@@ -8,9 +8,15 @@ export const VOICE_TOKEN_TTL_SECONDS = 15 * 60;
 
 export const DEFAULT_LIVEKIT_PUBLIC_URL = "wss://livekit.girthbass.duckdns.org";
 
+/** Where the server itself reaches LiveKit (the voice stream bridge joins rooms there). */
+export const DEFAULT_LIVEKIT_URL = "ws://livekit:7880";
+
 export interface LiveKitConfig {
     apiKey: string;
     apiSecret: string;
+    /** Internal URL the server joins rooms on. */
+    url: string;
+    /** URL handed to clients by the legacy REST route. */
     publicUrl: string;
 }
 
@@ -27,6 +33,7 @@ export function voiceLiveKitConfig(): LiveKitConfig | null {
     return {
         apiKey,
         apiSecret,
+        url: process.env.LIVEKIT_URL || DEFAULT_LIVEKIT_URL,
         publicUrl: process.env.LIVEKIT_PUBLIC_URL || DEFAULT_LIVEKIT_PUBLIC_URL,
     };
 }
