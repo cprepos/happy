@@ -1,4 +1,6 @@
-import { startApi } from "@/app/api/api";
+import { startApi, StartApiOptions } from "@/app/api/api";
+import * as fs from "fs";
+import * as path from "path";
 import { log } from "@/utils/log";
 import { awaitShutdown, onShutdown } from "@/utils/shutdown";
 import { db } from './storage/db';
@@ -10,6 +12,29 @@ import { startDatabaseMetricsUpdater } from "@/app/monitoring/metrics2";
 import { initEncrypt } from "./modules/encrypt";
 import { initGithub } from "./modules/github";
 import { loadFiles } from "./storage/files";
+
+// Optional bundled web app, served from HAPPY_STATIC_DIR (same behaviour as standalone mode).
+// HAPPY_INJECT_HTML_CONFIG is a JSON object exposed to the app as window.__HAPPY_CONFIG__.
+function staticWebappOptions(): StartApiOptions {
+    const staticDir = process.env.HAPPY_STATIC_DIR;
+    if (!staticDir) {
+        return {};
+    }
+    if (!fs.existsSync(path.join(staticDir, 'index.html'))) {
+        log({ module: 'static', level: 'warn' }, `HAPPY_STATIC_DIR=${staticDir} has no index.html; not serving a web app`);
+        return {};
+    }
+    let injectHtmlConfig: Record<string, unknown> | undefined;
+    if (process.env.HAPPY_INJECT_HTML_CONFIG) {
+        try {
+            injectHtmlConfig = JSON.parse(process.env.HAPPY_INJECT_HTML_CONFIG);
+        } catch {
+            log({ module: 'static', level: 'warn' }, 'HAPPY_INJECT_HTML_CONFIG is not valid JSON; ignoring it');
+        }
+    }
+    log(`Serving web app from ${staticDir}`);
+    return { staticDir, injectHtmlConfig };
+}
 
 async function main() {
 
@@ -37,7 +62,7 @@ async function main() {
     // Start
     //
 
-    await startApi();
+    await startApi(staticWebappOptions());
     await startMetricsServer();
     startDatabaseMetricsUpdater();
     startTimeout();
