@@ -126,6 +126,15 @@ export class AcpSessionManager {
     return flushed;
   }
 
+  /**
+   * Emit all text accumulated so far. For runners that show something
+   * outside the envelope stream (a session event) and need the text before
+   * it to arrive first.
+   */
+  flushText(): SessionEnvelope[] {
+    return this.flush();
+  }
+
   startTurn(): SessionEnvelope[] {
     if (this.currentTurnId) {
       return [];

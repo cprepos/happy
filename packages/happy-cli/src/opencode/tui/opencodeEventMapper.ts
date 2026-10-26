@@ -34,7 +34,17 @@ export type OpencodeMirrorAction =
     | { type: 'permission-replied'; id: string; reply: OpencodePermissionReply }
     | { type: 'title'; title: string }
     /** The TUI moved to another top-level session; the mirror follows it. */
-    | { type: 'session-changed'; sessionId: string };
+    | { type: 'session-changed'; sessionId: string }
+    /**
+     * A one-line session event for the app's chat (`sendSessionEvent`
+     * `message`). Compaction uses the Claude path's exact texts, so the app
+     * renders it the same way and resets its context gauge.
+     */
+    | { type: 'event'; message: string };
+
+/** The texts the Claude path sends around a compaction; the app keys on the second. */
+export const COMPACTION_STARTED_EVENT = 'Compaction started';
+export const COMPACTION_COMPLETED_EVENT = 'Compaction completed';
 
 /**
  * OpenCode tool ids -> the tool kinds OpenCode reports over ACP. The app has
@@ -140,6 +150,25 @@ export class OpencodeEventMapper {
     /** Sub-agent (task) sessions: their permissions belong to the followed session. */
     private readonly childSessions = new Set<string>();
 
+    /**
+     * Compaction. When the model's context fills up, OpenCode reports a
+     * `ContextOverflowError` on `session.error`, but it does not fail the
+     * turn: it adds a user message with a `compaction` part, streams a
+     * summary as an assistant message (`mode: "compaction"`, `summary: true`),
+     * re-posts the prompt that overflowed and publishes `session.compacted`.
+     * The session stays busy throughout. None of that is the user's
+     * conversation, so the mirror shows two event lines instead.
+     */
+    private readonly compactionParts = new Set<string>();
+    private readonly summaryMessages = new Set<string>();
+    private compacting = false;
+    /** An overflow error held back until it is clear OpenCode will not compact it away. */
+    private pendingOverflow: string | null = null;
+    /** OpenCode re-posts the overflowed prompt after an overflow compaction; that copy is not a new prompt. */
+    private replayExpected = false;
+    /** Text of the latest user prompt (ours or the TUI's), to recognise that re-post. */
+    private lastUserText: string | null = null;
+
     constructor(sessionId: string) {
         this.currentSessionId = sessionId;
     }
@@ -205,6 +234,8 @@ export class OpencodeEventMapper {
                 return this.markIdle();
             case 'session.error':
                 return this.handleError(props);
+            case 'session.compacted':
+                return this.handleCompacted(props);
             case 'permission.asked':
                 return this.handlePermissionAsked(props);
             case 'permission.replied':
@@ -242,7 +273,16 @@ export class OpencodeEventMapper {
     }
 
     private markIdle(): OpencodeMirrorAction[] {
-        const actions = this.envelopes(this.closeTurn(this.turnStatus));
+        const actions: OpencodeMirrorAction[] = [];
+        if (this.pendingOverflow !== null) {
+            // Nothing compacted it away (auto compaction is off, or the
+            // compaction itself overflowed): it is a real error after all.
+            actions.push(...this.errorStatus(this.pendingOverflow));
+        }
+        this.pendingOverflow = null;
+        this.compacting = false;
+        this.replayExpected = false;
+        actions.push(...this.envelopes(this.closeTurn(this.turnStatus)));
         if (this.busy) {
             this.busy = false;
             actions.push({ type: 'idle' });
@@ -286,11 +326,21 @@ export class OpencodeEventMapper {
             actions.push(...this.envelopes(this.closeTurn('completed')));
             this.busy = false;
             this.lastTitle = null;
+            this.compacting = false;
+            this.pendingOverflow = null;
+            this.replayExpected = false;
             this.currentSessionId = info.sessionID;
             actions.push({ type: 'session-changed', sessionId: info.sessionID });
         }
         if (!this.messageRoles.has(info.id)) {
             this.messageRoles.set(info.id, info.role);
+        }
+        if (info.role === 'assistant' && (info.mode === 'compaction' || info.summary === true)) {
+            this.summaryMessages.add(info.id);
+            if (info.error?.name === 'ContextOverflowError' && typeof info.error.data?.message === 'string') {
+                // The compaction could not fit either; OpenCode stops here.
+                this.pendingOverflow = info.error.data.message.trim() || this.pendingOverflow;
+            }
         }
         const pending = this.pendingParts.get(info.id);
         if (pending) {
@@ -317,6 +367,9 @@ export class OpencodeEventMapper {
         if (role === 'user') {
             return this.handleUserPart(part);
         }
+        if (this.summaryMessages.has(part.messageID)) {
+            return [];
+        }
         switch (part.type) {
             case 'text':
                 return this.forwardText(part.id, part.text ?? '', 'output', true);
@@ -330,7 +383,10 @@ export class OpencodeEventMapper {
     }
 
     private handleUserPart(part: PartLike): OpencodeMirrorAction[] {
-        if (this.ownMessageIds.has(part.messageID) || part.type !== 'text' || part.synthetic || part.ignored) {
+        if (part.type === 'compaction') {
+            return this.handleCompactionPart(part);
+        }
+        if (part.type !== 'text' || part.synthetic || part.ignored) {
             return [];
         }
         const text = (part.text ?? '').trim();
@@ -338,6 +394,14 @@ export class OpencodeEventMapper {
             return [];
         }
         this.sentUserParts.add(part.id);
+        if (this.replayExpected && text === this.lastUserText) {
+            this.replayExpected = false;
+            return [];
+        }
+        this.lastUserText = text;
+        if (this.ownMessageIds.has(part.messageID)) {
+            return [];
+        }
         return this.envelopes([
             ...this.closeTurn('completed'),
             createEnvelope('user', { t: 'text', text }),
@@ -348,7 +412,7 @@ export class OpencodeEventMapper {
         if (props.sessionID !== this.currentSessionId || props.field !== 'text' || typeof props.delta !== 'string') {
             return [];
         }
-        if (this.messageRoles.get(props.messageID) !== 'assistant') {
+        if (this.messageRoles.get(props.messageID) !== 'assistant' || this.summaryMessages.has(props.messageID)) {
             return [];
         }
         const kind = this.partKinds.get(props.partID);
@@ -428,10 +492,49 @@ export class OpencodeEventMapper {
         const detail = typeof error.data?.message === 'string' && error.data.message.trim()
             ? error.data.message.trim()
             : (typeof error.name === 'string' ? error.name : 'Unknown OpenCode error');
+        if (error.name === 'ContextOverflowError') {
+            // OpenCode compacts and retries on its own unless auto compaction
+            // is off; hold the error until the session goes idle without that.
+            this.pendingOverflow = detail;
+            return [];
+        }
+        return this.errorStatus(detail);
+    }
+
+    private errorStatus(detail: string): OpencodeMirrorAction[] {
         const envelopes = this.ensureTurn();
         envelopes.push(...this.manager.mapMessage({ type: 'status', status: 'error', detail }));
         this.turnStatus = 'failed';
         return this.envelopes(envelopes);
+    }
+
+    private handleCompactionPart(part: PartLike & { overflow?: boolean }): OpencodeMirrorAction[] {
+        if (this.compactionParts.has(part.id)) {
+            return [];
+        }
+        this.compactionParts.add(part.id);
+        // The overflow is being dealt with; a later one is reported afresh.
+        this.pendingOverflow = null;
+        if (part.overflow === true) {
+            this.replayExpected = true;
+        }
+        const actions = this.markBusy();
+        // Text streamed before the compaction belongs above the event line.
+        actions.push(...this.envelopes(this.manager.flushText()));
+        if (!this.compacting) {
+            this.compacting = true;
+            actions.push({ type: 'event', message: COMPACTION_STARTED_EVENT });
+        }
+        return actions;
+    }
+
+    private handleCompacted(props: any): OpencodeMirrorAction[] {
+        if (props.sessionID !== this.currentSessionId || !this.compacting) {
+            return [];
+        }
+        this.compacting = false;
+        this.replayExpected = false;
+        return [{ type: 'event', message: COMPACTION_COMPLETED_EVENT }];
     }
 
     private handlePermissionAsked(props: any): OpencodeMirrorAction[] {
