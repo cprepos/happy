@@ -200,6 +200,7 @@ class NemotronStream(stt.RecognizeStream):
                 data = json.loads(msg.data)
                 kind = data.get("type")
                 if kind == "partial":
+                    logger.debug("partial seg=%s %r", data.get("segment_id"), data.get("text"))
                     self._on_partial(data.get("text", ""))
                 elif kind == "final":
                     self._on_final(data)

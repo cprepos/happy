@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from livekit.agents import llm  # noqa: E402
 
-from happy_voice.assistant import VoiceConfig  # noqa: E402
+from happy_voice.assistant import _SCRIPTED_REPLY_RE, VoiceConfig  # noqa: E402
 from happy_voice.config import Settings  # noqa: E402
 from happy_voice.context import fold_system_messages, focused_session_from  # noqa: E402
 from happy_voice.prompt import (  # noqa: E402
@@ -74,6 +74,14 @@ def test_settings_voice_mapping() -> None:
     assert s.voice_for("pt-BR") == "pf_dora"
     assert s.voice_for("de") == "af_heart"
     assert s.llm_extra_body == {"chat_template_kwargs": {"enable_thinking": False}}
+
+
+def test_scripted_reply_marker() -> None:
+    m = _SCRIPTED_REPLY_RE.search("Message sent. [DO NOT say anything else, simply say 'sent']")
+    assert m and m.group(1) == "sent"
+    assert _SCRIPTED_REPLY_RE.search("Message sent to session sess_42.") is None
+    # only a trailing marker counts
+    assert _SCRIPTED_REPLY_RE.search("[DO NOT say anything else, simply say 'ok'] then more") is None
 
 
 if __name__ == "__main__":
