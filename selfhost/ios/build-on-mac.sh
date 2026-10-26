@@ -230,12 +230,12 @@ mac_stage_build() {
     pbx="$IOS_DIR/$scheme.xcodeproj/project.pbxproj"
     [[ -f "$pbx" ]] || die "missing $pbx"
 
-    # Current Xcode rejects pod targets below iOS 15; older pods still declare
-    # 9.0-13.x. Raise them to React Native's minimum.
+    # Current Xcode rejects pod targets below iOS 15 (older pods declare
+    # 9.0-13.x), and expo-router's Swift uses iOS 16 APIs. Raise them to 16.0.
     local pods_pbx="$IOS_DIR/Pods/Pods.xcodeproj/project.pbxproj"
     if [[ -f "$pods_pbx" ]]; then
-        perl -pi -e 's{(IPHONEOS_DEPLOYMENT_TARGET = )(\d+)(\.\d+)*;}{$1 . (($2 < 15 || "$2$3" eq "15" || "$2$3" eq "15.0") ? "15.1" : "$2$3") . ";"}ge' "$pods_pbx"
-        ok "pod deployment targets >= 15.1"
+        perl -pi -e 's{(IPHONEOS_DEPLOYMENT_TARGET = )(\d+)(\.\d+)*;}{$1 . ($2 < 16 ? "16.0" : "$2$3") . ";"}ge' "$pods_pbx"
+        ok "pod deployment targets >= 16.0"
     fi
 
     # RevenueCat 5.x: Swift 6.4 synthesizes PaywallColor's memberwise
@@ -294,7 +294,7 @@ Full log: $log"
             die "Xcode has no signing account/profile for team $APPLE_TEAM_ID. Open Xcode > Settings > Accounts,
 sign in to your Apple ID, and make sure the team ID matches. Full log: $log"
         fi
-        if grep -q 'Failed Registering Bundle Identifier\|is not available' "$log"; then
+        if grep -qE 'Failed Registering Bundle Identifier|identifier .* is not available' "$log"; then
             die "bundle id under '$APP_BUNDLE_ID_PREFIX' is taken by another team; choose another APP_BUNDLE_ID_PREFIX. Full log: $log"
         fi
         die "xcodebuild failed (exit $rc). Last lines of $log:
