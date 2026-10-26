@@ -64,8 +64,11 @@ export function setServerUrl(url: string | null): void {
     }
 }
 
+// Voice used to default to the hosted cloud unless this toggle was on. Voice
+// now always runs against the main server, so the toggle changes nothing; the
+// two functions below stay only for the server settings screen that reads them.
 export function shouldUseCustomServerForVoice(): boolean {
-    return isUsingCustomServer() && serverConfigStorage.getBoolean(USE_CUSTOM_SERVER_FOR_VOICE_KEY) === true;
+    return isUsingCustomServer();
 }
 
 export function setUseCustomServerForVoice(enabled: boolean): void {
@@ -76,8 +79,9 @@ export function setUseCustomServerForVoice(enabled: boolean): void {
     }
 }
 
+/** Voice always uses the main server URL. */
 export function getVoiceServerUrl(): string {
-    return shouldUseCustomServerForVoice() ? getServerUrl() : DEFAULT_SERVER_URL;
+    return getServerUrl();
 }
 
 export function getLogServerUrl(): string | null {
