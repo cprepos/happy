@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
 
-import { AgyBackend, type SpawnFn } from './AgyBackend';
+import { AGY_LOGIN_REQUIRED_DETAIL, AgyBackend, type SpawnFn } from './AgyBackend';
 import type { AgentMessage } from '@/agent/core/AgentBackend';
 
 /** Minimal fake of a spawned child process for driving AgyBackend in tests. */
@@ -339,5 +339,81 @@ describe('AgyBackend', () => {
     // The kill surfaces as a non-zero close, which rejects the turn.
     child.emit('close', null);
     await expect(turn).rejects.toThrow();
+  });
+  it('stops a turn at once and asks for a login when agy is not signed in', async () => {
+    const { child, stderr } = makeFakeChild();
+    const spawnFn = vi.fn(() => child) as unknown as SpawnFn;
+    const backend = new AgyBackend({
+      cwd: '/work',
+      permissionMode: 'default',
+      spawnFn,
+      resolveConversationId: () => null,
+    });
+    const messages: AgentMessage[] = [];
+    backend.onMessage((m) => messages.push(m));
+
+    const turn = backend.sendPrompt('/work', 'hi');
+    stderr.emit('data', 'Authentication required. Please visit the URL to log in:\n  https://accounts.google.com/o/oauth2/auth?x=1\n');
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    child.emit('close', null);
+
+    await expect(turn).rejects.toThrow(AGY_LOGIN_REQUIRED_DETAIL);
+    const errors = messages.filter((m) => m.type === 'status' && m.status === 'error');
+    expect(errors).toEqual([{ type: 'status', status: 'error', detail: AGY_LOGIN_REQUIRED_DETAIL }]);
+    // The OAuth URL is never forwarded to the session.
+    expect(JSON.stringify(messages)).not.toContain('accounts.google.com');
+  });
+
+  it('continues a resumed conversation from the first turn and never re-pins it', async () => {
+    const spawnCalls: string[][] = [];
+    let current = makeFakeChild();
+    const spawnFn = vi.fn((_bin: string, args: string[]) => {
+      spawnCalls.push(args);
+      return current.child;
+    }) as unknown as SpawnFn;
+    const pinned: string[] = [];
+    const backend = new AgyBackend({
+      cwd: '/work',
+      permissionMode: 'default',
+      spawnFn,
+      conversationId: 'resumed-1',
+      resolveConversationId: () => 'someone-else',
+      onConversationId: (id) => pinned.push(id),
+    });
+
+    const t1 = backend.sendPrompt('/work', 'first');
+    current.child.emit('close', 0);
+    await t1;
+
+    const idx = spawnCalls[0].indexOf('--conversation');
+    expect(spawnCalls[0][idx + 1]).toBe('resumed-1');
+    expect(backend.getConversationId()).toBe('resumed-1');
+    expect(pinned).toEqual([]);
+  });
+
+  it('reports the conversation id once when the first turn pins it', async () => {
+    let current = makeFakeChild();
+    const spawnFn = vi.fn(() => current.child) as unknown as SpawnFn;
+    let recorded: string | null = null;
+    const pinned: string[] = [];
+    const backend = new AgyBackend({
+      cwd: '/work',
+      permissionMode: 'default',
+      spawnFn,
+      resolveConversationId: () => recorded,
+      onConversationId: (id) => pinned.push(id),
+    });
+
+    const t1 = backend.sendPrompt('/work', 'first');
+    recorded = 'new-conv';
+    current.child.emit('close', 0);
+    await t1;
+
+    current = makeFakeChild();
+    const t2 = backend.sendPrompt('/work', 'second');
+    current.child.emit('close', 0);
+    await t2;
+
+    expect(pinned).toEqual(['new-conv']);
   });
 });
