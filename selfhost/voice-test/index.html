@@ -88,7 +88,9 @@ function metrics(el, items) { el.innerHTML = items.filter(Boolean).map(([k, v]) 
 
 // ------------------------------------------------------------------ audio output
 let ctx = null;
-function audioCtx() { if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)(); if (ctx.state === "suspended") ctx.resume(); return ctx; }
+// iOS Safari mutes Web Audio when the ringer switch is on silent unless the page asks for a playback session.
+function setAudioSession(type) { try { if (navigator.audioSession) navigator.audioSession.type = type; } catch {} }
+function audioCtx() { if (navigator.audioSession?.type !== "play-and-record") setAudioSession("playback"); if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)(); if (ctx.state === "suspended") ctx.resume(); return ctx; }
 
 class PcmPlayer {            // plays a stream of 24 kHz s16le chunks gaplessly
   constructor() { this.next = 0; this.sources = new Set(); this.carry = null; this.firstAudioAt = null; }
@@ -140,7 +142,7 @@ $("speakBtn").onclick = async () => {
   const t0 = now();
   try {
     const m = await speak($("ttsText").value, player);
-    metrics($("ttsMetrics"), [["first byte", fmt(m.ttfb)], ["first audio playing", fmt(player.firstAudioAt - t0)], ["full stream", fmt(m.total)], ["audio length", fmt(m.audioMs)], ["real-time factor", (m.total / m.audioMs).toFixed(3)]]);
+    metrics($("ttsMetrics"), [["first byte", fmt(m.ttfb)], ["first audio playing", fmt(player.firstAudioAt - t0)], ["full stream", fmt(m.total)], ["audio length", fmt(m.audioMs)], ["real-time factor", (m.total / m.audioMs).toFixed(3)], ["audio output", `${ctx.state}, ${ctx.sampleRate} Hz`]]);
   } catch (e) { metrics($("ttsMetrics"), [["error", e.message]]); }
   btn.disabled = false;
 };
@@ -152,6 +154,7 @@ const WORKLET = `class Tap extends AudioWorkletProcessor { process(inputs) { con
 class MicStream {
   constructor({ endpointMs = 0, onReady, onPartial, onFinal, onError }) { Object.assign(this, { endpointMs, onReady, onPartial, onFinal, onError }); }
   async start() {
+    setAudioSession("play-and-record");
     const c = audioCtx();
     this.stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
     if (!MicStream.loaded) { await c.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], { type: "application/javascript" }))); MicStream.loaded = true; }
@@ -187,7 +190,7 @@ class MicStream {
     };
     this.src.connect(this.node);   // the worklet outputs nothing audible; no connection to destination
   }
-  stopMic() { try { this.src?.disconnect(); this.node?.disconnect(); } catch {} this.stream?.getTracks().forEach(t => t.stop()); }
+  stopMic() { try { this.src?.disconnect(); this.node?.disconnect(); } catch {} this.stream?.getTracks().forEach(t => t.stop()); setAudioSession("playback"); }
   flush() { this.stopMic(); this.flushAt = now(); if (this.ws?.readyState === 1) this.ws.send(JSON.stringify({ type: "flush" })); }
   close() { this.stopMic(); if (this.ws?.readyState === 1) { this.ws.send(JSON.stringify({ type: "close" })); setTimeout(() => this.ws.close(), 500); } }
 }
