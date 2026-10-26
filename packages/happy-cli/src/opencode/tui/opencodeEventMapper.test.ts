@@ -82,9 +82,22 @@ describe('OpencodeEventMapper', () => {
                 id: 'per_177179946001R4bfPMs4P9Gc41',
                 toolName: 'execute',
                 input: { command: 'echo TUI-TYPED > tuifile.txt', patterns: ['echo TUI-TYPED > tuifile.txt'] },
+                toolCallId: 'chatcmpl-tool-891fbf4505619420',
             },
             { type: 'permission-replied', id: 'per_177179946001R4bfPMs4P9Gc41', reply: 'once' },
             { type: 'idle' },
+        ]);
+    });
+
+    it('uses the OpenCode call id on tool envelopes so permissions join their tool call', () => {
+        const mapper = new OpencodeEventMapper(SESSION);
+        const calls = envelopesOf(run(mapper, RECORDED))
+            .map((envelope) => envelope.ev as any)
+            .filter((ev) => ev.t === 'tool-call-start' || ev.t === 'tool-call-end')
+            .map((ev) => `${ev.t}:${ev.call}`);
+        expect(calls).toEqual([
+            'tool-call-start:chatcmpl-tool-891fbf4505619420',
+            'tool-call-end:chatcmpl-tool-891fbf4505619420',
         ]);
     });
 

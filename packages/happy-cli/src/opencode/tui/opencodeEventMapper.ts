@@ -29,7 +29,8 @@ export type OpencodeMirrorAction =
     | { type: 'busy' }
     /** The followed session finished working (turn over). */
     | { type: 'idle' }
-    | { type: 'permission-asked'; id: string; toolName: string; input: Record<string, unknown> }
+    /** `toolCallId` is the call id the tool-call envelopes use, so the app can join them. */
+    | { type: 'permission-asked'; id: string; toolName: string; input: Record<string, unknown>; toolCallId?: string }
     | { type: 'permission-replied'; id: string; reply: OpencodePermissionReply }
     | { type: 'title'; title: string }
     /** The TUI moved to another top-level session; the mirror follows it. */
@@ -83,6 +84,20 @@ export function normalizeOpencodeToolInput(input: unknown): Record<string, unkno
         args.newText = args.newString;
     }
     return args;
+}
+
+/**
+ * Use OpenCode's own call id on tool envelopes instead of the generated one.
+ * The app joins a permission request to its tool call by that id
+ * (`toolUseId`), and OpenCode reports it on both the tool part and the
+ * permission request.
+ */
+function withCallId(envelopes: SessionEnvelope[], callId: string): SessionEnvelope[] {
+    return envelopes.map((envelope) => (
+        envelope.ev.t === 'tool-call-start' || envelope.ev.t === 'tool-call-end'
+            ? { ...envelope, ev: { ...envelope.ev, call: callId } }
+            : envelope
+    ));
 }
 
 /** OpenCode's placeholder titles, which are not worth showing in the app. */
@@ -368,22 +383,22 @@ export class OpencodeEventMapper {
         if (!this.startedTools.has(callId)) {
             this.startedTools.add(callId);
             envelopes.push(...this.ensureTurn());
-            envelopes.push(...this.manager.mapMessage({
+            envelopes.push(...withCallId(this.manager.mapMessage({
                 type: 'tool-call',
                 toolName,
                 args: normalizeOpencodeToolInput(part.state?.input),
                 callId,
-            }));
+            }), callId));
         }
         if ((status === 'completed' || status === 'error') && !this.finishedTools.has(callId)) {
             this.finishedTools.add(callId);
             envelopes.push(...this.ensureTurn());
-            envelopes.push(...this.manager.mapMessage({
+            envelopes.push(...withCallId(this.manager.mapMessage({
                 type: 'tool-result',
                 toolName,
                 result: status === 'completed' ? part.state?.output : { error: part.state?.error },
                 callId,
-            }));
+            }), callId));
         }
         return this.envelopes(envelopes);
     }
@@ -416,6 +431,13 @@ export class OpencodeEventMapper {
             ...normalizeOpencodeToolInput(metadata),
             ...(Array.isArray(props.patterns) ? { patterns: props.patterns } : {}),
         };
-        return [{ type: 'permission-asked', id: props.id, toolName: opencodeToolKind(permission), input }];
+        const toolCallId = typeof props.tool?.callID === 'string' ? props.tool.callID : undefined;
+        return [{
+            type: 'permission-asked',
+            id: props.id,
+            toolName: opencodeToolKind(permission),
+            input,
+            ...(toolCallId ? { toolCallId } : {}),
+        }];
     }
 }
