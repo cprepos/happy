@@ -1,6 +1,7 @@
 #!/bin/sh
 # Local STT + TTS on Apple Silicon. Everything lives in this directory (default ~/happy-voice-local);
-# models go to the Hugging Face cache. Both services bind 127.0.0.1 only.
+# models go to the Hugging Face cache. Both services bind VOICE_HOST (default 127.0.0.1).
+# install-service.sh installs them as launchd services; start/stop/restart then go through launchctl.
 #
 #   ./run.sh setup            install uv (~/.local/bin, no profile edits), Python 3.12, .venv, requirements
 #   ./run.sh start [stt|tts]  start in the background (default: both); waits until /health is ok
@@ -48,6 +49,15 @@ stop_one() {
 
 cmd=${1:-status}; shift || true
 which=${1:-"stt tts"}
+
+# Installed as launchd services (install-service.sh): let launchd own the processes.
+DOMAIN="gui/$(id -u)"
+if launchctl print "$DOMAIN/com.happy.voice-stt" >/dev/null 2>&1; then
+  case $cmd in
+    start|restart) for s in $which; do launchctl kickstart -k "$DOMAIN/com.happy.voice-$s"; echo "$s restarted by launchd"; done; exit 0 ;;
+    stop) echo "launchd keeps these running; remove with ./install-service.sh --uninstall"; exit 0 ;;
+  esac
+fi
 case $cmd in
   setup)
     if [ ! -x "$UV" ]; then

@@ -246,4 +246,4 @@ async def speech(request: Request):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("TTS_PORT", "8880")))
+    uvicorn.run(app, host=os.environ.get("VOICE_HOST", "127.0.0.1"), port=int(os.environ.get("TTS_PORT", "8880")))

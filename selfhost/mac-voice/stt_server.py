@@ -338,4 +338,4 @@ async def transcribe(file: UploadFile = File(...), model: str = Form(default="")
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("STT_PORT", "8090")), ws_max_size=16 * 2**20)
+    uvicorn.run(app, host=os.environ.get("VOICE_HOST", "127.0.0.1"), port=int(os.environ.get("STT_PORT", "8090")), ws_max_size=16 * 2**20)
