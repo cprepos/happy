@@ -1,0 +1,43 @@
+--- Caddyfile
++++ Caddyfile.proposed
+@@ -28,34 +27,0 @@
+-    # /livekit — Voice UI + LiveKit WebRTC signaling
+-    # WebSocket upgrades (LiveKit client SDK) → LiveKit SFU (no extra auth; LiveKit JWT protects)
+-    # Regular HTTP (browser page + assets) → Next.js UI, OAuth-gated for public access
+-    handle /livekit* {
+-        @lk_ws {
+-            header Connection *Upgrade*
+-            header Upgrade websocket
+-        }
+-        handle @lk_ws {
+-            uri strip_prefix /livekit
+-            reverse_proxy 127.0.0.1:7880 {
+-                flush_interval -1
+-                header_up X-Forwarded-Proto {scheme}
+-                header_up Host {upstream_hostport}
+-            }
+-        }
+-
+-        forward_auth 127.0.0.1:4180 {
+-            uri /oauth2/auth
+-            header_up X-Real-IP {remote_host}
+-            header_up X-Forwarded-Uri {uri}
+-            copy_headers X-Auth-Request-Email
+-            @unauth status 401
+-            handle_response @unauth {
+-                redir * /oauth2/sign_in?rd={scheme}://{host}{uri} 302
+-            }
+-        }
+-        reverse_proxy 127.0.0.1:3000 {
+-            flush_interval -1
+-            header_up X-Forwarded-Proto {scheme}
+-            header_up X-Real-IP {remote_host}
+-        }
+-    }
+-
+@@ -728,5 +693,0 @@
+-}
+-
+-# LiveKit signaling (websocket) for self-hosted Happy voice.
+-livekit.girthbass.duckdns.org {
+-    reverse_proxy 127.0.0.1:7880
