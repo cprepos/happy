@@ -92,3 +92,5 @@ selfhost/webapp/
 /selfhost/ios/.env.ios
 # Local trash for moved-aside build outputs
 /trash/
+# Self-hosted voice stack secrets
+selfhost/.env.voice

@@ -1,0 +1,27 @@
+# LiveKit server config for the self-hosted voice stack.
+# Keys are NOT stored here: they come from LIVEKIT_KEYS ("<key>: <secret>"),
+# which compose.voice.yml builds from LIVEKIT_API_KEY / LIVEKIT_API_SECRET in .env.voice.
+#
+# Signaling (HTTP + WebSocket) listens on 127.0.0.1:7880 only; Caddy terminates TLS for
+# wss://livekit.girthbass.duckdns.org and proxies to it.
+# Media: ICE/TCP on 7881 and a single UDP mux port 7882 (Plex owns 50000-60000).
+# Router must forward TCP 7881 and UDP 7882 to this host.
+port: 7880
+bind_addresses:
+  - 127.0.0.1
+rtc:
+  tcp_port: 7881
+  udp_port: 7882
+  use_external_ip: true
+  # Only advertise LAN (+ VPN) addresses as host ICE candidates, never docker bridges.
+  # The public IP (via STUN) is added as a NAT candidate by use_external_ip.
+  ips:
+    includes:
+      - 192.168.2.0/24
+      - 10.8.0.0/24
+logging:
+  level: info
+  json: false
+room:
+  empty_timeout: 300
+  departure_timeout: 20
