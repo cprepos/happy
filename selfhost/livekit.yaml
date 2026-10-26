@@ -12,9 +12,12 @@ bind_addresses:
 rtc:
   tcp_port: 7881
   udp_port: 7882
+  # Public IP (via STUN) for clients outside, once the router forwards 7881/7882 ...
   use_external_ip: true
+  # ... and the LAN + VPN addresses too, so clients at home or on the VPN connect directly.
+  # Without this the public IP replaces them and LAN clients fail unless the router hairpins.
+  advertise_internal_ip: true
   # Only advertise LAN (+ VPN) addresses as host ICE candidates, never docker bridges.
-  # The public IP (via STUN) is added as a NAT candidate by use_external_ip.
   ips:
     includes:
       - 192.168.2.0/24
