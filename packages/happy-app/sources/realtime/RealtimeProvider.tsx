@@ -1,19 +1,16 @@
 import React from 'react';
-import { ElevenLabsProvider } from '@elevenlabs/react-native';
 import { RealtimeVoiceSession } from './RealtimeVoiceSession';
 import { useVoiceSessionGeneration } from '@/sync/storage';
 
 export const RealtimeProvider = ({ children }: { children: React.ReactNode }) => {
-    // Force ElevenLabsProvider to remount between sessions. The native SDK uses
-    // LiveKit, whose Room instance can't be reused after disconnect — second
-    // startSession silently fails. Children sit OUTSIDE the provider so the app
-    // tree isn't torn down on remount.
+    // A LiveKit Room can't be reused after it disconnects, so every finished
+    // conversation bumps the generation and the voice session is rebuilt from
+    // scratch. Children sit outside the keyed component so the app tree isn't
+    // torn down on remount.
     const generation = useVoiceSessionGeneration();
     return (
         <>
-            <ElevenLabsProvider key={generation}>
-                <RealtimeVoiceSession />
-            </ElevenLabsProvider>
+            <RealtimeVoiceSession key={generation} />
             {children}
         </>
     );
