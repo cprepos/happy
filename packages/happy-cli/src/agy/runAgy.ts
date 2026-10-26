@@ -24,7 +24,8 @@ import { initialMachineMetadata } from '@/daemon/run';
 import { createSessionMetadata } from '@/utils/createSessionMetadata';
 import { setupOfflineReconnection } from '@/utils/setupOfflineReconnection';
 import { notifyDaemonSessionStarted } from '@/daemon/controlClient';
-import { encodeBase64 } from '@/api/encryption';
+import { decodeBase64, encodeBase64 } from '@/api/encryption';
+import type { Session as ApiSession } from '@/api/types';
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler';
 import { connectionState } from '@/utils/serverConnectionErrors';
 import { MessageBuffer } from '@/ui/ink/messageBuffer';
@@ -43,6 +44,8 @@ export interface RunAgyOptions {
   credentials: Credentials;
   startedBy?: 'daemon' | 'terminal';
   verbose?: boolean;
+  /** agy conversation id to continue (`happy agy --resume <id>`). */
+  resumeConversationId?: string;
 }
 
 export async function runAgy(opts: RunAgyOptions): Promise<void> {
@@ -73,7 +76,30 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
     machineId: settings.machineId,
     startedBy: opts.startedBy,
   });
-  const response = await api.getOrCreateSession({ tag: sessionTag, metadata, state });
+  if (opts.resumeConversationId) {
+    metadata.agyConversationId = opts.resumeConversationId;
+  }
+
+  // The daemon sets these to resume a Happy session in place.
+  const reconnectSessionId = process.env.HAPPY_RECONNECT_SESSION_ID;
+  const reconnectKeyBase64 = process.env.HAPPY_RECONNECT_ENCRYPTION_KEY;
+  const reconnectVariant = process.env.HAPPY_RECONNECT_ENCRYPTION_VARIANT as 'legacy' | 'dataKey' | undefined;
+  let response: ApiSession | null;
+  if (reconnectSessionId && reconnectKeyBase64 && reconnectVariant) {
+    log(`Reconnecting to existing session ${reconnectSessionId}`);
+    response = {
+      id: reconnectSessionId,
+      seq: parseInt(process.env.HAPPY_RECONNECT_SEQ || '0', 10),
+      encryptionKey: decodeBase64(reconnectKeyBase64),
+      encryptionVariant: reconnectVariant,
+      metadata,
+      metadataVersion: parseInt(process.env.HAPPY_RECONNECT_METADATA_VERSION || '0', 10),
+      agentState: state,
+      agentStateVersion: parseInt(process.env.HAPPY_RECONNECT_AGENT_STATE_VERSION || '0', 10),
+    };
+  } else {
+    response = await api.getOrCreateSession({ tag: sessionTag, metadata, state });
+  }
   if (response) {
     log(`Happy Session ID: ${response.id}`);
   }
@@ -90,6 +116,18 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
     },
   });
   session = initialSession;
+
+  // On reconnect, un-archive the session and skip replaying old messages.
+  if (reconnectSessionId) {
+    session.suppressNextArchiveSignal();
+    session.skipExistingMessages();
+    session.updateMetadata((currentMetadata) => ({
+      ...currentMetadata,
+      lifecycleState: 'running',
+      archivedBy: undefined,
+      ...(opts.resumeConversationId ? { agyConversationId: opts.resumeConversationId } : {}),
+    }));
+  }
 
   if (response) {
     try {
@@ -122,6 +160,14 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
     model: selectedModel,
     effort: selectedEffort,
     log,
+    conversationId: opts.resumeConversationId ?? null,
+    // Recorded so the session can be resumed later (app Resume, `happy resume`).
+    onConversationId: (conversationId) => {
+      session.updateMetadata((currentMetadata) => ({
+        ...currentMetadata,
+        agyConversationId: conversationId,
+      }));
+    },
   });
 
   // Terminal UI (only with a real TTY; the daemon runs headless).
