@@ -89,6 +89,8 @@ const TASK_TOOL_NAMES = new Set([
 const INTERACTIVE_QUESTION_TOOL_NAMES = new Set([
     'AskUserQuestion',
     'request_user_input',
+    // OpenCode
+    'question',
 ]);
 
 export type ToolSummaryCategory = 'terminal' | 'edit' | 'read' | 'search' | 'web' | 'task' | 'other';

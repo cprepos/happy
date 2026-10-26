@@ -41,5 +41,6 @@ describe('tool registries', () => {
         expect(getToolViewComponent('create_agent')).toBeNull();
         expect(getToolFullViewComponent('future_tool')).toBeNull();
         expect(getToolViewComponent('request_user_input')).toBe('Request');
+        expect(getToolViewComponent('question')).toBe('Request');
     });
 });

@@ -15,6 +15,8 @@ interface PendingBase {
 export interface PendingAgentForm extends PendingBase {
     kind: 'form';
     questions: AgentQuestion[];
+    /** False when no transcript tool call can show this form inline. */
+    inTranscript?: boolean;
 }
 
 /**
@@ -76,7 +78,12 @@ export function selectPendingCommunications(state: AgentState | null): PendingAg
 
         const questions = readQuestions(communication);
         if (questions.length === 0) continue;
-        pending.push({ ...base, kind: 'form', questions });
+        pending.push({
+            ...base,
+            kind: 'form',
+            questions,
+            ...(communication.inTranscript === false ? { inTranscript: false } : {}),
+        });
     }
     return pending.sort((a, b) => a.createdAt - b.createdAt);
 }
@@ -124,11 +131,16 @@ export function selectAgentFormCommunication(
     return null;
 }
 
-/** Choice forms can live directly in chat; text-only forms keep the modal fallback. */
+/**
+ * Forms live directly in chat on their tool call. Every question left after
+ * `readQuestions` is answerable inline: it offers options or takes written
+ * text. Only a form the agent marks as having no tool call in the transcript
+ * keeps the modal fallback.
+ */
 export function canRenderAgentFormInline(communication: PendingAgentCommunication): boolean {
     return communication.kind === 'form'
-        && communication.questions.length > 0
-        && communication.questions.every(question => question.options.length > 0);
+        && communication.inTranscript !== false
+        && communication.questions.length > 0;
 }
 
 /**

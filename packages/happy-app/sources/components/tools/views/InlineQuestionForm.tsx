@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { ActivityIndicator, Platform, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Platform, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
@@ -18,15 +18,24 @@ export interface InlineQuestion {
     options: InlineQuestionOption[];
     multiSelect?: boolean | null;
     required?: boolean | null;
+    /** Shows a field for an answer the agent did not offer. Off unless set. */
+    allowCustom?: boolean | null;
 }
 
 export type InlineQuestionAnswers = Record<string, string[]>;
+
+/** Written answers by question id, for questions with `allowCustom`. */
+export type InlineQuestionCustomAnswers = Record<string, string>;
 
 interface InlineQuestionFormProps {
     questions: InlineQuestion[];
     canInteract: boolean;
     submittedAnswers?: InlineQuestionAnswers | null;
-    onSubmit: (answers: InlineQuestionAnswers) => Promise<void>;
+    /** The request was dismissed rather than answered; the card says so. */
+    dismissed?: boolean;
+    onSubmit: (answers: InlineQuestionAnswers, customAnswers: InlineQuestionCustomAnswers) => Promise<void>;
+    /** Adds a Dismiss action that declines to answer. */
+    onDismiss?: () => Promise<void>;
 }
 
 // This is the shared choice form used by both Claude's AskUserQuestion tool and
@@ -36,12 +45,14 @@ export const InlineQuestionForm = React.memo<InlineQuestionFormProps>((props) =>
     const { questions, onSubmit } = props;
     const { theme } = useUnistyles();
     const [selections, setSelections] = React.useState<Map<string, Set<number>>>(new Map());
+    const [customAnswers, setCustomAnswers] = React.useState<InlineQuestionCustomAnswers>({});
     const [isSubmitting, setIsSubmitting] = React.useState(false);
     const [locallySubmittedAnswers, setLocallySubmittedAnswers] = React.useState<InlineQuestionAnswers | null>(null);
     const questionKey = questions.map(question => question.id).join('\u0000');
 
     React.useEffect(() => {
         setSelections(new Map());
+        setCustomAnswers({});
         setLocallySubmittedAnswers(null);
         setIsSubmitting(false);
     }, [questionKey]);
@@ -50,8 +61,13 @@ export const InlineQuestionForm = React.memo<InlineQuestionFormProps>((props) =>
     const canInteract = props.canInteract && submittedAnswers === null;
     const allQuestionsAnswered = questions.every((question) => {
         if (question.required === false) return true;
+        if (question.allowCustom && (customAnswers[question.id] ?? '').trim().length > 0) return true;
         return (selections.get(question.id)?.size ?? 0) > 0;
     });
+
+    const handleCustomChange = React.useCallback((questionId: string, text: string) => {
+        setCustomAnswers(previous => ({ ...previous, [questionId]: text }));
+    }, []);
 
     const handleOptionToggle = React.useCallback((question: InlineQuestion, optionIndex: number) => {
         if (!canInteract) return;
@@ -78,25 +94,55 @@ export const InlineQuestionForm = React.memo<InlineQuestionFormProps>((props) =>
         if (!allQuestionsAnswered || isSubmitting) return;
 
         const answers: InlineQuestionAnswers = {};
+        const written: InlineQuestionCustomAnswers = {};
+        const shown: InlineQuestionAnswers = {};
         for (const question of questions) {
             const selected = selections.get(question.id);
-            if (!selected || selected.size === 0) continue;
-            answers[question.id] = Array.from(selected)
-                .map(optionIndex => question.options[optionIndex]?.label)
-                .filter((label): label is string => Boolean(label));
+            const labels = selected
+                ? Array.from(selected)
+                    .map(optionIndex => question.options[optionIndex]?.label)
+                    .filter((label): label is string => Boolean(label))
+                : [];
+            const custom = question.allowCustom ? (customAnswers[question.id] ?? '').trim() : '';
+            if (labels.length > 0) answers[question.id] = labels;
+            if (custom.length > 0) written[question.id] = custom;
+            if (labels.length > 0 || custom.length > 0) {
+                shown[question.id] = custom.length > 0 ? [...labels, custom] : labels;
+            }
         }
 
         setIsSubmitting(true);
-        setLocallySubmittedAnswers(answers);
+        setLocallySubmittedAnswers(shown);
         try {
-            await onSubmit(answers);
+            await onSubmit(answers, written);
         } catch (error) {
             setLocallySubmittedAnswers(null);
             console.error('Failed to submit question answer:', error);
         } finally {
             setIsSubmitting(false);
         }
-    }, [allQuestionsAnswered, isSubmitting, onSubmit, questions, selections]);
+    }, [allQuestionsAnswered, customAnswers, isSubmitting, onSubmit, questions, selections]);
+
+    const { onDismiss } = props;
+    const handleDismiss = React.useCallback(async () => {
+        if (!onDismiss || isSubmitting) return;
+        setIsSubmitting(true);
+        try {
+            await onDismiss();
+        } catch (error) {
+            console.error('Failed to dismiss question:', error);
+        } finally {
+            setIsSubmitting(false);
+        }
+    }, [isSubmitting, onDismiss]);
+
+    if (props.dismissed) {
+        return (
+            <ToolSectionView>
+                <Text style={styles.submittedHeader}>{t('agentQuestion.dismissed')}</Text>
+            </ToolSectionView>
+        );
+    }
 
     if (submittedAnswers) {
         return (
@@ -166,12 +212,36 @@ export const InlineQuestionForm = React.memo<InlineQuestionFormProps>((props) =>
                                     );
                                 })}
                             </View>
+                            {question.allowCustom && canInteract ? (
+                                <TextInput
+                                    style={styles.customInput}
+                                    value={customAnswers[question.id] ?? ''}
+                                    onChangeText={text => handleCustomChange(question.id, text)}
+                                    placeholder={question.options.length > 0
+                                        ? t('agentQuestion.ownAnswerPlaceholder')
+                                        : t('agentQuestion.ownAnswer')}
+                                    placeholderTextColor={theme.colors.textSecondary}
+                                    editable={!isSubmitting}
+                                    multiline
+                                    accessibilityLabel={t('agentQuestion.ownAnswer')}
+                                />
+                            ) : null}
                         </View>
                     );
                 })}
 
                 {canInteract && (
                     <View style={styles.actionsContainer}>
+                        {onDismiss ? (
+                            <TouchableOpacity
+                                style={[styles.dismissButton, isSubmitting && styles.submitButtonDisabled]}
+                                onPress={handleDismiss}
+                                disabled={isSubmitting}
+                                activeOpacity={0.7}
+                            >
+                                <Text style={styles.dismissButtonText}>{t('agentQuestion.dismiss')}</Text>
+                            </TouchableOpacity>
+                        ) : null}
                         <TouchableOpacity
                             style={[
                                 styles.submitButton,
@@ -321,6 +391,31 @@ const styles = StyleSheet.create((theme) => ({
     },
     submitButtonText: {
         color: Platform.select({ web: theme.colors.button.primary.tint, default: theme.colors.text }),
+        fontSize: 14,
+        fontWeight: '600',
+    },
+    customInput: {
+        minHeight: 44,
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: theme.colors.divider,
+        backgroundColor: Platform.select({ web: 'transparent', default: theme.colors.surface }),
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+        fontSize: 14,
+        color: theme.colors.text,
+        textAlignVertical: 'top',
+    },
+    dismissButton: {
+        paddingHorizontal: 16,
+        paddingVertical: 12,
+        borderRadius: 8,
+        alignItems: 'center',
+        justifyContent: 'center',
+        minHeight: 44,
+    },
+    dismissButtonText: {
+        color: theme.colors.textSecondary,
         fontSize: 14,
         fontWeight: '600',
     },

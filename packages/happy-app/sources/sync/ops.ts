@@ -932,7 +932,18 @@ export async function sessionAnswerQuestion(
     kind: string = 'form',
 ): Promise<void> {
     const reply: SessionCommunicationReply = { id, kind, status: 'answered', answers };
-    await apiSocket.sessionRPC(sessionId, 'communication', reply);
+    throwCommunicationError(await apiSocket.sessionRPC<unknown, SessionCommunicationReply>(sessionId, 'communication', reply));
+}
+
+/**
+ * The agent reports a reply it could not deliver (the question was already
+ * answered elsewhere, or the agent refused it) as `{ error }` instead of
+ * failing the RPC; surface it so the form stays answerable.
+ */
+function throwCommunicationError(response: unknown): void {
+    if (response && typeof response === 'object' && typeof (response as { error?: unknown }).error === 'string') {
+        throw new Error((response as { error: string }).error);
+    }
 }
 
 /**
@@ -944,7 +955,7 @@ export async function sessionCancelCommunication(
     kind: string = 'form',
 ): Promise<void> {
     const reply: SessionCommunicationReply = { id, kind, status: 'cancelled' };
-    await apiSocket.sessionRPC(sessionId, 'communication', reply);
+    throwCommunicationError(await apiSocket.sessionRPC<unknown, SessionCommunicationReply>(sessionId, 'communication', reply));
 }
 
 /**

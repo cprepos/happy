@@ -342,6 +342,10 @@ export const AgentCommunicationSchema = z.object({
     createdAt: z.number().nullish(),
     // Joins the communication to the tool call that raised it, when there is one.
     toolUseId: z.string().nullish(),
+    // False when no transcript tool call shows this communication (e.g. a
+    // question an OpenCode sub-agent asks), so it is answered from the
+    // banner above the composer instead of inline.
+    inTranscript: z.boolean().nullish(),
     // Shown when the client does not understand `kind`, so the user learns what
     // is being asked even though this build cannot render the payload.
     title: z.string().nullish(),

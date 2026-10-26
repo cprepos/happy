@@ -545,6 +545,7 @@ export const it: TranslationStructure = {
         ownAnswerPlaceholder: "Scrivi una risposta",
         submitFailed: "Impossibile inviare la risposta",
         dismiss: "Ignora",
+        dismissed: "Ignorata",
         unsupportedTitle: "Richiesta non supportata",
         unsupportedDescription: ({ kind }: { kind: string }) => `Questa versione di Happy non può mostrare una richiesta «${kind}». Aggiorna l'app per rispondere.`,
         moreQuestions: ({ count }: { count: number }) =>
