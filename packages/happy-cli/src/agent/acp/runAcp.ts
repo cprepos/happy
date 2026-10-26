@@ -319,34 +319,40 @@ function flattenSelectOptions(options: unknown): AcpSelectableOption[] {
   return flattened;
 }
 
-function extractConfigSelector(
+/**
+ * Find the select option that controls the agent's mode or model.
+ *
+ * An option whose declared category matches always wins. Only when no option
+ * declares the category do id/name heuristics apply, and the mode heuristic
+ * skips anything that looks like a model: OpenCode lists its `model` option
+ * before `mode`, and "model" contains "mode".
+ */
+export function extractConfigSelector(
   configOptions: SessionConfigOption[],
   category: 'mode' | 'model',
 ): AcpConfigSelector | null {
-  const optionMatchesCategory = (option: SessionConfigOption): boolean => {
-    if (option.category === category) {
-      return true;
-    }
-    // Some ACP providers omit category; fallback to id/name heuristics.
+  const looksLikeCategory = (option: SessionConfigOption): boolean => {
     const id = normalizeComparable(option.id);
     const name = normalizeComparable(option.name);
+    const looksLikeModel = id.includes('model') || name.includes('model');
     if (category === 'model') {
-      return id.includes('model') || name.includes('model');
+      return looksLikeModel;
     }
-    return id.includes('mode') || id.includes('permission') || name.includes('mode') || name.includes('permission');
+    return !looksLikeModel
+      && (id.includes('mode') || id.includes('permission') || name.includes('mode') || name.includes('permission'));
   };
 
-  for (const option of configOptions) {
-    if (option.type !== 'select' || !optionMatchesCategory(option)) {
-      continue;
-    }
-    return {
-      configId: option.id,
-      currentCode: option.currentValue,
-      options: flattenSelectOptions(option.options),
-    };
+  const selects = configOptions.filter((option) => option.type === 'select');
+  const option = selects.find((candidate) => candidate.category === category)
+    ?? selects.find(looksLikeCategory);
+  if (!option || option.type !== 'select') {
+    return null;
   }
-  return null;
+  return {
+    configId: option.id,
+    currentCode: option.currentValue,
+    options: flattenSelectOptions(option.options),
+  };
 }
 
 function normalizeComparable(value: string): string {
