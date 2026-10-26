@@ -175,6 +175,7 @@ class NemotronStream(stt.RecognizeStream):
             nonlocal closing
             async for item in self._input_ch:
                 if isinstance(item, self._FlushSentinel):
+                    logger.debug("stt flush (t=%.3f)", time.time())
                     await ws.send_str(json.dumps({"type": "flush"}))
                 else:
                     await ws.send_bytes(_to_mono_pcm16(item))
