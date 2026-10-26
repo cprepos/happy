@@ -557,6 +557,7 @@ Conversation history is preserved on the server, but in-flight tool calls are in
         startedBy,
         verbose,
         resumeSessionId,
+        permissionPolicy,
         agentName: 'opencode',
         command: resolveOpencodeBin(),
         args: [...OPENCODE_ACP_ARGS, ...passthroughArgs],
