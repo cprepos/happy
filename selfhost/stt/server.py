@@ -19,6 +19,10 @@ import os
 import time
 from dataclasses import dataclass, field
 
+# Release cached blocks in place instead of keeping fragmented segments reserved.
+# Must be set before torch initialises CUDA.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 import numpy as np
 import soundfile as sf
 import torch
@@ -33,6 +37,11 @@ MODEL_NAME = os.environ.get("STT_MODEL", "nvidia/nemotron-speech-streaming-en-0.
 RIGHT_CONTEXT = int(os.environ.get("STT_RIGHT_CONTEXT", "1"))
 LEFT_CONTEXT = int(os.environ.get("STT_LEFT_CONTEXT", "70"))
 DEFAULT_ENDPOINT_MS = int(os.environ.get("STT_ENDPOINT_MS", "0"))
+# Encoder weights/activations precision. bf16 halves VRAM with no measurable WER change;
+# the mel preprocessor and the RNNT decoder + joint always run in fp32.
+STT_DTYPE = os.environ.get("STT_DTYPE", "bf16").lower()
+if STT_DTYPE not in ("bf16", "fp32"):
+    raise ValueError(f"STT_DTYPE must be bf16 or fp32, got {STT_DTYPE!r}")
 SAMPLE_RATE = 16000
 LOG_MEL_ZERO = -16.635532333438686  # log(2^-24): preprocessor output for digital silence
 
@@ -46,8 +55,13 @@ class Engine:
 
         t0 = time.time()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model = nemo_asr.models.ASRModel.from_pretrained(model_name=MODEL_NAME, map_location=self.device)
+        # Load on the CPU and cast there, so the GPU never holds a full fp32 copy.
+        model = nemo_asr.models.ASRModel.from_pretrained(model_name=MODEL_NAME, map_location="cpu")
         model.encoder.set_default_att_context_size([LEFT_CONTEXT, RIGHT_CONTEXT])
+        self.dtype = torch.bfloat16 if STT_DTYPE == "bf16" and self.device.type == "cuda" else torch.float32
+        if self.dtype != torch.float32:
+            _encoder_to(model.encoder, self.dtype)
+        model.to(self.device)
 
         # Deterministic features for streaming: no dither, no padding.
         cfg = model.cfg.preprocessor
@@ -91,7 +105,7 @@ class Engine:
         )
 
     def new_state(self) -> "StreamState":
-        c_ch, c_t, c_len = self.model.encoder.get_initial_cache_state(batch_size=1)
+        c_ch, c_t, c_len = self.model.encoder.get_initial_cache_state(batch_size=1, dtype=self.dtype)
         return StreamState(
             cache_last_channel=c_ch,
             cache_last_time=c_t,
@@ -104,7 +118,12 @@ class Engine:
 
     @torch.inference_mode()
     def transcribe_file(self, audio: np.ndarray) -> str:
-        out = self.model.transcribe([audio], batch_size=1, verbose=False)
+        try:
+            out = self.model.transcribe([audio], batch_size=1, verbose=False)
+        finally:
+            # NeMo's transcribe teardown calls encoder/decoder/joint.unfreeze(), which puts them back
+            # in train mode: dropout would then corrupt every later streaming step.
+            self.model.eval()
         return _hyp_text(out)
 
     @torch.inference_mode()
@@ -135,6 +154,31 @@ class Engine:
         (st.pred_out, texts, st.cache_last_channel, st.cache_last_time, st.cache_last_channel_len, st.hyps) = out
         st.steps += 1
         return _hyp_text(texts)
+
+
+def _encoder_to(encoder: torch.nn.Module, dtype: torch.dtype) -> None:
+    """Run the conformer encoder in `dtype`.
+
+    Weights and buffers are cast; floating inputs (log-mel features, streaming caches) are cast on
+    the way in and the encoded output goes back to fp32, so the fp32 preprocessor before it and the
+    fp32 RNNT decoder + joint after it are unchanged. The returned streaming caches stay in `dtype`.
+    Hooks on the module cover both the streaming step and offline transcription.
+    """
+    encoder.to(dtype)
+
+    def cast(x):
+        return x.to(dtype) if torch.is_tensor(x) and x.is_floating_point() else x
+
+    def pre_hook(_m, args, kwargs):
+        return tuple(cast(a) for a in args), {k: cast(v) for k, v in kwargs.items()}
+
+    def post_hook(_m, _args, _kwargs, out):
+        if isinstance(out, (tuple, list)) and out and torch.is_tensor(out[0]):
+            return (out[0].float(), *out[1:])
+        return out
+
+    encoder.register_forward_pre_hook(pre_hook, with_kwargs=True)
+    encoder.register_forward_hook(post_hook, with_kwargs=True)
 
 
 def _hyp_text(texts) -> str:
@@ -175,7 +219,16 @@ async def _startup() -> None:
     st = ENGINE.new_state()
     for _ in range(3):
         ENGINE.step(st, np.zeros(ENGINE.chunk_samples, dtype=np.float32))
-    log.info("warmup done")
+    del st
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+        log.info(
+            "warmup done; dtype=%s allocated=%.0f MiB reserved=%.0f MiB",
+            STT_DTYPE, torch.cuda.memory_allocated() / 2**20, torch.cuda.memory_reserved() / 2**20,
+        )
+    else:
+        log.info("warmup done")
 
 
 @app.get("/health")
@@ -189,6 +242,7 @@ async def health():
         "chunk_ms": ENGINE.chunk_ms,
         "att_context_size": [LEFT_CONTEXT, RIGHT_CONTEXT],
         "device": str(ENGINE.device),
+        "dtype": STT_DTYPE if ENGINE.dtype != torch.float32 else "fp32",
     }
 
 
