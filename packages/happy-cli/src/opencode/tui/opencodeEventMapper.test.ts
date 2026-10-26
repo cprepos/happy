@@ -192,6 +192,61 @@ describe('OpencodeEventMapper', () => {
         ]);
     });
 
+    it('reports questions of the followed session joined to the question tool call', () => {
+        const mapper = new OpencodeEventMapper('ses_a');
+        const questions = [
+            { question: 'Which color?', header: 'Color', options: [{ label: 'Red', description: 'warm' }, { label: 'Blue', description: '' }], multiple: true, custom: false },
+        ];
+        const actions = run(mapper, [
+            { type: 'message.updated', properties: { info: { id: 'msg_a', sessionID: 'ses_a', role: 'assistant' } } },
+            {
+                type: 'message.part.updated',
+                properties: {
+                    part: {
+                        id: 'prt_q', messageID: 'msg_a', sessionID: 'ses_a', type: 'tool', tool: 'question', callID: 'call_q',
+                        state: { status: 'running', input: { questions } },
+                    },
+                },
+            },
+            {
+                type: 'question.asked',
+                properties: { id: 'que_1', sessionID: 'ses_a', questions, tool: { messageID: 'msg_a', callID: 'call_q' } },
+            },
+            { type: 'question.replied', properties: { sessionID: 'ses_a', requestID: 'que_1', answers: [['Red']] } },
+            { type: 'question.rejected', properties: { sessionID: 'ses_a', requestID: 'que_2' } },
+            { type: 'question.asked', properties: { id: 'que_x', sessionID: 'ses_unrelated', questions } },
+        ]);
+        expect(summarize(envelopesOf(actions))).toEqual([
+            'agent:turn-start',
+            `agent:tool-call-start:question:${JSON.stringify({ questions })}`,
+        ]);
+        expect((envelopesOf(actions)[1].ev as any).call).toBe('call_q');
+        expect(actions.filter((action) => action.type !== 'envelopes')).toEqual([
+            {
+                type: 'question-asked',
+                id: 'que_1',
+                questions: [{ question: 'Which color?', header: 'Color', options: [{ label: 'Red', description: 'warm' }, { label: 'Blue', description: '' }], multiple: true, custom: false }],
+                toolCallId: 'call_q',
+            },
+            { type: 'question-resolved', id: 'que_1', status: 'answered', answers: [['Red']] },
+            { type: 'question-resolved', id: 'que_2', status: 'cancelled' },
+        ]);
+    });
+
+    it('forwards sub-agent questions without a tool call to join', () => {
+        const mapper = new OpencodeEventMapper('ses_a');
+        const actions = run(mapper, [
+            { type: 'session.created', properties: { info: { id: 'ses_child', parentID: 'ses_a', title: 'sub' } } },
+            {
+                type: 'question.asked',
+                properties: { id: 'que_c', sessionID: 'ses_child', questions: [{ question: 'Name?', header: 'Name' }], tool: { messageID: 'm', callID: 'call_c' } },
+            },
+        ]);
+        expect(actions).toEqual([
+            { type: 'question-asked', id: 'que_c', questions: [{ question: 'Name?', header: 'Name', options: [] }] },
+        ]);
+    });
+
     it('marks aborted turns cancelled and errors failed', () => {
         const mapper = new OpencodeEventMapper('ses_a');
         const aborted = run(mapper, [

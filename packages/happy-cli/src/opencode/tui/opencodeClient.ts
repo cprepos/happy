@@ -3,7 +3,7 @@
  *
  * Covers what the Happy mirror needs: create/read sessions, post prompts
  * with our own message ids (so their echoes can be recognised), abort,
- * answer permissions, read providers/agents for the app's pickers, and
+ * answer permissions and questions, read providers/agents for the app's pickers, and
  * follow the `/event` server-sent event stream with reconnects.
  *
  * Every request carries HTTP basic auth (`opencode` + the per-run password
@@ -11,7 +11,7 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import type { OpencodeEvent, OpencodePermissionReply } from './opencodeEventMapper';
+import type { OpencodeEvent, OpencodePermissionReply, OpencodeQuestion } from './opencodeEventMapper';
 
 export type OpencodeServerInfo = {
     url: string;
@@ -133,6 +133,21 @@ export class OpencodeClient {
 
     listPermissions(): Promise<Array<{ id: string; sessionID: string; permission: string; patterns?: string[]; metadata?: Record<string, unknown> }>> {
         return this.request('GET', '/permission');
+    }
+
+    /** Questions the `question` tool is waiting on, across sessions of this server. */
+    listQuestions(): Promise<Array<{ id: string; sessionID: string; questions: OpencodeQuestion[]; tool?: { messageID: string; callID: string } }>> {
+        return this.request('GET', '/question');
+    }
+
+    /** Answer a question request: one list of chosen labels / typed text per question, in order. */
+    async replyQuestion(requestId: string, answers: string[][]): Promise<void> {
+        await this.request('POST', `/question/${encodeURIComponent(requestId)}/reply`, { answers });
+    }
+
+    /** Dismiss a question request; the tool fails with "The user dismissed this question". */
+    async rejectQuestion(requestId: string): Promise<void> {
+        await this.request('POST', `/question/${encodeURIComponent(requestId)}/reject`);
     }
 
     providers(): Promise<OpencodeProviders> {
