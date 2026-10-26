@@ -230,6 +230,14 @@ mac_stage_build() {
     pbx="$IOS_DIR/$scheme.xcodeproj/project.pbxproj"
     [[ -f "$pbx" ]] || die "missing $pbx"
 
+    # Current Xcode rejects pod targets below iOS 15; older pods still declare
+    # 9.0-13.x. Raise them to React Native's minimum.
+    local pods_pbx="$IOS_DIR/Pods/Pods.xcodeproj/project.pbxproj"
+    if [[ -f "$pods_pbx" ]]; then
+        perl -pi -e 's{(IPHONEOS_DEPLOYMENT_TARGET = )(\d+)(\.\d+)*;}{$1 . (($2 < 15 || "$2$3" eq "15" || "$2$3" eq "15.0") ? "15.1" : "$2$3") . ";"}ge' "$pods_pbx"
+        ok "pod deployment targets >= 15.1"
+    fi
+
     step "Signing: automatic, team $APPLE_TEAM_ID"
     # Set team + automatic signing on every app-target build configuration
     # (each one carries a PRODUCT_BUNDLE_IDENTIFIER). Idempotent.
