@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -40,6 +41,11 @@ logger = logging.getLogger("happy-voice")
 TOPIC_CONTEXT = "happy.context"
 TOPIC_TEXT = "happy.text"
 RPC_GET_CONFIG = "happy.getConfig"
+
+# The app's tool results dictate the exact words to speak, e.g.
+# "sent [DO NOT say anything else, simply say 'sent']". Speaking them directly saves a second LLM
+# round trip (the most expensive part of a tool turn); the result still goes into the history.
+_SCRIPTED_REPLY_RE = re.compile(r"\[\s*DO NOT say anything else,\s*simply say\s*'([^']{1,80})'\s*\]\s*$")
 
 
 @dataclass
@@ -111,6 +117,15 @@ class HappyAssistant(Agent):
     async def llm_node(self, chat_ctx, tools, model_settings):  # type: ignore[override]
         return Agent.default.llm_node(self, fold_system_messages(chat_ctx), tools, model_settings)
 
+    def _reply_with(self, result: str, context: RunContext) -> str | llm.ToolResult:
+        if not self._settings.scripted_tool_replies:
+            return result
+        m = _SCRIPTED_REPLY_RE.search(result)
+        if not m:
+            return result
+        context.session.say(m.group(1), allow_interruptions=True, add_to_chat_ctx=True)
+        return llm.ToolResult(result, reply_required=False)
+
     async def _call_app(self, method: str, payload: dict[str, Any]) -> str:
         identity = self._state.user_identity
         record = {"method": method, "payload": payload, "t": time.time()}
@@ -138,24 +153,30 @@ class HappyAssistant(Agent):
         return result
 
     @function_tool(raw_schema=SEND_MESSAGE_SCHEMA)
-    async def sendMessageToSession(self, raw_arguments: dict[str, Any], context: RunContext) -> str:
+    async def sendMessageToSession(
+        self, raw_arguments: dict[str, Any], context: RunContext
+    ) -> str | llm.ToolResult:
         session_id = str(raw_arguments.get("sessionId") or "").strip() or self._state.focused_session
         message = str(raw_arguments.get("message") or "").strip()
         if not message:
             raise ToolError("error (empty message)")
-        return await self._call_app(
+        result = await self._call_app(
             "sendMessageToSession", {"sessionId": session_id, "message": message}
         )
+        return self._reply_with(result, context)
 
     @function_tool(raw_schema=PERMISSION_SCHEMA)
-    async def processPermissionRequest(self, raw_arguments: dict[str, Any], context: RunContext) -> str:
+    async def processPermissionRequest(
+        self, raw_arguments: dict[str, Any], context: RunContext
+    ) -> str | llm.ToolResult:
         request_id = str(raw_arguments.get("requestId") or "").strip()
         decision = str(raw_arguments.get("decision") or "").strip().lower()
         if decision not in ("allow", "deny"):
             raise ToolError("error (decision must be allow or deny)")
-        return await self._call_app(
+        result = await self._call_app(
             "processPermissionRequest", {"requestId": request_id, "decision": decision}
         )
+        return self._reply_with(result, context)
 
     @function_tool(raw_schema=SKIP_TURN_SCHEMA)
     async def skip_turn(self, raw_arguments: dict[str, Any], context: RunContext) -> None:
