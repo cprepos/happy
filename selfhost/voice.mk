@@ -68,6 +68,7 @@ voice-smoke: $(VOICE_ENV)
 	@bash $(VOICE_DIR)/scripts/voice-smoke.sh
 
 # Static page + same-origin proxy to the services; binds 127.0.0.1 only.
+# VOICE_TRY_TTS_PORT / VOICE_TRY_STT_PORT point it at other loopback ports (e.g. an ssh tunnel to the Mac).
 # From another machine: ssh -L $(VOICE_TRY_PORT):127.0.0.1:$(VOICE_TRY_PORT) <user>@<host>, then http://localhost:$(VOICE_TRY_PORT)
 voice-try: $(VOICE_ENV)
 	@if [ ! -x "$(VOICE_TRY_VENV)/bin/python" ]; then \
@@ -75,7 +76,9 @@ voice-try: $(VOICE_ENV)
 		if command -v uv >/dev/null 2>&1; then uv venv -q -p 3.12 "$(VOICE_TRY_VENV)" && uv pip install -q -p "$(VOICE_TRY_VENV)/bin/python" -r $(VOICE_DIR)/voice-test/requirements.txt; \
 		else python3 -m venv "$(VOICE_TRY_VENV)" && "$(VOICE_TRY_VENV)/bin/pip" install -q -r $(VOICE_DIR)/voice-test/requirements.txt; fi; \
 	fi
-	@set -a; . "$(VOICE_ENV)"; set +a; VOICE_TRY_PORT=$(VOICE_TRY_PORT) exec "$(VOICE_TRY_VENV)/bin/python" -I $(VOICE_DIR)/voice-test/server.py
+	@set -a; . "$(VOICE_ENV)"; set +a; \
+		TTS_PORT=$${VOICE_TRY_TTS_PORT:-$$TTS_PORT} STT_PORT=$${VOICE_TRY_STT_PORT:-$$STT_PORT} \
+		VOICE_TRY_PORT=$(VOICE_TRY_PORT) exec "$(VOICE_TRY_VENV)/bin/python" -I $(VOICE_DIR)/voice-test/server.py
 
 # --- voice agent worker (packages/happy-voice-agent) ---
 VOICE_AGENT_DIR := $(abspath $(VOICE_DIR)/../packages/happy-voice-agent)
