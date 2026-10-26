@@ -6,7 +6,6 @@ const serverConfigStorage = new MMKV({ id: 'server-config' });
 
 const SERVER_KEY = 'custom-server-url';
 const LOG_SERVER_KEY = 'log-server-url';
-const USE_CUSTOM_SERVER_FOR_VOICE_KEY = 'use-custom-server-for-voice';
 const DEFAULT_SERVER_URL = 'https://api.cluster-fluster.com';
 
 export function getServerUrl(): string {
@@ -64,22 +63,7 @@ export function setServerUrl(url: string | null): void {
     }
 }
 
-// Voice used to default to the hosted cloud unless this toggle was on. Voice
-// now always runs against the main server, so the toggle changes nothing; the
-// two functions below stay only for the server settings screen that reads them.
-export function shouldUseCustomServerForVoice(): boolean {
-    return isUsingCustomServer();
-}
-
-export function setUseCustomServerForVoice(enabled: boolean): void {
-    if (enabled) {
-        serverConfigStorage.set(USE_CUSTOM_SERVER_FOR_VOICE_KEY, true);
-    } else {
-        serverConfigStorage.delete(USE_CUSTOM_SERVER_FOR_VOICE_KEY);
-    }
-}
-
-/** Voice always uses the main server URL. */
+/** Voice always uses the main server URL; there is no separate voice server. */
 export function getVoiceServerUrl(): string {
     return getServerUrl();
 }
