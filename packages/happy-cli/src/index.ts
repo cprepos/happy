@@ -483,6 +483,7 @@ Conversation history is preserved on the server, but in-flight tool calls are in
 
       let startedBy: 'daemon' | 'terminal' | undefined = undefined;
       let verbose = false;
+      let resumeSessionId: string | undefined;
       const passthroughArgs: string[] = [];
       for (let i = 1; i < args.length; i++) {
         if (args[i] === '--') {
@@ -495,6 +496,11 @@ Conversation history is preserved on the server, but in-flight tool calls are in
           i++;
         } else if (args[i] === '--verbose') {
           verbose = true;
+        } else if (args[i] === '--resume') {
+          resumeSessionId = args[++i];
+          if (!resumeSessionId) {
+            throw new Error('happy opencode --resume needs an OpenCode session id');
+          }
         }
       }
 
@@ -505,6 +511,7 @@ Conversation history is preserved on the server, but in-flight tool calls are in
         credentials,
         startedBy,
         verbose,
+        resumeSessionId,
         agentName: 'opencode',
         command: resolveOpencodeBin(),
         args: [...OPENCODE_ACP_ARGS, ...passthroughArgs],
@@ -763,6 +770,7 @@ ${chalk.bold('Usage:')}
   happy gemini            Start Gemini mode (ACP) [deprecated — use agy]
   happy agy               Start agy (Antigravity CLI) mode
   happy opencode          Start OpenCode mode (ACP)
+  happy opencode --resume <id> Continue an OpenCode session
   happy acp               Start a generic ACP-compatible agent
   happy connect           Connect AI vendor API keys
   happy sandbox           Configure and manage OS-level sandboxing

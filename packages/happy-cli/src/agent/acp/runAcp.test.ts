@@ -13,6 +13,8 @@ const mocks = vi.hoisted(() => {
     sendSessionProtocolMessage: vi.fn(),
     sendSessionEvent: vi.fn(),
     updateMetadata: vi.fn(),
+    suppressNextArchiveSignal: vi.fn(),
+    skipExistingMessages: vi.fn(),
     sendSessionDeath: vi.fn(),
     flush: vi.fn(async () => {}),
     close: vi.fn(async () => {}),
@@ -38,6 +40,7 @@ const mocks = vi.hoisted(() => {
     cancelCalls: [] as string[],
     disposeCalls: 0,
     constructorArgs: null as any,
+    opening: { kind: 'new' } as any,
   };
 
   return {
@@ -140,7 +143,7 @@ vi.mock('./AcpBackend', () => ({
           listener(message);
         }
       }
-      return { sessionId: 'acp-session-1' };
+      return { sessionId: 'acp-session-1', acpSessionId: 'ses_agent_1', opening: mocks.backendState.opening };
     }
 
     async sendPrompt(sessionId: string, prompt: string) {
@@ -210,6 +213,7 @@ describe('runAcp', () => {
     mocks.backendState.cancelCalls = [];
     mocks.backendState.disposeCalls = 0;
     mocks.backendState.constructorArgs = null;
+    mocks.backendState.opening = { kind: 'new' };
 
     mocks.mockApiCreate.mockResolvedValue({
       getOrCreateMachine: mocks.mockGetOrCreateMachine,
@@ -690,5 +694,79 @@ describe('runAcp', () => {
     expect(mocks.backendState.setConfigOptionCalls).toEqual([]);
     expect(mocks.backendState.setModeCalls).toEqual([]);
     expect(mocks.backendState.setModelCalls).toEqual([]);
+  });
+
+  describe('OpenCode resume', () => {
+    const credentials = { token: 'token', encryption: { type: 'legacy' as const, secret: new Uint8Array(32) } };
+    const metadataAfterUpdates = () => mocks.mockSession.updateMetadata.mock.calls
+      .reduce((current: Record<string, unknown>, [update]) => update(current), {});
+
+    async function runUntilStarted(resumeSessionId?: string) {
+      const runPromise = runAcp({
+        credentials,
+        agentName: 'opencode',
+        command: 'opencode',
+        args: ['acp'],
+        resumeSessionId,
+      });
+      await vi.waitFor(() => {
+        expect(mocks.backendState.startSessionCalls).toBe(1);
+        expect(mocks.getKillHandler()).toBeTypeOf('function');
+      });
+      await mocks.getKillHandler()!();
+      await runPromise;
+    }
+
+    it('records the ACP session id as opencodeSessionId', async () => {
+      await runUntilStarted();
+      expect(mocks.backendState.constructorArgs.resumeSessionId).toBeUndefined();
+      expect(metadataAfterUpdates()).toMatchObject({ opencodeSessionId: 'ses_agent_1' });
+    });
+
+    it('asks the backend to continue the session and records it before starting', async () => {
+      mocks.backendState.opening = { kind: 'resumed', method: 'session/resume' };
+      await runUntilStarted('ses_agent_1');
+      expect(mocks.backendState.constructorArgs.resumeSessionId).toBe('ses_agent_1');
+      expect(mocks.mockGetOrCreateSession).toHaveBeenCalledWith(expect.objectContaining({
+        metadata: expect.objectContaining({ flavor: 'opencode', opencodeSessionId: 'ses_agent_1' }),
+      }));
+      expect(mocks.mockSession.sendSessionEvent).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'message' }));
+    });
+
+    it('tells the user when the agent could not resume', async () => {
+      mocks.backendState.opening = { kind: 'resume-failed', reason: 'session/load for ses_old failed: Session not found' };
+      await runUntilStarted('ses_old');
+      expect(mocks.mockSession.sendSessionEvent).toHaveBeenCalledWith({
+        type: 'message',
+        message: expect.stringContaining('Could not resume the previous opencode session'),
+      });
+      expect(metadataAfterUpdates()).toMatchObject({ opencodeSessionId: 'ses_agent_1' });
+    });
+
+    it('reattaches to the Happy session the daemon names instead of creating one', async () => {
+      const env = {
+        HAPPY_RECONNECT_SESSION_ID: 'happy-session-9',
+        HAPPY_RECONNECT_ENCRYPTION_KEY: Buffer.alloc(32, 1).toString('base64'),
+        HAPPY_RECONNECT_ENCRYPTION_VARIANT: 'dataKey',
+        HAPPY_RECONNECT_SEQ: '12',
+        HAPPY_RECONNECT_METADATA_VERSION: '3',
+        HAPPY_RECONNECT_AGENT_STATE_VERSION: '4',
+      };
+      Object.assign(process.env, env);
+      try {
+        mocks.backendState.opening = { kind: 'resumed', method: 'session/resume' };
+        await runUntilStarted('ses_agent_1');
+      } finally {
+        for (const key of Object.keys(env)) {
+          delete process.env[key];
+        }
+      }
+      expect(mocks.mockGetOrCreateSession).not.toHaveBeenCalled();
+      expect(mocks.mockSetupOfflineReconnection).toHaveBeenCalledWith(expect.objectContaining({
+        response: expect.objectContaining({ id: 'happy-session-9', seq: 12, metadataVersion: 3, agentStateVersion: 4 }),
+      }));
+      expect(mocks.mockSession.suppressNextArchiveSignal).toHaveBeenCalled();
+      expect(mocks.mockSession.skipExistingMessages).toHaveBeenCalled();
+    });
   });
 });
