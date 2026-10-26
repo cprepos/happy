@@ -500,22 +500,48 @@ describe('modelModeOptions', () => {
             .toBe('Supercalifragili\u2026');
     });
 
-    it('offers OpenCode its own agents before a session reports them', () => {
-        expect(getOpencodePermissionModes(translate).map((mode) => mode.key)).toEqual(['build', 'plan']);
+    it('offers OpenCode its own agents, each with auto and ask, before a session reports them', () => {
+        expect(getOpencodePermissionModes(translate).map((mode) => [mode.key, mode.name])).toEqual([
+            ['build:auto', 'Build-auto'],
+            ['build:ask', 'Build-ask'],
+            ['plan:auto', 'Plan-auto'],
+            ['plan:ask', 'Plan-ask'],
+        ]);
         expect(getAvailablePermissionModes('opencode', null, translate).map((mode) => mode.key))
-            .toEqual(expect.arrayContaining(['build', 'plan']));
+            .toEqual(['build:auto', 'build:ask', 'plan:auto', 'plan:ask']);
         expect(getAvailableModels('opencode', null, translate).map((model) => model.key)).toEqual(['default']);
         expect(getDefaultModelKey('opencode')).toBe('default');
-        expect(getDefaultPermissionModeKey('opencode')).toBe('build');
+        expect(getDefaultPermissionModeKey('opencode')).toBe('build:auto');
     });
 
-    it('uses the modes and models a live OpenCode session reports', () => {
+    it('adds auto and ask to the bare agents an older OpenCode session reports', () => {
         const metadata = {
-            operatingModes: [{ code: 'build', value: 'build' }, { code: 'plan', value: 'plan' }],
+            operatingModes: [{ code: 'build', value: 'build, build' }, { code: 'plan', value: 'plan' }],
             models: [{ code: 'coder/coder', value: 'Coder (local vLLM)/Qwen (coder)' }],
         } as any;
-        expect(getAvailablePermissionModes('opencode', metadata, translate).map((mode) => mode.key).sort())
-            .toEqual(['build', 'plan']);
+        expect(getAvailablePermissionModes('opencode', metadata, translate).map((mode) => [mode.key, mode.name])).toEqual([
+            ['build:auto', 'Build-auto'],
+            ['build:ask', 'Build-ask'],
+            ['plan:auto', 'Plan-auto'],
+            ['plan:ask', 'Plan-ask'],
+        ]);
         expect(getAvailableModels('opencode', metadata, translate).map((model) => model.key)).toEqual(['coder/coder']);
+    });
+
+    it('lists the TUI mirror\'s modes with explicit keys', () => {
+        const metadata = {
+            operatingModes: [
+                { code: 'build', value: 'Build-ask', description: 'Build (asks first)' },
+                { code: 'build:auto', value: 'Build-auto', description: 'Build (auto)' },
+                { code: 'plan', value: 'Plan-ask' },
+                { code: 'plan:auto', value: 'Plan-auto' },
+            ],
+        } as any;
+        expect(getAvailablePermissionModes('opencode', metadata, translate)).toEqual([
+            { key: 'build:auto', name: 'Build-auto', description: 'Build (auto)' },
+            { key: 'build:ask', name: 'Build-ask', description: 'Build (asks first)' },
+            { key: 'plan:auto', name: 'Plan-auto', description: 'tr:agentInput.permissionMode.opencodeAuto' },
+            { key: 'plan:ask', name: 'Plan-ask', description: 'tr:agentInput.permissionMode.opencodeAsk' },
+        ]);
     });
 });
