@@ -402,8 +402,11 @@ model VoiceConversation {
     id                         String   @id @default(cuid())
     accountId                  String
     account                    Account  @relation(fields: [accountId], references: [id])
-    elevenLabsConversationId   String   @unique
-    durationSecs               Int?     // Filled in lazily from ElevenLabs API
+    elevenLabsConversationId   String?  @unique // Legacy ElevenLabs conversations only
+    roomName                   String?  @unique // LiveKit room, happy-voice-<id>
+    sessionId                  String?  // Happy session the conversation was started from
+    language                   String?  // Language code requested by the client
+    durationSecs               Int?
     createdAt                  DateTime @default(now())
 
     @@index([accountId, createdAt(sort: Desc)])
