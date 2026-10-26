@@ -473,3 +473,20 @@ describe('AcpSessionManager.flushCompleteParagraphs', () => {
     expect(mapper.endTurn('completed').map((envelope) => envelope.ev)).toEqual([{ t: 'turn-end', status: 'completed' }]);
   });
 });
+
+describe('AcpSessionManager.flushText', () => {
+  it('emits all pending text, paragraph or not, and keeps the turn open', () => {
+    const mapper = new AcpSessionManager();
+    const turn = mapper.startTurn()[0].turn;
+    mapper.mapMessage({ type: 'model-output', textDelta: 'Half a sentence' });
+    const flushed = mapper.flushText();
+    expect(flushed.map((envelope) => envelope.ev)).toEqual([{ t: 'text', text: 'Half a sentence' }]);
+    expect(flushed[0].turn).toBe(turn);
+    expect(mapper.flushText()).toEqual([]);
+    mapper.mapMessage({ type: 'model-output', textDelta: 'More.' });
+    expect(mapper.endTurn('completed').map((envelope) => envelope.ev)).toEqual([
+      { t: 'text', text: 'More.' },
+      { t: 'turn-end', status: 'completed' },
+    ]);
+  });
+});
