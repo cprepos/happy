@@ -563,6 +563,7 @@ export const pl: TranslationStructure = {
         ownAnswerPlaceholder: "Wpisz odpowiedź",
         submitFailed: "Nie udało się wysłać odpowiedzi",
         dismiss: "Odrzuć",
+        dismissed: "Odrzucono",
         unsupportedTitle: "Nieobsługiwane żądanie",
         unsupportedDescription: ({ kind }: { kind: string }) => `Ta wersja Happy nie może pokazać żądania «${kind}». Zaktualizuj aplikację, aby odpowiedzieć.`,
         moreQuestions: ({ count }: { count: number }) =>

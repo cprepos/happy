@@ -563,6 +563,7 @@ export const ru: TranslationStructure = {
         ownAnswerPlaceholder: "Напишите свой ответ",
         submitFailed: "Не удалось отправить ответ",
         dismiss: "Скрыть",
+        dismissed: "Скрыт",
         unsupportedTitle: "Неподдерживаемый запрос",
         unsupportedDescription: ({ kind }: { kind: string }) => `Эта версия Happy не может показать запрос «${kind}». Обновите приложение, чтобы ответить.`,
         moreQuestions: ({ count }: { count: number }) =>

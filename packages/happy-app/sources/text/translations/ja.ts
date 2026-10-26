@@ -548,6 +548,7 @@ export const ja: TranslationStructure = {
         ownAnswerPlaceholder: "回答を入力",
         submitFailed: "回答を送信できませんでした",
         dismiss: "閉じる",
+        dismissed: "閉じました",
         unsupportedTitle: "未対応のリクエスト",
         unsupportedDescription: ({ kind }: { kind: string }) => `このバージョンの Happy は「${kind}」リクエストを表示できません。アプリを更新してください。`,
         moreQuestions: ({ count }: { count: number }) =>

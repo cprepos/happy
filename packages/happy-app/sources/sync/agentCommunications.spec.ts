@@ -163,7 +163,7 @@ describe('selectAgentFormCommunication', () => {
 });
 
 describe('canRenderAgentFormInline', () => {
-    it('accepts choice forms and keeps text-only forms on the modal fallback', () => {
+    it('renders choice and text-only forms inline on their tool call', () => {
         expect(canRenderAgentFormInline({
             id: 'choice',
             createdAt: 0,
@@ -176,10 +176,27 @@ describe('canRenderAgentFormInline', () => {
             createdAt: 0,
             kind: 'form',
             questions: [question({ options: [], allowCustom: true })],
+        })).toBe(true);
+
+        expect(canRenderAgentFormInline({
+            id: 'mixed',
+            createdAt: 0,
+            kind: 'form',
+            questions: [question(), question({ id: 'q2', options: [] })],
+        })).toBe(true);
+    });
+
+    it('keeps forms without a transcript tool call on the modal fallback', () => {
+        expect(canRenderAgentFormInline({
+            id: 'subagent',
+            createdAt: 0,
+            kind: 'form',
+            questions: [question()],
+            inTranscript: false,
         })).toBe(false);
     });
 
-    it('assigns choice forms to the transcript before their tool message arrives', () => {
+    it('assigns forms to the transcript before their tool message arrives', () => {
         expect(shouldUseAgentQuestionFallback({
             id: 'choice',
             createdAt: 0,
@@ -192,7 +209,30 @@ describe('canRenderAgentFormInline', () => {
             createdAt: 0,
             kind: 'form',
             questions: [question({ options: [], allowCustom: true })],
+        })).toBe(false);
+
+        expect(shouldUseAgentQuestionFallback({
+            id: 'subagent',
+            createdAt: 0,
+            kind: 'form',
+            questions: [question({ options: [], allowCustom: true })],
+            inTranscript: false,
         })).toBe(true);
+    });
+});
+
+describe('selectPendingCommunications inTranscript', () => {
+    it('carries a form marked as having no tool call in the transcript', () => {
+        const [pending] = selectPendingCommunications(state({
+            que_1: {
+                kind: 'form',
+                createdAt: 1,
+                inTranscript: false,
+                form: { questions: [question({ id: 'q0', options: [] })] },
+            },
+        }));
+        expect(pending).toMatchObject({ id: 'que_1', kind: 'form', inTranscript: false });
+        expect(canRenderAgentFormInline(pending)).toBe(false);
     });
 });
 

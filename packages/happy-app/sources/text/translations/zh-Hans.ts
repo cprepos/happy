@@ -548,6 +548,7 @@ export const zhHans: TranslationStructure = {
         ownAnswerPlaceholder: "输入你的回答",
         submitFailed: "无法发送你的回答",
         dismiss: "忽略",
+        dismissed: "已忽略",
         unsupportedTitle: "不支持的请求",
         unsupportedDescription: ({ kind }: { kind: string }) => `此版本的 Happy 无法显示「${kind}」请求。请更新应用后回复。`,
         moreQuestions: ({ count }: { count: number }) =>
