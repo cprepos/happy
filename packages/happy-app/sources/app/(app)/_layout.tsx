@@ -119,6 +119,14 @@ export default function RootLayout() {
                 }}
             />
             <Stack.Screen
+                name="session/[id]/voice"
+                options={{
+                    headerShown: true,
+                    headerTitle: t('settingsVoice.voice'),
+                    headerBackTitle: t('common.back'),
+                }}
+            />
+            <Stack.Screen
                 name="machine/[id]"
                 options={{
                     headerShown: true,
@@ -154,6 +162,13 @@ export default function RootLayout() {
                     header: createPlainHeader,
                     headerTitle: t('sessionInfo.viewChanges'),
                     headerTitleAlign: 'center',
+                    headerBackTitle: t('common.back'),
+                }}
+            />
+            <Stack.Screen
+                name="settings/voice/voices"
+                options={{
+                    headerTitle: t('settingsVoice.voicePicker.title'),
                     headerBackTitle: t('common.back'),
                 }}
             />

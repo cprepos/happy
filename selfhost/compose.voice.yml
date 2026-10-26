@@ -164,7 +164,10 @@ services:
       # profile's HF weights id, so the agent reads VOICE_LLM_* instead
       LLM_BASE_URL: ${VOICE_LLM_BASE_URL:-http://127.0.0.1:9080/v1}
       LLM_MODEL: ${VOICE_LLM_MODEL:-coder}
+      # default Kokoro voice/speed when the app does not pick one for the chat; a blend such
+      # as "am_michael(2)+am_onyx(1)" mixes voices by weight
       TTS_VOICE: ${TTS_VOICE:-af_heart}
+      TTS_SPEED: ${TTS_SPEED:-1.0}
       VOICE_AGENT_NAME: happy-voice
       # the worker's health/debug HTTP server; 8081 is commonly taken on shared hosts
       VOICE_AGENT_HTTP_PORT: ${VOICE_AGENT_HTTP_PORT:-8791}

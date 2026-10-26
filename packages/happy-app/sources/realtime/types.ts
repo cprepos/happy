@@ -9,6 +9,10 @@ export interface VoiceSessionConfig {
     firstMessage?: string;
     /** ISO language code such as `en`; absent means auto-detect. */
     language?: string;
+    /** Kokoro voice or blend (see voiceCatalog.ts); absent means the server default. */
+    voice?: string;
+    /** Kokoro speed multiplier; absent means the server default. */
+    speed?: number;
 }
 
 export interface VoiceSession {

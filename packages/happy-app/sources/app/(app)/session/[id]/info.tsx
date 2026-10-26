@@ -7,7 +7,8 @@ import { Item } from '@/components/Item';
 import { ItemGroup } from '@/components/ItemGroup';
 import { ItemList } from '@/components/ItemList';
 import { GitLineChanges } from '@/components/GitLineChanges';
-import { useSession, useIsDataReady, useSessionGitStatus, useSessionGitStatusFiles } from '@/sync/storage';
+import { useSession, useIsDataReady, useSessionGitStatus, useSessionGitStatusFiles, useSetting } from '@/sync/storage';
+import { getSessionVoicePreset } from '@/realtime/voiceCatalog';
 import { getSessionName, useSessionStatus, formatOSPlatform, formatPathRelativeToHome, getResumeCommand } from '@/utils/sessionUtils';
 import { resolveSessionGitPresentation } from '@/utils/sessionGitPresentation';
 import * as Clipboard from 'expo-clipboard';
@@ -103,6 +104,7 @@ function SessionInfoContent({ session }: { session: Session }) {
         resumeSession,
         resumeSessionSubtitle,
     } = useSessionQuickActions(session);
+    const chatVoice = getSessionVoicePreset(session.id, useSetting('voiceBySession'));
 
     // Asked now rather than after the archive, which is what takes the chat out
     // of the checkout it would have been measured against.
@@ -241,6 +243,12 @@ function SessionInfoContent({ session }: { session: Session }) {
                             </View>
                         ) : undefined}
                         onPress={() => router.push(`/session/${session.id}/changes`)}
+                    />
+                    <Item
+                        title={t('settingsVoice.voice')}
+                        icon={<Ionicons name="mic-outline" size={29} color="#007AFF" />}
+                        detail={chatVoice?.label ?? t('settingsVoice.voicePicker.useDefault')}
+                        onPress={() => router.push(`/session/${session.id}/voice`)}
                     />
                     {session.metadata?.machineId && (
                         <Item
