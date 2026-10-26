@@ -94,8 +94,8 @@ interface Connection {
  * A voice conversation streamed through happy-server: one WebSocket carries
  * control messages as JSON and audio as binary frames (see `voiceStream.ts`
  * in happy-wire). The server sits in the LiveKit room on our behalf, so the
- * observable behavior (status, mode, client tools) matches
- * `LiveKitVoiceSession`.
+ * app never connects to LiveKit itself. Web and native share this class and
+ * differ only in the audio backend they pass in.
  */
 export class HappyVoiceSession implements VoiceSession {
     private connection: Connection | null = null;
