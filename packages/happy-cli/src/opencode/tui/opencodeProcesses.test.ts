@@ -61,6 +61,7 @@ function state(overrides: Partial<OpencodeTuiState>): OpencodeTuiState {
         opencodeSessionId: 'ses_test',
         happySessionId: 'happy_1',
         startedAt: Date.now(),
+        ownerTuiAttached: false,
         ...overrides,
     };
 }
