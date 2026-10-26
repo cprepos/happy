@@ -12,6 +12,11 @@ export interface VoiceSessionConfig {
 }
 
 export interface VoiceSession {
+    /**
+     * Called synchronously from the user gesture that starts voice, before
+     * anything is awaited (Safari only lets audio start inside the gesture).
+     */
+    prepare?(): void;
     startSession(config: VoiceSessionConfig): Promise<string | null>;
     endSession(): Promise<void>;
     sendTextMessage(message: string): void;
