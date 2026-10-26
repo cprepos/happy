@@ -1,5 +1,6 @@
 import * as z from 'zod';
 import { compareVersionsWithPrerelease, isWellFormedVersion } from '@/utils/versionUtils';
+import { normalizeOpencodePermissionModeKey, OPENCODE_DEFAULT_PERMISSION_MODE } from './opencodeModes';
 
 export const agentKeys = ['claude', 'codex', 'gemini', 'openclaw', 'agy', 'opencode'] as const;
 export type AgentKey = typeof agentKeys[number];
@@ -38,9 +39,10 @@ const codeAgentDefaults: Record<AgentKey, AgentDefaultConfig> = {
     gemini: { permissionMode: 'default', modelMode: 'gemini-2.5-pro', effortLevel: null },
     openclaw: { permissionMode: 'default', modelMode: 'default', effortLevel: null },
     agy: { permissionMode: 'default', modelMode: 'Gemini 3.8 Flash', effortLevel: 'medium' },
-    // `build` is OpenCode's own default agent. `default` model keeps whatever
+    // OpenCode's own default agent (build) with tool permissions approved
+    // automatically, like `opencode --auto`. `default` model keeps whatever
     // model the machine's opencode config selects.
-    opencode: { permissionMode: 'build', modelMode: 'default', effortLevel: null },
+    opencode: { permissionMode: OPENCODE_DEFAULT_PERMISSION_MODE, modelMode: 'default', effortLevel: null },
 };
 
 // `auto` first shipped in happy-cli 1.2.1-beta.2, for Claude and Codex alike.
@@ -163,8 +165,13 @@ export function getAgentDefaultOverride(
     overrides: AgentDefaultOverrides | null | undefined,
     flavor: string | null | undefined,
 ): AgentDefaultOverride {
-    const override = overrides?.[normalizeAgentKey(flavor)] ?? {};
-    const permissionMode = retirePermissionMode(override.permissionMode);
+    const agent = normalizeAgentKey(flavor);
+    const override = overrides?.[agent] ?? {};
+    // An OpenCode default saved as a bare agent (`build`, before auto/ask
+    // existed) meant that agent with the default policy, auto.
+    const permissionMode = agent === 'opencode'
+        ? normalizeOpencodePermissionModeKey(override.permissionMode)
+        : retirePermissionMode(override.permissionMode);
     const modelMode = retireModelMode(flavor, override.modelMode);
     return permissionMode === override.permissionMode && modelMode === override.modelMode
         ? override
