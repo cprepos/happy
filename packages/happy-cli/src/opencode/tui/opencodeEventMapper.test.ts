@@ -68,6 +68,33 @@ describe('OpencodeEventMapper', () => {
         ]);
     });
 
+    it('forwards finished paragraphs of a streaming part before the part ends', () => {
+        const mapper = new OpencodeEventMapper(SESSION);
+        const msg = 'msg_stream';
+        const part = { id: 'prt_stream', messageID: msg, sessionID: SESSION, type: 'text', text: '' };
+        const delta = (text: string): OpencodeEvent => ({
+            type: 'message.part.delta',
+            properties: { sessionID: SESSION, messageID: msg, partID: part.id, field: 'text', delta: text },
+        });
+        run(mapper, [
+            { type: 'session.status', properties: { sessionID: SESSION, status: { type: 'busy' } } },
+            { type: 'message.updated', properties: { info: { id: msg, sessionID: SESSION, role: 'assistant' } } },
+            { type: 'message.part.updated', properties: { part } },
+            delta('First paragraph.\n\nSecond'),
+        ]);
+
+        expect(summarize(envelopesOf(mapper.flushStreamingText()))).toEqual(['agent:text:First paragraph.']);
+        expect(mapper.flushStreamingText()).toEqual([]);
+
+        const rest = run(mapper, [
+            delta(' paragraph.'),
+            { type: 'message.part.updated', properties: { part: { ...part, text: 'First paragraph.\n\nSecond paragraph.' } } },
+            { type: 'session.idle', properties: { sessionID: SESSION } },
+        ]);
+        expect(summarize(envelopesOf(rest))).toEqual(['agent:text:Second paragraph.', 'agent:turn-end:completed']);
+        expect(mapper.flushStreamingText()).toEqual([]);
+    });
+
     it('reports permissions, busy/idle and the title alongside the envelopes', () => {
         const mapper = new OpencodeEventMapper(SESSION);
         const actions = run(mapper, RECORDED).filter((action) => action.type !== 'envelopes');
