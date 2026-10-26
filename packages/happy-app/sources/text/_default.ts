@@ -484,6 +484,7 @@ export const en = {
             // a guess about someone else's config.
             default: 'harness setting',
             agyDefault: 'agy sandbox',
+            opencodeBuild: 'opencode build agent',
             openclawInert: 'not applied',
             acceptEdits: 'edits, no asking',
             plan: 'plan first',

@@ -266,6 +266,17 @@ export function getAgyPermissionModes(translate: Translate): PermissionMode[] {
     ];
 }
 
+// OpenCode's primary agents, as `opencode acp` reports them in its `mode`
+// config option. A live session lists them from its own metadata; this list is
+// what the new-session screen shows before one exists. Whether a tool asks first
+// is set by the `permission` block of the machine's opencode config, not here.
+export function getOpencodePermissionModes(translate: Translate): PermissionMode[] {
+    return [
+        { key: 'build', name: 'Build', description: translate('agentInput.permissionMode.opencodeBuild') },
+        { key: 'plan', name: 'Plan', description: translate('agentInput.permissionMode.plan') },
+    ];
+}
+
 // Before the release tagged above the CLI's MessageMetaSchema rejected `auto`,
 // and a rejected mode dropped the whole prompt — the same failure mode
 // `dontAsk` had.
@@ -345,6 +356,9 @@ export function getHardcodedPermissionModes(flavor: AgentFlavor, translate: Tran
     if (flavor === 'agy') {
         return getAgyPermissionModes(translate);
     }
+    if (flavor === 'opencode') {
+        return getOpencodePermissionModes(translate);
+    }
     return getClaudePermissionModes(translate);
 }
 
@@ -378,6 +392,11 @@ export function getHardcodedModelModes(flavor: AgentFlavor, _translate: Translat
     }
     if (flavor === 'agy') {
         return getAgyModelModes();
+    }
+    if (flavor === 'opencode') {
+        // The model list comes from the machine's opencode config once a
+        // session runs; until then keep whatever that config selects.
+        return getOpenClawModelModes();
     }
     return getClaudeModelModes();
 }
