@@ -1,0 +1,58 @@
+name: happy-selfhost
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-happy}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in selfhost/.env}
+      POSTGRES_DB: ${POSTGRES_DB:-happy}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Not published to the host: reachable only on the compose network.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  happy-server:
+    build:
+      context: ..
+      dockerfile: Dockerfile.server
+    image: happy-selfhost/happy-server:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: "3005"
+      DB_PROVIDER: postgres
+      DATABASE_URL: postgresql://${POSTGRES_USER:-happy}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-happy}
+      HANDY_MASTER_SECRET: ${HANDY_MASTER_SECRET:?set HANDY_MASTER_SECRET in selfhost/.env}
+      PUBLIC_URL: ${PUBLIC_URL:-https://happy.girthbass.duckdns.org}
+      METRICS_ENABLED: ${METRICS_ENABLED:-false}
+      # Local file storage (no S3_HOST set) under DATA_DIR/files.
+      DATA_DIR: /data
+      # Webapp bundle; served only if /webapp/index.html exists at startup.
+      HAPPY_STATIC_DIR: /webapp
+      HAPPY_INJECT_HTML_CONFIG: '{"disableAnalytics":true}'
+    # Apply pending migrations, then start the server.
+    command: ["sh", "-c", "pnpm exec prisma migrate deploy --schema=prisma/schema.prisma && exec pnpm run start"]
+    volumes:
+      - happy-data:/data
+      - ${HAPPY_WEBAPP_DIR:-./webapp}:/webapp:ro
+    ports:
+      - "127.0.0.1:3005:3005"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3005/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      start_period: 60s
+      retries: 6
+
+volumes:
+  pgdata:
+  happy-data:
