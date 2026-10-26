@@ -15,7 +15,8 @@ import { initialMachineMetadata } from '@/daemon/run';
 import { createSessionMetadata } from '@/utils/createSessionMetadata';
 import { setupOfflineReconnection } from '@/utils/setupOfflineReconnection';
 import { notifyDaemonSessionStarted } from '@/daemon/controlClient';
-import { encodeBase64 } from '@/api/encryption';
+import { decodeBase64, encodeBase64 } from '@/api/encryption';
+import type { Session as ApiSession } from '@/api/types';
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler';
 import { startHappyServer } from '@/claude/utils/startHappyServer';
 import { projectPath } from '@/projectPath';
@@ -459,6 +460,8 @@ export async function runAcp(opts: {
   args: string[];
   startedBy?: 'daemon' | 'terminal';
   verbose?: boolean;
+  /** The agent's ACP session id to continue (`happy opencode --resume <id>`). */
+  resumeSessionId?: string;
 }): Promise<void> {
   const verbose = opts.verbose === true;
   const sessionTag = randomUUID();
@@ -475,13 +478,37 @@ export async function runAcp(opts: {
     metadata: initialMachineMetadata,
   });
 
+  const flavor = resolveSessionFlavor(opts.agentName);
   const { state, metadata } = createSessionMetadata({
-    flavor: resolveSessionFlavor(opts.agentName),
+    flavor,
     machineId: settings.machineId,
     startedBy: opts.startedBy,
     sandbox: settings.sandboxConfig,
   });
-  const response = await api.getOrCreateSession({ tag: sessionTag, metadata, state });
+  if (flavor === 'opencode' && opts.resumeSessionId) {
+    metadata.opencodeSessionId = opts.resumeSessionId;
+  }
+
+  // The daemon sets these to resume a Happy session in place.
+  const reconnectSessionId = process.env.HAPPY_RECONNECT_SESSION_ID;
+  const reconnectKeyBase64 = process.env.HAPPY_RECONNECT_ENCRYPTION_KEY;
+  const reconnectVariant = process.env.HAPPY_RECONNECT_ENCRYPTION_VARIANT as 'legacy' | 'dataKey' | undefined;
+  let response: ApiSession | null;
+  if (reconnectSessionId && reconnectKeyBase64 && reconnectVariant) {
+    logger.debug(`[${opts.agentName}] Reconnecting to existing session ${reconnectSessionId}`);
+    response = {
+      id: reconnectSessionId,
+      seq: parseInt(process.env.HAPPY_RECONNECT_SEQ || '0', 10),
+      encryptionKey: decodeBase64(reconnectKeyBase64),
+      encryptionVariant: reconnectVariant,
+      metadata,
+      metadataVersion: parseInt(process.env.HAPPY_RECONNECT_METADATA_VERSION || '0', 10),
+      agentState: state,
+      agentStateVersion: parseInt(process.env.HAPPY_RECONNECT_AGENT_STATE_VERSION || '0', 10),
+    };
+  } else {
+    response = await api.getOrCreateSession({ tag: sessionTag, metadata, state });
+  }
   if (response) {
     logAcp('muted', `Happy Session ID: ${response.id}`);
   }
@@ -502,6 +529,17 @@ export async function runAcp(opts: {
     },
   });
   session = initialSession;
+
+  // On reconnect, un-archive the session and skip replaying old messages.
+  if (reconnectSessionId) {
+    session.suppressNextArchiveSignal();
+    session.skipExistingMessages();
+    session.updateMetadata((currentMetadata) => ({
+      ...currentMetadata,
+      lifecycleState: 'running',
+      archivedBy: undefined,
+    }));
+  }
 
   if (response) {
     try {
@@ -551,6 +589,7 @@ export async function runAcp(opts: {
     permissionHandler,
     transportHandler: new DefaultTransport(opts.agentName),
     verbose,
+    resumeSessionId: opts.resumeSessionId,
   });
 
   let thinking = false;
@@ -898,6 +937,21 @@ export async function runAcp(opts: {
   try {
     const started = await backend.startSession();
     acpSessionId = started.sessionId;
+    if (flavor === 'opencode') {
+      // Recorded so the session can be resumed later (app Resume, `happy resume`).
+      session.updateMetadata((currentMetadata) => ({
+        ...currentMetadata,
+        opencodeSessionId: started.acpSessionId,
+      }));
+    }
+    if (started.opening.kind === 'resumed') {
+      logAcp('muted', `Resumed ${opts.agentName} session ${started.acpSessionId} (${started.opening.method})`);
+    }
+    if (started.opening.kind === 'resume-failed') {
+      const notice = `Could not resume the previous ${opts.agentName} session, so a new one was started and ${opts.agentName} will not remember the earlier conversation. ${started.opening.reason}`;
+      logAcp('error', notice);
+      session.sendSessionEvent({ type: 'message', message: notice });
+    }
     if (verbose) {
       if (!sawSlashCommands) {
         logAcp('muted', `Outgoing slash commands from ${opts.agentName}: not reported yet`);

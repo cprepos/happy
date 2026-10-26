@@ -218,6 +218,42 @@ describe('buildResumeLaunch', () => {
             },
         })).toThrow('Happy session session-3 uses unsupported flavor "gemini".');
     });
+
+    it('builds an OpenCode resume command for the daemon', () => {
+        expect(buildResumeLaunch({
+            id: 'session-6',
+            active: false,
+            metadata: {
+                path: '/tmp/repo',
+                flavor: 'opencode',
+                opencodeSessionId: 'ses_e89aa01edffeqrNYmkPtUpiwv6',
+                host: 'localhost',
+                homeDir: '/tmp',
+                happyHomeDir: '/tmp/.happy',
+                happyLibDir: '/tmp/happy',
+                happyToolsDir: '/tmp/happy/tools',
+            },
+        }, { startedBy: 'daemon', claudeStartingMode: 'remote' })).toEqual({
+            cwd: '/tmp/repo',
+            args: ['opencode', '--resume', 'ses_e89aa01edffeqrNYmkPtUpiwv6', '--started-by', 'daemon'],
+        });
+    });
+
+    it('refuses an OpenCode session that never recorded its ACP session', () => {
+        expect(() => buildResumeLaunch({
+            id: 'session-7',
+            active: false,
+            metadata: {
+                path: '/tmp/repo',
+                flavor: 'opencode',
+                host: 'localhost',
+                homeDir: '/tmp',
+                happyHomeDir: '/tmp/.happy',
+                happyLibDir: '/tmp/happy',
+                happyToolsDir: '/tmp/happy/tools',
+            },
+        })).toThrow('Happy session session-7 is missing its OpenCode session ID.');
+    });
 });
 
 describe('formatResumeHelp', () => {

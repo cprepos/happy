@@ -92,13 +92,16 @@ function getResumeAvailability(session: Session, machine: Machine | null | undef
         || session.metadata?.agyConversationId
     );
     if (!hasBackendResumeId) {
-        const message = t('sessionInfo.resumeSessionMissingBackendId');
-        return {
-            canResume: false,
-            canShowResume: true,
-            subtitle: message,
-            message,
-        };
+        // OpenCode records its ACP session under its own key.
+        if (!session.metadata?.opencodeSessionId) {
+            const message = t('sessionInfo.resumeSessionMissingBackendId');
+            return {
+                canResume: false,
+                canShowResume: true,
+                subtitle: message,
+                message,
+            };
+        }
     }
 
     if (!machine) {

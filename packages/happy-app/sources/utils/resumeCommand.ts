@@ -2,6 +2,7 @@ export type ResumeCommandMetadata = {
     path?: string | null;
     os?: string | null;
     flavor?: string | null;
+    opencodeSessionId?: string | null;
     claudeSessionId?: string | null;
     codexThreadId?: string | null;
     agyConversationId?: string | null;
@@ -29,6 +30,9 @@ function isWindows(metadata: ResumeCommandMetadata): boolean {
 function buildResumeInvocation(metadata: ResumeCommandMetadata): string | null {
     if (metadata.client?.id === 'rig' || metadata.capabilities?.resume === false) {
         return null;
+    }
+    if (metadata.flavor === 'opencode' && metadata.opencodeSessionId) {
+        return `happy opencode --resume ${metadata.opencodeSessionId}`;
     }
     if ((metadata.flavor === 'codex' || metadata.flavor === 'openai' || metadata.flavor === 'gpt') && metadata.codexThreadId) {
         return `happy codex --resume ${metadata.codexThreadId}`;

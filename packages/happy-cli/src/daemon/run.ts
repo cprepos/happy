@@ -808,6 +808,23 @@ export async function startDaemon(): Promise<void> {
           }
         }
 
+        // OpenCode's ACP session id, like the IDs below, can be missing from
+        // the metadata at hand: take the client's, else the server's.
+        if (flavor === 'opencode' && !metadata.opencodeSessionId) {
+          if (fallback?.metadata.flavor === 'opencode' && fallback.metadata.opencodeSessionId) {
+            metadata = { ...metadata, opencodeSessionId: fallback.metadata.opencodeSessionId };
+          } else {
+            logger.debug(`[DAEMON RUN] OpenCode session ${happySessionId} has no ACP session ID in the metadata at hand, fetching from server`);
+            const serverMetadata = await fetchServerSessionMetadata(happySessionId, encryption.encryptionKey, encryption.encryptionVariant);
+            if (serverMetadata) {
+              metadata = serverMetadata;
+              if (tracked) {
+                tracked.happySessionMetadataFromLocalWebhook = serverMetadata;
+              }
+            }
+          }
+        }
+
         // The agent session ID lands in metadata only once the agent reports it
         // (for Claude, the SessionStart hook), so the webhook snapshot taken at
         // spawn never has it — and neither does a client row that was ingested
