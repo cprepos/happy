@@ -2,7 +2,7 @@
 #
 #   make cli-build     build packages/happy-cli
 #   make cli-config    point the CLI at the self-hosted server (backs up settings first)
-#   make cli-install   build and link the CLI globally as `happy` (restarts the daemon)
+#   make cli-install   build and link the CLI as `happy` (npm link, or CLI_BIN_DIR if the npm prefix isn't writable)
 #
 # Variables:
 #   HAPPY_PUBLIC_URL   public URL of the server + webapp
@@ -50,5 +50,17 @@ cli-config:
 	fi
 	@SETTINGS_FILE="$(CLI_SETTINGS_FILE)" PUBLIC_URL="$(HAPPY_PUBLIC_URL)" node -e "$$CLI_CONFIG_JS"
 
+# npm link needs a writable global prefix. When it isn't (e.g. /usr), build and symlink
+# `happy` / `happy-mcp` into CLI_BIN_DIR instead (must be on PATH).
+CLI_BIN_DIR ?= $(HOME)/.local/bin
+
 cli-install:
-	cd "$(CLI_REPO_ROOT)" && pnpm --filter happy cli:install
+	@if [ -w "$$(npm config get prefix)/lib/node_modules" ]; then \
+		cd "$(CLI_REPO_ROOT)" && pnpm --filter happy cli:install; \
+	else \
+		cd "$(CLI_REPO_ROOT)/packages/happy-cli" && pnpm run build && \
+		mkdir -p "$(CLI_BIN_DIR)" && \
+		ln -sfn "$(CLI_REPO_ROOT)/packages/happy-cli/bin/happy.mjs" "$(CLI_BIN_DIR)/happy" && \
+		ln -sfn "$(CLI_REPO_ROOT)/packages/happy-cli/bin/happy-mcp.mjs" "$(CLI_BIN_DIR)/happy-mcp" && \
+		echo "linked happy and happy-mcp into $(CLI_BIN_DIR)"; \
+	fi
