@@ -28,6 +28,33 @@ function parseThinkingPayload(payload: unknown): { text: string; streaming: bool
   return { text, streaming };
 }
 
+const FENCE_LINE = /^\s*(```|~~~)/;
+
+/**
+ * Where streamed text can be cut so the part before it renders on its own:
+ * just after the last complete blank line that is not inside a code fence.
+ * Returns 0 when there is no such place yet.
+ */
+export function findParagraphCut(text: string): number {
+  let inFence = false;
+  let position = 0;
+  let cut = 0;
+  const lines = text.split('\n');
+  // The last element is the unfinished line (or '' after a trailing newline).
+  for (let i = 0; i < lines.length - 1; i += 1) {
+    const line = lines[i];
+    position += line.length + 1;
+    if (FENCE_LINE.test(line)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (!inFence && line.trim() === '') {
+      cut = position;
+    }
+  }
+  return cut;
+}
+
 export class AcpSessionManager {
   private currentTurnId: string | null = null;
   private readonly acpCallToSessionCall = new Map<string, string>();
@@ -71,6 +98,32 @@ export class AcpSessionManager {
       return [createEnvelope('agent', { t: 'text', text, thinking: true }, turnOptions(this.currentTurnId, this.nextTime()))];
     }
     return [createEnvelope('agent', { t: 'text', text }, turnOptions(this.currentTurnId, this.nextTime()))];
+  }
+
+  /**
+   * Emit the finished paragraphs of the text accumulated so far and keep the
+   * unfinished rest. The app has no way to grow a message in place, so
+   * without this a long answer (or long reasoning) shows up only when the
+   * stream switches type or the turn ends. Called periodically by runners
+   * while a turn streams.
+   */
+  flushCompleteParagraphs(): SessionEnvelope[] {
+    if (!this.pendingText || !this.pendingType) {
+      return [];
+    }
+    const cut = findParagraphCut(this.pendingText);
+    if (cut <= 0) {
+      return [];
+    }
+    const type = this.pendingType;
+    const rest = this.pendingText.slice(cut);
+    this.pendingText = this.pendingText.slice(0, cut);
+    const flushed = this.flush();
+    if (rest) {
+      this.pendingType = type;
+      this.pendingText = rest;
+    }
+    return flushed;
   }
 
   startTurn(): SessionEnvelope[] {

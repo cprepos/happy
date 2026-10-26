@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { OpencodeProviders } from './opencodeClient';
-import { buildOpencodePickers, opencodePromptOptions } from './opencodeSessionConfig';
+import { buildOpencodePickers, opencodePromptOptions, parseOpencodeMode } from './opencodeSessionConfig';
 
 const providers: OpencodeProviders = {
     providers: [
@@ -28,9 +28,25 @@ describe('buildOpencodePickers', () => {
             currentModelId: 'coder/coder',
         });
         expect(pickers.modes).toEqual({
-            availableModes: [{ id: 'build', name: 'build' }, { id: 'plan', name: 'plan', description: 'Read-only planning' }],
+            availableModes: [
+                { id: 'build', name: 'Build-auto', description: 'Build agent, approves tool permissions automatically' },
+                { id: 'build:ask', name: 'Build-ask', description: 'Build agent, asks before tools that need permission' },
+                { id: 'plan', name: 'Plan-auto', description: 'Read-only planning (approves tool permissions automatically)' },
+                { id: 'plan:ask', name: 'Plan-ask', description: 'Read-only planning (asks before tools that need permission)' },
+            ],
             currentModeId: 'build',
         });
+    });
+
+    it('lists the launch policy under the plain agent id', () => {
+        const pickers = buildOpencodePickers({ providers, agents, config: {}, launchPolicy: 'ask' });
+        expect(pickers.modes?.availableModes.map((mode) => [mode.id, mode.name])).toEqual([
+            ['build', 'Build-ask'],
+            ['build:auto', 'Build-auto'],
+            ['plan', 'Plan-ask'],
+            ['plan:auto', 'Plan-auto'],
+        ]);
+        expect(pickers.modes?.currentModeId).toBe('build');
     });
 
     it('falls back to the first provider default without a configured model', () => {
@@ -53,5 +69,29 @@ describe('opencodePromptOptions', () => {
         });
         expect(opencodePromptOptions({ model: 'nomodel', permissionMode: 'default', agentNames })).toEqual({});
         expect(opencodePromptOptions({ model: null, permissionMode: null, agentNames })).toEqual({});
+        expect(opencodePromptOptions({ permissionMode: 'plan:ask', agentNames })).toEqual({ agent: 'plan' });
+    });
+});
+
+describe('parseOpencodeMode', () => {
+    const agentNames = ['build', 'plan'];
+
+    it('reads the agent and policy from the picker ids', () => {
+        expect(parseOpencodeMode('build', agentNames, 'auto')).toEqual({ agent: 'build', policy: 'auto' });
+        expect(parseOpencodeMode('build', agentNames, 'ask')).toEqual({ agent: 'build', policy: 'ask' });
+        expect(parseOpencodeMode('plan:ask', agentNames, 'auto')).toEqual({ agent: 'plan', policy: 'ask' });
+        expect(parseOpencodeMode('plan:auto', agentNames, 'ask')).toEqual({ agent: 'plan', policy: 'auto' });
+    });
+
+    it('maps the generic permission modes to a policy', () => {
+        expect(parseOpencodeMode('bypassPermissions', agentNames, 'ask')).toEqual({ policy: 'auto' });
+        expect(parseOpencodeMode('yolo', agentNames, 'ask')).toEqual({ policy: 'auto' });
+        expect(parseOpencodeMode('default', agentNames, 'auto')).toEqual({ policy: 'ask' });
+    });
+
+    it('selects nothing for unknown or empty keys', () => {
+        expect(parseOpencodeMode('review:ask', agentNames, 'auto')).toEqual({});
+        expect(parseOpencodeMode('build:sometimes', agentNames, 'auto')).toEqual({});
+        expect(parseOpencodeMode(undefined, agentNames, 'auto')).toEqual({});
     });
 });

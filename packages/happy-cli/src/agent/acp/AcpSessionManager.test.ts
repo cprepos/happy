@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { isCuid } from '@paralleldrive/cuid2';
 import type { AgentMessage } from '@/agent/core';
-import { AcpSessionManager } from './AcpSessionManager';
+import { AcpSessionManager, findParagraphCut } from './AcpSessionManager';
 
 function mapMany(mapper: AcpSessionManager, messages: AgentMessage[]) {
   return messages.flatMap((message) => mapper.mapMessage(message));
@@ -410,5 +410,66 @@ describe('AcpSessionManager id consistency', () => {
     expect(firstStart.turn).not.toBe(secondStart.turn);
     expect(isCuid(firstStart.turn!)).toBe(true);
     expect(isCuid(secondStart.turn!)).toBe(true);
+  });
+});
+
+describe('findParagraphCut', () => {
+  it('cuts after the last complete blank line', () => {
+    const text = 'one\n\ntwo\n\nthree';
+    expect(text.slice(0, findParagraphCut(text))).toBe('one\n\ntwo\n\n');
+  });
+
+  it('does not cut without a finished blank line', () => {
+    expect(findParagraphCut('one\ntwo')).toBe(0);
+    expect(findParagraphCut('one\n')).toBe(0);
+  });
+
+  it('never cuts inside a code fence', () => {
+    const open = 'intro\n\n```ts\nconst a = 1;\n\nconst b = 2;\n';
+    expect(open.slice(0, findParagraphCut(open))).toBe('intro\n\n');
+    const closed = `${open}\`\`\`\n\nafter`;
+    expect(closed.slice(0, findParagraphCut(closed))).toBe(`${open}\`\`\`\n\n`);
+  });
+});
+
+describe('AcpSessionManager.flushCompleteParagraphs', () => {
+  it('emits finished paragraphs while the stream continues and the rest at turn end', () => {
+    const mapper = new AcpSessionManager();
+    const turn = mapper.startTurn()[0].turn;
+    expect(mapper.mapMessage({ type: 'model-output', textDelta: 'First para' })).toEqual([]);
+    expect(mapper.flushCompleteParagraphs()).toEqual([]);
+
+    mapper.mapMessage({ type: 'model-output', textDelta: 'graph.\n\nSecond ' });
+    const partial = mapper.flushCompleteParagraphs();
+    expect(partial).toHaveLength(1);
+    expect(partial[0].ev).toEqual({ t: 'text', text: 'First paragraph.' });
+    expect(partial[0].turn).toBe(turn);
+    expect(mapper.flushCompleteParagraphs()).toEqual([]);
+
+    mapper.mapMessage({ type: 'model-output', textDelta: 'paragraph.' });
+    const ended = mapper.endTurn('completed');
+    expect(ended.map((envelope) => envelope.ev)).toEqual([
+      { t: 'text', text: 'Second paragraph.' },
+      { t: 'turn-end', status: 'completed' },
+    ]);
+  });
+
+  it('keeps thinking flagged as thinking and does not merge it with later output', () => {
+    const mapper = new AcpSessionManager();
+    mapper.startTurn();
+    mapper.mapMessage({ type: 'event', name: 'thinking', payload: { text: 'Plan A.\n\nPlan B', streaming: true } });
+    expect(mapper.flushCompleteParagraphs().map((envelope) => envelope.ev)).toEqual([
+      { t: 'text', text: 'Plan A.', thinking: true },
+    ]);
+    const switched = mapper.mapMessage({ type: 'model-output', textDelta: 'Answer' });
+    expect(switched.map((envelope) => envelope.ev)).toEqual([{ t: 'text', text: 'Plan B', thinking: true }]);
+  });
+
+  it('flushing exactly at a boundary leaves nothing behind', () => {
+    const mapper = new AcpSessionManager();
+    mapper.startTurn();
+    mapper.mapMessage({ type: 'model-output', textDelta: 'Done.\n\n' });
+    expect(mapper.flushCompleteParagraphs().map((envelope) => envelope.ev)).toEqual([{ t: 'text', text: 'Done.' }]);
+    expect(mapper.endTurn('completed').map((envelope) => envelope.ev)).toEqual([{ t: 'turn-end', status: 'completed' }]);
   });
 });

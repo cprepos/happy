@@ -911,6 +911,11 @@ export async function runAcp(opts: {
   const keepAliveInterval = setInterval(() => {
     session.keepAlive(thinking, 'remote');
   }, 2000);
+  // Forward finished paragraphs of long streamed text while the turn runs,
+  // instead of only when the text ends.
+  const streamFlushInterval = setInterval(() => {
+    sendEnvelopes(sessionManager.flushCompleteParagraphs());
+  }, 1000);
 
   async function handleAbort() {
     try {
@@ -1018,6 +1023,7 @@ export async function runAcp(opts: {
     }
   } finally {
     clearInterval(keepAliveInterval);
+    clearInterval(streamFlushInterval);
     reconnectionHandle?.cancel();
     clearPendingTurn(new Error('ACP runner shutting down'));
 
