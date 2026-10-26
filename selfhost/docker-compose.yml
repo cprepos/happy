@@ -39,11 +39,13 @@ services:
       # Webapp bundle; served only if /webapp/index.html exists at startup.
       HAPPY_STATIC_DIR: /webapp
       HAPPY_INJECT_HTML_CONFIG: '{"disableAnalytics":true}'
-      # Voice: LiveKit keys (same pair as selfhost/.env.voice) and the URL clients connect to.
-      # Without the key and secret, POST /v1/voice/conversations answers 500.
+      # Voice: LiveKit keys (same pair as selfhost/.env.voice). Apps stream audio to this server
+      # (/v1/voice/stream), which joins the LiveKit room for them over the compose network:
+      # the livekit container (compose.voice.yml, project happy-voice) joins this project's
+      # default network with the alias "livekit". Without the key and secret, voice answers errors.
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-}
-      LIVEKIT_PUBLIC_URL: ${LIVEKIT_PUBLIC_URL:-wss://livekit.girthbass.duckdns.org}
+      LIVEKIT_URL: ${LIVEKIT_URL:-ws://livekit:7880}
     # Apply pending migrations, then start the server.
     command: ["sh", "-c", "pnpm exec prisma migrate deploy --schema=prisma/schema.prisma && exec pnpm run start"]
     volumes:
