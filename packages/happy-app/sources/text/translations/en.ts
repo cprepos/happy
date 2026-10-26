@@ -474,6 +474,8 @@ export const en: TranslationStructure = {
             default: 'harness setting',
             agyDefault: 'agy sandbox',
             opencodeBuild: 'opencode build agent',
+            opencodeAuto: 'approves tool permissions automatically',
+            opencodeAsk: 'asks before tools that need permission',
             openclawInert: 'not applied',
             acceptEdits: 'edits, no asking',
             plan: 'plan first',

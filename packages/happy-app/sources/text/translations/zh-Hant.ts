@@ -456,6 +456,8 @@ export const zhHant: TranslationStructure = {
             default: '預設',
             agyDefault: 'agy 沙箱，不詢問',
             opencodeBuild: 'opencode 的 build 代理',
+            opencodeAuto: '自動核准工具權限',
+            opencodeAsk: '在需要權限的工具執行前詢問',
             openclawInert: 'openclaw 不使用此設定',
             acceptEdits: '接受編輯',
             plan: '計畫模式',
