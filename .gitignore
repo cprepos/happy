@@ -48,6 +48,11 @@ yarn-error.*
 .plan
 
 CLAUDE.local.md
+
+# Self-host web app build output
+/selfhost/webapp/
+/selfhost/.webapp-build/
+/trash/*_webapp_*
 CLAUDE.md
 .claude/CLAUDE.md
 
