@@ -529,11 +529,16 @@ export class AcpBackend implements AgentBackend {
       });
 
       this.process.on('exit', (code, signal) => {
-        if (!this.disposed && code !== 0 && code !== null) {
-          signalStartupFailure(new Error(`Exit code: ${code}`));
-          logger.debug(`[AcpBackend] Process exited with code ${code}, signal ${signal}`);
-          this.emit({ type: 'status', status: 'stopped', detail: `Exit code: ${code}` });
+        if (this.disposed) {
+          return;
         }
+        // Any exit we did not ask for is the agent going away, including a
+        // kill by signal (code null) and a clean exit (code 0): the runner
+        // must not keep sending prompts to a dead process.
+        const detail = code !== null ? `Exit code: ${code}` : `Killed by ${signal ?? 'signal'}`;
+        signalStartupFailure(new Error(detail));
+        logger.debug(`[AcpBackend] Process exited with code ${code}, signal ${signal}`);
+        this.emit({ type: 'status', status: 'stopped', detail });
       });
 
       // Create Web Streams from Node streams
