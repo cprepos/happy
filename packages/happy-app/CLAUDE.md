@@ -39,7 +39,7 @@ All of these run `sources/scripts/releasePreflight.mjs` first and refuse off `ma
 - **Expo Router v6** for file-based routing
 - **Socket.io** for real-time WebSocket communication
 - **libsodium** (via `@more-tech/react-native-libsodium`) for end-to-end encryption
-- **LiveKit** for real-time voice communication
+- **LiveKit** (`@livekit/react-native`, `livekit-client`) for the voice assistant, against a self-hosted LiveKit server and agent worker
 
 ### Project Structure
 ```
@@ -57,7 +57,7 @@ sources/
 2. **Data Synchronization**: WebSocket-based real-time sync with automatic reconnection and state management
 3. **Encryption**: End-to-end encryption using libsodium for all sensitive data
 4. **State Management**: React Context for auth state, custom reducer for sync state
-5. **Real-time Voice**: LiveKit integration for voice communication sessions
+5. **Real-time Voice**: the app joins a LiveKit room per voice session using a token from `POST /v1/voice/conversations`; a self-hosted agent worker does STT, LLM and TTS (see `docs/voice-architecture.md`)
 6. **Platform-Specific Code**: Separate implementations for web vs native when needed
 
 ### Development Guidelines

@@ -1,5 +1,9 @@
 # Paid Voice — Rate Limiting & Auth
 
+> **Historical.** This describes the earlier ElevenLabs voice setup with paid
+> usage gating. The self-hosted build replaced it with LiveKit and has no
+> gate or quota; see `docs/voice-architecture.md` for the current design.
+
 ## Flow
 
 ```
