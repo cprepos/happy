@@ -53,7 +53,7 @@ COPY --from=builder /repo/packages/happy-wire /repo/packages/happy-wire
 COPY --from=builder /repo/packages/happy-server /repo/packages/happy-server
 
 # Expose the port the app will run on
-EXPOSE 3000
+EXPOSE 3005
 
 # Command to run the application
 COPY --from=builder /repo/package.json /repo/pnpm-workspace.yaml /repo/

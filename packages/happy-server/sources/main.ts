@@ -10,6 +10,30 @@ import { startDatabaseMetricsUpdater } from "@/app/monitoring/metrics2";
 import { initEncrypt } from "./modules/encrypt";
 import { initGithub } from "./modules/github";
 import { loadFiles } from "./storage/files";
+import * as fs from "fs";
+import * as path from "path";
+
+// Optional static webapp (self-host). Served only when HAPPY_STATIC_DIR points
+// at a directory containing index.html; otherwise the API serves its banner at `/`.
+function resolveStaticOptions(): { staticDir?: string; injectHtmlConfig?: Record<string, unknown> } {
+    const dir = process.env.HAPPY_STATIC_DIR;
+    if (!dir || !fs.existsSync(path.join(dir, "index.html"))) {
+        if (dir) {
+            log(`HAPPY_STATIC_DIR=${dir} has no index.html, not serving webapp`);
+        }
+        return {};
+    }
+    let injectHtmlConfig: Record<string, unknown> | undefined;
+    if (process.env.HAPPY_INJECT_HTML_CONFIG) {
+        try {
+            injectHtmlConfig = JSON.parse(process.env.HAPPY_INJECT_HTML_CONFIG);
+        } catch {
+            log("HAPPY_INJECT_HTML_CONFIG is not valid JSON, ignoring");
+        }
+    }
+    log(`Serving webapp from ${dir}`);
+    return { staticDir: dir, injectHtmlConfig };
+}
 
 async function main() {
 
@@ -37,7 +61,7 @@ async function main() {
     // Start
     //
 
-    await startApi();
+    await startApi(resolveStaticOptions());
     await startMetricsServer();
     startDatabaseMetricsUpdater();
     startTimeout();
