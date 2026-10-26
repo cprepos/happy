@@ -79,3 +79,6 @@ happy-workspaces/
 
 .context/
 .happy-tmp/
+
+# Self-hosted voice stack secrets
+selfhost/.env.voice
