@@ -34,6 +34,8 @@ DEFAULT_ENV = HERE.parents[2] / "selfhost" / ".env.voice"
 
 SR_IN = 24000  # Kokoro PCM rate; published as is
 FRAME_MS = 10
+MIC_QUEUE_MS = 400
+MIC_CUSHION_S = 0.2
 SPEECH_RMS = 400  # int16 RMS above which a received agent frame counts as speech
 
 SESSION_ID = "sess_e2e_42"
@@ -123,7 +125,7 @@ class Mic:
     """Publishes a continuous mono track: silence unless an utterance is playing, paced in real time."""
 
     def __init__(self) -> None:
-        self.source = rtc.AudioSource(SR_IN, 1, queue_size_ms=60)
+        self.source = rtc.AudioSource(SR_IN, 1, queue_size_ms=MIC_QUEUE_MS)
         self._queue: asyncio.Queue[tuple[np.ndarray, asyncio.Future]] = asyncio.Queue()
         self._task: asyncio.Task | None = None
 
@@ -133,8 +135,6 @@ class Mic:
     async def _run(self) -> None:
         n = SR_IN * FRAME_MS // 1000
         silence = np.zeros(n, dtype=np.int16)
-        t0 = time.perf_counter()
-        sent = 0
         current: np.ndarray | None = None
         pos = 0
         fut: asyncio.Future | None = None
@@ -151,15 +151,16 @@ class Mic:
                 chunk = silence
             frame = rtc.AudioFrame(chunk.tobytes(), SR_IN, 1, n)
             await self.source.capture_frame(frame)
-            sent += 1
             if current is not None and pos >= len(current):
                 current = None
                 if fut and not fut.done():
-                    fut.set_result(time.time())
-            # real-time pacing
-            ahead = t0 + sent * FRAME_MS / 1000 - time.perf_counter()
-            if ahead > 0:
-                await asyncio.sleep(ahead)
+                    # the last frame is queued; it plays out after what is still buffered
+                    fut.set_result(time.time() + self.source.queued_duration)
+            # Keep a cushion of buffered audio so event-loop hiccups never starve the track
+            # (an underrun turns into a silent gap that splits the utterance for the VAD).
+            excess = self.source.queued_duration - MIC_CUSHION_S
+            if excess > 0:
+                await asyncio.sleep(excess)
 
     async def say(self, pcm: np.ndarray) -> float:
         """Plays pcm; returns the wall time of the end of speech (last loud sample)."""
@@ -371,7 +372,9 @@ async def main() -> int:
     try:
         # 1. dispatch + config handshake + first message
         ok = await wait_for(lambda: agent_joined.is_set(), 20)
-        checks.check("agent dispatched and joined", ok, world.agent_identity)
+        if not checks.check("agent dispatched and joined", ok, world.agent_identity):
+            print("no worker took the job (is the voice-agent worker registered and available?)")
+            return 1
         await wait_for(lambda: world.config_requests > 0, 15)
         checks.check("happy.getConfig RPC called", world.config_requests == 1, f"{world.config_requests} call(s)")
         ok = await wait_for(lambda: bool(world.speech_onsets), 20)

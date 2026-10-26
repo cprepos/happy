@@ -44,8 +44,10 @@ class Settings:
         )
     )
     turn_detector: str = field(default_factory=lambda: _env("TURN_DETECTOR", "en"))
+    # silence (s) before Silero VAD declares end of speech; the turn detector guards early ends
+    vad_min_silence: float = field(default_factory=lambda: float(_env("VAD_MIN_SILENCE", "0.35")))
     min_endpointing_delay: float = field(default_factory=lambda: float(_env("MIN_ENDPOINTING_DELAY", "0.4")))
-    max_endpointing_delay: float = field(default_factory=lambda: float(_env("MAX_ENDPOINTING_DELAY", "3.0")))
+    max_endpointing_delay: float = field(default_factory=lambda: float(_env("MAX_ENDPOINTING_DELAY", "2.0")))
     config_timeout: float = field(default_factory=lambda: float(_env("CONFIG_RPC_TIMEOUT", "10")))
     tool_timeout: float = field(default_factory=lambda: float(_env("TOOL_RPC_TIMEOUT", "30")))
 

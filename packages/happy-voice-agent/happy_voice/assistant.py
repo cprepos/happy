@@ -77,7 +77,7 @@ class ConversationState:
 
 
 def prewarm(proc: JobProcess) -> None:
-    proc.userdata["vad"] = silero.VAD.load()
+    proc.userdata["vad"] = silero.VAD.load(min_silence_duration=Settings().vad_min_silence)
 
 
 def _turn_detector(kind: str):
@@ -260,7 +260,7 @@ async def entrypoint(ctx: JobContext) -> None:
         chat_ctx.add_message(role="system", content=f"Conversation history so far:\n{initial}")
 
     session: AgentSession = AgentSession(
-        vad=ctx.proc.userdata.get("vad") or silero.VAD.load(),
+        vad=ctx.proc.userdata.get("vad") or silero.VAD.load(min_silence_duration=settings.vad_min_silence),
         stt=NemotronSTT(url=settings.stt_url, language="en"),
         llm=openai.LLM(
             base_url=settings.llm_base_url,

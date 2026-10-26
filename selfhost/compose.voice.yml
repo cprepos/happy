@@ -125,5 +125,27 @@ services:
               device_ids: ["${LLM_GPU_A:-0}", "${LLM_GPU_B:-1}"]
               capabilities: [gpu]
 
+  # LiveKit Agents worker (packages/happy-voice-agent). CPU only; host network so it reaches
+  # livekit, stt, tts and llm on 127.0.0.1. Dispatched explicitly as "happy-voice".
+  voice-agent:
+    build:
+      context: ../packages/happy-voice-agent
+    image: happy-voice-agent:local
+    container_name: happy-voice-agent
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env.voice
+    environment:
+      LIVEKIT_URL: ws://127.0.0.1:7880
+      STT_URL: ws://127.0.0.1:${STT_PORT:-8090}/v1/stream
+      TTS_URL: http://127.0.0.1:${TTS_PORT:-8880}/v1
+      LLM_BASE_URL: http://127.0.0.1:${LLM_PORT:-8000}/v1
+      # .env.voice's LLM_MODEL is the HF weights id for vLLM; the agent needs the served name
+      LLM_MODEL: ${LLM_SERVED_NAME:-voice-llm}
+      TTS_VOICE: ${TTS_VOICE:-af_heart}
+      VOICE_AGENT_NAME: happy-voice
+      # the worker's health/debug HTTP server; 8081 is commonly taken on shared hosts
+      VOICE_AGENT_HTTP_PORT: ${VOICE_AGENT_HTTP_PORT:-8791}
+
 volumes:
   vllm-cache:
