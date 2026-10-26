@@ -392,7 +392,7 @@ forward_env() {
     [[ -n "${APP_BUNDLE_ID_PREFIX:-}" ]] && kv+=("HB_APP_BUNDLE_ID_PREFIX=$APP_BUNDLE_ID_PREFIX")
     [[ -n "${APP_DISPLAY_NAME:-}" ]] && kv+=("HB_APP_DISPLAY_NAME=$APP_DISPLAY_NAME")
     [[ -n "${APP_ENV:-}" ]] && kv+=("HB_APP_ENV=$APP_ENV")
-    printf '%s\0' "${kv[@]}"
+    printf '%s\0' ${kv[@]+"${kv[@]}"}
 }
 
 STAGE_ARGS=()
@@ -404,14 +404,14 @@ run_stage() {   # run_stage deps|build|install
     local -a envs=()
     while IFS= read -r -d '' item; do envs+=("$item"); done < <(forward_env)
     if [[ "$(uname -s)" == "Darwin" ]]; then
-        env "${envs[@]}" bash "$SCRIPT_DIR/build-on-mac.sh" --mac-stage "$stage" "${STAGE_ARGS[@]}"
+        env ${envs[@]+"${envs[@]}"} bash "$SCRIPT_DIR/build-on-mac.sh" --mac-stage "$stage" ${STAGE_ARGS[@]+"${STAGE_ARGS[@]}"}
         return
     fi
     cmd="env"
-    for item in "${envs[@]}"; do printf -v q '%q' "$item"; cmd+=" $q"; done
+    for item in ${envs[@]+"${envs[@]}"}; do printf -v q '%q' "$item"; cmd+=" $q"; done
     cmd+=" MAC_HOST=$(printf '%q' "$MAC_HOST") REMOTE_DIR=$(printf '%q' "$REMOTE_DIR")"
     cmd+=" bash \"\$HOME\"/$(printf '%q' "$REMOTE_DIR/$SELF_REL") --mac-stage $stage"
-    for item in "${STAGE_ARGS[@]}"; do printf -v q '%q' "$item"; cmd+=" $q"; done
+    for item in ${STAGE_ARGS[@]+"${STAGE_ARGS[@]}"}; do printf -v q '%q' "$item"; cmd+=" $q"; done
     ssh -o BatchMode=yes "$MAC_HOST" "$cmd"
 }
 
