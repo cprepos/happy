@@ -29,6 +29,15 @@ describe('buildResumeCommand', () => {
         })).toBe(`Set-Location -LiteralPath 'C:\\Users\\test\\project'; happy codex --resume 019ccca5-726b-7c61-b914-16de27dfab6e`);
     });
 
+    it('builds an Antigravity resume command from the agy conversation id', () => {
+        expect(buildResumeCommand({
+            path: '/tmp/project',
+            os: 'linux',
+            flavor: 'agy',
+            agyConversationId: '5d1f4c3a-agy',
+        })).toBe(`cd '/tmp/project' && happy agy --resume 5d1f4c3a-agy`);
+    });
+
     it('falls back to the bare resume command when no path is available', () => {
         expect(buildResumeCommand({
             flavor: 'claude',
