@@ -2,26 +2,24 @@
 # Keys are NOT stored here: they come from LIVEKIT_KEYS ("<key>: <secret>"),
 # which compose.voice.yml builds from LIVEKIT_API_KEY / LIVEKIT_API_SECRET in .env.voice.
 #
-# Signaling (HTTP + WebSocket) listens on 127.0.0.1:7880 only; Caddy terminates TLS for
-# wss://livekit.girthbass.duckdns.org and proxies to it.
-# Media: ICE/TCP on 7881 and a single UDP mux port 7882 (Plex owns 50000-60000).
-# Router must forward TCP 7881 and UDP 7882 to this host.
+# LiveKit is internal only. Apps never talk to it: they stream audio to happy-server
+# (wss://happy.../v1/voice/stream), which joins the room for them. The container sits on the
+# happy-selfhost docker network, so:
+# - happy-server reaches signaling at ws://livekit:7880 and media at the container IP;
+# - the voice agent (host network) reaches signaling through the 127.0.0.1:7880 publish and
+#   media at the container IP (host -> bridge traffic, not filtered by ufw).
+# Nothing else is published: no TLS site, no ufw rules, no router forwards.
 port: 7880
-bind_addresses:
-  - 127.0.0.1
 rtc:
+  # Container-internal ports; not published on the host.
   tcp_port: 7881
   udp_port: 7882
-  # Public IP (via STUN) for clients outside, once the router forwards 7881/7882 ...
-  use_external_ip: true
-  # ... and the LAN + VPN addresses too, so clients at home or on the VPN connect directly.
-  # Without this the public IP replaces them and LAN clients fail unless the router hairpins.
-  advertise_internal_ip: true
-  # Only advertise LAN (+ VPN) addresses as host ICE candidates, never docker bridges.
+  # No STUN lookup and no LAN/VPN addresses: the only ICE candidates are the container's
+  # address on the docker network (LiveKit picks it up as its node IP).
+  use_external_ip: false
   ips:
     includes:
-      - 192.168.2.0/24
-      - 10.8.0.0/24
+      - 172.24.0.0/16
 logging:
   level: info
   json: false
