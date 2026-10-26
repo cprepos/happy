@@ -186,7 +186,7 @@ export class OpencodeQuestionBridge {
                     [request.id]: {
                         kind: 'form',
                         createdAt: Date.now(),
-                        ...(request.toolCallId ? { toolUseId: request.toolCallId } : {}),
+                        ...(request.toolCallId ? { toolUseId: request.toolCallId } : { inTranscript: false }),
                         form: { questions: opencodeFormQuestions(request.questions) },
                     },
                 },

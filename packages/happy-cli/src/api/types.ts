@@ -475,6 +475,11 @@ export type AgentCommunication = {
   createdAt: number,
   /** Joins the communication to the tool call that raised it, when there is one. */
   toolUseId?: string,
+  /**
+   * False when no transcript tool call shows this communication (e.g. a
+   * sub-agent's question), so the app answers it from its banner instead.
+   */
+  inTranscript?: boolean,
   title?: string,
   form?: { questions: AgentQuestion[] }
 }

@@ -99,6 +99,13 @@ describe('OpencodeQuestionBridge', () => {
         expect(bridge.pendingIds()).toEqual(['que_1']);
     });
 
+    it('marks a question without a tool call as answered outside the transcript', () => {
+        const { fake, bridge } = setup();
+        bridge.ask({ id: 'que_c', questions: [NAME] });
+        expect(fake.state().communications?.que_c).toMatchObject({ kind: 'form', inTranscript: false });
+        expect(fake.state().communications?.que_c?.toolUseId).toBeUndefined();
+    });
+
     it('forwards an app answer to OpenCode and records it as answered', async () => {
         const { fake, replies, bridge } = setup();
         bridge.ask({ id: 'que_1', questions: [COLOR, TOPPINGS, NAME] });
