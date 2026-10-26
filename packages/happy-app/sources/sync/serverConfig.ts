@@ -1,3 +1,4 @@
+import Constants from 'expo-constants';
 import { MMKV } from 'react-native-mmkv';
 
 // Separate MMKV instance for server config that persists across logouts
@@ -24,7 +25,20 @@ export function getServerUrl(): string {
     return serverConfigStorage.getString(SERVER_KEY) ||
            (globalThis as any).__HAPPY_CONFIG__?.serverUrl ||
            process.env.EXPO_PUBLIC_HAPPY_SERVER_URL ||
+           getBakedServerUrl() ||
            DEFAULT_SERVER_URL;
+}
+
+// Server URL baked into the native app config (extra.app.serverUrl) by
+// SELFHOST=1 builds, so the app still targets the self-hosted server when the
+// EXPO_PUBLIC_* variables were not present while bundling.
+function getBakedServerUrl(): string | undefined {
+    try {
+        const url = (Constants?.expoConfig?.extra as { app?: { serverUrl?: unknown } } | undefined)?.app?.serverUrl;
+        return typeof url === 'string' && url ? url : undefined;
+    } catch {
+        return undefined;
+    }
 }
 
 export function rewriteLoopbackHost(url: string): string {
