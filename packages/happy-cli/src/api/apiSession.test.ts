@@ -1307,4 +1307,133 @@ describe('ApiSessionClient v3 messages API migration', () => {
         expect(mockAxiosGet).not.toHaveBeenCalled();
         expect(mockAxiosPost).not.toHaveBeenCalled();
     });
+
+    describe('reconnect archive guard', () => {
+        const metadataUpdate = (version: number, lifecycleState: string): Update => ({
+            id: `upd-meta-${version}`,
+            seq: version,
+            createdAt: Date.now(),
+            body: {
+                t: 'update-session',
+                id: 'test-session-id',
+                metadata: {
+                    version,
+                    value: encryptContent(session, { ...session.metadata, lifecycleState }),
+                },
+            },
+        } as unknown as Update);
+        const ackWith = (version: number, lifecycleState: string) => ({
+            result: 'success',
+            version,
+            metadata: encryptContent(session, { ...session.metadata, lifecycleState }),
+        });
+
+        it('swallows the stale archive a reconnect sees before it settles', async () => {
+            const client = new ApiSessionClient('fake-token', session);
+            const archived = vi.fn();
+            client.on('archived', archived);
+            client.suppressNextArchiveSignal();
+
+            emitSocketEvent('update', metadataUpdate(1, 'archived'));
+            expect(archived).not.toHaveBeenCalled();
+
+            await client.close();
+        });
+
+        it('honours an archive that comes after the un-archive was acknowledged', async () => {
+            mockSocket.emitWithAck.mockResolvedValue(ackWith(2, 'running'));
+            const client = new ApiSessionClient('fake-token', session);
+            const archived = vi.fn();
+            client.on('archived', archived);
+            client.suppressNextArchiveSignal();
+
+            client.updateMetadata((current) => ({ ...current, lifecycleState: 'running' }));
+            await waitForCheck(() => expect(mockSocket.emitWithAck).toHaveBeenCalledWith('update-metadata', expect.anything()));
+            await new Promise((resolve) => setTimeout(resolve, 10));
+
+            emitSocketEvent('update', metadataUpdate(3, 'archived'));
+            expect(archived).toHaveBeenCalledTimes(1);
+
+            await client.close();
+        });
+
+        it('settles after a version mismatch once the retried un-archive lands', async () => {
+            mockSocket.emitWithAck
+                .mockResolvedValueOnce({
+                    result: 'version-mismatch',
+                    version: 1,
+                    metadata: encryptContent(session, { ...session.metadata, lifecycleState: 'archived' }),
+                })
+                .mockResolvedValue(ackWith(2, 'running'));
+            const client = new ApiSessionClient('fake-token', session);
+            const archived = vi.fn();
+            client.on('archived', archived);
+            client.suppressNextArchiveSignal();
+
+            client.updateMetadata((current) => ({ ...current, lifecycleState: 'running' }));
+            await waitForCheck(() => expect(mockSocket.emitWithAck).toHaveBeenCalledTimes(2));
+            await new Promise((resolve) => setTimeout(resolve, 10));
+
+            emitSocketEvent('update', metadataUpdate(3, 'archived'));
+            expect(archived).toHaveBeenCalledTimes(1);
+
+            await client.close();
+        });
+
+        it('stays armed while the un-archive itself still reads archived', async () => {
+            mockSocket.emitWithAck.mockResolvedValue(ackWith(2, 'archived'));
+            const client = new ApiSessionClient('fake-token', session);
+            const archived = vi.fn();
+            client.on('archived', archived);
+            client.suppressNextArchiveSignal();
+
+            client.updateMetadata((current) => ({ ...current, title: 'unrelated' }));
+            await waitForCheck(() => expect(mockSocket.emitWithAck).toHaveBeenCalled());
+            await new Promise((resolve) => setTimeout(resolve, 10));
+
+            emitSocketEvent('update', metadataUpdate(3, 'archived'));
+            expect(archived).not.toHaveBeenCalled();
+
+            await client.close();
+        });
+
+        it('expires after 60 seconds even if the reconnect never settles', async () => {
+            vi.useFakeTimers();
+            const client = new ApiSessionClient('fake-token', session);
+            const archived = vi.fn();
+            client.on('archived', archived);
+            client.suppressNextArchiveSignal();
+
+            await vi.advanceTimersByTimeAsync(60_000);
+
+            emitSocketEvent('update', metadataUpdate(1, 'archived'));
+            expect(archived).toHaveBeenCalledTimes(1);
+
+            await client.close();
+        });
+
+        it('is still armed just before the 60 second deadline', async () => {
+            vi.useFakeTimers();
+            const client = new ApiSessionClient('fake-token', session);
+            const archived = vi.fn();
+            client.on('archived', archived);
+            client.suppressNextArchiveSignal();
+
+            await vi.advanceTimersByTimeAsync(59_000);
+            emitSocketEvent('update', metadataUpdate(1, 'archived'));
+            expect(archived).not.toHaveBeenCalled();
+
+            await client.close();
+        });
+
+        it('leaves no timer behind on close', async () => {
+            vi.useFakeTimers();
+            mockSocket.connected = true;
+            const client = new ApiSessionClient('fake-token', session);
+            client.suppressNextArchiveSignal();
+            expect(vi.getTimerCount()).toBe(1);
+            await client.close();
+            expect(vi.getTimerCount()).toBe(0);
+        });
+    });
 });
