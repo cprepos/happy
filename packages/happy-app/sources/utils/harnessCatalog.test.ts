@@ -93,6 +93,28 @@ describe('harness catalog', () => {
         }).map((harness) => harness.key)).toEqual(['claude', 'codex']);
     });
 
+    it('lists OpenCode only after an explicit installation report', () => {
+        expect(HARNESS_NAMES.opencode).toBe('OpenCode');
+
+        expect(listAvailableHarnesses({
+            availability: { claude: true, codex: true, agy: true, opencode: true },
+            happyAgentAvailable: false,
+            selected: 'claude',
+        }).map((harness) => harness.key)).toEqual(['claude', 'codex', 'agy', 'opencode']);
+
+        expect(listAvailableHarnesses({
+            availability: { claude: true, opencode: false },
+            happyAgentAvailable: false,
+            selected: 'opencode',
+        }).map((harness) => harness.key)).toEqual(['claude']);
+
+        expect(listAvailableHarnesses({
+            availability: null,
+            happyAgentAvailable: false,
+            selected: 'opencode',
+        }).map((harness) => harness.key)).toEqual(['claude', 'codex']);
+    });
+
     it('falls back to the whole catalog when a machine reports no capabilities', () => {
         expect(listAvailableHarnesses({
             availability: null,

@@ -471,6 +471,7 @@ export const ru: TranslationStructure = {
             auto: 'решает сам, спрашивает при сомнении',
             default: 'По умолчанию',
             agyDefault: 'песочница agy, без запросов',
+            opencodeBuild: 'агент build в opencode',
             openclawInert: 'не применяется в openclaw',
             acceptEdits: 'Принимать правки',
             plan: 'Режим планирования',

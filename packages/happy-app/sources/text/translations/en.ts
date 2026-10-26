@@ -473,6 +473,7 @@ export const en: TranslationStructure = {
             auto: 'asks when unsure',
             default: 'harness setting',
             agyDefault: 'agy sandbox',
+            opencodeBuild: 'opencode build agent',
             openclawInert: 'not applied',
             acceptEdits: 'edits, no asking',
             plan: 'plan first',

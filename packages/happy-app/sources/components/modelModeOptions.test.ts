@@ -20,6 +20,7 @@ import {
     groupModelModesByProvider,
     includeConfiguredModel,
     getOpenClawPermissionModes,
+    getOpencodePermissionModes,
     mapMetadataOptions,
     resolveCurrentOption,
 } from './modelModeOptions';
@@ -497,5 +498,24 @@ describe('modelModeOptions', () => {
     it('cuts mid-word only when there is no boundary to fall back on', () => {
         expect(truncateModelLabel('Supercalifragilisticexpialidocious'))
             .toBe('Supercalifragili\u2026');
+    });
+
+    it('offers OpenCode its own agents before a session reports them', () => {
+        expect(getOpencodePermissionModes(translate).map((mode) => mode.key)).toEqual(['build', 'plan']);
+        expect(getAvailablePermissionModes('opencode', null, translate).map((mode) => mode.key))
+            .toEqual(expect.arrayContaining(['build', 'plan']));
+        expect(getAvailableModels('opencode', null, translate).map((model) => model.key)).toEqual(['default']);
+        expect(getDefaultModelKey('opencode')).toBe('default');
+        expect(getDefaultPermissionModeKey('opencode')).toBe('build');
+    });
+
+    it('uses the modes and models a live OpenCode session reports', () => {
+        const metadata = {
+            operatingModes: [{ code: 'build', value: 'build' }, { code: 'plan', value: 'plan' }],
+            models: [{ code: 'coder/coder', value: 'Coder (local vLLM)/Qwen (coder)' }],
+        } as any;
+        expect(getAvailablePermissionModes('opencode', metadata, translate).map((mode) => mode.key).sort())
+            .toEqual(['build', 'plan']);
+        expect(getAvailableModels('opencode', metadata, translate).map((model) => model.key)).toEqual(['coder/coder']);
     });
 });
