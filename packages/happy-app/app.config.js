@@ -12,13 +12,6 @@ const bundleId = {
     preview: "com.slopus.happy.preview",
     production: "com.ex3ndr.happy"
 }[variant];
-// const stagingElevenLabsAgentId = 'agent_7801k2c0r5hjfraa1kdbytpvs6yt';
-const productionElevenLabsAgentId = 'agent_6701k211syvvegba4kt7m68nxjmw';
-const elevenLabsAgentId = {
-    development: productionElevenLabsAgentId,
-    preview: productionElevenLabsAgentId,
-    production: productionElevenLabsAgentId,
-}[variant];
 const consoleLoggingDefault = {
     development: true,
     preview: true,
@@ -229,7 +222,6 @@ const config = {
                 revenueCatAppleKey: process.env.EXPO_PUBLIC_REVENUE_CAT_APPLE,
                 revenueCatGoogleKey: process.env.EXPO_PUBLIC_REVENUE_CAT_GOOGLE,
                 revenueCatStripeKey: process.env.EXPO_PUBLIC_REVENUE_CAT_STRIPE,
-                elevenLabsAgentId,
                 consoleLoggingDefault,
                 buildCommitSha: buildMetadata.commitSha,
                 buildCommitTimestamp: buildMetadata.commitTimestamp,

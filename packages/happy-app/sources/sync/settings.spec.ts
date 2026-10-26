@@ -47,6 +47,18 @@ describe('settings', () => {
             });
         });
 
+        it('should accept stored settings that still carry removed voice keys', () => {
+            const legacy = {
+                voiceAssistantLanguage: 'en',
+                voiceCustomAgentId: 'agent_legacy',
+                voiceBypassToken: true,
+            };
+            expect(settingsParse(legacy)).toEqual({
+                ...settingsDefaults,
+                ...legacy,
+            });
+        });
+
         it('should handle partial settings and merge with defaults', () => {
             const partialSettings = {
                 viewInline: true
@@ -207,8 +219,6 @@ describe('settings', () => {
                 reviewPromptAnswered: false,
                 reviewPromptLikedApp: null,
                 voiceAssistantLanguage: null,
-                voiceCustomAgentId: null,
-                voiceBypassToken: false,
                 preferredLanguage: null,
                 recentMachinePaths: [],
                 lastUsedAgent: null,

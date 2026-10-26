@@ -32,7 +32,6 @@ import { useUnistyles } from 'react-native-unistyles';
 import { AsyncLock } from '@/utils/lock';
 import { getSessionRouteFromNotificationResponse } from '@/utils/notificationRouting';
 import { navigateToSession } from '@/hooks/useNavigateToSession';
-import { applyVoiceUpsellOverride } from '@/realtime/voiceExperiment';
 import { useTauriZoom } from '@/hooks/useTauriZoom';
 import { useTauriDrag } from '@/hooks/useTauriDrag';
 import { BrowserNavigationShortcuts } from '@/hooks/useBrowserNavigationShortcuts';
@@ -420,18 +419,9 @@ export default function RootLayout() {
     // the untouched (false) setting silently mutes console.log in dev builds
     // the moment this layout mounts.
     const consoleLoggingEnabled = useLocalSetting('consoleLoggingEnabled');
-    const devModeEnabled = __DEV__ || useLocalSetting('devModeEnabled');
-    const voiceUpsellOverride = useLocalSetting('voiceUpsellOverride');
     React.useEffect(() => {
         setConsoleOutputEnabled(consoleLoggingEnabled || (loadAppConfig().consoleLoggingDefault ?? false));
     }, [consoleLoggingEnabled]);
-
-    React.useEffect(() => {
-        if (!devModeEnabled || !voiceUpsellOverride) {
-            return;
-        }
-        applyVoiceUpsellOverride(voiceUpsellOverride);
-    }, [devModeEnabled, voiceUpsellOverride]);
 
     //
     // Not inited

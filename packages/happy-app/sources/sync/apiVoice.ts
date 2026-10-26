@@ -1,51 +1,63 @@
+import { z } from 'zod';
 import {
-    VoiceConversationResponseSchema,
     VoiceUsageResponseSchema,
-    type VoiceConversationResponse,
     type VoiceUsageResponse,
 } from '@slopus/happy-wire';
 import { AuthCredentials } from '@/auth/tokenStorage';
-import { getServerUrl, getVoiceServerUrl } from './serverConfig';
+import { getVoiceServerUrl } from './serverConfig';
 import { getHappyClientId } from './apiSocket';
-import { config } from '@/config';
-import { authGetToken } from '@/auth/authGetToken';
-import { decodeBase64 } from '@/encryption/base64';
 
-export type { VoiceConversationResponse, VoiceUsageResponse };
+export type { VoiceUsageResponse };
 
-async function getVoiceEndpoint(credentials: AuthCredentials): Promise<{ serverUrl: string; token: string }> {
-    const serverUrl = getVoiceServerUrl();
-    if (serverUrl === getServerUrl()) {
-        return { serverUrl, token: credentials.token };
-    }
+/**
+ * Response of `POST /v1/voice/conversations`: a LiveKit access token for a
+ * fresh room with the voice agent dispatched to it. The `allowed: false`
+ * variant is kept so an older server's refusal surfaces as an error instead
+ * of a parse failure.
+ */
+const VoiceConversationGrantSchema = z.object({
+    allowed: z.literal(true),
+    conversationId: z.string().min(1),
+    roomName: z.string().optional(),
+    token: z.string().min(1),
+    url: z.string().min(1),
+});
 
-    const secret = decodeBase64(credentials.secret, 'base64url');
-    const token = await authGetToken(secret, serverUrl);
-    return { serverUrl, token };
-}
+const VoiceConversationRefusalSchema = z.object({
+    allowed: z.literal(false),
+    reason: z.string().optional(),
+});
 
+const VoiceConversationResponseSchema = z.discriminatedUnion('allowed', [
+    VoiceConversationGrantSchema,
+    VoiceConversationRefusalSchema,
+]);
+
+export type VoiceConversationGrant = z.infer<typeof VoiceConversationGrantSchema>;
+export type VoiceConversationResponse = z.infer<typeof VoiceConversationResponseSchema>;
+
+/**
+ * Asks the server for a LiveKit room token. Voice always goes to the same
+ * server as everything else, with the same credentials.
+ */
 export async function fetchVoiceCredentials(
     credentials: AuthCredentials,
-    sessionId: string
+    sessionId: string,
+    language?: string,
 ): Promise<VoiceConversationResponse> {
-    const { serverUrl, token } = await getVoiceEndpoint(credentials);
-
-    const agentId = config.elevenLabsAgentId;
-
-    if (!agentId) {
-        throw new Error('Agent ID not configured');
-    }
+    const serverUrl = getVoiceServerUrl();
 
     const response = await fetch(`${serverUrl}/v1/voice/conversations`, {
         method: 'POST',
         headers: {
-            'Authorization': `Bearer ${token}`,
+            'Authorization': `Bearer ${credentials.token}`,
             'Content-Type': 'application/json',
             'X-Happy-Client': getHappyClientId(),
         },
         body: JSON.stringify({
-            agentId
-        })
+            sessionId,
+            ...(language ? { language } : {}),
+        }),
     });
 
     if (!response.ok) {
@@ -58,12 +70,12 @@ export async function fetchVoiceCredentials(
 export async function fetchVoiceUsage(
     credentials: AuthCredentials
 ): Promise<VoiceUsageResponse> {
-    const { serverUrl, token } = await getVoiceEndpoint(credentials);
+    const serverUrl = getVoiceServerUrl();
 
     const response = await fetch(`${serverUrl}/v1/voice/usage`, {
         method: 'GET',
         headers: {
-            'Authorization': `Bearer ${token}`,
+            'Authorization': `Bearer ${credentials.token}`,
             'X-Happy-Client': getHappyClientId(),
         },
     });

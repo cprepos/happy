@@ -1081,7 +1081,7 @@ export function SessionViewLoaded({
                     const hasPro = storage.getState().purchases.entitlements['pro'] ?? false;
                     tracking?.capture('voice_session_started', {
                         session_id: sessionId,
-                        elevenlabs_conversation_id: conversationId,
+                        voice_conversation_id: conversationId,
                         has_pro: hasPro,
                         onboarding_prompt_load_count: getVoiceOnboardingPromptLoadCount(),
                         voice_message_count: getVoiceMessageCount(),
@@ -1092,7 +1092,7 @@ export function SessionViewLoaded({
                 Modal.alert(t('common.error'), t('errors.voiceSessionFailed'));
                 tracking?.capture('voice_session_error', {
                     session_id: sessionId,
-                    elevenlabs_conversation_id: getCurrentVoiceConversationId(),
+                    voice_conversation_id: getCurrentVoiceConversationId(),
                     error: error instanceof Error ? error.message : 'Unknown error',
                 });
             }
@@ -1102,7 +1102,7 @@ export function SessionViewLoaded({
             await stopRealtimeSession();
             tracking?.capture('voice_session_stopped', {
                 session_id: sessionId,
-                elevenlabs_conversation_id: conversationId,
+                voice_conversation_id: conversationId,
                 ...(durationSeconds !== undefined ? { duration_seconds: durationSeconds } : {}),
             });
 
