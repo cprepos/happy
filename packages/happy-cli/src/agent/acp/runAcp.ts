@@ -16,7 +16,9 @@ import { createSessionMetadata } from '@/utils/createSessionMetadata';
 import { setupOfflineReconnection } from '@/utils/setupOfflineReconnection';
 import { notifyDaemonSessionStarted } from '@/daemon/controlClient';
 import { decodeBase64, encodeBase64 } from '@/api/encryption';
-import type { Session as ApiSession } from '@/api/types';
+import type { Metadata, Session as ApiSession } from '@/api/types';
+import { opencodeModeAgent, withOpencodePermissionModes, type OpencodePermissionPolicy } from '@/opencode/acpPermissionModes';
+import { parseOpencodeMode } from '@/opencode/tui/opencodeSessionConfig';
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler';
 import { startHappyServer } from '@/claude/utils/startHappyServer';
 import { projectPath } from '@/projectPath';
@@ -414,7 +416,11 @@ function resolveRequestedLegacyModelCode(models: SessionModelState, requested: s
 class GenericAcpPermissionHandler extends BasePermissionHandler implements AcpPermissionHandler {
   private readonly logPrefix: string;
 
-  constructor(session: ApiSessionClient, agentName: string) {
+  /**
+   * @param autoApprove When it returns true, a request is approved once
+   * without asking (OpenCode's auto mode); otherwise it goes to the app.
+   */
+  constructor(session: ApiSessionClient, agentName: string, private readonly autoApprove: () => boolean = () => false) {
     super(session);
     this.logPrefix = `[${agentName}]`;
   }
@@ -424,6 +430,24 @@ class GenericAcpPermissionHandler extends BasePermissionHandler implements AcpPe
   }
 
   async handleToolCall(toolCallId: string, toolName: string, input: unknown): Promise<PermissionResult> {
+    if (this.autoApprove()) {
+      logger.debug(`${this.logPrefix} Auto-approving tool ${toolName} (${toolCallId})`);
+      this.session.updateAgentState((currentState) => ({
+        ...currentState,
+        completedRequests: {
+          ...currentState.completedRequests,
+          [toolCallId]: {
+            tool: toolName,
+            arguments: input,
+            createdAt: Date.now(),
+            completedAt: Date.now(),
+            status: 'approved',
+            decision: 'approved',
+          },
+        },
+      }));
+      return { decision: 'approved' };
+    }
     return new Promise<PermissionResult>((resolve, reject) => {
       this.pendingRequests.set(toolCallId, {
         resolve,
@@ -462,6 +486,12 @@ export async function runAcp(opts: {
   verbose?: boolean;
   /** The agent's ACP session id to continue (`happy opencode --resume <id>`). */
   resumeSessionId?: string;
+  /**
+   * OpenCode only: `auto` (default) approves permission requests once without
+   * asking, like `opencode --auto`; `ask` shows them in the app. Messages from
+   * the app can switch it per message through their mode.
+   */
+  permissionPolicy?: OpencodePermissionPolicy;
 }): Promise<void> {
   const verbose = opts.verbose === true;
   const sessionTag = randomUUID();
@@ -488,6 +518,13 @@ export async function runAcp(opts: {
   if (flavor === 'opencode' && opts.resumeSessionId) {
     metadata.opencodeSessionId = opts.resumeSessionId;
   }
+  const launchPolicy: OpencodePermissionPolicy = opts.permissionPolicy ?? 'auto';
+  let permissionPolicy: OpencodePermissionPolicy = launchPolicy;
+  // OpenCode's mode list is shown as <Agent>-auto / <Agent>-ask (see acpPermissionModes).
+  const withSessionConfig = (current: Metadata, snapshot: Parameters<typeof mergeAcpSessionConfigIntoMetadata>[1]): Metadata => {
+    const merged = mergeAcpSessionConfigIntoMetadata(current, snapshot);
+    return flavor === 'opencode' ? withOpencodePermissionModes(merged, permissionPolicy) : merged;
+  };
 
   // The daemon sets these to resume a Happy session in place.
   const reconnectSessionId = process.env.HAPPY_RECONNECT_SESSION_ID;
@@ -555,7 +592,11 @@ export async function runAcp(opts: {
     }
   }
 
-  permissionHandler = new GenericAcpPermissionHandler(session, opts.agentName);
+  permissionHandler = new GenericAcpPermissionHandler(
+    session,
+    opts.agentName,
+    () => flavor === 'opencode' && permissionPolicy === 'auto',
+  );
   // Drop any permission requests left in agent state from a previous CLI
   // process that died while a tool prompt was open — see the matching
   // call in claudeRemoteLauncher for the full rationale.
@@ -687,6 +728,35 @@ export async function runAcp(opts: {
     }
   };
 
+  /**
+   * An OpenCode mode key picks an agent and/or a permission policy
+   * (`build:ask`, `plan`, `bypassPermissions`, ...). The policy applies from
+   * this message on; the agent is switched through ACP as before.
+   */
+  const applyOpencodeMode = async (requestedMode: string): Promise<void> => {
+    const agentNames = [
+      ...(modeSelector?.options.map((option) => option.code) ?? []),
+      ...(legacyModes?.availableModes.map((mode) => mode.id) ?? []),
+    ].map(opencodeModeAgent);
+    const parsed = parseOpencodeMode(requestedMode, agentNames, launchPolicy);
+    // Before the agent list is known, `<agent>:<policy>` still sets the policy.
+    const suffix = requestedMode.slice(opencodeModeAgent(requestedMode).length + 1);
+    const policy = parsed.policy ?? (suffix === 'auto' || suffix === 'ask' ? suffix : undefined);
+    const agent = parsed.agent;
+    if (policy && policy !== permissionPolicy) {
+      logger.debug(`[${opts.agentName}] Permission policy: ${policy}`);
+      permissionPolicy = policy;
+    }
+    if (agent) {
+      await switchPermissionModeIfRequested(agent);
+    } else if (!policy) {
+      // Not an OpenCode mode key: match it against the agent's modes as before.
+      await switchPermissionModeIfRequested(requestedMode);
+    }
+    const currentModeId = modeSelector?.currentCode ?? legacyModes?.currentModeId;
+    session.updateMetadata((currentMetadata) => withSessionConfig(currentMetadata, currentModeId ? { currentModeId } : {}));
+  };
+
   const switchModelIfRequested = async (requestedModel: string): Promise<void> => {
     if (!requestedModel) {
       return;
@@ -789,7 +859,7 @@ export async function runAcp(opts: {
           }
         }
         session.updateMetadata((currentMetadata) =>
-          mergeAcpSessionConfigIntoMetadata(currentMetadata, { configOptions }),
+          withSessionConfig(currentMetadata, { configOptions }),
         );
       }
     }
@@ -806,7 +876,7 @@ export async function runAcp(opts: {
           }
         }
         session.updateMetadata((currentMetadata) =>
-          mergeAcpSessionConfigIntoMetadata(currentMetadata, { modes }),
+          withSessionConfig(currentMetadata, { modes }),
         );
       }
     }
@@ -823,7 +893,7 @@ export async function runAcp(opts: {
           }
         }
         session.updateMetadata((currentMetadata) =>
-          mergeAcpSessionConfigIntoMetadata(currentMetadata, { models }),
+          withSessionConfig(currentMetadata, { models }),
         );
       }
     }
@@ -844,7 +914,7 @@ export async function runAcp(opts: {
           };
         }
         session.updateMetadata((currentMetadata) =>
-          mergeAcpSessionConfigIntoMetadata(currentMetadata, { currentModeId }),
+          withSessionConfig(currentMetadata, { currentModeId }),
         );
       }
     }
@@ -992,7 +1062,11 @@ export async function runAcp(opts: {
       const turnEnded = waitForTurnEnd();
       try {
         if (typeof batch.mode.permissionMode === 'string' && batch.mode.permissionMode.length > 0) {
-          await switchPermissionModeIfRequested(batch.mode.permissionMode);
+          if (flavor === 'opencode') {
+            await applyOpencodeMode(batch.mode.permissionMode);
+          } else {
+            await switchPermissionModeIfRequested(batch.mode.permissionMode);
+          }
         }
         if (typeof batch.mode.model === 'string' && batch.mode.model.length > 0) {
           await switchModelIfRequested(batch.mode.model);
