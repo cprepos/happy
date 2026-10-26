@@ -1,11 +1,14 @@
+/**
+ * What the voice agent receives when it asks for its configuration
+ * (RPC `happy.getConfig`): every field here is sent as JSON.
+ */
 export interface VoiceSessionConfig {
     sessionId: string;
     initialContext?: string;
     systemPrompt?: string;
     firstMessage?: string;
-    conversationToken?: string;
-    agentId?: string;
-    userId?: string;
+    /** ISO language code such as `en`; absent means auto-detect. */
+    language?: string;
 }
 
 export interface VoiceSession {
