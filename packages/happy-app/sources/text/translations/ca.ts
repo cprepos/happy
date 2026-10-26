@@ -455,6 +455,7 @@ export const ca: TranslationStructure = {
             auto: 'decideix pel seu compte, pregunta si dubta',
             default: 'Per defecte',
             agyDefault: "sandbox d'agy, sense preguntes",
+            opencodeBuild: "agent build d'opencode",
             openclawInert: "no s'aplica a openclaw",
             acceptEdits: 'Accepta edicions',
             plan: 'Mode de planificació',

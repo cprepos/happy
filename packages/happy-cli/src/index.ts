@@ -480,6 +480,50 @@ Conversation history is preserved on the server, but in-flight tool calls are in
       process.exit(1)
     }
     return;
+  } else if (subcommand === 'opencode') {
+    // OpenCode runs on the generic ACP runner (`opencode acp`). This alias is
+    // what the daemon spawns, so it accepts the daemon's launch flags and
+    // passes anything after `--` straight to `opencode acp`.
+    try {
+      const { runAcp } = await import('@/agent/acp');
+      const { resolveOpencodeBin, OPENCODE_ACP_ARGS } = await import('@/opencode/constants');
+
+      let startedBy: 'daemon' | 'terminal' | undefined = undefined;
+      let verbose = false;
+      const passthroughArgs: string[] = [];
+      for (let i = 1; i < args.length; i++) {
+        if (args[i] === '--') {
+          passthroughArgs.push(...args.slice(i + 1));
+          break;
+        }
+        if (args[i] === '--started-by') {
+          startedBy = args[++i] as 'daemon' | 'terminal';
+        } else if (args[i] === '--happy-starting-mode') {
+          i++;
+        } else if (args[i] === '--verbose') {
+          verbose = true;
+        }
+      }
+
+      const { credentials } = await authAndSetupMachineIfNeeded();
+      await ensureDaemonRunning()
+
+      await runAcp({
+        credentials,
+        startedBy,
+        verbose,
+        agentName: 'opencode',
+        command: resolveOpencodeBin(),
+        args: [...OPENCODE_ACP_ARGS, ...passthroughArgs],
+      });
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      if (process.env.DEBUG) {
+        console.error(error)
+      }
+      process.exit(1)
+    }
+    return;
   } else if (subcommand === 'logout') {
     // Keep for backward compatibility - redirect to auth logout
     console.log(chalk.yellow('Note: "happy logout" is deprecated. Use "happy auth logout" instead.\n'));
@@ -726,6 +770,7 @@ ${chalk.bold('Usage:')}
   happy gemini            Start Gemini mode (ACP) [deprecated — use agy]
   happy agy               Start agy (Antigravity CLI) mode
   happy agy --resume <id> Continue an agy conversation
+  happy opencode          Start OpenCode mode (ACP)
   happy acp               Start a generic ACP-compatible agent
   happy connect           Connect AI vendor API keys
   happy sandbox           Configure and manage OS-level sandboxing
