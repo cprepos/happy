@@ -13,6 +13,7 @@ from typing import Any
 from livekit import rtc
 from livekit.agents import (
     Agent,
+    APIConnectOptions,
     AgentSession,
     JobContext,
     JobProcess,
@@ -24,10 +25,11 @@ from livekit.agents import (
     metrics,
     room_io,
 )
+from livekit.agents.voice.agent_session import SessionConnectOptions
 from livekit.plugins import openai, silero
 
 from .config import Settings
-from .context import focused_session_from, fold_system_messages
+from .context import already_in_context, focused_session_from, fold_system_messages
 from .nemotron_stt import NemotronSTT
 from .prompt import (
     PERMISSION_SCHEMA,
@@ -111,6 +113,32 @@ def _make_llm(settings: Settings) -> openai.LLM:
     )
 
 
+def llm_conn_options(settings: Settings) -> APIConnectOptions:
+    """Timeout and retries of every LLM request, the turns' and the warm-ups'."""
+    return APIConnectOptions(max_retry=settings.llm_max_retry, timeout=settings.llm_timeout)
+
+
+def turn_handling(settings: Settings) -> dict[str, Any]:
+    return {
+        "turn_detection": _turn_detector(settings.turn_detector),
+        "endpointing": {
+            "min_delay": settings.min_endpointing_delay,
+            "max_delay": settings.max_endpointing_delay,
+        },
+        # local VAD barge-in (the adaptive detector is a hosted service), gated so background
+        # noise does not cut the agent off: speech must last interrupt_min_duration and the STT
+        # must have heard interrupt_min_words; a pause with no words then resumes the reply
+        "interruption": {
+            "enabled": True,
+            "mode": "vad",
+            "min_duration": settings.interrupt_min_duration,
+            "min_words": settings.interrupt_min_words,
+            "false_interruption_timeout": settings.false_interruption_timeout,
+            "resume_false_interruption": settings.resume_false_interruption,
+        },
+    }
+
+
 def warmup_snapshot(agent: Agent) -> tuple[llm.ChatContext, list[Any]]:
     """The history and tools the agent's next LLM request starts with (see HappyAssistant.llm_node).
 
@@ -155,9 +183,20 @@ class HappyAssistant(Agent):
         self._room = room
         self._state = state
         self._settings = settings
+        self.warmer: PrefixWarmer | None = None
 
     async def llm_node(self, chat_ctx, tools, model_settings):  # type: ignore[override]
-        return Agent.default.llm_node(self, fold_system_messages(chat_ctx), tools, model_settings)
+        warmer = self.warmer
+        try:
+            if warmer is not None:
+                await warmer.begin_turn()
+            async for chunk in Agent.default.llm_node(
+                self, fold_system_messages(chat_ctx), tools, model_settings
+            ):
+                yield chunk
+        finally:
+            if warmer is not None:
+                warmer.end_turn()
 
     def _reply_with(self, result: str, context: RunContext) -> str | llm.ToolResult:
         if not self._settings.scripted_tool_replies:
@@ -336,6 +375,15 @@ async def entrypoint(ctx: JobContext) -> None:
         config.first_message,
     )
 
+    logger.info(
+        "llm timeout=%.0fs retries=%d; barge-in after %.1fs and %d word(s); eou max %.1fs",
+        settings.llm_timeout,
+        settings.llm_max_retry,
+        settings.interrupt_min_duration,
+        settings.interrupt_min_words,
+        settings.max_endpointing_delay,
+    )
+
     instructions = build_instructions(
         app_system_prompt=config.system_prompt,
         session_id=config.session_id,
@@ -359,15 +407,8 @@ async def entrypoint(ctx: JobContext) -> None:
             speed=tts_speed,
             response_format="pcm",
         ),
-        turn_handling={
-            "turn_detection": _turn_detector(settings.turn_detector),
-            "endpointing": {
-                "min_delay": settings.min_endpointing_delay,
-                "max_delay": settings.max_endpointing_delay,
-            },
-            # local VAD barge-in (the adaptive detector is a hosted service)
-            "interruption": {"enabled": True, "mode": "vad"},
-        },
+        turn_handling=turn_handling(settings),
+        conn_options=SessionConnectOptions(llm_conn_options=llm_conn_options(settings)),
         user_away_timeout=None,
     )
 
@@ -433,7 +474,13 @@ async def entrypoint(ctx: JobContext) -> None:
     )
 
     # Prefill the prompt while the greeting plays, so the first reply does not wait for it.
-    warmer = PrefixWarmer(_make_llm(settings), lambda: warmup_snapshot(session.current_agent))
+    warmer = PrefixWarmer(
+        _make_llm(settings),
+        lambda: warmup_snapshot(session.current_agent),
+        timeout=settings.llm_timeout,
+        conn_options=llm_conn_options(settings),
+    )
+    agent.warmer = warmer
     warmer.schedule()
 
     if config.first_message.strip():
@@ -452,6 +499,9 @@ async def entrypoint(ctx: JobContext) -> None:
                     state.focused_session = focused
                 async with lock:
                     current = session.current_agent
+                    if already_in_context(text, current.chat_ctx, current.instructions):
+                        logger.info("context update (%d chars) is already in the prompt; skipped", len(text))
+                        continue
                     new_ctx = current.chat_ctx.copy()
                     new_ctx.add_message(role="system", content=text)
                     await current.update_chat_ctx(new_ctx)
