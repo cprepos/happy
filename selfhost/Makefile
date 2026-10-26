@@ -32,7 +32,7 @@ down:
 status:
 	$(COMPOSE) ps
 	@echo
-	@printf "local  /      : "; curl -fsS --max-time 5 http://127.0.0.1:3005/ | head -c 80 || echo "unreachable"; echo
+	@printf "local  /      : HTTP "; curl -sS -o /dev/null -w "%{http_code}" --max-time 5 http://127.0.0.1:3005/ || echo "unreachable"; echo
 	@printf "local  /health: "; curl -fsS --max-time 5 http://127.0.0.1:3005/health || echo "unreachable"; echo
 
 logs:
@@ -44,3 +44,4 @@ migrate: env
 
 -include voice.mk
 -include cli.mk
+-include webapp.mk
