@@ -1,4 +1,5 @@
 const { execFileSync } = require('node:child_process');
+const { isSelfHost, applySelfHostConfig } = require('./plugins/selfHost.js');
 
 const variant = process.env.APP_ENV || 'development';
 const name = {
@@ -55,7 +56,7 @@ function loadBuildMetadata() {
 
 const buildMetadata = loadBuildMetadata();
 
-export default {
+const config = {
     expo: {
         name,
         slug: "happy",
@@ -237,3 +238,6 @@ export default {
         owner: "bulkacorp"
     }
 };
+
+// SELFHOST=1: personal-team build against a self-hosted server (see plugins/selfHost.js).
+export default isSelfHost() ? applySelfHostConfig(config, variant) : config;
