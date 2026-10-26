@@ -29,12 +29,14 @@ export async function startRealtimeSession(sessionId: string, initialContext?: s
 
     // Show connecting state immediately so the user sees feedback
     storage.getState().setRealtimeStatus('connecting');
+    voiceSession.prepare?.();
 
     // Request microphone permission before starting voice session
     // Critical for iOS/Android - first session will fail without this
     const permissionResult = await requestMicrophonePermission();
     if (!permissionResult.granted) {
         storage.getState().setRealtimeStatus('disconnected');
+        void voiceSession.endSession(); // releases audio primed above
         showMicrophonePermissionDeniedAlert(permissionResult.canAskAgain);
         return null;
     }
@@ -43,6 +45,7 @@ export async function startRealtimeSession(sessionId: string, initialContext?: s
         const credentials = await TokenStorage.getCredentials();
         if (!credentials) {
             storage.getState().setRealtimeStatus('disconnected');
+            void voiceSession.endSession();
             Modal.alert(t('common.error'), t('errors.authenticationFailed'));
             return null;
         }
