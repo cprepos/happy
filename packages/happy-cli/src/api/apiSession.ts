@@ -218,6 +218,7 @@ export class ApiSessionClient extends EventEmitter {
     private reconnectTimeout: NodeJS.Timeout | null = null;
     private closed = false;
     private ignoreArchiveSignal = false;
+    private ignoreArchiveSignalTimer: NodeJS.Timeout | null = null;
     private skipInitialMessages = false;
     private claudeSessionProtocolState: ClaudeSessionProtocolState = {
         currentTurnId: null,
@@ -357,7 +358,7 @@ export class ApiSessionClient extends EventEmitter {
                         if (meta?.lifecycleState === 'archiveRequested' || meta?.lifecycleState === 'archived') {
                             if (this.ignoreArchiveSignal) {
                                 logger.debug(`[SOCKET] Session archived (${meta.lifecycleState}) but suppressed for reconnect`);
-                                this.ignoreArchiveSignal = false;
+                                this.settleArchiveSignal();
                             } else {
                                 logger.debug(`[SOCKET] Session archived (${meta.lifecycleState}), exiting...`);
                                 this.emit('archived');
@@ -933,17 +934,41 @@ export class ApiSessionClient extends EventEmitter {
     }
 
     /**
-     * Update session metadata
-     * @param handler - Handler function that returns the updated metadata
+     * Ignore the one stale "archived" a reconnect can see: the chat was
+     * archived while no process owned it, and that archive can still reach us
+     * after we start. The guard only lasts until the reconnect settles — our
+     * own un-archive is acknowledged by the server, so any later archive is a
+     * new one — or `settleMs` passes, whichever comes first. Left armed, it
+     * would swallow the user's next real archive hours later.
      */
-    suppressNextArchiveSignal() {
+    suppressNextArchiveSignal(settleMs: number = ApiSessionClient.ARCHIVE_GUARD_MS) {
+        this.settleArchiveSignal();
         this.ignoreArchiveSignal = true;
+        this.ignoreArchiveSignalTimer = setTimeout(() => {
+            logger.debug('[API] Reconnect archive guard expired');
+            this.settleArchiveSignal();
+        }, settleMs);
+        this.ignoreArchiveSignalTimer.unref?.();
+    }
+
+    private static readonly ARCHIVE_GUARD_MS = 60_000;
+
+    private settleArchiveSignal() {
+        this.ignoreArchiveSignal = false;
+        if (this.ignoreArchiveSignalTimer) {
+            clearTimeout(this.ignoreArchiveSignalTimer);
+            this.ignoreArchiveSignalTimer = null;
+        }
     }
 
     skipExistingMessages() {
         this.skipInitialMessages = true;
     }
 
+    /**
+     * Update session metadata
+     * @param handler - Handler function that returns the updated metadata
+     */
     updateMetadata(handler: (metadata: Metadata) => Metadata) {
         this.metadataLock.inLock(async () => {
             await backoff(async () => {
@@ -952,6 +977,13 @@ export class ApiSessionClient extends EventEmitter {
                 if (answer.result === 'success') {
                     this.metadata = decrypt(this.encryptionKey, this.encryptionVariant, decodeBase64(answer.metadata));
                     this.metadataVersion = answer.version;
+                    const lifecycleState = (this.metadata as { lifecycleState?: unknown } | null)?.lifecycleState;
+                    if (this.ignoreArchiveSignal && lifecycleState !== 'archived' && lifecycleState !== 'archiveRequested') {
+                        // The server now has the chat running at a version
+                        // past any stale archive: the reconnect has settled.
+                        logger.debug('[API] Reconnect settled; archive guard cleared');
+                        this.settleArchiveSignal();
+                    }
                 } else if (answer.result === 'version-mismatch') {
                     if (answer.version > this.metadataVersion) {
                         this.metadataVersion = answer.version;
@@ -1021,6 +1053,7 @@ export class ApiSessionClient extends EventEmitter {
         this.sendSync.stop();
         this.receiveSync.stop();
         this.clearReconnectTimers();
+        this.settleArchiveSignal();
         this.socket.close();
         if (this.reconnectCapabilityHeld) {
             releaseReconnectCapabilityMonitor();
