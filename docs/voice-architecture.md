@@ -1,171 +1,188 @@
 # Voice Architecture
 
-How the ElevenLabs voice assistant integrates with the Happy app, routes messages to sessions, and manages context delivery.
+How the voice assistant works in the self-hosted build: the app talks to a
+voice agent through a LiveKit room, the agent runs speech-to-text, an LLM and
+text-to-speech on our own machines, and it reaches back into the app to send
+messages to coding sessions and answer permission requests.
 
-## Components
+There is no ElevenLabs, RevenueCat gate or usage quota. The services are
+described in `selfhost/VOICE_SERVICES.md`.
 
-```text
-SessionView.tsx            UI — mic button, triggers voice start/stop
-RealtimeSession.ts         Lifecycle — start/stop, token fetch, session routing state
-RealtimeVoiceSession.tsx   Native ElevenLabs bridge (useConversation hook)
-RealtimeVoiceSession.web.tsx  Web ElevenLabs bridge (same interface)
-voiceHooks.ts              Context delivery — formats and routes app events to voice agent
-contextFormatters.ts       Text formatters for session context, messages, permissions
-realtimeClientTools.ts     Tool implementations the voice agent can invoke
-voiceConfig.ts             Feature flags and constants
-storage.ts                 Global state (realtimeStatus, realtimeMode)
-types.ts                   Shared type definitions
-```
+## Services
 
-## Session Routing
+| Service | Local address | Notes |
+|---------|---------------|-------|
+| LiveKit | `ws://127.0.0.1:7880` | public at `wss://livekit.girthbass.duckdns.org` |
+| STT | `ws://127.0.0.1:8090/v1/stream` | Nemotron streaming |
+| TTS | `http://127.0.0.1:8880/v1/audio/speech` | Kokoro |
+| LLM | `http://127.0.0.1:8000/v1` | vLLM, model `voice-llm` |
 
-A single module-level variable `currentSessionId` in `RealtimeSession.ts` controls which session the voice agent's tool calls route to. It is the single source of truth for both:
-
-- **Routing**: `messageClaudeCode` and `processPermissionRequest` in `realtimeClientTools.ts` read it via `getCurrentRealtimeSessionId()`.
-- **Focus dedup**: `voiceHooks.onSessionFocus()` compares against it to avoid re-injecting context for the already-focused session.
-
-When the user navigates to a different session while voice is active, `onSessionFocus` updates `currentSessionId` so subsequent voice commands route to the newly viewed session.
+Keys live in `selfhost/.env.voice` (template: `selfhost/.env.voice.example`).
 
 ```text
-User taps mic on Session A
-  │
-  v
-startRealtimeSession("A")
-  └──> currentSessionId = "A"
-
-User navigates to Session B
-  │
-  v
-sync.onSessionVisible("B")
-  └──> voiceHooks.onSessionFocus("B")
-         └──> setCurrentRealtimeSessionId("B")
-
-Voice agent calls messageClaudeCode
-  └──> getCurrentRealtimeSessionId() → "B"
+ Happy app                 Happy server                 LiveKit            Voice agent worker
+ ─────────                 ────────────                 ───────            ──────────────────
+ tap mic ──POST /v1/voice/conversations──>
+           <── { conversationId, roomName, token, url }
+ join room (token) ───────────────────────────────────────> room <── dispatch "happy-voice"
+ <──────────── RPC happy.getConfig ───────────────────────────────────────── worker
+ mic audio ───────────────────────────────────────────────────────────────> STT → LLM → TTS
+ <──────────── agent audio, lk.agent.state ──────────────────────────────── worker
+ <──────────── RPC sendMessageToSession / processPermissionRequest ──────── worker
+ data happy.context / happy.text ─────────────────────────────────────────> worker
 ```
 
-## Voice Start
+## Server: `POST /v1/voice/conversations`
 
-When the voice session starts, `onVoiceStarted(sessionId)` builds an initial prompt containing:
+- Uses the normal Happy auth. Body: `{ sessionId?, language? }`; unknown fields
+  are ignored so older clients keep working.
+- Returns `{ allowed: true, conversationId, roomName, token, url }`:
+  - `roomName` is `happy-voice-<conversationId>`.
+  - `token` is a LiveKit JWT for identity `user-<accountId>` with roomJoin,
+    canPublish, canSubscribe and canPublishData, valid for 15 minutes, whose
+    room config dispatches the agent named `happy-voice`.
+  - `url` is `LIVEKIT_PUBLIC_URL`.
+- Each conversation is stored as a `VoiceConversation` row.
+- Env: `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `LIVEKIT_PUBLIC_URL`.
+- `GET /v1/voice/usage` keeps its response shape but always reports unlimited.
+- Zod schemas for both live in `packages/happy-wire/src/voice.ts`. The
+  `allowed: false` variant stays in the type for compatibility.
 
-1. **Session directory** — one-liner per active session (id + summary), so the agent knows all available targets.
-2. **Current session context** — full dump via `injectSessionContext(sessionId)`: session metadata, path, summary, and message history.
+## Room protocol
+
+**Participants.** The app joins as the user participant. The worker joins as
+an agent participant (`kind = agent`) through explicit dispatch `happy-voice`.
+
+**Config handshake.** When the worker joins it waits for the first non-agent
+participant and calls RPC `happy.getConfig` on it (empty payload, 10 s
+timeout). The app answers with the JSON string
+`{ systemPrompt, firstMessage, initialContext, language, sessionId }`, the
+fields of `VoiceSessionConfig` in `sources/realtime/types.ts`. The worker
+combines `systemPrompt` with its own base prompt, adds `initialContext` as a
+context message, speaks `firstMessage` if present, and uses `language` (an ISO
+code such as `en`, from `getVoiceLanguageCode` in
+`sources/constants/Languages.ts`) to pick STT and TTS voices where supported.
+
+**App to agent** (reliable data messages, UTF-8 plain text):
+
+| Topic | Meaning | App call |
+|-------|---------|----------|
+| `happy.context` | Silent context; appended, no reply | `sendContextualUpdate` |
+| `happy.text` | Injected user turn; the agent replies | `sendTextMessage` |
+
+The app queues these until an agent participant is in the room.
+
+**Agent to app tool calls.** RPCs to the user participant, JSON string payload,
+string response, errors raised as RPC errors, 30 s timeout. Names and
+parameters must match `sources/realtime/realtimeClientTools.ts`, which wins if
+anything disagrees:
+
+- `sendMessageToSession` `{ sessionId: string, message: string }` sends text to
+  a coding session via `sync.sendMessage`.
+- `processPermissionRequest` `{ requestId: string, decision: "allow" | "deny" }`
+  finds the session holding that request and allows or denies it.
+
+**Agent state.** The worker publishes the standard LiveKit Agents attribute
+`lk.agent.state` (`initializing`, `listening`, `thinking`, `speaking`). The
+app maps it to `realtimeMode`; only `speaking` counts as the agent talking.
+
+**Ending.** The app disconnects; the worker closes its session and the room
+empties.
+
+## App components
 
 ```text
-onVoiceStarted("A")
-  │
-  ├──> formatSessionDirectory()
-  │      → "Available sessions:\n- abc: "Refactor auth"\n- def: "Fix dark mode""
-  │
-  └──> injectSessionContext("A")
-         → "# Session ID: abc\n# Project path: ...\n## History\n..."
+SessionView.tsx               UI: mic button, starts and stops voice
+RealtimeSession.ts            Lifecycle: start/stop, token fetch, session routing state
+RealtimeVoiceSession.tsx      Native LiveKit client (@livekit/react-native + livekit-client)
+RealtimeVoiceSession.web.tsx  Web LiveKit client (livekit-client), same interface
+RealtimeProvider(.web).tsx    Wraps the app; a new room per voice session
+hooks/voiceHooks.ts           Formats app events and routes them to the agent
+hooks/contextFormatters.ts    Text for session context, messages, permissions
+realtimeClientTools.ts        Tools the agent calls over RPC
+voiceSystemPrompt.ts          App-side system prompt sent in happy.getConfig
+voiceConfig.ts                Flags and constants
+types.ts                      VoiceSession interface and VoiceSessionConfig
+sync/apiVoice.ts              POST /v1/voice/conversations client
 ```
 
-## Context Delivery
+## Session routing
 
-App events are delivered to the voice agent through two channels with different semantics:
+A module-level `currentSessionId` in `RealtimeSession.ts` records the session
+the user is looking at. `voiceHooks.onSessionFocus()` updates it when the user
+navigates while voice is active, and compares against it to avoid re-sending
+context for the session that already has focus. The agent's tools carry an
+explicit `sessionId` or `requestId`, so the focused session is context for the
+agent, not a hidden routing target.
 
-### sendContext() — silent background injection
+## Voice start
 
-Calls `voice.sendContextualUpdate()`. The agent receives the information but does **not** respond. Always sent immediately, never queued.
+`onVoiceStarted(sessionId)` builds the initial context:
 
-Used for: new messages, session focus changes, session online/offline, full session dumps.
+1. a session directory, one line per active session (id and summary), so the
+   agent knows every target;
+2. the focused session in full via `injectSessionContext(sessionId)`:
+   metadata, path, summary and message history.
 
-### sendPrompt() — triggers agent response
+This becomes `initialContext` in the `happy.getConfig` answer.
 
-Calls `voice.sendTextMessage()`. Acts as a user turn — the agent will respond. **Queued while anyone is speaking**, flushed as a single batch when mode transitions to `idle`.
+## Context delivery
 
-Used for: permission requests, ready events (agent finished working).
+- **`sendContext()`** calls `sendContextualUpdate` (topic `happy.context`).
+  The agent takes it in silently. Sent immediately, never queued. Used for new
+  messages, focus changes, sessions going online or offline, and full session
+  dumps.
+- **`sendPrompt()`** calls `sendTextMessage` (topic `happy.text`) and makes the
+  agent respond. Prompts are queued in `pendingPrompts[]` while someone is
+  speaking and flushed as one joined message when `realtimeMode` returns to
+  `idle`. Used for permission requests and "agent finished" events.
 
-### Batching
+`injectSessionContext(sessionId)` is shared by voice start and focus changes and
+tracks already-shown sessions in `shownSessions`.
 
-When the user or agent is speaking, prompts queue up in `pendingPrompts[]`. A zustand subscription on `realtimeMode` triggers `flushPendingPrompts()` when mode returns to `idle`, joining all queued prompts into a single `sendTextMessage` call.
-
-```text
-realtimeMode = 'agent-speaking'
-  │
-  ├── onReady("abc")        → sendPrompt() → queued
-  ├── onPermission("abc")   → sendPrompt() → queued
-  ├── onMessages("abc")     → sendContext() → sent immediately
-  │
-  v
-realtimeMode → 'idle'
-  │
-  v
-flushPendingPrompts()
-  └──> voice.sendTextMessage(joined prompts)
-```
-
-### Session Context Injection
-
-`injectSessionContext(sessionId)` is the shared code path for injecting full session context. It is used by both `onVoiceStarted` (to build the initial prompt string) and `onSessionFocus` (to send a contextual update). It tracks which sessions have already been shown via `shownSessions` to avoid redundant dumps.
-
-## Realtime Mode
-
-`realtimeMode` in storage tracks who is currently speaking:
+## Realtime mode
 
 | Mode | Meaning | Source |
 |------|---------|--------|
-| `idle` | Nobody is talking | Default / after speech ends |
-| `agent-speaking` | ElevenLabs agent is producing audio | `onModeChange({ mode: 'speaking' })` |
-| `user-speaking` | User mic VAD is above threshold | `onVadScore({ vadScore })` |
+| `idle` | Nobody is talking | default, or agent state not `speaking` |
+| `agent-speaking` | The agent is producing audio | `lk.agent.state = speaking` |
+| `user-speaking` | The user is talking | local microphone activity |
 
-Priority: `agent-speaking` > `user-speaking` > `idle`. If both fire simultaneously, agent wins (user speech during agent output is likely crosstalk).
-
-### VAD Detection
-
-ElevenLabs provides `onVadScore({ vadScore: number })` — a continuous 0-1 signal for user microphone activity. We derive a binary state with debounce:
-
-- `vadScore > VAD_THRESHOLD` (0.5) → `user-speaking`, reset silence timer
-- `vadScore <= VAD_THRESHOLD` → start silence timer (`VAD_SILENCE_MS` = 300ms), transition to `idle` on timeout
-
-Agent mode changes (`onModeChange`) take priority over VAD. When `onModeChange` reports `'speaking'`, we set `agent-speaking` regardless of VAD. When it reports `'listening'`, we defer to VAD state.
-
-```text
-ElevenLabs SDK
-  │
-  ├── onModeChange({ mode: 'speaking' })
-  │     └──> realtimeMode = 'agent-speaking'
-  │
-  ├── onModeChange({ mode: 'listening' })
-  │     └──> realtimeMode = (VAD active ? 'user-speaking' : 'idle')
-  │
-  └── onVadScore({ vadScore })
-        └──> if agent not speaking:
-               vadScore > 0.5 → 'user-speaking'
-               vadScore ≤ 0.5 → debounce → 'idle'
-```
-
-## Voice Agent Tools
-
-The voice agent can invoke these client tools (defined in `realtimeClientTools.ts`):
-
-- **messageClaudeCode** — sends a text message to the currently focused session via `sync.sendMessage(sessionId, message)`.
-- **processPermissionRequest** — allows or denies a pending permission request on the current session.
-
-Both read the target session from `getCurrentRealtimeSessionId()`.
+`agent-speaking` wins over `user-speaking`. `realtimeStatus` follows the
+LiveKit room connection state.
 
 ## Lifecycle
 
 ```text
-App mounts RealtimeVoiceSession component
-  └──> useConversation() hook initializes
-  └──> registerVoiceSession(impl) — makes the instance available globally
-
 User taps mic
-  └──> voiceHooks.onVoiceStarted(sessionId) — builds initial prompt
-  └──> startRealtimeSession(sessionId, prompt)
-         ├──> fetchVoiceToken() — server-side gating (see plans/elevenlabs-voice-usage-gating.md)
-         ├──> currentSessionId = sessionId
-         └──> voiceSession.startSession({ token, initialContext, ... })
+  └─> voiceHooks.onVoiceStarted(sessionId)      builds initialContext
+  └─> startRealtimeSession(sessionId, context)
+        ├─> POST /v1/voice/conversations       token, url, roomName
+        ├─> currentSessionId = sessionId
+        └─> voiceSession.startSession(...)     joins the room, registers RPC
+                                               handlers, returns conversationId
 
-User taps mic again (or navigates away)
-  └──> stopRealtimeSession()
-         ├──> voiceSession.endSession()
-         ├──> currentSessionId = null
-         └──> voiceHooks.onVoiceStopped() — clears state
+User taps mic again (or leaves)
+  └─> stopRealtimeSession()
+        ├─> voiceSession.endSession()          disconnects from the room
+        ├─> currentSessionId = null
+        └─> voiceHooks.onVoiceStopped()
 ```
 
-## Related
+## Settings
 
-- `docs/plans/elevenlabs-voice-usage-gating.md` — usage gating and paywall flow for voice sessions.
+The voice settings screen has one setting, the assistant language
+(`voiceAssistantLanguage`). The former custom-agent, direct-connection and
+usage/paywall settings were removed; old stored values are ignored.
+
+## Testing
+
+- `selfhost/scripts/voice-smoke.sh` checks the services.
+- `make voice-try` serves `selfhost/voice-test/`, a loopback-only page that
+  tries TTS, STT and a full turn against the services.
+
+## History
+
+`docs/paid-voice.md` and `docs/plans/elevenlabs-voice-usage-gating.md` describe
+the earlier ElevenLabs design with paid gating. They are kept for reference
+only.
