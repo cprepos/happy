@@ -3,6 +3,7 @@ import os from 'os';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { findAgyBin } from '@/agy/constants';
+import { findOpencodeBin } from '@/opencode/constants';
 
 export interface CLIAvailability {
   claude: boolean;
@@ -10,6 +11,7 @@ export interface CLIAvailability {
   gemini: boolean;
   openclaw: boolean;
   agy: boolean;
+  opencode: boolean;
   detectedAt: number;
 }
 
@@ -40,6 +42,7 @@ function detectPosix(): CLIAvailability {
   const codex = commandExists('codex');
   const gemini = commandExists('gemini');
   const agy = findAgyBin() !== undefined;
+  const opencode = findOpencodeBin() !== undefined;
 
   // OpenClaw: check command, config file, or env var
   const openclawCommand = commandExists('openclaw');
@@ -47,7 +50,7 @@ function detectPosix(): CLIAvailability {
   const openclawEnv = !!process.env.OPENCLAW_GATEWAY_URL;
   const openclaw = openclawCommand || openclawConfig || openclawEnv;
 
-  return { claude, codex, gemini, openclaw, agy, detectedAt: Date.now() };
+  return { claude, codex, gemini, openclaw, agy, opencode, detectedAt: Date.now() };
 }
 
 function detectWindows(): CLIAvailability {
@@ -64,6 +67,7 @@ function detectWindows(): CLIAvailability {
   const codex = checkCommand('codex');
   const gemini = checkCommand('gemini');
   const agy = findAgyBin() !== undefined;
+  const opencode = findOpencodeBin() !== undefined;
 
   // OpenClaw: check command, config file, or env var
   const openclawCommand = checkCommand('openclaw');
@@ -71,5 +75,5 @@ function detectWindows(): CLIAvailability {
   const openclawEnv = !!process.env.OPENCLAW_GATEWAY_URL;
   const openclaw = openclawCommand || openclawConfig || openclawEnv;
 
-  return { claude, codex, gemini, openclaw, agy, detectedAt: Date.now() };
+  return { claude, codex, gemini, openclaw, agy, opencode, detectedAt: Date.now() };
 }

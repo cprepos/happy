@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { KNOWN_ACP_AGENTS, resolveAcpAgentConfig } from './acpAgentConfig';
+import { resolveOpencodeBin } from '@/opencode/constants';
 
 describe('KNOWN_ACP_AGENTS', () => {
   it('defines built-in Gemini and OpenCode command mappings', () => {
@@ -22,7 +23,7 @@ describe('resolveAcpAgentConfig', () => {
   it('appends extra CLI args for known agent aliases', () => {
     expect(resolveAcpAgentConfig(['opencode', '--foo'])).toEqual({
       agentName: 'opencode',
-      command: 'opencode',
+      command: resolveOpencodeBin(),
       args: ['acp', '--foo'],
     });
   });
@@ -30,7 +31,7 @@ describe('resolveAcpAgentConfig', () => {
   it('strips legacy --acp for opencode compatibility', () => {
     expect(resolveAcpAgentConfig(['opencode', '--acp', '--foo'])).toEqual({
       agentName: 'opencode',
-      command: 'opencode',
+      command: resolveOpencodeBin(),
       args: ['acp', '--foo'],
     });
   });
