@@ -1,0 +1,20 @@
+# Self-hosted voice stack: LiveKit (media/signaling), STT (Nemotron streaming),
+# TTS (Kokoro-FastAPI), LLM (vLLM).  Run via `make voice-up` (see voice.mk):
+#   docker compose -p happy-voice -f compose.voice.yml --env-file .env.voice up -d
+# Contract for consumers: VOICE_SERVICES.md
+name: happy-voice
+
+x-hf-cache: &hf-cache
+  - ${HF_CACHE_DIR:-/mnt/ai-data/huggingface}:/hf-cache
+
+services:
+  livekit:
+    image: livekit/livekit-server:v1.13.10
+    container_name: happy-voice-livekit
+    network_mode: host
+    restart: unless-stopped
+    command: ["--config", "/etc/livekit.yaml"]
+    environment:
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY:?set in .env.voice}: ${LIVEKIT_API_SECRET:?set in .env.voice}"
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
