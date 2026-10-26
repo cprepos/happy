@@ -79,3 +79,8 @@ happy-workspaces/
 
 .context/
 .happy-tmp/
+
+# Self-host iOS build config (contains Apple team ID)
+/selfhost/ios/.env.ios
+# Local trash for moved-aside build outputs
+/trash/
