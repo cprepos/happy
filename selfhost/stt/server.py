@@ -104,7 +104,12 @@ class Engine:
 
     @torch.inference_mode()
     def transcribe_file(self, audio: np.ndarray) -> str:
-        out = self.model.transcribe([audio], batch_size=1, verbose=False)
+        try:
+            out = self.model.transcribe([audio], batch_size=1, verbose=False)
+        finally:
+            # NeMo's transcribe teardown calls encoder/decoder/joint.unfreeze(), which puts them back
+            # in train mode: dropout would then corrupt every later streaming step.
+            self.model.eval()
         return _hyp_text(out)
 
     @torch.inference_mode()
