@@ -137,12 +137,6 @@ importers:
       '@dicebear/styles':
         specifier: 10.6.0
         version: 10.6.0
-      '@elevenlabs/react':
-        specifier: ^0.12.3
-        version: 0.12.3(@types/dom-mediacapture-record@1.0.22)(react@19.2.0)
-      '@elevenlabs/react-native':
-        specifier: ^0.5.7
-        version: 0.5.8(@livekit/react-native-webrtc@137.0.2(react-native@0.83.1(@babel/core@7.28.6)(@types/react@19.1.17)(react@19.2.0)))(@livekit/react-native@2.9.6(@livekit/react-native-webrtc@137.0.2(react-native@0.83.1(@babel/core@7.28.6)(@types/react@19.1.17)(react@19.2.0)))(livekit-client@2.17.0(@types/dom-mediacapture-record@1.0.22))(react-dom@19.2.0(react@19.2.0))(react-native@0.83.1(@babel/core@7.28.6)(@types/react@19.1.17)(react@19.2.0))(react@19.2.0)(tslib@2.8.1))(livekit-client@2.17.0(@types/dom-mediacapture-record@1.0.22))(react-native@0.83.1(@babel/core@7.28.6)(@types/react@19.1.17)(react@19.2.0))(react@19.2.0)
       '@expo/ui':
         specifier: ~55.0.5
         version: 55.0.5(expo@55.0.8)(react-native@0.83.1(@babel/core@7.28.6)(@types/react@19.1.17)(react@19.2.0))(react@19.2.0)
@@ -817,9 +811,6 @@ importers:
       dotenv:
         specifier: ^16.4.5
         version: 16.6.1
-      elevenlabs:
-        specifier: ^1.54.0
-        version: 1.59.0(encoding@0.1.13)
       fastify:
         specifier: ^5.2.0
         version: 5.7.2
@@ -971,9 +962,6 @@ importers:
       dotenv:
         specifier: ^16.4.5
         version: 16.6.1
-      elevenlabs:
-        specifier: ^1.54.0
-        version: 1.59.0(encoding@0.1.13)
       fastify:
         specifier: ^5.2.0
         version: 5.7.2
@@ -2021,26 +2009,6 @@ packages:
 
   '@electric-sql/pglite@0.3.15':
     resolution: {integrity: sha512-Cj++n1Mekf9ETfdc16TlDi+cDDQF0W7EcbyRHYOAeZdsAe8M/FJg18itDTSwyHfar2WIezawM9o0EKaRGVKygQ==}
-
-  '@elevenlabs/client@0.12.2':
-    resolution: {integrity: sha512-QWllhDndFfKmftlktNoa35+AF3gOCbSHowYhR42ZHb5u32lFbMPbh2BALCrpFa3edqCHSXtzG6zzLSAGjkhvHQ==}
-
-  '@elevenlabs/react-native@0.5.8':
-    resolution: {integrity: sha512-nrumWFAgu8rQIwt19mSTFSbz3VnxFDRCm2jjtY1p+Cn1i+ldXGpqJov2LQf/JAgBd1gtquuurv0dgDDwlLgHhg==}
-    peerDependencies:
-      '@livekit/react-native': ^2.9.2
-      '@livekit/react-native-webrtc': ^137.0.2
-      livekit-client: ^2.15.4
-      react: '>=17.0.0'
-      react-native: '>=0.70.0'
-
-  '@elevenlabs/react@0.12.3':
-    resolution: {integrity: sha512-fQJlabwuvQziBCCNcxlXZt5GVxcPHjwb46NtSEbLJY0zaOUtWJynRX4kPfbz7ChqnMe7FAHYnrq2XsaSzpQXLQ==}
-    peerDependencies:
-      react: '>=16.8.0'
-
-  '@elevenlabs/types@0.4.0':
-    resolution: {integrity: sha512-6CQb4r9DjepILhLybDxW0h8rvbsR8jPAp74HvFGYuvYdXcQRTkYTD9BQ4PV6VcuC1iqx0UljzJj8js3ADQ8EXw==}
 
   '@emnapi/core@1.9.2':
     resolution: {integrity: sha512-UC+ZhH3XtczQYfOlu3lNEkdW/p4dsJ1r/bP7H8+rhao3TTTMO1ATq/4DdIi23XuGoFY+Cz0JmCbdVl0hz9jZcA==}
@@ -6000,9 +5968,6 @@ packages:
   buffer@5.7.1:
     resolution: {integrity: sha512-EHcyIPBQ4BSGlvjB16k5KgAJ27CIsHY/2JBmCRReo48y9rQ3MaUzWX3KVlBa4U7MyX02HdVj0K7C3WaB3ju7FQ==}
 
-  buffer@6.0.3:
-    resolution: {integrity: sha512-FTiCpNxtwiZZHEZbcbTIcZjERVICn9yq/pDFkTl95/AxzD1naBctN7YO68riM/gLSDY7sdrMby8hofADYuuqOA==}
-
   bundle-name@4.1.0:
     resolution: {integrity: sha512-tjwM5exMg6BGRI+kNmTntNsvdZS1X8BFYS6tnJ2hdH0kVxM6/eVZ2xy+FqStSWvYmtfFMDLIxurorHwDKfDz5Q==}
     engines: {node: '>=18'}
@@ -6272,9 +6237,6 @@ packages:
 
   comma-separated-tokens@1.0.8:
     resolution: {integrity: sha512-GHuDRO12Sypu2cV70d1dkA2EUmXHgntrzbpvOB+Qy+49ypNfGgFQIC2fhhXbnyrJRynDCAARsT7Ou0M6hirpfw==}
-
-  command-exists@1.2.9:
-    resolution: {integrity: sha512-LTQ/SGc+s0Xc0Fu5WaKnR0YiygZkm9eKFvyS+fRsU7/ZWFF8ykFM6Pc9aCVf1+xasOOZpO3BAVgVrKvsqKHV7w==}
 
   commander@12.1.0:
     resolution: {integrity: sha512-Vw8qHK3bZM9y/P10u3Vib8o/DdkvA2OtPtZvD871QKjy74Wj1WSKFILMPRPSdUSx5RFK1arlJzEtA4PkFgnbuA==}
@@ -6921,10 +6883,6 @@ packages:
   electron-to-chromium@1.5.279:
     resolution: {integrity: sha512-0bblUU5UNdOt5G7XqGiJtpZMONma6WAfq9vsFmtn9x1+joAObr6x1chfqyxFSDCAFwFhCQDrqeAr6MYdpwJ9Hg==}
 
-  elevenlabs@1.59.0:
-    resolution: {integrity: sha512-OVKOd+lxNya8h4Rn5fcjv00Asd+DGWfTT6opGrQ16sTI+1HwdLn/kYtjl8tRMhDXbNmksD/9SBRKjb9neiUuVg==}
-    deprecated: This package has moved to @elevenlabs/elevenlabs-js
-
   emoji-regex@10.6.0:
     resolution: {integrity: sha512-toUI84YS5YmxW219erniWD0CIVOo46xGKColeNQRgOzDorgBi1v4D71/OFzgD9GO2UGKIv1C3Sp8DAn0+j5w7A==}
 
@@ -7147,10 +7105,6 @@ packages:
   eventsource@3.0.7:
     resolution: {integrity: sha512-CRT1WTyuQoD771GW56XEZFQ/ZoSfWid1alKGDYMmkt2yl8UXrVR4pspqWNEcqKvVIzg6PAltWjxcSSPrboA4iA==}
     engines: {node: '>=18.0.0'}
-
-  execa@5.1.1:
-    resolution: {integrity: sha512-8uSpZZocAZRBAPIEINJj3Lo9HyGitllczc27Eh5YYojjMFMn8yHMDMaUHE2Jqfq05D/wucwI4JGURyXt1vchyg==}
-    engines: {node: '>=10'}
 
   execa@8.0.1:
     resolution: {integrity: sha512-VyhnebXciFV2DESc+p6B+y0LjSm0krU4OgJN44qFAhBY0TJ+1V61tYD2+wHusZ6F9n5K+vl8k0sTy7PEfV4qpg==}
@@ -7782,10 +7736,6 @@ packages:
     resolution: {integrity: sha512-gIXjKqtFuWEgzFRJA9WCQeSJLZDjgJUOMCMzxtvFq/37KojM1BFGufqsCy0r4qSQmYLsZYMeyRqzIWOMup03sw==}
     engines: {node: '>=14'}
 
-  form-data-encoder@4.1.0:
-    resolution: {integrity: sha512-G6NsmEW15s0Uw9XnCg+33H3ViYRyiM0hMrMhhqQOR8NFc5GhYrI+6I3u7OTw7b91J2g8rtvMBZJDbcGb2YUniw==}
-    engines: {node: '>= 18'}
-
   form-data@4.0.5:
     resolution: {integrity: sha512-8RipRLol37bNs2bhoV67fiTEvdTrbMUYcFTiy3+wuuOnUog2QBHCZWXDRijWQfAkhBj2Uf5UnVaiWwA5vdd82w==}
     engines: {node: '>= 6'}
@@ -7793,10 +7743,6 @@ packages:
   format@0.2.2:
     resolution: {integrity: sha512-wzsgA6WOq+09wrU1tsJ09udeR/YZRaeArL9e1wPbFg3GG2yDnC2ldKpxs4xunpFF9DgqCqOIra3bc1HWrJ37Ww==}
     engines: {node: '>=0.4.x'}
-
-  formdata-node@6.0.3:
-    resolution: {integrity: sha512-8e1++BCiTzUno9v5IZ2J6bv4RU+3UKDmqWUQD0MIMVCd9AdhWkO1gw57oo1mNEX1dMq2EGI+FbWz4B92pscSQg==}
-    engines: {node: '>= 18'}
 
   forwarded@0.2.0:
     resolution: {integrity: sha512-buRG0fpBtRHSTCOASe6hD258tEubFoRLb4ZNA6NxMVHNw2gOcwHo9wyablzMzOA5z9xA9L1KNjk/Nt6MT9aYow==}
@@ -7883,10 +7829,6 @@ packages:
   get-stream@5.2.0:
     resolution: {integrity: sha512-nBF+F1rAZVCu/p7rjzgA+Yb4lfYXrpl7a6VmJrU8wF9I1CKvP/QwPNZHnOlwbTkY6dvtFIzFMSyQXbLoTQPRpA==}
     engines: {node: '>=8'}
-
-  get-stream@6.0.1:
-    resolution: {integrity: sha512-ts6Wi+2j3jQjqi70w5AlN8DFnkSwC+MqmxEzdEALB2qXZYV3X/b1CTfgPLGJNMeAWxdPfU8FO1ms3NUfaHCPYg==}
-    engines: {node: '>=10'}
 
   get-stream@8.0.1:
     resolution: {integrity: sha512-VaUJspBffn/LMCJVoMvSAdmscJyS1auj5Zulnn5UoYcY531UWmdwhRWkcGKnGU93m5HSXP9LP2usOryrBtQowA==}
@@ -8088,10 +8030,6 @@ packages:
   https-proxy-agent@7.0.6:
     resolution: {integrity: sha512-vK9P5/iUfdl95AI+JVyUuIcVtd4ofvtrOr3HNtM2yxC9bnMbEdp3x01OhQNnjb8IJYi38VlTE3mBXwcfvywuSw==}
     engines: {node: '>= 14'}
-
-  human-signals@2.1.0:
-    resolution: {integrity: sha512-B4FFZ6q/T2jhhksgkbEW3HBvWIfDW85snkQgawt07S7J5QXTk6BkNV+0yAeZrM5QpMAdYlocGoljn0sJ/WQkFw==}
-    engines: {node: '>=10.17.0'}
 
   human-signals@5.0.0:
     resolution: {integrity: sha512-AXcZb6vzzrFAUE61HnN4mpLqd/cSIwNQjtNWR0euPm6y0iqx3G4gOXaIDdtdDwZmhwe82LA6+zinmW4UBWVePQ==}
@@ -8366,10 +8304,6 @@ packages:
 
   is-ssh@1.4.1:
     resolution: {integrity: sha512-JNeu1wQsHjyHgn9NcWTaXq6zWSR6hqE0++zhfZlkFBbScNkyvxCdeV8sRkSBaeLKxmbpR21brail63ACNxJ0Tg==}
-
-  is-stream@2.0.1:
-    resolution: {integrity: sha512-hFoiJiTl63nn+kstHGBtewWSKnQLpyb155KHheA1l39uvtO9nWIop1p3udqPcUd/xbF1VLMO4n7OI6p7RbngDg==}
-    engines: {node: '>=8'}
 
   is-stream@3.0.0:
     resolution: {integrity: sha512-LnQR4bZ9IADDRSkvpqMGvt/tEJWclzklNgSw48V5EAaAeDd6qGvN8ei6k5p0tvxSR171VmGyHuTiAOfxAbr8kA==}
@@ -9270,10 +9204,6 @@ packages:
     resolution: {integrity: sha512-sHGJy8sOC1YraBywpzQlIKBE4pBbGbiF95U6Auspzyem956E0+FtDtsx1ZxlOJkQCZ1AFXAY/yuvtFYrOxF+Bw==}
     engines: {node: ^16.14.0 || >=18.0.0}
 
-  npm-run-path@4.0.1:
-    resolution: {integrity: sha512-S48WzZW777zhNIrn7gxOlISNAqi9ZC/uQFnRdbeIHhZhCA6UqpkOT8T1G7BvfdgP4Er8gF4sUbaS0i7QvIfCWw==}
-    engines: {node: '>=8'}
-
   npm-run-path@5.3.0:
     resolution: {integrity: sha512-ppwTtiJZq0O/ai0z7yfudtBpWIoxM8yE6nHi1X47eFR2EWORqfbu6CnPlNsjeN683eT0qG6H/Pyf9fCcvjnnnQ==}
     engines: {node: ^12.20.0 || ^14.13.1 || >=16.0.0}
@@ -9792,10 +9722,6 @@ packages:
   process-warning@5.0.0:
     resolution: {integrity: sha512-a39t9ApHNx2L4+HBnQKqxxHNs1r7KF+Intd8Q/g1bUh6q0WIp9voPXJ/x0j+ZL45KF1pJd9+q2jLIRMfvEshkA==}
 
-  process@0.11.10:
-    resolution: {integrity: sha512-cdGef/drWFoydD1JsMzuFf8100nZl+GT+yacc2bEced5f9Rjk4z+WtFUTBu9PhOi9j/jfmBPu0mMEY4wIdAF8A==}
-    engines: {node: '>= 0.6.0'}
-
   progress@2.0.3:
     resolution: {integrity: sha512-7PiHtLll5LdnKIMw100I+8xJXR5gW2QwWYkT6iJva0bXitZKa/XMrSbdmg3r2Xnaidz9Qumd0VPaMrZlF9V9sA==}
     engines: {node: '>=0.4.0'}
@@ -10252,10 +10178,6 @@ packages:
   readable-stream@3.6.2:
     resolution: {integrity: sha512-9u/sniCrY3D5WdsERHzHE4G2YCXqoG5FTHUiCC4SIbr6XcLZBY05ya9EKjYek9O5xOAwjGq+1JdGBAS7Q9ScoA==}
     engines: {node: '>= 6'}
-
-  readable-stream@4.7.0:
-    resolution: {integrity: sha512-oIGGmcpTLwPga8Bn6/Z75SVaH1z5dUut2ibSyAMVhmUggWpmDn2dapB0n7f8nwaSiRtepAsfJyfXIO5DCVAODg==}
-    engines: {node: ^12.22.0 || ^14.17.0 || >=16.0.0}
 
   readdirp@3.6.0:
     resolution: {integrity: sha512-hOS089on8RduqdbhvQ5Z37A0ESjsqz6qnRcffsMU3495FuTdqSm+7bhJ29JvIOsBDEEnan5DPu9t3To9VRlMzA==}
@@ -10838,10 +10760,6 @@ packages:
     resolution: {integrity: sha512-gmBGslpoQJtgnMAvOVqGZpEz9dyoKTCzy2nfz/n8aIFhN/jCE/rCmcxabB6jOOHV+0WNnylOxaxBQPSvcWklhA==}
     engines: {node: '>=12'}
 
-  strip-final-newline@2.0.0:
-    resolution: {integrity: sha512-BrpvfNAE3dcvq7ll3xVumzjKjZQ5tI1sEUIKr3Uoks0XUl45St3FlatVqef9prk4jRDzhW6WZg+3bk93y6pLjA==}
-    engines: {node: '>=6'}
-
   strip-final-newline@3.0.0:
     resolution: {integrity: sha512-dOESqjYr96iWYylGObzd39EuNTa5VJxyvVAEm5Jnh7KGo75V43Hk1odPQkNDyXNmUR6k+gEiDVXnjB8HJ3crXw==}
     engines: {node: '>=12'}
@@ -11213,9 +11131,6 @@ packages:
 
   uri-js@4.4.1:
     resolution: {integrity: sha512-7rKUyy33Q1yc98pQ1DAmLtwX109F7TIfWlW1Ydo8Wl1ii1SeHieeh0HHfPeL2fMXK6z0s8ecKs9frCuLJvndBg==}
-
-  url-join@4.0.1:
-    resolution: {integrity: sha512-jk1+QP6ZJqyOiuEI9AEWQfju/nB2Pw466kbA0LEZljHwKeMgd9WrAEgEGxjPDD2+TNbbb37rTyhEfrCXfuKXnA==}
 
   url-join@5.0.0:
     resolution: {integrity: sha512-n2huDr9h9yzd6exQVnH/jU5mr+Pfx08LRXXZhkLLetAMESRj+anQsTAh940iMrIetKAmry9coFuZQ2jY8/p3WA==}
@@ -13044,31 +12959,6 @@ snapshots:
       '@types/hammerjs': 2.0.46
 
   '@electric-sql/pglite@0.3.15': {}
-
-  '@elevenlabs/client@0.12.2(@types/dom-mediacapture-record@1.0.22)':
-    dependencies:
-      '@elevenlabs/types': 0.4.0
-      livekit-client: 2.17.0(@types/dom-mediacapture-record@1.0.22)
-    transitivePeerDependencies:
-      - '@types/dom-mediacapture-record'
-
-  '@elevenlabs/react-native@0.5.8(@livekit/react-native-webrtc@137.0.2(react-native@0.83.1(@babel/core@7.28.6)(@types/react@19.1.17)(react@19.2.0)))(@livekit/react-native@2.9.6(@livekit/react-native-webrtc@137.0.2(react-native@0.83.1(@babel/core@7.28.6)(@types/react@19.1.17)(react@19.2.0)))(livekit-client@2.17.0(@types/dom-mediacapture-record@1.0.22))(react-dom@19.2.0(react@19.2.0))(react-native@0.83.1(@babel/core@7.28.6)(@types/react@19.1.17)(react@19.2.0))(react@19.2.0)(tslib@2.8.1))(livekit-client@2.17.0(@types/dom-mediacapture-record@1.0.22))(react-native@0.83.1(@babel/core@7.28.6)(@types/react@19.1.17)(react@19.2.0))(react@19.2.0)':
-    dependencies:
-      '@elevenlabs/types': 0.4.0
-      '@livekit/react-native': 2.9.6(@livekit/react-native-webrtc@137.0.2(react-native@0.83.1(@babel/core@7.28.6)(@types/react@19.1.17)(react@19.2.0)))(livekit-client@2.17.0(@types/dom-mediacapture-record@1.0.22))(react-dom@19.2.0(react@19.2.0))(react-native@0.83.1(@babel/core@7.28.6)(@types/react@19.1.17)(react@19.2.0))(react@19.2.0)(tslib@2.8.1)
-      '@livekit/react-native-webrtc': 137.0.2(react-native@0.83.1(@babel/core@7.28.6)(@types/react@19.1.17)(react@19.2.0))
-      livekit-client: 2.17.0(@types/dom-mediacapture-record@1.0.22)
-      react: 19.2.0
-      react-native: 0.83.1(@babel/core@7.28.6)(@types/react@19.1.17)(react@19.2.0)
-
-  '@elevenlabs/react@0.12.3(@types/dom-mediacapture-record@1.0.22)(react@19.2.0)':
-    dependencies:
-      '@elevenlabs/client': 0.12.2(@types/dom-mediacapture-record@1.0.22)
-      react: 19.2.0
-    transitivePeerDependencies:
-      - '@types/dom-mediacapture-record'
-
-  '@elevenlabs/types@0.4.0': {}
 
   '@emnapi/core@1.9.2':
     dependencies:
@@ -17779,11 +17669,6 @@ snapshots:
       base64-js: 1.5.1
       ieee754: 1.2.1
 
-  buffer@6.0.3:
-    dependencies:
-      base64-js: 1.5.1
-      ieee754: 1.2.1
-
   bundle-name@4.1.0:
     dependencies:
       run-applescript: 7.1.0
@@ -18083,8 +17968,6 @@ snapshots:
       delayed-stream: 1.0.0
 
   comma-separated-tokens@1.0.8: {}
-
-  command-exists@1.2.9: {}
 
   commander@12.1.0: {}
 
@@ -18618,20 +18501,6 @@ snapshots:
 
   electron-to-chromium@1.5.279: {}
 
-  elevenlabs@1.59.0(encoding@0.1.13):
-    dependencies:
-      command-exists: 1.2.9
-      execa: 5.1.1
-      form-data: 4.0.5
-      form-data-encoder: 4.1.0
-      formdata-node: 6.0.3
-      node-fetch: 2.7.0(encoding@0.1.13)
-      qs: 6.14.1
-      readable-stream: 4.7.0
-      url-join: 4.0.1
-    transitivePeerDependencies:
-      - encoding
-
   emoji-regex@10.6.0: {}
 
   emoji-regex@8.0.0: {}
@@ -18970,18 +18839,6 @@ snapshots:
   eventsource@3.0.7:
     dependencies:
       eventsource-parser: 3.0.6
-
-  execa@5.1.1:
-    dependencies:
-      cross-spawn: 7.0.6
-      get-stream: 6.0.1
-      human-signals: 2.1.0
-      is-stream: 2.0.1
-      merge-stream: 2.0.0
-      npm-run-path: 4.0.1
-      onetime: 5.1.2
-      signal-exit: 3.0.7
-      strip-final-newline: 2.0.0
 
   execa@8.0.1:
     dependencies:
@@ -19923,8 +19780,6 @@ snapshots:
       cross-spawn: 7.0.6
       signal-exit: 4.1.0
 
-  form-data-encoder@4.1.0: {}
-
   form-data@4.0.5:
     dependencies:
       asynckit: 0.4.0
@@ -19934,8 +19789,6 @@ snapshots:
       mime-types: 2.1.35
 
   format@0.2.2: {}
-
-  formdata-node@6.0.3: {}
 
   forwarded@0.2.0: {}
 
@@ -20010,8 +19863,6 @@ snapshots:
   get-stream@5.2.0:
     dependencies:
       pump: 3.0.3
-
-  get-stream@6.0.1: {}
 
   get-stream@8.0.1: {}
 
@@ -20260,8 +20111,6 @@ snapshots:
       debug: 4.4.3
     transitivePeerDependencies:
       - supports-color
-
-  human-signals@2.1.0: {}
 
   human-signals@5.0.0: {}
 
@@ -20540,8 +20389,6 @@ snapshots:
   is-ssh@1.4.1:
     dependencies:
       protocols: 2.0.2
-
-  is-stream@2.0.1: {}
 
   is-stream@3.0.0: {}
 
@@ -21634,10 +21481,6 @@ snapshots:
       semver: 7.8.5
       validate-npm-package-name: 5.0.1
 
-  npm-run-path@4.0.1:
-    dependencies:
-      path-key: 3.1.1
-
   npm-run-path@5.3.0:
     dependencies:
       path-key: 4.0.0
@@ -22239,8 +22082,6 @@ snapshots:
   process-warning@4.0.1: {}
 
   process-warning@5.0.0: {}
-
-  process@0.11.10: {}
 
   progress@2.0.3: {}
 
@@ -22899,14 +22740,6 @@ snapshots:
       inherits: 2.0.4
       string_decoder: 1.3.0
       util-deprecate: 1.0.2
-
-  readable-stream@4.7.0:
-    dependencies:
-      abort-controller: 3.0.0
-      buffer: 6.0.3
-      events: 3.3.0
-      process: 0.11.10
-      string_decoder: 1.3.0
 
   readdirp@3.6.0:
     dependencies:
@@ -23664,8 +23497,6 @@ snapshots:
     dependencies:
       ansi-regex: 6.2.2
 
-  strip-final-newline@2.0.0: {}
-
   strip-final-newline@3.0.0: {}
 
   strip-json-comments@2.0.1:
@@ -24042,8 +23873,6 @@ snapshots:
   uri-js@4.4.1:
     dependencies:
       punycode: 2.3.1
-
-  url-join@4.0.1: {}
 
   url-join@5.0.0: {}
 
