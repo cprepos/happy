@@ -63,6 +63,16 @@ context message, speaks `firstMessage` if present, and uses `language` (an ISO
 code such as `en`, from `getVoiceLanguageCode` in
 `sources/constants/Languages.ts`) to pick STT and TTS voices where supported.
 
+The reply may also carry `voice` and `speed` when the user picked a voice
+preset (`sources/realtime/voiceCatalog.ts`): the chat's override in
+`voiceBySession`, else the default `voiceAssistantVoice`. `voice` is a Kokoro
+voice name or a weighted blend such as `am_michael(2)+am_onyx(1)`; `speed` is
+Kokoro's rate multiplier. Without them the worker uses its `TTS_VOICE` /
+`TTS_SPEED` defaults. The worker checks each name against Kokoro's voice list,
+clamps speed to 0.5-1.5, falls back to its defaults on anything invalid, and
+keeps the per-language voice for non-English conversations
+(`happy_voice/voices.py`).
+
 **App to agent** (reliable data messages, UTF-8 plain text):
 
 | Topic | Meaning | App call |
