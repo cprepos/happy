@@ -234,8 +234,9 @@ mac_stage_build() {
     # 9.0-13.x), and expo-router's Swift uses iOS 16 APIs. Raise them to 16.0.
     local pods_pbx="$IOS_DIR/Pods/Pods.xcodeproj/project.pbxproj"
     if [[ -f "$pods_pbx" ]]; then
+        perl -pi -e 's{(IPHONEOS_DEPLOYMENT_TARGET = )(\d+)(\.\d+)*;}{$1 . ($2 < 16 ? "16.0" : "$2$3") . ";"}ge' "$pbx"
         perl -pi -e 's{(IPHONEOS_DEPLOYMENT_TARGET = )(\d+)(\.\d+)*;}{$1 . ($2 < 16 ? "16.0" : "$2$3") . ";"}ge' "$pods_pbx"
-        ok "pod deployment targets >= 16.0"
+        ok "app and pod deployment targets >= 16.0"
     fi
 
     # RevenueCat 5.x: Swift 6.4 synthesizes PaywallColor's memberwise
