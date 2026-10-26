@@ -1,3 +1,5 @@
+import { resolveOpencodeBin } from '@/opencode/constants';
+
 export type AcpAgentConfig = {
   command: string;
   args: string[];
@@ -6,6 +8,14 @@ export type AcpAgentConfig = {
 export const KNOWN_ACP_AGENTS: Record<string, AcpAgentConfig> = {
   gemini: { command: 'gemini', args: ['--experimental-acp'] },
   opencode: { command: 'opencode', args: ['acp'] },
+};
+
+/**
+ * Known agents whose installer puts the binary somewhere a daemon's PATH often
+ * misses. The resolver returns an absolute path when the bare name would fail.
+ */
+const KNOWN_ACP_COMMAND_RESOLVERS: Partial<Record<string, () => string>> = {
+  opencode: resolveOpencodeBin,
 };
 
 export type ResolvedAcpAgentConfig = {
@@ -40,7 +50,7 @@ export function resolveAcpAgentConfig(cliArgs: string[]): ResolvedAcpAgentConfig
       .filter((arg) => !(agentName === 'opencode' && arg === '--acp'));
     return {
       agentName,
-      command: known.command,
+      command: KNOWN_ACP_COMMAND_RESOLVERS[agentName]?.() ?? known.command,
       args: [...known.args, ...passthroughArgs],
     };
   }
