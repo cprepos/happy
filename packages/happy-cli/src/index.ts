@@ -481,9 +481,11 @@ Conversation history is preserved on the server, but in-flight tool calls are in
     }
     return;
   } else if (subcommand === 'opencode') {
-    // OpenCode runs on the generic ACP runner (`opencode acp`). This alias is
-    // what the daemon spawns, so it accepts the daemon's launch flags and
-    // passes anything after `--` straight to `opencode acp`.
+    // In a terminal, `happy opencode` runs the real OpenCode TUI against a
+    // local `opencode serve` and mirrors that session to the app. Without a
+    // terminal (daemon spawns, `--happy-starting-mode remote`, `--acp`, or
+    // HAPPY_OPENCODE_MODE=acp) it runs on the generic ACP runner
+    // (`opencode acp`), passing anything after `--` straight to it.
     try {
       const { runAcp } = await import('@/agent/acp');
       const { resolveOpencodeBin, OPENCODE_ACP_ARGS } = await import('@/opencode/constants');
@@ -491,6 +493,8 @@ Conversation history is preserved on the server, but in-flight tool calls are in
       let startedBy: 'daemon' | 'terminal' | undefined = undefined;
       let verbose = false;
       let resumeSessionId: string | undefined;
+      let startingMode: string | undefined;
+      let forceAcp = process.env.HAPPY_OPENCODE_MODE === 'acp';
       const passthroughArgs: string[] = [];
       for (let i = 1; i < args.length; i++) {
         if (args[i] === '--') {
@@ -500,7 +504,9 @@ Conversation history is preserved on the server, but in-flight tool calls are in
         if (args[i] === '--started-by') {
           startedBy = args[++i] as 'daemon' | 'terminal';
         } else if (args[i] === '--happy-starting-mode') {
-          i++;
+          startingMode = args[++i];
+        } else if (args[i] === '--acp') {
+          forceAcp = true;
         } else if (args[i] === '--verbose') {
           verbose = true;
         } else if (args[i] === '--resume') {
@@ -513,6 +519,22 @@ Conversation history is preserved on the server, but in-flight tool calls are in
 
       const { credentials } = await authAndSetupMachineIfNeeded();
       await ensureDaemonRunning()
+
+      const useTui = !forceAcp
+        && startedBy !== 'daemon'
+        && startingMode !== 'remote'
+        && process.stdin.isTTY === true
+        && process.stdout.isTTY === true;
+      if (useTui) {
+        const { runOpencodeTui } = await import('@/opencode/tui/runOpencodeTui');
+        await runOpencodeTui({
+          credentials,
+          startedBy,
+          resumeSessionId,
+          bin: resolveOpencodeBin(),
+        });
+        process.exit(0);
+      }
 
       await runAcp({
         credentials,
@@ -777,8 +799,9 @@ ${chalk.bold('Usage:')}
   happy gemini            Start Gemini mode (ACP) [deprecated — use agy]
   happy agy               Start agy (Antigravity CLI) mode
   happy agy --resume <id> Continue an agy conversation
-  happy opencode          Start OpenCode mode (ACP)
-  happy opencode --resume <id> Continue an OpenCode session
+  happy opencode          Start OpenCode (its TUI here, mirrored to the app)
+  happy opencode --resume <id> Continue an OpenCode session, or reattach to a running one
+  happy opencode --acp    Start OpenCode without the TUI (ACP)
   happy acp               Start a generic ACP-compatible agent
   happy connect           Connect AI vendor API keys
   happy sandbox           Configure and manage OS-level sandboxing
