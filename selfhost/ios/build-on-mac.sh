@@ -323,7 +323,7 @@ mac_pick_device() {
 const fs = require("fs");
 const want = process.argv[2] || "";
 const devs = (JSON.parse(fs.readFileSync(process.argv[1], "utf8")).result || {}).devices || [];
-const phones = devs.filter(d => (d.hardwareProperties||{}).platform === "iOS" && (d.hardwareProperties||{}).reality === "physical");
+const phones = devs.filter(d => (d.hardwareProperties||{}).platform === "iOS" && (d.hardwareProperties||{}).reality !== "virtual");
 const describe = d => `${d.deviceProperties.name} [${d.identifier}] pairing=${(d.connectionProperties||{}).pairingState} tunnel=${(d.connectionProperties||{}).tunnelState} transport=${(d.connectionProperties||{}).transportType||"-"} devmode=${d.deviceProperties.developerModeStatus||"?"}`;
 phones.forEach(d => console.error("   device: " + describe(d)));
 let pick = phones;
