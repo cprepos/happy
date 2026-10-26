@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voice Stack Test</title>
+<style>
+  :root {
+    --bg: #f6f6f4; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66; --line: #e2e2dd;
+    --accent: #2f6fdb; --accent-text: #ffffff; --rec: #d33c32; --ok: #2b8a4b; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #151514; --panel: #1f1f1d; --text: #ecece8; --muted: #9a9a94; --line: #33332f; --accent: #5b8ff0; --accent-text: #0d0d0c; --rec: #f0685e; --ok: #5cc27e; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; font-size: 13px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  h2 { font-size: 15px; margin: 0 0 12px; }
+  textarea { width: 100%; min-height: 72px; resize: vertical; padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+  select, input[type=number] { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+  button { padding: 7px 14px; border: 0; border-radius: 6px; background: var(--accent); color: var(--accent-text); font: inherit; font-weight: 600; cursor: pointer; }
+  button.secondary { background: transparent; color: var(--text); border: 1px solid var(--line); }
+  button.rec { background: var(--rec); }
+  button:disabled { opacity: .45; cursor: default; }
+  .metrics { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 10px; font-size: 13px; color: var(--muted); }
+  .metrics b { color: var(--text); font-family: var(--mono); font-weight: 600; }
+  .transcript { margin-top: 10px; padding: 10px; min-height: 44px; border-radius: 6px; background: var(--bg); border: 1px solid var(--line); white-space: pre-wrap; }
+  .partial { color: var(--muted); font-style: italic; }
+  .log { margin-top: 10px; max-height: 320px; overflow-y: auto; }
+  .turn { padding: 8px 0; border-top: 1px solid var(--line); }
+  .turn:first-child { border-top: 0; }
+  .who { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .status { font-size: 13px; color: var(--muted); }
+  .status.ok { color: var(--ok); } .status.err { color: var(--rec); }
+  label { font-size: 13px; color: var(--muted); display: inline-flex; gap: 6px; align-items: center; }
+  code { font-family: var(--mono); font-size: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Voice stack test</h1>
+  <p class="sub">Kokoro TTS, Nemotron streaming STT and the vLLM voice model, through a proxy on 127.0.0.1. <span id="health" class="status">checking services…</span></p>
+
+  <section>
+    <h2>1. Text to speech</h2>
+    <textarea id="ttsText">Hi! I'm the self-hosted voice. Ask me to tell your coding session what to do next.</textarea>
+    <div class="row">
+      <select id="voice" aria-label="Voice"><option value="af_heart">af_heart</option></select>
+      <label>Speed <input id="speed" type="number" min="0.5" max="2" step="0.1" value="1.0" style="width:70px"></label>
+      <button id="speakBtn">Speak</button>
+      <button id="stopAudioBtn" class="secondary">Stop audio</button>
+    </div>
+    <div class="metrics" id="ttsMetrics"></div>
+  </section>
+
+  <section>
+    <h2>2. Speech to text</h2>
+    <div class="row">
+      <button id="recBtn">Record</button>
+      <label><input id="sttEndpoint" type="checkbox"> Finalize on silence</label>
+    </div>
+    <div class="transcript" id="sttOut"><span class="partial">Press Record and speak.</span></div>
+    <div class="metrics" id="sttMetrics"></div>
+  </section>
+
+  <section>
+    <h2>3. Full turn: mic, STT, LLM, TTS</h2>
+    <div class="row">
+      <button id="chatBtn">Talk</button>
+      <label><input id="chatAuto" type="checkbox" checked> End turn after <input id="chatEndMs" type="number" min="200" max="3000" step="100" value="700" style="width:72px"> ms of silence</label>
+      <button id="chatReset" class="secondary">New conversation</button>
+    </div>
+    <div class="transcript" id="chatLive"><span class="partial">Press Talk, speak, then pause (or press Stop).</span></div>
+    <div class="metrics" id="chatMetrics"></div>
+    <div class="log" id="chatLog"></div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const now = () => performance.now();
+const fmt = (ms) => (ms == null || isNaN(ms)) ? "–" : `${Math.round(ms)} ms`;
+function metrics(el, items) { el.innerHTML = items.filter(Boolean).map(([k, v]) => `<span>${k} <b>${v}</b></span>`).join(""); }
+
+// ------------------------------------------------------------------ audio output
+let ctx = null;
+function audioCtx() { if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)(); if (ctx.state === "suspended") ctx.resume(); return ctx; }
+
+class PcmPlayer {            // plays a stream of 24 kHz s16le chunks gaplessly
+  constructor() { this.next = 0; this.sources = new Set(); this.carry = null; this.firstAudioAt = null; }
+  push(bytes) {
+    const c = audioCtx();
+    if (this.carry) { const m = new Uint8Array(this.carry.length + bytes.length); m.set(this.carry); m.set(bytes, this.carry.length); bytes = m; this.carry = null; }
+    if (bytes.length % 2) { this.carry = bytes.slice(-1); bytes = bytes.slice(0, -1); }
+    if (!bytes.length) return;
+    const pcm = new Int16Array(bytes.buffer, bytes.byteOffset, bytes.length / 2);
+    const buf = c.createBuffer(1, pcm.length, 24000);
+    const ch = buf.getChannelData(0);
+    for (let i = 0; i < pcm.length; i++) ch[i] = pcm[i] / 32768;
+    const src = c.createBufferSource(); src.buffer = buf; src.connect(c.destination);
+    const t = Math.max(c.currentTime + 0.02, this.next);
+    src.start(t); this.next = t + buf.duration;
+    if (this.firstAudioAt == null) this.firstAudioAt = now() + (t - c.currentTime) * 1000;
+    this.sources.add(src); src.onended = () => this.sources.delete(src);
+  }
+  endsInMs() { return ctx ? Math.max(0, (this.next - ctx.currentTime) * 1000) : 0; }
+  stop() { for (const s of this.sources) { try { s.stop(); } catch {} } this.sources.clear(); this.next = 0; }
+}
+let activePlayer = null;
+
+// Streams one TTS request into `player`. Returns {ttfb, total, audioMs}.
+async function speak(text, player, signal) {
+  const t0 = now();
+  const r = await fetch("/api/tts/speech", { method: "POST", signal, headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: "kokoro", input: text, voice: $("voice").value, response_format: "pcm", stream: true, speed: parseFloat($("speed").value) || 1 }) });
+  if (!r.ok) throw new Error(`TTS ${r.status}: ${await r.text()}`);
+  const reader = r.body.getReader(); let ttfb = null, bytes = 0;
+  for (;;) {
+    const { done, value } = await reader.read(); if (done) break;
+    if (value && value.length) { if (ttfb == null) ttfb = now() - t0; bytes += value.length; player.push(value); }
+  }
+  return { ttfb, total: now() - t0, audioMs: bytes / 2 / 24 };
+}
+
+async function loadVoices() {
+  try {
+    const j = await (await fetch("/api/tts/voices")).json();
+    const ids = (j.voices || []).map(v => typeof v === "string" ? v : v.id).filter(v => /^[ab][fm]_/.test(v) && !v.includes("_inno"));
+    if (ids.length) $("voice").innerHTML = ids.map(v => `<option ${v === "af_heart" ? "selected" : ""}>${v}</option>`).join("");
+  } catch (e) { console.warn(e); }
+}
+
+$("speakBtn").onclick = async () => {
+  const btn = $("speakBtn"); btn.disabled = true;
+  activePlayer?.stop(); const player = activePlayer = new PcmPlayer(); audioCtx();
+  const t0 = now();
+  try {
+    const m = await speak($("ttsText").value, player);
+    metrics($("ttsMetrics"), [["first byte", fmt(m.ttfb)], ["first audio playing", fmt(player.firstAudioAt - t0)], ["full stream", fmt(m.total)], ["audio length", fmt(m.audioMs)], ["real-time factor", (m.total / m.audioMs).toFixed(3)]]);
+  } catch (e) { metrics($("ttsMetrics"), [["error", e.message]]); }
+  btn.disabled = false;
+};
+$("stopAudioBtn").onclick = () => activePlayer?.stop();
+
+// ------------------------------------------------------------------ mic -> 16 kHz PCM16 -> STT websocket
+const WORKLET = `class Tap extends AudioWorkletProcessor { process(inputs) { const ch = inputs[0][0]; if (ch) this.port.postMessage(ch.slice(0)); return true; } } registerProcessor("tap", Tap);`;
+
+class MicStream {
+  constructor({ endpointMs = 0, onReady, onPartial, onFinal, onError }) { Object.assign(this, { endpointMs, onReady, onPartial, onFinal, onError }); }
+  async start() {
+    const c = audioCtx();
+    this.stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    if (!MicStream.loaded) { await c.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], { type: "application/javascript" }))); MicStream.loaded = true; }
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    this.ws = new WebSocket(`${proto}://${location.host}/api/stt/stream?sample_rate=16000&endpoint_ms=${this.endpointMs}`);
+    this.ws.binaryType = "arraybuffer";
+    this.t0 = null; this.sent = 0;
+    await new Promise((res, rej) => { this.ws.onopen = res; this.ws.onerror = () => rej(new Error("STT websocket failed")); });
+    this.ws.onmessage = (ev) => {
+      const m = JSON.parse(ev.data);
+      if (m.type === "ready") this.onReady?.(m);
+      else if (m.type === "partial") this.onPartial?.(m, now() - this.t0 - m.audio_ms);
+      else if (m.type === "final") this.onFinal?.(m);
+      else if (m.type === "error") this.onError?.(new Error(m.message));
+    };
+    this.src = c.createMediaStreamSource(this.stream);
+    this.node = new AudioWorkletNode(c, "tap");
+    const ratio = c.sampleRate / 16000; let pos = 0; let pending = [];
+    this.node.port.onmessage = (ev) => {             // linear-interp resample to 16 kHz, send 20 ms frames
+      if (this.ws.readyState !== 1) return;
+      if (this.t0 == null) this.t0 = now();
+      const x = ev.data;
+      for (; pos < x.length; pos += ratio) {
+        const i = Math.floor(pos), f = pos - i, a = x[i], b = i + 1 < x.length ? x[i + 1] : a;
+        pending.push(Math.max(-1, Math.min(1, a + (b - a) * f)));
+      }
+      pos -= x.length;
+      while (pending.length >= 320) {
+        const fr = pending.splice(0, 320); const out = new Int16Array(320);
+        for (let i = 0; i < 320; i++) out[i] = fr[i] * 32767;
+        this.ws.send(out.buffer); this.sent += 320;
+      }
+    };
+    this.src.connect(this.node);   // the worklet outputs nothing audible; no connection to destination
+  }
+  stopMic() { try { this.src?.disconnect(); this.node?.disconnect(); } catch {} this.stream?.getTracks().forEach(t => t.stop()); }
+  flush() { this.stopMic(); this.flushAt = now(); if (this.ws?.readyState === 1) this.ws.send(JSON.stringify({ type: "flush" })); }
+  close() { this.stopMic(); if (this.ws?.readyState === 1) { this.ws.send(JSON.stringify({ type: "close" })); setTimeout(() => this.ws.close(), 500); } }
+}
+
+// ------------------------------------------------------------------ section 2
+let sttMic = null;
+$("recBtn").onclick = async () => {
+  const btn = $("recBtn");
+  if (sttMic) { btn.disabled = true; sttMic.flush(); return; }
+  const out = $("sttOut"); const finals = []; const lags = []; let firstPartial = null; let startAt;
+  const render = (p) => out.innerHTML = finals.map(f => `<div>${f}</div>`).join("") + (p ? `<span class="partial">${p}</span>` : "");
+  sttMic = new MicStream({
+    endpointMs: $("sttEndpoint").checked ? 700 : 0,
+    onReady: (m) => metrics($("sttMetrics"), [["model", m.model.split("/").pop()], ["chunk", `${m.chunk_ms} ms`]]),
+    onPartial: (m, lag) => { if (firstPartial == null) firstPartial = now() - startAt; lags.push(lag); render(m.text); },
+    onFinal: (m) => {
+      finals.push(m.text || "(nothing)"); render("");
+      const avg = lags.length ? lags.reduce((a, b) => a + b, 0) / lags.length : NaN;
+      metrics($("sttMetrics"), [["first partial after start", fmt(firstPartial)], ["partial lag behind speech (avg)", fmt(avg)],
+        sttMic?.flushAt ? ["final after Stop", fmt(now() - sttMic.flushAt)] : ["final (silence endpoint)", `${m.audio_ms} ms audio`], ["server flush", fmt(m.flush_ms)], ["audio", fmt(m.audio_ms)]]);
+      if (sttMic?.flushAt) { sttMic.close(); sttMic = null; btn.textContent = "Record"; btn.classList.remove("rec"); btn.disabled = false; }
+      lags.length = 0; firstPartial = null; startAt = now();
+    },
+    onError: (e) => { render(""); out.insertAdjacentHTML("beforeend", `<div class="status err">${e.message}</div>`); },
+  });
+  try {
+    startAt = now(); render("listening…"); await sttMic.start();
+    btn.textContent = "Stop"; btn.classList.add("rec");
+  } catch (e) { render(""); out.innerHTML = `<span class="status err">${e.message}</span>`; sttMic = null; }
+};
+
+// ------------------------------------------------------------------ section 3
+const SYSTEM = "You are a friendly voice assistant in a quick latency test. Reply in one or two short spoken sentences. No lists, no markdown, no emoji.";
+let history = [];
+let chatMic = null, chatBusy = false, chatAbort = null;
+function logTurn(who, text, extra = "") { $("chatLog").insertAdjacentHTML("afterbegin", `<div class="turn"><div class="who">${who}</div><div>${text}</div>${extra}</div>`); }
+$("chatReset").onclick = () => { history = []; $("chatLog").innerHTML = ""; activePlayer?.stop(); chatAbort?.abort(); };
+
+async function runTurn(userText, tStop, sttMs) {
+  chatBusy = true; $("chatBtn").disabled = true;
+  history.push({ role: "user", content: userText }); logTurn("you", userText);
+  activePlayer?.stop(); const player = activePlayer = new PcmPlayer(); chatAbort = new AbortController();
+  const t = { stt: sttMs }; const tLlm = now(); let reply = "", buf = "";
+  const queue = []; let ttsChain = Promise.resolve(); let firstTts = null;
+  const say = (s) => { s = s.trim(); if (!s) return; ttsChain = ttsChain.then(async () => { const m = await speak(s, player, chatAbort.signal); if (firstTts == null) firstTts = m.ttfb; }); };
+  try {
+    const r = await fetch("/api/llm/chat", { method: "POST", signal: chatAbort.signal, headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: CONFIG.llm_model, stream: true, temperature: 0.7, max_tokens: 160, messages: [{ role: "system", content: SYSTEM }, ...history] }) });
+    if (!r.ok) throw new Error(`LLM ${r.status}: ${await r.text()}`);
+    const rd = r.body.pipeThrough(new TextDecoderStream()).getReader(); let sse = "";
+    for (;;) {
+      const { done, value } = await rd.read(); if (done) break; sse += value;
+      let i; while ((i = sse.indexOf("\n")) >= 0) {
+        const line = sse.slice(0, i).trim(); sse = sse.slice(i + 1);
+        if (!line.startsWith("data: ") || line === "data: [DONE]") continue;
+        const d = JSON.parse(line.slice(6)).choices?.[0]?.delta?.content; if (!d) continue;
+        if (t.llmFirst == null) t.llmFirst = now() - tLlm;
+        reply += d; buf += d;
+        const m = buf.match(/^([\s\S]*?[.!?])(\s+)([\s\S]*)$/);   // speak each finished sentence immediately
+        if (m && m[1].trim().length > 3) { if (t.sentence == null) t.sentence = now() - tLlm; say(m[1]); buf = m[3]; }
+      }
+    }
+    t.llmDone = now() - tLlm; if (t.sentence == null) t.sentence = t.llmDone; say(buf);
+    await ttsChain;
+    history.push({ role: "assistant", content: reply });
+    const first = player.firstAudioAt ? player.firstAudioAt - tStop : NaN;
+    logTurn("assistant", reply);
+    metrics($("chatMetrics"), [["end of speech → STT final", fmt(t.stt)], ["LLM first token", fmt(t.llmFirst)], ["LLM first sentence", fmt(t.sentence)], ["TTS first byte", fmt(firstTts)], ["end of speech → first audio", fmt(first)]]);
+  } catch (e) { if (e.name !== "AbortError") logTurn("error", e.message); }
+  setTimeout(() => { chatBusy = false; $("chatBtn").disabled = false; }, 0);
+}
+
+$("chatBtn").onclick = async () => {
+  const btn = $("chatBtn"), live = $("chatLive");
+  if (chatMic) { btn.disabled = true; chatMic.flush(); return; }
+  activePlayer?.stop();
+  const auto = $("chatAuto").checked; let lastPartialAt = null;
+  chatMic = new MicStream({
+    endpointMs: auto ? (parseInt($("chatEndMs").value) || 700) : 0,
+    onPartial: (m) => { lastPartialAt = now(); live.innerHTML = `<span class="partial">${m.text}</span>`; },
+    onFinal: (m) => {
+      const mic = chatMic; chatMic = null; mic.close(); btn.textContent = "Talk"; btn.classList.remove("rec");
+      // End of speech: Stop press, or (auto) the last partial, which is when the user stopped talking.
+      const tStop = mic.flushAt ?? lastPartialAt ?? now(); const sttMs = now() - tStop;  // auto mode: includes the silence wait
+      live.innerHTML = `<span class="partial">…</span>`;
+      if (!m.text) { btn.disabled = false; live.innerHTML = `<span class="partial">Heard nothing. Press Talk again.</span>`; return; }
+      runTurn(m.text, tStop, sttMs);
+    },
+    onError: (e) => { live.innerHTML = `<span class="status err">${e.message}</span>`; },
+  });
+  try { live.innerHTML = `<span class="partial">listening…</span>`; await chatMic.start(); btn.textContent = "Stop"; btn.classList.add("rec"); }
+  catch (e) { live.innerHTML = `<span class="status err">${e.message}</span>`; chatMic = null; }
+};
+
+// ------------------------------------------------------------------ boot
+let CONFIG = { llm_model: "voice-llm" };
+(async () => {
+  try { CONFIG = await (await fetch("/api/config")).json(); } catch {}
+  loadVoices();
+  const h = $("health");
+  if (!window.isSecureContext || !navigator.mediaDevices) h.innerHTML = "Microphone needs a secure context: open via <code>http://localhost:8899</code> (SSH tunnel).";
+  try { const s = await (await fetch("/api/stt/health")).json(); h.textContent = `STT ${s.status}, model ${s.model}`; h.className = "status ok"; }
+  catch { h.textContent = "STT not reachable"; h.className = "status err"; }
+})();
+</script>
+</body>
+</html>
