@@ -192,6 +192,8 @@ export type OpencodeTuiState = {
     ownerTuiAttached: boolean;
     /** Launch permission policy, reused by a restart. Absent in older files. */
     permissionPolicy?: 'auto' | 'ask';
+    /** Signal that stops this owner for a restart; absent in older files (use SIGTERM). */
+    restartSignal?: 'SIGUSR2';
 };
 
 function stateFile(dir: string, opencodeSessionId: string): string {
