@@ -22,6 +22,14 @@ from happy_voice.assistant import (  # noqa: E402
 )
 from happy_voice.config import Settings  # noqa: E402
 from happy_voice.context import fold_system_messages, focused_session_from  # noqa: E402
+from happy_voice import voices  # noqa: E402
+from happy_voice.voices import (  # noqa: E402
+    _voice_names,
+    clamp_speed,
+    parse_voice,
+    resolve_tts,
+    validate_voice,
+)
 from happy_voice.prompt import (  # noqa: E402
     BASE_PROMPT,
     CONTEXT_PREFIX,
@@ -125,6 +133,98 @@ def test_announces_interrupted_speech_only() -> None:
     asyncio.run(run())
     assert sent == [(b"", {"reliable": True, "topic": TOPIC_INTERRUPTED})]
     assert TOPIC_INTERRUPTED == "happy.interrupted"
+
+
+KOKORO = ["af_heart", "af_bella", "am_michael", "am_onyx", "bm_george", "af_v0bella"]
+
+
+def test_voice_config_reads_voice_and_speed() -> None:
+    cfg = VoiceConfig.from_json('{"voice": "am_michael(2)+am_onyx(1)", "speed": 0.85}')
+    assert cfg.voice == "am_michael(2)+am_onyx(1)"
+    assert cfg.speed == 0.85
+    cfg = VoiceConfig.from_json('{"voice": "", "speed": "fast"}')
+    assert cfg.voice is None and cfg.speed is None
+    cfg = VoiceConfig.from_json('{"speed": true, "voice": 7}')
+    assert cfg.voice is None and cfg.speed is None
+    assert VoiceConfig.from_json("").voice is None
+
+
+def test_parse_voice() -> None:
+    assert parse_voice("af_heart") == [("af_heart", 1)]
+    assert parse_voice("am_michael(2)+am_onyx(1)") == [("am_michael", 2), ("am_onyx", 1)]
+    assert parse_voice("a(1)+b(1)+c(1)+d(1)") is not None
+    assert parse_voice("a(1)+b(1)+c(1)+d(1)+e(1)") is None  # too many parts
+    assert parse_voice("am_michael(0)+am_onyx(1)") is None  # weight must be positive
+    assert parse_voice("am_michael(-1)+am_onyx(1)") is None
+    assert parse_voice("am_michael(1.5)+am_onyx(1)") is None
+    assert parse_voice("am_michael+am_onyx") is None  # blend parts need weights
+    assert parse_voice("af_heart(1)") is None
+    assert parse_voice("") is None
+    assert parse_voice("../etc/passwd") is None
+    assert parse_voice("AF_HEART") is None
+
+
+def test_validate_voice_against_kokoro_list() -> None:
+    assert validate_voice("af_heart", KOKORO) == "af_heart"
+    assert validate_voice(" am_michael(2) + am_onyx(1) ", KOKORO) == "am_michael(2)+am_onyx(1)"
+    assert validate_voice("af_v0bella", KOKORO) == "af_v0bella"
+    assert validate_voice("af_nope", KOKORO) is None
+    assert validate_voice("am_michael(2)+am_nope(1)", KOKORO) is None
+    assert validate_voice(None, KOKORO) is None
+    assert validate_voice(3, KOKORO) is None
+
+
+def test_validate_voice_pattern_fallback() -> None:
+    assert validate_voice("af_anything", None) == "af_anything"
+    assert validate_voice("am_michael(2)+am_onyx(1)", None) == "am_michael(2)+am_onyx(1)"
+    assert validate_voice("af_v0bella", None) is None
+    assert validate_voice("heart", None) is None
+
+
+def test_clamp_speed() -> None:
+    assert clamp_speed(0.85) == 0.85
+    assert clamp_speed(1) == 1.0
+    assert clamp_speed(0.1) == 0.5
+    assert clamp_speed(9) == 1.5
+    assert clamp_speed(float("nan")) is None
+    assert clamp_speed(float("inf")) is None
+    assert clamp_speed(True) is None
+    assert clamp_speed("1.0") is None
+
+
+def test_resolve_tts() -> None:
+    s = Settings()
+    s.tts_voice = "af_heart"
+    s.tts_speed = 1.0
+    assert resolve_tts(s, "en", None, None, KOKORO) == ("af_heart", 1.0)
+    assert resolve_tts(s, "en", "am_michael(2)+am_onyx(1)", 0.85, KOKORO) == ("am_michael(2)+am_onyx(1)", 0.85)
+    assert resolve_tts(s, "en", "bm_george", None, KOKORO) == ("bm_george", 1.0)
+    assert resolve_tts(s, "en", "bm_george", 3, KOKORO) == ("bm_george", 1.5)
+    assert resolve_tts(s, None, "bm_george", 0.2, KOKORO) == ("bm_george", 0.5)
+    # invalid voice: server defaults for both
+    assert resolve_tts(s, "en", "af_nope", 0.8, KOKORO) == ("af_heart", 1.0)
+    # speed only
+    assert resolve_tts(s, "en", None, 1.2, KOKORO) == ("af_heart", 1.2)
+    assert resolve_tts(s, "en", None, "x", KOKORO) == ("af_heart", 1.0)
+    # other languages keep their language voice
+    assert resolve_tts(s, "es", "bm_george", 0.9, KOKORO) == ("ef_dora", 1.0)
+
+
+def test_kokoro_voice_list_shapes() -> None:
+    assert _voice_names({"voices": ["af_heart", "am_onyx"]}) == {"af_heart", "am_onyx"}
+    assert _voice_names({"voices": [{"id": "af_heart", "name": "af_heart"}]}) == {"af_heart"}
+    assert _voice_names({"voices": []}) is None
+    assert _voice_names("nope") is None
+
+
+def test_fetch_known_voices_failure_is_not_cached() -> None:
+    voices._known_voices = None
+    # nothing listens on port 9 (discard); the fetch fails fast and is retried next time
+    assert asyncio.run(voices.fetch_known_voices("http://127.0.0.1:9/v1", timeout=1.0)) is None
+    assert voices._known_voices is None
+    voices._known_voices = frozenset({"af_heart"})
+    assert asyncio.run(voices.fetch_known_voices("http://127.0.0.1:9/v1")) == {"af_heart"}
+    voices._known_voices = None
 
 
 if __name__ == "__main__":
