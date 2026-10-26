@@ -40,6 +40,9 @@ logger = logging.getLogger("happy-voice")
 
 TOPIC_CONTEXT = "happy.context"
 TOPIC_TEXT = "happy.text"
+# Empty packet sent when the user barges in, so the app (or the server
+# bridging its audio) drops agent speech it has buffered but not played.
+TOPIC_INTERRUPTED = "happy.interrupted"
 RPC_GET_CONFIG = "happy.getConfig"
 
 # The app's tool results dictate the exact words to speak, e.g.
@@ -185,6 +188,25 @@ class HappyAssistant(Agent):
         return None
 
 
+def announce_interruptions(session: Any, publish: Any) -> None:
+    """Call `publish(b"", reliable=True, topic=TOPIC_INTERRUPTED)` whenever
+    the agent's speech is interrupted."""
+
+    async def send() -> None:
+        try:
+            await publish(b"", reliable=True, topic=TOPIC_INTERRUPTED)
+        except Exception:
+            logger.exception("failed to announce interruption")
+
+    def on_done(handle: Any) -> None:
+        if handle.interrupted:
+            asyncio.create_task(send())
+
+    @session.on("speech_created")
+    def _on_speech(ev) -> None:
+        ev.speech_handle.add_done_callback(on_done)
+
+
 async def _fetch_config(
     room: rtc.Room, identity: str, timeout: float
 ) -> VoiceConfig:
@@ -312,6 +334,7 @@ async def entrypoint(ctx: JobContext) -> None:
         user_away_timeout=None,
     )
 
+    announce_interruptions(session, ctx.room.local_participant.publish_data)
     usage = metrics.UsageCollector()
 
     @session.on("metrics_collected")
