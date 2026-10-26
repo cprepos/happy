@@ -21,6 +21,7 @@ from happy_voice.assistant import (  # noqa: E402
     announce_interruptions,
 )
 from happy_voice.config import Settings  # noqa: E402
+from happy_voice.warmup import PrefixWarmer  # noqa: E402
 from happy_voice.context import fold_system_messages, focused_session_from  # noqa: E402
 from happy_voice import voices  # noqa: E402
 from happy_voice.voices import (  # noqa: E402
@@ -225,6 +226,153 @@ def test_fetch_known_voices_failure_is_not_cached() -> None:
     voices._known_voices = frozenset({"af_heart"})
     assert asyncio.run(voices.fetch_known_voices("http://127.0.0.1:9/v1")) == {"af_heart"}
     voices._known_voices = None
+
+
+class _FakeStream:
+    def __init__(self, owner: "_FakeLLM", chunks: int) -> None:
+        self._owner = owner
+        self._left = chunks
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        await asyncio.sleep(self._owner.delay)
+        if self._owner.fail:
+            raise RuntimeError("llm down")
+        if self._left <= 0:
+            raise StopAsyncIteration
+        self._left -= 1
+        self._owner.chunks_read += 1
+        return object()
+
+    async def aclose(self) -> None:
+        self._owner.closed_streams += 1
+
+
+class _FakeLLM:
+    def __init__(self, delay: float = 0.0, fail: bool = False) -> None:
+        self.delay = delay
+        self.fail = fail
+        self.requests: list[tuple[object, object]] = []
+        self.chunks_read = 0
+        self.closed_streams = 0
+        self.closed = False
+
+    def chat(self, *, chat_ctx, tools):
+        self.requests.append((chat_ctx, tools))
+        return _FakeStream(self, chunks=50)
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+def test_warmer_stops_at_first_chunk() -> None:
+    async def run() -> _FakeLLM:
+        model = _FakeLLM()
+        warmer = PrefixWarmer(model, lambda: ("ctx", ["tool"]), debounce=0)
+        warmer.schedule()
+        await asyncio.sleep(0.05)
+        assert warmer.completed == 1
+        await warmer.aclose()
+        return model
+
+    model = asyncio.run(run())
+    assert model.requests == [("ctx", ["tool"])]
+    assert model.chunks_read == 1
+    assert model.closed_streams == 1
+    assert model.closed
+
+
+def test_warmer_debounces_and_supersedes_bursts() -> None:
+    snapshots = iter(["first", "second", "third"])
+
+    async def run() -> tuple[_FakeLLM, PrefixWarmer]:
+        model = _FakeLLM()
+        warmer = PrefixWarmer(model, lambda: (next(snapshots), []), debounce=0.02)
+        for _ in range(3):  # a burst of context updates
+            warmer.schedule()
+        await asyncio.sleep(0.1)
+        await warmer.aclose()
+        return model, warmer
+
+    model, warmer = asyncio.run(run())
+    assert [ctx for ctx, _ in model.requests] == ["first"]
+    assert warmer.completed == 1
+
+
+def test_warmer_cancels_a_stale_request_in_flight() -> None:
+    async def run() -> tuple[_FakeLLM, PrefixWarmer]:
+        model = _FakeLLM(delay=0.05)
+        n = iter(range(10))
+        warmer = PrefixWarmer(model, lambda: (next(n), []), debounce=0)
+        warmer.schedule()
+        await asyncio.sleep(0.01)  # first request is prefilling
+        warmer.schedule()
+        await asyncio.sleep(0.15)
+        await warmer.aclose()
+        return model, warmer
+
+    model, warmer = asyncio.run(run())
+    assert [ctx for ctx, _ in model.requests] == [0, 1]
+    assert model.closed_streams == 2  # the stale stream is closed, not left running
+    assert warmer.completed == 1
+
+
+def test_warmer_failure_is_swallowed() -> None:
+    async def run() -> PrefixWarmer:
+        warmer = PrefixWarmer(_FakeLLM(fail=True), lambda: ("ctx", []), debounce=0)
+        warmer.schedule()
+        await asyncio.sleep(0.05)
+        await warmer.aclose()
+        return warmer
+
+    assert asyncio.run(run()).completed == 0
+
+
+def test_warmup_snapshot_matches_the_turn_request() -> None:
+    from livekit.agents import Agent, function_tool
+
+    from happy_voice.assistant import warmup_snapshot
+
+    @function_tool
+    async def ping() -> str:
+        """Ping."""
+        return "pong"
+
+    ctx = llm.ChatContext.empty()
+    ctx.add_message(role="system", content="instructions")
+    ctx.add_message(role="system", content="initial context")
+    ctx.add_message(role="assistant", content="Hi")
+    ctx.add_message(role="system", content="Session became focused: abc")
+    agent = Agent(instructions="instructions", chat_ctx=ctx, tools=[ping])
+    warm_ctx, tools = warmup_snapshot(agent)
+    msgs = [m for m in warm_ctx.items if isinstance(m, llm.ChatMessage)]
+    assert [m.role for m in msgs] == ["system", "assistant", "user"]
+    assert msgs[0].text_content.startswith("instructions")
+    assert [t.info.name for t in tools] == ["ping"]
+    # the snapshot is a copy: the agent's own history is untouched
+    assert len(agent.chat_ctx.items) == 4
+
+
+def test_warmup_snapshot_adds_a_user_turn_before_the_user_speaks() -> None:
+    from livekit.agents import Agent
+
+    from happy_voice.assistant import WARMUP_PLACEHOLDER, warmup_snapshot
+
+    ctx = llm.ChatContext.empty()
+    ctx.add_message(role="system", content="instructions")
+    ctx.add_message(role="assistant", content="Hi")
+    agent = Agent(instructions="instructions", chat_ctx=ctx)
+    warm_ctx, tools = warmup_snapshot(agent)
+    msgs = [m for m in warm_ctx.items if isinstance(m, llm.ChatMessage)]
+    assert [(m.role, m.text_content) for m in msgs] == [
+        ("system", "instructions"),
+        ("assistant", "Hi"),
+        ("user", WARMUP_PLACEHOLDER),
+    ]
+    assert tools == []
+    assert len(agent.chat_ctx.items) == 2
 
 
 if __name__ == "__main__":
