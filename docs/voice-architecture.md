@@ -32,7 +32,7 @@ loopback-only publish of port 7880. Media goes to the container IP in both
 cases.
 
 ```text
- ┌─ App (web; native soon) ─┐        ┌─ happy-server ──┐      ┌─ LiveKit ────────┐      ┌─ voice agent ────┐
+ ┌─ App (web and native) ───┐        ┌─ happy-server ──┐      ┌─ LiveKit ────────┐      ┌─ voice agent ────┐
  │ mic → 16 kHz PCM16       │  wss   │ voice bridge    │      │ room             │      │ STT (Nemotron)   │
  │                          │ ─────> │ (rtc-node),     │ ───> │ happy-voice-<id> │ ───> │ LLM (vLLM)       │
  │ speaker ← jitter buffer  │ <───── │ joins as        │ <─── │                  │ <─── │ TTS (Kokoro)     │
@@ -108,9 +108,9 @@ Env: `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` (same pair as
 
 **Legacy REST route.** `POST /v1/voice/conversations` still returns
 `{ allowed: true, conversationId, roomName, token, url }`, a LiveKit token for
-the app to join the room itself. Only the native app uses it until it moves to
-the voice stream, and `url` (`LIVEKIT_PUBLIC_URL`) no longer reaches LiveKit
-from outside. `GET /v1/voice/usage` keeps its response shape but always
+the app to join the room itself. No current app uses it (web and native both
+use the voice stream), and `url` (`LIVEKIT_PUBLIC_URL`) no longer reaches
+LiveKit from outside. `GET /v1/voice/usage` keeps its response shape but always
 reports unlimited. Zod schemas for both live in
 `packages/happy-wire/src/voice.ts`.
 
@@ -154,13 +154,13 @@ dispatch `happy-voice`.
 participant and calls RPC `happy.getConfig` on it (empty payload, 10 s
 timeout); the server forwards it to the app as an `rpc` message. The app
 answers with the JSON string
-`{ systemPrompt, firstMessage, initialContext, language, sessionId }`, the
-fields of `VoiceSessionConfig` in `sources/realtime/types.ts`. The worker
+`{ systemPrompt, firstMessage, initialContext, language, sessionId, voice?, speed? }`,
+the fields of `VoiceSessionConfig` in `sources/realtime/types.ts`, built by
+`buildAgentConfigJson` in `sources/realtime/voiceAgentConfig.ts`. The worker
 combines `systemPrompt` with its own base prompt, adds `initialContext` as a
 context message, speaks `firstMessage` if present, and uses `language` (an ISO
 code such as `en`, from `getVoiceLanguageCode` in
 `sources/constants/Languages.ts`) to pick STT and TTS voices where supported.
-Per-chat voice and speed choices in this answer are upcoming.
 
 The reply may also carry `voice` and `speed` when the user picked a voice
 preset (`sources/realtime/voiceCatalog.ts`): the chat's override in
@@ -210,19 +210,23 @@ happyVoiceSession.ts          Voice stream client (WebSocket, protocol, tools); 
 webVoiceAudio.ts              Web audio: one AudioContext, mic capture and playback worklets
 voiceAudioWorklets.ts         Worklet source: 16 kHz downsampler, PCM16 encoder, VAD, jitter buffer
 RealtimeVoiceSession.web.tsx  Web: HappyVoiceSession + web audio
-RealtimeVoiceSession.tsx      Native: still LiveKit direct (livekitVoiceSession.ts) until it moves to the stream
+nativeVoiceAudio.ts           Native audio on react-native-audio-api: mic capture, DSP, scheduled playback
+RealtimeVoiceSession.tsx      Native: HappyVoiceSession + native audio
 RealtimeProvider(.web).tsx    Wraps the app; a fresh voice component per conversation
 hooks/voiceHooks.ts           Formats app events and routes them to the agent
 hooks/contextFormatters.ts    Text for session context, messages, permissions
 realtimeClientTools.ts        Tools the agent calls over RPC
 voiceSystemPrompt.ts          App-side system prompt sent in happy.getConfig
+voiceAgentConfig.ts           The happy.getConfig reply, including voice and speed
+voiceCatalog.ts               Voice presets and the per-chat / default voice choice
 voiceConfig.ts                Flags and constants
 types.ts                      VoiceSession interface and VoiceSessionConfig
-sync/apiVoice.ts              POST /v1/voice/conversations client (native only)
+sync/apiVoice.ts              POST /v1/voice/conversations client (legacy, unused by the apps)
 ```
 
 `HappyVoiceSession` takes a `HappyVoiceAudio` (`prime`, `start`, `play`,
-`flush`, `stop`), so native only needs its own audio to use the same stream.
+`flush`, `stop`); web passes `webVoiceAudio.ts` and native passes
+`nativeVoiceAudio.ts`, so both use the same stream.
 On web, `prime` runs inside the tap that starts voice (Safari only allows
 audio to start there), the microphone uses echo cancellation and noise
 suppression, and the socket and microphone come up in parallel.

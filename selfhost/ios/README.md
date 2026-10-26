@@ -97,10 +97,11 @@ Voice goes through the Happy server on port 443: the app streams audio to
 LiveKit room for it (see `docs/voice-architecture.md`). LiveKit has no public
 URL, so no router forwards or firewall rules are needed, on Wi-Fi or cellular.
 
-The native app still joins LiveKit directly (through `POST
-/v1/voice/conversations`) and is moving to the voice stream. Once the public
-LiveKit paths are gone (`selfhost/cutover/CUTOVER.md`), voice on the iPhone
-build does not connect until that lands.
+The native app uses the same voice stream as the web app (audio on
+`react-native-audio-api`), so voice on the iPhone build works with LiveKit's
+public paths removed (`selfhost/cutover/CUTOVER.md`). Builds from before the
+native stream joined LiveKit directly and no longer connect; rebuild with
+`selfhost/ios/build.sh`.
 
 ## Troubleshooting
 
