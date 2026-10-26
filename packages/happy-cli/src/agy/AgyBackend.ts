@@ -33,6 +33,16 @@ export type SpawnFn = typeof spawn;
 
 const MAX_AGY_ERROR_DETAIL_CHARS = 2_000;
 
+/**
+ * What an unauthenticated agy prints to stderr in print mode. It then waits 60s
+ * for an OAuth code on stdin, which a headless turn can never supply.
+ */
+const AGY_AUTH_REQUIRED_PATTERN = /Authentication required\. Please visit the URL to log in|You are not logged into Antigravity/;
+
+/** Error shown instead of the OAuth URL when agy has no stored login. */
+export const AGY_LOGIN_REQUIRED_DETAIL =
+  'Antigravity is not signed in on this machine. Run `agy` once in a terminal on this machine and complete the Google sign-in, then send the message again.';
+
 function cleanAgyErrorOutput(value: string): string {
   return value
     .replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, '')
@@ -57,6 +67,10 @@ export interface AgyBackendOptions {
   spawnFn?: SpawnFn;
   /** Optional override for resolving the resume conversation id (tests). */
   resolveConversationId?: (cwd: string) => string | null;
+  /** agy conversation to continue from the first turn (`happy agy --resume <id>`). */
+  conversationId?: string | null;
+  /** Called once the backend knows which agy conversation this session uses. */
+  onConversationId?: (conversationId: string) => void;
 }
 
 /** Parse an agy duration string ("10m", "30s", "1h") to milliseconds; defaults to 10m. */
@@ -74,6 +88,7 @@ export class AgyBackend implements AgentBackend {
   private readonly log: (msg: string) => void;
   private readonly spawnFn: SpawnFn;
   private readonly resolveConversationId: (cwd: string) => string | null;
+  private readonly onConversationId: (conversationId: string) => void;
 
   private permissionMode: PermissionMode;
   private model?: string;
@@ -90,6 +105,13 @@ export class AgyBackend implements AgentBackend {
     this.log = opts.log ?? (() => {});
     this.spawnFn = opts.spawnFn ?? spawn;
     this.resolveConversationId = opts.resolveConversationId ?? readAgyConversationId;
+    this.onConversationId = opts.onConversationId ?? (() => {});
+    this.conversationId = opts.conversationId ?? null;
+  }
+
+  /** The agy conversation this session continues, once known. */
+  getConversationId(): string | null {
+    return this.conversationId;
   }
 
   /** Update the permission mode applied to subsequent turns. */
@@ -112,7 +134,7 @@ export class AgyBackend implements AgentBackend {
     // Deliberately do NOT seed from the cwd conversation cache: it holds whatever
     // conversation last ran in this cwd — possibly another live session's — so
     // seeding would cross-resume it. A fresh session starts a fresh conversation;
-    // resuming a specific one across restarts needs explicit id plumbing (follow-up).
+    // a resumed one is handed its own id explicitly (options.conversationId).
     return { sessionId: this.cwd };
   }
 
@@ -149,6 +171,7 @@ export class AgyBackend implements AgentBackend {
       // Node can fire both 'error' and 'close' on spawn failure; act on the first only.
       let settled = false;
       let stderrTail = '';
+      let authRequired = false;
       const watchdog = setTimeout(() => {
         this.log(`agy turn exceeded ${this.printTimeout}; killing process`);
         child.kill('SIGKILL');
@@ -174,6 +197,12 @@ export class AgyBackend implements AgentBackend {
           this.log(`stderr: ${text}`);
         }
         stderrTail = `${stderrTail}${chunk}`.slice(-MAX_AGY_ERROR_DETAIL_CHARS * 2);
+        if (!authRequired && AGY_AUTH_REQUIRED_PATTERN.test(stderrTail)) {
+          // Without a login agy waits a minute for a code nobody can type here.
+          authRequired = true;
+          this.log('agy is not signed in; stopping the turn');
+          child.kill('SIGTERM');
+        }
       });
 
       child.on('error', (err: Error) => {
@@ -181,7 +210,7 @@ export class AgyBackend implements AgentBackend {
         settled = true;
         cleanup();
         const detail = (err as NodeJS.ErrnoException).code === 'ENOENT'
-          ? `agy executable not found. Install the Antigravity CLI, or set HAPPY_AGY_PATH to its absolute path (tried 'agy' on PATH and ~/.local/bin/agy).`
+          ? `agy executable not found. Install the Antigravity CLI (curl -fsSL https://antigravity.google/cli/install.sh | bash), or set HAPPY_AGY_PATH to its absolute path (tried 'agy' on PATH and ~/.local/bin/agy).`
           : err.message;
         this.emit({ type: 'status', status: 'error', detail });
         reject(err);
@@ -205,12 +234,16 @@ export class AgyBackend implements AgentBackend {
           if (cid && cid !== preTurnCacheId) {
             this.conversationId = cid;
             this.log(`pinned agy conversation ${cid}`);
+            this.onConversationId(cid);
           } else {
             this.log('agy conversation cache unchanged after turn; not adopting (will retry next turn)');
           }
         }
 
-        if (code === 0) {
+        if (authRequired) {
+          this.emit({ type: 'status', status: 'error', detail: AGY_LOGIN_REQUIRED_DETAIL });
+          reject(new Error(AGY_LOGIN_REQUIRED_DETAIL));
+        } else if (code === 0) {
           this.emit({ type: 'status', status: 'idle' });
           resolve();
         } else {
