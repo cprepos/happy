@@ -4,7 +4,7 @@
 SHELL := /bin/bash
 COMPOSE := docker compose --project-directory $(CURDIR) -f $(CURDIR)/docker-compose.yml --env-file $(CURDIR)/.env
 
-.PHONY: help env build up down status logs migrate
+.PHONY: help env build up down status logs migrate webapp-dir
 
 help:
 	@echo "Targets: env build up down status logs migrate"
@@ -17,13 +17,13 @@ env:
 		sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$$(openssl rand -hex 24)/" .env && \
 		chmod 600 .env && echo "Wrote .env"; fi
 
-webapp:
+webapp-dir:
 	@mkdir -p webapp
 
 build: env
 	$(COMPOSE) build happy-server
 
-up: env webapp
+up: env webapp-dir
 	$(COMPOSE) up -d --build postgres happy-server
 
 down:
