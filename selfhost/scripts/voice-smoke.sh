@@ -3,7 +3,8 @@
 #  1. LiveKit: HTTP health + token-based room join that publishes an audio track
 #  2. TTS:     Kokoro streaming synthesis, time-to-first-byte
 #  3. STT:     stream the TTS audio in real time over the websocket, print partials + final
-#  4. LLM:     tool-call completion (sendMessageToSession) + TTFT and tokens/s
+#  4. LLM:     tool-call completion (sendMessageToSession) + TTFT and tokens/s against the
+#              worker's LLM (VOICE_LLM_BASE_URL / VOICE_LLM_MODEL, default: the coder vLLM)
 #
 # Uses a throwaway venv in ${VOICE_SMOKE_VENV:-~/.cache/happy-voice-smoke-venv}.
 # Exit code is non-zero if any check fails.
@@ -38,8 +39,8 @@ E = os.environ
 OUT = E["SMOKE_OUT"]
 STT = f"127.0.0.1:{E.get('STT_PORT', '8090')}"
 TTS = f"http://127.0.0.1:{E.get('TTS_PORT', '8880')}"
-LLM = f"http://127.0.0.1:{E.get('LLM_PORT', '8000')}"
-LLM_NAME = E.get("LLM_SERVED_NAME", "voice-llm")
+LLM = (E.get("VOICE_LLM_BASE_URL") or "http://127.0.0.1:9080/v1").rstrip("/")
+LLM_NAME = E.get("VOICE_LLM_MODEL") or "coder"
 SENTENCE = "Hey, tell Claude to list the files in the source directory and then run the tests."
 
 results: dict[str, str] = {}
@@ -246,7 +247,7 @@ SYSTEM = ("You are a concise voice assistant that controls coding sessions. The 
 
 def llm_check():
     try:
-        models = httpx.get(f"{LLM}/v1/models", timeout=5).json()
+        models = httpx.get(f"{LLM}/models", timeout=5).json()
         ok("llm.models", ", ".join(m["id"] for m in models["data"]))
     except Exception as e:
         return fail("llm.models", repr(e))
@@ -255,12 +256,13 @@ def llm_check():
     try:
         body = {"model": LLM_NAME, "stream": True, "temperature": 0.2, "max_tokens": 200,
                 "stream_options": {"include_usage": True},
+                "chat_template_kwargs": {"enable_thinking": False},
                 "messages": [{"role": "system", "content": SYSTEM},
                              {"role": "user", "content": "Tell Claude to list the files in the src directory."}],
                 "tools": TOOLS, "tool_choice": "auto"}
         t0 = time.perf_counter(); ttft = None
         name, args, content = None, "", ""
-        with httpx.stream("POST", f"{LLM}/v1/chat/completions", json=body, timeout=120) as r:
+        with httpx.stream("POST", f"{LLM}/chat/completions", json=body, timeout=120) as r:
             r.raise_for_status()
             for line in r.iter_lines():
                 if not line.startswith("data: ") or line == "data: [DONE]":
@@ -287,10 +289,11 @@ def llm_check():
     try:
         body = {"model": LLM_NAME, "stream": True, "temperature": 0.7, "max_tokens": 300,
                 "stream_options": {"include_usage": True},
+                "chat_template_kwargs": {"enable_thinking": False},
                 "messages": [{"role": "system", "content": SYSTEM},
                              {"role": "user", "content": "Explain in a few short paragraphs what a git rebase does."}]}
         t0 = time.perf_counter(); ttft = None; t_last = None; usage = None; text = ""
-        with httpx.stream("POST", f"{LLM}/v1/chat/completions", json=body, timeout=120) as r:
+        with httpx.stream("POST", f"{LLM}/chat/completions", json=body, timeout=120) as r:
             r.raise_for_status()
             for line in r.iter_lines():
                 if not line.startswith("data: ") or line == "data: [DONE]":
