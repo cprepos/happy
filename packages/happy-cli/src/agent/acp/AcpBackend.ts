@@ -107,6 +107,7 @@ import {
   handlePlanUpdate,
   handleThinkingUpdate,
 } from './sessionUpdateHandlers';
+import { buildPermissionInputFromRawInput, selectAcpPermissionOptionId } from './permissionOptions';
 
 /**
  * Extended RequestPermissionRequest with additional fields that may be present
@@ -119,6 +120,8 @@ type ExtendedRequestPermissionRequest = RequestPermissionRequest & {
     input?: Record<string, unknown>;
     arguments?: Record<string, unknown>;
     content?: Record<string, unknown>;
+    rawInput?: Record<string, unknown>;
+    title?: string;
   };
   kind?: string;
   input?: Record<string, unknown>;
@@ -577,7 +580,7 @@ export class AcpBackend implements AgentBackend {
           // Extract input/arguments from various possible locations FIRST (before checking toolName)
           let input: Record<string, unknown> = {};
           if (toolCall) {
-            input = toolCall.input || toolCall.arguments || toolCall.content || {};
+            input = toolCall.input || toolCall.arguments || buildPermissionInputFromRawInput(toolCall) || toolCall.content || {};
           } else {
             // If no toolCall, try to extract from params directly
             input = extendedParams.input || extendedParams.arguments || extendedParams.content || {};
@@ -637,71 +640,30 @@ export class AcpBackend implements AgentBackend {
                 input
               );
               
-              // Map permission decision to ACP response
-              // ACP uses optionId from the request options
-              let optionId = 'cancel'; // Default to cancel/deny
-              
-              if (result.decision === 'approved' || result.decision === 'approved_for_session') {
-                // Find the appropriate optionId from the request options
-                // Look for 'proceed_once' or 'proceed_always' in options
-                const proceedOnceOption = options.find((opt: any) => 
-                  opt.optionId === 'proceed_once' || opt.name?.toLowerCase().includes('once')
-                );
-                const proceedAlwaysOption = options.find((opt: any) => 
-                  opt.optionId === 'proceed_always' || opt.name?.toLowerCase().includes('always')
-                );
-                
-                if (result.decision === 'approved_for_session' && proceedAlwaysOption) {
-                  optionId = proceedAlwaysOption.optionId || 'proceed_always';
-                } else if (proceedOnceOption) {
-                  optionId = proceedOnceOption.optionId || 'proceed_once';
-                } else if (options.length > 0) {
-                  // Fallback to first option if no specific match
-                  optionId = options[0].optionId || 'proceed_once';
-                }
-                
-                // Emit tool-result with permissionId so UI can close the timer
-                // This is needed because tool_call_update comes with a different ID
-                this.emit({
-                  type: 'tool-result',
-                  toolName,
-                  result: { status: 'approved', decision: result.decision },
-                  callId: permissionId,
-                });
-              } else {
-                // Denied or aborted - find cancel option
-                const cancelOption = options.find((opt: any) => 
-                  opt.optionId === 'cancel' || opt.name?.toLowerCase().includes('cancel')
-                );
-                if (cancelOption) {
-                  optionId = cancelOption.optionId || 'cancel';
-                }
-                
-                // Emit tool-result for denied/aborted
-                this.emit({
-                  type: 'tool-result',
-                  toolName,
-                  result: { status: 'denied', decision: result.decision },
-                  callId: permissionId,
-                });
-              }
-              
+              // Map permission decision to one of the options the agent offered
+              const optionId = selectAcpPermissionOptionId(options, result.decision);
+              const approved = result.decision === 'approved' || result.decision === 'approved_for_session';
+
+              // Emit tool-result with permissionId so UI can close the timer
+              // This is needed because tool_call_update comes with a different ID
+              this.emit({
+                type: 'tool-result',
+                toolName,
+                result: { status: approved ? 'approved' : 'denied', decision: result.decision },
+                callId: permissionId,
+              });
+
               return { outcome: { outcome: 'selected', optionId } };
             } catch (error) {
               // Log to file only, not console
               logger.debug('[AcpBackend] Error in permission handler:', error);
               // Fallback to deny on error
-              return { outcome: { outcome: 'selected', optionId: 'cancel' } };
+              return { outcome: { outcome: 'selected', optionId: selectAcpPermissionOptionId(options, 'denied') } };
             }
           }
           
-          // Auto-approve with 'proceed_once' if no permission handler
-          // optionId must match one from the request options (e.g., 'proceed_once', 'proceed_always', 'cancel')
-          const proceedOnceOption = options.find((opt) => 
-            opt.optionId === 'proceed_once' || (typeof opt.name === 'string' && opt.name.toLowerCase().includes('once'))
-          );
-          const defaultOptionId = proceedOnceOption?.optionId || (options.length > 0 && options[0].optionId ? options[0].optionId : 'proceed_once');
-          return { outcome: { outcome: 'selected', optionId: defaultOptionId } };
+          // Auto-approve once if no permission handler
+          return { outcome: { outcome: 'selected', optionId: selectAcpPermissionOptionId(options, 'approved') } };
         },
       };
 
