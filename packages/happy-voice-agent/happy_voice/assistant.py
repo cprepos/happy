@@ -35,6 +35,7 @@ from .prompt import (
     SKIP_TURN_SCHEMA,
     build_instructions,
 )
+from .voices import fetch_known_voices, resolve_tts
 
 logger = logging.getLogger("happy-voice")
 
@@ -51,6 +52,12 @@ RPC_GET_CONFIG = "happy.getConfig"
 _SCRIPTED_REPLY_RE = re.compile(r"\[\s*DO NOT say anything else,\s*simply say\s*'([^']{1,80})'\s*\]\s*$")
 
 
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
 @dataclass
 class VoiceConfig:
     system_prompt: str = ""
@@ -58,6 +65,9 @@ class VoiceConfig:
     initial_context: str = ""
     language: str = "en"
     session_id: str = ""
+    # per-chat TTS choice from the app; validated in voices.resolve_tts
+    voice: str | None = None
+    speed: float | None = None
 
     @classmethod
     def from_json(cls, raw: str) -> VoiceConfig:
@@ -75,6 +85,8 @@ class VoiceConfig:
             initial_context=s("initialContext"),
             language=s("language") or "en",
             session_id=s("sessionId"),
+            voice=s("voice").strip() or None,
+            speed=_number(data.get("speed")),
         )
 
 
@@ -282,10 +294,16 @@ async def entrypoint(ctx: JobContext) -> None:
 
     config = await _fetch_config(ctx.room, participant.identity, settings.config_timeout)
     state.focused_session = config.session_id
+    known_voices = None
+    if config.voice is not None:
+        known_voices = await fetch_known_voices(settings.tts_url)
+    tts_voice, tts_speed = resolve_tts(settings, config.language, config.voice, config.speed, known_voices)
     logger.info(
-        "config: session=%s language=%s prompt=%d chars context=%d chars first=%r",
+        "config: session=%s language=%s voice=%s speed=%.2f prompt=%d chars context=%d chars first=%r",
         config.session_id,
         config.language,
+        tts_voice,
+        tts_speed,
         len(config.system_prompt),
         len(config.initial_context),
         config.first_message,
@@ -318,8 +336,8 @@ async def entrypoint(ctx: JobContext) -> None:
             base_url=settings.tts_url,
             api_key="not-needed",
             model="kokoro",
-            voice=settings.voice_for(config.language),
-            speed=settings.tts_speed,
+            voice=tts_voice,
+            speed=tts_speed,
             response_format="pcm",
         ),
         turn_handling={
