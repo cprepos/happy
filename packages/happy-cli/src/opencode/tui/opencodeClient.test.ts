@@ -79,6 +79,26 @@ describe('OpencodeClient', () => {
         expect(JSON.parse(stub.requests[2].body)).toEqual({ reply: 'always' });
     });
 
+    it('lists, answers and dismisses questions', async () => {
+        const stub = await startStub((req, res) => {
+            res.setHeader('content-type', 'application/json');
+            res.end(req.method === 'GET' ? JSON.stringify([{ id: 'que_1', sessionID: 'ses_1', questions: [] }]) : 'true');
+        });
+        servers.push(stub.server);
+        const client = new OpencodeClient({ url: stub.url, password: 'pw', directory: '/tmp' });
+
+        expect(await client.listQuestions()).toEqual([{ id: 'que_1', sessionID: 'ses_1', questions: [] }]);
+        await client.replyQuestion('que_1', [['Red'], ['a', 'b']]);
+        await client.rejectQuestion('que_2');
+
+        expect(stub.requests.map((r) => `${r.method} ${r.path}`)).toEqual([
+            'GET /question',
+            'POST /question/que_1/reply',
+            'POST /question/que_2/reject',
+        ]);
+        expect(JSON.parse(stub.requests[1].body)).toEqual({ answers: [['Red'], ['a', 'b']] });
+    });
+
     it('raises OpencodeHttpError with the status on failures and reports health', async () => {
         const stub = await startStub((_req, res) => {
             res.statusCode = 401;

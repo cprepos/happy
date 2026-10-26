@@ -23,6 +23,16 @@ export type OpencodeEvent = {
 
 export type OpencodePermissionReply = 'once' | 'always' | 'reject';
 
+/** One question of an OpenCode `question` tool call (OpenCode 1.19 `Question.Info`). */
+export type OpencodeQuestion = {
+    question: string;
+    header: string;
+    options: Array<{ label: string; description?: string }>;
+    multiple?: boolean;
+    /** Whether a typed answer is allowed; OpenCode treats a missing value as true. */
+    custom?: boolean;
+};
+
 export type OpencodeMirrorAction =
     | { type: 'envelopes'; envelopes: SessionEnvelope[] }
     /** The followed session started working. */
@@ -32,6 +42,14 @@ export type OpencodeMirrorAction =
     /** `toolCallId` is the call id the tool-call envelopes use, so the app can join them. */
     | { type: 'permission-asked'; id: string; toolName: string; input: Record<string, unknown>; toolCallId?: string }
     | { type: 'permission-replied'; id: string; reply: OpencodePermissionReply }
+    /**
+     * The `question` tool is waiting for the user. `toolCallId` is set only
+     * for questions of the followed session, whose tool call the app shows;
+     * a sub-agent's question has no card to join.
+     */
+    | { type: 'question-asked'; id: string; questions: OpencodeQuestion[]; toolCallId?: string }
+    /** Answered (from the TUI, or our own reply echoed back) or dismissed. `answers` is per question, in order. */
+    | { type: 'question-resolved'; id: string; status: 'answered' | 'cancelled'; answers?: string[][] }
     | { type: 'title'; title: string }
     /** The TUI moved to another top-level session; the mirror follows it. */
     | { type: 'session-changed'; sessionId: string }
@@ -241,6 +259,22 @@ export class OpencodeEventMapper {
             case 'permission.replied':
                 if (!this.isFollowedSession(props.sessionID) || typeof props.requestID !== 'string') return [];
                 return [{ type: 'permission-replied', id: props.requestID, reply: props.reply }];
+            case 'question.asked':
+                return this.handleQuestionAsked(props);
+            // Resolutions are not filtered by session: the runner only acts on
+            // ids it is showing, and a question of a session the TUI moved
+            // away from must still close in the app.
+            case 'question.replied':
+                if (typeof props.requestID !== 'string') return [];
+                return [{
+                    type: 'question-resolved',
+                    id: props.requestID,
+                    status: 'answered',
+                    ...(Array.isArray(props.answers) ? { answers: props.answers } : {}),
+                }];
+            case 'question.rejected':
+                if (typeof props.requestID !== 'string') return [];
+                return [{ type: 'question-resolved', id: props.requestID, status: 'cancelled' }];
             default:
                 return [];
         }
@@ -555,5 +589,31 @@ export class OpencodeEventMapper {
             input,
             ...(toolCallId ? { toolCallId } : {}),
         }];
+    }
+
+    private handleQuestionAsked(props: any): OpencodeMirrorAction[] {
+        if (!this.isFollowedSession(props.sessionID) || typeof props.id !== 'string' || !Array.isArray(props.questions)) {
+            return [];
+        }
+        const questions: OpencodeQuestion[] = props.questions
+            .filter((q: any) => q && typeof q.question === 'string')
+            .map((q: any) => ({
+                question: q.question,
+                header: typeof q.header === 'string' ? q.header : '',
+                options: Array.isArray(q.options)
+                    ? q.options
+                        .filter((option: any) => option && typeof option.label === 'string')
+                        .map((option: any) => ({
+                            label: option.label,
+                            ...(typeof option.description === 'string' ? { description: option.description } : {}),
+                        }))
+                    : [],
+                ...(typeof q.multiple === 'boolean' ? { multiple: q.multiple } : {}),
+                ...(typeof q.custom === 'boolean' ? { custom: q.custom } : {}),
+            }));
+        const toolCallId = props.sessionID === this.currentSessionId && typeof props.tool?.callID === 'string'
+            ? props.tool.callID
+            : undefined;
+        return [{ type: 'question-asked', id: props.id, questions, ...(toolCallId ? { toolCallId } : {}) }];
     }
 }

@@ -5,8 +5,8 @@
  * password) and runs `opencode attach` against it in the user's terminal.
  * Everything that happens in the OpenCode session, whoever caused it, is
  * read from the server's event stream and mirrored to the Happy session;
- * prompts and permission answers from the app are posted to the same
- * server, so the TUI shows them live.
+ * prompts, permission answers and answers to OpenCode's questions from the
+ * app are posted to the same server, so the TUI shows them live.
  *
  * Lifetimes:
  * - Quitting the TUI ends the session (server stopped, session inactive but
@@ -46,6 +46,7 @@ import { connectionState } from '@/utils/serverConnectionErrors';
 import { createOpencodeMessageId, OpencodeClient, type OpencodeSessionInfo } from './opencodeClient';
 import { OpencodeEventMapper, type OpencodeMirrorAction } from './opencodeEventMapper';
 import { OpencodePermissionBridge } from './opencodePermissionBridge';
+import { OpencodeQuestionBridge } from './opencodeQuestionBridge';
 import { OpencodePermissionRouter } from './opencodePermissionPolicy';
 import {
     attachOpencodeTui,
@@ -280,6 +281,7 @@ export async function runOpencodeTui(opts: {
 
     let session: ApiSessionClient;
     let permissions: OpencodePermissionBridge | null = null;
+    let questionBridge: OpencodeQuestionBridge | null = null;
     const { session: initialSession, reconnectionHandle } = setupOfflineReconnection({
         api,
         sessionTag,
@@ -289,6 +291,7 @@ export async function runOpencodeTui(opts: {
         onSessionSwap: (newSession) => {
             session = newSession;
             permissions?.updateSession(newSession);
+            questionBridge?.updateSession(newSession);
         },
     });
     session = initialSession;
@@ -360,6 +363,13 @@ export async function runOpencodeTui(opts: {
     permissions = new OpencodePermissionBridge(session, (id, reply) => client.replyPermission(id, reply));
     permissions.reset('Previous CLI process exited before responding');
     const bridge = permissions;
+    // Questions are never answered on the user's behalf, whatever the permission policy.
+    questionBridge = new OpencodeQuestionBridge(session, {
+        reply: (id, answers) => client.replyQuestion(id, answers),
+        reject: (id) => client.rejectQuestion(id),
+    });
+    questionBridge.reset();
+    const questions = questionBridge;
     const router = new OpencodePermissionRouter(launchPolicy, {
         ask: (request) => bridge.ask(request),
         reply: (id, reply) => client.replyPermission(id, reply),
@@ -429,6 +439,12 @@ export async function runOpencodeTui(opts: {
             case 'permission-replied':
                 bridge.resolveExternally(action.id, action.reply);
                 break;
+            case 'question-asked':
+                questions.ask(action);
+                break;
+            case 'question-resolved':
+                questions.resolveExternally(action.id, action.status, action.answers);
+                break;
             case 'title':
                 session.sendClaudeSessionMessage({ type: 'summary', summary: action.title, leafUuid: randomUUID() });
                 break;
@@ -442,8 +458,8 @@ export async function runOpencodeTui(opts: {
         }
     };
 
-    // Pick up requests raised while the event stream was down.
-    const syncPermissions = async () => {
+    // Pick up permission requests and questions raised while the event stream was down.
+    const syncPending = async () => {
         try {
             const pending = await client.listPermissions();
             for (const request of pending) {
@@ -454,12 +470,29 @@ export async function runOpencodeTui(opts: {
         } catch (error) {
             logger.debug('[OpenCode] Could not list pending permissions:', error);
         }
+        try {
+            const pending = await client.listQuestions();
+            for (const request of pending) {
+                for (const action of mapper.handle({ type: 'question.asked', properties: request })) {
+                    apply(action);
+                }
+            }
+            // Questions answered or dismissed while the stream was down.
+            const open = new Set(pending.map((request) => request.id));
+            for (const id of questions.pendingIds()) {
+                if (!open.has(id)) {
+                    questions.resolveExternally(id, 'cancelled');
+                }
+            }
+        } catch (error) {
+            logger.debug('[OpenCode] Could not list pending questions:', error);
+        }
     };
 
     const events = new AbortController();
     const streaming = client.streamEvents({
         signal: events.signal,
-        onConnected: () => { void syncPermissions(); },
+        onConnected: () => { void syncPending(); },
         onEvent: (event) => {
             const before = mapper.sessionId;
             for (const action of mapper.handle(event)) {
@@ -497,6 +530,7 @@ export async function runOpencodeTui(opts: {
 
     session.rpcHandlerManager.registerHandler('abort', async () => {
         bridge.abortAll();
+        questions.rejectAll();
         await client.abort(mapper.sessionId).catch((error) => logger.debug('[OpenCode] Abort failed:', error));
     });
 
@@ -529,6 +563,7 @@ export async function runOpencodeTui(opts: {
                 session.sendSessionProtocolMessage(envelope);
             }
             bridge.reset(reason);
+            questions.reset();
         } catch (error) {
             logger.debug('[OpenCode] Failed to close the turn:', error);
         }
