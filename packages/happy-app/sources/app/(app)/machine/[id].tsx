@@ -317,6 +317,17 @@ export default function MachineDetailScreen() {
                                 </Text>
                             }
                         />
+                        {metadata.cliAvailability.opencode !== undefined && (
+                            <Item
+                                title="OpenCode"
+                                showChevron={false}
+                                rightElement={
+                                    <Text style={{ color: metadata.cliAvailability.opencode ? '#34C759' : theme.colors.textSecondary, fontSize: 14 }}>
+                                        {metadata.cliAvailability.opencode ? t('machine.cliInstalled') : t('machine.cliNotFound')}
+                                    </Text>
+                                }
+                            />
+                        )}
                         {metadata.cliAvailability.rig !== undefined && (
                             <Item
                                 title="Rig"

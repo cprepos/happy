@@ -119,7 +119,7 @@ interface AgentInputProps {
     /** Plan quota windows from agent state, for the week stat and its popup. */
     sessionStatusUsageLimits?: UsageLimitsLike | null;
     onFileViewerPress?: () => void;
-    agentType?: 'claude' | 'codex' | 'gemini' | 'openclaw' | 'agy';
+    agentType?: 'claude' | 'codex' | 'gemini' | 'openclaw' | 'agy' | 'opencode';
     onAgentClick?: () => void;
     machineName?: string | null;
     onMachineClick?: () => void;
