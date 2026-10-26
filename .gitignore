@@ -79,3 +79,7 @@ happy-workspaces/
 
 .context/
 .happy-tmp/
+
+# Self-host deployment (secrets and generated webapp bundle)
+selfhost/.env
+selfhost/webapp/
