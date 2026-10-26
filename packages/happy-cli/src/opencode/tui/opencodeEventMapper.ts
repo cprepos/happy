@@ -166,6 +166,19 @@ export class OpencodeEventMapper {
         return this.manager.endTurn(status);
     }
 
+    /**
+     * Forward the finished paragraphs of the text or reasoning streaming
+     * right now. The runner calls this on a timer: the app cannot grow a
+     * message in place, so text otherwise reaches it only when the part ends
+     * (a tool call, the switch from reasoning to text, or the end of the turn).
+     */
+    flushStreamingText(): OpencodeMirrorAction[] {
+        if (!this.turnOpen) {
+            return [];
+        }
+        return this.envelopes(this.manager.flushCompleteParagraphs());
+    }
+
     handle(event: OpencodeEvent): OpencodeMirrorAction[] {
         const props = event.properties ?? {};
         switch (event.type) {

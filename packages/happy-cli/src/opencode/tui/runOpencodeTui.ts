@@ -52,6 +52,9 @@ import {
 } from './opencodeProcesses';
 import { buildOpencodePickers, opencodePromptOptions } from './opencodeSessionConfig';
 
+/** How often streamed text is checked for finished paragraphs to forward. */
+const STREAM_FLUSH_MS = 1000;
+
 /** How long to wait after the TUI exits for a SIGHUP that explains it. */
 const HANGUP_SETTLE_MS = 300;
 
@@ -384,6 +387,11 @@ export async function runOpencodeTui(opts: {
 
     sendKeepAlive();
     const keepAliveInterval = setInterval(sendKeepAlive, 2000);
+    const streamFlushInterval = setInterval(() => {
+        for (const action of mapper.flushStreamingText()) {
+            apply(action);
+        }
+    }, STREAM_FLUSH_MS);
 
     // --- Shutdown ---------------------------------------------------------
     let resolveDone!: () => void;
@@ -397,6 +405,7 @@ export async function runOpencodeTui(opts: {
         logger.debug(`[OpenCode] Ending session: ${reason} (archive=${archive})`);
         closeTui();
         clearInterval(keepAliveInterval);
+        clearInterval(streamFlushInterval);
         reconnectionHandle?.cancel();
         events.abort();
         try {
