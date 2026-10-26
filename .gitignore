@@ -88,3 +88,7 @@ happy-workspaces/
 # Self-host deployment (secrets and generated webapp bundle)
 selfhost/.env
 selfhost/webapp/
+# Self-host iOS build config (contains Apple team ID)
+/selfhost/ios/.env.ios
+# Local trash for moved-aside build outputs
+/trash/
