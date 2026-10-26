@@ -547,6 +547,7 @@ export const ca: TranslationStructure = {
         ownAnswerPlaceholder: "Escriu una resposta",
         submitFailed: "No s'ha pogut enviar la resposta",
         dismiss: "Descarta",
+        dismissed: "Descartada",
         unsupportedTitle: "Sol·licitud no compatible",
         unsupportedDescription: ({ kind }: { kind: string }) => `Aquesta versió de Happy no pot mostrar una sol·licitud «${kind}». Actualitza l'app per respondre.`,
         moreQuestions: ({ count }: { count: number }) =>

@@ -580,6 +580,7 @@ export const en = {
         ownAnswerPlaceholder: 'Write an answer instead',
         submitFailed: 'Could not send your answer',
         dismiss: 'Dismiss',
+        dismissed: 'Dismissed',
         unsupportedTitle: 'Unsupported request',
         unsupportedDescription: ({ kind }: { kind: string }) =>
             `This version of Happy cannot show a "${kind}" request. Update the app to respond.`,

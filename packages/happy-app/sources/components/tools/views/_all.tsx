@@ -52,6 +52,8 @@ export const toolViewRegistry: Record<string, ToolViewComponent> = {
     Agent: TaskView,
     AskUserQuestion: AskUserQuestionView,
     request_user_input: RequestUserInputView,
+    // OpenCode's question tool; the form arrives as an agent communication.
+    question: RequestUserInputView,
     // Gemini tools (lowercase)
     edit: GeminiEditView,
     execute: GeminiExecuteView,

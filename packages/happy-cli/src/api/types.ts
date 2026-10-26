@@ -439,4 +439,60 @@ export type AgentState = {
     }
   }
   agentGoalStatus?: AgentGoalStatus
+  /**
+   * Agent-to-user communications (questions the agent asks), keyed by
+   * request id. Separate from permission requests: a permission gates an
+   * action, a communication asks for information. The app answers through
+   * the `communication` session RPC (`AgentCommunicationReply`).
+   */
+  communications?: {
+    [id: string]: AgentCommunication
+  }
+  completedCommunications?: {
+    [id: string]: AgentCommunication & {
+      completedAt: number,
+      status: 'answered' | 'cancelled',
+      answers?: Record<string, AgentQuestionAnswer>
+    }
+  }
+}
+
+export type AgentQuestion = {
+  id: string,
+  header: string,
+  question: string,
+  options: Array<{ label: string, description?: string }>,
+  multiSelect?: boolean,
+  /** Lets the user write an answer the agent did not offer. */
+  allowCustom?: boolean,
+  /** When false the user may submit without choosing anything. */
+  required?: boolean
+}
+
+export type AgentCommunication = {
+  /** Only `form` today; the app shows unknown kinds as not answerable here. */
+  kind: string,
+  createdAt: number,
+  /** Joins the communication to the tool call that raised it, when there is one. */
+  toolUseId?: string,
+  /**
+   * False when no transcript tool call shows this communication (e.g. a
+   * sub-agent's question), so the app answers it from its banner instead.
+   */
+  inTranscript?: boolean,
+  title?: string,
+  form?: { questions: AgentQuestion[] }
+}
+
+export type AgentQuestionAnswer = {
+  options: string[],
+  custom?: string
+}
+
+/** Payload of the `communication` session RPC sent by the app. */
+export type AgentCommunicationReply = {
+  id: string,
+  kind: string,
+  status: 'answered' | 'cancelled',
+  answers?: Record<string, AgentQuestionAnswer>
 }
