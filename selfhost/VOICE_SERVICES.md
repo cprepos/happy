@@ -34,13 +34,13 @@ The router must forward **TCP 7881** and **UDP 7882** to this host for clients o
 
 | GPU | Use | Memory (measured) |
 |---|---|---|
-| 0 (3090) | STT (~5 GB), TTS (~1 GB), vLLM rank 0 (~16.7 GB) | ~23.5 / 24.6 GB |
-| 1 (3090 Ti) | vLLM rank 1 | ~16.9 / 24.6 GB |
+| 0 (3090) | STT (~1.6 GB in bf16; was ~5.1 GB in fp32), TTS (~1.5 GB) | ~3 / 24.6 GB |
+| 1 (3090 Ti) | free (the retired local voice LLM used it) | - |
 | 2, 3 | Taken by a separate, pre-existing vLLM systemd service (`qwen38-27b-fp8-tp2-vllm`) | full |
 
 The voice LLM is now the host's existing `coder` vLLM on GPUs 2-3 (systemd; never restarted or
-reconfigured from here). The `vllm-openai` rows for GPUs 0-1 apply only when the old local voice LLM
-is started on purpose: it sits behind the compose profile `local-llm`, so `make voice-up` no longer
+reconfigured from here). The old local voice LLM (`vllm-openai`, ~16.9 GB on each of GPUs 0 and 1) is
+retired and runs only when started on purpose: it sits behind the compose profile `local-llm`, so `make voice-up` no longer
 starts it. Opt in with `make voice-up SVC=llm` (or `--profile local-llm`), then point
 `VOICE_LLM_BASE_URL=http://127.0.0.1:8000/v1` and `VOICE_LLM_MODEL=voice-llm` at it. It starts only
 after STT and TTS are healthy and takes `LLM_GPU_MEM_UTIL=0.68` of each GPU. The `vllm-cache`
@@ -61,7 +61,7 @@ No LiveKit plugin speaks to Nemotron directly, so this is a small custom server
 that relays audio frames to the websocket below.
 
 ### `GET /health`
-`200 {"status":"ok","model":"nvidia/nemotron-speech-streaming-en-0.6b","sample_rate":16000,"chunk_ms":160,"att_context_size":[70,1],"device":"cuda"}`; `503 {"status":"loading"}` while the model loads.
+`200 {"status":"ok","model":"nvidia/nemotron-speech-streaming-en-0.6b","sample_rate":16000,"chunk_ms":160,"att_context_size":[70,1],"device":"cuda","dtype":"bf16"}`; `503 {"status":"loading"}` while the model loads.
 
 ### `WS /v1/stream?sample_rate=16000[&endpoint_ms=0][&interim_results=true]`
 - **In, binary:** raw PCM16 little-endian, mono, 16 kHz, any frame size (20 ms = 640 bytes is typical). Resample LiveKit's 48 kHz frames before sending (`rtc.AudioResampler`).
@@ -77,6 +77,12 @@ that relays audio frames to the websocket below.
 - `endpoint_ms` > 0 turns on a simple server-side endpoint: a `final` is sent after the transcript has not changed for that many ms of audio. Leave it at 0 when the worker has Silero VAD and the turn detector, and use `flush` instead.
 - Output is cased and punctuated. Each socket has its own decoder state; GPU steps from all sockets share one lock, and each step takes about 10-20 ms.
 - Latency setting: `STT_RIGHT_CONTEXT` (0 = 80 ms chunks, 1 = 160 ms [default], 6 = 560 ms, 13 = 1120 ms; larger is more accurate).
+- Precision: `STT_DTYPE` (`bf16` [default] or `fp32`). bf16 runs the conformer encoder in bfloat16; the
+  mel preprocessor and the RNNT decoder + joint stay in fp32. VRAM per process (nvidia-smi): about
+  1.6 GB in bf16 against 2.8 GB in fp32 (5.1 GB before the model was loaded on the CPU first and the
+  allocator was set to `expandable_segments`), unchanged with two concurrent streams. On 24 Kokoro clips
+  (12 coding sentences, 6 voices, 134 s) bf16 and fp32 give word-for-word identical transcripts
+  (2.2% WER streaming and file) with the same latency.
 
 ### `POST /v1/audio/transcriptions` (OpenAI-style)
 multipart `file` (any format libsndfile reads; resampled to 16 kHz), optional `response_format=text`.
@@ -128,8 +134,8 @@ Result: `sendMessageToSession({"sessionId":"sess_42","message":"List the files i
 | LiveKit token join + publish via `wss://livekit.girthbass.duckdns.org` | 1.0 s |
 | TTS time to first audio byte (streamed PCM) | 106-165 ms, flat from 1 to 20 sentences |
 | TTS throughput | 105.6 s of audio in 1.35 s (RTF ~0.013) |
-| STT partial lag behind real-time audio | avg 55 ms, max 82 ms (160 ms chunks) |
-| STT final after `flush` (end of audio) | ~80-110 ms |
+| STT partial lag behind real-time audio | avg 55 ms, max 82 ms (160 ms chunks); bf16 2026-10-26: avg 43 ms, max 64 ms |
+| STT final after `flush` (end of audio) | ~80-110 ms; bf16 2026-10-26: avg 95 ms, max 114 ms |
 | STT accuracy on TTS sample | 0% WER streaming |
 | STT whole file (4.7 s) | 144 ms |
 | LLM time to first token (71-token prompt) | 81 ms |
