@@ -30,8 +30,16 @@ export const realtimeClientTools = {
         }
 
         const { sessionId, message } = parsed.data;
+        // The model can invent a session id; refuse it instead of reporting success.
+        if (!storage.getState().sessions[sessionId]) {
+            console.error('❌ Unknown session:', sessionId);
+            return "error (unknown session id; use a sessionId from the session list in your context)";
+        }
         console.log('📤 Sending message to session:', sessionId);
-        await sync.sendMessage(sessionId, message, { source: 'voice' });
+        const sent = await sync.sendMessage(sessionId, message, { source: 'voice' });
+        if (!sent) {
+            return "error (the message could not be sent to the session)";
+        }
         incrementVoiceMessageCount();
         const voiceMessageCount = getVoiceMessageCount();
         if (isVoiceSessionStarted()) {

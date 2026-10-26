@@ -31,6 +31,8 @@ const AGENT_STATE_ATTRIBUTE = 'lk.agent.state';
 
 const MAX_QUEUED_MESSAGES = 100;
 const USER_SILENCE_MS = 300;
+/** How long an RPC from a not-yet-known participant waits for it to appear. */
+const AGENT_LOOKUP_TIMEOUT_MS = 3000;
 
 /** What differs between native and web. */
 export interface LiveKitVoicePlatform {
@@ -177,16 +179,24 @@ export class LiveKitVoiceSession implements VoiceSession {
     }
 
     private registerRpc(room: Room) {
-        // Only the dispatched agent may drive the client tools.
-        const fromAgent = (data: RpcInvocationData) => {
-            const caller = room.remoteParticipants.get(data.callerIdentity);
+        // Only the dispatched agent may drive the client tools. The agent calls
+        // happy.getConfig as soon as it sees us, and that RPC (data channel) can
+        // arrive before the signaling update that adds the agent to
+        // remoteParticipants, so give an unknown caller a moment to show up.
+        const fromAgent = async (data: RpcInvocationData) => {
+            const deadline = Date.now() + AGENT_LOOKUP_TIMEOUT_MS;
+            let caller = room.remoteParticipants.get(data.callerIdentity);
+            while (!caller && Date.now() < deadline && room.state !== ConnectionState.Disconnected) {
+                await new Promise((resolve) => setTimeout(resolve, 50));
+                caller = room.remoteParticipants.get(data.callerIdentity);
+            }
             if (!caller?.isAgent) {
                 throw new RpcError(2403, 'caller is not the voice agent');
             }
         };
 
         room.registerRpcMethod(VOICE_RPC_GET_CONFIG, async (data) => {
-            fromAgent(data);
+            await fromAgent(data);
             const config = this.config;
             return JSON.stringify({
                 systemPrompt: config?.systemPrompt ?? '',
@@ -198,12 +208,12 @@ export class LiveKitVoiceSession implements VoiceSession {
         });
 
         room.registerRpcMethod('sendMessageToSession', async (data) => {
-            fromAgent(data);
+            await fromAgent(data);
             return realtimeClientTools.sendMessageToSession(parsePayload(data.payload));
         });
 
         room.registerRpcMethod('processPermissionRequest', async (data) => {
-            fromAgent(data);
+            await fromAgent(data);
             return realtimeClientTools.processPermissionRequest(parsePayload(data.payload));
         });
     }
