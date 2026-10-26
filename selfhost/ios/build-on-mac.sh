@@ -165,7 +165,7 @@ mac_check_xcode() {
     [[ "$dev_dir" == *.app/Contents/Developer ]] \
         || die "xcode-select points at '${dev_dir:-nothing}', not Xcode. On the Mac run:
     sudo xcode-select -s /Applications/Xcode.app/Contents/Developer"
-    xver="$(xcodebuild -version 2>&1 | awk '/^Xcode/{print $2; exit}')"
+    xver="$(xcodebuild -version 2>&1 | awk '/^Xcode/ && !v {v=$2} END {print v}')"
     [[ -n "$xver" ]] || die "xcodebuild did not run ($(xcodebuild -version 2>&1 | head -n1)). On the Mac run:
     sudo xcodebuild -license accept
     xcodebuild -runFirstLaunch"
