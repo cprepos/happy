@@ -69,6 +69,13 @@ services:
     container_name: happy-voice-llm
     restart: unless-stopped
     ipc: host
+    # GPU 0 is shared with STT/TTS: start after them so vLLM sizes its KV cache
+    # around the memory they already hold.
+    depends_on:
+      stt:
+        condition: service_healthy
+      tts:
+        condition: service_healthy
     ports:
       - "127.0.0.1:${LLM_PORT:-8000}:8000"
     environment:
@@ -76,14 +83,15 @@ services:
       HF_HUB_CACHE: /hf-cache
       HF_TOKEN: ${HF_TOKEN:-}
       VLLM_NO_USAGE_STATS: "1"
+      CUDA_DEVICE_ORDER: PCI_BUS_ID
     volumes:
       - ${HF_CACHE_DIR:-/mnt/ai-data/huggingface}:/hf-cache
       - vllm-cache:/root/.cache/vllm
     command:
-      - ${LLM_MODEL:-Qwen/Qwen3.6-35B-A3B-FP8}
+      - ${LLM_MODEL:-QuantTrio/Qwen3.6-35B-A3B-AWQ}
       - --served-model-name
       - ${LLM_SERVED_NAME:-voice-llm}
-      - ${LLM_MODEL:-Qwen/Qwen3.6-35B-A3B-FP8}
+      - ${LLM_MODEL:-QuantTrio/Qwen3.6-35B-A3B-AWQ}
       - --host
       - 0.0.0.0
       - --port
@@ -93,7 +101,7 @@ services:
       - --max-model-len
       - "${LLM_MAX_MODEL_LEN:-32768}"
       - --gpu-memory-utilization
-      - "${LLM_GPU_MEM_UTIL:-0.92}"
+      - "${LLM_GPU_MEM_UTIL:-0.68}"
       - --language-model-only
       - --enable-prefix-caching
       - --enable-auto-tool-choice
@@ -114,7 +122,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["1", "2"]
+              device_ids: ["${LLM_GPU_A:-0}", "${LLM_GPU_B:-1}"]
               capabilities: [gpu]
 
 volumes:
