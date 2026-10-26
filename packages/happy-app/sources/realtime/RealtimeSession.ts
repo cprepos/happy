@@ -6,9 +6,7 @@ import { requestMicrophonePermission, showMicrophonePermissionDeniedAlert } from
 import { storage } from '@/sync/storage';
 import { getVoiceMessageCount, getVoiceOnboardingPromptLoadCount } from '@/sync/persistence';
 import { buildVoiceFirstMessage, buildVoiceSystemPrompt } from './voiceSystemPrompt';
-// TODO: import getVoiceLanguageCode from '@/constants/Languages' once the
-// language-code rename is merged, and remove ./voiceLanguage.
-import { getVoiceLanguageCode } from './voiceLanguage';
+import { getVoiceLanguageCode } from '@/constants/Languages';
 
 let voiceSession: VoiceSession | null = null;
 let voiceSessionStarted: boolean = false;
