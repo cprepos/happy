@@ -1,5 +1,9 @@
 # ElevenLabs Voice Usage Gating
 
+> **Historical.** This describes the earlier ElevenLabs voice setup with paid
+> usage gating. The self-hosted build replaced it with LiveKit and has no
+> gate or quota; see `docs/voice-architecture.md` for the current design.
+
 ## Problem
 
 We want to require a subscription after a user has consumed 1 hour of ElevenLabs conversation time.
