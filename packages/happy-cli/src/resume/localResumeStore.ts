@@ -26,6 +26,9 @@ export class LocalResumeSessionError extends Error {
 }
 
 function needsFreshMetadata(metadata: Metadata): boolean {
+    if (metadata.flavor === 'opencode') {
+        return !metadata.opencodeSessionId;
+    }
     if (metadata.flavor === 'codex') {
         return !metadata.codexThreadId;
     }

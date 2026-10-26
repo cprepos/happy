@@ -316,6 +316,7 @@ export type Metadata = {
   },
   machineId?: string,
   gitBranch?: string,
+  opencodeSessionId?: string, // OpenCode ACP session ID
   claudeSessionId?: string, // Claude Code session ID
   codexThreadId?: string, // Codex app-server thread ID
   tools?: string[],
