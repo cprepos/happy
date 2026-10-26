@@ -7,6 +7,7 @@ import { storage } from '@/sync/storage';
 import { getVoiceMessageCount, getVoiceOnboardingPromptLoadCount } from '@/sync/persistence';
 import { buildVoiceFirstMessage, buildVoiceSystemPrompt } from './voiceSystemPrompt';
 import { getVoiceLanguageCode } from '@/constants/Languages';
+import { resolveVoicePreset, voiceConfigFor } from './voiceCatalog';
 
 let voiceSession: VoiceSession | null = null;
 let voiceSessionStarted: boolean = false;
@@ -29,12 +30,14 @@ export async function startRealtimeSession(sessionId: string, initialContext?: s
 
     // Show connecting state immediately so the user sees feedback
     storage.getState().setRealtimeStatus('connecting');
+    voiceSession.prepare?.();
 
     // Request microphone permission before starting voice session
     // Critical for iOS/Android - first session will fail without this
     const permissionResult = await requestMicrophonePermission();
     if (!permissionResult.granted) {
         storage.getState().setRealtimeStatus('disconnected');
+        void voiceSession.endSession(); // releases audio primed above
         showMicrophonePermissionDeniedAlert(permissionResult.canAskAgain);
         return null;
     }
@@ -43,6 +46,7 @@ export async function startRealtimeSession(sessionId: string, initialContext?: s
         const credentials = await TokenStorage.getCredentials();
         if (!credentials) {
             storage.getState().setRealtimeStatus('disconnected');
+            void voiceSession.endSession();
             Modal.alert(t('common.error'), t('errors.authenticationFailed'));
             return null;
         }
@@ -61,7 +65,9 @@ export async function startRealtimeSession(sessionId: string, initialContext?: s
             onboardingPromptLoadCount,
             includePaidVoiceOnboarding: false,
         });
-        const language = getVoiceLanguageCode(storage.getState().settings.voiceAssistantLanguage);
+        const settings = storage.getState().settings;
+        const language = getVoiceLanguageCode(settings.voiceAssistantLanguage);
+        const voicePreset = resolveVoicePreset(sessionId, settings.voiceBySession, settings.voiceAssistantVoice);
 
         const conversationId = await voiceSession.startSession({
             sessionId,
@@ -69,6 +75,7 @@ export async function startRealtimeSession(sessionId: string, initialContext?: s
             systemPrompt,
             firstMessage,
             language,
+            ...voiceConfigFor(voicePreset),
         });
         currentVoiceConversationId = conversationId;
         currentVoiceSessionStartedAt = Date.now();

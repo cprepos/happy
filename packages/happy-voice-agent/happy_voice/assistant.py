@@ -35,17 +35,27 @@ from .prompt import (
     SKIP_TURN_SCHEMA,
     build_instructions,
 )
+from .voices import fetch_known_voices, resolve_tts
 
 logger = logging.getLogger("happy-voice")
 
 TOPIC_CONTEXT = "happy.context"
 TOPIC_TEXT = "happy.text"
+# Empty packet sent when the user barges in, so the app (or the server
+# bridging its audio) drops agent speech it has buffered but not played.
+TOPIC_INTERRUPTED = "happy.interrupted"
 RPC_GET_CONFIG = "happy.getConfig"
 
 # The app's tool results dictate the exact words to speak, e.g.
 # "sent [DO NOT say anything else, simply say 'sent']". Speaking them directly saves a second LLM
 # round trip (the most expensive part of a tool turn); the result still goes into the history.
 _SCRIPTED_REPLY_RE = re.compile(r"\[\s*DO NOT say anything else,\s*simply say\s*'([^']{1,80})'\s*\]\s*$")
+
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
 
 
 @dataclass
@@ -55,6 +65,9 @@ class VoiceConfig:
     initial_context: str = ""
     language: str = "en"
     session_id: str = ""
+    # per-chat TTS choice from the app; validated in voices.resolve_tts
+    voice: str | None = None
+    speed: float | None = None
 
     @classmethod
     def from_json(cls, raw: str) -> VoiceConfig:
@@ -72,6 +85,8 @@ class VoiceConfig:
             initial_context=s("initialContext"),
             language=s("language") or "en",
             session_id=s("sessionId"),
+            voice=s("voice").strip() or None,
+            speed=_number(data.get("speed")),
         )
 
 
@@ -185,6 +200,25 @@ class HappyAssistant(Agent):
         return None
 
 
+def announce_interruptions(session: Any, publish: Any) -> None:
+    """Call `publish(b"", reliable=True, topic=TOPIC_INTERRUPTED)` whenever
+    the agent's speech is interrupted."""
+
+    async def send() -> None:
+        try:
+            await publish(b"", reliable=True, topic=TOPIC_INTERRUPTED)
+        except Exception:
+            logger.exception("failed to announce interruption")
+
+    def on_done(handle: Any) -> None:
+        if handle.interrupted:
+            asyncio.create_task(send())
+
+    @session.on("speech_created")
+    def _on_speech(ev) -> None:
+        ev.speech_handle.add_done_callback(on_done)
+
+
 async def _fetch_config(
     room: rtc.Room, identity: str, timeout: float
 ) -> VoiceConfig:
@@ -260,10 +294,16 @@ async def entrypoint(ctx: JobContext) -> None:
 
     config = await _fetch_config(ctx.room, participant.identity, settings.config_timeout)
     state.focused_session = config.session_id
+    known_voices = None
+    if config.voice is not None:
+        known_voices = await fetch_known_voices(settings.tts_url)
+    tts_voice, tts_speed = resolve_tts(settings, config.language, config.voice, config.speed, known_voices)
     logger.info(
-        "config: session=%s language=%s prompt=%d chars context=%d chars first=%r",
+        "config: session=%s language=%s voice=%s speed=%.2f prompt=%d chars context=%d chars first=%r",
         config.session_id,
         config.language,
+        tts_voice,
+        tts_speed,
         len(config.system_prompt),
         len(config.initial_context),
         config.first_message,
@@ -296,8 +336,8 @@ async def entrypoint(ctx: JobContext) -> None:
             base_url=settings.tts_url,
             api_key="not-needed",
             model="kokoro",
-            voice=settings.voice_for(config.language),
-            speed=settings.tts_speed,
+            voice=tts_voice,
+            speed=tts_speed,
             response_format="pcm",
         ),
         turn_handling={
@@ -312,6 +352,7 @@ async def entrypoint(ctx: JobContext) -> None:
         user_away_timeout=None,
     )
 
+    announce_interruptions(session, ctx.room.local_participant.publish_data)
     usage = metrics.UsageCollector()
 
     @session.on("metrics_collected")

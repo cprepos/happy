@@ -13,13 +13,16 @@
 #   make voice-agent-up    build and (re)start only the voice-agent worker (other services untouched)
 #   make voice-agent-logs  follow the voice-agent worker logs
 #   make voice-agent-e2e   headless fake-app conversation against the running worker (tests/e2e_fake_app.py)
+#   make voice-stream-e2e  same idea through happy-server's /v1/voice/stream (scripts/voice-stream-e2e.mjs):
+#                          end-of-speech -> first agent audio and downlink jitter. Token: HAPPY_TOKEN or
+#                          ~/.happy/access.key. VOICE_STREAM_URL=... to target another server, VOICE_STREAM_ARGS=... extra flags
 
 VOICE_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 VOICE_ENV := $(VOICE_DIR)/.env.voice
 VOICE_COMPOSE := docker compose -p happy-voice -f $(VOICE_DIR)/compose.voice.yml --env-file $(VOICE_ENV)
 SVC ?=
 
-.PHONY: voice-keys voice-build voice-up voice-down voice-status voice-logs voice-smoke voice-try voice-agent-up voice-agent-logs voice-agent-e2e
+.PHONY: voice-keys voice-build voice-up voice-down voice-status voice-logs voice-smoke voice-try voice-agent-up voice-agent-logs voice-agent-e2e voice-stream-e2e
 
 VOICE_TRY_VENV ?= $(HOME)/.cache/happy-voice-try-venv
 VOICE_TRY_PORT ?= 8899
@@ -99,3 +102,9 @@ voice-agent-e2e: $(VOICE_ENV)
 		else python3 -m venv "$(VOICE_AGENT_VENV)" && "$(VOICE_AGENT_VENV)/bin/pip" install -q -r $(VOICE_AGENT_DIR)/requirements.txt; fi; \
 	fi
 	"$(VOICE_AGENT_VENV)/bin/python" $(VOICE_AGENT_DIR)/tests/e2e_fake_app.py --env $(VOICE_ENV)
+
+# Needs happy-server with the /v1/voice/stream route; exits 2 with a clear message when it is missing.
+VOICE_STREAM_URL ?= wss://happy.girthbass.duckdns.org/v1/voice/stream
+VOICE_STREAM_ARGS ?=
+voice-stream-e2e:
+	node $(VOICE_DIR)/scripts/voice-stream-e2e.mjs --url $(VOICE_STREAM_URL) $(VOICE_STREAM_ARGS)
