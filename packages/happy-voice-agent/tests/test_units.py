@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 from pathlib import Path
@@ -13,7 +14,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from livekit.agents import llm  # noqa: E402
 
-from happy_voice.assistant import _SCRIPTED_REPLY_RE, VoiceConfig  # noqa: E402
+from happy_voice.assistant import (  # noqa: E402
+    _SCRIPTED_REPLY_RE,
+    TOPIC_INTERRUPTED,
+    VoiceConfig,
+    announce_interruptions,
+)
 from happy_voice.config import Settings  # noqa: E402
 from happy_voice.context import fold_system_messages, focused_session_from  # noqa: E402
 from happy_voice.prompt import (  # noqa: E402
@@ -82,6 +88,43 @@ def test_scripted_reply_marker() -> None:
     assert _SCRIPTED_REPLY_RE.search("Message sent to session sess_42.") is None
     # only a trailing marker counts
     assert _SCRIPTED_REPLY_RE.search("[DO NOT say anything else, simply say 'ok'] then more") is None
+
+
+
+def test_announces_interrupted_speech_only() -> None:
+    class Session:
+        def on(self, event):
+            def register(fn):
+                self.handler = (event, fn)
+                return fn
+            return register
+
+    class Handle:
+        def __init__(self, interrupted: bool) -> None:
+            self.interrupted = interrupted
+
+        def add_done_callback(self, fn) -> None:
+            self.done = fn
+
+    sent: list[tuple[bytes, dict]] = []
+
+    async def publish(data: bytes, **kwargs) -> None:
+        sent.append((data, kwargs))
+
+    async def run() -> None:
+        session = Session()
+        announce_interruptions(session, publish)
+        event, on_speech = session.handler
+        assert event == "speech_created"
+        for interrupted in (False, True):
+            handle = Handle(interrupted)
+            on_speech(type("Ev", (), {"speech_handle": handle})())
+            handle.done(handle)
+        await asyncio.sleep(0)
+
+    asyncio.run(run())
+    assert sent == [(b"", {"reliable": True, "topic": TOPIC_INTERRUPTED})]
+    assert TOPIC_INTERRUPTED == "happy.interrupted"
 
 
 if __name__ == "__main__":
