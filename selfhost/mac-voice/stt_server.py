@@ -39,6 +39,7 @@ NEMOTRON_MODEL = os.environ.get("STT_MODEL", "nvidia/nemotron-speech-streaming-e
 PARAKEET_MODEL = os.environ.get("STT_PARAKEET_MODEL", "mlx-community/parakeet-tdt-0.6b-v3")
 # Nemotron right context in 80 ms encoder frames: 0 -> 80 ms chunks, 1 -> 160 ms (server default), 6 -> 560 ms, 13 -> 1120 ms
 RIGHT_CONTEXT = int(os.environ.get("STT_RIGHT_CONTEXT", "1"))
+FILE_RIGHT_CONTEXT = int(os.environ.get("STT_FILE_RIGHT_CONTEXT", "13"))
 # Encoder precision. fp16 is ~30% faster than fp32 on M1 with identical transcripts on the bench clips.
 STT_DTYPE = os.environ.get("STT_DTYPE", "fp16").lower()
 # Parakeet local-attention context (left, right) in 80 ms encoder frames, and the feed chunk size.
@@ -94,8 +95,9 @@ class NemotronEngine:
     def info(self) -> dict:
         return {"model": self.model_name, "chunk_ms": self.chunk_ms, "att_context_size": self.att_context_size, "dtype": STT_DTYPE}
 
-    def new_state(self) -> StreamState:
-        s = self.model.create_streaming_session(transcription_delay_ms=self.delay_ms)
+    def new_state(self, right_context: int | None = None) -> StreamState:
+        delay = self.delay_ms if right_context is None else self.DELAYS[right_context]
+        s = self.model.create_streaming_session(transcription_delay_ms=delay)
         if self.cast is not None:
             push = s._frontend.push
             s._frontend.push = lambda x, final=False: push(x, final=final).astype(self.cast)
@@ -121,9 +123,10 @@ class NemotronEngine:
         return "".join(st.tokens).strip()
 
     def transcribe_file(self, audio: np.ndarray) -> str:
-        st = self.new_state()
-        out = self.finish(st, audio.astype(np.float32))
-        return out
+        # Whole files use the 1120 ms look-ahead (STT_FILE_RIGHT_CONTEXT=13): 7x fewer encoder steps
+        # than 160 ms chunks, and the model's most accurate setting.
+        st = self.new_state(FILE_RIGHT_CONTEXT)
+        return self.finish(st, audio.astype(np.float32))
 
 
 class ParakeetEngine:
