@@ -190,6 +190,8 @@ export type OpencodeTuiState = {
     startedAt: number;
     /** Whether the owner's own TUI is still open (false once its terminal is gone). */
     ownerTuiAttached: boolean;
+    /** Launch permission policy, reused by a restart. Absent in older files. */
+    permissionPolicy?: 'auto' | 'ask';
 };
 
 function stateFile(dir: string, opencodeSessionId: string): string {

@@ -28,9 +28,10 @@ import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler'
 import { startHappyServer } from '@/claude/utils/startHappyServer';
 import { notifyDaemonSessionStarted } from '@/daemon/controlClient';
 import { initialMachineMetadata } from '@/daemon/run';
-import { encodeBase64 } from '@/api/encryption';
+import { decodeBase64, encodeBase64 } from '@/api/encryption';
 import { mergeAcpSessionConfigIntoMetadata } from '@/agent/acp/sessionConfigMetadata';
-import { Credentials, readSettings } from '@/persistence';
+import { Credentials, readPersistedSessions, readSettings } from '@/persistence';
+import type { Session } from '@/api/types';
 import { logger } from '@/ui/logger';
 import { createSessionMetadata } from '@/utils/createSessionMetadata';
 import { setupOfflineReconnection } from '@/utils/setupOfflineReconnection';
@@ -51,6 +52,12 @@ import {
     type OpencodeTuiState,
     type ProcessExit,
 } from './opencodeProcesses';
+import {
+    fetchServerSessions,
+    findReconnectableHappySession,
+    linkedHappySessionId,
+    rememberHappySession,
+} from './opencodeHappySession';
 import { buildOpencodePickers, opencodePromptOptions, parseOpencodeMode, type OpencodePermissionPolicy } from './opencodeSessionConfig';
 
 /** How often streamed text is checked for finished paragraphs to forward. */
@@ -159,6 +166,37 @@ async function attachToRunningSession(bin: string, owner: OpencodeTuiState, stat
     }
 }
 
+/**
+ * The Happy session to continue for an OpenCode session: the one the daemon
+ * or `happy resume` handed over (HAPPY_RECONNECT_*), else the one linked to
+ * it locally. Null means a new Happy session is created.
+ */
+async function findHappySessionToReconnect(credentials: Credentials, stateDir: string, opencodeSessionId: string): Promise<Session | null> {
+    const env = process.env;
+    if (env.HAPPY_RECONNECT_SESSION_ID && env.HAPPY_RECONNECT_ENCRYPTION_KEY && env.HAPPY_RECONNECT_ENCRYPTION_VARIANT) {
+        return {
+            id: env.HAPPY_RECONNECT_SESSION_ID,
+            seq: parseInt(env.HAPPY_RECONNECT_SEQ || '0', 10),
+            encryptionKey: decodeBase64(env.HAPPY_RECONNECT_ENCRYPTION_KEY),
+            encryptionVariant: env.HAPPY_RECONNECT_ENCRYPTION_VARIANT as 'legacy' | 'dataKey',
+            metadata: {} as Session['metadata'],
+            metadataVersion: parseInt(env.HAPPY_RECONNECT_METADATA_VERSION || '0', 10),
+            agentState: null,
+            agentStateVersion: parseInt(env.HAPPY_RECONNECT_AGENT_STATE_VERSION || '0', 10),
+        };
+    }
+    const found = findReconnectableHappySession({
+        opencodeSessionId,
+        linkedId: linkedHappySessionId(stateDir, opencodeSessionId),
+        persisted: readPersistedSessions(),
+        serverSessions: await fetchServerSessions(credentials.token),
+    });
+    if (!found) {
+        logger.debug(`[OpenCode] No saved Happy session for ${opencodeSessionId}; a new one will be created`);
+    }
+    return found;
+}
+
 export async function runOpencodeTui(opts: {
     credentials: Credentials;
     bin: string;
@@ -167,6 +205,8 @@ export async function runOpencodeTui(opts: {
     resumeSessionId?: string;
     /** `auto` (default) approves permission requests itself; `ask` shows them in the app. */
     permissionPolicy?: OpencodePermissionPolicy;
+    /** Run without a TUI of its own; `happy opencode --resume <id>` attaches one. */
+    headless?: boolean;
 }): Promise<void> {
     const launchPolicy: OpencodePermissionPolicy = opts.permissionPolicy ?? 'auto';
     const stateDir = opencodeTuiStateDir();
@@ -198,8 +238,17 @@ export async function runOpencodeTui(opts: {
         startedBy: opts.startedBy,
         sandbox: settings.sandboxConfig,
     });
+    if (opts.resumeSessionId) {
+        metadata.opencodeSessionId = opts.resumeSessionId;
+    }
     const sessionTag = randomUUID();
-    const response = await api.getOrCreateSession({ tag: sessionTag, metadata, state });
+    // Resuming continues the same Happy chat when its key is saved here.
+    const existing = opts.resumeSessionId
+        ? await findHappySessionToReconnect(opts.credentials, stateDir, opts.resumeSessionId)
+        : null;
+    const response = existing
+        ? { ...existing, metadata: { ...existing.metadata, ...metadata }, agentState: existing.agentState ?? state }
+        : await api.getOrCreateSession({ tag: sessionTag, metadata, state });
 
     let session: ApiSessionClient;
     let permissions: OpencodePermissionBridge | null = null;
@@ -215,6 +264,22 @@ export async function runOpencodeTui(opts: {
         },
     });
     session = initialSession;
+
+    if (existing) {
+        logger.debug(`[OpenCode] Reconnected to Happy session ${existing.id}`);
+        // Same as the daemon's resume in place: un-archive, and do not replay
+        // the chat's old messages as new prompts.
+        session.suppressNextArchiveSignal();
+        session.skipExistingMessages();
+        session.updateMetadata((current) => ({
+            ...current,
+            ...metadata,
+            lifecycleState: 'running',
+            lifecycleStateSince: Date.now(),
+            archivedBy: undefined,
+            archiveReason: undefined,
+        }));
+    }
 
     if (response) {
         try {
@@ -291,7 +356,7 @@ export async function runOpencodeTui(opts: {
     }
 
     let thinking = false;
-    let tuiAttached = true;
+    let tuiAttached = !opts.headless;
     let closeTui: () => void = () => { };
     const ownerState = (): OpencodeTuiState => ({
         ownerPid: process.pid,
@@ -303,8 +368,13 @@ export async function runOpencodeTui(opts: {
         happySessionId: session.sessionId,
         startedAt: Date.now(),
         ownerTuiAttached: tuiAttached,
+        permissionPolicy: launchPolicy,
     });
-    writeTuiState(stateDir, ownerState());
+    const saveOwnerState = () => {
+        writeTuiState(stateDir, ownerState());
+        rememberHappySession(stateDir, mapper.sessionId, session.sessionId);
+    };
+    saveOwnerState();
 
     const sendKeepAlive = () => session.keepAlive(thinking, tuiAttached ? 'local' : 'remote');
 
@@ -335,7 +405,7 @@ export async function runOpencodeTui(opts: {
                 break;
             case 'session-changed':
                 session.updateMetadata((current) => ({ ...current, opencodeSessionId: action.sessionId }));
-                writeTuiState(stateDir, ownerState());
+                saveOwnerState();
                 break;
         }
     };
@@ -464,13 +534,20 @@ export async function runOpencodeTui(opts: {
 
     const guard = installHangupGuard(() => {
         tuiAttached = false;
-        writeTuiState(stateDir, ownerState());
+        saveOwnerState();
         sendKeepAlive();
         // With no terminal, Ctrl-C can no longer reach us; SIGINT now means "stop".
         process.on('SIGINT', onTerminate);
     });
 
     try {
+        if (opts.headless) {
+            // No TUI of its own (a restart, or no terminal): run for the app
+            // until stopped. SIGINT stops it like SIGTERM.
+            process.on('SIGINT', onTerminate);
+            await done;
+            return;
+        }
         const outcome = await runTuiUntilExit({
             bin: opts.bin,
             url: server.url,
@@ -486,7 +563,7 @@ export async function runOpencodeTui(opts: {
         } else if (!guard.hungUp()) {
             // The terminal went away without a SIGHUP reaching us.
             tuiAttached = false;
-            writeTuiState(stateDir, ownerState());
+            saveOwnerState();
             sendKeepAlive();
             process.on('SIGINT', onTerminate);
         }
