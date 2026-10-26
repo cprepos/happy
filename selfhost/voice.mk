@@ -8,13 +8,17 @@
 #   make voice-status  container state + per-service health + GPU memory
 #   make voice-logs    follow logs (SVC=llm to pick one service)
 #   make voice-smoke   end-to-end smoke test of every service (see scripts/voice-smoke.sh)
+#   make voice-try     browser test page (TTS, STT, full turn) on http://127.0.0.1:8899 (loopback only)
 
 VOICE_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 VOICE_ENV := $(VOICE_DIR)/.env.voice
 VOICE_COMPOSE := docker compose -p happy-voice -f $(VOICE_DIR)/compose.voice.yml --env-file $(VOICE_ENV)
 SVC ?=
 
-.PHONY: voice-keys voice-build voice-up voice-down voice-status voice-logs voice-smoke
+.PHONY: voice-keys voice-build voice-up voice-down voice-status voice-logs voice-smoke voice-try
+
+VOICE_TRY_VENV ?= $(HOME)/.cache/happy-voice-try-venv
+VOICE_TRY_PORT ?= 8899
 
 voice-keys:
 	@if [ -f "$(VOICE_ENV)" ]; then \
@@ -57,3 +61,13 @@ voice-logs: $(VOICE_ENV)
 
 voice-smoke: $(VOICE_ENV)
 	@bash $(VOICE_DIR)/scripts/voice-smoke.sh
+
+# Static page + same-origin proxy to the services; binds 127.0.0.1 only.
+# From another machine: ssh -L $(VOICE_TRY_PORT):127.0.0.1:$(VOICE_TRY_PORT) <user>@<host>, then http://localhost:$(VOICE_TRY_PORT)
+voice-try: $(VOICE_ENV)
+	@if [ ! -x "$(VOICE_TRY_VENV)/bin/python" ]; then \
+		echo "== creating $(VOICE_TRY_VENV)"; \
+		if command -v uv >/dev/null 2>&1; then uv venv -q -p 3.12 "$(VOICE_TRY_VENV)" && uv pip install -q -p "$(VOICE_TRY_VENV)/bin/python" -r $(VOICE_DIR)/voice-test/requirements.txt; \
+		else python3 -m venv "$(VOICE_TRY_VENV)" && "$(VOICE_TRY_VENV)/bin/pip" install -q -r $(VOICE_DIR)/voice-test/requirements.txt; fi; \
+	fi
+	@set -a; . "$(VOICE_ENV)"; set +a; VOICE_TRY_PORT=$(VOICE_TRY_PORT) exec "$(VOICE_TRY_VENV)/bin/python" -I $(VOICE_DIR)/voice-test/server.py
