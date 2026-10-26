@@ -20,15 +20,16 @@ Config and secrets live in `selfhost/.env.voice` (gitignored; template `.env.voi
 
 | Service | Container | Listens on | Model / image | GPU |
 |---|---|---|---|---|
-| LiveKit | `happy-voice-livekit` | `127.0.0.1:7880` (HTTP + WS signaling), `*:7881/tcp` (ICE/TCP), `:7882/udp` (single UDP mux, LAN + VPN addresses) | `livekit/livekit-server:v1.13.10`, host networking | none |
+| LiveKit | `happy-voice-livekit` | `127.0.0.1:7880` (HTTP + WS signaling, published for the agent); 7881/tcp and 7882/udp (UDP mux) only on the container IP | `livekit/livekit-server:v1.13.10`, on the `happy-selfhost_default` network (alias `livekit`) | none |
 | STT | `happy-voice-stt` | `127.0.0.1:8090` | `nvidia/nemotron-speech-streaming-en-0.6b` (NeMo 3.0.0, cache-aware FastConformer RNNT), image built from `selfhost/stt/` | 0 |
 | TTS | `happy-voice-tts` | `127.0.0.1:8880` | `ghcr.io/remsky/kokoro-fastapi-gpu:v0.9.0` (Kokoro-82M) | 0 |
 | LLM | host systemd `qwen38-27b-fp8-tp2-vllm` (not managed here) | `127.0.0.1:9080` | Qwen3.8-27B FP8 served as `coder`, TP=2 | 2 + 3 |
 | Voice agent | `happy-voice-agent` | `127.0.0.1:8791` (health) | `packages/happy-voice-agent` (LiveKit Agents 1.8.9), host networking | none (CPU) |
 | LLM (optional, profile `local-llm`) | `happy-voice-llm` | `127.0.0.1:8000` | `vllm/vllm-openai:v0.32.0` serving `QuantTrio/Qwen3.6-35B-A3B-AWQ` as `voice-llm`, TP=2 | 0 + 1 |
 
-Public signaling: `wss://livekit.girthbass.duckdns.org` (host Caddy -> 127.0.0.1:7880).
-The router must forward **TCP 7881** and **UDP 7882** to this host for clients outside the LAN.
+LiveKit has no public endpoint. Apps stream audio to happy-server (`wss://happy.girthbass.duckdns.org/v1/voice/stream`,
+protocol in `packages/happy-wire/src/voiceStream.ts`), which joins the room over the docker network
+(`ws://livekit:7880`). No router forwards, ufw rules or Caddy site are needed for voice.
 
 ### GPU map
 
@@ -49,7 +50,7 @@ volume and weights are kept.
 ## LiveKit
 
 - API key/secret: `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` in `.env.voice`.
-- Worker URL (same host): `ws://127.0.0.1:7880`. Client URL: `wss://livekit.girthbass.duckdns.org`.
+- Worker URL (same host): `ws://127.0.0.1:7880`. happy-server: `ws://livekit:7880` (`LIVEKIT_URL`). No client URL.
 - Health: `GET http://127.0.0.1:7880/` -> `OK`.
 - Token: a standard LiveKit JWT (`livekit-api` `AccessToken(...).with_grants(VideoGrants(room_join=True, room=...))`).
 - Room settings: `empty_timeout: 300`, `departure_timeout: 20` (`selfhost/livekit.yaml`).
@@ -131,7 +132,6 @@ Result: `sendMessageToSession({"sessionId":"sess_42","message":"List the files i
 | Stage | Result |
 |---|---|
 | LiveKit token join, local `ws://127.0.0.1:7880` | 0.7 s to connect, then 3 ms to publish an audio track |
-| LiveKit token join + publish via `wss://livekit.girthbass.duckdns.org` | 1.0 s |
 | TTS time to first audio byte (streamed PCM) | 106-165 ms, flat from 1 to 20 sentences |
 | TTS throughput | 105.6 s of audio in 1.35 s (RTF ~0.013) |
 | STT partial lag behind real-time audio | avg 55 ms, max 82 ms (160 ms chunks); bf16 2026-10-26: avg 43 ms, max 64 ms |
