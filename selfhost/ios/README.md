@@ -1,8 +1,8 @@
 # Self-hosted iOS build (personal Apple team)
 
 Builds the app from this repo on your Apple Silicon Mac and installs it on your
-own iPhone. It talks to `https://happy.girthbass.duckdns.org`, and voice goes
-through `wss://livekit.girthbass.duckdns.org`. No App Store, TestFlight or EAS.
+own iPhone. It talks to `https://happy.girthbass.duckdns.org`. No App Store,
+TestFlight or EAS.
 
 `build.sh` sets `SELFHOST=1` and the related env vars that
 `packages/happy-app/app.config.js` reads. In that mode the config drops push
@@ -88,22 +88,19 @@ Options:
 The build bakes `HAPPY_PUBLIC_URL` in as the default server. To check it or
 change it, open the server row on the home header or in Settings. The current
 URL should be `https://happy.girthbass.duckdns.org`. After changing servers,
-log out and back in. For voice through your own LiveKit, turn on **Use Custom
-Server for Voice** on that screen. With it off, voice goes to the hosted
-service.
+log out and back in. Voice uses the same server.
 
-## Voice over cellular: router forwarding
+## Voice
 
-Signaling uses `wss://livekit.girthbass.duckdns.org` on port 443 through the
-reverse proxy. Media needs these ports forwarded from the router to the
-LiveKit host:
+Voice goes through the Happy server on port 443: the app streams audio to
+`wss://happy.girthbass.duckdns.org/v1/voice/stream`, and the server joins the
+LiveKit room for it (see `docs/voice-architecture.md`). LiveKit has no public
+URL, so no router forwards or firewall rules are needed, on Wi-Fi or cellular.
 
-- **TCP 7881**: ICE/TCP fallback
-- **UDP 7882**: RTP media (single-port mux)
-
-Wi-Fi on the same LAN may work without forwarding, but cellular won't. To
-test from outside, use a phone on cellular with Wi-Fi off. Also check that the
-host firewall (ufw/iptables) allows both ports.
+The native app still joins LiveKit directly (through `POST
+/v1/voice/conversations`) and is moving to the voice stream. Once the public
+LiveKit paths are gone (`selfhost/cutover/CUTOVER.md`), voice on the iPhone
+build does not connect until that lands.
 
 ## Troubleshooting
 
@@ -119,5 +116,5 @@ host firewall (ufw/iptables) allows both ports.
 | "Untrusted Developer" | Settings > General > VPN & Device Management > Trust |
 | "Developer Mode required" | Settings > Privacy & Security > Developer Mode, then restart |
 | App stops opening after a week | Free profile expired. Rerun the build (see above) |
-| Microphone does nothing or voice won't start | Settings > *App* > Microphone: on. If it was denied once, iOS won't ask again; turn it on there. Then check the voice toggle and the port forwarding above |
+| Microphone does nothing or voice won't start | Settings > *App* > Microphone: on. If it was denied once, iOS won't ask again; turn it on there. Then check the voice toggle and the Voice section above |
 | `xcodebuild` license or first-launch errors | `sudo xcodebuild -license accept && xcodebuild -runFirstLaunch` |
