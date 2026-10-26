@@ -255,12 +255,14 @@ class _FakeLLM:
         self.delay = delay
         self.fail = fail
         self.requests: list[tuple[object, object]] = []
+        self.kwargs: list[dict] = []
         self.chunks_read = 0
         self.closed_streams = 0
         self.closed = False
 
-    def chat(self, *, chat_ctx, tools):
+    def chat(self, *, chat_ctx, tools, **kwargs):
         self.requests.append((chat_ctx, tools))
+        self.kwargs.append(kwargs)
         return _FakeStream(self, chunks=50)
 
     async def aclose(self) -> None:
@@ -373,6 +375,202 @@ def test_warmup_snapshot_adds_a_user_turn_before_the_user_speaks() -> None:
     ]
     assert tools == []
     assert len(agent.chat_ctx.items) == 2
+
+
+_TUNING_ENV = (
+    "LLM_TIMEOUT",
+    "LLM_MAX_RETRY",
+    "MAX_ENDPOINTING_DELAY",
+    "INTERRUPT_MIN_DURATION",
+    "INTERRUPT_MIN_WORDS",
+    "FALSE_INTERRUPTION_TIMEOUT",
+    "RESUME_FALSE_INTERRUPTION",
+)
+
+
+def _settings_with(**env: str) -> Settings:
+    saved = {k: os.environ.pop(k, None) for k in _TUNING_ENV}
+    try:
+        os.environ.update(env)
+        return Settings()
+    finally:
+        for k in _TUNING_ENV:
+            os.environ.pop(k, None)
+            if saved[k] is not None:
+                os.environ[k] = saved[k]
+
+
+def test_llm_and_interruption_defaults() -> None:
+    s = _settings_with()
+    assert s.llm_timeout == 60.0
+    assert s.llm_max_retry == 0
+    assert s.max_endpointing_delay == 1.5
+    assert s.interrupt_min_duration == 0.8
+    assert s.interrupt_min_words == 1
+    assert s.false_interruption_timeout == 2.0
+    assert s.resume_false_interruption is True
+
+
+def test_llm_and_interruption_env_overrides() -> None:
+    s = _settings_with(
+        LLM_TIMEOUT="90",
+        LLM_MAX_RETRY="2",
+        INTERRUPT_MIN_DURATION="0.6",
+        INTERRUPT_MIN_WORDS="3",
+        FALSE_INTERRUPTION_TIMEOUT="off",
+        RESUME_FALSE_INTERRUPTION="false",
+    )
+    assert s.llm_timeout == 90.0
+    assert s.llm_max_retry == 2
+    assert s.interrupt_min_duration == 0.6
+    assert s.interrupt_min_words == 3
+    assert s.false_interruption_timeout is None
+    assert s.resume_false_interruption is False
+    assert _settings_with(FALSE_INTERRUPTION_TIMEOUT="0").false_interruption_timeout is None
+    assert _settings_with(FALSE_INTERRUPTION_TIMEOUT="1.25").false_interruption_timeout == 1.25
+
+
+def test_bad_tuning_values_fall_back_to_defaults() -> None:
+    s = _settings_with(
+        LLM_TIMEOUT="soon",
+        LLM_MAX_RETRY="-1",
+        INTERRUPT_MIN_DURATION="nan",
+        INTERRUPT_MIN_WORDS="two",
+        FALSE_INTERRUPTION_TIMEOUT="later",
+    )
+    assert s.llm_timeout == 60.0
+    assert s.llm_max_retry == 0
+    assert s.interrupt_min_duration == 0.8
+    assert s.interrupt_min_words == 1
+    assert s.false_interruption_timeout == 2.0
+    # below the 1 s floor a timeout would fail every request
+    assert _settings_with(LLM_TIMEOUT="0").llm_timeout == 60.0
+
+
+def test_session_options_follow_settings() -> None:
+    from happy_voice.assistant import llm_conn_options, turn_handling
+
+    s = _settings_with(LLM_TIMEOUT="45", INTERRUPT_MIN_WORDS="2")
+    s.turn_detector = "vad"  # no model download in unit tests
+    opts = llm_conn_options(s)
+    assert (opts.timeout, opts.max_retry) == (45.0, 0)
+    th = turn_handling(s)
+    assert th["interruption"] == {
+        "enabled": True,
+        "mode": "vad",
+        "min_duration": 0.8,
+        "min_words": 2,
+        "false_interruption_timeout": 2.0,
+        "resume_false_interruption": True,
+    }
+    assert th["endpointing"] == {"min_delay": 0.4, "max_delay": 1.5}
+
+
+def test_warmer_passes_conn_options() -> None:
+    from livekit.agents import APIConnectOptions
+
+    opts = APIConnectOptions(max_retry=0, timeout=60.0)
+
+    async def run() -> _FakeLLM:
+        model = _FakeLLM()
+        warmer = PrefixWarmer(model, lambda: ("ctx", []), debounce=0, conn_options=opts)
+        warmer.schedule()
+        await asyncio.sleep(0.05)
+        await warmer.aclose()
+        return model
+
+    assert asyncio.run(run()).kwargs == [{"conn_options": opts}]
+
+
+def test_turn_waits_for_the_warmup_in_flight() -> None:
+    async def run() -> tuple[float, PrefixWarmer, _FakeLLM]:
+        model = _FakeLLM(delay=0.1)
+        warmer = PrefixWarmer(model, lambda: ("ctx", []), debounce=0)
+        warmer.schedule()
+        await asyncio.sleep(0.02)  # the warm-up is prefilling
+        t = asyncio.get_running_loop().time()
+        await warmer.begin_turn()
+        waited = asyncio.get_running_loop().time() - t
+        warmer.end_turn()
+        await warmer.aclose()
+        return waited, warmer, model
+
+    waited, warmer, model = asyncio.run(run())
+    assert waited >= 0.05
+    assert warmer.completed == 1  # finished, not cancelled: the turn reuses its prefix
+    assert len(model.requests) == 1
+
+
+def test_turn_drops_a_warmup_not_yet_sent() -> None:
+    async def run() -> tuple[PrefixWarmer, _FakeLLM]:
+        model = _FakeLLM()
+        warmer = PrefixWarmer(model, lambda: ("ctx", []), debounce=0.05)
+        warmer.schedule()
+        await warmer.begin_turn()  # still debouncing
+        warmer.end_turn()
+        await asyncio.sleep(0.1)
+        await warmer.aclose()
+        return warmer, model
+
+    warmer, model = asyncio.run(run())
+    assert model.requests == []
+    assert warmer.completed == 0
+
+
+def test_turn_right_after_a_superseding_update_does_not_wait() -> None:
+    # A context update supersedes a warm-up that is prefilling and a text turn follows at
+    # once: the new warm-up is only debouncing, so the turn must not wait for it (it would in
+    # turn wait for the turn to end).
+    async def run() -> tuple[float, list]:
+        model = _FakeLLM(delay=0.2)
+        n = iter(range(10))
+        warmer = PrefixWarmer(model, lambda: (next(n), []), debounce=0.01, timeout=2.0)
+        warmer.schedule()
+        await asyncio.sleep(0.05)  # warm-up 0 is prefilling
+        warmer.schedule()  # supersedes it; its cancellation has not unwound yet
+        t = asyncio.get_running_loop().time()
+        await warmer.begin_turn()
+        waited = asyncio.get_running_loop().time() - t
+        warmer.end_turn()
+        await asyncio.sleep(0.05)
+        await warmer.aclose()
+        return waited, [ctx for ctx, _ in model.requests]
+
+    waited, requests = asyncio.run(run())
+    assert waited < 0.1
+    assert requests == [0]
+
+
+def test_warmup_scheduled_during_a_turn_waits_for_it() -> None:
+    async def run() -> tuple[int, int]:
+        model = _FakeLLM()
+        warmer = PrefixWarmer(model, lambda: ("ctx", []), debounce=0)
+        await warmer.begin_turn()
+        warmer.schedule()  # a context update arrives while the turn is generating
+        await asyncio.sleep(0.05)
+        during = len(model.requests)
+        warmer.end_turn()
+        await asyncio.sleep(0.05)
+        after = len(model.requests)
+        await warmer.aclose()
+        return during, after
+
+    assert asyncio.run(run()) == (0, 1)
+
+
+def test_long_duplicate_context_updates_are_detected() -> None:
+    from happy_voice.context import DUPLICATE_MIN_CHARS, already_in_context
+
+    dump = "# Session ID: abc\n\n" + "Claude Code: did a thing.\n" * 100
+    assert len(dump) >= DUPLICATE_MIN_CHARS
+    ctx = llm.ChatContext.empty()
+    ctx.add_message(role="system", content="instructions\n\nCURRENT SESSION:\n\n" + dump)
+    assert already_in_context(dump, ctx)
+    assert already_in_context("\n" + dump + "\n", llm.ChatContext.empty(), instructions="x" + dump)
+    assert not already_in_context(dump + "Claude Code: one more.", ctx)
+    # short updates are events that may repeat on purpose
+    ctx.add_message(role="system", content="Session became focused: abc")
+    assert not already_in_context("Session became focused: abc", ctx)
 
 
 if __name__ == "__main__":
