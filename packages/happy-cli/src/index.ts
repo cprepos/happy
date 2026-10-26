@@ -495,6 +495,8 @@ Conversation history is preserved on the server, but in-flight tool calls are in
       let resumeSessionId: string | undefined;
       let startingMode: string | undefined;
       let forceAcp = process.env.HAPPY_OPENCODE_MODE === 'acp';
+      // Auto mode (no permission prompts, like `opencode --auto`) is the default.
+      let permissionPolicy: 'auto' | 'ask' = 'auto';
       const passthroughArgs: string[] = [];
       for (let i = 1; i < args.length; i++) {
         if (args[i] === '--') {
@@ -509,6 +511,19 @@ Conversation history is preserved on the server, but in-flight tool calls are in
           forceAcp = true;
         } else if (args[i] === '--verbose') {
           verbose = true;
+        } else if (args[i] === '--ask-permissions') {
+          permissionPolicy = 'ask';
+        } else if (args[i] === '--yolo' || args[i] === '--dangerously-skip-permissions' || args[i] === '--auto') {
+          permissionPolicy = 'auto';
+        } else if (args[i] === '--permission-mode') {
+          const mode = args[++i];
+          if (mode === 'ask' || mode === 'default') {
+            permissionPolicy = 'ask';
+          } else if (mode === 'auto' || mode === 'yolo' || mode === 'bypassPermissions') {
+            permissionPolicy = 'auto';
+          } else {
+            throw new Error('happy opencode --permission-mode takes auto (or yolo, bypassPermissions) or ask (or default)');
+          }
         } else if (args[i] === '--resume') {
           resumeSessionId = args[++i];
           if (!resumeSessionId) {
@@ -531,6 +546,7 @@ Conversation history is preserved on the server, but in-flight tool calls are in
           credentials,
           startedBy,
           resumeSessionId,
+          permissionPolicy,
           bin: resolveOpencodeBin(),
         });
         process.exit(0);
@@ -802,6 +818,8 @@ ${chalk.bold('Usage:')}
   happy opencode          Start OpenCode (its TUI here, mirrored to the app)
   happy opencode --resume <id> Continue an OpenCode session, or reattach to a running one
   happy opencode --acp    Start OpenCode without the TUI (ACP)
+  happy opencode --ask-permissions  Ask before tools run (default: auto-approve,
+                            like opencode --auto; also --permission-mode ask|auto)
   happy acp               Start a generic ACP-compatible agent
   happy connect           Connect AI vendor API keys
   happy sandbox           Configure and manage OS-level sandboxing

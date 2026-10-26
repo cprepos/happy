@@ -38,6 +38,7 @@ import { connectionState } from '@/utils/serverConnectionErrors';
 import { createOpencodeMessageId, OpencodeClient, type OpencodeSessionInfo } from './opencodeClient';
 import { OpencodeEventMapper, type OpencodeMirrorAction } from './opencodeEventMapper';
 import { OpencodePermissionBridge } from './opencodePermissionBridge';
+import { OpencodePermissionRouter } from './opencodePermissionPolicy';
 import {
     attachOpencodeTui,
     classifyTuiExit,
@@ -50,7 +51,7 @@ import {
     type OpencodeTuiState,
     type ProcessExit,
 } from './opencodeProcesses';
-import { buildOpencodePickers, opencodePromptOptions } from './opencodeSessionConfig';
+import { buildOpencodePickers, opencodePromptOptions, parseOpencodeMode, type OpencodePermissionPolicy } from './opencodeSessionConfig';
 
 /** How often streamed text is checked for finished paragraphs to forward. */
 const STREAM_FLUSH_MS = 1000;
@@ -164,7 +165,10 @@ export async function runOpencodeTui(opts: {
     startedBy?: 'daemon' | 'terminal';
     /** OpenCode session id to continue. */
     resumeSessionId?: string;
+    /** `auto` (default) approves permission requests itself; `ask` shows them in the app. */
+    permissionPolicy?: OpencodePermissionPolicy;
 }): Promise<void> {
+    const launchPolicy: OpencodePermissionPolicy = opts.permissionPolicy ?? 'auto';
     const stateDir = opencodeTuiStateDir();
     const reaped = reapOrphanedServers(stateDir);
     if (reaped.length > 0) {
@@ -263,6 +267,10 @@ export async function runOpencodeTui(opts: {
     permissions = new OpencodePermissionBridge(session, (id, reply) => client.replyPermission(id, reply));
     permissions.reset('Previous CLI process exited before responding');
     const bridge = permissions;
+    const router = new OpencodePermissionRouter(launchPolicy, {
+        ask: (request) => bridge.ask(request),
+        reply: (id, reply) => client.replyPermission(id, reply),
+    });
 
     session.updateMetadata((current) => ({ ...current, opencodeSessionId: opencodeSession.id }));
     if (resumeNotice) {
@@ -272,8 +280,8 @@ export async function runOpencodeTui(opts: {
     let agentNames: string[] = [];
     try {
         const [providers, agents, config] = await Promise.all([client.providers(), client.agents(), client.config()]);
-        const pickers = buildOpencodePickers({ providers, agents, config });
-        agentNames = pickers.modes?.availableModes.map((mode) => mode.id) ?? [];
+        const pickers = buildOpencodePickers({ providers, agents, config, launchPolicy });
+        agentNames = (pickers.modes?.availableModes ?? []).map((mode) => mode.id).filter((id) => !id.includes(':'));
         session.updateMetadata((current) => mergeAcpSessionConfigIntoMetadata(current, {
             ...(pickers.models ? { models: pickers.models } : {}),
             ...(pickers.modes ? { modes: pickers.modes } : {}),
@@ -317,7 +325,7 @@ export async function runOpencodeTui(opts: {
                 session.sendSessionEvent({ type: 'ready' });
                 break;
             case 'permission-asked':
-                bridge.ask(action);
+                router.handleAsked(action);
                 break;
             case 'permission-replied':
                 bridge.resolveExternally(action.id, action.reply);
@@ -369,10 +377,15 @@ export async function runOpencodeTui(opts: {
         }
         const messageId = createOpencodeMessageId();
         mapper.markOwnMessage(messageId);
+        const { policy } = parseOpencodeMode(message.meta?.permissionMode, agentNames, launchPolicy);
+        if (policy) {
+            router.setPolicy(policy);
+        }
         const options = opencodePromptOptions({
             model: message.meta?.model,
             permissionMode: message.meta?.permissionMode,
             agentNames,
+            launchPolicy,
         });
         client.promptAsync(mapper.sessionId, { text, messageId, ...options }).catch((error) => {
             logger.debug('[OpenCode] Failed to send prompt:', error);
