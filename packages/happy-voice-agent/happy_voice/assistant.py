@@ -36,6 +36,7 @@ from .prompt import (
     build_instructions,
 )
 from .voices import fetch_known_voices, resolve_tts
+from .warmup import PrefixWarmer
 
 logger = logging.getLogger("happy-voice")
 
@@ -45,6 +46,7 @@ TOPIC_TEXT = "happy.text"
 # bridging its audio) drops agent speech it has buffered but not played.
 TOPIC_INTERRUPTED = "happy.interrupted"
 RPC_GET_CONFIG = "happy.getConfig"
+WARMUP_PLACEHOLDER = "(warm-up)"
 
 # The app's tool results dictate the exact words to speak, e.g.
 # "sent [DO NOT say anything else, simply say 'sent']". Speaking them directly saves a second LLM
@@ -95,6 +97,31 @@ class ConversationState:
     user_identity: str = ""
     focused_session: str = ""
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
+
+
+def _make_llm(settings: Settings) -> openai.LLM:
+    return openai.LLM(
+        base_url=settings.llm_base_url,
+        api_key=settings.llm_api_key,
+        model=settings.llm_model,
+        temperature=settings.llm_temperature,
+        parallel_tool_calls=False,
+        max_completion_tokens=settings.llm_max_tokens,
+        extra_body=settings.llm_extra_body,
+    )
+
+
+def warmup_snapshot(agent: Agent) -> tuple[llm.ChatContext, list[Any]]:
+    """The history and tools the agent's next LLM request starts with (see HappyAssistant.llm_node).
+
+    The model's chat template rejects a request without a user message ("No user query found"),
+    which is the state before the user first speaks, so a placeholder stands in for the turn
+    that will follow; everything before it is the prefix the real request shares.
+    """
+    ctx = fold_system_messages(agent.chat_ctx.copy())
+    if not any(isinstance(m, llm.ChatMessage) and m.role == "user" for m in ctx.items):
+        ctx.add_message(role="user", content=WARMUP_PLACEHOLDER)
+    return ctx, llm.ToolContext(agent.tools).flatten()
 
 
 def prewarm(proc: JobProcess) -> None:
@@ -323,15 +350,7 @@ async def entrypoint(ctx: JobContext) -> None:
     session: AgentSession = AgentSession(
         vad=ctx.proc.userdata.get("vad") or silero.VAD.load(min_silence_duration=settings.vad_min_silence),
         stt=NemotronSTT(url=settings.stt_url, language="en"),
-        llm=openai.LLM(
-            base_url=settings.llm_base_url,
-            api_key=settings.llm_api_key,
-            model=settings.llm_model,
-            temperature=settings.llm_temperature,
-            parallel_tool_calls=False,
-            max_completion_tokens=settings.llm_max_tokens,
-            extra_body=settings.llm_extra_body,
-        ),
+        llm=_make_llm(settings),
         tts=openai.TTS(
             base_url=settings.tts_url,
             api_key="not-needed",
@@ -413,6 +432,10 @@ async def entrypoint(ctx: JobContext) -> None:
         record=False,
     )
 
+    # Prefill the prompt while the greeting plays, so the first reply does not wait for it.
+    warmer = PrefixWarmer(_make_llm(settings), lambda: warmup_snapshot(session.current_agent))
+    warmer.schedule()
+
     if config.first_message.strip():
         session.say(config.first_message.strip(), allow_interruptions=True)
 
@@ -433,6 +456,7 @@ async def entrypoint(ctx: JobContext) -> None:
                     new_ctx.add_message(role="system", content=text)
                     await current.update_chat_ctx(new_ctx)
                 logger.info("context update (%d chars)", len(text))
+                warmer.schedule()
             else:
                 logger.info("text turn: %r", text[:200])
                 session.generate_reply(user_input=text)
@@ -441,5 +465,6 @@ async def entrypoint(ctx: JobContext) -> None:
 
     async def _cleanup(reason: str = "") -> None:
         inbox_task.cancel()
+        await warmer.aclose()
 
     ctx.add_shutdown_callback(_cleanup)
