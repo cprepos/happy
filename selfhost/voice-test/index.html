@@ -43,7 +43,7 @@
 <body>
 <main>
   <h1>Voice stack test</h1>
-  <p class="sub">Kokoro TTS, Nemotron streaming STT and the vLLM voice model, through a proxy on 127.0.0.1. <span id="health" class="status">checking services…</span></p>
+  <p class="sub">Kokoro TTS, Nemotron streaming STT and the vLLM model, through a proxy on 127.0.0.1. <span id="health" class="status">checking services…</span></p>
 
   <section>
     <h2>1. Text to speech</h2>
@@ -238,7 +238,7 @@ async function runTurn(userText, tStop, sttMs) {
   const say = (s) => { s = s.trim(); if (!s) return; ttsChain = ttsChain.then(async () => { const m = await speak(s, player, chatAbort.signal); if (firstTts == null) firstTts = m.ttfb; }); };
   try {
     const r = await fetch("api/llm/chat", { method: "POST", signal: chatAbort.signal, headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: CONFIG.llm_model, stream: true, temperature: 0.7, max_tokens: 160, messages: [{ role: "system", content: SYSTEM }, ...history] }) });
+      body: JSON.stringify({ model: CONFIG.llm_model, stream: true, temperature: 0.7, max_tokens: 160, chat_template_kwargs: { enable_thinking: false }, messages: [{ role: "system", content: SYSTEM }, ...history] }) });
     if (!r.ok) throw new Error(`LLM ${r.status}: ${await r.text()}`);
     const rd = r.body.pipeThrough(new TextDecoderStream()).getReader(); let sse = "";
     for (;;) {
