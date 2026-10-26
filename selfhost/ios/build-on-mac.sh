@@ -238,6 +238,16 @@ mac_stage_build() {
         ok "pod deployment targets >= 15.1"
     fi
 
+    # RevenueCat 5.x: Swift 6.4 synthesizes PaywallColor's memberwise
+    # init(stringRepresentation:) and rejects the explicit one as a
+    # redeclaration. An init in the type body stops the synthesis.
+    local paywall_color="$IOS_DIR/Pods/RevenueCat/Sources/Paywalls/PaywallColor.swift"
+    if [[ -f "$paywall_color" ]] && ! grep -q '_noMemberwise' "$paywall_color"; then
+        perl -0pi -e 's{(\n    fileprivate var _underlyingColor: \(any Sendable\)\?\n)}{$1\n    private init(_noMemberwise stringRepresentation: String) {\n        self.stringRepresentation = stringRepresentation\n    }\n}' "$paywall_color"
+        grep -q '_noMemberwise' "$paywall_color" || die "could not patch $paywall_color"
+        ok "patched RevenueCat PaywallColor for Swift 6.4"
+    fi
+
     step "Signing: automatic, team $APPLE_TEAM_ID"
     # Set team + automatic signing on every app-target build configuration
     # (each one carries a PRODUCT_BUNDLE_IDENTIFIER). Idempotent.
