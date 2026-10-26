@@ -14,6 +14,7 @@ import { fetchVoiceCredentials } from '@/sync/apiVoice';
 import { storage } from '@/sync/storage';
 import { realtimeClientTools } from './realtimeClientTools';
 import type { VoiceSession, VoiceSessionConfig } from './types';
+import { buildAgentConfigJson } from './voiceAgentConfig';
 
 /**
  * Room protocol shared with the voice agent worker (see the voice contract):
@@ -197,14 +198,7 @@ export class LiveKitVoiceSession implements VoiceSession {
 
         room.registerRpcMethod(VOICE_RPC_GET_CONFIG, async (data) => {
             await fromAgent(data);
-            const config = this.config;
-            return JSON.stringify({
-                systemPrompt: config?.systemPrompt ?? '',
-                firstMessage: config?.firstMessage ?? '',
-                initialContext: config?.initialContext ?? '',
-                language: config?.language ?? null,
-                sessionId: config?.sessionId ?? '',
-            });
+            return buildAgentConfigJson(this.config);
         });
 
         room.registerRpcMethod('sendMessageToSession', async (data) => {
