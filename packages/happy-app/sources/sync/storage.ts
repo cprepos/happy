@@ -30,7 +30,6 @@ import { loadSessionLastMessageSentAt, saveSessionLastMessageSentAt } from "./pe
 import type { CustomerInfo } from './revenueCat/types';
 import React from "react";
 import { sync } from "./sync";
-import { getCurrentRealtimeSessionId, getVoiceSession } from '@/realtime/RealtimeSession';
 import { isMutableTool } from "@/components/tools/knownTools";
 import { DecryptedArtifact } from "./artifactTypes";
 import { FeedItem } from "./feedTypes";
@@ -708,35 +707,9 @@ export const storage = create<StorageState>()((set, get) => {
                 if (existingSessionMessages && newSession.agentState &&
                     (!oldSession || newSession.agentStateVersion > (oldSession.agentStateVersion || 0))) {
 
-                    // Check for NEW permission requests before processing
-                    const currentRealtimeSessionId = getCurrentRealtimeSessionId();
-                    const voiceSession = getVoiceSession();
-
-                    // console.log('[REALTIME DEBUG] Permission check:', {
-                    //     currentRealtimeSessionId,
-                    //     sessionId: session.id,
-                    //     match: currentRealtimeSessionId === session.id,
-                    //     hasVoiceSession: !!voiceSession,
-                    //     oldRequests: Object.keys(oldSession?.agentState?.requests || {}),
-                    //     newRequests: Object.keys(newSession.agentState?.requests || {})
-                    // });
-
-                    if (currentRealtimeSessionId === session.id && voiceSession) {
-                        const oldRequests = oldSession?.agentState?.requests || {};
-                        const newRequests = newSession.agentState?.requests || {};
-
-                        // Find NEW permission requests only
-                        for (const [requestId, request] of Object.entries(newRequests)) {
-                            if (!oldRequests[requestId]) {
-                                // This is a NEW permission request
-                                const toolName = request.tool;
-                                // console.log('[REALTIME DEBUG] Sending permission notification for:', toolName);
-                                voiceSession.sendTextMessage(
-                                    `Claude is requesting permission to use the ${toolName} tool`
-                                );
-                            }
-                        }
-                    }
+                    // Voice is told about new permission requests by
+                    // voiceHooks.onPermissionRequested (sync.ts), which includes the
+                    // request id the agent needs to answer it.
 
                     // Process new AgentState through reducer
                     const reducerResult = reducer(existingSessionMessages.reducerState, [], newSession.agentState);
