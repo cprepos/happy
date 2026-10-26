@@ -973,6 +973,27 @@ export const knownTools = {
             return typeof firstQuestion?.question === 'string' ? firstQuestion.question : null;
         }
     },
+    // OpenCode's question tool: { questions: [{ question, header, options, multiple, custom }] }.
+    // The answerable form is the agent communication joined to this call.
+    'question': {
+        title: (opts: { metadata: Metadata | null, tool: ToolCall }) => {
+            const questions = opts.tool.input?.questions;
+            const header = Array.isArray(questions) ? questions[0]?.header : undefined;
+            return typeof header === 'string' && header ? header : t('tools.names.question');
+        },
+        icon: ICON_QUESTION,
+        minimal: false,
+        noStatus: true,
+        input: z.object({
+            questions: z.array(z.any()).optional(),
+        }).partial().passthrough(),
+        extractSubtitle: (opts: { metadata: Metadata | null, tool: ToolCall }) => {
+            const questions = opts.tool.input?.questions;
+            if (!Array.isArray(questions) || questions.length === 0) return null;
+            if (questions.length > 1) return t('tools.askUserQuestion.multipleQuestions', { count: questions.length });
+            return typeof questions[0]?.question === 'string' ? questions[0].question : null;
+        }
+    },
     // Internal Claude Code tool for loading deferred tools - no user-visible output
     'Skill': {
         icon: ICON_TASK,

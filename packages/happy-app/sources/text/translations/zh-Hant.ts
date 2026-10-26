@@ -547,6 +547,7 @@ export const zhHant: TranslationStructure = {
         ownAnswerPlaceholder: "輸入你的回答",
         submitFailed: "無法傳送你的回答",
         dismiss: "忽略",
+        dismissed: "已忽略",
         unsupportedTitle: "不支援的請求",
         unsupportedDescription: ({ kind }: { kind: string }) => `此版本的 Happy 無法顯示「${kind}」請求。請更新應用程式後回覆。`,
         moreQuestions: ({ count }: { count: number }) =>
