@@ -8,7 +8,8 @@ import {
     type EffortLevel,
 } from '@/components/modelModeOptions';
 import type { ModelMode, PermissionMode } from '@/components/PermissionModeSelector';
-import { resolveAgentDefaultConfig, retireModelMode } from '@/sync/agentDefaults';
+import { getAgentDefaultOverride, resolveAgentDefaultConfig, retireModelMode } from '@/sync/agentDefaults';
+import { normalizeOpencodePermissionModeKey } from '@/sync/opencodeModes';
 import { getRigReasoningSelection, isRigMetadata } from '@/sync/rig';
 import { useSetting } from '@/sync/storage';
 import type { Session } from '@/sync/storageTypes';
@@ -62,7 +63,16 @@ export function useComposerModes(session: Session | null | undefined): ComposerM
     ), [flavor, metadata, session?.permissionMode]);
 
     const permissionMode = React.useMemo<PermissionMode | null>(() => (
-        resolveCurrentOption(availableModes, [
+        flavor === 'opencode' ? resolveCurrentOption(availableModes, [
+            // OpenCode lists every mode as `<agent>:<policy>`; older saved
+            // picks and the TUI's report may be a bare agent id. Without a
+            // pick or a user default, show what the running CLI reports:
+            // that is what it does when the message carries no mode.
+            session?.permissionMode,
+            getAgentDefaultOverride(agentDefaultOverrides, flavor).permissionMode,
+            metadata?.currentOperatingModeCode,
+            effectiveAgentDefaults.permissionMode,
+        ].map((key) => normalizeOpencodePermissionModeKey(key, metadata?.operatingModes))) : resolveCurrentOption(availableModes, [
             session?.permissionMode,
             ...(isRig ? [
                 metadata?.currentOperatingModeCode,
@@ -73,7 +83,7 @@ export function useComposerModes(session: Session | null | undefined): ComposerM
                 metadata?.currentOperatingModeCode,
             ]),
         ])
-    ), [availableModes, session?.permissionMode, effectiveAgentDefaults.permissionMode, metadata?.currentOperatingModeCode, metadata?.permissionMode, metadata?.session?.permissionMode, isRig]);
+    ), [availableModes, flavor, agentDefaultOverrides, metadata?.operatingModes, session?.permissionMode, effectiveAgentDefaults.permissionMode, metadata?.currentOperatingModeCode, metadata?.permissionMode, metadata?.session?.permissionMode, isRig]);
 
     const modelMode = React.useMemo<ModelMode | null>(() => (
         resolveCurrentOption(availableModels, [

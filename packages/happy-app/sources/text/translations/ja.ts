@@ -457,6 +457,8 @@ export const ja: TranslationStructure = {
             default: 'デフォルト',
             agyDefault: 'agy サンドボックス、確認なし',
             opencodeBuild: 'opencode の build エージェント',
+            opencodeAuto: 'ツールの許可を自動で承認します',
+            opencodeAsk: '許可が必要なツールの前に確認します',
             openclawInert: 'openclaw では適用されません',
             acceptEdits: '編集を許可',
             plan: 'プランモード',

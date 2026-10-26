@@ -4,6 +4,14 @@ import { sortPermissionModes } from '@/utils/permissionModeLabels';
 import { sortRigModelsForPicker } from '@/utils/rigModelPickerOrder';
 import { compareVersionsWithPrerelease, isWellFormedVersion } from '@/utils/versionUtils';
 import { CLI_VERSION_WITH_AUTO, getCodeAgentDefaults, normalizeAgentKey, retireModelMode } from '@/sync/agentDefaults';
+import {
+    OPENCODE_DEFAULT_AGENTS,
+    OPENCODE_POLICIES,
+    opencodeAgentDisplayName,
+    opencodeAgentsFromModes,
+    opencodeLaunchPolicy,
+    type OpencodePermissionPolicy,
+} from '@/sync/opencodeModes';
 export { CLI_VERSION_WITH_AUTO } from '@/sync/agentDefaults';
 import {
     getRigCurrentModel,
@@ -266,15 +274,55 @@ export function getAgyPermissionModes(translate: Translate): PermissionMode[] {
     ];
 }
 
-// OpenCode's primary agents, as `opencode acp` reports them in its `mode`
-// config option. A live session lists them from its own metadata; this list is
-// what the new-session screen shows before one exists. Whether a tool asks first
-// is set by the `permission` block of the machine's opencode config, not here.
+function opencodePolicyDescription(policy: OpencodePermissionPolicy, translate: Translate): string {
+    return translate(policy === 'auto'
+        ? 'agentInput.permissionMode.opencodeAuto'
+        : 'agentInput.permissionMode.opencodeAsk');
+}
+
+// OpenCode's primary agents, each offered with auto and ask permissions (see
+// sync/opencodeModes.ts). This is what Settings and the new-session screen
+// show before a session exists; a live session builds the same list from the
+// agents it reports (getOpencodeSessionPermissionModes).
 export function getOpencodePermissionModes(translate: Translate): PermissionMode[] {
-    return [
-        { key: 'build', name: 'Build', description: translate('agentInput.permissionMode.opencodeBuild') },
-        { key: 'plan', name: 'Plan', description: translate('agentInput.permissionMode.plan') },
-    ];
+    const agentDescriptions: Record<string, string> = {
+        build: translate('agentInput.permissionMode.opencodeBuild'),
+        plan: translate('agentInput.permissionMode.plan'),
+    };
+    return OPENCODE_DEFAULT_AGENTS.flatMap((agent) => OPENCODE_POLICIES.map((policy) => ({
+        key: `${agent}:${policy}`,
+        name: `${opencodeAgentDisplayName(agent, null)}-${policy}`,
+        description: `${agentDescriptions[agent]} · ${opencodePolicyDescription(policy, translate)}`,
+    })));
+}
+
+/**
+ * The OpenCode mode list for a running session, always as `<agent>:auto` /
+ * `<agent>:ask`, whatever shape its CLI reported (explicit keys, the TUI's
+ * plain-id-for-the-launch-policy list, or an older CLI's bare agents). A
+ * session that has reported nothing yet gets the default agents.
+ */
+export function getOpencodeSessionPermissionModes(
+    metadata: Metadata | null | undefined,
+    translate: Translate,
+): PermissionMode[] {
+    const reported = metadata?.operatingModes ?? [];
+    const agents = opencodeAgentsFromModes(reported);
+    if (agents.length === 0) {
+        return getOpencodePermissionModes(translate);
+    }
+    return agents.flatMap(({ agent, option }) => {
+        const name = opencodeAgentDisplayName(agent, option);
+        const launchPolicy = opencodeLaunchPolicy(reported, agent);
+        return OPENCODE_POLICIES.map((policy) => {
+            const explicit = reported.find((mode) => mode.code === `${agent}:${policy}`);
+            const plainForPolicy = option && launchPolicy === policy ? option : null;
+            const description = explicit?.description
+                ?? (plainForPolicy && /-(auto|ask)$/i.test(plainForPolicy.value) ? plainForPolicy.description : null)
+                ?? opencodePolicyDescription(policy, translate);
+            return { key: `${agent}:${policy}`, name: `${name}-${policy}`, description };
+        });
+    });
 }
 
 // Before the release tagged above the CLI's MessageMetaSchema rejected `auto`,
@@ -505,6 +553,10 @@ export function getAvailablePermissionModes(
             getHardcodedPermissionModes(flavor, translate),
             metadata?.version,
         ));
+    }
+
+    if (flavor === 'opencode') {
+        return getOpencodeSessionPermissionModes(metadata, translate);
     }
 
     const metadataModes = mapMetadataOptions(metadata?.operatingModes);

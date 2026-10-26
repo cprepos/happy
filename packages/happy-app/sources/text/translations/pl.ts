@@ -472,6 +472,8 @@ export const pl: TranslationStructure = {
             default: 'Domyślny',
             agyDefault: 'piaskownica agy, bez pytań',
             opencodeBuild: 'agent build w opencode',
+            opencodeAuto: 'automatycznie zatwierdza uprawnienia narzędzi',
+            opencodeAsk: 'pyta przed narzędziami wymagającymi uprawnień',
             openclawInert: 'nieużywane przez openclaw',
             acceptEdits: 'Akceptuj edycje',
             plan: 'Tryb planowania',

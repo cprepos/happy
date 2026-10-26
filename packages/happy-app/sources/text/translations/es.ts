@@ -456,6 +456,8 @@ export const es: TranslationStructure = {
             default: 'Por defecto',
             agyDefault: 'sandbox de agy, sin preguntas',
             opencodeBuild: 'agente build de opencode',
+            opencodeAuto: 'aprueba automáticamente los permisos de herramientas',
+            opencodeAsk: 'pregunta antes de las herramientas que requieren permiso',
             openclawInert: 'no se aplica en openclaw',
             acceptEdits: 'Aceptar ediciones',
             plan: 'Modo de planificación',

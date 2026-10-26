@@ -520,8 +520,9 @@ describe('runAcp', () => {
 
     const runPromise = runAcp({
       credentials: { token: 'token', encryption: { type: 'legacy', secret: new Uint8Array(32) } },
-      agentName: 'opencode',
-      command: 'opencode',
+      // A generic ACP agent: OpenCode's list is rewritten (see the OpenCode permission policy tests).
+      agentName: 'generic',
+      command: 'generic',
       args: ['acp'],
     });
 
@@ -694,6 +695,106 @@ describe('runAcp', () => {
     expect(mocks.backendState.setConfigOptionCalls).toEqual([]);
     expect(mocks.backendState.setModeCalls).toEqual([]);
     expect(mocks.backendState.setModelCalls).toEqual([]);
+  });
+
+  describe('OpenCode permission policy', () => {
+    const credentials = { token: 'token', encryption: { type: 'legacy' as const, secret: new Uint8Array(32) } };
+    const metadataAfterUpdates = () => mocks.mockSession.updateMetadata.mock.calls
+      .reduce((current: Record<string, unknown>, [update]) => update(current), {});
+    const opencodeModes = {
+      type: 'event',
+      name: 'config_options_update',
+      payload: {
+        configOptions: [
+          {
+            type: 'select',
+            id: 'mode',
+            name: 'Mode',
+            category: 'mode',
+            currentValue: 'build',
+            options: [
+              { value: 'build', name: 'build' },
+              { value: 'plan', name: 'plan' },
+            ],
+          },
+        ],
+      },
+    };
+
+    async function start(permissionPolicy?: 'auto' | 'ask') {
+      mocks.backendState.startSessionMessages = [opencodeModes];
+      const runPromise = runAcp({ credentials, agentName: 'opencode', command: 'opencode', args: ['acp'], permissionPolicy });
+      await vi.waitFor(() => {
+        expect(mocks.backendState.startSessionCalls).toBe(1);
+        expect(mocks.getUserMessageHandler()).toBeTypeOf('function');
+      });
+      return { runPromise };
+    }
+
+    async function stop(runPromise: Promise<void>) {
+      await mocks.getKillHandler()!();
+      await runPromise;
+    }
+
+    function send(text: string, permissionMode?: string) {
+      mocks.getUserMessageHandler()!({
+        role: 'user',
+        content: { type: 'text', text },
+        meta: permissionMode ? { permissionMode } : {},
+      });
+    }
+
+    it('starts in auto mode, lists auto and ask per agent and approves requests itself', async () => {
+      const { runPromise } = await start();
+      expect(metadataAfterUpdates()).toMatchObject({
+        currentOperatingModeCode: 'build:auto',
+        operatingModes: [
+          expect.objectContaining({ code: 'build:auto', value: 'Build-auto' }),
+          expect.objectContaining({ code: 'build:ask', value: 'Build-ask' }),
+          expect.objectContaining({ code: 'plan:auto', value: 'Plan-auto' }),
+          expect.objectContaining({ code: 'plan:ask', value: 'Plan-ask' }),
+        ],
+      });
+      const handler = mocks.backendState.constructorArgs.permissionHandler;
+      await expect(handler.handleToolCall('call-1', 'bash', { command: 'ls' })).resolves.toEqual({ decision: 'approved' });
+      await stop(runPromise);
+    });
+
+    it('switches agent and policy per message', async () => {
+      const { runPromise } = await start();
+      send('[test] plan first', 'plan:ask');
+      await vi.waitFor(() => {
+        expect(mocks.backendState.prompts).toHaveLength(1);
+      });
+      expect(mocks.backendState.setConfigOptionCalls).toEqual([{ configId: 'mode', value: 'plan' }]);
+      expect(metadataAfterUpdates()).toMatchObject({ currentOperatingModeCode: 'plan:ask' });
+
+      const handler = mocks.backendState.constructorArgs.permissionHandler;
+      let settled = false;
+      handler.handleToolCall('call-2', 'bash', { command: 'ls' }).then(() => { settled = true; }, () => { settled = true; });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(settled).toBe(false);
+
+      send('[test] back to auto', 'build:auto');
+      await vi.waitFor(() => {
+        expect(mocks.backendState.prompts).toHaveLength(2);
+      });
+      expect(metadataAfterUpdates()).toMatchObject({ currentOperatingModeCode: 'build:auto' });
+      await expect(handler.handleToolCall('call-3', 'bash', { command: 'ls' })).resolves.toEqual({ decision: 'approved' });
+      await stop(runPromise);
+    });
+
+    it('starts in ask mode when launched with it', async () => {
+      const { runPromise } = await start('ask');
+      expect(metadataAfterUpdates()).toMatchObject({ currentOperatingModeCode: 'build:ask' });
+      send('[test] generic yolo', 'bypassPermissions');
+      await vi.waitFor(() => {
+        expect(mocks.backendState.prompts).toHaveLength(1);
+      });
+      expect(mocks.backendState.setConfigOptionCalls).toEqual([]);
+      expect(metadataAfterUpdates()).toMatchObject({ currentOperatingModeCode: 'build:auto' });
+      await stop(runPromise);
+    });
   });
 
   describe('OpenCode resume', () => {
