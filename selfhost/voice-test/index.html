@@ -115,7 +115,7 @@ let activePlayer = null;
 // Streams one TTS request into `player`. Returns {ttfb, total, audioMs}.
 async function speak(text, player, signal) {
   const t0 = now();
-  const r = await fetch("/api/tts/speech", { method: "POST", signal, headers: { "Content-Type": "application/json" },
+  const r = await fetch("api/tts/speech", { method: "POST", signal, headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ model: "kokoro", input: text, voice: $("voice").value, response_format: "pcm", stream: true, speed: parseFloat($("speed").value) || 1 }) });
   if (!r.ok) throw new Error(`TTS ${r.status}: ${await r.text()}`);
   const reader = r.body.getReader(); let ttfb = null, bytes = 0;
@@ -128,7 +128,7 @@ async function speak(text, player, signal) {
 
 async function loadVoices() {
   try {
-    const j = await (await fetch("/api/tts/voices")).json();
+    const j = await (await fetch("api/tts/voices")).json();
     const ids = (j.voices || []).map(v => typeof v === "string" ? v : v.id).filter(v => /^[ab][fm]_/.test(v) && !v.includes("_inno"));
     if (ids.length) $("voice").innerHTML = ids.map(v => `<option ${v === "af_heart" ? "selected" : ""}>${v}</option>`).join("");
   } catch (e) { console.warn(e); }
@@ -156,7 +156,7 @@ class MicStream {
     this.stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
     if (!MicStream.loaded) { await c.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], { type: "application/javascript" }))); MicStream.loaded = true; }
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    this.ws = new WebSocket(`${proto}://${location.host}/api/stt/stream?sample_rate=16000&endpoint_ms=${this.endpointMs}`);
+    this.ws = new WebSocket(`${proto}://${location.host}${location.pathname.replace(/[^/]*$/, "")}api/stt/stream?sample_rate=16000&endpoint_ms=${this.endpointMs}`);
     this.ws.binaryType = "arraybuffer";
     this.t0 = null; this.sent = 0;
     await new Promise((res, rej) => { this.ws.onopen = res; this.ws.onerror = () => rej(new Error("STT websocket failed")); });
@@ -234,7 +234,7 @@ async function runTurn(userText, tStop, sttMs) {
   const queue = []; let ttsChain = Promise.resolve(); let firstTts = null;
   const say = (s) => { s = s.trim(); if (!s) return; ttsChain = ttsChain.then(async () => { const m = await speak(s, player, chatAbort.signal); if (firstTts == null) firstTts = m.ttfb; }); };
   try {
-    const r = await fetch("/api/llm/chat", { method: "POST", signal: chatAbort.signal, headers: { "Content-Type": "application/json" },
+    const r = await fetch("api/llm/chat", { method: "POST", signal: chatAbort.signal, headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model: CONFIG.llm_model, stream: true, temperature: 0.7, max_tokens: 160, messages: [{ role: "system", content: SYSTEM }, ...history] }) });
     if (!r.ok) throw new Error(`LLM ${r.status}: ${await r.text()}`);
     const rd = r.body.pipeThrough(new TextDecoderStream()).getReader(); let sse = "";
@@ -285,11 +285,11 @@ $("chatBtn").onclick = async () => {
 // ------------------------------------------------------------------ boot
 let CONFIG = { llm_model: "voice-llm" };
 (async () => {
-  try { CONFIG = await (await fetch("/api/config")).json(); } catch {}
+  try { CONFIG = await (await fetch("api/config")).json(); } catch {}
   loadVoices();
   const h = $("health");
   if (!window.isSecureContext || !navigator.mediaDevices) h.innerHTML = "Microphone needs a secure context: open via <code>http://localhost:8899</code> (SSH tunnel).";
-  try { const s = await (await fetch("/api/stt/health")).json(); h.textContent = `STT ${s.status}, model ${s.model}`; h.className = "status ok"; }
+  try { const s = await (await fetch("api/stt/health")).json(); h.textContent = `STT ${s.status}, model ${s.model}`; h.className = "status ok"; }
   catch { h.textContent = "STT not reachable"; h.className = "status err"; }
 })();
 </script>
