@@ -5,36 +5,40 @@ This document describes how to deploy the Happy backend (`packages/happy-server`
 ## Runtime overview
 - **App server:** Node.js running `tsx ./sources/main.ts` (Fastify + Socket.IO).
 - **Database:** Postgres via Prisma.
-- **Cache:** Redis (currently used for connectivity and future expansion).
-- **Object storage:** S3-compatible storage for user-uploaded assets (MinIO works).
+- **Cache:** Redis (optional; only pinged at startup when `REDIS_URL` is set).
+- **Object storage:** S3-compatible storage (optional; MinIO works). Without `S3_HOST` the server stores files on local disk.
 - **Metrics:** Optional Prometheus `/metrics` server on a separate port.
 
-## Required services
-1. **Postgres**
+## Services
+1. **Postgres** (required)
    - Required for all persisted data.
    - Configure via `DATABASE_URL`.
+   - Standalone mode (`sources/standalone.ts`) uses embedded PGlite instead and needs no Postgres.
 
-2. **Redis**
-   - Required by startup (`redis.ping()` is called).
-   - Configure via `REDIS_URL`.
-   - Managed by this repo: `packages/happy-server/deploy/happy-redis.yaml` (StatefulSet + redis-exporter sidecar).
+2. **Redis** (optional)
+   - `sources/main.ts` connects and calls `redis.ping()` only when `REDIS_URL` is set; otherwise Redis is skipped entirely.
+   - Managed by this repo for prod: `packages/happy-server/deploy/happy-redis.yaml` (StatefulSet + redis-exporter sidecar).
 
-3. **S3-compatible storage**
-   - Used for avatars and other uploaded assets.
-   - Configure via `S3_HOST`, `S3_PORT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_BUCKET`, `S3_PUBLIC_URL`, `S3_USE_SSL`.
-   - **Deployed separately** — not managed by this repo's Kubernetes manifests. In prod, the S3-compatible service (MinIO or similar) behind `S3_PUBLIC_URL` is provisioned and managed by external infrastructure. The app only consumes it via env vars: `S3_PUBLIC_URL` is set in the Deployment, and credentials come from Vault via ExternalSecret (`/handy-files`).
-   - If `S3_HOST` is unset, the server falls back to local filesystem storage (`./data/files/`).
+3. **S3-compatible storage** (optional)
+   - Used for avatars and other uploaded assets when `S3_HOST` is set.
+   - Configure via `S3_HOST`, `S3_PORT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_BUCKET`, `S3_PUBLIC_URL`, `S3_USE_SSL`, `S3_REGION`.
+   - If `S3_HOST` is unset (`sources/storage/files.ts`), the server falls back to local filesystem storage under `$DATA_DIR/files/` (default `./data/files/`) and serves it at `/files/*`, building links from `PUBLIC_URL`.
+   - In prod, the S3-compatible service behind `S3_PUBLIC_URL` is provisioned by external infrastructure; credentials come from Vault via ExternalSecret (`/handy-files`).
    - For local k8s dev, a MinIO pod is deployed via `deploy/overlays/local/minio.yaml`.
 
 ## Environment variables
 **Required**
 - `DATABASE_URL`: Postgres connection string.
 - `HANDY_MASTER_SECRET`: master key for auth tokens and server-side encryption.
-- `REDIS_URL`: Redis connection string.
-- `S3_HOST`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_BUCKET`, `S3_PUBLIC_URL`: object storage config.
 
 **Common**
 - `PORT`: API server port (default `3005`).
+- `PUBLIC_URL`: public base URL, used for local-storage file links.
+- `DATA_DIR`: local data directory (default `./data`); files live in `$DATA_DIR/files`.
+- `HAPPY_STATIC_DIR`: directory with a built webapp (`index.html`) to serve at `/`.
+- `HAPPY_INJECT_HTML_CONFIG`: JSON exposed to the served webapp as `window.__HAPPY_CONFIG__`.
+- `REDIS_URL`: optional Redis connection string.
+- `S3_HOST`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_BUCKET`, `S3_PUBLIC_URL`: optional object storage config (local disk when unset).
 - `METRICS_ENABLED`: set to `false` to disable metrics server.
 - `METRICS_PORT`: metrics server port (default `9090`).
 - `S3_PORT`: optional S3 port.
@@ -52,7 +56,8 @@ This document describes how to deploy the Happy backend (`packages/happy-server`
 A production Dockerfile is provided at `Dockerfile.server`.
 
 Key notes:
-- The server defaults to port `3005` (set `PORT` explicitly in container environments).
+- The server defaults to port `3005` (set `PORT` explicitly in container environments); the image exposes `3005`.
+- `selfhost/docker-compose.yml` is a single-host example: Postgres plus the server, local file storage, no Redis or S3.
 - The image includes FFmpeg and Python for media processing.
 
 ## Kubernetes manifests
