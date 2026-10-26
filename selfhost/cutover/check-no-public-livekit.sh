@@ -55,7 +55,8 @@ ip=$(docker inspect happy-voice-livekit --format '{{with index .NetworkSettings.
 if [ -n "$ip" ]; then
     pass "livekit container on happy-selfhost_default at $ip"
     timeout 3 bash -c "</dev/tcp/$ip/7881" 2>/dev/null && pass "host -> $ip:7881 (ICE/TCP) reachable" || fail "host -> $ip:7881 unreachable"
-    docker logs happy-voice-livekit 2>&1 | grep -q "\"nodeIP\": \"$ip\"" && pass "LiveKit nodeIP is $ip" || fail "LiveKit log does not show nodeIP $ip"
+    # grep without -q: an early exit would SIGPIPE docker logs and fail the pipeline under pipefail.
+    docker logs happy-voice-livekit 2>&1 | grep "\"nodeIP\": \"$ip\"" >/dev/null && pass "LiveKit nodeIP is $ip" || fail "LiveKit log does not show nodeIP $ip"
 else
     fail "livekit container not on happy-selfhost_default"
 fi
