@@ -48,14 +48,14 @@
   - allowed
 - voice_session_started
   - session_id
-  - elevenlabs_conversation_id
+  - voice_conversation_id
 - voice_session_error
   - session_id
-  - elevenlabs_conversation_id
+  - voice_conversation_id
   - error
 - voice_session_stopped
   - session_id
-  - elevenlabs_conversation_id
+  - voice_conversation_id
   - duration_seconds
 
 ## Paywall
@@ -147,7 +147,7 @@ all include flow property which customizes the upsell screen shown by revenue ca
 ## Notes
 
 - session_switched now includes stable identity (`session_id`, `session_created_at`) plus recency. Entry source is still merged until we add an explicit source property.
-- elevenlabs_conversation_id is the conversation id returned by the ElevenLabs voice session layer.
+- voice_conversation_id is the conversation id the server returns from `POST /v1/voice/conversations` (the LiveKit room is `happy-voice-<id>`).
 - github_connected is a plain event with no GitHub profile data attached.
 
 ## Relevant Sources
