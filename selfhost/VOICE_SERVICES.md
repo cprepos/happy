@@ -4,7 +4,9 @@ This document is for whoever writes the voice-agent worker (LiveKit Agents, Pyth
 Everything below runs from `selfhost/compose.voice.yml` (Compose project `happy-voice`).
 
 ```
-make voice-up      # start (the LLM takes ~2-3 min to load and compile)
+make voice-up      # start livekit, stt, tts and the voice-agent worker
+make voice-agent-up   # rebuild/restart only the worker
+make voice-agent-e2e  # headless fake-app conversation against the running worker
 make voice-status  # health of every service + GPU memory
 make voice-smoke   # end-to-end check, prints the latencies below
 make voice-try     # browser test page on http://127.0.0.1:8899
@@ -21,7 +23,9 @@ Config and secrets live in `selfhost/.env.voice` (gitignored; template `.env.voi
 | LiveKit | `happy-voice-livekit` | `127.0.0.1:7880` (HTTP + WS signaling), `*:7881/tcp` (ICE/TCP), `:7882/udp` (single UDP mux, LAN + VPN addresses) | `livekit/livekit-server:v1.13.10`, host networking | none |
 | STT | `happy-voice-stt` | `127.0.0.1:8090` | `nvidia/nemotron-speech-streaming-en-0.6b` (NeMo 3.0.0, cache-aware FastConformer RNNT), image built from `selfhost/stt/` | 0 |
 | TTS | `happy-voice-tts` | `127.0.0.1:8880` | `ghcr.io/remsky/kokoro-fastapi-gpu:v0.9.0` (Kokoro-82M) | 0 |
-| LLM | `happy-voice-llm` | `127.0.0.1:8000` | `vllm/vllm-openai:v0.32.0` serving `QuantTrio/Qwen3.6-35B-A3B-AWQ` as `voice-llm`, TP=2 | 0 + 1 |
+| LLM | host systemd `qwen38-27b-fp8-tp2-vllm` (not managed here) | `127.0.0.1:9080` | Qwen3.8-27B FP8 served as `coder`, TP=2 | 2 + 3 |
+| Voice agent | `happy-voice-agent` | `127.0.0.1:8791` (health) | `packages/happy-voice-agent` (LiveKit Agents 1.8.9), host networking | none (CPU) |
+| LLM (optional, profile `local-llm`) | `happy-voice-llm` | `127.0.0.1:8000` | `vllm/vllm-openai:v0.32.0` serving `QuantTrio/Qwen3.6-35B-A3B-AWQ` as `voice-llm`, TP=2 | 0 + 1 |
 
 Public signaling: `wss://livekit.girthbass.duckdns.org` (host Caddy -> 127.0.0.1:7880).
 The router must forward **TCP 7881** and **UDP 7882** to this host for clients outside the LAN.
@@ -34,10 +38,13 @@ The router must forward **TCP 7881** and **UDP 7882** to this host for clients o
 | 1 (3090 Ti) | vLLM rank 1 | ~16.9 / 24.6 GB |
 | 2, 3 | Taken by a separate, pre-existing vLLM systemd service (`qwen38-27b-fp8-tp2-vllm`) | full |
 
-The plan reserved GPUs 1-2 for the LLM, but GPUs 2 and 3 were already in use, so the LLM shares GPU 0.
-vLLM starts only after STT and TTS are healthy and takes `LLM_GPU_MEM_UTIL=0.68` of each GPU, which
-leaves about 1 GB of headroom on GPU 0. If GPUs 2-3 are freed, set `LLM_GPU_A=1`, `LLM_GPU_B=2`,
-raise `LLM_GPU_MEM_UTIL` to about 0.9 and `make voice-up SVC=llm`.
+The voice LLM is now the host's existing `coder` vLLM on GPUs 2-3 (systemd; never restarted or
+reconfigured from here). The `vllm-openai` rows for GPUs 0-1 apply only when the old local voice LLM
+is started on purpose: it sits behind the compose profile `local-llm`, so `make voice-up` no longer
+starts it. Opt in with `make voice-up SVC=llm` (or `--profile local-llm`), then point
+`VOICE_LLM_BASE_URL=http://127.0.0.1:8000/v1` and `VOICE_LLM_MODEL=voice-llm` at it. It starts only
+after STT and TTS are healthy and takes `LLM_GPU_MEM_UTIL=0.68` of each GPU. The `vllm-cache`
+volume and weights are kept.
 
 ## LiveKit
 
@@ -87,10 +94,15 @@ OpenAI-compatible, so it works with `livekit-plugins-openai`'s `openai.TTS(base_
 - Voices: `GET /v1/audio/voices` -> `{"voices":[{"id":"af_heart",...},...]}`. Good English defaults: `af_heart`, `af_bella`, `am_michael`, `bf_emma`, `bm_george`. Voices can be blended, e.g. `"af_heart+af_bella"`.
 - Health: `GET /health`. Built-in UI: `http://127.0.0.1:8880/web`. API docs: `http://127.0.0.1:8880/docs`.
 
-## LLM: vLLM (`http://127.0.0.1:8000/v1`)
+## LLM: vLLM (`VOICE_LLM_BASE_URL`, default `http://127.0.0.1:9080/v1`)
 
-OpenAI Chat Completions. Model name **`voice-llm`** (the HF id `QuantTrio/Qwen3.6-35B-A3B-AWQ` also works).
-Use `livekit-plugins-openai`'s `openai.LLM(base_url="http://127.0.0.1:8000/v1", api_key="x", model="voice-llm")`.
+OpenAI Chat Completions. Default model **`coder`** (host service, no API key, `MAX_SEQS=2`, so keep
+`max_tokens` modest; the worker uses 250). Configure with `VOICE_LLM_BASE_URL` / `VOICE_LLM_MODEL` in
+`.env.voice`; the worker, `voice-status` and `voice-smoke` all read them. Always send
+`"chat_template_kwargs":{"enable_thinking":false}`. The notes below describe the optional local
+`voice-llm` (`http://127.0.0.1:8000/v1`); tool calling and thinking work the same way on `coder`.
+Both Qwen chat templates reject a system message that is not first, so the worker folds later system
+context into user messages.
 
 - Tool calling: `--enable-auto-tool-choice --tool-call-parser qwen3_coder`. Pass `tools` in the standard OpenAI format and get back standard `tool_calls` deltas when streaming.
 - Thinking is **off** by default (`--default-chat-template-kwargs '{"enable_thinking": false}'`, with `--reasoning-parser qwen3`). To turn it on for one request, send `"chat_template_kwargs":{"enable_thinking":true}`; any reasoning is then split out of `content` into the reasoning field (`reasoning_content`/`reasoning`, depending on the vLLM version).
@@ -123,6 +135,14 @@ Result: `sendMessageToSession({"sessionId":"sess_42","message":"List the files i
 | LLM time to first token (71-token prompt) | 81 ms |
 | LLM tool call: first delta / complete | 272 ms / 507 ms |
 | LLM decode speed | ~168 tok/s |
+
+With `coder` (2026-10-26): first token ~150-600 ms, tool call first delta / complete 614 / 848 ms,
+~77 tok/s decode, occasional multi-second stalls when both of its `MAX_SEQS=2` slots are busy.
+
+Full conversation, `make voice-agent-e2e` (fake app, Kokoro speech in, end of user speech -> first
+agent audio, including VAD silence 0.5 s and the turn detector): p50 1.84-2.11 s, max 2.46 s over
+3 runs on `coder` (tool turns ~1.7-1.9 s because the app's scripted tool replies are spoken without a
+second LLM call). On the old local `voice-llm` it was p50 ~1.4 s with VAD silence 0.35 s.
 
 So the expected service time from end of speech to first audio is roughly STT final (~100 ms) +
 LLM time to the first sentence (~150-300 ms) + TTS first byte (~140 ms), plus the turn detector's
