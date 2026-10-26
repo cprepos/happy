@@ -436,6 +436,9 @@ export async function runOpencodeTui(opts: {
                 session.updateMetadata((current) => ({ ...current, opencodeSessionId: action.sessionId }));
                 saveOwnerState();
                 break;
+            case 'event':
+                session.sendSessionEvent({ type: 'message', message: action.message });
+                break;
         }
     };
 
