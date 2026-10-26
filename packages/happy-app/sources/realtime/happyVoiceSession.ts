@@ -10,6 +10,7 @@ import { getVoiceServerUrl } from '@/sync/serverConfig';
 import { storage } from '@/sync/storage';
 import { realtimeClientTools } from './realtimeClientTools';
 import type { VoiceSession, VoiceSessionConfig } from './types';
+import { buildAgentConfigJson } from './voiceAgentConfig';
 
 const MAX_QUEUED_MESSAGES = 100;
 const USER_SILENCE_MS = 300;
@@ -301,14 +302,7 @@ export class HappyVoiceSession implements VoiceSession {
     private async callTool(method: string, payload: string): Promise<string> {
         switch (method) {
             case 'happy.getConfig': {
-                const config = this.config;
-                return JSON.stringify({
-                    systemPrompt: config?.systemPrompt ?? '',
-                    firstMessage: config?.firstMessage ?? '',
-                    initialContext: config?.initialContext ?? '',
-                    language: config?.language ?? null,
-                    sessionId: config?.sessionId ?? '',
-                });
+                return buildAgentConfigJson(this.config);
             }
             case 'sendMessageToSession':
                 return realtimeClientTools.sendMessageToSession(parsePayload(payload));
