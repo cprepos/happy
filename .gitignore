@@ -94,3 +94,6 @@ selfhost/webapp/
 /trash/
 # Self-hosted voice stack secrets
 selfhost/.env.voice
+
+# Backups of secrets and configs moved aside in the self-host directory
+/selfhost/trash/
