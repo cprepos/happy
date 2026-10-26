@@ -276,7 +276,6 @@ export const en = {
         voiceSessionFailed: 'Failed to start voice session',
         voiceServiceUnavailable: 'Voice service is temporarily unavailable',
         voiceLimitReachedTitle: 'Voice Limit Reached',
-        voiceHardLimitReached: ({ hours }: { hours: number }) => `You've used ${hours}+ hours of voice this month. This is the maximum allowed. You can configure your own ElevenLabs agent in Voice settings to use your own quota.`,
         voiceConversationLimitReached: 'You\'ve reached the maximum number of voice conversations this month. We may add on-demand voice usage in the future — please file an issue at github.com/nicepkg/happy/issues if you hit this limit.',
         oauthInitializationFailed: 'Failed to initialize OAuth flow',
         tokenStorageFailed: 'Failed to store authentication tokens',
@@ -764,25 +763,6 @@ export const en = {
             footer: ({ count }: { count: number }) => `${count} ${plural({ count, singular: 'language', plural: 'languages' })} available`,
             autoDetect: 'Auto-detect',
         },
-        // Bring your own agent
-        byoTitle: 'Bring Your Own Agent',
-        byoDescription: 'Use your own ElevenLabs agent instead of the Happy default. No subscription required — connect directly with your own ElevenLabs account. Your agent must define two client tools: sendMessageToSession (sends text to the coding agent) and processPermissionRequest (allows or denies tool use). It receives session context via the {{initialConversationContext}} dynamic variable.',
-        customAgentId: 'ElevenLabs Agent ID',
-        customAgentIdNotSet: 'Not configured',
-        customAgentIdDescription: 'Enter your ElevenLabs agent ID. Leave empty to use the Happy default.',
-        customAgentIdPlaceholder: 'e.g. abc123def456',
-        bypassToken: 'Direct Connection',
-        bypassTokenSubtitle: 'Skip Happy server, connect straight to ElevenLabs',
-        promptGuideTitle: 'Agent Prompt Guide',
-        promptGuideDescription: 'Your ElevenLabs agent needs:\n\n• Tool: sendMessageToSession — parameters: sessionId (string), message (string). Sends a message to the specified coding session.\n• Tool: processPermissionRequest — parameters: requestId (string), decision ("allow" or "deny"). Approves or denies a pending tool permission.\n• Dynamic variable: {{initialConversationContext}} — receives session history and context on start.\n\nThe agent acts as a voice bridge between the user and coding agents. It should be concise, only respond when addressed, and report when a coding agent finishes work.',
-        // Voice usage
-        usageTitle: 'Usage (Last 30 Days)',
-        usageFooter: 'Voice time used in the last 30 days. Free tier: 20 min. Subscribed: 5 hours. Max 100 conversations per month.',
-        usageLabel: 'Voice Time',
-        conversationsLabel: 'Conversations',
-        usageUsed: ({ used, limit }: { used: string; limit: string }) => `${used} used of ${limit}`,
-        supportTitle: 'Upgrade Voice',
-        supportSubtitle: 'Get more voice time and support development',
     },
 
     settingsAccount: {
