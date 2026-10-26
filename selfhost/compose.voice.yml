@@ -18,3 +18,104 @@ services:
       LIVEKIT_KEYS: "${LIVEKIT_API_KEY:?set in .env.voice}: ${LIVEKIT_API_SECRET:?set in .env.voice}"
     volumes:
       - ./livekit.yaml:/etc/livekit.yaml:ro
+
+  stt:
+    build:
+      context: ./stt
+    image: happy-voice-stt:local
+    container_name: happy-voice-stt
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${STT_PORT:-8090}:8090"
+    environment:
+      STT_MODEL: ${STT_MODEL:-nvidia/nemotron-speech-streaming-en-0.6b}
+      STT_RIGHT_CONTEXT: ${STT_RIGHT_CONTEXT:-1}
+      HF_HOME: /hf-cache
+      HF_HUB_CACHE: /hf-cache
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes: *hf-cache
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${STT_GPU:-0}"]
+              capabilities: [gpu]
+
+  tts:
+    image: ghcr.io/remsky/kokoro-fastapi-gpu:v0.9.0
+    container_name: happy-voice-tts
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${TTS_PORT:-8880}:8880"
+    environment:
+      USE_GPU: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8880/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 120s
+      retries: 5
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${TTS_GPU:-0}"]
+              capabilities: [gpu]
+
+  llm:
+    image: vllm/vllm-openai:v0.32.0
+    container_name: happy-voice-llm
+    restart: unless-stopped
+    ipc: host
+    ports:
+      - "127.0.0.1:${LLM_PORT:-8000}:8000"
+    environment:
+      HF_HOME: /hf-cache
+      HF_HUB_CACHE: /hf-cache
+      HF_TOKEN: ${HF_TOKEN:-}
+      VLLM_NO_USAGE_STATS: "1"
+    volumes:
+      - ${HF_CACHE_DIR:-/mnt/ai-data/huggingface}:/hf-cache
+      - vllm-cache:/root/.cache/vllm
+    command:
+      - ${LLM_MODEL:-Qwen/Qwen3.6-35B-A3B-FP8}
+      - --served-model-name
+      - ${LLM_SERVED_NAME:-voice-llm}
+      - ${LLM_MODEL:-Qwen/Qwen3.6-35B-A3B-FP8}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --tensor-parallel-size
+      - "2"
+      - --max-model-len
+      - "${LLM_MAX_MODEL_LEN:-32768}"
+      - --gpu-memory-utilization
+      - "${LLM_GPU_MEM_UTIL:-0.92}"
+      - --language-model-only
+      - --enable-prefix-caching
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - qwen3_coder
+      - --reasoning-parser
+      - qwen3
+      - --default-chat-template-kwargs
+      - '{"enable_thinking": false}'
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health || exit 1"]
+      interval: 20s
+      timeout: 5s
+      start_period: 900s
+      retries: 5
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["1", "2"]
+              capabilities: [gpu]
+
+volumes:
+  vllm-cache:
