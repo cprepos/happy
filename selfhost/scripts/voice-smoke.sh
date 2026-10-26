@@ -172,7 +172,6 @@ async def stt_check(pcm16):
             partials = []
             final = {}
             t_start = time.perf_counter()
-            speech_end_s = (sil.size + pcm16.size) / 16000
 
             async def reader():
                 async for m in ws:
@@ -196,16 +195,14 @@ async def stt_check(pcm16):
             await asyncio.wait_for(rt, 10)
             await ws.send(json.dumps({"type": "close"}))
         first = partials[0] if partials else None
-        last_word_lag = None
-        if partials:
-            # lag between the end of speech and the last partial update
-            last_word_lag = (partials[-1]["_t"] - speech_end_s) * 1000
+        # partial lag: wall-clock arrival minus the audio position it covers
+        lags = [p["_t"] * 1000 - p["audio_ms"] for p in partials]
         w = wer(SENTENCE, final.get("text", ""))
         print(f"       partials ({len(partials)}): " + " | ".join(p["text"] for p in partials[:: max(1, len(partials) // 6)]))
         print(f"       final: {final.get('text')!r}  (WER {w:.2%})")
         msg = (
-            f"{len(partials)} partials, first partial at {first['_t']*1000:.0f} ms (audio t={first['audio_ms']} ms), "
-            f"last partial {last_word_lag:.0f} ms after speech end, final {(final['_t']-t_flush)*1000:.0f} ms after flush"
+            f"{len(partials)} partials, partial lag behind audio avg {sum(lags)/len(lags):.0f} ms / max {max(lags):.0f} ms, "
+            f"final {(final['_t']-t_flush)*1000:.0f} ms after flush (end of audio)"
             if first else "no partials"
         )
         (ok if partials and w < 0.25 else fail)("stt.stream", msg)
