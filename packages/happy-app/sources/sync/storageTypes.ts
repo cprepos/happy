@@ -171,6 +171,7 @@ export const MetadataSchema = z.object({
         insertions: z.number().int().nonnegative(),
     }).passthrough().optional(),
     machineId: z.string().optional(),
+    opencodeSessionId: z.string().optional(), // OpenCode ACP session ID
     claudeSessionId: z.string().optional(), // Claude Code session ID
     codexThreadId: z.string().optional(), // Codex app-server thread ID
     tools: z.array(z.string()).optional(),
