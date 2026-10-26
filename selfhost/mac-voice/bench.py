@@ -342,7 +342,7 @@ def bench_files(name):
 
     for repo in ("mlx-community/parakeet-tdt-0.6b-v3", "mlx-community/parakeet-tdt-0.6b-v2"):
         pm = from_pretrained(repo)
-        run(repo.split("/")[1], lambda a: pm.generate(get_logmel(mx.array(a, dtype=mx.bfloat16), pm.preprocessor_config))[0].text)
+        run(repo.split("/")[1], lambda a: pm.generate(get_logmel(mx.array(a, dtype=mx.float32), pm.preprocessor_config).astype(mx.bfloat16))[0].text)
         del pm
         mx.clear_cache()
     save(name, "files", out)
