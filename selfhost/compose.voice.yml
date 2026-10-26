@@ -11,13 +11,23 @@ services:
   livekit:
     image: livekit/livekit-server:v1.13.10
     container_name: happy-voice-livekit
-    network_mode: host
     restart: unless-stopped
     command: ["--config", "/etc/livekit.yaml"]
     environment:
       LIVEKIT_KEYS: "${LIVEKIT_API_KEY:?set in .env.voice}: ${LIVEKIT_API_SECRET:?set in .env.voice}"
     volumes:
       - ./livekit.yaml:/etc/livekit.yaml:ro
+    # On happy-server's network (the happy-selfhost project must be up first), reachable there
+    # as ws://livekit:7880. The address is assigned by Docker: this network has no user
+    # configured subnet, so Docker refuses a fixed ipv4_address. LiveKit advertises whatever
+    # address it gets (rtc.ips.includes in livekit.yaml covers the whole subnet).
+    networks:
+      happy:
+        aliases: [livekit]
+    # Signaling for the voice agent on the host network only. RTC ports (7881/tcp, 7882/udp)
+    # stay inside the docker network: the agent reaches them at the container IP.
+    ports:
+      - "127.0.0.1:7880:7880"
 
   stt:
     build:
@@ -136,7 +146,8 @@ services:
               capabilities: [gpu]
 
   # LiveKit Agents worker (packages/happy-voice-agent). CPU only; host network so it reaches
-  # livekit, stt, tts and llm on 127.0.0.1. Dispatched explicitly as "happy-voice".
+  # livekit signaling, stt, tts and llm on 127.0.0.1 (LiveKit media goes to the container IP
+  # on the happy-selfhost bridge). Dispatched explicitly as "happy-voice".
   voice-agent:
     build:
       context: ../packages/happy-voice-agent
@@ -153,10 +164,19 @@ services:
       # profile's HF weights id, so the agent reads VOICE_LLM_* instead
       LLM_BASE_URL: ${VOICE_LLM_BASE_URL:-http://127.0.0.1:9080/v1}
       LLM_MODEL: ${VOICE_LLM_MODEL:-coder}
+      # default Kokoro voice/speed when the app does not pick one for the chat; a blend such
+      # as "am_michael(2)+am_onyx(1)" mixes voices by weight
       TTS_VOICE: ${TTS_VOICE:-af_heart}
+      TTS_SPEED: ${TTS_SPEED:-1.0}
       VOICE_AGENT_NAME: happy-voice
       # the worker's health/debug HTTP server; 8081 is commonly taken on shared hosts
       VOICE_AGENT_HTTP_PORT: ${VOICE_AGENT_HTTP_PORT:-8791}
+
+networks:
+  # happy-server's compose network (selfhost/docker-compose.yml, project happy-selfhost).
+  happy:
+    external: true
+    name: happy-selfhost_default
 
 volumes:
   vllm-cache:

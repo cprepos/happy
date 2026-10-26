@@ -57,6 +57,9 @@ export const SettingsSchema = z.object({
     reviewPromptAnswered: z.boolean().describe('Whether the review prompt has been answered'),
     reviewPromptLikedApp: z.boolean().nullish().describe('Whether user liked the app when asked'),
     voiceAssistantLanguage: z.string().nullable().describe('Preferred language for voice assistant (null for auto-detect)'),
+    voiceAssistantVoice: z.string().nullable().describe('Default voice preset id for the voice assistant (null for the server default)'),
+    // Flat map so a chat override syncs as one value; ids not in the catalog are ignored on read.
+    voiceBySession: z.record(z.string(), z.string()).describe('Per-chat voice preset overrides, keyed by session id'),
     // voiceCustomAgentId and voiceBypassToken were removed with the hosted
     // voice provider. Stored settings that still carry them parse fine: unknown
     // keys are kept as-is by settingsParse.
@@ -136,6 +139,8 @@ export const settingsDefaults: Settings = {
     reviewPromptAnswered: false,
     reviewPromptLikedApp: null,
     voiceAssistantLanguage: null,
+    voiceAssistantVoice: null,
+    voiceBySession: {},
     preferredLanguage: null,
     recentMachinePaths: [],
     lastUsedAgent: null,

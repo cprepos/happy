@@ -9,9 +9,18 @@ export interface VoiceSessionConfig {
     firstMessage?: string;
     /** ISO language code such as `en`; absent means auto-detect. */
     language?: string;
+    /** Kokoro voice or blend (see voiceCatalog.ts); absent means the server default. */
+    voice?: string;
+    /** Kokoro speed multiplier; absent means the server default. */
+    speed?: number;
 }
 
 export interface VoiceSession {
+    /**
+     * Called synchronously from the user gesture that starts voice, before
+     * anything is awaited (Safari only lets audio start inside the gesture).
+     */
+    prepare?(): void;
     startSession(config: VoiceSessionConfig): Promise<string | null>;
     endSession(): Promise<void>;
     sendTextMessage(message: string): void;

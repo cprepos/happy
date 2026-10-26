@@ -7,6 +7,7 @@ require('../patches/expose-pierre-diffs-style.cjs');
 require('../patches/force-preact-cjs.cjs');
 require('../patches/fix-pierre-trees-preact-hooks.cjs');
 require('../patches/fix-react-native-audio-api-size-t.cjs');
+require('../patches/enable-react-native-audio-api-voice-processing.cjs').patchAudioApiVoiceProcessing();
 require('../patches/fix-flash-list-web-inversion.cjs').patchFlashListWeb();
 require('../patches/fix-virtualized-list-stale-frame-offset.cjs').patchVirtualizedLists();
 

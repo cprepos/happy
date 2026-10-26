@@ -1,53 +1,25 @@
 import React, { useEffect } from 'react';
 import { Platform } from 'react-native';
-import { AndroidAudioTypePresets, AudioSession, registerGlobals } from '@livekit/react-native';
+import { AudioContext, AudioManager, AudioRecorder } from 'react-native-audio-api';
 import { registerVoiceSession } from './RealtimeSession';
-import { LiveKitVoiceSession, type LiveKitVoicePlatform } from './livekitVoiceSession';
+import { HappyVoiceSession } from './happyVoiceSession';
+import { createNativeVoiceAudio, type NativeVoiceAudioDeps } from './nativeVoiceAudio';
 
-// WebRTC globals and the polyfills livekit-client needs on React Native.
-// Must run once, before the first Room is created.
-let globalsRegistered = false;
-function ensureGlobals() {
-    if (!globalsRegistered) {
-        registerGlobals();
-        globalsRegistered = true;
-    }
-}
-ensureGlobals();
-
-/**
- * Native audio: a voice-chat audio session (echo cancellation, speaker by
- * default, Bluetooth headsets allowed) held only while a conversation runs.
- * Subscribed remote audio plays on its own on native.
- */
-const nativePlatform: LiveKitVoicePlatform = {
-    async prepare() {
-        ensureGlobals();
-        await AudioSession.configureAudio({
-            android: {
-                audioTypeOptions: AndroidAudioTypePresets.communication,
-            },
-            ios: {
-                defaultOutput: 'speaker',
-            },
-        });
-        if (Platform.OS === 'ios') {
-            await AudioSession.setAppleAudioConfiguration({
-                audioCategory: 'playAndRecord',
-                audioCategoryOptions: ['allowBluetooth', 'allowBluetoothA2DP', 'defaultToSpeaker'],
-                audioMode: 'voiceChat',
-            });
-        }
-        await AudioSession.startAudioSession();
-    },
-    async cleanup() {
-        await AudioSession.stopAudioSession();
-    },
+const nativeAudioDeps: NativeVoiceAudioDeps = {
+    platform: Platform.OS === 'ios' ? 'ios' : 'android',
+    createContext: (options) => new AudioContext(options),
+    createRecorder: (options) => new AudioRecorder(options),
+    audioManager: AudioManager,
 };
 
+/**
+ * Native voice streams through happy-server over one WebSocket, like the
+ * web; the app never connects to LiveKit. Audio runs on
+ * react-native-audio-api (nativeVoiceAudio.ts).
+ */
 export const RealtimeVoiceSession: React.FC = () => {
     useEffect(() => {
-        const session = new LiveKitVoiceSession(nativePlatform);
+        const session = new HappyVoiceSession(createNativeVoiceAudio(nativeAudioDeps));
         registerVoiceSession(session);
         return () => {
             void session.endSession();
