@@ -139,6 +139,11 @@ export class OpencodeClient {
         return this.request('GET', '/config/providers');
     }
 
+    /** Effective configuration; only the fields Happy reads are typed. */
+    config(): Promise<{ model?: string; default_agent?: string }> {
+        return this.request('GET', '/config');
+    }
+
     agents(): Promise<OpencodeAgent[]> {
         return this.request('GET', '/agent');
     }
