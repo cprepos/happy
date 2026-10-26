@@ -16,6 +16,11 @@
  *   the session keeps running for the app. `happy opencode --resume <id>`
  *   attaches a new TUI to it.
  * - Archiving from the app (killSession) or SIGTERM ends it from anywhere.
+ * - `happy opencode --resume <id>` with no owner running continues the
+ *   OpenCode session and the same Happy chat (see opencodeHappySession).
+ * - `happy opencode --resume <id> --restart` replaces the owner (and its
+ *   server) with one on the installed CLI, detached and headless, keeping
+ *   both; in a terminal it then attaches a TUI.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -35,6 +40,8 @@ import type { Session } from '@/api/types';
 import { logger } from '@/ui/logger';
 import { createSessionMetadata } from '@/utils/createSessionMetadata';
 import { setupOfflineReconnection } from '@/utils/setupOfflineReconnection';
+import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
+import { sanitizeSessionEnvironment } from '@/daemon/sessionEnvironment';
 import { connectionState } from '@/utils/serverConnectionErrors';
 import { createOpencodeMessageId, OpencodeClient, type OpencodeSessionInfo } from './opencodeClient';
 import { OpencodeEventMapper, type OpencodeMirrorAction } from './opencodeEventMapper';
@@ -44,6 +51,10 @@ import {
     attachOpencodeTui,
     classifyTuiExit,
     findLiveOwner,
+    isProcessAlive,
+    looksLikeOpencodeServe,
+    processCommandLine,
+    readTuiState,
     reapOrphanedServers,
     removeTuiState,
     startOpencodeServer,
@@ -59,6 +70,13 @@ import {
     rememberHappySession,
 } from './opencodeHappySession';
 import { buildOpencodePickers, opencodePromptOptions, parseOpencodeMode, type OpencodePermissionPolicy } from './opencodeSessionConfig';
+
+/**
+ * Sent by a restart to an owner that records it in its state file: stop
+ * like SIGTERM, but leave the Happy session active for the new owner.
+ * Older owners do not handle it and get SIGTERM instead.
+ */
+const RESTART_SIGNAL = 'SIGUSR2';
 
 /** How often streamed text is checked for finished paragraphs to forward. */
 const STREAM_FLUSH_MS = 1000;
@@ -171,7 +189,12 @@ async function attachToRunningSession(bin: string, owner: OpencodeTuiState, stat
  * or `happy resume` handed over (HAPPY_RECONNECT_*), else the one linked to
  * it locally. Null means a new Happy session is created.
  */
-async function findHappySessionToReconnect(credentials: Credentials, stateDir: string, opencodeSessionId: string): Promise<Session | null> {
+async function findHappySessionToReconnect(
+    credentials: Credentials,
+    stateDir: string,
+    opencodeSessionId: string,
+    happySessionId: string | undefined,
+): Promise<Session | null> {
     const env = process.env;
     if (env.HAPPY_RECONNECT_SESSION_ID && env.HAPPY_RECONNECT_ENCRYPTION_KEY && env.HAPPY_RECONNECT_ENCRYPTION_VARIANT) {
         return {
@@ -187,10 +210,13 @@ async function findHappySessionToReconnect(credentials: Credentials, stateDir: s
     }
     const found = findReconnectableHappySession({
         opencodeSessionId,
-        linkedId: linkedHappySessionId(stateDir, opencodeSessionId),
+        linkedId: happySessionId ?? linkedHappySessionId(stateDir, opencodeSessionId),
         persisted: readPersistedSessions(),
         serverSessions: await fetchServerSessions(credentials.token),
     });
+    if (!found && happySessionId) {
+        throw new Error(`Happy session ${happySessionId} is not saved on this machine (${configuration.sessionsFile}), so it cannot be continued`);
+    }
     if (!found) {
         logger.debug(`[OpenCode] No saved Happy session for ${opencodeSessionId}; a new one will be created`);
     }
@@ -207,6 +233,8 @@ export async function runOpencodeTui(opts: {
     permissionPolicy?: OpencodePermissionPolicy;
     /** Run without a TUI of its own; `happy opencode --resume <id>` attaches one. */
     headless?: boolean;
+    /** Happy session (chat) to continue on resume, instead of the one linked to it. */
+    happySessionId?: string;
 }): Promise<void> {
     const launchPolicy: OpencodePermissionPolicy = opts.permissionPolicy ?? 'auto';
     const stateDir = opencodeTuiStateDir();
@@ -244,7 +272,7 @@ export async function runOpencodeTui(opts: {
     const sessionTag = randomUUID();
     // Resuming continues the same Happy chat when its key is saved here.
     const existing = opts.resumeSessionId
-        ? await findHappySessionToReconnect(opts.credentials, stateDir, opts.resumeSessionId)
+        ? await findHappySessionToReconnect(opts.credentials, stateDir, opts.resumeSessionId, opts.happySessionId)
         : null;
     const response = existing
         ? { ...existing, metadata: { ...existing.metadata, ...metadata }, agentState: existing.agentState ?? state }
@@ -369,6 +397,7 @@ export async function runOpencodeTui(opts: {
         startedAt: Date.now(),
         ownerTuiAttached: tuiAttached,
         permissionPolicy: launchPolicy,
+        restartSignal: RESTART_SIGNAL,
     });
     const saveOwnerState = () => {
         writeTuiState(stateDir, ownerState());
@@ -480,7 +509,8 @@ export async function runOpencodeTui(opts: {
     let resolveDone!: () => void;
     const done = new Promise<void>((resolve) => { resolveDone = resolve; });
     let shuttingDown = false;
-    const shutdown = async (reason: string, archive: boolean) => {
+    /** `handover`: a restart takes the session over, so leave it active in the app. */
+    const shutdown = async (reason: string, archive: boolean, handover = false) => {
         if (shuttingDown) {
             return;
         }
@@ -517,8 +547,10 @@ export async function runOpencodeTui(opts: {
                     archiveReason: 'User terminated',
                 }));
             }
-            session.sendSessionDeath();
-            await api.deactivateSession(session.sessionId).catch(() => false);
+            if (!handover) {
+                session.sendSessionDeath();
+                await api.deactivateSession(session.sessionId).catch(() => false);
+            }
             await session.flush();
             await session.close();
         } catch (error) {
@@ -529,7 +561,9 @@ export async function runOpencodeTui(opts: {
 
     registerKillSessionHandler(session.rpcHandlerManager, () => shutdown('archived from the app', true));
     const onTerminate = () => { void shutdown('terminated', false); };
+    const onHandover = () => { void shutdown('restarting', false, true); };
     process.on('SIGTERM', onTerminate);
+    process.on(RESTART_SIGNAL, onHandover);
     void server.exited.then((exit) => shutdown(`opencode serve exited (code ${exit.code}, signal ${exit.signal})`, false));
 
     const guard = installHangupGuard(() => {
@@ -572,5 +606,98 @@ export async function runOpencodeTui(opts: {
         guard.dispose();
         process.off('SIGTERM', onTerminate);
         process.off('SIGINT', onTerminate);
+        process.off(RESTART_SIGNAL, onHandover);
     }
+}
+
+/** How long a restart waits for the old owner to stop, and for the new one to come up. */
+const RESTART_STOP_TIMEOUT_MS = 30_000;
+const RESTART_START_TIMEOUT_MS = 60_000;
+
+async function waitFor(check: () => boolean, timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (!check()) {
+        if (Date.now() >= deadline) {
+            return false;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    return true;
+}
+
+/**
+ * `happy opencode --resume <id> --restart`: move a session onto the CLI that
+ * is installed now, keeping OpenCode's context and the same Happy chat.
+ *
+ * The running owner (if any) is stopped with SIGTERM, after checking its
+ * recorded pid is still a `happy opencode`; it stops its own `opencode
+ * serve`, so the new owner starts a fresh one with the current config
+ * (permission policy, Happy MCP server). The new owner runs detached and
+ * headless, so it outlives this terminal; from a terminal a TUI is attached
+ * to it right away.
+ */
+export async function restartOpencodeSession(opts: {
+    bin: string;
+    opencodeSessionId: string;
+    /** Defaults to the policy the running owner was started with, else `auto`. */
+    permissionPolicy?: OpencodePermissionPolicy;
+    happySessionId?: string;
+}): Promise<void> {
+    const stateDir = opencodeTuiStateDir();
+    const id = opts.opencodeSessionId;
+    const recorded = readTuiState(stateDir, id);
+    const owner = findLiveOwner(stateDir, id);
+    const policy = opts.permissionPolicy ?? owner?.permissionPolicy ?? 'auto';
+    const cwd = owner?.cwd ?? recorded?.cwd ?? process.cwd();
+
+    if (owner) {
+        console.log(`Stopping the running session (pid ${owner.ownerPid})...`);
+        process.kill(owner.ownerPid, owner.restartSignal === RESTART_SIGNAL ? RESTART_SIGNAL : 'SIGTERM');
+        const ownerStopped = await waitFor(() => !isProcessAlive(owner.ownerPid), RESTART_STOP_TIMEOUT_MS);
+        if (!ownerStopped) {
+            throw new Error(`The running session (pid ${owner.ownerPid}) did not stop within ${RESTART_STOP_TIMEOUT_MS / 1000}s; nothing was restarted`);
+        }
+        const serverStopped = await waitFor(
+            () => !(isProcessAlive(owner.serverPid) && looksLikeOpencodeServe(processCommandLine(owner.serverPid))),
+            5_000,
+        );
+        if (!serverStopped) {
+            reapOrphanedServers(stateDir);
+        }
+    }
+
+    const args = ['opencode', '--resume', id, '--headless', '--permission-mode', policy];
+    if (opts.happySessionId) {
+        args.push('--happy-session', opts.happySessionId);
+    }
+    const child = spawnHappyCLI(args, {
+        cwd,
+        detached: true,
+        stdio: 'ignore',
+        env: sanitizeSessionEnvironment(process.env),
+    });
+    child.unref();
+    const childPid = child.pid;
+    if (childPid === undefined) {
+        throw new Error('Could not start the new session process');
+    }
+    let exitedEarly = false;
+    child.once('exit', () => { exitedEarly = true; });
+
+    let next: OpencodeTuiState | null = null;
+    const started = await waitFor(() => {
+        next = findLiveOwner(stateDir, id);
+        return exitedEarly || next?.ownerPid === childPid;
+    }, RESTART_START_TIMEOUT_MS);
+    const ready = next as OpencodeTuiState | null;
+    if (!started || exitedEarly || !ready) {
+        throw new Error(`The new session process (pid ${childPid}) did not come up; see the logs in ${configuration.logsDir}`);
+    }
+    console.log(`Session ${id} restarted on the installed CLI (pid ${ready.ownerPid}), same Happy session ${ready.happySessionId}.`);
+
+    if (isatty(0) && isatty(1)) {
+        await attachToRunningSession(opts.bin, ready, stateDir);
+        return;
+    }
+    console.log(`It runs in the background for the app. Open its TUI with: happy opencode --resume ${id}`);
 }

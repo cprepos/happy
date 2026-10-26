@@ -497,6 +497,10 @@ Conversation history is preserved on the server, but in-flight tool calls are in
       let forceAcp = process.env.HAPPY_OPENCODE_MODE === 'acp';
       // Auto mode (no permission prompts, like `opencode --auto`) is the default.
       let permissionPolicy: 'auto' | 'ask' = 'auto';
+      let permissionPolicyGiven = false;
+      let restart = false;
+      let headless = false;
+      let happySessionId: string | undefined;
       const passthroughArgs: string[] = [];
       for (let i = 1; i < args.length; i++) {
         if (args[i] === '--') {
@@ -511,11 +515,23 @@ Conversation history is preserved on the server, but in-flight tool calls are in
           forceAcp = true;
         } else if (args[i] === '--verbose') {
           verbose = true;
+        } else if (args[i] === '--restart') {
+          restart = true;
+        } else if (args[i] === '--headless') {
+          headless = true;
+        } else if (args[i] === '--happy-session') {
+          happySessionId = args[++i];
+          if (!happySessionId) {
+            throw new Error('happy opencode --happy-session needs a Happy session id');
+          }
         } else if (args[i] === '--ask-permissions') {
           permissionPolicy = 'ask';
+          permissionPolicyGiven = true;
         } else if (args[i] === '--yolo' || args[i] === '--dangerously-skip-permissions' || args[i] === '--auto') {
           permissionPolicy = 'auto';
+          permissionPolicyGiven = true;
         } else if (args[i] === '--permission-mode') {
+          permissionPolicyGiven = true;
           const mode = args[++i];
           if (mode === 'ask' || mode === 'default') {
             permissionPolicy = 'ask';
@@ -532,21 +548,41 @@ Conversation history is preserved on the server, but in-flight tool calls are in
         }
       }
 
+      if (restart && !resumeSessionId) {
+        throw new Error('happy opencode --restart needs --resume <OpenCode session id>');
+      }
+      if (happySessionId && !resumeSessionId) {
+        throw new Error('happy opencode --happy-session needs --resume <OpenCode session id>');
+      }
+
       const { credentials } = await authAndSetupMachineIfNeeded();
       await ensureDaemonRunning()
+
+      if (restart) {
+        const { restartOpencodeSession } = await import('@/opencode/tui/runOpencodeTui');
+        await restartOpencodeSession({
+          bin: resolveOpencodeBin(),
+          opencodeSessionId: resumeSessionId!,
+          permissionPolicy: permissionPolicyGiven ? permissionPolicy : undefined,
+          happySessionId,
+        });
+        process.exit(0);
+      }
 
       const useTui = !forceAcp
         && startedBy !== 'daemon'
         && startingMode !== 'remote'
         && process.stdin.isTTY === true
         && process.stdout.isTTY === true;
-      if (useTui) {
+      if (useTui || (headless && !forceAcp)) {
         const { runOpencodeTui } = await import('@/opencode/tui/runOpencodeTui');
         await runOpencodeTui({
           credentials,
           startedBy,
           resumeSessionId,
           permissionPolicy,
+          headless,
+          happySessionId,
           bin: resolveOpencodeBin(),
         });
         process.exit(0);
@@ -816,7 +852,12 @@ ${chalk.bold('Usage:')}
   happy agy               Start agy (Antigravity CLI) mode
   happy agy --resume <id> Continue an agy conversation
   happy opencode          Start OpenCode (its TUI here, mirrored to the app)
-  happy opencode --resume <id> Continue an OpenCode session, or reattach to a running one
+  happy opencode --resume <id> Continue an OpenCode session (same chat in the app),
+                            or reattach to a running one
+  happy opencode --resume <id> --restart
+                          Restart a running session on the installed CLI, keeping
+                            its context and chat; runs in the background, and
+                            opens its TUI when run in a terminal
   happy opencode --acp    Start OpenCode without the TUI (ACP)
   happy opencode --ask-permissions  Ask before tools run (default: auto-approve,
                             like opencode --auto; also --permission-mode ask|auto)
