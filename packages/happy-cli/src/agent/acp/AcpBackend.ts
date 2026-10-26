@@ -19,6 +19,7 @@ import {
   type InitializeRequest,
   type NewSessionRequest,
   type NewSessionResponse,
+  type InitializeResponse,
   type PromptRequest,
   type ContentBlock,
 } from '@agentclientprotocol/sdk';
@@ -209,6 +210,52 @@ export interface AcpBackendOptions {
 
   /** Log raw session updates to console */
   verbose?: boolean;
+
+  /**
+   * ACP session id to continue instead of starting a new session. Opened with
+   * `session/resume` when the agent advertises `sessionCapabilities.resume`,
+   * otherwise with `session/load` when it advertises `loadSession`; when it
+   * advertises neither, or the agent refuses, a new session is started and
+   * the result says why.
+   */
+  resumeSessionId?: string;
+}
+
+/**
+ * How `startSession` opened the agent's session.
+ *
+ * - `new`: a fresh `session/new` (no resume was asked for).
+ * - `resumed`: the requested session continues, via `method`.
+ * - `resume-failed`: a resume was asked for but could not be honoured, so a
+ *   fresh session was started instead; `reason` says why.
+ */
+export type AcpSessionOpening =
+  | { kind: 'new' }
+  | { kind: 'resumed'; method: 'session/resume' | 'session/load' }
+  | { kind: 'resume-failed'; reason: string };
+
+/** `startSession` result with the agent's own ACP session id. */
+export interface AcpStartSessionResult extends StartSessionResult {
+  /** The agent's ACP session id (the one to pass back as `resumeSessionId`). */
+  acpSessionId: string;
+  opening: AcpSessionOpening;
+}
+
+/**
+ * Pick the ACP method that continues an existing session, or null when the
+ * agent advertises none. `session/resume` wins because it does not stream the
+ * old conversation back; `session/load` does, and that replay must be dropped.
+ */
+export function selectAcpResumeMethod(
+  capabilities: InitializeResponse['agentCapabilities'],
+): 'session/resume' | 'session/load' | null {
+  if (capabilities?.sessionCapabilities?.resume) {
+    return 'session/resume';
+  }
+  if (capabilities?.loadSession) {
+    return 'session/load';
+  }
+  return null;
 }
 
 /**
@@ -345,6 +392,12 @@ export class AcpBackend implements AgentBackend {
   /** Timeout for emitting 'idle' status after last message chunk */
   private idleTimeout: NodeJS.Timeout | null = null;
 
+  /**
+   * True while `session/load` streams the old conversation back. Those
+   * updates are already in the Happy session, so they are dropped.
+   */
+  private replayingHistory = false;
+
   /** Transport handler for agent-specific behavior */
   private readonly transport: TransportHandler;
 
@@ -374,7 +427,7 @@ export class AcpBackend implements AgentBackend {
     }
   }
 
-  async startSession(initialPrompt?: string): Promise<StartSessionResult> {
+  async startSession(initialPrompt?: string): Promise<AcpStartSessionResult> {
     if (this.disposed) {
       throw new Error('Backend has been disposed');
     }
@@ -756,6 +809,73 @@ export class AcpBackend implements AgentBackend {
         mcpServers: mcpServers as unknown as NewSessionRequest['mcpServers'],
       };
 
+      // Continue the requested session when the agent can; otherwise fall
+      // through to a new one and report why.
+      let opening: AcpSessionOpening = { kind: 'new' };
+      let openedSession: Pick<NewSessionResponse, 'configOptions' | 'modes' | 'models'> | null = null;
+      const resumeSessionId = this.options.resumeSessionId;
+      if (resumeSessionId) {
+        const method = selectAcpResumeMethod(initializeResponse.agentCapabilities);
+        if (!method) {
+          opening = {
+            kind: 'resume-failed',
+            reason: `${this.options.agentName} does not support resuming ACP sessions (no loadSession or session.resume capability)`,
+          };
+        } else {
+          let timeoutHandle: NodeJS.Timeout | null = null;
+          try {
+            logger.debug(`[AcpBackend] Resuming session ${resumeSessionId} via ${method}`);
+            this.replayingHistory = method === 'session/load';
+            const request = method === 'session/resume'
+              ? this.connection!.unstable_resumeSession({ sessionId: resumeSessionId, cwd: this.options.cwd, mcpServers: mcpServers as unknown as NewSessionRequest['mcpServers'] })
+              : this.connection!.loadSession({ sessionId: resumeSessionId, cwd: this.options.cwd, mcpServers: mcpServers as unknown as NewSessionRequest['mcpServers'] });
+            openedSession = await Promise.race([
+              startupFailurePromise,
+              request,
+              new Promise<never>((_, reject) => {
+                timeoutHandle = setTimeout(() => {
+                  reject(new Error(`${method} timeout after ${initTimeout}ms - ${this.transport.agentName} did not respond`));
+                }, initTimeout);
+              }),
+            ]);
+            this.acpSessionId = resumeSessionId;
+            opening = { kind: 'resumed', method };
+            logger.debug(`[AcpBackend] Session resumed: ${resumeSessionId} (${method})`);
+          } catch (error) {
+            if (startupFailure && error === startupFailure) {
+              throw error;
+            }
+            const detail = error instanceof Error ? error.message : JSON.stringify(error);
+            opening = { kind: 'resume-failed', reason: `${method} for ${resumeSessionId} failed: ${detail}` };
+          } finally {
+            this.replayingHistory = false;
+            if (timeoutHandle) {
+              clearTimeout(timeoutHandle);
+            }
+          }
+        }
+        if (opening.kind === 'resume-failed') {
+          logger.debug(`[AcpBackend] ${opening.reason}; starting a new session`);
+        }
+      }
+
+      if (openedSession) {
+        if (this.options.verbose) {
+          logAcpBackendMuted(
+            `Incoming ${opening.kind === 'resumed' ? opening.method : 'resume'} response from ${this.options.agentName}: ${summarizeSessionMetadataPayload(openedSession)}`,
+          );
+        }
+        this.emitInitialSessionMetadata(openedSession);
+        this.emitIdleStatus();
+        if (initialPrompt) {
+          this.sendPrompt(sessionId, initialPrompt).catch((error) => {
+            logger.debug('[AcpBackend] Error sending initial prompt:', error);
+            this.emit({ type: 'status', status: 'error', detail: String(error) });
+          });
+        }
+        return { sessionId, acpSessionId: this.acpSessionId!, opening };
+      }
+
       logger.debug(`[AcpBackend] Creating new session...`);
 
       const sessionResponse = await withRetry(
@@ -812,7 +932,7 @@ export class AcpBackend implements AgentBackend {
         });
       }
 
-      return { sessionId };
+      return { sessionId, acpSessionId: sessionResponse.sessionId, opening };
 
     } catch (error) {
       // Log to file only, not console
@@ -857,7 +977,7 @@ export class AcpBackend implements AgentBackend {
     };
   }
 
-  private emitInitialSessionMetadata(sessionResponse: NewSessionResponse): void {
+  private emitInitialSessionMetadata(sessionResponse: Pick<NewSessionResponse, 'configOptions' | 'modes' | 'models'>): void {
     if (Array.isArray(sessionResponse.configOptions)) {
       this.emit({
         type: 'event',
@@ -899,6 +1019,18 @@ export class AcpBackend implements AgentBackend {
 
     const sessionUpdateType = update.sessionUpdate;
     const updateType = sessionUpdateType as string | undefined;
+
+    // session/load streams the whole conversation back before it answers.
+    // Keep what describes the session (commands, config, mode) and drop the
+    // transcript, which the Happy session already holds.
+    if (this.replayingHistory
+      && updateType !== 'available_commands_update'
+      && updateType !== 'config_option_update'
+      && updateType !== 'config_options_update'
+      && updateType !== 'current_mode_update') {
+      logger.debug(`[AcpBackend] Dropping replayed ${updateType ?? 'unknown'} update from session/load`);
+      return;
+    }
 
     logger.debug(`[AcpBackend] sessionUpdate: ${sessionUpdateType}`, JSON.stringify(update));
     if (this.options.verbose) {

@@ -55,6 +55,21 @@ function resolveFlavor(metadata: Metadata): 'codex' | 'claude' | 'agy' | null {
 
 export function buildResumeLaunch(session: ResumableHappySession, options: ResumeLaunchOptions = {}): ResumeLaunch {
     const { metadata } = session;
+
+    if (metadata.flavor === 'opencode') {
+        if (!metadata.opencodeSessionId) {
+            throw new Error(`Happy session ${session.id} is missing its OpenCode session ID.`);
+        }
+        const args = ['opencode', '--resume', metadata.opencodeSessionId];
+        if (options.startedBy) {
+            args.push('--started-by', options.startedBy);
+        }
+        return {
+            cwd: metadata.path,
+            args,
+        };
+    }
+
     const flavor = resolveFlavor(metadata);
 
     if (flavor === 'codex') {

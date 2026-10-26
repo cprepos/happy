@@ -105,6 +105,7 @@ export const ResumeFallbackSchema = z.object({
         path: z.string().min(1),
         machineId: z.string().min(1),
         flavor: z.string().nullish(),
+        opencodeSessionId: z.string().optional(),
         claudeSessionId: z.string().optional(),
         codexThreadId: z.string().optional(),
         agyConversationId: z.string().optional(),

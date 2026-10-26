@@ -11,6 +11,14 @@ describe('buildResumeCommand', () => {
             capabilities: { resume: false },
         })).toBeNull();
     });
+    it('builds an OpenCode resume command from the OpenCode session id', () => {
+        expect(buildResumeCommand({
+            path: '/tmp/project',
+            os: 'linux',
+            flavor: 'opencode',
+            opencodeSessionId: 'ses_e89aa01edffeqrNYmkPtUpiwv6',
+        })).toBe(`cd '/tmp/project' && happy opencode --resume ses_e89aa01edffeqrNYmkPtUpiwv6`);
+    });
     it('builds a Claude resume command that enters the session directory first', () => {
         expect(buildResumeCommand({
             path: '/tmp/project',
