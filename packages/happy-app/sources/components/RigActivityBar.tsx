@@ -143,13 +143,12 @@ export const RigActivityBar = React.memo(function RigActivityBar({
 
     const agentList = React.useMemo(() => {
         if (!subagents) return [];
-        return Object.values(subagents).sort((a, b) => b.startedAt - a.startedAt);
+        return Object.values(subagents)
+            .filter(a => a.status === 'running')
+            .sort((a, b) => b.startedAt - a.startedAt);
     }, [subagents]);
 
-    const runningCount = React.useMemo(
-        () => agentList.filter(a => a.status === 'running').length,
-        [agentList],
-    );
+    const runningCount = agentList.length;
 
     const togglePanel = React.useCallback(() => {
         setPanelOpen(prev => !prev);
