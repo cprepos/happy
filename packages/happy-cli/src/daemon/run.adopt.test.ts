@@ -148,6 +148,14 @@ describe.runIf(process.platform === 'linux')('daemon restart adopts running sess
     await waitFor(() => !isAlive(owner!.pid!) && !isAlive(backendPid));
   });
 
+  it('force-restarts an adopted session by stopping its whole process group', async () => {
+    // The resume after the stop is not under test here (spawning is mocked);
+    // what matters is that the agent backend goes with the owner.
+    await mocks.handlers.restartSession('live-session');
+    expect(signalled).toContainEqual([-owner!.pid!, 'SIGTERM']);
+    await waitFor(() => !isAlive(owner!.pid!) && !isAlive(backendPid));
+  });
+
   it('reports the session as running to resume instead of starting a duplicate', async () => {
     expect(await mocks.handlers.resumeSession('live-session')).toEqual({ type: 'success', sessionId: 'live-session' });
   });
