@@ -146,3 +146,52 @@ describe('resume-happy-session fallback payload', () => {
         expect(resumeSession).not.toHaveBeenCalled();
     });
 });
+
+describe('restart-happy-session', () => {
+    let restartSession: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+        handlers.clear();
+        restartSession = vi.fn(async () => ({ type: 'success', sessionId: 'session-1', stoppedPids: [11], newPid: 12 }) as any);
+        const client = new ApiMachineClient('fake-token', makeMachine());
+        client.setRPCHandlers({
+            spawnSession: vi.fn(),
+            resumeSession: vi.fn(),
+            restartSession,
+            stopSession: vi.fn(),
+            requestShutdown: vi.fn()
+        } as any);
+    });
+
+    it('takes the resume request and forwards model, permission mode and fallback', async () => {
+        const result = await handlers.get('restart-happy-session')!({
+            sessionId: 'session-1', model: 'opus', permissionMode: 'acceptEdits', fallback: validFallback, fallbackReason: 'untracked',
+        });
+        expect(restartSession).toHaveBeenCalledWith('session-1', {
+            model: 'opus', permissionMode: 'acceptEdits', fallback: validFallback, fallbackReason: 'untracked',
+        });
+        expect(result).toEqual({ type: 'success', sessionId: 'session-1', stoppedPids: [11], newPid: 12 });
+    });
+
+    it('drops a fallback for another machine, like resume', async () => {
+        await handlers.get('restart-happy-session')!({
+            sessionId: 'session-1', fallback: { ...validFallback, metadata: { ...validFallback.metadata, machineId: 'another-machine' } },
+        });
+        expect(restartSession).toHaveBeenCalledWith('session-1', expect.objectContaining({ fallback: undefined }));
+    });
+
+    it('returns errors as a result instead of throwing', async () => {
+        restartSession.mockResolvedValueOnce({ type: 'error', errorMessage: 'Restarting is not supported for gemini sessions' });
+        expect(await handlers.get('restart-happy-session')!({ sessionId: 'session-1' }))
+            .toEqual({ type: 'error', errorMessage: 'Restarting is not supported for gemini sessions' });
+        expect(await handlers.get('restart-happy-session')!({})).toEqual({ type: 'error', errorMessage: 'Session ID is required' });
+    });
+
+    it('is not registered when the daemon does not provide it', () => {
+        handlers.clear();
+        new ApiMachineClient('fake-token', makeMachine()).setRPCHandlers({
+            spawnSession: vi.fn(), resumeSession: vi.fn(), stopSession: vi.fn(), requestShutdown: vi.fn()
+        } as any);
+        expect(handlers.has('restart-happy-session')).toBe(false);
+    });
+});
