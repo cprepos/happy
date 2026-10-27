@@ -462,6 +462,13 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
             continue;
         }
 
+        // Subagent lifecycle events update session.subagents in the store
+        // (handled by applyMessages); they never create chat rows.
+        if (msg.role === 'event' && (msg.content as { type: string }).type.startsWith('subagent-')) {
+            state.messageIds.set(msg.id, msg.id);
+            continue;
+        }
+
         // Session protocol turn-start markers are lifecycle-only and should stay invisible.
         if (msg.role === 'event' && msg.content.type === 'message' && msg.content.message === 'Turn started') {
             state.messageIds.set(msg.id, msg.id);

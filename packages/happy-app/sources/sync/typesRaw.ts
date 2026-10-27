@@ -31,15 +31,45 @@ const agentEventSchema = z.discriminatedUnion('type', [z.object({
 }), z.object({
     type: z.literal('ready'),
 }), z.object({
-    // A receipt for a message this device sent: the agent has taken it into
-    // context. `ref` is the server message id the receipt names. Consumed by
-    // the reducer to settle the pending message; never rendered as a row.
     type: z.literal('user-message-accepted'),
     ref: z.string(),
 }), z.object({
     type: z.literal('user-message-rejected'),
     ref: z.string(),
     reason: z.string(),
+}), z.object({
+    type: z.literal('subagent-start'),
+    subagent: z.string(),
+    title: z.string().optional(),
+    subagentType: z.string().optional(),
+    model: z.string().optional(),
+    prompt: z.string().optional(),
+    spawnDepth: z.number().optional(),
+    parentTaskId: z.string().optional(),
+}), z.object({
+    type: z.literal('subagent-stop'),
+    subagent: z.string(),
+    status: z.enum(['completed', 'failed', 'stopped']).optional(),
+    summary: z.string().optional(),
+    tokens: z.number().optional(),
+    toolUses: z.number().optional(),
+    durationMs: z.number().optional(),
+}), z.object({
+    type: z.literal('subagent-progress'),
+    subagent: z.string(),
+    tokens: z.number().optional(),
+    toolUses: z.number().optional(),
+    durationMs: z.number().optional(),
+    lastToolName: z.string().optional(),
+    summary: z.string().optional(),
+}), z.object({
+    type: z.literal('subagent-agents'),
+    agents: z.array(z.object({
+        id: z.string(),
+        type: z.string().optional(),
+        description: z.string().optional(),
+        parentId: z.string().optional(),
+    })),
 })]);
 export type AgentEvent = z.infer<typeof agentEventSchema>;
 
@@ -92,6 +122,11 @@ const sessionTurnStartEventSchema = z.object({
 const sessionStartEventSchema = z.object({
     t: z.literal('start'),
     title: z.string().optional(),
+    subagentType: z.string().optional(),
+    model: z.string().optional(),
+    prompt: z.string().optional(),
+    spawnDepth: z.number().int().nonnegative().optional(),
+    parentTaskId: z.string().optional(),
 });
 
 const sessionTurnEndEventSchema = z.object({
@@ -101,6 +136,30 @@ const sessionTurnEndEventSchema = z.object({
 
 const sessionStopEventSchema = z.object({
     t: z.literal('stop'),
+    status: z.enum(['completed', 'failed', 'stopped']).optional(),
+    summary: z.string().optional(),
+    tokens: z.number().int().nonnegative().optional(),
+    toolUses: z.number().int().nonnegative().optional(),
+    durationMs: z.number().nonnegative().optional(),
+});
+
+const sessionProgressEventSchema = z.object({
+    t: z.literal('progress'),
+    tokens: z.number().int().nonnegative().optional(),
+    toolUses: z.number().int().nonnegative().optional(),
+    durationMs: z.number().nonnegative().optional(),
+    lastToolName: z.string().optional(),
+    summary: z.string().optional(),
+});
+
+const sessionAgentsEventSchema = z.object({
+    t: z.literal('agents'),
+    agents: z.array(z.object({
+        id: z.string(),
+        type: z.string().optional(),
+        description: z.string().optional(),
+        parentId: z.string().optional(),
+    })),
 });
 
 // A content-free receipt for a message this device already sent. `ref` is the
@@ -130,6 +189,8 @@ const sessionEventSchema = z.discriminatedUnion('t', [
     sessionStartEventSchema,
     sessionTurnEndEventSchema,
     sessionStopEventSchema,
+    sessionProgressEventSchema,
+    sessionAgentsEventSchema,
     sessionUserMessageAcceptedEventSchema,
     sessionUserMessageRejectedEventSchema,
 ]);
@@ -173,7 +234,7 @@ const sessionEnvelopeSchema = z.object({
             path: ['role'],
         });
     }
-    if ((envelope.ev.t === 'start' || envelope.ev.t === 'stop') && envelope.role !== 'agent') {
+    if ((envelope.ev.t === 'start' || envelope.ev.t === 'stop' || envelope.ev.t === 'progress') && envelope.role !== 'agent') {
         ctx.addIssue({
             code: z.ZodIssueCode.custom,
             message: `${envelope.ev.t} events must use role "agent"`,
@@ -629,8 +690,83 @@ function normalizeSessionEnvelope(
         return null;
     }
 
-    if (envelope.ev.t === 'start' || envelope.ev.t === 'stop') {
-        // Lifecycle marker for subagent boundaries; currently not rendered as chat content.
+    if (envelope.ev.t === 'start' && parentUUID) {
+        return {
+            id: messageId,
+            localId,
+            createdAt: messageCreatedAt,
+            role: 'event',
+            isSidechain: false,
+            content: {
+                type: 'subagent-start',
+                subagent: parentUUID,
+                title: envelope.ev.title,
+                subagentType: envelope.ev.subagentType,
+                model: envelope.ev.model,
+                prompt: envelope.ev.prompt,
+                spawnDepth: envelope.ev.spawnDepth,
+                parentTaskId: envelope.ev.parentTaskId,
+            },
+            meta,
+        } satisfies NormalizedMessage;
+    }
+
+    if (envelope.ev.t === 'stop' && parentUUID) {
+        return {
+            id: messageId,
+            localId,
+            createdAt: messageCreatedAt,
+            role: 'event',
+            isSidechain: false,
+            content: {
+                type: 'subagent-stop',
+                subagent: parentUUID,
+                status: envelope.ev.status,
+                summary: envelope.ev.summary,
+                tokens: envelope.ev.tokens,
+                toolUses: envelope.ev.toolUses,
+                durationMs: envelope.ev.durationMs,
+            },
+            meta,
+        } satisfies NormalizedMessage;
+    }
+
+    if (envelope.ev.t === 'progress' && parentUUID) {
+        return {
+            id: messageId,
+            localId,
+            createdAt: messageCreatedAt,
+            role: 'event',
+            isSidechain: false,
+            content: {
+                type: 'subagent-progress',
+                subagent: parentUUID,
+                tokens: envelope.ev.tokens,
+                toolUses: envelope.ev.toolUses,
+                durationMs: envelope.ev.durationMs,
+                lastToolName: envelope.ev.lastToolName,
+                summary: envelope.ev.summary,
+            },
+            meta,
+        } satisfies NormalizedMessage;
+    }
+
+    if (envelope.ev.t === 'agents') {
+        return {
+            id: messageId,
+            localId,
+            createdAt: messageCreatedAt,
+            role: 'event',
+            isSidechain: false,
+            content: {
+                type: 'subagent-agents',
+                agents: envelope.ev.agents,
+            },
+            meta,
+        } satisfies NormalizedMessage;
+    }
+
+    if (envelope.ev.t === 'start' || envelope.ev.t === 'stop' || envelope.ev.t === 'progress') {
         return null;
     }
 
