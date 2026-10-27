@@ -17,7 +17,7 @@ SELF_REL="selfhost/ios/build-on-mac.sh"
 TS="$(date +%Y%m%d_%H%M%S)"
 
 MAC_HOST="${MAC_HOST:-prep-air}"
-REMOTE_DIR="${REMOTE_DIR:-happy-build}"            # relative to the Mac user's $HOME
+REMOTE_DIR="${REMOTE_DIR:-happy}"                   # relative to the Mac user's $HOME
 NODE_FORMULA="${NODE_FORMULA:-node@24}"            # keg-only Homebrew Node LTS used for the build
 MIN_XCODE="16.1"                                   # Expo SDK 55 / React Native 0.83
 
@@ -49,10 +49,10 @@ Environment (Linux side, forwarded to the Mac; each overrides the Mac config fil
   APP_ENV                            development | preview | production (default preview)
   SELFHOST_SERVER_URL                server URL (default: PUBLIC_URL from selfhost/.env)
   DEVICE                             same as --device
-  MAC_HOST, REMOTE_DIR               ssh host and remote directory (default ~/happy-build)
+  MAC_HOST, REMOTE_DIR               ssh host and remote directory (default ~/happy)
 
 Mac config file (git-ignored, never synced or overwritten):
-  ~/happy-build/selfhost/ios/.env.ios   KEY=value lines, e.g. APPLE_TEAM_ID=ABCDE12345
+  ~/happy/selfhost/ios/.env.ios   KEY=value lines, e.g. APPLE_TEAM_ID=ABCDE12345
 EOF
 }
 
@@ -115,7 +115,7 @@ mac_env() {
     IOS_DIR="$APP_DIR/ios"
     DERIVED_DIR="$BUILD_HOME/DerivedData"
     LAST_APP_FILE="$BUILD_HOME/last-app-path"
-    TRASH_ROOT="$HOME/happy-build-trash"
+    TRASH_ROOT="$HOME/happy-trash"
     cd "$REPO_ROOT"
 }
 
@@ -439,7 +439,7 @@ do_sync() {
     command -v rsync >/dev/null || die "rsync not installed"
     ssh -o BatchMode=yes -o ConnectTimeout=10 "$MAC_HOST" true \
         || die "cannot ssh to '$MAC_HOST' (key-based login required)"
-    local backup="../happy-build-trash/${TS}_rsync_replaced"
+    local backup="../happy-trash/${TS}_rsync_replaced"
     # Filter order matters: first match wins. Excluded paths on the Mac
     # (node_modules, ios/, .env.ios, ...) are never deleted by --delete.
     # macOS ships openrsync, which lacks some options; use Homebrew rsync there.
@@ -463,7 +463,7 @@ do_sync() {
         "$REPO_ROOT/" "$MAC_HOST:$REMOTE_DIR/"
     # rsync --backup keeps anything it deleted or replaced; label it if present.
     # shellcheck disable=SC2016
-    ssh -o BatchMode=yes "$MAC_HOST" "d=\"\$HOME/happy-build-trash/${TS}_rsync_replaced\"; if [ -d \"\$d\" ]; then printf '# rsync backup\n\nFiles under ~/$REMOTE_DIR that %s deleted or replaced on %s (source no longer had them or they changed). Kept instead of deleted.\n' '$SELF_REL' '$TS' > \"\$d/NOTE.md\"; echo \"  note  replaced/deleted files kept in \$d\"; fi"
+    ssh -o BatchMode=yes "$MAC_HOST" "d=\"\$HOME/happy-trash/${TS}_rsync_replaced\"; if [ -d \"\$d\" ]; then printf '# rsync backup\n\nFiles under ~/$REMOTE_DIR that %s deleted or replaced on %s (source no longer had them or they changed). Kept instead of deleted.\n' '$SELF_REL' '$TS' > \"\$d/NOTE.md\"; echo \"  note  replaced/deleted files kept in \$d\"; fi"
     ok "synced (commit $(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo '?')$(git -C "$REPO_ROOT" diff --quiet HEAD 2>/dev/null || echo ', plus uncommitted changes'))"
 }
 
