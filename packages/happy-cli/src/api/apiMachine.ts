@@ -122,9 +122,15 @@ export type ResumeFallback = z.infer<typeof ResumeFallbackSchema>;
 
 export type ResumeSessionOptions = { model?: string; permissionMode?: string; fallback?: ResumeFallback; fallbackReason?: string };
 
+/** Response of `restart-happy-session`, returned as is (errors are not thrown). */
+export type RestartSessionResponse =
+    | { type: 'success'; sessionId: string; stoppedPids: number[]; newPid: number }
+    | { type: 'error'; errorMessage: string };
+
 type MachineRpcHandlers = {
     spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
     resumeSession?: (sessionId: string, options?: ResumeSessionOptions) => Promise<SpawnSessionResult>;
+    restartSession?: (sessionId: string, options?: ResumeSessionOptions) => Promise<RestartSessionResponse>;
     stopSession: (sessionId: string) => boolean;
     requestShutdown: () => void;
 }
@@ -178,10 +184,25 @@ export class ApiMachineClient {
     setRPCHandlers({
         spawnSession,
         resumeSession,
+        restartSession,
         stopSession,
         requestShutdown
     }: MachineRpcHandlers) {
         this.resumeSessionHandler = resumeSession ?? null;
+
+        // Last-resort restart from the app: same request as resume-happy-session.
+        if (restartSession) {
+            this.rpcHandlerManager.registerHandler('restart-happy-session', async (params: any): Promise<RestartSessionResponse> => {
+                const { sessionId } = params || {};
+                if (!sessionId || typeof sessionId !== 'string') {
+                    return { type: 'error', errorMessage: 'Session ID is required' };
+                }
+                logger.debug(`[API MACHINE] Restarting session ${sessionId}`);
+                const result = await restartSession(sessionId, this.parseResumeOptions(params));
+                logger.debug(`[API MACHINE] Restart of ${sessionId}: ${JSON.stringify(result)}`);
+                return result;
+            });
+        }
 
         // Register spawn session handler
         this.rpcHandlerManager.registerHandler('spawn-happy-session', async (params: any) => {
@@ -368,13 +389,32 @@ export class ApiMachineClient {
         });
     }
 
+    /** Options shared by `resume-happy-session` and `restart-happy-session`. */
+    private parseResumeOptions(params: any): ResumeSessionOptions {
+        const { model, permissionMode, fallback, fallbackReason } = params || {};
+        // Older clients send no fallback, and a malformed one is
+        // not worth failing the call over: the tracked-session path
+        // may still succeed.
+        const parsedFallback = fallback ? ResumeFallbackSchema.safeParse(fallback) : null;
+        return {
+            model: typeof model === 'string' ? model : undefined,
+            permissionMode: typeof permissionMode === 'string' ? permissionMode : undefined,
+            // Only this machine's sessions may hand their data key to it.
+            fallback: parsedFallback?.success && parsedFallback.data.metadata.machineId === this.machine.id
+                ? parsedFallback.data : undefined,
+            // Free-form, client-supplied and only ever echoed back
+            // in an error message, so it is bounded, not trusted.
+            fallbackReason: typeof fallbackReason === 'string' ? fallbackReason.slice(0, 64) : undefined,
+        };
+    }
+
     private syncResumeSessionRpcRegistration(): void {
         const method = 'resume-happy-session';
 
         if (this.resumeSessionHandler) {
             if (!this.rpcHandlerManager.hasHandler(method)) {
                 this.rpcHandlerManager.registerHandler(method, async (params: any) => {
-                    const { sessionId, model, permissionMode, fallback, fallbackReason } = params || {};
+                    const { sessionId } = params || {};
 
                     if (!sessionId || typeof sessionId !== 'string') {
                         throw new Error('Session ID is required');
@@ -385,19 +425,7 @@ export class ApiMachineClient {
                         throw new Error('Resume session handler not available');
                     }
 
-                    // Older clients send no fallback, and a malformed one is
-                    // not worth failing the call over: the tracked-session path
-                    // may still succeed.
-                    const parsedFallback = fallback ? ResumeFallbackSchema.safeParse(fallback) : null;
-                    const result = await handler(sessionId, {
-                        model,
-                        permissionMode,
-                        fallback: parsedFallback?.success && parsedFallback.data.metadata.machineId === this.machine.id
-                            ? parsedFallback.data : undefined,
-                        // Free-form, client-supplied and only ever echoed back
-                        // in an error message, so it is bounded, not trusted.
-                        fallbackReason: typeof fallbackReason === 'string' ? fallbackReason.slice(0, 64) : undefined,
-                    });
+                    const result = await handler(sessionId, this.parseResumeOptions(params));
                     switch (result.type) {
                         case 'success':
                             return { type: 'success', sessionId: result.sessionId };
