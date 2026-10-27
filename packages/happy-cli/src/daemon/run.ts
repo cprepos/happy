@@ -940,7 +940,9 @@ export async function startDaemon(): Promise<void> {
       lookupMetadata: lookupSessionMetadata,
       trackedPids: (happySessionId) => Array.from(pidToTrackedSession.values())
         .filter((session) => session.happySessionId === happySessionId)
-        .map((session) => ({ pid: session.pid, daemonSpawned: session.startedBy === 'daemon' && !!session.childProcess })),
+        // An adopted session the previous daemon spawned leads its own process
+        // group too; signal all of it so its agent backend goes with it.
+        .map((session) => ({ pid: session.pid, daemonSpawned: (session.startedBy === 'daemon' && !!session.childProcess) || !!session.ownsProcessGroup })),
       readPersisted: readPersistedSessions,
       opencodeStateDir: join(configuration.happyHomeDir, 'opencode-tui'),
       onStopped: (pid) => {
