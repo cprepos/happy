@@ -28,4 +28,9 @@ export interface TrackedSession {
   message?: string;
   /** tmux session identifier (format: session:window) */
   tmuxSessionId?: string;
+  /**
+   * Adopted from a previous daemon and verified to lead its own process group
+   * (it was spawned detached), so stopping it signals the whole group.
+   */
+  ownsProcessGroup?: boolean;
 }

@@ -37,6 +37,7 @@ import {
 import { startHappyTerminalDaemon } from './happyTerminalBoot';
 import { appendDaemonSpawnModeArgs, shouldForwardDaemonPermissionMode } from './spawnModeArgs';
 import { hasPersistedProcessConflict, isPidAlive, machineBootTimeMs } from './sessionLiveness';
+import { adoptLiveSessions } from './adoptSessions';
 
 /** Shell-escape a string for safe interpolation into tmux commands. */
 function shellescape(s: string): string {
@@ -200,6 +201,11 @@ export async function startDaemon(): Promise<void> {
     }
     if (Object.keys(persisted).length > 0) {
       logger.debug(`[DAEMON RUN] Loaded ${Object.keys(persisted).length} persisted sessions from disk`);
+    }
+    // Sessions outlive a daemon restart; track the ones still provably running
+    // so stop, restart and the session list keep working.
+    for (const adopted of adoptLiveSessions(persisted, bootTimeMs)) {
+      pidToTrackedSession.set(adopted.pid, adopted);
     }
 
     // Session spawning awaiter system
@@ -941,9 +947,11 @@ export async function startDaemon(): Promise<void> {
               }
             }
           } else {
-            // For externally started sessions, try to kill by PID
+            // For externally started sessions, try to kill by PID. An adopted
+            // daemon-spawned session leads its own group; signal all of it
+            // for the same reason as above.
             try {
-              process.kill(pid, 'SIGTERM');
+              process.kill(session.ownsProcessGroup && process.platform !== 'win32' ? -pid : pid, 'SIGTERM');
               logger.debug(`[DAEMON RUN] Sent SIGTERM to external session PID ${pid}`);
             } catch (error) {
               logger.debug(`[DAEMON RUN] Failed to kill external session PID ${pid}:`, error);
