@@ -74,6 +74,23 @@ export default defineConfig({
                     },
                 },
             },
+            {
+                extends: true,
+                test: {
+                    // Real agents, a scratch daemon and the real server; run on
+                    // demand only (`make restart-integration`).
+                    name: 'integration-restart',
+                    fileParallelism: false,
+                    maxWorkers: 1,
+                    minWorkers: 1,
+                    hookTimeout: 180_000,
+                    testTimeout: 900_000,
+                    include: ['src/session/restart.integration.test.ts'],
+                    sequence: {
+                        groupOrder: 3,
+                    },
+                },
+            },
         ],
         coverage: {
             provider: 'v8',

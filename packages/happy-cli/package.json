@@ -68,6 +68,7 @@
     "test:capability-lifetime": "node scripts/test-capability-parent-lifetime.cjs",
     "build": "shx rm -rf dist && tsc --noEmit && pkgroll",
     "test": "pnpm run build && vitest run --project unit",
+    "test:restart-integration": "vitest run --project integration-restart",
     "test:integration": "pnpm run build && vitest run --project integration-empty --project integration-plan-mode --project integration-authenticated",
     "cli:install": "node scripts/install-local.cjs",
     "prepublishOnly": "pnpm test",
