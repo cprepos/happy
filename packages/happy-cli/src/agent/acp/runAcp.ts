@@ -639,12 +639,6 @@ export async function runAcp(opts: {
   let abortController = new AbortController();
   let pendingTurn: PendingTurn | null = null;
   let errorReportedForCurrentTurn = false;
-  // Stop in the app (`abort`) cancels the current turn only. While the
-  // backend's cancel call runs, the 'stopped' status it reports means "turn
-  // cancelled", not "agent gone"; and a turn the user cancelled ends quietly
-  // instead of taking the whole runner down with it.
-  let cancelInFlight = false;
-  let currentTurnCancelled = false;
 
   const clearPendingTurn = (error?: Error) => {
     if (!pendingTurn) {
@@ -937,14 +931,7 @@ export async function runAcp(opts: {
       if (msg.status === 'idle') {
         clearPendingTurn();
       }
-      if (msg.status === 'stopped' && cancelInFlight) {
-        logger.debug(`[${opts.agentName}] Turn cancelled by user; runner keeps running`);
-        clearPendingTurn();
-      } else if (msg.status === 'error' && currentTurnCancelled) {
-        // The prompt the user just cancelled failed on its way out.
-        logger.debug(`[${opts.agentName}] Cancelled turn ended with: ${msg.detail ?? 'error'}`);
-        clearPendingTurn();
-      } else if (msg.status === 'error' || msg.status === 'stopped') {
+      if (msg.status === 'error' || msg.status === 'stopped') {
         stopRunnerFromBackendStatus(msg.status, msg.detail);
       }
     }
@@ -956,7 +943,7 @@ export async function runAcp(opts: {
 
     const envelopes = sessionManager.mapMessage(msg);
     sendEnvelopes(envelopes);
-    if (msg.type === 'status' && msg.status === 'error' && envelopes.length === 0 && !currentTurnCancelled) {
+    if (msg.type === 'status' && msg.status === 'error' && envelopes.length === 0) {
       session.sendSessionEvent({
         type: 'message',
         message: `${opts.agentName} error: ${msg.detail?.trim() || 'The agent stopped because of an unknown error.'}`,
@@ -1003,17 +990,7 @@ export async function runAcp(opts: {
   async function handleAbort() {
     try {
       if (acpSessionId) {
-        if (pendingTurn) {
-          currentTurnCancelled = true;
-        }
-        cancelInFlight = true;
-        try {
-          await backend.cancel(acpSessionId);
-        } finally {
-          cancelInFlight = false;
-        }
-        // The turn is over for the user even if the agent never says so.
-        clearPendingTurn();
+        await backend.cancel(acpSessionId);
       }
       permissionHandler.reset();
       abortController.abort();
@@ -1081,7 +1058,6 @@ export async function runAcp(opts: {
 
       logAcp('incoming', `Incoming prompt: ${formatUnknownForConsole(batch.message, ACP_EVENT_PREVIEW_CHARS)}`);
       errorReportedForCurrentTurn = false;
-      currentTurnCancelled = false;
       sendEnvelopes(sessionManager.startTurn());
       const turnEnded = waitForTurnEnd();
       try {
@@ -1097,23 +1073,13 @@ export async function runAcp(opts: {
         }
         await backend.sendPrompt(acpSessionId, batch.message);
         await turnEnded;
-        sendEnvelopes(sessionManager.endTurn(currentTurnCancelled ? 'cancelled' : 'completed'));
-        currentTurnCancelled = false;
+        sendEnvelopes(sessionManager.endTurn('completed'));
         session.sendSessionEvent({ type: 'ready' });
         if (verbose) {
           logAcp('muted', `Outgoing prompt completion from ${opts.agentName}`);
         }
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
-        if (currentTurnCancelled && !shouldExit) {
-          logger.debug(`[${opts.agentName}] Cancelled prompt ended with: ${detail}`);
-          clearPendingTurn();
-          await turnEnded.catch(() => {});
-          sendEnvelopes(sessionManager.endTurn('cancelled'));
-          currentTurnCancelled = false;
-          session.sendSessionEvent({ type: 'ready' });
-          continue;
-        }
         if (!errorReportedForCurrentTurn) {
           session.sendSessionEvent({
             type: 'message',

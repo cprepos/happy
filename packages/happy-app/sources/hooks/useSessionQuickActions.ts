@@ -2,7 +2,7 @@ import * as React from 'react';
 import { useHappyAction } from '@/hooks/useHappyAction';
 import { useNavigateToSession } from '@/hooks/useNavigateToSession';
 import { Modal } from '@/modal';
-import { machineRestartSession, machineResumeSession, sessionArchive, sessionKill, sessionSetAgentModes, forkAndSpawn, type ForkSource } from '@/sync/ops';
+import { machineResumeSession, sessionArchive, sessionKill, sessionSetAgentModes, forkAndSpawn, type ForkSource } from '@/sync/ops';
 import { maybeCleanupWorktree } from '@/hooks/useWorktreeCleanup';
 import { storage, useLocalSetting, useMachine, useSetting } from '@/sync/storage';
 import { Machine, Session } from '@/sync/storageTypes';
@@ -19,7 +19,6 @@ import { useSession } from '@/sync/storage';
 import { DuplicateSheet } from '@/components/DuplicateSheet';
 import type { SessionActionShortcutId } from '@/keyboard/shortcuts';
 import { isRigMetadata } from '@/sync/rig';
-import { canShowRestartAgent, confirmRestartAgent, executeRestartAgent } from '@/utils/sessionRestart';
 
 export interface SessionActionItem {
     id: SessionActionShortcutId;
@@ -28,8 +27,6 @@ export interface SessionActionItem {
     onPress: () => void;
     destructive?: boolean;
 }
-
-const recentlyRestartedIds = new Set<string>();
 
 interface UseSessionQuickActionsOptions {
     /**
@@ -70,15 +67,6 @@ function getResumeAvailability(session: Session, machine: Machine | null | undef
         };
     }
     if (isConnected) {
-        recentlyRestartedIds.delete(session.id);
-        return {
-            canResume: false,
-            canShowResume: false,
-            subtitle: '',
-            message: '',
-        };
-    }
-    if (recentlyRestartedIds.has(session.id)) {
         return {
             canResume: false,
             canShowResume: false,
@@ -315,42 +303,6 @@ export function useSessionQuickActions(
         performArchive();
     }, [performArchive]);
 
-    // Restart agent: last resort for a chat whose agent stopped answering.
-    // Offered while the session looks online too — a wedged agent still sends
-    // keep-alives, which is why Resume is hidden in exactly that state.
-    const canShowRestart = canShowRestartAgent(session);
-    const [restartingSession, performRestart] = useHappyAction(async () => {
-        let modes: { model?: string; permissionMode?: string } | undefined;
-        try {
-            const modeMeta = resolveMessageModeMeta(session, storage.getState().settings);
-            modes = { model: modeMeta.model ?? undefined, permissionMode: modeMeta.permissionMode };
-        } catch {
-            // The restart must not be blocked by a mode the client cannot
-            // map; the daemon keeps the session's own modes in that case.
-            modes = undefined;
-        }
-        await executeRestartAgent(session, machine, {
-            restart: machineRestartSession,
-            refresh: () => sync.refreshSessions(),
-            modes,
-        });
-        recentlyRestartedIds.add(session.id);
-        Modal.alert(t('sessionInfo.restartAgentSuccess'));
-    });
-
-    const restartSession = React.useCallback(() => {
-        if (restartingSession) return;
-        void (async () => {
-            const confirmed = await confirmRestartAgent(session, machine, {
-                alert: (title, message) => Modal.alert(title, message),
-                confirm: (title, message, opts) => Modal.confirm(title, message, opts),
-            });
-            if (confirmed) {
-                performRestart();
-            }
-        })();
-    }, [machine, performRestart, restartingSession, session]);
-
     const resumeSession = React.useCallback(() => {
         performResume();
     }, [performResume]);
@@ -405,10 +357,6 @@ export function useSessionQuickActions(
             items.push({ id: 'copy-metadata-and-logs', icon: 'document-text-outline', label: t('sessionInfo.copyMetadata') + ' & Client Logs', onPress: copySessionMetadataAndLogs });
         }
 
-        if (canShowRestart) {
-            items.push({ id: 'restart', icon: 'refresh-circle-outline', label: t('sessionInfo.restartAgent'), onPress: restartSession, destructive: true });
-        }
-
         items.push({ id: 'archive', icon: 'archive-outline', label: t('session.archiveAction'), onPress: archiveSession, destructive: true });
 
         return items;
@@ -416,7 +364,6 @@ export function useSessionQuickActions(
         archiveSession,
         canCopySessionMetadata,
         canFork,
-        canShowRestart,
         copySessionMetadata,
         copySessionMetadataAndLogs,
         forkSource,
@@ -425,7 +372,6 @@ export function useSessionQuickActions(
         openDuplicateSheet,
         resumeAvailability.canShowResume,
         resumeSession,
-        restartSession,
     ]);
 
     const showActionAlert = React.useCallback(() => {
@@ -447,7 +393,6 @@ export function useSessionQuickActions(
         canCopySessionMetadata,
         canResume: resumeAvailability.canResume,
         canShowResume: resumeAvailability.canShowResume,
-        canShowRestart,
         canFork,
         copySessionMetadata,
         copySessionMetadataAndLogs,
@@ -458,8 +403,6 @@ export function useSessionQuickActions(
         resumeSession,
         resumeSessionSubtitle: resumeAvailability.subtitle,
         resumingSession,
-        restartSession,
-        restartingSession,
     };
 }
 

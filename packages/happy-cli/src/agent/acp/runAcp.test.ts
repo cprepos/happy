@@ -36,11 +36,6 @@ const mocks = vi.hoisted(() => {
     setModelCalls: [] as string[],
     startSessionMessages: [] as any[],
     sendPromptError: null as Error | null,
-    // When set, sendPrompt reports 'running' and then waits for cancel,
-    // like a long turn; `rejectOnCancel` makes the cancelled prompt throw.
-    holdPrompt: false,
-    rejectOnCancel: false,
-    releaseHeldPrompt: null as (() => void) | null,
     startSessionCalls: 0,
     cancelCalls: [] as string[],
     disposeCalls: 0,
@@ -156,21 +151,6 @@ vi.mock('./AcpBackend', () => ({
       if (mocks.backendState.sendPromptError) {
         throw mocks.backendState.sendPromptError;
       }
-      if (mocks.backendState.holdPrompt) {
-        for (const listener of mocks.backendState.listeners) {
-          listener({ type: 'status', status: 'running' });
-        }
-        await new Promise<void>((resolve) => {
-          mocks.backendState.releaseHeldPrompt = resolve;
-        });
-        if (mocks.backendState.rejectOnCancel) {
-          for (const listener of mocks.backendState.listeners) {
-            listener({ type: 'status', status: 'error', detail: 'prompt aborted' });
-          }
-          throw new Error('prompt aborted');
-        }
-        return;
-      }
       for (const listener of mocks.backendState.listeners) {
         listener({ type: 'status', status: 'running' });
         listener({ type: 'model-output', textDelta: 'hello' });
@@ -198,11 +178,8 @@ vi.mock('./AcpBackend', () => ({
     async cancel(sessionId: string) {
       mocks.backendState.cancelCalls.push(sessionId);
       for (const listener of mocks.backendState.listeners) {
-        listener({ type: 'status', status: 'stopped', detail: 'Cancelled by user' });
+        listener({ type: 'status', status: 'stopped' });
       }
-      const release = mocks.backendState.releaseHeldPrompt;
-      mocks.backendState.releaseHeldPrompt = null;
-      release?.();
     }
 
     async dispose() {
@@ -232,9 +209,6 @@ describe('runAcp', () => {
     mocks.backendState.setModelCalls = [];
     mocks.backendState.startSessionMessages = [];
     mocks.backendState.sendPromptError = null;
-    mocks.backendState.holdPrompt = false;
-    mocks.backendState.rejectOnCancel = false;
-    mocks.backendState.releaseHeldPrompt = null;
     mocks.backendState.startSessionCalls = 0;
     mocks.backendState.cancelCalls = [];
     mocks.backendState.disposeCalls = 0;
@@ -459,127 +433,6 @@ describe('runAcp', () => {
       '  model=gemini-2.5-pro name=Gemini 2.5 Pro',
       '  model=gemini-2.5-flash name=Gemini 2.5 Flash',
     ]));
-  });
-
-  describe('Stop (abort) cancels the current turn only', () => {
-    const start = () => runAcp({
-      credentials: { token: 'token', encryption: { type: 'legacy', secret: new Uint8Array(32) } },
-      agentName: 'opencode',
-      command: 'opencode',
-      args: ['acp'],
-    });
-    const send = (text: string) => mocks.getUserMessageHandler()!({ role: 'user', content: { type: 'text', text } });
-    const turnEnds = () => mocks.mockSession.sendSessionProtocolMessage.mock.calls
-      .map(([envelope]) => envelope.ev)
-      .filter((ev) => ev.t === 'turn-end')
-      .map((ev) => ev.status);
-    const archived = () => mocks.mockSession.updateMetadata.mock.calls.some(([updater]) =>
-      (updater as (m: Record<string, unknown>) => Record<string, unknown>)({}).lifecycleState === 'archived');
-
-    it('ends a running turn as cancelled and keeps taking messages', async () => {
-      mocks.backendState.holdPrompt = true;
-      const runPromise = start();
-      let finished = false;
-      void runPromise.then(() => { finished = true; }, () => { finished = true; });
-
-      await vi.waitFor(() => expect(mocks.getUserMessageHandler()).toBeTypeOf('function'));
-      send('long task');
-      await vi.waitFor(() => expect(mocks.backendState.releaseHeldPrompt).toBeTypeOf('function'));
-
-      await mocks.sessionHandlers.get('abort')!({});
-      await vi.waitFor(() => expect(turnEnds()).toEqual(['cancelled']));
-      expect(finished).toBe(false);
-      expect(mocks.mockSession.close).not.toHaveBeenCalled();
-      expect(mocks.mockSession.sendSessionDeath).not.toHaveBeenCalled();
-      expect(archived()).toBe(false);
-
-      mocks.backendState.holdPrompt = false;
-      send('next task');
-      await vi.waitFor(() => expect(mocks.backendState.prompts.map((p) => p.prompt)).toEqual(['long task', 'next task']));
-      await vi.waitFor(() => expect(turnEnds()).toEqual(['cancelled', 'completed']));
-      expect(finished).toBe(false);
-
-      await mocks.getKillHandler()!();
-      await runPromise;
-    });
-
-    it('keeps running when the cancelled prompt fails on its way out', async () => {
-      mocks.backendState.holdPrompt = true;
-      mocks.backendState.rejectOnCancel = true;
-      const runPromise = start();
-      let finished = false;
-      void runPromise.then(() => { finished = true; }, () => { finished = true; });
-
-      await vi.waitFor(() => expect(mocks.getUserMessageHandler()).toBeTypeOf('function'));
-      send('long task');
-      await vi.waitFor(() => expect(mocks.backendState.releaseHeldPrompt).toBeTypeOf('function'));
-      await mocks.sessionHandlers.get('abort')!({});
-      await vi.waitFor(() => expect(turnEnds()).toEqual(['cancelled']));
-      expect(finished).toBe(false);
-      expect(mocks.mockSession.sendSessionEvent).not.toHaveBeenCalledWith(expect.objectContaining({
-        type: 'message',
-        message: expect.stringContaining('prompt aborted'),
-      }));
-
-      mocks.backendState.holdPrompt = false;
-      mocks.backendState.rejectOnCancel = false;
-      send('next task');
-      await vi.waitFor(() => expect(turnEnds()).toEqual(['cancelled', 'completed']));
-      expect(finished).toBe(false);
-      expect(archived()).toBe(false);
-
-      await mocks.getKillHandler()!();
-      await runPromise;
-    });
-
-    it('keeps running when Stop is pressed between turns', async () => {
-      const runPromise = start();
-      let finished = false;
-      void runPromise.then(() => { finished = true; }, () => { finished = true; });
-      await vi.waitFor(() => expect(mocks.backendState.startSessionCalls).toBe(1));
-
-      await mocks.sessionHandlers.get('abort')!({});
-      expect(mocks.backendState.cancelCalls).toEqual(['acp-session-1']);
-      send('after stop');
-      await vi.waitFor(() => expect(turnEnds()).toEqual(['completed']));
-      expect(finished).toBe(false);
-
-      await mocks.getKillHandler()!();
-      await runPromise;
-    });
-
-    it('still ends and archives the runner when the agent process dies', async () => {
-      const runPromise = start();
-      await vi.waitFor(() => expect(mocks.backendState.startSessionCalls).toBe(1));
-
-      for (const listener of mocks.backendState.listeners) {
-        listener({ type: 'status', status: 'stopped', detail: 'Killed by SIGKILL' });
-      }
-      await runPromise;
-
-      expect(archived()).toBe(true);
-      expect(mocks.mockSession.sendSessionDeath).toHaveBeenCalled();
-      expect(mocks.backendState.disposeCalls).toBe(1);
-    });
-
-    it('still ends the runner when the agent dies in the middle of a turn', async () => {
-      mocks.backendState.holdPrompt = true;
-      mocks.backendState.rejectOnCancel = true;
-      const runPromise = start();
-      const outcome = runPromise.then(() => null, (error: unknown) => error);
-      await vi.waitFor(() => expect(mocks.getUserMessageHandler()).toBeTypeOf('function'));
-      send('long task');
-      await vi.waitFor(() => expect(mocks.backendState.releaseHeldPrompt).toBeTypeOf('function'));
-
-      for (const listener of mocks.backendState.listeners) {
-        listener({ type: 'status', status: 'stopped', detail: 'Exit code: 1' });
-      }
-      mocks.backendState.releaseHeldPrompt!();
-
-      expect(await outcome).toBeInstanceOf(Error);
-      expect(archived()).toBe(true);
-      expect(mocks.backendState.disposeCalls).toBe(1);
-    });
   });
 
   it('exits when backend reports terminal startup status', async () => {
