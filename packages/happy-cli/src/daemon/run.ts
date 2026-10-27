@@ -37,6 +37,8 @@ import {
 import { startHappyTerminalDaemon } from './happyTerminalBoot';
 import { appendDaemonSpawnModeArgs, shouldForwardDaemonPermissionMode } from './spawnModeArgs';
 import { hasPersistedProcessConflict, isPidAlive, machineBootTimeMs } from './sessionLiveness';
+import { createSessionRestarter, type RestartResumeContext } from './restartSession';
+import { opencodeOwnerArgs } from '@/session/forceRestart';
 
 /** Shell-escape a string for safe interpolation into tmux commands. */
 function shellescape(s: string): string {
@@ -728,7 +730,17 @@ export async function startDaemon(): Promise<void> {
     // PR #1715's single-flight guard: independent sessions still start in parallel.
     const resumesInFlight = new Map<string, Promise<SpawnSessionResult>>();
     const cancelledResumes = new Set<string>();
-    const resumeSession = (happySessionId: string, options?: ResumeSessionOptions): Promise<SpawnSessionResult> => {
+    const resumeSession = async (happySessionId: string, options?: ResumeSessionOptions): Promise<SpawnSessionResult> => {
+      // A restart in progress is the resume; and OpenCode is resumed only
+      // through the restart path, which stops any live owner first, so one
+      // OpenCode session never ends up with two owners.
+      const restarting = sessionRestarter.inFlight(happySessionId);
+      const routeThroughRestart = restarting
+        || lookupSessionMetadata(happySessionId, options)?.flavor === 'opencode';
+      if (routeThroughRestart) {
+        const restarted = await (restarting ?? sessionRestarter.restart(happySessionId, options));
+        return restarted.type === 'success' ? { type: 'success', sessionId: restarted.sessionId } : restarted;
+      }
       const inFlight = resumesInFlight.get(happySessionId);
       if (inFlight) return inFlight;
       const attempt = resumeSessionAttempt(happySessionId, options).finally(() => {
@@ -739,7 +751,7 @@ export async function startDaemon(): Promise<void> {
       return attempt;
     };
 
-    const resumeConflict = (happySessionId: string): SpawnSessionResult | undefined => {
+    const resumeConflict = (happySessionId: string, afterForceStop = false): SpawnSessionResult | undefined => {
       for (const [pid, session] of pidToTrackedSession) {
         if (session.happySessionId !== happySessionId) continue;
         if (!isPidAlive(pid)) {
@@ -757,15 +769,17 @@ export async function startDaemon(): Promise<void> {
       // Detached owners can outlive a daemon restart. A saved PID may have been
       // reused, so neither adopt nor signal it. Refuse a duplicate until exit or
       // a local registration establishes ownership in this daemon.
-      if (hasPersistedProcessConflict(readPersistedSessions()[happySessionId], bootTimeMs)) {
+      // A forced stop has already verified every recorded pid (start time and
+      // command line), so a live one left now belongs to someone else.
+      if (!afterForceStop && hasPersistedProcessConflict(readPersistedSessions()[happySessionId], bootTimeMs)) {
         return { type: 'error', errorMessage: `Session ${happySessionId} may still have a running process from a previous daemon. Its ownership cannot be verified. Wait for that process to exit before retrying. If the session is still active, archive it from the session view.` };
       }
       return undefined;
     };
 
-    const resumeSessionAttempt = async (happySessionId: string, options?: ResumeSessionOptions): Promise<SpawnSessionResult> => {
+    const resumeSessionAttempt = async (happySessionId: string, options?: ResumeSessionOptions, restart?: RestartResumeContext): Promise<SpawnSessionResult> => {
       try {
-        const conflict = resumeConflict(happySessionId);
+        const conflict = resumeConflict(happySessionId, restart?.afterForceStop);
         if (conflict) return conflict;
         const tracked = findTrackedSessionById(happySessionId);
         // The daemon only remembers sessions it saw during this lifetime, so a
@@ -847,16 +861,31 @@ export async function startDaemon(): Promise<void> {
           }
         }
 
+        // The live owner may have switched OpenCode sessions since the metadata was written.
+        if (flavor === 'opencode' && restart?.opencode?.opencodeSessionId) {
+          metadata = { ...metadata, opencodeSessionId: restart.opencode.opencodeSessionId };
+        }
         const launch = buildResumeLaunch(
           { id: happySessionId, active: true, metadata },
           { startedBy: 'daemon', claudeStartingMode: 'remote' },
         );
+        if (flavor === 'opencode') {
+          // The TUI-style headless owner, as `happy opencode --restart` starts:
+          // app questions and permissions work, and a TUI can attach later.
+          launch.args = opencodeOwnerArgs({
+            opencodeSessionId: metadata.opencodeSessionId!,
+            happySessionId,
+            permissionPolicy: restart?.opencode?.permissionPolicy ?? 'auto',
+            startedBy: 'daemon',
+          });
+          launch.cwd = restart?.opencode?.cwd ?? launch.cwd;
+        }
 
-        if (options?.model) {
+        if (options?.model && flavor !== 'opencode') {
           launch.args.push('--model', options.model);
         }
         const resumePermissionMode = options?.permissionMode;
-        if (shouldForwardDaemonPermissionMode(metadata.flavor ?? 'claude', resumePermissionMode)) {
+        if (flavor !== 'opencode' && shouldForwardDaemonPermissionMode(metadata.flavor ?? 'claude', resumePermissionMode)) {
           launch.args.push('--permission-mode', resumePermissionMode);
         }
 
@@ -866,7 +895,7 @@ export async function startDaemon(): Promise<void> {
           return { type: 'error', errorMessage: `Resume of session ${happySessionId} was cancelled by a stop request.` };
         }
         // A webhook or stop can arrive while metadata/directory checks await.
-        const lateConflict = resumeConflict(happySessionId);
+        const lateConflict = resumeConflict(happySessionId, restart?.afterForceStop);
         if (lateConflict) return lateConflict;
 
         return spawnTrackedHappyProcess({
@@ -880,6 +909,8 @@ export async function startDaemon(): Promise<void> {
             HAPPY_RECONNECT_SEQ: String(encryption.seq),
             HAPPY_RECONNECT_METADATA_VERSION: String(encryption.metadataVersion),
             HAPPY_RECONNECT_AGENT_STATE_VERSION: String(encryption.agentStateVersion),
+            // A daemon environment forcing ACP must not turn the owner into a second, ACP runner.
+            ...(flavor === 'opencode' ? { HAPPY_OPENCODE_MODE: 'tui' } : {}),
           }),
         });
       } catch (error) {
@@ -891,6 +922,44 @@ export async function startDaemon(): Promise<void> {
         };
       }
     };
+
+    const lookupSessionMetadata = (happySessionId: string, options?: ResumeSessionOptions): Metadata | undefined =>
+      findTrackedSessionById(happySessionId)?.happySessionMetadataFromLocalWebhook
+      ?? (options?.fallback?.metadata as Metadata | undefined)
+      ?? readPersistedSessions()[happySessionId]?.metadata;
+
+    // `restart-happy-session`: stop the session's processes whether or not they
+    // are tracked or responsive, then resume into the same Happy session.
+    const sessionRestarter = createSessionRestarter({
+      lookupMetadata: lookupSessionMetadata,
+      trackedPids: (happySessionId) => Array.from(pidToTrackedSession.values())
+        .filter((session) => session.happySessionId === happySessionId)
+        .map((session) => ({ pid: session.pid, daemonSpawned: session.startedBy === 'daemon' && !!session.childProcess })),
+      readPersisted: readPersistedSessions,
+      opencodeStateDir: join(configuration.happyHomeDir, 'opencode-tui'),
+      onStopped: (pid) => {
+        if (pidToTrackedSession.has(pid)) onChildExited(pid);
+      },
+      resume: (happySessionId, options, context) => {
+        // Not through `resumeSession`: that would route OpenCode back here.
+        const inFlight = resumesInFlight.get(happySessionId);
+        if (inFlight) return inFlight;
+        const attempt = resumeSessionAttempt(happySessionId, options, context).finally(() => {
+          resumesInFlight.delete(happySessionId);
+          cancelledResumes.delete(happySessionId);
+        });
+        resumesInFlight.set(happySessionId, attempt);
+        return attempt;
+      },
+      currentPid: (happySessionId) => {
+        for (const [pid, session] of pidToTrackedSession) {
+          if (session.happySessionId === happySessionId && isPidAlive(pid)) return pid;
+        }
+        return undefined;
+      },
+      log: (message) => logger.debug(`[DAEMON RUN] ${message}`),
+    });
+    const restartSession = (happySessionId: string, options?: ResumeSessionOptions) => sessionRestarter.restart(happySessionId, options);
 
     // Stop a session by sessionId or PID fallback
     const stopSession = (sessionId: string): boolean => {
@@ -1049,6 +1118,7 @@ export async function startDaemon(): Promise<void> {
     apiMachine.setRPCHandlers({
       spawnSession,
       resumeSession,
+      restartSession,
       stopSession,
       requestShutdown: () => requestShutdown('happy-app')
     });
