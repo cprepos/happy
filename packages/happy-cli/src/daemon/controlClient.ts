@@ -58,6 +58,70 @@ async function daemonPost(path: string, body?: any, timeoutMs?: number): Promise
 
 const SESSION_STARTED_RETRY_TIMEOUT_MS = 3000;
 const SESSION_STARTED_RETRY_INTERVAL_MS = 100;
+const DAEMON_WATCH_INTERVAL_MS = 10_000;
+
+type SessionStartedPayload = { sessionId: string; metadata: Metadata; encryption?: unknown };
+
+/**
+ * The session this process last announced, and to which daemon instance.
+ * A daemon restart (CLI rebuild, crash recovery) starts with no knowledge of
+ * running sessions, so the announcement is repeated whenever the daemon state
+ * file names a different daemon than the one that accepted it.
+ */
+const announcement: {
+  payload: SessionStartedPayload | null;
+  daemon: string | null;
+  timer: NodeJS.Timeout | null;
+  inFlight: boolean;
+} = { payload: null, daemon: null, timer: null, inFlight: false };
+
+async function currentDaemonIdentity(): Promise<string | null> {
+  const state = await readDaemonState();
+  return state?.pid && state.httpPort ? `${state.pid}:${state.httpPort}` : null;
+}
+
+/**
+ * Re-send the last session announcement if a different daemon is now
+ * running. Runs on an interval once a session has announced itself; exported
+ * so tests can drive it.
+ */
+export async function reannounceSessionIfDaemonChanged(): Promise<boolean> {
+  if (!announcement.payload || announcement.inFlight) return false;
+  announcement.inFlight = true;
+  try {
+    const daemon = await currentDaemonIdentity();
+    if (!daemon || daemon === announcement.daemon) return false;
+    const payload = announcement.payload;
+    const result = await daemonPost('/session-started', payload);
+    // A newer announcement may have landed while this one was in flight.
+    if (result?.error || announcement.payload !== payload) return false;
+    announcement.daemon = daemon;
+    logger.debug(`[CONTROL CLIENT] Re-announced session ${payload.sessionId} to daemon ${daemon}`);
+    return true;
+  } finally {
+    announcement.inFlight = false;
+  }
+}
+
+function watchDaemonForReannouncement(): void {
+  if (announcement.timer) return;
+  const intervalMs = parseInt(process.env.HAPPY_DAEMON_REANNOUNCE_INTERVAL_MS || '', 10) || DAEMON_WATCH_INTERVAL_MS;
+  announcement.timer = setInterval(() => {
+    reannounceSessionIfDaemonChanged().catch((error) => {
+      logger.debug('[CONTROL CLIENT] Session re-announcement failed:', error);
+    });
+  }, intervalMs);
+  // Never keep a finished session process alive just to watch the daemon.
+  announcement.timer.unref();
+}
+
+/** Forget the announced session and stop watching the daemon. */
+export function stopSessionReannouncement(): void {
+  if (announcement.timer) clearInterval(announcement.timer);
+  announcement.payload = null;
+  announcement.daemon = null;
+  announcement.timer = null;
+}
 
 export async function notifyDaemonSessionStarted(
   sessionId: string,
@@ -75,12 +139,18 @@ export async function notifyDaemonSessionStarted(
   // this, the session's encryption data never reaches the daemon and the mobile
   // app's resume-happy-session RPC fails with "not tracked by this daemon".
   const payload = { sessionId, metadata, encryption };
+  // From here on, a restarted daemon is told about this session again.
+  announcement.payload = payload;
+  announcement.daemon = null;
+  watchDaemonForReannouncement();
   const deadline = Date.now() + SESSION_STARTED_RETRY_TIMEOUT_MS;
   let result: { error?: string } | any;
 
   while (true) {
+    const daemon = await currentDaemonIdentity();
     result = await daemonPost('/session-started', payload);
     if (!result?.error) {
+      if (announcement.payload === payload) announcement.daemon = daemon;
       return result;
     }
     if (Date.now() >= deadline) {
