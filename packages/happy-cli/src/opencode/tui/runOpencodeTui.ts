@@ -52,6 +52,9 @@ import {
     attachOpencodeTui,
     classifyTuiExit,
     findLiveOwner,
+    isProcessAlive,
+    looksLikeOpencodeServe,
+    processCommandLine,
     readTuiState,
     reapOrphanedServers,
     removeTuiState,
@@ -68,7 +71,6 @@ import {
     rememberHappySession,
 } from './opencodeHappySession';
 import { buildOpencodePickers, opencodePromptOptions, parseOpencodeMode, type OpencodePermissionPolicy } from './opencodeSessionConfig';
-import { locateSessionProcesses, opencodeOwnerArgs, opencodeRestartPlan, stopSessionProcesses } from '@/session/forceRestart';
 
 /**
  * Sent by a restart to an owner that records it in its state file: stop
@@ -646,7 +648,8 @@ export async function runOpencodeTui(opts: {
     }
 }
 
-/** How long a restart waits for the new owner to come up. */
+/** How long a restart waits for the old owner to stop, and for the new one to come up. */
+const RESTART_STOP_TIMEOUT_MS = 30_000;
 const RESTART_START_TIMEOUT_MS = 60_000;
 
 async function waitFor(check: () => boolean, timeoutMs: number): Promise<boolean> {
@@ -664,14 +667,12 @@ async function waitFor(check: () => boolean, timeoutMs: number): Promise<boolean
  * `happy opencode --resume <id> --restart`: move a session onto the CLI that
  * is installed now, keeping OpenCode's context and the same Happy chat.
  *
- * Every owner of the session is found without its help (state files, the
- * link file, saved sessions, `happy opencode` processes naming the session,
- * so also an owner whose state file went with a TUI session switch, or a
- * second owner) and stopped by the shared force-restart logic: SIGUSR2 to
- * owners that hand over, else SIGTERM, then SIGKILL after 8 s, then their
- * `opencode serve`. The new owner runs detached and headless, so it outlives
- * this terminal, on the OpenCode session the old owner was last on; from a
- * terminal a TUI is attached to it right away.
+ * The running owner (if any) is stopped with SIGTERM, after checking its
+ * recorded pid is still a `happy opencode`; it stops its own `opencode
+ * serve`, so the new owner starts a fresh one with the current config
+ * (permission policy, Happy MCP server). The new owner runs detached and
+ * headless, so it outlives this terminal; from a terminal a TUI is attached
+ * to it right away.
  */
 export async function restartOpencodeSession(opts: {
     bin: string;
@@ -681,48 +682,37 @@ export async function restartOpencodeSession(opts: {
     happySessionId?: string;
 }): Promise<void> {
     const stateDir = opencodeTuiStateDir();
-    const located = locateSessionProcesses({
-        flavor: 'opencode',
-        happySessionId: opts.happySessionId,
-        resumeTarget: opts.opencodeSessionId,
-        persisted: readPersistedSessions(),
-        opencodeStateDir: stateDir,
-    });
-    if (located.unverified.length > 0) {
-        throw new Error(`Not restarting: ${located.unverified.map((entry) => entry.reason).join('; ')}`);
-    }
-    const plan = opencodeRestartPlan(located, { happySessionId: opts.happySessionId, opencodeSessionId: opts.opencodeSessionId });
-    const recorded = readTuiState(stateDir, opts.opencodeSessionId);
-    const id = plan.opencodeSessionId ?? opts.opencodeSessionId;
-    const policy = opts.permissionPolicy ?? plan.permissionPolicy ?? recorded?.permissionPolicy ?? 'auto';
-    const cwd = plan.cwd ?? recorded?.cwd ?? process.cwd();
-    if (id !== opts.opencodeSessionId) {
-        console.log(`The running owner has switched to OpenCode session ${id}; restarting that one.`);
+    const id = opts.opencodeSessionId;
+    const recorded = readTuiState(stateDir, id);
+    const owner = findLiveOwner(stateDir, id);
+    const policy = opts.permissionPolicy ?? owner?.permissionPolicy ?? 'auto';
+    const cwd = owner?.cwd ?? recorded?.cwd ?? process.cwd();
+
+    if (owner) {
+        console.log(`Stopping the running session (pid ${owner.ownerPid})...`);
+        process.kill(owner.ownerPid, owner.restartSignal === RESTART_SIGNAL ? RESTART_SIGNAL : 'SIGTERM');
+        const ownerStopped = await waitFor(() => !isProcessAlive(owner.ownerPid), RESTART_STOP_TIMEOUT_MS);
+        if (!ownerStopped) {
+            throw new Error(`The running session (pid ${owner.ownerPid}) did not stop within ${RESTART_STOP_TIMEOUT_MS / 1000}s; nothing was restarted`);
+        }
+        const serverStopped = await waitFor(
+            () => !(isProcessAlive(owner.serverPid) && looksLikeOpencodeServe(processCommandLine(owner.serverPid))),
+            5_000,
+        );
+        if (!serverStopped) {
+            reapOrphanedServers(stateDir);
+        }
     }
 
-    if (located.targets.length > 0) {
-        console.log(`Stopping the running session (pid ${located.targets.map((target) => target.pid).join(', ')})...`);
-        const stopped = await stopSessionProcesses(located.targets, {
-            opencodeStateDir: stateDir,
-            log: (message) => logger.debug(`[OpenCode] Restart: ${message}`),
-        });
-        if (stopped.killed.length > 0) {
-            console.log(`pid ${stopped.killed.join(', ')} did not stop in time and was killed.`);
-        }
-        if (stopped.survivors.length > 0) {
-            throw new Error(`pid ${stopped.survivors.join(', ')} is still running after SIGKILL; nothing was restarted`);
-        }
-    } else {
-        reapOrphanedServers(stateDir);
+    const args = ['opencode', '--resume', id, '--headless', '--permission-mode', policy];
+    if (opts.happySessionId) {
+        args.push('--happy-session', opts.happySessionId);
     }
-
-    const args = opencodeOwnerArgs({ opencodeSessionId: id, happySessionId: plan.happySessionId, permissionPolicy: policy });
     const child = spawnHappyCLI(args, {
         cwd,
         detached: true,
         stdio: 'ignore',
-        // HAPPY_OPENCODE_MODE=acp would make the owner an ACP runner instead.
-        env: { ...sanitizeSessionEnvironment(process.env), HAPPY_OPENCODE_MODE: 'tui' },
+        env: sanitizeSessionEnvironment(process.env),
     });
     child.unref();
     const childPid = child.pid;

@@ -24,7 +24,6 @@ import {
     type ClaudeSessionProtocolState,
 } from '@/claude/utils/sessionProtocolMapper';
 import { InvalidateSync } from '@/utils/sync';
-import { readDeliveredSeq, writeDeliveredSeq } from './deliveredMessageCursor';
 import axios from 'axios';
 
 /**
@@ -198,8 +197,7 @@ export class ApiSessionClient extends EventEmitter {
     private agentState: AgentState | null;
     private agentStateVersion: number;
     private socket: Socket<ServerToClientEvents, ClientToServerEvents>;
-    /** User messages that arrived before onUserMessage was set, with their log seq. */
-    private pendingMessages: Array<{ message: UserMessage; seq: number | null }> = [];
+    private pendingMessages: UserMessage[] = [];
     private pendingMessageCallback: ((message: UserMessage) => void) | null = null;
     private pendingFileEvents: FileEventMessage[] = [];
     private pendingFileEventCallback: ((data: FileEventMessage) => void) | null = null;
@@ -220,16 +218,7 @@ export class ApiSessionClient extends EventEmitter {
     private reconnectTimeout: NodeJS.Timeout | null = null;
     private closed = false;
     private ignoreArchiveSignal = false;
-    private ignoreArchiveSignalTimer: NodeJS.Timeout | null = null;
     private skipInitialMessages = false;
-    /**
-     * localIds this process posted while a reconnect's first fetch is still
-     * ahead, so that fetch can tell the previous owner's messages from ours.
-     * Null outside that window.
-     */
-    private ownLocalIds: Set<string> | null = null;
-    /** Highest seq of a user message handed to the agent (see deliveredMessageCursor). */
-    private deliveredSeq = 0;
     private claudeSessionProtocolState: ClaudeSessionProtocolState = {
         currentTurnId: null,
         uuidToProviderSubagent: new Map<string, string>(),
@@ -357,7 +346,7 @@ export class ApiSessionClient extends EventEmitter {
                             ? (body as { content: { type: string } }).content.type
                             : 'unknown',
                     });
-                    this.routeIncomingMessage(body, messageSeq);
+                    this.routeIncomingMessage(body);
                     this.lastReceivedSeq = messageSeq;
                 } else if (data.body.t === 'update-session') {
                     if (data.body.metadata && data.body.metadata.version > this.metadataVersion) {
@@ -368,7 +357,7 @@ export class ApiSessionClient extends EventEmitter {
                         if (meta?.lifecycleState === 'archiveRequested' || meta?.lifecycleState === 'archived') {
                             if (this.ignoreArchiveSignal) {
                                 logger.debug(`[SOCKET] Session archived (${meta.lifecycleState}) but suppressed for reconnect`);
-                                this.settleArchiveSignal();
+                                this.ignoreArchiveSignal = false;
                             } else {
                                 logger.debug(`[SOCKET] Session archived (${meta.lifecycleState}), exiting...`);
                                 this.emit('archived');
@@ -408,9 +397,7 @@ export class ApiSessionClient extends EventEmitter {
     onUserMessage(callback: (data: UserMessage) => void) {
         this.pendingMessageCallback = callback;
         while (this.pendingMessages.length > 0) {
-            const { message, seq } = this.pendingMessages.shift()!;
-            callback(message);
-            this.recordDelivered(seq);
+            callback(this.pendingMessages.shift()!);
         }
     }
 
@@ -584,23 +571,13 @@ export class ApiSessionClient extends EventEmitter {
         };
     }
 
-    /** Persist that the agent has been handed the user message at `seq`. */
-    private recordDelivered(seq: number | null) {
-        if (seq === null || seq <= this.deliveredSeq) {
-            return;
-        }
-        this.deliveredSeq = seq;
-        writeDeliveredSeq(this.sessionId, seq);
-    }
-
-    private routeIncomingMessage(message: unknown, seq: number | null) {
+    private routeIncomingMessage(message: unknown) {
         const userResult = UserMessageSchema.safeParse(message);
         if (userResult.success) {
             if (this.pendingMessageCallback) {
                 this.pendingMessageCallback(userResult.data);
-                this.recordDelivered(seq);
             } else {
-                this.pendingMessages.push({ message: userResult.data, seq });
+                this.pendingMessages.push(userResult.data);
             }
             return;
         }
@@ -624,35 +601,13 @@ export class ApiSessionClient extends EventEmitter {
         this.emit('message', message);
     }
 
-    /**
-     * Fetch everything after the receive cursor and route it.
-     *
-     * The first fetch after a reconnect (`skipExistingMessages`) starts from
-     * the beginning of a log the agent has mostly seen already. It routes only
-     * the user input the agent never received, which is either of:
-     * - above the delivered cursor on disk: no owner ever routed it (sent while
-     *   nothing was listening, or while the old owner's socket was dead);
-     * - after the last message a previous owner wrote: routed, maybe, but the
-     *   agent never acted on it (still queued behind a wedged turn). An agent
-     *   that takes a prompt always writes something (a turn start) after it.
-     * Everything else only advances the receive cursor, as before. The second
-     * rule alone also covers owners from before the cursor existed.
-     */
     private async fetchMessages() {
-        // A reconnect fetch commits nothing (cursor, flag, routing) until it
-        // has read the whole log, so a failed page retried by the sync loop
-        // starts over instead of replaying the chat's history.
-        const reconnecting = this.skipInitialMessages;
-        const ownLocalIds = this.ownLocalIds ?? new Set<string>();
-        const deliveredBefore = reconnecting ? readDeliveredSeq(this.sessionId) : null;
-        if (reconnecting) {
-            logger.debug('[API] Reconnect: replaying only user input the agent never received', {
-                deliveredSeq: deliveredBefore,
-            });
+        // On reconnect, skip processing existing messages — just advance the cursor
+        const skipRouting = this.skipInitialMessages;
+        if (skipRouting) {
+            this.skipInitialMessages = false;
+            logger.debug('[API] Reconnect mode: skipping existing messages, advancing lastReceivedSeq');
         }
-        // Candidates, delivered once the whole log is read (see above).
-        const aboveCursor: Array<{ body: unknown; seq: number }> = [];
-        const sinceLastOwnerWrite: Array<{ body: unknown; seq: number }> = [];
 
         let afterSeq = this.lastReceivedSeq;
         while (true) {
@@ -676,41 +631,25 @@ export class ApiSessionClient extends EventEmitter {
                     maxSeq = message.seq;
                 }
 
+                if (skipRouting) continue;
+
                 if (message.content?.t !== 'encrypted') {
                     continue;
                 }
 
-                let body: unknown;
                 try {
-                    body = decrypt(this.encryptionKey, this.encryptionVariant, decodeBase64(message.content.c));
+                    const body = decrypt(this.encryptionKey, this.encryptionVariant, decodeBase64(message.content.c));
+                    this.routeIncomingMessage(body);
                 } catch (error) {
                     logger.debug('[API] Failed to decrypt fetched message', {
                         sessionId: this.sessionId,
                         seq: message.seq,
                         error
                     });
-                    continue;
-                }
-
-                if (!reconnecting) {
-                    this.routeIncomingMessage(body, message.seq);
-                    continue;
-                }
-                const isUserInput = UserMessageSchema.safeParse(body).success || FileEventMessageSchema.safeParse(body).success;
-                if (isUserInput) {
-                    sinceLastOwnerWrite.push({ body, seq: message.seq });
-                    if (deliveredBefore !== null && message.seq > deliveredBefore) {
-                        aboveCursor.push({ body, seq: message.seq });
-                    }
-                } else if (!message.localId || !ownLocalIds.has(message.localId)) {
-                    // A previous owner wrote after these: its agent had them.
-                    sinceLastOwnerWrite.length = 0;
                 }
             }
 
-            if (!reconnecting) {
-                this.lastReceivedSeq = Math.max(this.lastReceivedSeq, maxSeq);
-            }
+            this.lastReceivedSeq = Math.max(this.lastReceivedSeq, maxSeq);
             const hasMore = !!response.data.hasMore;
             if (hasMore && maxSeq === afterSeq) {
                 logger.debug('[API] fetchMessages pagination stalled, stopping to avoid infinite loop', {
@@ -722,23 +661,6 @@ export class ApiSessionClient extends EventEmitter {
             afterSeq = maxSeq;
             if (!hasMore) {
                 break;
-            }
-        }
-
-        if (reconnecting) {
-            this.skipInitialMessages = false;
-            this.ownLocalIds = null;
-            this.lastReceivedSeq = Math.max(this.lastReceivedSeq, afterSeq);
-            if (deliveredBefore !== null) {
-                this.deliveredSeq = Math.max(this.deliveredSeq, deliveredBefore);
-            }
-            const undelivered = new Map<number, unknown>();
-            for (const { body, seq } of [...aboveCursor, ...sinceLastOwnerWrite]) {
-                undelivered.set(seq, body);
-            }
-            for (const seq of [...undelivered.keys()].sort((a, b) => a - b)) {
-                logger.debug('[API] Reconnect: delivering a message the agent never received', { seq });
-                this.routeIncomingMessage(undelivered.get(seq), seq);
             }
         }
     }
@@ -776,11 +698,9 @@ export class ApiSessionClient extends EventEmitter {
 
     private enqueueMessage(content: unknown, invalidate: boolean = true) {
         const encrypted = encodeBase64(encrypt(this.encryptionKey, this.encryptionVariant, content));
-        const localId = randomUUID();
-        this.ownLocalIds?.add(localId);
         this.pendingOutbox.push({
             content: encrypted,
-            localId
+            localId: randomUUID()
         });
         if (invalidate) {
             this.sendSync.invalidate();
@@ -1013,48 +933,17 @@ export class ApiSessionClient extends EventEmitter {
     }
 
     /**
-     * Ignore the one stale "archived" a reconnect can see: the chat was
-     * archived while no process owned it, and that archive can still reach us
-     * after we start. The guard only lasts until the reconnect settles — our
-     * own un-archive is acknowledged by the server, so any later archive is a
-     * new one — or `settleMs` passes, whichever comes first. Left armed, it
-     * would swallow the user's next real archive hours later.
-     */
-    suppressNextArchiveSignal(settleMs: number = ApiSessionClient.ARCHIVE_GUARD_MS) {
-        this.settleArchiveSignal();
-        this.ignoreArchiveSignal = true;
-        this.ignoreArchiveSignalTimer = setTimeout(() => {
-            logger.debug('[API] Reconnect archive guard expired');
-            this.settleArchiveSignal();
-        }, settleMs);
-        this.ignoreArchiveSignalTimer.unref?.();
-    }
-
-    private static readonly ARCHIVE_GUARD_MS = 60_000;
-
-    private settleArchiveSignal() {
-        this.ignoreArchiveSignal = false;
-        if (this.ignoreArchiveSignalTimer) {
-            clearTimeout(this.ignoreArchiveSignalTimer);
-            this.ignoreArchiveSignalTimer = null;
-        }
-    }
-
-    /**
-     * This client reattaches to a session another process owned before: do
-     * not replay the chat's history as new prompts. User messages the agent
-     * never received (sent while no owner was listening) are still delivered;
-     * see fetchMessages.
-     */
-    skipExistingMessages() {
-        this.skipInitialMessages = true;
-        this.ownLocalIds = new Set();
-    }
-
-    /**
      * Update session metadata
      * @param handler - Handler function that returns the updated metadata
      */
+    suppressNextArchiveSignal() {
+        this.ignoreArchiveSignal = true;
+    }
+
+    skipExistingMessages() {
+        this.skipInitialMessages = true;
+    }
+
     updateMetadata(handler: (metadata: Metadata) => Metadata) {
         this.metadataLock.inLock(async () => {
             await backoff(async () => {
@@ -1063,13 +952,6 @@ export class ApiSessionClient extends EventEmitter {
                 if (answer.result === 'success') {
                     this.metadata = decrypt(this.encryptionKey, this.encryptionVariant, decodeBase64(answer.metadata));
                     this.metadataVersion = answer.version;
-                    const lifecycleState = (this.metadata as { lifecycleState?: unknown } | null)?.lifecycleState;
-                    if (this.ignoreArchiveSignal && lifecycleState !== 'archived' && lifecycleState !== 'archiveRequested') {
-                        // The server now has the chat running at a version
-                        // past any stale archive: the reconnect has settled.
-                        logger.debug('[API] Reconnect settled; archive guard cleared');
-                        this.settleArchiveSignal();
-                    }
                 } else if (answer.result === 'version-mismatch') {
                     if (answer.version > this.metadataVersion) {
                         this.metadataVersion = answer.version;
@@ -1139,7 +1021,6 @@ export class ApiSessionClient extends EventEmitter {
         this.sendSync.stop();
         this.receiveSync.stop();
         this.clearReconnectTimers();
-        this.settleArchiveSignal();
         this.socket.close();
         if (this.reconnectCapabilityHeld) {
             releaseReconnectCapabilityMonitor();

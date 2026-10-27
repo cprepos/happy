@@ -97,15 +97,12 @@ function SessionInfoContent({ session }: { session: Session }) {
     const sessionStatus = useSessionStatus(session);
     const {
         canShowResume,
-        canShowRestart,
         canFork,
         forking,
         forkSession,
         openDuplicateSheet,
         resumeSession,
         resumeSessionSubtitle,
-        restartSession,
-        restartingSession,
     } = useSessionQuickActions(session);
     const chatVoice = getSessionVoicePreset(session.id, useSetting('voiceBySession'));
 
@@ -292,16 +289,6 @@ function SessionInfoContent({ session }: { session: Session }) {
                             subtitle={t('session.forkedFromSubtitle')}
                             icon={<Ionicons name="return-up-back-outline" size={29} color="#5856D6" />}
                             onPress={() => navigateToSession(router, session.metadata!.parentSessionId!)}
-                        />
-                    )}
-                    {canShowRestart && (
-                        <Item
-                            title={t('sessionInfo.restartAgent')}
-                            subtitle={t('sessionInfo.restartAgentSubtitle')}
-                            icon={<Ionicons name="refresh-circle-outline" size={29} color="#FF9500" />}
-                            onPress={restartSession}
-                            loading={restartingSession}
-                            disabled={restartingSession}
                         />
                     )}
                     <Item

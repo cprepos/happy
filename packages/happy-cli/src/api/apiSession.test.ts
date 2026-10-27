@@ -3,10 +3,6 @@ import { ApiSessionClient } from './apiSession';
 import { decodeBase64, decrypt, decryptBlob, encodeBase64, encrypt } from './encryption';
 import type { Update } from './types';
 import { logger } from '@/ui/logger';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { readDeliveredSeq, writeDeliveredSeq } from './deliveredMessageCursor';
 
 const {
     mockIo,
@@ -15,8 +11,7 @@ const {
     mockAxiosPut,
     mockBackoff,
     mockDelay,
-    mockShouldReconnect,
-    testHome
+    mockShouldReconnect
 } = vi.hoisted(() => ({
     mockIo: vi.fn(),
     mockAxiosGet: vi.fn(),
@@ -34,8 +29,7 @@ const {
         throw lastError;
     }),
     mockDelay: vi.fn(async () => undefined),
-    mockShouldReconnect: vi.fn(() => true),
-    testHome: { dir: '' }
+    mockShouldReconnect: vi.fn(() => true)
 }));
 
 vi.mock('socket.io-client', () => ({
@@ -52,10 +46,7 @@ vi.mock('axios', () => ({
 
 vi.mock('@/configuration', () => ({
     configuration: {
-        serverUrl: 'https://server.test',
-        get happyHomeDir() {
-            return testHome.dir;
-        }
+        serverUrl: 'https://server.test'
     }
 }));
 
@@ -188,13 +179,11 @@ describe('ApiSessionClient v3 messages API migration', () => {
         };
 
         mockIo.mockReturnValue(mockSocket);
-        testHome.dir = mkdtempSync(join(tmpdir(), 'happy-api-session-'));
     });
 
     afterEach(() => {
         vi.useRealTimers();
         vi.restoreAllMocks();
-        rmSync(testHome.dir, { recursive: true, force: true });
     });
 
     it('registers core socket handlers and connects', () => {
@@ -1317,341 +1306,5 @@ describe('ApiSessionClient v3 messages API migration', () => {
         expect(mockSocket.close).toHaveBeenCalledTimes(1);
         expect(mockAxiosGet).not.toHaveBeenCalled();
         expect(mockAxiosPost).not.toHaveBeenCalled();
-    });
-
-    describe('reconnect archive guard', () => {
-        const metadataUpdate = (version: number, lifecycleState: string): Update => ({
-            id: `upd-meta-${version}`,
-            seq: version,
-            createdAt: Date.now(),
-            body: {
-                t: 'update-session',
-                id: 'test-session-id',
-                metadata: {
-                    version,
-                    value: encryptContent(session, { ...session.metadata, lifecycleState }),
-                },
-            },
-        } as unknown as Update);
-        const ackWith = (version: number, lifecycleState: string) => ({
-            result: 'success',
-            version,
-            metadata: encryptContent(session, { ...session.metadata, lifecycleState }),
-        });
-
-        it('swallows the stale archive a reconnect sees before it settles', async () => {
-            const client = new ApiSessionClient('fake-token', session);
-            const archived = vi.fn();
-            client.on('archived', archived);
-            client.suppressNextArchiveSignal();
-
-            emitSocketEvent('update', metadataUpdate(1, 'archived'));
-            expect(archived).not.toHaveBeenCalled();
-
-            await client.close();
-        });
-
-        it('honours an archive that comes after the un-archive was acknowledged', async () => {
-            mockSocket.emitWithAck.mockResolvedValue(ackWith(2, 'running'));
-            const client = new ApiSessionClient('fake-token', session);
-            const archived = vi.fn();
-            client.on('archived', archived);
-            client.suppressNextArchiveSignal();
-
-            client.updateMetadata((current) => ({ ...current, lifecycleState: 'running' }));
-            await waitForCheck(() => expect(mockSocket.emitWithAck).toHaveBeenCalledWith('update-metadata', expect.anything()));
-            await new Promise((resolve) => setTimeout(resolve, 10));
-
-            emitSocketEvent('update', metadataUpdate(3, 'archived'));
-            expect(archived).toHaveBeenCalledTimes(1);
-
-            await client.close();
-        });
-
-        it('settles after a version mismatch once the retried un-archive lands', async () => {
-            mockSocket.emitWithAck
-                .mockResolvedValueOnce({
-                    result: 'version-mismatch',
-                    version: 1,
-                    metadata: encryptContent(session, { ...session.metadata, lifecycleState: 'archived' }),
-                })
-                .mockResolvedValue(ackWith(2, 'running'));
-            const client = new ApiSessionClient('fake-token', session);
-            const archived = vi.fn();
-            client.on('archived', archived);
-            client.suppressNextArchiveSignal();
-
-            client.updateMetadata((current) => ({ ...current, lifecycleState: 'running' }));
-            await waitForCheck(() => expect(mockSocket.emitWithAck).toHaveBeenCalledTimes(2));
-            await new Promise((resolve) => setTimeout(resolve, 10));
-
-            emitSocketEvent('update', metadataUpdate(3, 'archived'));
-            expect(archived).toHaveBeenCalledTimes(1);
-
-            await client.close();
-        });
-
-        it('stays armed while the un-archive itself still reads archived', async () => {
-            mockSocket.emitWithAck.mockResolvedValue(ackWith(2, 'archived'));
-            const client = new ApiSessionClient('fake-token', session);
-            const archived = vi.fn();
-            client.on('archived', archived);
-            client.suppressNextArchiveSignal();
-
-            client.updateMetadata((current) => ({ ...current, title: 'unrelated' }));
-            await waitForCheck(() => expect(mockSocket.emitWithAck).toHaveBeenCalled());
-            await new Promise((resolve) => setTimeout(resolve, 10));
-
-            emitSocketEvent('update', metadataUpdate(3, 'archived'));
-            expect(archived).not.toHaveBeenCalled();
-
-            await client.close();
-        });
-
-        it('expires after 60 seconds even if the reconnect never settles', async () => {
-            vi.useFakeTimers();
-            const client = new ApiSessionClient('fake-token', session);
-            const archived = vi.fn();
-            client.on('archived', archived);
-            client.suppressNextArchiveSignal();
-
-            await vi.advanceTimersByTimeAsync(60_000);
-
-            emitSocketEvent('update', metadataUpdate(1, 'archived'));
-            expect(archived).toHaveBeenCalledTimes(1);
-
-            await client.close();
-        });
-
-        it('is still armed just before the 60 second deadline', async () => {
-            vi.useFakeTimers();
-            const client = new ApiSessionClient('fake-token', session);
-            const archived = vi.fn();
-            client.on('archived', archived);
-            client.suppressNextArchiveSignal();
-
-            await vi.advanceTimersByTimeAsync(59_000);
-            emitSocketEvent('update', metadataUpdate(1, 'archived'));
-            expect(archived).not.toHaveBeenCalled();
-
-            await client.close();
-        });
-
-        it('leaves no timer behind on close', async () => {
-            vi.useFakeTimers();
-            mockSocket.connected = true;
-            const client = new ApiSessionClient('fake-token', session);
-            client.suppressNextArchiveSignal();
-            expect(vi.getTimerCount()).toBe(1);
-            await client.close();
-            expect(vi.getTimerCount()).toBe(0);
-        });
-    });
-
-    describe('reconnect delivers what the agent never received', () => {
-        const user = (text: string) => ({ role: 'user', content: { type: 'text', text } });
-        const agent = (text: string) => ({ role: 'agent', content: { type: 'output', data: { text } } });
-        const logEntry = (seq: number, content: unknown, localId: string | null = null) => ({
-            id: `msg-${seq}`,
-            seq,
-            content: { t: 'encrypted', c: encryptContent(session, content) },
-            localId,
-            createdAt: seq,
-            updatedAt: seq,
-        });
-        const serveLog = (...pages: Array<ReturnType<typeof logEntry>[]>) => {
-            for (let i = 0; i < pages.length; i += 1) {
-                mockAxiosGet.mockResolvedValueOnce({ data: { messages: pages[i], hasMore: i < pages.length - 1 } });
-            }
-        };
-        const reconnect = () => {
-            const client = new ApiSessionClient('fake-token', session);
-            client.skipExistingMessages();
-            const received: string[] = [];
-            client.onUserMessage((message) => received.push(message.content.text));
-            return { client, received };
-        };
-
-        it('delivers messages sent while no owner was listening (above the delivered cursor)', async () => {
-            writeDeliveredSeq('test-session-id', 1);
-            // The old owner's socket died after seq 1 but it kept streaming.
-            serveLog([logEntry(1, user('one')), logEntry(2, agent('a')), logEntry(3, user('two')), logEntry(4, agent('b'))]);
-            const { client, received } = reconnect();
-
-            await (client as any).fetchMessages();
-
-            expect(received).toEqual(['two']);
-            expect((client as any).lastReceivedSeq).toBe(4);
-            expect(readDeliveredSeq('test-session-id')).toBe(3);
-        });
-
-        it('skips everything the agent already has', async () => {
-            writeDeliveredSeq('test-session-id', 3);
-            serveLog([logEntry(1, user('one')), logEntry(2, agent('a')), logEntry(3, user('two')), logEntry(4, agent('b'))]);
-            const { client, received } = reconnect();
-
-            await (client as any).fetchMessages();
-
-            expect(received).toEqual([]);
-            expect((client as any).lastReceivedSeq).toBe(4);
-        });
-
-        it('delivers messages still queued behind a wedged turn even though they were routed', async () => {
-            writeDeliveredSeq('test-session-id', 4);
-            serveLog([logEntry(1, user('one')), logEntry(2, agent('turn starts, then nothing')), logEntry(3, user('two')), logEntry(4, user('three'))]);
-            const { client, received } = reconnect();
-
-            await (client as any).fetchMessages();
-
-            expect(received).toEqual(['two', 'three']);
-        });
-
-        it('without a cursor (older owner) delivers only what came after its last write', async () => {
-            serveLog([logEntry(1, user('one')), logEntry(2, agent('a')), logEntry(3, user('two')), logEntry(4, user('three'))]);
-            const { client, received } = reconnect();
-
-            await (client as any).fetchMessages();
-
-            expect(received).toEqual(['two', 'three']);
-            expect(readDeliveredSeq('test-session-id')).toBe(4);
-        });
-
-        it('without a cursor replays nothing when the last word was the agent\'s', async () => {
-            serveLog([logEntry(1, user('one')), logEntry(2, agent('a')), logEntry(3, user('two')), logEntry(4, agent('b'))]);
-            const { client, received } = reconnect();
-
-            await (client as any).fetchMessages();
-
-            expect(received).toEqual([]);
-        });
-
-        it('does not count its own startup messages as the previous owner answering', async () => {
-            mockAxiosPost.mockResolvedValue({ data: { messages: [] } });
-            const { client, received } = reconnect();
-            client.sendSessionEvent({ type: 'message', message: 'Reconnected' });
-            await waitForCheck(() => expect(mockAxiosPost).toHaveBeenCalledTimes(1));
-            const ownLocalId = mockAxiosPost.mock.calls[0][1].messages[0].localId;
-
-            serveLog([
-                logEntry(1, user('one')),
-                logEntry(2, agent('a')),
-                logEntry(3, user('sent while down')),
-                logEntry(4, agent('Reconnected'), ownLocalId),
-            ]);
-            await (client as any).fetchMessages();
-
-            expect(received).toEqual(['sent while down']);
-        });
-
-        it('reads the whole log across pages before deciding', async () => {
-            serveLog(
-                [logEntry(1, user('one')), logEntry(2, user('two'))],
-                [logEntry(3, agent('answer to both')), logEntry(4, user('three'))],
-            );
-            const { client, received } = reconnect();
-
-            await (client as any).fetchMessages();
-
-            expect(received).toEqual(['three']);
-            expect((client as any).lastReceivedSeq).toBe(4);
-        });
-
-        it('starts over instead of replaying history when a page fails', async () => {
-            mockAxiosGet.mockResolvedValueOnce({ data: { messages: [logEntry(1, user('one')), logEntry(2, agent('a'))], hasMore: true } });
-            mockAxiosGet.mockRejectedValueOnce(new Error('network down'));
-            const { client, received } = reconnect();
-
-            await expect((client as any).fetchMessages()).rejects.toThrow('network down');
-            expect(received).toEqual([]);
-            expect((client as any).lastReceivedSeq).toBe(0);
-
-            serveLog([logEntry(1, user('one')), logEntry(2, agent('a')), logEntry(3, user('two'))]);
-            await (client as any).fetchMessages();
-
-            expect(received).toEqual(['two']);
-            expect(mockAxiosGet.mock.calls.at(-1)![1].params.after_seq).toBe(0);
-        });
-
-        it('fetches normally after the reconnect fetch', async () => {
-            writeDeliveredSeq('test-session-id', 1);
-            serveLog([logEntry(1, user('one')), logEntry(2, agent('a'))]);
-            const { client, received } = reconnect();
-            await (client as any).fetchMessages();
-
-            serveLog([logEntry(3, user('live'))]);
-            await (client as any).fetchMessages();
-
-            expect(received).toEqual(['live']);
-            expect(mockAxiosGet.mock.calls.at(-1)![1].params.after_seq).toBe(2);
-        });
-
-        it('also delivers image attachments that were never received', async () => {
-            writeDeliveredSeq('test-session-id', 1);
-            const fileEvent = {
-                role: 'session',
-                content: {
-                    type: 'session',
-                    data: {
-                        role: 'user',
-                        id: 'f1',
-                        time: 1,
-                        ev: { t: 'file', ref: 'ref-1', name: 'a.png', size: 3, mimeType: 'image/png' },
-                    },
-                },
-            };
-            serveLog([logEntry(1, user('one')), logEntry(2, agent('a')), logEntry(3, fileEvent), logEntry(4, user('look'))]);
-            const { client, received } = reconnect();
-            const files: unknown[] = [];
-            client.onFileEvent((event) => files.push(event));
-
-            await (client as any).fetchMessages();
-
-            expect(received).toEqual(['look']);
-            expect(files).toHaveLength(1);
-        });
-    });
-
-    describe('delivered cursor', () => {
-        it('records the seq of every user message handed to the agent', () => {
-            const client = new ApiSessionClient('fake-token', session);
-            client.onUserMessage(() => {});
-            emitSocketEvent('update', createNewMessageUpdate(1, encryptContent(session, {
-                role: 'user',
-                content: { type: 'text', text: 'hi' }
-            })));
-            expect(readDeliveredSeq('test-session-id')).toBe(1);
-            const raw = JSON.parse(readFileSync(join(testHome.dir, 'session-cursors', 'test-session-id.json'), 'utf-8'));
-            expect(raw.deliveredSeq).toBe(1);
-        });
-
-        it('records a message held for a late callback only once the callback takes it', () => {
-            const client = new ApiSessionClient('fake-token', session);
-            emitSocketEvent('update', createNewMessageUpdate(1, encryptContent(session, {
-                role: 'user',
-                content: { type: 'text', text: 'early' }
-            })));
-            expect(readDeliveredSeq('test-session-id')).toBeNull();
-
-            const received: string[] = [];
-            client.onUserMessage((message) => received.push(message.content.text));
-            expect(received).toEqual(['early']);
-            expect(readDeliveredSeq('test-session-id')).toBe(1);
-        });
-
-        it('does not move for messages that are not user input', () => {
-            const client = new ApiSessionClient('fake-token', session);
-            client.onUserMessage(() => {});
-            emitSocketEvent('update', createNewMessageUpdate(1, encryptContent(session, {
-                role: 'agent',
-                content: { type: 'output', data: {} }
-            })));
-            expect(readDeliveredSeq('test-session-id')).toBeNull();
-        });
-
-        it('ignores unsafe session ids and unreadable files', () => {
-            writeDeliveredSeq('a/b', 5);
-            expect(readDeliveredSeq('a/b')).toBeNull();
-            expect(readDeliveredSeq('never-written')).toBeNull();
-        });
     });
 });

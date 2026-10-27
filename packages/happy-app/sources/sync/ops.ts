@@ -589,63 +589,6 @@ export async function machineResumeSession(options: ResumeSessionOptions & { mod
     }
 }
 
-export type RestartSessionResult =
-    | { type: 'success'; sessionId: string; stoppedPids: number[]; newPid: number }
-    | { type: 'error'; errorMessage: string; cliTooOld?: boolean };
-
-/**
- * What a machine whose daemon predates `restart-happy-session` answers. The
- * server says "RPC method not available" when nothing registered the method
- * (the caller has already checked the machine is online, so the daemon is
- * there and simply does not know it); a daemon RPC manager that receives an
- * unknown method answers "Method not found".
- */
-export function isUnknownRpcMethodError(message: string | null | undefined): boolean {
-    if (!message) return false;
-    return /RPC method not available|Method not found/i.test(message);
-}
-
-/**
- * Last-resort restart: the daemon kills whatever process drives this session
- * (SIGTERM, then SIGKILL) and starts the agent again into the same Happy
- * session id. Works while the session still looks online, which is exactly
- * when the app and the agent have fallen out of sync and Resume is hidden.
- *
- * Ships the same fallback as resume, because the daemon may not be tracking
- * the session (e.g. it was restarted by a CLI rebuild) and then cannot
- * decrypt or reconnect to it without the session data key.
- *
- * `cliTooOld` marks a machine whose CLI does not implement the RPC; the
- * caller turns that into "update happy on the machine".
- */
-export async function machineRestartSession(options: ResumeSessionOptions & { model?: string; permissionMode?: string }): Promise<RestartSessionResult> {
-    const { machineId, sessionId, model, permissionMode } = options;
-    try {
-        const { fallback, reason } = buildResumeFallback(sessionId, machineId);
-        const result = await apiSocket.machineRPC<RestartSessionResult | { error: string } | null | undefined, { sessionId: string; model?: string; permissionMode?: string; fallback?: unknown; fallbackReason?: string }>(
-            machineId,
-            'restart-happy-session',
-            { sessionId, model, permissionMode, fallback, fallbackReason: reason },
-        );
-        if (!result || typeof result !== 'object') {
-            return { type: 'error', errorMessage: 'Empty response from the machine' };
-        }
-        if ('error' in result && typeof result.error === 'string') {
-            return { type: 'error', errorMessage: result.error, cliTooOld: isUnknownRpcMethodError(result.error) };
-        }
-        if ('type' in result && result.type === 'error') {
-            return { type: 'error', errorMessage: result.errorMessage, cliTooOld: isUnknownRpcMethodError(result.errorMessage) };
-        }
-        if ('type' in result && result.type === 'success') {
-            return result;
-        }
-        return { type: 'error', errorMessage: 'Unexpected response from the machine' };
-    } catch (error) {
-        const message = error instanceof Error ? error.message : 'Failed to restart session';
-        return { type: 'error', errorMessage: message, cliTooOld: isUnknownRpcMethodError(message) };
-    }
-}
-
 /**
  * Permanently remove a machine from the server. Sessions spawned by the
  * machine are preserved; only the Machine row and its AccessKeys are deleted.
