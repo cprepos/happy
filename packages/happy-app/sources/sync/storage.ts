@@ -895,11 +895,75 @@ export const storage = create<StorageState>()((set, get) => {
                 const messagesArray = Object.values(mergedMessagesMap)
                     .sort((a, b) => messageSortKey(b) - messageSortKey(a));
 
+                // Extract subagent lifecycle events from the batch and fold them
+                // into the session's subagents map (keyed by subagent id).
+                let subagentUpdates: Record<string, Partial<import('./storageTypes').SubagentInfo>> | null = null;
+                for (const msg of normalizedMessages) {
+                    if (msg.role !== 'event') continue;
+                    const c = msg.content as { type: string; [k: string]: any };
+                    if (c.type === 'subagent-start') {
+                        if (!subagentUpdates) subagentUpdates = {};
+                        subagentUpdates[c.subagent] = {
+                            ...(subagentUpdates[c.subagent] ?? {}),
+                            id: c.subagent,
+                            status: 'running',
+                            startedAt: msg.createdAt,
+                            ...(c.title ? { title: c.title } : {}),
+                            ...(c.subagentType ? { type: c.subagentType } : {}),
+                            ...(c.model ? { model: c.model } : {}),
+                            ...(c.prompt ? { prompt: c.prompt } : {}),
+                            ...(c.spawnDepth != null ? { spawnDepth: c.spawnDepth } : {}),
+                            ...(c.parentTaskId ? { parentId: c.parentTaskId } : {}),
+                        };
+                    } else if (c.type === 'subagent-stop') {
+                        if (!subagentUpdates) subagentUpdates = {};
+                        subagentUpdates[c.subagent] = {
+                            ...(subagentUpdates[c.subagent] ?? {}),
+                            id: c.subagent,
+                            status: c.status ?? 'completed',
+                            ...(c.summary ? { summary: c.summary } : {}),
+                            ...(c.tokens != null ? { tokens: c.tokens } : {}),
+                            ...(c.toolUses != null ? { toolUses: c.toolUses } : {}),
+                            ...(c.durationMs != null ? { durationMs: c.durationMs } : {}),
+                        };
+                    } else if (c.type === 'subagent-progress') {
+                        if (!subagentUpdates) subagentUpdates = {};
+                        subagentUpdates[c.subagent] = {
+                            ...(subagentUpdates[c.subagent] ?? {}),
+                            id: c.subagent,
+                            ...(c.tokens != null ? { tokens: c.tokens } : {}),
+                            ...(c.toolUses != null ? { toolUses: c.toolUses } : {}),
+                            ...(c.durationMs != null ? { durationMs: c.durationMs } : {}),
+                            ...(c.lastToolName ? { lastToolName: c.lastToolName } : {}),
+                            ...(c.summary ? { summary: c.summary } : {}),
+                        };
+                    }
+                }
+
+                // Merge subagent updates into the session's existing subagents map.
+                let mergedSubagents = session?.subagents;
+                if (subagentUpdates && session) {
+                    mergedSubagents = { ...(session.subagents ?? {}) };
+                    for (const [subId, update] of Object.entries(subagentUpdates)) {
+                        const existing = mergedSubagents[subId];
+                        const defaults = {
+                            id: subId,
+                            status: 'running' as const,
+                            startedAt: Date.now(),
+                        };
+                        mergedSubagents[subId] = {
+                            ...defaults,
+                            ...existing,
+                            ...update,
+                        } as import('./storageTypes').SubagentInfo;
+                    }
+                }
+
                 // Update session with todos and latestUsage
                 // IMPORTANT: We extract latestUsage from the mutable reducerState and copy it to the Session object
                 // This ensures latestUsage is available immediately on load, even before messages are fully loaded
                 let updatedSessions = state.sessions;
-                const needsUpdate = (reducerResult.todos !== undefined || existingSession.reducerState.latestUsage || shouldEnterPlanMode) && session;
+                const needsUpdate = (reducerResult.todos !== undefined || existingSession.reducerState.latestUsage || shouldEnterPlanMode || subagentUpdates) && session;
 
                 if (needsUpdate) {
                     updatedSessions = {
@@ -907,6 +971,7 @@ export const storage = create<StorageState>()((set, get) => {
                         [sessionId]: {
                             ...session,
                             ...(reducerResult.todos !== undefined && { todos: reducerResult.todos }),
+                            ...(mergedSubagents ? { subagents: mergedSubagents } : {}),
                             // Copy latestUsage from reducerState to make it immediately available
                             latestUsage: existingSession.reducerState.latestUsage ? {
                                 ...existingSession.reducerState.latestUsage

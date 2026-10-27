@@ -480,6 +480,24 @@ export interface Session {
         contextWindow?: number;
         timestamp: number;
     } | null;
+    subagents?: Record<string, SubagentInfo>;
+}
+
+export interface SubagentInfo {
+    id: string;
+    title?: string;
+    type?: string;
+    model?: string;
+    status: 'running' | 'completed' | 'failed' | 'stopped';
+    prompt?: string;
+    summary?: string;
+    tokens?: number;
+    toolUses?: number;
+    durationMs?: number;
+    startedAt: number;
+    spawnDepth?: number;
+    parentId?: string;
+    lastToolName?: string;
 }
 
 export interface DecryptedMessage {
