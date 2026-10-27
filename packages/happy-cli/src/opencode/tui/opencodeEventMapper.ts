@@ -13,6 +13,7 @@
  * text/tool/turn bookkeeping the ACP runner uses.
  */
 
+import { createHash } from 'node:crypto';
 import { createEnvelope, type SessionEnvelope } from '@slopus/happy-wire';
 import { AcpSessionManager } from '@/agent/acp/AcpSessionManager';
 
@@ -128,6 +129,22 @@ function withCallId(envelopes: SessionEnvelope[], callId: string): SessionEnvelo
     ));
 }
 
+/**
+ * Derive a deterministic cuid2-shaped subagent id from an OpenCode child
+ * session id, following the same approach as the Claude mapper.
+ */
+function deterministicSubagentId(childSessionId: string): string {
+    const digest = createHash('sha256')
+        .update(`oc-subagent:${childSessionId}`)
+        .digest('hex');
+    return `c${digest.slice(0, 23)}`;
+}
+
+/** Tag every envelope in the array with the given subagent id. */
+function withSubagent(envelopes: SessionEnvelope[], subagent: string): SessionEnvelope[] {
+    return envelopes.map((envelope) => ({ ...envelope, subagent }));
+}
+
 /** OpenCode's placeholder titles, which are not worth showing in the app. */
 function isDefaultTitle(title: string): boolean {
     return /^(New|Child) session - /.test(title);
@@ -167,6 +184,12 @@ export class OpencodeEventMapper {
     private readonly finishedTools = new Set<string>();
     /** Sub-agent (task) sessions: their permissions belong to the followed session. */
     private readonly childSessions = new Set<string>();
+    /** Child session id -> deterministic cuid2-shaped subagent id. */
+    private readonly childSubagentIds = new Map<string, string>();
+    /** Subagent ids for which a `start` envelope has been emitted. */
+    private readonly startedSubagents = new Set<string>();
+    /** Subagent ids currently considered active (started but not yet stopped). */
+    private readonly activeSubagents = new Set<string>();
 
     /**
      * Compaction. When the model's context fills up, OpenCode reports a
@@ -239,6 +262,9 @@ export class OpencodeEventMapper {
             case 'message.part.delta':
                 return this.handleDelta(props);
             case 'session.status':
+                if (this.childSessions.has(props.sessionID)) {
+                    return this.maybeEmitChildSessionStop(props.sessionID, props.status?.type);
+                }
                 if (props.sessionID !== this.currentSessionId) return [];
                 if (props.status?.type === 'busy' || props.status?.type === 'retry') {
                     return this.markBusy();
@@ -248,6 +274,9 @@ export class OpencodeEventMapper {
                 }
                 return [];
             case 'session.idle':
+                if (this.childSessions.has(props.sessionID)) {
+                    return this.maybeEmitChildSessionStop(props.sessionID, 'idle');
+                }
                 if (props.sessionID !== this.currentSessionId) return [];
                 return this.markIdle();
             case 'session.error':
@@ -297,6 +326,19 @@ export class OpencodeEventMapper {
         return this.manager.startTurn();
     }
 
+    private maybeEmitChildSessionStop(sessionId: string, statusType: string | undefined): OpencodeMirrorAction[] {
+        const subagentId = this.childSubagentIds.get(sessionId);
+        if (!subagentId || !this.activeSubagents.has(subagentId)) return [];
+        if (statusType !== 'idle' && statusType !== 'error') return [];
+        this.activeSubagents.delete(subagentId);
+        const envelopes = this.ensureTurn();
+        envelopes.push(createEnvelope('agent', {
+            t: 'stop',
+            status: statusType === 'error' ? 'failed' : 'completed',
+        }, { subagent: subagentId }));
+        return this.envelopes(envelopes);
+    }
+
     private markBusy(): OpencodeMirrorAction[] {
         const actions = this.envelopes(this.ensureTurn());
         if (!this.busy) {
@@ -330,7 +372,24 @@ export class OpencodeEventMapper {
         }
         if (typeof info.parentID === 'string') {
             this.childSessions.add(info.id);
-            return [];
+            if (!this.childSubagentIds.has(info.id)) {
+                const subagentId = deterministicSubagentId(info.id);
+                this.childSubagentIds.set(info.id, subagentId);
+            }
+            const subagentId = this.childSubagentIds.get(info.id)!;
+            const actions: OpencodeMirrorAction[] = [];
+            if (!this.startedSubagents.has(subagentId)) {
+                this.startedSubagents.add(subagentId);
+                this.activeSubagents.add(subagentId);
+                const envelopes = this.ensureTurn();
+                const title = typeof info.title === 'string' && !isDefaultTitle(info.title) ? info.title : undefined;
+                envelopes.push(createEnvelope('agent', {
+                    t: 'start',
+                    ...(title ? { title } : {}),
+                }, { subagent: subagentId }));
+                actions.push(...this.envelopes(envelopes));
+            }
+            return actions;
         }
         if (info.id !== this.currentSessionId || typeof info.title !== 'string') {
             return [];
