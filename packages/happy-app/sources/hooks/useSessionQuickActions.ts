@@ -29,6 +29,8 @@ export interface SessionActionItem {
     destructive?: boolean;
 }
 
+const recentlyRestartedIds = new Set<string>();
+
 interface UseSessionQuickActionsOptions {
     /**
      * Called on the press, before anything is asked of the machine.
@@ -68,6 +70,15 @@ function getResumeAvailability(session: Session, machine: Machine | null | undef
         };
     }
     if (isConnected) {
+        recentlyRestartedIds.delete(session.id);
+        return {
+            canResume: false,
+            canShowResume: false,
+            subtitle: '',
+            message: '',
+        };
+    }
+    if (recentlyRestartedIds.has(session.id)) {
         return {
             canResume: false,
             canShowResume: false,
@@ -323,6 +334,7 @@ export function useSessionQuickActions(
             refresh: () => sync.refreshSessions(),
             modes,
         });
+        recentlyRestartedIds.add(session.id);
         Modal.alert(t('sessionInfo.restartAgentSuccess'));
     });
 
