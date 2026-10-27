@@ -625,6 +625,9 @@ export const zhHant: TranslationStructure = {
             viewDiff: '目前檔案更改',
             question: '問題',
         },
+        requestUserInput: {
+            loading: '載入問題中…',
+        },
         askUserQuestion: {
             submit: '提交答案',
             multipleQuestions: ({ count }: { count: number }) => `${count} 個問題`,

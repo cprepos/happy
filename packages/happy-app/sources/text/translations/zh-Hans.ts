@@ -643,6 +643,9 @@ export const zhHans: TranslationStructure = {
             modifyingMultipleFiles: ({ file, count }: { file: string; count: number }) => `${file} 和其他 ${count} 个`,
             showingDiff: '显示更改',
         },
+        requestUserInput: {
+            loading: '加载问题中…',
+        },
         askUserQuestion: {
             submit: '提交答案',
             multipleQuestions: ({ count }: { count: number }) => `${count} 个问题`,

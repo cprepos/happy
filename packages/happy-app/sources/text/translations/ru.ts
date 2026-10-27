@@ -658,6 +658,9 @@ export const ru: TranslationStructure = {
             modifyingMultipleFiles: ({ file, count }: { file: string; count: number }) => `${file} и ещё ${count}`,
             showingDiff: 'Показ изменений',
         },
+        requestUserInput: {
+            loading: 'Загрузка вопроса…',
+        },
         askUserQuestion: {
             submit: 'Отправить ответ',
             multipleQuestions: ({ count }: { count: number }) => `${count} ${plural({ count, one: 'вопрос', few: 'вопроса', many: 'вопросов' })}`,

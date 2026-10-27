@@ -1,8 +1,12 @@
 import * as React from 'react';
+import { ActivityIndicator, Text, View } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
 
 import { sessionAnswerQuestion, sessionCancelCommunication } from '@/sync/ops';
 import { useSessionAgentFormCommunication } from '@/sync/storage';
+import { t } from '@/text';
 import type { AgentQuestionAnswer } from '@/sync/storageTypes';
+import { ToolSectionView } from '../ToolSectionView';
 import { ToolViewProps } from './_all';
 import {
     InlineQuestionForm,
@@ -61,7 +65,21 @@ export const RequestUserInputView = React.memo<ToolViewProps>(({ tool, sessionId
         await sessionCancelCommunication(sessionId, communication.id, communication.kind);
     }, [communication, sessionId]);
 
-    if (!communication || questions.length === 0) {
+    if (!communication) {
+        if (tool.state === 'running') {
+            return (
+                <ToolSectionView>
+                    <View style={loadingStyles.container}>
+                        <ActivityIndicator size="small" />
+                        <Text style={loadingStyles.text}>{t('tools.requestUserInput.loading')}</Text>
+                    </View>
+                </ToolSectionView>
+            );
+        }
+        return null;
+    }
+
+    if (questions.length === 0) {
         return null;
     }
 
@@ -76,3 +94,16 @@ export const RequestUserInputView = React.memo<ToolViewProps>(({ tool, sessionId
         />
     );
 });
+
+const loadingStyles = StyleSheet.create((theme) => ({
+    container: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        paddingVertical: 12,
+    },
+    text: {
+        fontSize: 14,
+        color: theme.colors.textSecondary,
+    },
+}));
