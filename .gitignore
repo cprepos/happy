@@ -97,3 +97,4 @@ selfhost/.env.voice
 
 # Backups of secrets and configs moved aside in the self-host directory
 /selfhost/trash/
+.node/
