@@ -40,7 +40,7 @@ export default React.memo(function VoiceSettingsScreen() {
                     subtitle={t('settingsVoice.voiceSubtitle')}
                     icon={<Ionicons name="mic-outline" size={29} color="#007AFF" />}
                     detail={voicePreset?.label ?? t('settingsVoice.voicePicker.serverDefault')}
-                    onPress={() => router.push('/settings/voice/voices')}
+                    onPress={() => router.push('/settings/voice/voices' as any)}
                 />
             </ItemGroup>
         </ItemList>
