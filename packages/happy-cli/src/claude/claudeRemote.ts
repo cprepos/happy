@@ -139,6 +139,7 @@ export async function claudeRemote(opts: {
         allowedTools: initial.mode.allowedTools ? initial.mode.allowedTools.concat(opts.allowedTools) : opts.allowedTools,
         disallowedTools: initial.mode.disallowedTools,
         effort: initial.mode.effort,
+        agentProgressSummaries: true,
         canCallTool: (toolName: string, input: unknown, options: CanCallToolOptions) => opts.canCallTool(toolName, input, mode, options),
         abort: opts.signal,
         settingsPath: opts.hookSettingsPath,

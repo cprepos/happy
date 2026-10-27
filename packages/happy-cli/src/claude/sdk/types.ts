@@ -54,6 +54,12 @@ export interface QueryOptions {
      * the SDK silently downgrades it to 'high' on models without it.
      */
     effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+    /**
+     * When true the SDK emits periodic SDKTaskProgressMessage events with
+     * a model-generated `summary` field for running subagents. Passed
+     * straight through to the SDK's `agentProgressSummaries` option.
+     */
+    agentProgressSummaries?: boolean
 }
 
 /**

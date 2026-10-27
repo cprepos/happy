@@ -78,6 +78,11 @@ export const sessionTurnStartEventSchema = z.object({
 export const sessionStartEventSchema = z.object({
   t: z.literal('start'),
   title: z.string().optional(),
+  subagentType: z.string().optional(),
+  model: z.string().optional(),
+  prompt: z.string().optional(),
+  spawnDepth: z.number().int().nonnegative().optional(),
+  parentTaskId: z.string().optional(),
 });
 
 export const sessionTurnEndStatusSchema = z.enum(['completed', 'failed', 'cancelled']);
@@ -90,6 +95,32 @@ export const sessionTurnEndEventSchema = z.object({
 
 export const sessionStopEventSchema = z.object({
   t: z.literal('stop'),
+  status: z.enum(['completed', 'failed', 'stopped']).optional(),
+  summary: z.string().optional(),
+  tokens: z.number().int().nonnegative().optional(),
+  toolUses: z.number().int().nonnegative().optional(),
+  durationMs: z.number().nonnegative().optional(),
+});
+
+export const sessionProgressEventSchema = z.object({
+  t: z.literal('progress'),
+  tokens: z.number().int().nonnegative().optional(),
+  toolUses: z.number().int().nonnegative().optional(),
+  durationMs: z.number().nonnegative().optional(),
+  lastToolName: z.string().optional(),
+  summary: z.string().optional(),
+});
+
+export const sessionAgentsEventSchema = z.object({
+  t: z.literal('agents'),
+  agents: z.array(
+    z.object({
+      id: z.string(),
+      type: z.string().optional(),
+      description: z.string().optional(),
+      parentId: z.string().optional(),
+    }),
+  ),
 });
 
 export const sessionEventSchema = z.discriminatedUnion('t', [
@@ -102,6 +133,8 @@ export const sessionEventSchema = z.discriminatedUnion('t', [
   sessionStartEventSchema,
   sessionTurnEndEventSchema,
   sessionStopEventSchema,
+  sessionProgressEventSchema,
+  sessionAgentsEventSchema,
 ]);
 
 export type SessionEvent = z.infer<typeof sessionEventSchema>;
@@ -138,7 +171,7 @@ export const sessionEnvelopeSchema = z
         path: ['role'],
       });
     }
-    if ((envelope.ev.t === 'start' || envelope.ev.t === 'stop') && envelope.role !== 'agent') {
+    if ((envelope.ev.t === 'start' || envelope.ev.t === 'stop' || envelope.ev.t === 'progress') && envelope.role !== 'agent') {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: `${envelope.ev.t} events must use role "agent"`,

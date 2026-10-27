@@ -18,6 +18,8 @@ export type ClaudeSessionProtocolState = {
     hiddenParentToolCalls?: Set<string>;
     startedSubagents?: Set<string>;
     activeSubagents?: Set<string>;
+    /** Maps SDK task_id to the tool_use_id that spawned the task */
+    taskIdToToolUseId?: Map<string, string>;
 };
 
 type ClaudeMapperResult = {
@@ -140,6 +142,25 @@ function getActiveSubagents(state: ClaudeSessionProtocolState): Set<string> {
         state.activeSubagents = new Set<string>();
     }
     return state.activeSubagents;
+}
+
+function getTaskIdToToolUseId(state: ClaudeSessionProtocolState): Map<string, string> {
+    if (!state.taskIdToToolUseId) {
+        state.taskIdToToolUseId = new Map<string, string>();
+    }
+    return state.taskIdToToolUseId;
+}
+
+/** Resolve a SDK task_id to the deterministic session subagent id, if known. */
+function sessionSubagentIdForTaskId(
+    state: ClaudeSessionProtocolState,
+    taskId: string,
+): string | undefined {
+    const toolUseId = getTaskIdToToolUseId(state).get(taskId);
+    if (!toolUseId) {
+        return undefined;
+    }
+    return getSessionSubagentIdForProviderSubagent(state, toolUseId);
 }
 
 function pickUuid(message: RawJSONLines): string | undefined {
@@ -394,6 +415,7 @@ function clearSubagentTracking(state: ClaudeSessionProtocolState): void {
     getHiddenParentToolCalls(state).clear();
     getStartedSubagents(state).clear();
     getActiveSubagents(state).clear();
+    getTaskIdToToolUseId(state).clear();
 }
 
 function ensureTurn(state: ClaudeSessionProtocolState, envelopes: SessionEnvelope[]): string {
@@ -529,6 +551,104 @@ function mapClaudeLogMessageToSessionEnvelopesInternal(
     }
 
     if (message.type === 'system') {
+        const subtype = (message as any).subtype as string | undefined;
+
+        if (subtype === 'task_started') {
+            const msg = message as any;
+            const taskId = msg.task_id as string | undefined;
+            const toolUseId = msg.tool_use_id as string | undefined;
+            if (taskId && toolUseId) {
+                getTaskIdToToolUseId(state).set(taskId, toolUseId);
+                const sessionSubagent = getSessionSubagentIdForProviderSubagent(state, toolUseId);
+                if (sessionSubagent) {
+                    const turnId = ensureTurn(state, envelopes);
+                    const started = getStartedSubagents(state);
+                    if (!started.has(sessionSubagent)) {
+                        const title = getSubagentTitles(state).get(sessionSubagent);
+                        envelopes.push(createEnvelope('agent', {
+                            t: 'start',
+                            ...(title ? { title } : {}),
+                            ...(msg.subagent_type ? { subagentType: msg.subagent_type } : {}),
+                            ...(msg.prompt ? { prompt: String(msg.prompt).slice(0, 200) } : {}),
+                            ...(typeof msg.spawn_depth === 'number' ? { spawnDepth: msg.spawn_depth } : {}),
+                            ...(msg.parent_task_id ? { parentTaskId: msg.parent_task_id } : {}),
+                        }, { turn: turnId, subagent: sessionSubagent }));
+                        started.add(sessionSubagent);
+                        getActiveSubagents(state).add(sessionSubagent);
+                    }
+                }
+            }
+            return { currentTurnId: state.currentTurnId, envelopes };
+        }
+
+        if (subtype === 'task_progress') {
+            const msg = message as any;
+            const taskId = msg.task_id as string | undefined;
+            if (taskId) {
+                const sessionSubagent = sessionSubagentIdForTaskId(state, taskId);
+                if (sessionSubagent) {
+                    const turnId = ensureTurn(state, envelopes);
+                    envelopes.push(createEnvelope('agent', {
+                        t: 'progress',
+                        ...(msg.usage?.total_tokens != null ? { tokens: msg.usage.total_tokens } : {}),
+                        ...(msg.usage?.tool_uses != null ? { toolUses: msg.usage.tool_uses } : {}),
+                        ...(msg.usage?.duration_ms != null ? { durationMs: msg.usage.duration_ms } : {}),
+                        ...(msg.last_tool_name ? { lastToolName: msg.last_tool_name } : {}),
+                        ...(msg.summary ? { summary: msg.summary } : {}),
+                    }, { turn: turnId, subagent: sessionSubagent }));
+                }
+            }
+            return { currentTurnId: state.currentTurnId, envelopes };
+        }
+
+        if (subtype === 'task_notification') {
+            const msg = message as any;
+            const taskId = msg.task_id as string | undefined;
+            if (taskId) {
+                const sessionSubagent = sessionSubagentIdForTaskId(state, taskId);
+                if (sessionSubagent) {
+                    const turnId = ensureTurn(state, envelopes);
+                    const active = getActiveSubagents(state);
+                    if (active.has(sessionSubagent)) {
+                        envelopes.push(createEnvelope('agent', {
+                            t: 'stop',
+                            ...(msg.status ? { status: msg.status } : {}),
+                            ...(msg.summary ? { summary: msg.summary } : {}),
+                            ...(msg.usage?.total_tokens != null ? { tokens: msg.usage.total_tokens } : {}),
+                            ...(msg.usage?.tool_uses != null ? { toolUses: msg.usage.tool_uses } : {}),
+                            ...(msg.usage?.duration_ms != null ? { durationMs: msg.usage.duration_ms } : {}),
+                        }, { turn: turnId, subagent: sessionSubagent }));
+                        active.delete(sessionSubagent);
+                    }
+                }
+            }
+            return { currentTurnId: state.currentTurnId, envelopes };
+        }
+
+        if (subtype === 'background_tasks_changed') {
+            const msg = message as any;
+            const tasks = Array.isArray(msg.tasks) ? msg.tasks : [];
+            const turnId = ensureTurn(state, envelopes);
+            const agents = tasks
+                .filter((t: any) => !t.ambient)
+                .map((t: any) => {
+                    const toolUseId = t.tool_use_id as string | undefined;
+                    if (t.task_id && toolUseId) {
+                        getTaskIdToToolUseId(state).set(t.task_id, toolUseId);
+                    }
+                    return {
+                        id: t.task_id as string,
+                        ...(t.subagent_type ? { type: t.subagent_type } : { type: t.task_type }),
+                        ...(t.description ? { description: t.description } : {}),
+                        ...(t.parent_task_id ? { parentId: t.parent_task_id } : {}),
+                    };
+                });
+            if (agents.length > 0) {
+                envelopes.push(createEnvelope('agent', { t: 'agents', agents }, { turn: turnId }));
+            }
+            return { currentTurnId: state.currentTurnId, envelopes };
+        }
+
         return {
             currentTurnId: state.currentTurnId,
             envelopes,
