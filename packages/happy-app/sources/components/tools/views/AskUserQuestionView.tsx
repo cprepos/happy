@@ -1,5 +1,6 @@
 import * as React from 'react';
 
+import { Modal } from '@/modal';
 import { sessionAllow } from '@/sync/ops';
 import { ToolViewProps } from './_all';
 import {
@@ -28,7 +29,10 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId 
     ), [input?.questions]);
 
     const handleSubmit = React.useCallback(async (answers: InlineQuestionAnswers) => {
-        if (!sessionId || !tool.permission?.id) return;
+        if (!sessionId || !tool.permission?.id) {
+            Modal.alert('Error', 'Still loading — please try again in a moment.', [{ text: 'OK', style: 'cancel' }]);
+            return;
+        }
 
         const providerAnswers: Record<string, string> = {};
         questions.forEach((question, index) => {
@@ -39,8 +43,6 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId 
             }
         });
 
-        // Claude resolves AskUserQuestion through its permission callback and
-        // expects the chosen values merged into the tool input.
         await sessionAllow(
             sessionId,
             tool.permission.id,
@@ -56,7 +58,7 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId 
     return (
         <InlineQuestionForm
             questions={questions}
-            canInteract={tool.state === 'running'}
+            canInteract={tool.state === 'running' && !!tool.permission?.id}
             submittedAnswers={tool.state === 'completed' ? {} : undefined}
             onSubmit={handleSubmit}
         />

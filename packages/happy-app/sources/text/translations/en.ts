@@ -643,6 +643,9 @@ export const en: TranslationStructure = {
             viewDiff: 'Current file changes',
             question: 'Question',
         },
+        requestUserInput: {
+            loading: 'Loading question…',
+        },
         askUserQuestion: {
             submit: 'Submit Answer',
             multipleQuestions: ({ count }: { count: number }) => `${count} questions`,

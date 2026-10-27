@@ -642,6 +642,9 @@ export const ca: TranslationStructure = {
             modifyingMultipleFiles: ({ file, count }: { file: string; count: number }) => `${file} i ${count} més`,
             showingDiff: 'Mostrant canvis',
         },
+        requestUserInput: {
+            loading: 'Carregant pregunta…',
+        },
         askUserQuestion: {
             submit: 'Envia resposta',
             multipleQuestions: ({ count }: { count: number }) => `${count} ${plural({ count, singular: 'pregunta', plural: 'preguntes' })}`,
