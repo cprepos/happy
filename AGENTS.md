@@ -46,6 +46,12 @@ a push there is one `git merge --ff-only` away from being deployable.
 each direction) and cannot take a fast-forward push. Do not force push to fix
 that. Use `selfhost`, or ask.
 
+One carve-out: inside GitHub Actions, `origin` is whatever repo the workflow is
+running in, so `git push origin HEAD:main` in `.github/workflows/` is already
+pushing to the fork. Leave it alone -- an Actions checkout has no `fork` remote,
+so "correcting" it breaks CI. The rule above is about pushes from a developer or
+agent working tree.
+
 ## Sync To Main
 
 When the user says `sync to main` or `synt to main`, they mean:
