@@ -88,6 +88,9 @@ happy-workspaces/
 # Self-host deployment (secrets and generated webapp bundle)
 selfhost/.env
 selfhost/webapp/
+# Self-host TTS artifacts (fine-tuned Morgan voice + model, from mf-morgan)
+selfhost/tts-voices/
+selfhost/tts-models/
 
 # Self-host iOS build config (contains Apple team ID)
 /selfhost/ios/.env.ios
