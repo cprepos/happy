@@ -69,12 +69,13 @@ def test_build_instructions_order() -> None:
 
 
 def test_voice_name_derives_from_voice_id() -> None:
-    assert voice_name("am_morgan") == "Morgan"
     assert voice_name("af_bella") == "Bella"
     assert voice_name("bf_emma") == "Emma"
     assert voice_name("bm_lewis") == "Lewis"
     # blends answer to the first voice
     assert voice_name("am_michael(2)+am_onyx(1)") == "Michael"
+    # overrides beat id derivation
+    assert voice_name("am_morgan") == "Morgan Freeman"
     # no resolvable name -> Happy
     assert voice_name("zz") == "Happy"
     assert voice_name("am") == "Happy"

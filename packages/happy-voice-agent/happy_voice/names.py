@@ -1,7 +1,9 @@
 """Persona names: the name a voice answers to.
 
-Kokoro voice ids encode the name and the gender: ``am_morgan`` is a male voice
-called Morgan, ``bf_emma`` a female one called Emma. ``voice_name`` resolves
+Kokoro voice ids encode the name and the gender: ``am_michael`` is a male voice
+called Michael, ``bf_emma`` a female one called Emma. ``OVERRIDES`` renames
+voices whose persona differs from the id (``am_morgan`` answers to Morgan
+Freeman, its fine-tuned persona). ``voice_name`` resolves
 the persona name of a validated voice spec (a single name or a weighted
 blend); a blend answers to its first voice. Specs without a resolvable name
 fall back to ``Happy``. Keep the app-side mirror (``voicePersona`` in
@@ -15,7 +17,10 @@ from typing import Any
 from .voices import parse_voice
 
 # Names that differ from the id derivation.
-OVERRIDES: dict[str, str] = {}
+OVERRIDES: dict[str, str] = {
+    # Fine-tuned Morgan Freeman voice.
+    "am_morgan": "Morgan Freeman",
+}
 
 FALLBACK_NAME = "Happy"
 

@@ -57,7 +57,7 @@ describe('voice catalog', () => {
 
 describe('voicePersona', () => {
     it('derives the name and gender from the voice id', () => {
-        expect(voicePersona('am_morgan')).toEqual({ name: 'Morgan', gender: 'male' });
+        expect(voicePersona('am_morgan')).toEqual({ name: 'Morgan Freeman', gender: 'male' });
         expect(voicePersona('af_heart')).toEqual({ name: 'Heart', gender: 'female' });
         expect(voicePersona('bf_emma')).toEqual({ name: 'Emma', gender: 'female' });
         expect(voicePersona('bm_lewis')).toEqual({ name: 'Lewis', gender: 'male' });

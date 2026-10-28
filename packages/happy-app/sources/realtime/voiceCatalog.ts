@@ -26,7 +26,7 @@ export interface VoicePreset {
 }
 
 export const VOICE_PRESETS: readonly VoicePreset[] = [
-    { id: 'morgan', label: 'Morgan', voice: 'am_morgan', speed: 1.0, accent: 'us', tone: 'deep' },
+    { id: 'morgan', label: 'Morgan Freeman', voice: 'am_morgan', speed: 1.0, accent: 'us', tone: 'deep' },
     { id: 'heart', label: 'Heart', voice: 'af_heart', speed: 1.0, accent: 'us', tone: 'warm' },
     { id: 'bella', label: 'Bella', voice: 'af_bella', speed: 1.0, accent: 'us', tone: 'bright' },
     { id: 'nicole', label: 'Nicole', voice: 'af_nicole', speed: 1.0, accent: 'us', tone: 'soft' },
@@ -43,9 +43,17 @@ export const VOICE_PRESETS: readonly VoicePreset[] = [
 
 export type VoiceGender = 'male' | 'female';
 
+// Persona names that differ from the id derivation. Keep in sync with
+// OVERRIDES in packages/happy-voice-agent/happy_voice/names.py.
+const PERSONA_OVERRIDES: Readonly<Record<string, string>> = {
+    // Fine-tuned Morgan Freeman voice.
+    am_morgan: 'Morgan Freeman',
+};
+
 /**
  * The persona a Kokoro voice answers to: the name encoded in the voice id
- * (am_morgan -> Morgan) and its gender (the id's prefix). Blends answer to
+ * (am_michael -> Michael, overridden to Morgan Freeman for am_morgan) and its
+ * gender (the id's prefix). Blends answer to
  * their first voice. Null when the spec has no resolvable name. The agent
  * derives the same name server-side (happy_voice/names.py) and the agent's
  * name always wins, so this only drives the app's prompt and greeting.
@@ -61,11 +69,13 @@ export function voicePersona(voice: string): { name: string; gender: VoiceGender
     if (!/^[a-z]{1,2}$/.test(prefix) || !tail) {
         return null;
     }
-    const name = tail
-        .split('_')
-        .filter(Boolean)
-        .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-        .join(' ');
+    const name =
+        PERSONA_OVERRIDES[first] ??
+        tail
+            .split('_')
+            .filter(Boolean)
+            .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+            .join(' ');
     if (!name) {
         return null;
     }
