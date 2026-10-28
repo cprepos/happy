@@ -60,10 +60,21 @@ function openclawExec(...args: string[]): string | null {
 }
 
 /**
- * Get the gateway URL from the openclaw binary via `openclaw status --json`.
- * Falls back to constructing from config get gateway.port.
+ * Get the gateway URL by reading the openclaw config file, then falling back
+ * to the openclaw binary. Reading the file avoids spawning the binary (which
+ * can trigger slow Node runtime-admission retries on some setups).
  */
 function queryGatewayUrl(): string | null {
+  // 1. Read gateway.port from the config file (fast, no subprocess)
+  try {
+    const raw = JSON.parse(readFileSync(resolveConfigPath(), 'utf-8'));
+    const port = raw?.gateway?.port;
+    if (typeof port === 'number' && port > 0) return `ws://127.0.0.1:${port}`;
+    const url = raw?.gateway?.url;
+    if (typeof url === 'string' && url.length > 0) return url;
+  } catch { /* fall through */ }
+
+  // 2. Fall back to the binary
   const statusJson = openclawExec('status', '--json');
   if (statusJson) {
     try {
@@ -73,7 +84,6 @@ function queryGatewayUrl(): string | null {
     } catch { /* fall through */ }
   }
 
-  // Fallback: query port directly
   const port = openclawExec('config', 'get', 'gateway.port');
   if (port && /^\d+$/.test(port)) return `ws://127.0.0.1:${port}`;
 

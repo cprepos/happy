@@ -367,6 +367,7 @@ class Sync {
     onSessionVisible = (sessionId: string) => {
         releaseSpawnedSession(sessionId);
         this.historyPrefetchSessions.add(sessionId);
+        this.sessionsSync.invalidate();
         this.refreshSessionData(sessionId);
         // Also cover focus arriving while the speculative first page is still
         // being decrypted. Revalidate first so a newer ExitPlanMode can cancel
@@ -384,7 +385,6 @@ class Sync {
     }
 
     private refreshSessionData = (sessionId: string) => {
-        this.sessionsSync.invalidate();
         this.getMessagesSync(sessionId).invalidate();
 
         // Also invalidate git status sync for this session

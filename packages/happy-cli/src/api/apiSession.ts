@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events'
 import { io, Socket } from 'socket.io-client'
 import { AgentState, ClientToServerEvents, FileEventMessage, FileEventMessageSchema, Metadata, ServerToClientEvents, Session, Update, UserMessage, UserMessageSchema, Usage } from './types'
 import { decodeBase64, decryptBlob, decrypt, encodeBase64, encrypt, encryptBlob } from './encryption';
-import { backoff, createBackoff, delay } from '@/utils/time';
+import { backoff, delay } from '@/utils/time';
 import { configuration } from '@/configuration';
 import { RawJSONLines } from '@/claude/types';
 import { randomUUID } from 'node:crypto';
@@ -971,28 +971,35 @@ export class ApiSessionClient extends EventEmitter {
      */
     updateAgentState(handler: (metadata: AgentState) => AgentState): Promise<void> {
         logger.debugLargeJson('Updating agent state', this.agentState);
-        const updateBackoff = createBackoff({ maxFailureCount: 5, onError: (e, count) => {
-            logger.debug(`[updateAgentState] retry ${count}:`, (e as Error)?.message || e);
-        } });
         return this.agentStateLock.inLock(async () => {
-            await updateBackoff(async () => {
+            const maxAttempts = 5;
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
                 let updated = handler(this.agentState || {});
                 const answer = await this.socket.emitWithAck('update-state', { sid: this.sessionId, expectedVersion: this.agentStateVersion, agentState: updated ? encodeBase64(encrypt(this.encryptionKey, this.encryptionVariant, updated)) : null });
                 if (answer.result === 'success') {
                     this.agentState = answer.agentState ? decrypt(this.encryptionKey, this.encryptionVariant, decodeBase64(answer.agentState)) : null;
                     this.agentStateVersion = answer.version;
                     logger.debug('Agent state updated', this.agentState);
+                    return;
                 } else if (answer.result === 'version-mismatch') {
                     if (answer.version > this.agentStateVersion) {
                         this.agentStateVersion = answer.version;
                         this.agentState = answer.agentState ? decrypt(this.encryptionKey, this.encryptionVariant, decodeBase64(answer.agentState)) : null;
                     }
-                    throw new Error('Agent state version mismatch');
+                    logger.debug(`[updateAgentState] version mismatch, attempt ${attempt}/${maxAttempts}`);
+                    if (attempt < maxAttempts) {
+                        await delay(Math.min(250 * attempt, 1000));
+                        continue;
+                    }
                 } else if (answer.result === 'error') {
                     logger.debug('[updateAgentState] server returned hard error', answer);
-                    throw new Error('Agent state update failed: server error');
+                    if (attempt < maxAttempts) {
+                        await delay(Math.min(250 * attempt, 1000));
+                        continue;
+                    }
                 }
-            });
+            }
+            throw new Error('updateAgentState failed after max retries');
         });
     }
 
