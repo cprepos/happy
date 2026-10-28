@@ -191,9 +191,16 @@ class HappyAssistant(Agent):
         try:
             if warmer is not None:
                 await warmer.begin_turn()
+            t0 = time.monotonic()
+            first = True
             async for chunk in Agent.default.llm_node(
                 self, fold_system_messages(chat_ctx), tools, model_settings
             ):
+                if first:
+                    waited = time.monotonic() - t0
+                    if waited > 2.0:
+                        logger.info("llm_node: first chunk after %.0fms", waited * 1000)
+                    first = False
                 yield chunk
         finally:
             if warmer is not None:

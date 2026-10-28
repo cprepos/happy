@@ -58,6 +58,9 @@ class PrefixWarmer:
 
     def schedule(self) -> None:
         if self._task is not None and not self._task.done():
+            if self._sending is self._task:
+                logger.debug("warmup already sending; keeping it")
+                return
             self._task.cancel()
         self._task = asyncio.create_task(self._run())
 
