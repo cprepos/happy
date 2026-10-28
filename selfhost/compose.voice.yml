@@ -158,8 +158,10 @@ services:
     env_file: .env.voice
     environment:
       LIVEKIT_URL: ws://127.0.0.1:7880
-      STT_URL: ws://127.0.0.1:${STT_PORT:-8090}/v1/stream
-      TTS_URL: http://127.0.0.1:${TTS_PORT:-8880}/v1
+      # Full URL overrides (e.g. the prep-air Mac services in .env.voice); the loopback
+      # defaults apply when unset.
+      STT_URL: ${STT_URL:-ws://127.0.0.1:${STT_PORT:-8090}/v1/stream}
+      TTS_URL: ${TTS_URL:-http://127.0.0.1:${TTS_PORT:-8880}/v1}
       # default: the host's coder vLLM (systemd); .env.voice's LLM_MODEL is the local-llm
       # profile's HF weights id, so the agent reads VOICE_LLM_* instead
       LLM_BASE_URL: ${VOICE_LLM_BASE_URL:-http://127.0.0.1:9080/v1}

@@ -35,10 +35,19 @@ import httpx
 import numpy as np
 from scipy.signal import resample_poly
 
+from urllib.parse import urlparse
+
 E = os.environ
 OUT = E["SMOKE_OUT"]
-STT = f"127.0.0.1:{E.get('STT_PORT', '8090')}"
-TTS = f"http://127.0.0.1:{E.get('TTS_PORT', '8880')}"
+# TTS_URL/STT_URL (e.g. the prep-air Mac services) win over the loopback ports.
+TTS = (E.get("TTS_URL") or f"http://127.0.0.1:{E.get('TTS_PORT', '8880')}").rstrip("/")
+if TTS.endswith("/v1"):
+    TTS = TTS[: -len("/v1")]
+STT = (
+    urlparse(E["STT_URL"]).netloc
+    if E.get("STT_URL")
+    else f"127.0.0.1:{E.get('STT_PORT', '8090')}"
+)
 LLM = (E.get("VOICE_LLM_BASE_URL") or "http://127.0.0.1:9080/v1").rstrip("/")
 LLM_NAME = E.get("VOICE_LLM_MODEL") or "coder"
 SENTENCE = "Hey, tell Claude to list the files in the source directory and then run the tests."
