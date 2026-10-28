@@ -63,6 +63,6 @@ Point `frontendDist` at hosted web app URL instead of bundled `../dist`. JS upda
 ## Release Flow
 
 1. Bump version in `tauri.conf.json`
-2. `git tag v0.2.0 && git push --tags`
+2. `git tag v0.2.0 && git push fork --tags` (never `origin` -- see AGENTS.md)
 3. CI builds all platforms, creates GitHub Release with artifacts
 4. Add download link on happy.engineering
