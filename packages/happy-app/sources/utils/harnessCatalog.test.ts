@@ -8,12 +8,12 @@ describe('harness catalog', () => {
         expect(HARNESS_NAMES.agy).toBe('Antigravity');
     });
 
-    it('retires Gemini and OpenClaw only', () => {
+    it('retires Gemini only', () => {
         expect(isRetiredHarness('gemini')).toBe(true);
-        expect(isRetiredHarness('openclaw')).toBe(true);
         expect(isRetiredHarness('claude')).toBe(false);
         // Antigravity is what Gemini's own error message redirects people to.
         expect(isRetiredHarness('agy')).toBe(false);
+        expect(isRetiredHarness('openclaw')).toBe(false);
     });
 
     it('lists only installed harnesses, in pick order', () => {
@@ -34,7 +34,7 @@ describe('harness catalog', () => {
 
     it('never offers a retired harness, even with its CLI installed', () => {
         const harnesses = listAvailableHarnesses({
-            availability: { claude: true, gemini: true, openclaw: true },
+            availability: { claude: true, gemini: true },
             happyAgentAvailable: false,
             selected: 'claude',
         });
@@ -56,7 +56,30 @@ describe('harness catalog', () => {
 
     it('keeps a real name for a retired harness so old sessions still read right', () => {
         expect(HARNESS_NAMES.gemini).toBe('Gemini');
+    });
+
+    // Only the machine running the gateway can start an OpenClaw session, so
+    // the row has to wait for that machine's own installation report.
+    it('lists OpenClaw only after an explicit installation report', () => {
         expect(HARNESS_NAMES.openclaw).toBe('OpenClaw');
+
+        expect(listAvailableHarnesses({
+            availability: { claude: true, codex: true, openclaw: true },
+            happyAgentAvailable: false,
+            selected: 'claude',
+        }).map((harness) => harness.key)).toEqual(['claude', 'codex', 'openclaw']);
+
+        expect(listAvailableHarnesses({
+            availability: { claude: true, openclaw: false },
+            happyAgentAvailable: false,
+            selected: 'openclaw',
+        }).map((harness) => harness.key)).toEqual(['claude']);
+
+        expect(listAvailableHarnesses({
+            availability: null,
+            happyAgentAvailable: false,
+            selected: 'openclaw',
+        }).map((harness) => harness.key)).toEqual(['claude', 'codex']);
     });
 
     it('drops Happy when no connected machine can run it', () => {

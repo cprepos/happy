@@ -20,13 +20,12 @@ export const HARNESS_NAMES: Record<NewSessionAgentType, string> = {
  *
  * Gemini's CLI login is dead for individual accounts — it now refuses with
  * "This client is no longer supported […] migrate to the Antigravity suite",
- * which is the `agy` harness. OpenClaw is shelved for now. Both stay in
- * HARNESS_NAMES so an existing session still shows a real product name, and
- * neither is removed from the CLI, the wire, or the transcript renderers.
+ * which is the `agy` harness. It stays in HARNESS_NAMES so an existing session
+ * still shows a real product name, and it is not removed from the CLI, the
+ * wire, or the transcript renderers.
  */
 export const RETIRED_HARNESSES: ReadonlySet<NewSessionAgentType> = new Set([
     'gemini',
-    'openclaw',
 ]);
 
 /** Pick order for every harness list: the ones people reach for come first. */
@@ -35,8 +34,24 @@ export const HARNESS_ORDER: readonly NewSessionAgentType[] = [
     'codex',
     'agy',
     'opencode',
+    'openclaw',
     'rig',
 ];
+
+/**
+ * Harnesses that are listed only after a daemon reports them installed.
+ *
+ * They are niche enough that an old or incomplete capability report must not
+ * advertise them speculatively, so they are left out of the empty-list
+ * fallback and being the current selection does not keep them listed.
+ * OpenClaw additionally needs a reachable gateway, which only the machine
+ * running it has, so a speculative row would be a dead end everywhere else.
+ */
+export const EXPLICIT_REPORT_HARNESSES: ReadonlySet<NewSessionAgentType> = new Set([
+    'agy',
+    'opencode',
+    'openclaw',
+]);
 
 export function isRetiredHarness(key: NewSessionAgentType | string): boolean {
     return RETIRED_HARNESSES.has(key as NewSessionAgentType);
@@ -64,11 +79,7 @@ export function isHarnessAvailable({
     key: NewSessionAgentType;
 }): boolean {
     if (key === 'rig') return happyAgentAvailable;
-    // Antigravity is niche enough that an old or incomplete capability report
-    // must not advertise it speculatively. Its daemon has to say it is installed.
-    if (key === 'agy') return availability?.agy === true;
-    // Same for OpenCode: only a daemon that reports it installed offers it.
-    if (key === 'opencode') return availability?.opencode === true;
+    if (EXPLICIT_REPORT_HARNESSES.has(key)) return availability?.[key] === true;
     return !availability || availability[key] === true;
 }
 
@@ -80,9 +91,10 @@ export function isHarnessAvailable({
  * cannot. Two things keep the list from ever being empty — the current
  * selection is usually included, and a machine that reports no capabilities at
  * all (an older daemon, or none selected yet) falls back to the familiar
- * catalog. Antigravity and OpenCode are the exception to both fallbacks: they are only listed
- * after an explicit installation report. A retired harness is also exempt from
- * the first rule, because keeping it listed would strand someone on it.
+ * catalog. EXPLICIT_REPORT_HARNESSES are the exception to both fallbacks: they
+ * are only listed after an explicit installation report. A retired harness is
+ * also exempt from the first rule, because keeping it listed would strand
+ * someone on it.
  */
 export function listAvailableHarnesses({
     availability,
@@ -94,10 +106,10 @@ export function listAvailableHarnesses({
     selected?: NewSessionAgentType | null;
 }): HarnessOption[] {
     const keys = HARNESS_ORDER.filter((key) => (
-        (key === selected && key !== 'agy' && key !== 'opencode')
+        (key === selected && !EXPLICIT_REPORT_HARNESSES.has(key))
         || isHarnessAvailable({ availability, happyAgentAvailable, key })
     ));
-    const fallback = HARNESS_ORDER.filter((key) => key !== 'agy' && key !== 'opencode');
+    const fallback = HARNESS_ORDER.filter((key) => !EXPLICIT_REPORT_HARNESSES.has(key));
     return (keys.length > 0 ? keys : fallback).map((key) => ({
         key,
         name: HARNESS_NAMES[key],
