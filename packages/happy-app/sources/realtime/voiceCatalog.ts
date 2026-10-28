@@ -26,6 +26,7 @@ export interface VoicePreset {
 }
 
 export const VOICE_PRESETS: readonly VoicePreset[] = [
+    { id: 'morgan', label: 'Morgan', voice: 'am_morgan', speed: 1.0, accent: 'us', tone: 'deep' },
     { id: 'heart', label: 'Heart', voice: 'af_heart', speed: 1.0, accent: 'us', tone: 'warm' },
     { id: 'bella', label: 'Bella', voice: 'af_bella', speed: 1.0, accent: 'us', tone: 'bright' },
     { id: 'nicole', label: 'Nicole', voice: 'af_nicole', speed: 1.0, accent: 'us', tone: 'soft' },

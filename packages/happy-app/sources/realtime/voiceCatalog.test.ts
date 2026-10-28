@@ -12,6 +12,7 @@ import { buildAgentConfigJson } from './voiceAgentConfig';
 // Voices served by the self-hosted Kokoro-FastAPI (GET /v1/audio/voices).
 const KOKORO_VOICES = new Set([
     'af_heart', 'af_bella', 'af_nicole', 'am_michael', 'am_onyx', 'am_fenrir', 'am_puck',
+    'am_morgan',
     'bf_emma', 'bm_george', 'bm_fable', 'bm_lewis',
 ]);
 // Same grammar the agent accepts: a name, or name(n)+name(n) with up to 4 parts.
