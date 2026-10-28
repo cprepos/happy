@@ -291,7 +291,7 @@ let CONFIG = { llm_model: "voice-llm" };
   try { CONFIG = await (await fetch("api/config")).json(); } catch {}
   loadVoices();
   const h = $("health");
-  if (!window.isSecureContext || !navigator.mediaDevices) h.innerHTML = "Microphone needs a secure context: open via <code>http://localhost:8899</code> (SSH tunnel).";
+  if (!window.isSecureContext || !navigator.mediaDevices) h.innerHTML = "Microphone needs a secure context: open via <code>http://localhost:8897</code> (SSH tunnel).";
   try { const s = await (await fetch("api/stt/health")).json(); h.textContent = `STT ${s.status}, model ${s.model}`; h.className = "status ok"; }
   catch { h.textContent = "STT not reachable"; h.className = "status err"; }
 })();

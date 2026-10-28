@@ -21,7 +21,7 @@ from aiohttp import WSMsgType, web
 
 HERE = Path(__file__).resolve().parent
 HOST = "127.0.0.1"  # never exposed beyond loopback
-PORT = int(os.environ.get("VOICE_TRY_PORT", "8899"))
+PORT = int(os.environ.get("VOICE_TRY_PORT", "8897"))
 TTS = os.environ.get("TTS_URL") or f"http://127.0.0.1:{os.environ.get('TTS_PORT', '8880')}"
 STT = os.environ.get("STT_URL") or f"http://127.0.0.1:{os.environ.get('STT_PORT', '8090')}"
 LLM = f"http://127.0.0.1:{os.environ.get('LLM_PORT', '8000')}"
