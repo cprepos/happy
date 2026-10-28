@@ -28,6 +28,35 @@ fi
 HAPPY_BIN="$HAPPY_ROOT/packages/happy-cli/bin/happy.mjs"
 LOG_DIR="$HAPPY_ROOT/logs"
 
+# OpenClaw gateway. Only hosts without a local OpenClaw install need these:
+# runOpenClaw() resolves CLI args > env > ~/.openclaw/openclaw.json, so the
+# machine running the gateway finds its own URL and token in that config and
+# can leave both unset. Everywhere else, point at the gateway host.
+#
+# Read from selfhost/.env (gitignored, mode 600) when present, so the token is
+# never written into a tracked file. Override by exporting either var before
+# running this script.
+SELFHOST_ENV="$HAPPY_ROOT/selfhost/.env"
+if [ -f "$SELFHOST_ENV" ]; then
+    OPENCLAW_GATEWAY_URL="${OPENCLAW_GATEWAY_URL:-$(sed -n 's/^OPENCLAW_GATEWAY_URL=//p' "$SELFHOST_ENV" | tail -1)}"
+    OPENCLAW_GATEWAY_TOKEN="${OPENCLAW_GATEWAY_TOKEN:-$(sed -n 's/^OPENCLAW_GATEWAY_TOKEN=//p' "$SELFHOST_ENV" | tail -1)}"
+fi
+OPENCLAW_GATEWAY_URL="${OPENCLAW_GATEWAY_URL:-}"
+OPENCLAW_GATEWAY_TOKEN="${OPENCLAW_GATEWAY_TOKEN:-}"
+
+# Emit the two keys only when set, so a host with a local gateway config keeps
+# using it rather than inheriting an empty override.
+OPENCLAW_PLIST_ENV=""
+if [ -n "$OPENCLAW_GATEWAY_URL" ]; then
+    OPENCLAW_PLIST_ENV="        <key>OPENCLAW_GATEWAY_URL</key>
+        <string>$OPENCLAW_GATEWAY_URL</string>"
+fi
+if [ -n "$OPENCLAW_GATEWAY_TOKEN" ]; then
+    OPENCLAW_PLIST_ENV="$OPENCLAW_PLIST_ENV
+        <key>OPENCLAW_GATEWAY_TOKEN</key>
+        <string>$OPENCLAW_GATEWAY_TOKEN</string>"
+fi
+
 uninstall() {
     echo "Stopping and removing $LABEL..."
     launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
@@ -77,6 +106,7 @@ cat > "$PLIST" << PLIST
         <string>$HOME/.local/openclaw-npm/bin:$HAPPY_ROOT/.node/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>HOME</key>
         <string>$HOME</string>
+$OPENCLAW_PLIST_ENV
     </dict>
     <key>WorkingDirectory</key>
     <string>$HAPPY_ROOT</string>
@@ -97,7 +127,15 @@ cat > "$PLIST" << PLIST
 </plist>
 PLIST
 
+# The plist can carry the gateway token, so keep it owner-readable only.
+chmod 600 "$PLIST"
+
 echo "Installed $PLIST"
+if [ -n "$OPENCLAW_GATEWAY_URL" ]; then
+    echo "OpenClaw gateway: $OPENCLAW_GATEWAY_URL (token ${OPENCLAW_GATEWAY_TOKEN:+set}${OPENCLAW_GATEWAY_TOKEN:-unset})"
+else
+    echo "OpenClaw gateway: not set; will fall back to ~/.openclaw/openclaw.json"
+fi
 
 # Load and start
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
