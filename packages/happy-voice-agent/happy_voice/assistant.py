@@ -30,6 +30,7 @@ from livekit.plugins import openai, silero
 
 from .config import Settings
 from .context import already_in_context, focused_session_from, fold_system_messages
+from .names import voice_name
 from .nemotron_stt import NemotronSTT
 from .prompt import (
     PERMISSION_SCHEMA,
@@ -364,11 +365,13 @@ async def entrypoint(ctx: JobContext) -> None:
     if config.voice is not None:
         known_voices = await fetch_known_voices(settings.tts_url)
     tts_voice, tts_speed = resolve_tts(settings, config.language, config.voice, config.speed, known_voices)
+    voice_persona = voice_name(tts_voice)
     logger.info(
-        "config: session=%s language=%s voice=%s speed=%.2f prompt=%d chars context=%d chars first=%r",
+        "config: session=%s language=%s voice=%s name=%s speed=%.2f prompt=%d chars context=%d chars first=%r",
         config.session_id,
         config.language,
         tts_voice,
+        voice_persona,
         tts_speed,
         len(config.system_prompt),
         len(config.initial_context),
@@ -388,6 +391,7 @@ async def entrypoint(ctx: JobContext) -> None:
         app_system_prompt=config.system_prompt,
         session_id=config.session_id,
         language=config.language,
+        name=voice_persona,
     )
     chat_ctx = llm.ChatContext()
     initial = config.initial_context.strip()

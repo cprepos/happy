@@ -41,6 +41,39 @@ export const VOICE_PRESETS: readonly VoicePreset[] = [
     { id: 'lewis', label: 'Lewis', voice: 'bm_lewis', speed: 1.0, accent: 'uk', tone: 'deep' },
 ];
 
+export type VoiceGender = 'male' | 'female';
+
+/**
+ * The persona a Kokoro voice answers to: the name encoded in the voice id
+ * (am_morgan -> Morgan) and its gender (the id's prefix). Blends answer to
+ * their first voice. Null when the spec has no resolvable name. The agent
+ * derives the same name server-side (happy_voice/names.py) and the agent's
+ * name always wins, so this only drives the app's prompt and greeting.
+ */
+export function voicePersona(voice: string): { name: string; gender: VoiceGender } | null {
+    const first = voice.split('+')[0].replace(/\(\d+\)$/, '').trim();
+    const idx = first.indexOf('_');
+    if (idx <= 0) {
+        return null;
+    }
+    const prefix = first.slice(0, idx);
+    const tail = first.slice(idx + 1);
+    if (!/^[a-z]{1,2}$/.test(prefix) || !tail) {
+        return null;
+    }
+    const name = tail
+        .split('_')
+        .filter(Boolean)
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+        .join(' ');
+    if (!name) {
+        return null;
+    }
+    // Two-letter prefixes (a/b + f/m) and single-letter ones (m male, n/e/o female).
+    const genderCode = prefix.length === 2 ? prefix[1] : prefix;
+    return { name, gender: genderCode === 'm' ? 'male' : 'female' };
+}
+
 export function findVoicePreset(id: string | null | undefined): VoicePreset | null {
     if (!id) {
         return null;

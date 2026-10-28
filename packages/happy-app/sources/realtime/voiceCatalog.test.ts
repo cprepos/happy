@@ -6,6 +6,7 @@ import {
     resolveVoicePreset,
     setSessionVoice,
     voiceConfigFor,
+    voicePersona,
 } from './voiceCatalog';
 import { buildAgentConfigJson } from './voiceAgentConfig';
 
@@ -51,6 +52,37 @@ describe('voice catalog', () => {
         expect(findVoicePreset('')).toBeNull();
         expect(findVoicePreset('nope')).toBeNull();
         expect(findVoicePreset('george')?.label).toBe('George');
+    });
+});
+
+describe('voicePersona', () => {
+    it('derives the name and gender from the voice id', () => {
+        expect(voicePersona('am_morgan')).toEqual({ name: 'Morgan', gender: 'male' });
+        expect(voicePersona('af_heart')).toEqual({ name: 'Heart', gender: 'female' });
+        expect(voicePersona('bf_emma')).toEqual({ name: 'Emma', gender: 'female' });
+        expect(voicePersona('bm_lewis')).toEqual({ name: 'Lewis', gender: 'male' });
+    });
+
+    it('answers blends to the first voice', () => {
+        expect(voicePersona('am_michael(2)+am_onyx(1)')).toEqual({ name: 'Michael', gender: 'male' });
+    });
+
+    it('is null without a resolvable name', () => {
+        expect(voicePersona('zz')).toBeNull();
+        expect(voicePersona('am')).toBeNull();
+        expect(voicePersona('')).toBeNull();
+    });
+
+    it('matches every preset label except named blends', () => {
+        for (const preset of VOICE_PRESETS) {
+            const persona = voicePersona(preset.voice);
+            expect(persona, preset.id).not.toBeNull();
+            const isBlend = preset.voice.includes('+');
+            // single-voice presets: the spoken name is the picker label
+            if (!isBlend) {
+                expect(persona!.name, preset.id).toBe(preset.label);
+            }
+        }
     });
 });
 

@@ -21,6 +21,7 @@ from happy_voice.assistant import (  # noqa: E402
     announce_interruptions,
 )
 from happy_voice.config import Settings  # noqa: E402
+from happy_voice.names import voice_name  # noqa: E402
 from happy_voice.warmup import PrefixWarmer  # noqa: E402
 from happy_voice.context import fold_system_messages, focused_session_from  # noqa: E402
 from happy_voice import voices  # noqa: E402
@@ -65,6 +66,32 @@ def test_build_instructions_order() -> None:
     assert text.startswith(BASE_PROMPT.strip()[:40])
     assert text.index("sess1") < text.index("APP PROMPT")
     assert "APP PROMPT" in text
+
+
+def test_voice_name_derives_from_voice_id() -> None:
+    assert voice_name("am_morgan") == "Morgan"
+    assert voice_name("af_bella") == "Bella"
+    assert voice_name("bf_emma") == "Emma"
+    assert voice_name("bm_lewis") == "Lewis"
+    # blends answer to the first voice
+    assert voice_name("am_michael(2)+am_onyx(1)") == "Michael"
+    # no resolvable name -> Happy
+    assert voice_name("zz") == "Happy"
+    assert voice_name("am") == "Happy"
+    assert voice_name("") == "Happy"
+    assert voice_name(None) == "Happy"
+    assert voice_name("bogus(0)") == "Happy"
+
+
+def test_name_section_is_last_and_happy_is_omitted() -> None:
+    text = build_instructions(app_system_prompt="APP PROMPT", session_id=None, language="en", name="Morgan")
+    assert "Your name is Morgan" in text
+    assert "or Happy" in text
+    # appended after the app prompt, so it overrides the app's address rules
+    assert text.index("APP PROMPT") < text.index("Your name is Morgan")
+    assert text.endswith("answer them.")
+    assert "Your name" not in build_instructions(app_system_prompt=None, session_id=None, language=None, name="Happy")
+    assert "Your name" not in build_instructions(app_system_prompt=None, session_id=None, language=None)
 
 
 def test_tool_schemas_have_no_client_scope_params() -> None:

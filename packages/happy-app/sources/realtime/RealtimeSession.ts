@@ -7,7 +7,7 @@ import { storage } from '@/sync/storage';
 import { getVoiceMessageCount, getVoiceOnboardingPromptLoadCount } from '@/sync/persistence';
 import { buildVoiceFirstMessage, buildVoiceSystemPrompt } from './voiceSystemPrompt';
 import { getVoiceLanguageCode } from '@/constants/Languages';
-import { resolveVoicePreset, voiceConfigFor } from './voiceCatalog';
+import { resolveVoicePreset, voiceConfigFor, voicePersona } from './voiceCatalog';
 
 let voiceSession: VoiceSession | null = null;
 let voiceSessionStarted: boolean = false;
@@ -54,20 +54,23 @@ export async function startRealtimeSession(sessionId: string, initialContext?: s
         currentSessionId = sessionId;
         const onboardingPromptLoadCount = getVoiceOnboardingPromptLoadCount();
         const voiceMessageCount = getVoiceMessageCount();
+        const settings = storage.getState().settings;
+        const language = getVoiceLanguageCode(settings.voiceAssistantLanguage);
+        const voicePreset = resolveVoicePreset(sessionId, settings.voiceBySession, settings.voiceAssistantVoice);
+        const persona = voicePreset ? voicePersona(voicePreset.voice) ?? undefined : undefined;
         const systemPrompt = buildVoiceSystemPrompt({
             initialContext,
             onboardingPromptLoadCount,
             voiceMessageCount,
             includePaidVoiceOnboarding: false,
+            persona,
         });
         const firstMessage = buildVoiceFirstMessage({
             hasPro: true,
             onboardingPromptLoadCount,
             includePaidVoiceOnboarding: false,
+            persona,
         });
-        const settings = storage.getState().settings;
-        const language = getVoiceLanguageCode(settings.voiceAssistantLanguage);
-        const voicePreset = resolveVoicePreset(sessionId, settings.voiceBySession, settings.voiceAssistantVoice);
 
         const conversationId = await voiceSession.startSession({
             sessionId,

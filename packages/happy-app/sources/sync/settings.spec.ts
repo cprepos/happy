@@ -219,7 +219,7 @@ describe('settings', () => {
                 reviewPromptAnswered: false,
                 reviewPromptLikedApp: null,
                 voiceAssistantLanguage: null,
-                voiceAssistantVoice: null,
+                voiceAssistantVoice: 'morgan',
                 voiceBySession: {},
                 preferredLanguage: null,
                 recentMachinePaths: [],
