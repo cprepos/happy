@@ -91,11 +91,35 @@ def _lang(voice: str) -> str:
 def _load():
     global MODEL, VOICES, LOAD_S
     from huggingface_hub import snapshot_download
+    from mlx_audio.tts.models.kokoro import pipeline as _kp
+    from mlx_audio.tts.models.kokoro.voice import load_voice_tensor
     from mlx_audio.tts.utils import load_model
 
     t0 = time.time()
-    MODEL = load_model(MODEL_ID)
-    VOICES = sorted(p.stem for p in (Path(snapshot_download(MODEL_ID)) / "voices").glob("*.safetensors"))
+    model_dir = Path(MODEL_ID)
+    if model_dir.is_dir():
+        # local model dir (e.g. a fine-tuned Kokoro); voices live in <dir>/voices
+        MODEL = load_model(str(model_dir))
+        voice_dir = model_dir / "voices"
+    else:
+        MODEL = load_model(MODEL_ID)
+        voice_dir = Path(snapshot_download(MODEL_ID)) / "voices"
+    VOICES = sorted(p.stem for p in voice_dir.glob("*.safetensors"))
+
+    # Resolve voices from the local dir first, so custom voices that do not
+    # exist on the hub work without HF resolution (and generate()'s per-call
+    # voice-cache reset stays cheap: one file read, no network).
+    _orig_load_voice = _kp.KokoroPipeline.load_single_voice
+
+    def _load_voice(self, voice: str):
+        if voice not in self.voices and not voice.endswith(".safetensors"):
+            p = voice_dir / f"{voice}.safetensors"
+            if p.exists():
+                self.voices[voice] = load_voice_tensor(str(p))
+                return self.voices[voice]
+        return _orig_load_voice(self, voice)
+
+    _kp.KokoroPipeline.load_single_voice = _load_voice
     if WARMUP:
         for _ in _synth("Hello there. This warms up the model, the phonemizer and the pipeline.", DEFAULT_VOICE, 1.0, threading.Event()):
             pass
