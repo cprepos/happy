@@ -31,7 +31,7 @@ import type {
   OpenClawClientMode,
 } from './openclawTypes';
 
-const PROTOCOL_VERSION = 3;
+const PROTOCOL_VERSION = 4;
 
 type PendingRequest = {
   resolve: (value: unknown) => void;

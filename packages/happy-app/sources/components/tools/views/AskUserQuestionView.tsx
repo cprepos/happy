@@ -2,6 +2,7 @@ import * as React from 'react';
 
 import { Modal } from '@/modal';
 import { sessionAllow } from '@/sync/ops';
+import { sync } from '@/sync/sync';
 import { ToolViewProps } from './_all';
 import {
     InlineQuestionForm,
@@ -52,6 +53,13 @@ export const AskUserQuestionView = React.memo<ToolViewProps>(({ tool, sessionId 
             { answers: providerAnswers },
         );
     }, [input?.questions, questions, sessionId, tool.permission?.id]);
+
+    React.useEffect(() => {
+        if (tool.state === 'running' && !tool.permission?.id && sessionId) {
+            const timer = setTimeout(() => sync.onSessionVisible(sessionId), 2000);
+            return () => clearTimeout(timer);
+        }
+    }, [tool.state, tool.permission?.id, sessionId]);
 
     if (questions.length === 0) return null;
 

@@ -4,6 +4,7 @@ import { StyleSheet } from 'react-native-unistyles';
 
 import { sessionAnswerQuestion, sessionCancelCommunication } from '@/sync/ops';
 import { useSessionAgentFormCommunication } from '@/sync/storage';
+import { sync } from '@/sync/sync';
 import { t } from '@/text';
 import type { AgentQuestionAnswer } from '@/sync/storageTypes';
 import { ToolSectionView } from '../ToolSectionView';
@@ -64,6 +65,13 @@ export const RequestUserInputView = React.memo<ToolViewProps>(({ tool, sessionId
         if (!sessionId || !communication || communication.status !== 'pending') return;
         await sessionCancelCommunication(sessionId, communication.id, communication.kind);
     }, [communication, sessionId]);
+
+    React.useEffect(() => {
+        if (!communication && tool.state === 'running' && sessionId) {
+            const timer = setTimeout(() => sync.onSessionVisible(sessionId), 2000);
+            return () => clearTimeout(timer);
+        }
+    }, [communication, tool.state, sessionId]);
 
     if (!communication) {
         if (tool.state === 'running') {
