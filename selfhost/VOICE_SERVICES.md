@@ -82,7 +82,22 @@ that relays audio frames to the websocket below.
   - `{"type":"error","message":"..."}`.
 - `endpoint_ms` > 0 turns on a simple server-side endpoint: a `final` is sent after the transcript has not changed for that many ms of audio. Leave it at 0 when the worker has Silero VAD and the turn detector, and use `flush` instead.
 - Output is cased and punctuated. Each socket has its own decoder state; GPU steps from all sockets share one lock, and each step takes about 10-20 ms.
-- Latency setting: `STT_RIGHT_CONTEXT` (0 = 80 ms chunks, 1 = 160 ms [default], 6 = 560 ms, 13 = 1120 ms; larger is more accurate).
+- Latency setting: `STT_RIGHT_CONTEXT` (0 = 80 ms chunks, 1 = 160 ms, 6 = 560 ms [default], 13 = 1120 ms).
+  The checkpoint ships these four and no others; NeMo's own default is 13. Larger look-ahead is
+  billed on *every* emission, not just the last one: the encoder cannot emit a token until that
+  many frames have arrived, so 6 adds ~400 ms and 13 ~960 ms before the turn detector even sees
+  the transcript.
+
+  Measured here (90 clips, 3 voices, clean/20 dB/10 dB, each streamed in real time through its own
+  STT container): WER mean 5.39% at rc=1, 5.23% at rc=6, 5.10% at rc=13 — median 0.00% at all three,
+  and the per-SNR split shows the spread is noise (rc=13 ties rc=1 at 20 dB; rc=6 is worse than rc=1
+  at 10 dB). What is left at every setting is acoustic substitution, not truncation: "push it to main"
+  → "push it to Maine", "stop for a second" → "stop the second". No first- or last-word loss at any
+  setting, because `_finish()` in `stt/server.py` pads the tail by one full chunk — which is also why
+  NeMo issue #16310 (cache-aware streaming dropping a short final chunk) does not reach us.
+
+  So accuracy is not the reason for the default; 6 is set deliberately, and 1 is the setting to go
+  back to if the added latency is felt in conversation.
 - Precision: `STT_DTYPE` (`bf16` [default] or `fp32`). bf16 runs the conformer encoder in bfloat16; the
   mel preprocessor and the RNNT decoder + joint stay in fp32. VRAM per process (nvidia-smi): about
   1.6 GB in bf16 against 2.8 GB in fp32 (5.1 GB before the model was loaded on the CPU first and the

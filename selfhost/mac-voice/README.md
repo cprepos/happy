@@ -42,7 +42,7 @@ Kokoro-82M with its voices is 0.34 GB. The `.venv` takes another 1.4 GB.
 | `VOICE_HOST` | 127.0.0.1 | bind address |
 | `WARMUP` | 1 | run one inference at load, so the first request is not cold |
 | `STT_BACKEND` | nemotron | `parakeet` uses `mlx-community/parakeet-tdt-0.6b-v3` with a streaming context of `STT_PARAKEET_CONTEXT` (128,16) |
-| `STT_RIGHT_CONTEXT` | 1 | Nemotron look-ahead for streaming: 0/1/6/13 gives 80/160/560/1120 ms. 1 matches the server |
+| `STT_RIGHT_CONTEXT` | 6 | Nemotron look-ahead for streaming: 0/1/6/13 gives 80/160/560/1120 ms. 6 matches the server |
 | `STT_FILE_RIGHT_CONTEXT` | 13 | look-ahead for `/v1/audio/transcriptions`. 13 is about 6x faster than 1 on an M1 |
 | `STT_DTYPE` | fp16 | encoder dtype. fp16 costs about 49 ms per 160 ms chunk on an M1, bf16 about 55 ms, fp32 about 70 ms. q8, q4 and `mx.compile` gave nothing |
 | `STT_ENDPOINT_MS` | 0 | silence that ends an utterance when the client does not set it |
