@@ -9,7 +9,7 @@ make voice-agent-up   # rebuild/restart only the worker
 make voice-agent-e2e  # headless fake-app conversation against the running worker
 make voice-status  # health of every service + GPU memory
 make voice-smoke   # end-to-end check, prints the latencies below
-make voice-try     # browser test page on http://127.0.0.1:8899
+make voice-try     # browser test page on http://127.0.0.1:8897
 make voice-logs SVC=stt
 ```
 
@@ -22,8 +22,8 @@ Config and secrets live in `selfhost/.env.voice` (gitignored; template `.env.voi
 |---|---|---|---|---|
 | LiveKit | `happy-voice-livekit` | `127.0.0.1:7880` (HTTP + WS signaling, published for the agent); 7881/tcp and 7882/udp (UDP mux) only on the container IP | `livekit/livekit-server:v1.13.10`, on the `happy-selfhost_default` network (alias `livekit`) | none |
 | STT | `happy-voice-stt` | `127.0.0.1:8090` | `nvidia/nemotron-speech-streaming-en-0.6b` (NeMo 3.0.0, cache-aware FastConformer RNNT), image built from `selfhost/stt/` | 0 |
-| TTS | `happy-voice-tts` | `127.0.0.1:8880` | `ghcr.io/remsky/kokoro-fastapi-gpu:v0.9.0` (Kokoro-82M) | 1 |
-| LLM | host systemd `qwen38-27b-fp8-tp2-vllm` (not managed here) | `127.0.0.1:9080` | Qwen3.8-27B FP8 served as `coder`, TP=2 | 2 + 3 |
+| TTS | `happy-voice-tts` | `127.0.0.1:8880` | `ghcr.io/remsky/kokoro-fastapi-gpu:v0.9.0` (Kokoro-82M) | 0 |
+| LLM | host coder stack (systemd, not managed here) | `127.0.0.1:9081` (the tier voice is pinned to) | Qwen3.6-35B-A3B int4 served as `coder-moe`; see the LLM section for the other tiers | shared |
 | Voice agent | `happy-voice-agent` | `127.0.0.1:8791` (health) | `packages/happy-voice-agent` (LiveKit Agents 1.8.9), host networking | none (CPU) |
 | LLM (optional, profile `local-llm`) | `happy-voice-llm` | `127.0.0.1:8000` | `vllm/vllm-openai:v0.32.0` serving `QuantTrio/Qwen3.6-35B-A3B-AWQ` as `voice-llm`, TP=2 | 0 + 1 |
 
@@ -35,12 +35,14 @@ protocol in `packages/happy-wire/src/voiceStream.ts`), which joins the room over
 
 | GPU | Use | Memory (measured) |
 |---|---|---|
-| 0 (3090) | STT (~1.6 GB in bf16; was ~5.1 GB in fp32) | ~1.6 / 24.6 GB |
-| 1 (3090 Ti) | TTS (~1.5 GB) | ~1.5 / 24.6 GB |
-| 2, 3 | Taken by a separate, pre-existing vLLM systemd service (`qwen38-27b-fp8-tp2-vllm`) | full |
+| 0 (3090) | STT (~1.6 GB in bf16) + TTS (~1.0 GB) -- both, since 2026-10-28 (`STT_GPU` / `TTS_GPU`) | ~2.6 GB of 24.6 GB, GPU 0 ~13.4 GB used in all |
+| 1 (3090 Ti) | no voice work | free for other services |
+| 2, 3 | the dense coder vLLM (`coder-dense`, TP=2) | full |
 
-The voice LLM is now the host's existing `coder` vLLM on GPUs 2-3 (systemd; never restarted or
-reconfigured from here). The old local voice LLM (`vllm-openai`, ~16.9 GB on each of GPUs 0 and 1) is
+TTS on GPU 0 measured no slower than on its own GPU (TTFB 111-165 ms either way).
+
+The voice LLM is a tier of the host's coder stack (systemd; never restarted or reconfigured from
+here). The old local voice LLM (`vllm-openai`, ~16.9 GB on each of GPUs 0 and 1) is
 retired and runs only when started on purpose: it sits behind the compose profile `local-llm`, so `make voice-up` no longer
 starts it. Opt in with `make voice-up SVC=llm` (or `--profile local-llm`), then point
 `VOICE_LLM_BASE_URL=http://127.0.0.1:8000/v1` and `VOICE_LLM_MODEL=voice-llm` at it. It starts only
@@ -82,7 +84,10 @@ that relays audio frames to the websocket below.
   - `{"type":"error","message":"..."}`.
 - `endpoint_ms` > 0 turns on a simple server-side endpoint: a `final` is sent after the transcript has not changed for that many ms of audio. Leave it at 0 when the worker has Silero VAD and the turn detector, and use `flush` instead.
 - Output is cased and punctuated. Each socket has its own decoder state; GPU steps from all sockets share one lock, and each step takes about 10-20 ms.
-- Latency setting: `STT_RIGHT_CONTEXT` (0 = 80 ms chunks, 1 = 160 ms, 6 = 560 ms [default], 13 = 1120 ms).
+- Latency setting: `STT_RIGHT_CONTEXT` (0 = 80 ms chunks, 1 = 160 ms [default], 6 = 560 ms, 13 = 1120 ms).
+  A 90-clip benchmark (3 voices, 3 SNRs) found 1/6/13 within noise of each other -- WER 5.39 / 5.23 /
+  5.10 %, median 0.00 % at all three, and 6 *worse* than 1 at 10 dB -- so 1 takes the ~400 ms that 6
+  adds to every emission.
   The checkpoint ships these four and no others; NeMo's own default is 13. Larger look-ahead is
   billed on *every* emission, not just the last one: the encoder cannot emit a token until that
   many frames have arrived, so 6 adds ~400 ms and 13 ~960 ms before the turn detector even sees
@@ -145,13 +150,35 @@ as pre-speech is passed through whole. Set `TTS_TRIM_LEAD=0` to disable it. The 
 re-extract `am_morgan.pt` from clean reference clips in the `mf-morgan` project; the trimmer is
 voice-agnostic and costs nothing once that happens.
 
-## LLM: vLLM (`VOICE_LLM_BASE_URL`, default `http://127.0.0.1:9080/v1`)
+## LLM: vLLM (`VOICE_LLM_BASE_URL`, default `http://127.0.0.1:9081/v1`)
 
-OpenAI Chat Completions. Default model **`coder`** (host service, no API key, `MAX_SEQS=2`, so keep
-`max_tokens` modest; the worker uses 250). Configure with `VOICE_LLM_BASE_URL` / `VOICE_LLM_MODEL` in
-`.env.voice`; the worker, `voice-status` and `voice-smoke` all read them. Always send
+OpenAI Chat Completions. The host's coder stack was split into two tiers behind a gateway on
+2026-10-28:
+
+| Port | Served name | Model | Notes |
+|---|---|---|---|
+| 9080 | `coder-dense` | Qwen3.8-27B FP8, TP=2 | what plain `coder` used to be; ~90 tok/s decode |
+| 9081 | `coder-moe` | Qwen3.6-35B-A3B int4 (~3B active), `--max-num-seqs 1` | ~178 tok/s decode; **voice is pinned here** |
+| 8899 | `coder` (virtual) | agentgateway + the `vllm-sr-router` ExtProc classifier on gRPC 50051 | classifies each turn onto a tier |
+
+Default model **`coder-moe`** (host service, no API key; keep `max_tokens` modest -- the worker uses
+250). Voice is pinned to one tier rather than pointed at the virtual `coder`, because that gateway
+routes statelessly per turn: the prefix warm-up (`happy_voice/warmup.py`) could warm a tier the turn
+never lands on, and a tier switch costs a full prefill. `coder-moe` is the pick because voice latency
+is decode-bound. Watch its `--max-num-seqs 1`: warm-up and turn cannot overlap at all there, and a
+coding agent on that tier blocks voice outright -- `WARMUP_TURN_WAIT` (0.5 s) is what keeps that from
+becoming a mute agent.
+
+**The name `coder` alone now 404s on both tier ports.** When a turn fails with
+`The model 'coder' does not exist` and the user reports "STT not working", this is why -- the STT is
+fine and the agent simply has no LLM to answer with.
+
+Configure with `VOICE_LLM_BASE_URL` / `VOICE_LLM_MODEL` in `.env.voice`; the worker, `voice-status`
+and `voice-smoke` all read them. `.env.voice`'s plain `LLM_MODEL` / `LLM_SERVED_NAME` belong to the
+opt-in `local-llm` container and the agent ignores them. Always send
 `"chat_template_kwargs":{"enable_thinking":false}`. The notes below describe the optional local
-`voice-llm` (`http://127.0.0.1:8000/v1`); tool calling and thinking work the same way on `coder`.
+`voice-llm` (`http://127.0.0.1:8000/v1`); tool calling and thinking work the same way on the coder
+tiers.
 Both Qwen chat templates reject a system message that is not first, so the worker folds later system
 context into user messages.
 
@@ -186,8 +213,13 @@ Result: `sendMessageToSession({"sessionId":"sess_42","message":"List the files i
 | LLM tool call: first delta / complete | 272 ms / 507 ms |
 | LLM decode speed | ~168 tok/s |
 
-With `coder` (2026-10-26): first token ~150-600 ms, tool call first delta / complete 614 / 848 ms,
-~77 tok/s decode, occasional multi-second stalls when both of its `MAX_SEQS=2` slots are busy.
+With `coder-dense` (2026-10-28): tool call first delta 622 ms, ~90 tok/s decode, occasional
+multi-second stalls when both of its `MAX_SEQS=2` slots are busy.
+
+With `coder-moe` (2026-10-28): ~178 tok/s decode, and tool calls do work on the int4 tier. A cold
+prefix cache is expensive there -- the first tool call measured an 11.5 s first delta -- so the
+warm-up matters more, not less. `make voice-agent-e2e`: 14/14, p50 first audio 1959 ms over four
+turns (`coder-dense` the same day: 2083 ms).
 
 Full conversation, `make voice-agent-e2e` (fake app, Kokoro speech in, end of user speech -> first
 agent audio, including VAD silence 0.5 s and the turn detector): p50 1.84-2.11 s, max 2.46 s over
@@ -200,7 +232,8 @@ end-of-turn delay. The `make voice-try` page's Chat section measures this end to
 
 ## Test page (`make voice-try`)
 
-`selfhost/voice-test/` is an aiohttp server bound to **127.0.0.1:8899 only**. It serves `index.html` and proxies
+`selfhost/voice-test/` is an aiohttp server bound to **127.0.0.1:8897 only** (`VOICE_TRY_PORT`; it
+was 8899 until the host's agentgateway took that port). It serves `index.html` and proxies
 `/api/tts/voices`, `/api/tts/speech`, `/api/stt/health`, `/api/stt/stream` (WS) and `/api/llm/chat`
-so a single tunnel is enough: `ssh -L 8899:127.0.0.1:8899 prep@<host>`, then open `http://localhost:8899`
+so a single tunnel is enough: `ssh -L 8897:127.0.0.1:8897 prep@<host>`, then open `http://localhost:8897`
 (localhost counts as a secure context, so the microphone works).

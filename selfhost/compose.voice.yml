@@ -39,7 +39,10 @@ services:
       - "127.0.0.1:${STT_PORT:-8090}:8090"
     environment:
       STT_MODEL: ${STT_MODEL:-nvidia/nemotron-speech-streaming-en-0.6b}
-      STT_RIGHT_CONTEXT: ${STT_RIGHT_CONTEXT:-6}
+      # 1 = 160 ms look-ahead. A 90-clip benchmark (3 voices, 3 SNRs) put 1/6/13 within noise of
+      # each other (WER 5.39 / 5.23 / 5.10 %, median 0.00 % at all three, 6 worse than 1 at 10 dB),
+      # and 6 adds ~400 ms to every emission, so take the latency.
+      STT_RIGHT_CONTEXT: ${STT_RIGHT_CONTEXT:-1}
       HF_HOME: /hf-cache
       HF_HUB_CACHE: /hf-cache
       HF_TOKEN: ${HF_TOKEN:-}
@@ -167,10 +170,11 @@ services:
       # defaults apply when unset.
       STT_URL: ${STT_URL:-ws://127.0.0.1:${STT_PORT:-8090}/v1/stream}
       TTS_URL: ${TTS_URL:-http://127.0.0.1:${TTS_PORT:-8880}/v1}
-      # default: the host's coder vLLM (systemd); .env.voice's LLM_MODEL is the local-llm
-      # profile's HF weights id, so the agent reads VOICE_LLM_* instead
-      LLM_BASE_URL: ${VOICE_LLM_BASE_URL:-http://127.0.0.1:9080/v1}
-      LLM_MODEL: ${VOICE_LLM_MODEL:-coder}
+      # default: the host coder stack's MoE tier (systemd); .env.voice's LLM_MODEL is the
+      # local-llm profile's HF weights id, so the agent reads VOICE_LLM_* instead.
+      # Pinned to one tier, not the virtual `coder` on 8899 -- see happy_voice/config.py.
+      LLM_BASE_URL: ${VOICE_LLM_BASE_URL:-http://127.0.0.1:9081/v1}
+      LLM_MODEL: ${VOICE_LLM_MODEL:-coder-moe}
       # default Kokoro voice/speed when the app does not pick one for the chat; a blend such
       # as "am_michael(2)+am_onyx(1)" mixes voices by weight
       TTS_VOICE: ${TTS_VOICE:-af_heart}
