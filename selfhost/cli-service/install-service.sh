@@ -15,6 +15,15 @@ set -euo pipefail
 # The daemon runs as your login user, restarts on crash, and starts on login.
 # Logs go to ~/happy/logs/daemon-stdout.log and daemon-stderr.log.
 
+# The daemon runs under launchd as `daemon start-sync`, not `daemon start`.
+# `daemon start` always spawns a detached child and exits 0 (see the
+# daemonSubcommand === 'start' branch in packages/happy-cli/src/index.ts) --
+# `--foreground` is not parsed there at all. Under launchd that means the job
+# exits cleanly the moment it has forked, launchd marks it finished, and
+# KeepAlive never fires again for the real daemon: a crash then goes unnoticed
+# until the next login. `start-sync` runs startDaemon() inline, so the launchd
+# job *is* the daemon and KeepAlive works as intended.
+
 LABEL="com.happy.cli-daemon"
 PLIST_DIR="$HOME/Library/LaunchAgents"
 PLIST="$PLIST_DIR/$LABEL.plist"
@@ -97,8 +106,7 @@ cat > "$PLIST" << PLIST
         <string>$NODE</string>
         <string>$HAPPY_BIN</string>
         <string>daemon</string>
-        <string>start</string>
-        <string>--foreground</string>
+        <string>start-sync</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>
