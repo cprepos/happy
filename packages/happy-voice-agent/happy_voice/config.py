@@ -85,6 +85,8 @@ class Settings:
     tts_url: str = field(default_factory=lambda: _env("TTS_URL", "http://127.0.0.1:8880/v1"))
     tts_voice: str = field(default_factory=lambda: _env("TTS_VOICE", "af_heart"))
     tts_speed: float = field(default_factory=lambda: float(_env("TTS_SPEED", "1.0")))
+    # Kokoro prefixes some segments with ~0.7 s of speech-free noise; see tts_trim.py
+    tts_trim_lead: bool = field(default_factory=lambda: _env("TTS_TRIM_LEAD", "1") != "0")
     llm_base_url: str = field(default_factory=lambda: _env("LLM_BASE_URL", "http://127.0.0.1:9080/v1"))
     llm_model: str = field(default_factory=lambda: _env("LLM_MODEL", "coder"))
     llm_api_key: str = field(default_factory=lambda: _env("LLM_API_KEY", "not-needed"))

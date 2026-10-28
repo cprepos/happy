@@ -601,6 +601,52 @@ def test_long_duplicate_context_updates_are_detected() -> None:
     assert not already_in_context("Session became focused: abc", ctx)
 
 
+def _pcm(*runs: tuple[int, float]) -> bytes:
+    """Concatenate (milliseconds, amplitude) runs as 24 kHz mono s16le, alternating sign.
+
+    Alternating keeps the rms equal to the amplitude, so a run's amplitude is exactly the
+    level the onset search sees.
+    """
+    out = bytearray()
+    for ms, amp in runs:
+        for n in range(24 * ms):
+            x = int(amp) if n % 2 == 0 else -int(amp)
+            out += (x & 0xFFFF).to_bytes(2, "little")
+    return bytes(out)
+
+
+def test_onset_skips_the_kokoro_lead_and_finds_the_speech() -> None:
+    from happy_voice.tts_trim import find_speech_onset
+
+    # the measured artifact: a burst to rms ~99 then a decay, ~700 ms, then speech
+    lead = _pcm((100, 99), (300, 60), (300, 20))
+    onset = find_speech_onset(lead + _pcm((500, 4000)), sample_rate=24000)
+    assert onset is not None
+    # within one 10 ms window of the real boundary
+    assert abs(onset - len(lead)) <= 24000 // 100 * 2
+
+
+def test_onset_ignores_audio_at_the_artifact_level() -> None:
+    from happy_voice.tts_trim import find_speech_onset
+
+    # 133 is the loudest 10 ms window seen in any pre-speech artifact
+    assert find_speech_onset(_pcm((700, 133)), sample_rate=24000) is None
+
+
+def test_onset_at_the_very_first_sample_is_zero_not_falsy_none() -> None:
+    from happy_voice.tts_trim import find_speech_onset
+
+    assert find_speech_onset(_pcm((200, 4000)), sample_rate=24000) == 0
+
+
+def test_silence_has_no_onset_so_the_caller_keeps_it() -> None:
+    from happy_voice.tts_trim import find_speech_onset
+
+    assert find_speech_onset(bytes(24000 * 2), sample_rate=24000) is None
+    # shorter than one window: still searching, nothing to report
+    assert find_speech_onset(_pcm((5, 9000)), sample_rate=24000) is None
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):

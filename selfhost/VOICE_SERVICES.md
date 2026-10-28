@@ -106,6 +106,30 @@ OpenAI-compatible, so it works with `livekit-plugins-openai`'s `openai.TTS(base_
 - Voices: `GET /v1/audio/voices` -> `{"voices":[{"id":"af_heart",...},...]}`. Good English defaults: `af_heart`, `af_bella`, `am_michael`, `bf_emma`, `bm_george`. Voices can be blended, e.g. `"af_heart+af_bella"`.
 - Health: `GET /health`. Built-in UI: `http://127.0.0.1:8880/web`. API docs: `http://127.0.0.1:8880/docs`.
 
+### The silent lead, and why the agent trims it
+
+For some inputs Kokoro returns about 0.7 s of speech-free audio *before* the speech: a burst
+rising to roughly rms 99 within 100 ms, then decaying to zero over half a second (peak ~2% of
+full scale). It is deterministic per text and, measured across 12 texts, appears only with the
+fine-tuned `am_morgan` voice -- `af_heart` (50-64 ms of lead) and `bm_george` (50-59 ms) never
+show it. Since the fine-tuned `kokoro-v1_0.pth` is mounted for every voice, the artifact belongs
+to the `am_morgan.pt` voice pack, not the model weights. A Kokoro voice pack is a table of style
+vectors indexed by the input's phoneme count, so a pack with poorly conditioned low rows misfires
+on exactly the short inputs the agent sends.
+
+That matters more than it sounds, because `StreamAdapter` issues one synthesize request per
+sentence batch and the pacer's first batch is always a single sentence. So the artifact lands at
+the start of every reply, and often every sentence: one four-sentence reply measured 7.907 s as a
+single direct request against 8.825 s through the pipeline.
+
+The region carries no speech at all -- our own STT transcribes it as `""` even amplified 24x -- so
+`happy_voice/tts_trim.py` in the voice agent drops it, keeping a 30 ms pad with a 5 ms fade-in.
+The onset threshold (rms 180 over a 10 ms window) sits between the loudest artifact window
+measured, 133, and the quietest speech onset, 235; anything the search cannot positively identify
+as pre-speech is passed through whole. Set `TTS_TRIM_LEAD=0` to disable it. The real fix is to
+re-extract `am_morgan.pt` from clean reference clips in the `mf-morgan` project; the trimmer is
+voice-agnostic and costs nothing once that happens.
+
 ## LLM: vLLM (`VOICE_LLM_BASE_URL`, default `http://127.0.0.1:9080/v1`)
 
 OpenAI Chat Completions. Default model **`coder`** (host service, no API key, `MAX_SEQS=2`, so keep

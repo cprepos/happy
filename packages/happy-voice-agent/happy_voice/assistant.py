@@ -39,6 +39,7 @@ from .prompt import (
     SKIP_TURN_SCHEMA,
     build_instructions,
 )
+from .tts_trim import trim_leading_artifact
 from .voices import fetch_known_voices, resolve_tts
 from .warmup import PrefixWarmer
 
@@ -412,13 +413,16 @@ async def entrypoint(ctx: JobContext) -> None:
         stt=NemotronSTT(url=settings.stt_url, language="en"),
         llm=_make_llm(settings),
         tts=tts_mod.StreamAdapter(
-            tts=openai.TTS(
-                base_url=settings.tts_url,
-                api_key="not-needed",
-                model="kokoro",
-                voice=tts_voice,
-                speed=tts_speed,
-                response_format="pcm",
+            tts=trim_leading_artifact(
+                openai.TTS(
+                    base_url=settings.tts_url,
+                    api_key="not-needed",
+                    model="kokoro",
+                    voice=tts_voice,
+                    speed=tts_speed,
+                    response_format="pcm",
+                ),
+                enabled=settings.tts_trim_lead,
             ),
             text_pacing=tts_mod.SentenceStreamPacer(
                 min_remaining_audio=3.0,
