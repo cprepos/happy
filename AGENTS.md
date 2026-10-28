@@ -24,13 +24,40 @@ Why: an OTA channel serves whatever was published last, not whatever is on
 `main`. On 2026-09-20 a preview OTA from a stale worktree silently rolled four
 shipped fixes off every preview phone for hours. Git looked fine the whole time.
 
+## Pushes Go To `fork`, Never `origin`
+
+This repo has two push remotes:
+
+- `fork` -> `git@github.com:cprepos/happy.git` -- **ours. Every push goes here.**
+- `origin` -> `https://github.com/slopus/happy` -- the shared upstream we forked.
+  **Never push to it**, on any branch.
+
+`origin/main` advances on its own (in one recent window, 36 of 37 new commits
+were a single upstream maintainer's), while our work sits on long-lived branches
+that run hundreds of commits ahead of it. A push to `origin` therefore does not
+"sync" anything -- it dumps unrelated app and CLI work onto a repo that is not
+ours. Fetching `origin` is fine and often necessary; pushing is not.
+
+`selfhost` is our working line, and it is what the deploy checkout at
+`/home/prep/happy` has checked out -- so `fork/selfhost` is the usual target, and
+a push there is one `git merge --ff-only` away from being deployable.
+
+`fork/main` has diverged badly from the work branches (hundreds of commits in
+each direction) and cannot take a fast-forward push. Do not force push to fix
+that. Use `selfhost`, or ask.
+
 ## Sync To Main
 
 When the user says `sync to main` or `synt to main`, they mean:
 
-1. Fetch `origin/main`.
+1. Fetch the upstream (`git fetch origin main`) so you can see what has landed.
 2. Rebase the current branch on `origin/main`.
-3. Push the current HEAD directly to `main` with a normal push, for example:
-   `git push origin HEAD:main`
+3. Push the current HEAD to **`fork`** with a normal push, for example:
+   `git push fork HEAD:selfhost`
+
+Despite the name, step 3 does **not** push to `origin` and does not push to a
+branch called `main` -- see the section above. Before pushing, show the commits
+the push contains and confirm the branch if it is anything other than
+`fork/selfhost`.
 
 Do not force push for this workflow.
