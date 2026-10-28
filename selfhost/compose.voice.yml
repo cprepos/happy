@@ -83,7 +83,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["${TTS_GPU:-0}"]
+              device_ids: ["${TTS_GPU:-1}"]
               capabilities: [gpu]
 
   # Optional: the voice agent uses the host's coder vLLM by default (VOICE_LLM_BASE_URL).
@@ -94,8 +94,8 @@ services:
     container_name: happy-voice-llm
     restart: unless-stopped
     ipc: host
-    # GPU 0 is shared with STT/TTS: start after them so vLLM sizes its KV cache
-    # around the memory they already hold.
+    # GPU 0 holds STT and GPU 1 holds TTS: start after both so vLLM sizes its KV
+    # cache around the memory they already hold.
     depends_on:
       stt:
         condition: service_healthy

@@ -22,7 +22,7 @@ Config and secrets live in `selfhost/.env.voice` (gitignored; template `.env.voi
 |---|---|---|---|---|
 | LiveKit | `happy-voice-livekit` | `127.0.0.1:7880` (HTTP + WS signaling, published for the agent); 7881/tcp and 7882/udp (UDP mux) only on the container IP | `livekit/livekit-server:v1.13.10`, on the `happy-selfhost_default` network (alias `livekit`) | none |
 | STT | `happy-voice-stt` | `127.0.0.1:8090` | `nvidia/nemotron-speech-streaming-en-0.6b` (NeMo 3.0.0, cache-aware FastConformer RNNT), image built from `selfhost/stt/` | 0 |
-| TTS | `happy-voice-tts` | `127.0.0.1:8880` | `ghcr.io/remsky/kokoro-fastapi-gpu:v0.9.0` (Kokoro-82M) | 0 |
+| TTS | `happy-voice-tts` | `127.0.0.1:8880` | `ghcr.io/remsky/kokoro-fastapi-gpu:v0.9.0` (Kokoro-82M) | 1 |
 | LLM | host systemd `qwen38-27b-fp8-tp2-vllm` (not managed here) | `127.0.0.1:9080` | Qwen3.8-27B FP8 served as `coder`, TP=2 | 2 + 3 |
 | Voice agent | `happy-voice-agent` | `127.0.0.1:8791` (health) | `packages/happy-voice-agent` (LiveKit Agents 1.8.9), host networking | none (CPU) |
 | LLM (optional, profile `local-llm`) | `happy-voice-llm` | `127.0.0.1:8000` | `vllm/vllm-openai:v0.32.0` serving `QuantTrio/Qwen3.6-35B-A3B-AWQ` as `voice-llm`, TP=2 | 0 + 1 |
@@ -35,8 +35,8 @@ protocol in `packages/happy-wire/src/voiceStream.ts`), which joins the room over
 
 | GPU | Use | Memory (measured) |
 |---|---|---|
-| 0 (3090) | STT (~1.6 GB in bf16; was ~5.1 GB in fp32), TTS (~1.5 GB) | ~3 / 24.6 GB |
-| 1 (3090 Ti) | free (the retired local voice LLM used it) | - |
+| 0 (3090) | STT (~1.6 GB in bf16; was ~5.1 GB in fp32) | ~1.6 / 24.6 GB |
+| 1 (3090 Ti) | TTS (~1.5 GB) | ~1.5 / 24.6 GB |
 | 2, 3 | Taken by a separate, pre-existing vLLM systemd service (`qwen38-27b-fp8-tp2-vllm`) | full |
 
 The voice LLM is now the host's existing `coder` vLLM on GPUs 2-3 (systemd; never restarted or
@@ -44,8 +44,13 @@ reconfigured from here). The old local voice LLM (`vllm-openai`, ~16.9 GB on eac
 retired and runs only when started on purpose: it sits behind the compose profile `local-llm`, so `make voice-up` no longer
 starts it. Opt in with `make voice-up SVC=llm` (or `--profile local-llm`), then point
 `VOICE_LLM_BASE_URL=http://127.0.0.1:8000/v1` and `VOICE_LLM_MODEL=voice-llm` at it. It starts only
-after STT and TTS are healthy and takes `LLM_GPU_MEM_UTIL=0.68` of each GPU. The `vllm-cache`
+after STT and TTS are healthy and takes `LLM_GPU_MEM_UTIL=0.68` of each GPU, which leaves room
+for the ~1.6 GB STT holds on GPU 0 and the ~1.5 GB TTS holds on GPU 1. The `vllm-cache`
 volume and weights are kept.
+
+STT and TTS are deliberately on different GPUs (`STT_GPU=0`, `TTS_GPU=1`). The STT server takes
+one global GPU lock per 10-20 ms streaming step, so when Kokoro shared the device its synthesis
+bursts queued behind those steps and reply chunks arrived late enough to sound choppy.
 
 ## LiveKit
 
