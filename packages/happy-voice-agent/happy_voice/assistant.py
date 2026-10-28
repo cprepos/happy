@@ -26,6 +26,7 @@ from livekit.agents import (
     room_io,
 )
 from livekit.agents.voice.agent_session import SessionConnectOptions
+from livekit.agents import tts as tts_mod
 from livekit.plugins import openai, silero
 
 from .config import Settings
@@ -410,13 +411,19 @@ async def entrypoint(ctx: JobContext) -> None:
         vad=ctx.proc.userdata.get("vad") or silero.VAD.load(min_silence_duration=settings.vad_min_silence),
         stt=NemotronSTT(url=settings.stt_url, language="en"),
         llm=_make_llm(settings),
-        tts=openai.TTS(
-            base_url=settings.tts_url,
-            api_key="not-needed",
-            model="kokoro",
-            voice=tts_voice,
-            speed=tts_speed,
-            response_format="pcm",
+        tts=tts_mod.StreamAdapter(
+            tts=openai.TTS(
+                base_url=settings.tts_url,
+                api_key="not-needed",
+                model="kokoro",
+                voice=tts_voice,
+                speed=tts_speed,
+                response_format="pcm",
+            ),
+            text_pacing=tts_mod.SentenceStreamPacer(
+                min_remaining_audio=3.0,
+                max_text_length=500,
+            ),
         ),
         turn_handling=turn_handling(settings),
         conn_options=SessionConnectOptions(llm_conn_options=llm_conn_options(settings)),
