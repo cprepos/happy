@@ -175,6 +175,8 @@ services:
       # as "am_michael(2)+am_onyx(1)" mixes voices by weight
       TTS_VOICE: ${TTS_VOICE:-af_heart}
       TTS_SPEED: ${TTS_SPEED:-1.0}
+      # 0 disables the Kokoro lead trim (happy_voice/tts_trim.py)
+      TTS_TRIM_LEAD: ${TTS_TRIM_LEAD:-1}
       VOICE_AGENT_NAME: happy-voice
       # the worker's health/debug HTTP server; 8081 is commonly taken on shared hosts
       VOICE_AGENT_HTTP_PORT: ${VOICE_AGENT_HTTP_PORT:-8791}
