@@ -384,6 +384,7 @@ class Sync {
     }
 
     private refreshSessionData = (sessionId: string) => {
+        this.sessionsSync.invalidate();
         this.getMessagesSync(sessionId).invalidate();
 
         // Also invalidate git status sync for this session

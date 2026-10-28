@@ -167,7 +167,8 @@ export class OpencodeQuestionBridge {
         if (!this.pending.delete(id)) {
             return false;
         }
-        this.session.updateAgentState((state) => completeCommunication(state, id, status, answers));
+        this.session.updateAgentState((state) => completeCommunication(state, id, status, answers))
+            .catch((e) => logger.debug(`[OpenCode] Failed to complete question ${id}:`, e));
         return true;
     }
 
@@ -192,6 +193,9 @@ export class OpencodeQuestionBridge {
                 },
                 completedCommunications,
             };
+        }).catch((e) => {
+            logger.debug(`[OpenCode] Failed to push question ${request.id} to app:`, e);
+            this.pending.delete(request.id);
         });
     }
 
@@ -229,7 +233,7 @@ export class OpencodeQuestionBridge {
                 next = completeCommunication(next, id, 'cancelled');
             }
             return next;
-        });
+        }).catch((e) => logger.debug('[OpenCode] Failed to reset communications:', e));
     }
 
     /** Ids of the questions currently shown in the app. */

@@ -19,7 +19,12 @@ LABEL="com.happy.cli-daemon"
 PLIST_DIR="$HOME/Library/LaunchAgents"
 PLIST="$PLIST_DIR/$LABEL.plist"
 HAPPY_ROOT="$HOME/happy"
-NODE="$HAPPY_ROOT/.node/bin/node"
+# Prefer Homebrew node@24 (required by OpenClaw), fall back to isolated node
+if [ -x /opt/homebrew/opt/node@24/bin/node ]; then
+    NODE="/opt/homebrew/opt/node@24/bin/node"
+else
+    NODE="$HAPPY_ROOT/.node/bin/node"
+fi
 HAPPY_BIN="$HAPPY_ROOT/packages/happy-cli/bin/happy.mjs"
 LOG_DIR="$HAPPY_ROOT/logs"
 
@@ -69,7 +74,7 @@ cat > "$PLIST" << PLIST
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>$HAPPY_ROOT/.node/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <string>$HOME/.local/openclaw-npm/bin:$HAPPY_ROOT/.node/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>HOME</key>
         <string>$HOME</string>
     </dict>

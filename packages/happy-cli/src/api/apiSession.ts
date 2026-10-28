@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events'
 import { io, Socket } from 'socket.io-client'
 import { AgentState, ClientToServerEvents, FileEventMessage, FileEventMessageSchema, Metadata, ServerToClientEvents, Session, Update, UserMessage, UserMessageSchema, Usage } from './types'
 import { decodeBase64, decryptBlob, decrypt, encodeBase64, encrypt, encryptBlob } from './encryption';
-import { backoff, delay } from '@/utils/time';
+import { backoff, createBackoff, delay } from '@/utils/time';
 import { configuration } from '@/configuration';
 import { RawJSONLines } from '@/claude/types';
 import { randomUUID } from 'node:crypto';
@@ -969,10 +969,13 @@ export class ApiSessionClient extends EventEmitter {
      * Update session agent state
      * @param handler - Handler function that returns the updated agent state
      */
-    updateAgentState(handler: (metadata: AgentState) => AgentState) {
+    updateAgentState(handler: (metadata: AgentState) => AgentState): Promise<void> {
         logger.debugLargeJson('Updating agent state', this.agentState);
-        this.agentStateLock.inLock(async () => {
-            await backoff(async () => {
+        const updateBackoff = createBackoff({ maxFailureCount: 5, onError: (e, count) => {
+            logger.debug(`[updateAgentState] retry ${count}:`, (e as Error)?.message || e);
+        } });
+        return this.agentStateLock.inLock(async () => {
+            await updateBackoff(async () => {
                 let updated = handler(this.agentState || {});
                 const answer = await this.socket.emitWithAck('update-state', { sid: this.sessionId, expectedVersion: this.agentStateVersion, agentState: updated ? encodeBase64(encrypt(this.encryptionKey, this.encryptionVariant, updated)) : null });
                 if (answer.result === 'success') {
@@ -986,8 +989,8 @@ export class ApiSessionClient extends EventEmitter {
                     }
                     throw new Error('Agent state version mismatch');
                 } else if (answer.result === 'error') {
-                    // console.error('Agent state update error', answer);
-                    // Hard error - ignore
+                    logger.debug('[updateAgentState] server returned hard error', answer);
+                    throw new Error('Agent state update failed: server error');
                 }
             });
         });

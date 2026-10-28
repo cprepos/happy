@@ -90,8 +90,10 @@ echo "==> Creating happy wrapper..."
 cat > "$HAPPY_ROOT/.node/bin/happy" << 'WRAPPER'
 #!/bin/sh
 HAPPY_ROOT="$HOME/happy"
-export PATH="$HAPPY_ROOT/.node/bin:$PATH"
-exec "$HAPPY_ROOT/.node/bin/node" "$HAPPY_ROOT/packages/happy-cli/bin/happy.mjs" "$@"
+export PATH="$HOME/.local/openclaw-npm/bin:$HAPPY_ROOT/.node/bin:/opt/homebrew/bin:$PATH"
+# Prefer Homebrew node@24 (required by OpenClaw), fall back to isolated node
+NODE="$(command -v /opt/homebrew/opt/node@24/bin/node 2>/dev/null || echo "$HAPPY_ROOT/.node/bin/node")"
+exec "$NODE" "$HAPPY_ROOT/packages/happy-cli/bin/happy.mjs" "$@"
 WRAPPER
 chmod +x "$HAPPY_ROOT/.node/bin/happy"
 
