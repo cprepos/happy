@@ -22,6 +22,7 @@ import statistics
 import sys
 import time
 import uuid
+import wave
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -196,6 +197,10 @@ async def main() -> int:
     ap.add_argument("--tts", default=None)
     ap.add_argument("--voice", default="am_michael")
     ap.add_argument("--agent-name", default="happy-voice")
+    # Write everything heard on the agent's track to a 24 kHz mono WAV. This is the only tap
+    # between the agent's emitter and the client, so it is what tells a synthesis artifact
+    # apart from something the agent's framing or the client's playback does.
+    ap.add_argument("--dump-audio", default=None, metavar="PATH")
     args = ap.parse_args()
 
     env = load_env(Path(args.env))
@@ -284,6 +289,7 @@ async def main() -> int:
             watch_state(p)
 
     agent_joined = asyncio.Event()
+    dumped: list[bytes] = []
 
     @room.on("participant_connected")
     def _joined(p: rtc.RemoteParticipant) -> None:
@@ -296,6 +302,8 @@ async def main() -> int:
         stream = rtc.AudioStream(track, sample_rate=24000, num_channels=1)
         async for ev in stream:
             samples = np.frombuffer(ev.frame.data, dtype=np.int16)
+            if args.dump_audio:
+                dumped.append(bytes(ev.frame.data))
             rms = float(np.sqrt(np.mean(samples.astype(np.float32) ** 2))) if len(samples) else 0.0
             now = time.time()
             if rms > SPEECH_RMS:
@@ -501,6 +509,14 @@ async def main() -> int:
                 print(f"  {who:5} {text}")
     finally:
         await room.disconnect()
+        if args.dump_audio and dumped:
+            pcm = b"".join(dumped)
+            with wave.open(args.dump_audio, "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(24000)
+                w.writeframes(pcm)
+            print(f"wrote {len(pcm) / 2 / 24000:.1f}s of agent audio to {args.dump_audio}", flush=True)
 
     failed = [r for r in checks.results if not r[1]]
     print(f"\n{len(checks.results) - len(failed)}/{len(checks.results)} checks passed")
