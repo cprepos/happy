@@ -500,6 +500,7 @@ async def entrypoint(ctx: JobContext) -> None:
         _make_llm(settings),
         lambda: warmup_snapshot(session.current_agent),
         timeout=settings.llm_timeout,
+        turn_wait=settings.warmup_turn_wait,
         conn_options=llm_conn_options(settings),
     )
     agent.warmer = warmer

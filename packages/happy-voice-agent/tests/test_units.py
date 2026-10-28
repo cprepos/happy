@@ -529,6 +529,29 @@ def test_turn_waits_for_the_warmup_in_flight() -> None:
     assert len(model.requests) == 1
 
 
+def test_turn_gives_up_on_a_slow_warmup_and_cancels_it() -> None:
+    # The reason the agent went mute: begin_turn() used to wait the whole LLM timeout, so a
+    # slow warm-up held the reply back for seconds. Past `turn_wait` the turn goes out and the
+    # warm-up is cancelled, so the two never prefill side by side.
+    async def run() -> tuple[float, PrefixWarmer, _FakeLLM]:
+        model = _FakeLLM(delay=5.0)
+        warmer = PrefixWarmer(model, lambda: ("ctx", []), debounce=0, timeout=60.0, turn_wait=0.05)
+        warmer.schedule()
+        await asyncio.sleep(0.02)  # the warm-up is prefilling and will not finish in time
+        t = asyncio.get_running_loop().time()
+        await warmer.begin_turn()
+        waited = asyncio.get_running_loop().time() - t
+        warmer.end_turn()
+        await asyncio.sleep(0.02)  # let the cancellation unwind
+        await warmer.aclose()
+        return waited, warmer, model
+
+    waited, warmer, model = asyncio.run(run())
+    assert waited < 0.3  # not the 60 s timeout
+    assert warmer.completed == 0
+    assert model.closed_streams == 1  # cancelled, not left in flight
+
+
 def test_turn_drops_a_warmup_not_yet_sent() -> None:
     async def run() -> tuple[PrefixWarmer, _FakeLLM]:
         model = _FakeLLM()

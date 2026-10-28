@@ -12,6 +12,14 @@ A warm-up and a turn must not prefill the same prompt side by side: vLLM does no
 between requests in flight, so both would pay the full prefill, and the coder server runs only
 two sequences at a time. So a turn waits for a warm-up already sending (then hits its cache)
 and drops one not yet sent, and warm-ups scheduled during a turn wait until it is over.
+
+That wait is bounded by `turn_wait`, not by the LLM timeout. The two are not the same budget:
+the LLM timeout (60 s here) bounds a *request*, while this bounds how long the user hears
+nothing before their reply is even asked for. A session was observed losing 8.4 s to a warm-up
+that was itself 13 s slow, and the user hung up before the turn's own request went out
+(`llm_prompt_tokens=0`). Waiting only pays off if the warm-up is nearly done; past that, the
+turn should issue its own request, and the warm-up is cancelled rather than left to prefill
+alongside it.
 """
 
 from __future__ import annotations
@@ -37,6 +45,7 @@ class PrefixWarmer:
         *,
         debounce: float = 0.3,
         timeout: float = 120.0,
+        turn_wait: float = 0.5,
         conn_options: APIConnectOptions | None = None,
     ) -> None:
         # `model` must not be the session's LLM: the session logs and bills that one's metrics.
@@ -44,6 +53,8 @@ class PrefixWarmer:
         self._snapshot = snapshot
         self._debounce = debounce
         self._timeout = timeout
+        # how long a turn may wait for a warm-up already sending; see the module docstring
+        self._turn_wait = turn_wait
         # without these the plugin's defaults apply: a 10 s timeout and 3 retries, each retry
         # restarting the prefill
         self._conn_options = conn_options
@@ -58,9 +69,7 @@ class PrefixWarmer:
 
     def schedule(self) -> None:
         if self._task is not None and not self._task.done():
-            if self._sending is self._task:
-                logger.debug("warmup already sending; keeping it")
-                return
+            # supersede it, even mid-request: its snapshot is already stale
             self._task.cancel()
         self._task = asyncio.create_task(self._run())
 
@@ -96,9 +105,11 @@ class PrefixWarmer:
     async def begin_turn(self) -> None:
         """Called before a turn's LLM request; pair with end_turn().
 
-        Waits for a warm-up that is already sending, so the turn reuses its cached prefix
-        instead of prefilling the same prompt next to it, and drops one that has not been sent
-        (the turn's own request caches the same prefix).
+        Waits up to `turn_wait` for a warm-up that is already sending, so the turn reuses its
+        cached prefix instead of prefilling the same prompt next to it, and drops one that has
+        not been sent (the turn's own request caches the same prefix). A warm-up still running
+        when the budget is up is cancelled: the turn is going out regardless, and leaving the
+        warm-up in flight means two prefills of the same prompt on a server with two slots.
         """
         self._turns += 1
         self._idle.clear()
@@ -112,8 +123,14 @@ class PrefixWarmer:
             return
         waited = time.monotonic()
         # asyncio.wait: neither the warm-up's failure nor its cancellation is raised here
-        await asyncio.wait({task}, timeout=self._timeout)
-        logger.info("turn waited %.0fms for the warm-up in flight", (time.monotonic() - waited) * 1000)
+        done, _ = await asyncio.wait({task}, timeout=self._turn_wait)
+        if not done:
+            task.cancel()
+        logger.info(
+            "turn waited %.0fms for the warm-up in flight (%s)",
+            (time.monotonic() - waited) * 1000,
+            "finished" if done else "cancelled, budget spent",
+        )
 
     def end_turn(self) -> None:
         self._turns = max(0, self._turns - 1)

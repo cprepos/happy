@@ -101,6 +101,9 @@ class Settings:
     # Retries after a failed request. A retry restarts the whole prefill from scratch (the old
     # request is aborted), so on a slow server it only adds load; off by default.
     llm_max_retry: int = field(default_factory=lambda: _env_int("LLM_MAX_RETRY", 0))
+    # How long a turn may wait for a prefix warm-up already in flight (s). Deliberately far
+    # below llm_timeout: this is dead air the user hears before their reply is even requested.
+    warmup_turn_wait: float = field(default_factory=lambda: _env_float("WARMUP_TURN_WAIT", 0.5, minimum=0.0))
     llm_extra_body: dict = field(
         default_factory=lambda: json.loads(
             _env("LLM_EXTRA_BODY", '{"chat_template_kwargs": {"enable_thinking": false}}')
