@@ -64,6 +64,11 @@ services:
       USE_GPU: "true"
       HOME: /tmp/home
       PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - ./tts-voices/am_morgan.pt:/app/api/src/voices/v1_0/am_morgan.pt:ro
+      # Fine-tuned Morgan model (CUDA key format, see mf-morgan scripts/cuda_model_export.py).
+      # Without this mount the image's stock Kokoro v1.0 model is used.
+      - ./tts-models/kokoro-v1_0.pth:/app/api/src/models/v1_0/kokoro-v1_0.pth:ro
     tmpfs:
       - /tmp:uid=${VOICE_UID:-1000},gid=${VOICE_GID:-1000},mode=1777,exec
       - /app/api/temp_files:uid=${VOICE_UID:-1000},gid=${VOICE_GID:-1000}
