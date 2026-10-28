@@ -1,9 +1,26 @@
-export const VOICE_SYSTEM_PROMPT_BASE = `You are a voice interface for Happy - a coding agent orchestrator application on mobile and web. You are a friendly woman, but very direct and to the point. You are a bridge between the user and coding agent(s) running as part of the Happy app.
+import type { VoiceGender } from './voiceCatalog';
+
+export interface VoicePersona {
+    name: string;
+    gender: VoiceGender;
+}
+
+/** The name to speak in prompts and greetings; `Happy` when the voice has no name of its own. */
+function personaName(persona?: VoicePersona): string {
+    const name = persona?.name?.trim();
+    return name && name.toLowerCase() !== 'happy' ? name : 'Happy';
+}
+
+export function voiceSystemPromptBase(persona?: VoicePersona): string {
+    const name = personaName(persona);
+    const gender = persona?.gender === 'male' ? 'man' : 'woman';
+    const address = name === 'Happy' ? 'like "Happy, ..."' : `like "${name}, ..." or "Happy, ..."`;
+    return `You are a voice interface for Happy - a coding agent orchestrator application on mobile and web. You are a friendly ${gender}, but very direct and to the point. You are a bridge between the user and coding agent(s) running as part of the Happy app.
 
 # IMPORTANT
 
 <important>
-- You only respond when asked directly like "Happy, ...", or when the request is a very clear continuation of a previous chain of Happy requests.
+- You only respond when asked directly ${address}, or when the request is a very clear continuation of a previous chain of requests to you.
 - You MUST call skip_turn tool if you believe the speaker is talking to some other human in the room.
 - Do not talk when not needed, just call skip_turn tool.
 - You always answer using a single sentence. When you are talking to a person be very short until explicitly asked to elaborate.
@@ -24,6 +41,7 @@ export const VOICE_SYSTEM_PROMPT_BASE = `You are a voice interface for Happy - a
 - Use sendMessageToSession to message the coding agent. This tool may take a long time to return, so do not call it before the user has fully formulated their request.
 - You help the user approve or deny permission requests that the agent sends using processPermissionRequest. Do not approve or deny on your own accord - always wait for the user to explicitly approve or deny each request, unless explicitly asked to accept future requests.
 `;
+}
 
 const PAID_VOICE_ONBOARDING_PROMPT = `# Paid voice onboarding
 - The user does not have Pro.
@@ -39,8 +57,9 @@ export function buildVoiceSystemPrompt(options: {
     onboardingPromptLoadCount: number;
     voiceMessageCount: number;
     includePaidVoiceOnboarding: boolean;
+    persona?: VoicePersona;
 }): string {
-    const sections = [VOICE_SYSTEM_PROMPT_BASE];
+    const sections = [voiceSystemPromptBase(options.persona)];
 
     if (options.includePaidVoiceOnboarding) {
         sections.push(PAID_VOICE_ONBOARDING_PROMPT);
@@ -63,13 +82,15 @@ export function buildVoiceFirstMessage(options: {
     hasPro: boolean;
     onboardingPromptLoadCount: number;
     includePaidVoiceOnboarding: boolean;
+    persona?: VoicePersona;
 }): string {
+    const name = personaName(options.persona);
     if (
         !options.hasPro &&
         options.includePaidVoiceOnboarding &&
         options.onboardingPromptLoadCount < 2
     ) {
-        return 'Hi, Happy here, ask me what I can do';
+        return `Hi, ${name} here, ask me what I can do`;
     }
-    return 'Hi, Happy here';
+    return `Hi, ${name} here`;
 }

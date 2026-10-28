@@ -61,11 +61,23 @@ def language_section(language: str | None) -> str:
     return f"# Language\nAlways reply in the language with ISO code '{language}', even though tool messages stay in English."
 
 
+def name_section(name: str | None) -> str:
+    """The voice persona's name; empty when the voice answers to ``Happy`` anyway."""
+    if not name or name.lower() == "happy":
+        return ""
+    return (
+        "# Your name\n"
+        f"Your name is {name}. The user may call you {name}, or Happy; either way they are talking to you.\n"
+        f"When the user addresses you by your name, answer them."
+    )
+
+
 def build_instructions(
     *,
     app_system_prompt: str | None,
     session_id: str | None,
     language: str | None,
+    name: str | None = None,
 ) -> str:
     sections = [BASE_PROMPT.strip()]
     for extra in (session_section(session_id), language_section(language)):
@@ -73,6 +85,10 @@ def build_instructions(
             sections.append(extra)
     if app_system_prompt and app_system_prompt.strip():
         sections.append(app_system_prompt.strip())
+    # Last, so it overrides the app prompt's own address rules.
+    extra = name_section(name)
+    if extra:
+        sections.append(extra)
     return "\n\n".join(sections)
 
 

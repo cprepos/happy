@@ -84,7 +84,13 @@ def load_env(path: Path) -> dict[str, str]:
 
 
 def norm_words(s: str) -> list[str]:
-    return re.sub(r"[^a-z0-9' ]+", " ", s.lower()).split()
+    # STT freely contracts/expands ("what is" <-> "what's"); normalize both sides.
+    s = s.lower()
+    s = re.sub(r"(\w+)n't", r"\1 not", s)
+    s = re.sub(r"(\w+)'\s*s\b", r"\1 is", s)
+    s = re.sub(r"(\w+)'\s*re\b", r"\1 are", s)
+    s = re.sub(r"(\w+)'\s*ll\b", r"\1 will", s)
+    return re.sub(r"[^a-z0-9 ]+", " ", s).split()
 
 
 def similarity(a: str, b: str) -> float:
@@ -186,13 +192,16 @@ class Checks:
 async def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--env", default=str(DEFAULT_ENV))
-    ap.add_argument("--livekit", default=os.environ.get("LIVEKIT_URL", "ws://127.0.0.1:7880"))
-    ap.add_argument("--tts", default=os.environ.get("TTS_URL", "http://127.0.0.1:8880/v1"))
+    ap.add_argument("--livekit", default=None)
+    ap.add_argument("--tts", default=None)
     ap.add_argument("--voice", default="am_michael")
     ap.add_argument("--agent-name", default="happy-voice")
     args = ap.parse_args()
 
     env = load_env(Path(args.env))
+    # Explicit flags win, then the env file, then the process env, then loopback.
+    args.livekit = args.livekit or env.get("LIVEKIT_URL") or os.environ.get("LIVEKIT_URL") or "ws://127.0.0.1:7880"
+    args.tts = args.tts or env.get("TTS_URL") or os.environ.get("TTS_URL") or "http://127.0.0.1:8880/v1"
     key, secret = env["LIVEKIT_API_KEY"], env["LIVEKIT_API_SECRET"]
     room_name = f"happy-voice-e2e-{uuid.uuid4().hex[:8]}"
     identity = "user-e2e"
@@ -352,20 +361,29 @@ async def main() -> int:
     turns: list[Turn] = []
 
     async def speak_turn(name: str, expect_reply: bool = True) -> Turn:
-        await wait_quiet()
-        t_start = time.time()
-        print(f"\n== user says: {UTTERANCES[name]!r}", flush=True)
-        end = await mic.say(clips[name])
-        turn = Turn(name, end)
-        if expect_reply:
-            await wait_for(lambda: onset_after(end) is not None, 15)
-            turn.first_audio = onset_after(end)
-            if turn.first_audio:
-                print(f"  first agent audio {1000 * (turn.first_audio - end):.0f} ms after end of speech", flush=True)
-            turns.append(turn)
-        await wait_for(lambda: bool(user_finals_after(t_start)), 5)
-        heard = " ".join(user_finals_after(t_start))
-        sim = similarity(heard, UTTERANCES[name])
+        heard, sim = "", 0.0
+        turn: Turn
+        for attempt in (1, 2):
+            # Real STT mis-hears the synthesized audio now and then ("how many" -> "harmony");
+            # one retry absorbs the flake instead of failing the run.
+            await wait_quiet()
+            t_start = time.time()
+            print(f"\n== user says: {UTTERANCES[name]!r}" + (" (retry)" if attempt == 2 else ""), flush=True)
+            end = await mic.say(clips[name])
+            turn = Turn(name, end)
+            if expect_reply:
+                await wait_for(lambda: onset_after(end) is not None, 15)
+                turn.first_audio = onset_after(end)
+                if turn.first_audio:
+                    print(f"  first agent audio {1000 * (turn.first_audio - end):.0f} ms after end of speech", flush=True)
+                if attempt == 1:
+                    turns.append(turn)
+            await wait_for(lambda: bool(user_finals_after(t_start)), 5)
+            heard = " ".join(user_finals_after(t_start))
+            sim = similarity(heard, UTTERANCES[name])
+            if sim >= 0.8:
+                break
+            print(f"  transcript below threshold (similarity {sim:.2f})", flush=True)
         checks.check(f"transcript '{name}'", sim >= 0.8, f"heard {heard!r} (similarity {sim:.2f})")
         return turn
 
