@@ -213,7 +213,15 @@ export class OpenClawSocket {
         message,
         thinking: options?.thinking ?? 'low',
         attachments: options?.attachments,
-        timeoutMs: 30000,
+        // Per-request turn cap (ms). This overrides the gateway's own
+        // agents.defaults.timeoutSeconds, so it must stay above the coder
+        // proxy's worst case (CODER_MAX_TOOL_ITERS * CODER_UPSTREAM_TIMEOUT,
+        // currently 3 * 90s = 270s) or long tool-using turns die client-side.
+        //
+        // NOTE: the local wait below is still 35s, so a turn that actually
+        // runs past that is rejected here before this cap is reached. Raising
+        // it is a separate call -- see the commit message.
+        timeoutMs: 300_000,
         idempotencyKey: randomUUID(),
       },
       35000,
