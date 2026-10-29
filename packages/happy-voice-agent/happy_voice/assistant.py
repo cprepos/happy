@@ -272,7 +272,9 @@ class HappyAssistant(Agent):
     @function_tool(raw_schema=SKIP_TURN_SCHEMA)
     async def skip_turn(self, raw_arguments: dict[str, Any], context: RunContext) -> None:
         # Returning None asks for no follow-up reply.
-        logger.info("skip_turn")
+        # The turn it declined is the "user said:" line logged just above; say so, because a
+        # bare "skip_turn" reads like a no-op rather than a dropped question.
+        logger.info("skip_turn: said nothing in reply to the turn above")
         return None
 
 

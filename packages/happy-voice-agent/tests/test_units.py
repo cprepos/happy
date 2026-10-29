@@ -37,6 +37,7 @@ from happy_voice.prompt import (  # noqa: E402
     CONTEXT_PREFIX,
     PERMISSION_SCHEMA,
     SEND_MESSAGE_SCHEMA,
+    SKIP_TURN_SCHEMA,
     build_instructions,
 )
 
@@ -66,6 +67,28 @@ def test_build_instructions_order() -> None:
     assert text.startswith(BASE_PROMPT.strip()[:40])
     assert text.index("sess1") < text.index("APP PROMPT")
     assert "APP PROMPT" in text
+
+
+def test_answering_is_the_default_and_outranks_the_app_prompt() -> None:
+    # voiceSystemPrompt.ts says "You only respond when asked directly like 'Happy, ...'", which
+    # cost a user three dropped questions on 2026-10-29. Our override has to come after it.
+    text = build_instructions(app_system_prompt="APP PROMPT", session_id=None, language=None)
+    assert "# When to answer" in text
+    assert text.index("APP PROMPT") < text.index("# When to answer")
+    # it is there even with no app prompt to override
+    assert "# When to answer" in build_instructions(
+        app_system_prompt=None, session_id=None, language=None
+    )
+    # and the name section still gets the last word
+    named = build_instructions(app_system_prompt=None, session_id=None, language=None, name="Morgan")
+    assert named.index("# When to answer") < named.index("Your name is Morgan")
+
+
+def test_skip_turn_is_described_as_the_exception_not_the_default() -> None:
+    description = SKIP_TURN_SCHEMA["description"]
+    assert "only when" in description
+    # a missing wake word is not grounds to skip, and neither is a repeated question
+    assert "name" in description and "again" in description
 
 
 def test_voice_name_derives_from_voice_id() -> None:
@@ -432,10 +455,11 @@ def _settings_with(**env: str) -> Settings:
 
 def test_llm_and_interruption_defaults() -> None:
     s = _settings_with()
-    # The virtual `coder` on agentgateway, which routes and fails over per turn. Not 8899:
-    # that is coder-tool-proxy, which sets stream=False upstream, so a voice turn would wait
-    # for the whole answer before the first word is spoken. See happy_voice/config.py.
-    assert (s.llm_base_url, s.llm_model) == ("http://127.0.0.1:8903/v1", "coder")
+    # agentgateway's MoE tier by name, which fails over to dense on its own. Not the virtual
+    # `coder`, which routes per request and so warms the tier the turn may not use, and not
+    # 8899: that is coder-tool-proxy, which sets stream=False upstream, so a voice turn would
+    # wait for the whole answer before the first word is spoken. See happy_voice/config.py.
+    assert (s.llm_base_url, s.llm_model) == ("http://127.0.0.1:8903/v1", "coder-moe")
     assert s.llm_timeout == 60.0
     assert s.llm_max_retry == 0
     assert s.max_endpointing_delay == 1.5
