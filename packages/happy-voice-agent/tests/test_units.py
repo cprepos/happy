@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -370,6 +371,56 @@ def test_warmer_cancels_a_stale_request_in_flight() -> None:
     assert [ctx for ctx, _ in model.requests] == [0, 1]
     assert model.closed_streams == 2  # the stale stream is closed, not left running
     assert warmer.completed == 1
+
+
+def test_turn_drops_a_warm_up_that_cannot_finish_in_the_budget() -> None:
+    # A 0.2 s warm-up with a 0.05 s budget: the first turn has no history to judge by and so
+    # waits out the budget (and loses it, as the 2026-10-29 session did twice), but the second
+    # knows what a warm-up costs here and drops it at once instead of buying more dead air.
+    async def run() -> tuple[PrefixWarmer, float, float]:
+        warmer = PrefixWarmer(_FakeLLM(delay=0.2), lambda: ("ctx", []), debounce=0, turn_wait=0.05)
+        warmer.schedule()
+        await asyncio.sleep(0.01)
+        blind = time.monotonic()
+        await warmer.begin_turn()
+        blind = time.monotonic() - blind
+        warmer.end_turn()
+        # let one warm-up finish, so there is a duration to judge by
+        warmer.schedule()
+        await asyncio.sleep(0.25)
+        assert warmer.completed == 1
+        warmer.schedule()
+        await asyncio.sleep(0.01)
+        informed = time.monotonic()
+        await warmer.begin_turn()
+        informed = time.monotonic() - informed
+        warmer.end_turn()
+        await warmer.aclose()
+        return warmer, blind, informed
+
+    warmer, blind, informed = asyncio.run(run())
+    assert blind >= 0.05  # waited out the whole budget
+    assert informed < 0.02  # dropped it immediately
+
+
+def test_turn_still_waits_for_a_warm_up_about_to_land() -> None:
+    # Same budget, but the warm-up takes 20 ms: waiting is what caches the prefix, so the turn
+    # must still do it rather than racing its own request against the one in flight.
+    async def run() -> tuple[PrefixWarmer, int]:
+        warmer = PrefixWarmer(_FakeLLM(delay=0.02), lambda: ("ctx", []), debounce=0, turn_wait=0.05)
+        warmer.schedule()
+        await asyncio.sleep(0.05)
+        assert warmer.completed == 1
+        warmer.schedule()
+        await asyncio.sleep(0.005)  # its request is out and nearly done
+        await warmer.begin_turn()
+        warmer.end_turn()
+        completed = warmer.completed
+        await warmer.aclose()
+        return warmer, completed
+
+    _, completed = asyncio.run(run())
+    assert completed == 2  # waited, and the warm-up finished rather than being cancelled
 
 
 def test_warmer_failure_is_swallowed() -> None:

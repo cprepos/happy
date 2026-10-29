@@ -62,10 +62,25 @@ class PrefixWarmer:
         # The task whose request is out. A task, not a flag: a superseded warm-up is still
         # unwinding its cancellation when the next one is scheduled.
         self._sending: asyncio.Task[None] | None = None
+        # when that request went out, so begin_turn can tell a nearly-done warm-up from one
+        # that has barely started
+        self._sending_since: float = 0.0
+        # durations of recent completed warm-ups; their median is how long the next one is
+        # expected to take. Short, so it tracks the GPU getting busy rather than averaging a
+        # whole session.
+        self._durations: list[float] = []
         self._turns = 0
         self._idle = asyncio.Event()
         self._idle.set()
         self.completed = 0
+
+    @property
+    def _expected(self) -> float | None:
+        """Median of recent warm-ups, or None until one has finished."""
+        if not self._durations:
+            return None
+        ordered = sorted(self._durations)
+        return ordered[len(ordered) // 2]
 
     def schedule(self) -> None:
         if self._task is not None and not self._task.done():
@@ -79,6 +94,7 @@ class PrefixWarmer:
         started = time.monotonic()
         me = asyncio.current_task()
         self._sending = me
+        self._sending_since = started
         try:
             chat_ctx, tools = self._snapshot()
             kwargs: dict[str, Any] = {}
@@ -100,7 +116,10 @@ class PrefixWarmer:
             if self._sending is me:
                 self._sending = None
         self.completed += 1
-        logger.info("llm warm-up: %.0fms", (time.monotonic() - started) * 1000)
+        elapsed = time.monotonic() - started
+        self._durations.append(elapsed)
+        del self._durations[:-5]
+        logger.info("llm warm-up: %.0fms", elapsed * 1000)
 
     async def begin_turn(self) -> None:
         """Called before a turn's LLM request; pair with end_turn().
@@ -110,6 +129,12 @@ class PrefixWarmer:
         not been sent (the turn's own request caches the same prefix). A warm-up still running
         when the budget is up is cancelled: the turn is going out regardless, and leaving the
         warm-up in flight means two prefills of the same prompt on a server with two slots.
+
+        It only waits when the warm-up can plausibly finish in time. Waiting out the whole
+        budget and then cancelling is the worst of both -- half a second of dead air and no
+        cached prefix to show for it, which is what two turns of the 2026-10-29 session did.
+        So if the median recent warm-up says this one still has more than the budget left to
+        run, drop it now and let the turn's own request do the caching.
         """
         self._turns += 1
         self._idle.clear()
@@ -122,6 +147,19 @@ class PrefixWarmer:
             task.cancel()
             return
         waited = time.monotonic()
+        expected = self._expected
+        if expected is not None:
+            remaining = expected - (waited - self._sending_since)
+            if remaining > self._turn_wait:
+                task.cancel()
+                logger.info(
+                    "turn dropped the warm-up in flight: ~%.0fms left of a typical %.0fms, "
+                    "past the %.0fms budget",
+                    remaining * 1000,
+                    expected * 1000,
+                    self._turn_wait * 1000,
+                )
+                return
         # asyncio.wait: neither the warm-up's failure nor its cancellation is raised here
         done, _ = await asyncio.wait({task}, timeout=self._turn_wait)
         if not done:
