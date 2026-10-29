@@ -23,7 +23,7 @@ Config and secrets live in `selfhost/.env.voice` (gitignored; template `.env.voi
 | LiveKit | `happy-voice-livekit` | `127.0.0.1:7880` (HTTP + WS signaling, published for the agent); 7881/tcp and 7882/udp (UDP mux) only on the container IP | `livekit/livekit-server:v1.13.10`, on the `happy-selfhost_default` network (alias `livekit`) | none |
 | STT | `happy-voice-stt` | `127.0.0.1:8090` | `nvidia/nemotron-speech-streaming-en-0.6b` (NeMo 3.0.0, cache-aware FastConformer RNNT), image built from `selfhost/stt/` | 0 |
 | TTS | `happy-voice-tts` | `127.0.0.1:8880` | `ghcr.io/remsky/kokoro-fastapi-gpu:v0.9.0` (Kokoro-82M) | 0 |
-| LLM | host coder stack (systemd, not managed here) | `127.0.0.1:9081` (the tier voice is pinned to) | Qwen3.6-35B-A3B int4 served as `coder-moe`; see the LLM section for the other tiers | shared |
+| LLM | host coder stack (systemd, not managed here) | `127.0.0.1:8903` (agentgateway) | the virtual `coder`, routed per turn onto one of two vLLM tiers; see the LLM section | shared |
 | Voice agent | `happy-voice-agent` | `127.0.0.1:8791` (health) | `packages/happy-voice-agent` (LiveKit Agents 1.8.9), host networking | none (CPU) |
 | LLM (optional, profile `local-llm`) | `happy-voice-llm` | `127.0.0.1:8000` | `vllm/vllm-openai:v0.32.0` serving `QuantTrio/Qwen3.6-35B-A3B-AWQ` as `voice-llm`, TP=2 | 0 + 1 |
 
@@ -150,26 +150,36 @@ as pre-speech is passed through whole. Set `TTS_TRIM_LEAD=0` to disable it. The 
 re-extract `am_morgan.pt` from clean reference clips in the `mf-morgan` project; the trimmer is
 voice-agnostic and costs nothing once that happens.
 
-## LLM: vLLM (`VOICE_LLM_BASE_URL`, default `http://127.0.0.1:9081/v1`)
+## LLM: vLLM (`VOICE_LLM_BASE_URL`, default `http://127.0.0.1:8903/v1`)
 
 OpenAI Chat Completions. The host's coder stack was split into two tiers behind a gateway on
 2026-10-28:
 
-| Port | Served name | Model | Notes |
+| Port | Served name | What it is | Notes |
 |---|---|---|---|
-| 9080 | `coder-dense` | Qwen3.8-27B FP8, TP=2 | what plain `coder` used to be; ~90 tok/s decode |
-| 9081 | `coder-moe` | Qwen3.6-35B-A3B int4 (~3B active), `--max-num-seqs 1` | ~178 tok/s decode; **voice is pinned here** |
-| 8899 | `coder` (virtual) | agentgateway + the `vllm-sr-router` ExtProc classifier on gRPC 50051 | classifies each turn onto a tier |
+| 9080 | `coder-dense` | Qwen3.8-27B FP8, TP=2, GPUs 2+3 | what plain `coder` used to be; ~90 tok/s decode |
+| 9081 | `coder-moe` | Qwen3.6-35B-A3B int4 (~3B active), TP=1 on GPU 1, `--max-num-seqs 1` | ~178 tok/s decode |
+| 8903 | `coder` (virtual) | agentgateway + the `vllm-sr-router` ExtProc classifier on gRPC 50051 | **what voice uses**; routes each turn to a tier and fails over |
+| 8899 | `coder` (virtual) | `coder-tool-proxy` in front of the gateway | the stack's public entrypoint. **Voice must not use it** |
 
-Default model **`coder-moe`** (host service, no API key; keep `max_tokens` modest -- the worker uses
-250). Voice is pinned to one tier rather than pointed at the virtual `coder`, because that gateway
-routes statelessly per turn: the prefix warm-up (`happy_voice/warmup.py`) could warm a tier the turn
-never lands on, and a tier switch costs a full prefill. `coder-moe` is the pick because voice latency
-is decode-bound. Watch its `--max-num-seqs 1`: warm-up and turn cannot overlap at all there, and a
-coding agent on that tier blocks voice outright -- `WARMUP_TURN_WAIT` (0.5 s) is what keeps that from
-becoming a mute agent.
+Default model **`coder`** at the gateway (host service, no API key; keep `max_tokens` modest -- the
+worker uses 250). Three things follow from pointing at 8903 rather than a tier port:
 
-**The name `coder` alone now 404s on both tier ports.** When a turn fails with
+- **No failover in the agent.** Each virtual model in `agentgateway/config.yaml` carries its own
+  failover list -- its own tier at priority 0, the other as spillover -- and a refused connection
+  counts unhealthy the same as a 5xx. Pinning a tier is what made voice mute on 2026-10-28: the
+  pinned `coder-moe` restarted six times while being tuned, and every turn died on connect with
+  `ConnectError: All connection attempts failed`, closing the session unrecoverable.
+- **The prefix warm-up is now best-effort.** The classifier routes per turn, so
+  `happy_voice/warmup.py` can warm a tier the turn does not land on. A lost optimization, bounded by
+  `WARMUP_TURN_WAIT` (0.5 s), not a fault. Watch `coder-moe`'s `--max-num-seqs 1`: warm-up and turn
+  cannot overlap there at all, and a coding agent on that tier blocks voice outright.
+- **Not 8899.** `coder-tool-proxy` appends a searxng MCP tool to every caller's `tools` and sets
+  `stream = False` upstream, emitting the finished answer as one synthetic SSE chunk. First-token
+  latency would become full generation time and the warm-up a full generation. It serves the same
+  `coder` name, so the mistake is silent -- only the latency shows it.
+
+**The name `coder` alone 404s on both *tier* ports (9080, 9081).** When a turn fails with
 `The model 'coder' does not exist` and the user reports "STT not working", this is why -- the STT is
 fine and the agent simply has no LLM to answer with.
 

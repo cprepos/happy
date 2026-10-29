@@ -4,7 +4,8 @@
 #   make voice-keys    generate .env.voice (LiveKit key pair) from .env.voice.example if missing
 #   make voice-build   build the local STT image
 #   make voice-up      start livekit, stt, tts, voice-agent (detached). The LLM is the host coder
-#                      stack's coder-moe tier (systemd); the old local voice LLM is opt-in: make voice-up SVC=llm
+#                      stack's virtual `coder` on agentgateway (systemd, port 8903); the old
+#                      local voice LLM is opt-in: make voice-up SVC=llm
 #   make voice-down    stop and remove the voice containers (volumes and model cache kept)
 #   make voice-status  container state + per-service health + GPU memory
 #   make voice-logs    follow logs (SVC=llm to pick one service)
@@ -61,7 +62,7 @@ voice-status: $(VOICE_ENV)
 	check livekit http://127.0.0.1:7880/; \
 	check stt  http://127.0.0.1:$${STT_PORT:-8090}/health; \
 	check tts  http://127.0.0.1:$${TTS_PORT:-8880}/health; \
-	check llm  $${VOICE_LLM_BASE_URL:-http://127.0.0.1:9081/v1}/models; \
+	check llm  $${VOICE_LLM_BASE_URL:-http://127.0.0.1:8903/v1}/models; \
 	check agent http://127.0.0.1:$${VOICE_AGENT_HTTP_PORT:-8791}/
 	@nvidia-smi --query-gpu=index,name,memory.used,memory.total,utilization.gpu --format=csv,noheader
 

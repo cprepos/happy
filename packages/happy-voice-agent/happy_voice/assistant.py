@@ -388,7 +388,9 @@ async def entrypoint(ctx: JobContext) -> None:
     )
 
     logger.info(
-        "llm timeout=%.0fs retries=%d; barge-in after %.1fs and %d word(s); eou max %.1fs",
+        "llm %s @ %s; timeout=%.0fs retries=%d; barge-in after %.1fs and %d word(s); eou max %.1fs",
+        settings.llm_model,
+        settings.llm_base_url,
         settings.llm_timeout,
         settings.llm_max_retry,
         settings.interrupt_min_duration,
