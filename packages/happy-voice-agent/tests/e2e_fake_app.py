@@ -46,6 +46,10 @@ UTTERANCES = {
     "list_files": "Hi Happy, can you tell Claude to list the files in the source folder?",
     "about": "Happy, what is this session about?",
     "allow": "Yes, allow it.",
+    # No name, and disfluent: on 2026-10-29 a phone session asked this three times and got
+    # skip_turn every time, because the prompt let "not addressed to me" cover anything
+    # without a wake word. Answering is the default now, and this is the turn that proves it.
+    "no_wake_word": "Tell me more about what needs to be done to test it.",
     "thanks": "Happy, how many sessions do I have open right now?",
 }
 
@@ -485,7 +489,15 @@ async def main() -> int:
         # 5. a question answered from context (latency sample)
         await speak_turn("about")
 
-        # 6. pending permission in context, then "yes, allow it"
+        # 6. a question that never says the agent's name: still answered, not skipped
+        turn = await speak_turn("no_wake_word")
+        checks.check(
+            "a question without the wake word is answered, not skipped",
+            turn.first_audio is not None,
+            "no audio within 15s of end of speech" if turn.first_audio is None else "",
+        )
+
+        # 7. pending permission in context, then "yes, allow it"
         await wait_quiet()
         await send(
             "happy.context",
@@ -504,7 +516,7 @@ async def main() -> int:
             json.dumps(calls[0][2]) if calls else "no call",
         )
 
-        # 7. one more latency sample
+        # 8. one more latency sample
         await speak_turn("thanks")
         await wait_quiet()
 
