@@ -102,4 +102,7 @@ selfhost/.env.voice
 
 # Backups of secrets and configs moved aside in the self-host directory
 /selfhost/trash/
+
+# Per-segment TTS WAVs the voice agent writes when LK_DUMP_TTS is set (diagnostic captures)
+/selfhost/lk_dump/
 .node/

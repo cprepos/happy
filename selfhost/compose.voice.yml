@@ -182,9 +182,16 @@ services:
       TTS_SPEED: ${TTS_SPEED:-1.0}
       # 0 disables the Kokoro lead trim (happy_voice/tts_trim.py)
       TTS_TRIM_LEAD: ${TTS_TRIM_LEAD:-1}
+      # 1 makes livekit-agents write every TTS segment to selfhost/lk_dump/ as a WAV. Diagnostic
+      # only, and it writes one file per sentence, so leave it unset outside a capture.
+      LK_DUMP_TTS: ${LK_DUMP_TTS:-}
       VOICE_AGENT_NAME: happy-voice
       # the worker's health/debug HTTP server; 8081 is commonly taken on shared hosts
       VOICE_AGENT_HTTP_PORT: ${VOICE_AGENT_HTTP_PORT:-8791}
+    volumes:
+      # where LK_DUMP_TTS writes: the plugin opens lk_dump/<label>_... relative to /app and does
+      # not create the directory, so it has to exist on both sides
+      - ./lk_dump:/app/lk_dump
 
 networks:
   # happy-server's compose network (selfhost/docker-compose.yml, project happy-selfhost).
