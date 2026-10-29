@@ -8,24 +8,38 @@ Endpoints:
   GET  /health
 
 Latency: on an M1 the Kokoro vocoder costs ~90 ms per second of audio plus ~100 ms per call, so
-time to first audio grows with the length of the first synthesized chunk. Text is split into
-sentences and the first sentence is split once more, at the first clause boundary (comma,
-semicolon, colon, dash) or else before a conjunction ("so", "and", "because", ...), or else after
-TTS_FIRST_MAX_WORDS words, keeping at least TTS_FIRST_MIN_WORDS words in the first piece. The rest
-is synthesized while the first piece plays (RTF ~0.12). TTS_FAST_FIRST=0 turns the split off.
+time to first audio grows with the length of the first synthesized chunk. So the first sentence is
+split once, at the first clause boundary (comma, semicolon, colon, dash) or else before a
+conjunction ("so", "and", "because", ...), keeping at least TTS_FIRST_MIN_WORDS words, and the rest
+is synthesized while that piece plays (RTF ~0.145). TTS_FAST_FIRST=0 turns the split off.
+
+A sentence with neither a clause boundary nor a conjunction in the window is left whole. Cutting
+it after TTS_FIRST_MAX_WORDS words instead lands mid-phrase -- "the source folder for you | just
+now" -- which inserted 0.24 s of silence there and restarted the intonation, and it bought about
+30 ms: the first audible word measured 713 ms at a cap of 8 against 743 ms with no split at all.
+TTS_FIRST_HARD_CUT=1 restores it, which is worth ~190 ms at a cap of 4. TTS_FIRST_MAX_WORDS still
+bounds the clause and conjunction search either way.
+
+Everything after that opening piece is grouped into TTS_CHUNK_WORDS-word pieces rather than one
+piece per sentence, because sentence boundaries inside a piece are Kokoro's own and need no
+joining. Synthesizing the whole remainder in one piece would be smoother still but underruns: on
+a seven-sentence reply the remainder is 17.58 s of audio needing 2.87 s against the 1.45 s of
+playback the opening piece buys.
 
 Every generate() call pads its audio, so each piece is trimmed before it goes out -- see _trim.
+The tail keeps a pause sized by the punctuation the piece ends on (_pause_after), because one
+value for every boundary clipped sentence breaks shorter than Kokoro's own 0.28-0.62 s.
 Without that, a split inserts the next piece's lead in the middle of the sentence: "I have sent
 that along." measured 2.35 s whole against 3.52 s in two pieces, with a 0.84 s hole at the join,
 and that hole is what a listener hears as a stop between sentences. Trimming removes it and the
 lead in front of the reply with it, so speech now starts 60 ms into the audio rather than 940 ms.
 TTS_TRIM_PIECES=0 turns it off.
 
-With the pads gone the cap is a plain latency-against-prosody choice, since each piece is
-synthesized independently and its intonation contour restarts. Measured on the nine-word sentence
-above, time to the first audible word: cap 4 gives 550 ms, cap 6 667 ms, cap 8 713 ms, cap 12
-722 ms, and TTS_FAST_FIRST=0 743 ms -- but on a 22-word sentence turning the split off costs
-1543 ms against 681 ms, which is what the split is for.
+Each piece is synthesized independently and its intonation contour restarts, so where a piece ends
+is a prosody choice and not only a latency one. Time to the first audible word on the nine-word
+sentence above: cap 4 gives 550 ms, cap 6 667 ms, cap 8 713 ms, cap 12 722 ms, and
+TTS_FAST_FIRST=0 743 ms -- but on a 22-word sentence turning the split off costs 1543 ms against
+681 ms, which is what the split is for.
 
 mp3 streams too: a LAME encoder (lameenc) runs across the whole response, so frames go out as
 soon as each piece is synthesized.
@@ -64,7 +78,21 @@ VALLEY_RMS = int(os.environ.get("TTS_VALLEY_RMS", "260")) / 32768.0
 MIN_LEAD = float(os.environ.get("TTS_MIN_LEAD", "0.12"))
 MAX_TRIM = float(os.environ.get("TTS_MAX_TRIM", "1.5"))
 KEEP_PAD = 0.030
-PAUSE = float(os.environ.get("TTS_PAUSE", "0.20"))
+# How much silence a piece keeps at its end, by what it ends with. Kokoro's own pacing for the
+# same text, measured in one generate() call, is 0.28-0.72 s between sentences and 0.54-0.72 s at
+# a comma, so a single 0.20 s value clipped every boundary short. TTS_PAUSE still overrides all
+# three at once, for an install that already sets it.
+_PAUSE_ALL = os.environ.get("TTS_PAUSE")
+PAUSE_SENTENCE = float(os.environ.get("TTS_PAUSE_SENTENCE", _PAUSE_ALL or "0.40"))
+PAUSE_CLAUSE = float(os.environ.get("TTS_PAUSE_CLAUSE", _PAUSE_ALL or "0.45"))
+PAUSE_PHRASE = float(os.environ.get("TTS_PAUSE_PHRASE", _PAUSE_ALL or "0.05"))
+# Words per piece once the opening piece has been split off. Sentences inside one piece are
+# Kokoro's to pace, which is what makes them smooth; 25 words is about 8 s of audio, ~1.2 s to
+# synthesize at RTF 0.145, against the >=1.4 s of audio the piece before it buys.
+CHUNK_WORDS = int(os.environ.get("TTS_CHUNK_WORDS", "25"))
+# Cut the opening piece after FIRST_MAX_WORDS even with no clause or conjunction there. Off: it
+# lands mid-phrase, which inserts a pause and restarts the intonation for ~30 ms of latency.
+FIRST_HARD_CUT = os.environ.get("TTS_FIRST_HARD_CUT", "0") != "0"
 FADE = 0.005
 WARMUP = os.environ.get("WARMUP", "1") != "0"
 SAMPLE_RATE = 24000
@@ -95,14 +123,29 @@ def _split_first(sentence: str) -> list[str]:
     for i in range(FIRST_MIN_WORDS, min(len(w) - 2, 2 * FIRST_MAX_WORDS)):
         if w[i].lower().strip(",;:") in _CONJ:
             return [" ".join(w[:i]), " ".join(w[i:])]
-    return [" ".join(w[:FIRST_MAX_WORDS]), " ".join(w[FIRST_MAX_WORDS:])]
+    if FIRST_HARD_CUT:
+        return [" ".join(w[:FIRST_MAX_WORDS]), " ".join(w[FIRST_MAX_WORDS:])]
+    return [sentence]  # nowhere to split that a listener would not hear
+
+
+def _group(sentences: list[str]) -> list[str]:
+    """Merge sentences up to CHUNK_WORDS, so Kokoro paces the boundaries inside a piece."""
+    out: list[str] = []
+    for s in sentences:
+        if out and len(out[-1].split()) + len(s.split()) <= CHUNK_WORDS:
+            out[-1] = f"{out[-1]} {s}"
+        else:
+            out.append(s)
+    return out
 
 
 def split_text(text: str) -> list[str]:
     parts = [p.strip() for p in _SENT.split(text.strip()) if p and p.strip()]
     if FAST_FIRST and parts:
-        parts = _split_first(parts[0]) + parts[1:]
-    return parts
+        head = _split_first(parts[0])
+        # Only the opening piece is sized for latency; group the rest.
+        return head[:1] + _group(head[1:] + parts[1:])
+    return _group(parts)
 
 
 def _lang(voice: str) -> str:
@@ -147,7 +190,7 @@ def _load():
     LOAD_S = time.time() - t0
 
 
-def _trim(x: np.ndarray) -> np.ndarray:
+def _trim(x: np.ndarray, pause: float = PAUSE_SENTENCE) -> np.ndarray:
     """Drop the speech-free lead and the over-long tail Kokoro puts around a piece.
 
     Every generate() call pads its audio: measured on an M1, "I have sent that" holds speech
@@ -165,8 +208,11 @@ def _trim(x: np.ndarray) -> np.ndarray:
     the agent's 0.4 s because this only ever looks in front of a piece's first speech, so a
     quiet run there cannot be a pause inside the speech.
 
-    The tail is cut to PAUSE rather than removed, because that pause is the spacing between
-    sentences.
+    The tail is set to `pause` rather than removed, because that silence is the spacing to
+    whatever comes next -- see _pause_after for how much each piece asks for. Set, not cut:
+    Kokoro's pad is 0.22-0.38 s depending on the text, so a sentence boundary that wants 0.40 s
+    has to be padded out, and silence between pieces exists only if it is put here, the next
+    piece having had its own lead trimmed off.
     """
     win = SAMPLE_RATE // 100  # 10 ms
     n = len(x) // win
@@ -200,13 +246,28 @@ def _trim(x: np.ndarray) -> np.ndarray:
             start = max(0, cut - int(KEEP_PAD * SAMPLE_RATE))
 
     end = len(x)
-    tail = [i for i in range(last + 1, len(qpair)) if qpair[i]]
+    pad_after = 0
+    # Where speech really stops: `last` is only where the final 50 ms run starts, and a word's
+    # decay keeps crossing ONSET after it. Searching from just past the run found quiet windows
+    # inside the last word and measured the pause from a point speech had not left, delivering
+    # 0.22 s where 0.40 s was asked for.
+    loud = np.where(rms >= ONSET_RMS)[0]
+    quiet_from = max(last + 5, int(loud[-1]) + 1) if len(loud) else last + 5
+    tail = [i for i in range(quiet_from, len(qpair)) if qpair[i]]
     if tail:
-        keep = tail[0] * win + int(PAUSE * SAMPLE_RATE)
+        keep = tail[0] * win + int(pause * SAMPLE_RATE)
         if keep < end:
             end = keep
+        else:
+            pad_after = keep - end  # the pad is shorter than the spacing: add the difference
+    else:
+        # No quiet run to be found: the pad is noisy, or there is none. Never cut on a guess, but
+        # silence can still be added after the last speech run, where it cannot clip anything.
+        keep = min(len(x), (last + 5) * win) + int(pause * SAMPLE_RATE)
+        if keep > end:
+            pad_after = keep - end
 
-    if start == 0 and end == len(x):
+    if start == 0 and end == len(x) and not pad_after:
         return x
     y = x[start:end].copy()
     fade = min(int(FADE * SAMPLE_RATE), len(y))
@@ -214,7 +275,20 @@ def _trim(x: np.ndarray) -> np.ndarray:
         y[:fade] *= np.linspace(0.0, 1.0, fade, dtype=np.float32)
     if end < len(x) and fade:
         y[-fade:] *= np.linspace(1.0, 0.0, fade, dtype=np.float32)
+    if pad_after:
+        # No fade: nothing was cut here, the piece just ends quieter than the spacing needs.
+        y = np.concatenate([y, np.zeros(pad_after, dtype=y.dtype)])
     return y
+
+
+def _pause_after(part: str) -> float:
+    """Silence to keep after a piece, from the punctuation it ends on."""
+    end = part.rstrip()[-1:]
+    if end in ".!?\u2026":
+        return PAUSE_SENTENCE
+    if end in ",;:-\u2013\u2014":
+        return PAUSE_CLAUSE
+    return PAUSE_PHRASE  # the piece stops mid-phrase, so barely pause at all
 
 
 def _synth(text: str, voice: str, speed: float, cancel: threading.Event):
@@ -223,11 +297,12 @@ def _synth(text: str, voice: str, speed: float, cancel: threading.Event):
     for part in split_text(text):
         if cancel.is_set():
             return
+        pause = _pause_after(part)
         # generate() returns a part as one array (checked on an M1: one chunk per call), so
         # trimming its pads costs no streaming latency -- there is nothing to hold back.
         for r in MODEL.generate(text=part, voice=v, speed=speed, lang_code=_lang(voice), split_pattern=None):
             audio = np.asarray(r.audio, dtype=np.float32).reshape(-1)
-            yield _trim(audio) if TRIM_PIECES else audio
+            yield _trim(audio, pause) if TRIM_PIECES else audio
             if cancel.is_set():
                 return
     mx.clear_cache()

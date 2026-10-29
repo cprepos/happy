@@ -48,11 +48,16 @@ Kokoro-82M with its voices is 0.34 GB. The `.venv` takes another 1.4 GB.
 | `STT_ENDPOINT_MS` | 0 | silence that ends an utterance when the client does not set it |
 | `TTS_MODEL` | prince-canuma/Kokoro-82M | a directory holding a Kokoro model and a `voices/` folder, or anything else, which is resolved against Hugging Face |
 | `TTS_VOICE` | af_heart | default voice |
-| `TTS_FAST_FIRST` | 1 | split the first sentence at a clause, a conjunction or `TTS_FIRST_MAX_WORDS`, so audio starts sooner |
-| `TTS_FIRST_MAX_WORDS` | 8 | hard cap on the first piece when there is no clause or conjunction to split at. Lower starts sooner but inserts a gap — see below |
+| `TTS_FAST_FIRST` | 1 | split the first sentence at a clause or a conjunction, so audio starts sooner |
+| `TTS_FIRST_MAX_WORDS` | 8 | how far into the sentence that clause or conjunction may be. With `TTS_FIRST_HARD_CUT` it is also a hard cap |
 | `TTS_FIRST_MIN_WORDS` | 3 | floor on the first piece, so it never becomes a one- or two-word fragment |
-| `TTS_TRIM_PIECES` | 1 | drop each piece's silent lead and cut its tail to `TTS_PAUSE` — see below |
-| `TTS_PAUSE` | 0.20 | seconds of silence kept between pieces |
+| `TTS_FIRST_HARD_CUT` | 0 | split after `TTS_FIRST_MAX_WORDS` even with no clause or conjunction there. Starts sooner but lands mid-phrase — see below |
+| `TTS_CHUNK_WORDS` | 25 | words per piece after the opening one. Sentences inside a piece are Kokoro's to pace, which is what makes them smooth |
+| `TTS_TRIM_PIECES` | 1 | drop each piece's silent lead and cut its tail to the pause below — see below |
+| `TTS_PAUSE_SENTENCE` | 0.40 | silence kept after a piece ending in `.` `!` `?` `…` |
+| `TTS_PAUSE_CLAUSE` | 0.45 | silence kept after a piece ending in `,` `;` `:` or a dash |
+| `TTS_PAUSE_PHRASE` | 0.05 | silence kept after a piece that stops mid-phrase |
+| `TTS_PAUSE` | | sets all three of the above at once, for an install that already uses it |
 | `TTS_MP3_KBPS` | 96 | bitrate of the streamed mp3 |
 
 `install-service.sh` writes `TTS_MODEL`, `TTS_VOICE` and `TTS_FIRST_MAX_WORDS` into the launchd
@@ -104,7 +109,7 @@ between sentences in a longer reply, since every sentence is its own piece. `af_
 same 0.80 s gap, so it is the model and not a voice pack.
 
 So each piece is trimmed before it is sent: the speech-free lead is dropped, and the tail is cut
-back to `TTS_PAUSE` (0.20 s), which is the spacing between sentences. The thresholds come from the
+back to the spacing wanted before whatever comes next. The thresholds come from the
 voice agent's `happy_voice/tts_trim.py`, which derived them by sweep — speech is 50 ms held at
 rms 1012, and the cut goes to the end of the quiet stretch in front of it, found by search rather
 than set by the threshold, so both ways of being wrong keep audio instead of clipping a word.
@@ -121,11 +126,44 @@ Time to first byte is unchanged — the trim runs on a piece that is already syn
 first audible word arrives about 880 ms sooner, because what used to play first was the lead.
 `TTS_TRIM_PIECES=0` turns it off.
 
-### What the cap costs
+### How long the pause should be
 
-With the padding gone, `TTS_FIRST_MAX_WORDS` is a plain trade of latency against phrasing: each
-piece is synthesized on its own, so its intonation restarts, and a split mid-phrase sounds it.
-Time to the first audible word, `am_morgan` over the LAN, median of three warm runs:
+A single pause for every boundary was the next thing wrong. Let Kokoro synthesize a four-sentence
+reply in one `generate()` call and it pauses **0.52 / 0.42 / 0.62 / 0.28 s** between the
+sentences, and **0.54-0.72 s** at a comma; a trim to one flat 0.20 s delivered 0.22 / 0.24 /
+0.24 s, so the sentences ran into each other. The pause is therefore chosen from the punctuation
+the piece ends on — `TTS_PAUSE_SENTENCE` 0.40 s, `TTS_PAUSE_CLAUSE` 0.45 s, `TTS_PAUSE_PHRASE`
+0.05 s.
+
+It is also *set* rather than cut. Kokoro's own pad is 0.22-0.38 s depending on the text, short of
+what a boundary asks for, and the next piece has had its lead trimmed off, so the difference is
+padded with silence. Two details decide whether that lands: the pause is measured from the last
+window above the speech threshold, not from the last 50 ms speech *run* — a word's decay keeps
+crossing the threshold after the run ends, and measuring from there delivered 0.22 s where 0.40 s
+was asked — and when no quiet run can be found at all the piece is padded but never cut, since
+adding silence cannot clip a word. Delivered boundaries now measure 0.44 / 0.46 / 0.34 s where
+one-call synthesis of the same reply gives 0.44 / 0.72 / 0.36 s.
+
+Better still is to have no join at all, which is why pieces after the opening one are grouped up
+to `TTS_CHUNK_WORDS` words: boundaries inside a piece are Kokoro's own. The grouping stays bounded
+because synthesizing a whole reply in one piece underruns — on a seven-sentence reply the
+remainder is 17.58 s of audio needing 2.87 s to generate, against the 1.45 s of playback the
+opening piece buys. 25 words is about 8 s of audio and 1.2 s of generation at RTF 0.145.
+
+Note that the voice agent paces its own requests one sentence at a time while the buffer is
+healthy (`happy_voice/assistant.py`), so grouping only bites on the requests where it batches.
+
+### What the cap costs, and why the hard cut is off
+
+Each piece is synthesized on its own, so its intonation restarts, and a split mid-phrase sounds
+it. "Claude finished listing the source folder for you just now." has no clause or conjunction in
+the window, so the old unconditional cut at word 8 landed between "for you" and "just now" and
+delivered 0.24 s of silence where the whole sentence has none. It bought about 30 ms. So it is off
+by default (`TTS_FIRST_HARD_CUT=1` brings it back, which is worth ~190 ms at a cap of 4) and such
+a sentence is now synthesized whole.
+
+Time to the first audible word with the cut on, `am_morgan` over the LAN, median of three warm
+runs — this is what the cap trades away:
 
 | Cap | 9-word sentence, no conjunction | 22-word sentence |
 |---|---|---|
