@@ -14,6 +14,7 @@
 #   make voice-agent-up    build and (re)start only the voice-agent worker (other services untouched)
 #   make voice-agent-logs  follow the voice-agent worker logs
 #   make voice-agent-e2e   headless fake-app conversation against the running worker (tests/e2e_fake_app.py)
+#   make voice-tts-lead-sweep  measure Kokoro's pre-speech lead per voice (tests/tts_lead_sweep.py)
 #   make voice-stream-e2e  same idea through happy-server's /v1/voice/stream (scripts/voice-stream-e2e.mjs):
 #                          end-of-speech -> first agent audio and downlink jitter. Token: HAPPY_TOKEN or
 #                          ~/.happy/access.key. VOICE_STREAM_URL=... to target another server, VOICE_STREAM_ARGS=... extra flags
@@ -23,7 +24,7 @@ VOICE_ENV := $(VOICE_DIR)/.env.voice
 VOICE_COMPOSE := docker compose -p happy-voice -f $(VOICE_DIR)/compose.voice.yml --env-file $(VOICE_ENV)
 SVC ?=
 
-.PHONY: voice-keys voice-build voice-up voice-down voice-status voice-logs voice-smoke voice-try voice-agent-up voice-agent-logs voice-agent-e2e voice-stream-e2e
+.PHONY: voice-keys voice-build voice-up voice-down voice-status voice-logs voice-smoke voice-try voice-agent-up voice-agent-logs voice-agent-e2e voice-stream-e2e voice-agent-venv voice-tts-lead-sweep
 
 VOICE_TRY_VENV ?= $(HOME)/.cache/happy-voice-try-venv
 # 8899 was the old default; the host's agentgateway took it (it serves the virtual `coder`).
@@ -97,13 +98,24 @@ voice-agent-up: $(VOICE_ENV)
 voice-agent-logs: $(VOICE_ENV)
 	$(VOICE_COMPOSE) logs -f --tail=200 voice-agent
 
-voice-agent-e2e: $(VOICE_ENV)
+voice-agent-venv:
 	@if [ ! -x "$(VOICE_AGENT_VENV)/bin/python" ]; then \
 		echo "== creating $(VOICE_AGENT_VENV)"; \
 		if command -v uv >/dev/null 2>&1; then uv venv -q -p 3.12 "$(VOICE_AGENT_VENV)" && uv pip install -q -p "$(VOICE_AGENT_VENV)/bin/python" -r $(VOICE_AGENT_DIR)/requirements.txt; \
 		else python3 -m venv "$(VOICE_AGENT_VENV)" && "$(VOICE_AGENT_VENV)/bin/pip" install -q -r $(VOICE_AGENT_DIR)/requirements.txt; fi; \
 	fi
-	"$(VOICE_AGENT_VENV)/bin/python" $(VOICE_AGENT_DIR)/tests/e2e_fake_app.py --env $(VOICE_ENV)
+
+# e.g. make voice-agent-e2e VOICE_AGENT_E2E_ARGS="--dump-audio-native /tmp/agent.wav"
+VOICE_AGENT_E2E_ARGS ?=
+voice-agent-e2e: $(VOICE_ENV) voice-agent-venv
+	"$(VOICE_AGENT_VENV)/bin/python" $(VOICE_AGENT_DIR)/tests/e2e_fake_app.py --env $(VOICE_ENV) $(VOICE_AGENT_E2E_ARGS)
+
+# Measures the speech-free lead Kokoro puts in front of a segment, per voice and text: where
+# happy_voice/tts_trim.py's thresholds come from. Needs the tts service up, nothing else.
+# e.g. make voice-tts-lead-sweep VOICE_TTS_SWEEP_ARGS="--voice am_morgan --trace"
+VOICE_TTS_SWEEP_ARGS ?=
+voice-tts-lead-sweep: $(VOICE_ENV) voice-agent-venv
+	"$(VOICE_AGENT_VENV)/bin/python" $(VOICE_AGENT_DIR)/tests/tts_lead_sweep.py --env $(VOICE_ENV) $(VOICE_TTS_SWEEP_ARGS)
 
 # Needs happy-server with the /v1/voice/stream route; exits 2 with a clear message when it is missing.
 VOICE_STREAM_URL ?= wss://happy.girthbass.duckdns.org/v1/voice/stream

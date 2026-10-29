@@ -1,25 +1,43 @@
 """Drop the speech-free lead Kokoro puts in front of a synthesized segment.
 
-For some inputs — and, measured here, only with the fine-tuned `am_morgan` voice pack —
-Kokoro-FastAPI returns about 0.7 s of low-level audio before the speech: a burst rising to
-roughly rms 99 within 100 ms, then decaying to zero over half a second (peak ~2% of full
-scale). It is deterministic per text, carries no speech at all (our own STT transcribes the
-region as "" even amplified 24x) and never appears with `af_heart` or `bm_george`.
+For some inputs — and only with the fine-tuned `am_morgan` voice pack — Kokoro-FastAPI
+returns 0.7-0.9 s of audible but speech-free audio before the speech: a band-limited burst
+(55-58 % of its energy in 300-1000 Hz, ~0-2 % above 3 kHz) rising over 200-400 ms, then
+decaying into a near-silent valley, then the real speech. `tests/tts_lead_sweep.py` measures
+it: 17 of 25 texts, leads of 680-910 ms, and the same shape in streaming and non-streaming
+responses, so it is the voice pack, not the chunker. `af_heart` shows it in 0 of 25 and
+`bm_george` in 1 of 25 (50 ms at rms 19, inaudible).
 
-On its own that is a soft glitch before each reply. What makes it loud is `StreamAdapter`:
-it sends one HTTP synthesize request per sentence batch, so the artifact lands at the start
-of *every sentence*. A four-sentence reply measured 8.736 s as one direct request and
-10.743 s through the pipeline — two whole seconds of inserted dead air. And because the
-real speech arrives ~0.7 s late behind audio you cannot hear, the agent counts as speaking
-while nothing plays: the opening sounds missing, and a listener who talks into that gap
-barges in and truncates the reply.
+On its own that is a glitch before each reply. What makes it loud is `StreamAdapter`: it
+sends one HTTP synthesize request per sentence batch, so the artifact lands at the start of
+*every sentence*. A four-sentence reply measured 8.736 s as one direct request and 10.743 s
+through the pipeline — two whole seconds of inserted dead air. And because the real speech
+arrives ~0.8 s late behind audio you cannot hear, the agent counts as speaking while nothing
+intelligible plays: the opening sounds missing, and a listener who talks into that gap barges
+in and truncates the reply.
 
-So trim it. The threshold is measured, not guessed: across every voice and text probed, the
-pre-speech artifact peaks at rms 133 in a 10 ms window, while the quietest speech onset
-reads 235. 180 sits between them. The cut keeps a 30 ms pad and fades in over 5 ms, and
-anything the onset search cannot positively identify as pre-speech is passed through
-untouched — a segment that is quiet throughout, or whose onset comes later than `max_trim`,
-is emitted whole. Trailing padding is left alone; it reads as sentence spacing.
+So trim it, on levels the sweep measures rather than guesses. Sustained over two consecutive
+10 ms windows (one window can be a click), the artifact reaches at most 1005 while the
+quietest unmistakable speech holds 1096, so `ONSET_RMS` sits between them. That bracket is
+narrow, which is why the threshold does not decide the cut: it only locates speech, and the
+cut goes to the *quietest window* of the valley in front of it, found by search. A valley
+floor is deep (at most 112 measured, against `VALLEY_CEILING`), so a few hundred rms of
+threshold error does not move the cut, and both ways of being wrong degrade to keeping audio
+rather than cutting speech — a threshold too high finds no onset and passes the segment
+through, one too low finds its onset inside the artifact, where the valley search then lands
+at the very start and trims nothing.
+
+Everything the search cannot positively identify is passed through untouched: a segment quiet
+throughout, one whose speech starts later than `max_trim`, and one whose valley is not quiet
+enough to be a valley. The cut keeps a 30 ms pad and fades in over 5 ms. Trailing padding is
+left alone; it reads as sentence spacing.
+
+An earlier version of this module read the artifact at "rms 133, speech at 235" and set the
+threshold to 180 — which is the artifact's own second window. It therefore reported an onset
+~50 ms in and kept the whole lead, and every capture that used the same metric to check the
+result agreed with it. The lead was found again at the far end of the pipeline, in the frames
+the agent pushes to its LiveKit track, after the transport and the TTS taps had been cleared
+by measurement.
 """
 
 from __future__ import annotations
@@ -34,17 +52,130 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("happy-voice")
 
-ONSET_RMS = 180
-"""10 ms-window RMS that counts as speech. Artifact tops out at 133, speech starts at 235."""
+ONSET_RMS = 1050
+"""Level, held over two 10 ms windows, that counts as speech.
+
+The sweep brackets it: the artifact holds at most 1005, the quietest unmistakable speech
+1096. It only locates speech; `find_speech_onset` then cuts at the valley in front of it.
+"""
+
+VALLEY_CEILING = 260
+"""How quiet the valley behind the artifact must be for its floor to be a cut point.
+
+Measured floors reach 112, so this is better than twice the margin, and it is what stops a
+dip between two words from being mistaken for the end of a lead.
+"""
+
+MIN_LEAD = 0.4
+"""Shortest lead this will cut, in seconds.
+
+Measured leads run 680-910 ms. Below this a quiet stretch in front of speech is far more
+likely to be a soft syllable or a stop closure *inside* the speech, and cutting there would
+drop the opening word -- so a cut that early is declined and the segment kept whole.
+"""
 
 KEEP_PAD = 0.030
-"""Seconds of audio kept before the onset, in case the threshold clips a soft attack."""
+"""Seconds of audio kept before the cut, in case the valley clips a soft attack."""
 
-MAX_TRIM = 1.0
-"""Never buffer (or cut) more than this. The longest artifact measured was 0.77 s."""
+MAX_TRIM = 1.5
+"""Never buffer (or cut) more than this.
+
+The longest lead measured is 910 ms and the speech comes *after* it, so the 1.0 s this was
+originally set to could expire before the onset it is looking for and pass the lead through.
+"""
 
 FADE = 0.005
 """Fade-in over the cut so it cannot click."""
+
+
+class _OnsetScanner:
+    """Finds where a segment's speech begins, over audio arriving in pieces.
+
+    Levels are compared as sums of squares (`rms >= t  <=>  sum(x^2) >= t^2 * n`), so the
+    scan stays in integers with no sqrt. Each window's energy is computed once as its bytes
+    arrive, and the valley search runs over those energies, so a segment costs one pass over
+    its audio however many pieces it comes in.
+    """
+
+    def __init__(
+        self,
+        sample_rate: int,
+        *,
+        window_ms: int = 10,
+        onset_rms: int = ONSET_RMS,
+        min_lead: float = MIN_LEAD,
+    ) -> None:
+        self._step = (sample_rate * window_ms // 1000) * 2  # bytes per window
+        self._samples = max(self._step // 2, 1)
+        self._min_lead = int(min_lead * sample_rate) * 2
+        self._limit = onset_rms * onset_rms * self._samples
+        self._energies: list[int] = []
+        self._partial = bytearray()  # bytes short of a whole window
+        self._scanned = 0  # window pairs up to here have been ruled out
+        self._onset: int | None = None  # first window of the first speech-level pair
+
+    def push(self, pcm: bytes) -> None:
+        """Take more of the segment. `pcm` is mono signed 16-bit little-endian."""
+        if self._step <= 0:
+            return
+        self._partial += pcm
+        whole = len(self._partial) // self._step
+        for w in range(whole):
+            window = self._partial[w * self._step : (w + 1) * self._step]
+            total = 0
+            for i in range(0, len(window), 2):
+                x = window[i] | (window[i + 1] << 8)
+                if x >= 0x8000:
+                    x -= 0x10000
+                total += x * x
+            self._energies.append(total)
+        del self._partial[: whole * self._step]
+
+    def cut_offset(self, *, valley_ceiling: int = VALLEY_CEILING) -> int | None:
+        """Byte offset to cut at, 0 to keep the segment whole, or None to keep looking.
+
+        Speech counts as two consecutive windows at `onset_rms` -- a single one can be a
+        click. The cut then goes to the quietest window in front of that, which is the floor
+        of the valley the artifact decays into. 0 comes back when there is nothing in front
+        of the speech, or when what is in front never drops to `valley_ceiling` and so is
+        speech already running; None means no speech found yet in the audio pushed so far.
+        """
+        if self._step <= 0:
+            return None
+        if self._onset is None:
+            energies = self._energies
+            while self._scanned + 1 < len(energies):
+                if (
+                    energies[self._scanned] >= self._limit
+                    and energies[self._scanned + 1] >= self._limit
+                ):
+                    self._onset = self._scanned
+                    break
+                self._scanned += 1
+            if self._onset is None:
+                return None
+
+        before = self._energies[: self._onset]
+        if not before:
+            return 0
+        # The *end* of the quiet stretch in front of the speech, not its quietest point: the
+        # artifact's own first windows are quieter than the valley it decays into (it fades
+        # in), so the quietest window of all is usually window 0.
+        quiet = valley_ceiling * valley_ceiling * self._samples
+        last = next(
+            (
+                i
+                for i in range(len(before) - 1, 0, -1)
+                if before[i] <= quiet and before[i - 1] <= quiet
+            ),
+            None,
+        )
+        if last is None or last * self._step < self._min_lead:
+            # Nothing quiet in front of the speech, or a cut too early to be this artifact:
+            # a lead measures 680-910 ms, so anything shorter is a quiet syllable or a stop
+            # closure inside speech, and cutting there would eat the opening word.
+            return 0
+        return last * self._step
 
 
 def find_speech_onset(
@@ -53,27 +184,18 @@ def find_speech_onset(
     sample_rate: int,
     window_ms: int = 10,
     onset_rms: int = ONSET_RMS,
+    valley_ceiling: int = VALLEY_CEILING,
+    min_lead: float = MIN_LEAD,
 ) -> int | None:
-    """Byte offset of the first `window_ms` window reaching `onset_rms`, or None.
+    """Where to cut `pcm` to drop a speech-free lead: see `_OnsetScanner.cut_offset`.
 
-    `pcm` is mono signed 16-bit little-endian. A partial trailing window is ignored: the
-    caller is still buffering and will ask again with more audio.
+    `pcm` is mono signed 16-bit little-endian, and a partial trailing window is ignored.
     """
-    step = (sample_rate * window_ms // 1000) * 2
-    if step <= 0:
-        return None
-    # rms >= t  <=>  sum(x^2) >= t^2 * n, so compare in integers and skip the sqrt
-    limit = onset_rms * onset_rms * (step // 2)
-    for start in range(0, len(pcm) - step + 1, step):
-        total = 0
-        for i in range(start, start + step, 2):
-            x = pcm[i] | (pcm[i + 1] << 8)
-            if x >= 0x8000:
-                x -= 0x10000
-            total += x * x
-        if total >= limit:
-            return start
-    return None
+    scanner = _OnsetScanner(
+        sample_rate, window_ms=window_ms, onset_rms=onset_rms, min_lead=min_lead
+    )
+    scanner.push(pcm)
+    return scanner.cut_offset(valley_ceiling=valley_ceiling)
 
 
 def _fade_in(pcm: bytearray, samples: int) -> None:
@@ -96,6 +218,8 @@ class LeadTrimmedTTS(tts.TTS):
         inner: tts.TTS,
         *,
         onset_rms: int = ONSET_RMS,
+        valley_ceiling: int = VALLEY_CEILING,
+        min_lead: float = MIN_LEAD,
         keep_pad: float = KEEP_PAD,
         max_trim: float = MAX_TRIM,
         fade: float = FADE,
@@ -107,6 +231,8 @@ class LeadTrimmedTTS(tts.TTS):
         )
         self._inner = inner
         self._onset_rms = onset_rms
+        self._valley_ceiling = valley_ceiling
+        self._min_lead = min_lead
         self._keep_pad = keep_pad
         self._max_trim = max_trim
         self._fade = fade
@@ -144,8 +270,7 @@ class _LeadTrimmedStream(tts.ChunkedStream):
         searching = True
         held = bytearray()
         cap = int(parent._max_trim * rate) * 2
-        step = (rate // 100) * 2  # one 10 ms window; windows already scanned stay scanned
-        scanned = 0
+        scanner = _OnsetScanner(rate, onset_rms=parent._onset_rms, min_lead=parent._min_lead)
 
         async with parent._inner.synthesize(self.input_text, conn_options=self._conn_options) as inner:
             async for audio in inner:
@@ -155,14 +280,11 @@ class _LeadTrimmedStream(tts.ChunkedStream):
                     continue
 
                 held += data
-                found = find_speech_onset(
-                    bytes(held[scanned:]), sample_rate=rate, onset_rms=parent._onset_rms
-                )
-                onset = None if found is None else scanned + found
+                scanner.push(data)
+                onset = scanner.cut_offset(valley_ceiling=parent._valley_ceiling)
                 if onset is None:
-                    scanned += (len(held) - scanned) // step * step
                     if len(held) >= cap:
-                        # No onset within the cap: this is not the artifact we know how to
+                        # No speech within the cap: this is not the artifact we know how to
                         # recognise, so emit everything rather than risk cutting speech.
                         logger.debug("tts lead: no onset within %.0fms, passing through", parent._max_trim * 1000)
                         output_emitter.push(bytes(held))

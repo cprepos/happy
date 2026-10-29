@@ -647,19 +647,58 @@ def _pcm(*runs: tuple[int, float]) -> bytes:
 def test_onset_skips_the_kokoro_lead_and_finds_the_speech() -> None:
     from happy_voice.tts_trim import find_speech_onset
 
-    # the measured artifact: a burst to rms ~99 then a decay, ~700 ms, then speech
-    lead = _pcm((100, 99), (300, 60), (300, 20))
+    # the shape tts_lead_sweep.py measures: a burst rising to rms ~900, a decay, then a
+    # near-silent valley -- 750 ms of it -- and only then the speech
+    lead = _pcm((50, 8), (250, 900), (200, 400), (250, 80))
     onset = find_speech_onset(lead + _pcm((500, 4000)), sample_rate=24000)
     assert onset is not None
-    # within one 10 ms window of the real boundary
-    assert abs(onset - len(lead)) <= 24000 // 100 * 2
+    # within two 10 ms windows of the end of the valley
+    assert abs(onset - len(lead)) <= 24000 // 100 * 2 * 2
 
 
 def test_onset_ignores_audio_at_the_artifact_level() -> None:
     from happy_voice.tts_trim import find_speech_onset
 
-    # 133 is the loudest 10 ms window seen in any pre-speech artifact
-    assert find_speech_onset(_pcm((700, 133)), sample_rate=24000) is None
+    # 1005 is the loudest level any pre-speech artifact holds over two windows; the quietest
+    # unmistakable speech holds 1096. An artifact alone must not read as speech.
+    assert find_speech_onset(_pcm((700, 1000)), sample_rate=24000) is None
+
+
+def test_onset_cuts_at_the_end_of_the_valley_not_its_quietest_window() -> None:
+    from happy_voice.tts_trim import find_speech_onset
+
+    # The artifact fades *in*, so its own first windows (rms 5) are quieter than the valley
+    # floor it later decays into (80). Cutting at the quietest window would trim nothing.
+    lead = _pcm((40, 5), (300, 900), (200, 400), (250, 80))
+    onset = find_speech_onset(lead + _pcm((500, 4000)), sample_rate=24000)
+    assert onset is not None
+    assert abs(onset - len(lead)) <= 24000 // 100 * 2 * 2
+
+
+def test_one_loud_window_is_a_click_two_are_speech() -> None:
+    from happy_voice.tts_trim import find_speech_onset
+
+    window = 24000 // 100 * 2  # bytes in one 10 ms window
+    valley = _pcm((500, 80))
+    assert find_speech_onset(valley + _pcm((10, 4000)) + _pcm((300, 80)), sample_rate=24000) is None
+    # the cut is the start of the valley's last window, so one window short of the speech
+    onset = find_speech_onset(valley + _pcm((20, 4000)) + _pcm((300, 80)), sample_rate=24000)
+    assert onset == len(valley) - window
+
+
+def test_speech_with_no_valley_in_front_of_it_is_kept_whole() -> None:
+    from happy_voice.tts_trim import find_speech_onset
+
+    # 600 never drops to VALLEY_CEILING: this is speech already running, not a lead.
+    assert find_speech_onset(_pcm((700, 600), (300, 4000)), sample_rate=24000) == 0
+
+
+def test_a_quiet_stretch_too_early_to_be_a_lead_is_kept() -> None:
+    from happy_voice.tts_trim import find_speech_onset
+
+    # 180 ms in, this is a stop closure inside the speech, not the 680-910 ms artifact --
+    # cutting there would drop the opening word.
+    assert find_speech_onset(_pcm((100, 900), (80, 50), (300, 4000)), sample_rate=24000) == 0
 
 
 def test_onset_at_the_very_first_sample_is_zero_not_falsy_none() -> None:
@@ -674,6 +713,19 @@ def test_silence_has_no_onset_so_the_caller_keeps_it() -> None:
     assert find_speech_onset(bytes(24000 * 2), sample_rate=24000) is None
     # shorter than one window: still searching, nothing to report
     assert find_speech_onset(_pcm((5, 9000)), sample_rate=24000) is None
+
+
+def test_the_scan_is_the_same_over_arbitrary_chunk_boundaries() -> None:
+    from happy_voice.tts_trim import _OnsetScanner, find_speech_onset
+
+    pcm = _pcm((50, 8), (250, 900), (200, 400), (250, 80), (500, 4000))
+    scanner = _OnsetScanner(24000)
+    # 7 bytes is not a whole sample, let alone a whole window
+    for i in range(0, len(pcm), 7):
+        scanner.push(pcm[i : i + 7])
+        if scanner.cut_offset() is not None:
+            break
+    assert scanner.cut_offset() == find_speech_onset(pcm, sample_rate=24000)
 
 
 if __name__ == "__main__":
