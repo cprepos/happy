@@ -321,6 +321,41 @@ class _FakeLLM:
         self.closed = True
 
 
+def test_eot_prediction_is_relogged_and_other_debug_is_dropped() -> None:
+    import logging
+
+    from happy_voice.assistant import _EotPredictionLog
+
+    ours: list[str] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            ours.append(record.getMessage())
+
+    happy = logging.getLogger("happy-voice")
+    handler = _Capture()
+    happy.addHandler(handler)
+    was = happy.level
+    happy.setLevel(logging.INFO)  # the worker's cli does this; nothing configures it here
+    try:
+        f = _EotPredictionLog()
+        eot = logging.LogRecord("livekit.agents", logging.DEBUG, __file__, 1, "eot prediction", (), None)
+        eot.probability = 0.42
+        eot.unlikely_threshold = 0.15
+        eot.endpointing_delay = 1.5
+        assert f.filter(eot) is False  # consumed, not forwarded to the library's handlers
+        assert ours and "probability=0.42" in ours[0] and "endpointing_delay=1.5" in ours[0]
+
+        noise = logging.LogRecord("livekit.agents", logging.DEBUG, __file__, 1, "chatty %s", ("x",), None)
+        assert f.filter(noise) is False  # the rest of DEBUG never reaches a handler
+        info = logging.LogRecord("livekit.agents", logging.INFO, __file__, 1, "real news", (), None)
+        assert f.filter(info) is True  # anything above DEBUG passes untouched
+        assert len(ours) == 1
+    finally:
+        happy.removeHandler(handler)
+        happy.setLevel(was)
+
+
 def test_warmer_stops_at_first_chunk() -> None:
     async def run() -> _FakeLLM:
         model = _FakeLLM()

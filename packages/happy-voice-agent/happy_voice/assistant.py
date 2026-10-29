@@ -278,6 +278,44 @@ class HappyAssistant(Agent):
         return None
 
 
+class _EotPredictionLog(logging.Filter):
+    """Surface the turn detector's end-of-turn probability in our own log.
+
+    The 2026-10-29 session spent 727-1502 ms per turn on endpointing, most turns landing on
+    the 1.5 s max_endpointing_delay. Whether that cap is the dial to touch depends on why the
+    detector kept waiting -- a genuinely unsure model is a different problem from a threshold
+    set too low -- and neither EOUMetrics nor any public event carries the probability.
+    livekit-agents logs it as a DEBUG record instead, with the threshold and the delay it
+    chose, and `on_eot_prediction` reaches only an internal session host.
+
+    So turn the library's logger to DEBUG, re-log that one record as ours, and drop every
+    other DEBUG record before it reaches a handler. Logging from inside a filter is unusual;
+    it is here because a filter is the only hook that can drop a record selectively, and
+    `livekit.agents` is one logger for the whole library.
+    """
+
+    _FIELDS = ("probability", "unlikely_threshold", "endpointing_delay", "trigger", "from_cache")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno > logging.DEBUG:
+            return True
+        # the raw msg, so the other DEBUG records are never formatted
+        if record.msg == "eot prediction":
+            logger.info(
+                "eot: %s",
+                " ".join(f"{f}={getattr(record, f, '?')}" for f in self._FIELDS),
+            )
+        return False
+
+    @classmethod
+    def install(cls) -> None:
+        lk = logging.getLogger("livekit.agents")
+        if any(isinstance(f, cls) for f in lk.filters):
+            return
+        lk.addFilter(cls())
+        lk.setLevel(logging.DEBUG)
+
+
 def announce_interruptions(session: Any, publish: Any) -> None:
     """Call `publish(b"", reliable=True, topic=TOPIC_INTERRUPTED)` whenever
     the agent's speech is interrupted."""
@@ -438,6 +476,7 @@ async def entrypoint(ctx: JobContext) -> None:
         user_away_timeout=None,
     )
 
+    _EotPredictionLog.install()
     announce_interruptions(session, ctx.room.local_participant.publish_data)
     usage = metrics.UsageCollector()
 
