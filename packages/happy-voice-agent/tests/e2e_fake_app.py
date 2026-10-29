@@ -201,6 +201,9 @@ async def main() -> int:
     # between the agent's emitter and the client, so it is what tells a synthesis artifact
     # apart from something the agent's framing or the client's playback does.
     ap.add_argument("--dump-audio", default=None, metavar="PATH")
+    # Same track, native rate and channel count, no resampling. A burst present here is in the
+    # published stream; one that only shows up in --dump-audio is this harness's resampler.
+    ap.add_argument("--dump-audio-native", default=None, metavar="PATH")
     args = ap.parse_args()
 
     env = load_env(Path(args.env))
@@ -290,6 +293,10 @@ async def main() -> int:
 
     agent_joined = asyncio.Event()
     dumped: list[bytes] = []
+    # the same track taken without asking for a rate, so the client-side resampler is out of
+    # the path: it tells a published artifact apart from one this harness manufactures
+    dumped_native: list[bytes] = []
+    native_fmt: dict[str, int] = {}
 
     @room.on("participant_connected")
     def _joined(p: rtc.RemoteParticipant) -> None:
@@ -297,6 +304,12 @@ async def main() -> int:
             world.agent_identity = p.identity
             agent_joined.set()
             watch_state(p)
+
+    async def consume_native(track: rtc.Track) -> None:
+        async for ev in rtc.AudioStream(track):
+            native_fmt.setdefault("sample_rate", ev.frame.sample_rate)
+            native_fmt.setdefault("num_channels", ev.frame.num_channels)
+            dumped_native.append(bytes(ev.frame.data))
 
     async def consume_audio(track: rtc.Track) -> None:
         stream = rtc.AudioStream(track, sample_rate=24000, num_channels=1)
@@ -319,6 +332,8 @@ async def main() -> int:
         if track.kind == rtc.TrackKind.KIND_AUDIO:
             print(f"  subscribed to audio of {p.identity}", flush=True)
             asyncio.create_task(consume_audio(track))
+            if args.dump_audio_native:
+                asyncio.create_task(consume_native(track))
 
     t_connect = time.time()
     await room.connect(args.livekit, token)
@@ -517,6 +532,20 @@ async def main() -> int:
                 w.setframerate(24000)
                 w.writeframes(pcm)
             print(f"wrote {len(pcm) / 2 / 24000:.1f}s of agent audio to {args.dump_audio}", flush=True)
+        if args.dump_audio_native and dumped_native:
+            pcm = b"".join(dumped_native)
+            sr = native_fmt.get("sample_rate", 48000)
+            ch = native_fmt.get("num_channels", 1)
+            with wave.open(args.dump_audio_native, "wb") as w:
+                w.setnchannels(ch)
+                w.setsampwidth(2)
+                w.setframerate(sr)
+                w.writeframes(pcm)
+            print(
+                f"wrote {len(pcm) / 2 / ch / sr:.1f}s of agent audio at {sr} Hz x{ch} "
+                f"to {args.dump_audio_native}",
+                flush=True,
+            )
 
     failed = [r for r in checks.results if not r[1]]
     print(f"\n{len(checks.results) - len(failed)}/{len(checks.results)} checks passed")
