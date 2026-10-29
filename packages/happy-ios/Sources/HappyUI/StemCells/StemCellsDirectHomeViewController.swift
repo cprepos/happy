@@ -5,9 +5,10 @@ import UIKit
 
 /// Home for a paired computer in development and preview builds: home's
 /// floating header over that computer's Stem Cells. The computer's own
-/// picture at the left opens settings; its name is plain in the middle;
-/// search and the filter are the pill at the right, the filter at the far edge.
-final class StemCellsDirectHomeViewController: UIViewController {
+/// picture at the left opens settings, where another computer or the Happy
+/// account is chosen; its name is plain in the middle; search alone is the
+/// pill at the right.
+final class StemCellsDirectHomeViewController: UIViewController, StemCellsDockHosting {
     private let context: AppContext
     private let id: String
     private let header = HomeHeaderView()
@@ -27,7 +28,8 @@ final class StemCellsDirectHomeViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = UIColor(Palette.groupedBackground)
+        // The conversation's own ground, light and dark.
+        view.backgroundColor = UIColor(Palette.surface)
         addChild(stemCells)
         stemCells.view.frame = view.bounds
         stemCells.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
@@ -44,12 +46,6 @@ final class StemCellsDirectHomeViewController: UIViewController {
         header.logoControl.accessibilityTraits = .button
         header.logoControl.accessibilityIdentifier = "stem-settings-mark"
         header.logoControl.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(openSettings)))
-        header.filterButton.menu = UIMenu(children: [
-            UIMenu(title: Strings.SessionsFilter.groupingTitle, image: StemCellsGlyphs.image("layers"), options: .displayInline, children: [
-                UIAction(title: Strings.StemCells.filterTitle, state: .on) { _ in },
-            ]),
-        ])
-        header.filterButton.showsMenuAsPrimaryAction = true
         stemCells.onSnapshot = { [weak self] snapshot in
             self?.header.status = snapshot.live ? .connected : .connecting
         }
@@ -64,7 +60,10 @@ final class StemCellsDirectHomeViewController: UIViewController {
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
-        if navigationController?.topViewController !== self {
+        // Settings has its own glass bar, a chat its own header: shown for
+        // them, the bar would slide in with them and away again.
+        if let top = navigationController?.topViewController, top !== self,
+           !(top is StemCellsSettingsViewController), !(top is StemCellChatViewController) {
             navigationController?.setNavigationBarHidden(false, animated: animated)
         }
     }
@@ -110,8 +109,10 @@ final class StemCellsDirectHomeViewController: UIViewController {
         stemCells.contentInsets = layout.insets
     }
 
+    var newWorkDock: UIView { stemCells.newWorkDock }
+
     @objc private func openSettings() {
-        StemCellsSettingsNavigationController.present(context: context, computer: id, from: self)
+        StemCellsSettingsViewController.open(context: context, computer: id, from: self)
     }
 }
 #endif

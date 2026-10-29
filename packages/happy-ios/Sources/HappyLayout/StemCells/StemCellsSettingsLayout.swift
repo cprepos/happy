@@ -3,53 +3,10 @@ import Foundation
 import CoreGraphics
 #endif
 
-/// Stem Cells settings, after Telegram's settings (techniques only): a bar
-/// that stays put with the QR button at its left and a capsule holding
-/// search and Edit at its right; under it, scrolling, the profiles as a
+/// Stem Cells settings, after Telegram's settings (techniques only): under
+/// the glass bar (`StemCellsGlassBarLayout`), scrolling, the profiles as a
 /// strip of circles, the chosen one's name and line, and grouped cards.
-public struct StemCellsSettingsBarLayout: Equatable, Sendable {
-    public enum Metrics {
-        /// Telegram's glass bar buttons: 44 round, 16 from the sides.
-        public static let button: CGFloat = 44
-        public static let side: CGFloat = 16
-        public static let top: CGFloat = 6
-        /// Edit's text inside the capsule, after the search slot.
-        public static let editPadding: CGFloat = 16
-        /// Searching: the field inside the button band, then Cancel.
-        public static let fieldInset: CGFloat = 4
-        public static let cancelGap: CGFloat = 12
-    }
-
-    public var qr: CGRect
-    public var capsule: CGRect
-    /// In the capsule's own space.
-    public var search: CGRect
-    public var edit: CGRect?
-    /// Searching, the field and Cancel take the bar.
-    public var field: CGRect?
-    public var cancel: CGRect?
-    /// Where the scrolling content starts.
-    public var bottom: CGFloat
-
-    /// `editWidth` is Edit's text width, nil where there is nothing to edit;
-    /// `cancelWidth` is Cancel's while searching.
-    public init(width: CGFloat, safeTop: CGFloat, editWidth: CGFloat?, cancelWidth: CGFloat? = nil) {
-        typealias M = Metrics
-        let y = safeTop + M.top
-        qr = CGRect(x: M.side, y: y, width: M.button, height: M.button)
-        search = CGRect(x: 0, y: 0, width: M.button, height: M.button)
-        let capsuleWidth = M.button + (editWidth.map { $0.rounded(.up) + M.editPadding } ?? 0)
-        edit = editWidth.map { CGRect(x: M.button, y: 0, width: $0.rounded(.up), height: M.button) }
-        capsule = CGRect(x: width - M.side - capsuleWidth, y: y, width: capsuleWidth, height: M.button)
-        if let cancelWidth {
-            let cancel = CGRect(x: width - M.side - cancelWidth.rounded(.up), y: y, width: cancelWidth.rounded(.up), height: M.button)
-            self.cancel = cancel
-            field = CGRect(x: M.side, y: y + M.fieldInset, width: max(0, cancel.minX - M.cancelGap - M.side), height: M.button - 2 * M.fieldInset)
-        }
-        bottom = y + M.button
-    }
-}
-
+///
 /// The profiles as story circles: the chosen one centred, larger and
 /// ringed, the others smaller either side; each grows as it nears the
 /// middle, so a drag scales them continuously and a stop snaps to one.
@@ -252,8 +209,7 @@ public struct StemCellsQRSheetLayout: Equatable, Sendable {
         public static let nameGap: CGFloat = 16
         /// Telegram's sheet: 38 round, its title in a 54 band.
         public static let radius: CGFloat = 38
-        public static let close: CGFloat = 44
-        public static let closeInset: CGFloat = 16
+        public static let close: CGFloat = SheetCloseLayout.size
         public static let titleBand: CGFloat = 54
         public static let titleCenter: CGFloat = 36
         public static let titleHeight: CGFloat = 22
@@ -278,7 +234,7 @@ public struct StemCellsQRSheetLayout: Equatable, Sendable {
     public init(size: CGSize, safeTop: CGFloat, safeBottom: CGFloat, nameHeight: CGFloat, text: Measurable) {
         typealias M = Metrics
         let inner = max(0, size.width - 2 * M.textSide)
-        close = CGRect(x: M.closeInset, y: M.closeInset, width: M.close, height: M.close)
+        close = SheetCloseLayout.frame(width: size.width)
         title = CGRect(x: M.textSide + M.close, y: M.titleCenter - M.titleHeight / 2, width: max(0, size.width - 2 * (M.textSide + M.close)), height: M.titleHeight)
         self.text = CGRect(x: M.textSide, y: M.titleBand + M.textGap, width: inner, height: text.height(fitting: inner))
         primary = CGRect(x: M.textSide, y: self.text.maxY + M.buttonsGap, width: inner, height: M.button)
@@ -291,3 +247,65 @@ public struct StemCellsQRSheetLayout: Equatable, Sendable {
         name = CGRect(x: M.textSide, y: avatar.maxY + M.nameGap, width: inner, height: nameHeight)
     }
 }
+
+/// The link sheet's content, over its buttons: the title, centred, then
+/// what to do on the computer.
+public struct StemCellsLinkContentLayout: Equatable, Sendable {
+    public enum Metrics {
+        /// From the title to the first step, as the relay's checklist has it.
+        public static let stepsGap: CGFloat = LinkComputerContentLayout.Metrics.checklistMarginTop
+        public static let bottom: CGFloat = 12
+    }
+
+    public var title: CGRect
+    /// Each step as a checklist row, its number where the box goes.
+    public var steps: [ChecklistRowLayout]
+    public var size: CGSize
+
+    public init(width: CGFloat, title: Measurable, steps: [LinkComputerContentLayout.Row]) {
+        typealias M = Metrics
+        let width = max(0, width)
+        self.title = CGRect(x: 0, y: 0, width: width, height: title.height(fitting: width))
+        var y = self.title.maxY + M.stepsGap
+        var rows: [ChecklistRowLayout] = []
+        for (index, step) in steps.enumerated() {
+            let row = ChecklistRowLayout(origin: CGPoint(x: 0, y: y), width: width, title: step.title, body: step.body)
+            rows.append(row)
+            y = row.maxY + (index < steps.count - 1 ? ChecklistRowLayout.Metrics.marginBottom : 0)
+        }
+        self.steps = rows
+        size = CGSize(width: width, height: y + M.bottom)
+    }
+}
+
+/// The link sheet's Relay | Direct switch: 60% as wide as the screen's
+/// buttons and centred over them, just above the primary one
+/// (`OnboardingLayout.accessory`), with the Beta tag astride its top edge
+/// at Direct's end.
+public struct StemCellsLinkSwitchLayout: Equatable, Sendable {
+    public enum Metrics {
+        public static let height: CGFloat = 36
+        /// Of the buttons' width.
+        public static let widthShare: CGFloat = 0.6
+        /// From the control's right end to the tag's.
+        public static let tagInset: CGFloat = 10
+    }
+
+    public var control: CGRect
+    public var tag: CGRect
+
+    /// In the room the screen keeps for it, `accessory`.
+    public init(accessory: CGRect, tag size: CGSize) {
+        let width = (accessory.width * Metrics.widthShare).rounded()
+        self.init(control: CGRect(x: accessory.minX + ((accessory.width - width) / 2).rounded(), y: accessory.minY, width: width, height: accessory.height), tag: size)
+    }
+
+    /// The tag on `control` where it stands now.
+    public init(control: CGRect, tag size: CGSize) {
+        typealias M = Metrics
+        self.control = control
+        let tagSize = CGSize(width: size.width.rounded(.up), height: size.height.rounded(.up))
+        tag = CGRect(x: control.maxX - M.tagInset - tagSize.width, y: (control.minY - tagSize.height / 2).rounded(), width: tagSize.width, height: tagSize.height)
+    }
+}
+

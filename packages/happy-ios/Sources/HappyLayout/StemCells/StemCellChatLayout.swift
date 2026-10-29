@@ -5,82 +5,29 @@ import CoreGraphics
 
 /// MakeStuffView.tsx's intro, the first row of new work's conversation: the
 /// 64px mark centred over one line, 16 apart and 16 inside the row
-/// (`.happy-make-stuff__empty`, `__lead`), then what can be made at once
-/// (`__offer`): a caption 4 under the line and the options 16 under it,
-/// wrapping as flex does at 480 at most, 8 across and between lines, each
-/// line centred. Once the conversation has begun (`settled`) the options go,
-/// the line keeps its place, hidden, and the row ends right under it
-/// (`[data-settled] { padding-bottom: 0 }`), where the first message lands.
+/// (`.happy-make-stuff__empty`, `__lead`). Once the conversation has begun
+/// (`settled`) the line keeps its place, hidden, and the row ends right
+/// under it (`[data-settled] { padding-bottom: 0 }`), where the first
+/// message lands.
 public struct MakeStuffIntroLayout: Equatable, Sendable {
     public enum Metrics {
         public static let inset: CGFloat = 16
         public static let mark: CGFloat = 64
         public static let gap: CGFloat = 16
-        public static let captionGap: CGFloat = 4
-        public static let optionsMeasure: CGFloat = 480
-        public static let optionGap: CGFloat = 8
-        public static let optionHeight: CGFloat = 28
-        /// A small Button with an icon: 10 padding and a 1 border a side, a 14 icon, 6 gap.
-        public static let optionChrome: CGFloat = 22 + 14 + 6
     }
 
     public var size: CGSize
     public var mark: CGRect
     public var line: CGRect
-    public var caption: CGRect?
-    public var options: [CGRect]
 
-    /// `line` and `caption` are centred text wrapping inside the row;
-    /// `optionLabels` are the options' labels at their natural width.
-    public init(width: CGFloat, line: Measurable, caption: Measurable? = nil, optionLabels: [CGFloat] = [], settled: Bool = false) {
+    /// `line` is centred text wrapping inside the row.
+    public init(width: CGFloat, line: Measurable, settled: Bool = false) {
         typealias M = Metrics
         let measure = max(0, width - 2 * M.inset)
         let lineSize = line.size(fitting: measure)
         mark = CGRect(x: (width - M.mark) / 2, y: M.inset, width: M.mark, height: M.mark)
         self.line = CGRect(x: M.inset, y: mark.maxY + M.gap, width: measure, height: lineSize.height)
-        guard !settled, let caption, !optionLabels.isEmpty else {
-            self.caption = nil
-            options = []
-            size = CGSize(width: max(0, width), height: self.line.maxY + (settled ? 0 : M.inset))
-            return
-        }
-        let captionFrame = CGRect(x: M.inset, y: self.line.maxY + M.captionGap, width: measure, height: caption.size(fitting: measure).height)
-        self.caption = captionFrame
-        // Each option joins the line while it fits, as flex-wrap does.
-        let measureLine = min(M.optionsMeasure, measure)
-        var lines: [[CGFloat]] = []
-        var used: CGFloat = 0
-        for label in optionLabels {
-            let button = min(measureLine, label.rounded(.up) + M.optionChrome)
-            if lines.isEmpty || used + M.optionGap + button > measureLine + 1 / 64 {
-                lines.append([button])
-                used = button
-            } else {
-                lines[lines.count - 1].append(button)
-                used += M.optionGap + button
-            }
-        }
-        var frames: [CGRect] = []
-        var y = captionFrame.maxY + M.gap
-        for buttons in lines {
-            let total = buttons.reduce(0, +) + CGFloat(buttons.count - 1) * M.optionGap
-            var x = ((width - total) / 2).rounded(.down)
-            for button in buttons {
-                frames.append(CGRect(x: x, y: y, width: button, height: M.optionHeight))
-                x += button + M.optionGap
-            }
-            y += M.optionHeight + M.optionGap
-        }
-        options = frames
-        size = CGSize(width: max(0, width), height: y - M.optionGap + M.inset)
-    }
-
-    /// Inside one option: the 14 icon 11 in (10 padding and the border), the
-    /// label 6 after it, both centred on the button's height.
-    public static func optionContent(_ button: CGSize, label: CGSize) -> (icon: CGRect, label: CGRect) {
-        let icon = CGRect(x: 11, y: ((button.height - 14) / 2).rounded(), width: 14, height: 14)
-        let text = CGRect(x: icon.maxX + 6, y: ((button.height - label.height) / 2).rounded(), width: max(0, min(label.width, button.width - icon.maxX - 6 - 11)), height: label.height)
-        return (icon, text)
+        size = CGSize(width: max(0, width), height: self.line.maxY + (settled ? 0 : M.inset))
     }
 }
 
@@ -117,24 +64,91 @@ public struct StemCellChatScreenLayout: Equatable, Sendable {
 
 /// The conversation's rows stacked in a scroll view: newest last, resting
 /// on the composer while they are shorter than the screen, as a chat does.
+/// A conversation that opens on its intro (desktop's leading header) keeps
+/// it pinned under the bar instead, and its rows fill in under it.
+///
+/// A lifted send (`StemCellSendLift`) stands on its line from the
+/// viewport's top while the reply has not filled the room under it: the
+/// content reaches a viewport below the line, so following the end keeps
+/// it there whatever the viewport does (the keyboard, the composer
+/// growing). Once the rows below it fill that room the lift is spent, and
+/// the stack is as it would be without it, at the same place.
 public struct StemCellChatStackLayout: Equatable, Sendable {
+    /// Row `row` held `line` down from the viewport's top.
+    public struct Lift: Equatable, Sendable {
+        public var row: Int
+        public var line: CGFloat
+
+        public init(row: Int, line: CGFloat) {
+            self.row = row
+            self.line = line
+        }
+    }
+
     public var frames: [CGRect]
     public var contentHeight: CGFloat
+    /// The lift still holds room for the reply.
+    public var holding: Bool
 
     /// `heights` top to bottom; `viewport` is the height between the top
     /// inset and the composer, which short content rests at the foot of.
-    public init(heights: [CGFloat], width: CGFloat, viewport: CGFloat) {
+    /// `pinsFirst`: the first row is the intro, at the top whatever follows.
+    public init(heights: [CGFloat], width: CGFloat, viewport: CGFloat, pinsFirst: Bool = false, lift: Lift? = nil) {
         let total = heights.reduce(0, +)
-        var y = max(0, viewport - total)
-        var frames: [CGRect] = []
-        frames.reserveCapacity(heights.count)
+        var starts: [CGFloat] = []
+        starts.reserveCapacity(heights.count)
+        var end: CGFloat = 0
         for height in heights {
-            frames.append(CGRect(x: 0, y: y, width: width, height: height))
-            y += height
+            starts.append(end)
+            end += height
         }
-        self.frames = frames
+        var lead = pinsFirst ? 0 : max(0, viewport - total)
         contentHeight = max(viewport, total)
+        holding = false
+        if let lift, starts.indices.contains(lift.row) {
+            let start = starts[lift.row]
+            // Shorter below it than the room under its line: held. At the
+            // moment the room fills, the natural rest is this same place.
+            if total - start < viewport - lift.line {
+                holding = true
+                if !pinsFirst { lead = max(0, lift.line - start) }
+                contentHeight = lead + start - lift.line + viewport
+            }
+        }
+        frames = zip(starts, heights).map { CGRect(x: 0, y: lead + $0, width: width, height: $1) }
+        if !holding { contentHeight = max(viewport, lead + total) }
     }
+}
+
+/// Desktop's send lift (Message.tsx `sendLift`, `SEND_LIFT_TOP`): a message
+/// sent while the agent is idle is lifted to 30% down the viewport, the
+/// turns before it still in view above, and the room under it is held for
+/// the reply until the reply fills it (`StemCellChatStackLayout.Lift`). A
+/// lift only ever moves a send up: one already at the line or above it
+/// stays where it landed.
+///
+/// Under a pinned intro the line is no higher than the intro's own line, so
+/// the first send, landing right under the intro, is already there and
+/// nothing moves; every later one is lifted to the same slot or lower.
+public struct StemCellSendLift: Equatable, Sendable {
+    public enum Metrics {
+        /// `SEND_LIFT_TOP`: of the viewport's height, from its top.
+        public static let share: CGFloat = 0.3
+        /// No lower than this share, however tall the intro: the reply's room.
+        public static let lowest: CGFloat = 0.5
+    }
+
+    /// From the viewport's top, where the send's top edge sits.
+    public var line: CGFloat
+
+    /// `introLine`: where a pinned intro's line ends.
+    public init(viewport: CGFloat, introLine: CGFloat? = nil) {
+        typealias M = Metrics
+        line = min(max((viewport * M.share).rounded(), introLine ?? 0), (viewport * M.lowest).rounded())
+    }
+
+    /// A send whose top is `shownAt` from the viewport's top, as it landed.
+    public func lifts(shownAt: CGFloat) -> Bool { shownAt > line }
 }
 
 /// One message of a Stem Cells conversation, as desktop's `Message` sets

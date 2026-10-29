@@ -168,6 +168,105 @@ final class DirectAccountsTests: XCTestCase {
         try await restored.signOut(accountID: directID)
         XCTAssertTrue(restored.accounts.isEmpty); XCTAssertNil(restored.direct.activeID)
     }
+    /// Where a computer is a home of its own: the last choice opens at
+    /// launch; with none, a paired computer, never Welcome; and signing the
+    /// last Happy account out opens the computer.
+    func testFallsBackToAComputer() async throws {
+        let backend = AccountsKeychain(); let directStore = KeychainDirectCredentialStore(backend: backend)
+        let directory = try directory()
+        func controller(fallsBack: Bool = true) -> AccountController {
+            let account = AccountController(serverConfig: ServerConfig(storage: InMemoryKeyValueStore()), clientID: "test", credentialStore: InMemoryCredentialStore(), storeDirectory: directory,
+                accountCredentialStore: KeychainAccountCredentialStore(backend: backend), directCredentialStore: directStore,
+                directTransport: { _ in IdentityTransport() }, rnServerImport: { .confirmed(ServerConfig.defaultServerURL) }, transport: FakeHTTP(), connector: FakeConnector())
+            account.fallsBackToComputer = fallsBack
+            return account
+        }
+        let account = controller()
+        await account.direct.setForeground(false)
+        let directID = try await { () async throws -> String in
+            try await account.addDirect(value(), name: "Mac")
+            return try XCTUnwrap(account.direct.activeID)
+        }()
+        try await account.signIn(Credentials(token: "token", secret: Data(repeating: 4, count: 32)))
+        let legacyID = try XCTUnwrap(account.session?.keys.anonID)
+
+        // The Happy account was chosen last: it opens.
+        var restored = controller(); await restored.direct.setForeground(false); await restored.restore()
+        XCTAssertEqual(restored.session?.keys.anonID, legacyID)
+        try await restored.switchAccount(to: directID)
+        restored = controller(); await restored.direct.setForeground(false); await restored.restore()
+        XCTAssertEqual(restored.direct.activeID, directID, "the computer chosen last didn't open")
+
+        // Signing the only Happy account out from it opens the computer.
+        try await restored.switchAccount(to: legacyID)
+        try await restored.signOut(accountID: legacyID)
+        XCTAssertEqual(restored.direct.activeID, directID)
+        if case .direct = restored.state {} else { XCTFail("Welcome instead of the computer") }
+
+        // Nothing chosen at all: the computer, not Welcome; without the
+        // fallback, as before.
+        try await restored.direct.select(nil)
+        let plain = controller(fallsBack: false); await plain.direct.setForeground(false); await plain.restore()
+        XCTAssertNil(plain.direct.activeID)
+        if case .signedOut = plain.state {} else { XCTFail("opened something without the fallback") }
+        let falling = controller(); await falling.direct.setForeground(false); await falling.restore()
+        XCTAssertEqual(falling.direct.activeID, directID)
+
+        // The old filter's choice: the computer, over a Happy account.
+        try await falling.signIn(Credentials(token: "token2", secret: Data(repeating: 5, count: 32)))
+        XCTAssertNotNil(falling.session)
+        let carried = controller(); await carried.direct.setForeground(false); await carried.restore(openingComputer: true, preferred: "nope")
+        XCTAssertEqual(carried.direct.activeID, directID)
+        XCTAssertNil(carried.session)
+        try await carried.signOut(accountID: directID)
+    }
+
+    /// The Direct connection experiment off: paired computers stay stored
+    /// but aren't listed, opened at launch or switched to; hiding the one
+    /// open opens the Happy account; showing them again brings them back.
+    func testHiddenComputersStayPairedButNeverOpen() async throws {
+        let backend = AccountsKeychain(); let directStore = KeychainDirectCredentialStore(backend: backend)
+        let directory = try directory()
+        func controller(shows: Bool) -> AccountController {
+            let account = AccountController(serverConfig: ServerConfig(storage: InMemoryKeyValueStore()), clientID: "test", credentialStore: InMemoryCredentialStore(), storeDirectory: directory,
+                accountCredentialStore: KeychainAccountCredentialStore(backend: backend), directCredentialStore: directStore,
+                directTransport: { _ in IdentityTransport() }, rnServerImport: { .confirmed(ServerConfig.defaultServerURL) }, transport: FakeHTTP(), connector: FakeConnector())
+            account.fallsBackToComputer = true
+            account.showsComputers = shows
+            return account
+        }
+        let account = controller(shows: true)
+        await account.direct.setForeground(false)
+        try await account.signIn(Credentials(token: "token", secret: Data(repeating: 4, count: 32)))
+        let legacyID = try XCTUnwrap(account.session?.keys.anonID)
+        try await account.addDirect(value(), name: "Mac")
+        let directID = try XCTUnwrap(account.direct.activeID)
+
+        // Hidden while open: the Happy account opens, the computer stays paired.
+        await account.setShowsComputers(false)
+        XCTAssertEqual(account.session?.keys.anonID, legacyID)
+        XCTAssertEqual(account.accounts.map(\.id), [legacyID])
+        XCTAssertEqual(account.direct.accounts.map(\.id), [directID])
+        do {
+            try await account.switchAccount(to: directID)
+            XCTFail("switched to a hidden computer")
+        } catch {}
+
+        // At launch, hidden, the computer neither opens nor stands in.
+        try await account.signOut(accountID: legacyID)
+        if case .signedOut = account.state {} else { XCTFail("a hidden computer stood in for Welcome: \(account.state)") }
+        let launched = controller(shows: false); await launched.direct.setForeground(false); await launched.restore()
+        if case .signedOut = launched.state {} else { XCTFail("a hidden computer opened at launch") }
+        XCTAssertTrue(launched.accounts.isEmpty)
+
+        // Shown again with nothing open: listed, and it opens, as at launch.
+        await launched.setShowsComputers(true)
+        XCTAssertEqual(launched.accounts.map(\.id), [directID])
+        XCTAssertEqual(launched.direct.activeID, directID)
+        if case .direct = launched.state {} else { XCTFail("a shown computer didn't open over Welcome: \(launched.state)") }
+        try await launched.signOut(accountID: directID)
+    }
+
     func testRemovalAwaitsCancellationAndDiscardsLateIdentity() async throws {
         let store = InMemoryDirectCredentialStore()
         try store.save(value(), id: "direct-cancel")

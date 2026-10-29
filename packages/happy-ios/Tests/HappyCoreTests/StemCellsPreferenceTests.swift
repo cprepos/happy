@@ -18,22 +18,41 @@ final class StemCellsPreferenceTests: XCTestCase {
         defaults.set("direct-1", forKey: StemCellsPreference.computerKey)
         let production = StemCellsPreference(variant: .production, storage: defaults)
         XCTAssertFalse(production.isAvailable)
-        XCTAssertFalse(production.isEnabled)
+        XCTAssertFalse(production.takeFilterChoice())
         XCTAssertNil(production.computerID)
-        production.isEnabled = true
-        XCTAssertFalse(production.isEnabled)
     }
 
-    func testPreviewAndDevelopmentOfferItOffByDefault() {
+    /// The filter's old choice is carried over once.
+    func testPreviewAndDevelopmentOfferIt() {
         for variant in [AppVariant.preview, .development] {
-            let preference = StemCellsPreference(variant: variant, storage: storage())
+            let defaults = storage()
+            let preference = StemCellsPreference(variant: variant, storage: defaults)
             XCTAssertTrue(preference.isAvailable)
-            XCTAssertFalse(preference.isEnabled, "not the default")
-            preference.isEnabled = true
-            XCTAssertTrue(preference.isEnabled)
+            XCTAssertFalse(preference.takeFilterChoice(), "not the default")
+            defaults.set(true, forKey: StemCellsPreference.enabledKey)
+            XCTAssertTrue(preference.takeFilterChoice())
+            XCTAssertFalse(preference.takeFilterChoice(), "carried over twice")
             preference.computerID = "direct-2"
             XCTAssertEqual(preference.computerID, "direct-2")
         }
+    }
+
+    /// Direct connection is an experiment, off until turned on; production
+    /// keeps its computer page and can never turn it on.
+    func testDirectConnectionIsOffUntilTurnedOn() {
+        for variant in [AppVariant.preview, .development] {
+            let preference = StemCellsPreference(variant: variant, storage: storage())
+            XCTAssertFalse(preference.directConnection)
+            XCTAssertFalse(preference.showsComputers)
+            preference.directConnection = true
+            XCTAssertTrue(preference.directConnection)
+            XCTAssertTrue(preference.showsComputers)
+        }
+        let defaults = storage()
+        defaults.set(true, forKey: StemCellsPreference.directKey)
+        let production = StemCellsPreference(variant: .production, storage: defaults)
+        XCTAssertFalse(production.directConnection)
+        XCTAssertTrue(production.showsComputers)
     }
 
     func testTheShippedBundleIdentifierIsProduction() {

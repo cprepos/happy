@@ -56,6 +56,11 @@ public final class DirectAgentClient: Sendable {
         try await decode(AgentWire.Health.self, "GET", "/v0/health")
     }
 
+    public func artifacts(pageCursor: String? = nil) async throws -> JSONValue {
+        let query = pageCursor.map { "?pageCursor=\(Self.escape($0))" } ?? ""
+        return try await decode(JSONValue.self, "GET", "/v0/artifacts\(query)")
+    }
+
     public func userSetting(_ key: String) async throws -> JSONValue? {
         struct Response: Decodable { let setting: AgentWire.Setting }
         do { return try await decode(Response.self, "GET", "/v0/user-settings/\(Self.escape(key))").setting.value }
@@ -168,14 +173,6 @@ public final class DirectAgentClient: Sendable {
         }
     }
 
-    /// A bot under the phone's own IDs, unnamed: the daemon calls it New Bot
-    /// and names it from its first message. It answers once the bot is ready.
-    public func createBot(id: String, workspaceId: String, agentId: String) async throws -> AgentWire.Bot {
-        let body: JSONValue = .object(["id": .string(id), "workspaceId": .string(workspaceId), "agentId": .string(agentId), "mutationId": .string(ClientID.make())])
-        struct Response: Decodable { let bot: AgentWire.Bot }
-        return try await decode(Response.self, "POST", "/v0/bots", json: body).bot
-    }
-
     // MARK: Surfaces
 
     /// The joined Surfaces; nil where the daemon serves none (`404`, `501`).
@@ -183,14 +180,6 @@ public final class DirectAgentClient: Sendable {
         struct Response: Decodable { let surfaces: [Lossy<AgentWire.Surface>] }
         do { return try await decode(Response.self, "GET", "/v0/surfaces").surfaces.compactMap(\.value) }
         catch DirectAgentError.status(404, _, _), DirectAgentError.status(501, _, _) { return nil }
-    }
-
-    /// `id` is the retry key: a repeat returns the Surface already made.
-    public func createSurface(id: String, type: String, name: String, text: String? = nil) async throws -> AgentWire.Surface {
-        var body: [String: JSONValue] = ["id": .string(id), "type": .string(type), "name": .string(name), "mutationId": .string(ClientID.make())]
-        if let text { body["text"] = .string(text) }
-        struct Response: Decodable { let surface: AgentWire.Surface }
-        return try await decode(Response.self, "POST", "/v0/surfaces", json: .object(body)).surface
     }
 
     /// A todo list's active todos, then its completed ones.
@@ -220,6 +209,11 @@ public final class DirectAgentClient: Sendable {
 
     public func bootstrap(_ agentId: String) async throws -> AgentWire.Bootstrap {
         try await decode(AgentWire.Bootstrap.self, "GET", "/v0/agents/\(Self.escape(agentId))/bootstrap")
+    }
+
+    /// The same snapshot, read for a conversation's detail.
+    public func sessionDetail(_ agentId: String) async throws -> AgentWire.Detail {
+        try await decode(AgentWire.Detail.self, "GET", "/v0/agents/\(Self.escape(agentId))/bootstrap")
     }
 
     /// Newest runs first page, or the runs before `before`, or the messages after `after`.
@@ -266,9 +260,11 @@ public final class DirectAgentClient: Sendable {
         return try await decode(Response.self, "GET", "/v0/agents/\(Self.escape(agentId))/mode").mode
     }
 
+    /// Always steering, as desktop sends: mid-turn it is taken at the next
+    /// boundary rather than waiting behind the run; idle, it starts one.
     public func sendMessage(_ agentId: String, id: String, text: String, images: [(mimeType: String, data: Data)], mode: AgentWire.Mode) async throws {
         var object: [String: JSONValue] = [
-            "id": .string(id), "text": .string(text), "delivery": .string("queue"),
+            "id": .string(id), "text": .string(text), "delivery": .string("steer"),
             "clientMetadata": .object(["composer": .string("mobile")]),
         ]
         if !images.isEmpty {
@@ -278,6 +274,21 @@ public final class DirectAgentClient: Sendable {
         }
         object["mode"] = try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(mode))
         _ = try await send("POST", "/v0/agents/\(Self.escape(agentId))/send", json: .object(object))
+    }
+
+    /// The composer's draft as the computer keeps it for this person.
+    public func draft(_ agentId: String) async throws -> AgentWire.Draft {
+        struct Response: Decodable { var draft: AgentWire.Draft }
+        return try await decode(Response.self, "GET", "/v0/agents/\(Self.escape(agentId))/draft").draft
+    }
+
+    /// Saves the draft, or clears it with nil. A write older than the one
+    /// kept is ignored; the answer is what is kept either way.
+    public func saveDraft(_ agentId: String, value: AgentWire.DraftValue?, updatedAt: Double, mutationId: String) async throws -> AgentWire.Draft {
+        struct Response: Decodable { var draft: AgentWire.Draft }
+        let draft: JSONValue = try value.map { try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode($0)) } ?? .null
+        let body: JSONValue = .object(["draft": draft, "updatedAt": .number(updatedAt), "mutationId": .string(mutationId)])
+        return try await decode(Response.self, "PUT", "/v0/agents/\(Self.escape(agentId))/draft", json: body).draft
     }
 
     public func abort(_ agentId: String) async throws {
@@ -314,6 +325,12 @@ public final class DirectAgentClient: Sendable {
     }
 
     // MARK: Artifacts
+
+    /// An artifact object, a deleted one's too (`GET /v0/artifacts/:artifactId`).
+    public func artifact(_ artifactId: String) async throws -> JSONValue {
+        guard let artifact = try await decode(JSONValue.self, "GET", "/v0/artifacts/\(Self.escape(artifactId))")["artifact"] else { throw DirectAgentError.invalidResponse }
+        return artifact
+    }
 
     /// One version of an artifact, `nil` for the latest: its entry, its files
     /// and how it wants to be shown.

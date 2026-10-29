@@ -7,7 +7,6 @@ import HappyCore
 extension Strings {
     public enum StemCells {
         /// The home filter's third choice.
-        public static let filterTitle = "Stem Cells"
 
         // Rows (HappyAgentSpacesSidebar.tsx, AppHappyAgentView.tsx).
         public static let search = "Search"
@@ -18,29 +17,39 @@ extension Strings {
         public static let prioritizing = "Prioritizing"
 
         // Menus.
-        public static let open = "Open"
-        public static let openBot = "Open bot"
         public static let renameTask = "Rename task"
         public static let renameBot = "Rename bot"
         public static let renameSection = "Rename section"
         /// The conversation's name in its bar, for VoiceOver.
         public static let renameHint = "Renames it"
+        public static let back = "Back"
+        /// A file picked for a message, which carries text and pictures alone.
+        public static func filesNotSent(_ names: [String]) -> String {
+            names.count == 1 ? "\(names[0]) wasn't attached" : "\(names.count) files weren't attached"
+        }
+        public static let filesNotSentDetail = "A message to an agent carries text and pictures only for now."
         public static let closeNewWork = "Close new work"
         public static let leaveTask = "Leave task"
         public static let archiveTask = "Archive task"
         public static let archiveBot = "Archive bot"
         public static let archiveSubtask = "Archive subtask"
         public static let deleteSection = "Delete section"
-        public static let tidyNow = "Tidy sidebar now"
-        public static let showSubtasks = "Show subtasks"
-        public static let hideSubtasks = "Hide subtasks"
-        public static let fold = "Collapse"
-        public static let unfold = "Expand"
-        public static let rename = "Rename"
-        // A row pulled open: short names for its two actions.
-        public static let swipeClose = "Close"
-        public static let swipeLeave = "Leave"
-        public static let swipeArchive = "Archive"
+        public static let reorder = "Reorder"
+
+        // A message from another agent (happy-desktop's AgentMessageActivity).
+        public static let agentMessage = "Message"
+        public static func agentMessageFrom(_ name: String) -> String { "from \(name)" }
+        /// An agent this one spawned that has no title yet (`projectSubagents`).
+        public static let subagent = "Subagent"
+        public static let untitledAgent = "Untitled agent"
+        public static let agentMessageOpenHint = "Shows the message"
+        public static let agentMessageCloseHint = "Hides the message"
+        /// A section's "+", for VoiceOver.
+        public static func newWorkIn(_ section: String) -> String { "New work in \(section)" }
+        /// Said once a row is lifted from its menu.
+        public static let reorderHint = "Lifted. Drag to move it, or tap to put it back."
+        /// The blurred screen behind a held row's menu, for VoiceOver.
+        public static let closeMenu = "Close menu"
         public static let cancel = "Cancel"
         public static let save = "Save"
 
@@ -68,7 +77,6 @@ extension Strings {
 
         // New work (MakeStuffView.tsx).
         public static let introLine = "Say what it is — it’ll find its place."
-        public static let introOptions = "Or start one of these:"
         public static let composerPlaceholder = "Describe it…"
 
         // The working line (AgentWorkingStatus.tsx, happyAgentConnection's `activityOf`).
@@ -96,32 +104,6 @@ extension Strings {
         public static let sending = "Sending…"
         public static let sendFailed = "Not sent. Tap to retry."
 
-        // What new work offers to make at once (AppHappyAgentView.tsx `SURFACE_CREATE_OFFERS`).
-        public static func offer(_ offer: StemCellOffer) -> String {
-            switch offer {
-            case .bot: "New bot"
-            case .surface("todo"): "New todo list"
-            case .surface("document"): "New document"
-            case .surface("calendar"): "New calendar"
-            case .surface("system_monitor"): "New system monitor"
-            case .surface("chat"): "New chat"
-            case .surface: "New"
-            }
-        }
-        /// The name a new Surface starts with, which the person may change first.
-        public static func surfaceName(_ type: String) -> String {
-            switch type {
-            case "todo": "Todo list"
-            case "document": "Document"
-            case "calendar": "Calendar"
-            case "system_monitor": "System Monitor"
-            case "chat": "Chat"
-            default: "Untitled"
-            }
-        }
-        public static let nameIt = "Name it"
-        public static let make = "Create"
-        public static let newBot = "New Bot"
 
         // A Surface on the phone: read, and a todo added.
         public static let addTodo = "Add a todo"
@@ -137,6 +119,13 @@ extension Strings {
         public static func media(isVideo: Bool, name: String) -> String { "\(isVideo ? video : picture): \(name)" }
         public static let addPicture = "Add a picture"
         public static let close = "Close"
+        /// Where the viewer is among the conversation's pictures.
+        public static func pictureNumber(_ number: Int, of count: Int) -> String { "\(number) of \(count)" }
+        /// Desktop's way back to the newest message, and whether the agent
+        /// is working as it shows, which UI tests read.
+        public static let jumpToLatest = "Jump to latest"
+        public static let jumpWorking = "working"
+        public static let jumpIdle = "idle"
         /// A tile's accessibility value, which UI tests wait on.
         public static let mediaLoading = "loading"
         public static let mediaLoaded = "loaded"
@@ -205,7 +194,7 @@ extension Strings {
         public static let done = "Done"
         public static let searchSettings = "Search settings"
         public static let showQR = "QR code"
-        public static let addProfile = "Add a computer or account"
+        public static let addProfile = "Add computer"
         public static let more = "More"
         public static let status = "Status"
         public static let account = "Account"
@@ -233,6 +222,38 @@ extension Strings {
 
         // The composer's pickers (desktop's ComposerModelControl, flattened).
         public static let model = "Model"
+        /// The four permission modes a message runs with (API.md's `permissionMode`).
+        public static let permission = "Permission"
+        public static func permissionName(_ mode: String) -> String {
+            switch mode {
+            case "read_only": "Read only"
+            case "workspace_write": "Workspace write"
+            case "auto": "Auto"
+            case "full_access": "Full access"
+            default: mode
+            }
+        }
+        public static func permissionDetail(_ mode: String) -> String? {
+            switch mode {
+            case "read_only": "Reads files; changes nothing."
+            case "workspace_write": "Changes files in its workspace only."
+            case "auto": "Anything past its workspace is reviewed first."
+            case "full_access": "Acts on the whole computer without asking."
+            default: nil
+            }
+        }
+
+        // The composer's "+" sheet, as Claude's "Add to session".
+        public static let addToMessage = "Add to message"
+        public static let photos = "Photos"
+        public static let camera = "Camera"
+        public static let cameraUnavailable = "No camera on this device"
+        public static let pasteFromClipboard = "Paste from clipboard"
+        public static let addFiles = "Add files"
+        public static func addPhotos(_ count: Int) -> String { "Add \(count)" }
+        public static func photo(picked: Int?) -> String { picked.map { "Photo, picked \($0)" } ?? "Photo" }
+        /// The clipboard held nothing a message can carry.
+        public static let nothingToPaste = "Nothing to paste"
         public static let provider = "Provider"
         public static let effort = "Effort"
         public static let modelsNotConfigured = "Models not configured"
@@ -246,24 +267,34 @@ extension Strings {
             case .session: "Session"
             }
         }
-        public static func percentLeft(_ percent: Int) -> String { "\(percent)% left" }
         public static let usageUnknown = "Usage unknown"
-        public static let updating = "Updating…"
-        public static let couldntRefresh = "Couldn’t refresh"
         public static let limitReached = "Limit reached"
-        public static func usageLeft(_ percent: Int) -> String { "\(percent)%" }
         public static func usageWindow(_ label: String, left: Int, resets: String?) -> String {
             resets.map { "\(label) · \(left)% left · resets \($0)" } ?? "\(label) · \(left)% left"
         }
         public static func limitResets(_ when: String) -> String { "Limit resets \(when)" }
-        public static func updated(_ age: String) -> String { "Updated \(age)" }
-        public static func updatedFailed(_ when: String) -> String { "Updated \(when) · couldn’t refresh" }
-        public static func windowAsOf(_ label: String, _ when: String) -> String { "\(label) as of \(when)" }
         public static func serviceAccount(_ service: String, _ account: String) -> String { "\(service) · \(account)" }
         /// Desktop's service header: "Claude (Current CLI)".
         public static func serviceHeader(_ service: String, _ account: String) -> String { "\(service) (\(account))" }
         public static func chipLabel(_ kind: String, _ value: String) -> String { "\(kind): \(value)" }
-
+        /// The lists' names, as desktop labels its panels.
+        public static let selectModel = "Select model"
+        public static let selectEffort = "Select effort"
+        public static func accountsOf(_ service: String) -> String { "\(service) account" }
+        /// A service's heading, read aloud: its account and each window it shows.
+        public static func headingLabel(_ service: String, _ account: String, _ windows: [String]) -> String {
+            (["\(service) account: \(account)"] + windows).joined(separator: ", ")
+        }
+        /// A gauge: the share left, alone at a row's end or with "left" in the windows.
+        public static func usageLeft(_ percent: Int) -> String { "\(percent)%" }
+        public static func percentLeft(_ percent: Int) -> String { "\(percent)% left" }
+        public static func windowLeft(_ label: String, _ percent: Int) -> String { "\(label) \(percent)% left" }
+        public static func resets(_ when: String) -> String { "resets \(when)" }
+        public static let updating = "Updating…"
+        public static let couldntRefresh = "Couldn’t refresh"
+        public static func updated(_ age: String) -> String { "Updated \(age)" }
+        public static func updatedFailed(_ when: String) -> String { "Updated \(when) · couldn’t refresh" }
+        public static func windowAsOf(_ label: String, _ when: String) -> String { "\(label) as of \(when)" }
         /// `usageAge`: how long ago, in a word.
         public static func age(_ date: Date, now: Date) -> String {
             let minutes = Int(now.timeIntervalSince(date) / 60)

@@ -18,8 +18,12 @@ public struct OnboardingLayout: Equatable, Sendable {
         public static let bodyPaddingVertical: CGFloat = 8
         public static let primaryMarginTop: CGFloat = 12
         public static let secondaryMarginTop: CGFloat = 4
+        /// Between glass buttons, which are pills where text actions are not.
+        public static let glassActionGap: CGFloat = 12
         public static let footerPaddingHorizontal: CGFloat = 16
         public static let footerPaddingBottom: CGFloat = 12
+        /// Above and below an accessory over the primary button.
+        public static let accessoryGap: CGFloat = 16
     }
 
     public struct Input {
@@ -30,14 +34,22 @@ public struct OnboardingLayout: Equatable, Sendable {
         public var content: Measurable
         public var primary: Measurable
         public var secondary: Measurable
+        /// A second text action under the first, where a screen has one.
+        public var tertiary: Measurable?
         public var help: CGSize
+        /// The actions are glass pills, spaced as pills.
+        public var glass = false
+        /// The height of a control the screen holds just above its primary
+        /// button, across the block (the link sheet's Relay | Direct).
+        public var accessory: CGFloat?
 
-        public init(size: CGSize, safeArea: LayoutInsets, content: Measurable, primary: Measurable, secondary: Measurable, help: CGSize) {
+        public init(size: CGSize, safeArea: LayoutInsets, content: Measurable, primary: Measurable, secondary: Measurable, tertiary: Measurable? = nil, help: CGSize) {
             self.size = size
             self.safeArea = safeArea
             self.content = content
             self.primary = primary
             self.secondary = secondary
+            self.tertiary = tertiary
             self.help = help
         }
     }
@@ -49,6 +61,10 @@ public struct OnboardingLayout: Equatable, Sendable {
     public var content: CGRect
     public var primary: CGRect
     public var secondary: CGRect
+    /// The accessory, as wide as the buttons, in the scroll view's coordinates.
+    public var accessory: CGRect?
+    /// Under the secondary, as far below it as it is below the primary.
+    public var tertiary: CGRect?
     /// Get help, in the screen's coordinates.
     public var help: CGRect
 
@@ -79,18 +95,32 @@ public struct OnboardingLayout: Equatable, Sendable {
         let contentHeight = input.content.height(fitting: innerWidth)
         let primaryHeight = input.primary.height(fitting: innerWidth)
         let secondaryHeight = input.secondary.height(fitting: innerWidth)
-        let blockHeight = contentHeight + M.primaryMarginTop + primaryHeight + M.secondaryMarginTop + secondaryHeight
+        let tertiaryHeight = input.tertiary?.height(fitting: innerWidth)
+        let gap = input.glass ? M.glassActionGap : M.secondaryMarginTop
+        let accessoryBand = input.accessory.map { M.accessoryGap + $0 + M.accessoryGap } ?? M.primaryMarginTop
+        let blockHeight = contentHeight + accessoryBand + primaryHeight + gap + secondaryHeight
+            + (tertiaryHeight.map { gap + $0 } ?? 0)
 
         // Two growing spacers centre the block; when it does not fit, the
         // body scrolls instead.
         let free = max(0, scroll.height - M.bodyPaddingVertical * 2 - blockHeight)
         var y = M.bodyPaddingVertical + free / 2
         content = CGRect(x: innerX, y: y, width: innerWidth, height: contentHeight)
-        y = content.maxY + M.primaryMarginTop
+        if let height = input.accessory {
+            let accessory = CGRect(x: innerX, y: content.maxY + M.accessoryGap, width: innerWidth, height: height)
+            self.accessory = accessory
+            y = accessory.maxY + M.accessoryGap
+        } else {
+            accessory = nil
+            y = content.maxY + M.primaryMarginTop
+        }
         primary = CGRect(x: innerX, y: y, width: innerWidth, height: primaryHeight)
-        y = primary.maxY + M.secondaryMarginTop
-        secondary = CGRect(x: innerX, y: y, width: innerWidth, height: secondaryHeight)
-        contentSize = CGSize(width: size.width, height: max(scroll.height, secondary.maxY + M.bodyPaddingVertical))
+        y = primary.maxY + gap
+        let secondary = CGRect(x: innerX, y: y, width: innerWidth, height: secondaryHeight)
+        let tertiary = tertiaryHeight.map { CGRect(x: innerX, y: secondary.maxY + gap, width: innerWidth, height: $0) }
+        self.secondary = secondary
+        self.tertiary = tertiary
+        contentSize = CGSize(width: size.width, height: max(scroll.height, (tertiary ?? secondary).maxY + M.bodyPaddingVertical))
     }
 }
 

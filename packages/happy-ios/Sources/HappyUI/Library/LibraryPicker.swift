@@ -5,7 +5,8 @@ import Photos
 import UIKit
 import UniformTypeIdentifiers
 
-/// One photo or video picked from the library, read in full.
+/// One photo or video picked from the library, a file from Files, or what
+/// was pasted, read in full.
 struct LibraryPick {
     enum Media {
         /// The photo's bytes as the library keeps them (HEIC, JPEG, PNG…).
@@ -13,6 +14,9 @@ struct LibraryPick {
         /// A copy of the video in the app's temporary directory, the
         /// caller's to move or remove.
         case video(URL)
+        /// Any other file from Files, copied the same way and the caller's
+        /// the same way.
+        case file(URL, UTType)
     }
 
     var media: Media
@@ -29,14 +33,15 @@ struct LibraryPick {
 /// The photo library as a sheet, after Telegram's attachment gallery: the
 /// camera roll newest first in a grid of our own, picked in order with
 /// numbered circles, and one button that hands the picks back. Their count
-/// after Cancel shows only the picks until Back. Library only: no camera,
-/// files or clipboard. Limited access is shown and managed as Telegram does;
-/// refused access offers Settings.
+/// after Cancel shows only the picks until Back. No camera. Limited
+/// access is shown and managed as Telegram does; refused access offers
+/// Settings.
 ///
 ///     LibraryPicker.present(from: self, options: .init(limit: 10, action: "Add")) { picks in … }
 ///
 /// `onPick` gets the picks in the order they were picked, read in full,
-/// and is not called when the sheet is cancelled or swiped away.
+/// and is not called when the sheet is cancelled or swiped away; the
+/// sheet's `onCancel` is.
 @MainActor
 enum LibraryPicker {
     struct Options {
@@ -46,12 +51,6 @@ enum LibraryPicker {
         var videos: Bool = true
         /// The button's word: "Add 2", "Send 2".
         var action: String = "Add"
-
-        init(limit: Int = 10, videos: Bool = true, action: String = "Add") {
-            self.limit = limit
-            self.videos = videos
-            self.action = action
-        }
     }
 
     @discardableResult
@@ -119,8 +118,58 @@ enum LibraryPicker {
     /// Removes the files a read left behind, for picks nobody will take.
     static func discard(_ picks: [LibraryPick]) {
         for pick in picks {
-            if case .video(let file) = pick.media { try? FileManager.default.removeItem(at: file) }
+            switch pick.media {
+            case .video(let file), .file(let file, _): remove(file)
+            case .image: break
+            }
         }
+    }
+
+    /// A file under `files`, and the folder `document` kept it in.
+    nonisolated private static func remove(_ file: URL) {
+        try? FileManager.default.removeItem(at: file)
+        let folder = file.deletingLastPathComponent()
+        if folder.deletingLastPathComponent().standardizedFileURL == files.standardizedFileURL {
+            try? FileManager.default.removeItem(at: folder)
+        }
+    }
+
+    /// A picture's bytes as a pick, measured and drawn small for its thumbnail.
+    nonisolated static func picture(_ data: Data, type: UTType) -> LibraryPick? {
+        guard let image = UIImage(data: data) else { return nil }
+        let pixels = CGSize(width: image.size.width * image.scale, height: image.size.height * image.scale)
+        let side: CGFloat = 512 * 3
+        let fit = min(1, side / max(1, max(pixels.width, pixels.height)))
+        let small = CGSize(width: max(1, (pixels.width * fit).rounded()), height: max(1, (pixels.height * fit).rounded()))
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let thumbnail = UIGraphicsImageRenderer(size: small, format: format).image { _ in image.draw(in: CGRect(origin: .zero, size: small)) }
+        return LibraryPick(media: .image(data, type), thumbnail: thumbnail, pixelSize: pixels, duration: nil, assetIdentifier: "")
+    }
+
+    /// A file from Files (already this app's copy) as a pick: a picture by
+    /// its bytes, a recording when recordings are wanted, else as a file,
+    /// moved under `files` so it is the caller's. A picture nothing can draw
+    /// (an SVG) is a file. Nothing is left behind when it can't be kept.
+    nonisolated static func document(_ url: URL, videos: Bool) -> LibraryPick? {
+        let type = UTType(filenameExtension: url.pathExtension) ?? .data
+        if type.conforms(to: .image), let data = try? Data(contentsOf: url), let pick = picture(data, type: type) {
+            try? FileManager.default.removeItem(at: url)
+            return pick
+        }
+        try? FileManager.default.createDirectory(at: files, withIntermediateDirectories: true)
+        let target = files.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try? FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        let kept = target.appendingPathComponent(url.lastPathComponent)
+        guard (try? FileManager.default.moveItem(at: url, to: kept)) != nil else {
+            try? FileManager.default.removeItem(at: url)
+            try? FileManager.default.removeItem(at: target)
+            return nil
+        }
+        if videos, type.conforms(to: .movie) {
+            return LibraryPick(media: .video(kept), thumbnail: UIImage(), pixelSize: .zero, duration: nil, assetIdentifier: "")
+        }
+        return LibraryPick(media: .file(kept, type), thumbnail: UIImage(), pixelSize: .zero, duration: nil, assetIdentifier: "")
     }
 
     nonisolated static var files: URL {
@@ -165,6 +214,9 @@ enum LibraryPicker {
 final class LibraryPickerViewController: UIViewController, UICollectionViewDataSource, UICollectionViewDelegate, PHPhotoLibraryChangeObserver, UICollectionViewDataSourcePrefetching {
     private let options: LibraryPicker.Options
     private let onPick: ([LibraryPick]) -> Void
+    /// Gone with nothing given: cancelled or swiped away.
+    var onCancel: (() -> Void)?
+    private var delivered = false
     private let titleLabel = UILabel()
     private let cancelButton = UIButton(type: .system)
     private let gridLayout = LibraryGridCollectionLayout()
@@ -213,7 +265,11 @@ final class LibraryPickerViewController: UIViewController, UICollectionViewDataS
 
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
-        if isBeingDismissed || presentingViewController == nil { readTask?.cancel() }
+        if isBeingDismissed || presentingViewController == nil {
+            readTask?.cancel()
+            if !delivered { onCancel?() }
+            onCancel = nil
+        }
     }
 
     override func viewDidLoad() {
@@ -229,7 +285,7 @@ final class LibraryPickerViewController: UIViewController, UICollectionViewDataS
         cancelButton.accessibilityIdentifier = "library-cancel"
         cancelButton.addAction(UIAction { [weak self] _ in
             guard let self else { return }
-            if showingPicks != nil {
+            if showingPicks != nil, !reading {
                 showPicks(false)
                 return
             }
@@ -633,6 +689,7 @@ final class LibraryPickerViewController: UIViewController, UICollectionViewDataS
                 return
             }
             let onPick = onPick
+            delivered = true
             dismiss(animated: true) { onPick(picks) }
         }
     }

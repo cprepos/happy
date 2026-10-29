@@ -70,11 +70,21 @@ public struct AgentInputMenu: Equatable, Sendable {
         public var key: String
         public var label: String
         public var isDisabled: Bool
+        /// Grey lines under the label.
+        public var subtitle: String?
+        /// Checked whatever `selectedKey` says.
+        public var isChecked: Bool
+        /// Non-empty: the row opens these over the menu instead of
+        /// picking (a submenu, stacked over its parent).
+        public var children: [Section]
 
-        public init(key: String, label: String, isDisabled: Bool = false) {
+        public init(key: String, label: String, isDisabled: Bool = false, subtitle: String? = nil, isChecked: Bool = false, children: [Section] = []) {
             self.key = key
             self.label = label
             self.isDisabled = isDisabled
+            self.subtitle = subtitle
+            self.isChecked = isChecked
+            self.children = children
         }
     }
 
@@ -96,6 +106,49 @@ public struct AgentInputMenu: Equatable, Sendable {
     public init(sections: [Section], selectedKey: String?) {
         self.sections = sections
         self.selectedKey = selectedKey
+    }
+}
+
+extension UIMenu {
+    /// `model` as a native menu: each section inline under its heading, a
+    /// row with children a submenu stacked over its parent; a pick is its key.
+    @MainActor
+    convenience init(_ model: AgentInputMenu, onSelect: @escaping (String) -> Void) {
+        func elements(_ sections: [AgentInputMenu.Section]) -> [UIMenuElement] {
+            let menus: [UIMenuElement] = sections.map { section in
+                UIMenu(title: section.title ?? "", options: .displayInline, children: section.options.map { option in
+                    if !option.children.isEmpty {
+                        let menu = UIMenu(title: option.label, identifier: UIMenu.Identifier(option.key), children: elements(option.children))
+                        menu.subtitle = option.subtitle
+                        return menu
+                    }
+                    let action = UIAction(
+                        title: option.label,
+                        attributes: option.isDisabled ? .disabled : [],
+                        state: option.isChecked || option.key == model.selectedKey ? .on : .off
+                    ) { _ in onSelect(option.key) }
+                    action.subtitle = option.subtitle
+                    return action
+                })
+            }
+            if menus.count == 1, let only = menus.first as? UIMenu, only.title.isEmpty { return only.children }
+            return menus
+        }
+        self.init(children: elements(model.sections))
+    }
+
+    /// This menu's submenu that is `visible`'s new version (by identifier),
+    /// else this menu: what an open menu shows when it is replaced.
+    @MainActor
+    func replacing(_ visible: UIMenu) -> UIMenu {
+        func find(_ menu: UIMenu) -> UIMenu? {
+            if menu.identifier == visible.identifier { return menu }
+            for case let child as UIMenu in menu.children {
+                if let found = find(child) { return found }
+            }
+            return nil
+        }
+        return find(self) ?? self
     }
 }
 
@@ -178,6 +231,10 @@ public struct AgentInputCardConfiguration: Equatable, Sendable {
     /// and `refusesControls` is not consulted (only Home's dock refuses,
     /// and it has no panel).
     public var desktop: AgentInputDesktopConfiguration?
+    /// The full-screen editor's button at the text's top right, once the
+    /// text is past the lines the card shows; the delegate hears
+    /// `agentInputCardDidPressExpand`. The compact card only.
+    public var showsExpand: Bool
 
     public init(
         placeholder: String,
@@ -197,7 +254,8 @@ public struct AgentInputCardConfiguration: Equatable, Sendable {
         primaryStyle: AgentInputPrimaryStyle = .standard,
         refusesControls: Bool = false,
         zenMode: Bool = false,
-        desktop: AgentInputDesktopConfiguration? = nil
+        desktop: AgentInputDesktopConfiguration? = nil,
+        showsExpand: Bool = false
     ) {
         self.placeholder = placeholder
         self.isEditable = isEditable
@@ -217,6 +275,7 @@ public struct AgentInputCardConfiguration: Equatable, Sendable {
         self.refusesControls = refusesControls
         self.zenMode = zenMode
         self.desktop = desktop
+        self.showsExpand = showsExpand
     }
 }
 
@@ -244,6 +303,8 @@ public protocol AgentInputCardDelegate: AnyObject {
     func agentInputCard(_ card: AgentInputCardView, didSelect key: String, in chip: AgentInputChip)
     /// A chip that `opensPicker` was pressed.
     func agentInputCard(_ card: AgentInputCardView, didPress chip: AgentInputChip)
+    /// A chip's menu opened.
+    func agentInputCard(_ card: AgentInputCardView, didOpenMenuIn chip: AgentInputChip)
     /// Return was typed. False swallows the newline (an autocomplete pick).
     func agentInputCardShouldInsertNewline(_ card: AgentInputCardView) -> Bool
     /// A hardware keyboard's Tab was typed. False swallows the tab (an
@@ -251,6 +312,8 @@ public protocol AgentInputCardDelegate: AnyObject {
     func agentInputCardShouldInsertTab(_ card: AgentInputCardView) -> Bool
     /// A control was pressed while `refusesControls` is on; it has shaken.
     func agentInputCardDidRefuse(_ card: AgentInputCardView, control: AgentInputControl)
+    /// The full-screen editor's button (`showsExpand`).
+    func agentInputCardDidPressExpand(_ card: AgentInputCardView)
 }
 
 extension AgentInputCardDelegate {
@@ -265,9 +328,11 @@ extension AgentInputCardDelegate {
     public func agentInputCard(_ card: AgentInputCardView, didRemoveAttachment id: String) {}
     public func agentInputCard(_ card: AgentInputCardView, didSelect key: String, in chip: AgentInputChip) {}
     public func agentInputCard(_ card: AgentInputCardView, didPress chip: AgentInputChip) {}
+    public func agentInputCard(_ card: AgentInputCardView, didOpenMenuIn chip: AgentInputChip) {}
     public func agentInputCardShouldInsertNewline(_ card: AgentInputCardView) -> Bool { true }
     public func agentInputCardShouldInsertTab(_ card: AgentInputCardView) -> Bool { true }
     public func agentInputCardDidRefuse(_ card: AgentInputCardView, control: AgentInputControl) {}
+    public func agentInputCardDidPressExpand(_ card: AgentInputCardView) {}
 }
 
 /// The card. Give it a frame from `height(fitting:)`; it lays itself out.
@@ -304,6 +369,7 @@ public final class AgentInputCardView: UIView {
     private let inputGroup = PassthroughView()
     private let actionsGroup = PassthroughView()
     private let placeholderLabel = UILabel()
+    private let expandButton = ComposerIconButton(icon: .ionicons("expand-outline"), size: AgentInputCardLayout.Metrics.expandIconSize)
     private let attachmentStrip = AttachmentStripView()
     private let addButton = ComposerIconButton(icon: .ionicons("add"), size: MobileComposerMetrics.mobile.addIconSize)
     private let middle = UIView()
@@ -430,6 +496,12 @@ public final class AgentInputCardView: UIView {
         placeholderLabel.isAccessibilityElement = false
         placeholderLabel.isUserInteractionEnabled = false
         inputGroup.addSubview(placeholderLabel)
+        expandButton.isHidden = true
+        expandButton.tint = Palette.textSecondary
+        expandButton.accessibilityLabel = Strings.Composer.expandEditor
+        expandButton.accessibilityIdentifier = "composer-expand"
+        expandButton.addTarget(self, action: #selector(expandTapped), for: .touchUpInside)
+        inputGroup.addSubview(expandButton)
 
         addButton.accessibilityLabel = Strings.Composer.addPhoto
         addButton.addTarget(self, action: #selector(addTapped), for: .touchUpInside)
@@ -449,6 +521,10 @@ public final class AgentInputCardView: UIView {
             chip.onPress = { [weak self] which in
                 guard let self else { return }
                 self.delegate?.agentInputCard(self, didPress: which)
+            }
+            chip.onMenu = { [weak self] which in
+                guard let self else { return }
+                self.delegate?.agentInputCard(self, didOpenMenuIn: which)
             }
             middle.addSubview(chip)
         }
@@ -645,6 +721,18 @@ public final class AgentInputCardView: UIView {
 
     public func blur() {
         textView.resignFirstResponder()
+    }
+
+    /// Where a chip stands, in `view`: what its owner's picker opens over.
+    /// Nil while the chip is hidden.
+    public func chipFrame(_ chip: AgentInputChip, in view: UIView) -> CGRect? {
+        let button = switch chip {
+        case .permission: permissionChip
+        case .model: modelChip
+        case .effort: effortChip
+        }
+        guard !button.isHidden, button.window != nil else { return nil }
+        return button.convert(button.bounds, to: view)
     }
 
     // MARK: Feedback
@@ -946,7 +1034,8 @@ public final class AgentInputCardView: UIView {
             modelIsMenu: config.model?.menu != nil,
             effort: config.effort.map { _ in .init(labelSize: effortChip.contentSize) },
             separator: config.effort == nil ? .zero : separator.sizeThatFits(.zero),
-            zenMode: config.zenMode
+            zenMode: config.zenMode,
+            offersExpand: config.showsExpand
         )
     }
 
@@ -972,6 +1061,7 @@ public final class AgentInputCardView: UIView {
 
         if let strip = layout.attachments {
             attachmentStrip.isHidden = false
+            attachmentStrip.insets = layout.attachmentInsets
             attachmentStrip.setLayoutFrame(strip)
         } else {
             attachmentStrip.isHidden = true
@@ -979,6 +1069,13 @@ public final class AgentInputCardView: UIView {
         textView.setLayoutFrame(layout.text)
         if textView.isScrollEnabled != layout.textScrolls {
             textView.isScrollEnabled = layout.textScrolls
+        }
+        setTextTrailingInset(layout.textTrailingInset)
+        if let expand = layout.expand {
+            expandButton.isHidden = false
+            expandButton.setLayoutFrame(expand)
+        } else {
+            expandButton.isHidden = true
         }
         placeholderLabel.setLayoutFrame(CGRect(
             x: layout.text.minX,
@@ -1009,8 +1106,11 @@ public final class AgentInputCardView: UIView {
     private func layoutDesktop(_ layout: AgentInputDesktopLayout) {
         typealias M = AgentInputDesktopLayout.Metrics
         layer.shadowPath = nil
+        expandButton.isHidden = true
+        setTextTrailingInset(0)
         if let strip = layout.attachments {
             attachmentStrip.isHidden = false
+            attachmentStrip.insets = .panel
             attachmentStrip.setLayoutFrame(strip)
         } else {
             attachmentStrip.isHidden = true
@@ -1027,6 +1127,13 @@ public final class AgentInputCardView: UIView {
         ))
         desktopControls.frame = actionsGroup.bounds
         desktopControls.place(layout)
+    }
+
+    /// The text wraps clear of the expand button while it shows. Its height
+    /// is measured at the full width: past the cap either way, it scrolls.
+    private func setTextTrailingInset(_ inset: CGFloat) {
+        guard textView.textContainerInset.right != inset else { return }
+        textView.textContainerInset.right = inset
     }
 
     private func place(_ chip: ComposerChipButton, _ frame: AgentInputCardLayout.ChipFrame?) {
@@ -1095,6 +1202,7 @@ public final class AgentInputCardView: UIView {
         updatePlaceholder()
 
         guard let previous else { return }
+        if previous.showsExpand != config.showsExpand { setNeedsLayout() }
         if previous.attachments.count != config.attachments.count
             || previous.inputMinHeight != config.inputMinHeight
             || previous.showsAdd != config.showsAdd
@@ -1193,6 +1301,10 @@ public final class AgentInputCardView: UIView {
     @objc private func primaryTapped() {
         delegate?.agentInputCardDidPressPrimary(self)
     }
+
+    @objc private func expandTapped() {
+        delegate?.agentInputCardDidPressExpand(self)
+    }
 }
 
 extension AgentInputCardView: UITextViewDelegate {
@@ -1290,6 +1402,8 @@ final class ComposerChipButton: UIButton {
     var onRefuse: ((AgentInputChip) -> Void)?
     /// A press on a chip that opens its owner's picker.
     var onPress: ((AgentInputChip) -> Void)?
+    /// The chip's menu opened.
+    var onMenu: ((AgentInputChip) -> Void)?
     /// Presses shake the chip instead of opening its menu.
     var refuses = false {
         didSet {
@@ -1318,6 +1432,11 @@ final class ComposerChipButton: UIButton {
         // `.menuOrder(.fixed)`, which happy-app gets by pre-reversing).
         preferredMenuElementOrder = .fixed
         addTarget(self, action: #selector(tapped), for: .touchUpInside)
+        addTarget(self, action: #selector(menuOpened), for: .menuActionTriggered)
+    }
+
+    @objc private func menuOpened() {
+        onMenu?(chip)
     }
 
     @objc private func tapped() {
@@ -1383,28 +1502,15 @@ final class ComposerChipButton: UIButton {
         let model = chipConfiguration?.menu
         let opensPicker = chipConfiguration?.opensPicker == true
         menu = refuses || opensPicker ? nil : model.map(makeMenu)
+        // Open while it changed (usage read as it opened): it shows the new one.
+        if let menu { contextMenuInteraction?.updateVisibleMenu { menu.replacing($0) } }
         showsMenuAsPrimaryAction = !refuses && !opensPicker
         isEnabled = refuses || opensPicker || model != nil
     }
 
     private func makeMenu(_ model: AgentInputMenu) -> UIMenu {
         let chip = self.chip
-        let sections: [UIMenuElement] = model.sections.map { section in
-            let actions = section.options.map { option in
-                UIAction(
-                    title: option.label,
-                    attributes: option.isDisabled ? .disabled : [],
-                    state: option.key == model.selectedKey ? .on : .off
-                ) { [weak self] _ in
-                    self?.onSelect?(option.key, chip)
-                }
-            }
-            return UIMenu(title: section.title ?? "", options: .displayInline, children: actions)
-        }
-        if sections.count == 1, let only = sections.first as? UIMenu, only.title.isEmpty {
-            return UIMenu(children: only.children)
-        }
-        return UIMenu(children: sections)
+        return UIMenu(model) { [weak self] key in self?.onSelect?(key, chip) }
     }
 
     override func layoutSubviews() {
@@ -1550,9 +1656,13 @@ final class PassthroughView: UIView {
 
 /// AgentInputAttachmentStrip: 64pt thumbnails in a horizontal scroll, each
 /// with a remove button hanging over its corner. The scroll view clips, as
-/// React Native's does.
+/// React Native's does; `insets` leave the buttons room inside it.
 final class AttachmentStripView: UIScrollView {
     var onRemove: ((String) -> Void)?
+
+    var insets: AgentInputCardLayout.AttachmentInsets = .panel {
+        didSet { if insets != oldValue { setNeedsLayout() } }
+    }
 
     var attachments: [AgentInputAttachmentPreview] = [] {
         didSet {
@@ -1599,7 +1709,7 @@ final class AttachmentStripView: UIScrollView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        let placed = AgentInputCardLayout.attachmentThumbnails(count: thumbnails.count)
+        let placed = AgentInputCardLayout.attachmentThumbnails(count: thumbnails.count, insets: insets)
         for (view, frame) in zip(thumbnails, placed.frames) {
             view.setLayoutFrame(frame)
         }
@@ -1613,20 +1723,27 @@ final class AttachmentThumbnailView: UIView {
     let attachment: AgentInputAttachmentPreview
     var onRemove: ((String) -> Void)?
     private let imageView = UIImageView()
+    /// The ring is a view of its own under the remove button: a layer's
+    /// border is drawn over its sublayers, and would cross the button.
+    private let ring = UIView()
     private let removeButton = ComposerIconButton(icon: .ionicons("close"), size: AgentInputCardLayout.Metrics.attachmentRemoveIconSize)
 
     init(attachment: AgentInputAttachmentPreview) {
         self.attachment = attachment
         super.init(frame: .zero)
         layer.cornerRadius = AgentInputCardLayout.Metrics.attachmentRadius
-        layer.borderWidth = AgentInputCardLayout.Metrics.attachmentBorder
         imageView.contentMode = .scaleAspectFill
         imageView.clipsToBounds = true
         imageView.layer.cornerRadius = AgentInputCardLayout.Metrics.attachmentRadius
         imageView.alpha = 0
         addSubview(imageView)
+        ring.layer.cornerRadius = AgentInputCardLayout.Metrics.attachmentRadius
+        ring.layer.borderWidth = AgentInputCardLayout.Metrics.attachmentBorder
+        ring.isUserInteractionEnabled = false
+        addSubview(ring)
         removeButton.backgroundColor = UIColor(Palette.surfaceHigh)
         removeButton.addTarget(self, action: #selector(removeTapped), for: .touchUpInside)
+        removeButton.accessibilityIdentifier = "composer-attachment-remove"
         addSubview(removeButton)
         accessibilityIdentifier = "composer-attachment"
         applyColors()
@@ -1642,7 +1759,7 @@ final class AttachmentThumbnailView: UIView {
     }
 
     private func applyColors() {
-        layer.borderColor = UIColor(Palette.divider).resolvedColor(with: traitCollection).cgColor
+        ring.layer.borderColor = UIColor(Palette.divider).resolvedColor(with: traitCollection).cgColor
     }
 
     private func load() {
@@ -1665,6 +1782,7 @@ final class AttachmentThumbnailView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         imageView.frame = bounds
+        ring.frame = bounds
         removeButton.frame = AgentInputCardLayout.attachmentRemoveButton
     }
 

@@ -27,6 +27,16 @@ public final class AccountController {
     public private(set) var localSettings: LocalSettings
     public private(set) var isAddingAccount = false
     public let direct: DirectAccounts
+    /// With no Happy account to open (none chosen at launch, or the last
+    /// one signed out), a paired computer opens instead of Welcome, at once.
+    /// Set by builds
+    /// where a computer is a home of its own (`StemCellsPreference.isAvailable`).
+    public var fallsBackToComputer = false
+    /// Paired computers are offered at all. Off (the Direct connection
+    /// experiment, off), they stay paired and stored but are neither listed
+    /// nor opened, so turning it on again brings them back. Set before
+    /// `restore`; afterwards through `setShowsComputers`.
+    public var showsComputers = true
 
     private let accountCredentialStore: AccountCredentialStore
     private let rnServerImport: @Sendable () -> ImportedAccountServer
@@ -114,6 +124,7 @@ public final class AccountController {
                            usesSharedItem: entry.location == .shared,
                            serverConfirmed: entry.serverConfirmed)
         }
+        guard showsComputers else { return legacy }
         return legacy + direct.accounts.sorted { $0.addedAt < $1.addedAt }.map { account in
             var value = AccountSummary(id: account.id, serverURL: URL(string: "http://server.tailcat")!, name: account.name, avatarThumbhash: account.thumbhash, isActive: direct.activeID == account.id, usesSharedItem: false)
             value.isDirect = true; value.connectionStatus = account.status.title
@@ -232,7 +243,7 @@ public final class AccountController {
         guard !busy else { throw AccountSwitchError.operationInProgress }
         busy = true
         defer { finishOperation() }
-        if direct.accounts.contains(where: { $0.id == id }) {
+        if showsComputers, direct.accounts.contains(where: { $0.id == id }) {
             try await activateDirect(id)
             return
         }
@@ -284,14 +295,21 @@ public final class AccountController {
         await ServerProbe(transport: transport).check(url)
     }
 
-    public func restore() async {
+    /// `openingComputer`: a paired computer opens rather than the Happy
+    /// account chosen last, `preferred` if it is one (carrying over the
+    /// filter that showed a computer's Stem Cells over the account's home).
+    public func restore(openingComputer: Bool = false, preferred: String? = nil) async {
         guard session == nil, !busy else { return }
         busy = true
         defer { finishOperation() }
         _ = await prepareStorageDirectory()
         do {
             try await direct.restore()
-            if let active = direct.active {
+            if openingComputer, showsComputers, direct.active == nil {
+                let computers = direct.accounts.filter { !$0.revoked }
+                if let computer = computers.first(where: { $0.id == preferred }) ?? computers.first { try await direct.select(computer.id) }
+            }
+            if showsComputers, let active = direct.active {
                 _ = try await reconcile()
                 localSettings = settings(for: active.id)
                 state = .direct(active)
@@ -299,6 +317,14 @@ public final class AccountController {
                 return
             }
         } catch { }
+        await restoreLegacy()
+        // Nothing chosen opens: a paired computer does.
+        if fallsBackToComputer, showsComputers, case .signedOut = state, pendingServerConfirmation == nil, let computer = direct.accounts.first(where: { !$0.revoked }) ?? direct.accounts.first {
+            try? await activateDirect(computer.id)
+        }
+    }
+
+    private func restoreLegacy() async {
         do {
             let values = try await reconcile()
             guard let id = registry.activeID,
@@ -407,6 +433,10 @@ public final class AccountController {
                 localSettings = settings(for: next.keys.anonID)
                 state = .signedIn(next)
                 observeProfile(of: next)
+            } else if fallsBackToComputer, showsComputers, let computer = direct.accounts.first(where: { !$0.revoked }) ?? direct.accounts.first {
+                // The last Happy account went: a paired computer opens at
+                // once, with no Welcome between.
+                try? await activateDirect(computer.id)
             } else {
                 localSettings = LocalSettings(storage: InMemoryKeyValueStore())
                 state = .signedOut
@@ -455,7 +485,7 @@ public final class AccountController {
         memoryStores.removeValue(forKey: id)
         if wasActive {
             await next?.start()
-            if next == nil, let following = direct.accounts.first { try await activateDirect(following.id) }
+            if next == nil, showsComputers, direct.activeID == nil, let following = direct.accounts.first { try await activateDirect(following.id) }
         }
         if let cleanupError { throw cleanupError }
     }
@@ -756,6 +786,34 @@ public final class AccountController {
         let account = try await direct.add(credentials, name: name)
         isAddingAccount = false
         try await activateDirect(account.id)
+    }
+
+    /// Shows or hides the paired computers. Hidden while one is open, the
+    /// Happy account chosen last opens instead, or Welcome with none. Shown
+    /// again with nothing open, a paired computer opens, as at launch.
+    public func setShowsComputers(_ shown: Bool) async {
+        guard shown != showsComputers else { return }
+        showsComputers = shown
+        notifyAccounts()
+        // A switch already in flight may still land on a computer, so look
+        // only once it's done, and at what's asked for then.
+        while busy { try? await Task.sleep(for: .milliseconds(20)) }
+        busy = true
+        defer { finishOperation() }
+        if showsComputers {
+            guard fallsBackToComputer, case .signedOut = state, pendingServerConfirmation == nil,
+                  let computer = direct.accounts.first(where: { !$0.revoked }) ?? direct.accounts.first else { return }
+            try? await activateDirect(computer.id)
+            return
+        }
+        guard case .direct = state else { return }
+        try? await direct.select(nil)
+        await restoreLegacy()
+        if case .direct = state {
+            localSettings = LocalSettings(storage: InMemoryKeyValueStore())
+            state = .signedOut
+        }
+        notifyAccounts()
     }
 
     private func activateDirect(_ id: String) async throws {

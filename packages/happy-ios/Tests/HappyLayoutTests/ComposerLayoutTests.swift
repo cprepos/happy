@@ -37,7 +37,7 @@ final class MobileComposerGeometryTests: XCTestCase {
             effortWidth: 64,
             primaryActionSize: 42,
             primaryActionMarginLeft: 8,
-            attachmentExtraHeight: 72
+            attachmentExtraHeight: 82
         ))
         XCTAssertEqual(metrics.baseHeight, 102)
         XCTAssertEqual(metrics.chromeHeight, 58)
@@ -59,7 +59,7 @@ final class MobileComposerGeometryTests: XCTestCase {
         XCTAssertEqual(metrics.composerHeight(inputHeight: 30), 102)
         XCTAssertEqual(metrics.composerHeight(inputHeight: 52), 118)
         XCTAssertEqual(metrics.composerHeight(inputHeight: 120), 186)
-        XCTAssertEqual(metrics.composerHeight(inputHeight: 30, hasAttachments: true), 174)
+        XCTAssertEqual(metrics.composerHeight(inputHeight: 30, hasAttachments: true), 184)
     }
 
     func testIconMenuGeometry() {
@@ -220,7 +220,8 @@ final class AgentInputCardLayoutTests: XCTestCase {
         modelIsMenu: Bool = true,
         effort: CGSize? = nil,
         minHeight: CGFloat? = nil,
-        zenMode: Bool = false
+        zenMode: Bool = false,
+        offersExpand: Bool = false
     ) -> AgentInputCardLayout {
         AgentInputCardLayout(.init(
             width: 377,
@@ -235,7 +236,8 @@ final class AgentInputCardLayoutTests: XCTestCase {
             modelIsMenu: modelIsMenu,
             effort: effort.map(AgentInputCardLayout.Chip.init),
             separator: effort == nil ? .zero : CGSize(width: 5, height: 17),
-            zenMode: zenMode
+            zenMode: zenMode,
+            offersExpand: offersExpand
         ))
     }
 
@@ -274,6 +276,27 @@ final class AgentInputCardLayoutTests: XCTestCase {
         XCTAssertEqual(capped.size.height, 186)
     }
 
+    /// Five lines fit; from the sixth the text scrolls and the full-screen
+    /// editor's 30pt button takes the text's top right corner, the lines
+    /// wrapping 30 short of it.
+    func testExpandShowsOnceTheTextScrolls() {
+        let five = card(text: 118, offersExpand: true)
+        XCTAssertFalse(five.textScrolls)
+        XCTAssertNil(five.expand)
+        XCTAssertEqual(five.textTrailingInset, 0)
+
+        let six = card(text: 140, offersExpand: true)
+        XCTAssertTrue(six.textScrolls)
+        assertFrame(six.text, rect(18, 12, 341, 120))
+        assertFrame(six.expand, rect(329, 12, 30, 30))
+        XCTAssertEqual(six.textTrailingInset, 30)
+        XCTAssertEqual(six.size, card(text: 140).size)
+
+        let unoffered = card(text: 140)
+        XCTAssertNil(unoffered.expand)
+        XCTAssertEqual(unoffered.textTrailingInset, 0)
+    }
+
     /// A cleared input drops to one line whatever was last measured.
     func testEmptyInputIgnoresAStaleMeasurement() {
         let layout = card(text: 120, hasText: false)
@@ -290,10 +313,45 @@ final class AgentInputCardLayoutTests: XCTestCase {
 
     func testAttachmentStripAboveTheInput() {
         let layout = card(attachments: 3)
-        assertFrame(layout.attachments, rect(18, 8, 341, 64))
-        assertFrame(layout.inputContainer, rect(10, 80, 357, 44))
-        assertFrame(layout.actionRow, rect(10, 124, 357, 42))
-        XCTAssertEqual(layout.size.height, 174)
+        assertFrame(layout.attachments, rect(0, 12, 377, 70))
+        XCTAssertEqual(layout.attachmentInsets, .init(leading: 18, top: 6, trailing: 18))
+        assertFrame(layout.inputContainer, rect(10, 90, 357, 44))
+        assertFrame(layout.actionRow, rect(10, 134, 357, 42))
+        XCTAssertEqual(layout.size.height, 184)
+        XCTAssertEqual(layout.size.height, MobileComposerMetrics.mobile.composerHeight(inputHeight: 30, hasAttachments: true))
+    }
+
+    /// The photos start at the text's left edge, as far down from the
+    /// card's top as that edge is in from its side, and every remove
+    /// button is inside the strip and the card: nothing is cut.
+    func testPhotosLineUpWithTheTextAndNothingIsCut() throws {
+        for border in [CGFloat(0), 0.5] {
+            let layout = card(text: 52, attachments: 3, border: border)
+            let strip = try XCTUnwrap(layout.attachments)
+            let placed = AgentInputCardLayout.attachmentThumbnails(count: 3, insets: layout.attachmentInsets)
+            let photos = placed.frames.map { $0.offsetBy(dx: strip.minX, dy: strip.minY) }
+            XCTAssertEqual(photos[0].minX, layout.text.minX, accuracy: 1e-9)
+            XCTAssertEqual(photos[0].minY, layout.text.minX, accuracy: 1e-9)
+            for photo in placed.frames {
+                let remove = AgentInputCardLayout.attachmentRemoveButton.offsetBy(dx: photo.minX, dy: photo.minY)
+                XCTAssertGreaterThanOrEqual(remove.minY, 0)
+                XCTAssertLessThanOrEqual(remove.maxY, strip.height)
+                XCTAssertLessThanOrEqual(remove.maxX, placed.contentWidth)
+                let inCard = remove.offsetBy(dx: strip.minX, dy: strip.minY)
+                XCTAssertGreaterThanOrEqual(inCard.minY, border)
+                XCTAssertLessThanOrEqual(inCard.maxY, layout.inputContainer.minY)
+            }
+            XCTAssertGreaterThanOrEqual(strip.minX, border)
+            XCTAssertLessThanOrEqual(strip.maxX, layout.size.width - border)
+        }
+        let layout = card(attachments: 3)
+        let placed = AgentInputCardLayout.attachmentThumbnails(count: 3, insets: layout.attachmentInsets)
+        assertFrame(placed.frames[0], rect(18, 6, 64, 64))
+        assertFrame(placed.frames[1], rect(90, 6, 64, 64))
+        assertFrame(placed.frames[2], rect(162, 6, 64, 64))
+        // The last button ends 12 before the content does.
+        XCTAssertEqual(placed.contentWidth, 244)
+        assertFrame(AgentInputCardLayout.attachmentRemoveButton.offsetBy(dx: placed.frames[2].minX, dy: placed.frames[2].minY), rect(214, 0, 18, 18))
     }
 
     func testBorderInsetsEverything() {
@@ -341,11 +399,11 @@ final class AgentInputCardLayoutTests: XCTestCase {
             zenMode: true
         )
         XCTAssertNil(layout.add)
-        assertFrame(layout.middle, rect(10, 124, 305, 42))
-        assertFrame(layout.primary, rect(325, 124, 42, 42))
+        assertFrame(layout.middle, rect(10, 134, 305, 42))
+        assertFrame(layout.primary, rect(325, 134, 42, 42))
         XCTAssertEqual(layout.middleContent, AgentInputCardLayout.MiddleContent())
         // Pictures already picked stay, and the height doesn't move.
-        assertFrame(layout.attachments, rect(18, 8, 341, 64))
+        assertFrame(layout.attachments, rect(0, 12, 377, 70))
         XCTAssertEqual(layout.size.height, card(attachments: 1, showsAdd: true).size.height)
         XCTAssertEqual(card(zenMode: true), card())
     }
@@ -487,5 +545,45 @@ final class ComposerTokenTests: XCTestCase {
         XCTAssertEqual(ContextGauge.intensity(percent: 0), 0.35, accuracy: 0.0001)
         XCTAssertEqual(ContextGauge.intensity(percent: 50), 0.675, accuracy: 0.0001)
         XCTAssertEqual(ContextGauge.intensity(percent: 140), 1, accuracy: 0.0001)
+    }
+}
+
+final class ComposerEditorLayoutTests: XCTestCase {
+    /// An iPhone 15 (393 × 852, 59 over and 34 under) with the keyboard up
+    /// at 516: the text 16 in from both sides and 8 down, 8 above the
+    /// keyboard; its first lines clear of the 44pt button 8 from the right.
+    func testOverTheKeyboard() {
+        let layout = ComposerEditorLayout(
+            size: CGSize(width: 393, height: 852),
+            safeArea: .init(top: 59, bottom: 34),
+            keyboardTop: 516
+        )
+        assertFrame(layout.collapse, rect(341, 63, 44, 44))
+        assertFrame(layout.text, rect(16, 67, 361, 441))
+        assertFrame(layout.collapseClearance, rect(325, 0, 36, 40))
+    }
+
+    /// The keyboard down: the text runs to the safe area's bottom; side
+    /// insets (landscape) push both in.
+    func testKeyboardDownInLandscape() {
+        let layout = ComposerEditorLayout(
+            size: CGSize(width: 852, height: 393),
+            safeArea: .init(top: 0, left: 59, bottom: 21, right: 59),
+            keyboardTop: nil
+        )
+        assertFrame(layout.collapse, rect(741, 4, 44, 44))
+        assertFrame(layout.text, rect(75, 8, 702, 356))
+        assertFrame(layout.collapseClearance, rect(666, 0, 36, 40))
+    }
+
+    /// A keyboard below the safe area's bottom (a hardware keyboard's bar)
+    /// leaves the text at the safe area.
+    func testKeyboardBelowTheSafeArea() {
+        let layout = ComposerEditorLayout(
+            size: CGSize(width: 393, height: 852),
+            safeArea: .init(top: 59, bottom: 34),
+            keyboardTop: 830
+        )
+        XCTAssertEqual(layout.text.maxY, 852 - 34 - 8)
     }
 }

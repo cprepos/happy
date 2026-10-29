@@ -370,12 +370,19 @@ describe('chat preload sync integration', () => {
         expect(engine.sessionLastSeq.has('a')).toBe(false);
     });
 
-    it('server events preserve voice-follow without claiming a visit or fetching all history', async () => {
+    // onSessionDataUpdated runs on every inbound socket update, so announcing
+    // focus here made the voice agent a "session became focused" update per
+    // message the coding agent emitted -- ~45 context updates in a three-minute
+    // session, each one growing the prompt it has to prefill. Focus is for a
+    // user opening a chat (onSessionVisible); voice learns about new messages
+    // through onMessages. The assertion used to be `toHaveBeenCalledWith`,
+    // written against the behaviour this replaced.
+    it('server events do not announce voice focus, claim a visit or fetch all history', async () => {
         mocks.request.mockResolvedValue(response([message()], true));
         const older = vi.spyOn(engine, 'loadOlderMessages');
         engine.onSessionDataUpdated('a');
         await engine.getMessagesSync('a').awaitQueue();
-        expect(mocks.voiceFocus).toHaveBeenCalledWith('a', {});
+        expect(mocks.voiceFocus).not.toHaveBeenCalled();
         expect(mocks.state.currentViewingSessionId).toBeNull();
         expect(older).not.toHaveBeenCalled();
     });

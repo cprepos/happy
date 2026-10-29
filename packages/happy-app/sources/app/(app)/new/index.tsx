@@ -123,6 +123,7 @@ const ALL_AGENTS: { key: AgentKey; label: string }[] = [
     { key: 'codex', label: 'codex' },
     { key: 'agy', label: 'antigravity' },
     { key: 'opencode', label: 'opencode' },
+    { key: 'openclaw', label: 'openclaw' },
     { key: 'rig', label: 'happy' },
 ];
 

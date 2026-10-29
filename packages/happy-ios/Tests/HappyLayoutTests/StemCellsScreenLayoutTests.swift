@@ -6,7 +6,7 @@ import CoreGraphics
 import XCTest
 
 /// Exact frames for the Stem Cells screens around the sidebar: the banner,
-/// the empty state, search, a todo list, a document and an intro option.
+/// the empty state, search, a todo list and a document.
 final class StemCellsScreenLayoutTests: XCTestCase {
     func testHomeStacksTheBannerOverTheList() {
         let layout = StemCellsHomeLayout(size: CGSize(width: 390, height: 844), contentTop: 120, chromeTop: 110, listBottom: 90, bannerHeight: 90)
@@ -71,12 +71,6 @@ final class StemCellsScreenLayoutTests: XCTestCase {
         XCTAssertEqual(StemCellsSurfaceBodyLayout(width: 390, body: block(height: 20), inset: 16).body, rect(16, 8, 358, 20))
     }
 
-    func testAnOptionHoldsItsIconThenItsLabel() {
-        let content = MakeStuffIntroLayout.optionContent(CGSize(width: 122, height: 28), label: CGSize(width: 80, height: 16))
-        XCTAssertEqual(content.icon, rect(11, 7, 14, 14))
-        XCTAssertEqual(content.label, rect(31, 6, 80, 16))
-    }
-
     func testChatTitleIsItsTextWideAndAllOfItWhileEdited() {
         let max = StemCellChatTitleLayout.maxWidth(barWidth: 393)
         XCTAssertEqual(max, 265)
@@ -90,5 +84,20 @@ final class StemCellsScreenLayoutTests: XCTestCase {
         // Before the bar is measured, the name is its own width.
         let unmeasured = StemCellChatTitleLayout(textWidth: 41.3, maxWidth: StemCellChatTitleLayout.maxWidth(barWidth: 0), editing: false)
         XCTAssertEqual(unmeasured.text, rect(0, 0, 42, 44))
+    }
+
+    func testTheDockIsTheNewWorkComposerWithTheKeyboardDown() {
+        // iPhone 17 Pro: 402 × 874, 34 under the safe area; a 100-tall card.
+        let layout = StemCellsDockLayout(size: CGSize(width: 402, height: 874), safeArea: LayoutInsets(top: 62, bottom: 34)) { width in
+            XCTAssertEqual(width, 386)
+            return 100
+        }
+        XCTAssertEqual(layout.card, CGRect(x: 8, y: 732, width: 386, height: 100))
+        XCTAssertEqual(layout.scrim, CGRect(x: 0, y: 782, width: 402, height: 92))
+        // From the card's top, and 8 of room over it.
+        XCTAssertEqual(layout.listBottom, 150)
+        // The very frame the conversation gives its composer with the keyboard down.
+        let chat = StemCellChatScreenLayout(size: CGSize(width: 402, height: 874), safeArea: LayoutInsets(top: 62, bottom: 34), keyboardTop: 874) { _ in 100 }
+        XCTAssertEqual(layout.card, chat.card)
     }
 }

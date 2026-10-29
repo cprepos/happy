@@ -7,10 +7,14 @@ import CoreGraphics
 /// and HomeDock.tsx's focused composer, which share every metric):
 ///
 ///     ┌ hairline ──────────────────────────────────────── r 30 ┐
-///     │ 10 [attachments 64, 8 below, 8 in]                  10 │ 8 top
+///     │ 18 [photos 64, 8 apart, 8 below] 18                    │ 18 top
 ///     │    8 text (30…120 with its 4 + 4, then scrolls)  8     │ input 44+
 ///     │    [+42] 2 [ permission ··· model · effort ] 2 8 [42]  │ row 42
 ///     └────────────────────────────────────────────────────────┘ 8 bottom
+///
+/// The photos start where the text does, and are as far down from the
+/// card's top as that is in from its side; each remove button hangs over
+/// its photo's corner inside the strip, so none is cut.
 ///
 /// Frames are in the card's bounds. `middleContent` is in `middle`'s.
 public struct AgentInputCardLayout: Equatable, Sendable {
@@ -40,6 +44,30 @@ public struct AgentInputCardLayout: Equatable, Sendable {
         public static let disabledChipOpacity: CGFloat = 0.58
         /// `MultiTextInput`'s `opacity: editable ? 1 : 0.58`.
         public static let readOnlyTextOpacity: CGFloat = 0.58
+        /// The full-screen editor's button at the text's top right, once
+        /// the text is past the lines the card shows (Telegram's expand):
+        /// its glyph, the square it is centred in, and the text's room
+        /// beside it.
+        public static let expandIconSize: CGFloat = 14
+        public static let expandSize: CGFloat = 30
+    }
+
+    /// Where the thumbnails sit in the strip's scrolling content: the first
+    /// `leading` in and `top` down, and the content ending `trailing` past
+    /// the last.
+    public struct AttachmentInsets: Equatable, Sendable {
+        public var leading: CGFloat
+        public var top: CGFloat
+        public var trailing: CGFloat
+
+        public init(leading: CGFloat, top: CGFloat, trailing: CGFloat) {
+            self.leading = leading
+            self.top = top
+            self.trailing = trailing
+        }
+
+        /// The desktop panel's strip: 4 in at both ends, flush with its top.
+        public static let panel = AttachmentInsets(leading: Metrics.attachmentStripPaddingH, top: 0, trailing: Metrics.attachmentStripPaddingH)
     }
 
     /// A chip's label (or glyph), measured on one line.
@@ -80,6 +108,8 @@ public struct AgentInputCardLayout: Equatable, Sendable {
         /// the rest says; the middle box stays, empty, and send keeps its
         /// place.
         public var zenMode: Bool
+        /// The full-screen editor's button, shown once the text scrolls.
+        public var offersExpand: Bool
 
         public init(
             width: CGFloat,
@@ -96,7 +126,8 @@ public struct AgentInputCardLayout: Equatable, Sendable {
             modelIsMenu: Bool = true,
             effort: Chip? = nil,
             separator: CGSize = .zero,
-            zenMode: Bool = false
+            zenMode: Bool = false,
+            offersExpand: Bool = false
         ) {
             self.width = width
             self.metrics = metrics
@@ -113,6 +144,7 @@ public struct AgentInputCardLayout: Equatable, Sendable {
             self.effort = effort
             self.separator = separator
             self.zenMode = zenMode
+            self.offersExpand = offersExpand
         }
     }
 
@@ -138,13 +170,19 @@ public struct AgentInputCardLayout: Equatable, Sendable {
     }
 
     public var size: CGSize
-    /// The horizontal strip (a scroll view); its thumbnails come from
-    /// `attachmentThumbnails(count:)`.
+    /// The horizontal strip (a scroll view) across the card; its thumbnails
+    /// come from `attachmentThumbnails(count:insets:)` with `attachmentInsets`.
     public var attachments: CGRect?
+    public var attachmentInsets: AttachmentInsets
     public var inputContainer: CGRect
     /// The text view, its 4 + 4 padding included.
     public var text: CGRect
     public var textScrolls: Bool
+    /// The full-screen editor's button, over the text's top right corner;
+    /// nil until the text is taller than the card shows.
+    public var expand: CGRect?
+    /// Room the text keeps clear at its right for `expand`, inside its frame.
+    public var textTrailingInset: CGFloat
     public var actionRow: CGRect
     public var add: CGRect?
     /// The box between add and send. It clips what it holds.
@@ -160,21 +198,27 @@ public struct AgentInputCardLayout: Equatable, Sendable {
         let contentX = border + metrics.shellInset
         let contentWidth = max(0, width - 2 * border - 2 * metrics.shellInset)
         var y = border + metrics.shellPaddingTop
+        let insets = AgentInputInsets(shellInset: metrics.shellInset, actionSize: metrics.actionSize, addIconSize: metrics.addIconSize)
 
+        // The strip runs edge to edge, so photos scroll under the card's
+        // side; it starts the overhang above the photos for their buttons.
+        let textLeft = contentX + insets.inputContainerPaddingLeft
+        let inside = textLeft - border
         if input.attachmentCount > 0 {
+            let photoTop = textLeft
             attachments = CGRect(
-                x: contentX + M.attachmentStripMarginH,
-                y: y,
-                width: max(0, contentWidth - 2 * M.attachmentStripMarginH),
-                height: M.attachmentSize
+                x: border,
+                y: photoTop - M.attachmentRemoveOverhang,
+                width: max(0, width - 2 * border),
+                height: M.attachmentRemoveOverhang + M.attachmentSize
             )
-            y += M.attachmentSize + M.attachmentStripMarginBottom
+            y = photoTop + M.attachmentSize + M.attachmentStripMarginBottom
         } else {
             attachments = nil
         }
+        attachmentInsets = AttachmentInsets(leading: inside, top: M.attachmentRemoveOverhang, trailing: inside)
 
         // The input container centres the text view in its padding box.
-        let insets = AgentInputInsets(shellInset: metrics.shellInset, actionSize: metrics.actionSize, addIconSize: metrics.addIconSize)
         let text = MultiTextInputLayout(
             contentHeight: input.textContentHeight,
             hasText: input.hasText,
@@ -196,6 +240,15 @@ public struct AgentInputCardLayout: Equatable, Sendable {
             height: text.height
         )
         textScrolls = text.scrollEnabled
+        // Past the lines the card shows (the sixth on): the text's top right
+        // corner, flush with it, the lines wrapping clear of it.
+        if input.offersExpand, textScrolls {
+            expand = CGRect(x: self.text.maxX - M.expandSize, y: self.text.minY, width: M.expandSize, height: M.expandSize)
+            textTrailingInset = M.expandSize
+        } else {
+            expand = nil
+            textTrailingInset = 0
+        }
         y += containerHeight
 
         // [+] [middle, flex 1] [send, 8 margin], 2 apart.
@@ -311,21 +364,19 @@ public struct AgentInputCardLayout: Equatable, Sendable {
     }
 
     /// The thumbnails in the attachment strip's scrolling content, and that
-    /// content's width: 4 in, 64pt squares 8 apart.
-    public static func attachmentThumbnails(count: Int) -> (frames: [CGRect], contentWidth: CGFloat) {
+    /// content's width: 64pt squares 8 apart, placed by `insets`.
+    public static func attachmentThumbnails(count: Int, insets: AttachmentInsets = .panel) -> (frames: [CGRect], contentWidth: CGFloat) {
         typealias M = Metrics
         let count = max(0, count)
         let frames = (0..<count).map { index in
             CGRect(
-                x: M.attachmentStripPaddingH + CGFloat(index) * (M.attachmentSize + M.attachmentGap),
-                y: 0,
+                x: insets.leading + CGFloat(index) * (M.attachmentSize + M.attachmentGap),
+                y: insets.top,
                 width: M.attachmentSize,
                 height: M.attachmentSize
             )
         }
-        let contentWidth = count > 0
-            ? 2 * M.attachmentStripPaddingH + CGFloat(count) * M.attachmentSize + CGFloat(count - 1) * M.attachmentGap
-            : 0
+        let contentWidth = frames.last.map { $0.maxX + insets.trailing } ?? 0
         return (frames, contentWidth)
     }
 
