@@ -87,35 +87,34 @@ class Settings:
     tts_speed: float = field(default_factory=lambda: float(_env("TTS_SPEED", "1.0")))
     # Kokoro prefixes some segments with ~0.7 s of speech-free noise; see tts_trim.py
     tts_trim_lead: bool = field(default_factory=lambda: _env("TTS_TRIM_LEAD", "1") != "0")
-    # agentgateway on 8903, asking for the dense tier (Qwen3.8-27B FP8 on 9080) by name. Each of
-    # the gateway's virtual models carries its own failover list -- `coder-dense` tries 9080 and
-    # spills over to coder-moe (9081), a refused connection counted unhealthy -- so the agent
-    # needs no failover of its own, and naming a tier is not the port pinning that made voice
-    # mute on 2026-10-28, when the pinned backend restarted six times while being tuned.
-    # Not the gateway's third virtual model, `coder`: that one is difficulty-routed per request,
-    # which split one 3-minute session 39/26 between the tiers. Per-turn routing costs more than
-    # the slower tier's decode -- the prefix warm-up prefills whichever tier it is given, so a
-    # turn that classifies onto the other one pays the full 20k-token prefill the warm-up exists
-    # to avoid.
-    # Dense rather than MoE, though MoE decodes faster, because MoE loses tool calling as the
-    # prompt grows. Context updates fold into the prompt as pseudo-user messages, and past ~25 of
-    # them coder-moe answers a "tell Claude to ..." turn by speaking the argument instead of
-    # calling sendMessageToSession. Measured 2026-10-29 at temperature 0 against both tiers:
+    # agentgateway on 8903, asking for the virtual `coder` model: the gateway decides which
+    # backend serves it, and a refused connection is counted unhealthy, so the agent needs no
+    # failover of its own.
     #
-    #   context updates   prompt    coder-moe               coder-dense
+    # Voice deliberately does not name a tier. It named coder-moe on 2026-10-29 to keep the
+    # prefix warm-up and the turn on one backend, and lost tool calling for it: context updates
+    # fold into the prompt as pseudo-user messages, and past ~25 of them that backend answers a
+    # "tell Claude Code to ..." turn by speaking the argument instead of calling
+    # sendMessageToSession. Measured at temperature 0, same prompt, both backends:
+    #
+    #   context updates   prompt    MoE                     dense
     #   0                 1.3k      sendMessageToSession     -
     #   10                2.6k      sendMessageToSession     -
     #   25                4.7k      spoke "test" out loud    sendMessageToSession
     #   45                7.4k      spoke "test" out loud    sendMessageToSession
     #
-    # The 18:12 iPad session that day ran to 52k prompt tokens and did exactly that, twice.
-    # Relaying work to the coding agent is the one thing this assistant must not get wrong, so
-    # it buys reliability with the ~200ms of TTFT that MoE would have saved.
+    # Naming dense fixed it, and then the tier layout went back under review at the gateway, so
+    # pinning from here is the wrong place to hold an opinion. Two failure modes to recognise if
+    # voice misbehaves again, both of them the gateway's to resolve: a per-request router can
+    # send a turn to a backend the warm-up did not warm, which costs that turn a full prefill;
+    # and any backend that cannot reliably emit tool calls drops the relay to Claude Code
+    # entirely. tests/e2e_fake_app.py step 8 is the regression test for the second.
+    #
     # Not 8903's neighbour 8899 either: that is coder-tool-proxy, which injects a searxng tool
     # into every request and sets stream=False upstream, so first-token latency would become
     # full generation time.
     llm_base_url: str = field(default_factory=lambda: _env("LLM_BASE_URL", "http://127.0.0.1:8903/v1"))
-    llm_model: str = field(default_factory=lambda: _env("LLM_MODEL", "coder-dense"))
+    llm_model: str = field(default_factory=lambda: _env("LLM_MODEL", "coder"))
     llm_api_key: str = field(default_factory=lambda: _env("LLM_API_KEY", "not-needed"))
     llm_temperature: float = field(default_factory=lambda: float(_env("LLM_TEMPERATURE", "0.2")))
     llm_max_tokens: int = field(default_factory=lambda: int(_env("LLM_MAX_TOKENS", "250")))
