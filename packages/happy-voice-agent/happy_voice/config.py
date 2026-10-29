@@ -87,17 +87,21 @@ class Settings:
     tts_speed: float = field(default_factory=lambda: float(_env("TTS_SPEED", "1.0")))
     # Kokoro prefixes some segments with ~0.7 s of speech-free noise; see tts_trim.py
     tts_trim_lead: bool = field(default_factory=lambda: _env("TTS_TRIM_LEAD", "1") != "0")
-    # The host's virtual `coder`, served by agentgateway on 8903: its classifier picks
-    # coder-dense (9080) or coder-moe (9081) per turn, and each virtual model carries its own
-    # failover list (the other tier as spillover, a refused connection counted unhealthy), so
-    # the agent needs no failover of its own. Pinning a tier here is what made voice mute on
-    # 2026-10-28, when the pinned one restarted six times while being tuned.
-    # Not 8903's neighbour 8899: that is coder-tool-proxy, which injects a searxng tool into
-    # every request and sets stream=False upstream, so first-token latency would become full
-    # generation time. One cost of the per-turn route: the prefix warm-up can warm a tier the
-    # turn does not land on -- a lost optimization bounded by warmup_turn_wait, not a fault.
+    # agentgateway on 8903, asking for the MoE tier (Qwen3.6-35B-A3B on 9081) by name. Each of
+    # the gateway's virtual models carries its own failover list -- `coder-moe` tries 9081 and
+    # spills over to coder-dense (9080), a refused connection counted unhealthy -- so the agent
+    # needs no failover of its own, and naming a tier is not the port pinning that made voice
+    # mute on 2026-10-28, when the pinned backend restarted six times while being tuned.
+    # Not the gateway's third virtual model, `coder`: that one is difficulty-routed per request,
+    # which split one 3-minute session 39/26 between the tiers. Per-turn routing costs more than
+    # the slower tier's decode -- the prefix warm-up prefills whichever tier it is given, so a
+    # turn that classifies onto the other one pays the full 20k-token prefill the warm-up exists
+    # to avoid. MoE for every turn beats the right tier for some of them.
+    # Not 8903's neighbour 8899 either: that is coder-tool-proxy, which injects a searxng tool
+    # into every request and sets stream=False upstream, so first-token latency would become
+    # full generation time.
     llm_base_url: str = field(default_factory=lambda: _env("LLM_BASE_URL", "http://127.0.0.1:8903/v1"))
-    llm_model: str = field(default_factory=lambda: _env("LLM_MODEL", "coder"))
+    llm_model: str = field(default_factory=lambda: _env("LLM_MODEL", "coder-moe"))
     llm_api_key: str = field(default_factory=lambda: _env("LLM_API_KEY", "not-needed"))
     llm_temperature: float = field(default_factory=lambda: float(_env("LLM_TEMPERATURE", "0.2")))
     llm_max_tokens: int = field(default_factory=lambda: int(_env("LLM_MAX_TOKENS", "250")))

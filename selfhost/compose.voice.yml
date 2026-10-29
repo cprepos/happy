@@ -170,12 +170,13 @@ services:
       # defaults apply when unset.
       STT_URL: ${STT_URL:-ws://127.0.0.1:${STT_PORT:-8090}/v1/stream}
       TTS_URL: ${TTS_URL:-http://127.0.0.1:${TTS_PORT:-8880}/v1}
-      # default: the host coder stack's virtual `coder` on agentgateway (systemd), which routes
-      # each turn to a tier and fails over between them -- not 8899, the tool proxy, which would
-      # cost voice its streaming. See happy_voice/config.py. .env.voice's LLM_MODEL is the
-      # local-llm profile's HF weights id, so the agent reads VOICE_LLM_* instead.
+      # default: the host coder stack's MoE tier by name on agentgateway (systemd), which fails
+      # over to the dense tier on its own -- not the virtual `coder`, which routes per request
+      # and so warms the wrong tier, and not 8899, the tool proxy, which would cost voice its
+      # streaming. See happy_voice/config.py. .env.voice's LLM_MODEL is the local-llm profile's
+      # HF weights id, so the agent reads VOICE_LLM_* instead.
       LLM_BASE_URL: ${VOICE_LLM_BASE_URL:-http://127.0.0.1:8903/v1}
-      LLM_MODEL: ${VOICE_LLM_MODEL:-coder}
+      LLM_MODEL: ${VOICE_LLM_MODEL:-coder-moe}
       # default Kokoro voice/speed when the app does not pick one for the chat; a blend such
       # as "am_michael(2)+am_onyx(1)" mixes voices by weight
       TTS_VOICE: ${TTS_VOICE:-af_heart}
