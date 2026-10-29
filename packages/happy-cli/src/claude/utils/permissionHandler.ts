@@ -16,7 +16,7 @@ export interface PermissionResponse {
     id: string;
     approved: boolean;
     reason?: string;
-    mode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan';
+    mode?: 'auto' | 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan';
     allowTools?: string[];
     updatedInput?: Record<string, unknown>;
     receivedAt?: number;
@@ -117,15 +117,24 @@ export class PermissionHandler {
         if (pending.toolName === 'exit_plan_mode' || pending.toolName === 'ExitPlanMode') {
             logger.debug('Plan mode result received', response);
             if (response.approved) {
-                // Switch permission mode via SDK before allowing ExitPlanMode
-                const newMode = (response.mode && ['default', 'acceptEdits', 'bypassPermissions'].includes(response.mode))
+                // Switch permission mode via SDK before allowing ExitPlanMode.
+                //
+                // An approval that names no mode lands on 'auto', not
+                // 'default': saying yes to a plan means "go do it", and
+                // 'default' stops for every single tool call, which reads as
+                // the approval not having taken. 'auto' lets Claude review its
+                // own calls and still stop when it actually wants a human. The
+                // app sends the mode explicitly (and falls back to 'default'
+                // for a CLI too old to parse 'auto'), so this fallback only
+                // covers older app builds that send none.
+                const newMode = (response.mode && ['auto', 'default', 'acceptEdits', 'bypassPermissions'].includes(response.mode))
                     ? response.mode
-                    : 'default';
+                    : 'auto';
 
                 logger.debug(`Plan approved - switching to ${newMode} mode and allowing ExitPlanMode`);
 
                 if (this.setPermissionModeCallback) {
-                    this.setPermissionModeCallback(newMode).catch((err) => {
+                    this.setPermissionModeCallback(mapToClaudeMode(newMode)).catch((err) => {
                         logger.debug('Failed to set permission mode via SDK:', err);
                     });
                 }

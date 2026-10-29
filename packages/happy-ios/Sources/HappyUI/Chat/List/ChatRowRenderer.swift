@@ -25,6 +25,9 @@ struct ChatRowStyle: Equatable, Sendable {
     /// metadata.path: tool paths under it are shown relative to it.
     var root: String?
     var flavor: String?
+    /// metadata.version: the happy-cli on the session's machine, which decides
+    /// whether a plan approval can name `auto` (ChatPermissionButtons.reply).
+    var cliVersion: String?
     /// `settings.showLineNumbersInToolViews`.
     var showLineNumbers = false
     /// `useIsTablet()`: permission buttons hug their labels at the

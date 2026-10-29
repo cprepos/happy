@@ -13,6 +13,8 @@ public struct PermissionButton: Equatable, Sendable {
         case allowAllEdits
         /// claude.permissions.yesAllowEverything
         case allowEverything
+        /// claude.permissions.yesAskEachTime
+        case allowManual
         /// claude.permissions.yesForTool
         case allowForTool
         /// claude.permissions.noTellClaude
@@ -80,13 +82,17 @@ public enum ChatPermissionButtons {
         let forTool = approved && isToolAllowed(toolName, input: toolInput, allowedTools: permission.allowedTools)
         let allEdits = approved && permission.mode == "acceptEdits"
         let everything = approved && permission.mode == "bypassPermissions"
-        let plain = approved && !allEdits && !everything && !forTool
-        var buttons = [PermissionButton(kind: .allow, selected: plain, inactive: denied || allEdits || everything || forTool, maxLines: 1)]
+        // `default` marks the manual button only on a plan, the one place that
+        // button exists; every other tool's plain "Yes" sends no mode at all.
+        let manual = approved && planNames.contains(toolName) && permission.mode == "default"
+        let plain = approved && !allEdits && !everything && !manual && !forTool
+        var buttons = [PermissionButton(kind: .allow, selected: plain, inactive: denied || allEdits || everything || manual || forTool, maxLines: 1)]
         if editNames.contains(toolName) {
-            buttons.append(PermissionButton(kind: .allowAllEdits, selected: allEdits, inactive: denied || plain || everything || forTool, maxLines: 2))
+            buttons.append(PermissionButton(kind: .allowAllEdits, selected: allEdits, inactive: denied || plain || everything || manual || forTool, maxLines: 2))
         }
         if planNames.contains(toolName) {
-            buttons.append(PermissionButton(kind: .allowEverything, selected: everything, inactive: denied || plain || allEdits || forTool, maxLines: 2))
+            buttons.append(PermissionButton(kind: .allowEverything, selected: everything, inactive: denied || plain || allEdits || manual || forTool, maxLines: 2))
+            buttons.append(PermissionButton(kind: .allowManual, selected: manual, inactive: denied || plain || allEdits || everything || forTool, maxLines: 2))
         }
         if !toolName.isEmpty && !editNames.contains(toolName) {
             buttons.append(PermissionButton(kind: .allowForTool, selected: forTool, inactive: denied || plain || allEdits || everything, maxLines: 2))
@@ -95,10 +101,20 @@ public enum ChatPermissionButtons {
         return buttons
     }
 
-    public static func reply(_ kind: PermissionButton.Kind, toolName: String, toolInput: JSONValue) -> PermissionReply {
+    /// Approving a plan is the moment the session leaves plan mode, so the
+    /// answer names the mode it lands in. Plain "Yes" lands on `auto`: saying
+    /// yes to a plan means "go do it", while `default` stops for every tool
+    /// call and reads as the approval not having taken — people who want that
+    /// press `allowManual` instead. A CLI too old to parse `auto` would drop
+    /// the mode and leave the session in plan mode, so it keeps `default`.
+    public static func reply(_ kind: PermissionButton.Kind, toolName: String, toolInput: JSONValue, cliVersion: String? = nil) -> PermissionReply {
         switch kind {
         case .allow:
-            return PermissionReply(allow: true, permissionMode: planNames.contains(toolName) ? "default" : nil)
+            guard planNames.contains(toolName) else { return PermissionReply(allow: true) }
+            let mode = AgentDefaults.permissionModeSupportedByCli("auto", cliVersion: cliVersion) ? "auto" : "default"
+            return PermissionReply(allow: true, mode: mode, permissionMode: mode)
+        case .allowManual:
+            return PermissionReply(allow: true, mode: "default", permissionMode: "default")
         case .allowAllEdits:
             return PermissionReply(allow: true, mode: "acceptEdits", permissionMode: "acceptEdits")
         case .allowEverything:

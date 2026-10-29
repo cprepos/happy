@@ -131,7 +131,7 @@ final class ChatPermissionButtonsTests: XCTestCase {
     func testEachToolOffersItsButtons() {
         XCTAssertEqual(kinds("Bash"), [.allow, .allowForTool, .deny])
         XCTAssertEqual(kinds("Edit"), [.allow, .allowAllEdits, .deny])
-        XCTAssertEqual(kinds("ExitPlanMode"), [.allow, .allowAllEdits, .allowEverything, .deny])
+        XCTAssertEqual(kinds("ExitPlanMode"), [.allow, .allowAllEdits, .allowEverything, .allowManual, .deny])
         XCTAssertEqual(kinds("Bash", flavor: "codex"), [.codexAllow, .codexAllowForSession, .codexAbort])
         XCTAssertEqual(kinds("CodexBash"), [.codexAllow, .codexAllowForSession, .codexAbort])
         let pending = ChatPermissionButtons.buttons(ToolPermission(id: "p", status: .pending), toolName: "Bash", toolInput: [:], flavor: nil)
@@ -151,6 +151,12 @@ final class ChatPermissionButtonsTests: XCTestCase {
         let denied = ChatPermissionButtons.buttons(ToolPermission(id: "p", status: .denied), toolName: "Edit", toolInput: [:], flavor: nil)
         XCTAssertEqual(denied.map(\.selected), [false, false, true])
         XCTAssertEqual(denied.map(\.inactive), [true, true, false])
+        // On a plan, `default` is the manual button, not plain "Yes".
+        let manual = ChatPermissionButtons.buttons(ToolPermission(id: "p", status: .approved, mode: "default"), toolName: "ExitPlanMode", toolInput: [:], flavor: nil)
+        XCTAssertEqual(manual.map(\.selected), [false, false, false, true, false])
+        XCTAssertEqual(manual.map(\.inactive), [true, true, true, false, true])
+        let auto = ChatPermissionButtons.buttons(ToolPermission(id: "p", status: .approved, mode: "auto"), toolName: "ExitPlanMode", toolInput: [:], flavor: nil)
+        XCTAssertEqual(auto.map(\.selected), [true, false, false, false, false])
         let canceled = ChatPermissionButtons.buttons(ToolPermission(id: "p", status: .canceled), toolName: "Edit", toolInput: [:], flavor: nil)
         XCTAssertFalse(canceled.contains { $0.selected || $0.inactive })
         let codex = ChatPermissionButtons.buttons(ToolPermission(id: "p", status: .approved), toolName: "CodexBash", toolInput: [:], flavor: nil)
@@ -161,7 +167,21 @@ final class ChatPermissionButtonsTests: XCTestCase {
     func testRepliesCarryTheChoice() {
         XCTAssertEqual(ChatPermissionButtons.reply(.allowForTool, toolName: "Bash", toolInput: ["command": "ls"]), PermissionReply(allow: true, allowedTools: ["Bash(ls)"]))
         XCTAssertEqual(ChatPermissionButtons.reply(.allowForTool, toolName: "Grep", toolInput: [:]), PermissionReply(allow: true, allowedTools: ["Grep"]))
-        XCTAssertEqual(ChatPermissionButtons.reply(.allow, toolName: "ExitPlanMode", toolInput: [:]), PermissionReply(allow: true, permissionMode: "default"))
+        XCTAssertEqual(ChatPermissionButtons.reply(.allow, toolName: "Bash", toolInput: [:]), PermissionReply(allow: true))
+        // A plan approval names where it lands: auto, or default on a CLI too
+        // old to parse auto.
+        XCTAssertEqual(
+            ChatPermissionButtons.reply(.allow, toolName: "ExitPlanMode", toolInput: [:], cliVersion: "1.2.1-beta.2"),
+            PermissionReply(allow: true, mode: "auto", permissionMode: "auto")
+        )
+        XCTAssertEqual(
+            ChatPermissionButtons.reply(.allow, toolName: "ExitPlanMode", toolInput: [:], cliVersion: "1.2.0"),
+            PermissionReply(allow: true, mode: "default", permissionMode: "default")
+        )
+        XCTAssertEqual(
+            ChatPermissionButtons.reply(.allowManual, toolName: "ExitPlanMode", toolInput: [:]),
+            PermissionReply(allow: true, mode: "default", permissionMode: "default")
+        )
         XCTAssertEqual(ChatPermissionButtons.reply(.allowAllEdits, toolName: "Edit", toolInput: [:]), PermissionReply(allow: true, mode: "acceptEdits", permissionMode: "acceptEdits"))
         XCTAssertEqual(ChatPermissionButtons.reply(.codexAbort, toolName: "CodexBash", toolInput: [:]), PermissionReply(allow: false, decision: .abort))
     }

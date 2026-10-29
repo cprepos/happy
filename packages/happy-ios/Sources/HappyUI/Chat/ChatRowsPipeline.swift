@@ -160,6 +160,7 @@ enum ChatRows {
             maxContentWidth: view.maxContentWidth,
             root: session.metadata?["path"]?.stringValue,
             flavor: flavor,
+            cliVersion: session.metadata?["version"]?.stringValue,
             showLineNumbers: session.settings.bool("showLineNumbersInToolViews"),
             tablet: view.tablet,
             permissionListMaxHeight: view.permissionListMaxHeight,

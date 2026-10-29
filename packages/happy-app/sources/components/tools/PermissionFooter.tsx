@@ -18,6 +18,7 @@ import { useUnistyles } from 'react-native-unistyles';
 import { storage } from '@/sync/storage';
 import { t } from '@/text';
 import { useIsTablet } from '@/utils/responsive';
+import { permissionModeSupportedByCli } from '@/components/modelModeOptions';
 
 interface PermissionActionButtonProps {
     label: string;
@@ -134,23 +135,34 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({ permission, 
     const [loadingButton, setLoadingButton] = useState<'allow' | 'deny' | 'abort' | null>(null);
     const [loadingAllEdits, setLoadingAllEdits] = useState(false);
     const [loadingBypass, setLoadingBypass] = useState(false);
+    const [loadingManual, setLoadingManual] = useState(false);
     const [loadingForSession, setLoadingForSession] = useState(false);
     
     // Check if this is a Codex session - check both metadata.flavor and tool name prefix
     const isCodex = metadata?.flavor === 'codex' || toolName.startsWith('Codex');
 
+    // Approving a plan is the moment the session leaves plan mode, so the
+    // answer has to name the mode it lands in. Plain "Yes" lands on Auto:
+    // saying yes to a plan means "go do it", while `default` stops for every
+    // tool call and reads as the approval not having taken. People who do want
+    // that get their own button now (handleApproveManual). A CLI too old to
+    // parse `auto` would drop the mode and stay in plan mode, so it keeps the
+    // old `default`.
+    const isPlanTool = toolName === 'exit_plan_mode' || toolName === 'ExitPlanMode';
+    const planApprovalMode = permissionModeSupportedByCli('auto', metadata?.version) ? 'auto' : 'default';
+
     const handleApprove = async () => {
-        if (permission.status !== 'pending' || loadingButton !== null || loadingAllEdits || loadingBypass || loadingForSession) return;
+        if (permission.status !== 'pending' || loadingButton !== null || loadingAllEdits || loadingBypass || loadingManual || loadingForSession) return;
 
         setLoadingButton('allow');
         try {
-            await sessionAllow(sessionId, permission.id);
-            // Plain plan approval switches the CLI's live SDK query to
-            // 'default' — mirror that here, otherwise the next message's meta
-            // still carries the stale 'plan' and pushes the SDK back into
-            // plan mode, undoing the approval.
-            if (toolName === 'exit_plan_mode' || toolName === 'ExitPlanMode') {
-                sessionSetAgentModes(sessionId, { permissionMode: 'default' });
+            await sessionAllow(sessionId, permission.id, isPlanTool ? planApprovalMode : undefined);
+            // Plan approval switches the CLI's live SDK query to the mode sent
+            // above — mirror that here, otherwise the next message's meta still
+            // carries the stale 'plan' and pushes the SDK back into plan mode,
+            // undoing the approval.
+            if (isPlanTool) {
+                sessionSetAgentModes(sessionId, { permissionMode: planApprovalMode });
             }
         } catch (error) {
             console.error('Failed to approve permission:', error);
@@ -159,8 +171,24 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({ permission, 
         }
     };
 
+    // Approve the plan but keep asking about every tool call — what plain
+    // "Yes" used to do, now that it lands on Auto.
+    const handleApproveManual = async () => {
+        if (permission.status !== 'pending' || loadingButton !== null || loadingAllEdits || loadingBypass || loadingManual || loadingForSession) return;
+
+        setLoadingManual(true);
+        try {
+            await sessionAllow(sessionId, permission.id, 'default');
+            sessionSetAgentModes(sessionId, { permissionMode: 'default' });
+        } catch (error) {
+            console.error('Failed to approve plan in manual mode:', error);
+        } finally {
+            setLoadingManual(false);
+        }
+    };
+
     const handleApproveAllEdits = async () => {
-        if (permission.status !== 'pending' || loadingButton !== null || loadingAllEdits || loadingBypass || loadingForSession) return;
+        if (permission.status !== 'pending' || loadingButton !== null || loadingAllEdits || loadingBypass || loadingManual || loadingForSession) return;
 
         setLoadingAllEdits(true);
         try {
@@ -175,7 +203,7 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({ permission, 
     };
 
     const handleBypassPermissions = async () => {
-        if (permission.status !== 'pending' || loadingButton !== null || loadingAllEdits || loadingBypass || loadingForSession) return;
+        if (permission.status !== 'pending' || loadingButton !== null || loadingAllEdits || loadingBypass || loadingManual || loadingForSession) return;
 
         setLoadingBypass(true);
         try {
@@ -189,7 +217,7 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({ permission, 
     };
 
     const handleApproveForSession = async () => {
-        if (permission.status !== 'pending' || loadingButton !== null || loadingAllEdits || loadingBypass || loadingForSession || !toolName) return;
+        if (permission.status !== 'pending' || loadingButton !== null || loadingAllEdits || loadingBypass || loadingManual || loadingForSession || !toolName) return;
 
         setLoadingForSession(true);
         try {
@@ -209,7 +237,7 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({ permission, 
     };
 
     const handleDeny = async () => {
-        if (permission.status !== 'pending' || loadingButton !== null || loadingAllEdits || loadingBypass || loadingForSession) return;
+        if (permission.status !== 'pending' || loadingButton !== null || loadingAllEdits || loadingBypass || loadingManual || loadingForSession) return;
 
         setLoadingButton('deny');
         try {
@@ -282,10 +310,13 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({ permission, 
     };
 
     // Detect which button was used based on mode (for Claude) or decision (for Codex)
-    const isApprovedViaAllow = isApproved && permission.mode !== 'acceptEdits' && permission.mode !== 'bypassPermissions' && !isToolAllowed(toolName, toolInput, permission.allowedTools);
+    // `default` marks the manual button only where that button exists; for
+    // every other tool plain "Yes" sends no mode at all, so it cannot collide.
+    const isApprovedViaManual = isApproved && isPlanTool && permission.mode === 'default';
+    const isApprovedViaAllow = isApproved && !isApprovedViaManual && permission.mode !== 'acceptEdits' && permission.mode !== 'bypassPermissions' && !isToolAllowed(toolName, toolInput, permission.allowedTools);
     const isApprovedViaAllEdits = isApproved && permission.mode === 'acceptEdits';
     const isApprovedViaBypass = isApproved && permission.mode === 'bypassPermissions';
-    const isApprovedForSession = isApproved && isToolAllowed(toolName, toolInput, permission.allowedTools);
+    const isApprovedForSession = isApproved && !isApprovedViaManual && isToolAllowed(toolName, toolInput, permission.allowedTools);
     
     // Codex-specific status detection with fallback
     const isCodexApproved = isCodex && isApproved && (permission.decision === 'approved' || !permission.decision);
@@ -508,12 +539,12 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({ permission, 
                     label: t('common.yes'),
                     loading: loadingButton === 'allow',
                     onPress: handleApprove,
-                    disabled: !isPending || loadingButton !== null || loadingAllEdits || loadingBypass || loadingForSession,
+                    disabled: !isPending || loadingButton !== null || loadingAllEdits || loadingBypass || loadingManual || loadingForSession,
                     buttonStyle: [
                         styles.button,
                         isPending && styles.buttonAllow,
                         isApprovedViaAllow && styles.buttonSelected,
-                        (isDenied || isApprovedViaAllEdits || isApprovedViaBypass || isApprovedForSession) && styles.buttonInactive
+                        (isDenied || isApprovedViaAllEdits || isApprovedViaBypass || isApprovedViaManual || isApprovedForSession) && styles.buttonInactive
                     ],
                     textStyle: [
                         styles.buttonText,
@@ -528,12 +559,12 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({ permission, 
                         label: t('claude.permissions.yesAllowAllEdits'),
                         loading: loadingAllEdits,
                         onPress: handleApproveAllEdits,
-                        disabled: !isPending || loadingButton !== null || loadingAllEdits || loadingBypass || loadingForSession,
+                        disabled: !isPending || loadingButton !== null || loadingAllEdits || loadingBypass || loadingManual || loadingForSession,
                         buttonStyle: [
                             styles.button,
                             isPending && styles.buttonAllowAll,
                             isApprovedViaAllEdits && styles.buttonSelected,
-                            (isDenied || isApprovedViaAllow || isApprovedViaBypass || isApprovedForSession) && styles.buttonInactive
+                            (isDenied || isApprovedViaAllow || isApprovedViaBypass || isApprovedViaManual || isApprovedForSession) && styles.buttonInactive
                         ],
                         textStyle: [
                             styles.buttonText,
@@ -550,17 +581,40 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({ permission, 
                         label: t('claude.permissions.yesAllowEverything'),
                         loading: loadingBypass,
                         onPress: handleBypassPermissions,
-                        disabled: !isPending || loadingButton !== null || loadingAllEdits || loadingBypass || loadingForSession,
+                        disabled: !isPending || loadingButton !== null || loadingAllEdits || loadingBypass || loadingManual || loadingForSession,
                         buttonStyle: [
                             styles.button,
                             isPending && styles.buttonForSession,
                             isApprovedViaBypass && styles.buttonSelected,
-                            (isDenied || isApprovedViaAllow || isApprovedViaAllEdits || isApprovedForSession) && styles.buttonInactive
+                            (isDenied || isApprovedViaAllow || isApprovedViaAllEdits || isApprovedViaManual || isApprovedForSession) && styles.buttonInactive
                         ],
                         textStyle: [
                             styles.buttonText,
                             isPending && styles.buttonTextForSession,
                             isApprovedViaBypass && styles.buttonTextSelected
+                        ],
+                        numberOfLines: 2,
+                    })
+                )}
+
+                {/* Approve the plan but keep every tool call under review - only
+                    for ExitPlanMode, where plain "Yes" now lands on Auto */}
+                {isPlanTool && (
+                    renderPermissionButton({
+                        label: t('claude.permissions.yesAskEachTime'),
+                        loading: loadingManual,
+                        onPress: handleApproveManual,
+                        disabled: !isPending || loadingButton !== null || loadingAllEdits || loadingBypass || loadingManual || loadingForSession,
+                        buttonStyle: [
+                            styles.button,
+                            isPending && styles.buttonAllowAll,
+                            isApprovedViaManual && styles.buttonSelected,
+                            (isDenied || isApprovedViaAllow || isApprovedViaAllEdits || isApprovedViaBypass || isApprovedForSession) && styles.buttonInactive
+                        ],
+                        textStyle: [
+                            styles.buttonText,
+                            isPending && styles.buttonTextAllowAll,
+                            isApprovedViaManual && styles.buttonTextSelected
                         ],
                         numberOfLines: 2,
                     })
@@ -572,7 +626,7 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({ permission, 
                         label: t('claude.permissions.yesForTool'),
                         loading: loadingForSession,
                         onPress: handleApproveForSession,
-                        disabled: !isPending || loadingButton !== null || loadingAllEdits || loadingBypass || loadingForSession,
+                        disabled: !isPending || loadingButton !== null || loadingAllEdits || loadingBypass || loadingManual || loadingForSession,
                         buttonStyle: [
                             styles.button,
                             isPending && styles.buttonForSession,
@@ -592,7 +646,7 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({ permission, 
                     label: t('claude.permissions.noTellClaude'),
                     loading: loadingButton === 'deny',
                     onPress: handleDeny,
-                    disabled: !isPending || loadingButton !== null || loadingAllEdits || loadingBypass || loadingForSession,
+                    disabled: !isPending || loadingButton !== null || loadingAllEdits || loadingBypass || loadingManual || loadingForSession,
                     buttonStyle: [
                         styles.button,
                         isPending && styles.buttonDeny,

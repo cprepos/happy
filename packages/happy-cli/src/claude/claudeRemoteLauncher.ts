@@ -24,7 +24,7 @@ import type { MessageParam, ContentBlockParam } from '@anthropic-ai/sdk/resource
 interface PermissionsField {
     date: number;
     result: 'approved' | 'denied';
-    mode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan';
+    mode?: 'auto' | 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan';
     allowedTools?: string[];
 }
 

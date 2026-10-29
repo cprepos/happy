@@ -200,6 +200,7 @@ public struct ChatWords: Equatable, Sendable {
         case .allow, .codexAllow: word("common.yes", "Yes") // 439, 508
         case .allowAllEdits: word("claude.permissions.yesAllowAllEdits", "Yes, allow all edits during this session") // 528
         case .allowEverything: word("claude.permissions.yesAllowEverything", "Yes, allow everything during this session") // 550
+        case .allowManual: word("claude.permissions.yesAskEachTime", "Yes, but ask me about every change")
         case .allowForTool: word("claude.permissions.yesForTool", "Yes, don't ask again for this tool") // 572
         case .deny: word("claude.permissions.noTellClaude", "No, and provide feedback") // 592
         case .codexAllowForSession: word("codex.permissions.yesForSession", "Yes, and don't ask for a session") // 457

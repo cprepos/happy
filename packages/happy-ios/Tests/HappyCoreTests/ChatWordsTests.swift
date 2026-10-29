@@ -59,6 +59,7 @@ final class ChatWordsTests: XCTestCase {
         Word(ask: { $0.permission(.codexAllow) }, key: "common.yes"),
         Word(ask: { $0.permission(.allowAllEdits) }, key: "claude.permissions.yesAllowAllEdits"),
         Word(ask: { $0.permission(.allowEverything) }, key: "claude.permissions.yesAllowEverything"),
+        Word(ask: { $0.permission(.allowManual) }, key: "claude.permissions.yesAskEachTime"),
         Word(ask: { $0.permission(.allowForTool) }, key: "claude.permissions.yesForTool"),
         Word(ask: { $0.permission(.deny) }, key: "claude.permissions.noTellClaude"),
         Word(ask: { $0.permission(.codexAllowForSession) }, key: "codex.permissions.yesForSession"),
@@ -79,7 +80,7 @@ final class ChatWordsTests: XCTestCase {
             XCTAssertEqual(word.ask(.english), word.ask(read), word.key)
             XCTAssertEqual(word.ask(.english), TranslationCatalog.english(word.key, word.values), word.key)
         }
-        XCTAssertEqual(Self.words.count, 66)
+        XCTAssertEqual(Self.words.count, 67)
     }
 
     func testEveryLanguageReadsHappyAppsKeys() {

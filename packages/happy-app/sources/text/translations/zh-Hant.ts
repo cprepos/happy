@@ -969,6 +969,7 @@ export const zhHant: TranslationStructure = {
         permissions: {
             yesAllowAllEdits: '是，允許本次工作階段的所有編輯',
             yesAllowEverything: '是，允許本次工作階段的所有操作',
+            yesAskEachTime: '是，但每次變更都詢問我',
             yesForTool: '是，不再詢問此工具',
             noTellClaude: '否，並告訴 Claude 該如何不同地操作',
         }

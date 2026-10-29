@@ -975,6 +975,7 @@ export const ru: TranslationStructure = {
         permissions: {
             yesAllowAllEdits: 'Да, разрешить все правки в этой сессии',
             yesAllowEverything: 'Да, разрешить всё в этой сессии',
+            yesAskEachTime: 'Да, но спрашивай о каждом изменении',
             yesForTool: 'Да, больше не спрашивать для этого инструмента',
             noTellClaude: 'Нет, дать обратную связь',
         }

@@ -1085,6 +1085,7 @@ export const en = {
         permissions: {
             yesAllowAllEdits: 'Yes, allow all edits during this session',
             yesAllowEverything: 'Yes, allow everything during this session',
+            yesAskEachTime: 'Yes, but ask me about every change',
             yesForTool: "Yes, don't ask again for this tool",
             noTellClaude: 'No, and provide feedback',
         }

@@ -970,6 +970,7 @@ export const ja: TranslationStructure = {
         permissions: {
             yesAllowAllEdits: 'はい、このセッション中のすべての編集を許可',
             yesAllowEverything: 'はい、このセッション中のすべてを許可',
+            yesAskEachTime: 'はい、ただし変更ごとに確認',
             yesForTool: "はい、このツールについては確認しない",
             noTellClaude: 'いいえ、フィードバックを提供',
         }

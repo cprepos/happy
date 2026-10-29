@@ -31,7 +31,7 @@ interface SessionPermissionRequest {
     id: string;
     approved: boolean;
     reason?: string;
-    mode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan';
+    mode?: 'auto' | 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan';
     allowTools?: string[];
     updatedInput?: Record<string, unknown>;
     decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort';
@@ -916,7 +916,7 @@ export async function sessionSetAvatar(
 /**
  * Allow a permission request
  */
-export async function sessionAllow(sessionId: string, id: string, mode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan', allowedTools?: string[], decision?: 'approved' | 'approved_for_session', updatedInput?: Record<string, unknown>): Promise<void> {
+export async function sessionAllow(sessionId: string, id: string, mode?: 'auto' | 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan', allowedTools?: string[], decision?: 'approved' | 'approved_for_session', updatedInput?: Record<string, unknown>): Promise<void> {
     const request: SessionPermissionRequest = { id, approved: true, mode, allowTools: allowedTools, decision, updatedInput };
     await apiSocket.sessionRPC(sessionId, 'permission', request);
 }

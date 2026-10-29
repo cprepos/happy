@@ -92,7 +92,7 @@ extension ChatRowRenderer {
             && (body != nil || toolBody(presentation.expandedBody, message: message, views: views, style: style) != nil)
         let tap: ChatRowAction = expandable ? .toggleTool(message.id) : open
         let footer = presentation.showsPermissionFooter ? tool.permission.map {
-            permissionFooter($0, tool: tool, busy: busy, flavor: style.flavor, tablet: style.tablet, maxListHeight: style.permissionListMaxHeight, text: text)
+            permissionFooter($0, tool: tool, busy: busy, flavor: style.flavor, cliVersion: style.cliVersion, tablet: style.tablet, maxListHeight: style.permissionListMaxHeight, text: text)
         } : nil
         let elapsed = presentation.showsElapsed ? elapsedSize(in: environment) : nil
         let glyph = presentation.statusGlyph.map { _ in CGSize(width: ToolCardLayout.Metrics.statusIconSize, height: ToolCardLayout.Metrics.statusIconSize) }
@@ -665,7 +665,7 @@ extension ChatRowRenderer {
     /// The buttons' 34 minimum and the list's cap keep their size at every
     /// text size; taller labels grow the buttons past it.
     static func permissionFooter(
-        _ permission: ToolPermission, tool: ToolCall, busy: PermissionButton.Kind?, flavor: String?, tablet: Bool = false,
+        _ permission: ToolPermission, tool: ToolCall, busy: PermissionButton.Kind?, flavor: String?, cliVersion: String? = nil, tablet: Bool = false,
         maxListHeight: CGFloat = PermissionFooterLayout.Metrics.maxListHeight, text: ChatRowText
     ) -> ChatPiece {
         let buttons = ChatPermissionButtons.buttons(permission, toolName: tool.name, toolInput: tool.input, flavor: flavor)
@@ -702,7 +702,7 @@ extension ChatRowRenderer {
                     items.append(.pulse(ChatBox(frame: box.insetBy(dx: -1, dy: -1), border: Palette.text, borderWidth: 2, radius: M.buttonRadius + 1)))
                 }
                 if pending && busy == nil {
-                    let reply = ChatPermissionButtons.reply(button.kind, toolName: tool.name, toolInput: tool.input)
+                    let reply = ChatPermissionButtons.reply(button.kind, toolName: tool.name, toolInput: tool.input, cliVersion: cliVersion)
                     hits.append(ChatHit(frame: box, action: .permission(ChatPermissionTap(permissionId: permission.id, kind: button.kind, reply: reply))))
                 }
             }

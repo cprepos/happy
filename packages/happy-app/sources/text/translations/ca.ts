@@ -969,6 +969,7 @@ export const ca: TranslationStructure = {
         permissions: {
             yesAllowAllEdits: 'Sí, permet totes les edicions durant aquesta sessió',
             yesAllowEverything: 'Sí, permet-ho tot durant aquesta sessió',
+            yesAskEachTime: 'Sí, però pregunta-m’ho per a cada canvi',
             yesForTool: 'Sí, no tornis a preguntar per aquesta eina',
             noTellClaude: 'No, proporciona comentaris',
         }
