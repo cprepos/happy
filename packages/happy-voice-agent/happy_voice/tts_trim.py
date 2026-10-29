@@ -17,8 +17,9 @@ intelligible plays: the opening sounds missing, and a listener who talks into th
 in and truncates the reply.
 
 So trim it, on levels the sweep measures rather than guesses. Sustained over two consecutive
-10 ms windows (one window can be a click), the artifact reaches at most 979-1005 while the
-quietest unmistakable speech holds 1096-1240, so `ONSET_RMS` sits between them. That bracket is
+10 ms windows (one window can be a click), the artifact reaches at most 973-1007 while the
+quietest unmistakable speech holds 1018-1240 across both Kokoro backends, so `ONSET_RMS` sits
+between them. That bracket is
 narrow, which is why the threshold does not decide the cut: it only locates speech, and the
 cut goes to the *quietest window* of the valley in front of it, found by search. A valley
 floor is deep (at most 116 measured, against `VALLEY_CEILING`), so a few hundred rms of
@@ -52,11 +53,19 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("happy-voice")
 
-ONSET_RMS = 1050
+ONSET_RMS = 1012
 """Level, held over two 10 ms windows, that counts as speech.
 
-The sweep brackets it: the artifact holds at most 979-1005, the quietest unmistakable
-speech 1096-1240. It only locates speech; `find_speech_onset` then cuts at the valley in front of it.
+The sweep brackets it, and the two Kokoro backends bracket it differently:
+
+    backend                  loudest artifact   quietest speech
+    CUDA Kokoro (GPU)              979-1005         1096-1240
+    MLX Kokoro (prep-air Mac)      973-1007         1018-1034
+
+1012 is inside both, which is why it is not the 1050 the GPU sweeps alone supported: that sits
+above the Mac's quietest speech, so on those clips no onset is found and the whole ~900 ms lead
+plays. The Mac needs the trim more, not less -- it leads on 25 of 25 texts where CUDA leads on
+17. It only locates speech; `find_speech_onset` then cuts at the valley in front of it.
 """
 
 VALLEY_CEILING = 260
