@@ -7,7 +7,14 @@
 #   ./install-service.sh --uninstall           remove the services and the firewall rules
 #
 # Settings (env): VOICE_DIR (~/happy-voice-local), VOICE_HOST (0.0.0.0), STT_PORT (8090),
-# TTS_PORT (8880), ALLOW_FROM (192.168.2.72, or "any").
+# TTS_PORT (8880), ALLOW_FROM (192.168.2.72, or "any"), TTS_MODEL (prince-canuma/Kokoro-82M),
+# TTS_VOICE (af_heart), TTS_FIRST_MAX_WORDS (8).
+#
+# TTS_MODEL and TTS_VOICE are written into the plist, so a fine-tuned Kokoro survives a
+# reinstall. Point TTS_MODEL at a directory holding the model and a voices/*.safetensors
+# folder; anything that is not a directory is resolved against Hugging Face. For example:
+#
+#   TTS_MODEL=$HOME/kokoro-am-morgan TTS_VOICE=am_morgan ./install-service.sh
 #
 # The services have no authentication. The allow rule (a pf anchor, reloaded at boot by a small
 # LaunchDaemon) keeps other LAN devices out. Firewall steps use sudo and ask for your password.
@@ -21,6 +28,10 @@ VOICE_HOST=${VOICE_HOST:-0.0.0.0}
 STT_PORT=${STT_PORT:-8090}
 TTS_PORT=${TTS_PORT:-8880}
 ALLOW_FROM=${ALLOW_FROM:-192.168.2.72}
+# Defaults are the stock hub model and voice, so a fresh install works with no local files.
+TTS_MODEL=${TTS_MODEL:-prince-canuma/Kokoro-82M}
+TTS_VOICE=${TTS_VOICE:-af_heart}
+TTS_FIRST_MAX_WORDS=${TTS_FIRST_MAX_WORDS:-8}
 
 AGENTS="$HOME/Library/LaunchAgents"
 LABEL_PREFIX=com.happy.voice
@@ -94,6 +105,9 @@ for svc in stt tts; do
     <key>VOICE_HOST</key><string>$VOICE_HOST</string>
     <key>STT_PORT</key><string>$STT_PORT</string>
     <key>TTS_PORT</key><string>$TTS_PORT</string>
+    <key>TTS_MODEL</key><string>$TTS_MODEL</string>
+    <key>TTS_VOICE</key><string>$TTS_VOICE</string>
+    <key>TTS_FIRST_MAX_WORDS</key><string>$TTS_FIRST_MAX_WORDS</string>
     <key>HOME</key><string>$HOME</string>
     <key>PATH</key><string>$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>

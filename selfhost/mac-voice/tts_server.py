@@ -14,6 +14,19 @@ semicolon, colon, dash) or else before a conjunction ("so", "and", "because", ..
 TTS_FIRST_MAX_WORDS words, keeping at least TTS_FIRST_MIN_WORDS words in the first piece. The rest
 is synthesized while the first piece plays (RTF ~0.12). TTS_FAST_FIRST=0 turns the split off.
 
+Every generate() call pads its audio, so each piece is trimmed before it goes out -- see _trim.
+Without that, a split inserts the next piece's lead in the middle of the sentence: "I have sent
+that along." measured 2.35 s whole against 3.52 s in two pieces, with a 0.84 s hole at the join,
+and that hole is what a listener hears as a stop between sentences. Trimming removes it and the
+lead in front of the reply with it, so speech now starts 60 ms into the audio rather than 940 ms.
+TTS_TRIM_PIECES=0 turns it off.
+
+With the pads gone the cap is a plain latency-against-prosody choice, since each piece is
+synthesized independently and its intonation contour restarts. Measured on the nine-word sentence
+above, time to the first audible word: cap 4 gives 550 ms, cap 6 667 ms, cap 8 713 ms, cap 12
+722 ms, and TTS_FAST_FIRST=0 743 ms -- but on a 22-word sentence turning the split off costs
+1543 ms against 681 ms, which is what the split is for.
+
 mp3 streams too: a LAME encoder (lameenc) runs across the whole response, so frames go out as
 soon as each piece is synthesized.
 """
@@ -45,6 +58,14 @@ FAST_FIRST = os.environ.get("TTS_FAST_FIRST", "1") != "0"
 FIRST_MIN_WORDS = int(os.environ.get("TTS_FIRST_MIN_WORDS", "3"))
 FIRST_MAX_WORDS = int(os.environ.get("TTS_FIRST_MAX_WORDS", "8"))
 MP3_KBPS = int(os.environ.get("TTS_MP3_KBPS", "96"))
+TRIM_PIECES = os.environ.get("TTS_TRIM_PIECES", "1") != "0"
+ONSET_RMS = int(os.environ.get("TTS_ONSET_RMS", "1012")) / 32768.0
+VALLEY_RMS = int(os.environ.get("TTS_VALLEY_RMS", "260")) / 32768.0
+MIN_LEAD = float(os.environ.get("TTS_MIN_LEAD", "0.12"))
+MAX_TRIM = float(os.environ.get("TTS_MAX_TRIM", "1.5"))
+KEEP_PAD = 0.030
+PAUSE = float(os.environ.get("TTS_PAUSE", "0.20"))
+FADE = 0.005
 WARMUP = os.environ.get("WARMUP", "1") != "0"
 SAMPLE_RATE = 24000
 
@@ -126,14 +147,87 @@ def _load():
     LOAD_S = time.time() - t0
 
 
+def _trim(x: np.ndarray) -> np.ndarray:
+    """Drop the speech-free lead and the over-long tail Kokoro puts around a piece.
+
+    Every generate() call pads its audio: measured on an M1, "I have sent that" holds speech
+    from 0.36 s to 1.00 s of a 1.38 s buffer, and "that along." from 0.46 s to 0.76 s of
+    another 1.38 s. Synthesize a sentence as two pieces and those two pads meet in the middle
+    of it -- 0.38 s of tail against 0.46 s of lead, the 0.84 s hole measured at the join. A
+    client can trim the lead off the start of a response but not one that arrives mid-stream,
+    so it is trimmed here, where every piece is still a whole array.
+
+    The levels come from the agent's `happy_voice/tts_trim.py`, which derived them by sweep:
+    speech is two consecutive 10 ms windows at ONSET_RMS, and the cut goes to the end of the
+    quiet stretch in front of that, found by search, not to the threshold. Both ways of being
+    wrong keep audio: no onset found passes the piece through, and an onset found inside the
+    lead puts the valley search at the start, where it trims nothing. MIN_LEAD is lower than
+    the agent's 0.4 s because this only ever looks in front of a piece's first speech, so a
+    quiet run there cannot be a pause inside the speech.
+
+    The tail is cut to PAUSE rather than removed, because that pause is the spacing between
+    sentences.
+    """
+    win = SAMPLE_RATE // 100  # 10 ms
+    n = len(x) // win
+    if n < 3:
+        return x
+    w = x[: n * win].reshape(n, win).astype(np.float64)
+    rms = np.sqrt((w * w).mean(axis=1))
+    def runs(mask: np.ndarray, k: int) -> np.ndarray:
+        """Where a run of `k` consecutive true windows starts."""
+        if len(mask) < k:
+            return np.zeros(0, dtype=bool)
+        out = mask[: len(mask) - k + 1].copy()
+        for i in range(1, k):
+            out &= mask[i : len(mask) - k + 1 + i]
+        return out
+
+    # 50 ms of speech, not 20: the lead itself can hold a 30 ms click at speech level (seen on
+    # "that along."), and treating that as the onset leaves the whole lead in place. Real
+    # speech runs measure 140-260 ms, so the longer run costs nothing.
+    pair = runs(rms >= ONSET_RMS, 5)
+    if not pair.any():
+        return x  # nothing we can positively call speech: keep it whole
+    first, last = int(pair.argmax()), int(len(pair) - 1 - pair[::-1].argmax())
+
+    start = 0
+    qpair = runs(rms <= VALLEY_RMS, 2)
+    lead = [i for i in range(first) if qpair[i]]
+    if lead:
+        cut = lead[-1] * win
+        if MIN_LEAD * SAMPLE_RATE <= cut <= MAX_TRIM * SAMPLE_RATE:
+            start = max(0, cut - int(KEEP_PAD * SAMPLE_RATE))
+
+    end = len(x)
+    tail = [i for i in range(last + 1, len(qpair)) if qpair[i]]
+    if tail:
+        keep = tail[0] * win + int(PAUSE * SAMPLE_RATE)
+        if keep < end:
+            end = keep
+
+    if start == 0 and end == len(x):
+        return x
+    y = x[start:end].copy()
+    fade = min(int(FADE * SAMPLE_RATE), len(y))
+    if start and fade:
+        y[:fade] *= np.linspace(0.0, 1.0, fade, dtype=np.float32)
+    if end < len(x) and fade:
+        y[-fade:] *= np.linspace(1.0, 0.0, fade, dtype=np.float32)
+    return y
+
+
 def _synth(text: str, voice: str, speed: float, cancel: threading.Event):
     """Runs on the MLX thread. Yields float32 numpy chunks at 24 kHz."""
     v = voice.replace("+", ",")
     for part in split_text(text):
         if cancel.is_set():
             return
+        # generate() returns a part as one array (checked on an M1: one chunk per call), so
+        # trimming its pads costs no streaming latency -- there is nothing to hold back.
         for r in MODEL.generate(text=part, voice=v, speed=speed, lang_code=_lang(voice), split_pattern=None):
-            yield np.asarray(r.audio, dtype=np.float32).reshape(-1)
+            audio = np.asarray(r.audio, dtype=np.float32).reshape(-1)
+            yield _trim(audio) if TRIM_PIECES else audio
             if cancel.is_set():
                 return
     mx.clear_cache()

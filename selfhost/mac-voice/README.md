@@ -46,9 +46,36 @@ Kokoro-82M with its voices is 0.34 GB. The `.venv` takes another 1.4 GB.
 | `STT_FILE_RIGHT_CONTEXT` | 13 | look-ahead for `/v1/audio/transcriptions`. 13 is about 6x faster than 1 on an M1 |
 | `STT_DTYPE` | fp16 | encoder dtype. fp16 costs about 49 ms per 160 ms chunk on an M1, bf16 about 55 ms, fp32 about 70 ms. q8, q4 and `mx.compile` gave nothing |
 | `STT_ENDPOINT_MS` | 0 | silence that ends an utterance when the client does not set it |
+| `TTS_MODEL` | prince-canuma/Kokoro-82M | a directory holding a Kokoro model and a `voices/` folder, or anything else, which is resolved against Hugging Face |
 | `TTS_VOICE` | af_heart | default voice |
-| `TTS_FAST_FIRST` | 1 | split the first sentence at a clause, a conjunction or `TTS_FIRST_MAX_WORDS` (8), so audio starts sooner |
+| `TTS_FAST_FIRST` | 1 | split the first sentence at a clause, a conjunction or `TTS_FIRST_MAX_WORDS`, so audio starts sooner |
+| `TTS_FIRST_MAX_WORDS` | 8 | hard cap on the first piece when there is no clause or conjunction to split at. Lower starts sooner but inserts a gap — see below |
+| `TTS_FIRST_MIN_WORDS` | 3 | floor on the first piece, so it never becomes a one- or two-word fragment |
+| `TTS_TRIM_PIECES` | 1 | drop each piece's silent lead and cut its tail to `TTS_PAUSE` — see below |
+| `TTS_PAUSE` | 0.20 | seconds of silence kept between pieces |
 | `TTS_MP3_KBPS` | 96 | bitrate of the streamed mp3 |
+
+`install-service.sh` writes `TTS_MODEL`, `TTS_VOICE` and `TTS_FIRST_MAX_WORDS` into the launchd
+plist, so they survive a reinstall and a reboot. Anything set only in a shell does not. Editing
+the plist afterwards is not enough on its own either: launchd keeps the job it loaded, so a
+`launchctl kickstart` restarts the service with the old environment. Reload it instead —
+`launchctl bootout gui/$(id -u)/com.happy.voice-tts` then `launchctl bootstrap gui/$(id -u)
+~/Library/LaunchAgents/com.happy.voice-tts.plist` — or just re-run the installer.
+
+## A fine-tuned Kokoro
+
+Point `TTS_MODEL` at a directory that holds the model weights and a `voices/` folder of
+`*.safetensors` voice packs. A path that is not an existing directory is treated as a Hugging Face
+repo id instead, so the default needs no local files. Custom voices are resolved from that
+`voices/` folder first, which is why a voice that exists nowhere on the hub still works.
+
+```sh
+TTS_MODEL=$HOME/kokoro-am-morgan TTS_VOICE=am_morgan ./install-service.sh
+```
+
+`GET /v1/audio/voices` lists what was found and `GET /health` echoes the model that is loaded.
+Check both after a reinstall, because a `TTS_MODEL` directory that does not exist is not an
+error: it falls through to the hub and serves stock Kokoro.
 
 ## Why the TTS splits the first sentence
 
@@ -66,6 +93,51 @@ chunk. These alternatives were measured and none of them was faster:
 The default fp32 mlx-audio model is 214 / 818 ms. Splitting the first sentence cut the medium
 sentence's time to first byte from about 900 ms to about 390 ms. The rest of the text is
 synthesized while the first piece plays, since generation runs at RTF ~0.13.
+
+### Padding, and the stops it caused
+
+Every Kokoro synthesis pads its audio. Measured on an M1, "I have sent that" holds speech from
+0.36 s to 1.00 s of a 1.38 s buffer, and "that along." from 0.46 s to 0.76 s of another 1.38 s.
+That is harmless for one piece but not for two: the text above runs 2.35 s whole and 3.52 s split,
+with a **0.84 s hole where the pieces join** — audible as a stop in the middle of a sentence, or
+between sentences in a longer reply, since every sentence is its own piece. `af_heart` showed the
+same 0.80 s gap, so it is the model and not a voice pack.
+
+So each piece is trimmed before it is sent: the speech-free lead is dropped, and the tail is cut
+back to `TTS_PAUSE` (0.20 s), which is the spacing between sentences. The thresholds come from the
+voice agent's `happy_voice/tts_trim.py`, which derived them by sweep — speech is 50 ms held at
+rms 1012, and the cut goes to the end of the quiet stretch in front of it, found by search rather
+than set by the threshold, so both ways of being wrong keep audio instead of clipping a word.
+
+| | before | after |
+|---|---|---|
+| "I have sent that along." | 3.52 s, 0.84 s hole | 1.45 s, no gap |
+| 9-word sentence | 4.83 s | 3.13 s |
+| 22-word sentence | 10.55 s, 1.00 s hole at the join | 8.85 s, no gap |
+| speech starts | 940 ms into the audio | 60 ms |
+| cost | | 0.2–0.8 ms per piece |
+
+Time to first byte is unchanged — the trim runs on a piece that is already synthesized — but the
+first audible word arrives about 880 ms sooner, because what used to play first was the lead.
+`TTS_TRIM_PIECES=0` turns it off.
+
+### What the cap costs
+
+With the padding gone, `TTS_FIRST_MAX_WORDS` is a plain trade of latency against phrasing: each
+piece is synthesized on its own, so its intonation restarts, and a split mid-phrase sounds it.
+Time to the first audible word, `am_morgan` over the LAN, median of three warm runs:
+
+| Cap | 9-word sentence, no conjunction | 22-word sentence |
+|---|---|---|
+| 4 | 550 ms | 676 ms |
+| 6 | 667 ms | 677 ms |
+| 8 (default) | 713 ms | 681 ms |
+| 12 | 722 ms | 640 ms |
+| `TTS_FAST_FIRST=0` | 743 ms | 1543 ms |
+
+So raising the cap costs little — about 160 ms between 4 and 8 on a short sentence, and nothing
+at all on a long one, where the first split lands on a conjunction before the cap applies.
+Turning splitting off is the one setting that hurts: 1543 ms on the long sentence.
 
 ## Results (MacBook Air M1, 16 GB, macOS 15.7.4, on AC power, Low Power Mode off)
 
