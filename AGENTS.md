@@ -38,13 +38,16 @@ that run hundreds of commits ahead of it. A push to `origin` therefore does not
 "sync" anything -- it dumps unrelated app and CLI work onto a repo that is not
 ours. Fetching `origin` is fine and often necessary; pushing is not.
 
-`selfhost` is our working line, and it is what the deploy checkout at
-`/home/prep/happy` has checked out -- so `fork/selfhost` is the usual target, and
-a push there is one `git merge --ff-only` away from being deployable.
+`main` is our working line, and it is what the deploy checkout at
+`/home/prep/happy` has checked out -- so `fork/main` is the target, and a push
+there is one `git merge --ff-only` away from being deployable.
 
-`fork/main` has diverged badly from the work branches (hundreds of commits in
-each direction) and cannot take a fast-forward push. Do not force push to fix
-that. Use `selfhost`, or ask.
+There is no `selfhost` branch any more. It and `main` had drifted into two
+rebased copies of the same project -- 188 of one side's 223 commits had a
+subject twin on the other -- which meant every change had to be landed twice
+and each copy quietly missed things the other had (`selfhost` had no copy of
+the ~190 happy-ios files behind the Mac app target; `main` had none of the
+later voice work). They were merged on 2026-10-29 and `selfhost` was deleted.
 
 One carve-out: inside GitHub Actions, `origin` is whatever repo the workflow is
 running in, so `git push origin HEAD:main` in `.github/workflows/` is already
@@ -58,12 +61,11 @@ When the user says `sync to main` or `synt to main`, they mean:
 
 1. Fetch the upstream (`git fetch origin main`) so you can see what has landed.
 2. Rebase the current branch on `origin/main`.
-3. Push the current HEAD to **`fork`** with a normal push, for example:
-   `git push fork HEAD:selfhost`
+3. Push the current HEAD to **`fork`** with a normal push:
+   `git push fork HEAD:main`
 
-Despite the name, step 3 does **not** push to `origin` and does not push to a
-branch called `main` -- see the section above. Before pushing, show the commits
-the push contains and confirm the branch if it is anything other than
-`fork/selfhost`.
+Step 3 does **not** push to `origin`, which is the shared upstream -- see the
+section above. Before pushing, show the commits the push contains, and confirm
+the branch if it is anything other than `fork/main`.
 
 Do not force push for this workflow.
