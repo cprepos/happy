@@ -393,9 +393,11 @@ class Sync {
 
     private onSessionDataUpdated = (sessionId: string) => {
         this.refreshSessionData(sessionId);
-        // Preserve existing voice-follow behavior for actual server events.
-        // Unlike a user visit, these must not opt a session into full history.
-        this.notifyVoiceSessionFocus(sessionId);
+        // No voice focus notification here. This runs on every inbound socket update, so
+        // announcing focus made the voice agent a "session became focused" update per message
+        // the coding agent emitted -- ~45 context updates in a three-minute session, each one
+        // growing the prompt the agent has to prefill. onSessionFocus is for a user opening a
+        // chat (onSessionVisible); voice learns about new messages through onMessages.
     }
 
     preloadSession = (sessionId: string) => {

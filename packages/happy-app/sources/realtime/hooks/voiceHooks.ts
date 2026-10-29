@@ -8,6 +8,7 @@ import {
     formatSessionOffline,
     formatSessionOnline
 } from './contextFormatters';
+import { createRepeatFilter } from './contextRepeat';
 import { storage } from '@/sync/storage';
 import { Message } from '@/sync/typesMessage';
 import { VOICE_CONFIG } from '../voiceConfig';
@@ -64,6 +65,8 @@ function flushPendingPrompts() {
     voice.sendTextMessage(batched);
 }
 
+const recentContext = createRepeatFilter();
+
 /**
  * Send silent background context — always immediate, never queued.
  */
@@ -74,6 +77,12 @@ function sendContext(update: string | null | undefined) {
     if (!update) return;
     const voice = getVoiceSession();
     if (!voice || !isVoiceSessionStarted()) return;
+    if (recentContext.isRepeat(update)) {
+        if (VOICE_CONFIG.ENABLE_DEBUG_LOGGING) {
+            console.log('🎤 Voice: sendContext skipped, repeats one just sent');
+        }
+        return;
+    }
     voice.sendContextualUpdate(update);
 }
 
@@ -192,6 +201,7 @@ export const voiceHooks = {
         }
         shownSessions.clear();
         pendingPrompts = [];
+        recentContext.reset();
         ensureModeSubscription();
 
         let prompt = '';
@@ -228,5 +238,6 @@ export const voiceHooks = {
         }
         shownSessions.clear();
         pendingPrompts = [];
+        recentContext.reset();
     }
 };

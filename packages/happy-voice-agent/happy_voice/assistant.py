@@ -30,7 +30,12 @@ from livekit.agents import tts as tts_mod
 from livekit.plugins import openai, silero
 
 from .config import Settings
-from .context import already_in_context, focused_session_from, fold_system_messages
+from .context import (
+    RecentUpdates,
+    already_in_context,
+    focused_session_from,
+    fold_system_messages,
+)
 from .names import voice_name
 from .nemotron_stt import NemotronSTT
 from .prompt import (
@@ -52,6 +57,8 @@ TOPIC_TEXT = "happy.text"
 TOPIC_INTERRUPTED = "happy.interrupted"
 RPC_GET_CONFIG = "happy.getConfig"
 WARMUP_PLACEHOLDER = "(warm-up)"
+# Longest a context update waits for the exchange to go quiet before being applied anyway (s).
+CONTEXT_DEFER_MAX = 10.0
 
 # The app's tool results dictate the exact words to speak, e.g.
 # "sent [DO NOT say anything else, simply say 'sent']". Speaking them directly saves a second LLM
@@ -553,6 +560,28 @@ async def entrypoint(ctx: JobContext) -> None:
         session.say(config.first_message.strip(), allow_interruptions=True)
 
     lock = asyncio.Lock()
+    recent_updates = RecentUpdates()
+
+    # Applying a context update while a reply is being prepared changes the prompt the
+    # preemptive generation was started on, which throws it away ("preemptive generation
+    # invalidated after on_user_turn_completed", three times in the 2026-10-29 session) -- the
+    # opposite of what the update is for. Nothing in a focus change or a tool-call notice has
+    # to reach the model in that half-second, so hold it until the window passes. Only context
+    # waits; permission requests and the app's own prompts arrive on TOPIC_TEXT.
+    #
+    # The window is the user speaking (a preemptive generation is about to start on what they
+    # have said so far) through the agent thinking (it is running). Not the agent speaking:
+    # by then the request is made, and the greeting alone would hold up the first session dump,
+    # which is the one warm-up that decides how long the first reply takes.
+    quiet = asyncio.Event()
+    quiet.set()
+
+    def _recheck_quiet(_: Any = None) -> None:
+        busy = session.user_state == "speaking" or session.agent_state == "thinking"
+        quiet.clear() if busy else quiet.set()
+
+    session.on("user_state_changed", _recheck_quiet)
+    session.on("agent_state_changed", _recheck_quiet)
 
     async def handle_inbox() -> None:
         while True:
@@ -561,8 +590,19 @@ async def entrypoint(ctx: JobContext) -> None:
             if not text:
                 continue
             if topic == TOPIC_CONTEXT:
+                # the focus is state, not prompt text: record it even if the update is dropped
                 if focused := focused_session_from(text):
                     state.focused_session = focused
+                if recent_updates.is_repeat(text, time.monotonic()):
+                    logger.info("context update (%d chars) repeats one just applied; skipped", len(text))
+                    continue
+                if not quiet.is_set():
+                    try:
+                        # capped: a long agent monologue must not starve context indefinitely,
+                        # and by then there is no preemptive generation left to invalidate
+                        await asyncio.wait_for(quiet.wait(), timeout=CONTEXT_DEFER_MAX)
+                    except asyncio.TimeoutError:
+                        logger.info("context update (%d chars) applied mid-turn after waiting", len(text))
                 async with lock:
                     current = session.current_agent
                     if already_in_context(text, current.chat_ctx, current.instructions):

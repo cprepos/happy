@@ -58,6 +58,32 @@ def test_fold_moves_late_system_messages_to_user_role() -> None:
     assert ctx.items[3].role == "system"
 
 
+def test_recent_updates_drops_a_repeat_inside_the_window_only() -> None:
+    from happy_voice.context import RecentUpdates
+
+    r = RecentUpdates(window=2.0)
+    tool = "New messages in session: abc\n\nClaude Code is using Read - sources/sync/sync.ts"
+    assert r.is_repeat(tool, 100.0) is False
+    # the sync layer re-renders the same tool call when its result lands, 1 ms later
+    assert r.is_repeat(tool, 100.001) is True
+    # a different update in between is not affected
+    assert r.is_repeat("Session became focused: abc", 100.002) is False
+    assert r.is_repeat(tool, 100.5) is True
+    # past the window the same text is taken at face value: the file really can be read twice
+    assert r.is_repeat(tool, 103.0) is False
+    # whitespace is not a difference
+    assert r.is_repeat(f"  {tool}\n", 103.1) is True
+
+
+def test_recent_updates_does_not_grow_without_bound() -> None:
+    from happy_voice.context import RecentUpdates
+
+    r = RecentUpdates(window=2.0, keep=4)
+    for i in range(50):
+        assert r.is_repeat(f"update {i}", 100.0 + i * 0.01) is False
+    assert len(r._seen) <= 4
+
+
 def test_focused_session_takes_last_match() -> None:
     assert focused_session_from("Session became focused: a\nSession became focused: b") == "b"
     assert focused_session_from("nothing here") is None
