@@ -50,6 +50,9 @@ UTTERANCES = {
     # skip_turn every time, because the prompt let "not addressed to me" cover anything
     # without a wake word. Answering is the default now, and this is the turn that proves it.
     "no_wake_word": "Tell me more about what needs to be done to test it.",
+    # Used after the prompt has been loaded with context updates, to check the model still
+    # reaches for the tool rather than speaking the argument. See step 8.
+    "relay_under_load": "Happy, tell Claude to run the tests.",
     "thanks": "Happy, how many sessions do I have open right now?",
 }
 
@@ -516,7 +519,39 @@ async def main() -> int:
             json.dumps(calls[0][2]) if calls else "no call",
         )
 
-        # 8. one more latency sample
+        # 8. a relay instruction with a realistically loaded prompt
+        #
+        # Until 2026-10-29 this suite sent 4 context updates where a real phone session sent
+        # ~45, and that gap hid a live regression: pinned to coder-moe, the agent stopped
+        # emitting tool calls once the prompt passed roughly 25 updates and spoke the argument
+        # out loud instead ("test"), while the suite -- 4 updates deep -- passed 16/16. So load
+        # the prompt to a real session's depth before asking for the one action that matters.
+        await wait_quiet()
+        for i in range(30):
+            await send("happy.context", f"Session became focused: {SESSION_ID}")
+            await send(
+                "happy.context",
+                f"New messages in session: {SESSION_ID}\n\nClaude Code: \n<text>Step {i}: "
+                "reread the config, checked the session status and marked the log position."
+                "</text>",
+            )
+            await asyncio.sleep(0.05)
+        await asyncio.sleep(1.0)
+        n_calls = len(world.rpc_calls)
+        await speak_turn("relay_under_load")
+        await wait_for(lambda: len(world.rpc_calls) > n_calls, 20)
+        calls = [c for c in world.rpc_calls[n_calls:] if c[1] == "sendMessageToSession"]
+        spoken = [
+            x[2] for x in world.transcripts
+            if x[1] == "agent" and x[2].strip() and x[0] >= world.transcripts[-1][0] - 10
+        ]
+        checks.check(
+            "relays to the session with a loaded prompt (not spoken aloud)",
+            bool(calls) and "test" in calls[0][2].get("message", "").lower(),
+            json.dumps(calls[0][2]) if calls else f"no tool call; agent said {spoken[-1:]!r}",
+        )
+
+        # 9. one more latency sample
         await speak_turn("thanks")
         await wait_quiet()
 

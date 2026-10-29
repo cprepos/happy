@@ -567,11 +567,12 @@ def _settings_with(**env: str) -> Settings:
 
 def test_llm_and_interruption_defaults() -> None:
     s = _settings_with()
-    # agentgateway's MoE tier by name, which fails over to dense on its own. Not the virtual
-    # `coder`, which routes per request and so warms the tier the turn may not use, and not
-    # 8899: that is coder-tool-proxy, which sets stream=False upstream, so a voice turn would
-    # wait for the whole answer before the first word is spoken. See happy_voice/config.py.
-    assert (s.llm_base_url, s.llm_model) == ("http://127.0.0.1:8903/v1", "coder-moe")
+    # agentgateway's dense tier by name, which fails over to MoE on its own. Not the virtual
+    # `coder`, which routes per request and so warms the tier the turn may not use; not the
+    # faster MoE tier, which stops emitting tool calls as context updates grow the prompt; and
+    # not 8899: that is coder-tool-proxy, which sets stream=False upstream, so a voice turn
+    # would wait for the whole answer before the first word is spoken. See happy_voice/config.py.
+    assert (s.llm_base_url, s.llm_model) == ("http://127.0.0.1:8903/v1", "coder-dense")
     assert s.llm_timeout == 60.0
     assert s.llm_max_retry == 0
     assert s.max_endpointing_delay == 1.5

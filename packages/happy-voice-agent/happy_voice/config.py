@@ -87,21 +87,35 @@ class Settings:
     tts_speed: float = field(default_factory=lambda: float(_env("TTS_SPEED", "1.0")))
     # Kokoro prefixes some segments with ~0.7 s of speech-free noise; see tts_trim.py
     tts_trim_lead: bool = field(default_factory=lambda: _env("TTS_TRIM_LEAD", "1") != "0")
-    # agentgateway on 8903, asking for the MoE tier (Qwen3.6-35B-A3B on 9081) by name. Each of
-    # the gateway's virtual models carries its own failover list -- `coder-moe` tries 9081 and
-    # spills over to coder-dense (9080), a refused connection counted unhealthy -- so the agent
+    # agentgateway on 8903, asking for the dense tier (Qwen3.8-27B FP8 on 9080) by name. Each of
+    # the gateway's virtual models carries its own failover list -- `coder-dense` tries 9080 and
+    # spills over to coder-moe (9081), a refused connection counted unhealthy -- so the agent
     # needs no failover of its own, and naming a tier is not the port pinning that made voice
     # mute on 2026-10-28, when the pinned backend restarted six times while being tuned.
     # Not the gateway's third virtual model, `coder`: that one is difficulty-routed per request,
     # which split one 3-minute session 39/26 between the tiers. Per-turn routing costs more than
     # the slower tier's decode -- the prefix warm-up prefills whichever tier it is given, so a
     # turn that classifies onto the other one pays the full 20k-token prefill the warm-up exists
-    # to avoid. MoE for every turn beats the right tier for some of them.
+    # to avoid.
+    # Dense rather than MoE, though MoE decodes faster, because MoE loses tool calling as the
+    # prompt grows. Context updates fold into the prompt as pseudo-user messages, and past ~25 of
+    # them coder-moe answers a "tell Claude to ..." turn by speaking the argument instead of
+    # calling sendMessageToSession. Measured 2026-10-29 at temperature 0 against both tiers:
+    #
+    #   context updates   prompt    coder-moe               coder-dense
+    #   0                 1.3k      sendMessageToSession     -
+    #   10                2.6k      sendMessageToSession     -
+    #   25                4.7k      spoke "test" out loud    sendMessageToSession
+    #   45                7.4k      spoke "test" out loud    sendMessageToSession
+    #
+    # The 18:12 iPad session that day ran to 52k prompt tokens and did exactly that, twice.
+    # Relaying work to the coding agent is the one thing this assistant must not get wrong, so
+    # it buys reliability with the ~200ms of TTFT that MoE would have saved.
     # Not 8903's neighbour 8899 either: that is coder-tool-proxy, which injects a searxng tool
     # into every request and sets stream=False upstream, so first-token latency would become
     # full generation time.
     llm_base_url: str = field(default_factory=lambda: _env("LLM_BASE_URL", "http://127.0.0.1:8903/v1"))
-    llm_model: str = field(default_factory=lambda: _env("LLM_MODEL", "coder-moe"))
+    llm_model: str = field(default_factory=lambda: _env("LLM_MODEL", "coder-dense"))
     llm_api_key: str = field(default_factory=lambda: _env("LLM_API_KEY", "not-needed"))
     llm_temperature: float = field(default_factory=lambda: float(_env("LLM_TEMPERATURE", "0.2")))
     llm_max_tokens: int = field(default_factory=lambda: int(_env("LLM_MAX_TOKENS", "250")))
