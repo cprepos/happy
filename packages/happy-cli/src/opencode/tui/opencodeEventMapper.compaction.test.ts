@@ -202,6 +202,11 @@ describe('OpencodeEventMapper compaction', () => {
             { type: 'session.created', properties: { sessionID: child, info: { id: child, parentID: 'ses_parent', title: 'task' } } },
             ...manual,
         ];
-        expect(timeline(events.flatMap((event) => mapper.handle(event)))).toEqual([]);
+        const lines = timeline(events.flatMap((event) => mapper.handle(event)));
+        // The child mirrors as a subagent (d3bfed38), so its lifecycle is the
+        // whole timeline. The point of this test survives that: none of the
+        // compaction it did shows up -- no service lines, no overflow notice.
+        expect(lines).toEqual(['agent:turn-start', 'agent:start', 'agent:stop']);
+        expect(lines.filter((line) => line.includes('service'))).toEqual([]);
     });
 });

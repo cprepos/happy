@@ -187,9 +187,34 @@ describe('OpencodeEventMapper', () => {
             },
         ]);
         expect(mapper.sessionId).toBe('ses_a');
-        expect(actions).toEqual([
+        // Still not followed: the child's own message produces nothing and the
+        // mapper stays on ses_a. What it does emit is the child's lifecycle --
+        // d3bfed38 made a child session mirror as a subagent -- and the
+        // permission is forwarded as before.
+        expect(summarize(envelopesOf(actions))).toEqual(['agent:turn-start', 'agent:start']);
+        expect(actions.filter((action) => action.type !== 'envelopes')).toEqual([
             { type: 'permission-asked', id: 'per_c', toolName: 'edit', input: { filePath: '/x.ts', path: '/x.ts', file_path: '/x.ts' } },
         ]);
+        // The lifecycle envelope carries the subagent tag; the turn it opens
+        // does not, since the turn belongs to the followed session.
+        const tagged = envelopesOf(actions).map((envelope) => envelope.subagent);
+        expect(tagged[0]).toBeUndefined();
+        expect(tagged[1]).toMatch(/^c[0-9a-f]{23}$/);
+    });
+
+    // The tag is a hash of the child session id, not a random id, so the app
+    // can correlate the same sub-agent across processes -- a resumed or
+    // restarted mirror has to land on the same id.
+    it('tags a sub-agent deterministically from its session id', () => {
+        const tagOf = (childId: string) => {
+            const mapper = new OpencodeEventMapper('ses_a');
+            const actions = run(mapper, [
+                { type: 'session.created', properties: { info: { id: childId, parentID: 'ses_a', title: 'sub' } } },
+            ]);
+            return envelopesOf(actions).map((envelope) => envelope.subagent).filter(Boolean)[0];
+        };
+        expect(tagOf('ses_child')).toBe(tagOf('ses_child'));
+        expect(tagOf('ses_child')).not.toBe(tagOf('ses_other'));
     });
 
     it('reports questions of the followed session joined to the question tool call', () => {
@@ -242,7 +267,10 @@ describe('OpencodeEventMapper', () => {
                 properties: { id: 'que_c', sessionID: 'ses_child', questions: [{ question: 'Name?', header: 'Name' }], tool: { messageID: 'm', callID: 'call_c' } },
             },
         ]);
-        expect(actions).toEqual([
+        // As above: the child's lifecycle is mirrored, and the question still
+        // comes through on its own.
+        expect(summarize(envelopesOf(actions))).toEqual(['agent:turn-start', 'agent:start']);
+        expect(actions.filter((action) => action.type !== 'envelopes')).toEqual([
             { type: 'question-asked', id: 'que_c', questions: [{ question: 'Name?', header: 'Name', options: [] }] },
         ]);
     });
