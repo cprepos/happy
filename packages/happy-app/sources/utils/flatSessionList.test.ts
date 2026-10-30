@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildFlatSessionRows } from './flatSessionList';
+import { buildFlatSessionRows, hasMultipleHosts, toFlatSessionRow } from './flatSessionList';
 import type { SessionListViewItem, SessionRowData } from '@/sync/storage';
 
 function row(overrides: Partial<SessionRowData> & { id: string }): SessionRowData {
@@ -157,5 +157,56 @@ describe('buildFlatSessionRows', () => {
         ], { sortByActivity: true });
 
         expect(rows.map((r) => r.session.id)).toEqual(['live']);
+    });
+
+    it('names the machine each chat runs on, and nothing for a bot', () => {
+        const rows = buildFlatSessionRows([
+            { type: 'bots', sessions: [row({ id: 'bot', botId: 'bot-1', botUsername: 'assistant', machineName: 'My Laptop' })] },
+            project('alpha', [{
+                id: '',
+                name: null,
+                sessions: [
+                    row({ id: 'named', machineId: 'laptop', machineName: 'My Laptop' }),
+                    row({ id: 'nameless', machineId: 'other', machineName: null }),
+                ],
+            }]),
+        ], { sortByActivity: true });
+
+        const byId = new Map(rows.map((r) => [r.session.id, r.hostName]));
+        expect(byId.get('named')).toBe('My Laptop');
+        // A machine with no name of its own says nothing rather than a raw id.
+        expect(byId.get('nameless')).toBeNull();
+        expect(byId.get('bot')).toBeNull();
+    });
+
+    it('carries the host onto a row that reached the list on its own', () => {
+        expect(toFlatSessionRow(row({ id: 'archived', machineName: 'Office Mac' })).hostName).toBe('Office Mac');
+    });
+});
+
+describe('hasMultipleHosts', () => {
+    const rowsFor = (sessions: SessionRowData[]) => buildFlatSessionRows([
+        project('alpha', [{ id: '', name: null, sessions }]),
+    ], { sortByActivity: true });
+
+    it('is false for one machine, so a single-machine account repeats nothing', () => {
+        expect(hasMultipleHosts(rowsFor([
+            row({ id: 'a', machineId: 'laptop', machineName: 'My Laptop' }),
+            row({ id: 'b', machineId: 'laptop', machineName: 'My Laptop' }),
+        ]))).toBe(false);
+    });
+
+    it('is true for two machines even when they share a display name', () => {
+        expect(hasMultipleHosts(rowsFor([
+            row({ id: 'a', machineId: 'one', machineName: 'prep-ml' }),
+            row({ id: 'b', machineId: 'two', machineName: 'prep-ml' }),
+        ]))).toBe(true);
+    });
+
+    it('does not count bots, which belong to no machine the reader can see', () => {
+        expect(hasMultipleHosts(rowsFor([
+            row({ id: 'a', machineId: 'laptop', machineName: 'My Laptop' }),
+            row({ id: 'bot', machineId: 'server', machineName: 'Server', botId: 'bot-1', botUsername: 'assistant' }),
+        ]))).toBe(false);
     });
 });

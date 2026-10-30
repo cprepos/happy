@@ -217,6 +217,7 @@ export const ca: TranslationStructure = {
         groupingTitle: 'Agrupació',
         flatList: 'Llista plana',
         groupByProject: 'Agrupa per projecte',
+        groupByMachine: 'Agrupa per màquina',
         appearanceSettings: 'Configuració d\'aparença',
         worktreeTabs: ({ count }: { count: number }) => count === 1 ? '1 pestanya' : `${count} pestanyes`,
     },

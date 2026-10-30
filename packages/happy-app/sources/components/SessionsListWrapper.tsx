@@ -59,8 +59,9 @@ export const SessionsListWrapper = React.memo(({
     const onlineMachineCount = machineChoices.filter((machine) => machine.online).length;
     const [, setHideArchivedSessions] = useSettingMutable('hideInactiveSessions');
     // The activity-sorted chat list is the default; the project hierarchy —
-    // project, then checkout, with chats as tabs — is the other layout.
-    const groupByProject = useSetting('sessionListGrouping') === 'project';
+    // project, then checkout, with chats as tabs — and the host grouping, which
+    // keeps the machine headings and drops the cards, are the other layouts.
+    const grouping = useSetting('sessionListGrouping');
     const styles = stylesheet;
 
     if (sessionListViewData === null) {
@@ -115,10 +116,11 @@ export const SessionsListWrapper = React.memo(({
         );
     }
 
-    if (groupByProject) {
+    if (grouping === 'project' || grouping === 'machine') {
         return (
             <View style={styles.container}>
                 <ProjectHomeList
+                    grouping={grouping}
                     topContentInset={topContentInset}
                     scrollIndicatorTopInset={scrollIndicatorTopInset}
                     bottomContentInset={bottomContentInset}

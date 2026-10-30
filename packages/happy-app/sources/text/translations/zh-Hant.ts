@@ -217,6 +217,7 @@ export const zhHant: TranslationStructure = {
         groupingTitle: '分組',
         flatList: '平鋪列表',
         groupByProject: '按專案分組',
+        groupByMachine: '按裝置分組',
         appearanceSettings: '外觀設定',
         worktreeTabs: ({ count }: { count: number }) => `${count} 個分頁`,
     },

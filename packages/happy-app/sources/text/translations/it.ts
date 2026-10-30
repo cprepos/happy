@@ -215,6 +215,7 @@ export const it: TranslationStructure = {
         groupingTitle: 'Raggruppamento',
         flatList: 'Elenco semplice',
         groupByProject: 'Raggruppa per progetto',
+        groupByMachine: 'Raggruppa per macchina',
         appearanceSettings: 'Impostazioni aspetto',
         worktreeTabs: ({ count }: { count: number }) => count === 1 ? '1 scheda' : `${count} schede`,
     },

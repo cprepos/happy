@@ -217,6 +217,7 @@ export const es: TranslationStructure = {
         groupingTitle: 'Agrupación',
         flatList: 'Lista plana',
         groupByProject: 'Agrupar por proyecto',
+        groupByMachine: 'Agrupar por máquina',
         appearanceSettings: 'Configuración de apariencia',
         worktreeTabs: ({ count }: { count: number }) => count === 1 ? '1 pestaña' : `${count} pestañas`,
     },

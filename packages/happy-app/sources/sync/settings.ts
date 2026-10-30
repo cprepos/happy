@@ -10,9 +10,10 @@ import { DEFAULT_USER_MESSAGE_BUBBLE_COLOR } from '../utils/userMessageBubbleCol
 export const SUPPORTED_SCHEMA_VERSION = 2;
 
 
-// How the home session list lays out: one activity-sorted flat list, or the
-// project-card hierarchy grouped by machine and repository.
-export const SESSION_LIST_GROUPING_MODES = ['flat', 'project'] as const;
+// How the home session list lays out: one activity-sorted flat list, the
+// project-card hierarchy grouped by machine and repository, or that same list
+// grouped by machine alone with the chats in one column under each.
+export const SESSION_LIST_GROUPING_MODES = ['flat', 'project', 'machine'] as const;
 export type SessionListGrouping = typeof SESSION_LIST_GROUPING_MODES[number];
 
 export const SettingsSchema = z.object({
@@ -34,7 +35,7 @@ export const SettingsSchema = z.object({
     // normalizeAvatarStyle so unknown values fall back to brutalist.
     avatarStyle: z.string().describe('Generated avatar style: brutalist, pixelated, or gradient'),
     avatarMonochrome: z.boolean().describe('Render generated avatars in black and white'),
-    sessionListGrouping: z.enum(SESSION_LIST_GROUPING_MODES).describe('Home session list layout: flat activity list or grouped by project'),
+    sessionListGrouping: z.enum(SESSION_LIST_GROUPING_MODES).describe('Home session list layout: flat activity list, grouped by project, or grouped by host'),
     // Keep the legacy key for synced settings compatibility. It controls the
     // harness badges in the session list.
     showFlavorIcons: z.boolean().describe('Whether to show harness icons in the session list'),

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildProjectHomeRows, findProjectWorktree, workspaceOrigin } from './projectHomeList';
+import { buildMachineHomeRows, buildProjectHomeRows, findProjectWorktree, workspaceOrigin } from './projectHomeList';
 import type { SessionListViewItem, SessionRowData } from '@/sync/storage';
 
 function row(overrides: Partial<SessionRowData> & { id: string }): SessionRowData {
@@ -95,6 +95,7 @@ function shape(rows: ReturnType<typeof build>): string[] {
             case 'archiveToggle': return item.hidden ? 'archive:show' : 'archive:hide';
             case 'archiveHeader': return `archiveHeader:${item.title}`;
             case 'archived': return `archived:${item.session.id}`;
+            case 'flatSession': return `chat:${item.row.session.id}${item.last ? ':last' : ''}`;
         }
     });
 }
@@ -454,6 +455,105 @@ describe('buildProjectHomeRows', () => {
             'bot:bot',
         ]);
         expect(build([])).toEqual([]);
+    });
+});
+
+describe('buildMachineHomeRows', () => {
+    function buildByMachine(
+        data: SessionListViewItem[],
+        archive: { hasArchivedSessions?: boolean; archiveHidden?: boolean } = {},
+    ) {
+        return buildMachineHomeRows({
+            data,
+            machines,
+            unknownMachineText: 'unknown',
+            expanded: {},
+            labels: { bots: 'Bots', projects: 'Projects' },
+            ...archive,
+        });
+    }
+
+    it('lists the chats themselves under each computer, with no project tree', () => {
+        const rows = buildByMachine([
+            project('happy', 'rig', [
+                { id: '', name: null, sessions: [row({ id: 'a', lastActivityAt: 20 })] },
+                { id: 'gdansk', name: 'Gdansk', sessions: [row({ id: 'b', lastActivityAt: 30 })] },
+            ]),
+            project('cli', 'happy', [
+                { id: '', name: null, sessions: [row({ id: 'c', machineId: 'machine-c' })] },
+            ], 'machine-c'),
+        ]);
+
+        expect(shape(rows)).toEqual([
+            'machine:Studio',
+            'chat:b',
+            'chat:a:last',
+            'machine:Terminal',
+            'chat:c:last',
+        ]);
+    });
+
+    it('keeps each chat its project and worktree, which the heading does not say', () => {
+        const rows = buildByMachine([
+            project('happy', 'rig', [
+                { id: 'gdansk', name: 'Gdansk', sessions: [row({ id: 'b' })] },
+            ]),
+        ]);
+        const chat = rows.find((item) => item.type === 'flatSession');
+
+        expect(chat).toMatchObject({ row: { projectName: 'happy', workspaceName: 'Gdansk' } });
+        // The heading above already names the computer, so the row does not repeat it.
+        expect(chat).toMatchObject({ row: { hostName: null } });
+    });
+
+    it('orders the computers as the project mode does: agents first, recent first', () => {
+        const rows = buildByMachine([
+            project('cli', 'happy', [
+                { id: '', name: null, sessions: [row({ id: 'a', machineId: 'machine-c', lastActivityAt: 99 })] },
+            ], 'machine-c'),
+            project('stale', 'rig', [
+                { id: '', name: null, sessions: [row({ id: 'b', machineId: 'machine-b', lastActivityAt: 10 })] },
+            ], 'machine-b'),
+            project('recent', 'rig', [
+                { id: '', name: null, sessions: [row({ id: 'c', lastActivityAt: 20 })] },
+            ]),
+        ]);
+
+        expect(shape(rows).filter((entry) => entry.startsWith('machine:')))
+            .toEqual(['machine:Studio', 'machine:Laptop', 'machine:Terminal']);
+    });
+
+    it('keeps bots in their own section, and a homeless chat under its own heading last', () => {
+        const rows = buildByMachine([
+            { type: 'bots', sessions: [row({ id: 'studio-bot' }), row({ id: 'homeless', machineId: null })] },
+            project('happy', 'rig', [{ id: '', name: null, sessions: [row({ id: 'a' })] }]),
+        ]);
+
+        expect(shape(rows)).toEqual([
+            'machine:Studio',
+            'section:Bots',
+            'bot:studio-bot',
+            'chat:a:last',
+            'machine:<unknown>',
+            'section:Bots',
+            'bot:homeless',
+        ]);
+    });
+
+    it('trails the archive behind every computer, exactly as the project mode does', () => {
+        const rows = buildByMachine([
+            project('happy', 'rig', [{ id: '', name: null, sessions: [row({ id: 'a' })] }]),
+            { type: 'header', title: 'Today' },
+            { type: 'session', session: row({ id: 'archived', archived: true }) },
+        ], { hasArchivedSessions: true, archiveHidden: false });
+
+        expect(shape(rows)).toEqual([
+            'machine:Studio',
+            'chat:a:last',
+            'archive:hide',
+            'archiveHeader:Today',
+            'archived:archived',
+        ]);
     });
 });
 

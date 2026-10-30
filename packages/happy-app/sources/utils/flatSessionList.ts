@@ -11,6 +11,34 @@ export interface FlatSessionRowData {
     projectName: string;
     /** Null in a project's primary checkout, which needs no second name. */
     workspaceName: string | null;
+    /**
+     * The machine this chat runs on, as the store already names it
+     * (`displayName || host || the session's own reported host`). Null for a
+     * bot, which belongs to no checkout, and for a machine with no name of its
+     * own, where a raw id would say less than nothing.
+     *
+     * Whether the row *draws* it is a separate question — see
+     * `hasMultipleHosts`.
+     */
+    hostName: string | null;
+}
+
+/**
+ * Whether these rows span more than one machine, which is the only time naming
+ * the host on every row tells the reader anything. A single-machine account
+ * would just repeat the same word down the column.
+ *
+ * Counts machines, not names: two hosts that happen to share a display name are
+ * still two places the work can be.
+ */
+export function hasMultipleHosts(rows: readonly FlatSessionRowData[]): boolean {
+    const machineIds = new Set<string>();
+    for (const row of rows) {
+        if (row.session.botId) continue;
+        if (row.session.machineId) machineIds.add(row.session.machineId);
+        if (machineIds.size > 1) return true;
+    }
+    return false;
 }
 
 /**
@@ -44,6 +72,7 @@ export function buildFlatSessionRows(
                     session,
                     projectName: item.project.name,
                     workspaceName: workspace.name ?? (workspace.id || null),
+                    hostName: session.machineName ?? null,
                 });
             }
         }
@@ -71,6 +100,7 @@ export function toFlatSessionRow(session: SessionRowData): FlatSessionRowData {
             session,
             projectName: `@${session.botUsername ?? ''}`,
             workspaceName: null,
+            hostName: null,
         };
     }
     const path = session.path?.trim() || '';
@@ -82,5 +112,6 @@ export function toFlatSessionRow(session: SessionRowData): FlatSessionRowData {
             ?? projectPath.split(/[\\/]/).filter(Boolean).at(-1)
             ?? '',
         workspaceName: session.workspaceName ?? (worktree ? getWorktreeName(path) : null),
+        hostName: session.machineName ?? null,
     };
 }

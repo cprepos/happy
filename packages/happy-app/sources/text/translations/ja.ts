@@ -218,6 +218,7 @@ export const ja: TranslationStructure = {
         groupingTitle: 'グループ化',
         flatList: 'フラットリスト',
         groupByProject: 'プロジェクト別にグループ化',
+        groupByMachine: 'マシン別にグループ化',
         appearanceSettings: '外観設定',
         worktreeTabs: ({ count }: { count: number }) => `${count} 個のタブ`,
     },

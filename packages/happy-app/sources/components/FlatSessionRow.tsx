@@ -45,14 +45,21 @@ export function flatListBackgroundColor(theme: Theme): string {
  * with a hairline under it, so the list reads as one continuous column rather
  * than a stack of project cards.
  */
-export const FlatSessionRow = React.memo(({ row, selected, showBorder, archived }: {
+export const FlatSessionRow = React.memo(({ row, selected, showBorder, archived, showHost }: {
     row: FlatSessionRowData;
     selected?: boolean;
     showBorder?: boolean;
     /** Retired work: the same row, faded back and drained of avatar colour. */
     archived?: boolean;
+    /**
+     * Name the machine beside the workspace. The list decides this once for
+     * the whole column (`hasMultipleHosts`), so a one-machine account is not
+     * told its own hostname on every row, and a column already grouped under
+     * host headings does not repeat them.
+     */
+    showHost?: boolean;
 }) => {
-    const { session, projectName, workspaceName } = row;
+    const { session, projectName, workspaceName, hostName } = row;
     const styles = stylesheet;
     const { theme } = useUnistyles();
     const sessionPressHandlers = useSessionPressHandlers(session.id);
@@ -217,6 +224,18 @@ export const FlatSessionRow = React.memo(({ row, selected, showBorder, archived 
                         <Text style={styles.harness} numberOfLines={1}>
                             {getHarnessName(session.flavor || 'claude')}
                         </Text>
+                        {showHost && hostName && (
+                            <>
+                                <Ionicons
+                                    name="desktop-outline"
+                                    size={13}
+                                    color={theme.colors.textSecondary}
+                                />
+                                <Text style={styles.workspace} numberOfLines={1}>
+                                    {hostName}
+                                </Text>
+                            </>
+                        )}
                         {workspaceName && (
                             <>
                                 <Text style={styles.workspace} numberOfLines={1}>

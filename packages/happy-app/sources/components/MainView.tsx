@@ -162,6 +162,7 @@ const HeaderRight = React.memo(({ activeTab }: { activeTab: ActiveTabType }) => 
                     options: [
                         { key: 'flat', label: t('sessionsFilter.flatList') },
                         { key: 'project', label: t('sessionsFilter.groupByProject') },
+                        { key: 'machine', label: t('sessionsFilter.groupByMachine') },
                     ],
                     selectedKey: sessionListGrouping,
                     onSelect: (key) => {

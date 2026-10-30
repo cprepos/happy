@@ -5,6 +5,7 @@ import {
     type SessionDisplayMachine,
 } from '@/utils/sessionDisplayOrder';
 import { getRepoPath, isWorktreePath } from '@/utils/worktreePaths';
+import { buildFlatSessionRows, type FlatSessionRowData } from '@/utils/flatSessionList';
 
 /**
  * One checkout of a project — the project's own, or one of its worktrees —
@@ -112,6 +113,13 @@ export type ProjectHomeRow =
     | { type: 'machine'; machineId: string | null; machineName: string }
     | { type: 'bot'; session: SessionRowData }
     | { type: 'project'; project: ProjectHomeEntry }
+    /**
+     * One chat, drawn the way the flat list draws it. Host grouping uses these
+     * instead of project cards: the heading already says which computer, so
+     * what is left to say is the chat, its project and its branch — which is
+     * exactly the flat row.
+     */
+    | { type: 'flatSession'; row: FlatSessionRowData; last: boolean }
     /** `last` closes the tree line that runs down from the project's avatar. */
     | { type: 'worktree'; worktree: ProjectWorktree; last: boolean }
     | { type: 'worktreeToggle'; toggle: WorktreeToggle }
@@ -145,6 +153,12 @@ interface BuildOptions {
     hasArchivedSessions?: boolean;
     /** The archive-visibility setting, as the toggle should report it. */
     archiveHidden?: boolean;
+    /**
+     * What sits under each computer: its projects as cards with their worktrees
+     * nested, or its chats as a flat activity-ordered column. The computer is
+     * the top level either way.
+     */
+    grouping?: 'project' | 'machine';
 }
 
 /** Checkouts are addressed through their project, which owns their names. */
@@ -228,7 +242,8 @@ interface MachineSection {
     /** A Happy Agent machine, as opposed to a Happy CLI daemon. */
     rig: boolean;
     bots: SessionRowData[];
-    projects: ProjectHomeRow[];
+    /** Everything under the heading but the bots: project cards, or chats. */
+    body: ProjectHomeRow[];
     /** When this computer was last worked on, across everything under it. */
     lastActivityAt: number;
 }
@@ -344,7 +359,24 @@ function projectRows(
  * chat's machine is frequently gone, and the tail is chronological rather than
  * grouped by anything.
  */
-export function buildProjectHomeRows({
+export function buildProjectHomeRows(options: BuildOptions): ProjectHomeRow[] {
+    return buildHomeRows({ ...options, grouping: 'project' });
+}
+
+/**
+ * The same list grouped by computer alone: each machine's heading, its bots,
+ * then its chats in one activity-ordered column, as the flat layout draws them.
+ *
+ * Organizing by host and nothing else is the cut for someone who thinks in
+ * machines rather than repositories — the row still names the project and the
+ * branch, so nothing is lost with the cards. The worktree tree is deliberately
+ * not drawn here: a tree of checkouts is a project's shape, not a computer's.
+ */
+export function buildMachineHomeRows(options: BuildOptions): ProjectHomeRow[] {
+    return buildHomeRows({ ...options, grouping: 'machine' });
+}
+
+function buildHomeRows({
     data,
     machines,
     unknownMachineText,
@@ -352,6 +384,7 @@ export function buildProjectHomeRows({
     labels,
     hasArchivedSessions = false,
     archiveHidden = true,
+    grouping = 'project',
 }: BuildOptions): ProjectHomeRow[] {
     const rows: ProjectHomeRow[] = [];
     const machinesById = new Map(machines.map((machine) => [machine.id, machine]));
@@ -368,7 +401,7 @@ export function buildProjectHomeRows({
                 || (machineId ?? `<${unknownMachineText}>`),
             rig: machine?.metadata?.machineKind === 'rig',
             bots: [],
-            projects: [],
+            body: [],
             lastActivityAt: 0,
         };
         sections.set(machineId, section);
@@ -383,28 +416,48 @@ export function buildProjectHomeRows({
 
     // A bot runs on a computer like anything else, and says which one. The ones
     // that do not join the chats that could not say either.
+    const botSessionIds = new Set<string>();
     for (const item of data) {
         if (item.type !== 'bots') continue;
         for (const session of item.sessions) {
             const section = sectionFor(session.machineId);
             section.bots.push(session);
+            botSessionIds.add(session.id);
             seen(section, [session]);
         }
     }
 
-    for (const group of buildSessionProjectDisplayGroups(data, machines, unknownMachineText)) {
-        const section = sectionFor(group.machineId);
-        for (const { project } of group.projects) {
-            const built = projectRows(project, expanded);
-            if (built.length === 0) continue;
-            section.projects.push(...built);
-            for (const workspace of project.workspaces) seen(section, workspace.sessions);
+    if (grouping === 'machine') {
+        // Already ordered live-first then by activity, and pushing in that
+        // order keeps each computer's chats in it. Bots are placed above, so
+        // their rows are skipped here rather than counted twice.
+        for (const row of buildFlatSessionRows(data, { sortByActivity: true })) {
+            if (botSessionIds.has(row.session.id)) continue;
+            const section = sectionFor(row.session.machineId);
+            // The heading says the computer; `last` is set once the section's
+            // rows are known, where the hairline has to stop.
+            section.body.push({ type: 'flatSession', row: { ...row, hostName: null }, last: false });
+            seen(section, [row.session]);
+        }
+        for (const section of sections.values()) {
+            const lastRow = section.body[section.body.length - 1];
+            if (lastRow?.type === 'flatSession') lastRow.last = true;
+        }
+    } else {
+        for (const group of buildSessionProjectDisplayGroups(data, machines, unknownMachineText)) {
+            const section = sectionFor(group.machineId);
+            for (const { project } of group.projects) {
+                const built = projectRows(project, expanded);
+                if (built.length === 0) continue;
+                section.body.push(...built);
+                for (const workspace of project.workspaces) seen(section, workspace.sessions);
+            }
         }
     }
 
     for (const section of Array.from(sections.values()).sort(compareMachineSections)) {
         // A computer with nothing left on it is not worth a heading of its own.
-        if (section.bots.length === 0 && section.projects.length === 0) continue;
+        if (section.bots.length === 0 && section.body.length === 0) continue;
         const key = section.machineId ?? 'unknown';
         rows.push({
             type: 'machine',
@@ -417,9 +470,14 @@ export function buildProjectHomeRows({
                 rows.push({ type: 'bot', session });
             }
         }
-        if (section.projects.length > 0) {
-            rows.push({ type: 'section', id: `projects:${key}`, label: labels.projects });
-            rows.push(...section.projects);
+        if (section.body.length > 0) {
+            // Host grouping needs no sub-heading: the chats are what the
+            // computer's heading introduces, and "Projects" over a list of
+            // chats would name the wrong thing.
+            if (grouping === 'project') {
+                rows.push({ type: 'section', id: `projects:${key}`, label: labels.projects });
+            }
+            rows.push(...section.body);
         }
     }
 

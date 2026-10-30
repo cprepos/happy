@@ -36,6 +36,7 @@ import {
 } from '@/sync/storage';
 import { useHasArchivedSessions, useVisibleSessionListViewData } from '@/hooks/useVisibleSessionListViewData';
 import {
+    buildMachineHomeRows,
     buildProjectHomeRows,
     workspaceOrigin,
     type ProjectHomeEntry,
@@ -53,6 +54,7 @@ import { hapticsLight } from './haptics';
 import { Avatar } from './Avatar';
 import { StatusDot } from './StatusDot';
 import { ShimmerText } from './ShimmerText';
+import { FlatSessionRow } from './FlatSessionRow';
 import { HomeListHeader } from './HomeListHeader';
 import { layout } from './layout';
 
@@ -113,16 +115,25 @@ export interface ProjectHomeListLayout {
  * stay out of the project cards, but the divider below them can reveal or hide
  * the same archive that the flat home list shows.
  */
-export const ProjectHomeList = React.memo((props: ProjectHomeListLayout) => {
+export const ProjectHomeList = React.memo(({ grouping = 'project', ...props }: ProjectHomeListLayout & {
+    /**
+     * Group under each computer's projects, or under the computer alone with
+     * its chats in one column. Both draw the machine headings; only the
+     * project layout draws cards and the worktree tree beneath them.
+     */
+    grouping?: 'project' | 'machine';
+}) => {
     const data = useVisibleSessionListViewData();
-    const machines = useAllMachines();
+    // Offline machines included so a heading is a computer's name rather than
+    // its uuid: a machine that is down still has chats filed under it.
+    const machines = useAllMachines({ includeOffline: true });
     const expanded = useLocalSetting('expandedProjects');
     const hasArchivedSessions = useHasArchivedSessions();
     // Stored under its original `hideInactiveSessions` key — synced settings
     // have no rename migration — but it hides archived sessions only.
     const [archiveHidden, setArchiveHidden] = useSettingMutable('hideInactiveSessions');
 
-    const rows = React.useMemo(() => buildProjectHomeRows({
+    const rows = React.useMemo(() => (grouping === 'machine' ? buildMachineHomeRows : buildProjectHomeRows)({
         data: data ?? [],
         machines,
         unknownMachineText: t('status.unknown'),
@@ -130,7 +141,7 @@ export const ProjectHomeList = React.memo((props: ProjectHomeListLayout) => {
         labels: { bots: t('sidebar.bots'), projects: t('sidebar.projects') },
         hasArchivedSessions,
         archiveHidden,
-    }), [archiveHidden, expanded, data, hasArchivedSessions, machines]);
+    }), [archiveHidden, expanded, data, grouping, hasArchivedSessions, machines]);
 
     const toggleArchive = React.useCallback(() => {
         setArchiveHidden(!archiveHidden);
@@ -192,6 +203,7 @@ export const ProjectHomeListView = React.memo(({
             case 'worktreeToggle': return `worktree-toggle-${row.toggle.projectId}`;
             case 'archiveToggle': return 'archive-toggle';
             case 'archiveHeader': return `archive-header-${row.title}`;
+            case 'flatSession': return `chat-${row.row.session.id}`;
             case 'archived': return `archived-${row.session.id}`;
         }
     }, []);
@@ -222,6 +234,10 @@ export const ProjectHomeListView = React.memo(({
                 return <WorktreeRow worktree={item.worktree} last={item.last} />;
             case 'worktreeToggle':
                 return <WorktreeToggleRow toggle={item.toggle} onToggle={onToggle} />;
+            case 'flatSession':
+                // The hairline stops at the computer's last chat, so each
+                // heading reads as the top of its own block.
+                return <FlatSessionRow row={item.row} showBorder={!item.last} />;
             case 'archiveToggle':
                 return (
                     <Pressable

@@ -9,7 +9,7 @@ import { Avatar } from './Avatar';
 import { ActiveSessionsGroupCompact } from './ActiveSessionsGroupCompact';
 import { ProjectGroup } from './ProjectGroup';
 import { FlatSessionRow, flatListBackgroundColor } from './FlatSessionRow';
-import { buildFlatSessionRows, toFlatSessionRow, type FlatSessionRowData } from '@/utils/flatSessionList';
+import { buildFlatSessionRows, hasMultipleHosts, toFlatSessionRow, type FlatSessionRowData } from '@/utils/flatSessionList';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useHasArchivedSessions, useVisibleSessionListViewData } from '@/hooks/useVisibleSessionListViewData';
 import { Typography } from '@/constants/Typography';
@@ -42,6 +42,8 @@ type SessionListDisplayItem = SessionListViewItem | {
     row: FlatSessionRowData;
     last: boolean;
     archived?: boolean;
+    /** Name the machine on the row; decided once for the whole column. */
+    showHost?: boolean;
 };
 
 const stylesheet = StyleSheet.create((theme) => ({
@@ -330,7 +332,10 @@ export function SessionsList({
     // The activity-sorted chat list is the default; the project-card hierarchy
     // is offered back through the home filter menu for people who organized
     // around it.
-    const flatSessionList = useSetting('sessionListGrouping') !== 'project';
+    // Only the flat mode draws the flat column here; the grouped modes are
+    // ProjectHomeList's, and a new mode must not fall into this branch by
+    // default — this component is also mounted directly for the sidebar.
+    const flatSessionList = useSetting('sessionListGrouping') === 'flat';
     const machines = useAllMachines();
     const pathname = usePathname();
     const isTablet = useIsTablet();
@@ -371,10 +376,18 @@ export function SessionsList({
             // A chat list should always float the thing the user just replied
             // to, so the canonical layout is ordered by recent activity.
             const flatRows = buildFlatSessionRows(groupedRows, { sortByActivity: true });
+            // The archive counts too: a retired chat from a machine that is
+            // otherwise gone from the list is exactly the row whose host is
+            // worth saying.
+            const archivedFlatRows = archivedRows.flatMap((item) => (
+                item.type === 'session' ? [toFlatSessionRow(item.session)] : []
+            ));
+            const showHost = hasMultipleHosts([...flatRows, ...archivedFlatRows]);
             const flatItems = flatRows.map<SessionListDisplayItem>((row, index) => ({
                 type: 'flat-session',
                 row,
                 last: index === flatRows.length - 1,
+                showHost,
             }));
             // The archive is the same column, only retired: its rows get the
             // flat row too rather than reverting to inset cards. The toggle
@@ -388,6 +401,7 @@ export function SessionsList({
                         row: toFlatSessionRow(item.session),
                         last: index === archivedRows.length - 1,
                         archived: true,
+                        showHost,
                     }
                     : item
             ));
@@ -475,6 +489,7 @@ export function SessionsList({
                         selected={item.row.session.id === selectedSessionId}
                         showBorder={!item.last}
                         archived={item.archived}
+                        showHost={item.showHost}
                     />
                 );
 

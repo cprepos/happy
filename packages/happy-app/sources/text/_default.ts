@@ -215,6 +215,7 @@ export const en = {
         groupingTitle: 'Grouping',
         flatList: 'Flat List',
         groupByProject: 'Group by Project',
+        groupByMachine: 'Group by Host',
         appearanceSettings: 'Appearance Settings',
         worktreeTabs: ({ count }: { count: number }) => count === 1 ? '1 tab' : `${count} tabs`,
     },
