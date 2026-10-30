@@ -19,7 +19,13 @@ function fakeSession(initial: AgentState = {}) {
         rpcHandlerManager: {
             registerHandler: (method: string, handler: RpcHandler) => { handlers.set(method, handler); },
         },
-        updateAgentState: (update: (current: AgentState) => AgentState) => { state = update(state); },
+        // Returns a promise because the real one does (ApiSessionClient
+        // .updateAgentState is Promise<void>) and the bridge chains .catch on
+        // it. A void double made every test here throw inside ask().
+        updateAgentState: (update: (current: AgentState) => AgentState) => {
+            state = update(state);
+            return Promise.resolve();
+        },
     };
     return {
         session: session as unknown as ApiSessionClient,
