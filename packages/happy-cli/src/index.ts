@@ -9,6 +9,7 @@
 
 import chalk from 'chalk'
 import { runClaude, StartOptions } from '@/claude/runClaude'
+import { opencodeModePolicy } from '@/opencode/acpPermissionModes'
 import { logger } from './ui/logger'
 import { readCredentials, readSettings } from './persistence'
 import { authAndSetupMachineIfNeeded } from './ui/auth'
@@ -531,14 +532,37 @@ Conversation history is preserved on the server, but in-flight tool calls are in
           permissionPolicy = 'auto';
           permissionPolicyGiven = true;
         } else if (args[i] === '--permission-mode') {
-          permissionPolicyGiven = true;
+          // OpenCode's own vocabulary is `<agent>:<policy>` (opencodeModes.ts),
+          // and that is what the app and the daemon send -- `build:auto` is the
+          // default mode for the whole harness. This used to accept only the
+          // cross-harness words and throw on anything else, which killed the
+          // process before it did any work: `resume-happy-session` builds
+          // `opencode --resume <id> --permission-mode build:auto`, so every
+          // resume of an OpenCode session died here, on the argument rather
+          // than on the resume.
           const mode = args[++i];
+          if (!mode) {
+            throw new Error('happy opencode --permission-mode needs a value');
+          }
+          const opencodePolicy = opencodeModePolicy(mode);
           if (mode === 'ask' || mode === 'default') {
             permissionPolicy = 'ask';
+            permissionPolicyGiven = true;
           } else if (mode === 'auto' || mode === 'yolo' || mode === 'bypassPermissions') {
             permissionPolicy = 'auto';
+            permissionPolicyGiven = true;
+          } else if (opencodePolicy) {
+            permissionPolicy = opencodePolicy;
+            permissionPolicyGiven = true;
+          } else if (/^[A-Za-z0-9_-]+$/.test(mode)) {
+            // A plain agent id (`build`, `plan`) means that agent with the
+            // policy the session already runs with, so no policy is forced
+            // here. The agent half is applied from the message's own mode
+            // (runAcp's onUserMessage), which is also the only place the
+            // launch path could act on it -- runAcp takes a policy, not an
+            // agent.
           } else {
-            throw new Error('happy opencode --permission-mode takes auto (or yolo, bypassPermissions) or ask (or default)');
+            throw new Error(`happy opencode --permission-mode got '${mode}'; it takes auto (or yolo, bypassPermissions), ask (or default), an OpenCode agent id such as build, or <agent>:auto / <agent>:ask`);
           }
         } else if (args[i] === '--resume') {
           resumeSessionId = args[++i];

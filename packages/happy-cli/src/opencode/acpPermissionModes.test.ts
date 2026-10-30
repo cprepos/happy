@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Metadata } from '@/api/types';
-import { opencodeModeAgent, withOpencodePermissionModes } from './acpPermissionModes';
+import { opencodeModeAgent, opencodeModePolicy, withOpencodePermissionModes } from './acpPermissionModes';
 
 const base = {
     path: '/tmp',
@@ -10,6 +10,25 @@ const base = {
     happyLibDir: '/tmp/lib',
     happyToolsDir: '/tmp/tools',
 } as unknown as Metadata;
+
+describe('opencodeModePolicy', () => {
+    it('takes the policy suffix and leaves a plain agent id unpoliced', () => {
+        expect(opencodeModePolicy('build:ask')).toBe('ask');
+        expect(opencodeModePolicy('plan:auto')).toBe('auto');
+        // No suffix means "whatever policy the session runs with".
+        expect(opencodeModePolicy('build')).toBeNull();
+        // `agent` is not a policy, so this is a whole agent id, as
+        // opencodeModeAgent also reads it.
+        expect(opencodeModePolicy('ns:agent')).toBeNull();
+    });
+
+    // `build:auto` is the harness default and what resume-happy-session puts
+    // on the command line, so this is the shape that has to parse.
+    it('reads the default mode the daemon sends on resume', () => {
+        expect(opencodeModePolicy('build:auto')).toBe('auto');
+        expect(opencodeModeAgent('build:auto')).toBe('build');
+    });
+});
 
 describe('opencodeModeAgent', () => {
     it('strips a policy suffix and leaves other ids alone', () => {

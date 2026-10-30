@@ -37,6 +37,22 @@ export function opencodeModeAgent(code: string): string {
     return code;
 }
 
+/**
+ * `build:ask` -> `ask`; a plain agent id -> null, meaning "whatever policy the
+ * session runs with". The twin of opencodeModeAgent, for callers that need the
+ * policy half rather than the agent half.
+ */
+export function opencodeModePolicy(code: string): OpencodePermissionPolicy | null {
+    const separator = code.lastIndexOf(':');
+    if (separator > 0) {
+        const suffix = code.slice(separator + 1);
+        if (suffix === 'auto' || suffix === 'ask') {
+            return suffix;
+        }
+    }
+    return null;
+}
+
 /** The agent's display name: OpenCode sometimes reports "build, build" or "plan/plan". */
 function agentDisplayName(option: MetadataOption | undefined, agent: string): string {
     const raw = option?.value?.trim() || agent;
