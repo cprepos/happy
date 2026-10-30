@@ -376,6 +376,7 @@ export const ja: TranslationStructure = {
         codexThreadId: 'Codex Thread ID',
         codexThreadIdCopied: 'Codex Thread IDがクリップボードにコピーされました',
         aiProvider: 'AIプロバイダー',
+        harness: 'ハーネス',
         failedToCopyClaudeCodeSessionId: 'Claude Code Session IDのコピーに失敗しました',
         failedToCopyCodexThreadId: 'Codex Thread IDのコピーに失敗しました',
         metadataCopied: 'メタデータがクリップボードにコピーされました',

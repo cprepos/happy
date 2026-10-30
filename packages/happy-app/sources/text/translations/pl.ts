@@ -392,6 +392,7 @@ export const pl: TranslationStructure = {
         codexThreadId: 'ID wątku Codex',
         codexThreadIdCopied: 'ID wątku Codex skopiowane do schowka',
         aiProvider: 'Dostawca AI',
+        harness: 'Narzędzie',
         failedToCopyClaudeCodeSessionId: 'Nie udało się skopiować ID sesji Claude Code',
         failedToCopyCodexThreadId: 'Nie udało się skopiować ID wątku Codex',
         metadataCopied: 'Metadane skopiowane do schowka',

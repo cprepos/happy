@@ -375,6 +375,7 @@ export const ca: TranslationStructure = {
         codexThreadId: 'ID del fil de Codex',
         codexThreadIdCopied: 'ID del fil de Codex copiat al porta-retalls',
         aiProvider: 'Proveïdor d\'IA',
+        harness: 'Entorn',
         failedToCopyClaudeCodeSessionId: 'Ha fallat copiar l\'ID de la sessió de Claude Code',
         failedToCopyCodexThreadId: 'Ha fallat copiar l\'ID del fil de Codex',
         metadataCopied: 'Metadades copiades al porta-retalls',

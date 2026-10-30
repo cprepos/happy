@@ -432,21 +432,37 @@ function SessionInfoContent({ session }: { session: Session }) {
                                 showChevron={false}
                             />
                         )}
-                        <Item
-                            title={t('sessionInfo.aiProvider')}
-                            subtitle={(() => {
-                                const rigIdentity = getRigIdentity(session.metadata);
-                                if (rigIdentity) return rigIdentity.providerName;
-                                const flavor = session.metadata.flavor || 'claude';
-                                if (flavor === 'claude') return 'Claude';
-                                if (flavor === 'gpt' || flavor === 'openai') return 'Codex';
-                                if (flavor === 'gemini') return 'Gemini';
-                                if (flavor === 'openclaw') return 'OpenClaw';
-                                return getHarnessName(flavor);
-                            })()}
-                            icon={<Ionicons name="sparkles-outline" size={29} color="#5856D6" />}
-                            showChevron={false}
-                        />
+                        {/*
+                          * Which harness is running this session: Claude Code,
+                          * OpenCode, Codex and so on. This row used to be
+                          * "AI Provider" with its own inline switch, which
+                          * answered a different question badly -- a Claude
+                          * session read "Claude", the model's name rather than
+                          * the harness's, so there was nothing in the app that
+                          * told you whether you were talking to Claude Code or
+                          * OpenCode. HARNESS_NAMES is the one list of product
+                          * names, so it is the only thing consulted here.
+                          *
+                          * Happy Agent (rig) sessions keep naming the provider,
+                          * because there the model provider really is what the
+                          * session is configured with and the harness is Happy
+                          * either way.
+                          */}
+                        {getRigIdentity(session.metadata) ? (
+                            <Item
+                                title={t('sessionInfo.aiProvider')}
+                                subtitle={getRigIdentity(session.metadata)!.providerName}
+                                icon={<Ionicons name="sparkles-outline" size={29} color="#5856D6" />}
+                                showChevron={false}
+                            />
+                        ) : (
+                            <Item
+                                title={t('sessionInfo.harness')}
+                                subtitle={getHarnessName(session.metadata.flavor || 'claude')}
+                                icon={<Ionicons name="sparkles-outline" size={29} color="#5856D6" />}
+                                showChevron={false}
+                            />
+                        )}
                         {getRigIdentity(session.metadata)?.modelName && (
                             <Item
                                 title="Model"

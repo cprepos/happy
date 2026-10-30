@@ -327,6 +327,7 @@ export const ru: TranslationStructure = {
         codexThreadId: 'ID треда Codex',
         codexThreadIdCopied: 'ID треда Codex скопирован в буфер обмена',
         aiProvider: 'Поставщик ИИ',
+        harness: 'Инструмент',
         failedToCopyClaudeCodeSessionId: 'Не удалось скопировать ID сессии Claude Code',
         failedToCopyCodexThreadId: 'Не удалось скопировать ID треда Codex',
         metadataCopied: 'Метаданные скопированы в буфер обмена',
