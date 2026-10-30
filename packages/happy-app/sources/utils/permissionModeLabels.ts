@@ -27,6 +27,9 @@ const PERMISSION_RANKS: Record<string, number> = {
     read: 40,
     yolo: 50,
     full: 50,
+    // Claude's `default` is shown as "Manual"; both words rank last, since
+    // "ask me about every tool" is the fallback when none of the others fit.
+    manual: 100,
     default: 100,
 };
 

@@ -64,7 +64,7 @@ describe('modelModeOptions', () => {
             ['acceptEdits', 'Edits'],
             ['plan', 'Plan'],
             ['bypassPermissions', 'Yolo'],
-            ['default', 'Default'],
+            ['default', 'Manual'],
         ]);
         expect(modes[0].description).toBe('tr:agentInput.permissionMode.auto');
     });
@@ -85,7 +85,9 @@ describe('modelModeOptions', () => {
 
     it('never calls a harness default Auto, which is a reviewed mode and not a default', () => {
         const named = (modes: { key: string; name: string }[]) => modes.find((mode) => mode.key === 'default')?.name;
-        expect(named(getClaudePermissionModes(translate))).toBe('Default');
+        // Claude's is "Manual", the name Claude's own UI uses; what this test
+        // guards is that none of them is ever called Auto.
+        expect(named(getClaudePermissionModes(translate))).toBe('Manual');
         expect(named(getCodexPermissionModes(translate))).toBe('Default');
         expect(named(getAgyPermissionModes(translate))).toBe('Default');
         expect(named(getGeminiPermissionModes(translate))).toBe('Default');

@@ -318,7 +318,7 @@ final class ComposerChipSetTests: XCTestCase {
         XCTAssertEqual(chips.permission?.selectedKey, "auto")
         XCTAssertEqual(chips.permission?.sections?.count, 1)
         XCTAssertNil(chips.permission?.sections?.first?.title)
-        XCTAssertEqual(chips.permission?.sections?.first?.options.map(\.label), ["Auto", "Edits", "Plan", "Yolo", "Default"])
+        XCTAssertEqual(chips.permission?.sections?.first?.options.map(\.label), ["Auto", "Edits", "Plan", "Yolo", "Manual"])
 
         XCTAssertEqual(chips.model.label, "Opus 5.5")
         XCTAssertEqual(chips.model.sections?.map(\.title), ["Anthropic"])

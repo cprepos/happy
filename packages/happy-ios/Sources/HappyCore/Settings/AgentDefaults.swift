@@ -177,7 +177,12 @@ public enum AgentDefaults {
                 Option("acceptEdits", "Edits", "edits, no asking"),
                 Option("plan", "Plan", "plan first"),
                 Option("bypassPermissions", "Yolo", "never asks"),
-                Option("default", "Default", "harness setting"),
+                // "Manual", as Claude's own UI calls it. It read "Default"
+                // before, which made it unfindable -- someone after the mode
+                // that asks about every tool call does not read "Default" as
+                // that mode. The other agents keep it, where it really is
+                // their own launch preset (agy especially).
+                Option("default", "Manual", "harness setting"),
             ]
         case .codex:
             [

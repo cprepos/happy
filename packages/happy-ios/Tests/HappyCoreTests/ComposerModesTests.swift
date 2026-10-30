@@ -112,7 +112,7 @@ final class ModelModeOptionsTests: XCTestCase {
             ["acceptEdits", "Edits"],
             ["plan", "Plan"],
             ["bypassPermissions", "Yolo"],
-            ["default", "Default"],
+            ["default", "Manual"],
         ])
         XCTAssertEqual(modes[0].description, "asks when unsure")
         XCTAssertEqual(modes[0].sinceCliVersion, "1.2.1-beta.2")
@@ -131,9 +131,13 @@ final class ModelModeOptionsTests: XCTestCase {
     }
 
     func testAHarnessDefaultIsNeverCalledAuto() {
-        for flavor in ["claude", "codex", "agy", "gemini"] {
+        // Claude's is "Manual", the name Claude's own UI uses; the rest keep
+        // "Default". What this guards is that none of them is called Auto,
+        // which is a reviewed mode and not a harness default.
+        for flavor in ["codex", "agy", "gemini"] {
             XCTAssertEqual(Options.hardcodedPermissionModes(flavor: flavor).first { $0.key == "default" }?.name, "Default", flavor)
         }
+        XCTAssertEqual(Options.hardcodedPermissionModes(flavor: "claude").first { $0.key == "default" }?.name, "Manual")
     }
 
     /// The hardcoded catalogs are written in order; this keeps them in step

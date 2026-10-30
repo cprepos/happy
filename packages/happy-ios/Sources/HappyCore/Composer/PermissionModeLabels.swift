@@ -18,6 +18,8 @@ public enum PermissionModeLabels {
         "read": 40,
         "yolo": 50,
         "full": 50,
+        // Claude's `default` shows as "Manual"; both rank last.
+        "manual": 100,
         "default": 100,
     ]
 

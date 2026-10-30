@@ -113,9 +113,15 @@ export function mapMetadataOptions(options?: MetadataOption[] | null): ModeOptio
 // Mode names are deliberately untranslated single words, because the composer
 // chip that shows the current mode has room for one word — see
 // permissionModeLabels.ts. They are Happy's own vocabulary, not a quote of each
-// CLI's: Claude's UI calls our `default` "Manual". Every list below is ordered
-// by that file's ranking so the modes line up across harnesses, with one
-// documented exception at agy.
+// CLI's. Every list below is ordered by that file's ranking so the modes line
+// up across harnesses, with one documented exception at agy.
+//
+// Claude's `default` is named "Manual", which is what Claude's own UI calls it.
+// It read "Default" before, and that made it unfindable: someone looking for
+// the mode that asks about every tool call does not read "Default" as that
+// mode, it sounds like whatever the default happens to be. The other harnesses
+// keep "Default", where it really is their own launch preset rather than "ask
+// me first" (agy especially — see the test for it).
 
 // Auto leads because it is the everyday mode: the harness reviews its own calls
 // and stops only when it actually wants a human. Claude ships it in the Agent
@@ -129,7 +135,7 @@ export function getClaudePermissionModes(translate: Translate): PermissionMode[]
         { key: 'acceptEdits', name: 'Edits', description: translate('agentInput.permissionMode.acceptEdits') },
         { key: 'plan', name: 'Plan', description: translate('agentInput.permissionMode.plan') },
         { key: 'bypassPermissions', name: 'Yolo', description: translate('agentInput.permissionMode.bypassPermissions') },
-        { key: 'default', name: 'Default', description: translate('agentInput.permissionMode.default') },
+        { key: 'default', name: 'Manual', description: translate('agentInput.permissionMode.default') },
     ];
 }
 
