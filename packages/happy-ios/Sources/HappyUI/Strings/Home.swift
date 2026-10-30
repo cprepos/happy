@@ -60,7 +60,7 @@ extension Strings {
         public static var resumeSessionSameMachineOnly: String { localized("sessionInfo.resumeSessionSameMachineOnly", "This session can only be resumed on the same machine it started on.") }
         public static var resumeSessionMachineOffline: String { localized("sessionInfo.resumeSessionMachineOffline", "This machine is offline. Resume is only available while it is online.") }
         public static var resumeSessionMissingMachine: String { localized("sessionInfo.resumeSessionMissingMachine", "This session is missing its machine metadata, so it cannot be resumed.") }
-        public static var resumeSessionMissingBackendId: String { localized("sessionInfo.resumeSessionMissingBackendId", "This session does not have a resumable Claude or Codex identifier.") }
+        public static var resumeSessionMissingBackendId: String { localized("sessionInfo.resumeSessionMissingBackendId", "This session does not have a resumable Claude, Codex or Antigravity identifier.") }
         public static var resumeSessionUnexpectedDirectoryPrompt: String { localized("sessionInfo.resumeSessionUnexpectedDirectoryPrompt", "Resume cannot create directories. Start the session manually from its original path.") }
         /// `session.forkErrorMissingMetadata`.
         public static var forkErrorMissingMetadata: String { localized("session.forkErrorMissingMetadata", "Missing session metadata required to fork.") }

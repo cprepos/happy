@@ -13,6 +13,7 @@ import { useSessionPressHandlers } from '@/hooks/useNavigateToSession';
 import { useSessionActionAlert, useSessionArchiveAction } from '@/hooks/useSessionQuickActions';
 import type { FlatSessionRowData } from '@/utils/flatSessionList';
 import { formatSessionListTimestamp } from '@/utils/sessionListTimestamp';
+import { getHarnessName } from '@/utils/harnessCatalog';
 import type { Theme } from '@/theme';
 import { t } from '@/text';
 import { RigGitLineChanges } from './RigGitLineChanges';
@@ -205,6 +206,17 @@ export const FlatSessionRow = React.memo(({ row, selected, showBorder, archived 
 
                 <View style={styles.workspaceRow}>
                     <View style={styles.workspaceLocation}>
+                        {/*
+                          * Which harness is running this chat, by product name:
+                          * Claude Code, OpenCode, Codex. The avatar already
+                          * carries a harness badge, but an icon does not tell
+                          * you it is OpenCode rather than Claude Code unless
+                          * you already know the icons, so the name goes on the
+                          * row itself.
+                          */}
+                        <Text style={styles.harness} numberOfLines={1}>
+                            {getHarnessName(session.flavor || 'claude')}
+                        </Text>
                         {workspaceName && (
                             <>
                                 <Text style={styles.workspace} numberOfLines={1}>
@@ -389,6 +401,15 @@ const stylesheet = StyleSheet.create((theme) => ({
         lineHeight: 18,
         color: theme.colors.textSecondary,
         ...Typography.default('regular'),
+    },
+    // Does not shrink: the harness name is short and is the thing being
+    // identified, so the workspace name gives way first.
+    harness: {
+        flexShrink: 0,
+        fontSize: 13,
+        lineHeight: 18,
+        color: theme.colors.textSecondary,
+        ...Typography.default('semiBold'),
     },
     workspaceMeta: {
         flexDirection: 'row',

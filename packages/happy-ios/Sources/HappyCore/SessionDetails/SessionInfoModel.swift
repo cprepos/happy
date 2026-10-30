@@ -56,7 +56,10 @@ public struct SessionInfoModel: Equatable, Sendable {
         public var operatingSystem: String?
         /// Happy Agent's client and version.
         public var client: String?
-        public var aiProvider: String
+        /// Happy Agent only: the configured model provider.
+        public var aiProvider: String?
+        /// Every other session: which harness is running it.
+        public var harness: String?
         public var model: String?
         /// Not shown for Happy Agent.
         public var sandbox: String?
@@ -121,6 +124,7 @@ public struct SessionInfoModel: Equatable, Sendable {
                 operatingSystem: SessionDetails.truthy(metadata["os"]).map(SessionDetails.osPlatform),
                 client: client,
                 aiProvider: SessionDetails.aiProvider(metadata),
+                harness: SessionDetails.harness(metadata),
                 model: identity?.modelName,
                 sandbox: isRig ? nil : SessionDetails.sandbox(metadata["sandbox"], homeDir: homeDir),
                 dangerouslySkipPermissions: isRig ? nil : SessionDetails.dangerouslySkipPermissions(

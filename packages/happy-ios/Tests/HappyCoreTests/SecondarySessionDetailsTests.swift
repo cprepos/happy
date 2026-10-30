@@ -104,15 +104,34 @@ final class SessionDetailsFormattingTests: XCTestCase {
         XCTAssertEqual(SessionDetails.dangerouslySkipPermissions(nil, flavor: "codex", permissionMode: nil, sandbox: .object(["enabled": .bool(true)])), "Unknown")
     }
 
-    func testAIProvider() {
-        XCTAssertEqual(SessionDetails.aiProvider(.object([:])), "Claude")
-        XCTAssertEqual(SessionDetails.aiProvider(.object(["flavor": .string("openai")])), "Codex")
-        XCTAssertEqual(SessionDetails.aiProvider(.object(["flavor": .string("gemini")])), "Gemini")
-        XCTAssertEqual(SessionDetails.aiProvider(.object(["flavor": .string("agy")])), "agy")
-        XCTAssertEqual(SessionDetails.aiProvider(.object([
+    // The harness by product name. The old aiProvider answered this question
+    // badly: no flavor read "Claude" (the model, not the harness) and `agy`
+    // read "agy", because anything unlisted fell through to the bare flavor.
+    func testHarnessIsNamedByProduct() {
+        XCTAssertEqual(SessionDetails.harness(.object([:])), "Claude Code")
+        XCTAssertEqual(SessionDetails.harness(.object(["flavor": .string("claude")])), "Claude Code")
+        XCTAssertEqual(SessionDetails.harness(.object(["flavor": .string("opencode")])), "OpenCode")
+        XCTAssertEqual(SessionDetails.harness(.object(["flavor": .string("agy")])), "Antigravity")
+        XCTAssertEqual(SessionDetails.harness(.object(["flavor": .string("gemini")])), "Gemini")
+        XCTAssertEqual(SessionDetails.harness(.object(["flavor": .string("openclaw")])), "OpenClaw")
+        // Older spellings of the Codex flavor, which sessions still carry.
+        XCTAssertEqual(SessionDetails.harness(.object(["flavor": .string("openai")])), "Codex")
+        XCTAssertEqual(SessionDetails.harness(.object(["flavor": .string("gpt")])), "Codex")
+        // A flavor we ship no name for is shown as it arrived, not guessed at.
+        XCTAssertEqual(SessionDetails.harness(.object(["flavor": .string("whatever")])), "whatever")
+    }
+
+    // Happy Agent names the provider instead: the harness is Happy whichever
+    // model it is pointed at, so the provider is the row that says something.
+    func testHappyAgentNamesTheProviderAndNoHarness() {
+        let rig: JSONValue = .object([
             "client": .object(["id": .string("rig")]),
             "provider": .object(["id": .string("anthropic"), "name": .string("Anthropic")]),
-        ])), "Anthropic")
+        ])
+        XCTAssertEqual(SessionDetails.aiProvider(rig), "Anthropic")
+        XCTAssertNil(SessionDetails.harness(rig))
+        // And the other way round for every non-rig session.
+        XCTAssertNil(SessionDetails.aiProvider(.object(["flavor": .string("opencode")])))
     }
 
     func testRigIdentityModelFromTheModelList() {

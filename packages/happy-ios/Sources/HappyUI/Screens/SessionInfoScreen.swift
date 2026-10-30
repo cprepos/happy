@@ -793,7 +793,14 @@ final class SessionInfoViewController: UIViewController {
         if let client = metadata.client {
             rows.append { [unowned self] in info(S.client, subtitle: client, icon: icon("terminal-outline", purple)) }
         }
-        rows.append { [unowned self] in info(S.aiProvider, subtitle: metadata.aiProvider, icon: icon("sparkles-outline", purple)) }
+        // Exactly one of these is set: the harness for a normal session, the
+        // provider for Happy Agent (SessionDetails.harness / .aiProvider).
+        if let harness = metadata.harness {
+            rows.append { [unowned self] in info(S.harness, subtitle: harness, icon: icon("sparkles-outline", purple)) }
+        }
+        if let provider = metadata.aiProvider {
+            rows.append { [unowned self] in info(S.aiProvider, subtitle: provider, icon: icon("sparkles-outline", purple)) }
+        }
         if let modelName = metadata.model {
             rows.append { [unowned self] in info(S.model, subtitle: modelName, icon: icon("hardware-chip-outline", purple)) }
         }
