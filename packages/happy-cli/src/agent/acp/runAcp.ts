@@ -17,7 +17,7 @@ import { setupOfflineReconnection } from '@/utils/setupOfflineReconnection';
 import { notifyDaemonSessionStarted } from '@/daemon/controlClient';
 import { decodeBase64, encodeBase64 } from '@/api/encryption';
 import type { Metadata, Session as ApiSession } from '@/api/types';
-import { opencodeModeAgent, withOpencodePermissionModes, type OpencodePermissionPolicy } from '@/opencode/acpPermissionModes';
+import { opencodeModeAgent, opencodeModePolicy, withOpencodePermissionModes, type OpencodePermissionPolicy } from '@/opencode/acpPermissionModes';
 import { parseOpencodeMode } from '@/opencode/tui/opencodeSessionConfig';
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler';
 import { startHappyServer } from '@/claude/utils/startHappyServer';
@@ -740,8 +740,7 @@ export async function runAcp(opts: {
     ].map(opencodeModeAgent);
     const parsed = parseOpencodeMode(requestedMode, agentNames, launchPolicy);
     // Before the agent list is known, `<agent>:<policy>` still sets the policy.
-    const suffix = requestedMode.slice(opencodeModeAgent(requestedMode).length + 1);
-    const policy = parsed.policy ?? (suffix === 'auto' || suffix === 'ask' ? suffix : undefined);
+    const policy = parsed.policy ?? opencodeModePolicy(requestedMode) ?? undefined;
     const agent = parsed.agent;
     if (policy && policy !== permissionPolicy) {
       logger.debug(`[${opts.agentName}] Permission policy: ${policy}`);
