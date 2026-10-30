@@ -164,6 +164,25 @@ export const InlineQuestionForm = React.memo<InlineQuestionFormProps>((props) =>
     return (
         <ToolSectionView>
             <View style={styles.container}>
+                {/*
+                  * Dismiss: an X in the corner rather than a button beside
+                  * Submit, so declining to answer does not read as an action
+                  * of equal weight to answering. Overlays the first question's
+                  * header chip, which starts at the left edge.
+                  */}
+                {canInteract && onDismiss ? (
+                    <TouchableOpacity
+                        style={styles.dismissCorner}
+                        onPress={handleDismiss}
+                        disabled={isSubmitting}
+                        activeOpacity={0.7}
+                        accessibilityRole="button"
+                        accessibilityLabel={t('agentQuestion.dismiss')}
+                        hitSlop={8}
+                    >
+                        <Ionicons name="close" size={20} color={theme.colors.textSecondary} />
+                    </TouchableOpacity>
+                ) : null}
                 {questions.map(question => {
                     const selectedOptions = selections.get(question.id) ?? new Set<number>();
                     return (
@@ -232,16 +251,6 @@ export const InlineQuestionForm = React.memo<InlineQuestionFormProps>((props) =>
 
                 {canInteract && (
                     <View style={styles.actionsContainer}>
-                        {onDismiss ? (
-                            <TouchableOpacity
-                                style={[styles.dismissButton, isSubmitting && styles.submitButtonDisabled]}
-                                onPress={handleDismiss}
-                                disabled={isSubmitting}
-                                activeOpacity={0.7}
-                            >
-                                <Text style={styles.dismissButtonText}>{t('agentQuestion.dismiss')}</Text>
-                            </TouchableOpacity>
-                        ) : null}
                         <TouchableOpacity
                             style={[
                                 styles.submitButton,
@@ -406,18 +415,18 @@ const styles = StyleSheet.create((theme) => ({
         color: theme.colors.text,
         textAlignVertical: 'top',
     },
-    dismissButton: {
-        paddingHorizontal: 16,
-        paddingVertical: 12,
-        borderRadius: 8,
+    // Pulled slightly out of the card's padding so the glyph sits in the
+    // corner rather than inset from it. zIndex keeps it above the first
+    // question's chip, which it overlaps.
+    dismissCorner: {
+        position: 'absolute',
+        top: -4,
+        right: -4,
+        width: 32,
+        height: 32,
         alignItems: 'center',
         justifyContent: 'center',
-        minHeight: 44,
-    },
-    dismissButtonText: {
-        color: theme.colors.textSecondary,
-        fontSize: 14,
-        fontWeight: '600',
+        zIndex: 1,
     },
     submittedContainer: {
         gap: 8,

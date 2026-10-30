@@ -961,8 +961,14 @@ export async function sessionCancelCommunication(
 /**
  * Deny a permission request
  */
-export async function sessionDeny(sessionId: string, id: string, mode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan', allowedTools?: string[], decision?: 'denied' | 'abort'): Promise<void> {
-    const request: SessionPermissionRequest = { id, approved: false, mode, allowTools: allowedTools, decision };
+/**
+ * `reason` is last so the existing positional callers keep working. It
+ * replaces the CLI's generic refusal text, which tells the agent to stop and
+ * wait for the user -- right for a rejected edit, wrong for a question the
+ * user simply declined to answer.
+ */
+export async function sessionDeny(sessionId: string, id: string, mode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan', allowedTools?: string[], decision?: 'denied' | 'abort', reason?: string): Promise<void> {
+    const request: SessionPermissionRequest = { id, approved: false, mode, allowTools: allowedTools, decision, reason };
     await apiSocket.sessionRPC(sessionId, 'permission', request);
 }
 
