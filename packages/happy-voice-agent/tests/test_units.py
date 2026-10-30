@@ -22,7 +22,7 @@ from happy_voice.assistant import (  # noqa: E402
     announce_interruptions,
 )
 from happy_voice.config import Settings  # noqa: E402
-from happy_voice.names import voice_name  # noqa: E402
+from happy_voice.names import persona_for, voice_name  # noqa: E402
 from happy_voice.warmup import PrefixWarmer  # noqa: E402
 from happy_voice.context import fold_system_messages, focused_session_from  # noqa: E402
 from happy_voice import voices  # noqa: E402
@@ -132,6 +132,20 @@ def test_voice_name_derives_from_voice_id() -> None:
     assert voice_name("") == "Happy"
     assert voice_name(None) == "Happy"
     assert voice_name("bogus(0)") == "Happy"
+
+
+def test_persona_only_follows_a_voice_that_was_asked_for() -> None:
+    # No voice requested: the server default is nameless, however it is configured.
+    assert persona_for(None, "af_heart", KOKORO) == "Happy"
+    # Requested and honoured: the voice lends its name.
+    assert persona_for("bm_george", "bm_george", KOKORO) == "George"
+    assert persona_for("am_morgan", "am_morgan", KOKORO + ["am_morgan"]) == "Morgan Freeman"
+    # A blend asked for and honoured answers to its first voice, as voice_name says.
+    assert persona_for("am_michael(2)+am_onyx(1)", "am_michael(2)+am_onyx(1)", KOKORO) == "Michael"
+    # Overridden by resolve_tts -- an unknown voice, or any voice on a non-English
+    # conversation -- so the voice being spoken is not the one named.
+    assert persona_for("af_nope", "af_heart", KOKORO) == "Happy"
+    assert persona_for("bm_george", "ef_dora", KOKORO) == "Happy"
 
 
 def test_name_section_is_last_and_happy_is_omitted() -> None:

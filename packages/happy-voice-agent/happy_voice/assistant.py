@@ -36,7 +36,7 @@ from .context import (
     focused_session_from,
     fold_system_messages,
 )
-from .names import voice_name
+from .names import persona_for
 from .nemotron_stt import NemotronSTT
 from .prompt import (
     PERMISSION_SCHEMA,
@@ -421,7 +421,9 @@ async def entrypoint(ctx: JobContext) -> None:
     if config.voice is not None:
         known_voices = await fetch_known_voices(settings.tts_url)
     tts_voice, tts_speed = resolve_tts(settings, config.language, config.voice, config.speed, known_voices)
-    voice_persona = voice_name(tts_voice)
+    # A name only for a voice the app asked for: the default voice is nameless, so the assistant
+    # stays Happy however that default is configured.
+    voice_persona = persona_for(config.voice, tts_voice, known_voices)
     logger.info(
         "config: session=%s language=%s voice=%s name=%s speed=%.2f prompt=%d chars context=%d chars first=%r",
         config.session_id,

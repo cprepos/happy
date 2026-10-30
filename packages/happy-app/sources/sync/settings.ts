@@ -139,7 +139,7 @@ export const settingsDefaults: Settings = {
     reviewPromptAnswered: false,
     reviewPromptLikedApp: null,
     voiceAssistantLanguage: null,
-    voiceAssistantVoice: 'morgan',
+    voiceAssistantVoice: null,
     voiceBySession: {},
     preferredLanguage: null,
     recentMachinePaths: [],
