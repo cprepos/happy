@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Home strings with no happy-app catalog key (literals in its source), in
-  English only. strings.xml is generated from the catalogs; this file is not.
+  Home strings with no happy-app catalog key (English literals in its
+  source). Translated in values-*/ (AndroidStringsTranslatedTest).
 -->
-<resources xmlns:tools="http://schemas.android.com/tools" tools:ignore="MissingTranslation">
+<resources>
     <!-- EmptyMainScreen.tsx -->
     <string name="home_no_sessions_title">No sessions yet</string>
     <string name="home_no_sessions_description">Start one on a connected machine.</string>
@@ -74,7 +74,7 @@
     <string name="home_dock_create_workspace">Create New Workspace</string>
     <string name="home_dock_create_worktree">Create New Worktree</string>
     <string name="home_dock_not_supported_by">Not supported by %1$s</string>
-    <string name="home_dock_custom_path_placeholder">~/path/to/project</string>
+    <string name="home_dock_custom_path_placeholder" translatable="false">~/path/to/project</string>
     <string name="home_dock_creating_workspace">Creating workspace…</string>
     <string name="home_dock_creating_worktree">Creating worktree…</string>
     <string name="home_dock_starting">Starting %1$s…</string>
@@ -100,4 +100,28 @@
     <string name="home_dock_bot_face_failed">%1$s is ready, but its picture couldn\'t be set. Try again.</string>
     <string name="home_dock_bot_not_now">Not now</string>
     <string name="home_dock_bot_try_again">Try again</string>
+    <!-- useStartSessionFromDraft.ts's refusals and failures (StartRefusal, StartResult.Failed). -->
+    <string name="home_start_no_machine">Please select a machine</string>
+    <string name="home_start_unknown_machine">This session’s computer is not registered with this account, so nothing can start a session on it. Check that Happy is running there and signed in to this account.</string>
+    <string name="home_start_happy_agent_missing">Happy Agent is not running on this computer</string>
+    <string name="home_start_happy_cli_missing">Happy CLI is not available on your computer. Run `happy daemon start` on your computer, then try again.</string>
+    <string name="home_start_machine_offline">Machine is offline</string>
+    <string name="home_start_happy_cli_offline">Happy CLI is offline on your computer. Run `happy daemon start` on your computer, then try again.</string>
+    <string name="home_start_cannot_start_happy_agent">This machine cannot start Happy agent sessions</string>
+    <string name="home_start_project_needs_happy_agent">Only Happy Agent knows where this project is, so no other harness can open it. Switch the harness back to Happy Agent, or pick the project’s folder.</string>
+    <string name="home_start_workspace_unavailable">The selected Happy Agent workspace is no longer available.</string>
+    <string name="home_start_bots_unsupported">Happy Agent on this computer cannot create bots yet. Update it and try again.</string>
+    <string name="home_start_configuration_unavailable">The selected agent configuration is unavailable</string>
+    <string name="home_start_still_syncing">The session was created, but it is still syncing. It should appear shortly.</string>
+    <string name="home_start_failed">Failed to start session</string>
+    <string name="home_first_message_failed">Failed to send the first message</string>
+    <string name="home_not_signed_in">Not signed in</string>
+    <!-- botName.ts describeBotNameProblem. -->
+    <string name="home_bot_name_empty">Give the bot a name</string>
+    <string name="home_bot_name_too_long">A bot\'s name is at most %1$d characters</string>
+    <string name="home_bot_name_control">A bot\'s name cannot contain line breaks or control characters</string>
+    <!-- utils/worktree.ts createWorktree. -->
+    <string name="home_worktree_unreachable">Failed to connect to machine</string>
+    <string name="home_worktree_not_git">Not a Git repository</string>
+    <string name="home_worktree_failed">Failed to create worktree</string>
 </resources>

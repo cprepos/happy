@@ -8,6 +8,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.assertIsNotSelected
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.junit4.v2.createComposeRule
@@ -21,6 +25,9 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.slopus.happy.model.AvatarHarness
 import com.slopus.happy.model.ProviderIconKind
 import com.slopus.happy.ui.PHONE
+import com.slopus.happy.ui.components.avatar.AvatarPlaceholder
+import com.slopus.happy.ui.components.avatar.PlaceholderAvatarTags
+import com.slopus.happy.ui.components.avatar.PlaceholderIndexKey
 import com.slopus.happy.ui.assertBox
 import com.slopus.happy.ui.assertDp
 import com.slopus.happy.ui.bounds
@@ -40,24 +47,6 @@ import org.robolectric.annotation.GraphicsMode
 class HomeComponentsLayoutTest {
     @get:Rule
     val rule = createComposeRule()
-
-    // The generated avatars pick their art from the same JS hash happy-app
-    // uses; these values were computed by running Avatar*.tsx's hashCode in Node.
-
-    @Test
-    fun avatarHashMatchesJavaScript() {
-        assertEquals(269061190L, avatarHash("m1:/Users/dev/happy"))
-        assertEquals(23692677L, avatarHash("session-123"))
-        assertEquals(61901292L, avatarHash("é😀x"))
-        assertEquals(1042809472L, avatarHash("a".repeat(40)))
-        assertEquals("Brutalism-69", BrutalistArt.imageFor("m1:/Users/dev/happy")) // index 370 = 262 + 40 + 68
-        assertEquals(BrutalistArt.colorPairs[5], BrutalistArt.colorsFor("m1:/Users/dev/happy"))
-        assertEquals("Abstract-58", BrutalistArt.imageFor("session-123")) // index 57
-        assertEquals(
-            listOf(0, 1, 0, 1, 2, 3, 1, 0, 1, 2, 3, 4).map { PixelatedArt.colors[it] },
-            PixelatedArt.cells("session-123", monochrome = false).take(12),
-        )
-    }
 
     @Test
     fun harnessBadgeGeometry() {
@@ -90,18 +79,13 @@ class HomeComponentsLayoutTest {
         rule.onAllNodesWithTag(AvatarTags.BADGE, useUnmergedTree = true).assertCountEquals(0)
     }
 
+    /** A bot or anyone without a picture wears the placeholder its id picks, filling its box. */
     @Test
-    fun everyStyleAndTheBotFillTheirBox() {
-        for (style in AvatarStyle.entries) {
-            assertEquals(style, AvatarStyle.normalize(style.key))
-        }
-        assertEquals(AvatarStyle.Brutalist, AvatarStyle.normalize("legacy"))
-        rule.setHappyContent {
-            CompositionLocalProvider(LocalAvatarSettings provides AvatarSettings(style = AvatarStyle.Pixelated)) {
-                Avatar(id = "bot", size = 40.dp, bot = true)
-            }
-        }
+    fun aBotWithoutAPictureWearsItsPlaceholder() {
+        rule.setHappyContent { Avatar(id = "bot", size = 40.dp, bot = true) }
         assertBox("bot avatar", rule.node(AvatarTags.AVATAR).bounds, 0.dp, 0.dp, 40.dp, 40.dp)
+        assertBox("placeholder", rule.node(PlaceholderAvatarTags.STILL).bounds, 0.dp, 0.dp, 40.dp, 40.dp)
+        rule.onNode(SemanticsMatcher.expectValue(PlaceholderIndexKey, AvatarPlaceholder.index("bot")), useUnmergedTree = true).assertExists()
     }
 
     // StatusDot.tsx: 6 by default.
@@ -139,7 +123,7 @@ class HomeComponentsLayoutTest {
         rule.waitForIdle()
     }
 
-    // WebPromptModal.tsx: 270 wide; 20 top padding; 36 input 16 under the text; buttons split by a divider.
+    // A Material 3 dialog: title, message, the field, then Cancel and the confirm action bottom right.
     @Test
     fun promptReturnsTheTextOrNull() {
         var result: String? = "unset"
@@ -153,20 +137,16 @@ class HomeComponentsLayoutTest {
             }
         }
         val container = rule.node(PromptTags.CONTAINER).bounds
-        assertDp("width", 270, container.right - container.left)
         val title = rule.node(PromptTags.TITLE).bounds
-        assertDp("title 20 below the top", container.top + 20.dp, title.top)
         val message = rule.node(PromptTags.MESSAGE).bounds
-        assertDp("message 4 + 4 under the title", title.bottom + 8.dp, message.top)
         val input = rule.node(PromptTags.INPUT).bounds
-        assertDp("input 16 under the message", message.bottom + 16.dp, input.top)
-        assertDp("input height", 36, input.bottom - input.top)
-        assertDp("input inset 16", container.left + 16.dp + (1f / 3f).dp, input.left)
         val cancel = rule.node(PromptTags.CANCEL).bounds
         val confirm = rule.node(PromptTags.CONFIRM).bounds
-        assertDp("buttons 16 + 1 under the input", input.bottom + 17.dp, cancel.top)
-        assertDp("buttons split evenly", cancel.right - cancel.left, confirm.right - confirm.left)
+        assertTrue("Material dialog width", container.right - container.left in 280.dp..560.dp)
+        assertTrue("title, message, field, actions top to bottom", title.bottom <= message.top && message.bottom <= input.top && input.bottom <= cancel.top)
+        assertTrue("field at least 56 high", input.bottom - input.top >= 56.dp)
         assertTrue("confirm right of cancel", confirm.left >= cancel.right)
+        assertTrue("actions bottom right", container.right - confirm.right < 32.dp)
 
         rule.node(PromptTags.INPUT).performTextReplacement("new name")
         rule.onNodeWithText("Save").performClick()
@@ -184,7 +164,7 @@ class HomeComponentsLayoutTest {
         assertEquals(null, result)
     }
 
-    // NativeSettingsMenu.android.tsx: "Group: ✓ Option" rows.
+    // NativeSettingsMenu.android.tsx: "Group: Option" rows, the selected one checked.
     @Test
     fun settingsMenuPrefixesTheGroupAndChecksTheSelection() {
         var picked: String? = null
@@ -198,7 +178,9 @@ class HomeComponentsLayoutTest {
                 onDismiss = {},
             ) { Box(Modifier.padding(4.dp)) }
         }
-        rule.onNodeWithText("Group sessions: ✓ Flat list").assertExists()
+        rule.onNodeWithTag(OptionMenuTags.item("grouping", "flat"), useUnmergedTree = true).assertIsSelected()
+        rule.onNodeWithTag(OptionMenuTags.item("grouping", "project"), useUnmergedTree = true).assertIsNotSelected()
+        rule.onNodeWithText("Group sessions: Flat list").assertExists()
         rule.onNodeWithText("Appearance settings").assertExists()
         rule.onNodeWithText("Group sessions: By project").performClick()
         assertEquals("project", picked)

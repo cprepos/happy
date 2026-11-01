@@ -1,5 +1,6 @@
 package com.slopus.happy.ui.files
 
+import com.slopus.happy.text.wordsResource
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -9,7 +10,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.material3.CircularProgressIndicator
+import com.slopus.happy.ui.components.PageProgressIndicator as CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -23,7 +24,6 @@ import androidx.compose.ui.unit.dp
 import com.slopus.happy.R
 import com.slopus.happy.ui.components.Screen
 import com.slopus.happy.ui.components.StackHeader
-import com.slopus.happy.ui.components.TitleAlignment
 import com.slopus.happy.ui.diff.DiffFilesList
 import com.slopus.happy.ui.theme.HappyTheme
 import com.slopus.happy.ui.theme.happyTextStyle
@@ -51,7 +51,7 @@ class ChangesActions(
 
 /**
  * session/[id]/changes.tsx: the session's changes as one scrolling diff,
- * under a plain header titled "View changes" (centred, back). Every file
+ * under the Material bar titled "View changes" (back), on glass. Every file
  * starts collapsed (DiffFilesList `defaultCollapsed`); [scrollToFile]
  * scrolls to one. On the surface colour.
  *
@@ -65,7 +65,7 @@ class ChangesActions(
 @Composable
 fun ChangesScreen(content: ChangesContent, actions: ChangesActions, scrollToFile: String? = null) {
     val colors = HappyTheme.colors
-    Screen(header = { StackHeader(stringResource(R.string.session_info_view_changes), actions.onBack, TitleAlignment.Center) }) {
+    Screen(header = { StackHeader(stringResource(R.string.session_info_view_changes), actions.onBack) }, ground = colors.surface) {
         Box(Modifier.fillMaxSize().background(colors.surface)) {
             when (content) {
                 ChangesContent.Loading -> Spinner()
@@ -97,25 +97,25 @@ private fun AgentBody(content: ChangesContent.Agent, actions: ChangesActions, sc
     val state = content.state
     val load = state.load
     when {
-        !content.supported -> ChangesMessage("Update Happy Agent on your computer to view changes in this session.")
+        !content.supported -> ChangesMessage(stringResource(R.string.files_update_agent))
         load is AgentChanges.Load.Loading -> Spinner()
-        load is AgentChanges.Load.Error -> ChangesMessage(load.message, actions.onRetry)
+        load is AgentChanges.Load.Error -> ChangesMessage(wordsResource(load.message), actions.onRetry)
         load is AgentChanges.Load.Ready && (load.git.comparison != "ready" || load.git.base == null) ->
-            ChangesMessage("A comparison with origin/main is not available for this workspace.", actions.onRetry)
+            ChangesMessage(stringResource(R.string.files_no_comparison), actions.onRetry)
         else -> {
             val notices = state.notices
             val colors = HappyTheme.colors
             DiffFilesList(
-                items = state.items(stringResource(R.string.files_file_empty)),
+                items = state.items(),
                 scrollToPath = scrollToFile,
                 defaultCollapsed = true,
                 onRequestContent = actions.onRequestContent,
                 onExpandContext = actions.onExpandContext,
-                emptyText = if (state.clean) stringResource(R.string.files_no_changes) else "No file details are available for this comparison.",
+                emptyText = if (state.clean) stringResource(R.string.files_no_changes) else stringResource(R.string.files_no_details),
                 header = if (notices.isEmpty()) null else {
                     {
                         Column(Modifier.fillMaxWidth().testTag(ChangesTags.NOTICES).padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            for (notice in notices) Text(notice, style = messageStyle, color = colors.textSecondary)
+                            for (notice in notices) Text(wordsResource(notice), style = messageStyle, color = colors.textSecondary)
                         }
                     }
                 },

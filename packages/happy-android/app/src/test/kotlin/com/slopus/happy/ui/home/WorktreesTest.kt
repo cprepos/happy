@@ -1,5 +1,7 @@
 package com.slopus.happy.ui.home
 
+import com.slopus.happy.R
+import com.slopus.happy.text.Words
 import com.slopus.happy.sync.BashResult
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -32,11 +34,11 @@ class WorktreesTest {
 
     @Test fun tellsAFailedShellCallFromAFolderThatIsNotARepository() = runTest {
         assertEquals(
-            WorktreeOutcome.Failed("Not a Git repository"),
+            WorktreeOutcome.Failed(Words.ours(R.string.home_worktree_not_git)),
             createWorktree("/tmp", bash = shell(BashResult(success = false, stderr = "fatal", exitCode = 128)).second),
         )
         assertEquals(
-            WorktreeOutcome.Failed("Failed to connect to machine"),
+            WorktreeOutcome.Failed(Words.ours(R.string.home_worktree_unreachable)),
             createWorktree("/tmp", bash = shell(BashResult(success = false, exitCode = -1)).second),
         )
     }

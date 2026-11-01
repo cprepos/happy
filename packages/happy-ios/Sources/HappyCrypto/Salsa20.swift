@@ -84,20 +84,30 @@ enum Salsa20 {
     static func xsalsa20XOR(_ data: inout [UInt8], key: Data, nonce: Data, skip: Int) {
         precondition(key.count == 32 && nonce.count == 24)
         let subkey = hsalsa20(key: key, input: nonce.prefix(16))
-        let streamNonce = Data(nonce.suffix(8))
-        var keystream = [UInt8](repeating: 0, count: 64)
+        // The block input is built once; only the counter words change, so
+        // a media file's megabytes don't allocate a block's input each.
+        var input = Data(nonce.suffix(8))
+        input.append(contentsOf: [UInt8](repeating: 0, count: 8))
+        var base = subkey.withUnsafeBytes { keyBytes in
+            input.withUnsafeBytes { inputBytes in state(key: keyBytes, input: inputBytes) }
+        }
         var block: UInt64 = UInt64(skip / 64)
         var keystreamOffset = skip % 64
         var index = 0
-        while index < data.count {
-            salsa20Block(key: subkey, nonce: streamNonce, counter: block, into: &keystream)
-            while keystreamOffset < 64 && index < data.count {
-                data[index] ^= keystream[keystreamOffset]
-                keystreamOffset += 1
-                index += 1
+        let count = data.count
+        data.withUnsafeMutableBufferPointer { bytes in
+            while index < count {
+                base[8] = UInt32(truncatingIfNeeded: block)
+                base[9] = UInt32(truncatingIfNeeded: block >> 32)
+                let words = permute(base, feedForward: true)
+                while keystreamOffset < 64 && index < count {
+                    bytes[index] ^= UInt8(truncatingIfNeeded: words[keystreamOffset >> 2] >> (UInt32(keystreamOffset & 3) * 8))
+                    keystreamOffset += 1
+                    index += 1
+                }
+                keystreamOffset = 0
+                block += 1
             }
-            keystreamOffset = 0
-            block += 1
         }
     }
 
@@ -106,22 +116,6 @@ enum Salsa20 {
         var zeros = [UInt8](repeating: 0, count: count)
         xsalsa20XOR(&zeros, key: key, nonce: nonce, skip: 0)
         return zeros
-    }
-
-    private static func salsa20Block(key: Data, nonce: Data, counter: UInt64, into out: inout [UInt8]) {
-        var input = Data(nonce)
-        withUnsafeBytes(of: counter.littleEndian) { input.append(contentsOf: $0) }
-        let words = key.withUnsafeBytes { keyBytes in
-            input.withUnsafeBytes { inputBytes in
-                permute(state(key: keyBytes, input: inputBytes), feedForward: true)
-            }
-        }
-        for (index, word) in words.enumerated() {
-            out[index * 4] = UInt8(truncatingIfNeeded: word)
-            out[index * 4 + 1] = UInt8(truncatingIfNeeded: word >> 8)
-            out[index * 4 + 2] = UInt8(truncatingIfNeeded: word >> 16)
-            out[index * 4 + 3] = UInt8(truncatingIfNeeded: word >> 24)
-        }
     }
 
     private static func appendLE(_ word: UInt32, to data: inout Data) {

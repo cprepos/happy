@@ -73,9 +73,9 @@ namespace, sandbox, account registry and defaults.
 ## Deliberate parity limits
 
 This is a usable AppKit relay-client port, **not full feature parity with the
-iOS interface**. Direct/Stem Cells connections, Happy Agent catalog/session
+iOS interface**. Direct/V2 connections, Happy Agent catalog/session
 creation, account-switcher UI, structured question forms, attachments, rich
-markdown/diff/file viewers, model/effort controls, stories, voice, camera,
+markdown/diff/file viewers, model/effort controls, voice, camera,
 guest/App Clip flows, push notifications, universal links and an automatic
 updater are not yet ported. Existing relay sessions still use the same
 underlying sync/reducer/sender. Draft text is retained per session only for

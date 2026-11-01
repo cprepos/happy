@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  values/strings_push.xml in ja: Android-only strings, not in happy-app's
+  catalogs. AndroidStringsTranslatedTest fails while one is missing here.
+-->
+<resources>
+    <string name="push_background_send_pending_title">メッセージは送信されていません</string>
+    <string name="push_background_send_pending_body">メッセージをバックグラウンドで送信中です。30秒以内に届かない場合は失敗します。</string>
+    <string name="push_background_send_failed_title">メッセージの送信に失敗しました</string>
+    <string name="push_background_send_failed_body">アプリがバックグラウンドにある間にメッセージを送信できませんでした。Happy を開いて再試行してください。</string>
+    <string name="push_permission">許可</string>
+    <string name="push_request_again">もう一度許可を求める</string>
+    <string name="push_reregister">このデバイスを再登録</string>
+    <string name="push_current_token">現在のトークン %1$s</string>
+    <string name="push_label_loading">読み込み中</string>
+    <string name="push_label_unavailable">利用不可</string>
+    <string name="push_label_allowed">許可済み</string>
+    <string name="push_label_denied">拒否</string>
+    <string name="push_label_not_requested">未リクエスト</string>
+    <string name="push_subtitle_checking">このデバイスのプッシュ通知の許可を確認しています。</string>
+    <string name="push_subtitle_unsupported">プッシュ通知の許可はモバイルデバイスでのみ管理できます。</string>
+    <string name="push_subtitle_granted">このデバイスはプッシュ通知を受け取れます。</string>
+    <string name="push_subtitle_can_ask">アプリからシステムの確認をもう一度表示できます。</string>
+    <string name="push_subtitle_stopped">システムは確認を表示しなくなりました。通知を再び有効にするにはシステム設定を開いてください。</string>
+    <string name="push_request_unsupported">プッシュ通知の許可は iPhone と Android でのみ利用できます。</string>
+    <string name="push_request_can_ask">システムがまだ許す場合、システムの確認をもう一度表示します。</string>
+    <string name="push_request_settings">システムが確認を表示しない場合はシステム設定を開きます。</string>
+    <string name="push_tokens_hint">アカウントに登録されているすべてのプッシュトークンを表示します。古いトークンをタップすると削除できます。</string>
+    <string name="push_tokens_footer">登録済みトークン（%1$d）。現在のデバイスの情報はこの電話から取得します。古いトークンはトークンのフィンガープリントとサーバーのタイムスタンプで表示します。</string>
+    <string name="push_no_tokens">登録済みのプッシュトークンはありません</string>
+    <string name="push_this_device">このデバイス</string>
+    <string name="push_delete_title">プッシュトークンを削除</string>
+    <string name="push_delete_message">%1$s をアカウントから削除しますか？</string>
+    <string name="push_other_device">別のデバイスまたは古い登録</string>
+    <string name="push_registered">登録日時: %1$s</string>
+    <string name="push_last_seen">最終確認: %1$s</string>
+    <string name="push_server_id">サーバー ID: %1$s</string>
+    <string name="push_token">トークン: %1$s</string>
+    <string name="push_build">ビルド %1$s</string>
+    <string name="push_simulator">エミュレーター</string>
+    <string name="push_android_device">Android デバイス</string>
+    <string name="push_load_failed">プッシュ通知の設定を読み込めませんでした。</string>
+    <string name="push_enabled">このデバイスでプッシュ通知が有効になりました。</string>
+    <string name="push_opened_settings">システムが許可の確認を表示しないため、Happy が設定を開きました。</string>
+    <string name="push_not_granted">プッシュ通知が許可されませんでした。</string>
+    <string name="push_request_failed">プッシュ通知の許可をリクエストできませんでした。</string>
+    <string name="push_refreshed">このデバイスのプッシュトークンを更新しました。</string>
+    <string name="push_not_enabled">このデバイスではまだプッシュ通知が有効になっていません。</string>
+    <string name="push_refresh_failed">このデバイスのプッシュトークンを更新できませんでした。</string>
+    <string name="push_delete_failed">プッシュトークンを削除できませんでした。</string>
+</resources>

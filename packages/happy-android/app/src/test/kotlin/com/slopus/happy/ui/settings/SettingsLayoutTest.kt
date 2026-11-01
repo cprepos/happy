@@ -1,22 +1,33 @@
 package com.slopus.happy.ui.settings
 
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isDialog
+import androidx.compose.ui.test.isPopup
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.longClick
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.slopus.happy.model.GitHubProfile
-import com.slopus.happy.model.Profile
 import com.slopus.happy.ui.PHONE
 import com.slopus.happy.ui.PHONE_WIDTH
 import com.slopus.happy.ui.assertBox
 import com.slopus.happy.ui.assertDp
 import com.slopus.happy.ui.bounds
+import com.slopus.happy.ui.components.GlassSpec
 import com.slopus.happy.ui.components.ItemGroupTags
+import com.slopus.happy.ui.components.ItemTags
+import com.slopus.happy.ui.home.AccountMenu
+import com.slopus.happy.ui.home.AccountMenuEntry
 import com.slopus.happy.ui.node
 import com.slopus.happy.ui.setHappyContent
 import org.junit.Assert.assertEquals
@@ -27,6 +38,23 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
+/** Fixtures shared by the settings tests. */
+object SettingsFixtures {
+    val profile = SettingsProfile("0123456789abcdef", "Ada Lovelace", "@ada")
+    val accounts = AccountMenu(
+        listOf(
+            AccountMenuEntry("0123456789abcdef", "Ada Lovelace", active = true),
+            AccountMenuEntry("fedcba9876543210", "Work"),
+            AccountMenuEntry("agent-connection-1", "Studio", agent = true),
+        ),
+    )
+}
+
+/**
+ * A Happy account's Settings, as iOS lays out the page: the big picture,
+ * name and username, the accounts card, then its pages and About in iOS's
+ * order, Logout last.
+ */
 @RunWith(AndroidJUnit4::class)
 @Config(qualifiers = PHONE)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -34,89 +62,126 @@ class SettingsLayoutTest {
     @get:Rule
     val rule = createComposeRule()
 
-    private val profile = Profile(
-        id = "account-1",
-        timestamp = 0,
-        firstName = "Ada",
-        lastName = "Lovelace",
-        avatar = null,
-        github = GitHubProfile(id = 1.0, login = "ada", name = "Ada L", avatarUrl = "", email = null, bio = "Analytical engines"),
-        connectedServices = listOf("anthropic"),
+    private val opened = mutableListOf<String>()
+    private val actions = HappySettingsActions(
+        onAccount = { opened += "account" },
+        onBackup = { opened += "backup" },
+        onAppearance = { opened += "appearance" },
+        onLanguage = { opened += "language" },
+        onVoice = { opened += "voice" },
+        onAgents = { opened += "agents" },
+        onScanTerminal = { opened += "scan" },
+        onEnterTerminal = { opened += "url" },
+        onSignOut = { opened += "signOut" },
     )
 
-    @Test
-    fun settingsAppCard() {
-        rule.setHappyContent { SettingsScreen(versionName = "0.1.0", onBack = {}, onAccount = {}, onAppearance = {}, onOpenUrl = {}) }
-        val card = rule.node(SettingsTags.APP_CARD).bounds
-        assertBox("card", card, 16.dp, (64 + 16).dp, (PHONE_WIDTH - 32).dp, (24 + 90 + 12 + 24).dp)
-        assertBox("logotype", rule.node(SettingsTags.LOGOTYPE).bounds, (16 + (PHONE_WIDTH - 32 - 300) / 2f).dp, (64 + 16 + 24).dp, 300.dp, 90.dp)
-        // The terminal group has no title: a 16 spacer, then its card.
-        val terminal = rule.onAllNodesWithTag(ItemGroupTags.CARD, useUnmergedTree = true)[0].bounds
-        assertDp("terminal card 16 under the app card", card.bottom + 16.dp, terminal.top)
-        rule.onNodeWithText("0.1.0").performScrollTo().assertIsDisplayed()
-    }
-
-    @Test
-    fun settingsProfileHeader() {
-        rule.setHappyContent { SettingsScreen(versionName = "0.1.0", onBack = {}, onAccount = {}, onAppearance = {}, onOpenUrl = {}, profile = profile) }
-        val card = rule.node(SettingsTags.APP_CARD).bounds
-        val avatar = rule.node(SettingsTags.AVATAR).bounds
-        assertBox("avatar", avatar, ((PHONE_WIDTH - 90) / 2f).dp, card.top + 24.dp, 90.dp, 90.dp)
-        val name = rule.node(SettingsTags.NAME).bounds
-        assertDp("name 12 under the avatar", avatar.bottom + 12.dp, name.top)
-        assertDp("name centred", (PHONE_WIDTH / 2f).dp, (name.left + name.right) / 2)
-        val bio = rule.node(SettingsTags.BIO).bounds
-        assertDp("bio 4 under the name", name.bottom + 4.dp, bio.top)
-        assertDp("8 and 24 under the bio", bio.bottom + 8.dp + 24.dp, card.bottom)
-        rule.onNodeWithText("Ada Lovelace").assertIsDisplayed()
-        rule.onAllNodesWithTag(SettingsTags.LOGOTYPE, useUnmergedTree = true).assertCountEquals(0)
-    }
-
-    @Test
-    fun settingsNameWithoutBio() {
-        rule.setHappyContent {
-            SettingsScreen(versionName = "0.1.0", onBack = {}, onAccount = {}, onAppearance = {}, onOpenUrl = {}, profile = profile.copy(github = null))
-        }
-        val card = rule.node(SettingsTags.APP_CARD).bounds
-        val name = rule.node(SettingsTags.NAME).bounds
-        assertDp("8 and 24 under the name", name.bottom + 8.dp + 24.dp, card.bottom)
-    }
-
-    @Test
-    fun settingsRowsAndConnectedAccounts() {
-        var claude = 0
-        var gitHub = 0
-        var voice = 0
+    private fun show(accountActions: AccountsCardActions = AccountsCardActions({ opened += "switch:$it" }, { opened += "add" })) =
         rule.setHappyContent {
             SettingsScreen(
-                versionName = "0.1.0",
-                versionSubtitle = "Commit 2026-10-16 03:12 UTC / abc1234",
-                onBack = {}, onAccount = {}, onAppearance = {}, onOpenUrl = {},
-                profile = profile,
-                accounts = ConnectedAccounts(claudeConnected = true, gitHubLogin = "ada"),
-                onClaude = { claude++ },
-                onGitHub = { gitHub++ },
-                onVoice = { voice++ },
+                profile = SettingsFixtures.profile,
+                about = AboutInfo("1.8.0 (412)", "Commit 2026-10-16 03:12 UTC / abc1234"),
+                accounts = SettingsFixtures.accounts,
+                accountActions = accountActions,
+                actions = actions,
             )
         }
-        rule.onAllNodesWithTag(ItemGroupTags.HEADER, useUnmergedTree = true).assertCountEquals(3)
-        for (title in listOf("Scan QR code to authenticate", "Enter URL manually", "Claude Code", "Active", "Connected as @ada", "Agents", "What's New")) {
-            rule.onNodeWithText(title).performScrollTo().assertIsDisplayed()
-        }
-        rule.onNodeWithText("Claude Code").performScrollTo().performClick()
-        rule.onNodeWithText("Connected as @ada").performScrollTo().performClick()
-        assertEquals(1, claude)
-        assertEquals(1, gitHub)
-        rule.onNodeWithText("Voice Assistant").performScrollTo().performClick()
-        assertEquals(1, voice)
-        rule.onNodeWithText("Commit 2026-10-16 03:12 UTC / abc1234").performScrollTo().assertIsDisplayed()
+
+    @Test
+    fun theProfileIsABigPictureNameAndUsernameCentredUnderTheBar() {
+        show()
+        val picture = rule.node(SettingsPageTags.PICTURE).bounds
+        assertBox("picture", picture, ((PHONE_WIDTH - 100) / 2f).dp, (64 + 8).dp + GlassSpec.feather, 100.dp, 100.dp)
+        val name = rule.node(SettingsPageTags.NAME).bounds
+        assertDp("name 12 under the picture", picture.bottom + 12.dp, name.top)
+        assertBox("name across the page, 24 in", name, 24.dp, name.top, (PHONE_WIDTH - 48).dp, name.bottom - name.top)
+        val subtitle = rule.node(SettingsPageTags.SUBTITLE).bounds
+        assertDp("line 2 under the name", name.bottom + 2.dp, subtitle.top)
+        val accounts = rule.onAllNodesWithTag(ItemGroupTags.CARD, useUnmergedTree = true)[0].bounds
+        assertDp("cards 28 under the line", subtitle.bottom + 28.dp, accounts.top)
+        rule.onNodeWithText("@ada").assertIsDisplayed()
+        // A Happy account's picture has no edit badge: nothing here changes it.
+        rule.onAllNodesWithTag(SettingsPageTags.EDIT, useUnmergedTree = true).assertCountEquals(0)
     }
 
     @Test
-    fun settingsDisconnectedAccounts() {
-        rule.setHappyContent { SettingsScreen(versionName = "0.1.0", onBack = {}, onAccount = {}, onAppearance = {}, onOpenUrl = {}) }
-        rule.onNodeWithText("Connect account").performScrollTo().assertIsDisplayed()
-        rule.onNodeWithText("Connect your GitHub account").performScrollTo().assertIsDisplayed()
+    fun cardsComeInIosOrder() {
+        show()
+        val cards = rule.onAllNodesWithTag(ItemGroupTags.CARD, useUnmergedTree = true)
+        cards.assertCountEquals(7)
+        fun cardOf(tag: String): Int {
+            val row = rule.node(tag).bounds
+            return (0 until 7).first { index -> cards[index].bounds.let { it.top <= row.top && row.bottom <= it.bottom } }
+        }
+        assertEquals(0, cardOf(SettingsPageTags.ADD_AGENT))
+        assertEquals(listOf(1, 1), listOf(SettingsTags.ACCOUNT, SettingsTags.BACKUP).map(::cardOf))
+        assertEquals(listOf(2, 2, 2, 2), listOf(SettingsTags.APPEARANCE, SettingsTags.LANGUAGE, SettingsTags.VOICE, SettingsTags.AGENTS).map(::cardOf))
+        assertEquals(listOf(3, 3), listOf(SettingsTags.SCAN_TERMINAL, SettingsTags.ENTER_TERMINAL).map(::cardOf))
+        assertEquals(4, cardOf(SettingsTags.SUPPORT))
+        rule.node(SettingsTags.VERSION).performScrollTo()
+        assertEquals(5, cardOf(SettingsTags.VERSION))
+        rule.node(SettingsPageTags.REMOVE).performScrollTo()
+        assertEquals(6, cardOf(SettingsPageTags.REMOVE))
+        // happy-app's Connected Accounts are gone, as on iOS; no titled groups at all.
+        rule.onAllNodesWithTag(ItemGroupTags.HEADER, useUnmergedTree = true).assertCountEquals(0)
+        rule.onNode(hasText("Claude Code")).assertDoesNotExist()
+    }
+
+    @Test
+    fun everyRowOpensItsPage() {
+        show()
+        for (tag in listOf(SettingsTags.ACCOUNT, SettingsTags.BACKUP, SettingsTags.APPEARANCE, SettingsTags.LANGUAGE, SettingsTags.VOICE, SettingsTags.AGENTS, SettingsTags.SCAN_TERMINAL, SettingsTags.ENTER_TERMINAL)) {
+            rule.node(tag).performScrollTo().performClick()
+        }
+        assertEquals(listOf("account", "backup", "appearance", "language", "voice", "agents", "scan", "url"), opened)
+        for (title in listOf("What's New", "GitHub", "slopus/happy", "Report an Issue", "Privacy Policy", "Terms of Service", "1.8.0 (412)", "Commit 2026-10-16 03:12 UTC / abc1234")) {
+            rule.onNodeWithText(title).performScrollTo().assertIsDisplayed()
+        }
+    }
+
+    @Test
+    fun theAccountsCardChecksTheOpenOneSwitchesAndAdds() {
+        show()
+        rule.node(SettingsPageTags.account("0123456789abcdef")).assert(SemanticsMatcher.expectValue(SemanticsProperties.Selected, true))
+        rule.node(SettingsPageTags.account("agent-connection-1")).assert(SemanticsMatcher.expectValue(SemanticsProperties.Selected, false))
+        // The open one stays open.
+        rule.node(SettingsPageTags.account("0123456789abcdef")).performClick()
+        rule.node(SettingsPageTags.account("fedcba9876543210")).performClick()
+        rule.node(SettingsPageTags.account("agent-connection-1")).performClick()
+        rule.node(SettingsPageTags.ADD_AGENT).performClick()
+        assertEquals(listOf("switch:fedcba9876543210", "switch:agent-connection-1", "add"), opened)
+        // An account's picture takes the tile's place: 30, in the 32 icon slot.
+        val icons = rule.onAllNodesWithTag(ItemTags.ICON, useUnmergedTree = true)
+        assertDp("icon slot", 32.dp, icons[0].bounds.let { it.right - it.left })
+    }
+
+    @Test
+    fun holdingAnAgentDisconnectsItAfterAConfirm() {
+        val removed = mutableListOf<String>()
+        show(AccountsCardActions({}, {}, onRemove = { removed += it.id }, canRemove = { it.agent || it.active }))
+        // Another Happy account can't go from here: holding it offers nothing.
+        rule.node(SettingsPageTags.account("fedcba9876543210")).performTouchInput { longClick() }
+        rule.onNode(hasText("Logout") and hasAnyAncestor(isPopup())).assertDoesNotExist()
+
+        rule.node(SettingsPageTags.account("agent-connection-1")).performTouchInput { longClick() }
+        rule.onNodeWithText("Disconnect").performClick()
+        rule.onNodeWithText("Disconnect agent?").assertIsDisplayed()
+        rule.onNode(hasText("Disconnect") and hasAnyAncestor(isDialog())).performClick()
+        rule.waitForIdle()
+        assertEquals(listOf("agent-connection-1"), removed)
+    }
+
+    @Test
+    fun logoutAsksFirst() {
+        show()
+        rule.node(SettingsPageTags.REMOVE).performScrollTo().performClick()
+        rule.onNodeWithText("Sign out?").assertIsDisplayed()
+        rule.onNodeWithText("Cancel").performClick()
+        rule.waitForIdle()
+        assertEquals(emptyList<String>(), opened)
+        rule.node(SettingsPageTags.REMOVE).performClick()
+        rule.onNode(hasText("Logout") and hasAnyAncestor(isDialog())).performClick()
+        rule.waitForIdle()
+        assertEquals(listOf("signOut"), opened)
     }
 
     @Test
@@ -130,7 +195,9 @@ class SettingsLayoutTest {
     @Test
     fun tenTapsOnVersionToggleDeveloperMode() {
         var taps = 0
-        rule.setHappyContent { SettingsScreen(versionName = versionDetail("1.8.0", 412), onBack = {}, onAccount = {}, onAppearance = {}, onOpenUrl = {}, onVersion = { taps++ }) }
+        rule.setHappyContent {
+            SettingsScreen(SettingsFixtures.profile, AboutInfo(versionDetail("1.8.0", 412)), aboutActions = AboutActions(onVersion = { taps++ }))
+        }
         rule.onNodeWithText("1.8.0 (412)").performScrollTo().assertIsDisplayed()
         rule.node(SettingsTags.VERSION).performClick()
         assertEquals(1, taps)
@@ -146,4 +213,3 @@ class SettingsLayoutTest {
         assertEquals(true, clicks.click())
     }
 }
-

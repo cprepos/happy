@@ -1,5 +1,7 @@
 package com.slopus.happy.ui.home
 
+import com.slopus.happy.text.Words
+import com.slopus.happy.R
 import com.slopus.happy.attachments.AttachmentNotice
 import com.slopus.happy.attachments.AttachmentPreview
 import com.slopus.happy.attachments.AttachmentUploadResult
@@ -30,7 +32,7 @@ class LiveMachineActions(private val ops: () -> MachineOps?) : MachineActions {
         ops()?.spawnSession(options) ?: SpawnSessionResult.Error(SIGNED_OUT)
 
     override suspend fun createWorktree(machineId: String, basePath: String): WorktreeOutcome {
-        val ops = ops() ?: return WorktreeOutcome.Failed(SIGNED_OUT)
+        val ops = ops() ?: return WorktreeOutcome.Failed(Words.ours(R.string.home_not_signed_in))
         return createWorktree(basePath) { command -> ops.bash(machineId, command, basePath) }
     }
 

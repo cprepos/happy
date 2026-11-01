@@ -25,11 +25,9 @@ enum Route: Hashable {
 
     // Settings
     case settings
-    case settingsAccount
     case settingsAppearance
     case settingsLanguage
     case settingsAgents
-    case settingsConnectClaude
     case settingsVoice
     case settingsVoiceLanguage
     case supportUs
@@ -46,13 +44,14 @@ enum Screens {
     static func make(_ route: Route, context: AppContext, session: AccountSession) -> UIViewController {
         switch route {
         case .settings:
-            return SettingsViewController(context: context)
+            // The one Settings, on this account's page.
+            return SettingsViewController(context: context, computer: session.keys.anonID)
         case .server:
             return ServerConfigViewController(context: context)
         case .troubleshoot:
             return TroubleshootViewController(context: context, session: session)
         case .session(let id):
-            return ChatViewController(context: context, session: session, sessionId: id)
+            return LegacyChatViewController(context: context, session: session, sessionId: id)
         case .sessionInfo(let id):
             return SessionInfoViewController(context: context, session: session, sessionId: id)
         case .sessionChanges(let id):
@@ -69,16 +68,12 @@ enum Screens {
             return MachineViewController(context: context, session: session, machineId: id)
         case .newSession(let machineId, let path, let prompt):
             return NewSessionViewController(context: context, session: session, machineId: machineId, path: path, prompt: prompt)
-        case .settingsAccount:
-            return SettingsAccountViewController(context: context, session: session)
         case .settingsAppearance:
             return SettingsAppearanceViewController(context: context, session: session)
         case .settingsLanguage:
             return SettingsLanguageViewController(session: session)
         case .settingsAgents:
             return SettingsAgentsViewController(context: context, session: session)
-        case .settingsConnectClaude:
-            return SettingsConnectClaudeViewController()
         case .settingsVoice:
             return VoiceSettingsViewController(context: context, session: session)
         case .settingsVoiceLanguage:
@@ -100,21 +95,18 @@ extension UIViewController {
     /// Chats push a lightweight shell immediately. Their content is prepared
     /// during the transition, without a readiness gate on navigation.
     ///
-    /// The tablet sidebar has no stack of its own: it pushes onto the one
-    /// beside it, as SidebarNavigator.tsx's single stack does, and not
-    /// again onto the chat already on top. The route is recorded so the
-    /// sidebar can keep that chat's row selected (`HappyUI/Tablet`).
+    /// From the iPad's sidebar, the screen becomes the main panel's root
+    /// instead, or the main panel goes back to it when it shows that
+    /// already (`SidebarNavigationController`). The route is recorded so
+    /// the sidebar can keep that chat's row selected (`HappyUI/Tablet`).
     func push(_ route: Route, context: AppContext, animated: Bool = true) {
-        guard let session = context.account.session,
-              let stack = navigationController ?? tabletDetailNavigation,
-              navigationController != nil || !TabletRoutes.isShowing(route, in: stack)
-        else { return }
+        guard let session = context.account.session, let stack = navigationController else { return }
         #if DEBUG || HAPPY_FIXTURES
         let constructionStarted = CACurrentMediaTime()
         #endif
         let controller = Screens.make(route, context: context, session: session)
         #if DEBUG || HAPPY_FIXTURES
-        (controller as? ChatViewController)?.constructionSeconds = CACurrentMediaTime() - constructionStarted
+        (controller as? LegacyChatViewController)?.constructionSeconds = CACurrentMediaTime() - constructionStarted
         #endif
         TabletRoutes.record(route, for: controller)
         stack.pushViewController(controller, animated: animated)
@@ -136,7 +128,7 @@ final class PlaceholderViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = UIColor(Palette.groupedBackground)
-        showsBackTitle()
+        minimalBackButton()
     }
 }
 #endif

@@ -35,10 +35,6 @@ import androidx.compose.ui.unit.dp
 import com.slopus.happy.R
 import com.slopus.happy.model.SessionListGrouping
 import com.slopus.happy.model.Settings
-import com.slopus.happy.ui.components.AvatarBrutalist
-import com.slopus.happy.ui.components.AvatarGradient
-import com.slopus.happy.ui.components.AvatarPixelated
-import com.slopus.happy.ui.components.AvatarStyle
 import com.slopus.happy.ui.components.HappySwitch
 import com.slopus.happy.ui.components.Icon
 import com.slopus.happy.ui.components.Ionicon
@@ -54,7 +50,6 @@ import com.slopus.happy.ui.theme.happyTextStyle
 object AppearanceTags {
     const val BUBBLE_DROPDOWN = "appearance.bubbleDropdown"
     const val BUBBLE_PREVIEW = "appearance.bubblePreview"
-    const val AVATAR_DROPDOWN = "appearance.avatarDropdown"
     const val OPTION = "appearance.option"
 }
 
@@ -78,8 +73,6 @@ object AppearanceSpec {
     val bubbleLineGap = 4.dp
     val bubbleLineHeight = 3.dp
     val bubbleLineWidths = listOf(18.dp, 26.dp)
-    val avatarPreview = 28.dp
-    const val AVATAR_PREVIEW_ID = "avatar-style-preview"
 }
 
 /** utils/userMessageBubbleColor.ts: the presets, in the picker's order. */
@@ -173,23 +166,6 @@ fun BubbleColorPreview(color: BubbleColor) {
     }
 }
 
-@Composable
-private fun AvatarStylePreview(style: AvatarStyle, monochrome: Boolean) {
-    val id = AppearanceSpec.AVATAR_PREVIEW_ID
-    val size = AppearanceSpec.avatarPreview
-    when (style) {
-        AvatarStyle.Brutalist -> AvatarBrutalist(id, size, monochrome = monochrome)
-        AvatarStyle.Pixelated -> AvatarPixelated(id, size, monochrome = monochrome)
-        AvatarStyle.Gradient -> AvatarGradient(id, size, monochrome = monochrome)
-    }
-}
-
-private fun avatarStyleLabel(style: AvatarStyle) = when (style) {
-    AvatarStyle.Brutalist -> R.string.settings_appearance_avatar_style_options_brutalist
-    AvatarStyle.Pixelated -> R.string.settings_appearance_avatar_style_options_pixelated
-    AvatarStyle.Gradient -> R.string.settings_appearance_avatar_style_options_gradient
-}
-
 /** The dropdown's closed value: preview, label (15, secondary), an 18 chevron; 8 apart, at most 184 wide. */
 @Composable
 private fun DropdownValue(label: String, expanded: Boolean, tag: String, preview: @Composable () -> Unit) {
@@ -249,19 +225,23 @@ private fun SwitchItem(title: String, subtitle: String, icon: Ionicon, iconColor
  *
  * Groups: Theme (tap cycles adaptive, light, dark), Language (current
  * language, opens the picker), Chat (quota remaining; bubble colour
- * dropdown), Avatars (style dropdown with 28 previews; monochrome), Input
- * (context size), Display (session grouping, which a tap flips; compact
- * tool calls, file diffs sidebar, grouped tool calls, line numbers, harness
- * icons in the header and the list). Rows are standard [Item]s with 29 icons
- * and [HappySwitch]es; a dropdown opens under its row, 6 padding above and
- * below its options, and opening one closes the other.
+ * dropdown), Avatars (monochrome; this app's own Animated Avatars, kept on
+ * the phone and off by default), Input (context size), Display (session
+ * grouping, which a tap flips; compact tool calls, file diffs sidebar,
+ * grouped tool calls, line numbers, harness icons in the header and the
+ * list). Rows are standard [Item]s with 29 icons and [HappySwitch]es; a
+ * dropdown opens under its row, 6 padding above and below its options.
  *
- * Not ported: a theme change doesn't set the platform's night mode
- * (happy-app's Appearance.setColorScheme). Compose and the system bars
- * follow the setting; only platform-drawn chrome such as the text selection
- * toolbar keeps the system's. Doing it needs UiModeManager (API 31+) plus
- * recreating the activity for its window theme, which MainActivity avoids
- * by handling uiMode itself.
+ * As on happy-ios there is no Avatar Style: every avatar without a picture
+ * wears its placeholder whichever style is set, so only Black & White and
+ * Animated Avatars change how they look.
+ *
+ * The theme is the platform's night mode too (happy-app's
+ * Appearance.setColorScheme, `ui/theme/AppNightMode`): on API 31+ the system's
+ * splash, the window, platform-drawn chrome such as the text selection
+ * toolbar, and web pages follow the setting, as Compose and the system bars
+ * do. MainActivity handles uiMode itself, so a change repaints in place;
+ * nothing is recreated.
  */
 @Composable
 fun AppearanceScreen(
@@ -272,12 +252,12 @@ fun AppearanceScreen(
     onSettingsChange: ((Settings) -> Settings) -> Unit = {},
     languageDetail: String = "",
     onLanguage: () -> Unit = {},
+    animatedAvatars: Boolean = false,
+    onAnimatedAvatarsChange: (Boolean) -> Unit = {},
 ) {
     val colors = HappyTheme.colors
     var bubbleOpen by remember { mutableStateOf(false) }
-    var avatarOpen by remember { mutableStateOf(false) }
     val bubbleColor = BubbleColor.normalize(settings.userMessageBubbleColor)
-    val avatarStyle = AvatarStyle.normalize(settings.avatarStyle)
     val violet = SettingsSpec.indigo
 
     Screen(header = { StackHeader(stringResource(R.string.settings_appearance), onBack) }) {
@@ -329,10 +309,7 @@ fun AppearanceScreen(
                     subtitle = stringResource(R.string.settings_appearance_user_message_bubble_color_description),
                     icon = { ItemIcon(Ionicon.ChatbubbleEllipsesOutline, BubblePalettes.solid(bubbleColor, colors.dark).indicator) },
                     rightElement = { DropdownValue(bubbleLabel, bubbleOpen, AppearanceTags.BUBBLE_DROPDOWN) { BubbleColorPreview(bubbleColor) } },
-                    onClick = {
-                        avatarOpen = false
-                        bubbleOpen = !bubbleOpen
-                    },
+                    onClick = { bubbleOpen = !bubbleOpen },
                 )
                 if (bubbleOpen) {
                     Column(Modifier.padding(vertical = AppearanceSpec.dropdownPaddingVertical)) {
@@ -347,34 +324,19 @@ fun AppearanceScreen(
             }
 
             ItemGroup(title = stringResource(R.string.settings_appearance_avatars), footer = stringResource(R.string.settings_appearance_avatars_description)) {
-                val styleLabel = stringResource(avatarStyleLabel(avatarStyle))
-                Item(
-                    title = stringResource(R.string.settings_appearance_avatar_style),
-                    icon = { ItemIcon(Ionicon.PersonCircleOutline, colors.status.connecting) },
-                    rightElement = {
-                        DropdownValue(styleLabel, avatarOpen, AppearanceTags.AVATAR_DROPDOWN) { AvatarStylePreview(avatarStyle, settings.avatarMonochrome) }
-                    },
-                    onClick = {
-                        bubbleOpen = false
-                        avatarOpen = !avatarOpen
-                    },
-                )
-                if (avatarOpen) {
-                    Column(Modifier.padding(vertical = AppearanceSpec.dropdownPaddingVertical)) {
-                        for (style in AvatarStyle.entries) {
-                            DropdownOption(stringResource(avatarStyleLabel(style)), style == avatarStyle, onClick = {
-                                onSettingsChange { it.copy(avatarStyle = style.key) }
-                                avatarOpen = false
-                            }) { AvatarStylePreview(style, settings.avatarMonochrome) }
-                        }
-                    }
-                }
                 SwitchItem(
                     stringResource(R.string.settings_appearance_avatar_monochrome),
                     stringResource(R.string.settings_appearance_avatar_monochrome_description),
                     Ionicon.ContrastOutline, colors.status.connecting,
                     settings.avatarMonochrome,
                 ) { value -> onSettingsChange { it.copy(avatarMonochrome = value) } }
+                SwitchItem(
+                    stringResource(R.string.live_avatars_title),
+                    stringResource(R.string.live_avatars_description),
+                    Ionicon.SparklesOutline, violet,
+                    animatedAvatars,
+                    onAnimatedAvatarsChange,
+                )
             }
 
             ItemGroup(title = stringResource(R.string.settings_appearance_input), footer = stringResource(R.string.settings_appearance_input_description)) {

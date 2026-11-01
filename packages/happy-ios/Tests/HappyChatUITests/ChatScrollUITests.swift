@@ -90,17 +90,18 @@ final class ChatScrollUITests: XCTestCase {
     /// the conversation moves as far as the finger, not as far as the finger
     /// and the keyboard together.
     func testAnInteractiveDismissKeepsTheConversationUnderTheFinger() throws {
-        try interactiveDismiss(ultra: false)
+        try interactiveDismissKeepsTheConversationUnderTheFinger(["-fixture", "long", "-keyboard"])
     }
 
-    func testUltraListInteractiveDismissKeepsTheConversationUnderTheFinger() throws {
-        try interactiveDismiss(ultra: true)
+    /// The same in the agents' chat (`-screen agentChat`).
+    func testAnInteractiveDismissKeepsTheAgentConversationUnderTheFinger() throws {
+        try interactiveDismissKeepsTheConversationUnderTheFinger(["-screen", "agentChat", "-keyboard"])
     }
 
-    private func interactiveDismiss(ultra: Bool) throws {
-        let app = launch(["-fixture", "long", "-keyboard"] + (ultra ? ["-chatUltraList"] : []))
+    private func interactiveDismissKeepsTheConversationUnderTheFinger(_ arguments: [String]) throws {
+        let app = launch(arguments)
         var state = probe(app) { self.filled($0) && self.number($0["keyboardTop"]) < self.number(($0["window"] as? [NSNumber])?.last) - 150 }
-        XCTAssertEqual(state["renderer"] as? String, ultra ? "UltraList" : "UICollectionView")
+        XCTAssertEqual(state["renderer"] as? String, "UltraList")
         guard number(state["keyboardTop"]) < number((state["window"] as? [NSNumber])?.last) - 150 else {
             throw XCTSkip("no software keyboard on this simulator (hardware keyboard connected)")
         }
@@ -127,9 +128,7 @@ final class ChatScrollUITests: XCTestCase {
 
     // MARK: Keyboard show, return, dismiss and hide
 
-    /// UltraList moves the keyboard with UltraView's own controller; the
-    /// same script on UICollectionView, which keeps the system's
-    /// interactive dismissal and the layout guide, is the comparison. The
+    /// UltraList moves the keyboard with UltraView's own controller. The
     /// keyboard shows on a tap; a drag a third of the way down, held still
     /// and let go, returns it; a slow drag to the bottom dismisses it with
     /// the conversation under the finger; a quick drag let go partway
@@ -137,24 +136,27 @@ final class ChatScrollUITests: XCTestCase {
     /// sits on the keyboard all the while, and moves frame by frame after
     /// each finger lifts.
     func testUltraListKeyboardShowReturnDismissAndHide() throws {
-        try keyboardShowReturnDismissAndHide(ultra: true)
-    }
-
-    func testKeyboardShowReturnDismissAndHide() throws {
-        try keyboardShowReturnDismissAndHide(ultra: false)
+        try keyboardShowReturnDismissAndHide()
     }
 
     /// An empty chat has no rows to move: the dock and the placeholder
     /// still ride the keyboard on the list's inset motion.
     func testUltraListEmptyChatKeyboardShowReturnDismissAndHide() throws {
-        try keyboardShowReturnDismissAndHide(ultra: true, empty: true)
+        try keyboardShowReturnDismissAndHide(empty: true)
     }
 
-    private func keyboardShowReturnDismissAndHide(ultra: Bool, empty: Bool = false) throws {
-        let app = launch(["-fixture", empty ? "empty" : "long", "-hideKeyboardButton"] + (ultra ? ["-chatUltraList"] : []))
+    /// The agents' chat (`-screen agentChat`) takes its keyboard the same
+    /// way, from the same controller, its card standing its gap over the
+    /// keyboard.
+    func testTheAgentChatKeyboardShowReturnDismissAndHide() throws {
+        try keyboardShowReturnDismissAndHide(arguments: ["-screen", "agentChat", "-hideKeyboardButton"])
+    }
+
+    private func keyboardShowReturnDismissAndHide(empty: Bool = false, arguments: [String]? = nil) throws {
+        let app = launch(arguments ?? ["-fixture", empty ? "empty" : "long", "-hideKeyboardButton"])
         var state = probe(app) { empty ? $0["renderer"] != nil : self.filled($0) }
         XCTAssertTrue(app.textViews.firstMatch.waitForExistence(timeout: 10), "the composer is there")
-        XCTAssertEqual(state["renderer"] as? String, ultra ? "UltraList" : "UICollectionView")
+        XCTAssertEqual(state["renderer"] as? String, "UltraList")
         let window = try XCTUnwrap(state["window"] as? [NSNumber]).map { CGFloat($0.doubleValue) }
         let width = window[0], height = window[1]
         let resting = height - number((state["safeArea"] as? [NSNumber])?[2])
@@ -170,15 +172,16 @@ final class ChatScrollUITests: XCTestCase {
             Thread.sleep(forTimeInterval: 0.5)
             return probe(app)
         }
+        // The agents' card stands its gap (`dockBelow`) over the keyboard.
         func assertDocked(_ state: [String: Any], _ label: String) {
-            XCTAssertEqual(number(state["dockMaxY"]), min(resting, number(state["keyboardTop"])), accuracy: 1, "\(label): the dock sits on the keyboard")
+            XCTAssertEqual(number(state["dockMaxY"]) + number(state["dockBelow"]), min(resting, number(state["keyboardTop"])), accuracy: 1, "\(label): the dock sits on the keyboard")
         }
         func assertDown(_ state: [String: Any], _ label: String) {
             XCTAssertGreaterThanOrEqual(number(state["keyboardTop"]), resting - 1, "\(label): the keyboard is down")
-            XCTAssertEqual(number(state["dockMaxY"]), resting, accuracy: 1, "\(label): the dock rests on the safe area")
+            XCTAssertEqual(number(state["dockMaxY"]) + number(state["dockBelow"]), resting, accuracy: 1, "\(label): the dock rests on the safe area")
         }
         func assertDriver(_ state: [String: Any], _ label: String) {
-            XCTAssertEqual(state["keyboard"] as? String, ultra ? "controller" : "guide", "\(label): who moves the keyboard")
+            XCTAssertEqual(state["keyboard"] as? String, "controller", "\(label): who moves the keyboard")
         }
         func assertAnimated(_ state: [String: Any], _ label: String) {
             let sampled = release(state)
@@ -186,11 +189,11 @@ final class ChatScrollUITests: XCTestCase {
             XCTAssertGreaterThanOrEqual((sampled["dockFramesMoved"] as? NSNumber)?.intValue ?? 0, 3, "\(label): the dock animates, frame by frame")
         }
         /// UltraView's controller owned the finger's keyboard and its
-        /// release; on UICollectionView nothing did.
+        /// release.
         func assertDriven(_ state: [String: Any], _ label: String) {
             let touch = state["lastTouch"] as? [String: Any] ?? [:]
-            XCTAssertEqual(touch["keyboardDriven"] as? Bool, ultra, "\(label): the controller tracked the finger")
-            XCTAssertEqual(release(state)["driving"] as? Bool, ultra, "\(label): the controller played the release")
+            XCTAssertEqual(touch["keyboardDriven"] as? Bool, true, "\(label): the controller tracked the finger")
+            XCTAssertEqual(release(state)["driving"] as? Bool, true, "\(label): the controller played the release")
         }
         func show(_ label: String) throws -> [String: Any] {
             let before = touches(probe(app))
@@ -239,7 +242,7 @@ final class ChatScrollUITests: XCTestCase {
         if !empty {
             XCTAssertEqual(content / finger, 1, accuracy: 0.15, "dismiss: content \(content) for a finger's \(finger) while the keyboard moved")
         }
-        XCTAssertEqual(touch["keyboardDriven"] as? Bool, ultra, "dismiss: the controller tracked the finger")
+        XCTAssertEqual(touch["keyboardDriven"] as? Bool, true, "dismiss: the controller tracked the finger")
         assertDown(state, "dismiss")
 
         // A quick drag let go partway: dismissed by its speed.
@@ -297,7 +300,7 @@ final class ChatScrollUITests: XCTestCase {
         let finger = number(touch["fingerTravel"])
         let content = number(touch["offsetTravel"])
         XCTAssertLessThan(finger, -150, "the finger went up")
-        XCTAssertEqual(touch["recognizers"] as? [String], ["UIScrollViewPanGestureRecognizer"], "the list's own pan")
+        XCTAssertEqual(touch["recognizers"] as? [String], ["UltraList.InputPan"], "the list's own pan")
         // Past the newest message the list gives less than the finger, as
         // a pull past any end does, and springs back.
         XCTAssertLessThan(abs(content), abs(finger), "content \(content) for a finger's \(finger)")

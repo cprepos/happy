@@ -1,5 +1,6 @@
 package com.slopus.happy.ui.files
 
+import com.slopus.happy.text.Words
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -33,6 +34,7 @@ import com.slopus.happy.ui.assertActionsLabelled
 import com.slopus.happy.ui.assertBox
 import com.slopus.happy.ui.assertDp
 import com.slopus.happy.ui.bounds
+import com.slopus.happy.ui.components.GlassSpec
 import com.slopus.happy.ui.components.HeaderTags
 import com.slopus.happy.ui.diff.DiffTags
 import com.slopus.happy.ui.diff.LocalDiffSyntax
@@ -119,7 +121,7 @@ class FilesLayoutTest {
         rule.onAllNodesWithTag(DiffTags.LINE, useUnmergedTree = true).assertCountEquals(0)
         val header = rule.node(DiffTags.HEADER).bounds
         val bar = rule.node(HeaderTags.BAR).bounds
-        assertBox("file header under the bar", header, 0.dp, bar.bottom, PHONE_WIDTH.dp, header.height)
+        assertBox("file header under the bar and its feather", header, 0.dp, bar.bottom + GlassSpec.feather, PHONE_WIDTH.dp, header.height)
         rule.node(DiffTags.HEADER).performClick()
         rule.waitForIdle()
         rule.onAllNodesWithTag(DiffTags.LINE, useUnmergedTree = true).assertCountEquals(3)
@@ -138,7 +140,7 @@ class FilesLayoutTest {
     @Test
     fun agentMessagesOfferRetry() {
         var retried = 0
-        var content by mutableStateOf<ChangesContent>(ChangesContent.Agent(AgentChanges.State(load = AgentChanges.Load.Error("boom")), supported = true))
+        var content by mutableStateOf<ChangesContent>(ChangesContent.Agent(AgentChanges.State(load = AgentChanges.Load.Error(Words.Said("boom"))), supported = true))
         show { ChangesScreen(content, ChangesActions(onRetry = { retried++ })) }
         rule.onNodeWithText("boom").assertExists()
         val message = rule.node(ChangesTags.MESSAGE).bounds
@@ -280,7 +282,7 @@ class FilesLayoutTest {
         assertTrue("at least 200 high", text.height.value >= 200)
         rule.node(TextSelectionTags.COPY).performClick()
         assertEquals(1, copied)
-        assertDp("copy padded 8 around 24", 40, rule.node(TextSelectionTags.COPY).bounds.width)
+        assertDp("copy padded 12 around 24, a 48 target with the glyph on the keyline", 48, rule.node(TextSelectionTags.COPY).bounds.width)
     }
 
     @Test

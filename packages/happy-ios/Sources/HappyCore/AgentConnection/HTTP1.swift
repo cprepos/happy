@@ -1,0 +1,367 @@
+import Foundation
+import HappyWire
+import Tailcat
+
+public struct HTTP1Response: Sendable {
+    public let status: Int
+    public let headers: [String: String]
+    public let body: Data
+    public init(status: Int, headers: [String: String] = [:], body: Data = Data()) {
+        self.status = status; self.headers = headers; self.body = body
+    }
+}
+
+public protocol AgentTransport: Sendable {
+    /// A raw connection, for the browser's scoped HTTP and CONNECT bridges.
+    func browserConnection() async throws -> any BrowserStream
+    func request(method: String, path: String, credential: String, body: Data?, headers: [String: String]) async throws -> HTTP1Response
+    /// A bounded file write with a longer deadline than small API requests.
+    func upload(path: String, credential: String, body: Data) async throws -> HTTP1Response
+    /// `upload`, or a `request` with `method`, telling `sent` how many of
+    /// the body's bytes have gone out as they go: a sending picture's ring.
+    func send(method: String, path: String, credential: String, body: Data, upload: Bool, sent: @escaping @Sendable (Int) -> Void) async throws -> HTTP1Response
+    /// A GET whose body arrives as it is written, for an event stream.
+    func stream(path: String, credential: String, headers: [String: String]) async throws -> HTTP1Stream
+    /// Lets go of the connection so the next request makes a new one.
+    func reset() async
+    func close() async
+}
+
+/// A response head, and its decoded body as the bytes arrive. The body ends
+/// when the server closes it; ending the iteration closes the stream.
+public struct HTTP1Stream: Sendable {
+    public let status: Int
+    public let headers: [String: String]
+    public let body: AsyncThrowingStream<Data, Error>
+    public init(status: Int, headers: [String: String] = [:], body: AsyncThrowingStream<Data, Error>) {
+        self.status = status; self.headers = headers; self.body = body
+    }
+}
+
+extension AgentTransport {
+    public func upload(path: String, credential: String, body: Data) async throws -> HTTP1Response {
+        try await request(method: "PUT", path: path, credential: credential, body: body, headers: ["Content-Type": "application/json"])
+    }
+    /// A transport that can't tell its writes apart has sent it all once
+    /// it is answered.
+    public func send(method: String, path: String, credential: String, body: Data, upload: Bool, sent: @escaping @Sendable (Int) -> Void) async throws -> HTTP1Response {
+        let response = upload
+            ? try await self.upload(path: path, credential: credential, body: body)
+            : try await request(method: method, path: path, credential: credential, body: body, headers: [:])
+        sent(body.count)
+        return response
+    }
+
+    public func stream(path: String, credential: String, headers: [String: String]) async throws -> HTTP1Stream {
+        throw PairingError.unavailable
+    }
+
+    public func reset() async {}
+
+    func request(_ path: String, credential: String, method: String = "GET", body: Data? = nil, headers: [String: String] = [:]) async throws -> HTTP1Response {
+        try await request(method: method, path: path, credential: credential, body: body, headers: headers)
+    }
+}
+
+/// One transport per account. HTTPS uses platform-verified TLS; otherwise
+/// `server.tailcat` is a logical authority over the private tunnel.
+public actor AgentHTTPTransport: SelfMeteringTransport {
+    private let address: String
+    let port: UInt16
+    private let publicUrl: String?
+    private let tailcatAvailable: Bool
+    nonisolated let authority: String
+    private var publicStreams: [UUID: any BrowserStream] = [:]
+    private var client: TailcatClient?
+    private var connecting: Task<TailcatClient, Error>?
+    private var closed = false
+    /// The account's recorder, once a metered transport is over this one.
+    nonisolated let meter = MeterSlot()
+    /// The tunnel up now, as the recorder knows it.
+    private var tunnelID: UUID?
+
+    public init(address: String, port: UInt16, publicUrl: String? = nil, tailcatAvailable: Bool = true) {
+        self.address = address; self.port = port; self.publicUrl = publicUrl
+        self.tailcatAvailable = tailcatAvailable
+        authority = publicUrl.map { String($0.dropFirst("https://".count)) } ?? "server.tailcat:\(port)"
+    }
+
+    public nonisolated func attach(_ metrics: ConnectionMetrics) { meter.metrics = metrics }
+
+    public func close() async {
+        closed = true
+        connecting?.cancel(); connecting = nil
+        let old = client; client = nil
+        tunnelDown()
+        await old?.close()
+        await closePublicStreams()
+    }
+
+    /// A computer whose daemon restarted has forgotten this tunnel's session
+    /// and drops what it sends until the tunnel rekeys, minutes later; a new
+    /// tunnel handshakes at once.
+    public func reset() async {
+        let old = client; client = nil
+        tunnelDown()
+        await old?.close()
+        await closePublicStreams()
+    }
+
+    private func closePublicStreams() async {
+        let streams = publicStreams.values; publicStreams.removeAll()
+        for stream in streams { await stream.close() }
+    }
+
+    private func forgetPublicStream(_ id: UUID) { publicStreams[id] = nil }
+
+    private func tunnelDown() {
+        guard let id = tunnelID else { return }
+        tunnelID = nil
+        meter.metrics?.tunnelDown(id)
+    }
+
+    /// A TCP flow to the computer, counted on the channel the request
+    /// that opens it names (`MetricsScope.channel`).
+    func flow(_ client: TailcatClient?) async throws -> any BrowserStream {
+        guard !closed else { throw CancellationError() }
+        let raw: any BrowserStream
+        if let publicUrl {
+            let origin = try AgentOrigin(publicUrl)
+            let id = UUID()
+            raw = try HTTPSBrowserStream.open(origin) { [weak self] in
+                Task { await self?.forgetPublicStream(id) }
+            }
+            publicStreams[id] = raw
+        } else {
+            guard let client else { throw PairingError.unavailable }
+            raw = try await client.openTCP(port: port)
+        }
+        guard let metrics = meter.metrics else { return raw }
+        return MeteredStream(raw, metrics: metrics, channel: MetricsScope.channel ?? (publicUrl == nil ? .tailcat : .http))
+    }
+
+    /// Resets the tunnel if it is still `used`, after a failure on it.
+    func reset(_ used: TailcatClient?) async {
+        guard let used else { return }
+        guard client === used else { return }
+        await reset()
+    }
+
+    func connection() async throws -> TailcatClient? {
+        guard !closed else { throw CancellationError() }
+        if let publicUrl { _ = try AgentOrigin(publicUrl); return nil }
+        guard tailcatAvailable else { throw PairingError.unavailable }
+        if let client { return client }
+        let task: Task<TailcatClient, Error>
+        if let connecting { task = connecting }
+        else {
+            let address = address
+            task = Task { var config = TailcatClient.Configuration(); config.connectTimeout = 20; return try await TailcatClient.connect(to: address, configuration: config) }
+            connecting = task
+        }
+        do {
+            let value = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+            // Read before the state below changes, with no wait in between.
+            let tunnel = meter.metrics == nil ? nil : await value.serverAddress
+            guard !closed, !Task.isCancelled else { await value.close(); throw CancellationError() }
+            connecting = nil
+            // Callers that waited on the same connect see it up once.
+            guard client !== value else { return value }
+            client = value
+            if let metrics = meter.metrics, let tunnel {
+                let id = UUID()
+                tunnelID = id
+                metrics.tunnelUp(id, info: Self.info(tunnel, port: port), flows: { [weak value] in
+                    guard let statistics = await value?.flowStatistics else { return nil }
+                    return TunnelFlows(open: statistics.open, closing: statistics.closing,
+                                       openLimit: TailcatFlowStatistics.openLimit, closingLimit: TailcatFlowStatistics.closingLimit)
+                }) { [weak value] in
+                    switch await value?.path {
+                    case .relay: .relayed
+                    case .direct(let endpoint): .direct(endpoint: endpoint)
+                    case nil: nil
+                    }
+                }
+            }
+            return value
+        } catch {
+            connecting = nil
+            if !(error is CancellationError) { meter.metrics?.failed("Tailcat connect: \(MeteredError.describe(error))") }
+            throw error
+        }
+    }
+
+    public func request(method: String, path: String, credential: String, body: Data?, headers: [String: String]) async throws -> HTTP1Response {
+        try await request(method: method, path: path, credential: credential, body: body, headers: headers, sent: nil)
+    }
+
+    private func request(method: String, path: String, credential: String, body: Data?, headers: [String: String], sent: (@Sendable (Int) -> Void)?) async throws -> HTTP1Response {
+        guard ["GET", "POST", "PATCH", "PUT", "DELETE"].contains(method), Self.safe(path: path, credential: credential, headers: headers) else { throw PairingError.invalidResponse }
+        let client = try await connection()
+        let port = port
+        do {
+            return try await exchange(client: client, port: port, method: method, path: path, credential: credential, body: body, headers: headers, timeout: .seconds(35), sent: sent)
+        } catch {
+            if Self.lostTunnel(error) { await reset(client) }
+            throw error
+        }
+    }
+
+    /// Whether `error` says the tunnel carried nothing back (a timeout, a
+    /// stream it could not open), rather than a refused or garbled answer.
+    nonisolated static func lostTunnel(_ error: Error) -> Bool {
+        if error is CancellationError { return false }
+        if let error = error as? PairingError { return error == .unavailable }
+        return true
+    }
+
+    public func upload(path: String, credential: String, body: Data) async throws -> HTTP1Response {
+        try await upload(path: path, credential: credential, body: body, sent: nil)
+    }
+
+    public func send(method: String, path: String, credential: String, body: Data, upload: Bool, sent: @escaping @Sendable (Int) -> Void) async throws -> HTTP1Response {
+        upload
+            ? try await self.upload(path: path, credential: credential, body: body, sent: sent)
+            : try await request(method: method, path: path, credential: credential, body: body, headers: [:], sent: sent)
+    }
+
+    private func upload(path: String, credential: String, body: Data, sent: (@Sendable (Int) -> Void)?) async throws -> HTTP1Response {
+        guard body.count <= 72 * 1024 * 1024, Self.safe(path: path, credential: credential, headers: [:]) else {
+            throw PairingError.invalidResponse
+        }
+        let client = try await connection()
+        do {
+            return try await exchange(client: client, port: port, method: "PUT", path: path, credential: credential,
+                body: body, headers: [:], timeout: .seconds(15 * 60), sent: sent)
+        } catch {
+            if Self.lostTunnel(error) { await reset(client) }
+            throw error
+        }
+    }
+
+    private nonisolated func exchange(client: TailcatClient?, port: UInt16, method: String, path: String, credential: String, body: Data?, headers: [String: String], timeout: Duration, sent: (@Sendable (Int) -> Void)?) async throws -> HTTP1Response {
+        try await withThrowingTaskGroup(of: HTTP1Response.self) { group in
+            group.addTask {
+                let stream = try await self.flow(client)
+                return try await withTaskCancellationHandler {
+                    do {
+                        var head = "\(method) \(path) HTTP/1.1\r\nHost: \(self.authority)\r\nAuthorization: Bearer \(credential)\r\nConnection: close\r\nAccept: application/json\r\nContent-Length: \(body?.count ?? 0)\r\n"
+                        // JSON unless the caller names the type (a picture's bytes).
+                        if body != nil, !headers.keys.contains(where: { $0.lowercased() == "content-type" }) { head += "Content-Type: application/json\r\n" }
+                        for (name, value) in headers { head += "\(name): \(value)\r\n" }
+                        try await stream.write(Data((head + "\r\n").utf8))
+                        if let body {
+                            var offset = 0
+                            while offset < body.count {
+                                try Task.checkCancellation()
+                                let end = min(body.count, offset + 256 * 1024)
+                                try await stream.write(Data(body[offset..<end]))
+                                offset = end
+                                // Written to the tunnel: what a sending picture's ring shows.
+                                sent?(offset)
+                            }
+                        }
+                        var parser = HTTP1Parser()
+                        while true {
+                            try Task.checkCancellation()
+                            let bytes = try await stream.read(maximumBytes: 65536)
+                            if let response = try parser.append(bytes, eof: bytes.isEmpty) {
+                                await stream.close()
+                                return response
+                            }
+                        }
+                    } catch { await stream.close(); throw error }
+                } onCancel: { Task { await stream.close() } }
+            }
+            group.addTask { try await Task.sleep(for: timeout); throw PairingError.unavailable }
+            defer { group.cancelAll() }
+            guard let response = try await group.next() else { throw PairingError.unavailable }
+            return response
+        }
+    }
+}
+
+/// Kept for callers that construct the original tunnel-only transport.
+public typealias TailcatHTTPTransport = AgentHTTPTransport
+
+extension TailcatHTTPTransport {
+    /// What the recorder may show of a tunnel: its relay and the computer's
+    /// public node key, never the address (it holds the tunnel's secrets).
+    nonisolated static func info(_ address: TailcatAddress, port: UInt16) -> TunnelInfo {
+        let region = address.regions.first { $0.regionID == address.regionID } ?? address.regions.first
+        let key = address.serverPublicKey.description
+        let short = key.hasPrefix("nodekey:") ? "nodekey:" + key.dropFirst(8).prefix(8) + "…" : String(key.prefix(16)) + "…"
+        return TunnelInfo(regionID: region?.regionID ?? address.regionID, regionCode: region?.regionCode ?? "", regionName: region?.regionName ?? "",
+                          relayHost: region?.nodes.first { !$0.stunOnly }?.hostName, nodeKey: short, port: port)
+    }
+}
+
+/// The recorder a transport reports to, set once it is metered.
+final class MeterSlot: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: ConnectionMetrics?
+    var metrics: ConnectionMetrics? {
+        get { lock.lock(); defer { lock.unlock() }; return value }
+        set { lock.lock(); value = newValue; lock.unlock() }
+    }
+}
+
+/// Incremental HTTP/1.1 decoding with strict framing and bounded metadata.
+/// Handles arbitrary TCP boundaries, length, chunked and close-delimited bodies.
+struct HTTP1Parser {
+    private var data = Data()
+    private let limit = 8 * 1024 * 1024
+
+    mutating func append(_ bytes: Data, eof: Bool) throws -> HTTP1Response? {
+        guard data.count + bytes.count <= limit + 65536 else { throw PairingError.invalidResponse }
+        data.append(bytes)
+        guard let divider = data.range(of: Data("\r\n\r\n".utf8)) else {
+            guard data.count <= 32768, !eof else { throw PairingError.invalidResponse }; return nil
+        }
+        guard divider.lowerBound <= 32768,
+              let head = String(data: data[..<divider.lowerBound], encoding: .utf8) else { throw PairingError.invalidResponse }
+        let lines = head.components(separatedBy: "\r\n")
+        let statusParts = (lines.first ?? "").split(separator: " ")
+        guard statusParts.count >= 2, ["HTTP/1.1", "HTTP/1.0"].contains(String(statusParts[0])), let status = Int(statusParts[1]), (200...599).contains(status) else { throw PairingError.invalidResponse }
+        var headers: [String: String] = [:]
+        for line in lines.dropFirst() {
+            guard let colon = line.firstIndex(of: ":") else { throw PairingError.invalidResponse }
+            let name = line[..<colon].lowercased()
+            guard !name.isEmpty, headers[name] == nil else { throw PairingError.invalidResponse }
+            headers[name] = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+        }
+        let body = Data(data[divider.upperBound...])
+        if status == 204 || status == 304 { return HTTP1Response(status: status, headers: headers) }
+        if let transfer = headers["transfer-encoding"] {
+            guard transfer.lowercased() == "chunked", headers["content-length"] == nil else { throw PairingError.invalidResponse }
+            var cursor = 0; var decoded = Data(); var chunks = 0
+            while true {
+                guard let lineEnd = body.range(of: Data("\r\n".utf8), in: cursor..<body.count) else {
+                    guard body.count - cursor < 8192, !eof else { throw PairingError.invalidResponse }; return nil
+                }
+                guard lineEnd.lowerBound - cursor < 8192,
+                      let text = String(data: body[cursor..<lineEnd.lowerBound], encoding: .utf8),
+                      let countText = text.split(separator: ";", maxSplits: 1).first,
+                      let count = Int(countText, radix: 16), count >= 0, count <= limit - decoded.count else { throw PairingError.invalidResponse }
+                cursor = lineEnd.upperBound; chunks += 1
+                guard chunks <= 65536 else { throw PairingError.invalidResponse }
+                if count == 0 {
+                    // No trailers, or bounded trailers terminated by a blank line.
+                    if body.count >= cursor + 2, body[cursor..<cursor + 2] == Data("\r\n".utf8) { return HTTP1Response(status: status, headers: headers, body: decoded) }
+                    if let end = body.range(of: Data("\r\n\r\n".utf8), in: cursor..<body.count), end.upperBound - cursor <= 32768 { return HTTP1Response(status: status, headers: headers, body: decoded) }
+                    guard body.count - cursor <= 32768, !eof else { throw PairingError.invalidResponse }; return nil
+                }
+                guard body.count >= cursor + count + 2 else { if eof { throw PairingError.invalidResponse }; return nil }
+                guard body[cursor + count..<cursor + count + 2] == Data("\r\n".utf8) else { throw PairingError.invalidResponse }
+                decoded.append(body[cursor..<cursor + count]); cursor += count + 2
+            }
+        }
+        if let length = headers["content-length"] {
+            guard let count = Int(length), count >= 0, count <= limit else { throw PairingError.invalidResponse }
+            if body.count >= count { return HTTP1Response(status: status, headers: headers, body: Data(body.prefix(count))) }
+            if eof { throw PairingError.invalidResponse }; return nil
+        }
+        guard body.count <= limit else { throw PairingError.invalidResponse }
+        return eof ? HTTP1Response(status: status, headers: headers, body: body) : nil
+    }
+}

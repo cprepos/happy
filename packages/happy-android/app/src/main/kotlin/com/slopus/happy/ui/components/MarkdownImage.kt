@@ -1,5 +1,7 @@
 package com.slopus.happy.ui.components
 
+import androidx.compose.ui.res.stringResource
+import com.slopus.happy.R
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -51,7 +53,7 @@ fun MarkdownImage(alt: String, url: String, modifier: Modifier = Modifier) {
     ) {
         RemoteImage(
             model = url,
-            contentDescription = alt.ifEmpty { "Markdown image" },
+            contentDescription = alt.ifEmpty { stringResource(R.string.chat_markdown_image) },
             contentScale = ContentScale.Fit,
             background = colors.surfaceHighest,
             modifier = Modifier

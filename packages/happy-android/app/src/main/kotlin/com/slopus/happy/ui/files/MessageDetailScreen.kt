@@ -7,7 +7,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.CircularProgressIndicator
+import com.slopus.happy.ui.components.PageProgressIndicator as CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -25,7 +25,7 @@ import com.slopus.happy.chat.tools.toolDisplayTitle
 import com.slopus.happy.ui.chat.rememberToolText
 import com.slopus.happy.ui.components.Screen
 import com.slopus.happy.ui.components.StackHeader
-import com.slopus.happy.ui.components.TitleAlignment
+import com.slopus.happy.ui.components.barInsetTop
 import com.slopus.happy.ui.theme.HappyTheme
 import com.slopus.happy.ui.theme.happyTextStyle
 
@@ -78,7 +78,7 @@ fun MessageDetailScreen(
     focusFile: String? = null,
 ) {
     val colors = HappyTheme.colors
-    Screen(header = { StackHeader(messageDetailTitle(message, env), onBack, TitleAlignment.Center) }) {
+    Screen(header = { StackHeader(messageDetailTitle(message, env), onBack) }) {
         when {
             !loaded || message == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(Modifier.size(20.dp).testTag(MessageDetailTags.SPINNER), color = colors.textSecondary, strokeWidth = 2.dp)
@@ -92,7 +92,8 @@ fun MessageDetailScreen(
 
 @Composable
 private fun PlainText(text: String) {
-    Box(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
+    // Starts under the glass bar and scrolls on under it.
+    Box(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(top = barInsetTop()).padding(16.dp)) {
         SelectionContainer {
             Text(text, style = happyTextStyle(fontSize = 16, lineHeight = 24), color = HappyTheme.colors.text, modifier = Modifier.testTag(MessageDetailTags.TEXT))
         }

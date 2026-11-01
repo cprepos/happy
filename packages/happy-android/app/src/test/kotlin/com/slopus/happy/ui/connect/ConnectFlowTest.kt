@@ -16,7 +16,6 @@ import com.slopus.happy.ui.setHappyContent
 import kotlinx.coroutines.CompletableDeferred
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -91,28 +90,70 @@ class ConnectFlowTest {
     }
 
     @Test
-    fun otherCodesCancelsAndFailedScansDoNothing() {
+    fun aCancelledScanDoesNothing() {
         setTerminal()
-        scanner.results += listOf(
-            ScanResult.Scanned(accountUrl),
-            ScanResult.Scanned("https://example.com"),
-            ScanResult.Cancelled,
-            ScanResult.Failed("Google Play services are not available"),
-        )
-        repeat(4) {
-            rule.runOnIdle { flow.scan() }
-            rule.waitForIdle()
-        }
-        assertEquals(4, scanner.scans)
+        scanner.results += ScanResult.Cancelled
+        rule.runOnIdle { flow.scan() }
+        rule.waitForIdle()
+        assertEquals(1, scanner.scans)
         assertTrue(approved.isEmpty())
+        rule.onNodeWithText("Error").assertDoesNotExist()
+    }
+
+    /** Each scan that can't be approved here is an alert, never silence. */
+    private fun assertScanSays(scanned: ScanResult, message: String) {
+        scanner.results += scanned
+        rule.runOnIdle { flow.scan() }
+        rule.onNodeWithText(message).assertExists()
+        rule.onNodeWithText("OK").performClick()
+        rule.onNodeWithText(message).assertDoesNotExist()
+        assertTrue(approved.isEmpty())
+    }
+
+    @Test
+    fun theTerminalScannerSaysWhatEveryOtherCodeIs() {
+        setTerminal()
+        assertScanSays(ScanResult.Scanned(accountUrl), "This code links a new device. Scan it from Settings › Backup & Restore › Link New Device.")
+        assertScanSays(ScanResult.Scanned("https://example.com"), "This QR code isn't a Happy code.")
+        assertScanSays(ScanResult.Scanned("happy://something?else"), "This QR code isn't a Happy code.")
+        assertScanSays(ScanResult.Scanned("happy://direct?abc"), "This code connects an agent. Use Add in the account menu on Home.")
+        assertScanSays(ScanResult.Failed(ScanFailure.Unavailable), "The QR scanner isn't available on this device. Paste the link instead.")
+        assertScanSays(ScanResult.Failed(ScanFailure.NoCamera), "This device has no camera. Paste the link instead.")
+        assertScanSays(ScanResult.Failed(ScanFailure.CameraFailed), "The camera couldn't start. Try again, or paste the link instead.")
         assertEquals(0, successes)
+    }
+
+    @Test
+    fun aPairingCodeGoesToAgentPairingFromAnyScanner() {
+        val paired = CopyOnWriteArrayList<String>()
+        rule.setHappyContent {
+            CompositionLocalProvider(LocalQrScanner provides scanner, LocalAgentPairing provides { paired += it }) {
+                flow = rememberAccountLink(approve = { url -> approved += url })
+            }
+        }
+        scanner.results += ScanResult.Scanned("  happy://direct?eyJ2IjoxfQ \n")
+        rule.runOnIdle { flow.scan() }
+        rule.waitUntil { paired.isNotEmpty() }
+        assertEquals(listOf("happy://direct?eyJ2IjoxfQ"), paired)
+        // Pasted, too, even where the prompt asks for a terminal link.
+        rule.runOnIdle { flow.connectWithUrl("HAPPY://DIRECT?x") }
+        rule.waitUntil { paired.size == 2 }
+        assertTrue(approved.isEmpty())
         rule.onNodeWithText("Error").assertDoesNotExist()
     }
 
     @Test
     fun aPastedLinkWithoutThePrefixIsInvalid() {
         setTerminal()
+        // A Happy code of another kind names the screen it belongs to, as the
+        // camera does; only a link of no known kind is simply invalid.
+        val elsewhere = "This code links a new device. Scan it from Settings › Backup & Restore › Link New Device."
         rule.runOnIdle { flow.connectWithUrl(accountUrl) }
+        rule.onNodeWithText(elsewhere).assertExists()
+        rule.onNodeWithText("OK").performClick()
+        rule.onNodeWithText(elsewhere).assertDoesNotExist()
+
+        rule.runOnIdle { flow.connectWithUrl("https://example.com/not-happy") }
         rule.onNodeWithText("Invalid authentication URL").assertExists()
         assertTrue(approved.isEmpty())
         rule.onNodeWithText("OK").performClick()
@@ -164,12 +205,10 @@ class ConnectFlowTest {
     }
 
     @Test
-    fun theAccountScannerIgnoresTerminalCodes() {
+    fun theAccountScannerSaysWhereTerminalCodesGo() {
         setAccount()
-        scanner.results += ScanResult.Scanned(terminalUrl)
-        rule.runOnIdle { flow.scan() }
-        rule.waitForIdle()
-        assertTrue(approved.isEmpty())
+        assertScanSays(ScanResult.Scanned(terminalUrl), "This code connects a terminal. Scan it from Settings › Scan QR code to authenticate.")
+        assertEquals(0, errors)
     }
 
     @Test
@@ -198,11 +237,74 @@ class ConnectFlowTest {
         assertFalse(showing)
     }
 
+    private val paired = CopyOnWriteArrayList<String>()
+
+    private fun setStart() {
+        rule.setHappyContent {
+            CompositionLocalProvider(LocalQrScanner provides scanner, LocalAgentPairing provides { paired += it }) {
+                flow = rememberAddConnect(approve = { url -> failWith?.let { throw it }; approved += url })
+            }
+        }
+    }
+
+    /** The first screen: a terminal code is approved (by a new account), a pairing code pairs, the rest say what they are. */
     @Test
-    fun acceptScanKeepsOnlyCodesWithThePrefix() {
-        assertEquals(terminalUrl, acceptScan(ScanResult.Scanned(terminalUrl), "happy://terminal?"))
-        assertNull(acceptScan(ScanResult.Scanned(accountUrl), "happy://terminal?"))
-        assertNull(acceptScan(ScanResult.Cancelled, "happy://terminal?"))
-        assertNull(acceptScan(ScanResult.Failed("x"), "happy://terminal?"))
+    fun theFirstScreenRoutesEveryCode() {
+        setStart()
+        scanner.results += ScanResult.Scanned(terminalUrl)
+        rule.runOnIdle { flow.scan() }
+        rule.waitUntil { approved.isNotEmpty() }
+        assertEquals(listOf(terminalUrl), approved)
+        rule.onNodeWithText("Error").assertDoesNotExist()
+
+        scanner.results += ScanResult.Scanned("happy://direct?abc")
+        rule.runOnIdle { flow.scan() }
+        rule.waitUntil { paired.isNotEmpty() }
+        assertEquals(listOf("happy://direct?abc"), paired)
+
+        approved.clear()
+        assertScanSays(ScanResult.Scanned(accountUrl), "This code adds a phone to an account. Scan it with a phone that's signed in.")
+        assertScanSays(ScanResult.Scanned("happy://something?else"), "This QR code isn't a Happy code.")
+        assertScanSays(ScanResult.Scanned("https://example.com"), "This QR code isn't a Happy code.")
+    }
+
+    /** "Enter link manually" routes a pasted link as Connect routes a scanned code. */
+    @Test
+    fun theFirstScreenRoutesPastedLinks() {
+        setStart()
+        rule.runOnIdle { flow.connectWithUrl(" $terminalUrl ") }
+        rule.waitUntil { approved.isNotEmpty() }
+        assertEquals(listOf(terminalUrl), approved)
+        rule.runOnIdle { flow.connectWithUrl("happy://direct?xyz") }
+        rule.waitUntil { paired.isNotEmpty() }
+        rule.runOnIdle { flow.connectWithUrl(accountUrl) }
+        rule.onNodeWithText("This code adds a phone to an account. Scan it with a phone that's signed in.").assertExists()
+        rule.onNodeWithText("OK").performClick()
+        rule.runOnIdle { flow.connectWithUrl("hello") }
+        rule.onNodeWithText("Invalid authentication URL").assertExists()
+        rule.onNodeWithText("OK").performClick()
+        assertEquals(listOf(terminalUrl), approved)
+    }
+
+    @Test
+    fun aFailedApprovalOnTheFirstScreenIsAnAlert() {
+        failWith = IOException("offline")
+        setStart()
+        rule.runOnIdle { flow.connectWithUrl(terminalUrl) }
+        rule.onNodeWithText("Failed to connect terminal").assertExists()
+        assertFalse(flow.isLoading)
+    }
+
+    @Test
+    fun codesAreClassifiedByKind() {
+        assertEquals(HappyCode.Terminal(terminalUrl), HappyCode.classify(" $terminalUrl "))
+        assertEquals(HappyCode.Account(accountUrl), HappyCode.classify(accountUrl))
+        assertEquals(HappyCode.AgentPairing("happy://direct?abc"), HappyCode.classify("happy://direct?abc"))
+        // Malformed pairing codes stay pairing codes; they never fall back to relay approval.
+        assertEquals(HappyCode.AgentPairing("happy://direct"), HappyCode.classify("happy://direct"))
+        assertEquals(HappyCode.AgentPairing("Happy://Direct?%%"), HappyCode.classify("Happy://Direct?%%"))
+        assertEquals(HappyCode.UnknownHappy("happy://directory?x"), HappyCode.classify("happy://directory?x"))
+        assertEquals(HappyCode.UnknownHappy("happy://session/1"), HappyCode.classify("happy://session/1"))
+        assertEquals(HappyCode.NotHappy("hello"), HappyCode.classify("hello"))
     }
 }

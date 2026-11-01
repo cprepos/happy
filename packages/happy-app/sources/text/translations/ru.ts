@@ -413,6 +413,7 @@ export const ru: TranslationStructure = {
 
 
     status: {
+        syncing: 'синхронизация',
         connected: 'подключено',
         connecting: 'подключение',
         disconnected: 'отключено',
@@ -962,6 +963,7 @@ export const ru: TranslationStructure = {
         sending: 'Отправка…',
         sendFailed: ({ reason }: { reason: string }) => `Не отправлено: ${reason}`,
         unknownTime: 'неизвестное время',
+        mediaPosition: ({ index, total }: { index: number; total: number }) => `${index} из ${total}`,
     },
 
     codex: {
@@ -1144,6 +1146,17 @@ export const ru: TranslationStructure = {
         friendRequestGeneric: 'Новый запрос в друзья',
         friendAccepted: ({ name }: { name: string }) => `Вы теперь друзья с ${name}`,
         friendAcceptedGeneric: 'Запрос в друзья принят',
+    },
+
+    // What new work will be, in the middle of its empty chat (the native apps' compose).
+    newWork: {
+        task: 'Задача',
+        bot: 'Бот',
+        name: 'Название (необязательно)',
+        taskNote: 'Задача назовёт себя по первому сообщению, если вы не дадите ей название.',
+        botNote: 'Бот — это один долгий разговор со своей папкой.',
+        taskFailed: ({ reason }: { reason: string }) => `Не удалось запустить задачу. ${reason} Ваш текст и вложения на месте.`,
+        botFailed: ({ reason }: { reason: string }) => `Не удалось запустить бота. ${reason} Ваш текст и вложения на месте.`,
     },
 
 } as const;

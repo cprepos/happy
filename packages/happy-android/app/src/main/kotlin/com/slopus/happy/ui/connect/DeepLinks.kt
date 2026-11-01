@@ -56,6 +56,14 @@ sealed interface DeepLink {
      */
     data class Screen(val route: Any, val signedOut: Boolean = false) : DeepLink
 
+    /**
+     * `happy://direct?…`: an agent offering to connect over Happy Protocol V2.
+     * Opens signed in or out. The code is a secret, so it never prints.
+     */
+    data class AgentPairing(val code: String) : DeepLink {
+        override fun toString() = "AgentPairing(…)"
+    }
+
     /** `/`, and app paths with no screen on Android (excluded features, or none at all): Home. */
     data object Home : DeepLink
 }
@@ -70,6 +78,7 @@ sealed interface DeepLink {
  * app's (another scheme or host, or not a URL).
  */
 fun parseDeepLink(link: String): DeepLink? {
+    if (HappyCode.isAgentPairing(link)) return DeepLink.AgentPairing(link.trim())
     val uri = try {
         URI(link.trim())
     } catch (_: URISyntaxException) {
@@ -92,12 +101,12 @@ private fun route(segments: List<String>, rawQuery: String?): DeepLink? {
         listOf("terminal") -> DeepLink.Terminal(firstParamName(rawQuery))
         listOf("terminal", "connect") -> DeepLink.TerminalWeb
         listOf("new") -> screen(NewSessionRoute)
-        listOf("settings") -> screen(SettingsRoute)
-        listOf("settings", "account") -> screen(AccountRoute)
+        listOf("settings") -> screen(SettingsRoute())
+        listOf("settings", "account") -> screen(AccountRoute())
         listOf("settings", "appearance") -> screen(AppearanceRoute)
         listOf("settings", "agents") -> screen(AgentsRoute)
-        listOf("settings", "language") -> screen(LanguageRoute)
-        listOf("settings", "voice") -> screen(VoiceSettingsRoute)
+        listOf("settings", "language") -> screen(LanguageRoute())
+        listOf("settings", "voice") -> screen(VoiceSettingsRoute())
         listOf("settings", "voice", "language") -> screen(VoiceLanguageRoute)
         listOf("settings", "connect", "claude") -> screen(ConnectClaudeRoute)
         listOf("server") -> signedOut(ServerRoute)

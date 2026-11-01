@@ -39,7 +39,7 @@ public final class SettingsAgentsViewController: UIViewController {
     public override func viewDidLoad() {
         super.viewDidLoad()
         title = Strings.Settings.agents
-        showsBackTitle()
+        minimalBackButton()
         // The computers and every agent's fields are worked out off the
         // main thread; the screen rebuilds only the groups that changed.
         let pipeline = ApplyPipeline<AgentsPage.Input, AgentsPage.Content?, AgentsPage.Update>(
@@ -254,6 +254,17 @@ public final class SettingsAgentsViewController: UIViewController {
             self?.set(.codex, .modelMode, model)
         })
         present(alert, animated: true)
+    }
+}
+/// A row's tick, for the old-design pages that still pick from a list.
+@MainActor
+enum SettingsCheckmark {
+    static func view(tint: ColorToken) -> UIImageView {
+        let check = UIImageView(image: .icon(.ionicons("checkmark"), size: 20))
+        check.tintColor = UIColor(tint)
+        check.contentMode = .center
+        check.accessibilityLabel = "selected"
+        return check
     }
 }
 #endif

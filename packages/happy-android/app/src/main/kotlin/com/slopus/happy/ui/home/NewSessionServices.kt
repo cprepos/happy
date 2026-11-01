@@ -14,6 +14,9 @@ import com.slopus.happy.model.WorktreeListing
 import com.slopus.happy.model.WorktreePaths
 import com.slopus.happy.model.WorktreeSelection
 import com.slopus.happy.model.WorktreeTarget
+import com.slopus.happy.model.collectMachineChoices
+import com.slopus.happy.model.collectSessionPlaces
+import com.slopus.happy.model.findMachineChoice
 import com.slopus.happy.model.formatPathRelativeToHome
 import com.slopus.happy.model.resolveNewSessionOptions
 import com.slopus.happy.model.selectingAgent
@@ -123,6 +126,21 @@ class NewSessionServices(
 
     /** A custom directory typed in by hand. */
     fun selectPath(path: String) = drafts.change { it.withPath(path) }
+
+    /**
+     * LegacyComposeStart's followMachine: a computer with no folder picked
+     * (another was just chosen, or nothing ever was) starts in its most
+     * recent folder, or home, so the folders follow the computer.
+     */
+    fun followMachine() {
+        val snapshot = snapshots.value ?: return
+        drafts.change { draft ->
+            if (draft.selectedPath != null || draft.selectedProjectId != null) return@change draft
+            val choice = findMachineChoice(collectMachineChoices(snapshot.machines), draft.selectedMachineId) ?: return@change draft
+            val recent = collectSessionPlaces(choice.machineIds, snapshot.sessions).firstOrNull { it.projectId == null && it.path != null }
+            draft.withPath(recent?.path ?: "~")
+        }
+    }
 
     /** ProjectHomeList's "+": the dock opens on a new workspace (or worktree) of that project. */
     fun prepareWorkspace(machineId: String, projectId: String?, path: String?) {

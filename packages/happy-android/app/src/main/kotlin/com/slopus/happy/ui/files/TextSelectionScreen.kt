@@ -35,7 +35,7 @@ import com.slopus.happy.ui.components.Icon
 import com.slopus.happy.ui.components.Ionicon
 import com.slopus.happy.ui.components.Screen
 import com.slopus.happy.ui.theme.HappyTheme
-import com.slopus.happy.ui.theme.PlexMono
+import com.slopus.happy.ui.theme.AppMono
 import com.slopus.happy.ui.theme.happyTextStyle
 import java.util.UUID
 
@@ -80,12 +80,11 @@ fun TextSelectionScreen(text: String?, onBack: () -> Unit, onCopy: () -> Unit) {
                 right = {
                     Box(
                         Modifier
-                            .padding(end = 8.dp)
                             .testTag(TextSelectionTags.COPY)
                             .clip(RoundedCornerShape(8.dp))
                             .clickable(enabled = enabled, role = Role.Button, onClick = onCopy)
                             .semantics { contentDescription = copyLabel }
-                            .padding(8.dp),
+                            .padding(12.dp),
                     ) {
                         Icon(Ionicon.CopyOutline, 24.dp, if (enabled) colors.header.tint else colors.textSecondary)
                     }
@@ -118,7 +117,7 @@ fun TextSelectionScreen(text: String?, onBack: () -> Unit, onCopy: () -> Unit) {
                 SelectionContainer {
                     Text(
                         text,
-                        style = happyTextStyle(fontSize = 14, lineHeight = 20, family = PlexMono),
+                        style = happyTextStyle(fontSize = 14, lineHeight = 20, family = AppMono),
                         color = colors.text,
                         modifier = Modifier
                             .fillMaxWidth()

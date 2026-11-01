@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  values/strings_push.xml in ru: Android-only strings, not in happy-app's
+  catalogs. AndroidStringsTranslatedTest fails while one is missing here.
+-->
+<resources>
+    <string name="push_background_send_pending_title">Сообщение не отправлено</string>
+    <string name="push_background_send_pending_body">Сообщение всё ещё отправляется в фоне. Если его не доставят за 30 секунд, отправка не удастся.</string>
+    <string name="push_background_send_failed_title">Сообщение не отправлено</string>
+    <string name="push_background_send_failed_body">Сообщение не удалось отправить, пока приложение было в фоне. Откройте Happy и повторите.</string>
+    <string name="push_permission">Разрешение</string>
+    <string name="push_request_again">Запросить разрешение снова</string>
+    <string name="push_reregister">Перерегистрировать это устройство</string>
+    <string name="push_current_token">Текущий токен %1$s</string>
+    <string name="push_label_loading">Загрузка</string>
+    <string name="push_label_unavailable">Недоступно</string>
+    <string name="push_label_allowed">Разрешено</string>
+    <string name="push_label_denied">Запрещено</string>
+    <string name="push_label_not_requested">Не запрошено</string>
+    <string name="push_subtitle_checking">Проверяем разрешения на push-уведомления для этого устройства.</string>
+    <string name="push_subtitle_unsupported">Разрешениями на push-уведомления можно управлять только на мобильных устройствах.</string>
+    <string name="push_subtitle_granted">Это устройство может получать push-уведомления.</string>
+    <string name="push_subtitle_can_ask">Системный запрос ещё можно показать снова из приложения.</string>
+    <string name="push_subtitle_stopped">Система больше не показывает запрос. Откройте системные настройки, чтобы снова включить уведомления.</string>
+    <string name="push_request_unsupported">Разрешения на push-уведомления доступны только на iPhone и Android.</string>
+    <string name="push_request_can_ask">Снова показывает системный запрос, если система ещё это позволяет.</string>
+    <string name="push_request_settings">Открывает системные настройки, если система больше не покажет запрос.</string>
+    <string name="push_tokens_hint">Показывает все push-токены, зарегистрированные в вашем аккаунте. Нажмите на старый токен, чтобы удалить его.</string>
+    <string name="push_tokens_footer">Зарегистрированные токены (%1$d). Данные текущего устройства берутся с этого телефона. У старых токенов — отпечаток токена и время сервера.</string>
+    <string name="push_no_tokens">Нет зарегистрированных push-токенов</string>
+    <string name="push_this_device">Это устройство</string>
+    <string name="push_delete_title">Удалить push-токен</string>
+    <string name="push_delete_message">Удалить %1$s из вашего аккаунта?</string>
+    <string name="push_other_device">Другое устройство или устаревшая регистрация</string>
+    <string name="push_registered">Зарегистрирован: %1$s</string>
+    <string name="push_last_seen">Последняя активность: %1$s</string>
+    <string name="push_server_id">ID на сервере: %1$s</string>
+    <string name="push_token">Токен: %1$s</string>
+    <string name="push_build">сборка %1$s</string>
+    <string name="push_simulator">эмулятор</string>
+    <string name="push_android_device">устройство Android</string>
+    <string name="push_load_failed">Не удалось загрузить настройки push-уведомлений.</string>
+    <string name="push_enabled">Push-уведомления включены на этом устройстве.</string>
+    <string name="push_opened_settings">Система больше не покажет запрос на разрешение, поэтому Happy открыл настройки.</string>
+    <string name="push_not_granted">Разрешение на push-уведомления не выдано.</string>
+    <string name="push_request_failed">Не удалось запросить разрешение на push-уведомления.</string>
+    <string name="push_refreshed">Push-токен этого устройства обновлён.</string>
+    <string name="push_not_enabled">Push-уведомления на этом устройстве пока не включены.</string>
+    <string name="push_refresh_failed">Не удалось обновить push-токен этого устройства.</string>
+    <string name="push_delete_failed">Не удалось удалить push-токен.</string>
+</resources>

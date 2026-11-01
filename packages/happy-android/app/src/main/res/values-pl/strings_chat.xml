@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  values/strings_chat.xml in pl: Android-only strings, not in happy-app's
+  catalogs. AndroidStringsTranslatedTest fails while one is missing here.
+-->
+<resources>
+    <string name="chat_send_failed">Nie udało się wysłać wiadomości.</string>
+    <string name="chat_no_messages">Brak wiadomości</string>
+    <string name="chat_created">Utworzono %1$s</string>
+    <string name="chat_permissions_in_terminal">Uprawnienia są wyświetlane tylko w terminalu. Zresetuj lub wyślij wiadomość, aby sterować z aplikacji.</string>
+    <string name="chat_stop">Zatrzymaj</string>
+    <string name="chat_voice">Głos</string>
+    <string name="chat_send">Wyślij</string>
+    <string name="chat_markdown_image">Obraz Markdown</string>
+    <string name="chat_remove_image">Usuń %1$s</string>
+    <string name="chat_add_photo">Dodaj zdjęcie</string>
+    <string name="diff_badge_new">NOWY</string>
+    <string name="diff_badge_deleted">USUNIĘTY</string>
+    <string name="diff_badge_renamed">ZMIENIONA NAZWA</string>
+    <string name="files_no_session_path">Brak ścieżki sesji</string>
+    <string name="files_outside_root">Plik znajduje się poza katalogiem głównym sesji.</string>
+    <string name="files_decode_failed">Nie udało się zdekodować pliku</string>
+    <string name="files_diff_failed">Nie udało się pobrać różnic</string>
+    <string name="files_load_failed">Nie udało się wczytać pliku</string>
+    <string name="files_contents_match">Zawartość pliku jest taka sama jak w bazie porównania.</string>
+    <string name="files_truncated">Wyświetlono %1$s z %2$s zmienionych plików. Otwórz przestrzeń roboczą na komputerze, aby zobaczyć pełną listę.</string>
+    <string name="files_counts_approximate">Liczby zmian w tej przestrzeni roboczej są przybliżone.</string>
+    <string name="files_conflicted">W tej przestrzeni roboczej są nierozwiązane konflikty scalania.</string>
+    <string name="files_changes_failed">Nie udało się wczytać zmian z Happy Agent.</string>
+    <string name="files_file_failed">Nie udało się wczytać tego pliku. Odśwież zmiany i spróbuj ponownie.</string>
+    <string name="files_update_agent">Zaktualizuj Happy Agent na komputerze, aby zobaczyć zmiany w tej sesji.</string>
+    <string name="files_no_comparison">Porównanie z origin/main nie jest dostępne dla tej przestrzeni roboczej.</string>
+    <string name="files_no_details">Brak szczegółów plików dla tego porównania.</string>
+</resources>

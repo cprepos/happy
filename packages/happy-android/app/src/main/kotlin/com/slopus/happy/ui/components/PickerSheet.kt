@@ -36,6 +36,7 @@ import com.slopus.happy.R
 import com.slopus.happy.ui.chat.ChatTheme
 import com.slopus.happy.ui.theme.HappyTheme
 import com.slopus.happy.ui.theme.happyTextStyle
+import com.slopus.happy.ui.layout.ContentTokens
 
 object PickerSheetTags {
     const val PANEL = "pickerSheet"
@@ -47,7 +48,7 @@ object PickerSheetTags {
 
 /** PickerSheet.tsx */
 object PickerSheetSpec {
-    val maxWidth = 640.dp
+    val maxWidth = ContentTokens.sheetMaxWidth
     val radius = 28.dp
     val rowInset = 24.dp
     val touchTarget = 48.dp

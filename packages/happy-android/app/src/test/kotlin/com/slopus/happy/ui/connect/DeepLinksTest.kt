@@ -54,6 +54,16 @@ class DeepLinksTest {
     }
 
     @Test
+    fun pairingCodesOpenPairingAndNeverPrint() {
+        val code = "happy://direct?eyJ2IjoxfQ"
+        assertEquals(DeepLink.AgentPairing(code), parseDeepLink(" $code\n"))
+        assertEquals(DeepLink.AgentPairing("HAPPY://direct?x"), parseDeepLink("HAPPY://direct?x"))
+        assertFalse(DeepLink.AgentPairing(code).toString().contains("eyJ"))
+        // Only the host itself: another path is an app path.
+        assertEquals(DeepLink.Home, parseDeepLink("happy://directory"))
+    }
+
+    @Test
     fun productionAppLinksMapToTheSamePaths() {
         assertEquals(DeepLink.Terminal(key), parseDeepLink("https://app.happy.engineering/terminal?$key"))
         assertEquals(DeepLink.TerminalWeb, parseDeepLink("https://app.happy.engineering/terminal/connect#key=$key"))
@@ -84,12 +94,12 @@ class DeepLinksTest {
             "happy://session/s1/message/m1" to screen(MessageDetailRoute("s1", "m1")),
             "happy://machine/mac-1" to screen(MachineRoute("mac-1")),
             "happy://new?autoSubmit=1" to screen(NewSessionRoute),
-            "happy://settings" to screen(SettingsRoute),
-            "happy://settings/account" to screen(AccountRoute),
+            "happy://settings" to screen(SettingsRoute()),
+            "happy://settings/account" to screen(AccountRoute()),
             "happy://settings/appearance" to screen(AppearanceRoute),
             "happy://settings/agents" to screen(AgentsRoute),
-            "happy://settings/language" to screen(LanguageRoute),
-            "happy://settings/voice" to screen(VoiceSettingsRoute),
+            "happy://settings/language" to screen(LanguageRoute()),
+            "happy://settings/voice" to screen(VoiceSettingsRoute()),
             "happy://settings/voice/language" to screen(VoiceLanguageRoute),
             "https://app.happy.engineering/settings/connect/claude" to screen(ConnectClaudeRoute),
             "happy://server" to signedOut(ServerRoute),

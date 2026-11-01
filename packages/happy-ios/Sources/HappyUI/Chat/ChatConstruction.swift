@@ -28,6 +28,17 @@ final class ChatConstruction: NSObject {
         steps.removeAll()
     }
 
+    /// Every step left, now: a screen light enough to build in one frame.
+    func finish() {
+        while !steps.isEmpty, isCurrent() {
+            let step = steps.removeFirst()
+            let started = CACurrentMediaTime()
+            step()
+            stageSeconds.append(CACurrentMediaTime() - started)
+        }
+        cancel()
+    }
+
     @objc private func tick() {
         guard isCurrent() else { cancel(); return }
         // The first callback precedes the shell's first presentation.

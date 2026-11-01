@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  values/strings_settings.xml in ja: Android-only strings, not in happy-app's
+  catalogs. AndroidStringsTranslatedTest fails while one is missing here.
+-->
+<resources>
+    <string name="settings_search_placeholder">設定を検索</string>
+    <string name="settings_nothing_found">見つかりませんでした</string>
+    <string name="settings_add_agent">エージェントを追加</string>
+    <string name="settings_edit_agent">エージェントを編集</string>
+    <string name="settings_change_avatar">アバターを変更</string>
+    <string name="settings_edit_name">名前を編集</string>
+    <string name="settings_hide_projects">プロジェクトを隠す</string>
+    <string name="settings_hide_projects_footer">ホームにプロジェクトを表示しません（ここと Happy Desktop の両方）。</string>
+    <string name="settings_sign_out_title">サインアウトしますか？</string>
+    <string name="settings_disconnect_title">エージェントを切断しますか？</string>
+    <string name="settings_happy_account">Happy アカウント</string>
+    <string name="settings_backup_restore">バックアップと復元</string>
+    <string name="settings_show_secret_key">シークレットキーを表示</string>
+    <string name="settings_hide_secret_key">シークレットキーを隠す</string>
+    <string name="settings_copy_secret_key">シークレットキーをコピー</string>
+    <string name="settings_link_device_footer">別のスマートフォンの「復元」に表示されるコードをスキャンすると、そのスマートフォンがこのアカウントにサインインします。</string>
+    <string name="settings_restore_account">アカウントを復元</string>
+    <string name="settings_restore_account_footer">別のアカウントにそのシークレットキーか、そのアカウントを持つスマートフォンでサインインします。このアカウントはここに残ります。</string>
+    <string name="settings_copy_id_footer">ID をタップするとコピーできます。</string>
+    <string name="settings_change_photo">写真を変更</string>
+    <string name="settings_remove_photo">写真を削除</string>
+    <string name="settings_could_not_save_profile">プロフィールを保存できませんでした</string>
+    <string name="settings_could_not_change_photo">写真を変更できませんでした</string>
+    <string name="settings_could_not_remove_photo">写真を削除できませんでした</string>
+    <string name="settings_agents_title">エージェント</string>
+    <string name="settings_agents_default">デフォルト（%1$s）</string>
+    <string name="settings_agents_use_code_default">コードのデフォルトを使う</string>
+    <string name="settings_agents_custom_model">カスタムモデル…</string>
+    <string name="settings_agents_enter_model_id">正確なモデル ID を入力</string>
+    <string name="settings_agents_no_machines">接続されたマシンはありません</string>
+    <string name="settings_agents_no_machines_subtitle">コンピューターで Happy を実行すると接続できます</string>
+    <string name="settings_agents_defaults">デフォルト</string>
+    <string name="settings_agents_clear_overrides">上書きをクリア</string>
+    <string name="settings_agents_clear_overrides_subtitle">すべてのエージェントをコードのデフォルトに戻す</string>
+    <string name="settings_agents_permission">権限</string>
+    <string name="settings_agents_model">モデル</string>
+    <string name="settings_agents_effort">思考量</string>
+    <string name="settings_agents_custom_codex_title">Codex のカスタムモデル</string>
+    <string name="settings_agents_custom_codex_message">正確なモデル ID を入力してください。利用できるかどうかは Codex アカウントまたは API の設定によります。</string>
+    <string name="settings_connect_claude_title">Claude に接続</string>
+    <string name="settings_connect_claude">Claude を接続</string>
+    <string name="settings_connect_claude_run">ターミナルで次のコマンドを実行してください：</string>
+    <string name="settings_commit">コミット</string>
+    <string name="settings_commit_at">コミット %1$s</string>
+</resources>

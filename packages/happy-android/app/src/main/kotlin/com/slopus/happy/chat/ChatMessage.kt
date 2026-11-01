@@ -161,7 +161,7 @@ sealed interface ChatMessage {
         val codexItemId: String? = null,
         /** Sent, but the agent has not taken it into context yet; pinned to the bottom. */
         val pending: Boolean = false,
-        /** Terminal refusal from the daemon; this message never started a turn. */
+        /** Terminal refusal from the daemon (empty when nothing said why); this message never started a turn. */
         val sendError: String? = null,
         /** Position in the chat when that differs from [createdAt]. */
         val sortAt: Long? = null,

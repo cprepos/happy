@@ -4,7 +4,8 @@ import CoreGraphics
 #endif
 
 /// The rows of the home list grouped by project (components/
-/// ProjectHomeList.tsx). Every row shares two leading columns:
+/// ProjectHomeList.tsx), each laid out at its card's width
+/// (`HomeCardLayout`). Every row shares two leading columns:
 ///
 ///     |16| avatar lane 28 |12| name ………………… |8| trailing |16|
 ///
@@ -17,9 +18,18 @@ public enum ProjectListMetrics {
     public static let avatarSize: CGFloat = 28
     public static let avatarGap: CGFloat = 12
     public static let projectRowHeight: CGFloat = 52
-    public static let projectMarginTop: CGFloat = 8
     public static let worktreeRowHeight: CGFloat = 48
     public static let botRowHeight: CGFloat = 48
+    /// The least room above and below a row's text. The heights above are
+    /// the rows' at the designed text size and smaller; a larger size
+    /// grows a row past them to keep this room, so no text runs past it.
+    public static let textPaddingY: CGFloat = 12
+
+    /// A row's height around text `textHeight` tall: its designed height,
+    /// or taller where the text needs it.
+    public static func rowHeight(_ designed: CGFloat, text textHeight: CGFloat) -> CGFloat {
+        max(designed, textHeight + 2 * textPaddingY)
+    }
     public static let trailingGap: CGFloat = 8
     public static let trailingMarginLeft: CGFloat = 8
     /// The `+` that creates a workspace.
@@ -52,9 +62,9 @@ func trailingFrames(_ sizes: [CGSize], right: CGFloat, midY: CGFloat, gap: CGFlo
     return (frames, x)
 }
 
-/// A project's card: avatar, name, then an activity dot, its line changes
-/// and the `+`. The card sits 8 below the row above it, inside its own
-/// cell, and the tree stem drops from under the avatar to the cell's foot.
+/// A project's row: avatar, name, then an activity dot, its line changes
+/// and the `+`. The tree stem drops from under the avatar to the row's
+/// foot.
 public struct ProjectCardLayout: Equatable, Sendable {
     public struct Input {
         public var width: CGFloat
@@ -88,31 +98,30 @@ public struct ProjectCardLayout: Equatable, Sendable {
     public init(_ input: Input) {
         typealias M = ProjectListMetrics
         let width = max(0, input.width)
-        let top = M.projectMarginTop
-        let height = top + M.projectRowHeight
-        let midY = top + M.projectRowHeight / 2
-        size = CGSize(width: width, height: height)
-        avatar = CGRect(x: M.paddingX, y: midY - M.avatarSize / 2, width: M.avatarSize, height: M.avatarSize)
-        let line = M.treeLineWidth(hairline: input.hairline)
-        let stemTop = top + (M.projectRowHeight + M.avatarSize) / 2
-        stem = input.showsTree
-            ? CGRect(x: M.paddingX + (M.avatarSize - line) / 2, y: stemTop, width: line, height: height - stemTop)
-            : nil
-
         var sizes: [CGSize] = []
         if input.showsDot { sizes.append(CGSize(width: M.dotSize, height: M.dotSize)) }
         let changesSize = input.changes?.size(fitting: .greatestFiniteMagnitude)
         if let changesSize { sizes.append(changesSize) }
         if input.showsAdd { sizes.append(M.addButton) }
-        let trailing = trailingFrames(sizes, right: width - M.paddingX, midY: midY, gap: M.trailingGap)
-        var frames = trailing.frames[...]
+        // Where the trailing column starts doesn't depend on the height.
+        let trailingMinX = trailingFrames(sizes, right: width - M.paddingX, midY: 0, gap: M.trailingGap).minX
+        let nameRight = sizes.isEmpty ? width - M.paddingX : trailingMinX - M.trailingMarginLeft
+        let nameWidth = max(0, nameRight - M.nameX)
+        let nameHeight = input.name.height(fitting: nameWidth)
+
+        let height = M.rowHeight(M.projectRowHeight, text: max(nameHeight, changesSize?.height ?? 0))
+        let midY = height / 2
+        size = CGSize(width: width, height: height)
+        avatar = CGRect(x: M.paddingX, y: midY - M.avatarSize / 2, width: M.avatarSize, height: M.avatarSize)
+        let line = M.treeLineWidth(hairline: input.hairline)
+        let stemTop = (height + M.avatarSize) / 2
+        stem = input.showsTree
+            ? CGRect(x: M.paddingX + (M.avatarSize - line) / 2, y: stemTop, width: line, height: height - stemTop)
+            : nil
+        var frames = trailingFrames(sizes, right: width - M.paddingX, midY: midY, gap: M.trailingGap).frames[...]
         dot = input.showsDot ? frames.popFirst() : nil
         changes = changesSize != nil ? frames.popFirst() : nil
         add = input.showsAdd ? frames.popFirst() : nil
-
-        let nameRight = sizes.isEmpty ? width - M.paddingX : trailing.minX - M.trailingMarginLeft
-        let nameWidth = max(0, nameRight - M.nameX)
-        let nameHeight = input.name.height(fitting: nameWidth)
         name = CGRect(x: M.nameX, y: midY - nameHeight / 2, width: nameWidth, height: nameHeight)
     }
 }
@@ -153,34 +162,28 @@ public struct WorktreeRowLayout: Equatable, Sendable {
     public init(_ input: Input) {
         typealias M = ProjectListMetrics
         let width = max(0, input.width)
-        let height = M.worktreeRowHeight
+        var sizes: [CGSize] = []
+        if input.showsDot { sizes.append(CGSize(width: M.dotSize, height: M.dotSize)) }
+        let changesSize = input.changes?.size(fitting: .greatestFiniteMagnitude)
+        if let changesSize { sizes.append(changesSize) }
+        // An empty trailing column still takes its margin.
+        let laneRight = trailingFrames(sizes, right: width - M.paddingX, midY: 0, gap: M.trailingGap).minX - M.trailingMarginLeft
+        let labelX = M.nameX + (input.chevron.map { $0.width + M.toggleIconGap } ?? 0)
+        let lane = max(0, laneRight - labelX)
+        let text = input.label.size(fitting: lane)
+
+        let height = M.rowHeight(M.worktreeRowHeight, text: max(text.height, changesSize?.height ?? 0))
         let midY = height / 2
         size = CGSize(width: width, height: height)
         let line = M.treeLineWidth(hairline: input.hairline)
         trunk = CGRect(x: M.paddingX + (M.avatarSize - line) / 2, y: 0, width: line, height: input.last ? height / 2 : height)
         elbow = CGRect(x: M.paddingX + M.avatarSize / 2, y: midY - line / 2, width: M.avatarSize / 2, height: line)
-
-        var sizes: [CGSize] = []
-        if input.showsDot { sizes.append(CGSize(width: M.dotSize, height: M.dotSize)) }
-        let changesSize = input.changes?.size(fitting: .greatestFiniteMagnitude)
-        if let changesSize { sizes.append(changesSize) }
-        let trailing = trailingFrames(sizes, right: width - M.paddingX, midY: midY, gap: M.trailingGap)
-        var frames = trailing.frames[...]
+        var frames = trailingFrames(sizes, right: width - M.paddingX, midY: midY, gap: M.trailingGap).frames[...]
         dot = input.showsDot ? frames.popFirst() : nil
         changes = changesSize != nil ? frames.popFirst() : nil
-        // An empty trailing column still takes its margin.
-        let laneRight = trailing.minX - M.trailingMarginLeft
-        var x = M.nameX
-        if let box = input.chevron {
-            chevron = CGRect(x: x, y: midY - box.height / 2, width: box.width, height: box.height)
-            x += box.width + M.toggleIconGap
-        } else {
-            chevron = nil
-        }
-        let lane = max(0, laneRight - x)
-        let text = input.label.size(fitting: lane)
+        chevron = input.chevron.map { CGRect(x: M.nameX, y: midY - $0.height / 2, width: $0.width, height: $0.height) }
         label = CGRect(
-            x: x,
+            x: labelX,
             y: midY - text.height / 2,
             width: input.chevron == nil ? lane : min(text.width, lane),
             height: text.height
@@ -200,73 +203,47 @@ public struct ProjectChatRowLayout: Equatable, Sendable {
     public init(width: CGFloat, name: Measurable, corner: Measurable) {
         typealias M = ProjectListMetrics
         let width = max(0, width)
-        let height = M.botRowHeight
-        let midY = height / 2
-        size = CGSize(width: width, height: height)
-        avatar = CGRect(x: M.paddingX, y: midY - M.avatarSize / 2, width: M.avatarSize, height: M.avatarSize)
         let cornerMax = max(0, width - M.nameX - M.paddingX - M.trailingMarginLeft)
         let cornerSize = corner.size(fitting: cornerMax)
         let cornerWidth = min(cornerSize.width, cornerMax)
-        self.corner = CGRect(x: width - M.paddingX - cornerWidth, y: midY - cornerSize.height / 2, width: cornerWidth, height: cornerSize.height)
-        let nameWidth = max(0, self.corner.minX - M.trailingMarginLeft - M.nameX)
+        let cornerX = width - M.paddingX - cornerWidth
+        let nameWidth = max(0, cornerX - M.trailingMarginLeft - M.nameX)
         let nameHeight = name.height(fitting: nameWidth)
+        let height = M.rowHeight(M.botRowHeight, text: max(nameHeight, cornerSize.height))
+        let midY = height / 2
+        size = CGSize(width: width, height: height)
+        avatar = CGRect(x: M.paddingX, y: midY - M.avatarSize / 2, width: M.avatarSize, height: M.avatarSize)
+        self.corner = CGRect(x: cornerX, y: midY - cornerSize.height / 2, width: cornerWidth, height: cornerSize.height)
         self.name = CGRect(x: M.nameX, y: midY - nameHeight / 2, width: nameWidth, height: nameHeight)
     }
 }
 
-/// "BOTS", "PROJECTS", or a day over the archive (ProjectHomeList.tsx
-/// `section`).
-public struct ProjectSectionLayout: Equatable, Sendable {
-    public enum Metrics {
-        public static let paddingLeft: CGFloat = 16
-        public static let paddingRight: CGFloat = 12
-        public static let paddingTop: CGFloat = 18
-        public static let paddingBottom: CGFloat = 6
-    }
-
-    public var size: CGSize
-    public var label: CGRect
-
-    public init(width: CGFloat, label: Measurable) {
-        typealias M = Metrics
-        let width = max(0, width)
-        let labelWidth = max(0, width - M.paddingLeft - M.paddingRight)
-        let height = label.height(fitting: labelWidth)
-        self.label = CGRect(x: M.paddingLeft, y: M.paddingTop, width: labelWidth, height: height)
-        size = CGSize(width: width, height: M.paddingTop + height + M.paddingBottom)
-    }
-}
-
-/// The computer heading everything under it: a desktop glyph, its name (at
-/// most 60% of the row) and a rule to the edge.
+/// The computer heading its cards, as a section's title stands over its
+/// card in the modern home: a desktop glyph and its name, in line with the
+/// cards' avatars, `paddingBottom` above the first card.
 public struct MachineHeaderLayout: Equatable, Sendable {
     public enum Metrics {
-        public static let paddingX: CGFloat = 16
-        public static let paddingTop: CGFloat = 14
-        public static let paddingBottom: CGFloat = 2
+        /// The cards' side and the avatars' inset in them.
+        public static let paddingX: CGFloat = HomeCardLayout.Metrics.side + ProjectListMetrics.paddingX
+        public static let paddingTop: CGFloat = 20
+        public static let paddingBottom: CGFloat = 8
         public static let gap: CGFloat = 6
-        public static let nameMaxFraction: CGFloat = 0.6
     }
 
     public var size: CGSize
     public var icon: CGRect
     public var name: CGRect
-    public var rule: CGRect
 
-    public init(width: CGFloat, hairline: CGFloat, icon: CGSize, name: Measurable) {
+    public init(width: CGFloat, icon: CGSize, name: Measurable) {
         typealias M = Metrics
         let width = max(0, width)
-        let inner = max(0, width - 2 * M.paddingX)
-        let nameMax = inner * M.nameMaxFraction
+        let nameMax = max(0, width - 2 * M.paddingX - icon.width - M.gap)
         let fitted = name.size(fitting: nameMax)
         let text = CGSize(width: min(fitted.width, nameMax), height: fitted.height)
-        let line = ProjectListMetrics.treeLineWidth(hairline: hairline)
-        let rowHeight = max(icon.height, text.height, line)
+        let rowHeight = max(icon.height, text.height)
         let midY = M.paddingTop + rowHeight / 2
         self.icon = CGRect(x: M.paddingX, y: midY - icon.height / 2, width: icon.width, height: icon.height)
         self.name = CGRect(x: self.icon.maxX + M.gap, y: midY - text.height / 2, width: text.width, height: text.height)
-        let ruleX = self.name.maxX + M.gap
-        rule = CGRect(x: ruleX, y: midY - line / 2, width: max(0, width - M.paddingX - ruleX), height: line)
         size = CGSize(width: width, height: M.paddingTop + rowHeight + M.paddingBottom)
     }
 }

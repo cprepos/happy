@@ -8,7 +8,7 @@ import HappyWire
 /// info.tsx off the main thread: the session's own snapshot (never home's),
 /// and exactly which groups and rows each change touches.
 final class SessionInfoDerivationTests: XCTestCase {
-    typealias Fixture = TabletGroupedListTests
+    typealias Fixture = LegacyHomeFixtures
 
     static func detail(_ session: SessionRecord?, dataReady: Bool = true, composer: JSONValue = .object([:])) -> SessionDetailSnapshot {
         SessionDetailSnapshot(
@@ -40,7 +40,7 @@ final class SessionInfoDerivationTests: XCTestCase {
         let first = try XCTUnwrap(derive(Self.detail(Self.record)))
         XCTAssertEqual(first.output.frame.sections, [.quickActions, .details, .metadata, .activity, .raw])
         XCTAssertEqual(first.output.changes, SessionInfoChanges(
-            state: true, rebuilt: [.quickActions, .details, .metadata, .activity, .raw], title: true
+            state: true, rebuilt: [.quickActions, .details, .metadata, .activity, .raw], title: true, header: true
         ))
         XCTAssertEqual(first.output.frame.raw.map(\.kind), [.metadata, .session])
         // Release builds have no raw group.
@@ -82,7 +82,7 @@ final class SessionInfoDerivationTests: XCTestCase {
     /// own snapshot, holding the same record, changes no title.
     func testHomesRecordSeedsTheTitleTheFirstFrameShows() throws {
         let untitled = Fixture.session("s2", machine: "m1", path: "/work/other")
-        let home = HomeSnapshot(machines: MachinesSnapshot(synced: true, machines: []), sessions: [untitled, Self.record])
+        let home = LegacyHomeSnapshot(machines: MachinesSnapshot(synced: true, machines: []), sessions: [untitled, Self.record])
         for record in [Self.record, untitled] {
             let seed = try XCTUnwrap(SessionInfoSeed(home, sessionId: record.id))
             let first = try XCTUnwrap(derive(Self.detail(record)))
@@ -140,7 +140,7 @@ final class SessionInfoDerivationTests: XCTestCase {
 /// the list cursor and its composer, fetched and compared off the main
 /// thread.
 final class SessionDetailSnapshotTests: XCTestCase {
-    typealias Fixture = TabletGroupedListTests
+    typealias Fixture = LegacyHomeFixtures
 
     private func store() throws -> LocalStore {
         let store = try LocalStore.inMemory()

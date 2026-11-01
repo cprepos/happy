@@ -18,7 +18,6 @@ import com.slopus.happy.ui.components.ItemGroup
 import com.slopus.happy.ui.components.ItemList
 import com.slopus.happy.ui.components.Screen
 import com.slopus.happy.ui.components.StackHeader
-import com.slopus.happy.ui.components.TitleAlignment
 import com.slopus.happy.ui.theme.HappyTheme
 
 /** onboarding/settings.tsx */
@@ -50,7 +49,7 @@ fun OnboardingSettingsScreen(
     val logout = stringResource(R.string.common_logout)
     val cancel = stringResource(R.string.common_cancel)
 
-    Screen(header = { StackHeader(stringResource(R.string.onboarding_settings_title), onBack, TitleAlignment.Center) }) {
+    Screen(header = { StackHeader(stringResource(R.string.onboarding_settings_title), onBack) }) {
         ItemList {
             ItemGroup {
                 Item(

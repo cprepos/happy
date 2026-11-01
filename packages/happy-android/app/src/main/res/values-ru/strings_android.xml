@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  values/strings_android.xml in ru: Android-only strings, not in happy-app's
+  catalogs. AndroidStringsTranslatedTest fails while one is missing here.
+-->
+<resources>
+    <plurals name="conversation_attached_picture_count">
+        <item quantity="one">%1$d прикреплённое изображение</item>
+        <item quantity="few">%1$d прикреплённых изображения</item>
+        <item quantity="many">%1$d прикреплённых изображений</item>
+        <item quantity="other">%1$d прикреплённого изображения</item>
+    </plurals>
+    <string name="server_url_empty">URL сервера не может быть пустым</string>
+    <string name="server_url_protocol">URL сервера должен использовать протокол HTTP или HTTPS</string>
+    <string name="server_url_invalid">Неверный формат URL</string>
+    <string name="settings_agents">Агенты</string>
+    <string name="settings_agents_subtitle">Подключённые компьютеры и настройки агентов по умолчанию</string>
+    <string name="happy_action_unknown_error">Неизвестная ошибка</string>
+    <string name="live_avatars_title">Анимированные аватары</string>
+    <string name="live_avatars_description">Аватары без фото двигаются. Расходует больше заряда.</string>
+    <string name="settings_appearance_file_diffs_sidebar">Боковая панель изменений файлов</string>
+    <string name="settings_appearance_file_diffs_sidebar_description">Показывать изменения git рядом с чатом на компьютере</string>
+    <string name="chat_scroll_to_bottom">Прокрутить вниз</string>
+    <string name="voice_clear_search">Очистить поиск</string>
+    <string name="scan_unavailable">QR-сканер недоступен на этом устройстве. Вставьте ссылку вместо этого.</string>
+    <string name="scan_not_happy_code">Это не QR-код Happy.</string>
+    <string name="scan_terminal_code_elsewhere">Этот код подключает терминал. Отсканируйте его в «Настройки › Отсканируйте QR-код для авторизации».</string>
+    <string name="scan_account_code_elsewhere">Этот код привязывает новое устройство. Отсканируйте его в «Настройки › Резервная копия и восстановление › Привязать новое устройство».</string>
+    <string name="scan_pairing_unavailable">Этот код подключает агента. Используйте «Добавить» в меню аккаунтов на главном экране.</string>
+    <string name="scan_close">Закрыть</string>
+    <string name="scan_hint">Наведите камеру на QR-код</string>
+    <string name="scan_open_settings">Открыть настройки</string>
+    <string name="scan_torch_on">Включить фонарик</string>
+    <string name="scan_torch_off">Выключить фонарик</string>
+    <string name="state_animation_replay">Воспроизвести снова</string>
+    <string name="scan_no_camera">На этом устройстве нет камеры. Вставьте ссылку.</string>
+    <string name="scan_camera_failed">Не удалось запустить камеру. Попробуйте снова или вставьте ссылку.</string>
+    <string name="voice_microphone_title">Нужен доступ к микрофону</string>
+    <string name="voice_microphone_ask">Happy нужен доступ к микрофону для голосового чата. Разрешите его, когда появится запрос.</string>
+    <string name="voice_microphone_settings">Happy нужен доступ к микрофону для голосового чата. Включите доступ к микрофону в настройках устройства.</string>
+</resources>

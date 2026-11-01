@@ -45,6 +45,7 @@ import com.slopus.happy.model.SessionRowData
 import com.slopus.happy.model.SessionState
 import com.slopus.happy.model.VisibleGitChanges
 import com.slopus.happy.model.compactCount
+import com.slopus.happy.model.resolveFlatRowPresentation
 import com.slopus.happy.model.toFlatSessionRow
 import com.slopus.happy.ui.chat.SessionStatusColors
 import com.slopus.happy.ui.chat.VibingMessages
@@ -54,6 +55,10 @@ import com.slopus.happy.ui.components.AvatarBadgeLocation
 import com.slopus.happy.ui.components.Icon
 import com.slopus.happy.ui.components.Ionicon
 import com.slopus.happy.ui.components.ProviderIcon
+import com.slopus.happy.ui.components.ShimmerSpec
+import com.slopus.happy.ui.components.ShimmerText
+import com.slopus.happy.ui.components.rememberReduceMotion
+import com.slopus.happy.ui.components.shimmer
 import com.slopus.happy.ui.components.StatusDot
 import com.slopus.happy.ui.components.hairline
 import com.slopus.happy.ui.home.ArchiveToggleRow
@@ -83,6 +88,8 @@ object TabletGroupedTags {
     const val ADD = "tabletGrouped.add"
     const val CARD = "tabletGrouped.card"
     const val COMPACT_ROW = "tabletGrouped.compactRow"
+    const val COMPACT_TITLE = "tabletGrouped.compactTitle"
+    const val PROJECT_NAME = "tabletGrouped.projectName"
     const val INDICATOR = "tabletGrouped.indicator"
     const val ARCHIVED = "tabletGrouped.archived"
     const val ARCHIVED_STATUS = "tabletGrouped.archivedStatus"
@@ -211,8 +218,7 @@ private fun BotsSection(sessions: List<SessionRowData>, callbacks: HomeListCallb
                     bottom = HomeSpec.sectionPaddingBottom,
                 ),
         ) {
-            // SessionsList spells it out in English.
-            Text("Bots", style = HomeSpec.sectionHeader, color = colors.grouped.sectionTitle)
+            Text(stringResource(R.string.sidebar_bots), style = HomeSpec.sectionHeader, color = colors.grouped.sectionTitle)
         }
         sessions.forEachIndexed { index, session ->
             FlatSessionRow(
@@ -273,10 +279,11 @@ private fun MachineRule(machineId: String?, machineName: String, callbacks: Home
 
 /**
  * ProjectGroup's WorkspaceSection: the first chat's face (30), the project
- * (14/20 medium, section title colour) over its branch (12/16) and line
- * counts, and a 30 filled "+" whose centre lines up with the card's status
- * dots; padded 12/8, 16 in and 22 from the end. Under it a card (surface,
- * hairline, radius 18, 12 in, 8 below) of [CompactSessionRow]s.
+ * (14/20 medium, section title colour, shimmering while one of its chats
+ * works) over its branch (12/16) and line counts, and a 30 filled "+" whose
+ * centre lines up with the card's status dots; padded 12/8, 16 in and 22
+ * from the end. Under it a card (surface, hairline, radius 18, 12 in, 8
+ * below) of [CompactSessionRow]s.
  */
 @Composable
 private fun CheckoutSection(
@@ -310,12 +317,14 @@ private fun CheckoutSection(
                 Avatar(id = first.avatarId, size = TabletGroupedSpec.headingAvatar, imageUri = first.projectAvatarUri, thumbhash = first.projectAvatarThumbhash)
             }
             Column(Modifier.weight(1f)) {
-                Text(
+                // Home's project header rule: it shimmers while one of its chats works.
+                ShimmerText(
                     text = row.projectName,
                     style = TabletGroupedSpec.projectTitle,
-                    color = colors.grouped.sectionTitle,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+                    baseColor = colors.grouped.sectionTitle,
+                    highlightColor = ShimmerSpec.sheen(colors.grouped.sectionTitle, colors.grouped.background),
+                    shimmering = row.working,
+                    modifier = Modifier.testTag(TabletGroupedTags.PROJECT_NAME),
                 )
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(TabletGroupedSpec.branchGap)) {
                     Text(
@@ -399,8 +408,8 @@ private fun SessionRowData.needsUserAction() = state == SessionState.PermissionR
 
 /**
  * CompactSessionRow: 56 tall on the card's surface, 16 in; the name (15,
- * two lines at most, secondary once disconnected) and an 18 slot 8 after it
- * for the dot: pulsing orange for a request, blue for a result, the draft
+ * two lines at most, secondary once disconnected, shimmering while the agent
+ * works, as home's rows do) and an 18 slot 8 after it for the dot: pulsing orange for a request, blue for a result, the draft
  * glyph on an idle chat with one, pulsing blue while thinking, a grey dot
  * while idle. Swiping uncovers Archive, which only stops the agent.
  */
@@ -416,13 +425,17 @@ private fun CompactSessionRow(
 ) {
     val colors = HappyTheme.colors
     val status = rowStatus(session)
+    // Home's rows' rule (resolveFlatRowPresentation): the name shimmers while the agent works.
+    val shimmers = resolveFlatRowPresentation(session.state, session.hasUnread, faded = false).shimmerTitle && !rememberReduceMotion()
+    val ground = if (selected) colors.surfaceSelected else colors.surface
+    val ink = if (status.connected) colors.text else colors.textSecondary
     SwipeToArchive(enabled = !stopping, onArchive = { onStop(session.id) }) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(TabletGroupedSpec.compactHeight)
                 .testTag(TabletGroupedTags.COMPACT_ROW)
-                .background(if (selected) colors.surfaceSelected else colors.surface)
+                .background(ground)
                 .then(if (selected) Modifier.semantics { this.selected = true } else Modifier)
                 .sessionPressDown(session.id, callbacks)
                 .combinedClickable(onClick = { callbacks.onOpen(session.id) }, onLongClick = { callbacks.onMenu(session.id) }),
@@ -431,13 +444,17 @@ private fun CompactSessionRow(
                 modifier = Modifier.align(Alignment.CenterStart).padding(horizontal = TabletGroupedSpec.compactPaddingHorizontal),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                // Its two lines kept: the band sweeps the same Text, so the row never changes size.
                 Text(
                     text = session.name ?: stringResource(R.string.session_new_chat),
                     style = TabletGroupedSpec.compactTitle,
-                    color = if (status.connected) colors.text else colors.textSecondary,
+                    color = ink,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag(TabletGroupedTags.COMPACT_TITLE)
+                        .then(if (shimmers) Modifier.shimmer(ShimmerSpec.sheen(ink, ground)) else Modifier),
                 )
                 Box(
                     modifier = Modifier

@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  values/strings_pairing.xml in ru: Android-only strings, not in happy-app's
+  catalogs. AndroidStringsTranslatedTest fails while one is missing here.
+-->
+<resources>
+    <string name="pairing_title">Подключить агента</string>
+    <string name="pairing_connecting">Подключение к %1$s…</string>
+    <string name="pairing_unverified">Имя взято из кода и не проверено, пока подключение не завершится.</string>
+    <string name="pairing_compare">Проверьте, что %1$s показывает те же четыре эмодзи в том же порядке.</string>
+    <string name="pairing_match">Совпадают</string>
+    <string name="pairing_mismatch">Не совпадают</string>
+    <string name="pairing_confirming">Подтвердите и на %1$s.</string>
+    <string name="pairing_paired">Подключено к %1$s</string>
+    <string name="pairing_paired_detail">Подключение сохраняется, пока вы не удалите его здесь или в Happy Agent.</string>
+    <string name="pairing_failed">Не удалось подключиться</string>
+    <string name="pairing_done">Готово</string>
+    <string name="pairing_error_invalid_code">Этот код недействителен. Создайте новый в Happy Agent.</string>
+    <string name="pairing_error_update_required">Обновите Happy, чтобы использовать этот код.</string>
+    <string name="pairing_error_expired">Срок действия кода истёк. Создайте новый в Happy Agent.</string>
+    <string name="pairing_error_rejected">Подключение отклонено. Создайте новый код и снова сравните эмодзи.</string>
+    <string name="pairing_error_invalid_proof">Не удалось проверить агента. Создайте новый код.</string>
+    <string name="pairing_error_invalid_response">Агент вернул некорректный ответ.</string>
+    <string name="pairing_error_unavailable">Не удалось связаться с агентом. Проверьте его подключение и попробуйте снова.</string>
+    <string name="pairing_error_revoked">Это устройство больше не авторизовано. Подключите агента снова.</string>
+</resources>

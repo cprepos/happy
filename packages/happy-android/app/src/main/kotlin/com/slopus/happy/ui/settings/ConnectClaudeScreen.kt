@@ -1,5 +1,7 @@
 package com.slopus.happy.ui.settings
 
+import androidx.compose.ui.res.stringResource
+import com.slopus.happy.R
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -70,20 +72,20 @@ fun ConnectClaudeScreen(onBack: () -> Unit) {
     val colors = HappyTheme.colors
     val shape = RoundedCornerShape(ConnectClaudeSpec.terminalRadius)
     val command = "happy connect claude"
-    Screen(header = { StackHeader("Connect to Claude", onBack) }) {
+    Screen(header = { StackHeader(stringResource(R.string.settings_connect_claude_title), onBack) }) {
         Column(
             modifier = Modifier.fillMaxSize().padding(ConnectClaudeSpec.padding),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
             Text(
-                "Connect Claude",
+                stringResource(R.string.settings_connect_claude),
                 style = ConnectClaudeSpec.title,
                 color = colors.text,
                 modifier = Modifier.padding(bottom = ConnectClaudeSpec.titleGap).testTag(ConnectClaudeTags.TITLE),
             )
             Text(
-                "Run the following command in your terminal:",
+                stringResource(R.string.settings_connect_claude_run),
                 style = ConnectClaudeSpec.body,
                 color = colors.textSecondary,
                 textAlign = TextAlign.Center,

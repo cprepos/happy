@@ -7,6 +7,8 @@ import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isHeading
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -90,15 +92,19 @@ class AppearanceLayoutTest {
     }
 
     @Test
-    fun appearanceAvatarStyleAndSwitches() {
+    fun appearanceAvatarsAndSwitches() {
         var settings = Settings.Defaults
+        var animated = false
         rule.setHappyContent {
-            AppearanceScreen(theme = ThemePreference.Light, onThemeChange = {}, onBack = {}, settings = settings, onSettingsChange = { settings = it(settings) })
+            AppearanceScreen(
+                theme = ThemePreference.Light, onThemeChange = {}, onBack = {}, settings = settings, onSettingsChange = { settings = it(settings) },
+                animatedAvatars = animated, onAnimatedAvatarsChange = { animated = it },
+            )
         }
-        rule.node(AppearanceTags.AVATAR_DROPDOWN).performScrollTo().performClick()
-        rule.onAllNodesWithTag(AppearanceTags.OPTION, useUnmergedTree = true).assertCountEquals(3)
-        rule.onNodeWithText("Gradient").performScrollTo().performClick()
-        assertEquals("gradient", settings.avatarStyle)
+        // As on happy-ios: no Avatar Style, and Animated Avatars after Black & White.
+        rule.onAllNodesWithText("Avatar Style", useUnmergedTree = true).assertCountEquals(0)
+        rule.onNodeWithContentDescription("Animated Avatars").performScrollTo().performClick()
+        assertTrue(animated)
         rule.onNodeWithText("Flat List").performScrollTo().performClick()
         assertEquals(SessionListGrouping.Project, settings.sessionListGrouping)
         rule.onNodeWithText("File Diffs Sidebar").performScrollTo().assertIsDisplayed()

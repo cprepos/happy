@@ -20,12 +20,12 @@ struct ChatPiece {
         }
     }
 
-    /// Pieces one above the other (`ChatStackLayout`), each with its own
+    /// Pieces one above the other (`LegacyChatStackLayout`), each with its own
     /// margins, padding and background.
     static func stack(_ entries: [ChatStackEntry], gap: CGFloat = 0) -> ChatPiece {
         let items = entries.map(\.item)
-        return ChatPiece(measurable: ChatStackLayout.measurable(items: { _ in items }, gap: gap)) { frame in
-            let layout = ChatStackLayout(width: frame.width, items: items, gap: gap)
+        return ChatPiece(measurable: LegacyChatStackLayout.measurable(items: { _ in items }, gap: gap)) { frame in
+            let layout = LegacyChatStackLayout(width: frame.width, items: items, gap: gap)
             var drawn: [ChatDrawItem] = []
             var hits: [ChatHit] = []
             for (index, entry) in entries.enumerated() {
@@ -47,13 +47,13 @@ struct ChatStackEntry {
     var marginTop: CGFloat = 0
     var marginBottom: CGFloat = 0
     var padding: LayoutInsets = .zero
-    var placement: ChatStackLayout.Placement = .fill
+    var placement: LegacyChatStackLayout.Placement = .fill
     var maxHeight: CGFloat?
     /// Drawn behind the entry, its padding included; the frame is filled in.
     var background: ChatBox?
 
-    var item: ChatStackLayout.Item {
-        ChatStackLayout.Item(piece.measurable, marginTop: marginTop, marginBottom: marginBottom, padding: padding, placement: placement, maxHeight: maxHeight)
+    var item: LegacyChatStackLayout.Item {
+        LegacyChatStackLayout.Item(piece.measurable, marginTop: marginTop, marginBottom: marginBottom, padding: padding, placement: placement, maxHeight: maxHeight)
     }
 }
 
@@ -65,6 +65,8 @@ struct ChatToolViews {
     var diffExpanded: [Int: Set<Int>] = [:]
     var diagrams = ChatMermaidHeights()
     var flush = true
+    /// An attachment still in the outbox: where it is on its way.
+    var delivery: OutboxDelivery?
 }
 
 // MARK: Tool rows (ToolView.tsx)
@@ -92,7 +94,7 @@ extension ChatRowRenderer {
             && (body != nil || toolBody(presentation.expandedBody, message: message, views: views, style: style) != nil)
         let tap: ChatRowAction = expandable ? .toggleTool(message.id) : open
         let footer = presentation.showsPermissionFooter ? tool.permission.map {
-            permissionFooter($0, tool: tool, busy: busy, flavor: style.flavor, cliVersion: style.cliVersion, tablet: style.tablet, maxListHeight: style.permissionListMaxHeight, text: text)
+            permissionFooter($0, tool: tool, busy: busy, flavor: style.flavor, cliVersion: style.cliVersion, maxListHeight: style.permissionListMaxHeight, text: text)
         } : nil
         let elapsed = presentation.showsElapsed ? elapsedSize(in: environment) : nil
         let glyph = presentation.statusGlyph.map { _ in CGSize(width: ToolCardLayout.Metrics.statusIconSize, height: ToolCardLayout.Metrics.statusIconSize) }
@@ -255,7 +257,7 @@ extension ChatRowRenderer {
         case .bash: bashView(message.tool, text: text)
         case .codexBash: codexBashView(message.tool, root: style.root, text: text)
         case .geminiExecute: geminiExecuteView(message.tool, text: text)
-        case .file: fileView(message.tool, text: text)
+        case .file: fileView(message.tool, delivery: views.delivery, text: text)
         }
     }
 
@@ -489,10 +491,24 @@ extension ChatRowRenderer {
 
     /// FileView: the picture a person attached, at its own shape, then its
     /// name on one line. Nothing when the input doesn't read as one.
-    static func fileView(_ tool: ToolCall, text: ChatRowText) -> ChatStackEntry? {
+    ///
+    /// One still in the outbox (`delivery`, the file's own item, by its
+    /// call id) is drawn from this device's copy, dimmed under Telegram's
+    /// ring: its cross takes out just this file, and once it failed the
+    /// ring's arrow sends it again.
+    static func fileView(_ tool: ToolCall, delivery: OutboxDelivery? = nil, text: ChatRowText) -> ChatStackEntry? {
         guard let file = ToolFileInput(tool.input) else { return nil }
         let name = MeasuredText(ChatTextStyles.attachmentName.string(file.name, color: Palette.textSecondary, lineBreakMode: .byTruncatingTail, in: text.environment), maxLines: 1)
-        let attachment = ChatAttachment(ref: file.ref, thumbhash: file.thumbhash)
+        var attachment = ChatAttachment(
+            ref: file.ref, thumbhash: file.thumbhash, size: file.size.map { Int($0) },
+            isVideo: file.isVideo, name: file.name, mimeType: file.mimeType)
+        var tap: ChatRowAction?
+        if let delivery, let localId = tool.callId {
+            let failed = if case .failed = delivery { true } else { false }
+            attachment.local = localId
+            attachment.upload = ChatUpload(key: UploadProgressBoard.outboxKey(localId), failed: failed)
+            tap = failed ? .retry(localId: localId) : .cancelUpload(messageId: localId, piece: localId)
+        }
         func layout(_ width: CGFloat) -> FileViewLayout {
             FileViewLayout(width: width, imageWidth: file.imageWidth, imageHeight: file.imageHeight, name: name.measurable)
         }
@@ -500,7 +516,17 @@ extension ChatRowRenderer {
             let layout = layout(frame.width)
             let image = layout.image.offsetBy(dx: frame.minX, dy: frame.minY)
             let nameFrame = layout.name.offsetBy(dx: frame.minX, dy: frame.minY)
-            return ([.attachment(attachment, frame: image), .text(name.layout(for: nameFrame), nameFrame)], [])
+            // Sending: the ring's cross or retry. Sent: Telegram's download
+            // ring, a tap reading, pausing or resuming it; a recording's
+            // play button plays it streaming, its badge the download.
+            let hits: [ChatHit] = if let tap {
+                [ChatHit(frame: ChatUpload.ring(in: image).insetBy(dx: -8, dy: -8), action: tap)]
+            } else if attachment.isVideo {
+                [ChatHit(frame: MediaStatusLayout.badgeHit(in: image), action: .toggleDownload(file.ref)), ChatHit(frame: image, action: .playAttachment(attachment))]
+            } else {
+                [ChatHit(frame: image, action: .toggleDownload(file.ref))]
+            }
+            return ([.attachment(attachment, frame: image), .text(name.layout(for: nameFrame), nameFrame)], hits)
         })
     }
 
@@ -665,7 +691,7 @@ extension ChatRowRenderer {
     /// The buttons' 34 minimum and the list's cap keep their size at every
     /// text size; taller labels grow the buttons past it.
     static func permissionFooter(
-        _ permission: ToolPermission, tool: ToolCall, busy: PermissionButton.Kind?, flavor: String?, cliVersion: String? = nil, tablet: Bool = false,
+        _ permission: ToolPermission, tool: ToolCall, busy: PermissionButton.Kind?, flavor: String?, cliVersion: String? = nil,
         maxListHeight: CGFloat = PermissionFooterLayout.Metrics.maxListHeight, text: ChatRowText
     ) -> ChatPiece {
         let buttons = ChatPermissionButtons.buttons(permission, toolName: tool.name, toolInput: tool.input, flavor: flavor)
@@ -677,9 +703,7 @@ extension ChatRowRenderer {
         }
         let measurables = labels.map(\.measurable)
         func layout(_ width: CGFloat) -> PermissionFooterLayout {
-            tablet
-                ? .tablet(width: width, labels: measurables, maxListHeight: maxListHeight)
-                : PermissionFooterLayout(width: width, labels: measurables, maxListHeight: maxListHeight)
+            PermissionFooterLayout(width: width, labels: measurables, maxListHeight: maxListHeight)
         }
         return ChatPiece(measurable: Measurable { layout($0).size }) { frame in
             typealias M = PermissionFooterLayout.Metrics
@@ -694,7 +718,7 @@ extension ChatRowRenderer {
                 let alpha = button.inactive ? M.inactiveOpacity : 1
                 items.append(.box(ChatBox(
                     frame: box, fill: button.selected ? Palette.surfaceHighest : Palette.surface,
-                    border: Palette.divider, borderWidth: M.buttonBorder, radius: M.buttonRadius, alpha: alpha
+                    border: Palette.legacyDivider, borderWidth: M.buttonBorder, radius: M.buttonRadius, alpha: alpha
                 )))
                 let text = labels[index].layout(for: layout.labels[index])
                 items.append(.text(alpha < 1 ? text.dimmed(alpha) : text, label))

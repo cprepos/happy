@@ -13,7 +13,7 @@ extension ChatWeight {
         }
     }
 
-    var figtree: StemCellsFonts.Weight {
+    var figtree: Fonts.Weight {
         switch self {
         case .regular: .regular
         case .medium: .medium
@@ -26,16 +26,16 @@ extension ChatWeight {
 extension ChatTextStyle {
     var font: UIFont {
         switch face {
-        case .plex(let face): Fonts.font(face, size: size)
+        case .plex(let face): LegacyFonts.font(face, size: size)
         case .system(let weight): .systemFont(ofSize: size, weight: weight.uiWeight)
         case .systemItalic: .italicSystemFont(ofSize: size)
         case .menlo: UIFont(name: "Menlo-Regular", size: size) ?? .monospacedSystemFont(ofSize: size, weight: .regular)
         case .menloBold: UIFont(name: "Menlo-Bold", size: size) ?? .monospacedSystemFont(ofSize: size, weight: .semibold)
         case .menloItalic: UIFont(name: "Menlo-Italic", size: size) ?? .monospacedSystemFont(ofSize: size, weight: .regular)
-        case .figtree(let weight): StemCellsFonts.ui(weight.figtree, size: size)
+        case .figtree(let weight): Fonts.ui(weight.figtree, size: size)
         case .figtreeOblique(let weight):
             // A browser's synthetic oblique: a quarter of the height across.
-            UIFont(descriptor: StemCellsFonts.ui(weight.figtree, size: size).fontDescriptor.withMatrix(CGAffineTransform(a: 1, b: 0, c: 0.25, d: 1, tx: 0, ty: 0)), size: size)
+            UIFont(descriptor: Fonts.ui(weight.figtree, size: size).fontDescriptor.withMatrix(CGAffineTransform(a: 1, b: 0, c: 0.25, d: 1, tx: 0, ty: 0)), size: size)
         }
     }
 
@@ -102,9 +102,10 @@ extension ChatTextStyle {
 /// Markdown spans as one attributed paragraph in a block's style: bold and
 /// italic swap the face, inline code takes the mono style, links are
 /// underlined and carry their URL (`RenderSpans`). In an `environment`,
-/// every face is at its text size.
+/// every face is at its text size. `everyLink` makes any address a link,
+/// for a document whose screen resolves its relative ones.
 enum ChatSpans {
-    static func string(_ spans: [MarkdownSpan], style: ChatTextStyle, color: ColorToken, in environment: TextEnvironment?) -> NSAttributedString {
+    static func string(_ spans: [MarkdownSpan], style: ChatTextStyle, color: ColorToken, in environment: TextEnvironment?, everyLink: Bool = false) -> NSAttributedString {
         let result = NSMutableAttributedString()
         let uiColor = UIColor(color)
         for span in spans {
@@ -117,9 +118,17 @@ enum ChatSpans {
             } else if span.styles.contains(.italic) {
                 spanStyle = style.with(style.emphasisFace)
             }
+            // A person this phone named (never a link an agent typed): in
+            // the strong face and the mention's ink, on a tint when it is the reader.
+            if let url = span.url, let mention = HappyReferences.mention(link: url) {
+                var attributes = style.attributes(color: UIColor(Palette.mention), font: style.with(style.strongFace).font(in: environment), in: environment)
+                if mention.me { attributes[.backgroundColor] = UIColor(Palette.mentionMe) }
+                result.append(NSAttributedString(string: span.text, attributes: attributes))
+                continue
+            }
             var attributes = style.attributes(color: uiColor, font: spanStyle.font(in: environment), in: environment)
             // An http(s) link, or a reference this phone wrote (never one an agent typed).
-            if let url = span.url, Markdown.isHTTPLink(url) || HappyReferences.reference(link: url) != nil {
+            if let url = span.url, (everyLink && !url.isEmpty) || LegacyMarkdown.isHTTPLink(url) || HappyReferences.reference(link: url) != nil {
                 attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue
                 attributes[.chatLink] = url
             }
@@ -261,13 +270,20 @@ final class MeasuredText {
 }
 
 /// Draws a `ChatTextLayout`. Nothing is measured here.
-final class ChatTextView: UIView {
+class ChatTextView: UIView {
     var layout: ChatTextLayout? {
         didSet {
-            guard layout !== oldValue else { return }
+            guard layout !== oldValue, !Self.drawsAlike(layout, oldValue) else { return }
             setNeedsDisplay()
             accessibilityLabel = layout?.string.string
         }
+    }
+
+    /// The same words at the same width, planned again as a reply streams
+    /// on below them: what is drawn stands.
+    static func drawsAlike(_ a: ChatTextLayout?, _ b: ChatTextLayout?) -> Bool {
+        guard let a, let b else { return false }
+        return a.width == b.width && a.size == b.size && a.maxLines == b.maxLines && a.string.isEqual(to: b.string)
     }
 
     override init(frame: CGRect) {
@@ -303,6 +319,103 @@ final class ChatTextView: UIView {
 
     func link(at point: CGPoint) -> String? {
         layout?.link(at: point)
+    }
+}
+
+/// A `ChatTextView` that draws text coming on screen, as UltraList draws
+/// its rows (`ChatNodeDrawing`), into a bitmap off the main thread: a row
+/// brought in ahead of the scroll costs the main thread nothing to draw.
+/// Text on screen with nothing drawn yet is drawn at once, so nothing
+/// shows blank; text that grew shows its last drawing meanwhile.
+final class ChatOffMainTextView: ChatTextView {
+    private var drawing: Task<Void, Never>?
+    /// The width the shown bitmap was drawn at.
+    private var drawnWidth: CGFloat?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        // Another appearance: drawn again at once, with the rest of the screen.
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: Self, _) in
+            self.forget()
+        }
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    override var layout: ChatTextLayout? {
+        didSet {
+            // Other words than it showed: none until they are drawn. The
+            // same words grown, as a reply streams: the last ones meanwhile.
+            guard layout !== oldValue else { return }
+            if let old = oldValue?.string, let new = layout?.string, Self.grew(old, into: new) { return }
+            forget()
+        }
+    }
+
+    /// `new` starts with all of `old`, its attributes included.
+    private static func grew(_ old: NSAttributedString, into new: NSAttributedString) -> Bool {
+        old.length > 0 && new.length >= old.length && new.attributedSubstring(from: NSRange(location: 0, length: old.length)).isEqual(to: old)
+    }
+
+    /// Nothing drawn, and nothing on its way.
+    private func forget() {
+        drawing?.cancel()
+        drawing = nil
+        layer.contents = nil
+        drawnWidth = nil
+        setNeedsDisplay()
+    }
+
+    override func display(_ layer: CALayer) {
+        drawing?.cancel()
+        drawing = nil
+        guard let layout, bounds.width > 0, bounds.height > 0 else {
+            layer.contents = nil
+            drawnWidth = nil
+            return
+        }
+        let size = bounds.size
+        let traits = traitCollection
+        let scale = layer.contentsScale
+        // Another width wraps the words elsewhere: what was drawn is wrong.
+        if drawnWidth != size.width { layer.contents = nil }
+        // On screen with nothing drawn: now. Words that grew, as a reply
+        // streams, keep showing the last of them (pinned top-left) until
+        // the rest is drawn.
+        if layer.contents == nil, let window, !isInHiddenView, convert(bounds, to: window).intersects(window.bounds) {
+            layer.contents = Self.draw(layout, size: size, scale: scale, traits: traits)
+            drawnWidth = size.width
+            return
+        }
+        drawing = Task { [weak self] in
+            let image = await Task.detached(priority: .userInitiated) { Self.draw(layout, size: size, scale: scale, traits: traits) }.value
+            // Only for the words and size it was drawn for.
+            guard !Task.isCancelled, let self, self.layout === layout, self.bounds.size == size else { return }
+            self.layer.contents = image
+            self.drawnWidth = size.width
+        }
+    }
+
+    /// It or a view it is in is hidden, wherever it sits: UltraList builds
+    /// the next row ahead of a scroll hidden at its container's top, on
+    /// screen, and drawing its words then held a drag's frame 10 ms.
+    private var isInHiddenView: Bool {
+        sequence(first: self as UIView, next: \.superview).contains { $0.isHidden }
+    }
+
+    private nonisolated static func draw(_ layout: ChatTextLayout, size: CGSize, scale: CGFloat, traits: UITraitCollection) -> CGImage? {
+        let format = UIGraphicsImageRendererFormat(for: traits)
+        format.scale = scale
+        format.opaque = false
+        // The palette is sRGB: 8 bits a channel, not the wide format's 16,
+        // half the bytes to draw and to hand to the render server.
+        format.preferredRange = .standard
+        return UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            traits.performAsCurrent { layout.draw(at: .zero) }
+        }.cgImage
     }
 }
 #endif

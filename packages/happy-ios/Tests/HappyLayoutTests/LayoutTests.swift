@@ -1,0 +1,457 @@
+import Foundation
+#if canImport(CoreGraphics)
+import CoreGraphics
+#endif
+@testable import HappyLayout
+import XCTest
+
+/// Exact frames for the V2 sidebar, the new-work intro and the
+/// conversation's stack.
+final class LayoutTests: XCTestCase {
+    /// A third of a point: lanes and glyphs sit on 3x pixels.
+    private let third: CGFloat = 1.0 / 3
+
+    func testRowsStackAtTheirKindsHeights() {
+        let result = SidebarLayout.layout([
+            .init(kind: .row),
+            .init(kind: .row, hasMark: true, hasTrailing: true),
+            .init(kind: .separator, hasMark: false),
+            .init(kind: .section, hasMark: false),
+            .init(kind: .row, hasMark: false),
+        ], width: 390)
+        let frames = result.frames
+        // Desktop's pixels half again: the box 8 in, 48 tall (`SIDEBAR_ROW_HEIGHT`
+        // 32); a 30 mark centred 24 into the box (32 from the edge), then 12
+        // to the label, which rides 2 up so its x-height's middle is the row's.
+        XCTAssertEqual(frames[0].box, CGRect(x: 8, y: 9, width: 374, height: 48))
+        XCTAssertEqual(frames[0].mark, CGRect(x: 17, y: 18, width: 30, height: 30))
+        XCTAssertEqual(frames[0].label, CGRect(x: 59, y: 7, width: 312 + 2 * third, height: 48))
+        XCTAssertNil(frames[0].trailing)
+        // The trailing square, 27, centred 24 in from the box's right (on a
+        // 3x pixel); the label stops 12 short of it. Rows stand 3 apart (`SIDEBAR_ROW_GAP` 2).
+        XCTAssertEqual(frames[1].trailing, CGRect(x: 344 + 2 * third, y: 70 + 2 * third, width: 27, height: 27))
+        XCTAssertEqual(frames[1].label, CGRect(x: 59, y: 58, width: 273 + 2 * third, height: 48))
+        // The separator is 26 tall, its hairline across the box at its middle.
+        XCTAssertEqual(frames[2].box, CGRect(x: 8, y: 111, width: 374, height: 26))
+        XCTAssertEqual(frames[2].rule, CGRect(x: 8, y: 123, width: 374, height: 1))
+        // A section heading is 42; its title starts 15 into the box (desktop's
+        // 10), where a glyph's ink does, and keeps clear of its fold's lane.
+        XCTAssertEqual(frames[3].box, CGRect(x: 8, y: 140, width: 374, height: 42))
+        XCTAssertEqual(frames[3].label, CGRect(x: 23, y: 140, width: 315 + 2 * third, height: 42))
+        XCTAssertEqual(frames[3].chevron, CGRect(x: 344 + 2 * third, y: 147 + 2 * third, width: 27, height: 27))
+        // No mark: no leading space.
+        XCTAssertNil(frames[4].mark)
+        XCTAssertEqual(frames[4].label, CGRect(x: 17, y: 183, width: 354 + 2 * third, height: 48))
+        XCTAssertEqual(result.contentHeight, 233 + 9)
+    }
+
+    func testTheSidebarKeepsItsGeometryAndUsesLegacyHomeTypeSizes() {
+        typealias M = Metrics
+        XCTAssertEqual(M.phone, 1.5)
+        XCTAssertEqual([M.rowHeight, M.sectionHeight, M.separatorHeight, M.rowGap, M.inset], [48, 42, 26, 3, 8])
+        XCTAssertEqual([M.mark, M.glyph, M.markGap, M.trailing, M.addGlyph], [30, 24, 12, 27, 21])
+        XCTAssertEqual([M.labelSize, M.sectionLabelSize, M.chevronGlyph, M.questionGlyph, M.clockGlyph], [17, 11, 18, 22.5, 21])
+        XCTAssertEqual(M.labelSize, TextStyles.sessionTitle.size)
+        XCTAssertEqual(M.labelSize, TextStyles.projectName.size)
+        XCTAssertEqual(M.sectionLabelSize, TextStyles.projectSection.size)
+        // Nesting and its lines aren't scaled: desktop's 28 a level, 1 thick.
+        XCTAssertEqual([M.indent, M.line], [28, 1])
+    }
+
+    /// Each end of a row holds its mark centred in a square the row's
+    /// height (Kirill's rule, desktop's 16 in a 32 row): the leading mark's
+    /// centre and the fold's optical centre (its ink's weight, not its box)
+    /// half the row in from the row box's side, as far as from its top.
+    func testEachEndsMarkIsCentredInASquareTheRowsHeight() {
+        typealias M = Metrics
+        for width: CGFloat in [375, 402, 440] {
+            let frames = SidebarLayout.layout([
+                .init(kind: .row, hasFold: true),
+                .init(kind: .row, hasFold: true, foldClosed: true),
+                .init(kind: .section, hasMark: false),
+                .init(kind: .row, depth: 1, hasTrailing: true),
+            ], width: width).frames
+            for (index, frame) in frames.prefix(2).enumerated() {
+                let box = frame.box
+                // 24 in from the left, 24 down: on the row's middle.
+                XCTAssertEqual(frame.mark!.midX - box.minX, 24)
+                XCTAssertEqual(frame.mark!.midY - box.minY, 24)
+                // The chevron's ink weighs 24 in from the right and 24 down,
+                // to the nearest 3x pixel.
+                let ink = index == 0 ? M.chevronDownInk : M.chevronRightInk
+                let glyph = frame.chevronGlyph!
+                XCTAssertEqual(glyph.size, CGSize(width: M.chevronGlyph, height: M.chevronGlyph))
+                XCTAssertEqual(box.maxX - (glyph.midX + ink.dx), 24, accuracy: third / 2 + 0.001)
+                XCTAssertEqual(glyph.midY + ink.dy - box.minY, 24, accuracy: third / 2 + 0.001)
+                XCTAssertEqual((glyph.minX * 3).rounded(), glyph.minX * 3, accuracy: 0.0001)
+                XCTAssertEqual((glyph.minY * 3).rounded(), glyph.minY * 3, accuracy: 0.0001)
+                // Left inset = right inset: the row is balanced.
+                XCTAssertEqual(frame.mark!.midX - box.minX, box.maxX - (glyph.midX + ink.dx), accuracy: third / 2 + 0.001)
+                // The title keeps the mark's 12 and rides 2 up to the marks' middle.
+                XCTAssertEqual(frame.label.minX - frame.mark!.maxX, 12)
+                XCTAssertEqual(frame.label.midY, box.midY - M.titleLift)
+            }
+            // A section's fold and a status mark stand on the same column.
+            XCTAssertEqual(frames[2].chevron!.midX, frames[0].chevron!.midX)
+            XCTAssertEqual(frames[3].trailing!.midX, frames[0].chevron!.midX)
+            // A section's title starts where a top-level glyph's ink does.
+            XCTAssertEqual(frames[2].label.minX, frames[2].box.minX + 15)
+        }
+        // On a 2x screen the ends land on its whole pixels, as near 24.
+        for frame in SidebarLayout.layout([.init(kind: .row, hasTrailing: true, hasFold: true)], width: 402, scale: 2).frames {
+            for rect in [frame.chevronGlyph!, frame.trailing!] {
+                XCTAssertEqual((rect.minX * 2).rounded(), rect.minX * 2, accuracy: 0.0001)
+                XCTAssertEqual((rect.minY * 2).rounded(), rect.minY * 2, accuracy: 0.0001)
+            }
+            XCTAssertEqual(frame.box.maxX - (frame.chevronGlyph!.midX + Metrics.chevronDownInk.dx), 24, accuracy: 0.25 + 0.001)
+        }
+        // The numbers: 8 + 24 = 32 from each edge; the "⌄" drawn 0.34 low
+        // and the "›" 0.21 right and 0.13 low of their boxes' centres.
+        let frame = SidebarLayout.layout([.init(kind: .row, hasFold: true)], width: 402).frames[0]
+        XCTAssertEqual(frame.mark, CGRect(x: 17, y: 18, width: 30, height: 30))
+        XCTAssertEqual(frame.chevronGlyph, CGRect(x: 361, y: 24 + third, width: 18, height: 18))
+        let closed = SidebarLayout.layout([.init(kind: .row, hasFold: true, foldClosed: true)], width: 402).frames[0]
+        XCTAssertEqual(closed.chevronGlyph, CGRect(x: 361 + third, y: 24, width: 18, height: 18))
+    }
+
+    func testNestedRowsHangOffTheirParentsMark() {
+        let result = SidebarLayout.layout([
+            .init(kind: .row),
+            .init(kind: .row, depth: 1),
+            .init(kind: .row, depth: 2),
+            .init(kind: .row, depth: 1),
+        ], width: 320)
+        let frames = result.frames
+        // A nested row's mark stands 28 right of its parent's.
+        XCTAssertEqual(frames[1].mark, CGRect(x: 45, y: 69, width: 30, height: 30))
+        XCTAssertEqual(frames[2].mark, CGRect(x: 73, y: 120, width: 30, height: 30))
+        XCTAssertEqual(frames[3].label, CGRect(x: 87, y: 160, width: 301 + 2 * third - 87, height: 48))
+        XCTAssertEqual(result.connectors, [
+            // Row 0's children (1 and 3): one stem down its mark's centre, from
+            // under the mark to just past the last child's middle, and an elbow
+            // into each child, 4 short of its mark.
+            CGRect(x: 31, y: 48, width: 1, height: 139),
+            CGRect(x: 32, y: 83, width: 9, height: 1),
+            CGRect(x: 32, y: 185, width: 9, height: 1),
+            // Row 1's child (2), one level in.
+            CGRect(x: 59, y: 99, width: 1, height: 37),
+            CGRect(x: 60, y: 134, width: 9, height: 1),
+        ])
+    }
+
+    func testARowWithNestedRowsWearsItsFoldAtTheEnd() {
+        let result = SidebarLayout.layout([
+            .init(kind: .row, hasFold: true),
+            .init(kind: .row, depth: 1, hasTrailing: true, hasFold: true),
+            .init(kind: .row, depth: 2),
+        ], width: 390)
+        let frames = result.frames
+        // The fold takes the trailing square, as a section's does.
+        XCTAssertEqual(frames[0].chevron, CGRect(x: 344 + 2 * third, y: 19 + 2 * third, width: 27, height: 27))
+        XCTAssertNil(frames[0].trailing)
+        XCTAssertEqual(frames[0].label, CGRect(x: 59, y: 7, width: 273 + 2 * third, height: 48))
+        // A status or dot stands one square before it, and the label stops short of both.
+        XCTAssertEqual(frames[1].chevron, CGRect(x: 344 + 2 * third, y: 70 + 2 * third, width: 27, height: 27))
+        XCTAssertEqual(frames[1].trailing, CGRect(x: 305 + 2 * third, y: 70 + 2 * third, width: 27, height: 27))
+        XCTAssertEqual(frames[1].label, CGRect(x: 87, y: 58, width: 293 + 2 * third - 87, height: 48))
+        XCTAssertNil(frames[2].chevron)
+        // Neither a separator nor a section takes a row's fold.
+        let others = SidebarLayout.layout([.init(kind: .separator, hasFold: true), .init(kind: .widget, hasFold: true)], width: 390).frames
+        XCTAssertNil(others[0].chevron)
+        XCTAssertNil(others[1].chevron)
+    }
+
+    func testFoldingMovesOnlyWhatFollows() {
+        let open = SidebarLayout.layout([.init(kind: .row), .init(kind: .section), .init(kind: .row), .init(kind: .row)], width: 390)
+        let folded = SidebarLayout.layout([.init(kind: .row), .init(kind: .section), .init(kind: .row)], width: 390)
+        XCTAssertEqual(open.frames[0], folded.frames[0])
+        XCTAssertEqual(open.frames[1], folded.frames[1])
+        XCTAssertEqual(open.contentHeight - folded.contentHeight, 51)
+    }
+
+    func testIntroCentresItsMarkOverItsLine() {
+        let line = text("Say what it is — it’ll find its place.", advance: 8, lineHeight: 20)
+        let wide = MakeStuffIntroLayout(width: 390, line: line)
+        XCTAssertEqual(wide.mark, CGRect(x: 163, y: 16, width: 64, height: 64))
+        XCTAssertEqual(wide.line, CGRect(x: 16, y: 96, width: 358, height: 20))
+        XCTAssertEqual(wide.size, CGSize(width: 390, height: 132))
+        // Too narrow for one line: the line wraps and the row grows under it.
+        let narrow = MakeStuffIntroLayout(width: 200, line: line)
+        XCTAssertEqual(narrow.mark, CGRect(x: 68, y: 16, width: 64, height: 64))
+        XCTAssertEqual(narrow.line, CGRect(x: 16, y: 96, width: 168, height: 40))
+        XCTAssertEqual(narrow.size.height, 152)
+        // Begun: the row ends under its (hidden) line, where the first message lands.
+        let settled = MakeStuffIntroLayout(width: 390, line: line, settled: true)
+        XCTAssertEqual(settled.mark, wide.mark)
+        XCTAssertEqual(settled.line, wide.line)
+        XCTAssertEqual(settled.size, CGSize(width: 390, height: 116))
+    }
+
+    func testTheComposerRidesTheKeyboard() {
+        let size = CGSize(width: 390, height: 844)
+        let safe = LayoutInsets(top: 103, left: 0, bottom: 34, right: 0)
+        // Keyboard down: the guide's top is the safe area's foot.
+        let down = ChatScreenLayout(size: size, safeArea: safe, keyboardTop: 810) { _ in 60 }
+        XCTAssertEqual(down.card, CGRect(x: 8, y: 742, width: 374, height: 60))
+        XCTAssertEqual(down.listTop, 103)
+        XCTAssertEqual(down.listBottom, 110)
+        XCTAssertEqual(down.viewport, 631)
+        XCTAssertEqual(down.headerScrim, CGRect(x: 0, y: 0, width: 390, height: 137))
+        // Keyboard up: the card sits 8 above it.
+        let up = ChatScreenLayout(size: size, safeArea: safe, keyboardTop: 508) { width in width == 374 ? 92 : 0 }
+        XCTAssertEqual(up.card, CGRect(x: 8, y: 408, width: 374, height: 92))
+        XCTAssertEqual(up.listBottom, 444)
+        XCTAssertEqual(up.viewport, 297)
+        XCTAssertEqual(up.headerScrim, down.headerScrim)
+    }
+
+    /// Under the glass header (iPhone 17 Pro: the bar's 54 under a 62
+    /// status bar, its buttons and the name's capsule 62 to 106) the scrim
+    /// is the header's own edge, Telegram's: from the top of the screen to
+    /// 34 under the bar's foot, whole down to 80 above its end.
+    func testTheHeaderScrimIsTheHeadersOwnEdge() {
+        let size = CGSize(width: 402, height: 874)
+        let safe = LayoutInsets(top: 116, left: 0, bottom: 34, right: 0)
+        let layout = ChatScreenLayout(size: size, safeArea: safe, keyboardTop: 840) { _ in 60 }
+        XCTAssertEqual(layout.headerScrim, CGRect(x: 0, y: 0, width: 402, height: 150))
+        XCTAssertEqual(layout.listTop, 116, "the transcript still starts under the bar")
+        // Sideways, with no status bar, the bar alone and the same overhang.
+        let sideways = ChatScreenLayout(size: CGSize(width: 874, height: 402), safeArea: LayoutInsets(top: 32, left: 62, bottom: 21, right: 62), keyboardTop: 402) { _ in 60 }
+        XCTAssertEqual(sideways.headerScrim, CGRect(x: 0, y: 0, width: 874, height: 66))
+    }
+
+    /// On an iPad the card keeps to the transcript's 800 column, centred,
+    /// 8 in from it; narrower than that it is the phone's card.
+    func testTheComposerCardKeepsToTheTranscriptsColumn() {
+        let safe = LayoutInsets(top: 74, left: 0, bottom: 20, right: 0)
+        let wide = ChatScreenLayout(size: CGSize(width: 1376, height: 1032), safeArea: safe, keyboardTop: 1032, maxContentWidth: 800) { width in width == 784 ? 100 : 0 }
+        XCTAssertEqual(wide.card, CGRect(x: 296, y: 904, width: 784, height: 100))
+        let narrow = ChatScreenLayout(size: CGSize(width: 692, height: 1180), safeArea: safe, keyboardTop: 1180, maxContentWidth: 800) { _ in 100 }
+        XCTAssertEqual(narrow.card, CGRect(x: 8, y: 1052, width: 676, height: 100))
+    }
+
+    /// The edge over that header, 150 tall: whole behind the status bar and
+    /// the bar's top half, a third left at the bar's foot (116), a tenth 12
+    /// under it, none at its end. Messages read almost up to the glass.
+    func testTheHeaderEdgeEasesOutThroughTheBarsFoot() {
+        let stops = HeaderScrim.stops(height: 150)
+        func alpha(at y: CGFloat) -> Double {
+            let t = Double(y / 150)
+            let after = stops.firstIndex { $0.location >= t } ?? stops.count - 1
+            guard after > 0 else { return stops[0].alpha }
+            let a = stops[after - 1], b = stops[after]
+            return a.alpha + (b.alpha - a.alpha) * (t - a.location) / (b.location - a.location)
+        }
+        XCTAssertEqual(stops.first?.location, 0)
+        XCTAssertEqual(stops.first?.alpha, 1)
+        XCTAssertEqual(stops.last?.location, 1)
+        XCTAssertEqual(stops.last?.alpha, 0)
+        XCTAssertEqual(zip(stops, stops.dropFirst()).filter { $0.1.alpha > $0.0.alpha }.count, 0, "it only ever eases out")
+        XCTAssertEqual(alpha(at: 30), 1, "the status bar is the ground")
+        XCTAssertEqual(alpha(at: 70), 1, accuracy: 0.01, "the bar's top is the ground")
+        XCTAssertEqual(alpha(at: 116), 0.33, accuracy: 0.03, "a third at the bar's foot")
+        XCTAssertLessThan(alpha(at: 128), 0.12, "nearly gone 12 under the foot")
+        XCTAssertEqual(HeaderScrim.topPeak, 0.85, "Telegram's over a plain ground")
+        XCTAssertEqual(HeaderScrim.topBlurRadius, 1)
+    }
+
+    /// Telegram's curve, fitted: near whole for its first fifth, half gone
+    /// by the middle, a long faint tail.
+    func testTheEdgesCurveIsTelegrams() {
+        XCTAssertEqual(HeaderScrim.curve(0), 1)
+        XCTAssertEqual(HeaderScrim.curve(0.2), 0.941, accuracy: 0.03)
+        XCTAssertEqual(HeaderScrim.curve(0.5), 0.483, accuracy: 0.03)
+        XCTAssertEqual(HeaderScrim.curve(0.7), 0.136, accuracy: 0.03)
+        XCTAssertEqual(HeaderScrim.curve(1), 0)
+    }
+
+    /// A header shorter than the fade (a phone on its side) is the curve's
+    /// end: what is left at its foot is none, and at its top what the
+    /// curve has there.
+    func testAShortHeaderEdgeIsTheCurvesEnd() {
+        let stops = HeaderScrim.stops(height: 66)
+        XCTAssertEqual(stops.first?.location, 0)
+        XCTAssertEqual(stops.first?.alpha ?? 0, HeaderScrim.curve(14.0 / 80), accuracy: 0.001)
+        XCTAssertEqual(stops.last?.alpha, 0)
+    }
+
+    /// Only rows within a screen of what shows are views; they stay until
+    /// two screens away.
+    func testOnlyRowsNearTheScreenAreViews() {
+        // Ten rows of 300 under an intro of 116, on a screen of 600.
+        let frames = [CGRect(x: 0, y: 0, width: 390, height: 116)] + (0..<10).map { CGRect(x: 0, y: 116 + CGFloat($0) * 300, width: 390, height: 300) }
+        // At the top: the intro, and rows down to 1200, a screen below the screen.
+        let top = ChatMountedRows(frames: frames, top: 0, height: 600)
+        XCTAssertEqual(top.mount, 0..<5)
+        XCTAssertEqual(top.keep, 0..<7)
+        // In the middle, 1316..1916 showing: from 716 to 2516.
+        let middle = ChatMountedRows(frames: frames, top: 1316, height: 600)
+        XCTAssertEqual(middle.mount, 3..<9)
+        XCTAssertEqual(middle.keep, 1..<11)
+        // At the end: the last rows, and nothing past them.
+        let end = ChatMountedRows(frames: frames, top: 2516, height: 600)
+        XCTAssertEqual(end.mount, 7..<11)
+        XCTAssertEqual(end.keep, 5..<11)
+        // A row ending where the band starts, or starting where it ends, is out.
+        XCTAssertEqual(ChatMountedRows.rows(frames, from: 416, to: 1016), 2..<4)
+        // Nothing to show: no rows.
+        XCTAssertEqual(ChatMountedRows(frames: [], top: 0, height: 600).mount, 0..<0)
+        // Rows of no height, the working line at rest, come in with their neighbours.
+        let resting = [CGRect(x: 0, y: 0, width: 390, height: 300), CGRect(x: 0, y: 300, width: 390, height: 0), CGRect(x: 0, y: 300, width: 390, height: 300)]
+        XCTAssertEqual(ChatMountedRows.rows(resting, from: 0, to: 600), 0..<3)
+        XCTAssertEqual(ChatMountedRows.rows(resting, from: 400, to: 600), 2..<3)
+    }
+
+    /// A tall reply is cut between its marks, never through one, each chunk
+    /// at least 1024 tall; a short one is one chunk.
+    func testATallRowIsCutBetweenItsMarks() {
+        func mark(_ y: CGFloat, _ height: CGFloat) -> CGRect { CGRect(x: 16, y: y, width: 358, height: height) }
+        // Three paragraphs, then a code card (its box, then its lines over it), then more paragraphs.
+        let frames = [mark(0, 300), mark(300, 400), mark(700, 400), mark(1100, 1400), mark(1120, 600), mark(1720, 700), mark(2500, 500), mark(3000, 600), mark(3600, 900)]
+        let size = CGSize(width: 390, height: 4500)
+        let cut = ChatChunks(frames: frames, size: size)
+        XCTAssertEqual(cut.chunks, [
+            // 1100 tall at the card: cut before it.
+            .init(items: 0..<3, frame: CGRect(x: 0, y: 0, width: 390, height: 1100)),
+            // The card's lines reach no further than its box: it ends at 2500, 1400 tall.
+            .init(items: 3..<6, frame: CGRect(x: 0, y: 1100, width: 390, height: 1400)),
+            // 1100 by the paragraph at 3600: cut there, and the rest to the row's end.
+            .init(items: 6..<8, frame: CGRect(x: 0, y: 2500, width: 390, height: 1100)),
+            .init(items: 8..<9, frame: CGRect(x: 0, y: 3600, width: 390, height: 900)),
+        ])
+        // A mark reaching past the next one's top is never cut from it.
+        let overlapping = ChatChunks(frames: [mark(0, 3000), mark(1500, 100), mark(2900, 1200)], size: CGSize(width: 390, height: 4100))
+        XCTAssertEqual(overlapping.chunks, [.init(items: 0..<3, frame: CGRect(x: 0, y: 0, width: 390, height: 4100))])
+        // Up to twice a chunk tall: not cut.
+        let short = ChatChunks(frames: [mark(0, 1100), mark(1100, 900)], size: CGSize(width: 390, height: 2048))
+        XCTAssertEqual(short.chunks, [.init(items: 0..<2, frame: CGRect(x: 0, y: 0, width: 390, height: 2048))])
+    }
+
+    /// A send carries a reader at or near the end to it, and leaves one
+    /// reading up in history where they are.
+    func testASendFollowsOnlyAReaderNearTheEnd() {
+        func follows(_ following: Bool, _ distance: CGFloat) -> Bool {
+            SendFollow.Send(following: following, distanceFromEnd: distance).follows
+        }
+        XCTAssertTrue(follows(true, 0))
+        XCTAssertTrue(follows(true, 400), "already following: it stays following")
+        XCTAssertTrue(follows(false, 0))
+        XCTAssertTrue(follows(false, 80), "the threshold itself follows")
+        XCTAssertFalse(follows(false, 81), "reading history: nothing moves")
+        XCTAssertFalse(follows(false, 400))
+    }
+
+    /// An inline page sits under its artifact's card, across the column at its measured height.
+    func testAnInlinePageSitsUnderItsCard() {
+        let layout = MessageLayout.agent(width: 390, parts: [.card, .page(height: 132)])
+        let card = ResultCardLayout.height
+        XCTAssertEqual(layout.parts, [.card(rect(16, 8, 358, card)), .page(rect(16, 8 + card + 8, 358, 132))])
+        XCTAssertEqual(layout.size, CGSize(width: 390, height: 8 + card + 8 + 132 + 8))
+    }
+
+    func testAgentParagraphsSitOneGapApart() {
+        let layout = MessageLayout.agent(width: 390, blocks: [.text(block(height: 24)), .text(block(height: 48))])
+        XCTAssertEqual(layout.markdownOrigin, CGPoint(x: 16, y: 8))
+        let frames = layout.markdown?.blocks.compactMap { placed -> CGRect? in
+            if case let .text(frame) = placed { return frame }
+            return nil
+        }
+        // No outer margins: the first paragraph starts at the top, the next 8 below.
+        XCTAssertEqual(frames, [rect(0, 0, 358, 24), rect(0, 32, 358, 48)])
+        XCTAssertEqual(layout.size, CGSize(width: 390, height: 96))
+        // A wide screen keeps the reading column.
+        let wide = MessageLayout.agent(width: 1000, maxContentWidth: 800, blocks: [.text(block(height: 24))])
+        XCTAssertEqual(wide.markdownOrigin, CGPoint(x: 116, y: 8))
+        XCTAssertEqual(wide.markdown?.size.width, 768)
+    }
+
+    func testAPersonsMessageHugsTheRightInItsBubble() {
+        let short = MessageLayout.user(width: 390, text: text("hello", lineHeight: 20), showsStatus: false)
+        XCTAssertEqual(short.bubble, rect(310, 8, 64, 40))
+        XCTAssertEqual(short.text, rect(322, 18, 40, 20))
+        XCTAssertNil(short.status)
+        XCTAssertEqual(short.size, CGSize(width: 390, height: 56))
+        // Long text wraps at 36 from the left, less the padding: 314.
+        let long = MessageLayout.user(width: 390, text: text(String(repeating: "a", count: 100), lineHeight: 20), showsStatus: true)
+        XCTAssertEqual(long.bubble, rect(38, 8, 336, 80))
+        XCTAssertEqual(long.text, rect(50, 18, 312, 60))
+        XCTAssertEqual(long.status, rect(16, 90, 358, 14))
+        XCTAssertEqual(long.size.height, 112)
+        XCTAssertNil(long.foldControl)
+    }
+
+    /// As wide as Telegram's on a phone: 36 clear at the left, our 16 at
+    /// the right; a picture sent alone reaches as far.
+    func testAPersonsBubbleReachesTelegramsWidth() {
+        for (width, bubble) in [(375, 323), (402, 350), (440, 388)] as [(CGFloat, CGFloat)] {
+            let layout = MessageLayout.user(width: width, text: block(height: 24), showsStatus: false)
+            XCTAssertEqual(layout.bubble, rect(36, 8, bubble, 44), "at \(width)")
+            XCTAssertEqual(layout.text, rect(48, 18, bubble - 24, 24), "at \(width)")
+            let picture = MessageLayout.user(width: width, text: nil, pictures: [MediaFlow.Image(width: 4000, height: 2000, scale: nil)], showsStatus: false)
+            XCTAssertEqual(picture.pictures, [rect(36, 8, bubble, bubble / 2)], "at \(width)")
+        }
+    }
+
+    /// Desktop's fold: past ten lines the bubble shows ten, Show full 8
+    /// under them; opened, every line and Show less. Ten lines or fewer,
+    /// nothing folds.
+    func testALongMessageShowsTenLinesUntilOpened() {
+        let long = String(repeating: "a", count: 1200)
+        func layout(_ width: CGFloat, opened: Bool, _ string: String = long) -> MessageLayout {
+            MessageLayout.user(
+                width: width, text: text(string, lineHeight: 24),
+                fold: .init(preview: text(string, lineHeight: 24, maxLines: 10), control: fixed(60, 16), opened: opened, lineHeight: 24),
+                showsStatus: false
+            )
+        }
+        // 375: 37 a line, 33 lines; 402: 40, 30; 440: 45, 27.
+        for (width, x, line, lines) in [(375, 39, 296, 33), (402, 42, 320, 30), (440, 40, 360, 27)] as [(CGFloat, CGFloat, CGFloat, CGFloat)] {
+            let closed = layout(width, opened: false)
+            XCTAssertTrue(closed.cut)
+            XCTAssertEqual(closed.bubble, rect(x, 8, line + 24, 284), "at \(width)")
+            XCTAssertEqual(closed.text, rect(x + 12, 18, line, 240), "at \(width)")
+            XCTAssertEqual(closed.foldControl, rect(x + 12, 266, 60, 16), "at \(width)")
+            XCTAssertEqual(closed.size, CGSize(width: width, height: 300), "at \(width)")
+            let open = layout(width, opened: true)
+            XCTAssertFalse(open.cut)
+            XCTAssertEqual(open.bubble, rect(x, 8, line + 24, lines * 24 + 44), "at \(width)")
+            XCTAssertEqual(open.text, rect(x + 12, 18, line, lines * 24), "at \(width)")
+            XCTAssertEqual(open.foldControl, rect(x + 12, 18 + lines * 24 + 8, 60, 16), "at \(width)")
+            XCTAssertEqual(open.size.height, lines * 24 + 60, "at \(width)")
+        }
+        // Exactly ten lines at 402.
+        let ten = layout(402, opened: false, String(repeating: "a", count: 400))
+        XCTAssertFalse(ten.cut)
+        XCTAssertNil(ten.foldControl)
+        XCTAssertEqual(ten.bubble, rect(42, 8, 344, 260))
+        // Cut, it keeps the whole text's width: a wider line further down
+        // doesn't widen it on opening.
+        let narrowTop = MessageLayout.user(
+            width: 402, text: fixed(300, 720),
+            fold: .init(preview: fixed(200, 240), control: fixed(60, 16), opened: false, lineHeight: 24), showsStatus: false
+        )
+        XCTAssertEqual(narrowTop.bubble, rect(62, 8, 324, 284))
+        XCTAssertEqual(narrowTop.text, rect(74, 18, 300, 240))
+        // A cut line's ellipsis wider than any whole line widens it, cut
+        // and opened alike.
+        for opened in [false, true] {
+            let ellipsis = MessageLayout.user(
+                width: 402, text: fixed(300, 720),
+                fold: .init(preview: fixed(310, 240), control: fixed(60, 16), opened: opened, lineHeight: 24), showsStatus: false
+            )
+            XCTAssertEqual(ellipsis.bubble?.width, 334)
+            XCTAssertEqual(ellipsis.text?.width, 310)
+        }
+        // Ten lines tall or less, the preview is never measured.
+        let unmeasured = MessageLayout.user(
+            width: 402, text: fixed(300, 240),
+            fold: .init(preview: Measurable { _ in XCTFail("measured the preview"); return .zero }, control: fixed(60, 16), opened: false, lineHeight: 24),
+            showsStatus: false
+        )
+        XCTAssertNil(unmeasured.foldControl)
+        // A short message's Show full never widens it.
+        let short = layout(402, opened: false, "hi")
+        XCTAssertEqual(short.bubble, rect(346, 8, 40, 44))
+        XCTAssertNil(short.foldControl)
+    }
+}

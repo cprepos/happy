@@ -1510,7 +1510,7 @@ final class NewSessionChoicesTests: XCTestCase {
         drafts.setWorktreeKey(draft.worktreeKey)
         let composer = NewSessionComposer(
             drafts: drafts,
-            snapshot: HomeSnapshot(machines: MachinesSnapshot(synced: true, machines: machines), sessions: sessions),
+            snapshot: LegacyHomeSnapshot(machines: MachinesSnapshot(synced: true, machines: machines), sessions: sessions),
             ops: ops
         )
         await composer.waitForIdle()
@@ -1519,9 +1519,20 @@ final class NewSessionChoicesTests: XCTestCase {
 
     @MainActor
     func testTheComposerMovesAGoneComputerToTheFirstOffered() async {
-        let composer = await composer(NewSessionDraft(selectedMachineId: "gone"), machines: [machine("m1")])
+        let composer = await composer(NewSessionDraft(selectedMachineId: "gone", selectedPath: "/Users/steve/gone-only"), machines: [machine("m1")])
         XCTAssertEqual(composer.drafts.draft.selectedMachineId, "m1")
         XCTAssertEqual(composer.choices.currentMachine?.key, "m1")
+        XCTAssertNil(composer.drafts.draft.selectedPath, "the gone computer's folder was kept for another")
+    }
+
+    /// The same computer under its other daemon's id keeps its folder.
+    @MainActor
+    func testTheComposerKeepsTheFolderOfAComputerNamedByItsOtherDaemon() async {
+        let rig = rigMachine("rig1", sibling: "m1")
+        let composer = await composer(NewSessionDraft(selectedMachineId: "rig1", selectedPath: "~/happy"), machines: [machine("m1"), rig])
+        XCTAssertTrue(composer.choices.offersDraftMachine)
+        XCTAssertEqual(composer.drafts.draft.selectedMachineId, composer.choices.resolvedMachineId)
+        XCTAssertEqual(composer.drafts.draft.selectedPath, "~/happy")
     }
 
     @MainActor
@@ -1693,7 +1704,7 @@ extension NewSessionChoicesTests {
         isStarting: Bool = false,
         now: Int64 = 1
     ) -> NewSessionScreenModel {
-        let snapshot = HomeSnapshot(machines: MachinesSnapshot(synced: true, machines: machines), sessions: sessions)
+        let snapshot = LegacyHomeSnapshot(machines: MachinesSnapshot(synced: true, machines: machines), sessions: sessions)
         let choices = NewSessionChoices(.init(draft: draft, createsBot: false, snapshot: snapshot))
         return NewSessionScreenModel(choices: choices, draft: draft, snapshot: snapshot, gitWorktrees: [], isStarting: isStarting, now: now)
     }

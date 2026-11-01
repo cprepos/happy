@@ -24,24 +24,43 @@ final class HomeRendererHarness {
         func option(_ name: String) -> String? {
             arguments.firstIndex(of: name).flatMap { arguments.indices.contains($0 + 1) ? arguments[$0 + 1] : nil }
         }
-        let renderer = HomeListRenderer(rawValue: option("-renderer") ?? "UITableView") ?? .tableView
-        let restoreRenderer = option("-renderer") == "stored"
         let grouping = option("-grouping") ?? "flat"
         let sessionCount = Int(option("-sessionCount") ?? "0") ?? 0
         let archiveCount = Int(option("-archiveCount") ?? "0") ?? 0
+        let secondMachine = arguments.contains("-secondMachine")
+        // `-freshSettings`: this launch starts from no stored settings or
+        // drafts, whatever an earlier one left.
+        let fresh = arguments.contains("-freshSettings")
         Task {
-            let controller = AccountController(serverConfig: ServerConfig(storage: InMemoryKeyValueStore()), clientID: "ios/home-renderer-harness", credentialStore: InMemoryCredentialStore(), storeDirectory: nil, rnServerImport: { .confirmed(ServerConfig.defaultServerURL) }, localSettingsFactory: { UserDefaultsStore(suiteName: "home-renderer-harness.\($0)") }, transport: HomeHarnessOffline(), connector: HomeHarnessNoSocket())
+            let controller = AccountController(serverConfig: ServerConfig(storage: InMemoryKeyValueStore()), clientID: "ios/home-renderer-harness", credentialStore: InMemoryCredentialStore(), storeDirectory: nil, rnServerImport: { .confirmed(ServerConfig.defaultServerURL) }, localSettingsFactory: { id in
+                let suite = "home-renderer-harness.\(id)"
+                if fresh { UserDefaults.standard.removePersistentDomain(forName: suite) }
+                return UserDefaultsStore(suiteName: suite)
+            }, transport: HomeHarnessOffline(), connector: HomeHarnessNoSocket())
             do {
+                // `-accountMix`: the switcher lists one of each kind, an
+                // account made for a computer, this legacy one and an agent
+                // connection, none with a picture of its own.
+                if arguments.contains("-accountMix") {
+                    try await controller.signIn(Credentials(token: "home-harness-made", secret: Data(repeating: 23, count: 32)), origin: .madeForComputer)
+                }
                 try await controller.signIn(Credentials(token: "home-harness", secret: Data(repeating: 19, count: 32)))
+                if arguments.contains("-accountMix") {
+                    await controller.agentConnections.setForeground(false)
+                    let credentials = try JSONDecoder().decode(AgentConnectionCredentials.self, from: Data(#"{"address":"account-mix","port":1,"deviceID":"account-mix","deviceToken":"fixture"}"#.utf8))
+                    _ = try await controller.agentConnections.add(credentials, name: "Studio Mac")
+                }
                 guard let session = controller.session else { fatalError("Home harness missing session") }
                 self.account = controller
-                if !restoreRenderer {
-                    controller.localSettings.homeListRenderer = renderer
-                    controller.localSettings.chatListRenderer = arguments.contains("-chatUltraList") ? .ultraList : .collectionView
-                }
                 let store = session.store
+                let namedProfile = arguments.contains("-namedProfile")
                 try await Task.detached {
                     try SeededAccount.seed(store)
+                    // `-namedProfile`: this account has a name and a GitHub
+                    // login, as one signed in with GitHub does.
+                    if namedProfile {
+                        _ = try store.applyProfile(AccountProfile(id: "home-harness", timestamp: 1, firstName: "Steve", github: GitHubProfile(id: 1, login: "steve")))
+                    }
                     if archiveCount > 0, let template = try store.sessions().first {
                         try store.upsertSessions((0..<archiveCount).map { index in
                             var row = template
@@ -51,6 +70,23 @@ final class HomeRendererHarness {
                             row.metadata = .object(metadata)
                             return row
                         })
+                    }
+                    // A second computer with a project of its own: each
+                    // computer heads its rows.
+                    if secondMachine, var machine = try store.machines().first, let template = try store.sessions().first {
+                        machine.id = "studio-mac"
+                        var metadata = machine.metadata?.objectValue ?? [:]
+                        metadata["displayName"] = .string("Studio Mac")
+                        machine.metadata = .object(metadata)
+                        try store.upsertMachine(machine)
+                        var row = template
+                        row.id = "studio-site"; row.active = true
+                        var fields = row.metadata?.objectValue ?? [:]
+                        fields["machineId"] = .string("studio-mac")
+                        fields["path"] = .string("/Users/harness/Developer/site")
+                        fields["summary"] = .object(["text": .string("Landing page")])
+                        row.metadata = .object(fields)
+                        try store.upsertSessions([row])
                     }
                     if sessionCount > 0, let template = try store.sessions().first {
                         try store.upsertSessions((0..<sessionCount).map { index in
@@ -64,18 +100,18 @@ final class HomeRendererHarness {
                             return row
                         })
                     }
-                    try store.addPendingSettings(["sessionListGrouping": .string(grouping), "hideInactiveSessions": .bool(archiveCount > 0)])
+                    try store.addPendingSettings(["sessionListGrouping": .string(grouping), "hideInactiveSessions": .bool(archiveCount > 0 && !arguments.contains("-showArchive"))])
                 }.value
                 let context = AppContext(account: controller, variant: .development, version: "home-harness")
-                let home = HomeViewController(context: context, session: session)
+                let home = LegacyHomeViewController(context: context, session: session)
                 let navigation = UINavigationController(rootViewController: home)
                 AppCoordinator.applyAppearance(to: navigation.navigationBar)
-                let shell = TabletShellViewController(context: context, detail: navigation)
+                let shell = ShellViewController(context: context, phone: navigation)
                 window.rootViewController = shell
                 if arguments.contains("-qaProbe"), let window = window as? HarnessWindow {
                     qaProbe = ChatUltraQAProbe(window: window, chat: nil)
                 }
-                shell.rootDidChange()
+                shell.updateMode()
                 if archiveCount > 0, let window = window as? HarnessWindow {
                     archiveProbe = HomeArchiveProbe(window: window, snapshots: store.homeSnapshots())
                 }
@@ -150,7 +186,7 @@ final class HomeArchiveProbe: NSObject {
     private let archivedPrefixes: [String]?
     var report: Data { (try? JSONEncoder().encode(samples)) ?? Data() }
 
-    init(window: HarnessWindow, snapshots: AsyncStream<HomeSnapshot>, archivedPrefixes: [String]? = nil) {
+    init(window: HarnessWindow, snapshots: AsyncStream<LegacyHomeSnapshot>, archivedPrefixes: [String]? = nil) {
         self.window = window
         self.archivedPrefixes = archivedPrefixes
         super.init()
@@ -258,7 +294,7 @@ final class HomeArchiveProbe: NSObject {
         guard !view.isHidden, let window else { return [] }
         let layer = view.layer.presentation() ?? view.layer
         let opacity = inherited * layer.opacity
-        let isRow = view is SessionRowCell || view is ProjectChatCell || view is ListRowView
+        let isRow = view is ListRowView
         let archived = isRow && (view.accessibilityLabel.map { label in
             archivedPrefixes.map { $0.contains { label.hasPrefix($0 + ",") } } ?? label.hasPrefix("Archived fixture")
         } ?? false)

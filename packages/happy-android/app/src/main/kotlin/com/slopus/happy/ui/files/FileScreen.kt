@@ -1,5 +1,7 @@
 package com.slopus.happy.ui.files
 
+import com.slopus.happy.text.wordsResource
+import com.slopus.happy.text.Words
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -19,7 +21,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.CircularProgressIndicator
+import com.slopus.happy.ui.components.PageProgressIndicator as CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -56,7 +58,7 @@ import com.slopus.happy.ui.components.StackHeader
 import com.slopus.happy.ui.layout.LocalWindowLayout
 import com.slopus.happy.ui.layout.contentMaxWidth
 import com.slopus.happy.ui.theme.HappyTheme
-import com.slopus.happy.ui.theme.PlexMono
+import com.slopus.happy.ui.theme.AppMono
 import com.slopus.happy.ui.theme.happyTextStyle
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
@@ -77,7 +79,7 @@ object FileTags {
 /** What file.tsx loaded: still loading, failed, binary, or the text and its uncommitted diff. */
 sealed interface FileLoad {
     data object Loading : FileLoad
-    data class Failed(val message: String) : FileLoad
+    data class Failed(val message: Words) : FileLoad
     data object Binary : FileLoad
     data class Loaded(val content: String, val diff: String?) : FileLoad
 }
@@ -137,7 +139,7 @@ suspend fun SessionFileOps.loadFile(sessionId: String, filePath: String, session
         }
         val response = readFile(sessionId, filePath)
         val content = response.content
-        if (!response.success || content.isNullOrEmpty()) return FileLoad.Failed(response.error ?: "Failed to read file")
+        if (!response.success || content.isNullOrEmpty()) return FileLoad.Failed(Words.said(response.error, R.string.files_failed_to_read))
         val bytes = try {
             java.util.Base64.getMimeDecoder().decode(content)
         } catch (_: IllegalArgumentException) {
@@ -150,7 +152,7 @@ suspend fun SessionFileOps.loadFile(sessionId: String, filePath: String, session
     } catch (e: CancellationException) {
         throw e
     } catch (_: Exception) {
-        FileLoad.Failed("Failed to load file")
+        FileLoad.Failed(Words.ours(R.string.files_load_failed))
     }
 }
 
@@ -191,7 +193,7 @@ private val DarkFileDiff = FileDiffColors(c(0x0D2E1F), c(0x3FB950), c(0xC9D1D9),
 /** theme.ts `glass.border`, the native bars' hairline. */
 private fun glassBorder(dark: Boolean) = if (dark) Color(1f, 1f, 1f, 0.14f) else Color(1f, 1f, 1f, 0.82f)
 
-private val codeStyle = happyTextStyle(fontSize = 14, lineHeight = 20, family = PlexMono)
+private val codeStyle = happyTextStyle(fontSize = 14, lineHeight = 20, family = AppMono)
 
 /**
  * session/[id]/file.tsx, header "File Viewer" with back. While loading: a
@@ -233,10 +235,10 @@ fun FileScreen(
                 Text(stringResource(R.string.files_loading_file, fileName), style = happyTextStyle(fontSize = 16), color = colors.textSecondary, modifier = Modifier.padding(top = 16.dp))
             }
             is FileLoad.Failed -> {
-                Centered(stringResource(R.string.common_error), colors.textDestructive, load.message)
+                Centered(stringResource(R.string.common_error), colors.textDestructive, wordsResource(load.message))
                 if (alertShown) {
                     HappyAlert(
-                        Alert(stringResource(R.string.common_error), load.message, listOf(AlertButton(stringResource(R.string.common_ok)))),
+                        Alert(stringResource(R.string.common_error), wordsResource(load.message), listOf(AlertButton(stringResource(R.string.common_ok)))),
                         onDismiss = { alertShown = false },
                     )
                 }
@@ -284,7 +286,7 @@ private fun LoadedFile(load: FileLoad.Loaded, filePath: String, line: Int?, colu
         ) {
             FileIcon(filePath.substringAfterLast('/').ifEmpty { filePath }, 20.dp)
             val label = if (requested != null) "$filePath:$requested${column?.takeIf { it > 0 }?.let { ":$it" }.orEmpty()}" else filePath
-            Text(label, style = happyTextStyle(fontSize = 14, family = PlexMono), color = colors.textSecondary, modifier = Modifier.padding(start = 8.dp).weight(1f))
+            Text(label, style = happyTextStyle(fontSize = 14, family = AppMono), color = colors.textSecondary, modifier = Modifier.padding(start = 8.dp).weight(1f))
         }
         if (load.diff != null) {
             Row(

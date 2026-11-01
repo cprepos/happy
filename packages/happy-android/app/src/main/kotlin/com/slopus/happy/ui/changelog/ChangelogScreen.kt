@@ -39,6 +39,8 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.unit.dp
 import com.slopus.happy.R
+import com.slopus.happy.ui.browser.rememberTextLayout
+import com.slopus.happy.ui.browser.webLinkGestures
 import com.slopus.happy.chat.markdown.parseMarkdown
 import com.slopus.happy.ui.chat.MarkdownView
 import com.slopus.happy.ui.components.Header
@@ -105,12 +107,15 @@ private fun SummaryLine(summary: String) {
             )
         }
     }
+    // Its links long-press to the link menu, as a message's do.
+    val layout = rememberTextLayout()
     Text(
         text,
         style = ChangelogSpec.summary,
         color = HappyTheme.colors.text,
         inlineContent = inline,
-        modifier = Modifier.padding(bottom = ChangelogSpec.summaryGap).testTag(ChangelogTags.SUMMARY),
+        onTextLayout = { layout.value = it },
+        modifier = Modifier.padding(bottom = ChangelogSpec.summaryGap).testTag(ChangelogTags.SUMMARY).webLinkGestures(text, layout),
     )
 }
 

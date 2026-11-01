@@ -5,12 +5,11 @@ import HappyWire
 import UIKit
 
 /// What the chat screen decides on the main thread and hands to the rows'
-/// derivation: the list's width and layout, and what the reader opened,
+/// derivation: the list's width, and what the reader opened,
 /// picked or is waiting on. All of it is small, and copied whole.
 struct ChatRowsView: Equatable, Sendable {
     var width: CGFloat = 0
     var maxContentWidth: CGFloat = .greatestFiniteMagnitude
-    var tablet = false
     /// The list's text size and the screen's words: every row is planned
     /// in them.
     var text = ChatRowText.designed
@@ -34,7 +33,7 @@ struct ChatRowsView: Equatable, Sendable {
 }
 
 struct ChatRowsInput: Sendable {
-    var snapshot: ChatSnapshot?
+    var snapshot: LegacyChatSnapshot?
     var session: ChatSessionState
     var view = ChatRowsView()
     /// The account's diff documents and syntax colour.
@@ -43,7 +42,7 @@ struct ChatRowsInput: Sendable {
     /// being coloured are planned again after one.
     var recolour = 0
 
-    init(snapshot: ChatSnapshot? = nil, session: ChatSessionState, view: ChatRowsView = ChatRowsView(), render: RenderServices) {
+    init(snapshot: LegacyChatSnapshot? = nil, session: ChatSessionState, view: ChatRowsView = ChatRowsView(), render: RenderServices) {
         self.snapshot = snapshot
         self.session = session
         self.view = view
@@ -92,10 +91,9 @@ struct ChatListUpdate: Sendable {
 /// One chat update for the main thread. Every optional is nil when its
 /// part of the screen keeps what it shows.
 struct ChatRowsUpdate: Sendable {
-    /// What the list was planned for; another width, layout or text size
+    /// What the list was planned for; another width or text size
     /// is refused.
     var width: CGFloat
-    var tablet: Bool
     var text: TextEnvironment?
     var list: ChatListUpdate?
     var facts: ChatSnapshotFacts?
@@ -127,7 +125,7 @@ enum ChatRows {
         let now = Int64(Date().timeIntervalSince1970 * 1000)
         var state = applied
         var update = ChatRowsUpdate(
-            width: view.width, tablet: view.tablet, text: view.text.environment, graceEnd: applied.graceEnd, now: now,
+            width: view.width, text: view.text.environment, graceEnd: applied.graceEnd, now: now,
             grows: applied.window.grows, reachesOldest: false, measured: 0
         )
         // A grace tick always answers, so the screen sets its next timer
@@ -162,7 +160,6 @@ enum ChatRows {
             flavor: flavor,
             cliVersion: session.metadata?["version"]?.stringValue,
             showLineNumbers: session.settings.bool("showLineNumbersInToolViews"),
-            tablet: view.tablet,
             permissionListMaxHeight: view.permissionListMaxHeight,
             text: view.text,
             render: input.render
@@ -270,6 +267,8 @@ enum ChatRows {
             var question: ChatQuestionState?
             var diffs: [Int: Set<Int>] = [:]
             if case .message(.toolCall(let call)) = item {
+                // An attachment is its own outbox item, under its call id.
+                if call.tool.name == "file", let localId = call.tool.callId { delivery = deliveries[localId] }
                 diffs = view.diffExpanded[call.id] ?? [:]
                 expanded = view.expandedTools.contains(call.id)
                 busy = call.tool.permission.flatMap { view.permissionBusy[$0.id] }

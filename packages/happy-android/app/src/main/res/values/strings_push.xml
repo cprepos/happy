@@ -1,8 +1,54 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- sync.ts's background-send notifications (English only there too). -->
-<resources xmlns:tools="http://schemas.android.com/tools" tools:ignore="MissingTranslation">
+<!--
+  Push: sync.ts's background-send notifications and settings/account.tsx's
+  push rows (English inline in happy-app). Translated in values-*/
+  (AndroidStringsTranslatedTest).
+-->
+<resources>
     <string name="push_background_send_pending_title">Message not sent</string>
     <string name="push_background_send_pending_body">A message is still sending in the background. It will fail in 30 seconds if not delivered.</string>
     <string name="push_background_send_failed_title">Message failed</string>
     <string name="push_background_send_failed_body">A message failed to send while the app was in background. Open Happy and retry.</string>
+
+    <!-- Settings › Account's push rows. -->
+    <string name="push_permission">Permission</string>
+    <string name="push_request_again">Request Permission Again</string>
+    <string name="push_reregister">Re-register This Device</string>
+    <string name="push_current_token">Current token %1$s</string>
+    <string name="push_label_loading">Loading</string>
+    <string name="push_label_unavailable">Unavailable</string>
+    <string name="push_label_allowed">Allowed</string>
+    <string name="push_label_denied">Denied</string>
+    <string name="push_label_not_requested">Not requested</string>
+    <string name="push_subtitle_checking">Checking push notification permissions for this device.</string>
+    <string name="push_subtitle_unsupported">Push notification permissions are only managed on mobile devices.</string>
+    <string name="push_subtitle_granted">This device can receive push notifications.</string>
+    <string name="push_subtitle_can_ask">The system prompt can still be shown again from the app.</string>
+    <string name="push_subtitle_stopped">The system has stopped prompting. Open system settings to enable notifications again.</string>
+    <string name="push_request_unsupported">Push notification permissions are only available on iPhone and Android.</string>
+    <string name="push_request_can_ask">Shows the system prompt again if the system still allows it.</string>
+    <string name="push_request_settings">Opens system settings when the system will not prompt again.</string>
+    <string name="push_tokens_hint">Shows every push token registered on your account. Tap an old token to delete it.</string>
+    <string name="push_tokens_footer">Registered Tokens (%1$d). Current-device metadata comes from this phone. Older tokens use their token fingerprint plus server timestamps.</string>
+    <string name="push_no_tokens">No registered push tokens</string>
+    <string name="push_this_device">This device</string>
+    <string name="push_delete_title">Delete Push Token</string>
+    <string name="push_delete_message">Remove %1$s from your account?</string>
+    <string name="push_other_device">Other device or stale registration</string>
+    <string name="push_registered">Registered: %1$s</string>
+    <string name="push_last_seen">Last seen: %1$s</string>
+    <string name="push_server_id">Server ID: %1$s</string>
+    <string name="push_token">Token: %1$s</string>
+    <string name="push_build">build %1$s</string>
+    <string name="push_simulator">simulator</string>
+    <string name="push_android_device">android device</string>
+    <string name="push_load_failed">Failed to load push notification settings.</string>
+    <string name="push_enabled">Push notifications are enabled for this device.</string>
+    <string name="push_opened_settings">The system will not show the permission prompt again, so Happy opened Settings instead.</string>
+    <string name="push_not_granted">Push notification permission was not granted.</string>
+    <string name="push_request_failed">Failed to request push notification permission.</string>
+    <string name="push_refreshed">This device push token was refreshed.</string>
+    <string name="push_not_enabled">Push notifications are not enabled for this device yet.</string>
+    <string name="push_refresh_failed">Failed to refresh this device push token.</string>
+    <string name="push_delete_failed">Failed to delete push token.</string>
 </resources>

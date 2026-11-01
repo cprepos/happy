@@ -11,7 +11,7 @@ final class AccountSyncTests: XCTestCase {
     var fixture: ServerFixture!
     var http: FakeHTTP!
     var store: LocalStore!
-    var engine: SyncEngine!
+    var engine: LegacySyncEngine!
     var account: AccountCipher!
 
     override func setUpWithError() throws {
@@ -19,9 +19,9 @@ final class AccountSyncTests: XCTestCase {
         http = FakeHTTP()
         store = try LocalStore.inMemory()
         account = AccountCipher(secret: fixture.keys.secret)
-        var options = SyncEngine.Options()
+        var options = LegacySyncEngine.Options()
         options.backoff = Backoff(initial: .milliseconds(1), maximum: .milliseconds(2))
-        engine = SyncEngine(api: testAPI(http), store: store, keys: fixture.keys, options: options)
+        engine = LegacySyncEngine(api: testAPI(http), store: store, keys: fixture.keys, options: options)
     }
 
     override func tearDown() async throws {
@@ -94,7 +94,7 @@ final class AccountSyncTests: XCTestCase {
         do {
             try await engine.pushSettings()
             XCTFail("expected a conflict")
-        } catch let error as SyncEngine.SyncError {
+        } catch let error as LegacySyncEngine.SyncError {
             XCTAssertEqual(error, .settingsConflict)
         }
         XCTAssertEqual(http.requests("POST /v1/account/settings").count, 3)
@@ -225,7 +225,7 @@ final class SessionActionsTests: XCTestCase {
     var fixture: ServerFixture!
     var http: FakeHTTP!
     var store: LocalStore!
-    var engine: SyncEngine!
+    var engine: LegacySyncEngine!
     var rpc: FakeRPC!
     var actions: SessionActions!
 
@@ -233,7 +233,7 @@ final class SessionActionsTests: XCTestCase {
         fixture = ServerFixture()
         http = FakeHTTP()
         store = try LocalStore.inMemory()
-        engine = SyncEngine(api: testAPI(http), store: store, keys: fixture.keys)
+        engine = LegacySyncEngine(api: testAPI(http), store: store, keys: fixture.keys)
         rpc = FakeRPC()
         actions = SessionActions(api: testAPI(http), store: store, sync: engine, rpc: rpc, now: { 500 })
     }
@@ -272,15 +272,28 @@ final class SessionActionsTests: XCTestCase {
         XCTAssertTrue(stored.isArchived)
     }
 
-    func testAFailedArchivePutsTheRowBack() async throws {
+    func testARefusedArchivePutsTheRowBack() async throws {
         try storeSession()
-        http.onRaw("POST /v1/sessions/s/archive", "nope", status: 500)
+        http.onRaw("POST /v1/sessions/s/archive", "nope", status: 403)
         do {
             try await actions.archive(sessionId: "s")
             XCTFail("expected an error")
         } catch {}
         XCTAssertEqual(try store.session(id: "s")?.archiving, false)
         XCTAssertEqual(try store.session(id: "s")?.isArchived, false)
+        let pending = await engine.intents.pending()
+        XCTAssertTrue(pending.isEmpty)
+    }
+
+    /// A server that fails for now isn't a no: the archive stands, kept,
+    /// and goes again.
+    func testAFailingServerKeepsTheArchiveWaiting() async throws {
+        try storeSession()
+        http.onRaw("POST /v1/sessions/s/archive", "nope", status: 500)
+        try await actions.archive(sessionId: "s")
+        XCTAssertEqual(try store.session(id: "s")?.archiving, true)
+        let pending = await engine.intents.pending()
+        XCTAssertEqual(pending.map(\.kind), [.archive])
     }
 
     func testABotNeedsItsMachine() async throws {

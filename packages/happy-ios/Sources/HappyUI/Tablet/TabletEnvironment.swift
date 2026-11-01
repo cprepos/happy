@@ -2,41 +2,21 @@
 import HappyLayout
 import UIKit
 
-/// `useIsTablet()` as a trait: the window is at least 768 wide
-/// (`TabletBreakpoint`). The shell sets it on everything under it and
-/// flips it live as Split View, Slide Over or Stage Manager resize the
-/// window. A screen with a tablet branch reads `traitCollection.isTabletLayout`
-/// and re-lays out on `registerForTraitChanges([TabletLayoutTrait.self])`.
-///
-/// It is the width rule alone, as happy-app's screens use it: true on the
-/// first-run screens too, where the shell itself steps aside.
-public struct TabletLayoutTrait: UITraitDefinition {
+/// The screen is the iPad's sidebar (`ShellViewController`): home leaves
+/// its ground clear, so the system's sidebar material shows through.
+public struct SidebarColumnTrait: UITraitDefinition {
     public static let defaultValue = false
-    public static let name = "HappyTabletLayout"
-}
-
-/// `localSettings.zenMode`, which the persistent header's zen control
-/// toggles. Besides collapsing the sidebar it trims the composer
-/// (AgentInput.tsx `zenMode`), so the composer can read it here.
-public struct ZenModeTrait: UITraitDefinition {
-    public static let defaultValue = false
-    public static let name = "HappyZenMode"
+    public static let name = "HappySidebarColumn"
 }
 
 extension UITraitCollection {
-    public var isTabletLayout: Bool { self[TabletLayoutTrait.self] }
-    public var isZenMode: Bool { self[ZenModeTrait.self] }
+    public var isSidebarColumn: Bool { self[SidebarColumnTrait.self] }
 }
 
 extension UIMutableTraits {
-    public var isTabletLayout: Bool {
-        get { self[TabletLayoutTrait.self] }
-        set { self[TabletLayoutTrait.self] = newValue }
-    }
-
-    public var isZenMode: Bool {
-        get { self[ZenModeTrait.self] }
-        set { self[ZenModeTrait.self] = newValue }
+    public var isSidebarColumn: Bool {
+        get { self[SidebarColumnTrait.self] }
+        set { self[SidebarColumnTrait.self] = newValue }
     }
 }
 
@@ -74,7 +54,7 @@ enum TabletRoutes {
     /// (from a notification) is still known by its type.
     static func route(of controller: UIViewController) -> Route? {
         if let box = routes.object(forKey: controller) { return box.route }
-        if let chat = controller as? ChatViewController { return .session(id: chat.sessionId) }
+        if let chat = controller as? LegacyChatViewController { return .session(id: chat.sessionId) }
         return nil
     }
 
@@ -87,74 +67,46 @@ enum TabletRoutes {
 }
 
 extension UIViewController {
-    /// The branches of happy-app's tablet layout this screen's window gets
-    /// (`TabletBranches`): the shell's width rule, the screen's
-    /// orientation, the device's header height.
+    /// The branches of happy-app's layout this screen's window gets
+    /// (`TabletBranches`): the screen's orientation and the device's header
+    /// height. Never happy-app's tablet: the iPad's main panel keeps the
+    /// phone's screens (docs/IPAD.md).
     var tabletBranches: TabletBranches {
         let size = view.window?.bounds.size ?? view.bounds.size
         return TabletBranches(
-            isTablet: traitCollection.isTabletLayout,
+            isTablet: false,
             isLandscape: TabletBreakpoint.isLandscape(size),
             headerHeight: DeviceCalculations.headerHeight(isPad: traitCollection.userInterfaceIdiom == .pad)
         )
     }
-
-    /// navigation/Header.tsx :322. The screens with happy-app's plain header
-    /// (settings, session info, machine, changes, message, What's New) and
-    /// the chat (ChatHeaderView.tsx :59) have no back button on a tablet:
-    /// the persistent header's back serves instead. Call once from
-    /// `viewDidLoad`; it follows the window as it resizes.
-    func dropsBackButtonOnTablet() {
-        applyTabletBackButton()
-        registerForTraitChanges([TabletLayoutTrait.self], action: #selector(applyTabletBackButton))
-    }
-
-    @objc private func applyTabletBackButton() {
-        navigationItem.hidesBackButton = !tabletBranches.plainHeaderShowsBackButton(isOnboardingRoute: false)
-    }
-
-    /// The tablet shell's stack, for a screen beside it rather than in it
-    /// (the sidebar and the list it hosts).
-    var tabletDetailNavigation: UINavigationController? {
-        var current: UIViewController? = self
-        while let controller = current {
-            if let shell = controller as? TabletShellViewController { return shell.detail }
-            current = controller.parent
-        }
-        return nil
-    }
 }
 
-/// components/layout.ts: how wide content may grow. happy-app works it out
-/// once, when the module loads, from the screen and the window of that
-/// moment; so does this, the first time it is read. Only a 13-inch iPad is
-/// a tablet there (800); every other iPad and every iPhone is unlimited.
+/// How wide content may grow (`ContentWidthLimit`): 800 on an iPad,
+/// unlimited on a phone.
 @MainActor
 public enum ContentWidth {
-    /// `layout.maxWidth`: messages, item groups, the session list.
-    public static var maxWidth: CGFloat { limits.maxWidth }
+    /// `layout.maxWidth`: messages, the composer, item groups, settings.
+    public static var maxWidth: CGFloat { ContentWidthLimit.maxWidth(isPad: isPad) }
     /// `layout.headerMaxWidth`: header rows.
-    public static var headerMaxWidth: CGFloat { limits.headerMaxWidth }
+    public static var headerMaxWidth: CGFloat { maxWidth }
 
-    private static var cached: (maxWidth: CGFloat, headerMaxWidth: CGFloat)?
+    private static let isPad = UIDevice.current.userInterfaceIdiom == .pad
+}
 
-    private static var limits: (maxWidth: CGFloat, headerMaxWidth: CGFloat) {
-        if let cached { return cached }
-        // Before the scene connects there is nothing to measure yet: no
-        // limit, and nothing kept.
-        guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first else {
-            return (.greatestFiniteMagnitude, .greatestFiniteMagnitude)
+extension UIScrollView {
+    /// Holds a scrolling page to the readable column (`ContentWidth`),
+    /// centred: the page lays itself out at the width this returns, and the
+    /// margins either side are the scroll view's insets, so the page is
+    /// still the window's to scroll. The whole width on a phone.
+    func readableColumn(width: CGFloat) -> CGFloat {
+        let column = ChatColumn(rowWidth: width, maxContentWidth: ContentWidth.maxWidth)
+        if contentInset.left != column.x || contentInset.right != column.x {
+            contentInset.left = column.x
+            contentInset.right = column.x
         }
-        let screen = scene.screen.bounds.size
-        // The scene's own size, which is the window's even before one is key.
-        let window = scene.coordinateSpace.bounds.size
-        let type = DeviceCalculations.deviceType(screen: screen, isPad: UIDevice.current.userInterfaceIdiom == .pad)
-        let limits = (
-            maxWidth: ContentWidthLimit.maxWidth(deviceType: type, window: window),
-            headerMaxWidth: ContentWidthLimit.headerMaxWidth(deviceType: type, window: window)
-        )
-        cached = limits
-        return limits
+        let x = -adjustedContentInset.left
+        if contentOffset.x != x { contentOffset.x = x }
+        return column.width
     }
 }
 #endif

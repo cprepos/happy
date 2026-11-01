@@ -1,5 +1,7 @@
 package com.slopus.happy.ui.home
 
+import com.slopus.happy.ui.page
+import androidx.activity.compose.ReportDrawnWhen
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -18,7 +20,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavDestination.Companion.hasRoute
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.NavHostController
-import androidx.navigation.compose.composable
 import androidx.navigation.toRoute
 import com.slopus.happy.AppGraph
 import com.slopus.happy.BuildConfig
@@ -30,8 +31,8 @@ import com.slopus.happy.sync.ComposerMirror
 import com.slopus.happy.ui.HomeRoute
 import com.slopus.happy.ui.SettingsRoute
 import com.slopus.happy.ui.chat.SessionRoute
+import com.slopus.happy.ui.chat.composeChat
 import com.slopus.happy.ui.components.AvatarSettings
-import com.slopus.happy.ui.components.AvatarStyle
 import com.slopus.happy.ui.components.LocalAvatarSettings
 import com.slopus.happy.ui.files.SessionChangesRoute
 import com.slopus.happy.ui.machine.LiveMachineControls
@@ -40,14 +41,11 @@ import com.slopus.happy.ui.machine.MachineScreen
 import com.slopus.happy.ui.machine.MachineScreenActions
 import com.slopus.happy.ui.machine.recentMachineSessions
 import com.slopus.happy.ui.onboarding.LinkComputerChecklist
-import com.slopus.happy.ui.onboarding.OnboardingLinkComputer
-import com.slopus.happy.ui.onboarding.OnboardingSettingsRoute
 import com.slopus.happy.ui.session.DuplicateSheet
 import com.slopus.happy.ui.session.SessionInfoActions
 import com.slopus.happy.ui.session.SessionInfoLive
 import com.slopus.happy.ui.session.SessionInfoRoute
 import com.slopus.happy.ui.session.SessionInfoScreen
-import com.slopus.happy.ui.settings.AppearanceRoute
 import com.slopus.happy.ui.settings.ChangelogRoute
 import com.slopus.happy.ui.theme.HappyTheme
 import kotlinx.coroutines.Dispatchers
@@ -58,27 +56,27 @@ import kotlinx.serialization.json.JsonObject
 /** Where the home list's taps lead: the same for the phone home and the tablet sidebar. */
 class HomeNavigation(
     val onSettings: () -> Unit,
-    val onAppearance: () -> Unit,
     val onWhatsNew: () -> Unit,
-    val onOnboardingSettings: () -> Unit,
     val onOpenSession: (String) -> Unit,
     val onOpenMachine: (String) -> Unit,
     val onTroubleshoot: () -> Unit,
+    /** The new-session screen (new/index.tsx), where `/new` leads. */
     val onNewSession: () -> Unit,
     val onDetails: (String) -> Unit,
+    /** Compose: an empty chat whose first send starts the session, on the phone and in the tablet's detail pane. */
+    val onCompose: () -> Unit = onNewSession,
 ) {
     companion object {
-        fun of(nav: NavHostController, onOpenSession: (String) -> Unit, onTroubleshoot: () -> Unit) = HomeNavigation(
-            onSettings = { nav.navigate(SettingsRoute) },
-            onAppearance = { nav.navigate(AppearanceRoute) },
+        fun of(graph: AppGraph, nav: NavHostController, onOpenSession: (String) -> Unit, onTroubleshoot: () -> Unit) = HomeNavigation(
+            onSettings = { nav.navigate(SettingsRoute()) },
             onWhatsNew = { nav.navigate(ChangelogRoute) },
-            onOnboardingSettings = { nav.navigate(OnboardingSettingsRoute) },
             onOpenSession = onOpenSession,
             onOpenMachine = { id -> nav.navigate(MachineRoute(id)) },
             onTroubleshoot = onTroubleshoot,
             // router.navigate('/new'): a second tap while it is on top stays one screen.
             onNewSession = { nav.navigate(NewSessionRoute) { launchSingleTop = true } },
             onDetails = { id -> nav.navigate(SessionInfoRoute(id)) },
+            onCompose = { nav.composeChat() },
         )
     }
 }
@@ -89,36 +87,43 @@ class HomeNavigation(
  */
 val LocalHomeInSidebar = staticCompositionLocalOf { false }
 
-/** The home routes. [onOpenSession] belongs to the chat, [onTroubleshoot] to onboarding. */
+/**
+ * A Happy account's home, [HomeRoute]'s while one is open (HappyApp). [onOpenSession]
+ * belongs to the chat, [onTroubleshoot] to onboarding.
+ */
+@Composable
+fun LegacyHome(graph: AppGraph, nav: NavHostController, onOpenSession: (sessionId: String) -> Unit, onTroubleshoot: () -> Unit) {
+    if (LocalHomeInSidebar.current) {
+        Box(Modifier.fillMaxSize().background(HappyTheme.colors.grouped.background).testTag(HomeTags.TABLET_BLANK))
+    } else {
+        HomeListHost(graph, remember(nav) { HomeNavigation.of(graph, nav, onOpenSession, onTroubleshoot) }, phone = true) { host ->
+            // Fully drawn (cold start's timeToFullDisplay, research/cold-start.md): the rows are read from disk.
+            ReportDrawnWhen { host.state != null }
+            HomeScreen(
+                state = host.state,
+                connectionStatus = host.connectionStatus,
+                grouping = host.grouping,
+                callbacks = host.callbacks,
+                actions = host.actions,
+                update = host.update,
+                offlineContent = { computers, onShowArchived ->
+                    LinkComputerChecklist(graph, computers = computers, onTroubleshoot = host.navigation.onTroubleshoot, onShowArchived = onShowArchived)
+                },
+                accounts = rememberAccountMenu(graph),
+                listState = host.listState,
+                syncing = host.syncing,
+            )
+        }
+    }
+}
+
+/** The screens beside a Happy account's home. [onOpenSession] belongs to the chat. */
 fun NavGraphBuilder.homeRoutes(
     graph: AppGraph,
     nav: NavHostController,
     onOpenSession: (sessionId: String) -> Unit = {},
-    onTroubleshoot: () -> Unit = {},
 ) {
-    composable<HomeRoute> {
-        if (LocalHomeInSidebar.current) {
-            Box(Modifier.fillMaxSize().background(HappyTheme.colors.grouped.background).testTag(HomeTags.TABLET_BLANK))
-        } else {
-            HomeListHost(graph, remember(nav) { HomeNavigation.of(nav, onOpenSession, onTroubleshoot) }, withDock = true) { host ->
-                HomeScreen(
-                    state = host.state,
-                    connectionStatus = host.connectionStatus,
-                    grouping = host.grouping,
-                    callbacks = host.callbacks,
-                    actions = host.actions,
-                    update = host.update,
-                    linkContent = { OnboardingLinkComputer(graph, onSettings = host.navigation.onOnboardingSettings) },
-                    offlineContent = { computers, onShowArchived ->
-                        LinkComputerChecklist(graph, computers = computers, onTroubleshoot = host.navigation.onTroubleshoot, onShowArchived = onShowArchived)
-                    },
-                    dock = host.dock?.state,
-                    dockActions = host.dock?.actions,
-                )
-            }
-        }
-    }
-    composable<NewSessionRoute> {
+    page<NewSessionRoute> {
         val dock = rememberNewSessionDock(
             graph,
             focused = true,
@@ -128,10 +133,10 @@ fun NavGraphBuilder.homeRoutes(
         )
         NewSessionScreen(dock, onBack = { nav.popBackStack() })
     }
-    composable<SessionInfoRoute> { entry ->
+    page<SessionInfoRoute> { entry ->
         SessionInfoRouteScreen(graph, entry.toRoute<SessionInfoRoute>().id, nav, onOpenSession)
     }
-    composable<MachineRoute> { entry ->
+    page<MachineRoute> { entry ->
         val id = entry.toRoute<MachineRoute>().id
         val services = remember(graph) { HomeServices.of(graph) }
         val snapshot by services.snapshots.collectAsStateWithLifecycle()
@@ -218,9 +223,8 @@ internal fun NavHostController.leaveSessionInfo(sessionId: String, successor: St
 /** The synced avatar settings, for every avatar under [content]. */
 @Composable
 fun ProvideAvatarSettings(settings: Settings, content: @Composable () -> Unit) {
-    val avatars = remember(settings.avatarStyle, settings.avatarMonochrome, settings.showFlavorIcons, settings.showHarnessIconInSessionHeader) {
+    val avatars = remember(settings.avatarMonochrome, settings.showFlavorIcons, settings.showHarnessIconInSessionHeader) {
         AvatarSettings(
-            style = AvatarStyle.normalize(settings.avatarStyle),
             monochrome = settings.avatarMonochrome,
             showFlavorIcons = settings.showFlavorIcons,
             showHarnessIconInSessionHeader = settings.showHarnessIconInSessionHeader,

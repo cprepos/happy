@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  values/strings_agent_home.xml in ca: Android-only strings, not in happy-app's
+  catalogs. AndroidStringsTranslatedTest fails while one is missing here.
+-->
+<resources>
+    <string name="agent_home_working">Treballant…</string>
+    <string name="agent_home_show_subtasks">Mostra les subtasques</string>
+    <string name="agent_home_hide_subtasks">Amaga les subtasques</string>
+    <string name="agent_home_connecting">Connectant amb %1$s…</string>
+    <string name="agent_home_empty_title">Encara no hi ha converses</string>
+    <string name="agent_home_empty_body">Comença un xat amb aquest agent i apareixerà aquí.</string>
+    <string name="agent_home_offline_title">No es pot contactar amb %1$s</string>
+    <string name="agent_home_offline_body">Comprova que l\'agent s\'executa i està en línia. Happy es torna a connectar sol.</string>
+    <string name="agent_home_revoked">Aquest telèfon s\'ha eliminat a Happy Agent. Torna a connectar l\'agent per fer-lo servir.</string>
+    <string name="agent_home_update_required">Aquest agent necessita una versió més nova de Happy. Actualitza l\'app per fer-lo servir.</string>
+    <string name="agent_home_status_offline">fora de línia</string>
+    <string name="agent_home_status_revoked">eliminat</string>
+    <string name="agent_home_status_update">cal actualitzar</string>
+    <string name="agent_artifacts_untitled">Sense títol</string>
+    <string name="agent_artifacts_empty">Encara no hi ha artefactes.</string>
+    <string name="agent_artifacts_failed">No s\'han pogut llegir els artefactes</string>
+    <string name="agent_surface_add_todo">Afegeix una tasca</string>
+    <string name="agent_surface_no_todos">Encara no hi ha res aquí.</string>
+    <string name="agent_surface_todo_done">fet</string>
+    <string name="agent_surface_empty_document">Aquest document és buit.</string>
+    <string name="agent_surface_open_on_computer">Obre-ho a l\'ordinador per fer-ho servir.</string>
+    <string name="agent_surface_failed">No s\'ha pogut llegir</string>
+    <string name="agent_search_placeholder">Cerca converses i configuració</string>
+    <string name="agent_search_clear">Esborra</string>
+    <string name="agent_search_conversations">Converses</string>
+    <string name="agent_search_actions">Accions ràpides</string>
+    <string name="agent_search_no_results">No hi ha resultats per a «%1$s»</string>
+    <string name="agent_search_add">Afegeix un compte o un agent</string>
+    <string name="agent_search_open_settings">Obre la configuració</string>
+    <string name="agent_settings_edit_name">Edita el nom</string>
+    <string name="agent_settings_edit_avatar">Edita l\'avatar</string>
+    <string name="agent_settings_edit_name_prefix">"Canvia el teu nom a "</string>
+    <string name="agent_settings_edit_avatar_prefix">"Canvia el teu avatar a "</string>
+    <string name="agent_settings_profile_footer">El canvi el fa el teu Chief of Staff. No s\'envia res fins que no ho enviïs.</string>
+    <string name="agent_settings_connect">Connecta un agent</string>
+    <string name="agent_settings_connected">Connectat</string>
+    <string name="agent_settings_connecting">Connectant</string>
+    <string name="agent_settings_offline">Fora de línia</string>
+    <string name="agent_settings_revoked">Eliminat de Happy Agent</string>
+    <string name="agent_settings_update">Cal actualitzar</string>
+    <string name="agent_settings_remove">Elimina la connexió</string>
+    <string name="agent_settings_remove_title">Vols eliminar %1$s?</string>
+    <string name="agent_settings_remove_message">Happy oblida aquest agent en aquest telèfon. Happy Agent continuarà mostrant el telèfon fins que també l\'eliminis allà.</string>
+    <string name="agent_settings_remove_footer">Happy Agent continuarà mostrant aquest telèfon fins que l\'eliminis allà.</string>
+</resources>

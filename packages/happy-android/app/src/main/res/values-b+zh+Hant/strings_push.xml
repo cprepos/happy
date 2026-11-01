@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  values/strings_push.xml in b+zh+Hant: Android-only strings, not in happy-app's
+  catalogs. AndroidStringsTranslatedTest fails while one is missing here.
+-->
+<resources>
+    <string name="push_background_send_pending_title">訊息未傳送</string>
+    <string name="push_background_send_pending_body">一則訊息仍在背景傳送。如果 30 秒內未送達，將會失敗。</string>
+    <string name="push_background_send_failed_title">訊息傳送失敗</string>
+    <string name="push_background_send_failed_body">App 在背景時有一則訊息傳送失敗。請開啟 Happy 並重試。</string>
+    <string name="push_permission">權限</string>
+    <string name="push_request_again">重新要求權限</string>
+    <string name="push_reregister">重新註冊此裝置</string>
+    <string name="push_current_token">目前權杖 %1$s</string>
+    <string name="push_label_loading">載入中</string>
+    <string name="push_label_unavailable">無法使用</string>
+    <string name="push_label_allowed">已允許</string>
+    <string name="push_label_denied">已拒絕</string>
+    <string name="push_label_not_requested">未要求</string>
+    <string name="push_subtitle_checking">正在檢查此裝置的推播通知權限。</string>
+    <string name="push_subtitle_unsupported">推播通知權限只能在行動裝置上管理。</string>
+    <string name="push_subtitle_granted">此裝置可以接收推播通知。</string>
+    <string name="push_subtitle_can_ask">App 仍可再次顯示系統提示。</string>
+    <string name="push_subtitle_stopped">系統已不再提示。請開啟系統設定重新啟用通知。</string>
+    <string name="push_request_unsupported">推播通知權限僅適用於 iPhone 和 Android。</string>
+    <string name="push_request_can_ask">如果系統仍允許，將再次顯示系統提示。</string>
+    <string name="push_request_settings">系統不再提示時，將開啟系統設定。</string>
+    <string name="push_tokens_hint">顯示你的帳號中註冊的所有推播權杖。點按舊權杖即可刪除。</string>
+    <string name="push_tokens_footer">已註冊的權杖（%1$d）。目前裝置的資訊來自這支手機。較舊的權杖使用權杖指紋和伺服器時間戳記。</string>
+    <string name="push_no_tokens">沒有已註冊的推播權杖</string>
+    <string name="push_this_device">此裝置</string>
+    <string name="push_delete_title">刪除推播權杖</string>
+    <string name="push_delete_message">要從你的帳號中移除 %1$s 嗎？</string>
+    <string name="push_other_device">其他裝置或過期的註冊</string>
+    <string name="push_registered">註冊時間：%1$s</string>
+    <string name="push_last_seen">最近活動：%1$s</string>
+    <string name="push_server_id">伺服器 ID：%1$s</string>
+    <string name="push_token">權杖：%1$s</string>
+    <string name="push_build">組建 %1$s</string>
+    <string name="push_simulator">模擬器</string>
+    <string name="push_android_device">Android 裝置</string>
+    <string name="push_load_failed">無法載入推播通知設定。</string>
+    <string name="push_enabled">此裝置已啟用推播通知。</string>
+    <string name="push_opened_settings">系統不會再顯示權限提示，所以 Happy 開啟了設定。</string>
+    <string name="push_not_granted">未授予推播通知權限。</string>
+    <string name="push_request_failed">無法要求推播通知權限。</string>
+    <string name="push_refreshed">已重新整理此裝置的推播權杖。</string>
+    <string name="push_not_enabled">此裝置尚未啟用推播通知。</string>
+    <string name="push_refresh_failed">無法重新整理此裝置的推播權杖。</string>
+    <string name="push_delete_failed">無法刪除推播權杖。</string>
+</resources>

@@ -47,11 +47,12 @@ let package = Package(
         .package(url: "https://github.com/elevenlabs/elevenlabs-swift-sdk.git", exact: "3.4.0"),
         // Native Home and chat's optional renderer. Pin the pre-1.0 API used by
         // NodeRow and the custom keyframe scroller.
-        .package(url: "https://github.com/slopus/ultraview.git", revision: "007316544874a8fec514e48261b5b19abfd087f2"),
-        .package(url: "https://github.com/slopus/tailcat-swift.git", revision: "70a66d473b32e5c8217cf8652237d9848af4ce3e"),
-        // Animated (tgs) stickers in Stories. lottie-spm is Lottie's prebuilt
-        // xcframework, so it adds no source build; stickers play on its Core
-        // Animation engine, off the main thread's render loop.
+        .package(url: "https://github.com/slopus/ultraview.git", revision: "ac81d2b1dec7c2637e77f7f8f4d9005dbaf4c24b"),
+        .package(url: "https://github.com/slopus/tailcat-swift.git", revision: "f62543179c9cd6621ca31db0a8f627d440224ce5"),
+        // The state pictures (`StateSceneView`), desktop's Lottie scenes.
+        // lottie-spm is Lottie's prebuilt xcframework, so it adds no source
+        // build; scenes play on its Core Animation engine, off the main
+        // thread's render loop.
         .package(url: "https://github.com/airbnb/lottie-spm.git", exact: "4.5.2"),
     ],
     targets: [

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Several accounts and agent connections (ui/home/AccountMenu, ui/connection).
+  Not in happy-app's catalogs. Translated in values-*/ (AndroidStringsTranslatedTest).
+-->
+<resources>
+    <string name="account_menu_title">Accounts</string>
+    <string name="account_menu_add">Add</string>
+    <string name="account_menu_unnamed_account">Happy account</string>
+    <string name="account_menu_unnamed_agent">Agent</string>
+    <string name="account_menu_agent">Agent connection</string>
+    <string name="agent_home_connected">Connected to %1$s</string>
+</resources>

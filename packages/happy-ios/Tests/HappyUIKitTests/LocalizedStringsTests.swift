@@ -45,6 +45,9 @@ final class LocalizedStringsTests: XCTestCase {
         ]
         let colours = ["blue", "green", "purple", "rose", "sand", "gray"]
         let styles = ["pixelated", "gradient", "brutalist"]
+        // English is decoded off the main thread, as any catalog must be,
+        // whichever test ran before.
+        _ = await TranslationCatalog.load("en")
         AppLocalization.use(nil)
         for (status, key) in statuses { XCTAssertEqual(Strings.Home.connectionStatus(status), TranslationCatalog.english("status.\(key)")) }
         for colour in colours {
@@ -85,7 +88,6 @@ final class LocalizedStringsTests: XCTestCase {
         XCTAssertEqual(Strings.Agents.clearOverrides, "Clear Overrides")
         XCTAssertEqual(Strings.Home.dockPlaceholder, "Plan, ask, build…")
         XCTAssertEqual(Strings.Home.createWorkspaceIn("happy"), "Create workspace in happy")
-        XCTAssertEqual(Strings.SettingsTitles.connectClaude, "Connect to Claude")
     }
 }
 #endif

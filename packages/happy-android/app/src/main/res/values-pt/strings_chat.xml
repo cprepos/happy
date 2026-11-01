@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  values/strings_chat.xml in pt: Android-only strings, not in happy-app's
+  catalogs. AndroidStringsTranslatedTest fails while one is missing here.
+-->
+<resources>
+    <string name="chat_send_failed">Falha ao enviar a mensagem.</string>
+    <string name="chat_no_messages">Nenhuma mensagem ainda</string>
+    <string name="chat_created">Criada %1$s</string>
+    <string name="chat_permissions_in_terminal">As permissões são mostradas só no terminal. Redefina ou envie uma mensagem para controlar pelo app.</string>
+    <string name="chat_stop">Parar</string>
+    <string name="chat_voice">Voz</string>
+    <string name="chat_send">Enviar</string>
+    <string name="chat_markdown_image">Imagem Markdown</string>
+    <string name="chat_remove_image">Remover %1$s</string>
+    <string name="chat_add_photo">Adicionar foto</string>
+    <string name="diff_badge_new">NOVO</string>
+    <string name="diff_badge_deleted">EXCLUÍDO</string>
+    <string name="diff_badge_renamed">RENOMEADO</string>
+    <string name="files_no_session_path">Sem caminho da sessão</string>
+    <string name="files_outside_root">O arquivo está fora da raiz da sessão.</string>
+    <string name="files_decode_failed">Falha ao decodificar o arquivo</string>
+    <string name="files_diff_failed">Falha ao obter o diff</string>
+    <string name="files_load_failed">Falha ao carregar o arquivo</string>
+    <string name="files_contents_match">O conteúdo do arquivo é igual à base de comparação.</string>
+    <string name="files_truncated">Mostrando %1$s de %2$s arquivos alterados. Abra o espaço de trabalho no seu computador para ver a lista completa.</string>
+    <string name="files_counts_approximate">As contagens de alterações deste espaço de trabalho são aproximadas.</string>
+    <string name="files_conflicted">Este espaço de trabalho tem conflitos de merge não resolvidos.</string>
+    <string name="files_changes_failed">Não foi possível carregar as alterações do Happy Agent.</string>
+    <string name="files_file_failed">Não foi possível carregar este arquivo. Recarregue as alterações e tente de novo.</string>
+    <string name="files_update_agent">Atualize o Happy Agent no seu computador para ver as alterações desta sessão.</string>
+    <string name="files_no_comparison">A comparação com origin/main não está disponível para este espaço de trabalho.</string>
+    <string name="files_no_details">Não há detalhes de arquivos para esta comparação.</string>
+</resources>

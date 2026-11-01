@@ -1,4 +1,5 @@
 #if canImport(UIKit)
+import AVFoundation
 import HappyCore
 import ImageIO
 import os
@@ -31,22 +32,17 @@ final class ComposerImagePicker: NSObject, PHPickerViewControllerDelegate {
     var host: (() -> UIViewController?)?
 
     private let staging: ComposerAttachmentStaging
+    private let maxFileBytes: Int
 
-    init(staging: ComposerAttachmentStaging) {
+    init(staging: ComposerAttachmentStaging, maxFileBytes: Int = ComposerAttachmentRules.maxFileSize) {
         self.staging = staging
+        self.maxFileBytes = maxFileBytes
     }
 
-    /// `attachImages`: asks, every time, whether to paste or to pick.
+    /// `attachImages`: the library picker. A copied picture is pasted in
+    /// the text view (`paste`).
     func attach() {
-        let alert = UIAlertController(title: Strings.ImageUpload.attachTitle, message: nil, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: Strings.ImageUpload.pasteFromClipboard, style: .default) { [weak self] _ in
-            self?.pasteImages()
-        })
-        alert.addAction(UIAlertAction(title: Strings.ImageUpload.chooseFromLibrary, style: .default) { [weak self] _ in
-            self?.pickImages()
-        })
-        alert.addAction(UIAlertAction(title: Strings.Common.cancel, style: .cancel))
-        present(alert)
+        pickImages()
     }
 
     /// How many more pictures may wait in the composer; at none, says so.
@@ -63,6 +59,52 @@ final class ComposerImagePicker: NSObject, PHPickerViewControllerDelegate {
         let picked = Array(pictures.prefix(ComposerAttachmentRules.remaining(selected: images.count)))
         Task { for data in picked { await stage(data, name: nil) } }
     }
+
+    /// The shared library picker hands ownership of videos and documents to
+    /// this staging directory before its temporary copies are discarded.
+    func add(file: URL, name: String, mimeType: String) async {
+        guard room() > 0 else { return }
+        let staging = staging
+        let limit = maxFileBytes
+        do {
+            let attachment = try await Task.detached { () -> OutgoingAttachment in
+                let values = try URL(fileURLWithPath: file.path).resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+                guard values.isRegularFile == true, let size = values.fileSize, size <= limit else {
+                    throw ComposerImageError.tooLarge
+                }
+                let destination = try staging.newFile(extension: file.pathExtension)
+                try FileManager.default.copyItem(at: file, to: destination)
+                // Its shape, so its tile in the sent message has it before it is read.
+                let shape = await Self.shape(destination, mimeType: mimeType)
+                return OutgoingAttachment(fileURL: destination, name: name, mimeType: mimeType, size: size,
+                    width: shape.map { Int($0.width) }, height: shape.map { Int($0.height) })
+            }.value
+            guard images.count < ComposerAttachmentRules.maxImages else { staging.remove(attachment.fileURL); return }
+            images.append(ComposerPickedImage(id: ComposerAttachmentRules.previewId(), attachment: attachment))
+        } catch ComposerImageError.tooLarge {
+            alert(Strings.ImageUpload.fileTooLargeTitle,
+                Strings.ImageUpload.fileTooLargeMessage(name: name, maxMb: limit / 1024 / 1024))
+        } catch { uploadFailedAlert() }
+    }
+
+    /// A video's or picture's upright size in pixels, read from its file.
+    nonisolated static func shape(_ file: URL, mimeType: String) async -> CGSize? {
+        if mimeType.hasPrefix("video/") {
+            guard let track = try? await AVURLAsset(url: file).loadTracks(withMediaType: .video).first,
+                  let (size, transform) = try? await track.load(.naturalSize, .preferredTransform) else { return nil }
+            let upright = size.applying(transform)
+            return CGSize(width: abs(upright.width), height: abs(upright.height))
+        }
+        guard mimeType.hasPrefix("image/"), let source = CGImageSourceCreateWithURL(file as CFURL, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? CGFloat,
+              let height = properties[kCGImagePropertyPixelHeight] as? CGFloat else { return nil }
+        // EXIF orientations 5 to 8 turn the picture on its side.
+        let turned = (properties[kCGImagePropertyOrientation] as? Int).map { (5...8).contains($0) } ?? false
+        return turned ? CGSize(width: height, height: width) : CGSize(width: width, height: height)
+    }
+
+    func add(picture: Data) async { await stage(picture, name: nil) }
 
     /// The pasteboard's picture, attached: what a paste in the text view
     /// does when there is one.
@@ -206,11 +248,11 @@ final class ComposerImagePicker: NSObject, PHPickerViewControllerDelegate {
 
     /// `previewForAsset`'s size check, then onto the end of the list.
     private func admit(_ image: ComposerNormalizedImage, name: String?) {
-        guard image.size <= ComposerAttachmentRules.maxFileSize else {
+        guard image.size <= maxFileBytes else {
             staging.remove(image.fileURL)
             alert(
                 Strings.ImageUpload.fileTooLargeTitle,
-                Strings.ImageUpload.fileTooLargeMessage(name: name ?? "image", maxMb: ComposerAttachmentRules.maxFileSizeMegabytes)
+                Strings.ImageUpload.fileTooLargeMessage(name: name ?? "image", maxMb: maxFileBytes / 1024 / 1024)
             )
             return
         }
@@ -265,6 +307,7 @@ private struct PickedItem: @unchecked Sendable {
 }
 
 enum ComposerImageError: Error {
+    case tooLarge
     case unreadable
     case unwritable
 }

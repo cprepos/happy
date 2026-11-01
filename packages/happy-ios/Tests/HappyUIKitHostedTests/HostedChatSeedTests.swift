@@ -56,7 +56,7 @@ final class HostedChatSeedTests: XCTestCase {
     func testAChatPushesItsShellThenBuildsTheHeaderAndTabs() async throws {
         let (controller, _) = try await signedIn()
         let context = AppContext(account: controller, variant: .development, version: "test")
-        let chat = ChatViewController(context: context, session: try XCTUnwrap(controller.session), sessionId: "seeded-tab-4")
+        let chat = LegacyChatViewController(context: context, session: try XCTUnwrap(controller.session), sessionId: "seeded-tab-4")
         chat.loadViewIfNeeded()
         XCTAssertEqual(chat.navigationItem.title, "Scroll indicator")
         XCTAssertNil(Self.subview(AgentInputCardView.self, in: chat.view))
@@ -67,9 +67,8 @@ final class HostedChatSeedTests: XCTestCase {
         let installed = try await until { chat.contentInstalled && chat.navigationItem.title == "chat-nav" }
         XCTAssertTrue(installed)
         XCTAssertEqual(chat.navigationItem.title, "chat-nav", "the header names the checkout")
-        let avatar = chat.navigationItem.rightBarButtonItems?.compactMap { $0.customView as? ChatHeaderAvatarControl }.first
-        XCTAssertEqual(avatar?.isHidden, false, "the avatar")
-        XCTAssertNotNil(avatar?.content)
+        // Compose alone at the right; the title opens info, permissions and all.
+        XCTAssertEqual(chat.navigationItem.rightBarButtonItems?.map(\.accessibilityIdentifier), ["compose"])
         let strip = try XCTUnwrap(Self.subview(ChatWorktreeTabStrip.self, in: chat.view))
         XCTAssertFalse(strip.isHidden, "the strip")
 

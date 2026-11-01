@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  values/strings_push.xml in ca: Android-only strings, not in happy-app's
+  catalogs. AndroidStringsTranslatedTest fails while one is missing here.
+-->
+<resources>
+    <string name="push_background_send_pending_title">Missatge no enviat</string>
+    <string name="push_background_send_pending_body">Un missatge encara s\'està enviant en segon pla. Fallarà d\'aquí a 30 segons si no s\'entrega.</string>
+    <string name="push_background_send_failed_title">Ha fallat el missatge</string>
+    <string name="push_background_send_failed_body">No s\'ha pogut enviar un missatge mentre l\'app era en segon pla. Obre Happy i torna-ho a provar.</string>
+    <string name="push_permission">Permís</string>
+    <string name="push_request_again">Torna a demanar el permís</string>
+    <string name="push_reregister">Torna a registrar aquest dispositiu</string>
+    <string name="push_current_token">Testimoni actual %1$s</string>
+    <string name="push_label_loading">S\'està carregant</string>
+    <string name="push_label_unavailable">No disponible</string>
+    <string name="push_label_allowed">Permès</string>
+    <string name="push_label_denied">Denegat</string>
+    <string name="push_label_not_requested">No sol·licitat</string>
+    <string name="push_subtitle_checking">S\'estan comprovant els permisos de notificacions push d\'aquest dispositiu.</string>
+    <string name="push_subtitle_unsupported">Els permisos de notificacions push només es gestionen en dispositius mòbils.</string>
+    <string name="push_subtitle_granted">Aquest dispositiu pot rebre notificacions push.</string>
+    <string name="push_subtitle_can_ask">L\'app encara pot tornar a mostrar l\'avís del sistema.</string>
+    <string name="push_subtitle_stopped">El sistema ja no mostra l\'avís. Obre la configuració del sistema per tornar a activar les notificacions.</string>
+    <string name="push_request_unsupported">Els permisos de notificacions push només estan disponibles a l\'iPhone i a Android.</string>
+    <string name="push_request_can_ask">Torna a mostrar l\'avís del sistema si el sistema encara ho permet.</string>
+    <string name="push_request_settings">Obre la configuració del sistema quan el sistema ja no mostri l\'avís.</string>
+    <string name="push_tokens_hint">Mostra tots els testimonis push registrats al teu compte. Toca un testimoni antic per suprimir-lo.</string>
+    <string name="push_tokens_footer">Testimonis registrats (%1$d). Les dades del dispositiu actual provenen d\'aquest telèfon. Els testimonis antics fan servir la seva empremta i les marques de temps del servidor.</string>
+    <string name="push_no_tokens">No hi ha testimonis push registrats</string>
+    <string name="push_this_device">Aquest dispositiu</string>
+    <string name="push_delete_title">Suprimeix el testimoni push</string>
+    <string name="push_delete_message">Vols treure %1$s del teu compte?</string>
+    <string name="push_other_device">Un altre dispositiu o un registre obsolet</string>
+    <string name="push_registered">Registrat: %1$s</string>
+    <string name="push_last_seen">Vist per última vegada: %1$s</string>
+    <string name="push_server_id">ID del servidor: %1$s</string>
+    <string name="push_token">Testimoni: %1$s</string>
+    <string name="push_build">compilació %1$s</string>
+    <string name="push_simulator">emulador</string>
+    <string name="push_android_device">dispositiu Android</string>
+    <string name="push_load_failed">No s\'ha pogut carregar la configuració de les notificacions push.</string>
+    <string name="push_enabled">Les notificacions push estan activades en aquest dispositiu.</string>
+    <string name="push_opened_settings">El sistema ja no mostrarà l\'avís de permís, així que Happy ha obert la configuració.</string>
+    <string name="push_not_granted">No s\'ha concedit el permís de notificacions push.</string>
+    <string name="push_request_failed">No s\'ha pogut demanar el permís de notificacions push.</string>
+    <string name="push_refreshed">S\'ha actualitzat el testimoni push d\'aquest dispositiu.</string>
+    <string name="push_not_enabled">Les notificacions push encara no estan activades en aquest dispositiu.</string>
+    <string name="push_refresh_failed">No s\'ha pogut actualitzar el testimoni push d\'aquest dispositiu.</string>
+    <string name="push_delete_failed">No s\'ha pogut suprimir el testimoni push.</string>
+</resources>

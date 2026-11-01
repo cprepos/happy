@@ -45,6 +45,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.unit.dp
 import com.slopus.happy.R
+import com.slopus.happy.ui.browser.rememberTextLayout
+import com.slopus.happy.ui.browser.webLinkGestures
 import com.slopus.happy.ui.components.Icon
 import com.slopus.happy.ui.components.Ionicon
 import com.slopus.happy.ui.theme.HappyTheme
@@ -169,15 +171,25 @@ fun BotFacePicker(bot: HomeDockBot, onPick: (Int) -> Unit, onRoll: () -> Unit, o
                 if (url.isNullOrEmpty()) {
                     append(bot.artist)
                 } else {
+                    // Tagged with its address, so a long press offers the link menu for it.
                     withLink(
                         LinkAnnotation.Clickable(
-                            "artist",
+                            url,
                             TextLinkStyles(SpanStyle(textDecoration = TextDecoration.Underline)),
                         ) { onOpenUrl(url) },
                     ) { append(bot.artist) }
                 }
             }
-            Text(credit, style = BotFaceSpec.credit, color = colors.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.testTag(BotFaceTags.CREDIT))
+            val layout = rememberTextLayout()
+            Text(
+                credit,
+                style = BotFaceSpec.credit,
+                color = colors.textSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                onTextLayout = { layout.value = it },
+                modifier = Modifier.testTag(BotFaceTags.CREDIT).webLinkGestures(credit, layout),
+            )
         }
     }
 }

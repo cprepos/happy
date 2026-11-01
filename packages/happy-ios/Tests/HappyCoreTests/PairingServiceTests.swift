@@ -1,0 +1,94 @@
+import Foundation
+import XCTest
+@testable import HappyCore
+import HappyCrypto
+import HappyWire
+
+private func vectorBytes(_ hex: String) -> Data {
+    Data(stride(from: 0, to: hex.count, by: 2).map { offset in
+        let start = hex.index(hex.startIndex, offsetBy: offset)
+        return UInt8(hex[start..<hex.index(start, offsetBy: 2)], radix: 16)!
+    })
+}
+
+private actor PairingVectorTransport: AgentTransport {
+    var requests: [(String, String, Data?)] = []
+    var closed = false
+    let ending: String
+    let proof: Data
+    var confirms = 0
+    init(ending: String = "completed", proof: Data = vectorBytes("81fa0f2f506f539f4ca3f22eeeac675850f3cd902719f14799fc6519266893c9")) { self.ending = ending; self.proof = proof }
+    func request(method: String, path: String, credential: String, body: Data?, headers: [String: String]) async throws -> HTTP1Response {
+        requests.append((path, credential, body))
+        let object: [String: Any]
+        if path.hasSuffix("/handshake") && method == "POST" {
+            object = ["handshakeId": CanonicalBase64URL.encode(Data(repeating: 6, count: 32)), "publicKey": CanonicalBase64URL.encode(vectorBytes("ce8d3ad1ccb633ec7b70c17814a5c76ecd029685050d344745ba05870e587d59")), "nonce": CanonicalBase64URL.encode(Data(repeating: 5, count: 32)), "expiresAt": Date().addingTimeInterval(60).timeIntervalSince1970 * 1000]
+        } else if path.hasSuffix("/reveal") { object = ["status": "verifying"] }
+        else if path.hasSuffix("/reject") { object = ["status": "rejected"] }
+        else if path.hasSuffix("/confirm") { confirms += 1; object = ["status": "verifying"] }
+        else { object = ["status": ending, "deviceId": "dvVectorDevice", "mac": CanonicalBase64URL.encode(proof)] }
+        return HTTP1Response(status: 200, body: try JSONSerialization.data(withJSONObject: object))
+    }
+    func close() { closed = true }
+    func snapshot() -> ([(String, String, Data?)], Bool) { (requests, closed) }
+}
+
+final class PairingServiceTests: XCTestCase {
+    private func service(_ transport: PairingVectorTransport, publicUrl: String? = nil) throws -> PairingService {
+        var payload: [String: Any] = ["v": 1, "a": "tcFixedVectorAddress", "p": 24781, "t": CanonicalBase64URL.encode(Data(repeating: 3, count: 32)), "n": "Unverified Mac", "e": Date().addingTimeInterval(60).timeIntervalSince1970 * 1000]
+        if let publicUrl { payload["v"] = 2; payload["u"] = publicUrl; payload["a"] = nil; payload["p"] = nil }
+        let link = try PairingLink(PairingLink.prefix + CanonicalBase64URL.encode(JSONSerialization.data(withJSONObject: payload)))
+        return PairingService(link: link, transport: transport, crypto: try PairingCrypto(privateKey: Data(repeating: 1, count: 32), nonce: Data(repeating: 4, count: 32)))
+    }
+    func testCommitRevealEmojiConfirmWaitAndProof() async throws {
+        let transport = PairingVectorTransport(); let service = try service(transport)
+        let emoji = try await service.start(deviceName: "Phone")
+        XCTAssertEqual(emoji, ["🌀", "👗", "⏳", "👟"])
+        let credentials = try await service.confirm()
+        XCTAssertEqual(credentials.deviceToken, CanonicalBase64URL.encode(vectorBytes("05bf38156a0b81046b4e15f584760e0e8996efe81239e5efe4560fef29c20aeb")))
+        let (requests, closed) = await transport.snapshot()
+        XCTAssertEqual(requests.map(\.0), ["/v0/mobile-connector/handshake", "/v0/mobile-connector/handshake/reveal", "/v0/mobile-connector/handshake/confirm", "/v0/mobile-connector/handshake?wait=25"])
+        XCTAssertEqual(requests[0].1, CanonicalBase64URL.encode(Data(repeating: 3, count: 32)))
+        XCTAssertTrue(requests.dropFirst().allSatisfy { $0.1 == CanonicalBase64URL.encode(Data(repeating: 6, count: 32)) })
+        let confirmation = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(requests[2].2)) as? [String: String])
+        XCTAssertEqual(confirmation["mac"], CanonicalBase64URL.encode(vectorBytes("56562cd319819213d10c33fd9e508fffb19343d84b14882ecfc550c058181d85")))
+        XCTAssertTrue(closed)
+    }
+    func testInvalidProofNeverProducesCredentials() async throws {
+        let transport = PairingVectorTransport(proof: Data(repeating: 0, count: 32)); let service = try service(transport)
+        _ = try await service.start(deviceName: "Phone")
+        do { _ = try await service.confirm(); XCTFail("Bad proof accepted") }
+        catch { XCTAssertEqual(error as? PairingError, .invalidProof) }
+        await service.cancel()
+    }
+    func testPublicOriginPairingProofAndCredentialPersistence() async throws {
+        let origin = "https://agent.example.com:8443"
+        let transport = PairingVectorTransport(proof: vectorBytes("876bd980d032036c848f77faaa191644e31504f10bd2a6713f669dac9bb8849f"))
+        let service = try service(transport, publicUrl: origin)
+        let emoji = try await service.start(deviceName: "Phone")
+        XCTAssertEqual(emoji, ["🇨🇳", "✉️", "🚠", "🍼"])
+        let credentials = try await service.confirm()
+        XCTAssertEqual(credentials.address, origin)
+        XCTAssertEqual(credentials.publicUrl, origin)
+        XCTAssertEqual(credentials.tailcatAvailable, false)
+        XCTAssertEqual(credentials.port, 8443)
+        XCTAssertEqual(credentials.deviceToken, CanonicalBase64URL.encode(vectorBytes("a175d3b4fea158aade7d1becf944f3d5eed2e62d7e73cbdcc4aec5e0a93a58a8")))
+        XCTAssertEqual(try JSONDecoder().decode(AgentConnectionCredentials.self, from: JSONEncoder().encode(credentials)), credentials)
+        let old = Data(#"{"address":"tcAddress","port":24781,"deviceID":"device","deviceToken":"token"}"#.utf8)
+        XCTAssertNil(try JSONDecoder().decode(AgentConnectionCredentials.self, from: old).publicUrl)
+    }
+    func testRejectedExpiredAndCancellationAreFinal() async throws {
+        for ending in ["rejected", "expired"] {
+            let transport = PairingVectorTransport(ending: ending); let service = try service(transport)
+            _ = try await service.start(deviceName: "Phone")
+            do { _ = try await service.confirm(); XCTFail("Terminal status accepted") }
+            catch { XCTAssertEqual(error as? PairingError, ending == "rejected" ? .rejected : .expired) }
+            await service.cancel()
+        }
+        let transport = PairingVectorTransport(); let service = try service(transport)
+        _ = try await service.start(deviceName: "Phone"); await service.cancel()
+        do { _ = try await service.confirm(); XCTFail("Cancelled handshake accepted") } catch is CancellationError { }
+        let (requests, closed) = await transport.snapshot()
+        XCTAssertEqual(requests.last?.0, "/v0/mobile-connector/handshake/reject"); XCTAssertTrue(closed)
+    }
+}

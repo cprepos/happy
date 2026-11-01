@@ -16,8 +16,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -127,20 +130,31 @@ fun ItemGroup(
     }
 }
 
-/** ItemList: the grouped-background scroll view, 16 of bottom padding. */
+/**
+ * ItemList: the grouped-background scroll view, 16 of bottom padding. On a
+ * [Screen] it runs under the glass header, starting with the header's room
+ * ([LocalBarInset]), so its groups scroll on under the bar.
+ */
 @Composable
 fun ItemList(
     modifier: Modifier = Modifier,
     scrollState: ScrollState = rememberScrollState(),
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    val inset = LocalBarInset.current
+    if (inset != null) ClaimBarInset(inset)
+    // A row the page was opened to show scrolls to the middle of what shows ([RowReveal]).
+    val scroller = if (LocalRowReveal.current != null) remember(scrollState, inset) { RevealScroller(scrollState, inset?.top ?: 0.dp) } else null
     Column(
         modifier = modifier
             .fillMaxSize()
             .background(HappyTheme.colors.grouped.background)
+            .then(if (scroller != null) Modifier.onGloballyPositioned { scroller.viewport = it } else Modifier)
             .verticalScroll(scrollState),
     ) {
-        content()
+        if (inset != null) Spacer(modifier = Modifier.height(inset.top))
+        // Nested lists start where this one does.
+        CompositionLocalProvider(LocalBarInset provides null, LocalRevealScroller provides (scroller ?: LocalRevealScroller.current)) { content() }
         Spacer(modifier = Modifier.height(ItemGroupSpec.listPaddingBottom))
     }
 }

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="surface_leave">退出</string>
+    <string name="surface_leave_title">「%1$s」から退出しますか？</string>
+    <string name="surface_leave_message">すべてのデバイスであなたのリストから消えます。ほかの参加者には残ります。</string>
+    <string name="surface_leave_failed">「%1$s」から退出できませんでした</string>
+    <string name="surface_leave_no_answer">エージェントが応答しませんでした。少し待ってからもう一度お試しください。</string>
+    <string name="conversation_jump_to_latest">最新へ移動</string>
+    <string name="conversation_jump_working">作業中</string>
+</resources>

@@ -96,6 +96,7 @@ export const en: TranslationStructure = {
 
 
     status: {
+        syncing: 'syncing',
         connected: 'connected',
         connecting: 'connecting',
         disconnected: 'disconnected',
@@ -1054,6 +1055,7 @@ export const en: TranslationStructure = {
         sending: 'Sending…',
         sendFailed: ({ reason }: { reason: string }) => `Not sent: ${reason}`,
         unknownTime: 'unknown time',
+        mediaPosition: ({ index, total }: { index: number; total: number }) => `${index} of ${total}`,
     },
 
     codex: {
@@ -1212,6 +1214,17 @@ export const en: TranslationStructure = {
         friendRequestGeneric: 'New friend request',
         friendAccepted: ({ name }: { name: string }) => `You are now friends with ${name}`,
         friendAcceptedGeneric: 'Friend request accepted',
+    },
+
+    // What new work will be, in the middle of its empty chat (the native apps' compose).
+    newWork: {
+        task: 'Task',
+        bot: 'Bot',
+        name: 'Name (optional)',
+        taskNote: 'A task names itself from its first message unless you name it.',
+        botNote: 'A bot is one lasting conversation with a folder of its own.',
+        taskFailed: ({ reason }: { reason: string }) => `The task could not be started. ${reason} Your text and attachments are still here.`,
+        botFailed: ({ reason }: { reason: string }) => `The bot could not be started. ${reason} Your text and attachments are still here.`,
     },
 
 } as const;

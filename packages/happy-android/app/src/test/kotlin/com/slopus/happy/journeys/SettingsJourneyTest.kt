@@ -7,7 +7,7 @@ import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isDialog
 import androidx.compose.ui.test.junit4.v2.createComposeRule
-import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.test.core.app.ApplicationProvider
@@ -41,11 +41,11 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
 /**
- * Journey 5, Settings and back: Dark theme, Pixelated avatars, Russian and
+ * Journey 5, Settings and back: Dark theme, black-and-white avatars, Russian and
  * developer mode, each set where Settings puts it and each holding on Home,
  * in the chat and in Settings; the account's settings reach the server.
  * Logout then drops this phone's push token on the server and wipes the
- * account, back to Welcome in the device's language.
+ * account, back to the first screen in the device's language.
  */
 @OptIn(ExperimentalTestApi::class)
 @RunWith(AndroidJUnit4::class)
@@ -87,19 +87,18 @@ class SettingsJourneyTest {
         rule.waitFor(FlatRowTags.ROW)
         assertEquals(false, dark)
 
-        // Settings › Appearance: Dark (Adaptive → Light → Dark), Pixelated avatars.
+        // Settings › Appearance: Dark (Adaptive → Light → Dark), black-and-white avatars.
         rule.node(HomeTags.SETTINGS).performClick()
         rule.waitFor(SettingsTags.VERSION)
         rule.assertActionsLabelled()
         clickable("Appearance").performScrollTo().performClick()
-        rule.waitForText("Avatar Style")
+        rule.waitForText("Black & White Avatars")
         clickable("Appearance").performClick()
         clickable("Appearance").performClick()
         rule.waitUntil(5_000) { dark == true }
         assertEquals(ThemePreference.Dark, graph.localSettings.themePreference.value)
-        clickable("Avatar Style").performScrollTo().performClick()
-        rule.onNodeWithText("Pixelated").performScrollTo().performClick()
-        rule.waitUntil(10_000) { server.settingsJson()?.get("avatarStyle")?.jsonPrimitive?.content == "pixelated" }
+        rule.onNodeWithContentDescription("Black & White Avatars").performScrollTo().performClick()
+        rule.waitUntil(10_000) { server.settingsJson()?.get("avatarMonochrome")?.jsonPrimitive?.content == "true" }
         rule.assertActionsLabelled()
 
         // Language: Russian, confirmed; the screen speaks it at once.
@@ -122,24 +121,24 @@ class SettingsJourneyTest {
 
         // Home and the chat, in Russian and dark; the session's row and settings unchanged.
         back()
-        rule.waitForText("Сессии")
+        rule.waitFor(HomeTags.SETTINGS)
+        rule.onNode(androidx.compose.ui.test.hasContentDescription("Настройки"), useUnmergedTree = true).assertExists()
         assertEquals(true, dark)
         rule.node(FlatRowTags.ROW).performClick()
         rule.waitFor(ChatScreenTags.SCREEN)
         rule.waitForText("Введите сообщение...")
         rule.assertActionsLabelled()
-        assertEquals("pixelated", graph.settings.settings.value.avatarStyle)
+        assertTrue(graph.settings.settings.value.avatarMonochrome)
         rule.node(ComposerTags.INPUT).assertExists()
         back()
         rule.waitFor(FlatRowTags.ROW)
 
-        // Logout, from Settings › Account, confirmed.
+        // Logout, Settings' last row, confirmed.
         rule.node(HomeTags.SETTINGS).performClick()
-        clickable("Аккаунт").performScrollTo().performClick()
-        clickable("Выйти").performScrollTo().performClick()
+        rule.node(com.slopus.happy.ui.settings.SettingsPageTags.REMOVE).performScrollTo().performClick()
         dialogButton("Выйти").performClick()
-        // The language was the account's setting: Welcome is back in the device's, as after happy-app's reload.
-        rule.waitForText("Create account")
+        // The language was the account's setting: the first screen is back in the device's, as after happy-app's reload.
+        rule.waitForText("Start")
         rule.waitUntil(10_000) { server.requestsTo("/v1/push-tokens/ExponentPushToken%5Bphone%5D").any { it.method == "DELETE" } }
         assertNull(tokens.load())
         assertNull(graph.store.profile())

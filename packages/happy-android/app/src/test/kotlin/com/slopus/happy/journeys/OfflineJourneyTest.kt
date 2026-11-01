@@ -98,7 +98,8 @@ class OfflineJourneyTest {
     @Test
     fun aDropQueuesSendsAndABacklogThatGoOutWhenTheServerIsBack() {
         openChat()
-        rule.node(HomeTags.STATUS).assertDoesNotExist()
+        // Connected, the bar holds just the name, as agent home's does.
+        rule.waitUntilDoesNotExist(hasTestTag(HomeTags.STATUS), 10_000)
 
         // The socket goes and won't come back; home says so.
         server.acceptSockets = false

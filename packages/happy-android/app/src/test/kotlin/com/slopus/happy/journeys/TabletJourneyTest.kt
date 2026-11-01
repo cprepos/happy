@@ -1,6 +1,7 @@
 package com.slopus.happy.journeys
 
 import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasAnyDescendant
@@ -13,7 +14,6 @@ import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
-import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.slopus.happy.ui.HappyApp
 import com.slopus.happy.ui.assertActionsLabelled
@@ -23,9 +23,8 @@ import com.slopus.happy.ui.chat.ChatScreenTags
 import com.slopus.happy.ui.chat.ComposerTags
 import com.slopus.happy.ui.chat.MessageTags
 import com.slopus.happy.ui.home.FlatRowTags
-import com.slopus.happy.ui.home.HomeDockTags
 import com.slopus.happy.ui.home.HomeTags
-import com.slopus.happy.ui.home.NewSessionTags
+import com.slopus.happy.ui.chat.ComposeChatTags
 import com.slopus.happy.ui.node
 import com.slopus.happy.ui.tablet.TabletShellTags
 import com.slopus.happy.ui.tablet.TabletSidebarTags
@@ -34,7 +33,6 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.junit.After
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -91,17 +89,17 @@ class TabletJourneyTest {
         rule.waitFor(MessageTags.USER)
         rule.assertActionsLabelled()
 
-        // New Session in the detail: it starts, and its chat replaces the other.
+        // New session in the detail: the compose chat replaces the other, and becomes the started chat.
         val spawns = journey.rpc(Journey.MACHINE, "spawn-happy-session") { request ->
             server.addSession("b", updatedAt = 90_000, metadata = Journey.sessionMetadata(request["directory"]!!.jsonPrimitive.content, "Started on tablet"))
             buildJsonObject { put("type", "success"); put("sessionId", "b") }
         }
         rule.node(TabletSidebarTags.NEW_SESSION).performClick()
-        rule.waitFor(NewSessionTags.SCREEN)
-        assertTrue(rule.node(NewSessionTags.SCREEN).bounds.left >= 360.dp)
-        rule.waitFor(HomeDockTags.INPUT)
-        rule.node(HomeDockTags.INPUT).performTextInput("Start here")
-        rule.node(HomeDockTags.PRIMARY).performClick()
+        rule.waitFor(ComposeChatTags.TARGET)
+        rule.onAllNodes(hasTestTag(ChatScreenTags.SCREEN) and com.slopus.happy.ui.isOnActivePage, useUnmergedTree = true).assertCountEquals(1)
+        assertDp("the compose chat in the detail", 360, rule.node(ChatScreenTags.SCREEN).bounds.left)
+        rule.node(ComposerTags.INPUT).performTextInput("Start here")
+        rule.node(ComposerTags.PRIMARY).performClick()
         rule.waitUntil(15_000) { server.sentRecords("b").any { "Start here" in it.second.toString() } }
         assertEquals("claude", spawns.single()["agent"]!!.jsonPrimitive.content)
         rule.waitForChatTitle("Started on tablet", 15_000)

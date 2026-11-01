@@ -1,0 +1,163 @@
+package com.slopus.happy.artifacts
+
+import androidx.compose.runtime.Immutable
+import com.slopus.happy.chat.arr
+import com.slopus.happy.chat.num
+import com.slopus.happy.chat.obj
+import com.slopus.happy.chat.str
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+
+/**
+ * An artifact as something names it (iOS's `Artifact`): a catalog row, a
+ * tool call's card, a reference in a message. [followsLatest] opens the
+ * newest version; otherwise exactly [version].
+ */
+@Immutable
+@Serializable
+data class ArtifactRef(
+    val id: String,
+    val version: Int,
+    val type: String,
+    val title: String,
+    val followsLatest: Boolean,
+    /** A reference named this version: it opens that one, never the latest. */
+    val pinned: Boolean = false,
+) {
+    /** Desktop's card follows the artifact from the call that created it, whose files are written after it. */
+    val opensLatest: Boolean get() = followsLatest || (version == 1 && !pinned)
+
+    companion object {
+        /** A tool call's `artifact` presentation: `shows: "latest"` follows it, else it is exactly `version`. */
+        fun presented(id: String, version: Int?, type: String?, title: String?, shows: String?) =
+            ArtifactRef(id, version ?: 1, type ?: "unknown", title.orEmpty(), followsLatest = shows == "latest")
+    }
+}
+
+/** One file of an artifact version, as its manifest lists it. */
+@Immutable
+data class ArtifactFile(val path: String, val mimeType: String, val size: Long) {
+    val name: String get() = path.substringAfterLast('/')
+    val isVideo: Boolean get() = mimeType.startsWith("video/")
+    /** A picture or a recording: shown natively, in the gallery and the viewer. */
+    val isVisual: Boolean get() = mimeType.startsWith("image/") || isVideo
+    val isMarkdown: Boolean get() {
+        val ext = path.substringAfterLast('.', "").lowercase()
+        return mimeType.startsWith("text/markdown") || ext == "md" || ext == "markdown"
+    }
+
+    /**
+     * What Android's WebView draws itself: pages, text and SVG. A PDF or an
+     * office file it would only download, so those open in another app.
+     */
+    val isWebPage: Boolean get() {
+        val type = mimeType.substringBefore(';').trim().lowercase()
+        val ext = path.substringAfterLast('.', "").lowercase()
+        return type.startsWith("text/") || type == "application/xhtml+xml" || type == "image/svg+xml" ||
+            type == "application/json" || ext in setOf("html", "htm", "xhtml", "svg", "txt", "json", "css", "js")
+    }
+
+    companion object {
+        fun parse(value: JsonElement?): ArtifactFile? {
+            val o = value.obj ?: return null
+            return ArtifactFile(
+                path = o["path"].str ?: return null,
+                mimeType = o["mimeType"].str ?: "application/octet-stream",
+                size = o["size"].num?.toLong() ?: 0,
+            )
+        }
+    }
+}
+
+/**
+ * One version of an artifact (`GET /v0/artifacts/:id/versions/:n`): its
+ * entry, its files and, for an older page, the URL it runs at.
+ */
+@Immutable
+data class ArtifactVersion(
+    val artifactId: String,
+    val number: Int,
+    val title: String,
+    val entry: ArtifactFile?,
+    val files: List<ArtifactFile>,
+    val liveUrl: String? = null,
+) {
+    fun file(path: String): ArtifactFile? = files.firstOrNull { it.path == path } ?: entry?.takeIf { it.path == path }
+
+    companion object {
+        fun parse(version: JsonObject?): ArtifactVersion? {
+            version ?: return null
+            val files = version["files"].arr.orEmpty().mapNotNull(ArtifactFile::parse)
+            // API.md: the entry is a file object. One without its type is looked up in the manifest,
+            // and bad metadata never opens another file by implication.
+            val declared = version["entry"].obj
+            val entry = declared?.takeIf { it["mimeType"].str != null }?.let(ArtifactFile::parse)
+                ?: declared?.get("path").str?.let { path -> files.firstOrNull { it.path == path } }
+            return ArtifactVersion(
+                artifactId = version["artifactId"].str ?: "",
+                number = version["number"].num?.toInt() ?: return null,
+                title = version["title"].str.orEmpty(),
+                entry = entry,
+                files = files,
+                liveUrl = version["live"].obj?.get("url").str,
+            )
+        }
+    }
+}
+
+/**
+ * What one artifact screen shows, decided from the version alone (iOS's
+ * `ArtifactViewController.load`): a page at its live URL; a Markdown
+ * document; the version's pictures and recordings, or the one a link
+ * opened; any other page in the browser; a file the WebView can't draw
+ * handed to another app; or nothing, when the file isn't in the version.
+ */
+sealed interface ArtifactShow {
+    data class Live(val url: String) : ArtifactShow
+    data class Document(val file: ArtifactFile) : ArtifactShow
+    data class Gallery(val files: List<ArtifactFile>) : ArtifactShow
+    data class Page(val file: ArtifactFile) : ArtifactShow
+    data class Openable(val file: ArtifactFile) : ArtifactShow
+    data object Unavailable : ArtifactShow
+
+    companion object {
+        /** [path] is the file a link opened; null for the entry. */
+        fun of(version: ArtifactVersion, path: String? = null): ArtifactShow {
+            if (path == null) version.liveUrl?.let { return Live(it) }
+            val entry = version.entry ?: return Unavailable
+            val wanted = path ?: entry.path
+            val file = version.files.firstOrNull { it.path == wanted } ?: entry.takeIf { wanted == it.path } ?: return Unavailable
+            return when {
+                file.isMarkdown -> Document(file)
+                file.isVisual -> {
+                    // An image series is all of its pictures and recordings, in the manifest's order.
+                    val shown = if (file == entry) version.files.filter { it.isVisual } else listOf(file)
+                    Gallery(shown.ifEmpty { listOf(file) })
+                }
+                file.isWebPage -> Page(file)
+                else -> Openable(file)
+            }
+        }
+    }
+}
+
+/** A catalog page's row (`GET /v0/artifacts`), as iOS's list reads it. */
+@Immutable
+data class ArtifactListing(val items: List<ArtifactRef>, val next: String?) {
+    companion object {
+        fun parse(answer: JsonObject): ArtifactListing = ArtifactListing(
+            items = answer["artifacts"].arr.orEmpty().mapNotNull { item ->
+                val o = item.obj ?: return@mapNotNull null
+                ArtifactRef(
+                    id = o["id"].str ?: return@mapNotNull null,
+                    version = o["latestVersion"].num?.toInt() ?: 1,
+                    type = o["type"].str.orEmpty(),
+                    title = o["title"].str.orEmpty(),
+                    followsLatest = true,
+                )
+            },
+            next = answer["nextPageCursor"].str,
+        )
+    }
+}

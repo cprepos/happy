@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  values/strings_android.xml in ja: Android-only strings, not in happy-app's
+  catalogs. AndroidStringsTranslatedTest fails while one is missing here.
+-->
+<resources>
+    <plurals name="conversation_attached_picture_count">
+        <item quantity="other">添付画像 %1$d 枚</item>
+    </plurals>
+    <string name="server_url_empty">サーバー URL を入力してください</string>
+    <string name="server_url_protocol">サーバー URL には HTTP または HTTPS を使ってください</string>
+    <string name="server_url_invalid">URL の形式が正しくありません</string>
+    <string name="settings_agents">エージェント</string>
+    <string name="settings_agents_subtitle">接続済みのコンピュータとエージェントの既定値</string>
+    <string name="happy_action_unknown_error">不明なエラー</string>
+    <string name="live_avatars_title">アニメーションアバター</string>
+    <string name="live_avatars_description">写真のないアバターが動きます。バッテリーの消費が増えます。</string>
+    <string name="settings_appearance_file_diffs_sidebar">ファイル差分サイドバー</string>
+    <string name="settings_appearance_file_diffs_sidebar_description">デスクトップでチャットの横に git の変更を表示</string>
+    <string name="chat_scroll_to_bottom">一番下までスクロール</string>
+    <string name="voice_clear_search">検索をクリア</string>
+    <string name="scan_unavailable">このデバイスでは QR スキャナーを使えません。代わりにリンクを貼り付けてください。</string>
+    <string name="scan_not_happy_code">この QR コードは Happy のものではありません。</string>
+    <string name="scan_terminal_code_elsewhere">このコードはターミナルを接続します。「設定 › QRコードをスキャンして認証」からスキャンしてください。</string>
+    <string name="scan_account_code_elsewhere">このコードは新しいデバイスをリンクします。「設定 › バックアップと復元 › 新しいデバイスをリンク」からスキャンしてください。</string>
+    <string name="scan_pairing_unavailable">このコードはエージェントを接続します。ホームのアカウントメニューにある「追加」を使ってください。</string>
+    <string name="scan_close">閉じる</string>
+    <string name="scan_hint">カメラを QR コードに向けてください</string>
+    <string name="scan_open_settings">設定を開く</string>
+    <string name="scan_torch_on">ライトをオン</string>
+    <string name="scan_torch_off">ライトをオフ</string>
+    <string name="state_animation_replay">もう一度再生</string>
+    <string name="scan_no_camera">このデバイスにはカメラがありません。リンクを貼り付けてください。</string>
+    <string name="scan_camera_failed">カメラを起動できませんでした。もう一度試すか、リンクを貼り付けてください。</string>
+    <string name="voice_microphone_title">マイクへのアクセスが必要です</string>
+    <string name="voice_microphone_ask">ボイスチャットには Happy がマイクにアクセスする必要があります。確認が表示されたら許可してください。</string>
+    <string name="voice_microphone_settings">ボイスチャットには Happy がマイクにアクセスする必要があります。デバイスの設定でマイクへのアクセスを有効にしてください。</string>
+</resources>

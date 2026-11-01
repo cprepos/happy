@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="surface_leave">Покинуть</string>
+    <string name="surface_leave_title">Покинуть «%1$s»?</string>
+    <string name="surface_leave_message">Пропадёт из вашего списка на всех ваших устройствах. У остальных участников останется.</string>
+    <string name="surface_leave_failed">Не удалось покинуть «%1$s»</string>
+    <string name="surface_leave_no_answer">Агент не ответил. Попробуйте ещё раз чуть позже.</string>
+    <string name="conversation_jump_to_latest">К последним сообщениям</string>
+    <string name="conversation_jump_working">работает</string>
+</resources>

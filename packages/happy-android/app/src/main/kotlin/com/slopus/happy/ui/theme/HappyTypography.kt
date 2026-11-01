@@ -2,28 +2,19 @@ package com.slopus.happy.ui.theme
 
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.sp
-import com.slopus.happy.R
 
-// Ported from packages/happy-app/sources/constants/Typography.ts:
-// IBM Plex Sans for text, IBM Plex Mono for code and keys.
+// The system's own faces, as an Android app reads: the system sans for text
+// and the system monospace for code and keys (Typography.ts's IBM Plex is
+// happy-app's). The logotype is artwork and keeps its own lettering.
 
-val PlexSans = FontFamily(
-    Font(R.font.ibm_plex_sans_regular, FontWeight.Normal),
-    Font(R.font.ibm_plex_sans_italic, FontWeight.Normal, FontStyle.Italic),
-    Font(R.font.ibm_plex_sans_semibold, FontWeight.SemiBold),
-)
+val AppSans: FontFamily = FontFamily.Default
 
-val PlexMono = FontFamily(
-    Font(R.font.ibm_plex_mono_regular, FontWeight.Normal),
-    Font(R.font.ibm_plex_mono_semibold, FontWeight.SemiBold),
-)
+val AppMono: FontFamily = FontFamily.Monospace
 
 /**
  * React Native on Android gives every line exactly `lineHeight`, with the
@@ -47,27 +38,38 @@ private val RnTightLineHeightStyle = LineHeightStyle(
     mode = LineHeightStyle.Mode.Tight,
 )
 
-/** (ascender 1025 + descender 275) / 1000 units per em, in every IBM Plex face bundled here. */
-private const val PLEX_LINE_HEIGHT_RATIO = 1.3f
+/** Roboto's (ascender 1900 + descender 500) / 2048 units per em: below it a line height is tight. */
+private const val FONT_LINE_HEIGHT_RATIO = 1.17f
+
+/**
+ * The weight text is drawn at for the weight a stylesheet asks. Typography.ts's
+ * semibold (600) is IBM Plex's, a light face; the system's 600 is Roboto's
+ * heaviest step short of bold, and faces without one (Samsung's One UI font)
+ * fall to bold, so emphasis read fat. Android's own type scale emphasises
+ * with medium (500), so 600 and up are drawn medium.
+ */
+fun appWeight(weight: FontWeight): FontWeight = if (weight >= FontWeight.SemiBold) FontWeight.Medium else weight
 
 /**
  * A text style built the way the RN stylesheets declare them: family, size,
  * line height, tracking. Without a line height, RN Android lays text out
- * with the font's padding included, so that is kept too.
+ * with the font's padding included, so that is kept too. Weights go through
+ * [appWeight]; iOS's negative tracking (SF's) is not taken, as it crowds the
+ * system face.
  */
 fun happyTextStyle(
     fontSize: Int,
     lineHeight: Int? = null,
     letterSpacing: Float = 0f,
     weight: FontWeight = FontWeight.Normal,
-    family: FontFamily = PlexSans,
+    family: FontFamily = AppSans,
 ): TextStyle = TextStyle(
     fontFamily = family,
-    fontWeight = weight,
+    fontWeight = appWeight(weight),
     fontSize = fontSize.sp,
     lineHeight = lineHeight?.sp ?: TextUnit.Unspecified,
-    letterSpacing = letterSpacing.sp,
-    lineHeightStyle = if (lineHeight != null && lineHeight < fontSize * PLEX_LINE_HEIGHT_RATIO) RnTightLineHeightStyle else RnLineHeightStyle,
+    letterSpacing = letterSpacing.coerceAtLeast(0f).sp,
+    lineHeightStyle = if (lineHeight != null && lineHeight < fontSize * FONT_LINE_HEIGHT_RATIO) RnTightLineHeightStyle else RnLineHeightStyle,
     platformStyle = if (lineHeight == null) RnFontPadding else null,
 )
 

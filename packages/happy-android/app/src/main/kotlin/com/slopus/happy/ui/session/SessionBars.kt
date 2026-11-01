@@ -17,7 +17,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.CircularProgressIndicator
+import com.slopus.happy.ui.components.PageProgressIndicator as CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -45,6 +45,7 @@ import com.slopus.happy.model.RigActivityIndicator
 import com.slopus.happy.model.offeredActions
 import com.slopus.happy.ui.components.Icon
 import com.slopus.happy.ui.components.Ionicon
+import com.slopus.happy.ui.components.ShimmerSpec
 import com.slopus.happy.ui.components.ShimmerText
 import com.slopus.happy.ui.theme.HappyTheme
 import com.slopus.happy.ui.theme.happyTextStyle
@@ -239,8 +240,8 @@ fun RigActivityBar(indicators: List<RigActivityIndicator>, modifier: Modifier = 
 /**
  * PendingChatPlaceholder: a chat no machine has agreed to run yet. Spec:
  * centred, 48 in: chatbubbles-outline 64 in textSecondary, 16 above
- * "Starting a new chat…" (18 semibold, shimmering from textSecondary to
- * text); under it the messages already sent (15/21 text, up to 6 lines,
+ * "Starting a new chat…" (18 semibold, desktop's lift shimmer: text 38%
+ * into the surface with a band of full text, plain text with animations off); under it the messages already sent (15/21 text, up to 6 lines,
  * 10 below), else the anchor's directory (14 secondary, one line, 6 below).
  */
 @Composable
@@ -258,8 +259,10 @@ fun PendingChatPlaceholder(pending: PendingChat, anchorPath: String?, modifier: 
         ShimmerText(
             text = stringResource(R.string.session_starting_chat),
             style = SessionBarSpec.pendingTitle.copy(textAlign = TextAlign.Center),
-            baseColor = colors.textSecondary,
+            // Desktop's "Creating …": letters dimmed toward the page, a full-strength band through them.
+            baseColor = ShimmerSpec.rest(colors.text, colors.surface),
             highlightColor = colors.text,
+            stillColor = colors.text,
             modifier = Modifier.testTag(SessionBarTags.PENDING_TITLE),
         )
         when {

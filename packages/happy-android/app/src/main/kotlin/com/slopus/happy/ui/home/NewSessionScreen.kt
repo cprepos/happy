@@ -1,5 +1,6 @@
 package com.slopus.happy.ui.home
 
+import com.slopus.happy.text.words
 import android.content.res.Resources
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -47,6 +48,7 @@ import com.slopus.happy.ui.chat.formatLastSeen
 import com.slopus.happy.ui.components.Alert
 import com.slopus.happy.ui.components.AlertButton
 import com.slopus.happy.ui.components.HappyAlert
+import com.slopus.happy.ui.components.GlassBarScreen
 import com.slopus.happy.ui.components.Header
 import com.slopus.happy.ui.components.Icon
 import com.slopus.happy.ui.components.Ionicon
@@ -189,8 +191,8 @@ fun rememberNewSessionDock(
                             }
                         }
                         is StartResult.NotSent -> notices = result.notices.map { attachmentNoticeAlert(it, resources) }
-                        is StartResult.Refused -> alert = Alert(strings.error, result.refusal.message, listOf(AlertButton(strings.ok)))
-                        is StartResult.Failed -> alert = Alert(strings.error, result.message, listOf(AlertButton(strings.ok)))
+                        is StartResult.Refused -> alert = Alert(strings.error, resources.getString(result.refusal.text), listOf(AlertButton(strings.ok)))
+                        is StartResult.Failed -> alert = Alert(strings.error, resources.words(result.message), listOf(AlertButton(strings.ok)))
                         StartResult.Abandoned -> Unit
                     }
                 }
@@ -284,9 +286,10 @@ fun rememberNewSessionDock(
 /**
  * new/index.tsx on a phone, reached from the empty home's "Start New
  * Session": the header (a 24 chevron-back in a 48 target, then "Start New
- * Session" 16/20 semibold start-aligned, both in the text colour), then the
- * dock's focused composer as the screen itself — the rows over the composer
- * at the bottom, a picker in their place, the progress line and Stop.
+ * Session" 16/20 semibold start-aligned, both in the text colour) on
+ * glass ([GlassBarScreen]), then the dock's focused composer as the
+ * screen itself — the rows over the composer at the bottom, a picker in
+ * their place, the progress line and Stop.
  *
  * The back button is the screen's own, so it stays under the tablet shell
  * too: happy-app draws it whenever the screen is native, and nothing hides it.
@@ -294,35 +297,44 @@ fun rememberNewSessionDock(
 @Composable
 fun NewSessionScreen(dock: NewSessionDock, onBack: () -> Unit, modifier: Modifier = Modifier) {
     val colors = HappyTheme.colors
-    Column(modifier = modifier.fillMaxSize().background(colors.grouped.background).testTag(NewSessionTags.SCREEN)) {
-        Header(
-            alignment = TitleAlignment.Start,
-            left = {
-                val back = stringResource(R.string.common_back)
-                Box(
-                    modifier = Modifier
-                        .testTag(NewSessionTags.BACK)
-                        .size(48.dp)
-                        .clickable(role = Role.Button, onClick = onBack)
-                        .semantics { contentDescription = back },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(Ionicon.ChevronBack, 24.dp, colors.text)
-                }
-            },
-            titleContent = {
-                Text(
-                    stringResource(R.string.new_session_title),
-                    style = happyTextStyle(fontSize = 16, lineHeight = 20, weight = FontWeight.SemiBold),
-                    color = colors.text,
-                    maxLines = 1,
-                    modifier = Modifier.testTag(NewSessionTags.TITLE).semantics { heading() },
-                )
-            },
-        )
-        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+    GlassBarScreen(
+        modifier = modifier.fillMaxSize().background(colors.grouped.background).testTag(NewSessionTags.SCREEN),
+        ground = colors.grouped.background,
+        bar = { NewSessionHeader(onBack) },
+    ) {
+        Box(modifier = Modifier.fillMaxSize()) {
             HomeDockFocus(dock.state, dock.actions, standalone = true)
         }
     }
     dock.dialogs()
+}
+
+@Composable
+private fun NewSessionHeader(onBack: () -> Unit) {
+    val colors = HappyTheme.colors
+    Header(
+        alignment = TitleAlignment.Start,
+        left = {
+            val back = stringResource(R.string.common_back)
+            Box(
+                modifier = Modifier
+                    .testTag(NewSessionTags.BACK)
+                    .size(48.dp)
+                    .clickable(role = Role.Button, onClick = onBack)
+                    .semantics { contentDescription = back },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Ionicon.ChevronBack, 24.dp, colors.text)
+            }
+        },
+        titleContent = {
+            Text(
+                stringResource(R.string.new_session_title),
+                style = happyTextStyle(fontSize = 16, lineHeight = 20, weight = FontWeight.SemiBold),
+                color = colors.text,
+                maxLines = 1,
+                modifier = Modifier.testTag(NewSessionTags.TITLE).semantics { heading() },
+            )
+        },
+    )
 }

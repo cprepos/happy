@@ -17,11 +17,11 @@ import com.slopus.happy.model.buildSessionListViewData
 import com.slopus.happy.model.collectMachineChoices
 import com.slopus.happy.model.hasArchivedSessions
 import com.slopus.happy.model.resolveHomeEmptyState
-import com.slopus.happy.model.shouldShowFirstRunInstall
 import com.slopus.happy.model.settings.LocalSettingsValues
 import com.slopus.happy.model.shouldShowOfflineMachinesBanner
 import com.slopus.happy.model.toFlatSessionRow
 import com.slopus.happy.model.visibleSessionListItems
+import com.slopus.happy.ui.components.HomeCardPlace
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -64,6 +64,65 @@ sealed interface HomeRow {
     }
 }
 
+/**
+ * A row as the phone's home draws it, in the inset cards (iOS's
+ * HomeListModel at a71eea391): [place] is its place in its card, or null
+ * for a row on the page between cards (a computer's heading, the archive
+ * toggle, a section's gap).
+ */
+@Immutable
+data class HomeCardEntry(val row: HomeRow, val place: HomeCardPlace?) {
+    val key: String get() = row.key
+}
+
+/** A row of a card, as opposed to a heading, a gap or the archive toggle. */
+private val HomeRow.isCardRow: Boolean
+    get() = when (this) {
+        is HomeRow.Chat -> true
+        is HomeRow.Project -> when (row) {
+            is ProjectHomeRow.Bot, is ProjectHomeRow.ProjectCard, is ProjectHomeRow.Worktree,
+            is ProjectHomeRow.Toggle, is ProjectHomeRow.Archived -> true
+            else -> false
+        }
+        is HomeRow.ArchiveToggle, is HomeRow.DayHeader -> false
+    }
+
+/** A worktree or the toggle ending them: on its project's tree line, which already joins it to the row above. */
+private val HomeRow.hangsOnTree: Boolean
+    get() = this is HomeRow.Project && (row is ProjectHomeRow.Worktree || row is ProjectHomeRow.Toggle)
+
+/**
+ * [rows] in cards: rows run together into one card until a heading, a gap
+ * or the archive toggle. Day headings go (the archive is one card under
+ * its toggle); a section's heading is only the gap between its card and
+ * the one above, and nothing at the top of a computer's rows; a computer
+ * heads its rows only when [showsMachines]. No hairline along a tree line.
+ */
+fun homeCardEntries(rows: List<HomeRow>, showsMachines: Boolean): List<HomeCardEntry> {
+    val kept = ArrayList<HomeRow>(rows.size)
+    for (row in rows) {
+        val project = (row as? HomeRow.Project)?.row
+        val dropped = row is HomeRow.DayHeader ||
+            project is ProjectHomeRow.ArchiveHeader ||
+            (project is ProjectHomeRow.MachineHeader && !showsMachines) ||
+            (project is ProjectHomeRow.Section && kept.lastOrNull()?.isCardRow != true)
+        if (!dropped) kept += row
+    }
+    return kept.mapIndexed { index, row ->
+        if (!row.isCardRow) return@mapIndexed HomeCardEntry(row, null)
+        val next = kept.getOrNull(index + 1)
+        val last = next?.isCardRow != true
+        HomeCardEntry(
+            row,
+            HomeCardPlace(
+                first = kept.getOrNull(index - 1)?.isCardRow != true,
+                last = last,
+                separated = !last && !next!!.hangsOnTree,
+            ),
+        )
+    }
+}
+
 /** The offline plaque: [machineName] when exactly one computer is linked. */
 @Immutable
 data class OfflineBanner(val machineName: String?)
@@ -72,13 +131,14 @@ data class OfflineBanner(val machineName: String?)
 @Immutable
 data class HomeListState(
     val emptyState: HomeEmptyState,
-    /** No computer linked: the link page takes the home over, even over sessions. */
-    val showsInstallStep: Boolean = emptyState == HomeEmptyState.Link,
     val grouping: SessionListGrouping,
     val hasArchivedSessions: Boolean,
     val archiveHidden: Boolean,
+    /** The rows as the tablet's sidebar lists them, full width. */
     val rows: List<HomeRow>,
     val offlineBanner: OfflineBanner?,
+    /** The same rows in the phone home's inset cards ([homeCardEntries]). */
+    val cards: List<HomeCardEntry> = emptyList(),
     /** The linked computers' names, for the offline checklist. */
     val computers: List<String> = emptyList(),
     /** Grouped by project: each chat's checkout, whose chats the session screen shows as tabs. */
@@ -119,11 +179,12 @@ fun deriveHomeList(inputs: HomeListInputs, zone: ZoneId, today: LocalDate): Home
     }
     return HomeListState(
         emptyState = resolveHomeEmptyState(visible.size, hasArchived, choices.size, online),
-        showsInstallStep = shouldShowFirstRunInstall(snapshot.machines.size),
         grouping = inputs.grouping,
         hasArchivedSessions = hasArchived,
         archiveHidden = inputs.archiveHidden,
         rows = rows,
+        // A computer heads its rows only when the account has more than one, or chats on more than one.
+        cards = homeCardEntries(rows, showsMachines = choices.size > 1 || rows.count { (it as? HomeRow.Project)?.row is ProjectHomeRow.MachineHeader } > 1),
         offlineBanner = if (shouldShowOfflineMachinesBanner(choices.size, online)) OfflineBanner(choices.singleOrNull()?.name) else null,
         computers = choices.map { it.name },
         worktrees = if (inputs.grouping == SessionListGrouping.Project) projectWorktreesBySession(all) else emptyMap(),
@@ -162,7 +223,12 @@ fun reuseUnchanged(previous: HomeListState?, next: HomeListState): HomeListState
     if (previous == next) return previous
     val old = previous.rows.associateBy { it.key }
     val rows = next.rows.map { row -> old[row.key]?.takeIf { it == row } ?: row }
-    return next.copy(rows = if (rows == previous.rows) previous.rows else rows)
+    val oldCards = previous.cards.associateBy { it.key }
+    val cards = next.cards.map { entry -> oldCards[entry.key]?.takeIf { it == entry } ?: entry }
+    return next.copy(
+        rows = if (rows == previous.rows) previous.rows else rows,
+        cards = if (cards == previous.cards) previous.cards else cards,
+    )
 }
 
 /**

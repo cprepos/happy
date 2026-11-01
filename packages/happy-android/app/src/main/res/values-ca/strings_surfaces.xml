@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="surface_leave">Surt</string>
+    <string name="surface_leave_title">Vols sortir de «%1$s»?</string>
+    <string name="surface_leave_message">Desapareixerà de la teva llista a tots els teus dispositius. La resta de participants el conserven.</string>
+    <string name="surface_leave_failed">No s\'ha pogut sortir de «%1$s»</string>
+    <string name="surface_leave_no_answer">L\'agent no ha respost. Torna-ho a provar d\'aquí a un moment.</string>
+    <string name="conversation_jump_to_latest">Vés als més recents</string>
+    <string name="conversation_jump_working">treballant</string>
+</resources>

@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  values/strings_artifacts.xml in es: Android-only strings, not in happy-app's
+  catalogs. AndroidStringsTranslatedTest fails while one is missing here.
+-->
+<resources>
+    <string name="artifact_untitled">Artefacto sin título</string>
+    <string name="artifact_deleted">Este artefacto se eliminó.</string>
+    <string name="artifact_unavailable">No se pudo cargar este artefacto. Comprueba que tu ordenador esté encendido.</string>
+    <string name="artifact_file_unavailable">No se pudo abrir este archivo.</string>
+    <string name="artifact_picture">Imagen</string>
+    <string name="artifact_video">Vídeo</string>
+    <plurals name="artifact_count_images">
+        <item quantity="one">%1$d imagen</item>
+        <item quantity="many">%1$d de imágenes</item>
+        <item quantity="other">%1$d imágenes</item>
+    </plurals>
+    <plurals name="artifact_count_videos">
+        <item quantity="one">%1$d vídeo</item>
+        <item quantity="many">%1$d de vídeos</item>
+        <item quantity="other">%1$d vídeos</item>
+    </plurals>
+    <string name="artifact_share">Compartir</string>
+    <string name="artifact_play">Reproducir</string>
+    <string name="artifact_pause">Pausar</string>
+    <string name="artifact_open_with">Abrir en otra app</string>
+    <string name="artifact_open_with_body">Android no puede mostrar este archivo aquí. Se abre en una app de este teléfono que pueda leerlo.</string>
+    <string name="browser_via">a través de %1$s</string>
+    <string name="browser_default_computer">conexión de agente</string>
+    <string name="browser_unreachable">No se puede contactar con %1$s.\nComprueba la conexión del agente y toca Recargar.</string>
+    <string name="browser_unreachable_page">No se puede contactar con %1$s.\nComprueba la conexión o la dirección de la página y toca Recargar.</string>
+    <string name="browser_unsupported">El WebView de este teléfono no puede enviar páginas a través de tu ordenador. Actualiza Android System WebView y toca Recargar.</string>
+    <string name="browser_forward">Adelante</string>
+    <string name="browser_close">Cerrar</string>
+    <string name="browser_share_link">Compartir enlace</string>
+    <string name="browser_open_outside">Abrir en el navegador (sin proxy)</string>
+    <string name="link_menu_open_in_app">Abrir en el navegador de Happy</string>
+    <string name="link_menu_open_in_app_direct">En la app, en la red de este teléfono</string>
+    <string name="link_menu_open_external">Abrir en un navegador externo</string>
+    <string name="link_menu_open_external_proxied">Fuera de la red del agente</string>
+    <string name="link_menu_copy">Copiar enlace</string>
+    <string name="link_menu_share">Compartir</string>
+</resources>

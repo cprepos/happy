@@ -127,7 +127,7 @@ fun AgentsScreen(
         val overrideValue = AgentDefaults.overrideValue(overrides, agent.wire, config.field)
         val hasOverride = AgentDefaults.hasOverride(overrides, agent.wire, config.field)
         val isExpanded = expanded == agent to config.field
-        val detail = if (hasOverride) optionName(config.options, overrideValue) else "Default (${optionName(config.options, effectiveValue)})"
+        val detail = if (hasOverride) optionName(config.options, overrideValue) else stringResource(R.string.settings_agents_default, optionName(config.options, effectiveValue))
         val isCustomCodexModel = agent == AgentKey.Codex && config.field == AgentDefaultField.ModelMode &&
             !overrideValue.isNullOrEmpty() && config.options.none { it.key == overrideValue }
 
@@ -138,25 +138,25 @@ fun AgentsScreen(
             onClick = { expanded = if (isExpanded) null else agent to config.field },
         )
         if (isExpanded) {
-            Option("Use code default", optionName(config.options, config.codeDefaultKey), !hasOverride) { update(agent, config.field, null) }
+            Option(stringResource(R.string.settings_agents_use_code_default), optionName(config.options, config.codeDefaultKey), !hasOverride) { update(agent, config.field, null) }
             for (option in config.options) {
                 Option(option.name, option.description, hasOverride && overrideValue == option.key) { update(agent, config.field, option.key) }
             }
             if (agent == AgentKey.Codex && config.field == AgentDefaultField.ModelMode) {
-                Option("Custom model…", if (isCustomCodexModel) overrideValue else "Enter an exact model ID", isCustomCodexModel) {
+                Option(stringResource(R.string.settings_agents_custom_model), if (isCustomCodexModel) overrideValue else stringResource(R.string.settings_agents_enter_model_id), isCustomCodexModel) {
                     customModel = if (isCustomCodexModel) overrideValue else ""
                 }
             }
         }
     }
 
-    Screen(header = { StackHeader("Agents", onBack) }) {
+    Screen(header = { StackHeader(stringResource(R.string.settings_agents_title), onBack) }) {
         ItemList {
-            ItemGroup(title = "Machines") {
+            ItemGroup(title = stringResource(R.string.settings_machines)) {
                 if (machines.isEmpty()) {
                     Item(
-                        title = "No connected machines",
-                        subtitle = "Run Happy on a computer to connect it",
+                        title = stringResource(R.string.settings_agents_no_machines),
+                        subtitle = stringResource(R.string.settings_agents_no_machines_subtitle),
                         icon = { ItemIcon(Ionicon.DesktopOutline, colors.textSecondary) },
                         enabled = false,
                         showChevron = false,
@@ -177,10 +177,10 @@ fun AgentsScreen(
                 }
             }
 
-            ItemGroup(title = "Defaults") {
+            ItemGroup(title = stringResource(R.string.settings_agents_defaults)) {
                 Item(
-                    title = "Clear Overrides",
-                    subtitle = "Return every agent to code defaults",
+                    title = stringResource(R.string.settings_agents_clear_overrides),
+                    subtitle = stringResource(R.string.settings_agents_clear_overrides_subtitle),
                     icon = { ItemIcon(Ionicon.RefreshOutline, AgentsSpec.clearIcon) },
                     onClick = { onOverridesChange(AgentDefaultOverrides()) },
                     enabled = overrides.agents.isNotEmpty() || overrides.unknown.isNotEmpty(),
@@ -195,9 +195,9 @@ fun AgentsScreen(
                     .filter { it.key != "default" }
                 val efforts = ModeOptions.effortLevelsForModel(agent.wire, effective.modelMode)
                 val fields = buildList {
-                    add(FieldConfig(AgentDefaultField.PermissionMode, "Permission", Ionicon.ShieldCheckmarkOutline, ModeOptions.permissionModes(agent.wire, resources::getString), code.permissionMode))
-                    if (models.isNotEmpty()) add(FieldConfig(AgentDefaultField.ModelMode, "Model", Ionicon.HardwareChipOutline, models, code.modelMode))
-                    if (efforts.isNotEmpty()) add(FieldConfig(AgentDefaultField.EffortLevel, "Effort", Ionicon.SpeedometerOutline, efforts, code.effortLevel))
+                    add(FieldConfig(AgentDefaultField.PermissionMode, stringResource(R.string.settings_agents_permission), Ionicon.ShieldCheckmarkOutline, ModeOptions.permissionModes(agent.wire, resources::getString), code.permissionMode))
+                    if (models.isNotEmpty()) add(FieldConfig(AgentDefaultField.ModelMode, stringResource(R.string.settings_agents_model), Ionicon.HardwareChipOutline, models, code.modelMode))
+                    if (efforts.isNotEmpty()) add(FieldConfig(AgentDefaultField.EffortLevel, stringResource(R.string.settings_agents_effort), Ionicon.SpeedometerOutline, efforts, code.effortLevel))
                 }
                 ItemGroup(title = AgentType.harnessName(agent.wire)) {
                     Column {
@@ -211,11 +211,11 @@ fun AgentsScreen(
     customModel?.let { current ->
         PromptModal(
             prompt = Prompt(
-                title = "Custom Codex model",
-                message = "Enter an exact model ID. Availability depends on your Codex account or API configuration.",
+                title = stringResource(R.string.settings_agents_custom_codex_title),
+                message = stringResource(R.string.settings_agents_custom_codex_message),
                 placeholder = "model-id",
                 defaultValue = current,
-                confirmText = "Save",
+                confirmText = stringResource(R.string.common_save),
                 onResult = { value ->
                     val model = value?.trim()
                     if (!model.isNullOrEmpty()) update(AgentKey.Codex, AgentDefaultField.ModelMode, model)

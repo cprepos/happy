@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  values/strings_push.xml in b+zh+Hans: Android-only strings, not in happy-app's
+  catalogs. AndroidStringsTranslatedTest fails while one is missing here.
+-->
+<resources>
+    <string name="push_background_send_pending_title">消息未发送</string>
+    <string name="push_background_send_pending_body">一条消息仍在后台发送。如果 30 秒内未送达，将会失败。</string>
+    <string name="push_background_send_failed_title">消息发送失败</string>
+    <string name="push_background_send_failed_body">应用在后台时有一条消息发送失败。请打开 Happy 并重试。</string>
+    <string name="push_permission">权限</string>
+    <string name="push_request_again">重新请求权限</string>
+    <string name="push_reregister">重新注册此设备</string>
+    <string name="push_current_token">当前令牌 %1$s</string>
+    <string name="push_label_loading">加载中</string>
+    <string name="push_label_unavailable">不可用</string>
+    <string name="push_label_allowed">已允许</string>
+    <string name="push_label_denied">已拒绝</string>
+    <string name="push_label_not_requested">未请求</string>
+    <string name="push_subtitle_checking">正在检查此设备的推送通知权限。</string>
+    <string name="push_subtitle_unsupported">推送通知权限只能在移动设备上管理。</string>
+    <string name="push_subtitle_granted">此设备可以接收推送通知。</string>
+    <string name="push_subtitle_can_ask">应用仍可再次显示系统提示。</string>
+    <string name="push_subtitle_stopped">系统已不再提示。请打开系统设置重新启用通知。</string>
+    <string name="push_request_unsupported">推送通知权限仅适用于 iPhone 和 Android。</string>
+    <string name="push_request_can_ask">如果系统仍允许，将再次显示系统提示。</string>
+    <string name="push_request_settings">系统不再提示时，将打开系统设置。</string>
+    <string name="push_tokens_hint">显示你的账号中注册的所有推送令牌。点按旧令牌即可删除。</string>
+    <string name="push_tokens_footer">已注册的令牌（%1$d）。当前设备的信息来自这部手机。较旧的令牌使用令牌指纹和服务器时间戳。</string>
+    <string name="push_no_tokens">没有已注册的推送令牌</string>
+    <string name="push_this_device">此设备</string>
+    <string name="push_delete_title">删除推送令牌</string>
+    <string name="push_delete_message">要从你的账号中移除 %1$s 吗？</string>
+    <string name="push_other_device">其他设备或过期的注册</string>
+    <string name="push_registered">注册时间：%1$s</string>
+    <string name="push_last_seen">最近活动：%1$s</string>
+    <string name="push_server_id">服务器 ID：%1$s</string>
+    <string name="push_token">令牌：%1$s</string>
+    <string name="push_build">版本号 %1$s</string>
+    <string name="push_simulator">模拟器</string>
+    <string name="push_android_device">Android 设备</string>
+    <string name="push_load_failed">无法加载推送通知设置。</string>
+    <string name="push_enabled">此设备已启用推送通知。</string>
+    <string name="push_opened_settings">系统不会再显示权限提示，所以 Happy 打开了设置。</string>
+    <string name="push_not_granted">未授予推送通知权限。</string>
+    <string name="push_request_failed">无法请求推送通知权限。</string>
+    <string name="push_refreshed">已刷新此设备的推送令牌。</string>
+    <string name="push_not_enabled">此设备尚未启用推送通知。</string>
+    <string name="push_refresh_failed">无法刷新此设备的推送令牌。</string>
+    <string name="push_delete_failed">无法删除推送令牌。</string>
+</resources>

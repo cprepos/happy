@@ -1,12 +1,13 @@
 package com.slopus.happy.ui.voice
 
+import com.slopus.happy.ui.page
 import androidx.compose.runtime.*
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.NavHostController
-import androidx.navigation.compose.composable
+import androidx.navigation.toRoute
 import com.slopus.happy.AppGraph
 import com.slopus.happy.BuildConfig
 import com.slopus.happy.R
@@ -21,11 +22,12 @@ import com.slopus.happy.voice.VoiceUpsell
 import com.slopus.happy.voice.VoiceUsage
 import kotlinx.serialization.Serializable
 
-@Serializable data object VoiceSettingsRoute
+/** [reveal]: the row Settings' search found there ([ProvideRowReveal]). */
+@Serializable data class VoiceSettingsRoute(val reveal: String? = null)
 @Serializable data object VoiceLanguageRoute
 
 fun NavGraphBuilder.voiceRoutes(graph: AppGraph, nav: NavHostController) {
-    composable<VoiceSettingsRoute> {
+    page<VoiceSettingsRoute> { entry ->
         val settings by graph.settings.settings.collectAsStateWithLifecycle()
         val purchases by graph.purchases.purchases.collectAsStateWithLifecycle()
         val alerts = remember { Alerts() }
@@ -35,13 +37,15 @@ fun NavGraphBuilder.voiceRoutes(graph: AppGraph, nav: NavHostController) {
         LaunchedEffect(graph) {
             try { usage = graph.voice.usage() } finally { loading = false }
         }
-        VoiceSettingsScreen(settings, graph.settings::change, usage, loading, purchases.entitlements["pro"] == true,
-            onSupport = support::run,
-            onLanguage = { nav.navigate(VoiceLanguageRoute) }, onBack = { nav.popBackStack() },
-            developerContent = { VoiceDeveloperSettings(graph) })
+        ProvideRowReveal(entry.toRoute<VoiceSettingsRoute>().reveal) {
+            VoiceSettingsScreen(settings, graph.settings::change, usage, loading, purchases.entitlements["pro"] == true,
+                onSupport = support::run,
+                onLanguage = { nav.navigate(VoiceLanguageRoute) }, onBack = { nav.popBackStack() },
+                developerContent = { VoiceDeveloperSettings(graph) })
+        }
         alerts.Host()
     }
-    composable<VoiceLanguageRoute> {
+    page<VoiceLanguageRoute> {
         val settings by graph.settings.settings.collectAsStateWithLifecycle()
         VoiceLanguageScreen(settings.voiceAssistantLanguage,
             onSelect = { code -> graph.settings.change { it.copy(voiceAssistantLanguage = code) } }, onBack = { nav.popBackStack() })

@@ -51,8 +51,9 @@ public struct FlatSessionRowLayout: Equatable, Sendable {
         public static let changesLine: CGFloat = 14.3
         public static let dividerHeight: CGFloat = 0.33
 
-        /// Where the text column and the hairline start.
-        public static var contentX: CGFloat { paddingLeft + avatarSize + avatarGap }
+        /// Where the text column and the hairline start beside an avatar
+        /// this wide.
+        public static func contentX(avatar: CGFloat = avatarSize) -> CGFloat { paddingLeft + avatar + avatarGap }
     }
 
     /// One line of each of the texts, as a one-line label draws it at the
@@ -100,6 +101,9 @@ public struct FlatSessionRowLayout: Equatable, Sendable {
         public var draftIcon: CGSize?
         public var showsDivider: Bool
         public var lines: Lines
+        /// The avatar's side: 60, or home's card's smaller mark
+        /// (`HomeCardLayout.Metrics.sessionAvatar`).
+        public var avatarSize: CGFloat
 
         public init(
             width: CGFloat,
@@ -111,8 +115,10 @@ public struct FlatSessionRowLayout: Equatable, Sendable {
             changes: CGSize? = nil,
             draftIcon: CGSize? = nil,
             showsDivider: Bool,
-            lines: Lines = .designed
+            lines: Lines = .designed,
+            avatarSize: CGFloat = Metrics.avatarSize
         ) {
+            self.avatarSize = avatarSize
             self.width = width
             self.title = title
             self.timestamp = timestamp
@@ -129,11 +135,18 @@ public struct FlatSessionRowLayout: Equatable, Sendable {
     /// The row's height for these lines, with or without a workspace line
     /// under a glyph `branchIcon` tall, line counts and a draft glyph
     /// `draftIcon` tall (0 without one): what `init` makes `size.height`.
-    /// The draft glyph is fixed and under the row's 18, so home's row
-    /// heights leave it out (`HomeRowKind` doesn't carry it).
-    public static func height(lines: Lines, workspace: Bool, changes: Bool = false, branchIcon: CGFloat = Metrics.branchIconSize, draftIcon: CGFloat = 0) -> CGFloat {
+    /// The draft glyph is fixed and under the row's 18, so it never moves
+    /// the height.
+    public static func height(
+        lines: Lines,
+        workspace: Bool,
+        changes: Bool = false,
+        branchIcon: CGFloat = Metrics.branchIconSize,
+        draftIcon: CGFloat = 0,
+        avatarSize: CGFloat = Metrics.avatarSize
+    ) -> CGFloat {
         typealias M = Metrics
-        return M.paddingVertical * 2 + max(M.avatarSize, contentHeight(lines: lines, workspace: workspace, changes: changes, branchIcon: branchIcon, draftIcon: draftIcon))
+        return M.paddingVertical * 2 + max(avatarSize, contentHeight(lines: lines, workspace: workspace, changes: changes, branchIcon: branchIcon, draftIcon: draftIcon))
     }
 
     /// The text column: the title's row, the project, 1, the workspace's
@@ -166,14 +179,17 @@ public struct FlatSessionRowLayout: Equatable, Sendable {
     public init(_ input: Input) {
         typealias M = Metrics
         let width = max(0, input.width)
-        let x = M.contentX
+        let x = M.contentX(avatar: input.avatarSize)
         let right = max(x, width - M.paddingRight)
         let contentWidth = right - x
         let lines = input.lines
         let hasWorkspace = input.workspace != nil
         let hasChanges = input.changes != nil
         let draftHeight = input.draftIcon?.height ?? 0
-        let height = Self.height(lines: lines, workspace: hasWorkspace, changes: hasChanges, branchIcon: input.branchIcon.height, draftIcon: draftHeight)
+        let height = Self.height(
+            lines: lines, workspace: hasWorkspace, changes: hasChanges, branchIcon: input.branchIcon.height, draftIcon: draftHeight,
+            avatarSize: input.avatarSize
+        )
         let content = Self.contentHeight(lines: lines, workspace: hasWorkspace, changes: hasChanges, branchIcon: input.branchIcon.height, draftIcon: draftHeight)
         let titleRowHeight = max(M.titleRowHeight, lines.title)
 
@@ -239,33 +255,11 @@ public struct FlatSessionRowLayout: Equatable, Sendable {
             branchIcon = nil
         }
 
-        avatar = CGRect(x: M.paddingLeft, y: (height - M.avatarSize) / 2, width: M.avatarSize, height: M.avatarSize)
+        avatar = CGRect(x: M.paddingLeft, y: (height - input.avatarSize) / 2, width: input.avatarSize, height: input.avatarSize)
         divider = input.showsDivider
             ? CGRect(x: x, y: height - M.dividerHeight, width: max(0, width - x), height: M.dividerHeight)
             : nil
         size = CGSize(width: width, height: height)
-    }
-}
-
-/// A day heading over archived rows ("Today", "3 days ago"): a label on
-/// the list's own background (SessionsList.tsx `headerSectionFlat`).
-public struct SessionDayHeaderLayout: Equatable, Sendable {
-    public enum Metrics {
-        public static let paddingHorizontal: CGFloat = 16
-        public static let paddingTop: CGFloat = 20
-        public static let paddingBottom: CGFloat = 8
-    }
-
-    public var size: CGSize
-    public var label: CGRect
-
-    public init(width: CGFloat, label: Measurable) {
-        typealias M = Metrics
-        let width = max(0, width)
-        let labelWidth = max(0, width - M.paddingHorizontal * 2)
-        let labelHeight = label.height(fitting: labelWidth)
-        self.label = CGRect(x: M.paddingHorizontal, y: M.paddingTop, width: labelWidth, height: labelHeight)
-        size = CGSize(width: width, height: M.paddingTop + labelHeight + M.paddingBottom)
     }
 }
 
@@ -340,6 +334,11 @@ public struct NoSessionsLayout: Equatable, Sendable {
         /// "Start New Session": a RoundButton this tall, stretched across
         /// the screen (`alignSelf: 'stretch'`).
         public var buttonHeight: CGFloat?
+        /// The button's label width, when the button is as wide as its
+        /// label and centred instead (home's notice, as the first screen's
+        /// Start): at least `StartLayout.Metrics.buttonMinWidth`, inside the
+        /// text's margins.
+        public var buttonLabelWidth: CGFloat?
         public var action: Measurable?
 
         public init(
@@ -349,6 +348,7 @@ public struct NoSessionsLayout: Equatable, Sendable {
             title: Measurable,
             description: Measurable,
             buttonHeight: CGFloat? = nil,
+            buttonLabelWidth: CGFloat? = nil,
             action: Measurable?
         ) {
             self.size = size
@@ -357,6 +357,7 @@ public struct NoSessionsLayout: Equatable, Sendable {
             self.title = title
             self.description = description
             self.buttonHeight = buttonHeight
+            self.buttonLabelWidth = buttonLabelWidth
             self.action = action
         }
     }
@@ -397,7 +398,12 @@ public struct NoSessionsLayout: Equatable, Sendable {
         y = title.maxY + M.titleMarginBottom
         description = centred(descriptionSize, y)
         y = description.maxY + M.descriptionMarginBottom
-        button = input.buttonHeight.map { CGRect(x: insets.left, y: y, width: width, height: $0) }
+        button = input.buttonHeight.map { height in
+            guard let label = input.buttonLabelWidth else { return CGRect(x: insets.left, y: y, width: width, height: height) }
+            let fitted = label + RoundButtonMetrics.of(.large).paddingHorizontal * 2
+            let buttonWidth = min(textWidth, max(StartLayout.Metrics.buttonMinWidth, fitted))
+            return centred(CGSize(width: buttonWidth, height: height), y)
+        }
         y = button?.maxY ?? y
         action = actionSize.map { centred($0, y + M.actionMarginTop) }
         y = action?.maxY ?? y

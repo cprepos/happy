@@ -29,11 +29,17 @@
 	<true/>
 	<key>NSAppTransportSecurity</key>
 	<dict>
+		<key>NSAllowsArbitraryLoadsInWebContent</key>
+		<true/>
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Allow Happy to show your photos and videos so you can share them in stories and chats.</string>
+	<string>Allow Happy to show your photos and videos so you can share them in chats.</string>
+	<key>PHPhotoLibraryPreventAutomaticLimitedAccessAlert</key>
+	<true/>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Allow Happy to save pictures and videos your agents made to your library.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Allow Happy v2 to access your camera to scan QR codes and share photos with AI.</string>
 	<key>NSMicrophoneUsageDescription</key>

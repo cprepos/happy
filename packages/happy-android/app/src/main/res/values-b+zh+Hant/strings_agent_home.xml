@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  values/strings_agent_home.xml in zh-Hant: Android-only strings, not in happy-app's
+  catalogs. AndroidStringsTranslatedTest fails while one is missing here.
+-->
+<resources>
+    <string name="agent_home_working">工作中…</string>
+    <string name="agent_home_show_subtasks">顯示子任務</string>
+    <string name="agent_home_hide_subtasks">隱藏子任務</string>
+    <string name="agent_home_connecting">正在連線到 %1$s…</string>
+    <string name="agent_home_empty_title">還沒有對話</string>
+    <string name="agent_home_empty_body">與此代理程式開始聊天，對話會顯示在這裡。</string>
+    <string name="agent_home_offline_title">無法連線到 %1$s</string>
+    <string name="agent_home_offline_body">請確認代理程式正在執行且在線上。Happy 會自動重新連線。</string>
+    <string name="agent_home_revoked">此手機已在 Happy Agent 中移除。請重新連線代理程式後再使用。</string>
+    <string name="agent_home_update_required">此代理程式需要較新版本的 Happy。請更新 App 後再使用。</string>
+    <string name="agent_home_status_offline">離線</string>
+    <string name="agent_home_status_revoked">已移除</string>
+    <string name="agent_home_status_update">需要更新</string>
+    <string name="agent_artifacts_untitled">無標題</string>
+    <string name="agent_artifacts_empty">還沒有工件。</string>
+    <string name="agent_artifacts_failed">無法讀取工件</string>
+    <string name="agent_surface_add_todo">新增待辦</string>
+    <string name="agent_surface_no_todos">這裡還沒有內容。</string>
+    <string name="agent_surface_todo_done">已完成</string>
+    <string name="agent_surface_empty_document">此文件是空的。</string>
+    <string name="agent_surface_open_on_computer">請在電腦上開啟以使用。</string>
+    <string name="agent_surface_failed">無法讀取</string>
+    <string name="agent_search_placeholder">搜尋對話和設定</string>
+    <string name="agent_search_clear">清除</string>
+    <string name="agent_search_conversations">對話</string>
+    <string name="agent_search_actions">快速動作</string>
+    <string name="agent_search_no_results">沒有「%1$s」的結果</string>
+    <string name="agent_search_add">新增帳戶或代理程式</string>
+    <string name="agent_search_open_settings">開啟設定</string>
+    <string name="agent_settings_edit_name">編輯名稱</string>
+    <string name="agent_settings_edit_avatar">編輯頭像</string>
+    <string name="agent_settings_edit_name_prefix">把你的名字改成</string>
+    <string name="agent_settings_edit_avatar_prefix">把你的頭像改成</string>
+    <string name="agent_settings_profile_footer">由你的 Chief of Staff 進行變更。你送出之前不會傳送任何內容。</string>
+    <string name="agent_settings_connect">連線代理程式</string>
+    <string name="agent_settings_connected">已連線</string>
+    <string name="agent_settings_connecting">正在連線</string>
+    <string name="agent_settings_offline">離線</string>
+    <string name="agent_settings_revoked">已從 Happy Agent 中移除</string>
+    <string name="agent_settings_update">需要更新</string>
+    <string name="agent_settings_remove">移除連線</string>
+    <string name="agent_settings_remove_title">移除 %1$s？</string>
+    <string name="agent_settings_remove_message">Happy 會在此手機上忘記此代理程式。在你也從 Happy Agent 中移除之前，它會繼續列出此手機。</string>
+    <string name="agent_settings_remove_footer">在你從 Happy Agent 中移除之前，它會繼續列出此手機。</string>
+</resources>

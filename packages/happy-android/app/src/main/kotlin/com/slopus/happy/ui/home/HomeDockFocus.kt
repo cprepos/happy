@@ -1,6 +1,15 @@
 package com.slopus.happy.ui.home
 
-import androidx.activity.compose.BackHandler
+import com.slopus.happy.ui.components.PageBackHandler as BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -38,6 +47,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -66,6 +76,7 @@ import com.slopus.happy.model.resolveStartProgress
 import com.slopus.happy.ui.components.Icon
 import com.slopus.happy.ui.components.Ionicon
 import com.slopus.happy.ui.components.PickerSheetOption
+import com.slopus.happy.ui.components.PopupMotion
 import com.slopus.happy.ui.components.PickerSheetPanel
 import com.slopus.happy.ui.components.PickerSheetSection
 import com.slopus.happy.ui.components.hairline
@@ -221,7 +232,23 @@ fun HomeDockFocus(state: HomeDockState, actions: HomeDockActions, modifier: Modi
                     .padding(bottom = HomeDockSpec.configPaddingBottom),
                 contentAlignment = Alignment.BottomCenter,
             ) {
-                val current = page
+                // A picker rises out of the rows' place and sinks back into it (PopupMotion's dialog
+                // scale from the bottom edge), the rows fading under it.
+                AnimatedContent(
+                    targetState = page,
+                    transitionSpec = {
+                        val rising = targetState != null
+                        val origin = TransformOrigin(0.5f, 1f)
+                        val enter = fadeIn(tween(PopupMotion.ENTER_MS / 2)) +
+                            (if (rising) scaleIn(tween(PopupMotion.ENTER_MS, easing = PopupMotion.enterEasing), PopupMotion.DIALOG_SCALE, origin) else EnterTransition.None)
+                        val exit = fadeOut(tween(PopupMotion.EXIT_MS)) +
+                            (if (!rising) scaleOut(tween(PopupMotion.EXIT_MS, easing = PopupMotion.exitEasing), PopupMotion.DIALOG_SCALE, origin) else ExitTransition.None)
+                        (enter togetherWith exit).using(SizeTransform(clip = false))
+                    },
+                    contentAlignment = Alignment.BottomCenter,
+                    label = "dockPicker",
+                ) { current ->
+                Box(contentAlignment = Alignment.BottomCenter) {
                 if (current != null && options != null) {
                     val statusTop = with(density) { WindowInsets.statusBars.getTop(this).toDp() }
                     val ime = with(density) { WindowInsets.ime.getBottom(this).toDp() }
@@ -255,6 +282,8 @@ fun HomeDockFocus(state: HomeDockState, actions: HomeDockActions, modifier: Modi
                             )
                         }
                     }
+                }
+                }
                 }
             }
             Box(

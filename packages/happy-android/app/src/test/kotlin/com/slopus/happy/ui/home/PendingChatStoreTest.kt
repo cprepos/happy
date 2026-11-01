@@ -1,5 +1,6 @@
 package com.slopus.happy.ui.home
 
+import com.slopus.happy.text.Words
 import com.slopus.happy.model.NewSessionDraft
 import com.slopus.happy.model.PENDING_CHAT_PREFIX
 import com.slopus.happy.model.PendingChatStatus
@@ -21,7 +22,7 @@ class PendingChatStoreTest {
     ) : PendingChatSessions {
         val sent = ArrayList<Pair<String, String>>()
         val drafts = HashMap<String, String>()
-        val alerts = ArrayList<String>()
+        val alerts = ArrayList<Words>()
 
         override suspend fun send(sessionId: String, text: String): Boolean {
             sent += sessionId to text
@@ -31,7 +32,7 @@ class PendingChatStoreTest {
         override fun draft(sessionId: String) = drafts[sessionId]
         override suspend fun writeDraft(sessionId: String, text: String) { drafts[sessionId] = text }
         override fun exists(sessionId: String) = sessionId in known
-        override fun alert(message: String) { alerts += message }
+        override fun alert(message: Words) { alerts += message }
     }
 
     private var ids = 0
@@ -103,7 +104,7 @@ class PendingChatStoreTest {
         // Nothing is sent after a failure, so "three" never overtakes "boom".
         assertEquals(listOf("one", "boom"), sessions.sent.map { it.second })
         assertEquals("boom\n\nthree\n\ndraft", sessions.drafts["real"])
-        assertEquals(listOf("Machine is offline"), sessions.alerts)
+        assertEquals(listOf(Words.Said("Machine is offline")), sessions.alerts)
 
         val declined = FakeSessions(reply = { false })
         val other = store.open("anchor", emptyList())
@@ -145,7 +146,7 @@ class PendingChatStoreTest {
         val sessions = FakeSessions()
         val gates = ArrayDeque<CompletableDeferred<StartResult>>()
         val started = ArrayList<SessionStartRequest>()
-        val failures = ArrayList<String>()
+        val failures = ArrayList<Words>()
         val starter = PendingChatStarter(
             store, PendingChatHandover(store, sessions), backgroundScope,
             start = { request -> started += request; CompletableDeferred<StartResult>().also(gates::addLast).await() },
@@ -163,12 +164,12 @@ class PendingChatStoreTest {
         assertEquals(listOf("s1" to "hi"), sessions.sent)
         assertEquals(2, started.size)
 
-        gates.removeFirst().complete(StartResult.Failed("No machine"))
-        assertEquals(listOf("No machine"), failures)
+        gates.removeFirst().complete(StartResult.Failed(Words.Said("No machine")))
+        assertEquals(listOf(Words.Said("No machine")), failures)
         assertEquals(PendingChatStatus.Failed, store[second.id]!!.status)
 
         gates.removeFirst().complete(StartResult.Abandoned)
-        assertEquals(listOf("No machine"), failures)
+        assertEquals(listOf(Words.Said("No machine")), failures)
         assertEquals(PendingChatStatus.Failed, store[third.id]!!.status)
     }
 }

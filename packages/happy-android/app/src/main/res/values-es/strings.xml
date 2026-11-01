@@ -55,6 +55,7 @@
     <string name="profile_username">Nombre de usuario</string>
     <string name="profile_status">Estado</string>
 
+    <string name="status_syncing">sincronizando</string>
     <string name="status_connected">conectado</string>
     <string name="status_connecting">conectando</string>
     <string name="status_disconnected">desconectado</string>
@@ -945,6 +946,7 @@
     <string name="message_sending">Sending…</string>
     <string name="message_send_failed">No enviado: %1$s</string>
     <string name="message_unknown_time">tiempo desconocido</string>
+    <string name="message_media_position">%1$d de %2$d</string>
 
     <string name="codex_permissions_yes_for_session">Sí, y no preguntar por esta sesión</string>
     <string name="codex_permissions_stop_and_explain">Detener, y explicar qué hacer</string>
@@ -1056,4 +1058,12 @@
     <string name="feed_friend_request_generic">Nueva solicitud de amistad</string>
     <string name="feed_friend_accepted">Ahora eres amigo de %1$s</string>
     <string name="feed_friend_accepted_generic">Solicitud de amistad aceptada</string>
+
+    <string name="new_work_task">Tarea</string>
+    <string name="new_work_bot">Bot</string>
+    <string name="new_work_name">Nombre (opcional)</string>
+    <string name="new_work_task_note">Una tarea toma su nombre de su primer mensaje, salvo que le pongas uno.</string>
+    <string name="new_work_bot_note">Un bot es una conversación duradera con su propia carpeta.</string>
+    <string name="new_work_task_failed">No se pudo iniciar la tarea. %1$s Tu texto y tus adjuntos siguen aquí.</string>
+    <string name="new_work_bot_failed">No se pudo iniciar el bot. %1$s Tu texto y tus adjuntos siguen aquí.</string>
 </resources>

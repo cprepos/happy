@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The in-app browser (browser/BrowserProxy.kt) shows http pages: an artifact at
+  its synthetic http://a….happy-artifact.invalid origin, and a live artifact or
+  dev server on the computer's localhost. WebView refuses cleartext unless this
+  permits it. Those requests go only to the app's own loopback proxy, which
+  carries them to the computer over the agent connection; nothing leaves the
+  phone in clear. Everything else keeps the platform's default (no cleartext).
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">happy-artifact.invalid</domain>
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+    </domain-config>
+</network-security-config>

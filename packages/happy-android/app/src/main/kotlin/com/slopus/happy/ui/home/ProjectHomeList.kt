@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -54,10 +55,14 @@ import com.slopus.happy.model.resolveFlatRowPresentation
 import com.slopus.happy.model.workspaceOrigin
 import com.slopus.happy.ui.chat.light
 import com.slopus.happy.ui.components.Avatar
+import com.slopus.happy.ui.components.HomeCardSpec
 import com.slopus.happy.ui.components.Icon
 import com.slopus.happy.ui.components.Ionicon
+import com.slopus.happy.ui.components.ShimmerSpec
 import com.slopus.happy.ui.components.ShimmerText
 import com.slopus.happy.ui.components.StatusDot
+import com.slopus.happy.ui.layout.LocalWindowLayout
+import com.slopus.happy.ui.layout.contentMaxWidth
 import com.slopus.happy.ui.theme.HappyTheme
 import com.slopus.happy.ui.theme.happyTextStyle
 
@@ -92,10 +97,18 @@ object ProjectListSpec {
     val projectName = happyTextStyle(fontSize = 17, lineHeight = 22)
     val worktreeName = happyTextStyle(fontSize = 16, lineHeight = 21)
     val toggle = happyTextStyle(fontSize = 15, lineHeight = 20)
-    val timestamp = happyTextStyle(fontSize = 13, lineHeight = 18)
     val gitCount = happyTextStyle(fontSize = 13, lineHeight = 18, weight = FontWeight.SemiBold)
     val gitApproximate = happyTextStyle(fontSize = 11, lineHeight = 18)
     const val ARCHIVED_ALPHA = 0.6f
+    /** Where every row's name starts, and so its hairline in a card. */
+    val nameX = rowPaddingX + avatar + avatarGap
+    /** A computer's heading over its cards: in line with the cards' avatars (iOS's MachineHeaderLayout). */
+    val cardMachinePaddingX = HomeCardSpec.inset + rowPaddingX
+    val cardMachinePaddingTop = 20.dp
+    val cardMachinePaddingBottom = 8.dp
+
+    /** A card row's fixed height, whatever it says: a project 52, the rest 48. */
+    fun cardRowHeight(row: ProjectHomeRow): Dp = if (row is ProjectHomeRow.ProjectCard) projectRow else worktreeRow
 }
 
 /** StyleSheet.hairlineWidth * 2: the tree lines. */
@@ -107,14 +120,23 @@ private fun treeLine(): Dp = with(LocalDensity.current) { 2f.toDp() }
  * projects; a project card (28 avatar, 52 high) with its worktrees hanging
  * off a tree line (48 high), then the toggle that shows them all or fewer;
  * the archive tail drawn the way the flat list draws it.
+ *
+ * [carded], in home's inset cards (iOS at a71eea391): a section's heading
+ * is only the gap between two cards; a computer's heading stands over its
+ * cards in line with their avatars, with no rule; a project's row loses the
+ * room above it; the card draws the hairlines.
  */
 @Composable
-fun ProjectHomeRowContent(row: ProjectHomeRow, callbacks: HomeListCallbacks) {
+fun ProjectHomeRowContent(row: ProjectHomeRow, callbacks: HomeListCallbacks, carded: Boolean = false) {
     when (row) {
-        is ProjectHomeRow.Section -> SectionRow(stringResource(if (row.section == ProjectHomeSection.Bots) R.string.sidebar_bots else R.string.sidebar_projects))
-        is ProjectHomeRow.MachineHeader -> MachineHeaderRow(row.machineId, row.machineName, callbacks)
+        is ProjectHomeRow.Section -> if (carded) {
+            Spacer(Modifier.fillMaxWidth().height(HomeCardSpec.gap).testTag(ProjectListTags.SECTION))
+        } else {
+            SectionRow(stringResource(if (row.section == ProjectHomeSection.Bots) R.string.sidebar_bots else R.string.sidebar_projects))
+        }
+        is ProjectHomeRow.MachineHeader -> MachineHeaderRow(row.machineId, row.machineName, callbacks, carded)
         is ProjectHomeRow.Bot -> ChatRow(row.session, bot = true, archived = false, callbacks)
-        is ProjectHomeRow.ProjectCard -> ProjectCardRow(row.project, callbacks)
+        is ProjectHomeRow.ProjectCard -> ProjectCardRow(row.project, callbacks, carded)
         is ProjectHomeRow.Worktree -> WorktreeRow(row.worktree, row.last, callbacks)
         is ProjectHomeRow.Toggle -> WorktreeToggleRow(row.toggle, callbacks)
         is ProjectHomeRow.ArchiveToggle -> ArchiveToggleRow(row.hidden, banded = false, callbacks)
@@ -135,9 +157,9 @@ private fun SectionRow(label: String) {
     }
 }
 
-/** The computer everything below runs on: desktop glyph (12), its name (11), a line to the edge. */
+/** The computer everything below runs on: desktop glyph (12), its name (11), a line to the edge (none over cards). */
 @Composable
-private fun MachineHeaderRow(machineId: String?, machineName: String, callbacks: HomeListCallbacks) {
+private fun MachineHeaderRow(machineId: String?, machineName: String, callbacks: HomeListCallbacks, carded: Boolean) {
     val colors = HappyTheme.colors
     val name = if (machineId == null) "<${stringResource(R.string.status_unknown)}>" else machineName
     Row(
@@ -145,7 +167,20 @@ private fun MachineHeaderRow(machineId: String?, machineName: String, callbacks:
             .fillMaxWidth()
             .testTag(ProjectListTags.MACHINE)
             .then(if (machineId != null) Modifier.clickable(role = Role.Button) { callbacks.onOpenMachine(machineId) } else Modifier)
-            .padding(start = ProjectListSpec.rowPaddingX, end = ProjectListSpec.rowPaddingX, top = 14.dp, bottom = 2.dp),
+            .then(
+                if (carded) {
+                    Modifier
+                        .contentMaxWidth(LocalWindowLayout.current)
+                        .padding(
+                            start = ProjectListSpec.cardMachinePaddingX,
+                            end = ProjectListSpec.cardMachinePaddingX,
+                            top = ProjectListSpec.cardMachinePaddingTop,
+                            bottom = ProjectListSpec.cardMachinePaddingBottom,
+                        )
+                } else {
+                    Modifier.padding(start = ProjectListSpec.rowPaddingX, end = ProjectListSpec.rowPaddingX, top = 14.dp, bottom = 2.dp)
+                },
+            ),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
@@ -156,9 +191,9 @@ private fun MachineHeaderRow(machineId: String?, machineName: String, callbacks:
             color = colors.textSecondary,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.widthIn(max = 220.dp),
+            modifier = if (carded) Modifier.weight(1f, fill = false) else Modifier.widthIn(max = 220.dp),
         )
-        Box(Modifier.weight(1f).height(treeLine()).background(colors.textSecondary))
+        if (!carded) Box(Modifier.weight(1f).height(treeLine()).background(colors.textSecondary))
     }
 }
 
@@ -176,11 +211,13 @@ private fun RowScope.AvatarLane(content: @Composable BoxScope.() -> Unit) {
 private fun RowScope.RowName(text: String, working: Boolean, style: TextStyle) {
     val colors = HappyTheme.colors
     Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
-        if (working) {
-            ShimmerText(text = text, style = style, baseColor = colors.textSecondary, highlightColor = colors.text)
-        } else {
-            Text(text = text, style = style, color = colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
+        ShimmerText(
+            text = text,
+            style = style,
+            baseColor = colors.text,
+            highlightColor = ShimmerSpec.sheen(colors.text, colors.grouped.background),
+            shimmering = working,
+        )
     }
 }
 
@@ -211,7 +248,7 @@ private fun ProjectGitChanges(session: SessionRowData?) {
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ProjectCardRow(project: ProjectHomeEntry, callbacks: HomeListCallbacks) {
+private fun ProjectCardRow(project: ProjectHomeEntry, callbacks: HomeListCallbacks, carded: Boolean) {
     LocalHomeRowObserver.current?.let { observe -> SideEffect { observe(project.id) } }
     val colors = HappyTheme.colors
     val session = project.session
@@ -219,7 +256,7 @@ private fun ProjectCardRow(project: ProjectHomeEntry, callbacks: HomeListCallbac
     val stem = treeLine()
     Row(
         modifier = Modifier
-            .padding(top = ProjectListSpec.projectRowTop)
+            .padding(top = if (carded) 0.dp else ProjectListSpec.projectRowTop)
             .fillMaxWidth()
             .height(ProjectListSpec.projectRow)
             .testTag(ProjectListTags.PROJECT)
@@ -358,11 +395,10 @@ private fun WorktreeToggleRow(toggle: WorktreeToggle, callbacks: HomeListCallbac
     }
 }
 
-/** A bot, or an archived chat: avatar, name, then the timestamp or a 10 dot. Archived rows are faded to 0.6. */
+/** A bot, or an archived chat: avatar, name, then a 10 dot while it waits or is unread (no time). Archived rows are faded to 0.6. */
 @Composable
 private fun ChatRow(session: SessionRowData, bot: Boolean, archived: Boolean, callbacks: HomeListCallbacks) {
     LocalHomeRowObserver.current?.let { observe -> SideEffect { observe(session.id) } }
-    val colors = HappyTheme.colors
     val presentation = resolveFlatRowPresentation(session.state, session.hasUnread, archived || session.machineOffline)
     val dot = presentation.topRight as? FlatRowTopRight.Dot
     Row(
@@ -378,11 +414,9 @@ private fun ChatRow(session: SessionRowData, bot: Boolean, archived: Boolean, ca
     ) {
         AvatarLane { Avatar(id = session.avatarId, size = ProjectListSpec.avatar, bot = bot, imageUri = session.avatarUri, thumbhash = session.avatarThumbhash) }
         RowName(session.name ?: stringResource(R.string.session_new_chat), presentation.shimmerTitle, ProjectListSpec.projectName)
-        Box(modifier = Modifier.padding(start = ProjectListSpec.trailingGap)) {
-            if (dot != null) {
+        if (dot != null) {
+            Box(modifier = Modifier.padding(start = ProjectListSpec.trailingGap)) {
                 StatusDot(color = if (dot.blocked) BlockedDotColor else UnreadDotColor, size = ProjectListSpec.chatDot)
-            } else {
-                Text(text = formatSessionListTimestamp(session.lastActivityAt), style = ProjectListSpec.timestamp, color = colors.textSecondary, maxLines = 1)
             }
         }
     }

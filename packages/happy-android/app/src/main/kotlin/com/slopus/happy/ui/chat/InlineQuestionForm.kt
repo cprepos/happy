@@ -16,7 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.CircularProgressIndicator
+import com.slopus.happy.ui.components.PageProgressIndicator as CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -39,6 +39,8 @@ import com.slopus.happy.R
 import com.slopus.happy.chat.AgentQuestionOption
 import com.slopus.happy.ui.components.Icon
 import com.slopus.happy.ui.components.Ionicon
+import com.slopus.happy.ui.components.ShimmerSpec
+import com.slopus.happy.ui.components.ShimmerText
 import com.slopus.happy.ui.theme.HappyTheme
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
@@ -69,7 +71,9 @@ typealias InlineQuestionAnswers = Map<String, List<String>>
  * Without interaction options fade to 0.6. Submit sits right, 8 down:
  * padding 20/12, radius 8, surfaceHighest, 1 divider border (radio-blue
  * once every required question has an answer), 14 semibold, 0.5 until then,
- * a spinner while sending. Once sent the form becomes "Header: answers"
+ * a spinner while sending ([shimmerWhileSending]: instead the word stays,
+ * at full strength and its own size, under desktop's lift shimmer, as
+ * Happy Agent's prompt does). Once sent the form becomes "Header: answers"
  * lines, 8 apart (13 semibold textSecondary, 13 text; "—" for none).
  */
 @Composable
@@ -79,6 +83,7 @@ fun InlineQuestionForm(
     submittedAnswers: InlineQuestionAnswers?,
     onSubmit: suspend (InlineQuestionAnswers) -> Unit,
     modifier: Modifier = Modifier,
+    shimmerWhileSending: Boolean = false,
 ) {
     val key = questions.joinToString("\u0000") { it.id }
     var selections by remember(key) { mutableStateOf<Map<String, Set<Int>>>(emptyMap()) }
@@ -144,6 +149,7 @@ fun InlineQuestionForm(
                     SubmitButton(
                         ready = allAnswered && !submitting,
                         submitting = submitting,
+                        shimmer = shimmerWhileSending,
                         onClick = {
                             val answers = questions.mapNotNull { q ->
                                 val chosen = selections[q.id].orEmpty()
@@ -245,13 +251,13 @@ internal fun CheckMark(selected: Boolean, size: androidx.compose.ui.unit.Dp, rad
 }
 
 @Composable
-private fun SubmitButton(ready: Boolean, submitting: Boolean, onClick: () -> Unit) {
+private fun SubmitButton(ready: Boolean, submitting: Boolean, shimmer: Boolean, onClick: () -> Unit) {
     val colors = HappyTheme.colors
     val shape = RoundedCornerShape(QuestionSpec.submitRadius)
     Box(
         modifier = Modifier
             .testTag(QuestionTags.SUBMIT)
-            .alpha(if (ready) 1f else QuestionSpec.SUBMIT_DISABLED_OPACITY)
+            .alpha(if (ready || (submitting && shimmer)) 1f else QuestionSpec.SUBMIT_DISABLED_OPACITY)
             .defaultMinSize(minHeight = QuestionSpec.optionMinHeight)
             .clip(shape)
             .background(colors.surfaceHighest)
@@ -260,10 +266,17 @@ private fun SubmitButton(ready: Boolean, submitting: Boolean, onClick: () -> Uni
             .padding(horizontal = QuestionSpec.submitPaddingHorizontal, vertical = QuestionSpec.submitPaddingVertical),
         contentAlignment = Alignment.Center,
     ) {
-        if (submitting) {
+        if (submitting && !shimmer) {
             CircularProgressIndicator(Modifier.size(20.dp), color = colors.text, strokeWidth = 2.dp)
         } else {
-            Text(stringResource(R.string.tools_ask_user_question_submit), style = QuestionSpec.submitText, color = colors.text)
+            ShimmerText(
+                stringResource(R.string.tools_ask_user_question_submit),
+                style = QuestionSpec.submitText,
+                baseColor = ShimmerSpec.rest(colors.text, colors.surfaceHighest),
+                highlightColor = colors.text,
+                shimmering = submitting,
+                stillColor = colors.text,
+            )
         }
     }
 }

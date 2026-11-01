@@ -18,11 +18,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -32,7 +34,9 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -50,8 +54,9 @@ import com.slopus.happy.chat.markdown.isHttpMarkdownLink
 import com.slopus.happy.chat.markdown.tokenizeCode
 import com.slopus.happy.ui.components.MarkdownImage
 import com.slopus.happy.ui.components.MermaidView
+import com.slopus.happy.ui.browser.webLinkGestures
 import com.slopus.happy.ui.theme.HappyTheme
-import com.slopus.happy.ui.theme.PlexMono
+import com.slopus.happy.ui.theme.AppMono
 import com.slopus.happy.ui.theme.happyTextStyle
 import kotlinx.coroutines.delay
 import androidx.compose.ui.text.SpanStyle as ComposeSpanStyle
@@ -89,8 +94,8 @@ object MarkdownSpec {
     val codeRadius = 8.dp
     val codeMarginVertical = 8.dp
     val codePadding = 16.dp
-    val codeLanguage = happyTextStyle(fontSize = 12, family = PlexMono)
-    val codeText = happyTextStyle(fontSize = 14, lineHeight = 20, family = PlexMono)
+    val codeLanguage = happyTextStyle(fontSize = 12, family = AppMono)
+    val codeText = happyTextStyle(fontSize = 14, lineHeight = 20, family = AppMono)
     val copyButtonText = happyTextStyle(fontSize = 12, lineHeight = 16)
     val ruleMargin = 8.dp
     val optionGap = 8.dp
@@ -134,67 +139,110 @@ fun MarkdownView(
     blocks: List<MarkdownBlock>,
     modifier: Modifier = Modifier,
     onOptionPress: ((String) -> Unit)? = null,
+    /** Every link, of any address, goes here instead of the system; for a document that resolves its own (an artifact's). */
+    onLink: ((String) -> Unit)? = null,
+    /** Draws a picture instead of [MarkdownImage]; for a document that reads its own (an artifact's). */
+    image: (@Composable (MarkdownBlock.Image) -> Unit)? = null,
 ) {
+    if (onLink != null) {
+        CompositionLocalProvider(LocalMarkdownLinks provides onLink) { MarkdownView(blocks, modifier, onOptionPress, null, image) }
+        return
+    }
     Column(modifier = modifier) {
-        for (block in blocks) {
-            when (block) {
-                is MarkdownBlock.Text -> Text(
-                    text = rememberSpans(block.content),
-                    style = MarkdownSpec.text,
-                    color = HappyTheme.colors.text,
-                    modifier = Modifier
-                        .padding(top = MarkdownSpec.textMarginTop, bottom = MarkdownSpec.textMarginBottom)
-                        .testTag(MarkdownTags.TEXT),
-                )
-                is MarkdownBlock.Header -> {
-                    val (style, margins) = MarkdownSpec.headers[(block.level - 1).coerceIn(0, 5)]
-                    Text(
-                        text = rememberSpans(block.content),
-                        style = style,
-                        color = HappyTheme.colors.text,
-                        modifier = Modifier.padding(top = margins.first, bottom = margins.second).testTag(MarkdownTags.HEADER),
-                    )
-                }
-                is MarkdownBlock.BulletList -> ListBlock(
-                    block.items.map { Triple(MarkdownSpec.bullets[it.depth.coerceAtMost(2)], it.depth, it.spans) },
-                )
-                is MarkdownBlock.NumberedList -> ListBlock(block.items.map { Triple("${it.number}.", it.depth, it.spans) })
-                is MarkdownBlock.CodeBlock -> CodeBlock(block.content, block.language)
-                is MarkdownBlock.Mermaid -> MermaidView(block.content) { CodeBlock(block.content, "mermaid") }
-                MarkdownBlock.HorizontalRule -> Box(
-                    Modifier
-                        .padding(vertical = MarkdownSpec.ruleMargin)
-                        .testTag(MarkdownTags.RULE)
-                        .fillMaxWidth()
-                        .height(1.dp)
-                        .background(HappyTheme.colors.divider),
-                )
-                is MarkdownBlock.Options -> OptionsBlock(block.items, onOptionPress)
-                is MarkdownBlock.Table -> TableBlock(block)
-                is MarkdownBlock.Image -> MarkdownImage(block.alt, block.url)
-            }
+        for (block in blocks) MarkdownBlockView(block, onOptionPress, image)
+    }
+}
+
+/**
+ * One of [MarkdownView]'s blocks, as it draws it in its column. A drawn
+ * transcript row ([com.slopus.happy.ui.conversation.ProseColumn]) composes
+ * its code, tables, options, pictures and diagrams with it.
+ */
+@Composable
+internal fun MarkdownBlockView(
+    block: MarkdownBlock,
+    onOptionPress: ((String) -> Unit)? = null,
+    image: (@Composable (MarkdownBlock.Image) -> Unit)? = null,
+) {
+    when (block) {
+        is MarkdownBlock.Text -> SpansText(
+            spans = block.content,
+            style = MarkdownSpec.text,
+            color = HappyTheme.colors.text,
+            modifier = Modifier
+                .padding(top = MarkdownSpec.textMarginTop, bottom = MarkdownSpec.textMarginBottom)
+                .testTag(MarkdownTags.TEXT),
+        )
+        is MarkdownBlock.Header -> {
+            val (style, margins) = MarkdownSpec.headers[(block.level - 1).coerceIn(0, 5)]
+            SpansText(
+                spans = block.content,
+                style = style,
+                color = HappyTheme.colors.text,
+                modifier = Modifier.padding(top = margins.first, bottom = margins.second).testTag(MarkdownTags.HEADER),
+            )
         }
+        is MarkdownBlock.BulletList -> ListBlock(
+            block.items.map { Triple(MarkdownSpec.bullets[it.depth.coerceAtMost(2)], it.depth, it.spans) },
+        )
+        is MarkdownBlock.NumberedList -> ListBlock(block.items.map { Triple("${it.number}.", it.depth, it.spans) })
+        is MarkdownBlock.CodeBlock -> CodeBlock(block.content, block.language)
+        is MarkdownBlock.Mermaid -> MermaidView(block.content) { CodeBlock(block.content, "mermaid") }
+        MarkdownBlock.HorizontalRule -> Box(
+            Modifier
+                .padding(vertical = MarkdownSpec.ruleMargin)
+                .testTag(MarkdownTags.RULE)
+                .fillMaxWidth()
+                .height(1.dp)
+                .background(HappyTheme.colors.divider),
+        )
+        is MarkdownBlock.Options -> OptionsBlock(block.items, onOptionPress)
+        is MarkdownBlock.Table -> TableBlock(block)
+        is MarkdownBlock.Image -> image?.invoke(block) ?: MarkdownImage(block.alt, block.url)
     }
 }
 
 @Composable
 private fun rememberSpans(spans: List<MarkdownSpan>): AnnotatedString {
     val text = HappyTheme.colors.text
-    return remember(spans, text) { spansToAnnotatedString(spans) }
+    val links = LocalMarkdownLinks.current
+    return remember(spans, text, links) { spansToAnnotatedString(spans, links) }
 }
+
+/**
+ * Rendered spans as text; its web links tap and long-press through the
+ * screen's [LinkOpener][com.slopus.happy.ui.browser.LinkOpener] where there is one.
+ */
+@Composable
+private fun SpansText(spans: List<MarkdownSpan>, style: TextStyle, color: Color, modifier: Modifier = Modifier) {
+    val text = rememberSpans(spans)
+    val layout = remember { mutableStateOf<TextLayoutResult?>(null) }
+    Text(
+        text = text,
+        style = style,
+        color = color,
+        onTextLayout = { layout.value = it },
+        modifier = modifier.webLinkGestures(text, layout).revealText(layout),
+    )
+}
+
+/** Where MarkdownView's links go when its caller handles them; null for the system's (http(s) only). */
+private val LocalMarkdownLinks = staticCompositionLocalOf<((String) -> Unit)?> { null }
 
 private val LinkStyles = TextLinkStyles(style = ComposeSpanStyle(textDecoration = TextDecoration.Underline))
 
 /** RenderSpans: each span's styles over the block's, http(s) links tappable. */
-fun spansToAnnotatedString(spans: List<MarkdownSpan>): AnnotatedString = buildAnnotatedString {
+fun spansToAnnotatedString(spans: List<MarkdownSpan>, onLink: ((String) -> Unit)? = null): AnnotatedString = buildAnnotatedString {
     for (span in spans) {
         val style = ComposeSpanStyle(
             fontWeight = if (SpanStyle.Bold in span.styles || SpanStyle.Semibold in span.styles) FontWeight.SemiBold else null,
             fontStyle = if (SpanStyle.Italic in span.styles) FontStyle.Italic else null,
-            fontFamily = if (SpanStyle.Code in span.styles) PlexMono else null,
+            fontFamily = if (SpanStyle.Code in span.styles) AppMono else null,
         )
         val url = span.url
-        if (url != null && isHttpMarkdownLink(url)) {
+        if (url != null && onLink != null) {
+            withLink(LinkAnnotation.Clickable(url, LinkStyles) { onLink(url) }) { withStyle(style) { append(span.text) } }
+        } else if (url != null && isHttpMarkdownLink(url)) {
             withLink(LinkAnnotation.Url(url, LinkStyles)) { withStyle(style) { append(span.text) } }
         } else {
             withStyle(style) { append(span.text) }
@@ -217,7 +265,7 @@ private fun ListBlock(items: List<Triple<String, Int, List<MarkdownSpan>>>) {
                     color = color,
                     modifier = Modifier.padding(end = MarkdownSpec.bulletGap, top = 1.dp),
                 )
-                Text(text = rememberSpans(spans), style = MarkdownSpec.text, color = color, modifier = Modifier.weight(1f))
+                SpansText(spans = spans, style = MarkdownSpec.text, color = color, modifier = Modifier.weight(1f))
             }
         }
     }
@@ -255,11 +303,13 @@ private fun CodeBlock(content: String, language: String?) {
                 )
             }
             Box(modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                val layout = remember { mutableStateOf<TextLayoutResult?>(null) }
                 Text(
                     text = highlighted,
                     style = MarkdownSpec.codeText,
                     softWrap = false,
-                    modifier = Modifier.padding(MarkdownSpec.codePadding),
+                    onTextLayout = { layout.value = it },
+                    modifier = Modifier.padding(MarkdownSpec.codePadding).revealText(layout),
                 )
             }
         }
@@ -406,8 +456,8 @@ private fun TableRow(cells: List<List<MarkdownSpan>>, widths: List<Dp>, header: 
                         .background(if (header) colors.surfaceHigh else Color.Transparent)
                         .padding(horizontal = 12.dp, vertical = 8.dp),
                 ) {
-                    Text(
-                        text = rememberSpans(spans),
+                    SpansText(
+                        spans = spans,
                         style = if (header) MarkdownSpec.tableHeaderText else MarkdownSpec.tableCellText,
                         color = colors.text,
                     )

@@ -1,5 +1,7 @@
 package com.slopus.happy.ui.files
 
+import com.slopus.happy.text.Words
+import com.slopus.happy.R
 import com.slopus.happy.diff.DiffBudget
 import com.slopus.happy.diff.DiffSource
 import com.slopus.happy.diff.DiffStats
@@ -88,7 +90,7 @@ class LegacyChanges(
     private val cache: SessionFileCache? = null,
     private val pathKey: String? = null,
 ) {
-    data class Result(val file: GitFileStatus, val content: Content?, val error: String?)
+    data class Result(val file: GitFileStatus, val content: Content?, val error: Words?)
 
     sealed interface Content {
         data class Patch(val patch: String) : Content
@@ -215,10 +217,10 @@ class LegacyChanges(
     }
 
     private suspend fun fetch(file: GitFileStatus, state: State): Result {
-        val root = sessionPath ?: return Result(file, null, "No session path")
+        val root = sessionPath ?: return Result(file, null, Words.ours(R.string.files_no_session_path))
         val resolved = SessionFilePaths.resolve(file.fullPath, root)
         val relative = resolved?.takeIf { it.withinSessionRoot }?.relativePath
-            ?: return Result(file, null, "File is outside the session root.")
+            ?: return Result(file, null, Words.ours(R.string.files_outside_root))
         return try {
             when {
                 // Images diff as pictures: both sides, not a patch git can't produce.
@@ -226,8 +228,8 @@ class LegacyChanges(
                 file.status == GitFileStatusKind.Untracked -> {
                     val read = ops.readFile(sessionId, resolved.absolutePath)
                     val content = read.content
-                    if (!read.success || content.isNullOrEmpty()) return Result(file, null, read.error ?: "Failed to read file")
-                    val text = decodeBase64Text(content) ?: return Result(file, null, "Failed to decode file")
+                    if (!read.success || content.isNullOrEmpty()) return Result(file, null, Words.said(read.error, R.string.files_failed_to_read))
+                    val text = decodeBase64Text(content) ?: return Result(file, null, Words.ours(R.string.files_decode_failed))
                     Result(file, Content.NewFile(text), null)
                 }
                 else -> {
@@ -237,13 +239,13 @@ class LegacyChanges(
                         ignoreWhitespace = state.ignoreWhitespace,
                     )
                     val res = ops.bash(sessionId, command, root, 5_000)
-                    if (!res.success) Result(file, null, res.error ?: "Failed to fetch diff") else Result(file, Content.Patch(res.stdout), null)
+                    if (!res.success) Result(file, null, Words.said(res.error, R.string.files_diff_failed)) else Result(file, Content.Patch(res.stdout), null)
                 }
             }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Result(file, null, e.message ?: "Failed to fetch diff")
+            Result(file, null, Words.said(e.message, R.string.files_diff_failed))
         }
     }
 
@@ -278,11 +280,11 @@ class AgentChanges(
 ) {
     sealed interface Load {
         data object Loading : Load
-        data class Error(val message: String) : Load
+        data class Error(val message: Words) : Load
         data class Ready(val git: GitState, val revision: Int) : Load
     }
 
-    data class FileResult(val content: GitFileContent?, val error: String?)
+    data class FileResult(val content: GitFileContent?, val error: Words?)
 
     data class State(
         val load: Load = Load.Loading,
@@ -292,8 +294,8 @@ class AgentChanges(
     ) {
         val fileCount: Int? get() = (load as? Load.Ready)?.git?.takeIf { it.comparison == "ready" }?.changedFiles?.toInt()
 
-        /** HappyAgentDiffFiles `items`; [fileEmpty] is files.fileEmpty. */
-        fun items(fileEmpty: String): List<DiffFileItem> {
+        /** HappyAgentDiffFiles `items`. */
+        fun items(): List<DiffFileItem> {
             val git = (load as? Load.Ready)?.git ?: return emptyList()
             return git.files.map { file ->
                 val result = results[file.path]
@@ -311,9 +313,9 @@ class AgentChanges(
                     error = result?.error,
                     image = (content as? GitFileContent.Image)?.let { DiffImages(it.before, it.after) },
                     message = when {
-                        content is GitFileContent.Message -> content.message
+                        content is GitFileContent.Message -> Words.Said(content.message)
                         content is GitFileContent.Text && content.oldText == content.newText ->
-                            if (content.newText.isEmpty()) fileEmpty else "File contents match the comparison base."
+                            Words.ours(if (content.newText.isEmpty()) R.string.files_file_empty else R.string.files_contents_match)
                         else -> null
                     },
                     source = (content as? GitFileContent.Text)?.let {
@@ -329,12 +331,12 @@ class AgentChanges(
         }
 
         /** The notices above the list: truncated, approximate, conflicted. */
-        val notices: List<String> get() {
+        val notices: List<Words> get() {
             val git = (load as? Load.Ready)?.git ?: return emptyList()
             return buildList {
-                if (git.filesTruncated) add("Showing ${git.files.size} of ${git.changedFiles} changed files. Open the workspace on your computer to see the full list.")
-                if (!git.countsExact) add("Change counts are approximate for this workspace.")
-                if (git.conflicted) add("This workspace has unresolved merge conflicts.")
+                if (git.filesTruncated) add(Words.ours(R.string.files_truncated, git.files.size.toString(), git.changedFiles.toString()))
+                if (!git.countsExact) add(Words.ours(R.string.files_counts_approximate))
+                if (git.conflicted) add(Words.ours(R.string.files_conflicted))
             }
         }
 
@@ -366,7 +368,7 @@ class AgentChanges(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Load.Error(e.message ?: "Could not load changes from Happy Agent.")
+                Load.Error(Words.said(e.message, R.string.files_changes_failed))
             }
             if (request == revision) mutable.update { it.copy(load = load) }
         }
@@ -398,7 +400,7 @@ class AgentChanges(
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    FileResult(null, e.message ?: "Could not load this file. Reload changes to try again.")
+                    FileResult(null, Words.said(e.message, R.string.files_file_failed))
                 }
                 if (ready.revision != revision) return@launch
                 inFlight -= path

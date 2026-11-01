@@ -23,6 +23,10 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // tailcat-kotlin has no published artifact; tools/tailcat/build.sh builds its pinned commit here.
+        maven(file("vendor/maven")) {
+            content { includeGroup("io.tailcat") }
+        }
         // LiveKit's audio routing dependency is published through JitPack.
         maven("https://jitpack.io") {
             content { includeModule("com.github.davidliu", "audioswitch") }
@@ -34,5 +38,6 @@ rootProject.name = "happy-android"
 
 include(":app")
 include(":crypto")
+include(":benchmark")
 include(":elevenlabs")
 project(":elevenlabs").projectDir = file("vendor/elevenlabs")

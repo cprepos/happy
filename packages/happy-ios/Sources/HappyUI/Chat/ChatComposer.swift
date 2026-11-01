@@ -10,7 +10,7 @@ import UIKit
 // owns everything inside its own bounds: the text, the draft, attachments,
 // the mode chips, the context meter, send and stop.
 //
-//     ChatViewController
+//     LegacyChatViewController
 //       ├─ list (flipped collection view)
 //       └─ dock ─┬─ accessories (the screen's)
 //                └─ composer: any ChatComposerView   ← ChatComposerFactory.make
@@ -58,11 +58,11 @@ public struct ChatComposerState: Equatable, Sendable {
     /// The session record (metadata, agent state, thinking, active) and the
     /// account settings.
     public var session: ChatSessionState
-    /// The latest model usage, for the context meter (`ChatSnapshot.usage`).
+    /// The latest model usage, for the context meter (`LegacyChatSnapshot.usage`).
     public var usage: ChatUsage?
-    /// Unsent messages by local id (`ChatSnapshot.delivery`).
+    /// Unsent messages by local id (`LegacyChatSnapshot.delivery`).
     public var delivery: [String: OutboxDelivery]
-    /// The chat has been read at least once (`ChatSnapshot.isLoaded`).
+    /// The chat has been read at least once (`LegacyChatSnapshot.isLoaded`).
     public var isLoaded: Bool
     /// The agent is waiting on a question the person can answer by typing
     /// (AskUserQuestion / request_user_input); sending answers it.
@@ -127,6 +127,38 @@ public protocol ChatComposerView: UIView {
     var isTextFocused: Bool { get }
     func focus()
     func blur()
+    var hasPermissionMenu: Bool { get }
+    /// The permission modes the session's profile offers; nil for none.
+    var permissionChoice: PermissionModeChoice? { get }
+    /// The session's status for the header's capsule, under its name
+    /// (online, last seen, thinking, waiting on the person); nil before
+    /// the session is known.
+    var headerStatus: ChatHeaderStatus? { get }
+}
+
+extension ChatComposerView {
+    public var hasPermissionMenu: Bool { false }
+    public var permissionChoice: PermissionModeChoice? { nil }
+    public var headerStatus: ChatHeaderStatus? { nil }
+}
+
+/// A session's status as its header says it: the words and their tone.
+public struct ChatHeaderStatus: Equatable {
+    public var text: String
+    public var color: UIColor
+    /// Work under way ("thinking…", a chat being started): the words carry
+    /// the sheen.
+    public var working = false
+    /// The account's link on its way ("connecting…"): the spinner before
+    /// the words, as home's title has it.
+    public var spins = false
+
+    public init(text: String, color: UIColor, working: Bool = false, spins: Bool = false) {
+        self.text = text
+        self.color = color
+        self.working = working
+        self.spins = spins
+    }
 }
 
 @MainActor
@@ -149,10 +181,14 @@ public protocol ChatComposerDelegate: AnyObject {
     /// the newest message and, as happy-app does, dismisses any question
     /// the agent was waiting on, since the message answers it.
     func composer(_ composer: any ChatComposerView, didSend localId: String)
+
+    /// `headerStatus` changed.
+    func composerDidChangeHeaderStatus(_ composer: any ChatComposerView)
 }
 
 extension ChatComposerDelegate {
     public func composerDidRestore(_ composer: any ChatComposerView, generation: Int) {}
+    public func composerDidChangeHeaderStatus(_ composer: any ChatComposerView) {}
 }
 
 /// How long the chat waits for its composer's opening draft.

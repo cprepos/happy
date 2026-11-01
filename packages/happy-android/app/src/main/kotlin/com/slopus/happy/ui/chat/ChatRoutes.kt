@@ -1,24 +1,24 @@
 package com.slopus.happy.ui.chat
 
+import com.slopus.happy.ui.page
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.NavHostController
-import androidx.navigation.compose.composable
 import androidx.navigation.toRoute
 import com.slopus.happy.AppGraph
 import com.slopus.happy.R
@@ -73,7 +73,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 
-/** `/session/{id}`: one chat. */
+/** `/session/{id}`: one chat, or an empty one compose opened (a `compose-chat:` id, [ComposeChat]). */
 @Serializable
 data class SessionRoute(val id: String)
 
@@ -87,16 +87,20 @@ fun NavGraphBuilder.chatRoutes(
     actions: ChatActions = SyncChatActions { graph.account.value },
     onInfo: (sessionId: String) -> Unit = {},
 ) {
-    composable<SessionRoute> { entry ->
+    page<SessionRoute> { entry ->
         val route = entry.toRoute<SessionRoute>()
+        // Each takes the chat the screen shows, which a compose chat's route id is not once it has started.
         ChatRoute(
             graph, route.id, actions,
             onBack = { nav.popBackStack() },
-            onInfo = { onInfo(route.id) },
-            onToolPress = { message -> nav.navigate(toolPressRoute(route.id, message)) },
-            onToolFilePress = { message, file -> nav.navigate(MessageDetailRoute(route.id, message.id, file = file)) },
+            onInfo = onInfo,
+            // An empty chat in this one's place, so Back still leads home.
+            onCompose = { nav.composeChat(inPlace = true) },
+            onToolPress = { sessionId, message -> nav.navigate(toolPressRoute(sessionId, message)) },
+            onToolFilePress = { sessionId, message, file -> nav.navigate(MessageDetailRoute(sessionId, message.id, file = file)) },
             // A resume that comes back as another session, or another tab of the checkout, replaces this chat in place.
-            onOpenSession = { id -> if (id != route.id) nav.navigate(SessionRoute(id)) { popUpTo<SessionRoute> { inclusive = true } } },
+            onOpenSession = { shown, id -> if (id != shown) nav.navigate(SessionRoute(id)) { popUpTo<SessionRoute> { inclusive = true } } },
+            onComposeStarted = { id -> entry.savedStateHandle[COMPOSE_STARTED] = id },
         )
     }
 }
@@ -107,14 +111,20 @@ private fun ChatRoute(
     routeId: String,
     actions: ChatActions,
     onBack: () -> Unit,
-    onInfo: () -> Unit,
-    onToolPress: (ChatMessage.ToolCallMessage) -> Unit,
-    onToolFilePress: (ChatMessage.ToolCallMessage, String) -> Unit,
-    onOpenSession: (String) -> Unit,
+    onInfo: (sessionId: String) -> Unit,
+    onCompose: () -> Unit,
+    onToolPress: (sessionId: String, ChatMessage.ToolCallMessage) -> Unit,
+    onToolFilePress: (sessionId: String, ChatMessage.ToolCallMessage, String) -> Unit,
+    onOpenSession: (shown: String, sessionId: String) -> Unit,
+    /** A compose chat's first send started this session. */
+    onComposeStarted: (sessionId: String) -> Unit = {},
 ) {
-    // A chat opened from a tab strip's `+` stands on its stand-in's id until the machine names it (Home's pending chats).
+    // A chat opened from a tab strip's `+` stands on its stand-in's id until the machine names it (Home's pending chats);
+    // one compose opened, on its own id until its first send has started the session.
     val route = rememberPendingChatRoute(graph, routeId)
-    val sessionId = route.sessionId
+    val compose = rememberComposeChat(graph, routeId)
+    compose?.startedId?.let { started -> LaunchedEffect(started) { onComposeStarted(started) } }
+    val sessionId = compose?.sessionId ?: route.sessionId
     val account by graph.account.collectAsStateWithLifecycle()
     val feed = remember(account) {
         val sync = account
@@ -126,10 +136,19 @@ private fun ChatRoute(
     }
     val state by remember(feed, sessionId) { feed.state(sessionId) }.collectAsStateWithLifecycle(ChatState())
     val settings by graph.settings.settings.collectAsStateWithLifecycle()
+    // No session yet: the composer is the new-session draft's.
+    val drafting = compose?.composing == true
+    // The empty chat stands until the session its send started has loaded, so nothing flashes between.
+    val composing = compose != null && (drafting || state.session == null)
     // One flow per account and chat: a new one would start a new draft.
-    val mirrorFlow = remember(account, sessionId) { account?.composer?.mirror(sessionId) }
-    val mirror by remember(mirrorFlow) { mirrorFlow ?: flowOf(ComposerMirror()) }.collectAsStateWithLifecycle(ComposerMirror())
-    val draft = rememberComposerDraft(mirrorFlow, onWrite = { text -> if (!route.writeDraft(text)) actions.setDraft(sessionId, text) })
+    val mirrorFlow = remember(account, sessionId, drafting) { if (drafting) compose?.mirror else account?.composer?.mirror(sessionId) }
+    val mirror by remember(mirrorFlow, drafting) { mirrorFlow.takeUnless { drafting } ?: flowOf(ComposerMirror()) }.collectAsStateWithLifecycle(ComposerMirror())
+    val draft = rememberComposerDraft(mirrorFlow, onWrite = { text ->
+        when {
+            compose?.composing == true -> compose.writeDraft(text)
+            !route.writeDraft(text) -> actions.setDraft(sessionId, text)
+        }
+    })
     route.SeedDraft(draft)
     val resources = LocalResources.current
     val metadata = state.session?.metadata
@@ -141,9 +160,9 @@ private fun ChatRoute(
 
     // sync.ts onSessionVisible's git half: the checkout is asked for its status now.
     val git = remember(graph) { GitStatusServices.of(graph) }
-    LaunchedEffect(git, sessionId, account) { if (account != null) git.sessionVisible(sessionId) }
+    LaunchedEffect(git, sessionId, account, drafting) { if (account != null && !drafting) git.sessionVisible(sessionId) }
     // useSessionVisibility: the open chat reads at once and can't turn unread.
-    SessionViewingEffect(graph, sessionId)
+    if (!drafting) SessionViewingEffect(graph, sessionId)
     val statuses by git.statuses.collectAsStateWithLifecycle()
     val gitStatus = gitStatusKey(metadata?.machineId, metadata?.path)?.let(statuses::get)
 
@@ -161,7 +180,8 @@ private fun ChatRoute(
     val notSent = stringResource(R.string.errors_unknown_error)
     val latestState by rememberUpdatedState(state)
     val latestSettings by rememberUpdatedState(settings)
-    val images = rememberComposerImages(enabled = state.session != null && canUseAttachments(state.session?.metadata))
+    // An empty chat takes images for its first message; whether they can go is the start's to say.
+    val images = rememberComposerImages(enabled = composing || (state.session != null && canUseAttachments(state.session?.metadata)))
     val latestImages by rememberUpdatedState(images)
     val notices = remember { mutableStateListOf<Alert>() }
     // Not lifecycle-bound: the change to the background is the one that matters.
@@ -171,14 +191,20 @@ private fun ChatRoute(
         failure = e.message?.takeIf { it.isNotBlank() } ?: notSent
     }
 
-    val screenActions = remember(sessionId, actions, feed, draft, resources, route) {
+    val latestCompose by rememberUpdatedState(onCompose)
+    val screenActions = remember(sessionId, actions, feed, draft, resources, route, compose) {
         ChatScreenActions(
             onBack = onBack,
-            onInfo = onInfo,
-            onToolPress = onToolPress,
-            onToolFilePress = onToolFilePress,
+            onInfo = { onInfo(sessionId) },
+            // An empty chat already here stays.
+            onCompose = { if (compose?.composing != true) latestCompose() },
+            onToolPress = { message -> onToolPress(sessionId, message) },
+            onToolFilePress = { message, file -> onToolFilePress(sessionId, message, file) },
             onDraftChange = draft::set,
             onSend = onSend@{ text ->
+                if (compose != null && compose.composing) {
+                    return@onSend compose.send(text, latestImages) { started, rest -> actions.setDraft(started, rest) }
+                }
                 if (route.submit(text)) return@onSend draft.set("")
                 val picked = latestImages?.images?.toList().orEmpty()
                 if ((text.isBlank() && picked.isEmpty()) || sending) return@onSend
@@ -235,7 +261,7 @@ private fun ChatRoute(
                     try {
                         val ops = ChatResumeOps(actions, { latestMirror }, { latestSettings.agentDefaultOverrides })
                         when (val outcome = resumer.resume(ops, sessionId, machine, session.metadata, resumeTexts)) {
-                            is ResumeOutcome.Resumed -> onOpenSession(outcome.sessionId)
+                            is ResumeOutcome.Resumed -> onOpenSession(sessionId, outcome.sessionId)
                             is ResumeOutcome.Failed -> failure = outcome.message
                             ResumeOutcome.InFlight -> Unit
                         }
@@ -265,7 +291,16 @@ private fun ChatRoute(
         LocalSuggestionSource provides rememberSessionSuggestions(graph, sessionId, state.session?.metadata),
         LocalUsageDisplay provides UsageDisplay(settings.alwaysShowContextSize, settings.usageLimitShowRemaining),
     ) {
-        val slots = rememberSessionScreenSlots(graph, routeId, route.pending, state, onSwitch = onOpenSession, onBack = onBack)
+        // A compose chat that has started is its session's chat: the checkout's tabs are that session's.
+        val slots = rememberSessionScreenSlots(graph, if (compose != null) sessionId else routeId, route.pending, state, onSwitch = { onOpenSession(sessionId, it) }, onBack = onBack)
+        val chatSlots = if (compose != null && composing) {
+            ChatScreenSlots(
+                headerSubtitle = compose.progress(),
+                pending = ChatPendingSlot(compose.session, focusComposer = true) { ComposeTarget(compose) },
+            )
+        } else {
+            slots.chat
+        }
         ChatScreen(
             state = state,
             draft = draft.text,
@@ -278,7 +313,7 @@ private fun ChatRoute(
             modes = modes,
             gitStatus = gitStatus,
             showCliWarning = showCliWarning,
-            slots = slots.chat,
+            slots = chatSlots,
             goalBar = slots.goalBar,
             activityBar = slots.activityBar,
             inactiveHint = state.session?.let { session ->
@@ -288,6 +323,7 @@ private fun ChatRoute(
             },
         )
     }
+    compose?.Dialogs()
     notices.firstOrNull()?.let { HappyAlert(it, onDismiss = { notices.removeAt(0) }) }
     failure?.let { message ->
         HappyAlert(

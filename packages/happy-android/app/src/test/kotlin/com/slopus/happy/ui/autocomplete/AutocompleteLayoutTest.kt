@@ -144,7 +144,7 @@ class AutocompleteLayoutTest {
         val list = rule.node(AutocompleteTags.LIST).bounds
         assertDp("list left", panel.left, list.left)
         assertDp("list right", panel.right, list.right)
-        assertDp("held to 800", 800.dp, list.right - list.left)
+        assertDp("the panel's, 8 inside the 800 column", 784.dp, list.right - list.left)
     }
 
     @Test

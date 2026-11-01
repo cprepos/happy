@@ -47,7 +47,9 @@ import androidx.compose.ui.unit.dp
 import com.slopus.happy.R
 import com.slopus.happy.ui.components.Alert
 import com.slopus.happy.ui.components.AlertButton
+import com.slopus.happy.ui.components.GlassBarScreen
 import com.slopus.happy.ui.components.HappyAlert
+import com.slopus.happy.ui.components.HeaderBackButton
 import com.slopus.happy.ui.components.Header
 import com.slopus.happy.ui.components.HeaderIconButton
 import com.slopus.happy.ui.components.Icon
@@ -96,14 +98,13 @@ data class SecondaryAction(val title: String, val onClick: () -> Unit, val enabl
 /**
  * The first-run template (OnboardingScreen.tsx):
  *
- *   header   OnboardingHeader
+ *   header   OnboardingHeader, on glass ([GlassBarScreen])
  *   body     one block, centred in the space left: content, primary, secondary
  *   footer   Get help, bottom right, above the navigation bar
  *
- * The block's content slot reserves the height of both first-run contents
- * (welcome and link-your-computer) and its secondary slot the height of every
- * secondary label, so the actions sit at the same place whichever screen is
- * showing. Block: full width up to 480, 24 side padding; primary 12 below the
+ * The block's content slot reserves the height of the link checklist and
+ * its secondary slot the height of every secondary label, so the actions
+ * sit at the same place whichever screen is showing. Block: full width up to 480, 24 side padding; primary 12 below the
  * content; secondary 4 below the primary. If the block outgrows the screen
  * the body scrolls from the top and the spacers collapse.
  */
@@ -115,56 +116,58 @@ fun OnboardingScreen(
     secondary: SecondaryAction,
     modifier: Modifier = Modifier,
 ) {
-    Column(modifier = modifier.fillMaxSize().background(HappyTheme.colors.grouped.background)) {
-        header()
-        BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxWidth().testTag(OnboardingTags.BODY)) {
-            val viewport = maxHeight
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
-                    .heightIn(min = viewport)
-                    .padding(vertical = OnboardingSpec.bodyPaddingVertical),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Spacer(modifier = Modifier.weight(1f))
+    val ground = HappyTheme.colors.grouped.background
+    GlassBarScreen(header, ground, modifier.fillMaxSize().background(ground)) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxWidth().testTag(OnboardingTags.BODY)) {
+                val viewport = maxHeight
                 Column(
                     modifier = Modifier
-                        .widthIn(max = OnboardingSpec.blockMaxWidth)
                         .fillMaxWidth()
-                        .testTag(OnboardingTags.BLOCK)
-                        .padding(horizontal = OnboardingSpec.blockPaddingHorizontal),
+                        .verticalScroll(rememberScrollState())
+                        .heightIn(min = viewport)
+                        .padding(vertical = OnboardingSpec.bodyPaddingVertical),
+                    horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    Layers(
-                        reserve = listOf({ WelcomeContent() }, { LinkComputerContent() }),
-                        modifier = Modifier.testTag(OnboardingTags.CONTENT),
-                        content = content,
-                    )
-                    Box(modifier = Modifier.padding(top = OnboardingSpec.primaryGap).testTag(OnboardingTags.PRIMARY)) {
-                        primary()
-                    }
-                    Layers(
-                        reserve = secondaryTitles().map { title -> { SecondaryButton(title = title, onClick = {}, enabled = false) } },
-                        modifier = Modifier.padding(top = OnboardingSpec.secondaryGap).testTag(OnboardingTags.SECONDARY),
+                    Spacer(modifier = Modifier.weight(1f))
+                    Column(
+                        modifier = Modifier
+                            .widthIn(max = OnboardingSpec.blockMaxWidth)
+                            .fillMaxWidth()
+                            .testTag(OnboardingTags.BLOCK)
+                            .padding(horizontal = OnboardingSpec.blockPaddingHorizontal),
                     ) {
-                        SecondaryButton(title = secondary.title, onClick = secondary.onClick, enabled = secondary.enabled)
+                        Layers(
+                            reserve = listOf { LinkComputerContent() },
+                            modifier = Modifier.testTag(OnboardingTags.CONTENT),
+                            content = content,
+                        )
+                        Box(modifier = Modifier.padding(top = OnboardingSpec.primaryGap).testTag(OnboardingTags.PRIMARY)) {
+                            primary()
+                        }
+                        Layers(
+                            reserve = secondaryTitles().map { title -> { SecondaryButton(title = title, onClick = {}, enabled = false) } },
+                            modifier = Modifier.padding(top = OnboardingSpec.secondaryGap).testTag(OnboardingTags.SECONDARY),
+                        ) {
+                            SecondaryButton(title = secondary.title, onClick = secondary.onClick, enabled = secondary.enabled)
+                        }
                     }
+                    Spacer(modifier = Modifier.weight(1f))
                 }
-                Spacer(modifier = Modifier.weight(1f))
             }
-        }
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = OnboardingSpec.footerPaddingHorizontal)
-                .padding(
-                    bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() +
-                        OnboardingSpec.footerPaddingBottom,
-                )
-                .testTag(OnboardingTags.FOOTER),
-            horizontalArrangement = Arrangement.End,
-        ) {
-            GetHelpButton()
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = OnboardingSpec.footerPaddingHorizontal)
+                    .padding(
+                        bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() +
+                            OnboardingSpec.footerPaddingBottom,
+                    )
+                    .testTag(OnboardingTags.FOOTER),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                GetHelpButton()
+            }
         }
     }
 }
@@ -172,8 +175,6 @@ fun OnboardingScreen(
 /** Every secondary label the template can show. */
 @Composable
 private fun secondaryTitles(): List<String> = listOf(
-    stringResource(R.string.onboarding_restore_existing),
-    stringResource(R.string.welcome_create_account),
     stringResource(R.string.onboarding_paste_link),
 )
 
@@ -215,7 +216,6 @@ private fun SecondaryButton(title: String, onClick: () -> Unit, enabled: Boolean
 @Composable
 fun GetHelpButton() {
     val colors = HappyTheme.colors
-    val uriHandler = LocalUriHandler.current
     val interactionSource = remember { MutableInteractionSource() }
     val pressed by interactionSource.collectIsPressedAsState()
     var showHelp by remember { mutableStateOf(false) }
@@ -237,20 +237,25 @@ fun GetHelpButton() {
         Text(text = label, style = OnboardingSpec.getHelp, color = colors.textSecondary)
     }
 
-    if (showHelp) {
-        HappyAlert(
-            alert = Alert(
-                title = label,
-                message = stringResource(R.string.onboarding_help_message),
-                buttons = listOf(
-                    AlertButton(stringResource(R.string.onboarding_help_discord)) { uriHandler.openUri(OnboardingSpec.HELP_DISCORD_URL) },
-                    AlertButton(stringResource(R.string.common_cancel)),
-                    AlertButton(stringResource(R.string.onboarding_help_issues)) { uriHandler.openUri(OnboardingSpec.HELP_ISSUES_URL) },
-                ),
+    if (showHelp) GetHelpAlert(onDismiss = { showHelp = false })
+}
+
+/** "Get help": the two public places to ask, Android button order. */
+@Composable
+fun GetHelpAlert(onDismiss: () -> Unit) {
+    val uriHandler = LocalUriHandler.current
+    HappyAlert(
+        alert = Alert(
+            title = stringResource(R.string.onboarding_get_help),
+            message = stringResource(R.string.onboarding_help_message),
+            buttons = listOf(
+                AlertButton(stringResource(R.string.onboarding_help_discord)) { uriHandler.openUri(OnboardingSpec.HELP_DISCORD_URL) },
+                AlertButton(stringResource(R.string.common_cancel)),
+                AlertButton(stringResource(R.string.onboarding_help_issues)) { uriHandler.openUri(OnboardingSpec.HELP_ISSUES_URL) },
             ),
-            onDismiss = { showHelp = false },
-        )
-    }
+        ),
+        onDismiss = onDismiss,
+    )
 }
 
 /**
@@ -263,10 +268,12 @@ fun OnboardingHeader(
     customServerLabel: String?,
     onServer: () -> Unit,
     gearDescription: String = stringResource(R.string.server_title),
+    onBack: (() -> Unit)? = null,
 ) {
     val colors = HappyTheme.colors
     Header(
         alignment = TitleAlignment.Center,
+        left = onBack?.let { back -> { HeaderBackButton(onClick = back) } },
         titleContent = {
             if (customServerLabel != null) {
                 Text(

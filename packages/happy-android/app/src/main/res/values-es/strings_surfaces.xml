@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="surface_leave">Salir</string>
+    <string name="surface_leave_title">¿Salir de «%1$s»?</string>
+    <string name="surface_leave_message">Desaparecerá de tu lista en todos tus dispositivos. Los demás participantes lo conservan.</string>
+    <string name="surface_leave_failed">No se pudo salir de «%1$s»</string>
+    <string name="surface_leave_no_answer">El agente no respondió. Inténtalo de nuevo en un momento.</string>
+    <string name="conversation_jump_to_latest">Ir a lo más reciente</string>
+    <string name="conversation_jump_working">trabajando</string>
+</resources>

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Window animations for dialogs, sheets and viewers (ui/components/PopupMotion.kt). -->
+<resources>
+    <style name="HappyDialogAnimation">
+        <item name="android:windowEnterAnimation">@anim/happy_dialog_enter</item>
+        <item name="android:windowExitAnimation">@anim/happy_dialog_exit</item>
+    </style>
+    <style name="HappySheetAnimation">
+        <item name="android:windowEnterAnimation">@anim/happy_sheet_enter</item>
+        <item name="android:windowExitAnimation">@anim/happy_sheet_exit</item>
+    </style>
+    <style name="HappyFadeAnimation">
+        <item name="android:windowEnterAnimation">@anim/happy_fade_enter</item>
+        <item name="android:windowExitAnimation">@anim/happy_fade_exit</item>
+    </style>
+</resources>

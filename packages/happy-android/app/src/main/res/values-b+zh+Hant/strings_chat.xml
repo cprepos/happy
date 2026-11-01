@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  values/strings_chat.xml in b+zh+Hant: Android-only strings, not in happy-app's
+  catalogs. AndroidStringsTranslatedTest fails while one is missing here.
+-->
+<resources>
+    <string name="chat_send_failed">訊息傳送失敗。</string>
+    <string name="chat_no_messages">還沒有訊息</string>
+    <string name="chat_created">建立於 %1$s</string>
+    <string name="chat_permissions_in_terminal">權限僅在終端機中顯示。重設或傳送訊息即可在 App 中控制。</string>
+    <string name="chat_stop">停止</string>
+    <string name="chat_voice">語音</string>
+    <string name="chat_send">傳送</string>
+    <string name="chat_markdown_image">Markdown 圖片</string>
+    <string name="chat_remove_image">移除 %1$s</string>
+    <string name="chat_add_photo">新增照片</string>
+    <string name="diff_badge_new">新增</string>
+    <string name="diff_badge_deleted">已刪除</string>
+    <string name="diff_badge_renamed">已重新命名</string>
+    <string name="files_no_session_path">沒有工作階段路徑</string>
+    <string name="files_outside_root">檔案位於工作階段根目錄之外。</string>
+    <string name="files_decode_failed">無法解碼檔案</string>
+    <string name="files_diff_failed">無法取得差異</string>
+    <string name="files_load_failed">無法載入檔案</string>
+    <string name="files_contents_match">檔案內容與比較基準一致。</string>
+    <string name="files_truncated">顯示 %2$s 個已變更檔案中的 %1$s 個。在電腦上開啟工作區以查看完整清單。</string>
+    <string name="files_counts_approximate">此工作區的變更計數為近似值。</string>
+    <string name="files_conflicted">此工作區有未解決的合併衝突。</string>
+    <string name="files_changes_failed">無法從 Happy Agent 載入變更。</string>
+    <string name="files_file_failed">無法載入此檔案。請重新載入變更後重試。</string>
+    <string name="files_update_agent">在電腦上更新 Happy Agent 才能查看此工作階段的變更。</string>
+    <string name="files_no_comparison">此工作區無法與 origin/main 進行比較。</string>
+    <string name="files_no_details">此比較沒有可用的檔案詳細資料。</string>
+</resources>

@@ -1,5 +1,8 @@
 package com.slopus.happy.model.settings
 
+import android.content.res.Resources
+import androidx.annotation.StringRes
+import com.slopus.happy.R
 import com.slopus.happy.net.HappyHttp
 import com.slopus.happy.net.HappyJson
 import kotlinx.serialization.Serializable
@@ -55,7 +58,7 @@ class PushTokensApi(private val http: HappyHttp, private val token: () -> String
     }
 }
 
-/** account.tsx's formatting of push state. */
+/** account.tsx's formatting of push state, in the person's language (`strings_push.xml`). */
 object PushText {
     /** formatPushTokenFingerprint: the Expo token's value, first and last 6 when longer than 12. */
     fun fingerprint(token: String): String {
@@ -64,43 +67,53 @@ object PushText {
     }
 
     /** formatPushPermissionLabel. */
-    fun label(permission: PushPermission?): String = when {
-        permission == null -> "Loading"
-        permission.status == PushPermissionStatus.Unsupported -> "Unavailable"
-        permission.granted -> "Allowed"
-        permission.status == PushPermissionStatus.Denied -> "Denied"
-        else -> "Not requested"
+    @StringRes
+    fun label(permission: PushPermission?): Int = when {
+        permission == null -> R.string.push_label_loading
+        permission.status == PushPermissionStatus.Unsupported -> R.string.push_label_unavailable
+        permission.granted -> R.string.push_label_allowed
+        permission.status == PushPermissionStatus.Denied -> R.string.push_label_denied
+        else -> R.string.push_label_not_requested
     }
 
     /** formatPushPermissionSubtitle. */
-    fun subtitle(permission: PushPermission?): String = when {
-        permission == null -> "Checking push notification permissions for this device."
-        permission.status == PushPermissionStatus.Unsupported -> "Push notification permissions are only managed on mobile devices."
-        permission.granted -> "This device can receive push notifications."
-        permission.canAskAgain -> "The system prompt can still be shown again from the app."
-        else -> "iOS has stopped prompting. Open system settings to enable notifications again."
+    @StringRes
+    fun subtitle(permission: PushPermission?): Int = when {
+        permission == null -> R.string.push_subtitle_checking
+        permission.status == PushPermissionStatus.Unsupported -> R.string.push_subtitle_unsupported
+        permission.granted -> R.string.push_subtitle_granted
+        permission.canAskAgain -> R.string.push_subtitle_can_ask
+        else -> R.string.push_subtitle_stopped
     }
 
     /** The "Request Permission Again" row's subtitle. */
-    fun requestSubtitle(permission: PushPermission?): String = when {
-        permission?.status == PushPermissionStatus.Unsupported -> "Push notification permissions are only available on iPhone and Android."
-        permission?.canAskAgain == true -> "Shows the system prompt again if iOS still allows it."
-        else -> "Opens system settings when iOS will not prompt again."
+    @StringRes
+    fun requestSubtitle(permission: PushPermission?): Int = when {
+        permission?.status == PushPermissionStatus.Unsupported -> R.string.push_request_unsupported
+        permission?.canAskAgain == true -> R.string.push_request_can_ask
+        else -> R.string.push_request_settings
     }
 
     /** buildPushTokenSubtitle, with `toLocaleString` as the default locale's medium date and time. */
-    fun tokenSubtitle(token: PushToken, isCurrentDevice: Boolean, deviceLabel: String, appLabel: String?, format: DateFormat = defaultFormat()): String {
+    fun tokenSubtitle(
+        resources: Resources,
+        token: PushToken,
+        isCurrentDevice: Boolean,
+        deviceLabel: String,
+        appLabel: String?,
+        format: DateFormat = defaultFormat(),
+    ): String {
         val lines = mutableListOf<String>()
         if (isCurrentDevice) {
             lines += deviceLabel
             if (appLabel != null) lines += appLabel
         } else {
-            lines += "Other device or stale registration"
+            lines += resources.getString(R.string.push_other_device)
         }
-        lines += "Registered: ${format.format(Date(token.createdAt))}"
-        lines += "Last seen: ${format.format(Date(token.updatedAt))}"
-        lines += "Server ID: ${token.id}"
-        lines += "Token: ${fingerprint(token.token)}"
+        lines += resources.getString(R.string.push_registered, format.format(Date(token.createdAt)))
+        lines += resources.getString(R.string.push_last_seen, format.format(Date(token.updatedAt)))
+        lines += resources.getString(R.string.push_server_id, token.id)
+        lines += resources.getString(R.string.push_token, fingerprint(token.token))
         return lines.joinToString("\n")
     }
 
@@ -111,6 +124,7 @@ object PushText {
      * OS and version; app version, build, and "simulator" on an emulator.
      */
     fun deviceLabels(
+        resources: Resources,
         deviceName: String?,
         modelName: String?,
         osVersion: String?,
@@ -125,9 +139,9 @@ object PushText {
         ).filter { it.isNotBlank() }
         val app = listOfNotNull(
             appVersion?.takeIf { it.isNotEmpty() }?.let { "Happy $it" },
-            buildVersion?.takeIf { it.isNotEmpty() }?.let { "build $it" },
-            "simulator".takeIf { emulator },
+            buildVersion?.takeIf { it.isNotEmpty() }?.let { resources.getString(R.string.push_build, it) },
+            resources.getString(R.string.push_simulator).takeIf { emulator },
         )
-        return (device.joinToString(" • ").ifEmpty { "android device" }) to app.joinToString(" • ").ifEmpty { null }
+        return (device.joinToString(" • ").ifEmpty { resources.getString(R.string.push_android_device) }) to app.joinToString(" • ").ifEmpty { null }
     }
 }

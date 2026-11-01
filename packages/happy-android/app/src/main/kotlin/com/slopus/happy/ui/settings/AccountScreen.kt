@@ -1,79 +1,70 @@
 package com.slopus.happy.ui.settings
 
 import android.content.ClipData
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.ColorFilter
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.res.painterResource
-import com.slopus.happy.model.Profile
-import com.slopus.happy.model.settings.PushPermission
-import com.slopus.happy.model.settings.PushPermissionStatus
-import com.slopus.happy.model.settings.PushText
-import com.slopus.happy.model.settings.PushToken
-import com.slopus.happy.ui.components.HappySwitch
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.slopus.happy.R
+import com.slopus.happy.model.settings.PushPermission
+import com.slopus.happy.model.settings.PushPermissionStatus
+import com.slopus.happy.model.settings.PushText
+import com.slopus.happy.model.settings.PushToken
 import com.slopus.happy.ui.components.Alert
 import com.slopus.happy.ui.components.AlertButton
 import com.slopus.happy.ui.components.HappyAlert
+import com.slopus.happy.ui.components.HappySwitch
 import com.slopus.happy.ui.components.Icon
 import com.slopus.happy.ui.components.Ionicon
 import com.slopus.happy.ui.components.Item
 import com.slopus.happy.ui.components.ItemGroup
 import com.slopus.happy.ui.components.ItemList
-import com.slopus.happy.ui.components.RemoteImage
 import com.slopus.happy.ui.components.Screen
 import com.slopus.happy.ui.components.StackHeader
+import com.slopus.happy.ui.components.revealRow
+import com.slopus.happy.ui.theme.AppMono
 import com.slopus.happy.ui.theme.HappyTheme
-import com.slopus.happy.ui.theme.PlexMono
 import com.slopus.happy.ui.theme.happyTextStyle
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 object AccountTags {
+    const val NAME = "account.name"
+    const val USERNAME = "account.username"
+    const val ANALYTICS = "account.analytics"
+    const val PUSH_PERMISSION = "account.pushPermission"
+    const val PUSH_REQUEST = "account.pushRequest"
+    const val PUSH_REREGISTER = "account.pushReregister"
+    const val ANALYTICS_ID = "account.analyticsId"
+    const val PUBLIC_ID = "account.publicId"
+    const val SERVER = "account.server"
+    const val ANALYTICS_SWITCH = "account.analyticsSwitch"
     const val SECRET_KEY = "account.secretKey"
     const val SECRET_KEY_TEXT = "account.secretKeyText"
-    const val ANALYTICS_SWITCH = "account.analyticsSwitch"
-    const val GITHUB_AVATAR = "account.githubAvatar"
+    const val COPY_SECRET_KEY = "account.copySecretKey"
+    const val LINK_DEVICE = "account.linkDevice"
+    const val RESTORE = "account.restore"
 }
 
-/** settings/account.tsx */
+/** settings/account.tsx's revealed key, as iOS's Backup & Restore shows it: a code row the card's width. */
 object AccountSpec {
     val secretPaddingHorizontal = 16.dp
     val secretPaddingVertical = 14.dp
-    val secretLabelGap = 10.dp
-    val secretIcon = 18.dp
-    val secretLabel = happyTextStyle(fontSize = 11, letterSpacing = 0.5f, weight = FontWeight.SemiBold)
-    val secretText = happyTextStyle(fontSize = 13, lineHeight = 20, letterSpacing = 0.5f, family = PlexMono)
-    val copiedGreen = Color(0xFF34C759)
+    val secretText = happyTextStyle(fontSize = 15, lineHeight = 22, letterSpacing = 0.5f, family = AppMono)
 }
 
 /** What the push rows show (account.tsx's push state). */
@@ -89,73 +80,12 @@ data class PushState(
     val appLabel: String? = null,
 )
 
-/** account.tsx `knownServices`: id, name, icon, and whether the icon takes the text colour. */
-private data class KnownService(val id: String, val name: String, val icon: Int, val tinted: Boolean)
-
-private val knownServices = listOf(
-    KnownService("anthropic", "Claude Code", R.drawable.icon_claude, tinted = false),
-    KnownService("gemini", "Google Gemini", R.drawable.icon_gemini, tinted = false),
-    KnownService("openai", "OpenAI Codex", R.drawable.icon_gpt, tinted = true),
-)
-
-/**
- * Settings > Account (settings/account.tsx, native rows): account
- * information, the profile (name, GitHub with disconnect), connected
- * services with disconnect, the secret key backup, analytics, push
- * notifications and registered tokens, logout.
- *
- * Spec: standard [ItemGroup]s of [Item]s with 29 icons. The profile group
- * shows when there is a name or GitHub login; connected services only those
- * account.tsx knows (Claude Code, Google Gemini, OpenAI Codex) with "Active"
- * as detail. The revealed secret key is a block with 16/14 padding: an 11
- * semibold uppercase label and an 18 copy icon 10 above the 13/20 mono key.
- * Registered tokens list every token with an unlimited subtitle; another
- * device's token deletes on tap after a confirm.
- *
- * "Link New Device" scans the new device's QR code ([onLinkNewDevice]); while
- * [linkingDevice] it reads "Scanning..." and takes no taps.
- */
+/** Copies [text]; a clipboard that refuses calls [failed] instead of crashing. */
 @Composable
-fun AccountScreen(
-    anonId: String?,
-    publicId: String?,
-    formattedSecretKey: String,
-    analyticsOptOut: Boolean,
-    onAnalyticsOptOutChange: (Boolean) -> Unit,
-    onLogout: () -> Unit,
-    onBack: () -> Unit,
-    profile: Profile = Profile.Defaults,
-    gitHubBusy: Boolean = false,
-    onDisconnectGitHub: () -> Unit = {},
-    disconnectingService: String? = null,
-    onDisconnectService: (service: String, name: String) -> Unit = { _, _ -> },
-    push: PushState = PushState(),
-    onRequestPush: () -> Unit = {},
-    onRefreshPush: () -> Unit = {},
-    onDeletePushToken: (PushToken) -> Unit = {},
-    linkingDevice: Boolean = false,
-    onLinkNewDevice: () -> Unit = {},
-) {
-    val colors = HappyTheme.colors
+private fun rememberCopy(): (text: String, failed: () -> Unit, then: () -> Unit) -> Unit {
     val clipboard = LocalClipboard.current
     val scope = rememberCoroutineScope()
-    var showSecret by remember { mutableStateOf(false) }
-    var copiedRecently by remember { mutableStateOf(false) }
-    var alert by remember { mutableStateOf<Alert?>(null) }
-
-    val ok = stringResource(R.string.common_ok)
-    val copiedTitle = stringResource(R.string.common_copied)
-    val successTitle = stringResource(R.string.common_success)
-    val secretCopied = stringResource(R.string.settings_account_secret_key_copied)
-    val notAvailable = stringResource(R.string.settings_account_not_available)
-    val resources = LocalResources.current
-    fun copiedMessage(label: String): String = resources.getString(R.string.items_copied_to_clipboard, label)
-
-    val errorTitle = stringResource(R.string.common_error)
-    val secretCopyFailed = stringResource(R.string.settings_account_secret_key_copy_failed)
-
-    /** Copies [text]; a clipboard that refuses calls [failed] instead of crashing. */
-    fun copy(text: String, failed: () -> Unit = {}, then: () -> Unit) {
+    return { text, failed, then ->
         scope.launch {
             try {
                 clipboard.setClipEntry(ClipEntry(ClipData.newPlainText(text, text)))
@@ -168,173 +98,83 @@ fun AccountScreen(
             then()
         }
     }
+}
 
-    LaunchedEffect(copiedRecently) {
-        if (copiedRecently) {
-            delay(2000)
-            copiedRecently = false
-        }
-    }
+/**
+ * Settings › Account, as iOS's AccountSettingsViewController has it: who the
+ * account is (its name and username when the profile has them, the
+ * Analytics and Public IDs, a tap copying one, and its server; "Tap an ID to
+ * copy it." under the card); Analytics, a switch, with what it shares under
+ * it; this phone's push permission with Request Permission Again and
+ * Re-register This Device, what the permission means under them; and every
+ * push token on the account, another device's deleted on a tap after a
+ * confirm, the count under them. What happy-app's page also had moved: the
+ * secret key and Link New Device to Backup & Restore, Logout to Settings'
+ * last row; connected services are gone, as on iOS.
+ */
+@Composable
+fun AccountScreen(
+    anonId: String?,
+    publicId: String?,
+    analyticsOptOut: Boolean,
+    onAnalyticsOptOutChange: (Boolean) -> Unit,
+    onBack: () -> Unit,
+    displayName: String? = null,
+    username: String? = null,
+    /** The server's host; null is the default server. */
+    server: String? = null,
+    push: PushState = PushState(),
+    onRequestPush: () -> Unit = {},
+    onRefreshPush: () -> Unit = {},
+    onDeletePushToken: (PushToken) -> Unit = {},
+) {
+    val colors = HappyTheme.colors
+    val copy = rememberCopy()
+    var alert by remember { mutableStateOf<Alert?>(null) }
+    val ok = stringResource(R.string.common_ok)
+    val copiedTitle = stringResource(R.string.common_copied)
+    val notAvailable = stringResource(R.string.settings_account_not_available)
+    val resources = LocalResources.current
+    fun copied(label: String, value: String) = copy(value, {}) { alert = Alert(copiedTitle, resources.getString(R.string.items_copied_to_clipboard, label), listOf(AlertButton(ok))) }
 
     Screen(header = { StackHeader(stringResource(R.string.settings_account), onBack) }) {
         ItemList {
-            ItemGroup(title = stringResource(R.string.settings_account_account_information)) {
+            ItemGroup(footer = stringResource(R.string.settings_copy_id_footer)) {
+                if (displayName != null) {
+                    Item(title = stringResource(R.string.settings_account_name), detail = displayName, showChevron = false, modifier = Modifier.revealRow(AccountTags.NAME))
+                }
+                if (username != null) {
+                    Item(title = stringResource(R.string.profile_username), detail = "@$username", showChevron = false, modifier = Modifier.revealRow(AccountTags.USERNAME))
+                }
+                val analyticsId = stringResource(R.string.settings_account_anonymous_id)
                 Item(
-                    title = stringResource(R.string.settings_account_status),
-                    detail = stringResource(R.string.settings_account_status_active),
+                    title = analyticsId,
+                    detail = anonId ?: notAvailable,
                     showChevron = false,
+                    onClick = anonId?.let { { copied(analyticsId, it) } },
+                    modifier = Modifier.revealRow(AccountTags.ANALYTICS_ID),
                 )
-                CopyableItem(stringResource(R.string.settings_account_anonymous_id), anonId, notAvailable) { title, value ->
-                    copy(value) { alert = Alert(copiedTitle, copiedMessage(title), listOf(AlertButton(ok))) }
-                }
-                CopyableItem(stringResource(R.string.settings_account_public_id), publicId, notAvailable) { title, value ->
-                    copy(value) { alert = Alert(copiedTitle, copiedMessage(title), listOf(AlertButton(ok))) }
-                }
+                val publicIdTitle = stringResource(R.string.settings_account_public_id)
                 Item(
-                    title = stringResource(R.string.settings_account_link_new_device),
-                    subtitle = stringResource(
-                        if (linkingDevice) R.string.common_scanning else R.string.settings_account_link_new_device_subtitle,
-                    ),
-                    icon = { ItemIcon(Ionicon.QrCodeOutline, SettingsSpec.blue) },
-                    onClick = onLinkNewDevice,
-                    enabled = !linkingDevice,
+                    title = publicIdTitle,
+                    detail = publicId ?: notAvailable,
                     showChevron = false,
+                    onClick = publicId?.let { { copied(publicIdTitle, it) } },
+                    modifier = Modifier.revealRow(AccountTags.PUBLIC_ID),
                 )
-            }
-
-            val cancel = stringResource(R.string.common_cancel)
-            val disconnect = stringResource(R.string.modals_disconnect)
-            val resourcesForConfirm = LocalResources.current
-            fun confirmDisconnect(title: String, message: String, action: () -> Unit) {
-                alert = Alert(title, message, listOf(AlertButton(cancel), AlertButton(disconnect, destructive = true, onClick = action)), cancelable = false)
-            }
-
-            val displayName = profile.displayName
-            val gitHubLogin = profile.github?.login
-            if (displayName != null || gitHubLogin != null || profile.avatar != null) {
-                ItemGroup(title = stringResource(R.string.settings_account_profile)) {
-                    if (displayName != null) {
-                        Item(title = stringResource(R.string.settings_account_name), detail = displayName, showChevron = false)
-                    }
-                    if (gitHubLogin != null) {
-                        val title = stringResource(R.string.modals_disconnect_github)
-                        val message = stringResource(R.string.modals_disconnect_github_confirm)
-                        Item(
-                            title = stringResource(R.string.settings_account_github),
-                            detail = "@$gitHubLogin",
-                            subtitle = stringResource(R.string.settings_account_tap_to_disconnect),
-                            // The uploaded avatar when there is one (no thumbhash placeholder), else the logo.
-                            icon = {
-                                val url = profile.avatar?.url?.takeIf { it.isNotEmpty() }
-                                if (url != null) {
-                                    RemoteImage(url, contentDescription = null, modifier = Modifier.size(SettingsSpec.itemIcon).clip(CircleShape).testTag(AccountTags.GITHUB_AVATAR))
-                                } else {
-                                    ItemIcon(Ionicon.LogoGithub, colors.textSecondary)
-                                }
-                            },
-                            onClick = { confirmDisconnect(title, message, onDisconnectGitHub) },
-                            loading = gitHubBusy,
-                            showChevron = false,
-                        )
-                    }
-                }
-            }
-
-            val services = knownServices.filter { it.id in profile.connectedServices }
-            if (services.isNotEmpty()) {
-                ItemGroup(title = stringResource(R.string.settings_connected_accounts)) {
-                    for (service in services) {
-                        val busy = disconnectingService == service.id
-                        Item(
-                            title = service.name,
-                            detail = stringResource(R.string.settings_account_status_active),
-                            subtitle = stringResource(R.string.settings_account_tap_to_disconnect),
-                            icon = {
-                                Image(
-                                    painter = painterResource(service.icon),
-                                    contentDescription = null,
-                                    contentScale = ContentScale.Fit,
-                                    colorFilter = if (service.tinted) ColorFilter.tint(colors.text) else null,
-                                    modifier = Modifier.size(SettingsSpec.itemIcon),
-                                )
-                            },
-                            onClick = {
-                                confirmDisconnect(
-                                    resourcesForConfirm.getString(R.string.modals_disconnect_service, service.name),
-                                    resourcesForConfirm.getString(R.string.modals_disconnect_service_confirm, service.name),
-                                ) { onDisconnectService(service.id, service.name) }
-                            },
-                            loading = busy,
-                            enabled = !busy,
-                            showChevron = false,
-                        )
-                    }
-                }
-            }
-
-            ItemGroup(
-                title = stringResource(R.string.settings_account_backup),
-                footer = stringResource(R.string.settings_account_backup_description),
-            ) {
                 Item(
-                    title = stringResource(R.string.settings_account_secret_key),
-                    subtitle = stringResource(if (showSecret) R.string.settings_account_tap_to_hide else R.string.settings_account_tap_to_reveal),
-                    icon = { ItemIcon(if (showSecret) Ionicon.EyeOffOutline else Ionicon.EyeOutline, SettingsSpec.orange) },
-                    onClick = { showSecret = !showSecret },
+                    title = stringResource(R.string.settings_account_server),
+                    detail = server ?: stringResource(R.string.settings_default_server),
                     showChevron = false,
+                    modifier = Modifier.revealRow(AccountTags.SERVER),
                 )
             }
 
-            if (showSecret) {
-                ItemGroup {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable(role = Role.Button) {
-                                copy(formattedSecretKey, failed = { alert = Alert(errorTitle, secretCopyFailed, listOf(AlertButton(ok))) }) {
-                                    copiedRecently = true
-                                    alert = Alert(successTitle, secretCopied, listOf(AlertButton(ok)))
-                                }
-                            }
-                            .testTag(AccountTags.SECRET_KEY)
-                            .padding(horizontal = AccountSpec.secretPaddingHorizontal, vertical = AccountSpec.secretPaddingVertical),
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(bottom = AccountSpec.secretLabelGap),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                text = stringResource(R.string.settings_account_secret_key_label).uppercase(),
-                                style = AccountSpec.secretLabel,
-                                color = colors.textSecondary,
-                            )
-                            Icon(
-                                icon = if (copiedRecently) Ionicon.CheckmarkCircle else Ionicon.CopyOutline,
-                                size = AccountSpec.secretIcon,
-                                color = if (copiedRecently) AccountSpec.copiedGreen else colors.textSecondary,
-                            )
-                        }
-                        Text(
-                            text = formattedSecretKey,
-                            style = AccountSpec.secretText,
-                            color = colors.text,
-                            modifier = Modifier.testTag(AccountTags.SECRET_KEY_TEXT),
-                        )
-                    }
-                }
-            }
-
-            ItemGroup(
-                title = stringResource(R.string.settings_account_privacy),
-                footer = stringResource(R.string.settings_account_privacy_description),
-            ) {
+            ItemGroup(footer = stringResource(R.string.settings_account_privacy_description)) {
                 val analytics = stringResource(R.string.settings_account_analytics)
                 Item(
                     title = analytics,
-                    subtitle = stringResource(
-                        if (analyticsOptOut) R.string.settings_account_analytics_disabled else R.string.settings_account_analytics_enabled,
-                    ),
+                    icon = { SettingsTile(Ionicon.AnalyticsOutline, SettingsTiles.blue) },
                     rightElement = {
                         HappySwitch(
                             checked = !analyticsOptOut,
@@ -344,85 +184,72 @@ fun AccountScreen(
                         )
                     },
                     showChevron = false,
+                    modifier = Modifier.revealRow(AccountTags.ANALYTICS),
                 )
             }
 
-            ItemGroup(
-                title = "Push Notifications",
-                footer = "Shows every push token registered on your account. Tap an old token to delete it.",
-            ) {
+            // account.tsx's push rows.
+            ItemGroup(footer = stringResource(PushText.subtitle(push.permission)) + " " + stringResource(R.string.push_tokens_hint)) {
                 val unsupported = push.permission?.status == PushPermissionStatus.Unsupported
                 Item(
-                    title = "Permission",
-                    detail = PushText.label(push.permission),
-                    subtitle = PushText.subtitle(push.permission),
-                    icon = { ItemIcon(Ionicon.NotificationsOutline, SettingsSpec.blue) },
+                    title = stringResource(R.string.push_permission),
+                    detail = stringResource(PushText.label(push.permission)),
+                    icon = { SettingsTile(Ionicon.NotificationsOutline, SettingsTiles.red) },
                     loading = push.loading,
                     showChevron = false,
+                    modifier = Modifier.revealRow(AccountTags.PUSH_PERMISSION),
                 )
                 Item(
-                    title = "Request Permission Again",
-                    subtitle = PushText.requestSubtitle(push.permission),
-                    icon = { ItemIcon(Ionicon.ShieldCheckmarkOutline, AccountSpec.copiedGreen) },
+                    title = stringResource(R.string.push_request_again),
+                    icon = { SettingsTile(Ionicon.ShieldCheckmarkOutline, SettingsTiles.green) },
                     onClick = onRequestPush,
                     loading = push.requesting,
                     enabled = !(push.requesting || push.loading || unsupported),
                     showChevron = false,
+                    modifier = Modifier.revealRow(AccountTags.PUSH_REQUEST),
                 )
                 Item(
-                    title = "Re-register This Device",
-                    subtitle = push.currentToken?.let { "Current token ${PushText.fingerprint(it)}" }
-                        ?: "Fetches the current Expo token and registers it again.",
-                    icon = { ItemIcon(Ionicon.RefreshOutline, SettingsSpec.orange) },
+                    title = stringResource(R.string.push_reregister),
+                    subtitle = push.currentToken?.let { stringResource(R.string.push_current_token, PushText.fingerprint(it)) },
+                    icon = { SettingsTile(Ionicon.RefreshOutline, SettingsTiles.orange) },
                     onClick = onRefreshPush,
                     loading = push.refreshing,
                     enabled = !(push.refreshing || push.loading),
                     showChevron = false,
+                    modifier = Modifier.revealRow(AccountTags.PUSH_REREGISTER),
                 )
             }
 
             ItemGroup(
-                title = "Registered Tokens (${push.tokens.size})",
-                footer = "Current-device metadata comes from this phone. Older tokens use their token fingerprint plus server timestamps.",
+                footer = stringResource(R.string.push_tokens_footer, push.tokens.size),
             ) {
                 if (push.tokens.isEmpty()) {
-                    Item(
-                        title = "No registered push tokens",
-                        subtitle = "Once this device is registered, it will appear here.",
-                        showChevron = false,
-                    )
+                    Item(title = stringResource(R.string.push_no_tokens), titleColor = colors.textSecondary, showChevron = false)
                 }
+                val cancel = stringResource(R.string.common_cancel)
                 val delete = stringResource(R.string.common_delete)
+                val thisDevice = stringResource(R.string.push_this_device)
+                val deleteTitle = stringResource(R.string.push_delete_title)
                 for (token in push.tokens) {
                     val current = push.currentToken == token.token
                     val fingerprint = PushText.fingerprint(token.token)
                     Item(
                         title = fingerprint,
-                        detail = if (current) "This device" else null,
-                        subtitle = PushText.tokenSubtitle(token, current, push.deviceLabel, push.appLabel),
+                        detail = if (current) thisDevice else null,
+                        subtitle = PushText.tokenSubtitle(resources, token, current, push.deviceLabel, push.appLabel),
                         subtitleLines = 0,
-                        icon = {
-                            ItemIcon(
-                                if (current) Ionicon.PhonePortraitOutline else Ionicon.TrashOutline,
-                                if (current) colors.textSecondary else SettingsSpec.red,
-                            )
-                        },
+                        icon = { SettingsTile(if (current) Ionicon.PhonePortraitOutline else Ionicon.TrashOutline, if (current) SettingsTiles.gray else SettingsTiles.red) },
                         onClick = if (current) {
-                            null
+                            { copied(fingerprint, token.token) }
                         } else {
                             {
                                 alert = Alert(
-                                    "Delete Push Token",
-                                    "Remove $fingerprint from your account?",
+                                    deleteTitle,
+                                    resources.getString(R.string.push_delete_message, fingerprint),
                                     listOf(AlertButton(cancel), AlertButton(delete, destructive = true) { onDeletePushToken(token) }),
                                     cancelable = false,
                                 )
                             }
-                        },
-                        onLongClick = if (current) {
-                            { copy(token.token) { alert = Alert(copiedTitle, copiedMessage(fingerprint), listOf(AlertButton(ok))) } }
-                        } else {
-                            null
                         },
                         loading = push.deletingToken == token.token,
                         enabled = push.deletingToken == null,
@@ -430,23 +257,89 @@ fun AccountScreen(
                     )
                 }
             }
+        }
+    }
 
-            val logoutTitle = stringResource(R.string.common_logout)
-            val logoutConfirm = stringResource(R.string.settings_account_logout_confirm)
-            ItemGroup(title = stringResource(R.string.settings_account_danger_zone)) {
+    alert?.let { HappyAlert(alert = it, onDismiss = { alert = null }) }
+}
+
+/**
+ * Settings › Backup & Restore (iOS's BackupSettingsViewController): the
+ * secret key, shown on a tap as a code row the card's width and copied by a
+ * tap on it or Copy Secret Key, with the warning that it is the account
+ * under the card; Link New Device, which scans the code another phone shows
+ * under Restore (it reads "Scanning..." meanwhile); and Restore an Account,
+ * which signs in to another account by its key, this one staying.
+ */
+@Composable
+fun BackupScreen(
+    formattedSecretKey: String,
+    onBack: () -> Unit,
+    linkingDevice: Boolean = false,
+    onLinkNewDevice: () -> Unit = {},
+    onRestore: () -> Unit = {},
+) {
+    val colors = HappyTheme.colors
+    val copy = rememberCopy()
+    var revealed by remember { mutableStateOf(false) }
+    var alert by remember { mutableStateOf<Alert?>(null) }
+    val ok = stringResource(R.string.common_ok)
+    val successTitle = stringResource(R.string.common_success)
+    val errorTitle = stringResource(R.string.common_error)
+    val secretCopied = stringResource(R.string.settings_account_secret_key_copied)
+    val secretCopyFailed = stringResource(R.string.settings_account_secret_key_copy_failed)
+    fun copyKey() = copy(formattedSecretKey, { alert = Alert(errorTitle, secretCopyFailed, listOf(AlertButton(ok))) }) {
+        alert = Alert(successTitle, secretCopied, listOf(AlertButton(ok)))
+    }
+
+    Screen(header = { StackHeader(stringResource(R.string.settings_backup_restore), onBack) }) {
+        ItemList {
+            ItemGroup(footer = stringResource(R.string.settings_account_backup_description)) {
                 Item(
-                    title = stringResource(R.string.settings_account_logout),
-                    subtitle = stringResource(R.string.settings_account_logout_subtitle),
-                    icon = { ItemIcon(Ionicon.LogOutOutline, SettingsSpec.red) },
-                    destructive = true,
-                    onClick = {
-                        alert = Alert(
-                            logoutTitle,
-                            logoutConfirm,
-                            listOf(AlertButton(cancel), AlertButton(logoutTitle, destructive = true, onClick = onLogout)),
-                            cancelable = false,
-                        )
-                    },
+                    title = stringResource(if (revealed) R.string.settings_hide_secret_key else R.string.settings_show_secret_key),
+                    icon = { SettingsTile(if (revealed) Ionicon.EyeOffOutline else Ionicon.EyeOutline, SettingsTiles.orange) },
+                    onClick = { revealed = !revealed },
+                    showChevron = false,
+                    modifier = Modifier.revealRow(AccountTags.SECRET_KEY),
+                )
+                if (revealed) {
+                    Text(
+                        text = formattedSecretKey,
+                        style = AccountSpec.secretText,
+                        color = colors.text,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(role = Role.Button, onClick = ::copyKey)
+                            .testTag(AccountTags.SECRET_KEY_TEXT)
+                            .padding(horizontal = AccountSpec.secretPaddingHorizontal, vertical = AccountSpec.secretPaddingVertical),
+                    )
+                    Item(
+                        title = stringResource(R.string.settings_copy_secret_key),
+                        titleColor = colors.textLink,
+                        icon = { Icon(Ionicon.CopyOutline, 22.dp, colors.textLink) },
+                        onClick = ::copyKey,
+                        showChevron = false,
+                        modifier = Modifier.testTag(AccountTags.COPY_SECRET_KEY),
+                    )
+                }
+            }
+            ItemGroup(footer = stringResource(R.string.settings_link_device_footer)) {
+                Item(
+                    title = stringResource(R.string.settings_account_link_new_device),
+                    detail = if (linkingDevice) stringResource(R.string.common_scanning) else null,
+                    icon = { SettingsTile(Ionicon.QrCodeOutline, SettingsTiles.indigo) },
+                    onClick = onLinkNewDevice,
+                    enabled = !linkingDevice,
+                    showChevron = false,
+                    modifier = Modifier.revealRow(AccountTags.LINK_DEVICE),
+                )
+            }
+            ItemGroup(footer = stringResource(R.string.settings_restore_account_footer)) {
+                Item(
+                    title = stringResource(R.string.settings_restore_account),
+                    icon = { SettingsTile(Ionicon.KeyOutline, SettingsTiles.blue) },
+                    onClick = onRestore,
+                    modifier = Modifier.revealRow(AccountTags.RESTORE),
                 )
             }
         }
@@ -455,13 +348,58 @@ fun AccountScreen(
     alert?.let { HappyAlert(alert = it, onDismiss = { alert = null }) }
 }
 
-/** An Item showing a value in its detail; long press copies it (Item.tsx `copy`). */
+/**
+ * Account's rows as Settings' search finds them (iOS's page rows less the
+ * push tokens, which are read only once the page shows): found, [open]
+ * opens the page at the row.
+ */
 @Composable
-private fun CopyableItem(title: String, value: String?, placeholder: String, onCopy: (title: String, value: String) -> Unit) {
-    Item(
-        title = title,
-        detail = value ?: placeholder,
-        showChevron = false,
-        onLongClick = value?.let { { onCopy(title, it) } },
+fun accountPageEntries(
+    anonId: String?,
+    publicId: String?,
+    displayName: String?,
+    username: String?,
+    server: String?,
+    open: (row: String) -> Unit,
+): List<SettingsEntry> {
+    val notAvailable = stringResource(R.string.settings_account_not_available)
+    fun row(id: String, title: String, detail: String? = null, icon: (@Composable () -> Unit)? = null) =
+        SettingsEntry(id = id, title = title, detail = detail, icon = icon, onClick = { open(id) }, page = true)
+    return listOfNotNull(
+        displayName?.let { row(AccountTags.NAME, stringResource(R.string.settings_account_name), it) },
+        username?.let { row(AccountTags.USERNAME, stringResource(R.string.profile_username), "@$it") },
+        row(AccountTags.ANALYTICS_ID, stringResource(R.string.settings_account_anonymous_id), anonId ?: notAvailable),
+        row(AccountTags.PUBLIC_ID, stringResource(R.string.settings_account_public_id), publicId ?: notAvailable),
+        row(AccountTags.SERVER, stringResource(R.string.settings_account_server), server ?: stringResource(R.string.settings_default_server)),
+        row(AccountTags.ANALYTICS, stringResource(R.string.settings_account_analytics)) { SettingsTile(Ionicon.AnalyticsOutline, SettingsTiles.blue) },
+        row(AccountTags.PUSH_PERMISSION, stringResource(R.string.push_permission)) { SettingsTile(Ionicon.NotificationsOutline, SettingsTiles.red) },
+        row(AccountTags.PUSH_REQUEST, stringResource(R.string.push_request_again)) { SettingsTile(Ionicon.ShieldCheckmarkOutline, SettingsTiles.green) },
+        row(AccountTags.PUSH_REREGISTER, stringResource(R.string.push_reregister)) { SettingsTile(Ionicon.RefreshOutline, SettingsTiles.orange) },
     )
 }
+
+/** Backup & Restore's rows as Settings' search finds them (the key hidden, as the page opens). */
+@Composable
+fun backupPageEntries(open: (row: String) -> Unit): List<SettingsEntry> = listOf(
+    SettingsEntry(
+        id = AccountTags.SECRET_KEY,
+        title = stringResource(R.string.settings_show_secret_key),
+        icon = { SettingsTile(Ionicon.EyeOutline, SettingsTiles.orange) },
+        onClick = { open(AccountTags.SECRET_KEY) },
+        page = true,
+    ),
+    SettingsEntry(
+        id = AccountTags.LINK_DEVICE,
+        title = stringResource(R.string.settings_account_link_new_device),
+        icon = { SettingsTile(Ionicon.QrCodeOutline, SettingsTiles.indigo) },
+        onClick = { open(AccountTags.LINK_DEVICE) },
+        page = true,
+    ),
+    SettingsEntry(
+        id = AccountTags.RESTORE,
+        title = stringResource(R.string.settings_restore_account),
+        icon = { SettingsTile(Ionicon.KeyOutline, SettingsTiles.blue) },
+        onClick = { open(AccountTags.RESTORE) },
+        page = true,
+    ),
+)

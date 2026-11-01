@@ -5,6 +5,7 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
+    alias(libs.plugins.androidx.baselineprofile)
 }
 
 // One application ID per build type, the same IDs the React Native app ships
@@ -12,10 +13,13 @@ plugins {
 //   debug   -> development variant
 //   preview -> preview variant
 //   release -> production variant
+// and one of our own that never ships:
+//   bench   -> release code, debug-signed, installed beside the others (research/cold-start.md)
 val applicationIds = mapOf(
     "debug" to "com.slopus.happy.dev",
     "preview" to "com.slopus.happy.preview",
     "release" to "com.ex3ndr.happy",
+    "bench" to "com.slopus.happy.bench",
 )
 
 // The commit the build is from, for Settings > Version (happy-app
@@ -89,6 +93,8 @@ android {
         targetSdk = libs.versions.android.targetSdk.get().toInt()
         versionCode = versionCodeValue ?: 1
         versionName = versionNameValue
+        // Instrumented device checks only (src/androidTest); nothing of it reaches an APK we ship.
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         buildConfigField("String", "DEFAULT_SERVER_URL", "\"https://api.cluster-fluster.com\"")
         buildConfigField("String", "REVENUE_CAT_GOOGLE_KEY", groovy.json.JsonOutput.toJson(revenueCatGoogleKey))
@@ -123,6 +129,10 @@ android {
     buildTypes {
         debug {
             resValue("string", "app_name", "Happy (dev)")
+            // -Phappy.debuggable=false: a debug build ART compiles ahead of time, for
+            // frame measurements (research/telegram-chat.md). A debuggable app runs
+            // interpreted and reads two to three times slower than it ships.
+            isDebuggable = providers.gradleProperty("happy.debuggable").orNull != "false"
         }
         release {
             isMinifyEnabled = true
@@ -138,6 +148,16 @@ android {
             matchingFallbacks += "release"
             resValue("string", "app_name", "Happy (preview)")
             signingConfig = signingConfigs.findByName("preview") ?: signingConfigs.getByName("debug")
+        }
+        // Release code after R8, installable beside the dev build: what cold start is
+        // measured on (benchmark/, research/cold-start.md). Its manifest adds the
+        // fixture account (src/bench).
+        create("bench") {
+            initWith(getByName("release"))
+            matchingFallbacks += "release"
+            isProfileable = true
+            resValue("string", "app_name", "Happy (bench)")
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
@@ -186,7 +206,7 @@ android {
 // file is app/google-services.json, else happy-app's committed one (same
 // Firebase project and application ids). Each variant gets the resources
 // the plugin would generate for the client whose package name is its
-// application id; FirebaseInitProvider reads them at startup.
+// application id; push/FirebaseStart.kt reads them where push first needs Firebase.
 val googleServices: Map<*, *>? = listOf(file("google-services.json"), file("../../happy-app/google-services.json"))
     .firstOrNull { it.exists() }
     ?.let { groovy.json.JsonSlurper().parse(it) as Map<*, *> }
@@ -226,8 +246,16 @@ tasks.configureEach {
 
 androidComponents {
     onVariants { variant ->
-        val applicationId = applicationIds.getValue(requireNotNull(variant.buildType))
+        // -Phappy.applicationId=com.slopus.happy.chatbench: a measuring build installed beside the
+        // signed-in dev app, never over it (research/telegram-chat.md).
+        // The baseline profile plugin's build types (nonMinified*, benchmark*) are the bench app's.
+        val applicationId = providers.gradleProperty("happy.applicationId").orNull
+            ?: applicationIds[variant.buildType] ?: applicationIds.getValue("bench")
         variant.applicationId.set(applicationId)
+        // The system doesn't compile a debuggable app on install: it runs from the APK, and with
+        // the dex deflated, every cold start first inflated all of it, about 200 ms on the Fold.
+        // Stored, it is mapped from the APK as it is (research/cold-start.md).
+        if (variant.debuggable) variant.packaging.dex.useLegacyPackaging.set(false)
         firebaseResources(applicationId).forEach { (name, value) ->
             variant.resValues.put(variant.makeResValueKey("string", name), com.android.build.api.variant.ResValue(value))
         }
@@ -276,7 +304,7 @@ abstract class VerifyReleaseKeeps : DefaultTask() {
             return if (end < 0) null else xml.substring(open.range.first, end)
         }
         if (!Regex("""<queries>[\s\S]*?<package android:name="com\.android\.vending"""").containsMatchIn(xml)) {
-            problems += "<queries> lost com.android.vending (QrScanner, ReviewPrompt look for the Play Store)"
+            problems += "<queries> lost com.android.vending (ReviewPrompt looks for the Play Store)"
         }
         val activity = component("activity", "com.slopus.happy.MainActivity")
         if (activity == null || "android:exported=\"true\"" !in activity) problems += "MainActivity is not exported"
@@ -319,20 +347,48 @@ kotlin {
     }
 }
 
+// The Baseline and startup profiles (research/cold-start.md), generated on a device by
+// :benchmark's BaselineProfileGenerator into src/main/generated/baselineProfiles, which
+// every variant ships. Generated by hand (generateBaselineProfile), never by a build.
+baselineProfile {
+    mergeIntoMain = true
+    saveInSrc = true
+    automaticGenerationDuringBuild = false
+    // Classes the startup profile names go first in the dex: a cold start pages in less of it.
+    dexLayoutOptimization = true
+    // Generated against the bench build, the one with the fixture account; merged into main.
+    variants {
+        create("bench") { from(project(":benchmark")) }
+    }
+}
+
+// The plugin's copies of the bench build (benchmarkBench measures, nonMinifiedBench
+// generates) seed the same fixture account as the bench build itself.
+android.sourceSets.matching { it.name == "benchmarkBench" || it.name == "nonMinifiedBench" }.configureEach {
+    kotlin.srcDir("src/bench/kotlin")
+    manifest.srcFile("src/bench/AndroidManifest.xml")
+}
+
 dependencies {
     implementation(project(":crypto"))
+    // Installs the Baseline Profile on sideloaded and pre-Play-cloud-profile installs.
+    implementation(libs.androidx.profileinstaller)
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.exifinterface)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.navigation.compose)
+    implementation(libs.androidx.webkit)
+    implementation(libs.androidx.browser)
 
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)
     implementation(libs.compose.foundation)
     implementation(libs.compose.material3)
     implementation(libs.compose.ui.tooling.preview)
+    // Destination composition/measure attribution in navigation macrobenchmark traces.
+    "benchImplementation"(libs.compose.runtime.tracing)
     debugImplementation(libs.compose.ui.tooling)
     debugImplementation(libs.compose.ui.test.manifest)
 
@@ -341,10 +397,13 @@ dependencies {
     implementation(libs.okhttp)
     implementation(project(":elevenlabs"))
 
-    // QR codes (AGENTS.md "QR codes"): Google Code Scanner reads them, as
-    // expo-camera's launchScanner does on Android; ZXing's encoder draws them.
-    implementation(libs.play.services.code.scanner)
+    // QR codes (AGENTS.md "QR codes"): our own CameraX scanner reads them with
+    // ZXing's decoder, so no Play services; ZXing's encoder draws them.
+    implementation(libs.camera.camera2)
+    implementation(libs.camera.lifecycle)
+    implementation(libs.camera.compose)
     implementation(libs.zxing.core)
+    implementation(libs.tailcat)
 
     // The review ask (utils/requestReview.ts): expo-store-review's Play in-app review.
     implementation(libs.play.review)
@@ -352,6 +411,7 @@ dependencies {
     // Push (AGENTS.md "Push"): FCM, configured from google-services.json when it is there.
     implementation(libs.firebase.messaging)
     implementation(libs.coil.compose)
+    implementation(libs.lottie.compose)
     implementation(libs.coil.network.okhttp)
     implementation(libs.revenuecat.purchases)
     implementation(libs.revenuecat.ui)
@@ -364,5 +424,15 @@ dependencies {
     testImplementation(libs.compose.ui.test.junit4)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.okhttp.mockwebserver)
+    // Ephemeral trusted/untrusted TLS fixtures, without changing system trust.
+    testImplementation(libs.okhttp.tls)
     testImplementation(libs.coil.test)
+
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.test.uiautomator)
+    androidTestImplementation(platform(libs.compose.bom))
+    androidTestImplementation(libs.compose.ui.test.junit4)
+    // ChatListBenchmark's Telegram-style RecyclerView cell; not in the app.
+    androidTestImplementation(libs.androidx.recyclerview)
 }

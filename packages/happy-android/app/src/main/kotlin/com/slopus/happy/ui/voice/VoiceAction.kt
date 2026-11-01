@@ -102,14 +102,13 @@ internal fun voiceStartAlert(result: VoiceStart, resources: android.content.res.
         VoiceStart.NotSignedIn -> message(R.string.errors_authentication_failed)
         VoiceStart.LimitReached -> message(R.string.errors_voice_conversation_limit_reached, R.string.errors_voice_limit_reached_title)
         VoiceStart.Unavailable -> message(R.string.errors_voice_service_unavailable)
-        // microphonePermissions.ts uses inline English for this system permission alert.
+        // microphonePermissions.ts's inline English, translated here.
         is VoiceStart.MicrophoneDenied -> Alert(
-            "Microphone Access Required",
-            if (result.canAskAgain) "Happy needs access to your microphone for voice chat. Please grant permission when prompted."
-            else "Happy needs access to your microphone for voice chat. Please enable microphone access in your device settings.",
+            resources.getString(R.string.voice_microphone_title),
+            resources.getString(if (result.canAskAgain) R.string.voice_microphone_ask else R.string.voice_microphone_settings),
             buildList {
                 add(AlertButton(resources.getString(R.string.common_cancel)))
-                if (!result.canAskAgain) add(AlertButton("Open Settings", onClick = openSettings))
+                if (!result.canAskAgain) add(AlertButton(resources.getString(R.string.scan_open_settings), onClick = openSettings))
             },
         )
     }

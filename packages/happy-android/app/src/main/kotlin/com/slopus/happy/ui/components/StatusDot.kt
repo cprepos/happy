@@ -1,59 +1,112 @@
 package com.slopus.happy.ui.components
 
 import android.provider.Settings
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.background
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.BlendMode
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.CompositingStrategy
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.graphics.drawscope.ContentDrawScope
+import androidx.compose.ui.node.DrawModifierNode
+import androidx.compose.ui.node.ModifierNodeElement
+import androidx.compose.ui.node.invalidateDraw
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 /**
  * StatusDot.tsx: a [size] circle (6 by default) in [color]. Pulsing fades
- * between full and 30% opacity, 1 s each way; settling back takes 200 ms.
+ * between full and 30% opacity, 1 s each way, eased; settling back takes
+ * 200 ms. The pulse keeps the screen's [ShimmerClock] and is drawn by it:
+ * a frame of it draws one circle, with no animation of its own to run, no
+ * state to write and nothing to compose. [onRenderThread], the pulse runs
+ * there ([RenderThreadPulse]) and costs the main thread nothing a frame; it
+ * then stops at once rather than settling.
  */
 @Composable
-fun StatusDot(color: Color, modifier: Modifier = Modifier, pulsing: Boolean = false, size: Dp = 6.dp) {
-    val alpha = remember { Animatable(1f) }
-    LaunchedEffect(pulsing) {
-        if (pulsing) {
-            alpha.animateTo(0.3f, infiniteRepeatable(tween(1000), RepeatMode.Reverse))
-        } else {
-            alpha.animateTo(1f, tween(200))
-        }
+fun StatusDot(color: Color, modifier: Modifier = Modifier, pulsing: Boolean = false, size: Dp = 6.dp, onRenderThread: Boolean = false) {
+    if (pulsing && onRenderThread && renderThreadMotion()) {
+        RenderThreadPulse(color, modifier, size)
+        return
     }
-    Box(
-        modifier = modifier
-            .size(size)
-            .graphicsLayer { this.alpha = alpha.value }
-            .background(color, CircleShape),
-    )
+    Box(modifier = modifier.size(size).then(PulseElement(rememberShimmerClock(), color, pulsing)))
+}
+
+/** The pulse's numbers: StatusDot.tsx's. */
+internal object PulseSpec {
+    const val HALF_MILLIS = 1000L
+    const val LOW = 0.3f
+    const val SETTLE_MILLIS = 200L
+
+    /** The dot's opacity [millis] into its pulse: down to [LOW] over a second, eased, then back up as it went down. */
+    fun alpha(millis: Long): Float {
+        val t = millis % (2 * HALF_MILLIS)
+        val way = if (t < HALF_MILLIS) t else 2 * HALF_MILLIS - t
+        return 1f - (1f - LOW) * FastOutSlowInEasing.transform(way.toFloat() / HALF_MILLIS)
+    }
+}
+
+private data class PulseElement(val clock: ShimmerClock, val color: Color, val pulsing: Boolean) : ModifierNodeElement<PulseNode>() {
+    override fun create() = PulseNode(clock, color, pulsing)
+
+    override fun update(node: PulseNode) {
+        if (node.clock !== clock) node.leave()
+        node.clock = clock
+        node.color = color
+        node.pulse(pulsing)
+        node.invalidateDraw()
+    }
+}
+
+private class PulseNode(var clock: ShimmerClock, var color: Color, private var pulsing: Boolean) : Modifier.Node(), DrawModifierNode {
+    private var onClock = false
+    /** The clock's time when the pulse began, or when it stopped and the dot began to settle. */
+    private var since: Long? = null
+    /** The opacity the dot settles back from. */
+    private var from = 1f
+
+    override fun onAttach() = pulse(pulsing, force = true)
+
+    override fun onDetach() = leave()
+
+    fun leave() {
+        if (onClock) clock.detachPulse(this)
+        onClock = false
+        since = null
+    }
+
+    fun pulse(on: Boolean, force: Boolean = false) {
+        if (on == pulsing && !force) return
+        // Stopping: settle from wherever the pulse is.
+        val settling = !on && pulsing && !force
+        if (settling) from = alphaNow()
+        since = if (settling) clock.millis else null
+        pulsing = on
+        val want = isAttached && (on || settling)
+        if (want == onClock) return
+        if (want) clock.attachPulse(this) else clock.detachPulse(this)
+        onClock = want
+    }
+
+    private fun alphaNow(): Float {
+        val now = clock.millis ?: return 1f
+        val start = since ?: now.also { since = it }
+        val elapsed = now - start
+        if (pulsing) return PulseSpec.alpha(elapsed)
+        val t = (elapsed.toFloat() / PulseSpec.SETTLE_MILLIS).coerceIn(0f, 1f)
+        if (t >= 1f && onClock) {
+            // Settled: off the clock until it pulses again.
+            clock.detachPulse(this)
+            onClock = false
+        }
+        return from + (1f - from) * FastOutSlowInEasing.transform(t)
+    }
+
+    override fun ContentDrawScope.draw() {
+        drawCircle(color, alpha = alphaNow())
+    }
 }
 
 /** Whether the person has turned animations off (Android's "Remove animations": duration scale 0). */
@@ -63,69 +116,4 @@ fun rememberReduceMotion(): Boolean {
     return remember(context) {
         Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
     }
-}
-
-private const val SWEEP_DURATION = 1700
-private const val SWEEP_PAUSE = 650
-
-/**
- * ShimmerText.tsx: one line of text in [baseColor] with a band of
- * [highlightColor] sweeping across it, clipped to the glyphs. The band is
- * max(44, 40% of the text's width) wide and crosses in 1.7 s, then rests
- * 0.65 s. With animations off the text is plain [baseColor].
- */
-@Composable
-fun ShimmerText(
-    text: String,
-    style: TextStyle,
-    baseColor: Color,
-    highlightColor: Color,
-    modifier: Modifier = Modifier,
-) {
-    val reduceMotion = rememberReduceMotion()
-    var width by remember { mutableIntStateOf(0) }
-    val progress = remember { Animatable(0f) }
-    if (!reduceMotion) {
-        LaunchedEffect(Unit) {
-            progress.animateTo(1f, infiniteRepeatable(tween(SWEEP_DURATION + SWEEP_PAUSE, easing = LinearEasing), RepeatMode.Restart))
-        }
-    }
-    val sweepFraction = SWEEP_DURATION.toFloat() / (SWEEP_DURATION + SWEEP_PAUSE)
-    Text(
-        text = text,
-        style = style,
-        color = baseColor,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
-        modifier = modifier
-            .semantics { contentDescription = text }
-            .onSizeChanged { width = it.width }
-            .then(
-                if (reduceMotion) {
-                    Modifier
-                } else {
-                    Modifier
-                        .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
-                        .drawWithContent {
-                            drawContent()
-                            if (width == 0) return@drawWithContent
-                            val band = maxOf(44.dp.toPx(), width * 0.4f)
-                            val t = (progress.value / sweepFraction).coerceAtMost(1f)
-                            val x = -band + (width + band) * t
-                            drawRect(
-                                brush = Brush.linearGradient(
-                                    0f to baseColor,
-                                    0.5f to highlightColor,
-                                    1f to baseColor,
-                                    start = Offset(x, size.height),
-                                    end = Offset(x + band, 0f),
-                                ),
-                                topLeft = Offset(x, 0f),
-                                size = androidx.compose.ui.geometry.Size(band, size.height),
-                                blendMode = BlendMode.SrcAtop,
-                            )
-                        }
-                },
-            ),
-    )
 }

@@ -82,6 +82,7 @@ export const zhHant: TranslationStructure = {
     },
 
     status: {
+        syncing: '同步中',
         connected: '已連線',
         connecting: '連線中',
         disconnected: '已中斷連線',
@@ -956,6 +957,7 @@ export const zhHant: TranslationStructure = {
         sending: 'Sending…',
         sendFailed: ({ reason }: { reason: string }) => `未傳送：${reason}`,
         unknownTime: '未知時間',
+        mediaPosition: ({ index, total }: { index: number; total: number }) => `第 ${index} 項，共 ${total} 項`,
     },
 
     codex: {
@@ -1114,4 +1116,16 @@ export const zhHant: TranslationStructure = {
         friendAccepted: ({ name }: { name: string }) => `您現在與 ${name} 成為了好友`,
         friendAcceptedGeneric: '好友請求已接受',
     },
+
+    // What new work will be, in the middle of its empty chat (the native apps' compose).
+    newWork: {
+        task: '任務',
+        bot: '機器人',
+        name: '名稱（選填）',
+        taskNote: '如果不命名，任務會根據第一則訊息自行命名。',
+        botNote: '機器人是一段長期持續的對話，擁有自己的資料夾。',
+        taskFailed: ({ reason }: { reason: string }) => `無法啟動任務。${reason}你的文字和附件仍保留在這裡。`,
+        botFailed: ({ reason }: { reason: string }) => `無法啟動機器人。${reason}你的文字和附件仍保留在這裡。`,
+    },
+
 } as const;

@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  A Happy account's chat, files and diffs: words happy-app writes inline in
+  English (EmptyMessages.tsx, ChatFooter.tsx, AgentInput.tsx, the files and
+  changes screens) or Android's own. Translated in values-*/
+  (AndroidStringsTranslatedTest).
+-->
+<resources>
+    <string name="chat_send_failed">Message failed to send.</string>
+    <string name="chat_no_messages">No messages yet</string>
+    <string name="chat_created">Created %1$s</string>
+    <string name="chat_permissions_in_terminal">Permissions shown in terminal only. Reset or send a message to control from app.</string>
+    <string name="chat_stop">Stop</string>
+    <string name="chat_voice">Voice</string>
+    <string name="chat_send">Send</string>
+    <string name="chat_markdown_image">Markdown image</string>
+    <string name="chat_remove_image">Remove %1$s</string>
+    <string name="chat_add_photo">Add photo</string>
+    <!-- DiffFileHeader's badges. -->
+    <string name="diff_badge_new">NEW</string>
+    <string name="diff_badge_deleted">DELETED</string>
+    <string name="diff_badge_renamed">RENAMED</string>
+    <!-- The changes and file screens, where the computer gave no words of its own. -->
+    <string name="files_no_session_path">No session path</string>
+    <string name="files_outside_root">File is outside the session root.</string>
+    <string name="files_decode_failed">Failed to decode file</string>
+    <string name="files_diff_failed">Failed to fetch diff</string>
+    <string name="files_load_failed">Failed to load file</string>
+    <string name="files_contents_match">File contents match the comparison base.</string>
+    <string name="files_truncated">Showing %1$s of %2$s changed files. Open the workspace on your computer to see the full list.</string>
+    <string name="files_counts_approximate">Change counts are approximate for this workspace.</string>
+    <string name="files_conflicted">This workspace has unresolved merge conflicts.</string>
+    <string name="files_changes_failed">Could not load changes from Happy Agent.</string>
+    <string name="files_file_failed">Could not load this file. Reload changes to try again.</string>
+    <string name="files_update_agent">Update Happy Agent on your computer to view changes in this session.</string>
+    <string name="files_no_comparison">A comparison with origin/main is not available for this workspace.</string>
+    <string name="files_no_details">No file details are available for this comparison.</string>
+</resources>

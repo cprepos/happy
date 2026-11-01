@@ -1,14 +1,12 @@
 <div align="center">
 
-<h1>Any Model. Your Subscription.<br><em>Happy Harness.</em></h1>
+<h1>Happy Engineering</h1>
 
-<p>Orchestrate Claude, Codex and Grok in one app</p>
-
-<p>Free and open source</p>
+<p>The fun way of making things :D</p>
 
 </div>
 
-https://github.com/user-attachments/assets/b3580704-f9e0-441e-80be-3f83f6a08ab5
+https://github.com/user-attachments/assets/deeeeaf5-e550-49bc-829f-1186898f441a
 
 <p align="center">
 <a href="https://happy.engineering/#download"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/slopus/happy-desktop/main/.github/download-desktop-dark.svg"><img width="212" height="39" alt="Download Desktop for macOS, Windows, and Linux" src="https://raw.githubusercontent.com/slopus/happy-desktop/main/.github/download-desktop-light.svg" /></picture></a>
@@ -20,11 +18,13 @@ https://github.com/user-attachments/assets/b3580704-f9e0-441e-80be-3f83f6a08ab5
 
 ## What you get
 
-1. **Multi-provider.** Astra, Fable, and Grok in one app, each with its
-   vendor's own prompts and tools. Give every task the model that fits, and
-   delegate to subagents on any of them.
+1. **Any model: Claude, Codex, Grok, Gemini, and more.** Gemini runs through
+   Antigravity, and OpenCode or any Agent Client Protocol agent plugs in as a
+   harness. Give every task the model that fits, and delegate to subagents on
+   any of them.
 2. **Reuse your subscriptions.** Sign in with the Claude, Codex, and Grok
-   subscriptions you already pay for. Happy adds a harness, not another bill.
+   subscriptions you already pay for; Antigravity, OpenCode, and ACP agents
+   keep their own logins. Happy adds a harness, not another bill.
 3. **Open source MIT.** It runs on your own hardware and your projects stay
    ordinary folders. Read the code, fork it, ship your own build.
 4. **End-to-end encrypted mobile app.** Left your desk? The same sessions are
@@ -68,5 +68,6 @@ happy codex
 - [happy-cli](packages/happy-cli): the original Happy CLI (`happy` on npm)
 - [happy-agent](packages/happy-agent): remote session control for the original Happy CLI (not the Happy Agent runtime)
 - [happy-server](packages/happy-server): the relay server for encrypted sync
+- [happy-push-server](packages/happy-push-server): Cloudflare Worker that delivers push notifications via APNs/FCM (replaces the Expo push service)
 
 Migrated from the `happy-coder` package. Thanks to [@franciscop](https://github.com/franciscop) for donating the `happy` package name!

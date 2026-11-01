@@ -1,9 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Strings with no happy-app catalog key, in English only. strings.xml is
-  generated from the catalogs (tools/translations); this file is not.
+  Strings with no happy-app catalog key. strings.xml is generated from the
+  catalogs (tools/translations); this file is not. Translated in values-*/ (AndroidStringsTranslatedTest).
 -->
-<resources xmlns:tools="http://schemas.android.com/tools" tools:ignore="MissingTranslation">
+<resources>
+    <!-- Native compact composer: queued previews are in its attachment menu. -->
+    <plurals name="conversation_attached_picture_count">
+        <item quantity="one">%1$d attached image</item>
+        <item quantity="other">%1$d attached images</item>
+    </plurals>
     <!-- serverConfig.ts validateServerUrl -->
     <string name="server_url_empty">Server URL cannot be empty</string>
     <string name="server_url_protocol">Server URL must use HTTP or HTTPS protocol</string>
@@ -13,6 +18,10 @@
     <string name="settings_agents">Agents</string>
     <string name="settings_agents_subtitle">Connected machines and agent defaults</string>
     <string name="happy_action_unknown_error">Unknown error</string>
+
+    <!-- happy-ios Strings.LiveAvatars: Animated Avatars, with no equivalent in happy-app -->
+    <string name="live_avatars_title">Animated Avatars</string>
+    <string name="live_avatars_description">Avatars without a picture move. Uses more battery.</string>
     <!-- literals in settings/appearance.tsx -->
     <string name="settings_appearance_file_diffs_sidebar">File Diffs Sidebar</string>
     <string name="settings_appearance_file_diffs_sidebar_description">Show git changes next to the chat on desktop</string>
@@ -20,4 +29,31 @@
     <string name="chat_scroll_to_bottom">Scroll to bottom</string>
     <!-- Accessibility label for the unlabeled close-circle in settings/voice/language.tsx. -->
     <string name="voice_clear_search">Clear search</string>
+
+    <!-- Scans that can't be approved where they were made (ui/connect/ConnectFlows.kt).
+         happy-app ignores these silently; the native apps say why. -->
+    <string name="scan_unavailable">The QR scanner isn\'t available on this device. Paste the link instead.</string>
+    <string name="scan_no_camera">This device has no camera. Paste the link instead.</string>
+    <string name="scan_camera_failed">The camera couldn\'t start. Try again, or paste the link instead.</string>
+    <string name="scan_not_happy_code">This QR code isn\'t a Happy code.</string>
+    <string name="scan_terminal_code_elsewhere">This code connects a terminal. Scan it from Settings › Scan QR code to authenticate.</string>
+    <string name="scan_account_code_elsewhere">This code links a new device. Scan it from Settings › Backup &amp; Restore › Link New Device.</string>
+    <string name="scan_pairing_unavailable">This code connects an agent. Use Add in the account menu on Home.</string>
+
+    <!-- The QR scanner (ui/connect/QrScannerScreen.kt); happy-app uses Google Code Scanner's. -->
+    <string name="scan_close">Close</string>
+    <string name="scan_hint">Point the camera at the QR code</string>
+    <string name="scan_open_settings">Open Settings</string>
+    <string name="scan_torch_on">Turn on flashlight</string>
+    <string name="scan_torch_off">Turn off flashlight</string>
+
+    <!-- The compose chat's pill menu (ui/chat/ComposeChat.kt, iOS's LegacyComposeStart). -->
+
+    <!-- State pictures (ui/components/StateAnimation.kt). -->
+    <string name="state_animation_replay">Play again</string>
+
+    <!-- microphonePermissions.ts (English inline there). -->
+    <string name="voice_microphone_title">Microphone Access Required</string>
+    <string name="voice_microphone_ask">Happy needs access to your microphone for voice chat. Please grant permission when prompted.</string>
+    <string name="voice_microphone_settings">Happy needs access to your microphone for voice chat. Please enable microphone access in your device settings.</string>
 </resources>

@@ -55,6 +55,7 @@
     <string name="profile_username">Nome utente</string>
     <string name="profile_status">Stato</string>
 
+    <string name="status_syncing">sincronizzazione</string>
     <string name="status_connected">connesso</string>
     <string name="status_connecting">connessione in corso</string>
     <string name="status_disconnected">disconnesso</string>
@@ -945,6 +946,7 @@
     <string name="message_sending">Sending…</string>
     <string name="message_send_failed">Non inviato: %1$s</string>
     <string name="message_unknown_time">ora sconosciuta</string>
+    <string name="message_media_position">%1$d di %2$d</string>
 
     <string name="codex_permissions_yes_for_session">Sì, e non chiedere per una sessione</string>
     <string name="codex_permissions_stop_and_explain">Fermati e spiega cosa devo fare</string>
@@ -1056,4 +1058,12 @@
     <string name="feed_friend_request_generic">Nuova richiesta di amicizia</string>
     <string name="feed_friend_accepted">Ora sei amico di %1$s</string>
     <string name="feed_friend_accepted_generic">Richiesta di amicizia accettata</string>
+
+    <string name="new_work_task">Attività</string>
+    <string name="new_work_bot">Bot</string>
+    <string name="new_work_name">Nome (facoltativo)</string>
+    <string name="new_work_task_note">Un’attività prende il nome dal suo primo messaggio, a meno che tu non gliene dia uno.</string>
+    <string name="new_work_bot_note">Un bot è una conversazione duratura con una cartella tutta sua.</string>
+    <string name="new_work_task_failed">Impossibile avviare l’attività. %1$s Il testo e gli allegati sono ancora qui.</string>
+    <string name="new_work_bot_failed">Impossibile avviare il bot. %1$s Il testo e gli allegati sono ancora qui.</string>
 </resources>

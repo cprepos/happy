@@ -10,7 +10,7 @@ import HappyWire
 final class GitHeadingStatusTests: XCTestCase {
     let repo = GitCheckoutKey(machineId: "m", path: "/repo")
 
-    private func make(_ paths: [String: String]) throws -> (GitStatusSync, HeadingRPC, SyncEngine) {
+    private func make(_ paths: [String: String]) throws -> (GitStatusSync, HeadingRPC, LegacySyncEngine) {
         let fixture = ServerFixture()
         let store = try LocalStore.inMemory()
         for (id, path) in paths {
@@ -19,7 +19,7 @@ final class GitHeadingStatusTests: XCTestCase {
             try store.upsertSessions([session])
         }
         let http = FakeHTTP()
-        let engine = SyncEngine(api: testAPI(http), store: store, keys: fixture.keys)
+        let engine = LegacySyncEngine(api: testAPI(http), store: store, keys: fixture.keys)
         let rpc = HeadingRPC(key: fixture.dataKey)
         let actions = SessionActions(api: testAPI(http), store: store, sync: engine, rpc: rpc)
         return (GitStatusSync(actions: actions, store: store), rpc, engine)
@@ -149,32 +149,6 @@ final class GitHeadingStatusTests: XCTestCase {
     }
 }
 
-/// The grouped sidebar's swipe on a chat only stops it (CompactSessionRow).
-final class TabletChatArchiveTests: XCTestCase {
-    func testKillOnlyAndItsMessages() async {
-        let ops = KillOps()
-        await ops.answer(.success(SessionKillResponse(success: true, message: "")))
-        let killed = await TabletChatArchive.run(ops, sessionId: "s1")
-        XCTAssertEqual(killed, .killed)
-        await ops.answer(.success(SessionKillResponse(success: false, message: "Session not found")))
-        let refused = await TabletChatArchive.run(ops, sessionId: "s2")
-        XCTAssertEqual(refused, .refused("Session not found"))
-        // `result.message || t('sessionInfo.failedToArchiveSession')`.
-        await ops.answer(.success(SessionKillResponse(success: false, message: "")))
-        let silent = await TabletChatArchive.run(ops, sessionId: "s3")
-        XCTAssertEqual(silent, .refused(nil))
-        await ops.answer(.failure(Offline()))
-        let failed = await TabletChatArchive.run(ops, sessionId: "s4")
-        XCTAssertEqual(failed, .failed)
-        let kills = await ops.kills
-        let archives = await ops.archives
-        XCTAssertEqual(kills, ["s1", "s2", "s3", "s4"])
-        // Never the server archive the flat row's swipe adds.
-        XCTAssertEqual(archives, [])
-    }
-}
-
-private struct Offline: Error {}
 
 private actor Seen {
     var values: [[GitCheckoutKey: GitHeadingStatus]] = []
@@ -214,23 +188,4 @@ private actor HeadingRPC: RPCTransport {
             "success": .bool(true), "stdout": .string(stdout), "stderr": .string(""), "exitCode": .number(0),
         ])))
     }
-}
-
-private actor KillOps: HomeSessionOps {
-    var kills: [String] = []
-    var archives: [String] = []
-    private var next: Result<SessionKillResponse, Error> = .success(SessionKillResponse(success: true, message: ""))
-
-    func answer(_ result: Result<SessionKillResponse, Error>) { next = result }
-
-    func sessionKill(sessionId: String) async throws -> SessionKillResponse {
-        kills.append(sessionId)
-        return try next.get()
-    }
-
-    func sessionSetAgentModes(sessionId: String, patch: SessionAgentModesPatch, transport: any MetadataUpdateTransport) async throws {}
-    func sessionSetAvatar(sessionId: String, picture: SessionAvatarPicture) async throws {}
-    func archive(sessionId: String) async throws { archives.append(sessionId) }
-    func ensureSessionReady(sessionId: String) async throws {}
-    func uploadSessionBlob(sessionId: String, name: String, bytes: Data) async throws -> (ref: String, size: Int) { ("", 0) }
 }

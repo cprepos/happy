@@ -81,6 +81,7 @@ export const ca: TranslationStructure = {
 
 
     status: {
+        syncing: 'sincronitzant',
         connected: 'connectat',
         connecting: 'connectant',
         disconnected: 'desconnectat',
@@ -956,6 +957,7 @@ export const ca: TranslationStructure = {
         sending: 'Sending…',
         sendFailed: ({ reason }: { reason: string }) => `No enviat: ${reason}`,
         unknownTime: 'temps desconegut',
+        mediaPosition: ({ index, total }: { index: number; total: number }) => `${index} de ${total}`,
     },
 
     codex: {
@@ -1113,7 +1115,19 @@ export const ca: TranslationStructure = {
         friendRequestGeneric: 'Nova sol·licitud d\'amistat',
         friendAccepted: ({ name }: { name: string }) => `Ara ets amic de ${name}`,
         friendAcceptedGeneric: 'Sol·licitud d\'amistat acceptada',
-    }
+    },
+
+    // What new work will be, in the middle of its empty chat (the native apps' compose).
+    newWork: {
+        task: 'Tasca',
+        bot: 'Bot',
+        name: 'Nom (opcional)',
+        taskNote: 'Una tasca pren el nom del seu primer missatge, tret que n’hi posis un.',
+        botNote: 'Un bot és una conversa duradora amb una carpeta pròpia.',
+        taskFailed: ({ reason }: { reason: string }) => `No s’ha pogut iniciar la tasca. ${reason} El teu text i els adjunts encara hi són.`,
+        botFailed: ({ reason }: { reason: string }) => `No s’ha pogut iniciar el bot. ${reason} El teu text i els adjunts encara hi són.`,
+    },
+
 } as const;
 
 export type TranslationsCa = typeof ca;

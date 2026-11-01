@@ -20,7 +20,8 @@ extension HappyAPI {
         return upload
     }
 
-    public func uploadEncryptedBlob(_ data: Data, upload: AttachmentUpload) async throws {
+    /// `progress` hears the share of the request's bytes written, as they go.
+    public func uploadEncryptedBlob(_ data: Data, upload: AttachmentUpload, progress: (@Sendable (Double) -> Void)? = nil) async throws {
         guard let url = URL(string: upload.uploadUrl), ["https", "http"].contains(url.scheme ?? "") else {
             throw APIError.decoding("invalid upload URL")
         }
@@ -50,7 +51,11 @@ extension HappyAPI {
         } else {
             throw APIError.decoding("unsupported upload method")
         }
-        try validateAttachmentResponse(try await transport.send(HTTPRequest(method: upload.method, url: url, headers: headers, body: body)))
+        let request = HTTPRequest(method: upload.method, url: url, headers: headers, body: body)
+        guard let progress else { return try validateAttachmentResponse(try await transport.send(request)) }
+        try validateAttachmentResponse(try await transport.send(request) { sent, total in
+            progress(total > 0 ? Double(sent) / Double(total) : 1)
+        })
     }
 
     private func isAttachmentServerURL(_ url: URL) -> Bool {
@@ -69,6 +74,35 @@ extension HappyAPI {
         components.host = serverURL.host
         components.port = serverURL.port
         return components.string ?? raw
+    }
+
+    /// Where an attachment's sealed bytes are read from: a presigned URL
+    /// (good for 15 minutes) or, on a server keeping files itself, its own
+    /// route, which takes the account's token.
+    public func attachmentLink(sessionId: String, ref: String) async throws -> (url: URL, headers: [String: String]) {
+        let request = try makeRequest("POST", "/v1/sessions/\(Self.escape(sessionId))/attachments/request-download", body: JSONValue.object(["ref": .string(ref)]).encoded())
+        let response = try await transport.send(request)
+        try validateAttachmentResponse(response)
+        let value = try JSONValue.decode(response.body)
+        guard let raw = value["downloadUrl"]?.stringValue, let url = URL(string: rewriteLoopbackHost(raw), relativeTo: serverURL)?.absoluteURL,
+              ["http", "https"].contains(url.scheme ?? "") else {
+            throw APIError.decoding("invalid download URL")
+        }
+        var headers: [String: String] = [:]
+        if isAttachmentServerURL(url), let token {
+            headers["Authorization"] = "Bearer \(token)"
+        }
+        return (url, headers)
+    }
+
+    /// One range of an attachment's sealed bytes from its link. S3 answers
+    /// `206`; a server keeping files itself answers the whole file, `200`.
+    public func attachmentRange(_ link: (url: URL, headers: [String: String]), range: Range<Int>) async throws -> MediaPiece {
+        var headers = link.headers
+        headers["Range"] = MediaPiece.header(range)
+        let response = try await transport.send(HTTPRequest(method: "GET", url: link.url, headers: headers))
+        if response.status == 401 { throw APIError.unauthorized }
+        return try MediaPiece.http(status: response.status, headers: response.headers, body: response.body)
     }
 
     public func downloadEncryptedAttachment(sessionId: String, ref: String) async throws -> Data {

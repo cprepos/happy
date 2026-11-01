@@ -9,6 +9,7 @@ import androidx.compose.ui.platform.Clipboard
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.NativeClipboard
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.junit4.v2.createComposeRule
@@ -17,17 +18,14 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
-import androidx.compose.ui.test.assertIsDisplayed
-import com.slopus.happy.model.GitHubProfile
 import androidx.compose.ui.unit.dp
-import com.slopus.happy.model.ImageRef
-import com.slopus.happy.model.Profile
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.slopus.happy.model.settings.PushPermission
 import com.slopus.happy.model.settings.PushToken
-import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.slopus.happy.ui.PHONE
 import com.slopus.happy.ui.assertDp
 import com.slopus.happy.ui.bounds
+import com.slopus.happy.ui.components.ItemGroupTags
 import com.slopus.happy.ui.node
 import com.slopus.happy.ui.setHappyContent
 import org.junit.Assert.assertEquals
@@ -38,6 +36,7 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
+/** Settings › Account and Backup & Restore, as iOS splits happy-app's Account page. */
 @RunWith(AndroidJUnit4::class)
 @Config(qualifiers = PHONE)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -45,99 +44,77 @@ class AccountLayoutTest {
     @get:Rule
     val rule = createComposeRule()
 
+    private val token = PushToken(id = "pt1", token = "ExponentPushToken[abcdefghijklmnop]", createdAt = 0, updatedAt = 0)
+
+    private class RecordingClipboard(private val refuse: Boolean = false) : Clipboard {
+        var text: String? = null
+        override val nativeClipboard: NativeClipboard get() = error("unused")
+        override suspend fun getClipEntry(): ClipEntry? = null
+        override suspend fun setClipEntry(clipEntry: ClipEntry?) {
+            if (refuse) throw SecurityException("denied")
+            text = clipEntry?.clipData?.getItemAt(0)?.text?.toString()
+        }
+    }
+
     @Test
-    fun accountSecretKeyRevealAndAnalyticsSwitch() {
+    fun whoTheAccountIsAndATapCopiesAnId() {
+        val clipboard = RecordingClipboard()
+        rule.setHappyContent {
+            CompositionLocalProvider(LocalClipboard provides clipboard) {
+                AccountScreen(
+                    anonId = "0123456789abcdef", publicId = "cmabc",
+                    analyticsOptOut = false, onAnalyticsOptOutChange = {}, onBack = {},
+                    displayName = "Ada Lovelace", username = "ada",
+                )
+            }
+        }
+        for (text in listOf("Ada Lovelace", "@ada", "0123456789abcdef", "cmabc", "Happy Cloud", "Tap an ID to copy it.")) {
+            rule.onNodeWithText(text).assertIsDisplayed()
+        }
+        rule.node(AccountTags.PUBLIC_ID).performClick()
+        rule.waitForIdle()
+        assertEquals("cmabc", clipboard.text)
+        rule.onNodeWithText("Public ID copied to clipboard").assertIsDisplayed()
+        // No titled groups, no key, no logout: those moved, as on iOS.
+        rule.onAllNodesWithTag(ItemGroupTags.HEADER, useUnmergedTree = true).assertCountEquals(0)
+        rule.onAllNodesWithText("Secret Key").assertCountEquals(0)
+        rule.onAllNodesWithText("Logout").assertCountEquals(0)
+    }
+
+    @Test
+    fun withoutIdsNothingIsCopiedAndTheServerIsNamed() {
+        var optOut = true
+        rule.setHappyContent {
+            AccountScreen(anonId = null, publicId = null, analyticsOptOut = optOut, onAnalyticsOptOutChange = { optOut = it }, onBack = {}, server = "happy.example.com")
+        }
+        rule.onAllNodesWithText("Not available").assertCountEquals(2)
+        rule.onNodeWithText("happy.example.com").assertIsDisplayed()
+        rule.node(AccountTags.ANALYTICS_SWITCH).assertIsOff().performClick()
+        assertEquals(false, optOut)
+    }
+
+    @Test
+    fun analyticsIsOnUnlessOptedOut() {
         var optOut = false
         rule.setHappyContent {
-            AccountScreen(
-                anonId = "0123456789abcdef",
-                publicId = "cmabc",
-                formattedSecretKey = "AAAAA-BBBBB-CCCCC-DDDDD-EEEEE-FFFFF-GGGGG-HHHHH-IIIII-JJJJJ-KKKKK-LLLLL-M",
-                analyticsOptOut = optOut,
-                onAnalyticsOptOutChange = { optOut = it },
-                onLogout = {},
-                onBack = {},
-            )
+            AccountScreen(anonId = null, publicId = null, analyticsOptOut = optOut, onAnalyticsOptOutChange = { optOut = it }, onBack = {})
         }
-        rule.onAllNodesWithTag(AccountTags.SECRET_KEY, useUnmergedTree = true).assertCountEquals(0)
-        rule.onNodeWithText("Secret Key").performClick()
-        val block = rule.node(AccountTags.SECRET_KEY).bounds
-        val text = rule.node(AccountTags.SECRET_KEY_TEXT).bounds
-        assertDp("secret text inset 16", block.left + 16.dp, text.left)
-        assertDp("14 under the secret text", text.bottom + 14.dp, block.bottom)
-        assertDp("secret text lines are 20", 0f.dp, ((text.bottom - text.top).value % 20f).dp)
-
         rule.node(AccountTags.ANALYTICS_SWITCH).assertIsOn().performClick()
         assertTrue("switching analytics off opts out", optOut)
     }
 
     @Test
-    fun accountAnalyticsSwitchShowsOptOut() {
-        rule.setHappyContent {
-            AccountScreen(
-                anonId = null, publicId = null, formattedSecretKey = "",
-                analyticsOptOut = true, onAnalyticsOptOutChange = {}, onLogout = {}, onBack = {},
-            )
-        }
-        rule.node(AccountTags.ANALYTICS_SWITCH).assertIsOff()
-        rule.onAllNodesWithText("Not available").assertCountEquals(2)
-    }
-
-    private val profile = Profile(
-        id = "account-1", timestamp = 0, firstName = "Ada", lastName = null, avatar = null,
-        github = GitHubProfile(id = 1.0, login = "ada", name = "Ada", avatarUrl = "", email = null, bio = null),
-        connectedServices = listOf("anthropic", "openai", "unknown-service"),
-    )
-
-    private val token = PushToken(id = "pt1", token = "ExponentPushToken[abcdefghijklmnop]", createdAt = 0, updatedAt = 0)
-
-    @Test
-    fun accountProfileAndServicesDisconnectAfterConfirming() {
-        val disconnected = mutableListOf<String>()
-        rule.setHappyContent {
-            AccountScreen(
-                anonId = null, publicId = null, formattedSecretKey = "",
-                analyticsOptOut = false, onAnalyticsOptOutChange = {}, onLogout = {}, onBack = {},
-                profile = profile,
-                onDisconnectGitHub = { disconnected += "github" },
-                onDisconnectService = { service, _ -> disconnected += service },
-            )
-        }
-        rule.onNodeWithText("@ada").performScrollTo().assertIsDisplayed()
-        rule.onNodeWithText("OpenAI Codex").performScrollTo().assertIsDisplayed()
-        rule.onAllNodesWithText("Active").assertCountEquals(3)
-        rule.onNodeWithText("Claude Code").performScrollTo().performClick()
-        rule.onNodeWithText("Are you sure you want to disconnect Claude Code from your account?").assertIsDisplayed()
-        rule.onNodeWithText("Disconnect").performClick()
-        rule.onNodeWithText("@ada").performScrollTo().performClick()
-        rule.onNodeWithText("Disconnect").performClick()
-        assertEquals(listOf("anthropic", "github"), disconnected)
-    }
-
-    @Test
-    fun accountWithoutProfileHasNoProfileGroup() {
-        rule.setHappyContent {
-            AccountScreen(anonId = null, publicId = null, formattedSecretKey = "", analyticsOptOut = false, onAnalyticsOptOutChange = {}, onLogout = {}, onBack = {})
-        }
-        rule.onAllNodesWithText("PROFILE").assertCountEquals(0)
-        rule.onAllNodesWithText("CONNECTED ACCOUNTS").assertCountEquals(0)
-        rule.onNodeWithText("No registered push tokens").performScrollTo().assertIsDisplayed()
-        rule.onNodeWithText("REGISTERED TOKENS (0)").performScrollTo().assertIsDisplayed()
-    }
-
-    @Test
-    fun accountPushRowsWithoutPush() {
+    fun pushRowsAndTokens() {
         val deleted = mutableListOf<String>()
         rule.setHappyContent {
             AccountScreen(
-                anonId = null, publicId = null, formattedSecretKey = "",
-                analyticsOptOut = false, onAnalyticsOptOutChange = {}, onLogout = {}, onBack = {},
+                anonId = null, publicId = null, analyticsOptOut = false, onAnalyticsOptOutChange = {}, onBack = {},
                 push = PushState(permission = PushPermission.Undetermined, tokens = listOf(token)),
                 onDeletePushToken = { deleted += it.id },
             )
         }
         rule.onNodeWithText("Not requested").performScrollTo().assertIsDisplayed()
-        rule.onNodeWithText("iOS has stopped prompting. Open system settings to enable notifications again.").performScrollTo().assertIsDisplayed()
+        rule.onNodeWithText("Registered Tokens (1)", substring = true).performScrollTo().assertIsDisplayed()
         rule.onNodeWithText("abcdef…klmnop").performScrollTo().performClick()
         rule.onNodeWithText("Remove abcdef…klmnop from your account?").assertIsDisplayed()
         rule.onNodeWithText("Delete").performClick()
@@ -145,55 +122,59 @@ class AccountLayoutTest {
     }
 
     @Test
-    fun linkNewDeviceScansAndReadsScanningWhileLinking() {
-        var scans = 0
-        var linking by mutableStateOf(false)
-        rule.setHappyContent {
-            AccountScreen(
-                anonId = null, publicId = null, formattedSecretKey = "",
-                analyticsOptOut = false, onAnalyticsOptOutChange = {}, onLogout = {}, onBack = {},
-                linkingDevice = linking,
-                onLinkNewDevice = { scans++ },
-            )
-        }
-        rule.onNodeWithText("Scan QR code to link device").performClick()
-        assertEquals(1, scans)
-
-        linking = true
-        rule.onAllNodesWithText("Scan QR code to link device").assertCountEquals(0)
-        rule.onNodeWithText("Scanning...").performClick()
-        assertEquals("a link in progress takes no taps", 1, scans)
+    fun noTokensSaysSo() {
+        rule.setHappyContent { AccountScreen(anonId = null, publicId = null, analyticsOptOut = false, onAnalyticsOptOutChange = {}, onBack = {}) }
+        rule.onNodeWithText("No registered push tokens").performScrollTo().assertIsDisplayed()
+        rule.onNodeWithText("Registered Tokens (0)", substring = true).performScrollTo().assertIsDisplayed()
     }
 
     @Test
-    fun aRefusedSecretKeyCopySaysSo() {
-        // account.tsx handleCopySecret: a failed copy alerts instead of crashing.
-        val refusing = object : Clipboard {
-            override val nativeClipboard: NativeClipboard get() = error("unused")
-            override suspend fun getClipEntry(): ClipEntry? = null
-            override suspend fun setClipEntry(clipEntry: ClipEntry?) = throw SecurityException("denied")
-        }
+    fun theKeyShowsOnATapAsACodeRowAndCopies() {
+        val clipboard = RecordingClipboard()
+        val key = "AAAAA-BBBBB-CCCCC-DDDDD-EEEEE-FFFFF-GGGGG-HHHHH-IIIII-JJJJJ-KKKKK-LLLLL-M"
         rule.setHappyContent {
-            CompositionLocalProvider(LocalClipboard provides refusing) {
-                AccountScreen(anonId = null, publicId = null, formattedSecretKey = "AAAAA", analyticsOptOut = false, onAnalyticsOptOutChange = {}, onLogout = {}, onBack = {})
-            }
+            CompositionLocalProvider(LocalClipboard provides clipboard) { BackupScreen(formattedSecretKey = key, onBack = {}) }
         }
-        rule.onNodeWithText("Secret Key").performClick()
-        rule.node(AccountTags.SECRET_KEY).performClick()
+        rule.onAllNodesWithTag(AccountTags.SECRET_KEY_TEXT, useUnmergedTree = true).assertCountEquals(0)
+        rule.onNodeWithText("Show Secret Key").performClick()
+        rule.onNodeWithText("Hide Secret Key").assertIsDisplayed()
+        val card = rule.onAllNodesWithTag(ItemGroupTags.CARD, useUnmergedTree = true)[0].bounds
+        val text = rule.node(AccountTags.SECRET_KEY_TEXT).bounds
+        assertDp("the key the card's width", (card.right - card.left) - (2f / 3).dp, text.right - text.left)
+        rule.node(AccountTags.COPY_SECRET_KEY).performClick()
+        rule.waitForIdle()
+        assertEquals(key, clipboard.text)
+        rule.onNodeWithText("Secret key copied to clipboard. Store it in a safe place!").assertIsDisplayed()
+    }
+
+    @Test
+    fun aRefusedKeyCopySaysSo() {
+        // account.tsx handleCopySecret: a failed copy alerts instead of crashing.
+        rule.setHappyContent {
+            CompositionLocalProvider(LocalClipboard provides RecordingClipboard(refuse = true)) { BackupScreen(formattedSecretKey = "AAAAA", onBack = {}) }
+        }
+        rule.onNodeWithText("Show Secret Key").performClick()
+        rule.node(AccountTags.SECRET_KEY_TEXT).performClick()
         rule.waitForIdle()
         rule.onNodeWithText("Failed to copy secret key").assertIsDisplayed()
     }
 
     @Test
-    fun gitHubRowShowsTheUploadedAvatar() {
-        val withAvatar = profile.copy(avatar = ImageRef(64.0, 64.0, "", "a.png", "https://example.com/a.png"))
+    fun linkNewDeviceScansReadsScanningAndRestoreOpens() {
+        var scans = 0
+        var restores = 0
+        var linking by mutableStateOf(false)
         rule.setHappyContent {
-            AccountScreen(anonId = null, publicId = null, formattedSecretKey = "", analyticsOptOut = false, onAnalyticsOptOutChange = {}, onLogout = {}, onBack = {}, profile = withAvatar)
+            BackupScreen(formattedSecretKey = "", onBack = {}, linkingDevice = linking, onLinkNewDevice = { scans++ }, onRestore = { restores++ })
         }
-        rule.onNodeWithText("@ada").performScrollTo()
-        val avatar = rule.node(AccountTags.GITHUB_AVATAR).bounds
-        assertDp("29 wide", 29, avatar.right - avatar.left)
-        assertDp("29 high", 29, avatar.bottom - avatar.top)
+        rule.node(AccountTags.LINK_DEVICE).performClick()
+        assertEquals(1, scans)
+        linking = true
+        rule.onNodeWithText("Scanning...").assertIsDisplayed()
+        rule.node(AccountTags.LINK_DEVICE).performClick()
+        assertEquals("a link in progress takes no taps", 1, scans)
+        rule.node(AccountTags.RESTORE).performScrollTo().performClick()
+        assertEquals(1, restores)
+        rule.onNodeWithText("Scan the code another phone shows under Restore to sign it in to this account.").assertIsDisplayed()
     }
 }
-

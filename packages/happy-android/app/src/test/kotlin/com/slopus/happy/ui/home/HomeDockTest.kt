@@ -1,8 +1,5 @@
 package com.slopus.happy.ui.home
 
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertCountEquals
@@ -25,11 +22,9 @@ import com.slopus.happy.model.HomeModelFixtures.session
 import com.slopus.happy.model.NewSessionDraft
 import com.slopus.happy.model.NewSessionLabels
 import com.slopus.happy.model.NewSessionPage
-import com.slopus.happy.model.SessionListGrouping
 import com.slopus.happy.model.StartPhase
 import com.slopus.happy.model.resolveNewSessionOptions
 import com.slopus.happy.model.settings.AgentDefaultOverrides
-import com.slopus.happy.net.ConnectionStatus
 import com.slopus.happy.ui.PHONE
 import com.slopus.happy.ui.PHONE_WIDTH
 import com.slopus.happy.ui.TOLERANCE
@@ -48,8 +43,6 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
-import java.time.LocalDate
-import java.time.ZoneOffset
 
 /**
  * The home dock against HomeDock.tsx (Android branch):
@@ -113,7 +106,7 @@ class HomeDockTest {
         onOpenMachine = {}, onCreateWorkspace = {}, onProjectMenu = { _, _ -> },
     )
     private val actions = HomeScreenActions(
-        onSettings = {}, onAppearance = {}, onSetGrouping = {}, onNewSession = {}, onTroubleshoot = {}, onOpenUrl = {}, onWhatsNew = {},
+        onSettings = {}, onNewSession = {}, onTroubleshoot = {}, onOpenUrl = {}, onWhatsNew = {},
     )
 
     private fun dock(
@@ -136,50 +129,10 @@ class HomeDockTest {
     private val image = AttachmentPreview("i1", "file:///nowhere/a.jpg", 10, 20, "image/jpeg", 100, "a.jpg")
 
     private fun show(dock: HomeDockState) {
-        val list = deriveHomeList(
-            HomeListInputs(HomeSnapshot(sessions, machines), SessionListGrouping.Flat, true, emptySet(), emptySet(), emptySet()),
-            ZoneOffset.UTC,
-            LocalDate.of(2026, 10, 16),
-        )
-        rule.setHappyContent {
-            HomeScreen(list, ConnectionStatus.CONNECTED, SessionListGrouping.Flat, callbacks, actions, dock = dock, dockActions = dockActions)
-        }
+        rule.setHappyContent { HomeDockFocus(dock, dockActions) }
     }
 
     private val rootBottom get() = rule.onRoot().bounds.bottom
-
-    @Test
-    fun theRestingCapsuleSitsOverTheBottomOfTheList() {
-        show(dock())
-        val capsule = rule.node(HomeDockTags.CAPSULE).bounds
-        assertBox("capsule", capsule, 16.dp, rootBottom - 10.dp - 56.dp, (PHONE_WIDTH - 32).dp, 56.dp)
-        assertDp("text 7 + 21 into the capsule", 16 + 7 + 21, rule.node(HomeDockTags.CAPSULE_TEXT).bounds.left)
-        rule.onNodeWithText("Plan, ask, build…").assertIsDisplayed()
-        val send = rule.node(HomeDockTags.CAPSULE_SEND).bounds
-        assertBox("send", send, (PHONE_WIDTH - 16 - 7 - 42).dp, capsule.top + 7.dp, 42.dp, 42.dp)
-        assertTrue("the list runs on under the dock", rule.node(HomeTags.LIST).bounds.bottom >= capsule.bottom - TOLERANCE)
-    }
-
-    @Test
-    fun sendNeedsTextAndTheTextOpensTheComposer() {
-        var state by mutableStateOf(dock())
-        val list = deriveHomeList(
-            HomeListInputs(HomeSnapshot(sessions, machines), SessionListGrouping.Flat, true, emptySet(), emptySet(), emptySet()),
-            ZoneOffset.UTC,
-            LocalDate.of(2026, 10, 16),
-        )
-        rule.setHappyContent {
-            HomeScreen(list, ConnectionStatus.CONNECTED, SessionListGrouping.Flat, callbacks, actions, dock = state, dockActions = dockActions)
-        }
-        rule.node(HomeDockTags.CAPSULE_SEND).performClick()
-        assertEquals(0, submits)
-        state = dock(prompt = "fix the build")
-        rule.waitForIdle()
-        rule.node(HomeDockTags.CAPSULE_SEND).performClick()
-        assertEquals(1, submits)
-        rule.node(HomeDockTags.CAPSULE_TEXT).performClick()
-        assertEquals(listOf(true), focusChanges)
-    }
 
     @Test
     fun theFocusedDockStacksItsRowsOverTheComposer() {
@@ -306,10 +259,10 @@ class HomeDockTest {
         }
         rule.onNodeWithText("Start New Session").assertIsDisplayed()
         val header = rule.node(HeaderTags.BAR).bounds
-        // new/index.tsx's header: a 24 chevron-back in a 48 target 16 in, the title start-aligned 8 after it.
+        // new/index.tsx's header: a 24 chevron-back in a 48 target 4 in, so the glyph is on the 16 keyline; the title 8 after it.
         val back = rule.node(NewSessionTags.BACK).bounds
-        assertBox("back", back, 16.dp, back.top, 48.dp, 48.dp)
-        assertDp("title after the back", 16 + 48 + 8, rule.node(NewSessionTags.TITLE).bounds.left)
+        assertBox("back", back, 4.dp, back.top, 48.dp, 48.dp)
+        assertDp("title after the back", 4 + 48 + 8, rule.node(NewSessionTags.TITLE).bounds.left)
         rule.node(NewSessionTags.BACK).performClick()
         assertEquals(1, backs)
         backs = 0

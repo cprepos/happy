@@ -7,21 +7,21 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -30,12 +30,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.hideFromAccessibility
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.slopus.happy.R
 import com.slopus.happy.model.FlatRowTopRight
@@ -48,8 +49,10 @@ import com.slopus.happy.model.resolveFlatRowPresentation
 import com.slopus.happy.model.visibleGitChanges
 import com.slopus.happy.ui.components.Avatar
 import com.slopus.happy.ui.components.AvatarBadgeLocation
+import com.slopus.happy.ui.components.HomeCardSpec
 import com.slopus.happy.ui.components.Icon
 import com.slopus.happy.ui.components.Ionicon
+import com.slopus.happy.ui.components.ShimmerSpec
 import com.slopus.happy.ui.components.ShimmerText
 import com.slopus.happy.ui.components.StatusDot
 import com.slopus.happy.ui.components.hairline
@@ -63,7 +66,6 @@ object FlatRowTags {
     const val AVATAR = "flatRow.avatar"
     const val TITLE = "flatRow.title"
     const val TOP_RIGHT = "flatRow.topRight"
-    const val TIMESTAMP = "flatRow.timestamp"
     const val DOT = "flatRow.dot"
     const val PROJECT = "flatRow.project"
     const val WORKSPACE = "flatRow.workspace"
@@ -76,12 +78,13 @@ object FlatRowTags {
 /** FlatSessionRow.tsx */
 object FlatRowSpec {
     val avatar = 60.dp
+    /** In home's inset card, a smaller avatar (iOS's `HomeCardLayout.Metrics.sessionAvatar`). */
+    val cardAvatar = 40.dp
     val paddingLeft = 16.dp
     val paddingRight = 16.dp
     val paddingVertical = 10.dp
     val avatarGap = 12.dp
     val topRightDot = 20.dp
-    val topRightMinWidth = 56.dp
     val topRightHeight = 22.dp
     val topRightGap = 8.dp
     val workspaceMinHeight = 18.dp
@@ -93,11 +96,31 @@ object FlatRowSpec {
     const val AVATAR_FADED = 0.5f
     const val CONTENT_FADED = 0.6f
     val title = happyTextStyle(fontSize = 17, lineHeight = 22, weight = FontWeight.SemiBold)
-    val timestamp = happyTextStyle(fontSize = 13, lineHeight = 22).copy(fontFeatureSettings = "tnum")
     val project = happyTextStyle(fontSize = 15, lineHeight = 20)
     val workspace = happyTextStyle(fontSize = 13, lineHeight = 18)
     val swipeText = happyTextStyle(fontSize = 12, weight = FontWeight.SemiBold)
     val gitCount = happyTextStyle(fontSize = 11, weight = FontWeight.SemiBold)
+
+    /**
+     * A row in home's card, whatever it says: 10 above and below the taller
+     * of the 40 avatar and the three lines (title 22, project 20, 1, the
+     * workspace line's 18), each line following the font scale.
+     * Nothing a row shows (a workspace or not, a dot, counts) moves it.
+     */
+    @Composable
+    fun cardRowHeight(): Dp =
+        paddingVertical * 2 + maxOf(cardAvatar, maxOf(line(title), topRightHeight) + line(project) + 1.dp + cardWorkspaceLine())
+
+    /** The workspace line in a card, held whether or not there is a workspace. */
+    @Composable
+    fun cardWorkspaceLine(): Dp = maxOf(line(workspace), workspaceMinHeight)
+
+    // Text keeps a line's ratio to its font size, and the nonlinear scale
+    // grows a 17 font less than a 22 line's own sp would say.
+    @Composable
+    private fun line(style: TextStyle): Dp = with(LocalDensity.current) {
+        style.fontSize.toDp() * (style.lineHeight.value / style.fontSize.value)
+    }
 }
 
 /** The flat list paints one colour, rows and page alike: white in light, the page's own black in dark. */
@@ -114,12 +137,17 @@ fun gitRemovedColor(colors: HappyColors) = if (colors.dark) Color(0xFFFF453A) el
 /**
  * One session in the flat home list: 60 avatar centred in a row padded 16
  * either side and 10 above and below; title 17/22 semibold (shimmering while
- * the agent works) with the timestamp or a 20 dot in a 56-minimum corner;
- * the project 15/20; the worktree 13/18 with a 13 branch glyph, then the
- * draft glyph and line counts. A hairline runs from the text (x = 88) to the
- * edge. Archived rows, and rows whose machine is gone, keep the geometry and
- * fade: avatar 0.5 and monochrome, text 0.6. Swiping left uncovers a 112
- * Archive action; a long press opens the session menu.
+ * the agent works) with a 20 dot after it while it waits or is unread (its
+ * slot kept, so the title never moves; no time); the project 15/20; the
+ * worktree 13/18 with a 13 branch glyph, then the draft glyph and line
+ * counts. A hairline runs from the text (x = 88) to the edge. Archived rows,
+ * and rows whose machine is gone, keep the geometry and fade: avatar 0.5 and
+ * monochrome, text 0.6. Swiping left uncovers a 112 Archive action; a long
+ * press opens the session menu.
+ *
+ * [carded], in home's inset card (iOS's SessionRowCell at a71eea391): a 40
+ * avatar, a 10 dot, the card's ground, [FlatRowSpec.cardRowHeight] high, and
+ * the card draws the hairline.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -131,6 +159,7 @@ fun FlatSessionRow(
     modifier: Modifier = Modifier,
     archiving: Boolean = false,
     selected: Boolean = false,
+    carded: Boolean = false,
 ) {
     LocalHomeRowObserver.current?.let { observe -> SideEffect { observe(row.session.id) } }
     val session = row.session
@@ -149,18 +178,24 @@ fun FlatSessionRow(
     }
     val presentation = resolveFlatRowPresentation(session.state, showUnreadDot, faded)
     val name = session.name ?: stringResource(R.string.session_new_chat)
-    val timestamp = remember(session.lastActivityAt) { formatSessionListTimestamp(session.lastActivityAt) }
+    val avatarSize = if (carded) FlatRowSpec.cardAvatar else FlatRowSpec.avatar
+    val ground = when {
+        selected -> colors.surfaceSelected
+        carded -> colors.surfaceHigh
+        else -> flatListBackground(colors)
+    }
 
     SwipeToArchive(
         enabled = !archiving,
         onArchive = { callbacks.onArchive(session.id) },
-        modifier = modifier,
+        modifier = if (carded) modifier.fillMaxHeight() else modifier,
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .then(if (carded) Modifier.fillMaxHeight() else Modifier)
                 .testTag(FlatRowTags.ROW)
-                .background(if (selected) colors.surfaceSelected else flatListBackground(colors))
+                .background(ground)
                 .then(if (selected) Modifier.semantics { this.selected = true } else Modifier)
                 .sessionPressDown(session.id, callbacks)
                 .combinedClickable(
@@ -178,12 +213,12 @@ fun FlatSessionRow(
             Box(
                 modifier = Modifier
                     .testTag(FlatRowTags.AVATAR)
-                    .size(FlatRowSpec.avatar)
+                    .size(avatarSize)
                     .alpha(if (faded) FlatRowSpec.AVATAR_FADED else 1f),
             ) {
                 Avatar(
                     id = session.avatarId,
-                    size = FlatRowSpec.avatar,
+                    size = avatarSize,
                     bot = session.botId != null,
                     monochrome = faded,
                     flavor = session.flavor,
@@ -201,19 +236,23 @@ fun FlatSessionRow(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(modifier = Modifier.weight(1f).testTag(FlatRowTags.TITLE)) {
-                        if (presentation.shimmerTitle) {
-                            ShimmerText(text = name, style = FlatRowSpec.title, baseColor = colors.textSecondary, highlightColor = colors.text)
-                        } else {
-                            Text(
-                                text = name,
-                                style = FlatRowSpec.title,
-                                color = if (faded) colors.textSecondary else colors.text,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
+                        val ink = if (faded) colors.textSecondary else colors.text
+                        // A carded row's ground is its card's.
+                        val ground = when {
+                            selected -> colors.surfaceSelected
+                            carded -> colors.surfaceHigh
+                            else -> flatListBackground(colors)
                         }
+                        ShimmerText(
+                            text = name,
+                            style = FlatRowSpec.title,
+                            baseColor = ink,
+                            highlightColor = ShimmerSpec.sheen(ink, ground),
+                            shimmering = presentation.shimmerTitle,
+                            modifier = Modifier.wrapContentHeight(unbounded = carded),
+                        )
                     }
-                    TopRight(timestamp, presentation.topRight, session.state)
+                    TopRight(presentation.topRight, session.state, if (carded) HomeCardSpec.dot else FlatRowSpec.topRightDot)
                 }
                 Text(
                     text = row.projectName,
@@ -224,7 +263,7 @@ fun FlatSessionRow(
                     modifier = Modifier.testTag(FlatRowTags.PROJECT),
                 )
                 Row(
-                    modifier = Modifier.padding(top = 1.dp).heightIn(min = FlatRowSpec.workspaceMinHeight),
+                    modifier = Modifier.padding(top = 1.dp).heightIn(min = if (carded) FlatRowSpec.cardWorkspaceLine() else FlatRowSpec.workspaceMinHeight),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Row(
@@ -258,7 +297,7 @@ fun FlatSessionRow(
                 }
             }
         }
-        if (showBorder) {
+        if (showBorder && !carded) {
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
@@ -272,9 +311,9 @@ fun FlatSessionRow(
     }
 }
 
+/** The dot while the chat waits on the user (orange) or is unread (blue), in a slot that keeps its width either way. */
 @Composable
-private fun TopRight(timestamp: String, topRight: FlatRowTopRight, state: SessionState) {
-    val colors = HappyTheme.colors
+private fun TopRight(topRight: FlatRowTopRight, state: SessionState, dotSize: Dp) {
     val dot = topRight as? FlatRowTopRight.Dot
     val label = when {
         dot == null -> null
@@ -286,30 +325,15 @@ private fun TopRight(timestamp: String, topRight: FlatRowTopRight, state: Sessio
         modifier = Modifier
             .padding(start = FlatRowSpec.topRightGap)
             .testTag(FlatRowTags.TOP_RIGHT)
-            .widthIn(min = FlatRowSpec.topRightMinWidth)
+            .width(dotSize)
             .height(FlatRowSpec.topRightHeight)
             .then(if (label != null) Modifier.semantics { contentDescription = label } else Modifier),
         contentAlignment = Alignment.CenterEnd,
     ) {
-        // The stamp keeps its width under the dot, so clearing unread can't move the title.
-        // Large text overflows the 22 slot, centred, as RN's visible overflow does, rather than clipping.
-        Text(
-            text = timestamp,
-            style = FlatRowSpec.timestamp,
-            color = colors.textSecondary,
-            textAlign = TextAlign.End,
-            maxLines = 1,
-            modifier = Modifier
-                .wrapContentHeight(unbounded = true)
-                .alpha(if (dot != null) 0f else 1f)
-                // Under a dot the stamp only holds the width: TalkBack reads the dot's label instead.
-                .then(if (dot != null) Modifier.semantics { hideFromAccessibility() } else Modifier)
-                .testTag(FlatRowTags.TIMESTAMP),
-        )
         if (dot != null) {
             StatusDot(
                 color = if (dot.blocked) BlockedDotColor else UnreadDotColor,
-                size = FlatRowSpec.topRightDot,
+                size = dotSize,
                 modifier = Modifier.testTag(FlatRowTags.DOT),
             )
         }

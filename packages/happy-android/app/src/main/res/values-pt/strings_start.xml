@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  values/strings_start.xml in pt: Android-only strings, not in happy-app's
+  catalogs. AndroidStringsTranslatedTest fails while one is missing here.
+-->
+<resources>
+    <string name="start_button">Começar</string>
+    <string name="start_connect">Conectar</string>
+    <string name="start_more">Mais</string>
+    <string name="start_enter_link">Inserir link manualmente</string>
+    <string name="start_restore_legacy">Restaurar conta antiga</string>
+    <string name="start_legacy_server">Servidor antigo</string>
+    <string name="start_enter_link_title">Inserir link</string>
+    <string name="start_enter_link_message">Cole o link do Happy no seu computador ou do Happy Agent.</string>
+    <string name="start_account_code">Este código adiciona um telefone a uma conta. Escaneie-o com um telefone conectado à conta.</string>
+</resources>

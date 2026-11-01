@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Leaving a Surface from an agent connection's home, and the agent chat's
+  jump to the newest message (ui/connection, ui/conversation). Not in
+  happy-app's catalogs; written here, with every supported language in its
+  own values-*/strings_surfaces.xml.
+-->
+<resources>
+    <!-- iOS's Strings.leaveSurface: desktop's menu says it. -->
+    <string name="surface_leave">Leave</string>
+    <string name="surface_leave_title">Leave “%1$s”?</string>
+    <string name="surface_leave_message">It goes from your list on all your devices. Everyone else in it keeps it.</string>
+    <string name="surface_leave_failed">Couldn\'t leave “%1$s”</string>
+    <string name="surface_leave_no_answer">The agent didn\'t answer. Try again in a moment.</string>
+
+    <!-- iOS's Strings.jumpToLatest and jumpWorking, for TalkBack. -->
+    <string name="conversation_jump_to_latest">Jump to latest</string>
+    <string name="conversation_jump_working">working</string>
+</resources>

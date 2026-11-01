@@ -1,5 +1,6 @@
 package com.slopus.happy.ui.tablet
 
+import com.slopus.happy.ui.rememberHomeAccountSwitch
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -18,7 +19,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.CircularProgressIndicator
+import com.slopus.happy.ui.components.PageProgressIndicator as CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -56,6 +57,9 @@ import com.slopus.happy.ui.home.HomeListHost
 import com.slopus.happy.ui.home.HomeListScope
 import com.slopus.happy.ui.home.HomeNavigation
 import com.slopus.happy.ui.home.HomeServices
+import com.slopus.happy.ui.home.AccountMenu
+import com.slopus.happy.ui.home.AccountMenuButton
+import com.slopus.happy.ui.home.rememberAccountMenu
 import com.slopus.happy.ui.theme.HappyTheme
 import com.slopus.happy.ui.theme.happyTextStyle
 import kotlinx.coroutines.Dispatchers
@@ -155,7 +159,7 @@ fun TabletSidebar(
             },
             onNewInCheckout = { first ->
                 services.newSession(context.applicationContext).prepareCheckout(first?.machineId, first?.path, first?.homeDir)
-                navigation.onNewSession()
+                navigation.onCompose()
             },
         )
     }
@@ -167,7 +171,7 @@ fun TabletSidebar(
         } else {
             null
         }
-        TabletSidebarContent(host, machines, selectedSessionId, headerHeight, modifier, groupedRows, grouped, stopping)
+        TabletSidebarContent(host, machines, selectedSessionId, headerHeight, modifier, groupedRows, grouped, stopping, rememberAccountMenu(graph), rememberHomeAccountSwitch(graph))
     }
     alert?.let { HappyAlert(it, onDismiss = { alert = null }) }
 }
@@ -195,6 +199,9 @@ fun TabletSidebarContent(
     groupedRows: List<TabletGroupedRow>? = null,
     grouped: TabletGroupedActions = TabletGroupedActions(onStop = {}, onNewInCheckout = {}),
     stopping: Set<String> = emptySet(),
+    /** Every account on the phone; the sidebar carries the switcher the phone's home bar has. */
+    accounts: AccountMenu = AccountMenu(),
+    onSwitchAccount: (String) -> Unit = {},
 ) {
     val colors = HappyTheme.colors
     val line = hairline()
@@ -221,7 +228,10 @@ fun TabletSidebarContent(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(TabletSidebarSpec.controlsGap),
         ) {
-            NewSessionButton(host.navigation.onNewSession, Modifier.weight(1f))
+            // The shell hides the phone's home bar, so the account switcher lives here instead,
+            // beside New session and in reach whatever the detail pane shows.
+            AccountMenuButton(accounts, onSwitchAccount, inset = 0.dp)
+            NewSessionButton(host.navigation.onCompose, Modifier.weight(1f))
             if (state?.hasArchivedSessions == true) {
                 ArchiveButton(hidden = state.archiveHidden, onClick = { host.callbacks.onSetArchiveHidden(!state.archiveHidden) })
             }
@@ -236,8 +246,9 @@ fun TabletSidebarContent(
                 )
                 state.rows.isEmpty() -> EmptySessionsTablet(
                     machines = machines,
-                    onNewSession = host.navigation.onNewSession,
+                    onNewSession = host.navigation.onCompose,
                     onTroubleshoot = host.navigation.onTroubleshoot,
+                    onLinkComputer = host.actions.onLinkComputer,
                 )
                 // MainView.tsx's sidebar mounts SessionsList, whose project grouping is its own.
                 host.grouping == SessionListGrouping.Project -> if (groupedRows == null) {
@@ -259,6 +270,7 @@ fun TabletSidebarContent(
                 }
                 else -> HomeList(
                     state = state,
+                    listState = host.listState,
                     callbacks = host.callbacks,
                     actions = host.actions,
                     update = host.update,

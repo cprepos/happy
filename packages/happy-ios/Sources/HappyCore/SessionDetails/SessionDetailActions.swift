@@ -10,10 +10,10 @@ public struct SessionDetailActions: Sendable {
     let sessions: SessionActions
     let machines: MachineActions
     let store: LocalStore
-    let sync: SyncEngine
+    let sync: LegacySyncEngine
     let metadataTransport: any MetadataUpdateTransport
 
-    public init(sessions: SessionActions, machines: MachineActions, store: LocalStore, sync: SyncEngine, metadataTransport: any MetadataUpdateTransport) {
+    public init(sessions: SessionActions, machines: MachineActions, store: LocalStore, sync: LegacySyncEngine, metadataTransport: any MetadataUpdateTransport) {
         self.sessions = sessions
         self.machines = machines
         self.store = store
@@ -202,7 +202,7 @@ public struct SessionDetailActions: Sendable {
     public static let taskDeleteMessage = "A task’s conversation can’t be deleted. Leave the task instead."
     static let failedToLeaveTask = "Failed to leave task"
     static let failedToArchiveSession = "Failed to archive session"
-    static let failedToDeleteSession = "Failed to delete session"
+    public static let failedToDeleteSession = "Failed to delete session"
 
     static func message(_ error: SessionActionError) -> String? {
         if case .failed(let message) = error, !message.isEmpty { return message }

@@ -1,5 +1,7 @@
 package com.slopus.happy.ui.diff
 
+import com.slopus.happy.text.wordsResource
+import com.slopus.happy.text.Words
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -14,7 +16,7 @@ import androidx.compose.foundation.lazy.LazyItemScope
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.material3.CircularProgressIndicator
+import com.slopus.happy.ui.components.PageProgressIndicator as CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -36,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import com.slopus.happy.R
 import com.slopus.happy.diff.DiffDocument
 import com.slopus.happy.diff.DiffRow
+import com.slopus.happy.ui.components.barInsetTop
 import com.slopus.happy.diff.DiffSource
 import com.slopus.happy.diff.FileChangeKind
 import com.slopus.happy.diff.syntax.SyntaxService
@@ -62,9 +65,9 @@ data class DiffFileItem(
     val source: DiffSource? = null,
     /** Set instead of [source] for files that are pictures rather than text. */
     val image: DiffImages? = null,
-    val error: String? = null,
+    val error: Words? = null,
     /** Why a file has no text body (empty, conflicted, ...). */
-    val message: String? = null,
+    val message: Words? = null,
     /** Stable identity; [path] when null. */
     val key: String? = null,
 ) {
@@ -136,6 +139,7 @@ private class DiffSections(private val scope: CoroutineScope, private val syntax
  * [onRequestContent] is asked for it once per expansion. [scrollToPath]
  * scrolls to that file once, when the list first has it, and tints its
  * section hunkBg. No files: [emptyText] (or "No changes") padded 32.
+ * On a glass screen it starts under the bar ([barInsetTop]).
  */
 @Composable
 fun DiffFilesList(
@@ -207,8 +211,8 @@ fun DiffFilesList(
                         Text(pluralResource(R.plurals.diff_tap_to_expand, count, count), style = happyTextStyle(fontSize = 13), color = palette.textSecondary)
                     }
                 }
-                item.error != null -> item(key = "body:${item.id}") { SectionMessage(item.error, palette, tint, width) }
-                item.message != null -> item(key = "body:${item.id}") { SectionMessage(item.message, palette, tint, width) }
+                item.error != null -> item(key = "body:${item.id}") { SectionMessage(wordsResource(item.error), palette, tint, width) }
+                item.message != null -> item(key = "body:${item.id}") { SectionMessage(wordsResource(item.message), palette, tint, width) }
                 item.image != null -> item(key = "body:${item.id}") { DiffImageView(item.image.before, item.image.after, width) }
                 item.source == null -> item(key = "body:${item.id}") {
                     LaunchedEffect(item.path) { if (requested.add(item.path)) runCatching { requestContent?.invoke(item.path) } }
@@ -260,7 +264,8 @@ fun DiffFilesList(
     LazyColumn(
         state = state,
         modifier = modifier.fillMaxSize().background(palette.surface),
-        contentPadding = PaddingValues(bottom = 32.dp),
+        // On a glass screen the list starts under the bar and scrolls on under it.
+        contentPadding = PaddingValues(top = barInsetTop(), bottom = 32.dp),
         content = content,
     )
 }

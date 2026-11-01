@@ -165,12 +165,14 @@ class SessionInfoScreenTest {
     }
 
     @Test
-    fun centredTitleAndQuickActionsInOrder() {
+    fun materialBarAndQuickActionsInOrder() {
         show(claudeSession())
         val bar = rule.node(HeaderTags.BAR).bounds
         assertDp("header", 64, bar.bottom - bar.top)
+        // The Material bar every pushed screen has: the title at the start, after back.
+        val back = rule.node(HeaderTags.LEFT).bounds
         val title = rule.node(HeaderTags.TITLE).bounds
-        assertDp("title centred", (PHONE_WIDTH / 2f).dp, (title.left + title.right) / 2)
+        assertTrue("title after back, at the start", title.left >= back.right && title.left < (PHONE_WIDTH / 4).dp)
         rule.onNodeWithText("Fix the build").assertExists()
         val order = listOf(
             SessionInfoTags.CHANGES, SessionInfoTags.MACHINE, SessionInfoTags.FORK, SessionInfoTags.DUPLICATE,

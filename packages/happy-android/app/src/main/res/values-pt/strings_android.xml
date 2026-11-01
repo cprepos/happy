@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  values/strings_android.xml in pt: Android-only strings, not in happy-app's
+  catalogs. AndroidStringsTranslatedTest fails while one is missing here.
+-->
+<resources>
+    <plurals name="conversation_attached_picture_count">
+        <item quantity="one">%1$d imagem anexada</item>
+        <item quantity="many">%1$d de imagens anexadas</item>
+        <item quantity="other">%1$d imagens anexadas</item>
+    </plurals>
+    <string name="server_url_empty">A URL do servidor não pode ficar vazia</string>
+    <string name="server_url_protocol">A URL do servidor deve usar o protocolo HTTP ou HTTPS</string>
+    <string name="server_url_invalid">Formato de URL inválido</string>
+    <string name="settings_agents">Agentes</string>
+    <string name="settings_agents_subtitle">Computadores conectados e padrões dos agentes</string>
+    <string name="happy_action_unknown_error">Erro desconhecido</string>
+    <string name="live_avatars_title">Avatares animados</string>
+    <string name="live_avatars_description">Avatares sem foto se movem. Usa mais bateria.</string>
+    <string name="settings_appearance_file_diffs_sidebar">Barra lateral de alterações de arquivos</string>
+    <string name="settings_appearance_file_diffs_sidebar_description">Mostrar alterações do git ao lado do chat no desktop</string>
+    <string name="chat_scroll_to_bottom">Rolar até o fim</string>
+    <string name="voice_clear_search">Limpar busca</string>
+    <string name="scan_unavailable">O leitor de QR não está disponível neste dispositivo. Cole o link em vez disso.</string>
+    <string name="scan_not_happy_code">Este código QR não é do Happy.</string>
+    <string name="scan_terminal_code_elsewhere">Este código conecta um terminal. Escaneie-o em Configurações › Escaneie o código QR para autenticar.</string>
+    <string name="scan_account_code_elsewhere">Este código vincula um novo dispositivo. Escaneie-o em Configurações › Backup e restauração › Vincular novo dispositivo.</string>
+    <string name="scan_pairing_unavailable">Este código conecta um agente. Use Adicionar no menu de contas da tela inicial.</string>
+    <string name="scan_close">Fechar</string>
+    <string name="scan_hint">Aponte a câmera para o código QR</string>
+    <string name="scan_open_settings">Abrir configurações</string>
+    <string name="scan_torch_on">Ligar a lanterna</string>
+    <string name="scan_torch_off">Desligar a lanterna</string>
+    <string name="state_animation_replay">Reproduzir de novo</string>
+    <string name="scan_no_camera">Este dispositivo não tem câmera. Cole o link.</string>
+    <string name="scan_camera_failed">Não foi possível iniciar a câmera. Tente de novo ou cole o link.</string>
+    <string name="voice_microphone_title">Acesso ao microfone necessário</string>
+    <string name="voice_microphone_ask">O Happy precisa de acesso ao microfone para o chat de voz. Conceda a permissão quando for solicitado.</string>
+    <string name="voice_microphone_settings">O Happy precisa de acesso ao microfone para o chat de voz. Ative o acesso ao microfone nas configurações do dispositivo.</string>
+</resources>

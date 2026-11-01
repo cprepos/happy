@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  values/strings_settings.xml in pl: Android-only strings, not in happy-app's
+  catalogs. AndroidStringsTranslatedTest fails while one is missing here.
+-->
+<resources>
+    <string name="settings_search_placeholder">Szukaj w ustawieniach</string>
+    <string name="settings_nothing_found">Nic nie znaleziono</string>
+    <string name="settings_add_agent">Dodaj agenta</string>
+    <string name="settings_edit_agent">Edytuj agenta</string>
+    <string name="settings_change_avatar">Zmień awatar</string>
+    <string name="settings_edit_name">Edytuj nazwę</string>
+    <string name="settings_hide_projects">Ukryj projekty</string>
+    <string name="settings_hide_projects_footer">Ekran główny pomija Twoje projekty, tutaj i w Happy Desktop.</string>
+    <string name="settings_sign_out_title">Wylogować się?</string>
+    <string name="settings_disconnect_title">Rozłączyć agenta?</string>
+    <string name="settings_happy_account">Konto Happy</string>
+    <string name="settings_backup_restore">Kopia zapasowa i przywracanie</string>
+    <string name="settings_show_secret_key">Pokaż klucz tajny</string>
+    <string name="settings_hide_secret_key">Ukryj klucz tajny</string>
+    <string name="settings_copy_secret_key">Kopiuj klucz tajny</string>
+    <string name="settings_link_device_footer">Zeskanuj kod, który inny telefon pokazuje w sekcji Przywróć, aby zalogować go do tego konta.</string>
+    <string name="settings_restore_account">Przywróć konto</string>
+    <string name="settings_restore_account_footer">Zaloguj się do innego konta za pomocą jego klucza tajnego lub telefonu, który je ma. To konto zostanie tutaj.</string>
+    <string name="settings_copy_id_footer">Dotknij identyfikatora, aby go skopiować.</string>
+    <string name="settings_change_photo">Zmień zdjęcie</string>
+    <string name="settings_remove_photo">Usuń zdjęcie</string>
+    <string name="settings_could_not_save_profile">Nie udało się zapisać profilu</string>
+    <string name="settings_could_not_change_photo">Nie udało się zmienić zdjęcia</string>
+    <string name="settings_could_not_remove_photo">Nie udało się usunąć zdjęcia</string>
+    <string name="settings_agents_title">Agenci</string>
+    <string name="settings_agents_default">Domyślnie (%1$s)</string>
+    <string name="settings_agents_use_code_default">Domyślne z kodu</string>
+    <string name="settings_agents_custom_model">Własny model…</string>
+    <string name="settings_agents_enter_model_id">Wpisz dokładny identyfikator modelu</string>
+    <string name="settings_agents_no_machines">Brak podłączonych maszyn</string>
+    <string name="settings_agents_no_machines_subtitle">Uruchom Happy na komputerze, aby go podłączyć</string>
+    <string name="settings_agents_defaults">Domyślne</string>
+    <string name="settings_agents_clear_overrides">Wyczyść nadpisania</string>
+    <string name="settings_agents_clear_overrides_subtitle">Przywróć wszystkim agentom wartości domyślne z kodu</string>
+    <string name="settings_agents_permission">Uprawnienia</string>
+    <string name="settings_agents_model">Model</string>
+    <string name="settings_agents_effort">Wysiłek</string>
+    <string name="settings_agents_custom_codex_title">Własny model Codex</string>
+    <string name="settings_agents_custom_codex_message">Wpisz dokładny identyfikator modelu. Dostępność zależy od twojego konta Codex lub konfiguracji API.</string>
+    <string name="settings_connect_claude_title">Połącz z Claude</string>
+    <string name="settings_connect_claude">Połącz Claude</string>
+    <string name="settings_connect_claude_run">Uruchom to polecenie w terminalu:</string>
+    <string name="settings_commit">Commit</string>
+    <string name="settings_commit_at">Commit %1$s</string>
+</resources>

@@ -8,6 +8,7 @@ import com.slopus.happy.model.ProjectWorkspaceGroup
 import com.slopus.happy.model.SessionListInputs
 import com.slopus.happy.model.SessionListItem
 import com.slopus.happy.model.SessionRowData
+import com.slopus.happy.model.SessionState
 import com.slopus.happy.model.VisibleGitChanges
 import com.slopus.happy.model.buildSessionListViewData
 import com.slopus.happy.model.gitStatusKey
@@ -52,6 +53,9 @@ sealed interface TabletGroupedRow {
         val lastOfProject: Boolean,
     ) : TabletGroupedRow {
         override val key get() = "project-$projectKey-${workspace.id}"
+
+        /** Work runs in one of its chats: its name shimmers, as home's project and worktree rows do. */
+        val working: Boolean get() = workspace.sessions.any { it.state == SessionState.Thinking }
     }
 
     data class ArchiveToggle(val hidden: Boolean) : TabletGroupedRow {

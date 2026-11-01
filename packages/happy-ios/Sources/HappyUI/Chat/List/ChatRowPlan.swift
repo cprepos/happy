@@ -20,11 +20,13 @@ final class ChatRowPlan: @unchecked Sendable {
     let alpha: CGFloat
     /// What VoiceOver reads for the row.
     let accessibilityLabel: String?
-    /// Stem Cells sidebar proposals, which the screen keeps as live views
+    /// V2 sidebar proposals, which the screen keeps as live views
     /// over the row: each laid out, at its frame in row coordinates.
-    let proposals: [(artifactId: String, layout: StemCellSidebarProposalLayout, frame: CGRect)]
+    let proposals: [(artifactId: String, layout: SidebarProposalLayout, frame: CGRect)]
+    /// What its tap toggles (Show full, Show less), as a VoiceOver action.
+    let toggles: String?
 
-    init(id: String, size: CGSize, items: [ChatDrawItem], hits: [ChatHit] = [], alpha: CGFloat = 1, accessibilityLabel: String? = nil, proposals: [(artifactId: String, layout: StemCellSidebarProposalLayout, frame: CGRect)] = []) {
+    init(id: String, size: CGSize, items: [ChatDrawItem], hits: [ChatHit] = [], alpha: CGFloat = 1, accessibilityLabel: String? = nil, proposals: [(artifactId: String, layout: SidebarProposalLayout, frame: CGRect)] = [], toggles: String? = nil) {
         self.id = id
         self.size = size
         self.items = items
@@ -32,6 +34,7 @@ final class ChatRowPlan: @unchecked Sendable {
         self.alpha = alpha
         self.accessibilityLabel = accessibilityLabel
         self.proposals = proposals
+        self.toggles = toggles
     }
 }
 
@@ -58,6 +61,8 @@ enum ChatDrawItem {
     case icon(Icon, size: CGFloat, frame: CGRect, tint: ColorToken)
     /// ActivityIndicator size="small", scaled.
     case spinner(CGRect, tint: ColorToken, scale: CGFloat)
+    /// A label carrying the shimmer while its work goes (`ChatShimmerView`).
+    case shimmer(ChatShimmerText, frame: CGRect)
     /// A running tool's timer: whole seconds since `since` (ms), as "12.0s",
     /// at the row's text size (nil: the designed size).
     case elapsed(since: Int64, frame: CGRect, text: TextEnvironment?)
@@ -83,17 +88,28 @@ enum ChatDrawItem {
     /// A mermaid diagram, drawn by its own page; the page reports how tall
     /// it is with `mermaidHeight`.
     case mermaid(ChatMermaid, frame: CGRect)
-    /// A picture or recording a Stem Cells agent presented, or a photo the
+    /// A picture or recording a V2 agent presented, or a photo the
     /// person sent, loaded once it is on screen.
     case media(ChatMedia, frame: CGRect)
+    /// A file card's chip and detail line while its file may still be on
+    /// its way: the ring or the glyph, and the size or how much is here.
+    case fileStatus(ChatFileStatus, frame: CGRect)
     /// Live content of its own, drawn by a view that reads and follows it.
     case embed(ChatEmbed, frame: CGRect)
 }
 
 /// What an embedded view shows.
 enum ChatEmbed: Equatable, Sendable {
-    /// A story, by its ID (`StoryInlineView`).
-    case story(String)
+    /// An HTML artifact's page (`InlinePageView`).
+    case page(InlinePage)
+}
+
+/// An artifact's page shown inline in a V2 conversation: the
+/// version and entry its web view loads through the paired computer.
+struct InlinePage: Equatable, Sendable {
+    var artifactId: String
+    var title: String
+    var page: References.Page
 }
 
 /// A diagram in a row: `index` is its place among the row's diagrams, so
@@ -111,7 +127,7 @@ struct ChatMermaidHeights: Equatable, Sendable {
     var heights: [Int: CGFloat] = [:]
 }
 
-/// One picture or recording in a Stem Cells conversation: `key` names it
+/// One picture or recording in a V2 conversation: `key` names it
 /// to the screen's `ChatMediaSource`, and its thumbhash shows until it
 /// arrives. A recording shows its first frame under a play button.
 struct ChatMedia: Equatable, Sendable {
@@ -120,6 +136,38 @@ struct ChatMedia: Equatable, Sendable {
     var thumbhash: String?
     /// What VoiceOver reads: its name.
     var label: String
+    /// Still going to the computer: its ring.
+    var upload: ChatUpload? = nil
+}
+
+/// A picture or video of a message on its way: how far it is lives on
+/// `UploadProgressBoard` under `key`, applied to its tile a frame at a
+/// time; the plan only says it is sending, or failed.
+struct ChatUpload: Equatable, Sendable {
+    var key: String
+    var failed: Bool
+
+    /// The ring's disc in a tile at `frame`.
+    static func ring(in frame: CGRect) -> CGRect {
+        UploadRingLayout.disc(in: frame.size).offsetBy(dx: frame.minX, dy: frame.minY)
+    }
+}
+
+/// A file card's live part (`ChatFileStatusView`): in the card's own
+/// coordinates, its chip, where the glyph or Telegram's ring goes, and its
+/// detail line, which says the kind and then the size or progress.
+struct ChatFileStatus: Equatable, Sendable {
+    /// The media's `ChatMedia.key`.
+    var key: String
+    var glyph: Icon
+    var glyphSize: CGFloat
+    /// The kind before the size ("PDF"), nil when it has none.
+    var kind: String?
+    /// The size presented with it.
+    var size: Int?
+    var chip: CGRect
+    var detail: CGRect
+    var fontScale: CGFloat
 }
 
 /// A picture the person attached: `ref` under the session's attachments,
@@ -127,6 +175,18 @@ struct ChatMedia: Equatable, Sendable {
 struct ChatAttachment: Equatable, Sendable {
     var ref: String
     var thumbhash: String?
+    /// Still in this device's outbox: its `localId`, whose copy is drawn
+    /// rather than downloaded.
+    var local: String? = nil
+    /// Still going to the server: its ring.
+    var upload: ChatUpload? = nil
+    /// The plaintext's size, as the file event says it.
+    var size: Int? = nil
+    /// A recording: its first frame under the play button, streamed when tapped.
+    var isVideo = false
+    /// Its name and type, for the player to know what it plays.
+    var name = ""
+    var mimeType: String? = nil
 }
 
 /// What a tap on part of a row does.
@@ -142,6 +202,9 @@ enum ChatRowAction: Equatable, Sendable {
     case openFile(String)
     case option(String)
     case retry(localId: String)
+    /// A sending picture's cross: takes it out of message `messageId`. A
+    /// legacy chat's picture is its own outbox item, so both are its `localId`.
+    case cancelUpload(messageId: String, piece: String)
     case permission(ChatPermissionTap)
     /// An option in a tool's question form, by tool message id.
     case questionOption(toolId: String, questionId: String, option: Int)
@@ -150,10 +213,18 @@ enum ChatRowAction: Equatable, Sendable {
     case diffShowMore(toolId: String, chunk: Int, file: Int)
     /// A diagram's page says how tall it is, in points.
     case mermaidHeight(row: String, index: Int, height: CGFloat)
-    /// A Stem Cells picture or recording, opened whole by its `ChatMedia.key`.
+    /// A V2 picture or recording, opened whole by its `ChatMedia.key`.
     case openMedia(String)
-    /// A Stem Cells artifact's card.
-    case openArtifact(StemCellArtifact)
+    /// A media file's ring (or a video's badge): pause its download, or
+    /// start or resume it; one already here opens instead. By its
+    /// `ChatMedia.key`, or a legacy attachment's ref.
+    case toggleDownload(String)
+    /// A legacy chat's recording, played streaming.
+    case playAttachment(ChatAttachment)
+    /// A V2 artifact's card.
+    case openArtifact(Artifact)
+    /// A finished V2 turn's "View traces" / "Hide traces", by its run.
+    case toggleTurn(String)
 
     // Long presses
 

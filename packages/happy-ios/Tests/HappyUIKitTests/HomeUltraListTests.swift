@@ -26,7 +26,7 @@ private final class CaptureUltraView: HomeUltraListView {
 
 @MainActor
 final class HomeUltraListTests: XCTestCase {
-    override func setUp() { super.setUp(); Fonts.registerBundledFonts() }
+    override func setUp() { super.setUp(); LegacyFonts.registerBundledFonts() }
 
     func testDeferredArchivedTextKeepsNativePixelsAndOverlayGeometry() async {
         for category in [UIContentSizeCategory.large, .accessibilityExtraExtraExtraLarge] {
@@ -65,24 +65,37 @@ final class HomeUltraListTests: XCTestCase {
         }
     }
 
-    func testCustomPlansKeepExistingSessionGeometryAtEveryTextSize() async {
-        for category in [UIContentSizeCategory.large, .extraExtraExtraLarge, .accessibilityExtraExtraExtraLarge] {
+    /// A session's plan is its `FlatSessionRowLayout`, at the lines of the
+    /// text size it was made at: as tall as the layout's height for those
+    /// lines, the avatar centred on it, each line of text one line of its
+    /// style and inside the row; in home's card it is moved in by the
+    /// card's side.
+    func testASessionsPlanIsItsLayoutAtEveryTextSize() async {
+        for category in [UIContentSizeCategory.extraSmall, .large, .extraExtraExtraLarge, .accessibilityExtraExtraExtraLarge] {
             let text = TextEnvironment(scale: TextScale(TextSizeCategory(category)), displayScale: 3)
             let environment = await HomeTextEnvironment.make(text)
+            let lines = environment.rows.sessionLines
             for workspace in [nil, "fix-login"] {
                 let row = HomeRowMeasurerTests.session(workspace: workspace, changes: HomeRowMeasurerTests.changes)
-                for width in [CGFloat(320), 393, 430] {
-                    let plan = await Task.detached { HomeRowDrawing.make(.flat(.session(row)), width: width, grouped: false, selected: false, environment: environment, dark: false) }.value
-                    let cell = SessionRowCell(style: .default, reuseIdentifier: nil)
-                    cell.traitOverrides.followsTextSize = true
-                    cell.traitOverrides.preferredContentSizeCategory = category
-                    cell.traitOverrides.displayScale = 3
-                    cell.lines = environment.rows.sessionLines
-                    cell.configure(row, style: .gradient, monochrome: false)
-                    cell.updateTraitsIfNeeded()
-                    let layout = cell.layout(width: width)
-                    XCTAssertEqual(plan.size, layout.size)
-                    XCTAssertEqual(plan.avatarFrame, layout.avatar)
+                // Home's card, and the tablet's full-width row.
+                for (width, carded) in [CGFloat(320), 393, 430].flatMap({ [($0, true), ($0, false)] }) {
+                    let at = "\(category.rawValue) \(width) carded \(carded) workspace \(workspace != nil)"
+                    let plan = await Task.detached { HomeRowDrawing.make(.flat(.session(row)), width: width, grouped: false, selected: false, carded: carded, environment: environment, dark: false) }.value
+                    let avatar = carded ? HomeCardLayout.Metrics.sessionAvatar : FlatSessionRowLayout.Metrics.avatarSize
+                    let height = FlatSessionRowLayout.height(lines: lines, workspace: workspace != nil, changes: true, branchIcon: environment.rows.branchIcon.height, avatarSize: avatar)
+                    XCTAssertEqual(plan.size, CGSize(width: width, height: height), at)
+                    XCTAssertEqual(plan.avatarFrame.size, CGSize(width: avatar, height: avatar), at)
+                    XCTAssertEqual(plan.avatarFrame.midY, height / 2, accuracy: 0.001, at)
+                    XCTAssertGreaterThanOrEqual(plan.avatarFrame.minX, carded ? HomeCardLayout.Metrics.side : 0, at)
+                    var texts: [String: CGRect] = [:]
+                    for case .text(let value, _, _, let frame) in plan.marks { texts[value] = frame }
+                    XCTAssertEqual(texts[row.title ?? ""]?.height, lines.title, at)
+                    XCTAssertEqual(texts[row.projectName]?.height, lines.project, at)
+                    if let workspace { XCTAssertEqual(texts[workspace]?.height, lines.workspace, at) }
+                    XCTAssertEqual(texts["+1.2k"]?.height, lines.changes, at)
+                    for (value, frame) in texts {
+                        XCTAssertTrue(CGRect(origin: .zero, size: plan.size).insetBy(dx: -0.001, dy: -0.001).contains(frame), "\(value) runs out of the row, \(at)")
+                    }
                     XCTAssertTrue(plan.accessibilityLabel.contains("+1.2k"))
                     XCTAssertTrue(plan.accessibilityLabel.contains("-7"))
                 }
@@ -172,10 +185,10 @@ final class HomeUltraListTests: XCTestCase {
             }
         }.value
         for (grouped, (toggle, row, heading)) in zip([false, true], plans) {
-            // ArchiveToggleCell: half-strength content over its page colour.
+            // The archive toggle: half-strength content over its page colour.
             XCTAssertEqual(toggle.press, .dim)
             XCTAssertEqual(toggle.background, grouped ? Palette.groupedBackground : Palette.flatListBackground)
-            XCTAssertEqual(row.press, .fill(Palette.surfaceSelected), "SessionRowCell's selected background")
+            XCTAssertEqual(row.press, .fill(Palette.surfaceSelected), "a flat session's selected background")
             XCTAssertEqual(heading.press, .none)
             // The page colour is the row view's layer, so a press fill can
             // sit between it and the drawing: the drawing leaves it clear.
@@ -242,68 +255,23 @@ final class HomeUltraListTests: XCTestCase {
         }
     }
 
-    func testTabletPlansMatchNativeHeadersAndCardSegments() async throws {
-        _ = await TranslationCatalog.load("en")
-        for category in [UIContentSizeCategory.large, .accessibilityExtraExtraExtraLarge] {
-            let environment = await HomeTextEnvironment.make(.init(scale: TextScale(TextSizeCategory(category)), displayScale: 2))
-            for width in [CGFloat(280), 320] {
-                func check(_ row: TabletGroupedRow, cell: UITableViewCell, title: StyledLabel) throws {
-                    let plan = HomeRowDrawing.makeTablet(row, width: width, selected: true, environment: environment, dark: true)
-                    cell.traitOverrides.preferredContentSizeCategory = category
-                    cell.traitOverrides.displayScale = 2; cell.updateTraitsIfNeeded()
-                    cell.frame = CGRect(x: 0, y: 0, width: width, height: plan.size.height)
-                    cell.layoutIfNeeded()
-                    XCTAssertEqual(plan.size, cell.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)))
-                    let frame = try XCTUnwrap(plan.marks.compactMap { mark -> CGRect? in
-                        if case .text(let value, _, _, let frame) = mark, value == title.string { return frame }
-                        return nil
-                    }.first)
-                    let native = title.convert(title.bounds, to: cell.contentView)
-                    XCTAssertEqual(PixelGrid.snap(frame, scale: 2), native)
-                }
-                let heading = TabletSectionHeaderCell(style: .default, reuseIdentifier: nil)
-                heading.configure(Strings.Tablet.bots)
-                try check(.botsHeader, cell: heading, title: heading.label)
-                let workspace = TabletWorkspaceHeader(id: "p", projectName: "happy", avatar: .init(seed: "p"), branch: "main", changes: .init(approximate: false, insertions: 0, deletions: 7), checkout: nil, place: .init(machineId: nil, path: nil, worktreeKey: nil))
-                let header = TabletWorkspaceHeaderCell(style: .default, reuseIdentifier: nil)
-                header.configure(workspace, style: .gradient, monochrome: false)
-                try check(.workspace(workspace), cell: header, title: header.titleLabel)
-                for first in [false, true] {
-                    for last in [false, true] {
-                        let chat = TabletChatRow(id: "c", title: "A chat title with enough words for two lines", connected: true, indicator: .dot(.working, pulsing: false), showsBorder: !last, first: first, last: last, projectEnd: last)
-                        let cell = TabletChatCell(style: .default, reuseIdentifier: nil); cell.configure(chat)
-                        try check(.chat(chat), cell: cell, title: cell.titleLabel)
-                    }
-                }
-                let session = SessionRecord(id: "a", seq: 1, createdAt: 0, updatedAt: 0, active: false, activeAt: 0, projectId: nil, metadataVersion: 1, metadataCipher: "", metadata: nil, agentStateVersion: 0, agentStateCipher: nil, agentState: nil, dataKeyCipher: "", decryptable: true, thinking: false, unread: false)
-                var archived = TabletArchivedRow(session, row: HomeRowMeasurerTests.session("a", workspace: nil), now: 10_000, first: true)
-                archived.last = true
-                let cell = TabletArchivedCell(style: .default, reuseIdentifier: nil)
-                cell.configure(archived, style: .gradient, monochrome: false)
-                try check(.archived(archived), cell: cell, title: cell.titleLabel)
-            }
-        }
-    }
-
     func testGroupedPlansUseCapturedLanguageOffMain() async {
         let environment = await HomeTextEnvironment.make(.init(scale: .standard, displayScale: 2))
         let catalog = await TranslationCatalog.load("ru")
-        let expected = catalog("sidebar.bots")
-        let plans = await Task.detached {
-            [HomeRowDrawing.makeTablet(.botsHeader, width: 320, selected: false, environment: environment, dark: false, catalog: catalog),
-             HomeRowDrawing.make(.flat(.archiveToggle(hidden: true)), width: 320, grouped: false, selected: false, environment: environment, dark: false, catalog: catalog)]
+        let expected = catalog("sidebar.showArchived")
+        let plan = await Task.detached {
+            HomeRowDrawing.make(.flat(.archiveToggle(hidden: true)), width: 320, grouped: false, selected: false, environment: environment, dark: false, catalog: catalog)
         }.value
-        XCTAssertEqual(plans[0].accessibilityLabel, expected)
-        XCTAssertEqual(plans[1].accessibilityLabel, catalog("sidebar.showArchived"))
-        XCTAssertNotEqual(expected, "Bots")
+        XCTAssertEqual(plan.accessibilityLabel, expected)
+        XCTAssertNotEqual(expected, "Show archived")
         let previous = AppLocalization.screens
         AppLocalization.use(catalog)
         defer { AppLocalization.use(previous) }
         let view = CaptureUltraView()
         let adapter = HomeUltraListAdapter(view: view, pictures: nil)
         AppLocalization.use(await TranslationCatalog.load("fr"))
-        let tablet = TabletGroupedList(ids: [.botsHeader], rows: [.botsHeader], avatarStyle: .gradient, avatarMonochrome: false, offline: nil)
-        adapter.update(.init(model: .empty, width: 320, environment: environment, dark: false, selected: nil, tablet: tablet))
+        let model = HomeListModel(ids: [.archiveToggle], rows: [.flat(.archiveToggle(hidden: true))], avatarStyle: .gradient, avatarMonochrome: false, grouped: false, offline: nil)
+        adapter.update(.init(model: model, width: 320, environment: environment, dark: false, selected: nil))
         let snapshot = await view.nextSnapshot()
         XCTAssertEqual(snapshot.first?.plan.accessibilityLabel, expected, "queued work belongs to its screen's captured language")
         adapter.deactivate()

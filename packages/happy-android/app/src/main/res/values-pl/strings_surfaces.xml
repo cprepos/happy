@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="surface_leave">Opuść</string>
+    <string name="surface_leave_title">Opuścić „%1$s”?</string>
+    <string name="surface_leave_message">Zniknie z Twojej listy na wszystkich Twoich urządzeniach. Pozostali uczestnicy go zachowają.</string>
+    <string name="surface_leave_failed">Nie udało się opuścić „%1$s”</string>
+    <string name="surface_leave_no_answer">Agent nie odpowiedział. Spróbuj ponownie za chwilę.</string>
+    <string name="conversation_jump_to_latest">Przejdź do najnowszych</string>
+    <string name="conversation_jump_working">pracuje</string>
+</resources>

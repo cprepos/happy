@@ -1,5 +1,7 @@
 package com.slopus.happy.ui.diff
 
+import androidx.compose.ui.res.stringResource
+import com.slopus.happy.R
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -28,7 +30,7 @@ import com.slopus.happy.diff.FileChangeKind
 import com.slopus.happy.ui.components.Icon
 import com.slopus.happy.ui.components.Ionicon
 import com.slopus.happy.ui.files.FileIcon
-import com.slopus.happy.ui.theme.PlexMono
+import com.slopus.happy.ui.theme.AppMono
 import com.slopus.happy.ui.theme.happyTextStyle
 
 /** What a file header shows: a built [DiffFile] has it, and so does a git-status entry (`DiffFileSummary`). */
@@ -42,10 +44,10 @@ data class DiffFileSummary(val path: String, val kind: FileChangeKind, val addit
 private val RnFontPadding = PlatformTextStyle(includeFontPadding = true)
 
 object DiffHeaderSpec {
-    val dir = happyTextStyle(fontSize = 12, family = PlexMono)
-    val name = TextStyle(fontFamily = PlexMono, fontWeight = FontWeight.SemiBold, fontSize = 12.5.sp, platformStyle = RnFontPadding)
-    val badge = TextStyle(fontFamily = PlexMono, fontWeight = FontWeight.SemiBold, fontSize = 10.5.sp, platformStyle = RnFontPadding)
-    val stat = happyTextStyle(fontSize = 12, family = PlexMono)
+    val dir = happyTextStyle(fontSize = 12, family = AppMono)
+    val name = TextStyle(fontFamily = AppMono, fontWeight = FontWeight.SemiBold, fontSize = 12.5.sp, platformStyle = RnFontPadding)
+    val badge = TextStyle(fontFamily = AppMono, fontWeight = FontWeight.SemiBold, fontSize = 10.5.sp, platformStyle = RnFontPadding)
+    val stat = happyTextStyle(fontSize = 12, family = AppMono)
 }
 
 /**
@@ -102,9 +104,9 @@ fun DiffFileHeader(
             if (title == null) Text(name, style = DiffHeaderSpec.name, color = palette.text, maxLines = 1)
         }
         when (file.kind) {
-            FileChangeKind.Added -> Badge("NEW", palette.markerAdd)
-            FileChangeKind.Deleted -> Badge("DELETED", palette.markerDel)
-            FileChangeKind.Renamed -> Badge("RENAMED", palette.textSecondary)
+            FileChangeKind.Added -> Badge(stringResource(R.string.diff_badge_new), palette.markerAdd)
+            FileChangeKind.Deleted -> Badge(stringResource(R.string.diff_badge_deleted), palette.markerDel)
+            FileChangeKind.Renamed -> Badge(stringResource(R.string.diff_badge_renamed), palette.textSecondary)
             else -> Unit
         }
         if (file.additions > 0) Text("+${file.additions}", style = DiffHeaderSpec.stat, color = palette.markerAdd)

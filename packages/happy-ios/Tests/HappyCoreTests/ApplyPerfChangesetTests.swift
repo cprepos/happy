@@ -101,7 +101,7 @@ final class ApplyPerfHomeTests: XCTestCase {
 
     /// Home's list alone, without the new-session pickers' snapshot (which
     /// keeps the metadata whole).
-    static func listOnly(_ snapshot: HomeSnapshot, after applied: HomeDerivation.Applied?) -> (output: HomeUpdate, state: HomeDerivation.Applied)? {
+    static func listOnly(_ snapshot: LegacyHomeSnapshot, after applied: HomeDerivation.Applied?) -> (output: HomeUpdate, state: HomeDerivation.Applied)? {
         HomeDerivation.derive(HomeDerivation.Input(snapshot: snapshot, clock: ApplyPerfFixtures.clock), applied: applied ?? .init())
     }
 
@@ -126,10 +126,12 @@ final class ApplyPerfHomeTests: XCTestCase {
         let (before, after) = ApplyPerfFixtures.overtaking()
         let applied = try XCTUnwrap(ApplyPerfFixtures.derive(before, after: nil)).state
         let update = try XCTUnwrap(ApplyPerfFixtures.derive(after, after: applied)).output
-        // The old apply also redrew the row for its raw activity time.
+        // The old apply also redrew the row for its raw activity time. Only
+        // the card's top corners follow: the row that overtook takes them
+        // from the one it passed.
         XCTAssertEqual(update.changeset.moves.count, 1)
-        XCTAssertEqual(update.changeset.reconfigures, [])
-        XCTAssertEqual(update.changeset.touchedRows, 1)
+        XCTAssertEqual(update.changeset.reconfigures, [0, 1])
+        XCTAssertEqual(update.changeset.touchedRows, 3)
     }
 
     func testOneBatchOf500IsOneApplyOfInserts() throws {
@@ -298,7 +300,7 @@ final class ApplyPerfPipelineTests: XCTestCase {
         homePipeline.follow(feed.snapshots()) { $0.snapshot = $1 }
 
         let chat = ApplyPerfRecorder<ChatSessionState>()
-        let chatPipeline = ApplyPipeline<HomeSnapshot?, ChatSessionState?, ChatSessionState>(
+        let chatPipeline = ApplyPipeline<LegacyHomeSnapshot?, ChatSessionState?, ChatSessionState>(
             input: nil,
             state: nil,
             derive: { snapshot, applied in
@@ -373,7 +375,7 @@ final class ApplyPerfMetricsTests: XCTestCase {
 }
 
 final class ApplyPerfHomeLayoutTests: XCTestCase {
-    private func grouped(_ snapshot: HomeSnapshot, _ grouping: String) -> HomeSnapshot {
+    private func grouped(_ snapshot: LegacyHomeSnapshot, _ grouping: String) -> LegacyHomeSnapshot {
         var snapshot = snapshot
         snapshot.settings = SettingsSnapshot(pending: ["sessionListGrouping": .string(grouping)])
         return snapshot
@@ -473,7 +475,7 @@ final class ApplyPerfChatSessionTests: XCTestCase {
         offline.sessions[1].active = false
         let stopped = ChatSessionState(offline, sessionId: "session-0001")
         XCTAssertNotEqual(stopped, before)
-        XCTAssertEqual(stopped.machine?.id, "computer", "a stopped session keeps its machine for resuming")
+        XCTAssertEqual(stopped.machine?.id, "agent", "a stopped session keeps its machine for resuming")
         offline.sessions[1].activeAt -= 3_600_000
         XCTAssertNotEqual(ChatSessionState(offline, sessionId: "session-0001"), stopped, "a stopped session shows when it was last seen")
     }
@@ -601,7 +603,7 @@ extension ApplyPerfDockTests {
             metadataVersion: 1, metadataCipher: "", metadata: .object(["host": .string("host")]), daemonStateVersion: 0,
             daemonStateCipher: nil, daemonState: nil, dataKeyCipher: nil, decryptable: true))
         let draft = NewSessionDraft(selectedMachineId: "m")
-        func project(_ snapshot: HomeSnapshot, revision: UInt64) async -> String? {
+        func project(_ snapshot: LegacyHomeSnapshot, revision: UInt64) async -> String? {
             let choices = await NewSessionChoiceDeriver().choices(snapshot: snapshot, revision: revision, generation: revision,
                                                                   draft: draft, createsBot: false, worktrees: [])
             return choices?.value.sessionPlaces.first { $0.path == "/work" }?.projectId
@@ -650,7 +652,7 @@ final class ApplyPerfMachineScreenTests: XCTestCase {
 }
 
 final class ApplyPerfPresenceClockTests: XCTestCase {
-    private func stopped(_ snapshot: HomeSnapshot, index: Int, lastSeen: Int64) -> HomeSnapshot {
+    private func stopped(_ snapshot: LegacyHomeSnapshot, index: Int, lastSeen: Int64) -> LegacyHomeSnapshot {
         var snapshot = snapshot
         snapshot.sessions[index].active = false
         snapshot.sessions[index].activeAt = lastSeen
@@ -675,8 +677,10 @@ final class ApplyPerfPresenceClockTests: XCTestCase {
     }
 
     /// The presence clock stands still while nothing is disconnected, here
-    /// 30 hours. Home and the sidebar write headings at the real time, so
-    /// last night's archived chat is "Yesterday", not "Today".
+    /// 30 hours. The list home and the sidebar draw from writes its day
+    /// headings at the real time, so last night's archived chat is
+    /// "Yesterday", not "Today"; the rows themselves stand in one card with
+    /// no headings.
     func testHomeHeadingsIgnoreAStalePresenceClock() throws {
         let now = Date()
         let calendar = Calendar.autoupdatingCurrent
@@ -690,36 +694,31 @@ final class ApplyPerfPresenceClockTests: XCTestCase {
         snapshot.settings = SettingsSnapshot(pending: ["hideInactiveSessions": .bool(false)])
         snapshot.presenceNow = millis(now) - 30 * 3_600_000
 
-        let home = try XCTUnwrap(HomeDerivation.derive(HomeDerivation.Input(snapshot: snapshot), applied: .init())).output
-        let headings = try XCTUnwrap(home.content.list).rows.compactMap { row -> SessionList.DayAge? in
-            if case .flat(.dayHeader(let age)) = row { return age }
+        // As `HomeDerivation` makes it, at the time of the derivation.
+        let list = SessionList(snapshot, clock: SessionList.Clock())
+        let headings = list.items.compactMap { item -> SessionList.DayAge? in
+            if case .dayHeader(let age) = item { return age }
             return nil
         }
         XCTAssertEqual(headings, [.today, .yesterday])
 
-        let sidebar = try XCTUnwrap(TabletSidebarDerivation.derive(snapshot, applied: .init())).output
-        guard case .list(let list) = sidebar.frame.content else { return XCTFail("the sidebar lists the live session") }
-        let sidebarHeadings = list.rows.compactMap { row -> SessionList.DayAge? in
-            if case .flat(.dayHeader(let age)) = row { return age }
-            return nil
-        }
-        XCTAssertEqual(sidebarHeadings, [.today, .yesterday])
+        let home = try XCTUnwrap(HomeDerivation.derive(HomeDerivation.Input(snapshot: snapshot), applied: .init())).output
+        let rows = try XCTUnwrap(home.content.list).rows
+        XCTAssertFalse(rows.contains { if case .flat(.dayHeader) = $0 { true } else { false } })
     }
 
-    /// With the time fixed, presence ticks alone reach neither home nor the
-    /// sidebar, a minute or a day apart.
+    /// With the time fixed, presence ticks alone don't reach home, a minute
+    /// or a day apart.
     func testPresenceTicksAloneChangeNothingOnHome() throws {
         var snapshot = stopped(ApplyPerfFixtures.snapshot(5), index: 1, lastSeen: ApplyPerfFixtures.now - 5 * 60_000)
         snapshot.presenceNow = ApplyPerfFixtures.now
-        let input = { (snapshot: HomeSnapshot) in
+        let input = { (snapshot: LegacyHomeSnapshot) in
             HomeDerivation.Input(snapshot: snapshot, includesDock: true, clock: ApplyPerfFixtures.clock)
         }
         let home = try XCTUnwrap(HomeDerivation.derive(input(snapshot), applied: .init())).state
-        let sidebar = try XCTUnwrap(TabletSidebarDerivation.derive(snapshot, applied: .init(), clock: ApplyPerfFixtures.clock)).state
         for tick: Int64 in [60_000, 25 * 3_600_000] {
             snapshot.presenceNow = ApplyPerfFixtures.now + tick
             XCTAssertNil(HomeDerivation.derive(input(snapshot), applied: home))
-            XCTAssertNil(TabletSidebarDerivation.derive(snapshot, applied: sidebar, clock: ApplyPerfFixtures.clock))
         }
     }
 }
@@ -729,7 +728,7 @@ final class ApplyPerfChatFactsTests: XCTestCase {
         var reducer = ChatReducer()
         _ = reducer.reduce([ChatRecords.user("u1", localId: "local-1"), ChatRecords.text("a1")])
         let messages = reducer.messages
-        let facts = ChatSnapshotFacts(ChatSnapshot(sessionId: "s", messages: messages, isLoaded: true))
+        let facts = ChatSnapshotFacts(LegacyChatSnapshot(sessionId: "s", messages: messages, isLoaded: true))
         XCTAssertTrue(facts.isLoaded)
         XCTAssertFalse(facts.isEmpty)
         XCTAssertFalse(facts.hasPendingQuestion)

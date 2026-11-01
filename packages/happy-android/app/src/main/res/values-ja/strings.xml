@@ -55,6 +55,7 @@
     <string name="profile_username">ユーザー名</string>
     <string name="profile_status">ステータス</string>
 
+    <string name="status_syncing">同期中</string>
     <string name="status_connected">接続済み</string>
     <string name="status_connecting">接続中</string>
     <string name="status_disconnected">切断済み</string>
@@ -909,6 +910,7 @@
     <string name="message_sending">Sending…</string>
     <string name="message_send_failed">未送信: %1$s</string>
     <string name="message_unknown_time">不明な時間</string>
+    <string name="message_media_position">%2$d件中%1$d件目</string>
 
     <string name="codex_permissions_yes_for_session">はい、このセッションでは確認しない</string>
     <string name="codex_permissions_stop_and_explain">停止して、何をすべきか説明</string>
@@ -1018,4 +1020,12 @@
     <string name="feed_friend_request_generic">新しい友達リクエスト</string>
     <string name="feed_friend_accepted">%1$sさんと友達になりました</string>
     <string name="feed_friend_accepted_generic">友達リクエストが承認されました</string>
+
+    <string name="new_work_task">タスク</string>
+    <string name="new_work_bot">ボット</string>
+    <string name="new_work_name">名前（任意）</string>
+    <string name="new_work_task_note">名前を付けなければ、タスクは最初のメッセージから名前が付きます。</string>
+    <string name="new_work_bot_note">ボットは専用のフォルダーを持つ、ずっと続くひとつの会話です。</string>
+    <string name="new_work_task_failed">タスクを開始できませんでした。%1$sテキストと添付ファイルはそのまま残っています。</string>
+    <string name="new_work_bot_failed">ボットを開始できませんでした。%1$sテキストと添付ファイルはそのまま残っています。</string>
 </resources>

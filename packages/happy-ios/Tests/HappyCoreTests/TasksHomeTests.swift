@@ -8,7 +8,7 @@ import HappyWire
 /// (`metadata.task`), listed under each computer's bots, opened as chats,
 /// left by anyone in them, archived only by their owner, never deleted.
 final class TasksHomeTests: XCTestCase {
-    typealias Fixture = TabletGroupedListTests
+    typealias Fixture = LegacyHomeFixtures
 
     static func task(
         _ id: String,
@@ -45,8 +45,8 @@ final class TasksHomeTests: XCTestCase {
         "id": .string("bot1"), "name": .string("Helper"), "username": .string("helper"), "orderKey": .string("a"),
     ])]
 
-    static func snapshot(_ sessions: [SessionRecord], grouping: String = "project") -> HomeSnapshot {
-        HomeSnapshot(
+    static func snapshot(_ sessions: [SessionRecord], grouping: String = "project") -> LegacyHomeSnapshot {
+        LegacyHomeSnapshot(
             machines: MachinesSnapshot(synced: true, machines: [Fixture.machine("m1", active: true, name: "Studio")]),
             sessions: sessions,
             settings: SettingsSnapshot(pending: [
@@ -131,19 +131,18 @@ final class TasksHomeTests: XCTestCase {
             Fixture.session("s1", machine: "m1", path: "/work/happy", title: "Primary"),
         ])
         XCTAssertEqual(Self.shape(home.rows(expanded: [])), [
-            "machine:Studio",
             "section:bots", "bot:b1",
             "section:tasks", "task:t1",
             "section:projects", "project:happy",
         ])
-        guard case .task(let row) = home.rows(expanded: [])[4] else { return XCTFail("no task row") }
+        guard case .task(let row) = home.rows(expanded: [])[3] else { return XCTFail("no task row") }
         XCTAssertEqual(row.title, "Fix login redirect")
         XCTAssertEqual(HomeListRow.project(.task(row)).sessionId, "t1", "a tap opens the task's chat")
     }
 
     func testAComputerWithOnlyTasksStillGetsItsSection() {
         let home = Self.home([Self.task("t1", taskId: "task1")])
-        XCTAssertEqual(Self.shape(home.rows(expanded: [])), ["machine:Studio", "section:tasks", "task:t1"])
+        XCTAssertEqual(Self.shape(home.rows(expanded: [])), ["section:tasks", "task:t1"])
     }
 
     /// Keys are decimal fractions compared as strings, as Happy Desktop
@@ -157,14 +156,9 @@ final class TasksHomeTests: XCTestCase {
             Self.task("fraction", taskId: "e", orderKey: "4.5"),
         ])
         XCTAssertEqual(Self.shape(home.rows(expanded: [])), [
-            "machine:Studio", "section:tasks",
+            "section:tasks",
             "task:fraction", "task:forty-five", "task:five", "task:tie-a", "task:tie-b",
         ])
-        let sidebar = Fixture.list(Self.snapshot([
-            Self.task("five", taskId: "a", orderKey: "5"),
-            Self.task("forty-five", taskId: "b", orderKey: "45"),
-        ]))
-        XCTAssertEqual(Array(sidebar.ids.prefix(3)), [.tasksHeader, .task("forty-five"), .task("five")])
     }
 
     func testTasksFollowThePersonsOwnOrderThenTheNewest() {
@@ -175,7 +169,7 @@ final class TasksHomeTests: XCTestCase {
             Self.task("first", taskId: "d", orderKey: "3"),
         ])
         XCTAssertEqual(Self.shape(home.rows(expanded: [])), [
-            "machine:Studio", "section:tasks",
+            "section:tasks",
             // Joined tasks in their member order, then the rest newest first.
             "task:first", "task:second", "task:new", "task:old",
         ])
@@ -194,15 +188,12 @@ final class TasksHomeTests: XCTestCase {
             leaving,
         ]
         let home = Self.home(sessions)
-        XCTAssertEqual(Self.shape(home.rows(expanded: [])), ["machine:Studio", "section:tasks", "task:live"])
+        XCTAssertEqual(Self.shape(home.rows(expanded: [])), ["section:tasks", "task:live"])
         XCTAssertFalse(home.hasArchived)
 
         let flat = SessionList(Self.snapshot(sessions, grouping: "flat"), clock: ApplyPerfFixtures.clock)
         XCTAssertEqual(flat.items.compactMap(\.sessionId), ["live"])
         XCTAssertFalse(flat.hasArchived)
-
-        let sidebar = Fixture.list(Self.snapshot(sessions))
-        XCTAssertEqual(sidebar.ids, [.tasksHeader, .task("live")])
     }
 
 
@@ -246,25 +237,11 @@ final class TasksHomeTests: XCTestCase {
         let applied = try XCTUnwrap(ApplyPerfHomeTests.listOnly(snapshot, after: nil)).state
         snapshot.sessions.append(Self.task("t0", taskId: "z", orderKey: "1"))
         let update = try XCTUnwrap(ApplyPerfHomeTests.listOnly(snapshot, after: applied))
-        XCTAssertEqual(update.output.changeset.inserts, [2], "joined at the top of the tasks")
+        // Home's list starts with the tasks' card: no computer heads it
+        // and its section's gap only follows a card.
+        XCTAssertEqual(update.output.changeset.inserts, [0], "joined at the top of the tasks")
         XCTAssertEqual(update.output.changeset.deletes, [])
-        XCTAssertEqual(update.output.changeset.reconfigures, [])
-    }
-
-    // MARK: Tablet sidebar
-
-    func testTheSidebarListsTasksUnderTheBots() {
-        let list = Fixture.list(Self.snapshot([
-            Fixture.session("b1", machine: "m1", path: "/work/helper", metadata: Self.bot),
-            Self.task("t1", taskId: "a", orderKey: "1"),
-            Self.task("t2", taskId: "b", orderKey: "2"),
-            Fixture.session("s1", machine: "m1", path: "/work/happy", title: "Primary"),
-        ]))
-        XCTAssertEqual(Array(list.ids.prefix(6)), [.botsHeader, .bot("b1"), .tasksHeader, .task("t1"), .task("t2"), .machine("m1")])
-        guard case .task(let first) = list.rows[3], case .task(let last) = list.rows[4] else { return XCTFail("\(list.rows)") }
-        XCTAssertTrue(first.showsDivider)
-        XCTAssertFalse(last.showsDivider, "the last task keeps no hairline, as the last bot")
-        XCTAssertEqual(list.rows[3].sessionId, "t1")
+        XCTAssertEqual(update.output.changeset.reconfigures, [1], "the task it passed gives up the card's top corners")
     }
 
     // MARK: Leave, archive, never delete

@@ -14,6 +14,7 @@ import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -40,6 +41,7 @@ import com.slopus.happy.ui.assertActionsLabelled
 import com.slopus.happy.ui.assertBox
 import com.slopus.happy.ui.assertDp
 import com.slopus.happy.ui.bounds
+import com.slopus.happy.ui.components.GlassBarTags
 import com.slopus.happy.ui.components.HeaderTags
 import com.slopus.happy.ui.hasRole
 import com.slopus.happy.ui.node
@@ -279,9 +281,12 @@ class ChatLayoutTest {
         rule.onNodeWithText("Fix the login").assertExists()
         rule.onNodeWithText("online").assertExists()
         val bar = rule.node(HeaderTags.BAR).bounds
-        val avatar = rule.node(ChatScreenTags.AVATAR).bounds
-        assertDp("avatar 28", 28, avatar.right - avatar.left)
-        assertDp("avatar centred in the bar", (bar.top + bar.bottom) / 2, (avatar.top + avatar.bottom) / 2)
+        val compose = rule.node(ChatScreenTags.COMPOSE).bounds
+        val more = rule.node(ChatScreenTags.MORE).bounds
+        assertDp("compose touch target", 48, compose.right - compose.left)
+        assertDp("overflow touch target", 48, more.right - more.left)
+        assertDp("compose centred in the bar", (bar.top + bar.bottom) / 2, (compose.top + compose.bottom) / 2)
+        assertDp("overflow after compose", compose.right, more.left)
         // Inverted: the newest row sits lowest, 8 above the composer.
         val agent = rule.node(MessageTags.AGENT).bounds
         val user = rule.node(MessageTags.USER).bounds
@@ -291,9 +296,29 @@ class ChatLayoutTest {
         assertDp("8 under the footer", 8, composer.top - footer.bottom)
     }
 
+    // The header is glass: the transcript runs the full height under it, as the agent chat's does.
+    @Test
+    fun transcriptRunsUnderTheGlassBar() {
+        val rows = (0 until 20).map { ChatReduction.buildRow(ChatMessage.AgentText("a$it", it.toLong(), "Reply $it"), true)!! }.asReversed()
+        rule.setHappyContent {
+            ChatScreen(
+                state = ChatState(ChatSnapshot(rows, loaded = true), session(), sessionLoaded = true, online = true),
+                draft = "",
+                bubbleColor = "gray",
+                actions = ChatScreenActions(),
+            )
+        }
+        val glass = rule.node(GlassBarTags.BAR).bounds
+        val list = rule.node(ChatListTags.LIST).bounds
+        assertDp("the bar is the 64 header", 64, glass.bottom - glass.top)
+        assertDp("the list starts at the top of the screen", 0, list.top)
+        val agents = rule.onAllNodesWithTag(MessageTags.AGENT, useUnmergedTree = true)
+        val under = (0 until agents.fetchSemanticsNodes().size).any { agents[it].getUnclippedBoundsInRoot().top < glass.bottom }
+        assertTrue("a row lies under the bar", under)
+    }
+
     /**
-     * TalkBack over a chat: the header's back and avatar are named buttons
-     * (the avatar, unnamed in happy-app, after the Details it opens); the
+     * TalkBack over a chat: the header's back, New chat and More are named buttons; the
      * agent's copy action is "Copy", the primary button "Send" (AgentInput's
      * labels); the input reads its draft. Nothing actionable goes unnamed.
      */
@@ -312,7 +337,8 @@ class ChatLayoutTest {
             )
         }
         rule.onNode(hasContentDescription("Back") and hasRole(Role.Button)).assertExists()
-        rule.node(ChatScreenTags.AVATAR).assert(hasContentDescription("Details") and hasRole(Role.Button))
+        rule.node(ChatScreenTags.COMPOSE).assert(hasContentDescription("New chat") and hasRole(Role.Button))
+        rule.node(ChatScreenTags.MORE).assert(hasContentDescription("More") and hasRole(Role.Button))
         rule.onNode(hasContentDescription("Send") and hasRole(Role.Button)).assertExists()
         rule.onNode(hasSetTextAction()).assert(hasText("Draft"))
         rule.assertActionsLabelled()

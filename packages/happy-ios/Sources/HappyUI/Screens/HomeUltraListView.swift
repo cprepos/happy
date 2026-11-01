@@ -31,9 +31,9 @@ final class HomeUltraRow: ListRow {
     var trailingSwipeActions: [ListSwipeAction] {
         guard let archive else { return [] }
         if leaves {
-            return [ListSwipeAction(title: Strings.Tasks.leave, image: .icon(.ionicons("exit-outline"), size: 20), isDestructive: true) { archive() }]
+            return [ListSwipeAction(title: Strings.Tasks.leave, image: .icon(.ionicons("exit-outline"), size: 20), color: UIColor(Palette.statusError), isDestructive: true) { archive() }]
         }
-        return [ListSwipeAction(title: Strings.SessionInfo.archiveSession, image: .icon(.ionicons("archive-outline"), size: 20), isDestructive: true) { archive() }]
+        return [ListSwipeAction(title: Strings.SessionInfo.archiveSession, image: .icon(.ionicons("archive-outline"), size: 20), color: UIColor(Palette.statusError), isDestructive: true) { archive() }]
     }
 
     init(identity: String, revision: UInt64, plan: HomeRowDrawing, selected: Bool = false,
@@ -104,6 +104,9 @@ private final class HomeUltraRowView: ListRowView, UIGestureRecognizerDelegate {
         content.layer.opacity = opacity * 0.88
     }
 
+    /// Home's grounds, which the sidebar leaves out.
+    private static let grounds = [Palette.groupedGround, Palette.groupedBackground]
+
     init(row: HomeUltraRow) {
         self.row = row
         drawingView = row.usesArchiveBitmap ? HomeArchiveBitmapView(plan: row.plan, bitmap: row.archiveBitmap) : row.node.makeView()
@@ -121,6 +124,7 @@ private final class HomeUltraRowView: ListRowView, UIGestureRecognizerDelegate {
         tap.delegate = self; long.delegate = self
         addGestureRecognizer(tap); addGestureRecognizer(long)
         applyRow()
+        registerForTraitChanges([SidebarColumnTrait.self]) { (self: Self, _) in self.applyRow() }
     }
 
     @available(*, unavailable)
@@ -146,7 +150,24 @@ private final class HomeUltraRowView: ListRowView, UIGestureRecognizerDelegate {
     }
 
     private func applyRow() {
-        background.backgroundColor = row.plan.background.map(row.plan.resolved)
+        // The page, then the row's part of its card over it. As the iPad's
+        // sidebar there is no page: the system's sidebar shows through.
+        let page = row.plan.background.flatMap { traitCollection.isSidebarColumn && Self.grounds.contains($0) ? nil : $0 }
+        if let card = row.plan.card {
+            backgroundColor = page.map(row.plan.resolved)
+            background.backgroundColor = row.plan.resolved(card.color)
+        } else {
+            backgroundColor = nil
+            background.backgroundColor = page.map(row.plan.resolved)
+        }
+        for view in [background, pressFill] {
+            var corners: CACornerMask = []
+            if row.plan.card?.roundsTop == true { corners.formUnion([.layerMinXMinYCorner, .layerMaxXMinYCorner]) }
+            if row.plan.card?.roundsBottom == true { corners.formUnion([.layerMinXMaxYCorner, .layerMaxXMaxYCorner]) }
+            view.layer.cornerCurve = .continuous
+            view.layer.cornerRadius = corners.isEmpty ? 0 : HomeCardLayout.Metrics.radius
+            view.layer.maskedCorners = corners
+        }
         tap.isEnabled = !row.selectsOnRelease
         if !row.selectsOnRelease || archiveTouch?.identity != row.identity { archiveTouch = nil }
         long.isEnabled = row.longPress != nil
@@ -161,7 +182,7 @@ private final class HomeUltraRowView: ListRowView, UIGestureRecognizerDelegate {
         if row.selected { accessibilityTraits.insert(.selected) }
         var actions: [UIAccessibilityCustomAction] = []
         if row.longPress != nil {
-            actions.append(UIAccessibilityCustomAction(name: Strings.HomeRenderer.actions, actionHandler: { [weak self] _ in
+            actions.append(UIAccessibilityCustomAction(name: Strings.Home.rowActions, actionHandler: { [weak self] _ in
                 self?.row.longPress?(); return self?.row.longPress != nil
             }))
         }
@@ -230,7 +251,10 @@ private final class HomeUltraRowView: ListRowView, UIGestureRecognizerDelegate {
     }
     override func layoutSubviews() {
         super.layoutSubviews()
-        for view in [background, pressFill, content, drawingView, overlayView] { view.frame = bounds }
+        for view in [content, drawingView, overlayView] { view.frame = bounds }
+        // A card's row fills only its part of the card.
+        let card = row.plan.card.map { CGRect(x: $0.frame.minX, y: 0, width: $0.frame.width, height: bounds.height) } ?? bounds
+        for view in [background, pressFill] { view.frame = card }
     }
     override func applyPreparation(_ preparation: ListPreparation, width: Double, environment: RenderEnvironment) {
         drawingView.applyPreparation(preparation, width: width, environment: environment)

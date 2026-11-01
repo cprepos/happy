@@ -54,6 +54,9 @@ struct ChatServices {
     var resume: @MainActor (_ session: SessionRecord, _ machine: MachineRecord?) async throws -> String? = { _, _ in nil }
     /// useAttachmentImage's download and decryption: a picture's bytes.
     var attachment: @Sendable (_ ref: String) async throws -> Data = { _ in throw URLError(.fileDoesNotExist) }
+    /// Where an attachment's sealed bytes come from, for the account's
+    /// `MediaLibrary`; nil reads whole pictures through `attachment`.
+    var attachmentSource: ChatAttachmentImages.Source? = nil
 
     struct Seed: Sendable {
         var session: ChatSessionState
@@ -119,6 +122,9 @@ struct ChatServices {
             },
             attachment: { [sync = account.sync] ref in
                 try await sync.downloadAttachment(sessionId: sessionId, ref: ref)
+            },
+            attachmentSource: { [sync = account.sync] ref, size in
+                try await sync.attachmentSource(sessionId: sessionId, ref: ref, size: size)
             }
         )
     }
@@ -141,14 +147,14 @@ struct ChatServices {
     }
 
     /// What the observations below would first hand over for `snapshot`.
-    nonisolated static func seed(_ snapshot: HomeSnapshot, sessionId: String, record: SessionRecord? = nil) -> Seed {
+    nonisolated static func seed(_ snapshot: LegacyHomeSnapshot, sessionId: String, record: SessionRecord? = nil) -> Seed {
         Seed(
             session: ChatSessionState(snapshot, sessionId: sessionId, record: record),
             checkout: checkout(sessionId, in: snapshot)
         )
     }
 
-    nonisolated private static func checkout(_ id: String, in snapshot: HomeSnapshot) -> WorktreeCheckout? {
+    nonisolated private static func checkout(_ id: String, in snapshot: LegacyHomeSnapshot) -> WorktreeCheckout? {
         AccountSettings(snapshot.settings).sessionListGrouping == .project
             ? WorktreeCheckout.locate(id, in: snapshot)
             : nil
@@ -164,7 +170,7 @@ struct ChatServices {
     ) -> (_ id: String, _ applied: WorktreeCheckout??, _ onChange: @escaping @MainActor (WorktreeCheckout?) -> Void) -> ApplyObservation {
         { id, applied, onChange in
             // The state is what was applied: nil before the first apply.
-            let pipeline = ApplyPipeline<HomeSnapshot?, WorktreeCheckout??, WorktreeCheckout?>(
+            let pipeline = ApplyPipeline<LegacyHomeSnapshot?, WorktreeCheckout??, WorktreeCheckout?>(
                 input: nil,
                 state: applied,
                 derive: { snapshot, applied in
@@ -195,7 +201,7 @@ struct ChatServices {
         isCurrent: @escaping @MainActor () -> Bool
     ) -> (_ applied: ChatSessionState?, _ onChange: @escaping @MainActor (ChatSessionState) -> Void) -> ApplyObservation {
         { applied, onChange in
-            let pipeline = ApplyPipeline<HomeSnapshot?, ChatSessionState?, ChatSessionState>(
+            let pipeline = ApplyPipeline<LegacyHomeSnapshot?, ChatSessionState?, ChatSessionState>(
                 input: nil,
                 state: applied,
                 derive: { snapshot, applied in

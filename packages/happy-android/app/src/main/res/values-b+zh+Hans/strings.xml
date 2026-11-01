@@ -55,6 +55,7 @@
     <string name="profile_username">用户名</string>
     <string name="profile_status">状态</string>
 
+    <string name="status_syncing">同步中</string>
     <string name="status_connected">已连接</string>
     <string name="status_connecting">连接中</string>
     <string name="status_disconnected">已断开</string>
@@ -909,6 +910,7 @@
     <string name="message_sending">Sending…</string>
     <string name="message_send_failed">未发送：%1$s</string>
     <string name="message_unknown_time">未知时间</string>
+    <string name="message_media_position">第 %1$d 项，共 %2$d 项</string>
 
     <string name="codex_permissions_yes_for_session">是，并且本次会话不再询问</string>
     <string name="codex_permissions_stop_and_explain">停止，并说明该做什么</string>
@@ -1018,4 +1020,12 @@
     <string name="feed_friend_request_generic">新的好友请求</string>
     <string name="feed_friend_accepted">您现在与 %1$s 成为了好友</string>
     <string name="feed_friend_accepted_generic">好友请求已接受</string>
+
+    <string name="new_work_task">任务</string>
+    <string name="new_work_bot">机器人</string>
+    <string name="new_work_name">名称（可选）</string>
+    <string name="new_work_task_note">如果不命名，任务会根据第一条消息自行命名。</string>
+    <string name="new_work_bot_note">机器人是一段长期持续的对话，拥有自己的文件夹。</string>
+    <string name="new_work_task_failed">无法启动任务。%1$s你的文字和附件仍保留在这里。</string>
+    <string name="new_work_bot_failed">无法启动机器人。%1$s你的文字和附件仍保留在这里。</string>
 </resources>

@@ -1,5 +1,7 @@
 package com.slopus.happy.model
 
+import com.slopus.happy.R
+import com.slopus.happy.text.Words
 import androidx.compose.runtime.Immutable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -266,12 +268,12 @@ fun sanitizeBotName(input: String): String = input.replace(CONTROL_CHARACTERS, "
 fun isValidBotName(name: String): Boolean = describeBotNameProblem(name) == null
 
 /** describeBotNameProblem: why the daemon would refuse [name], in the person's words; null when it's fine. */
-fun describeBotNameProblem(name: String): String? {
+fun describeBotNameProblem(name: String): Words? {
     val trimmed = name.trim()
     return when {
-        trimmed.isEmpty() -> "Give the bot a name"
-        trimmed.length > BOT_NAME_MAX_LENGTH -> "A bot's name is at most $BOT_NAME_MAX_LENGTH characters"
-        CONTROL_CHARACTERS.containsMatchIn(trimmed) -> "A bot's name cannot contain line breaks or control characters"
+        trimmed.isEmpty() -> Words.ours(R.string.home_bot_name_empty)
+        trimmed.length > BOT_NAME_MAX_LENGTH -> Words.ours(R.string.home_bot_name_too_long, BOT_NAME_MAX_LENGTH)
+        CONTROL_CHARACTERS.containsMatchIn(trimmed) -> Words.ours(R.string.home_bot_name_control)
         else -> null
     }
 }

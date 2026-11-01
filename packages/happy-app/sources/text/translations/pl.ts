@@ -92,6 +92,7 @@ export const pl: TranslationStructure = {
 
 
     status: {
+        syncing: 'synchronizacja',
         connected: 'połączono',
         connecting: 'łączenie',
         disconnected: 'rozłączono',
@@ -972,6 +973,7 @@ export const pl: TranslationStructure = {
         sending: 'Sending…',
         sendFailed: ({ reason }: { reason: string }) => `Nie wysłano: ${reason}`,
         unknownTime: 'nieznany czas',
+        mediaPosition: ({ index, total }: { index: number; total: number }) => `${index} z ${total}`,
     },
 
     codex: {
@@ -1143,6 +1145,17 @@ export const pl: TranslationStructure = {
         friendRequestGeneric: 'Nowe zaproszenie do znajomych',
         friendAccepted: ({ name }: { name: string }) => `Jesteś teraz znajomym z ${name}`,
         friendAcceptedGeneric: 'Zaproszenie do znajomych zaakceptowane',
+    },
+
+    // What new work will be, in the middle of its empty chat (the native apps' compose).
+    newWork: {
+        task: 'Zadanie',
+        bot: 'Bot',
+        name: 'Nazwa (opcjonalnie)',
+        taskNote: 'Zadanie nazwie się samo od pierwszej wiadomości, chyba że nadasz mu nazwę.',
+        botNote: 'Bot to jedna trwała rozmowa z własnym folderem.',
+        taskFailed: ({ reason }: { reason: string }) => `Nie udało się rozpocząć zadania. ${reason} Twój tekst i załączniki wciąż tu są.`,
+        botFailed: ({ reason }: { reason: string }) => `Nie udało się uruchomić bota. ${reason} Twój tekst i załączniki wciąż tu są.`,
     },
 
 } as const;

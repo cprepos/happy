@@ -1,5 +1,7 @@
 package com.slopus.happy.ui.home
 
+import com.slopus.happy.text.Words
+import com.slopus.happy.R
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -243,7 +245,7 @@ class SessionStarterTest {
             if (refuse) throw SendException("The session has not synced yet.")
             true
         }
-        assertEquals(StartResult.Failed("The session has not synced yet."), h.starter.start(confirmDirectory = yes))
+        assertEquals(StartResult.Failed(Words.Said("The session has not synced yet.")), h.starter.start(confirmDirectory = yes))
         assertEquals("hi", h.drafts.draft.value.input)
         refuse = false
         assertEquals(StartResult.Started("s1"), h.starter.start(confirmDirectory = yes))
@@ -327,8 +329,10 @@ class SessionStarterTest {
         assertEquals(listOf(StartPhase.Worktree, StartPhase.Spawning, StartPhase.Opening), h.phases)
 
         val failed = harness(draft = h.drafts.draft.value)
-        failed.machines.worktree = WorktreeOutcome.Failed("not a git repository")
-        assertEquals(StartResult.Failed("not a git repository"), failed.starter.start(confirmDirectory = yes))
+        failed.machines.worktree = WorktreeOutcome.Failed(Words.Said("fatal: not a git repository"))
+        assertEquals(StartResult.Failed(Words.Said("fatal: not a git repository")), failed.starter.start(confirmDirectory = yes))
+        failed.machines.worktree = WorktreeOutcome.Failed(Words.ours(R.string.home_worktree_not_git))
+        assertEquals(StartResult.Failed(Words.ours(R.string.home_worktree_not_git)), failed.starter.start(confirmDirectory = yes))
         assertTrue(failed.machines.spawns.isEmpty())
     }
 
@@ -434,7 +438,7 @@ class SessionStarterTest {
         val old = harness(listOf(rig), NewSessionDraft(selectedMachineId = "r1"))
         assertEquals(StartResult.Refused(StartRefusal.BotsUnsupported), old.starter.start(bot = BotRequest("Ada", "s"), confirmDirectory = yes))
         val blank = harness(listOf(botRig), NewSessionDraft(selectedMachineId = "b1"))
-        assertEquals(StartResult.Failed("Give the bot a name"), blank.starter.start(bot = BotRequest("  ", "s"), confirmDirectory = yes))
+        assertEquals(StartResult.Failed(Words.ours(R.string.home_bot_name_empty)), blank.starter.start(bot = BotRequest("  ", "s"), confirmDirectory = yes))
         assertTrue(old.machines.spawns.isEmpty() && blank.machines.spawns.isEmpty())
     }
 }

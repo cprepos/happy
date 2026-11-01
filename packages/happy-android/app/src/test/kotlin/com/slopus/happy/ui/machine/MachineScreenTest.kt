@@ -98,7 +98,7 @@ class MachineScreenTest {
         show(studio)
         val header = rule.node(HeaderTags.BAR).bounds
         assertDp("header", 64, header.bottom - header.top)
-        assertBox("pencil", rule.node(MachineTags.RENAME).bounds, (PHONE_WIDTH - 16 - 48).dp, header.top + 8.dp, 48.dp, 48.dp)
+        assertBox("pencil", rule.node(MachineTags.RENAME).bounds, (PHONE_WIDTH - 4 - 48).dp, header.top + 8.dp, 48.dp, 48.dp)
         rule.onNodeWithText("Studio").assertExists()
         val status = rule.node(MachineTags.STATUS).bounds
         val stop = rule.node(MachineTags.STOP_DAEMON).bounds

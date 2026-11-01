@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  values/strings_pairing.xml in zh-Hant: Android-only strings, not in happy-app's
+  catalogs. AndroidStringsTranslatedTest fails while one is missing here.
+-->
+<resources>
+    <string name="pairing_title">連線代理程式</string>
+    <string name="pairing_connecting">正在連線到 %1$s…</string>
+    <string name="pairing_unverified">名稱來自代碼，連線完成前尚未驗證。</string>
+    <string name="pairing_compare">確認 %1$s 顯示相同的四個表情符號，且順序相同。</string>
+    <string name="pairing_match">一致</string>
+    <string name="pairing_mismatch">不一致</string>
+    <string name="pairing_confirming">也請在 %1$s 上確認。</string>
+    <string name="pairing_paired">已連線到 %1$s</string>
+    <string name="pairing_paired_detail">在你於此處或 Happy Agent 中移除之前，它會保持連線。</string>
+    <string name="pairing_failed">無法連線</string>
+    <string name="pairing_done">完成</string>
+    <string name="pairing_error_invalid_code">此代碼無效。請在 Happy Agent 中產生新代碼。</string>
+    <string name="pairing_error_update_required">請更新 Happy 以使用此代碼。</string>
+    <string name="pairing_error_expired">此代碼已過期。請在 Happy Agent 中產生新代碼。</string>
+    <string name="pairing_error_rejected">連線遭拒。請產生新代碼並再次比對表情符號。</string>
+    <string name="pairing_error_invalid_proof">無法驗證代理程式。請產生新代碼。</string>
+    <string name="pairing_error_invalid_response">代理程式傳回了無效的回應。</string>
+    <string name="pairing_error_unavailable">無法連線到代理程式。請檢查它的連線後再試一次。</string>
+    <string name="pairing_error_revoked">此裝置已不再獲得授權。請重新連線代理程式。</string>
+</resources>

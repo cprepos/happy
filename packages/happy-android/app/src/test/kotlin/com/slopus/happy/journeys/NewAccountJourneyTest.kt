@@ -3,7 +3,7 @@ package com.slopus.happy.journeys
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.v2.createComposeRule
-import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -13,9 +13,13 @@ import com.slopus.happy.ui.HappyApp
 import com.slopus.happy.ui.PHONE
 import com.slopus.happy.ui.assertActionsLabelled
 import com.slopus.happy.ui.attachments.AttachmentStripTags
+import com.slopus.happy.attachments.AttachTabKind
+import com.slopus.happy.ui.attach.AttachTags
 import com.slopus.happy.ui.chat.ChatScreenTags
+import com.slopus.happy.ui.chat.ComposeChatTags
+import com.slopus.happy.ui.chat.ComposerTags
 import com.slopus.happy.ui.chat.MessageTags
-import com.slopus.happy.ui.home.HomeDockTags
+import com.slopus.happy.ui.components.HeaderTags
 import com.slopus.happy.ui.home.HomeTags
 import com.slopus.happy.ui.node
 import kotlinx.serialization.json.JsonObject
@@ -23,6 +27,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -34,10 +39,11 @@ import org.robolectric.annotation.GraphicsMode
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
- * Journey 1, a new account: Create account lands on Link Your Computer;
- * the computer the user links appears and home offers the dock; the dock
- * starts a Claude session on it with a prompt and a pasted image, and the
- * chat opens with that first message delivered to the server, image and all.
+ * Journey 1, a new account: a new account lands on Link Your Computer;
+ * the computer the user links appears and home offers compose; compose opens
+ * an empty chat whose first send starts a Claude session on it with a prompt
+ * and a pasted image, and that screen becomes the session's chat with the
+ * message delivered to the server, image and all.
  */
 @OptIn(ExperimentalTestApi::class)
 @RunWith(AndroidJUnit4::class)
@@ -58,8 +64,9 @@ class NewAccountJourneyTest {
         graph = journey.graph()
         rule.setContent { HappyApp(graph) }
 
-        // Welcome → Create account → Link Your Computer.
-        rule.onNodeWithText("Create account").performClick()
+        // A new account: home, with its link state (no computer yet) under the usual header.
+        // The first screen makes no empty account; make one directly, as a terminal code would.
+        runBlocking { graph.auth.createAccount() }
         rule.waitFor(HomeTags.LINK)
         rule.waitForText("Link Your Computer")
         rule.assertActionsLabelled()
@@ -80,24 +87,28 @@ class NewAccountJourneyTest {
         }
         journey.machine(updatedAt = 10)
         server.dropSockets()
-        rule.waitFor(HomeDockTags.CAPSULE, 15_000)
-        rule.node(HomeTags.LINK).assertDoesNotExist()
+        // The link state giving way is what says the computer arrived; compose floats over home.
+        rule.waitUntilDoesNotExist(hasTestTag(HomeTags.LINK), 15_000)
+        rule.waitFor(HomeTags.COMPOSE)
 
-        // The dock: a prompt and an image from the clipboard.
-        rule.node(HomeDockTags.CAPSULE).performClick()
-        rule.waitFor(HomeDockTags.INPUT)
+        // Compose: an empty chat aimed at that computer, with a prompt and an image from the clipboard.
+        rule.node(HomeTags.COMPOSE).performClick()
+        rule.waitFor(ComposeChatTags.TARGET)
+        rule.waitFor(ComposerTags.INPUT)
+        // The attachment sheet: its File tab pastes, the caption is the draft, its Send sends both.
         copyImageToClipboard()
-        rule.node(HomeDockTags.ADD_IMAGE).performClick()
-        rule.onNodeWithText("Paste from Clipboard").performClick()
-        rule.waitFor(AttachmentStripTags.THUMB)
-        rule.node(HomeDockTags.INPUT).performTextInput("Explain this screenshot")
-        rule.assertActionsLabelled()
-        rule.node(HomeDockTags.PRIMARY).performClick()
+        rule.node(AttachmentStripTags.ADD).performClick()
+        rule.node(AttachTags.tab(AttachTabKind.Files)).performClick()
+        rule.node(AttachTags.PASTE).performClick()
+        rule.waitFor(AttachTags.SEND)
+        rule.node(AttachTags.CAPTION).performTextInput("Explain this screenshot")
+        rule.node(AttachTags.SEND).performClick()
 
-        // The chat opens on the new session with the message delivered.
-        rule.waitFor(ChatScreenTags.SCREEN, 15_000)
-        rule.waitFor(MessageTags.USER)
+        // The same screen becomes the new session's chat, with the message delivered.
+        rule.waitFor(MessageTags.USER, 15_000)
         rule.waitForText("Explain this screenshot")
+        rule.waitUntilDoesNotExist(hasTestTag(ComposeChatTags.TARGET), 5_000)
+        rule.onAllNodes(hasTestTag(ChatScreenTags.SCREEN), useUnmergedTree = true).assertCountEquals(1)
         rule.assertActionsLabelled()
 
         val spawn = spawns.single()
@@ -111,6 +122,11 @@ class NewAccountJourneyTest {
         val refs = records.flatMap { record -> Regex("\"ref\":\"([^\"]+)\"").findAll(record.toString()).map { it.groupValues[1] }.toList() }
         assertTrue("a record names the uploaded image: $records", refs.any { it in server.attachments })
         rule.onAllNodes(hasTestTag(MessageTags.USER), useUnmergedTree = true).fetchSemanticsNodes().let { assertTrue(it.isNotEmpty()) }
+
+        // It took the compose screen's place: one Back is home.
+        rule.node(HeaderTags.LEFT).performClick()
+        rule.waitFor(HomeTags.COMPOSE)
+        rule.waitUntilDoesNotExist(hasTestTag(ChatScreenTags.SCREEN), 5_000)
     }
 
     private companion object {

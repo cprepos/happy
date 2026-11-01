@@ -55,6 +55,7 @@
     <string name="profile_username">使用者名稱</string>
     <string name="profile_status">狀態</string>
 
+    <string name="status_syncing">同步中</string>
     <string name="status_connected">已連線</string>
     <string name="status_connecting">連線中</string>
     <string name="status_disconnected">已中斷連線</string>
@@ -909,6 +910,7 @@
     <string name="message_sending">Sending…</string>
     <string name="message_send_failed">未傳送：%1$s</string>
     <string name="message_unknown_time">未知時間</string>
+    <string name="message_media_position">第 %1$d 項，共 %2$d 項</string>
 
     <string name="codex_permissions_yes_for_session">是，並且本次工作階段不再詢問</string>
     <string name="codex_permissions_stop_and_explain">停止，並說明該做什麼</string>
@@ -1018,4 +1020,12 @@
     <string name="feed_friend_request_generic">新的好友請求</string>
     <string name="feed_friend_accepted">您現在與 %1$s 成為了好友</string>
     <string name="feed_friend_accepted_generic">好友請求已接受</string>
+
+    <string name="new_work_task">任務</string>
+    <string name="new_work_bot">機器人</string>
+    <string name="new_work_name">名稱（選填）</string>
+    <string name="new_work_task_note">如果不命名，任務會根據第一則訊息自行命名。</string>
+    <string name="new_work_bot_note">機器人是一段長期持續的對話，擁有自己的資料夾。</string>
+    <string name="new_work_task_failed">無法啟動任務。%1$s你的文字和附件仍保留在這裡。</string>
+    <string name="new_work_bot_failed">無法啟動機器人。%1$s你的文字和附件仍保留在這裡。</string>
 </resources>

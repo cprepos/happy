@@ -112,12 +112,13 @@ class ComponentLayoutTest {
             )
         }
         assertBox("bar", rule.node(HeaderTags.BAR).bounds, 0.dp, 0.dp, PHONE_WIDTH.dp, 64.dp)
-        assertBox("left slot", rule.node(HeaderTags.LEFT).bounds, 16.dp, 8.dp, 48.dp, 48.dp)
-        assertBox("right slot", rule.node(HeaderTags.RIGHT).bounds, (PHONE_WIDTH - 16 - 48).dp, 8.dp, 48.dp, 48.dp)
+        // 48 slots 4 in, so a 24 glyph centred in one is on the content's 16 keyline.
+        assertBox("left slot", rule.node(HeaderTags.LEFT).bounds, 4.dp, 8.dp, 48.dp, 48.dp)
+        assertBox("right slot", rule.node(HeaderTags.RIGHT).bounds, (PHONE_WIDTH - 4 - 48).dp, 8.dp, 48.dp, 48.dp)
         // The title takes what is left between the controls, 8 from each.
-        assertBox("title box", rule.node(HeaderTags.TITLE_BOX).bounds, 72.dp, 0.dp, (PHONE_WIDTH - 144).dp, 64.dp)
+        assertBox("title box", rule.node(HeaderTags.TITLE_BOX).bounds, 60.dp, 0.dp, (PHONE_WIDTH - 120).dp, 64.dp)
         val title = rule.node(HeaderTags.TITLE).bounds
-        assertDp("title left", 72, title.left)
+        assertDp("title left", 60, title.left)
         assertDp("title line height", 20, title.bottom - title.top)
         assertDp("title centred vertically", 32, (title.top + title.bottom) / 2)
     }

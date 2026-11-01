@@ -1,5 +1,6 @@
 package com.slopus.happy.ui.session
 
+import com.slopus.happy.ui.components.DialogWindowMotion
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -16,7 +17,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.CircularProgressIndicator
+import com.slopus.happy.ui.components.PageProgressIndicator as CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -40,7 +41,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.min
-import androidx.compose.ui.window.Dialog
+import com.slopus.happy.ui.components.PageDialog as Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.slopus.happy.R
 import com.slopus.happy.model.SessionMetadata
@@ -62,6 +63,7 @@ import com.slopus.happy.ui.components.hairline
 import com.slopus.happy.ui.theme.HappyTheme
 import com.slopus.happy.ui.theme.happyTextStyle
 import kotlinx.coroutines.launch
+import com.slopus.happy.ui.layout.ContentTokens
 
 /** Resume, fork and duplicate (ops.ts); tests use a fake. */
 interface SessionContinuations {
@@ -107,7 +109,7 @@ object DuplicateSheetTags {
 /** DuplicateSheet.tsx's styles; duplicateSheetLayout.ts's frame. */
 object DuplicateSheetSpec {
     val margin = 16.dp
-    val maxWidth = 560.dp
+    val maxWidth = ContentTokens.dialogMaxWidth
     const val MAX_HEIGHT_RATIO = 0.85f
     val radius = 16.dp
     val title = happyTextStyle(fontSize = 17, weight = FontWeight.SemiBold)
@@ -203,6 +205,7 @@ fun DuplicateSheet(
     }
 
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        DialogWindowMotion()
         BoxWithConstraints {
             val width = min(DuplicateSheetSpec.maxWidth, maxWidth - DuplicateSheetSpec.margin * 2)
             val shape = RoundedCornerShape(DuplicateSheetSpec.radius)

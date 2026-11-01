@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  values/strings_chat.xml in ja: Android-only strings, not in happy-app's
+  catalogs. AndroidStringsTranslatedTest fails while one is missing here.
+-->
+<resources>
+    <string name="chat_send_failed">メッセージを送信できませんでした。</string>
+    <string name="chat_no_messages">メッセージはまだありません</string>
+    <string name="chat_created">%1$s に作成</string>
+    <string name="chat_permissions_in_terminal">権限はターミナルにのみ表示されます。アプリから操作するにはリセットするかメッセージを送信してください。</string>
+    <string name="chat_stop">停止</string>
+    <string name="chat_voice">音声</string>
+    <string name="chat_send">送信</string>
+    <string name="chat_markdown_image">Markdown の画像</string>
+    <string name="chat_remove_image">%1$s を削除</string>
+    <string name="chat_add_photo">写真を追加</string>
+    <string name="diff_badge_new">新規</string>
+    <string name="diff_badge_deleted">削除</string>
+    <string name="diff_badge_renamed">名前変更</string>
+    <string name="files_no_session_path">セッションのパスがありません</string>
+    <string name="files_outside_root">ファイルはセッションのルートの外にあります。</string>
+    <string name="files_decode_failed">ファイルをデコードできませんでした</string>
+    <string name="files_diff_failed">差分を取得できませんでした</string>
+    <string name="files_load_failed">ファイルを読み込めませんでした</string>
+    <string name="files_contents_match">ファイルの内容は比較元と同じです。</string>
+    <string name="files_truncated">変更された %2$s 個のファイルのうち %1$s 個を表示しています。全体を見るにはコンピューターでワークスペースを開いてください。</string>
+    <string name="files_counts_approximate">このワークスペースの変更数はおおよその値です。</string>
+    <string name="files_conflicted">このワークスペースには未解決のマージコンフリクトがあります。</string>
+    <string name="files_changes_failed">Happy Agent から変更を読み込めませんでした。</string>
+    <string name="files_file_failed">このファイルを読み込めませんでした。変更を再読み込みしてもう一度お試しください。</string>
+    <string name="files_update_agent">このセッションの変更を見るには、コンピューターの Happy Agent をアップデートしてください。</string>
+    <string name="files_no_comparison">このワークスペースでは origin/main との比較を利用できません。</string>
+    <string name="files_no_details">この比較にはファイルの詳細がありません。</string>
+</resources>

@@ -1,7 +1,5 @@
 package com.slopus.happy.ui.home
 
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.CompositionLocalProvider
 import com.slopus.happy.model.WorktreeToggle
 import com.slopus.happy.model.ProjectHomeRow
@@ -13,7 +11,6 @@ import androidx.compose.ui.hapticfeedback.HapticFeedback
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
@@ -24,7 +21,10 @@ import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isHeading
+import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
@@ -52,7 +52,11 @@ import com.slopus.happy.ui.assertActionsLabelled
 import com.slopus.happy.ui.assertBox
 import com.slopus.happy.ui.assertDp
 import com.slopus.happy.ui.bounds
+import com.slopus.happy.ui.components.GlassSpec
 import com.slopus.happy.ui.components.HeaderTags
+import com.slopus.happy.ui.components.HomeCardTags
+import com.slopus.happy.ui.connection.AgentHomeSpec
+import kotlinx.serialization.json.buildJsonObject
 import com.slopus.happy.ui.hasRole
 import com.slopus.happy.ui.node
 import com.slopus.happy.ui.setHappyContent
@@ -74,21 +78,25 @@ import java.time.LocalDate
 import java.time.ZoneOffset
 
 /**
- * The phone home screen against happy-app's layout:
- * - MainView's header: logo 19 in a 32 box; "Sessions" (`tabs.sessions`) 16/20 centred; the
- *   status line (11/16, 6 dot) hangs 2 into the title's bottom while the
- *   socket isn't connected; the filter and settings buttons are 44 squares
- *   split by a 22-high hairline, the gear 16 from the edge.
- * - FlatSessionRow: 60 avatar at 16, 10 above and below; 12 to the text;
- *   title 17/22, project 15/20, workspace line 1 below at 18 minimum, so a
- *   row is 81; the top-right slot is at least 56 and ends 16 from the edge;
- *   the hairline runs from 88 to the edge. Swiping uncovers a 112 Archive
- *   action; a long press opens the session menu.
- * - SessionsList: the list starts 12 under the header; the archive toggle
- *   sits 24 below the last live row.
- * - ProjectHomeList: 8 + 52 project card with a 28 avatar at 16, 48 worktrees.
+ * The phone home screen, as iOS's legacy home draws it now and as the
+ * agent connection's home does:
+ * - The bar: the account menu on the left, the account's name (the smaller
+ *   bar title) with how the connection stands after it while it isn't
+ *   online, settings at the end. Compose is a 56 floating button 16 in from
+ *   the bottom end, in every state but loading and the link state.
+ * - The rows stand in inset cards 16 in from the sides, from 8 under the
+ *   bar: a card row of the flat list is 81 (40 avatar at the card's 16, 12
+ *   to the text, title 17/22, project 15/20, 1, the workspace line's 18),
+ *   with a 10 dot and no time; hairlines from the text to the card's edge,
+ *   none under a card's last row. Swiping uncovers a 112 Archive action; a
+ *   long press opens the session menu.
+ * - The archive toggle stands on the page between the live card and the
+ *   archive's, with no day headings.
+ * - ProjectHomeList: 52 project rows with a 28 avatar, 48 worktrees, in one
+ *   card; a single computer heads nothing.
  * - SessionsListWrapper: spinner while loading, EmptyMainScreen's states.
- * - One changed session recomposes its own row and no other.
+ * - One changed session recomposes its own row and no other; nothing a row
+ *   shows changes its height.
  */
 @RunWith(AndroidJUnit4::class)
 @Config(qualifiers = PHONE)
@@ -116,16 +124,20 @@ class HomeLayoutTest {
         onProjectMenu = { _, _ -> },
     )
     private var newSession = 0
+    private var composed = 0
+    private var settings = 0
     private var whatsNew = 0
+    private var linkComputer = 0
     private val actions = HomeScreenActions(
-        onSettings = {},
-        onAppearance = {},
-        onSetGrouping = {},
+        onSettings = { settings++ },
         onNewSession = { newSession++ },
         onTroubleshoot = {},
         onOpenUrl = {},
         onWhatsNew = { whatsNew++ },
+        onLinkComputer = { linkComputer++ },
+        onCompose = { composed++ },
     )
+    private val accounts = AccountMenu(listOf(AccountMenuEntry("acc", "Steve", active = true)))
 
     private fun cli(id: String, at: Long = noon, active: Boolean = true) = session(
         id,
@@ -148,64 +160,134 @@ class HomeLayoutTest {
 
     private fun show(state: HomeListState?, status: ConnectionStatus = ConnectionStatus.CONNECTED) {
         rule.setHappyContent {
-            HomeScreen(state, status, state?.grouping ?: SessionListGrouping.Flat, callbacks, actions)
+            HomeScreen(state, status, state?.grouping ?: SessionListGrouping.Flat, callbacks, actions, accounts = accounts)
+        }
+    }
+
+    private val barBottom get() = rule.node(HomeTags.BAR).bounds.bottom
+
+    @Test
+    fun theBarIsTheAgentHomesAndComposeFloatsBottomEnd() {
+        show(state(listOf(cli("a"))))
+        val bar = rule.node(HomeTags.BAR).bounds
+        val menu = rule.node(AccountMenuTags.BUTTON).bounds
+        assertTrue("the account menu at the start", menu.left < 30.dp)
+        assertDp("account menu centred in the bar", (bar.top + bar.bottom) / 2, (menu.top + menu.bottom) / 2)
+        val settingsButton = rule.node(HomeTags.SETTINGS).bounds
+        // The bar's outer glyphs stand on the rows' content inside the cards: the avatar's left on the first row's, settings' 24 glyph's right where the rows' content ends.
+        val rowAvatar = rule.onAllNodesWithTag(FlatRowTags.AVATAR, useUnmergedTree = true)[0].getUnclippedBoundsInRoot()
+        val rowEnd = rule.onAllNodesWithTag(FlatRowTags.TOP_RIGHT, useUnmergedTree = true)[0].getUnclippedBoundsInRoot()
+        assertDp("the row's avatar 32 in", 32, rowAvatar.left)
+        assertDp("the account avatar on the row's", rowAvatar.left, (menu.left + menu.right) / 2 - 16.dp)
+        assertDp("the row's content ends 32 in", bar.right - 32.dp, rowEnd.right)
+        assertDp("the settings glyph ends with the row's content", rowEnd.right, (settingsButton.left + settingsButton.right) / 2 + 12.dp)
+        // The account's name, the smaller bar title; online says nothing.
+        rule.onNodeWithText("Steve", useUnmergedTree = true).assertExists()
+        assertDp("title line", with(rule.density) { AgentHomeSpec.barTitle.lineHeight.toDp() }, rule.node(HomeTags.TITLE).bounds.height())
+        rule.onAllNodesWithTag(HomeTags.STATUS, useUnmergedTree = true).assertCountEquals(0)
+        val compose = rule.node(HomeTags.COMPOSE).bounds
+        val list = rule.node(HomeTags.LIST).bounds
+        assertDp("compose at the end", list.right - 16.dp, compose.right)
+        assertDp("compose at the bottom", list.bottom - 16.dp, compose.bottom)
+        assertDp("compose is a 56 FAB", 56, compose.right - compose.left)
+        rule.node(HomeTags.COMPOSE).performClick()
+        rule.node(HomeTags.SETTINGS).performClick()
+        assertEquals(1, composed)
+        assertEquals(1, settings)
+        assertEquals("compose is not the new-session screen", 0, newSession)
+    }
+
+    @Test
+    fun anUnhealthyConnectionFollowsTheName() {
+        show(state(listOf(cli("a"))), ConnectionStatus.DISCONNECTED)
+        val bar = rule.node(HomeTags.BAR).bounds
+        val title = rule.node(HomeTags.TITLE).bounds
+        val status = rule.node(HomeTags.STATUS).bounds
+        assertDp("status centred in the bar", (bar.top + bar.bottom) / 2, (status.top + status.bottom) / 2)
+        assertTrue("status after the name", status.left >= title.right)
+        rule.onNodeWithText("offline", useUnmergedTree = true).assertExists()
+    }
+
+    @Test
+    fun theConnectionChangingMovesNeitherTheNameNorTheRows() {
+        val home = state(listOf(cli("a")))
+        var connection by mutableStateOf(ConnectionStatus.CONNECTED)
+        var syncing by mutableStateOf(false)
+        rule.setHappyContent {
+            HomeScreen(home, connection, home.grouping, callbacks, actions, accounts = accounts, syncing = syncing)
+        }
+        val first = rule.onAllNodesWithTag(FlatRowTags.ROW, useUnmergedTree = true)[0].bounds
+        val title = rule.node(HomeTags.TITLE).bounds
+        for ((status, catchingUp) in listOf(
+            ConnectionStatus.CONNECTING to false, ConnectionStatus.CONNECTED to true,
+            ConnectionStatus.CONNECTED to false, ConnectionStatus.DISCONNECTED to false,
+            ConnectionStatus.ERROR to false, ConnectionStatus.CONNECTING to true,
+            ConnectionStatus.CONNECTED to true, ConnectionStatus.CONNECTED to false,
+        )) {
+            connection = status
+            syncing = catchingUp
+            rule.waitForIdle()
+            assertEquals(first, rule.onAllNodesWithTag(FlatRowTags.ROW, useUnmergedTree = true)[0].bounds)
+            assertEquals(title, rule.node(HomeTags.TITLE).bounds)
+            val label = when (status) {
+                ConnectionStatus.CONNECTED -> if (catchingUp) "syncing" else null
+                ConnectionStatus.CONNECTING -> "connecting"
+                else -> "offline"
+            }
+            rule.onAllNodesWithTag(HomeTags.STATUS, useUnmergedTree = true).assertCountEquals(if (label == null) 0 else 1)
+            if (label != null) rule.onNodeWithText(label, useUnmergedTree = true).assertExists()
         }
     }
 
     @Test
-    fun header() {
-        show(state(listOf(cli("a"))))
-        assertBox("logo box", rule.node(HomeTags.LOGO).bounds, 24.dp, 16.dp, 32.dp, 32.dp)
-        val settings = rule.node(HomeTags.SETTINGS).bounds
-        assertBox("settings", settings, (PHONE_WIDTH - 16 - 44).dp, 10.dp, 44.dp, 44.dp)
-        val divider = rule.node(HomeTags.ACTION_DIVIDER).bounds
-        assertDp("divider meets the gear", settings.left, divider.right)
-        assertDp("divider height", 22, divider.bottom - divider.top)
-        assertDp("divider centred", 32, (divider.top + divider.bottom) / 2)
-        assertBox("filter", rule.node(HomeTags.FILTER).bounds, divider.left - 44.dp, 10.dp, 44.dp, 44.dp)
-        val title = rule.node(HomeTags.TITLE).bounds
-        assertDp("title centred", (PHONE_WIDTH / 2f).dp, (title.left + title.right) / 2)
-        assertDp("title centred in the bar", 32, (title.top + title.bottom) / 2)
-        assertDp("title line height", 20, title.bottom - title.top)
-        rule.onAllNodesWithTag(HomeTags.STATUS, useUnmergedTree = true).assertCountEquals(0)
-    }
-
-    @Test
-    fun headerStatusHangsUnderTheTitle() {
-        show(state(listOf(cli("a"))), ConnectionStatus.DISCONNECTED)
-        val title = rule.node(HomeTags.TITLE).bounds
-        val status = rule.node(HomeTags.STATUS).bounds
-        assertDp("title stays centred in the bar", 32, (title.top + title.bottom) / 2)
-        assertDp("status top", title.bottom - 2.dp, status.top)
-        assertDp("status line", 16, status.bottom - status.top)
-        assertDp("status centred", (PHONE_WIDTH / 2f).dp, (status.left + status.right) / 2)
-    }
-
-    @Test
-    fun flatRowGeometry() {
+    fun flatRowsStandInACard() {
         show(state(listOf(cli("a"), cli("b", noon - 1))))
         val rows = rule.onAllNodesWithTag(FlatRowTags.ROW, useUnmergedTree = true)
         rows.assertCountEquals(2)
         val row = rows[0].bounds
-        assertBox("first row", row, 0.dp, (64 + 12).dp, PHONE_WIDTH.dp, 81.dp)
+        assertBox("first row, in its card", row, 16.dp, barBottom + GlassSpec.feather + 8.dp, (PHONE_WIDTH - 32).dp, 81.dp)
         val avatar = rule.onAllNodesWithTag(FlatRowTags.AVATAR, useUnmergedTree = true)[0].bounds
-        assertBox("avatar", avatar, 16.dp, row.top + 10.5.dp, 60.dp, 60.dp)
+        assertBox("avatar", avatar, 32.dp, row.top + 20.5.dp, 40.dp, 40.dp)
         val title = rule.onAllNodesWithTag(FlatRowTags.TITLE, useUnmergedTree = true)[0].bounds
-        assertDp("title left", 88, title.left)
+        assertDp("title left", 84, title.left)
         assertDp("title top", row.top + 10.dp, title.top)
         assertDp("title line", 22, title.bottom - title.top)
         val corner = rule.onAllNodesWithTag(FlatRowTags.TOP_RIGHT, useUnmergedTree = true)[0].bounds
-        assertDp("corner ends 16 in", (PHONE_WIDTH - 16).dp, corner.right)
-        assertTrue("corner at least 56", corner.right - corner.left >= 56.dp - 0.34.dp)
+        assertDp("corner ends 16 into the card", (PHONE_WIDTH - 32).dp, corner.right)
+        assertDp("corner holds only the 10 dot", 10, corner.right - corner.left)
         assertDp("corner 8 after the title", title.right + 8.dp, corner.left)
         val project = rule.onAllNodesWithTag(FlatRowTags.PROJECT, useUnmergedTree = true)[0].bounds
         assertDp("project under the title", title.bottom, project.top)
         assertDp("project line", 20, project.bottom - project.top)
-        val divider = rule.node(FlatRowTags.DIVIDER).bounds
-        assertBox("divider", divider, 88.dp, row.bottom - divider.height(), (PHONE_WIDTH - 88).dp, divider.height())
-        // Only the first row draws a divider: the last has none.
-        rule.onAllNodesWithTag(FlatRowTags.DIVIDER, useUnmergedTree = true).assertCountEquals(1)
-        assertBox("second row", rows[1].bounds, 0.dp, row.bottom, PHONE_WIDTH.dp, 81.dp)
+        // The card draws one hairline, under the first row from its text to the card's edge; none under the last.
+        rule.onAllNodesWithTag(FlatRowTags.DIVIDER, useUnmergedTree = true).assertCountEquals(0)
+        rule.onAllNodesWithTag(HomeCardTags.DIVIDER, useUnmergedTree = true).assertCountEquals(1)
+        val divider = rule.node(HomeCardTags.DIVIDER).bounds
+        assertBox("divider", divider, 84.dp, row.bottom - divider.height(), (PHONE_WIDTH - 84 - 16).dp, divider.height())
+        assertBox("second row", rows[1].bounds, 16.dp, row.bottom, (PHONE_WIDTH - 32).dp, 81.dp)
+        // No times on home's rows.
+        rule.onAllNodesWithText("12:00 PM", substring = true, useUnmergedTree = true).assertCountEquals(0)
+    }
+
+    /** A row's height is its kind's, whatever it shows: a workspace or not, a dot or not, a title too long for its line. */
+    @Test
+    fun nothingARowShowsChangesItsHeight() {
+        val plain = cli("plain")
+        val busy = session(
+            "busy",
+            metadata = metadata(path = "/Users/dev/busy") {
+                put("machineId", "m1")
+                put("summary", buildJsonObject { put("text", "A generated title much too long to fit on its one line in the card"); put("updatedAt", 1) })
+                put("workspace", buildJsonObject { put("id", "w"); put("kind", "workspace"); put("name", "fix-scroll") })
+            },
+            active = true,
+            lastMessageSentAt = noon - 1,
+        )
+        show(state(listOf(plain, busy), unread = setOf("busy")))
+        rule.onAllNodesWithTag(FlatRowTags.DOT, useUnmergedTree = true).assertCountEquals(1)
+        val rows = rule.onAllNodesWithTag(FlatRowTags.ROW, useUnmergedTree = true)
+        assertDp("plain", 81, rows[0].bounds.height())
+        assertDp("workspace, unread, long title", 81, rows[1].bounds.height())
     }
 
     private fun androidx.compose.ui.unit.DpRect.height() = bottom - top
@@ -226,19 +308,23 @@ class HomeLayoutTest {
         rule.waitForIdle()
         val row = rule.node(FlatRowTags.ROW).bounds
         val action = rule.node(FlatRowTags.ARCHIVE_ACTION).bounds
-        assertBox("archive action", action, (PHONE_WIDTH - 112).dp, row.top, 112.dp, 81.dp)
-        assertDp("row slid by the action's width", -112, row.left)
+        assertBox("archive action, at the card's end", action, (PHONE_WIDTH - 16 - 112).dp, row.top, 112.dp, 81.dp)
+        assertDp("row slid by the action's width", 16 - 112, row.left)
         rule.node(FlatRowTags.ARCHIVE_ACTION).performClick()
         assertEquals(listOf("a"), archived)
     }
 
     @Test
-    fun archiveToggleAndDayHeaders() {
-        show(state(listOf(cli("a"), cli("gone", noon, active = false)), hidden = false))
-        val lastLive = rule.onAllNodesWithTag(FlatRowTags.ROW, useUnmergedTree = true)[0].bounds
+    fun theArchiveIsOneCardUnderItsToggle() {
+        show(state(listOf(cli("a"), cli("gone", noon, active = false), cli("older", noon - 3 * 86_400_000L, active = false)), hidden = false))
+        val rows = rule.onAllNodesWithTag(FlatRowTags.ROW, useUnmergedTree = true)
+        val lastLive = rows[0].bounds
         val toggle = rule.node(HomeTags.ARCHIVE_TOGGLE).bounds
-        assertDp("toggle right under the live rows", lastLive.bottom, toggle.top)
-        rule.onAllNodesWithTag(HomeTags.DAY_HEADER, useUnmergedTree = true).assertCountEquals(1)
+        assertDp("toggle right under the live card", lastLive.bottom, toggle.top)
+        // Two days, no headings: the archive is one card under the toggle.
+        rule.onAllNodesWithTag(HomeTags.DAY_HEADER, useUnmergedTree = true).assertCountEquals(0)
+        assertDp("the archive's card under the toggle", toggle.bottom, rows[1].bounds.top)
+        assertDp("one card", rows[1].bounds.bottom, rows[2].bounds.top)
         rule.node(HomeTags.ARCHIVE_TOGGLE).performClick()
         assertEquals(listOf(true), archiveHidden)
     }
@@ -257,7 +343,7 @@ class HomeLayoutTest {
         val two = listOf(studio.copy(active = false), machine("m2", machineMetadata { put("displayName", "Laptop") }, active = false))
         val current = state(listOf(cli("a")), machines = two)
         rule.setHappyContent {
-            HomeScreen(current, ConnectionStatus.CONNECTED, SessionListGrouping.Flat, callbacks, actions, update = HomeUpdate.Changelog)
+            HomeScreen(current, ConnectionStatus.CONNECTED, SessionListGrouping.Flat, callbacks, actions, update = HomeUpdate.Changelog, accounts = accounts)
         }
         val offline = rule.node(HomeStateTags.OFFLINE_BANNER).bounds
         val changelog = rule.node(HomeStateTags.CHANGELOG_BANNER).bounds
@@ -275,7 +361,6 @@ class HomeLayoutTest {
         rule.setHappyContent {
             HomeScreen(
                 current, ConnectionStatus.CONNECTED, SessionListGrouping.Flat, callbacks, actions,
-                linkContent = { Box(Modifier.fillMaxSize()) },
                 offlineContent = { computers, _ -> offlineComputers = computers },
             )
         }
@@ -286,38 +371,49 @@ class HomeLayoutTest {
         assertEquals(HomeEmptyState.NoSessions, current!!.emptyState)
         rule.node(HomeStateTags.NO_SESSIONS).assertExists()
         rule.node(HomeStateTags.NEW_SESSION).performClick()
-        assertEquals(1, newSession)
+        assertEquals("the empty home's button composes", 1, composed)
+        rule.node(HomeTags.COMPOSE).assertExists()
 
         current = state(emptyList(), machines = listOf(studio.copy(active = false)))
         rule.waitForIdle()
         assertEquals(listOf("Studio"), offlineComputers)
 
-        // No computer at all: the first-run link page replaces the whole screen, header included.
+        // No computer and nothing to list: the link state is home's empty state, under home's own
+        // header. The account menu and Settings stay reachable; there is nothing to compose on yet.
+        // Scan QR code starts the scan.
         current = state(emptyList(), machines = emptyList())
         rule.waitForIdle()
+        assertEquals(HomeEmptyState.Link, current!!.emptyState)
         rule.node(HomeTags.LINK).assertExists()
-        rule.onAllNodesWithTag(HomeTags.FILTER, useUnmergedTree = true).assertCountEquals(0)
-        val link = rule.node(HomeTags.LINK).bounds
-        assertDp("link page from the top", 0, link.top)
-        assertDp("link page full width", PHONE_WIDTH, link.right - link.left)
+        rule.node(AccountMenuTags.BUTTON).assertExists()
+        rule.node(HomeTags.SETTINGS).assertExists()
+        rule.onAllNodesWithTag(HomeTags.COMPOSE, useUnmergedTree = true).assertCountEquals(0)
+        assertTrue("link state under the header", rule.node(HomeTags.LINK).bounds.top >= rule.node(HomeTags.SETTINGS).bounds.bottom)
+        rule.onNodeWithText("Scan QR code").performClick()
+        assertEquals(1, linkComputer)
+
+        // Sessions cached with no computer linked still list; the link state is only for an empty home.
+        current = state(listOf(cli("a")), machines = emptyList())
+        rule.waitForIdle()
+        rule.node(FlatRowTags.ROW).assertExists()
+        rule.onAllNodesWithTag(HomeTags.LINK, useUnmergedTree = true).assertCountEquals(0)
     }
 
     /**
      * TalkBack over Home, as MainView, FlatSessionRow and SessionsList label
-     * it: "Sessions" is a header; Filter and Settings are named buttons; an
-     * unread row's top-right reads "new results" and not the stamp hidden
-     * under the dot; the archive toggle is a button, selected while the
-     * archive shows. Grouped by project, every row is a button.
+     * it: the account menu, Settings and New chat are named buttons; an
+     * unread row's corner reads "new results", a read one's says nothing;
+     * the archive toggle is a button, selected while the archive shows.
+     * Grouped by project, every row is a button.
      */
     @Test
     fun homeReadsForTalkBack() {
         show(state(listOf(cli("a"), cli("gone", noon, active = false)), hidden = false, unread = setOf("a")))
-        rule.onNode(hasText("Sessions") and isHeading(), useUnmergedTree = true).assertExists()
-        rule.onNode(hasContentDescription("Filter") and hasRole(Role.Button)).assertExists()
+        rule.onNode(hasContentDescription("Accounts", substring = true) and hasRole(Role.Button), useUnmergedTree = true).assertExists()
+        rule.onNode(hasContentDescription("New chat") and hasRole(Role.Button)).assertExists()
         rule.onNode(hasContentDescription("Settings") and hasRole(Role.Button)).assertExists()
         rule.onAllNodesWithTag(FlatRowTags.TOP_RIGHT, useUnmergedTree = true)[0].assert(hasContentDescription("new results"))
-        rule.onAllNodesWithTag(FlatRowTags.TIMESTAMP, useUnmergedTree = true)[0].assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.HideFromAccessibility))
-        rule.onAllNodesWithTag(FlatRowTags.TIMESTAMP, useUnmergedTree = true)[1].assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.HideFromAccessibility))
+        rule.onAllNodesWithTag(FlatRowTags.TOP_RIGHT, useUnmergedTree = true)[1].assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.ContentDescription))
         rule.node(HomeTags.ARCHIVE_TOGGLE).assert(hasRole(Role.Button)).assertIsSelected()
         rule.assertActionsLabelled()
     }
@@ -374,15 +470,37 @@ class HomeLayoutTest {
             session("wt", metadata = rigMetadata(projectId = "p1", projectName = "happy", workspaceId = "w1", workspaceName = "Gdansk"), lastMessageSentAt = noon),
         )
         show(state(sessions, grouping = SessionListGrouping.Project, machines = listOf(rig)))
+        // One computer heads nothing, and the projects' section heading is no more than the room above its card.
+        rule.onAllNodesWithTag(ProjectListTags.MACHINE, useUnmergedTree = true).assertCountEquals(0)
+        rule.onAllNodesWithTag(ProjectListTags.SECTION, useUnmergedTree = true).assertCountEquals(0)
         val project = rule.node(ProjectListTags.PROJECT).bounds
-        assertDp("project row", 52, project.bottom - project.top)
+        assertBox("project row, in its card", project, 16.dp, barBottom + GlassSpec.feather + 8.dp, (PHONE_WIDTH - 32).dp, 52.dp)
         val worktree = rule.node(ProjectListTags.WORKTREE).bounds
-        assertBox("worktree", worktree, 0.dp, project.bottom, PHONE_WIDTH.dp, 48.dp)
+        assertBox("worktree, in the same card", worktree, 16.dp, project.bottom, (PHONE_WIDTH - 32).dp, 48.dp)
         val stem = rule.node(ProjectListTags.TREE_STEM).bounds
         assertDp("stem drops from the avatar", project.top + 40.dp, stem.top)
-        assertDp("stem centred on the avatar", 30, (stem.left + stem.right) / 2)
+        assertDp("stem centred on the avatar", 16 + 16 + 14, (stem.left + stem.right) / 2)
         val trunk = rule.node(ProjectListTags.TREE_TRUNK).bounds
         assertDp("last trunk stops at the elbow", worktree.top + 24.dp, trunk.bottom)
+        // The tree line joins them already: no hairline between.
+        rule.onAllNodesWithTag(HomeCardTags.DIVIDER, useUnmergedTree = true).assertCountEquals(0)
+    }
+
+    @Test
+    fun twoComputersEachHeadTheirCards() {
+        val rig = machine("machine-1", machineMetadata { put("displayName", "Studio"); put("machineKind", "rig") })
+        val laptop = machine("m2", machineMetadata { put("displayName", "Laptop") })
+        val sessions = listOf(
+            session("own", metadata = rigMetadata(projectId = "p1", projectName = "happy"), lastMessageSentAt = noon),
+            session("cli", metadata = metadata(path = "/Users/dev/site") { put("machineId", "m2") }, active = true, lastMessageSentAt = noon - 1),
+        )
+        show(state(sessions, grouping = SessionListGrouping.Project, machines = listOf(rig, laptop)))
+        val headings = rule.onAllNodesWithTag(ProjectListTags.MACHINE, useUnmergedTree = true)
+        headings.assertCountEquals(2)
+        val first = headings[0].bounds
+        val project = rule.onAllNodesWithTag(ProjectListTags.PROJECT, useUnmergedTree = true)[0].bounds
+        assertDp("the heading's glyph in line with the cards' avatars", 32, rule.onNodeWithText("Studio", useUnmergedTree = true).bounds.left - 12.dp - 6.dp)
+        assertDp("the card 8 under its heading", first.bottom, project.top)
     }
 
     @Test

@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  An agent connection's artifacts, Surfaces and in-app browser (ui/artifacts,
+  ui/browser). Not in happy-app's catalogs (it has no artifact screens);
+  in iOS's words (Strings.Agents, Strings.ArtifactMedia,
+  BrowserViewController). Translated in values-*/ (AndroidStringsTranslatedTest).
+-->
+<resources>
+    <string name="artifact_untitled">Untitled artifact</string>
+    <string name="artifact_deleted">This artifact was deleted.</string>
+    <string name="artifact_unavailable">This artifact couldn’t be loaded. Check that your computer is on.</string>
+    <string name="artifact_file_unavailable">This file couldn’t be opened.</string>
+    <string name="artifact_picture">Picture</string>
+    <string name="artifact_video">Video</string>
+    <!-- A picture or recording for TalkBack: "Picture: chart.png". -->
+    <string name="artifact_media_label" translatable="false">%1$s: %2$s</string>
+    <plurals name="artifact_count_images">
+        <item quantity="one">%1$d image</item>
+        <item quantity="other">%1$d images</item>
+    </plurals>
+    <plurals name="artifact_count_videos">
+        <item quantity="one">%1$d video</item>
+        <item quantity="other">%1$d videos</item>
+    </plurals>
+    <string name="artifact_share">Share</string>
+    <string name="artifact_play">Play</string>
+    <string name="artifact_pause">Pause</string>
+    <string name="artifact_open_with">Open in another app</string>
+    <string name="artifact_open_with_body">Android can’t show this file here. It opens in an app on this phone that reads it.</string>
+
+    <string name="browser_via">via %1$s</string>
+    <string name="browser_default_computer">agent connection</string>
+    <string name="browser_unreachable">Can’t reach %1$s.\nCheck the agent connection, then tap Reload.</string>
+    <string name="browser_unreachable_page">Can’t reach %1$s.\nCheck the connection or page address, then tap Reload.</string>
+    <string name="browser_unsupported">This phone’s WebView can’t send pages through your computer. Update Android System WebView, then tap Reload.</string>
+    <string name="browser_forward">Forward</string>
+    <string name="browser_close">Close</string>
+    <string name="browser_share_link">Share Link</string>
+    <string name="browser_open_outside">Open in browser (outside proxy)</string>
+
+    <!-- A link's long-press menu (ui/browser/Links.kt), in chats and documents. -->
+    <string name="link_menu_open_in_app">Open in Happy browser</string>
+    <string name="link_menu_open_in_app_direct">In the app, on this phone’s network</string>
+    <string name="link_menu_open_external">Open in external browser</string>
+    <string name="link_menu_open_external_proxied">Outside the agent’s network</string>
+    <string name="link_menu_copy">Copy link</string>
+    <string name="link_menu_share">Share</string>
+</resources>

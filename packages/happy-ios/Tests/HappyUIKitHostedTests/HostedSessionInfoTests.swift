@@ -20,7 +20,16 @@ private struct NoSockets: WebSocketConnector {
     }
 }
 
-/// Session info as the chat's avatar opens it, over a store holding the
+/// A socket always on its way: the account's own status stays
+/// "connecting", for a test to say it's live instead.
+private struct ForeverConnecting: WebSocketConnector {
+    func connect(to url: URL) async throws -> WebSocketConnection {
+        try await Task.sleep(for: .seconds(3_600))
+        throw URLError(.timedOut)
+    }
+}
+
+/// Session info as the chat's title opens it, over a store holding the
 /// session, in a window of a real scene: its groups must be on screen, and
 /// a long session's (an agent state of hundreds of requests, megabytes of
 /// raw JSON in Debug) must open without holding the main thread.
@@ -30,7 +39,7 @@ final class HostedSessionInfoTests: XCTestCase {
     /// 2026-10-16 09:00 UTC.
     private static let base: Int64 = 1_792_141_200_000
 
-    private func signedIn(agentState: JSONValue, sessionRecord: SessionRecord? = nil) async throws -> (AccountController, AccountSession) {
+    private func signedIn(agentState: JSONValue, sessionRecord: SessionRecord? = nil, connector: any WebSocketConnector = NoSockets()) async throws -> (AccountController, AccountSession) {
         let controller = AccountController(
             serverConfig: ServerConfig(storage: InMemoryKeyValueStore()),
             clientID: "ios/test",
@@ -38,7 +47,7 @@ final class HostedSessionInfoTests: XCTestCase {
             storeDirectory: nil,
             rnServerImport: { .confirmed(ServerConfig.defaultServerURL) },
             transport: NoNetwork(),
-            connector: NoSockets()
+            connector: connector
         )
         try await controller.signIn(Credentials(token: "t", secret: Data(repeating: 3, count: 32)))
         let account = try XCTUnwrap(controller.session)
@@ -117,37 +126,61 @@ final class HostedSessionInfoTests: XCTestCase {
         view.subviews.flatMap { child in (child as? T).map { [$0] } ?? subviews(type, in: child) }
     }
 
-    /// The groups the screen shows, once the push is over.
-    private func shownGroups(_ info: SessionInfoViewController, in window: UIWindow) -> [ItemGroupView] {
-        guard info.transitionCoordinator == nil, let list = subviews(GroupedListView.self, in: info.view).first,
-              list.window === window else { return [] }
-        var ancestor: UIView? = list
+    /// A card the screen shows: its section, and the card it is drawn on.
+    private struct Group {
+        var section: ProfileSection
+        var card: SettingsCardView
+        var heading: String? { section.heading }
+        var titles: [String] { section.rows.map(\.title) }
+    }
+
+    /// The groups the screen shows, once the push is over, its load status
+    /// aside; none until the first is on screen.
+    private func shownGroups(_ info: SessionInfoViewController, in window: UIWindow) -> [Group] {
+        guard info.transitionCoordinator == nil, let scroll = subviews(DetailScrollView.self, in: info.view).first,
+              scroll.window === window else { return [] }
+        var ancestor: UIView? = scroll
         while let view = ancestor {
             guard !view.isHidden, view.alpha > 0 else { return [] }
             ancestor = view.superview
         }
-        let groups = list.sections.compactMap { $0 as? ItemGroupView }.filter { $0.accessibilityIdentifier != "session-info-load-status" }
-        guard let first = groups.first, first.superview === list,
-              first.convert(first.bounds, to: window).intersects(window.bounds) else { return [] }
+        let groups = info.sections.sections.filter { $0.id != "session-info-load-status" }.compactMap { section in
+            info.sections.card(section.id).map { Group(section: section, card: $0) }
+        }
+        guard let first = groups.first, first.card.superview === scroll, first.card.bounds.height > 0,
+              first.card.convert(first.card.bounds, to: window).intersects(window.bounds) else { return [] }
         return groups
     }
 
-    func testTheAvatarOpensSessionInfoWithItsGroupsOnScreen() async throws {
-        let (controller, _) = try await signedIn(agentState: .object(["controlledByUser": .bool(false)]))
+    /// Every row's title on the screen's cards.
+    private func titles(_ info: SessionInfoViewController) -> [String] {
+        info.sections.sections.flatMap { $0.rows.map(\.title) }
+    }
+
+    func testTheTitleOpensSessionInfoWithItsGroupsOnScreen() async throws {
+        let (controller, account) = try await signedIn(agentState: .object(["controlledByUser": .bool(false)]))
         let context = AppContext(account: controller, variant: .development, version: "test")
         let (window, navigation, root) = try await hosted()
         root.push(.session(id: Self.sessionId), context: context)
         // A chat is readied before it is pushed (`ChatOpening`).
-        let pushed = try await until { navigation.topViewController is ChatViewController }
+        let pushed = try await until { navigation.topViewController is LegacyChatViewController }
         XCTAssertTrue(pushed, "the chat was never pushed")
-        let chat = try XCTUnwrap(navigation.topViewController as? ChatViewController)
-        var avatar: ChatHeaderAvatarControl? {
-            chat.navigationItem.rightBarButtonItems?.compactMap { $0.customView as? ChatHeaderAvatarControl }.first
+        let chat = try XCTUnwrap(navigation.topViewController as? LegacyChatViewController)
+        // The title capsule opens it: in the bar from the push, opening
+        // once the chat's record is in.
+        let title = try XCTUnwrap(chat.navigationItem.titleView as? ChatHeaderView)
+        let shown = try await until { chat.transitionCoordinator == nil && chat.contentInstalled && title.window != nil }
+        XCTAssertTrue(shown, "the title never showed")
+        // Back, the name, and Compose: no More, no debug fixtures.
+        XCTAssertEqual(chat.navigationItem.rightBarButtonItems?.map(\.accessibilityIdentifier), ["compose"])
+        XCTAssertNil(chat.navigationItem.leftBarButtonItems)
+        for (style, name) in [(UIUserInterfaceStyle.light, "light"), (.dark, "dark")] {
+            window.overrideUserInterfaceStyle = style
+            try await Task.sleep(for: .seconds(1))
+            keep(window, "hosted-legacy-chat-header-\(name)")
         }
-        // In the bar once the chat is loaded, shown once its record is in.
-        let shown = try await until { chat.transitionCoordinator == nil && avatar.map { !$0.isHidden && $0.window != nil } == true }
-        XCTAssertTrue(shown, "the avatar never showed")
-        try XCTUnwrap(avatar).sendActions(for: .touchUpInside)
+        window.overrideUserInterfaceStyle = .unspecified
+        title.onOpen?()
         let info = try XCTUnwrap(navigation.topViewController as? SessionInfoViewController)
         let opened = try await until { !self.shownGroups(info, in: window).isEmpty }
         XCTAssertTrue(opened, "session info showed no groups")
@@ -155,21 +188,187 @@ final class HostedSessionInfoTests: XCTestCase {
         let groups = shownGroups(info, in: window)
         let screen = window.bounds
         for (index, group) in groups.enumerated() {
-            let frame = group.convert(group.bounds, to: window)
+            let frame = group.card.convert(group.card.bounds, to: window)
             XCTAssertGreaterThan(frame.width, 0, "group \(index)")
             XCTAssertGreaterThan(frame.height, 0, "group \(index)")
-            XCTAssertFalse(group.rows.isEmpty, "group \(index)")
-            for (row, view) in group.rows.enumerated() {
+            XCTAssertFalse(group.section.rows.isEmpty, "group \(index)")
+            let rows = subviews(SettingsCardView.RowView.self, in: group.card)
+            XCTAssertEqual(rows.count, group.section.rows.count, "group \(index)")
+            for (row, view) in rows.enumerated() {
                 XCTAssertGreaterThan(view.bounds.height, 0, "group \(index) row \(row)")
             }
         }
-        // The first group sits under the bar, on screen.
+        // The head sits under the bar, the first group on screen under it.
+        let name = info.header.name.convert(info.header.name.bounds, to: window)
+        XCTAssertGreaterThanOrEqual(name.minY, navigation.navigationBar.frame.maxY - 1)
         let first = try XCTUnwrap(groups.first)
-        let firstFrame = first.convert(first.bounds, to: window)
+        let firstFrame = first.card.convert(first.card.bounds, to: window)
         XCTAssertTrue(screen.contains(firstFrame.origin), "\(firstFrame)")
-        XCTAssertGreaterThanOrEqual(firstFrame.minY, navigation.navigationBar.frame.maxY - 1)
-        XCTAssertEqual(info.title, "Session info screen")
+        XCTAssertGreaterThan(firstFrame.minY, name.maxY)
+        XCTAssertEqual(info.header.name.text, "Session info screen")
+
+        // The chat's permission mode, once in its header's More menu, is a
+        // row here: the current mode as its value, a native menu of all of
+        // them, and a pick kept as the composer keeps one.
+        func permissionRow() -> MenuRowButton? {
+            subviews(MenuRowButton.self, in: info.view).first { $0.accessibilityIdentifier == "profile-permission-mode" }
+        }
+        let rowShown = try await until { permissionRow() != nil }
+        XCTAssertTrue(rowShown, "no permission mode on the session's info")
+        let row = try XCTUnwrap(permissionRow())
+        XCTAssertTrue(row.showsMenuAsPrimaryAction)
+        XCTAssertGreaterThan(row.bounds.height, 40)
+        XCTAssertGreaterThan(row.bounds.width, 300)
+        for (style, name) in [(UIUserInterfaceStyle.light, "light"), (.dark, "dark")] {
+            window.overrideUserInterfaceStyle = style
+            try await Task.sleep(for: .seconds(1))
+            keep(window, "legacy-info-permission-\(name)")
+        }
+        window.overrideUserInterfaceStyle = .unspecified
+        let menu = try XCTUnwrap(row.menuFor?())
+        XCTAssertEqual(menu.identifier.rawValue, "chat-permissions")
+        let actions = menu.children.compactMap { $0 as? UIAction }
+        // Every mode the chat's composer offers, none dropped.
+        let offered = try XCTUnwrap(chat.permissionChoice).menu.sections.flatMap(\.options).map(\.key)
+        XCTAssertEqual(actions.compactMap(\.accessibilityIdentifier), offered)
+        XCTAssertTrue(offered.contains("plan"))
+        let plan = try XCTUnwrap(actions.first { $0.accessibilityIdentifier == "plan" })
+        XCTAssertEqual(plan.state, .off)
+        let button = UIButton(type: .system)
+        button.addAction(plan, for: .touchUpInside)
+        button.sendActions(for: .touchUpInside)
+        let store = account.store
+        let sessionId = Self.sessionId
+        var stored: String?
+        for _ in 0..<300 where stored != "plan" {
+            stored = try await Task.detached { try store.composerState(sessionId: sessionId).values["permissionMode"]?.stringValue }.value
+            if stored != "plan" { try await Task.sleep(for: .milliseconds(10)) }
+        }
+        XCTAssertEqual(stored, "plan", "the pick isn't kept as the composer's")
+        let ticked = try XCTUnwrap(row.menuFor?()).children.compactMap { $0 as? UIAction }.filter { $0.state == .on }.compactMap(\.accessibilityIdentifier)
+        XCTAssertEqual(ticked, ["plan"])
+        XCTAssertEqual(row.accessibilityValue, plan.title, "the row shows the pick")
         await controller.signOut()
+    }
+
+    /// The legacy chat's header is the agent chat's: its name and its
+    /// session's status on one glass capsule, in the bar from the push's
+    /// first layout, nothing measured first; the status is nowhere else.
+    func testTheLegacyChatHasItsCapsuleFromThePushesFirstLayout() async throws {
+        let (controller, account) = try await signedIn(agentState: .object(["controlledByUser": .bool(false)]), connector: ForeverConnecting())
+        let context = AppContext(account: controller, variant: .development, version: "test")
+        // No socket here: the account's link is told it's live, or the
+        // chat would say "connecting…" where the session's status goes.
+        let link = LegacyLink.link(for: account)
+        // The socket's own "connecting" has come.
+        try await Task.sleep(for: .milliseconds(300))
+        link.receive(status: .connected)
+        link.receive(catchingUp: false)
+        let live = try await until { link.indicator.shown == .online }
+        XCTAssertTrue(live, "the link never came back live")
+        for (style, name) in [(UIUserInterfaceStyle.light, "light"), (.dark, "dark")] {
+            let (window, navigation, _) = try await hosted()
+            window.overrideUserInterfaceStyle = style
+            let chat = LegacyChatViewController(context: context, session: account, sessionId: Self.sessionId)
+            navigation.pushViewController(chat, animated: true)
+            window.layoutIfNeeded()
+            // The first layout pass of the push.
+            let header = try XCTUnwrap(chat.navigationItem.titleView as? ChatHeaderView, "a plain title at the push's start")
+            XCTAssertNotNil(header.window, "the capsule isn't in the bar as the push starts")
+            XCTAssertTrue(header.capsule.effect is UIGlassEffect)
+            XCTAssertGreaterThan(header.capsule.bounds.width, 100)
+            XCTAssertEqual(header.titleView.text, "Session info screen")
+            let status = try XCTUnwrap(Self.allViews(UILabel.self, in: header.capsule.contentView).first { $0.accessibilityIdentifier == "chat-status" })
+            XCTAssertEqual(status.text, Strings.Composer.online, "the status isn't the capsule's subtitle")
+            // Dynamic colours are never equal as objects: compare them resolved.
+            let traits = header.traitCollection
+            XCTAssertEqual(header.statusColor.resolvedColor(with: traits), UIColor(Palette.sessionStatusOnline).resolvedColor(with: traits))
+            // Mid-push: the capsule is already there.
+            try await Task.sleep(for: .milliseconds(150))
+            keep(window, "legacy-chat-mid-push-\(name)", afterUpdates: false)
+            let settled = try await until { chat.transitionCoordinator == nil && chat.contentInstalled }
+            XCTAssertTrue(settled)
+            XCTAssertTrue(chat.navigationItem.titleView === header, "the capsule was swapped once the chat was built")
+            try await Task.sleep(for: .milliseconds(600))
+            XCTAssertEqual(status.text, Strings.Composer.online)
+            // Not over the composer as well: the status is the header's.
+            let elsewhere = Self.allViews(UILabel.self, in: chat.view).filter {
+                !$0.isHidden && $0.alpha > 0 && $0.window != nil && $0.text == Strings.Composer.online
+            }
+            XCTAssertEqual(elsewhere, [], "the status still shows outside the capsule")
+            keep(window, "legacy-chat-header-\(name)")
+            window.isHidden = true
+        }
+        await controller.signOut()
+    }
+
+    /// Every legacy screen goes back with the chevron alone in its glass
+    /// circle: never "Back" nor the screen behind's title.
+    func testEveryLegacyScreenGoesBackWithTheChevronAlone() async throws {
+        let (controller, account) = try await signedIn(agentState: .object(["controlledByUser": .bool(false)]))
+        let context = AppContext(account: controller, variant: .development, version: "test")
+        let scene = try await hostedActiveScene()
+        let hostWindow = scene.keyWindow
+        let home = LegacyHomeViewController(context: context, session: account)
+        let navigation = UINavigationController(rootViewController: home)
+        AppCoordinator.applyAppearance(to: navigation.navigationBar)
+        // One stack on an iPad too: the main panel's back buttons are the
+        // same delegate's (`ShellViewController`).
+        let shell = ShellViewController(context: context, phone: navigation, splits: false)
+        let window = hostedKeyWindow(in: scene, root: shell)
+        defer { window.isHidden = true; hostWindow?.makeKey() }
+        window.layoutIfNeeded()
+        let routes: [Route] = [
+            .session(id: Self.sessionId), .sessionInfo(id: Self.sessionId), .sessionChanges(id: Self.sessionId),
+            .machine(id: "test-mac"), .settings, .settingsAppearance, .settingsLanguage, .settingsVoice,
+        ]
+        for route in routes {
+            let top = try XCTUnwrap(navigation.topViewController)
+            let count = navigation.viewControllers.count
+            top.push(route, context: context, animated: false)
+            let pushed = try await until(seconds: 10) { navigation.viewControllers.count == count + 1 && navigation.transitionCoordinator == nil }
+            XCTAssertTrue(pushed, "\(route) was never pushed")
+            try await Task.sleep(for: .milliseconds(300))
+            navigation.navigationBar.layoutIfNeeded()
+            for below in navigation.viewControllers.dropLast() {
+                XCTAssertEqual(below.navigationItem.backButtonDisplayMode, .minimal, "\(type(of: below)) under \(route)")
+                XCTAssertNil(below.navigationItem.backButtonTitle, "\(type(of: below)) under \(route)")
+            }
+            // Words by the chevron, at the bar's leading edge: the top's own
+            // centred title may well be the screen behind's.
+            let behind = navigation.viewControllers.dropLast().last
+            let words = Self.allViews(UILabel.self, in: navigation.navigationBar).filter {
+                !$0.isHidden && $0.alpha > 0 && [Strings.Common.back, behind?.navigationItem.title, behind?.title].contains($0.text)
+                    && $0.text?.isEmpty == false && $0.convert($0.bounds, to: navigation.navigationBar).minX < 100
+            }
+            XCTAssertEqual(words.compactMap(\.text), [], "words by the chevron on \(route)")
+            if case .sessionInfo = route {
+                for (style, name) in [(UIUserInterfaceStyle.light, "light"), (.dark, "dark")] {
+                    window.overrideUserInterfaceStyle = style
+                    try await Task.sleep(for: .seconds(1))
+                    keep(window, "legacy-info-back-\(name)")
+                }
+                window.overrideUserInterfaceStyle = .unspecified
+            }
+        }
+        await controller.signOut()
+    }
+
+    private static func allViews<T: UIView>(_ type: T.Type, in view: UIView) -> [T] {
+        view.subviews.flatMap { child in ((child as? T).map { [$0] } ?? []) + allViews(type, in: child) }
+    }
+
+    private func keep(_ window: UIWindow, _ name: String, afterUpdates: Bool = true) {
+        let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+            _ = window.drawHierarchy(in: window.bounds, afterScreenUpdates: afterUpdates)
+        }
+        let attachment = XCTAttachment(image: image)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        if let directory = ProcessInfo.processInfo.environment["HAPPY_PREVIEW_DIR"] {
+            try? image.pngData()?.write(to: URL(fileURLWithPath: directory).appendingPathComponent("\(name).png"))
+        }
     }
 
     /// Sync may keep changing visible metadata while the first groups are
@@ -207,9 +406,8 @@ final class HostedSessionInfoTests: XCTestCase {
             let pipeline = values["pipeline"] as? ApplyPipeline<SessionInfoInput, SessionInfoFrame?, SessionInfoUpdate>
             let frame = values["frame"] as? SessionInfoFrame
             let queue = values["queue"] as? [SessionInfoSection]
-            let made = values["made"] as? [SessionInfoSection: UIView]
-            let list = try XCTUnwrap(subviews(GroupedListView.self, in: info.view).first)
-            print("SESSIONINFO-LIVE applies=\(String(describing: pipeline?.counts)) model=\(frame?.model != nil) queue=\(String(describing: queue)) made=\(String(describing: made?.keys)) window=\(list.window != nil) bounds=\(list.bounds) hidden=\(list.isHidden) sections=\(list.sections.count)")
+            let scroll = try XCTUnwrap(subviews(DetailScrollView.self, in: info.view).first)
+            print("SESSIONINFO-LIVE applies=\(String(describing: pipeline?.counts)) model=\(frame?.model != nil) queue=\(String(describing: queue)) window=\(scroll.window != nil) bounds=\(scroll.bounds) hidden=\(scroll.isHidden) sections=\(info.sections.sections.count)")
         }
         // The navigation bar can finish its title fade after the push ends.
         try await Task.sleep(for: .milliseconds(500))
@@ -226,7 +424,7 @@ final class HostedSessionInfoTests: XCTestCase {
         let latest = await account.sessionDetails.current(sessionId: Self.sessionId)
         let host = try XCTUnwrap(latest?.session?.metadata?["host"]?.stringValue)
         let reconciled = try await until {
-            self.shownGroups(info, in: window).flatMap(\.rows).compactMap { $0 as? ItemRowView }.contains { $0.subtitle == host }
+            self.shownGroups(info, in: window).flatMap(\.section.rows).contains { $0.subtitle == host }
         }
         XCTAssertTrue(reconciled, "the group did not catch up to the last store snapshot")
         await controller.signOut()
@@ -272,7 +470,7 @@ final class HostedSessionInfoTests: XCTestCase {
             let info = try XCTUnwrap(navigation.topViewController as? SessionInfoViewController)
             let opened = try await until { !self.shownGroups(info, in: window).isEmpty }
             XCTAssertTrue(opened, "Happy Agent details showed no visible groups (bot: \(bot))")
-            let titles = shownGroups(info, in: window).flatMap(\.rows).compactMap { ($0 as? ItemRowView)?.title }
+            let titles = shownGroups(info, in: window).flatMap(\.titles)
             XCTAssertEqual(titles.contains(Strings.SessionDetail.deleteSession), !bot)
             await controller.signOut()
         }
@@ -284,12 +482,9 @@ final class HostedSessionInfoTests: XCTestCase {
         let (window, navigation, root) = try await hosted()
         root.push(.sessionInfo(id: Self.sessionId), context: context)
         let info = try XCTUnwrap(navigation.topViewController as? SessionInfoViewController)
-        let list = try XCTUnwrap(subviews(GroupedListView.self, in: info.view).first)
-        let started = try await until {
-            self.subviews(ItemGroupView.self, in: info.view).contains { $0.accessibilityIdentifier != "session-info-load-status" }
-                && list.sections.allSatisfy { $0.accessibilityIdentifier == "session-info-load-status" }
-        }
-        XCTAssertTrue(started, "the initial group batch was not observed")
+        let scroll = try XCTUnwrap(subviews(DetailScrollView.self, in: info.view).first)
+        let started = try await until { !self.shownGroups(info, in: window).isEmpty }
+        XCTAssertTrue(started, "the first groups never showed")
         let store = account.store
         let id = Self.sessionId
         let base = Self.base
@@ -297,18 +492,19 @@ final class HostedSessionInfoTests: XCTestCase {
             try store.setCursor(.sessionsChangedSince, base)
             try store.deleteSession(id: id)
         }.value
-        let deleted = try await until { info.title == Strings.SessionDetail.sessionDeleted }
-        XCTAssertTrue(deleted)
-        XCTAssertTrue(list.isHidden)
-        XCTAssertTrue(list.sections.isEmpty)
-        XCTAssertTrue(subviews(ItemGroupView.self, in: info.view).isEmpty, "cancelled groups stayed in the workshop")
+        let deleted = try await until { !self.subviews(DetailMessageView.self, in: info.view).isEmpty }
+        XCTAssertTrue(deleted, "\"Session deleted\" never showed")
+        XCTAssertTrue(scroll.isHidden)
+        XCTAssertTrue(info.sections.sections.isEmpty)
+        XCTAssertTrue(subviews(SettingsCardView.self, in: scroll).isEmpty, "the deleted session's cards stayed")
 
         let replacement = Self.session(agentState: .object([:]))
         try await Task.detached { try store.upsertSessions([replacement]) }.value
         let reopened = try await until { !self.shownGroups(info, in: window).isEmpty }
-        XCTAssertTrue(reopened, "the replacement snapshot did not restart group creation")
-        XCTAssertFalse(list.isHidden)
-        XCTAssertEqual(subviews(ItemGroupView.self, in: info.view).count, list.sections.count)
+        XCTAssertTrue(reopened, "the replacement snapshot did not show its groups")
+        XCTAssertFalse(scroll.isHidden)
+        XCTAssertTrue(subviews(DetailMessageView.self, in: info.view).isEmpty)
+        XCTAssertEqual(subviews(SettingsCardView.self, in: scroll).count, info.sections.sections.count)
         await controller.signOut()
     }
 
@@ -318,9 +514,7 @@ final class HostedSessionInfoTests: XCTestCase {
         let (window, navigation, root) = try await hosted()
         root.push(.sessionInfo(id: Self.sessionId), context: context)
         let info = try XCTUnwrap(navigation.topViewController as? SessionInfoViewController)
-        let started = try await until {
-            self.subviews(ItemGroupView.self, in: info.view).contains { $0.accessibilityIdentifier != "session-info-load-status" }
-        }
+        let started = try await until { !self.shownGroups(info, in: window).isEmpty }
         XCTAssertTrue(started)
         let store = account.store
         var withoutMetadata = Self.session(agentState: .object([:]))
@@ -330,26 +524,27 @@ final class HostedSessionInfoTests: XCTestCase {
         try await Task.detached { try store.upsertSessions([removed]) }.value
         let opened = try await until {
             let groups = self.shownGroups(info, in: window)
-            return !groups.isEmpty && !groups.contains { $0.title == Strings.SessionDetail.metadata }
+            return !groups.isEmpty && !groups.contains { $0.heading == Strings.SessionDetail.metadata }
         }
         XCTAssertTrue(opened)
-        XCTAssertFalse(shownGroups(info, in: window).contains { $0.title == Strings.SessionDetail.metadata })
+        XCTAssertFalse(shownGroups(info, in: window).contains { $0.heading == Strings.SessionDetail.metadata })
 
         var withMetadata = Self.session(agentState: .object([:]))
         withMetadata.metadataVersion = 3
         let restored = withMetadata
         try await Task.detached { try store.upsertSessions([restored]) }.value
         let returned = try await until {
-            self.shownGroups(info, in: window).contains { $0.title == Strings.SessionDetail.metadata }
+            self.shownGroups(info, in: window).contains { $0.heading == Strings.SessionDetail.metadata }
         }
         XCTAssertTrue(returned)
         await controller.signOut()
     }
 
-    /// The bar has the title home shows as the screen is pushed, before its
-    /// own snapshot is read; that snapshot, holding the same session, then
-    /// changes nothing in the title.
-    func testTheTitleIsInTheBarAsItIsPushedAndTheSessionsOwnSnapshotChangesNothing() async throws {
+    /// The head has the name and avatar home shows as the screen is
+    /// pushed, before its own snapshot is read; that snapshot, holding the
+    /// same session, then changes neither. The bar has no title: the name
+    /// is the head's, as on the agent chat's profile.
+    func testTheNameIsInTheHeadAsItIsPushedAndTheSessionsOwnSnapshotChangesNothing() async throws {
         let (controller, _) = try await signedIn(agentState: .object(["controlledByUser": .bool(false)]))
         let context = AppContext(account: controller, variant: .development, version: "test")
         let (window, navigation, root) = try await hosted()
@@ -357,28 +552,23 @@ final class HostedSessionInfoTests: XCTestCase {
         let info = try XCTUnwrap(navigation.topViewController as? SessionInfoViewController)
         // Loaded as the push's transition starts; loaded now, before the
         // session's own snapshot can have reached the main thread, it has
-        // the title and none of the groups.
+        // the name and the avatar and none of the groups.
         info.loadViewIfNeeded()
-        let titleView = try XCTUnwrap(info.navigationItem.titleView as? NavigationTitleView)
-        XCTAssertEqual(titleView.title, "Session info screen")
-        XCTAssertEqual(info.title, "Session info screen")
-        XCTAssertTrue(subviews(ItemGroupView.self, in: info.view).allSatisfy { $0.accessibilityIdentifier == "session-info-load-status" })
-        let size = titleView.frame.size
-        XCTAssertGreaterThan(size.width, 0)
-        #if DEBUG
-        let renders = titleView.titleLabel.renders
-        #endif
+        XCTAssertEqual(info.header.name.text, "Session info screen")
+        guard case .session(let seeded)? = info.header.avatar else { return XCTFail("no avatar from the first frame") }
+        XCTAssertEqual(seeded.avatar.seed, "test-mac:/Users/test/happy")
+        XCTAssertNil(info.navigationItem.titleView)
+        XCTAssertNil(info.title)
+        XCTAssertTrue(info.sections.sections.allSatisfy { $0.id == "session-info-load-status" })
 
         // The session's own snapshot is in once its groups are shown.
         let opened = try await until { !self.shownGroups(info, in: window).isEmpty }
         XCTAssertTrue(opened, "session info showed no groups")
-        XCTAssertTrue(info.navigationItem.titleView === titleView, "the same title view")
-        XCTAssertEqual(titleView.title, "Session info screen")
-        XCTAssertEqual(titleView.frame.size, size)
-        XCTAssertEqual(info.title, "Session info screen")
-        #if DEBUG
-        XCTAssertEqual(titleView.titleLabel.renders, renders, "the title was not drawn again")
-        #endif
+        XCTAssertEqual(info.header.name.text, "Session info screen")
+        guard case .session(let read)? = info.header.avatar else { return XCTFail("the avatar went") }
+        XCTAssertEqual(read.avatar.seed, seeded.avatar.seed)
+        XCTAssertEqual(AvatarPlaceholder.index(seed: read.avatar.seed), AvatarPlaceholder.index(seed: seeded.avatar.seed))
+        XCTAssertNil(info.navigationItem.titleView)
         await controller.signOut()
     }
 
@@ -403,7 +593,7 @@ final class HostedSessionInfoTests: XCTestCase {
         XCTAssertEqual(blocks.count, 3)
         let measured = try await until(seconds: 20) { blocks.allSatisfy { $0.bounds.height > 1000 || $0.code.utf16.count < 10_000 } }
         XCTAssertTrue(measured, "the raw JSON was never laid out")
-        let list = try XCTUnwrap(subviews(GroupedListView.self, in: info.view).first)
+        let list = try XCTUnwrap(subviews(DetailScrollView.self, in: info.view).first)
         // Below the screen: at most the first pieces within a screen of
         // it are drawn, and nothing of the last block.
         for block in blocks { XCTAssertLessThanOrEqual(block.drawnPieces.count, 4, "\(block.drawnPieces)") }
@@ -431,46 +621,26 @@ final class HostedSessionInfoTests: XCTestCase {
     }
 
     #if DEBUG
-    /// The groups are made a few rows a frame, out of sight, and join the
-    /// list in one frame, every label in them having drawn its text once.
-    func testItsGroupsAreMadeAFewRowsAFrameAndShownTogether() async throws {
+    /// Its groups join the screen together, never some of them, and stay
+    /// the same cards as the session changes under them.
+    func testItsGroupsAreShownTogether() async throws {
         let (controller, _) = try await signedIn(agentState: Self.longAgentState())
         let context = AppContext(account: controller, variant: .development, version: "test")
         let (window, navigation, root) = try await hosted()
-        // Once to warm up, then the open that is checked.
-        for attempt in 0..<2 {
-            root.push(.sessionInfo(id: Self.sessionId), context: context)
-            let info = try XCTUnwrap(navigation.topViewController as? SessionInfoViewController)
-            let list = try XCTUnwrap(subviews(GroupedListView.self, in: info.view).first)
-            var shown: [Int] = []
-            let recorder = TickRecorder { _ in
-                shown.append(list.sections.filter { $0.accessibilityIdentifier != "session-info-load-status" }.count)
-            }
-            let opened = try await until { !self.shownGroups(info, in: window).isEmpty }
-            recorder.stop()
-            XCTAssertTrue(opened, "session info showed no groups")
-            try await Task.sleep(for: .milliseconds(100))
-            guard attempt == 1 else {
-                navigation.popToRootViewController(animated: false)
-                try await Task.sleep(for: .milliseconds(150))
-                continue
-            }
-            let groups = list.sections.count
-            XCTAssertEqual(groups, 6, "quick actions, details, metadata, agent state, activity, raw JSON")
-            // Never some of the groups: none, then all.
-            XCTAssertTrue(Set(shown).isSubset(of: [0, groups]), "\(shown)")
-            let steps = info.slices.map(\.steps).reduce(0, +)
-            let rows = list.sections.compactMap { $0 as? ItemGroupView }.map(\.rows.count).reduce(0, +)
-            // A step starts a group, makes a row or finishes a group.
-            XCTAssertGreaterThanOrEqual(steps, rows + 2 * groups, "\(info.slices)")
-            XCTAssertGreaterThan(info.slices.count, 1, "made in one frame: \(info.slices)")
-            print("SESSIONINFO-SLICES " + info.slices.map { String(format: "%.2f ms × %d", $0.seconds * 1000, $0.steps) }.joined(separator: ", "))
-            let labels = list.sections.flatMap { subviews(StyledLabel.self, in: $0) }
-            XCTAssertGreaterThan(labels.count, 50)
-            XCTAssertEqual(labels.filter { $0.renders != 1 }.map { "\($0.string): \($0.renders)" }, [])
-            // Nothing is left out of sight.
-            XCTAssertEqual(subviews(ItemGroupView.self, in: info.view).count, groups)
+        root.push(.sessionInfo(id: Self.sessionId), context: context)
+        let info = try XCTUnwrap(navigation.topViewController as? SessionInfoViewController)
+        var shown: [Int] = []
+        let recorder = TickRecorder { _ in
+            shown.append(info.sections.sections.filter { $0.id != "session-info-load-status" }.count)
         }
+        let opened = try await until { !self.shownGroups(info, in: window).isEmpty }
+        recorder.stop()
+        XCTAssertTrue(opened, "session info showed no groups")
+        let ids = info.sections.sections.map(\.id)
+        XCTAssertEqual(ids, ["quick-actions", "details", "metadata", "agent-state", "activity", "raw-0", "raw-1", "raw-2"])
+        // Never some of the groups: none, then all.
+        XCTAssertTrue(Set(shown).isSubset(of: [0, ids.count]), "\(shown)")
+        XCTAssertEqual(subviews(SettingsCardView.self, in: info.view).count, ids.count)
         await controller.signOut()
     }
     #endif
@@ -497,9 +667,6 @@ final class HostedSessionInfoTests: XCTestCase {
             let opening = Opening(turns: watch.stop(), pushed: pushed)
             info.append(opening)
             lines.append("session info: \(opening)")
-            #if DEBUG
-            lines.append("  making " + screen.slices.map { String(format: "%.2f ms × %d", $0.seconds * 1000, $0.steps) }.joined(separator: ", "))
-            #endif
             navigation.popToRootViewController(animated: false)
             try await Task.sleep(for: .milliseconds(150))
         }

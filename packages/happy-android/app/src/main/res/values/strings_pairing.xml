@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Happy Protocol V2 pairing (ui/connection). Not in happy-app's catalogs.
+  Translated in values-*/ (AndroidStringsTranslatedTest).
+-->
+<resources>
+    <string name="pairing_title">Connect Agent</string>
+    <string name="pairing_connecting">Connecting to %1$s…</string>
+    <string name="pairing_unverified">The name comes from the code and isn\'t verified until the connection completes.</string>
+    <string name="pairing_compare">Check that %1$s shows the same four emoji, in the same order.</string>
+    <string name="pairing_match">They match</string>
+    <string name="pairing_mismatch">They don\'t match</string>
+    <string name="pairing_confirming">Confirm on %1$s too.</string>
+    <string name="pairing_paired">Connected to %1$s</string>
+    <string name="pairing_paired_detail">It stays connected until you remove it here or in Happy Agent.</string>
+    <string name="pairing_failed">Couldn\'t connect</string>
+    <string name="pairing_done">Done</string>
+    <!-- Why pairing or a paired agent failed (connection/PairingLink.kt's AgentConnectionException.Reason). -->
+    <string name="pairing_error_invalid_code">This code is invalid. Generate a new one in Happy Agent.</string>
+    <string name="pairing_error_update_required">Update Happy to use this code.</string>
+    <string name="pairing_error_expired">This code has expired. Generate a new one in Happy Agent.</string>
+    <string name="pairing_error_rejected">The connection was rejected. Generate a new code and compare the emoji again.</string>
+    <string name="pairing_error_invalid_proof">The agent could not be verified. Generate a new code.</string>
+    <string name="pairing_error_invalid_response">The agent returned an invalid response.</string>
+    <string name="pairing_error_unavailable">Could not reach the agent. Check its connection and try again.</string>
+    <string name="pairing_error_revoked">This device is no longer authorized. Connect the agent again.</string>
+</resources>

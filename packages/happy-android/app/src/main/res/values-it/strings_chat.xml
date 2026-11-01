@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  values/strings_chat.xml in it: Android-only strings, not in happy-app's
+  catalogs. AndroidStringsTranslatedTest fails while one is missing here.
+-->
+<resources>
+    <string name="chat_send_failed">Invio del messaggio non riuscito.</string>
+    <string name="chat_no_messages">Ancora nessun messaggio</string>
+    <string name="chat_created">Creata %1$s</string>
+    <string name="chat_permissions_in_terminal">Le autorizzazioni sono mostrate solo nel terminale. Reimposta o invia un messaggio per gestirle dall\'app.</string>
+    <string name="chat_stop">Interrompi</string>
+    <string name="chat_voice">Voce</string>
+    <string name="chat_send">Invia</string>
+    <string name="chat_markdown_image">Immagine Markdown</string>
+    <string name="chat_remove_image">Rimuovi %1$s</string>
+    <string name="chat_add_photo">Aggiungi foto</string>
+    <string name="diff_badge_new">NUOVO</string>
+    <string name="diff_badge_deleted">ELIMINATO</string>
+    <string name="diff_badge_renamed">RINOMINATO</string>
+    <string name="files_no_session_path">Nessun percorso di sessione</string>
+    <string name="files_outside_root">Il file è fuori dalla radice della sessione.</string>
+    <string name="files_decode_failed">Impossibile decodificare il file</string>
+    <string name="files_diff_failed">Impossibile recuperare il diff</string>
+    <string name="files_load_failed">Impossibile caricare il file</string>
+    <string name="files_contents_match">Il contenuto del file corrisponde alla base di confronto.</string>
+    <string name="files_truncated">Mostrati %1$s di %2$s file modificati. Apri lo spazio di lavoro sul computer per vedere l\'elenco completo.</string>
+    <string name="files_counts_approximate">I conteggi delle modifiche per questo spazio di lavoro sono approssimativi.</string>
+    <string name="files_conflicted">Questo spazio di lavoro ha conflitti di merge non risolti.</string>
+    <string name="files_changes_failed">Impossibile caricare le modifiche da Happy Agent.</string>
+    <string name="files_file_failed">Impossibile caricare questo file. Ricarica le modifiche e riprova.</string>
+    <string name="files_update_agent">Aggiorna Happy Agent sul computer per vedere le modifiche di questa sessione.</string>
+    <string name="files_no_comparison">Il confronto con origin/main non è disponibile per questo spazio di lavoro.</string>
+    <string name="files_no_details">Nessun dettaglio dei file disponibile per questo confronto.</string>
+</resources>

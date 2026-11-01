@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  values/strings_artifacts.xml in ca: Android-only strings, not in happy-app's
+  catalogs. AndroidStringsTranslatedTest fails while one is missing here.
+-->
+<resources>
+    <string name="artifact_untitled">Artefacte sense títol</string>
+    <string name="artifact_deleted">Aquest artefacte s\'ha eliminat.</string>
+    <string name="artifact_unavailable">No s\'ha pogut carregar aquest artefacte. Comprova que l\'ordinador estigui engegat.</string>
+    <string name="artifact_file_unavailable">No s\'ha pogut obrir aquest fitxer.</string>
+    <string name="artifact_picture">Imatge</string>
+    <string name="artifact_video">Vídeo</string>
+    <plurals name="artifact_count_images">
+        <item quantity="one">%1$d imatge</item>
+        <item quantity="many">%1$d d\'imatges</item>
+        <item quantity="other">%1$d imatges</item>
+    </plurals>
+    <plurals name="artifact_count_videos">
+        <item quantity="one">%1$d vídeo</item>
+        <item quantity="many">%1$d de vídeos</item>
+        <item quantity="other">%1$d vídeos</item>
+    </plurals>
+    <string name="artifact_share">Comparteix</string>
+    <string name="artifact_play">Reprodueix</string>
+    <string name="artifact_pause">Pausa</string>
+    <string name="artifact_open_with">Obre en una altra app</string>
+    <string name="artifact_open_with_body">Android no pot mostrar aquest fitxer aquí. S\'obre en una app d\'aquest telèfon que el pugui llegir.</string>
+    <string name="browser_via">a través de %1$s</string>
+    <string name="browser_default_computer">connexió d\'agent</string>
+    <string name="browser_unreachable">No es pot contactar amb %1$s.\nComprova la connexió de l\'agent i toca Torna a carregar.</string>
+    <string name="browser_unreachable_page">No es pot contactar amb %1$s.\nComprova la connexió o l\'adreça de la pàgina i toca Torna a carregar.</string>
+    <string name="browser_unsupported">El WebView d\'aquest telèfon no pot enviar pàgines a través de l\'ordinador. Actualitza Android System WebView i toca Torna a carregar.</string>
+    <string name="browser_forward">Endavant</string>
+    <string name="browser_close">Tanca</string>
+    <string name="browser_share_link">Comparteix l\'enllaç</string>
+    <string name="browser_open_outside">Obre al navegador (sense proxy)</string>
+    <string name="link_menu_open_in_app">Obre al navegador de Happy</string>
+    <string name="link_menu_open_in_app_direct">A l\'app, a la xarxa d\'aquest telèfon</string>
+    <string name="link_menu_open_external">Obre en un navegador extern</string>
+    <string name="link_menu_open_external_proxied">Fora de la xarxa de l\'agent</string>
+    <string name="link_menu_copy">Copia l\'enllaç</string>
+    <string name="link_menu_share">Comparteix</string>
+</resources>

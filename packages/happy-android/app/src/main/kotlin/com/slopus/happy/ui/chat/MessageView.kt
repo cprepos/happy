@@ -16,9 +16,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.material3.CircularProgressIndicator
+import com.slopus.happy.ui.components.PageProgressIndicator as CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
@@ -57,7 +58,7 @@ import com.slopus.happy.ui.components.Ionicon
 import com.slopus.happy.ui.layout.LocalWindowLayout
 import com.slopus.happy.ui.layout.contentMaxWidth
 import com.slopus.happy.ui.theme.HappyTheme
-import com.slopus.happy.ui.theme.PlexMono
+import com.slopus.happy.ui.theme.AppMono
 import com.slopus.happy.ui.theme.happyTextStyle
 import java.text.DateFormat
 import java.util.Date
@@ -110,7 +111,7 @@ object MessageSpec {
     val chipPaddingVertical = 2.dp
     val chipRadius = 10.dp
     const val CHIP_OPACITY = 0.65f
-    val chipText = happyTextStyle(fontSize = 13, family = PlexMono)
+    val chipText = happyTextStyle(fontSize = 13, family = AppMono)
     val agentMarginHorizontal = 16.dp
     val agentMarginVertical = 10.dp
     val copyHeight = 20.dp
@@ -176,10 +177,19 @@ fun MessageView(row: ChatRow, bubble: BubblePalette, callbacks: MessageCallbacks
  * (14, agentEventText) 8 apart at 0.72. Command: its args in a bubble if
  * any, then a chip "/name" (mono 13, input text) with padding 10/2, radius
  * 10, a 1 divider border, at 0.65. Long press opens the Copy menu
- * ([LongPressCopyable]).
+ * ([LongPressCopyable]). [attachments] (a conversation's photos) go under
+ * the body, above the status line, and are not dimmed while pending.
  */
 @Composable
-fun UserMessage(row: ChatRow.User, bubble: BubblePalette, callbacks: MessageCallbacks, modifier: Modifier = Modifier) {
+fun UserMessage(
+    row: ChatRow.User,
+    bubble: BubblePalette,
+    callbacks: MessageCallbacks,
+    modifier: Modifier = Modifier,
+    attachments: (@Composable () -> Unit)? = null,
+    /** Draws the bubble's words instead of [MarkdownView]: a conversation's laid-out row ([com.slopus.happy.ui.conversation.ProseColumn]). */
+    body: (@Composable (List<com.slopus.happy.chat.markdown.MarkdownBlock>) -> Unit)? = null,
+) {
     val message = row.message
     val colors = HappyTheme.colors
     val chat = ChatTheme.colors
@@ -192,7 +202,7 @@ fun UserMessage(row: ChatRow.User, bubble: BubblePalette, callbacks: MessageCall
     }
     val alignment = if (fromOther) Alignment.Start else Alignment.End
     val statusText = when {
-        message.sendError != null -> stringResource(R.string.message_send_failed, message.sendError)
+        message.sendError != null -> stringResource(R.string.message_send_failed, message.sendError.ifEmpty { stringResource(R.string.chat_send_failed) })
         showPending && message.meta?.queuedWhileBusy == true -> stringResource(R.string.message_sends_after_this_turn)
         showPending -> stringResource(R.string.message_sending)
         else -> ""
@@ -211,7 +221,7 @@ fun UserMessage(row: ChatRow.User, bubble: BubblePalette, callbacks: MessageCall
                 .border(hairline, bubble.border, bubbleShape)
                 .padding(horizontal = MessageSpec.bubblePaddingHorizontal, vertical = MessageSpec.bubblePaddingVertical),
         ) {
-            MarkdownView(blocks, onOptionPress = callbacks.onOptionPress)
+            if (body != null) body(blocks) else MarkdownView(blocks, onOptionPress = callbacks.onOptionPress)
         }
     }
 
@@ -277,6 +287,7 @@ fun UserMessage(row: ChatRow.User, bubble: BubblePalette, callbacks: MessageCall
                 }
             }
         }
+        attachments?.invoke()
         val failed = row.failedLocalId
         if (failed == null) {
             StatusLine(statusText, if (message.sendError != null) colors.textDestructive else chat.agentEventText)
@@ -354,20 +365,27 @@ private fun rememberPendingStatusVisible(pending: Boolean, queuedWhileBusy: Bool
  * Agent text (`AgentTextBlock`). Spec: 16 side margins, 10 above and below;
  * the markdown, selectable; under it a copy button the width of its 16
  * glyph and 20 high at the text's left edge, copy-outline swapping to a
- * checkmark for 1.5 s after a copy.
+ * checkmark for 1.5 s after a copy. While the words stream, [reveal]
+ * draws them in as Telegram does ([TextReveal]): the copy button shows
+ * once they are all there.
  */
 @Composable
-fun AgentMessage(row: ChatRow.AgentText, callbacks: MessageCallbacks, modifier: Modifier = Modifier) {
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(horizontal = MessageSpec.agentMarginHorizontal, vertical = MessageSpec.agentMarginVertical)
-            .testTag(MessageTags.AGENT),
-    ) {
-        SelectionContainer {
-            MarkdownView(row.blocks, modifier = Modifier.fillMaxWidth(), onOptionPress = callbacks.onOptionPress)
+fun AgentMessage(row: ChatRow.AgentText, callbacks: MessageCallbacks, modifier: Modifier = Modifier, reveal: TextReveal? = null) {
+    // The reveal's height is a node of its own, so a frame of it measures that node alone.
+    Box(modifier.revealHeight(reveal)) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = MessageSpec.agentMarginHorizontal, vertical = MessageSpec.agentMarginVertical)
+                .testTag(MessageTags.AGENT),
+        ) {
+            CompositionLocalProvider(LocalTextReveal provides reveal) {
+                SelectionContainer {
+                    MarkdownView(row.blocks, modifier = Modifier.fillMaxWidth(), onOptionPress = callbacks.onOptionPress)
+                }
+            }
+            MessageCopyButton(row.message.text)
         }
-        MessageCopyButton(row.message.text)
     }
 }
 

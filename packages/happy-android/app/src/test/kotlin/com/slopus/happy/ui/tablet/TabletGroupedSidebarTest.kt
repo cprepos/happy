@@ -20,7 +20,7 @@ import com.slopus.happy.ui.HappyApp
 import com.slopus.happy.ui.chat.ChatScreenTags
 import com.slopus.happy.ui.home.FlatRowTags
 import com.slopus.happy.ui.home.HomeServices
-import com.slopus.happy.ui.home.NewSessionTags
+import com.slopus.happy.ui.chat.ComposeChatTags
 import com.slopus.happy.ui.home.ProjectListTags
 import com.slopus.happy.ui.node
 import kotlinx.coroutines.runBlocking
@@ -94,9 +94,9 @@ class TabletGroupedSidebarTest {
         waitFor(ChatScreenTags.SCREEN)
         rule.onAllNodesWithTag(TabletGroupedTags.COMPACT_ROW, useUnmergedTree = true)[0].assertIsSelected()
 
-        // The "+" points the draft at that checkout and opens the new-session screen beside the list.
+        // The "+" points the draft at that checkout and opens the compose chat beside the list.
         rule.onAllNodesWithTag(TabletGroupedTags.ADD, useUnmergedTree = true)[1].performClick()
-        waitFor(NewSessionTags.SCREEN)
+        waitFor(ComposeChatTags.TARGET)
         val draft = HomeServices.of(graph)
             .newSession(ApplicationProvider.getApplicationContext()).draft.value
         assertEquals("m1", draft.selectedMachineId)

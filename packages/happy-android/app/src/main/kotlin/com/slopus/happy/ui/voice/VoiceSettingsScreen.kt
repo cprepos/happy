@@ -5,7 +5,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.material3.CircularProgressIndicator
+import com.slopus.happy.ui.components.PageProgressIndicator as CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -23,6 +23,7 @@ import com.slopus.happy.R
 import com.slopus.happy.model.Settings
 import com.slopus.happy.ui.components.*
 import com.slopus.happy.ui.settings.ItemIcon
+import com.slopus.happy.ui.settings.SettingsEntry
 import com.slopus.happy.ui.settings.SettingsSpec
 import com.slopus.happy.ui.theme.HappyTheme
 import com.slopus.happy.ui.theme.happyTextStyle
@@ -72,23 +73,24 @@ fun VoiceSettingsScreen(
             }
             if (!hasPro) ItemGroup {
                 Item(title = stringResource(R.string.settings_voice_support_title), subtitle = stringResource(R.string.settings_voice_support_subtitle),
-                    icon = { ItemIcon(Ionicon.HeartOutline, Color(0xFFFF2D55)) }, onClick = onSupport, modifier = Modifier.testTag("voice.support"))
+                    icon = { ItemIcon(Ionicon.HeartOutline, Color(0xFFFF2D55)) }, onClick = onSupport, modifier = Modifier.revealRow(VoiceTags.SUPPORT))
             }
             developerContent?.invoke()
             ItemGroup(title = stringResource(R.string.settings_voice_language_title), footer = stringResource(R.string.settings_voice_language_description)) {
                 Item(title = stringResource(R.string.settings_voice_preferred_language), subtitle = stringResource(R.string.settings_voice_preferred_language_subtitle),
                     detail = (VoiceLanguages.find(settings.voiceAssistantLanguage) ?: VoiceLanguages.all.first()).displayName,
                     icon = { ItemIcon(Ionicon.LanguageOutline, SettingsSpec.blue) }, onClick = onLanguage,
-                    modifier = Modifier.testTag("voice.language"))
+                    modifier = Modifier.revealRow(VoiceTags.LANGUAGE))
             }
             ItemGroup(title = stringResource(R.string.settings_voice_byo_title), footer = stringResource(R.string.settings_voice_byo_description)) {
                 Item(title = stringResource(R.string.settings_voice_custom_agent_id),
                     subtitle = settings.voiceCustomAgentId ?: stringResource(R.string.settings_voice_custom_agent_id_not_set),
-                    icon = { ItemIcon(Ionicon.KeyOutline, SettingsSpec.orange) }, onClick = { editing = true }, modifier = Modifier.testTag("voice.agent"))
+                    icon = { ItemIcon(Ionicon.KeyOutline, SettingsSpec.orange) }, onClick = { editing = true }, modifier = Modifier.revealRow(VoiceTags.AGENT))
                 val bypass = stringResource(R.string.settings_voice_bypass_token)
                 Item(title = bypass, subtitle = stringResource(R.string.settings_voice_bypass_token_subtitle),
                     icon = { ItemIcon(Ionicon.FlashOutline, SettingsSpec.red) },
-                    rightElement = { HappySwitch(settings.voiceBypassToken, { value -> onSettingsChange { it.copy(voiceBypassToken = value) } }, label = bypass) })
+                    rightElement = { HappySwitch(settings.voiceBypassToken, { value -> onSettingsChange { it.copy(voiceBypassToken = value) } }, label = bypass) },
+                    modifier = Modifier.revealRow(VoiceTags.BYPASS))
             }
             settings.voiceCustomAgentId?.takeIf { it.isNotEmpty() }?.let { id ->
                 ItemGroup(title = stringResource(R.string.settings_voice_prompt_guide_title), footer = stringResource(R.string.settings_voice_prompt_guide_description)) {
@@ -106,6 +108,42 @@ fun VoiceSettingsScreen(
                 if (value != null) onSettingsChange { setCustomVoiceAgent(it, value) }
             }),
         onDismiss = { editing = false },
+    )
+}
+
+object VoiceTags {
+    const val SUPPORT = "voice.support"
+    const val LANGUAGE = "voice.language"
+    const val AGENT = "voice.agent"
+    const val BYPASS = "voice.bypass"
+}
+
+/**
+ * Voice's rows as Settings' search finds them (iOS's, less usage, which is
+ * read once the page shows): Support us without Pro, the preferred
+ * language, the custom agent and Direct Connection.
+ */
+@Composable
+fun voicePageEntries(settings: Settings, hasPro: Boolean, open: (row: String) -> Unit): List<SettingsEntry> {
+    fun row(id: String, title: String, icon: Ionicon, color: Color, subtitle: String? = null, detail: String? = null) =
+        SettingsEntry(id = id, title = title, subtitle = subtitle, detail = detail, icon = { ItemIcon(icon, color) }, onClick = { open(id) }, page = true)
+    return listOfNotNull(
+        if (hasPro) null else row(VoiceTags.SUPPORT, stringResource(R.string.settings_voice_support_title), Ionicon.HeartOutline, Color(0xFFFF2D55)),
+        row(
+            VoiceTags.LANGUAGE,
+            stringResource(R.string.settings_voice_preferred_language),
+            Ionicon.LanguageOutline,
+            SettingsSpec.blue,
+            detail = (VoiceLanguages.find(settings.voiceAssistantLanguage) ?: VoiceLanguages.all.first()).displayName,
+        ),
+        row(
+            VoiceTags.AGENT,
+            stringResource(R.string.settings_voice_custom_agent_id),
+            Ionicon.KeyOutline,
+            SettingsSpec.orange,
+            subtitle = settings.voiceCustomAgentId ?: stringResource(R.string.settings_voice_custom_agent_id_not_set),
+        ),
+        row(VoiceTags.BYPASS, stringResource(R.string.settings_voice_bypass_token), Ionicon.FlashOutline, SettingsSpec.red),
     )
 }
 
@@ -142,7 +180,7 @@ fun VoiceLanguageScreen(preferred: String?, onSelect: (String?) -> Unit, onBack:
     val colors = HappyTheme.colors
     var query by rememberSaveable { mutableStateOf("") }
     val languages = remember(query) { VoiceLanguages.all.filter { it.matches(query) } }
-    Screen(header = { StackHeader(stringResource(R.string.settings_voice__language__title), onBack) }) {
+    Screen(header = { StackHeader(stringResource(R.string.settings_voice__language__title), onBack) }, avoidKeyboard = true) {
         ItemList {
             Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
                 Row(Modifier.testTag("voice.searchField").fillMaxWidth().background(colors.glass.backgroundStrong, RoundedCornerShape(16.dp))

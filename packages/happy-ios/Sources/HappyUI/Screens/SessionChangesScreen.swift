@@ -73,12 +73,12 @@ final class SessionChangesViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        showsBackTitle()
+        minimalBackButton()
         // The session's metadata from the account's shared feed, found and
         // compared off the main thread; a new message's activity stamp is
         // not something these viewers read.
         let sessionId = self.sessionId
-        let pipeline = ApplyPipeline<HomeSnapshot?, JSONValue??, JSONValue?>(
+        let pipeline = ApplyPipeline<LegacyHomeSnapshot?, JSONValue??, JSONValue?>(
             input: nil,
             state: nil,
             derive: { snapshot, applied in

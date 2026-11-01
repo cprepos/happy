@@ -13,6 +13,8 @@ import androidx.compose.ui.semantics.SemanticsNode
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.isRoot
+import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onLast
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -68,7 +70,7 @@ import com.slopus.happy.ui.home.HomeSnapshot
 import com.slopus.happy.ui.home.deriveHomeList
 import com.slopus.happy.ui.node
 import com.slopus.happy.ui.onboarding.OnboardingContentTags
-import com.slopus.happy.ui.onboarding.WelcomeScreen
+import com.slopus.happy.ui.onboarding.OnboardingLinkComputerScreen
 import com.slopus.happy.ui.settings.SettingsScreen
 import com.slopus.happy.ui.setHappyContent
 import kotlinx.serialization.json.put
@@ -110,7 +112,7 @@ class FontScaleLayoutTest {
 
     private val noon = LocalDate.of(2026, 10, 16).atTime(12, 0).toInstant(ZoneOffset.UTC).toEpochMilli()
     private val homeCallbacks = HomeListCallbacks({}, {}, {}, {}, {}, {}, {}, { _, _ -> })
-    private val homeActions = HomeScreenActions({}, {}, {}, {}, {}, {}, {})
+    private val homeActions = HomeScreenActions({}, {}, {}, {}, {}, {})
 
     private fun showLarge(content: @Composable () -> Unit) {
         rule.setHappyContent { CompositionLocalProvider(LocalDensity provides LARGE_TEXT, content = content) }
@@ -141,7 +143,8 @@ class FontScaleLayoutTest {
         assertTrue("$name bottom ${inner.bottom} inside ${outer.bottom}", inner.bottom <= outer.bottom + 0.34.dp)
     }
 
-    // FlatSessionRow at 2.0: title and project lines grow; the avatar and the text's 88 inset don't move.
+    // FlatSessionRow in its card at 2.0: the lines grow and the row with them, to its kind's height at
+    // this scale; the 40 avatar and the text's 84 inset don't move.
     @Test
     fun homeRowGrows() {
         val studio = machine("m1", machineMetadata { put("displayName", "Studio") })
@@ -159,17 +162,12 @@ class FontScaleLayoutTest {
         assertDp("title line", line(17, 22), title.height)
         assertDp("project line", line(15, 20), project.height)
         assertTrue("title grows past 22", title.height > 30.dp)
-        assertDp("title still 88 in", 88, title.left)
+        assertDp("title still 84 in", 84, title.left)
         assertDp("title still 10 down", row.top + 10.dp, title.top)
-        assertDp("avatar stays 60", 60, rule.node(FlatRowTags.AVATAR).bounds.height)
-        assertTrue("row grows past 81", row.height > 81.dp)
+        assertDp("avatar stays 40", 40, rule.node(FlatRowTags.AVATAR).bounds.height)
+        assertDp("row: 10, the title, project and workspace lines and 1, 10", 20.dp + line(17, 22) + line(15, 20) + 1.dp + line(13, 18), row.height)
         assertInside("project", row, project)
-        val corner = rule.node(FlatRowTags.TOP_RIGHT).bounds
-        val stamp = rule.node(FlatRowTags.TIMESTAMP).bounds
-        assertDp("timestamp line", line(13, 22), stamp.height)
-        assertDp("the corner slot stays 22", 22, corner.height)
-        assertDp("timestamp overflows it, centred", (corner.top + corner.bottom) / 2, (stamp.top + stamp.bottom) / 2)
-        assertInside("timestamp", row, stamp)
+        assertDp("the corner slot stays 22", 22, rule.node(FlatRowTags.TOP_RIGHT).bounds.height)
     }
 
     @Test
@@ -259,7 +257,7 @@ class FontScaleLayoutTest {
 
     @Test
     fun settingsScreenFitsLargeText() {
-        showLarge { SettingsScreen(versionName = "0.1.0", onBack = {}, onAccount = {}, onAppearance = {}, onOpenUrl = {}) }
+        showLarge { SettingsScreen(com.slopus.happy.ui.settings.SettingsFixtures.profile, com.slopus.happy.ui.settings.AboutInfo("0.1.0")) }
         assertNothingClipped()
     }
 
@@ -293,11 +291,14 @@ class FontScaleLayoutTest {
     fun onboardingTitlesAreCapped() {
         showLarge {
             Box(Modifier.fillMaxSize()) {
-                WelcomeScreen(customServerLabel = null, creatingAccount = false, onCreateAccount = {}, onRestore = {}, onServer = {})
+                OnboardingLinkComputerScreen(
+                    customServerLabel = null, ticked = emptySet(), onToggle = {}, busy = false, error = null,
+                    onScan = {}, onPasteLink = {}, onSettings = {}, onOpenDesktopSite = {},
+                )
             }
         }
         assertNothingClipped()
-        val headline = rule.onNodeWithTag(OnboardingContentTags.HEADLINE).bounds
+        val headline = rule.onAllNodesWithTag(OnboardingContentTags.LINK_TITLE, useUnmergedTree = true).onLast().bounds
         assertTrue("the cap bites at 2.0", line(28, 34) > 40.8.dp)
         val lines = headline.height / 40.8.dp
         assertEquals("headline is whole 40.8 lines", Math.round(lines).toFloat(), lines, 0.02f)

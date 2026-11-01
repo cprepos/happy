@@ -21,6 +21,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
@@ -53,7 +54,8 @@ internal fun SwipeToArchive(
     val offset = remember { Animatable(0f) }
     val scope = rememberCoroutineScope()
     Box(modifier = modifier.fillMaxWidth().clipToBounds()) {
-        Box(modifier = Modifier.matchParentSize(), contentAlignment = Alignment.CenterEnd) {
+        // Drawn only once the row moves: at rest its red would fringe a card's rounded corners.
+        Box(modifier = Modifier.matchParentSize().drawWithContent { if (offset.value < 0f) drawContent() }, contentAlignment = Alignment.CenterEnd) {
             Column(
                 modifier = Modifier
                     .width(FlatRowSpec.swipeAction)

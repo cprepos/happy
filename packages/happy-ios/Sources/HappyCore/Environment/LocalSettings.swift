@@ -39,17 +39,6 @@ public enum ThemePreference: String, CaseIterable, Sendable {
     }
 }
 
-/// The local Home renderer. Older installations and unknown future values
-/// keep the established table renderer.
-public enum HomeListRenderer: String, CaseIterable, Sendable {
-    case tableView = "UITableView"
-    case ultraList = "UltraList"
-}
-
-public enum ChatListRenderer: String, CaseIterable, Sendable {
-    case collectionView = "UICollectionView"
-    case ultraList = "UltraList"
-}
 
 /// Device-only settings that belong to the signed-in account, like
 /// happy-app's `local-settings`. Logout clears them, as happy-app's
@@ -66,6 +55,11 @@ public final class LocalSettings: Sendable {
 
     public init(storage: KeyValueStore) {
         self.storage = storage
+        // Choices the app no longer offers: whatever was picked, the one
+        // way left is used, and the stored pick goes.
+        for key in Keys.retired where storage.string(forKey: key) != nil {
+            storage.set(nil, forKey: key)
+        }
     }
 
     public var linkComputerChecklist: LinkChecklist {
@@ -87,15 +81,6 @@ public final class LocalSettings: Sendable {
         set { storage.set(newValue.rawValue, forKey: Keys.themePreference) }
     }
 
-    public var homeListRenderer: HomeListRenderer {
-        get { storage.string(forKey: Keys.homeListRenderer).flatMap(HomeListRenderer.init(rawValue:)) ?? .tableView }
-        set { storage.set(newValue.rawValue, forKey: Keys.homeListRenderer) }
-    }
-
-    public var chatListRenderer: ChatListRenderer {
-        get { storage.string(forKey: Keys.chatListRenderer).flatMap(ChatListRenderer.init(rawValue:)) ?? .collectionView }
-        set { storage.set(newValue.rawValue, forKey: Keys.chatListRenderer) }
-    }
 
     /// Ten taps on Settings › Version.
     public var devModeEnabled: Bool {
@@ -163,7 +148,7 @@ public final class LocalSettings: Sendable {
     }
 
     public func clear() {
-        for key in [Keys.linkComputerChecklist, Keys.themePreference, Keys.homeListRenderer, Keys.chatListRenderer, Keys.devModeEnabled, Keys.markdownCopyV2, Keys.expandedProjects, Keys.acknowledgedCliVersions, Keys.registeredPushToken, Keys.zenMode, NewSessionDraft.storageKey] {
+        for key in [Keys.linkComputerChecklist, Keys.themePreference, Keys.devModeEnabled, Keys.markdownCopyV2, Keys.expandedProjects, Keys.acknowledgedCliVersions, Keys.registeredPushToken, Keys.zenMode, NewSessionDraft.storageKey] {
             storage.set(nil, forKey: key)
         }
     }
@@ -178,8 +163,10 @@ public final class LocalSettings: Sendable {
     private enum Keys {
         static let linkComputerChecklist = "linkComputerChecklist"
         static let themePreference = "themePreference"
-        static let homeListRenderer = "homeListRenderer"
-        static let chatListRenderer = "chatListRenderer"
+        /// The chat's and Home's renderer picks, from when Appearance
+        /// offered UICollectionView and UITableView beside UltraList.
+        static let retired = ["chatListRenderer", "homeListRenderer"]
+
         static let devModeEnabled = "devModeEnabled"
         static let markdownCopyV2 = "markdownCopyV2"
         static let expandedProjects = "expandedProjects"

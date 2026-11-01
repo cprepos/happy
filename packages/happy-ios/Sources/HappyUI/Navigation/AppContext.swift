@@ -26,21 +26,16 @@ public final class AppContext {
 /// Scanning and answering pairing codes: connecting a terminal
 /// (useConnectTerminal.ts) and linking another device (useConnectAccount.ts).
 @MainActor
-enum PairingFlow {
+enum LegacyPairingFlow {
     enum Kind {
         case terminal
         case account
-
-        var prefix: String {
-            switch self {
-            case .terminal: PairingLink.terminalPrefix
-            case .account: PairingLink.accountPrefix
-            }
-        }
     }
 
     enum Outcome: Equatable {
         case approved
+        /// The code was answered already, or has expired: nothing was sent.
+        case alreadyHandled
         /// Not a pairing link of the expected kind.
         case invalidLink
         /// A terminal that only speaks auth v1.
@@ -48,24 +43,9 @@ enum PairingFlow {
         case failed
     }
 
-    /// Presents the camera and returns the first code of `kind` it reads;
-    /// nil when closed. Other codes are ignored, as happy-app's scanner
-    /// ignores them.
-    static func scan(_ kind: Kind, from controller: UIViewController) async -> String? {
-        await withCheckedContinuation { continuation in
-            let scanner = QRScannerViewController()
-            scanner.accepts = {
-                $0.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix(kind.prefix) ||
-                DirectPairingLink.isDirect($0)
-            }
-            scanner.onFinish = { continuation.resume(returning: $0) }
-            controller.present(scanner, animated: true)
-        }
-    }
-
     /// Approves a scanned or pasted link of the expected kind.
     static func approve(_ text: String, expecting kind: Kind, session: AccountSession) async -> Outcome {
-        guard let link = PairingLink(text.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+        guard let link = LegacyPairingLink(text.trimmingCharacters(in: .whitespacesAndNewlines)) else {
             return .invalidLink
         }
         switch (link, kind) {
@@ -74,10 +54,13 @@ enum PairingFlow {
         default:
             return .invalidLink
         }
+        return await approve(link, session: session)
+    }
+
+    static func approve(_ link: LegacyPairingLink, session: AccountSession) async -> Outcome {
         do {
-            _ = try await session.pairing.approve(link)
-            return .approved
-        } catch PairingError.terminalNeedsUpdate {
+            return try await session.pairing.approve(link) == .alreadyHandled ? .alreadyHandled : .approved
+        } catch LegacyPairingError.terminalNeedsUpdate {
             return .terminalNeedsUpdate
         } catch {
             return .failed
@@ -93,6 +76,8 @@ enum PairingFlow {
             UINotificationFeedbackGenerator().notificationOccurred(.success)
         case (.approved, .account):
             Alerts.show(Strings.Common.success, Strings.Modals.deviceLinkedSuccessfully, on: controller)
+        case (.alreadyHandled, _):
+            Alerts.show(Strings.Scan.alreadyUsedTitle, Strings.Scan.alreadyUsed, on: controller)
         case (.invalidLink, _):
             Alerts.show(Strings.Common.error, Strings.Modals.invalidAuthUrl, on: controller)
         case (.terminalNeedsUpdate, _):
@@ -114,10 +99,13 @@ extension UIViewController {
         return item
     }
 
-    /// happy-app's stack shows "Back" on the screens pushed from here.
-    func showsBackTitle() {
-        navigationItem.backButtonDisplayMode = .default
-        navigationItem.backButtonTitle = Strings.Common.back
+    /// The screens pushed from here go back with the chevron alone, in its
+    /// glass circle: never "Back" nor this screen's title. The shell's
+    /// stacks say the same of every screen (`ShellViewController`);
+    /// this covers one pushed onto another stack.
+    func minimalBackButton() {
+        navigationItem.backButtonDisplayMode = .minimal
+        navigationItem.backButtonTitle = nil
     }
 }
 #endif

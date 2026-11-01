@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  values/strings_pairing.xml in pt: Android-only strings, not in happy-app's
+  catalogs. AndroidStringsTranslatedTest fails while one is missing here.
+-->
+<resources>
+    <string name="pairing_title">Conectar agente</string>
+    <string name="pairing_connecting">Conectando a %1$s…</string>
+    <string name="pairing_unverified">O nome vem do código e só é verificado quando a conexão termina.</string>
+    <string name="pairing_compare">Verifique se %1$s mostra os mesmos quatro emojis na mesma ordem.</string>
+    <string name="pairing_match">Coincidem</string>
+    <string name="pairing_mismatch">Não coincidem</string>
+    <string name="pairing_confirming">Confirme também em %1$s.</string>
+    <string name="pairing_paired">Conectado a %1$s</string>
+    <string name="pairing_paired_detail">Continua conectado até você removê-lo aqui ou no Happy Agent.</string>
+    <string name="pairing_failed">Não foi possível conectar</string>
+    <string name="pairing_done">Concluído</string>
+    <string name="pairing_error_invalid_code">Este código é inválido. Gere um novo no Happy Agent.</string>
+    <string name="pairing_error_update_required">Atualize o Happy para usar este código.</string>
+    <string name="pairing_error_expired">Este código expirou. Gere um novo no Happy Agent.</string>
+    <string name="pairing_error_rejected">A conexão foi recusada. Gere um novo código e compare os emojis de novo.</string>
+    <string name="pairing_error_invalid_proof">Não foi possível verificar o agente. Gere um novo código.</string>
+    <string name="pairing_error_invalid_response">O agente retornou uma resposta inválida.</string>
+    <string name="pairing_error_unavailable">Não foi possível acessar o agente. Verifique a conexão dele e tente de novo.</string>
+    <string name="pairing_error_revoked">Este dispositivo não está mais autorizado. Conecte o agente de novo.</string>
+</resources>

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A full-window viewer going: fades out, 140 ms. -->
+<alpha xmlns:android="http://schemas.android.com/apk/res/android"
+    android:duration="140"
+    android:fromAlpha="1"
+    android:interpolator="@anim/happy_emphasized_accelerate"
+    android:toAlpha="0" />

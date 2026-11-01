@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Conversations with a paired Happy Agent (ui/conversation). Not in
+  happy-app's catalogs. Translated in values-*/ (AndroidStringsTranslatedTest).
+-->
+<resources>
+    <string name="conversation_details">Chat details</string>
+    <string name="conversation_offline">Offline</string>
+    <string name="conversation_revoked">This device was removed</string>
+    <string name="conversation_update_required">Update required</string>
+    <string name="conversation_unavailable">This agent connection is not available on this device.</string>
+    <string name="conversation_empty">No messages yet.</string>
+    <string name="conversation_read_only">This conversation is driven by another agent and can\'t take messages.</string>
+    <string name="conversation_archived">This conversation is archived.</string>
+    <string name="conversation_activity_awaiting_answer">Waiting for your answer</string>
+    <string name="conversation_activity_waiting_for_model">Waiting for the model…</string>
+    <string name="conversation_activity_thinking">Thinking…</string>
+    <string name="conversation_activity_preparing_tools">Preparing tools…</string>
+    <string name="conversation_activity_running_tools">Running tools…</string>
+    <string name="conversation_activity_working">Working…</string>
+    <string name="conversation_activity_delegating">Subtasks are working</string>
+    <string name="conversation_sending">Sending…</string>
+    <string name="conversation_pending">Waiting for the agent</string>
+    <string name="conversation_tool_running">Running</string>
+    <string name="conversation_tool_failed">Failed</string>
+    <string name="conversation_from_agent">From another agent</string>
+    <string name="conversation_failure_resolved">Retried</string>
+    <string name="conversation_compacting">Compacting the conversation…</string>
+    <string name="conversation_compacted">Conversation compacted</string>
+    <string name="conversation_compaction_failed">Compaction failed</string>
+    <string name="conversation_artifact">Artifact</string>
+    <string name="conversation_artifact_unavailable">Open it in Happy Agent on your computer.</string>
+    <string name="conversation_file_unavailable">Files open in Happy Agent on your computer.</string>
+    <string name="conversation_picture">Picture</string>
+    <string name="conversation_picture_failed">Couldn\'t load this picture.</string>
+    <string name="conversation_permission">Permission request</string>
+    <string name="conversation_permission_from">%1$s asks for permission</string>
+    <string name="conversation_answer">Answer</string>
+    <string name="conversation_answer_placeholder">Your answer</string>
+    <string name="conversation_secret_name">Name for this secret</string>
+    <string name="conversation_secret_name_placeholder" translatable="false">deploy-api</string>
+    <string name="conversation_secret_value_placeholder">Value</string>
+    <string name="conversation_secret_save">Save and answer</string>
+    <string name="conversation_secret_use_existing">Use a secret you already have</string>
+    <string name="conversation_secret_name_taken">That name is taken. Choose another.</string>
+    <string name="conversation_secret_failed">Couldn\'t save the secret. Nothing was sent.</string>
+    <string name="conversation_secret_answer">Answer again</string>
+    <string name="conversation_secret_kept">Saved as %1$s. Answering again needs no retyping.</string>
+    <string name="conversation_secret_answer_failed">The secret was saved, but the answer didn\'t get through. Try again.</string>
+    <string name="conversation_secret_malformed">This request doesn\'t say what it needs, so there\'s nothing to fill in. Answer it in Happy Agent on your computer.</string>
+    <string name="conversation_secret_unavailable">This asks for a secret. Answer it in Happy Agent on your computer.</string>
+    <string name="conversation_older_failed">Couldn\'t load earlier messages.</string>
+    <string name="conversation_load_failed">Couldn\'t load this conversation</string>
+    <string name="conversation_close">Close</string>
+    <string name="conversation_details_model">Model</string>
+    <string name="conversation_details_effort">Effort</string>
+    <string name="conversation_details_permission_mode">Permission mode</string>
+    <string name="conversation_details_agent_id">Agent ID</string>
+    <string name="conversation_details_conversation">Conversation</string>
+    <string name="conversation_status_working">Working</string>
+    <string name="conversation_untitled">New Task</string>
+    <string name="conversation_permission_auto">Auto</string>
+    <string name="conversation_permission_auto_description">Works in its folder; anything beyond is reviewed first.</string>
+    <string name="conversation_permission_workspace_write">Workspace write</string>
+    <string name="conversation_permission_workspace_write_description">Reads anywhere, writes only in its folder.</string>
+    <string name="conversation_permission_read_only">Read only</string>
+    <string name="conversation_permission_read_only_description">Reads and answers, changes nothing.</string>
+    <string name="conversation_permission_full_access">Full access</string>
+    <string name="conversation_permission_full_access_description">Runs anything on this computer without asking.</string>
+    <string name="conversation_media_reading">Opening…</string>
+    <string name="conversation_media_no_app">Nothing on this phone opens this kind of file.</string>
+    <string name="conversation_media_failed">Couldn\'t open this. Tap to try again.</string>
+    <string name="conversation_picture_close">Close picture</string>
+    <string name="conversation_chief_of_staff" translatable="false">Chief of Staff</string>
+    <string name="conversation_chief_unavailable">Can\'t open the Chief of Staff</string>
+    <string name="conversation_chief_missing">There\'s no Chief of Staff on this computer.</string>
+    <string name="conversation_mode_permission">Permissions</string>
+    <string name="conversation_mode_model">Model</string>
+    <string name="conversation_mode_effort">Effort</string>
+    <string name="conversation_send">Send</string>
+    <string name="conversation_stop">Stop</string>
+    <string name="conversation_attach_picture">Add picture</string>
+    <string name="conversation_remove_picture">Remove picture</string>
+    <string name="conversation_composer_more">More</string>
+    <string name="conversation_mode_label">Model %1$s, effort %2$s</string>
+    <string name="conversation_mode_label_model_only">Model %1$s</string>
+    <string name="conversation_mode_permission_item">Permissions: %1$s</string>
+    <string name="conversation_pictures_too_large_title">Pictures too large</string>
+    <string name="conversation_pictures_too_large_message">Together these pictures are more than one message can carry. Remove some and send again.</string>
+    <!-- Conversation.describe's own words, where the agent gave none. -->
+    <string name="conversation_problem_refused">The agent refused this (%1$d).</string>
+    <string name="conversation_problem_unknown">Something went wrong.</string>
+    <string name="conversation_problem_pictures">Couldn\'t read the pictures to send.</string>
+    <!-- A failed turn, as desktop's failure card (conversationFailureMessage) words it. -->
+    <string name="conversation_failure_signin_missing">%1$s isn\'t signed in. Run `%2$s`, then retry.</string>
+    <string name="conversation_failure_cannot_authenticate">%1$s couldn\'t authenticate. Check its sign-in settings, then retry.</string>
+    <string name="conversation_failure_usage_limit">%1$s usage limit reached.</string>
+    <string name="conversation_failure_no_account">Every account in “%1$s” is out of usage.</string>
+    <string name="conversation_failure_rate_limited">%1$s is rate-limited. Try again in a minute.</string>
+    <string name="conversation_failure_provider_unavailable">%1$s is overloaded right now. Try again in a moment.</string>
+    <string name="conversation_failure_network">Couldn\'t reach %1$s. Check your connection, then retry.</string>
+    <string name="conversation_failure_context_too_long">This conversation is too long for %1$s, even after a reset.</string>
+    <string name="conversation_failure_provider_disabled">%1$s is turned off. Turn it on in Settings, then retry.</string>
+    <string name="conversation_failure_internal">Something went wrong: %1$s</string>
+</resources>

@@ -1,5 +1,7 @@
 package com.slopus.happy.model
 
+import com.slopus.happy.text.Words
+import com.slopus.happy.R
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -65,9 +67,9 @@ class BotFaceTest {
         assertEquals(BOT_NAME_MAX_LENGTH, sanitizeBotName("x".repeat(300)).length)
         assertTrue(isValidBotName("  Ada "))
         assertFalse(isValidBotName("   "))
-        assertEquals("Give the bot a name", describeBotNameProblem(" "))
-        assertEquals("A bot's name is at most 256 characters", describeBotNameProblem("x".repeat(257)))
-        assertEquals("A bot's name cannot contain line breaks or control characters", describeBotNameProblem("a\u0007b"))
+        assertEquals(Words.ours(R.string.home_bot_name_empty), describeBotNameProblem(" "))
+        assertEquals(Words.ours(R.string.home_bot_name_too_long, 256), describeBotNameProblem("x".repeat(257)))
+        assertEquals(Words.ours(R.string.home_bot_name_control), describeBotNameProblem("a\u0007b"))
         assertNull(describeBotNameProblem("Ada"))
     }
 

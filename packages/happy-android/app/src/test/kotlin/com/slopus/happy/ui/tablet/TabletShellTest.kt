@@ -24,11 +24,13 @@ import com.slopus.happy.ui.assertDp
 import com.slopus.happy.ui.bounds
 import com.slopus.happy.ui.chat.ChatScreenTags
 import com.slopus.happy.ui.components.HeaderTags
+import com.slopus.happy.ui.components.HomeCardSpec
 import com.slopus.happy.ui.files.ChangesTags
 import com.slopus.happy.ui.home.FlatRowTags
 import com.slopus.happy.ui.home.HomeDockTags
 import com.slopus.happy.ui.home.NewSessionTags
 import com.slopus.happy.ui.home.HomeTags
+import com.slopus.happy.ui.home.AccountMenuTags
 import com.slopus.happy.ui.node
 import com.slopus.happy.ui.session.SessionInfoTags
 import kotlinx.coroutines.runBlocking
@@ -37,6 +39,7 @@ import kotlinx.serialization.json.put
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import com.slopus.happy.ui.layout.ContentTokens
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -48,8 +51,9 @@ private const val TABLET_WIDTH = 1280
 
 /**
  * SidebarNavigator.tsx on a signed-in window: the sidebar (30% of the window,
- * 250–360) beside the stack from 768 wide, the persistent header's zen and
- * back over both, Home blank in the detail; just the stack below 768.
+ * 250–360) beside the stack from 840 wide (Material expanded), the persistent
+ * header's zen and back over both, Home blank in the detail; just the stack
+ * below 840, which keeps a book foldable one pane both ways (750 and 832).
  */
 @OptIn(ExperimentalTestApi::class)
 @RunWith(AndroidJUnit4::class)
@@ -103,8 +107,10 @@ class TabletShellTest {
         val detail = rule.node(TabletShellTags.DETAIL).bounds
         assertBox("detail", detail, 360.dp, 0.dp, (TABLET_WIDTH - 360).dp, detail.bottom)
         rule.node(HomeTags.TABLET_BLANK).assertExists()
-        // The phone home's header is not drawn: its list lives in the sidebar.
-        rule.onAllNodesWithTag(HomeTags.FILTER, useUnmergedTree = true).assertCountEquals(0)
+        // The phone home's header is not drawn: its list lives in the sidebar, and so does its
+        // one account switcher, the only way to reach another account under the shell.
+        rule.onAllNodesWithTag(AccountMenuTags.BUTTON, useUnmergedTree = true).assertCountEquals(1)
+        assertTrue("the switcher is in the sidebar", rule.node(AccountMenuTags.BUTTON).bounds.right <= sidebar.right)
         rule.onAllNodesWithTag(FlatRowTags.ROW, useUnmergedTree = true).assertCountEquals(2)
 
         // The persistent header: 28 controls 16 in, 4 apart, centred in the 64 row; back dimmed with nowhere to go.
@@ -114,9 +120,11 @@ class TabletShellTest {
         assertBox("zen", zen, 16.dp, header.top + 18.dp, 28.dp, 28.dp)
         assertBox("back", rule.node(TabletShellTags.BACK).bounds, 48.dp, zen.top, 28.dp, 28.dp)
 
-        // New session sits 8 under the header row, 16 in.
+        // The controls row sits 8 under the header: the account switcher 16 in, then New session.
+        val switcher = rule.node(AccountMenuTags.BUTTON).bounds
         val newSession = rule.node(TabletSidebarTags.NEW_SESSION).bounds
-        assertDp("new session 16 in", 16, newSession.left - sidebar.left - 1.dp / 2)
+        assertDp("the switcher 16 in", 16, switcher.left - sidebar.left - 1.dp / 2)
+        assertDp("new session 8 past the switcher", switcher.right + 8.dp, newSession.left)
         assertTrue("new session under the header", newSession.top >= header.bottom + 8.dp)
         val settings = rule.node(TabletSidebarTags.SETTINGS).bounds
         assertDp("settings row at the sidebar's foot", sidebar.bottom - 0.5.dp, settings.bottom)
@@ -170,22 +178,24 @@ class TabletShellTest {
      * one screen: a second tap adds no entry, so one Back leaves.
      */
     @Test
-    fun newSessionOpensInTheDetail() {
+    fun newSessionComposesInTheDetail() {
         session("a", 200)
         signIn()
         waitFor(FlatRowTags.ROW)
         rule.onAllNodesWithTag(HomeDockTags.DOCK, useUnmergedTree = true).assertCountEquals(0)
+        // The compose chat, not the new-session screen, beside the sidebar.
         rule.node(TabletSidebarTags.NEW_SESSION).performClick()
-        waitFor(NewSessionTags.SCREEN)
-        assertDp("new session in the detail", 360, rule.node(NewSessionTags.SCREEN).bounds.left)
-        assertDp("its own back, 48 wide", 48, rule.node(NewSessionTags.BACK).bounds.let { it.right - it.left })
+        waitFor(ChatScreenTags.SCREEN)
+        rule.onAllNodesWithTag(NewSessionTags.SCREEN, useUnmergedTree = true).assertCountEquals(0)
+        assertDp("the compose chat in the detail", 360, rule.node(ChatScreenTags.SCREEN).bounds.left)
+        assertDp("to the window's edge", TABLET_WIDTH, rule.node(ChatScreenTags.SCREEN).bounds.right)
 
         rule.node(TabletSidebarTags.NEW_SESSION).performClick()
         rule.waitForIdle()
-        rule.onAllNodesWithTag(NewSessionTags.SCREEN, useUnmergedTree = true).assertCountEquals(1)
-        rule.node(NewSessionTags.BACK).performClick()
+        rule.onAllNodesWithTag(ChatScreenTags.SCREEN, useUnmergedTree = true).assertCountEquals(1)
+        rule.node(TabletShellTags.BACK).performClick()
         waitFor(HomeTags.TABLET_BLANK)
-        rule.onAllNodesWithTag(NewSessionTags.SCREEN, useUnmergedTree = true).assertCountEquals(0)
+        rule.onAllNodesWithTag(ChatScreenTags.SCREEN, useUnmergedTree = true).assertCountEquals(0)
     }
 
     @Test
@@ -212,14 +222,28 @@ class TabletShellTest {
         assertDp("64 glyph", 64, rule.node(EmptySessionsTabletTags.ICON).bounds.let { it.bottom - it.top })
     }
 
-    // index.tsx: with no computer linked the link page takes the whole window, shell and all.
+    // Unlike index.tsx, no computer linked keeps the shell: the sidebar's empty state offers Scan QR code,
+    // and the account switcher and New session stay beside it.
     @Test
-    fun theLinkPageTakesTheWholeWindow() {
+    fun noComputerKeepsTheShell() {
         signIn(machine = false)
-        waitFor(HomeTags.LINK)
-        rule.onAllNodesWithTag(TabletSidebarTags.SIDEBAR, useUnmergedTree = true).assertCountEquals(0)
-        rule.onAllNodesWithTag(TabletShellTags.HEADER, useUnmergedTree = true).assertCountEquals(0)
-        assertDp("link page from the left edge", 0, rule.node(HomeTags.LINK).bounds.left)
+        waitFor(EmptySessionsTabletTags.ROOT)
+        rule.node(TabletSidebarTags.SIDEBAR).assertExists()
+        rule.node(TabletShellTags.HEADER).assertExists()
+        rule.node(AccountMenuTags.BUTTON).assertExists()
+        rule.node(EmptySessionsTabletTags.BUTTON).assertExists().performClick()
+        rule.onAllNodesWithTag(HomeTags.LINK, useUnmergedTree = true).assertCountEquals(0)
+        rule.node(HomeTags.TABLET_BLANK).assertExists()
+    }
+
+    // Sessions cached with no computer linked list in the sidebar, the shell kept.
+    @Test
+    fun noComputerStillListsCachedSessions() {
+        session("a", 200)
+        signIn(machine = false)
+        waitFor(FlatRowTags.ROW)
+        rule.node(TabletSidebarTags.SIDEBAR).assertExists()
+        rule.onAllNodesWithTag(EmptySessionsTabletTags.ROOT, useUnmergedTree = true).assertCountEquals(0)
     }
 
     // An unfolded foldable on its side, 841 wide: the shell, with a 252 sidebar (30%).
@@ -234,24 +258,52 @@ class TabletShellTest {
         assertDp("detail after it", 252, rule.node(TabletShellTags.DETAIL).bounds.left)
     }
 
+    // At exactly 840, Material's expanded class, the shell starts: a 252 sidebar (30%).
+    @Test
+    @Config(qualifiers = "w840dp-h750dp-xhdpi")
+    fun theShellStartsAt840() {
+        session("a", 200)
+        signIn()
+        waitFor(FlatRowTags.ROW)
+        val sidebar = rule.node(TabletSidebarTags.SIDEBAR).bounds
+        assertDp("sidebar 30% of 840", 252, sidebar.right - sidebar.left)
+        assertDp("detail after it", 252, rule.node(TabletShellTags.DETAIL).bounds.left)
+    }
+
     // The same foldable upright, 673 wide, and a phone: no shell, the phone home.
     @Test
     @Config(qualifiers = "w673dp-h841dp-xhdpi")
-    fun foldablePortraitIsAPhone() = assertPhoneHome()
+    fun foldablePortraitIsAPhone() = assertPhoneHome(ContentTokens.Medium.keyline(673.dp))
+
+    // happy-app's old 768 cutoff: medium, one pane.
+    @Test
+    @Config(qualifiers = "w768dp-h1024dp-xhdpi")
+    fun at768ItIsOnePane() = assertPhoneHome(ContentTokens.Medium.keyline(768.dp))
+
+    // A Galaxy Z Fold7 on its side, 832 wide: medium, one pane, the centred column.
+    @Test
+    @Config(qualifiers = "w832dp-h750dp-xxhdpi")
+    fun foldSidewaysIsOnePane() = assertPhoneHome(ContentTokens.Medium.keyline(832.dp))
+
+    // The Fold upright, 750 wide: one pane.
+    @Test
+    @Config(qualifiers = "w750dp-h832dp-xxhdpi")
+    fun foldUprightIsOnePane() = assertPhoneHome(ContentTokens.Medium.keyline(750.dp))
 
     @Test
     @Config(qualifiers = PHONE)
-    fun phoneIsUnchanged() = assertPhoneHome()
+    fun phoneIsUnchanged() = assertPhoneHome(HomeCardSpec.inset)
 
-    private fun assertPhoneHome() {
+    /** The phone's home, its rows' cards [cardInset] in: 16 on a phone, Material's 24 margin on a medium window. */
+    private fun assertPhoneHome(cardInset: androidx.compose.ui.unit.Dp) {
         session("a", 200)
         signIn()
         waitFor(FlatRowTags.ROW)
         rule.onAllNodesWithTag(TabletSidebarTags.SIDEBAR, useUnmergedTree = true).assertCountEquals(0)
         rule.onAllNodesWithTag(TabletShellTags.HEADER, useUnmergedTree = true).assertCountEquals(0)
-        rule.node(HomeTags.FILTER).assertExists()
-        rule.node(HomeDockTags.DOCK).assertExists()
-        assertDp("home row from the left edge", 0, rule.node(FlatRowTags.ROW).bounds.left)
+        rule.node(AccountMenuTags.BUTTON).assertExists()
+        rule.node(HomeTags.COMPOSE).assertExists()
+        assertDp("home row inset in its card", cardInset, rule.node(FlatRowTags.ROW).bounds.left)
         rule.node(FlatRowTags.ROW).performClick()
         waitFor(ChatScreenTags.SCREEN)
         assertDp("the chat keeps its back button", 48, rule.node(HeaderTags.LEFT).bounds.let { it.right - it.left })

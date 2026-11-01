@@ -8,6 +8,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.captureToImage
@@ -62,10 +67,10 @@ class ChatDockLayoutTest {
 
     private val hint = InactiveHint(canResume = false, resuming = false, resumeCommand = ResumeCommandBlock(listOf("happy claude --resume abc"), "happy claude --resume abc"))
 
-    private fun show(rowCount: Int = 1, withHint: Boolean = true) = rule.setHappyContent {
+    private fun show(rowCount: Int = 1, withHint: Boolean = true, thinking: () -> Boolean = { false }) = rule.setHappyContent {
         ProvideWindowLayout {
             ChatScreen(
-                state = ChatState(ChatSnapshot(rows(rowCount), loaded = true), info, sessionLoaded = true, online = true),
+                state = ChatState(ChatSnapshot(rows(rowCount), loaded = true), info, sessionLoaded = true, online = true, thinking = thinking()),
                 draft = "",
                 bubbleColor = "gray",
                 actions = ChatScreenActions(),
@@ -130,6 +135,23 @@ class ChatDockLayoutTest {
 
     @Test
     @Config(qualifiers = PHONE)
+    fun theScrollButtonsArrowShimmersWhileTheAgentThinks() {
+        var thinking by mutableStateOf(false)
+        show(rowCount = 60, thinking = { thinking })
+        rule.node(ChatListTags.LIST).performTouchInput { swipeDown(startY = top + 200f, endY = bottom - 200f) }
+        rule.waitForIdle()
+        val described = SemanticsMatcher.keyIsDefined(SemanticsProperties.StateDescription)
+        rule.node(ChatListTags.SCROLL_BUTTON).assert(!described)
+        thinking = true
+        rule.waitForIdle()
+        rule.node(ChatListTags.SCROLL_BUTTON).assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "working"))
+        thinking = false
+        rule.waitForIdle()
+        rule.node(ChatListTags.SCROLL_BUTTON).assert(!described)
+    }
+
+    @Test
+    @Config(qualifiers = PHONE)
     fun backAtTheNewestTheDetailsReturn() {
         show(rowCount = 60)
         rule.node(ChatListTags.LIST).performTouchInput { swipeDown(startY = top + 200f, endY = bottom - 200f) }
@@ -163,12 +185,14 @@ class ChatDockLayoutTest {
         assertTrue("nothing fades", shown(GOAL))
     }
 
-    // SessionView `contentRunsUnderHeader`: the header tints surfaceHigh over older rows on a portrait phone only.
+    // The header is glass over the transcript (GlassBarLayout), not SessionView's surfaceHigh tint: the screen's own colour.
     @Test
     @Config(qualifiers = PHONE)
-    fun aPortraitHeaderTintsOverOlderRows() {
+    fun aPortraitHeaderIsGlassOverOlderRows() {
         show(rowCount = 60, withHint = false)
-        assertEquals(Color(0xFFF8F8F8), headerColor())
+        rule.node(ChatListTags.LIST).performTouchInput { swipeDown() }
+        rule.waitForIdle()
+        assertEquals(Color.White, headerColor())
     }
 
     @Test

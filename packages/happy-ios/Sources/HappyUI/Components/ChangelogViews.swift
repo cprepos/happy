@@ -128,7 +128,7 @@ struct ChangelogPlan: Sendable {
             case .link(let label, let url):
                 // RenderSpans underlines and opens only http(s) links; the
                 // rest read as plain text.
-                result.append(Markdown.isHTTPLink(url) ? link(label, url: url, style: body, in: text) : body.string(label, color: Palette.text, in: text))
+                result.append(LegacyMarkdown.isHTTPLink(url) ? link(label, url: url, style: body, in: text) : body.string(label, color: Palette.text, in: text))
             }
         }
         return result
@@ -284,7 +284,7 @@ final class ChangelogEntryView: UIView {
     private var rasterViews: [[ChangelogTextView]] = []
 
     /// Opens a tapped link (tests replace it).
-    var openLink: (URL) -> Void = { UIApplication.shared.open($0) }
+    lazy var openLink: (URL) -> Void = { [weak self] in self?.openBrowserLink($0) }
 
     let card = GroupCardView()
     private(set) var titleView: ChangelogTextView?

@@ -157,7 +157,7 @@ class ChatReduction(private val now: () -> Long = System::currentTimeMillis) {
         val (state, error) = message.localId?.let(delivery::get) ?: return message
         return when (state) {
             OutboxState.QUEUED, OutboxState.SENDING -> message.copy(pending = true)
-            OutboxState.FAILED -> message.copy(pending = false, sendError = error?.ifEmpty { null } ?: SEND_FAILED)
+            OutboxState.FAILED -> message.copy(pending = false, sendError = error.orEmpty())
             OutboxState.SENT -> message
         }
     }
@@ -171,7 +171,6 @@ class ChatReduction(private val now: () -> Long = System::currentTimeMillis) {
 
     companion object {
         /** A failed send without a reason of its own. */
-        const val SEND_FAILED = "Message failed to send."
 
         fun buildRow(message: ChatMessage, isClaudeFlavor: Boolean): ChatRow? = when (message) {
             is ChatMessage.UserText -> userRow(message, isClaudeFlavor)

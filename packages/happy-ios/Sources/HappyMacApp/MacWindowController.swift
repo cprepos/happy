@@ -116,7 +116,7 @@ final class MacWindowController: NSWindowController, NSMenuItemValidation {
         alert.messageText = "Account & server"
         alert.informativeText = account.pendingServerConfirmation != nil
             ? "Confirm the server that owns this account. Credentials are never sent to a new server until you confirm it."
-            : "Server changes apply to the next sign-in, not existing accounts. Mac push, voice, stories, and direct connections are not available in this AppKit version."
+            : "Server changes apply to the next sign-in, not existing accounts. Mac push, voice, and direct connections are not available in this AppKit version."
         alert.accessoryView = server
         alert.addButton(withTitle: account.pendingServerConfirmation == nil ? "Save" : "Confirm Server")
         alert.addButton(withTitle: "Cancel")
@@ -159,7 +159,7 @@ final class MacWindowController: NSWindowController, NSMenuItemValidation {
     }
 
     func openPairingURL(_ text: String) {
-        guard let link = PairingLink(text) else { return showError("This is not a valid Happy pairing link.") }
+        guard let link = LegacyPairingLink(text) else { return showError("This is not a valid Happy pairing link.") }
         guard let session = account.session else { return showError("Sign in before connecting another device.") }
         guard let window else { return }
         let alert = NSAlert(); alert.messageText = "Connect this device to your account?"

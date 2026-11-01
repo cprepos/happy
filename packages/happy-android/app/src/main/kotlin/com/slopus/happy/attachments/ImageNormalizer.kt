@@ -98,7 +98,7 @@ object ImageNormalizer {
     private fun outputWidth(width: Int, height: Int, orientation: Int) = if (swaps(orientation)) height else width
     private fun outputHeight(width: Int, height: Int, orientation: Int) = if (swaps(orientation)) width else height
 
-    private fun Matrix.applyOrientation(orientation: Int) {
+    internal fun Matrix.applyOrientation(orientation: Int) {
         when (orientation) {
             ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> postScale(-1f, 1f)
             ExifInterface.ORIENTATION_ROTATE_180 -> postRotate(180f)

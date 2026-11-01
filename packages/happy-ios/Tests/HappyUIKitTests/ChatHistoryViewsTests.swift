@@ -14,7 +14,7 @@ final class ChatHistoryViewsTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        Fonts.registerBundledFonts()
+        LegacyFonts.registerBundledFonts()
     }
 
     /// Turns of a prompt and its answer. A window ends on the prompt that
@@ -33,7 +33,7 @@ final class ChatHistoryViewsTests: XCTestCase {
         view.width = width
         view.requests.grows = grows
         return ChatRowsInput(
-            snapshot: ChatSnapshot(sessionId: "s", messages: messages, isLoaded: true, hasMoreOlder: true, olderBoundary: 1, windowEpoch: epoch),
+            snapshot: LegacyChatSnapshot(sessionId: "s", messages: messages, isLoaded: true, hasMoreOlder: true, olderBoundary: 1, windowEpoch: epoch),
             session: ChatSessionState(record: nil, settings: AccountSettings()),
             view: view,
             render: .isolated()
@@ -68,7 +68,9 @@ final class ChatHistoryViewsTests: XCTestCase {
         XCTAssertEqual(again.state.window.windowCount, grown.state.window.windowCount)
     }
 
-    func testTheOlderEndSitsInItsSlotPastTheOldestRow() throws {
+    /// OlderEnd keeps its 32pt slot past the oldest row, and its retry
+    /// button asks again.
+    func testTheOlderEndHasItsSlotAndRetries() throws {
         let planner = RowPlanner<ChatRowInput, ChatRowPlan> { ChatRowRenderer.plan($0, width: $1) }
         let derived = try XCTUnwrap(ChatRows.derive(input(messages(5), epoch: 0, grows: 0), applied: ChatRowsApplied(), planner: planner))
         let update = try XCTUnwrap(derived.output.list)
@@ -77,9 +79,7 @@ final class ChatHistoryViewsTests: XCTestCase {
         list.apply(update, animated: false)
         let slot = update.model.olderEndFrame
         XCTAssertEqual(slot.height, ChatOlderEndLayout.height)
-        XCTAssertEqual(list.olderEnd.bounds.size, slot.size)
-        XCTAssertEqual(list.olderEnd.center, CGPoint(x: slot.midX, y: slot.midY))
-        XCTAssertTrue(list.olderEnd.superview === list.collectionView)
+        XCTAssertEqual(list.olderEnd.sizeThatFits(CGSize(width: width, height: 0)).height, slot.height)
 
         var actions = 0
         list.olderEnd.onAction = { actions += 1 }

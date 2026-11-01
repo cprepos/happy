@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  values/strings_artifacts.xml in ru: Android-only strings, not in happy-app's
+  catalogs. AndroidStringsTranslatedTest fails while one is missing here.
+-->
+<resources>
+    <string name="artifact_untitled">Артефакт без названия</string>
+    <string name="artifact_deleted">Этот артефакт удалён.</string>
+    <string name="artifact_unavailable">Не удалось загрузить этот артефакт. Проверьте, что компьютер включён.</string>
+    <string name="artifact_file_unavailable">Не удалось открыть этот файл.</string>
+    <string name="artifact_picture">Изображение</string>
+    <string name="artifact_video">Видео</string>
+    <plurals name="artifact_count_images">
+        <item quantity="one">%1$d изображение</item>
+        <item quantity="few">%1$d изображения</item>
+        <item quantity="many">%1$d изображений</item>
+        <item quantity="other">%1$d изображения</item>
+    </plurals>
+    <plurals name="artifact_count_videos">
+        <item quantity="one">%1$d видео</item>
+        <item quantity="few">%1$d видео</item>
+        <item quantity="many">%1$d видео</item>
+        <item quantity="other">%1$d видео</item>
+    </plurals>
+    <string name="artifact_share">Поделиться</string>
+    <string name="artifact_play">Воспроизвести</string>
+    <string name="artifact_pause">Пауза</string>
+    <string name="artifact_open_with">Открыть в другом приложении</string>
+    <string name="artifact_open_with_body">Android не может показать этот файл здесь. Он откроется в приложении на телефоне, которое умеет его читать.</string>
+    <string name="browser_via">через %1$s</string>
+    <string name="browser_default_computer">подключение агента</string>
+    <string name="browser_unreachable">Не удаётся связаться с %1$s.\nПроверьте подключение агента, затем нажмите «Обновить».</string>
+    <string name="browser_unreachable_page">Не удаётся связаться с %1$s.\nПроверьте подключение или адрес страницы, затем нажмите «Обновить».</string>
+    <string name="browser_unsupported">WebView этого телефона не может передавать страницы через ваш компьютер. Обновите Android System WebView, затем нажмите «Обновить».</string>
+    <string name="browser_forward">Вперёд</string>
+    <string name="browser_close">Закрыть</string>
+    <string name="browser_share_link">Поделиться ссылкой</string>
+    <string name="browser_open_outside">Открыть в браузере (без прокси)</string>
+    <string name="link_menu_open_in_app">Открыть в браузере Happy</string>
+    <string name="link_menu_open_in_app_direct">В приложении, через сеть этого телефона</string>
+    <string name="link_menu_open_external">Открыть во внешнем браузере</string>
+    <string name="link_menu_open_external_proxied">Вне сети агента</string>
+    <string name="link_menu_copy">Скопировать ссылку</string>
+    <string name="link_menu_share">Поделиться</string>
+</resources>

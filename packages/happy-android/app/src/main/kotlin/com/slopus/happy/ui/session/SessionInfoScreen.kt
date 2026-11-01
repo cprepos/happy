@@ -25,16 +25,14 @@ import com.slopus.happy.model.displayName
 import com.slopus.happy.model.resumeCommand
 import com.slopus.happy.sync.ComposerMirror
 import com.slopus.happy.sync.OpResult
-import com.slopus.happy.ui.components.Header
-import com.slopus.happy.ui.components.HeaderBackButton
+import com.slopus.happy.ui.components.StackHeader
 import com.slopus.happy.ui.components.Icon
 import com.slopus.happy.ui.components.Ionicon
 import com.slopus.happy.ui.components.Screen
-import com.slopus.happy.ui.components.TitleAlignment
 import com.slopus.happy.ui.components.confirm
 import com.slopus.happy.ui.home.ArchiveResult
 import com.slopus.happy.ui.theme.HappyTheme
-import com.slopus.happy.ui.theme.PlexMono
+import com.slopus.happy.ui.theme.AppMono
 import com.slopus.happy.ui.theme.happyTextStyle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -79,7 +77,7 @@ object SessionInfoSpec {
     val yellow = Color(0xFFFFCC00)
     val icon = 29.dp
     val changesIcon = 26.dp
-    val code = happyTextStyle(fontSize = 12, lineHeight = 18, family = PlexMono)
+    val code = happyTextStyle(fontSize = 12, lineHeight = 18, family = AppMono)
     const val UPDATE_COMMAND = "npm install -g happy@latest"
 }
 
@@ -132,7 +130,7 @@ class SessionInfoActions(
 )
 
 /**
- * session/[id]/info.tsx. The header names the session, centred. While the
+ * session/[id]/info.tsx. The Material bar names the session, on glass. While the
  * first sync is out, an hourglass and "Loading"; a session that's gone says
  * so. Otherwise: quick actions (changes with Happy Agent's counts, the
  * machine, resume, fork, duplicate, the parent, archive and delete), the
@@ -175,7 +173,7 @@ fun SessionInfoScreen(
     }
     Screen(
         modifier = modifier,
-        header = { Header(title = title, alignment = TitleAlignment.Center, left = { HeaderBackButton(onClick = actions.onBack) }) },
+        header = { StackHeader(title, actions.onBack) },
     ) {
         when {
             !ready -> Placeholder(Ionicon.HourglassOutline, Modifier.testTag(SessionInfoTags.LOADING)) {

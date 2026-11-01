@@ -1,17 +1,20 @@
 #if canImport(UIKit)
 import AVFoundation
 import HappyLayout
+import OSLog
 import UIKit
 
-/// Full-screen camera QR scanner. Reports the first code it reads that
-/// `accepts` lets through, or nil when closed, then dismisses itself. Without camera access it explains
+/// Full-screen camera QR scanner. Reports the first QR code it reads, or nil
+/// when closed, then dismisses itself. It never judges a code: the caller
+/// says what a wrong one is, so none is ignored. Without camera access it explains
 /// why and offers the Settings app; in the simulator there is no camera, so
 /// it says so.
 public final class QRScannerViewController: UIViewController {
     /// Called exactly once.
     public var onFinish: ((String?) -> Void)?
-    /// Codes this rejects are ignored and scanning goes on.
-    public var accepts: (String) -> Bool = { _ in true }
+    /// The other ways in, under ⋯ at the top right (entering a link,
+    /// restoring, the server): each closes the scanner, then runs.
+    var otherWays: [ScannerWay] = []
 
     private enum Mode {
         case scanning
@@ -30,7 +33,13 @@ public final class QRScannerViewController: UIViewController {
     private let messageLabel = StyledLabel(style: TextStyles.scannerMessage, color: Palette.text, alignment: .center)
     private let settingsButton = RoundButton(title: Strings.Scanner.openSettings)
     private let closeButton = UIButton(type: .system)
+    private let moreButton = UIButton(type: .system)
     private var finished = false
+    /// The session is running: only then does the preview layer convert
+    /// the viewfinder into the output's space correctly.
+    private var running = false
+    private var viewfinder: CGRect?
+    private static let log = Logger(subsystem: "engineering.happy", category: "scan")
 
     public init() {
         previewLayer = AVCaptureVideoPreviewLayer(session: capture.session)
@@ -68,6 +77,17 @@ public final class QRScannerViewController: UIViewController {
         closeButton.accessibilityLabel = Strings.Scanner.close
         closeButton.addTarget(self, action: #selector(close), for: .touchUpInside)
         view.addSubview(closeButton)
+        moreButton.setImage(UIImage(systemName: "ellipsis", withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .semibold)), for: .normal)
+        moreButton.backgroundColor = closeButton.backgroundColor
+        moreButton.layer.cornerRadius = QRScannerLayout.Metrics.closeButtonSize / 2
+        moreButton.accessibilityLabel = Strings.Start.more
+        moreButton.accessibilityIdentifier = "scanner-more"
+        moreButton.showsMenuAsPrimaryAction = true
+        moreButton.menu = UIMenu(children: otherWays.map { way in
+            UIAction(title: way.title, image: UIImage(systemName: way.symbol)) { [weak self] _ in self?.finish(nil, then: way.run) }
+        })
+        moreButton.isHidden = otherWays.isEmpty
+        view.addSubview(moreButton)
         updateMode()
         start()
     }
@@ -89,6 +109,8 @@ public final class QRScannerViewController: UIViewController {
         if let frame = layout.message { messageLabel.setLayoutFrame(frame) }
         if let frame = layout.button { settingsButton.setLayoutFrame(frame) }
         closeButton.setLayoutFrame(layout.close)
+        // The close button's mirror at the right.
+        moreButton.setLayoutFrame(CGRect(x: view.bounds.width - layout.close.maxX, y: layout.close.minY, width: layout.close.width, height: layout.close.height))
         updateScanArea(layout.viewfinder)
     }
 
@@ -110,6 +132,7 @@ public final class QRScannerViewController: UIViewController {
         messageLabel.isHidden = scanning
         settingsButton.isHidden = mode != .denied
         closeButton.tintColor = scanning ? .white : UIColor(Palette.text)
+        moreButton.tintColor = closeButton.tintColor
         messageLabel.string = mode == .denied ? Strings.Modals.cameraPermissionsRequiredToScanQr : Strings.Scanner.unavailable
         setNeedsStatusBarAppearanceUpdate()
         view.setNeedsLayout()
@@ -124,7 +147,11 @@ public final class QRScannerViewController: UIViewController {
             let started = await self?.capture.start { [weak self] value in
                 self?.found(value)
             }
-            if started == false { self?.mode = .unavailable }
+            Self.log.debug("capture started: \(String(describing: started), privacy: .public)")
+            guard let self else { return }
+            if started == false { return mode = .unavailable }
+            running = true
+            updateScanArea(viewfinder)
         }
     }
 
@@ -137,13 +164,20 @@ public final class QRScannerViewController: UIViewController {
     }
 
     /// Reads only inside the viewfinder, so a second code nearby is ignored.
+    /// Converted before the session runs, the rect comes out empty and the
+    /// camera reads nothing at all; so only once it runs, and the whole
+    /// frame whenever the conversion is unusable.
     private func updateScanArea(_ viewfinder: CGRect?) {
-        guard let viewfinder, previewLayer.frame.width > 0 else { return }
-        capture.setRectOfInterest(previewLayer.metadataOutputRectConverted(fromLayerRect: viewfinder))
+        self.viewfinder = viewfinder
+        guard running, let viewfinder, previewLayer.frame.width > 0 else { return }
+        let area = QRScannerLayout.scanArea(previewLayer.metadataOutputRectConverted(fromLayerRect: viewfinder))
+        Self.log.debug("scan area \(String(describing: area), privacy: .public)")
+        capture.setRectOfInterest(area)
     }
 
     private func found(_ value: String) {
-        guard !finished, accepts(value) else { return }
+        Self.log.debug("read a code of \(value.utf8.count) bytes")
+        guard !finished else { return }
         finish(value)
     }
 
@@ -151,15 +185,23 @@ public final class QRScannerViewController: UIViewController {
         finish(nil)
     }
 
-    private func finish(_ value: String?) {
+    private func finish(_ value: String?, then next: (() -> Void)? = nil) {
         guard !finished else { return }
         finished = true
         capture.stop()
         let onFinish = onFinish
         dismiss(animated: true) {
             onFinish?(value)
+            next?()
         }
     }
+}
+
+/// One of the scanner's other ways in.
+struct ScannerWay {
+    var title: String
+    var symbol: String
+    var run: () -> Void
 }
 
 /// Dims everything but the viewfinder and outlines it.

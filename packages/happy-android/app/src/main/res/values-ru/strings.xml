@@ -55,6 +55,7 @@
     <string name="profile_username">Имя пользователя</string>
     <string name="profile_status">Статус</string>
 
+    <string name="status_syncing">синхронизация</string>
     <string name="status_connected">подключено</string>
     <string name="status_connecting">подключение</string>
     <string name="status_disconnected">отключено</string>
@@ -963,6 +964,7 @@
     <string name="message_sending">Отправка…</string>
     <string name="message_send_failed">Не отправлено: %1$s</string>
     <string name="message_unknown_time">неизвестное время</string>
+    <string name="message_media_position">%1$d из %2$d</string>
 
     <string name="codex_permissions_yes_for_session">Да, и не спрашивать для этой сессии</string>
     <string name="codex_permissions_stop_and_explain">Остановить и объяснить, что делать</string>
@@ -1075,4 +1077,12 @@
     <string name="feed_friend_request_generic">Новый запрос в друзья</string>
     <string name="feed_friend_accepted">Вы теперь друзья с %1$s</string>
     <string name="feed_friend_accepted_generic">Запрос в друзья принят</string>
+
+    <string name="new_work_task">Задача</string>
+    <string name="new_work_bot">Бот</string>
+    <string name="new_work_name">Название (необязательно)</string>
+    <string name="new_work_task_note">Задача назовёт себя по первому сообщению, если вы не дадите ей название.</string>
+    <string name="new_work_bot_note">Бот — это один долгий разговор со своей папкой.</string>
+    <string name="new_work_task_failed">Не удалось запустить задачу. %1$s Ваш текст и вложения на месте.</string>
+    <string name="new_work_bot_failed">Не удалось запустить бота. %1$s Ваш текст и вложения на месте.</string>
 </resources>

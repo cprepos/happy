@@ -35,7 +35,7 @@ final class ChatChromeTextSizeTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        Fonts.registerBundledFonts()
+        LegacyFonts.registerBundledFonts()
     }
 
     private func environment(_ category: UIContentSizeCategory) -> TextEnvironment {
@@ -165,14 +165,6 @@ final class ChatChromeTextSizeTests: XCTestCase {
             assertDrawn(changes.added, in: changes.layout.added, ChatTextStyle(TextStyles.gitLineCount), category)
             assertDrawn(changes.removed, in: changes.layout.removed, ChatTextStyle(TextStyles.gitLineCount), category)
             XCTAssertEqual(capsule.layout.changes?.size, changes.layout.size)
-
-            let plain = await offMain { ChatHeaderMeasure.plain(ChatPlainHeaderInput(model: model, width: 600, text: text)) }
-            let layout = ChatPlainHeaderLayout(
-                bar: CGRect(x: 0, y: 0, width: 632, height: 50), size: CGSize(width: 632, height: 50), maxWidth: 800,
-                title: .fixed(plain.title.size), subtitle: plain.subtitle.map { .fixed($0.size) }, changes: plain.changes?.layout.size
-            )
-            assertDrawn(plain.title, in: layout.title, ChatTextStyles.headerTitle, category)
-            assertDrawn(plain.subtitle, in: layout.subtitle, ChatTextStyles.headerPlainSubtitle, category)
 
             let label = await offMain { ChatHeaderMeasure.cliWarning(ChatCliWarningInput(label: "CLI Update Required", width: 393, text: text)) }
             let pill = CliWarningPillLayout(width: 393, top: 103, label: .fixed(label.size))
@@ -337,15 +329,16 @@ final class ChatChromeTextSizeTests: XCTestCase {
         return nil
     }
 
-    /// The fixture chat with a goal and rig counts: its header and bars
-    /// follow the text size while the screen itself doesn't, and a new
+    /// The fixture chat with a goal and rig counts: its bars
+    /// follow the text size while the screen itself doesn't (its header's
+    /// capsule keeps the bar's own words, as the agent chat's), and a new
     /// size measures them again and lays the dock out with their new
     /// heights.
     func testANewTextSizeLaysTheDockOutAgain() async throws {
         let account = try await signedIn()
         let session = try XCTUnwrap(account.session)
         let context = AppContext(account: account, variant: .development, version: "test")
-        let chat = ChatViewController(context: context, session: session, sessionId: FixtureScenarios.prefix + FixtureScenario.live.rawValue)
+        let chat = LegacyChatViewController(context: context, session: session, sessionId: FixtureScenarios.prefix + FixtureScenario.live.rawValue)
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 393, height: 852))
         window.traitOverrides.preferredContentSizeCategory = .large
         window.traitOverrides.displayScale = 3
@@ -358,10 +351,10 @@ final class ChatChromeTextSizeTests: XCTestCase {
         let goal = try XCTUnwrap(find(ChatGoalBarView.self, in: chat.view))
         let rig = try XCTUnwrap(find(ChatRigActivityView.self, in: chat.view))
         let dock = try XCTUnwrap(find(ChatDockView.self, in: chat.view))
-        let title = try XCTUnwrap(chat.navigationItem.titleView as? ChatHeaderTitleView)
+        // The phone's header is the agent chat's capsule, its words the bar's own size.
+        XCTAssertTrue(chat.navigationItem.titleView is ChatHeaderView)
         XCTAssertNil(chat.view.traitCollection.textEnvironment)
         XCTAssertEqual(goal.traitCollection.textEnvironment, environment(.large))
-        XCTAssertEqual(title.text, environment(.large))
 
         /// What isn't yet at `category`, or nil once all is.
         func unsettled(_ category: UIContentSizeCategory) -> String? {
@@ -370,7 +363,6 @@ final class ChatChromeTextSizeTests: XCTestCase {
             var behind: [String] = []
             if goal.measure.applied?.input.text != text { behind.append("goal plan \(String(describing: goal.measure.applied?.input.text))") }
             if rig.measure.applied?.input.text != text { behind.append("rig plan \(String(describing: rig.measure.applied?.input.text))") }
-            if title.measure.applied?.input.text != text { behind.append("title plan \(String(describing: title.measure.applied?.input.text))") }
             if let plan = goal.measure.plan, abs(goal.bounds.height - plan.layout.size.height) >= 0.5 {
                 behind.append("goal \(goal.bounds.height) of \(plan.layout.size.height)")
             }
@@ -387,11 +379,7 @@ final class ChatChromeTextSizeTests: XCTestCase {
         window.updateTraitsIfNeeded()
         let grown = try await until { unsettled(.accessibilityMedium) == nil }
         XCTAssertTrue(grown, "the bars are measured again at the new size: \(unsettled(.accessibilityMedium) ?? "")")
-        // The bar holds the title view's own size to XXL; the header is
-        // handed the screen's.
-        XCTAssertEqual(title.text, environment(.accessibilityMedium), "the screen at \(chat.traitCollection.preferredContentSizeCategory.rawValue)")
         XCTAssertGreaterThan(dock.bounds.height, designed, "and the dock takes their new heights")
-        XCTAssertEqual(title.measure.plan?.layout.size.height, 44)
         await account.signOut()
     }
     #endif

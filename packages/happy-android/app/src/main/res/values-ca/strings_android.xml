@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  values/strings_android.xml in ca: Android-only strings, not in happy-app's
+  catalogs. AndroidStringsTranslatedTest fails while one is missing here.
+-->
+<resources>
+    <plurals name="conversation_attached_picture_count">
+        <item quantity="one">%1$d imatge adjunta</item>
+        <item quantity="many">%1$d d\'imatges adjuntes</item>
+        <item quantity="other">%1$d imatges adjuntes</item>
+    </plurals>
+    <string name="server_url_empty">L\'URL del servidor no pot estar buit</string>
+    <string name="server_url_protocol">L\'URL del servidor ha de fer servir el protocol HTTP o HTTPS</string>
+    <string name="server_url_invalid">Format d\'URL no vàlid</string>
+    <string name="settings_agents">Agents</string>
+    <string name="settings_agents_subtitle">Ordinadors connectats i valors predeterminats dels agents</string>
+    <string name="happy_action_unknown_error">Error desconegut</string>
+    <string name="live_avatars_title">Avatars animats</string>
+    <string name="live_avatars_description">Els avatars sense foto es mouen. Consumeix més bateria.</string>
+    <string name="settings_appearance_file_diffs_sidebar">Barra lateral de canvis de fitxers</string>
+    <string name="settings_appearance_file_diffs_sidebar_description">Mostra els canvis de git al costat del xat a l\'escriptori</string>
+    <string name="chat_scroll_to_bottom">Desplaça\'t al final</string>
+    <string name="voice_clear_search">Esborra la cerca</string>
+    <string name="scan_unavailable">L\'escàner de QR no està disponible en aquest dispositiu. Enganxa l\'enllaç en lloc d\'això.</string>
+    <string name="scan_not_happy_code">Aquest codi QR no és de Happy.</string>
+    <string name="scan_terminal_code_elsewhere">Aquest codi connecta un terminal. Escaneja\'l des de Configuració › Escaneja el codi QR per autenticar-te.</string>
+    <string name="scan_account_code_elsewhere">Aquest codi enllaça un dispositiu nou. Escaneja\'l des de Configuració › Còpia de seguretat i restauració › Enllaça un nou dispositiu.</string>
+    <string name="scan_pairing_unavailable">Aquest codi connecta un agent. Fes servir Afegeix al menú de comptes de l\'inici.</string>
+    <string name="scan_close">Tanca</string>
+    <string name="scan_hint">Apunta la càmera al codi QR</string>
+    <string name="scan_open_settings">Obre els paràmetres</string>
+    <string name="scan_torch_on">Encén la llanterna</string>
+    <string name="scan_torch_off">Apaga la llanterna</string>
+    <string name="state_animation_replay">Torna a reproduir</string>
+    <string name="scan_no_camera">Aquest dispositiu no té càmera. Enganxa l\'enllaç.</string>
+    <string name="scan_camera_failed">No s\'ha pogut iniciar la càmera. Torna-ho a provar o enganxa l\'enllaç.</string>
+    <string name="voice_microphone_title">Cal accés al micròfon</string>
+    <string name="voice_microphone_ask">Happy necessita accés al micròfon per al xat de veu. Concedeix el permís quan se\'t demani.</string>
+    <string name="voice_microphone_settings">Happy necessita accés al micròfon per al xat de veu. Activa l\'accés al micròfon a la configuració del dispositiu.</string>
+</resources>

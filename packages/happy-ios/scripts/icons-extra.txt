@@ -24,3 +24,12 @@ reviewed components/SessionActionsPopover.tsx action.icon as keyof typeof Ionico
 # expand button (AgentInputCard.swift); contract-outline, which closes it,
 # the scan finds.
 Ionicons expand-outline
+
+# Desktop transcript tool rows (HappyUI ChatPlanner.tool): a command, a failed call,
+# and a filter (AgentActivityRow.tsx toolGlyph).
+Octicons code
+Octicons alert
+Ionicons funnel-outline
+Ionicons checkmark-outline
+# Presented recordings (AgentActivityRow.tsx toolGlyph's film-outline).
+Ionicons film-outline

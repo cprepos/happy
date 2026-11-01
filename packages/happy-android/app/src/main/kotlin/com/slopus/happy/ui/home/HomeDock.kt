@@ -1,54 +1,18 @@
 package com.slopus.happy.ui.home
 
 import androidx.compose.animation.core.Easing
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.asPaddingValues
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBars
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.max
-import com.slopus.happy.R
 import com.slopus.happy.attachments.AttachmentPreview
 import com.slopus.happy.model.NewSessionLabels
 import com.slopus.happy.model.NewSessionOptions
 import com.slopus.happy.model.NewSessionPage
 import com.slopus.happy.model.StartPhase
 import com.slopus.happy.model.isValidBotName
-import com.slopus.happy.ui.chat.ChatTheme
-import com.slopus.happy.ui.components.Icon
-import com.slopus.happy.ui.components.Ionicon
-import com.slopus.happy.ui.components.hairline
 import com.slopus.happy.ui.theme.HappyColors
-import com.slopus.happy.ui.theme.HappyTheme
 import com.slopus.happy.ui.theme.happyTextStyle
 import kotlin.math.roundToInt
 
@@ -221,89 +185,3 @@ internal fun composerShellHeight(resting: Float, full: Int, progress: Float): In
 
 /** How far along [progress] a piece of the reveal is, between [start] and [end]. */
 internal fun reveal(progress: Float, start: Float, end: Float) = ((progress - start) / (end - start)).coerceIn(0f, 1f)
-
-/**
- * The resting home dock, over the bottom of the list. Spec: 16 either
- * side, 8 above, max(10, nav bar) below. A 56 high capsule (radius 28,
- * input.background, hairline glass border, a soft shadow), 7 in at both
- * ends: the 17pt text 21 from the shell edge ("Plan, ask, build…" in
- * textSecondary until something is typed), tapping it opens the
- * composer; then, 4 on, the 42 round send button, surfaceHighest until
- * there is text, then primary (#F5F5F5 in dark), an arrow-up 16 in its
- * tint (textSecondary when idle), a spinner while a session is starting.
- * Over a list, a scrim fades in from the capsule's midpoint down.
- */
-@Composable
-fun HomeDock(state: HomeDockState, actions: HomeDockActions, modifier: Modifier = Modifier) {
-    val colors = HappyTheme.colors
-    val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-    Box(modifier = modifier.testTag(HomeDockTags.DOCK).fillMaxWidth()) {
-        if (state.showScrim) {
-            Box(
-                modifier = Modifier
-                    .testTag(HomeDockTags.SCRIM)
-                    .matchParentSize()
-                    // Clear down to the capsule's midpoint, then feathering over what scrolls beneath.
-                    .padding(top = HomeDockSpec.paddingTop + HomeDockSpec.shellHeight / 2)
-                    .background(Brush.verticalGradient(listOf(colors.grouped.background.copy(alpha = 0f), colors.grouped.background))),
-            )
-        }
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = HomeDockSpec.paddingHorizontal)
-                .padding(top = HomeDockSpec.paddingTop, bottom = max(HomeDockSpec.minPaddingBottom, navBottom)),
-        ) {
-            val shape = RoundedCornerShape(HomeDockSpec.shellRadius)
-            val canSubmit = state.canSubmit()
-            Row(
-                modifier = Modifier
-                    .testTag(HomeDockTags.CAPSULE)
-                    .fillMaxWidth()
-                    .height(HomeDockSpec.shellHeight)
-                    .shadow(if (colors.dark) 4.dp else 2.dp, shape)
-                    .clip(shape)
-                    .background(colors.input.background)
-                    .border(hairline(), ChatTheme.colors.glassBorder, shape)
-                    .padding(horizontal = HomeDockSpec.contentPadding),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(HomeDockSpec.contentGap),
-            ) {
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
-                        .clickable(interactionSource = null, indication = null) { actions.onFocusChange(true) }
-                        .padding(start = HomeDockSpec.inputPaddingStart, end = HomeDockSpec.inputPaddingEnd),
-                    contentAlignment = Alignment.CenterStart,
-                ) {
-                    Text(
-                        state.prompt.ifEmpty { stringResource(R.string.home_dock_placeholder) },
-                        style = HomeDockSpec.text,
-                        color = if (state.prompt.isEmpty()) colors.textSecondary else colors.text,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.testTag(HomeDockTags.CAPSULE_TEXT),
-                    )
-                }
-                val send = stringResource(R.string.home_dock_send)
-                Box(
-                    modifier = Modifier
-                        .testTag(HomeDockTags.CAPSULE_SEND)
-                        .size(HomeDockSpec.sendSize)
-                        .clip(CircleShape)
-                        .background(if (canSubmit) sendBackground(colors) else colors.surfaceHighest)
-                        .clickable(enabled = canSubmit, role = Role.Button, onClick = actions.onSubmit)
-                        .semantics { contentDescription = send },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    if (state.phase != null) {
-                        CircularProgressIndicator(Modifier.size(20.dp), color = colors.textSecondary, strokeWidth = 2.dp)
-                    } else {
-                        Icon(Ionicon.ArrowUp, HomeDockSpec.sendIcon, if (canSubmit) sendIconColor(colors) else colors.textSecondary)
-                    }
-                }
-            }
-        }
-    }
-}

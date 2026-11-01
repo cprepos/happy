@@ -23,9 +23,11 @@ import com.slopus.happy.crypto.encodeBase64
 import com.slopus.happy.testing.FakeHappyServer
 import com.slopus.happy.testing.SoftwareKeys
 import com.slopus.happy.ui.home.HomeTags
+import com.slopus.happy.ui.home.AccountMenuTags
 import com.slopus.happy.ui.onboarding.RestoreTags
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -65,43 +67,46 @@ class AppFlowTest {
     @After
     fun tearDown() = server.close()
 
-    // A new account has no computer, so the link page takes the home over (index.tsx); its gear logs out.
+    // A new account has no computer: home keeps its header and shows the link state; Settings' last row logs out.
     @Test
     fun createAccountThenLogout() {
-        rule.onNodeWithText("Create account").performClick()
+        // The first screen makes no empty account; make one directly, as a terminal code would.
+        runBlocking { graph.auth.createAccount() }
         rule.waitUntilAtLeastOneExists(hasTestTag(HomeTags.LINK), 5_000)
         assertTrue(graph.auth.state.value is AuthState.SignedIn)
 
         rule.onNodeWithContentDescription("Settings").performClick()
-        rule.onNodeWithText("Log out and start over").performScrollTo().performClick()
+        rule.onNodeWithTag(com.slopus.happy.ui.settings.SettingsPageTags.REMOVE).performScrollTo().performClick()
         rule.onNode(hasText("Logout") and hasClickAction() and hasAnyAncestor(isDialog())).performClick()
 
-        rule.waitUntilAtLeastOneExists(hasText("Create account"), 5_000)
+        rule.waitUntilAtLeastOneExists(hasText("Start"), 5_000)
         assertEquals(AuthState.SignedOut, graph.auth.state.value)
         assertNull(graph.store.profile())
     }
 
     @Test
     fun restoreWithSecretKeyThenSync() {
-        // With no computer the link page takes the home over, and the filter only shows while loading.
+        // The filter only shows while loading.
         server.addMachine("m1")
         server.addSession("s1", updatedAt = 100)
         server.setSettings(buildJsonObject { put("analyticsOptOut", true) }, version = 2)
 
-        rule.onNodeWithText("Restore existing account").performClick()
+        rule.onNodeWithContentDescription("More").performClick()
+        rule.onNodeWithText("Restore Legacy Account").performClick()
         rule.onNodeWithText("Use a secret key instead").performClick()
         rule.onNodeWithTag(RestoreTags.KEY_INPUT)
             .performTextReplacement(SecretKeyBackup.format(encodeBase64(server.secret, Base64Variant.Url)))
         rule.onNodeWithText("Restore").performClick()
 
-        rule.waitUntilAtLeastOneExists(hasTestTag(HomeTags.FILTER), 5_000)
+        rule.waitUntilAtLeastOneExists(hasTestTag(AccountMenuTags.BUTTON), 5_000)
         rule.waitUntil(5_000) { graph.store.sessionIds() == setOf("s1") && graph.store.settings() != null }
         assertEquals(server.publicKey, server.authenticatedKeys.single())
     }
 
     @Test
     fun aWrongSecretKeyShowsTheError() {
-        rule.onNodeWithText("Restore existing account").performClick()
+        rule.onNodeWithContentDescription("More").performClick()
+        rule.onNodeWithText("Restore Legacy Account").performClick()
         rule.onNodeWithText("Use a secret key instead").performClick()
         rule.onNodeWithTag(RestoreTags.KEY_INPUT).performTextReplacement("AAAAA-BBBBB")
         rule.onNodeWithText("Restore").performClick()

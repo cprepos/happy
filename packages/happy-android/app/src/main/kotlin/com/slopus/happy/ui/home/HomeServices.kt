@@ -1,5 +1,6 @@
 package com.slopus.happy.ui.home
 
+import com.slopus.happy.text.Words
 import android.content.Context
 import android.util.Log
 import androidx.compose.foundation.background
@@ -187,10 +188,10 @@ class HomeServices private constructor(private val graph: AppGraph) {
     /** pendingChats.ts: chats opened from a tab strip's `+` that no machine has answered for yet. */
     val pendingChats = PendingChatStore()
 
-    private val pendingFailures = MutableStateFlow<String?>(null)
+    private val pendingFailures = MutableStateFlow<Words?>(null)
 
     /** A strip start that failed, in its own words, until the screen has shown it. */
-    val pendingChatFailure: StateFlow<String?> = pendingFailures.asStateFlow()
+    val pendingChatFailure: StateFlow<Words?> = pendingFailures.asStateFlow()
 
     fun dismissPendingChatFailure() {
         pendingFailures.value = null
@@ -215,7 +216,7 @@ class HomeServices private constructor(private val graph: AppGraph) {
 
             override fun exists(sessionId: String): Boolean = session(sessionId) != null
 
-            override fun alert(message: String) {
+            override fun alert(message: Words) {
                 pendingFailures.value = message
             }
         },
@@ -223,6 +224,14 @@ class HomeServices private constructor(private val graph: AppGraph) {
 
     /** Where each checkout's tab strip was scrolled to (first item, offset), across the screens that show it. */
     val stripOffsets = java.util.concurrent.ConcurrentHashMap<String, Pair<Int, Int>>()
+
+    /**
+     * Where home's list sits, by account. The tablet shell swaps the phone's
+     * host for the sidebar's at the breakpoint, which throws the list away, so
+     * the anchor is kept out here and the rebuilt list starts from it. Keyed by
+     * account so one never opens on another's place.
+     */
+    val homeListOffsets = java.util.concurrent.ConcurrentHashMap<String, Pair<Int, Int>>()
 
     private var pendingChatStarter: PendingChatStarter? = null
 

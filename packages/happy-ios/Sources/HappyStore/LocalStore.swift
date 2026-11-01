@@ -20,11 +20,11 @@ import HappyWire
 public final class LocalStore: Sendable {
     public let writer: any DatabaseWriter
     let lifecycle = StoreLifecycle()
-    let homeObservation: SharedValueObservation<HomeSnapshot>
+    let homeObservation: SharedValueObservation<LegacyHomeSnapshot>
     let settingsObservation: SharedValueObservation<SettingsSnapshot>
     let machinesObservation: SharedValueObservation<MachinesSnapshot>
     let draftSessionsObservation: SharedValueObservation<Set<String>>
-    let homeHub: SnapshotHub<HomeSnapshot>
+    let homeHub: SnapshotHub<LegacyHomeSnapshot>
     let machinesHub: SnapshotHub<MachinesSnapshot>
     let troubleshootingHub: SnapshotHub<TroubleshootingSnapshot>
     let draftSessionsHub: SnapshotHub<Set<String>>
@@ -98,10 +98,12 @@ public final class LocalStore: Sendable {
         troubleshootingHub = SnapshotHub(observation: troubleshootingObservation, project: { overlay.troubleshooting($0) })
         try Schema.migrator.migrate(writer)
         // Live state from a previous run is stale: the server re-sends
-        // `thinking` every few seconds while it holds, and an archive that
-        // was in flight has since been answered.
+        // `thinking` every few seconds while it holds. An archive or leave
+        // still waiting in `intent` keeps its session out of the list; any
+        // other was answered.
         try performWrite { db in
-            try db.execute(sql: "UPDATE session SET thinking = 0, thinkingAt = 0, archiving = 0 WHERE thinking = 1 OR archiving = 1")
+            try db.execute(sql: "UPDATE session SET thinking = 0, thinkingAt = 0 WHERE thinking = 1")
+            try db.execute(sql: "UPDATE session SET archiving = \(Self.removalPending) WHERE archiving != \(Self.removalPending)")
             try db.execute(sql: "UPDATE outbox SET state = 'queued' WHERE state = 'sending'")
         }
     }
@@ -157,6 +159,8 @@ public final class LocalStore: Sendable {
         let removed = try performWrite { db in
             var removed = Set<String>()
             for record in incoming {
+                // Deleted here, the server not told yet.
+                if try Self.deletePending(record.id, db) { continue }
                 let result = try Self.upsert(record, db)
                 if let reconcileComposer {
                     try Self.reconcileComposer(result.merged, previous: result.previous, db: db, transform: reconcileComposer)
@@ -262,6 +266,41 @@ public final class LocalStore: Sendable {
         try performWrite { db in
             try db.execute(sql: "UPDATE session SET archiving = ? WHERE id = ? AND archiving != ?", arguments: [archiving, id, archiving])
         }
+    }
+
+    // MARK: Intents (docs/offline-first.md)
+
+    /// An archive or leave waiting for `session`, in SQL. Legacy accounts
+    /// never queue an unarchive, which would share the archive slot.
+    static let removalPending = "EXISTS (SELECT 1 FROM intent WHERE intent.slot IN ('archive|' || session.id, 'leave|' || session.id))"
+
+    /// Whether a delete of session `id` waits: a stale list must not bring
+    /// it back meanwhile.
+    static func deletePending(_ id: String, _ db: Database) throws -> Bool {
+        try Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM intent WHERE slot = ?)", arguments: ["delete|" + id]) ?? false
+    }
+
+    /// The kept intents, each as the JSON it was saved as.
+    public func intentValues() throws -> [Data] {
+        try performRead { db in try Data.fetchAll(db, sql: "SELECT value FROM intent") }
+    }
+
+    /// Keeps an intent, replacing what its slot held.
+    public func saveIntent(slot: String, id: String, value: Data) throws {
+        try performWrite { db in
+            try db.execute(sql: """
+                INSERT INTO intent(slot, id, value) VALUES (?, ?, ?)
+                ON CONFLICT(slot) DO UPDATE SET id = excluded.id, value = excluded.value
+                """, arguments: [slot, id, value])
+        }
+    }
+
+    public func updateIntent(id: String, value: Data) throws {
+        try performWrite { db in try db.execute(sql: "UPDATE intent SET value = ? WHERE id = ?", arguments: [value, id]) }
+    }
+
+    public func removeIntent(id: String) throws {
+        try performWrite { db in try db.execute(sql: "DELETE FROM intent WHERE id = ?", arguments: [id]) }
     }
 
     public func deleteSession(id: String) throws {
@@ -566,17 +605,17 @@ public final class LocalStore: Sendable {
 
     /// Everything home draws: machines, sessions, the projects they belong
     /// to and the settings that shape the list.
-    public func homeSnapshot() throws -> HomeSnapshot {
+    public func homeSnapshot() throws -> LegacyHomeSnapshot {
         try performRead { db in try Self.fetchHomeSnapshot(db) }
     }
 
     @MainActor
-    public func observeHome(onChange: @escaping @MainActor (HomeSnapshot) -> Void) -> StoreObservation {
+    public func observeHome(onChange: @escaping @MainActor (LegacyHomeSnapshot) -> Void) -> StoreObservation {
         Self.deliverOnMain(homeSnapshots(), onChange: onChange)
     }
 
-    static func fetchHomeSnapshot(_ db: Database) throws -> HomeSnapshot {
-        HomeSnapshot(
+    static func fetchHomeSnapshot(_ db: Database) throws -> LegacyHomeSnapshot {
+        LegacyHomeSnapshot(
             machines: try fetchMachinesSnapshot(db),
             sessions: try SessionRecord.order(Column("updatedAt").desc).fetchAll(db),
             projects: try ProjectRecord.fetchAll(db),
@@ -744,9 +783,23 @@ public final class LocalStore: Sendable {
     }
 
     /// Discard the selected item and its dependency chain, including its files.
+    /// A file alone is taken out of its chain: what waited on it waits on
+    /// what it waited on, so the text it went with still goes.
     public func discardOutbox(localId: String) throws -> [AttachmentRecord] {
         try performWrite { db in
             let items = try OutboxRecord.fetchAll(db)
+            if let file = items.first(where: { $0.localId == localId && $0.kind == .file }) {
+                for var item in items where item.dependsOn == localId {
+                    item.dependsOn = file.dependsOn
+                    try item.update(db)
+                }
+                let attachments = try AttachmentRecord.filter(Column("outboxLocalId") == localId).fetchAll(db)
+                for attachment in attachments {
+                    _ = try AttachmentRecord.deleteOne(db, key: attachment.localId)
+                }
+                _ = try OutboxRecord.deleteOne(db, key: localId)
+                return attachments
+            }
             var ids: Set<String> = [localId]
             var changed = true
             while changed {
@@ -846,7 +899,7 @@ public final class LocalStore: Sendable {
         try performWrite { db in
             for table in [
                 "message", "outbox", "chatHistory", "session", "machine", "project", "accountSettings", "pendingSettings",
-                "accountProfile", "syncState", "attachment", "draft", "composerState",
+                "accountProfile", "syncState", "attachment", "draft", "composerState", "intent",
             ] {
                 try db.execute(sql: "DELETE FROM \(table)")
             }
@@ -991,7 +1044,7 @@ public struct MachinesSnapshot: Equatable, Sendable {
 }
 
 /// What home is built from, read in one transaction so the parts agree.
-public struct HomeSnapshot: Equatable, Sendable {
+public struct LegacyHomeSnapshot: Equatable, Sendable {
     public var machines: MachinesSnapshot
     public var sessions: [SessionRecord]
     public var projects: [ProjectRecord]

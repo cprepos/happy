@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  values/strings_android.xml in pl: Android-only strings, not in happy-app's
+  catalogs. AndroidStringsTranslatedTest fails while one is missing here.
+-->
+<resources>
+    <plurals name="conversation_attached_picture_count">
+        <item quantity="one">%1$d załączony obraz</item>
+        <item quantity="few">%1$d załączone obrazy</item>
+        <item quantity="many">%1$d załączonych obrazów</item>
+        <item quantity="other">%1$d załączonego obrazu</item>
+    </plurals>
+    <string name="server_url_empty">Adres URL serwera nie może być pusty</string>
+    <string name="server_url_protocol">Adres URL serwera musi używać protokołu HTTP lub HTTPS</string>
+    <string name="server_url_invalid">Nieprawidłowy format adresu URL</string>
+    <string name="settings_agents">Agenci</string>
+    <string name="settings_agents_subtitle">Połączone komputery i domyślne ustawienia agentów</string>
+    <string name="happy_action_unknown_error">Nieznany błąd</string>
+    <string name="live_avatars_title">Animowane awatary</string>
+    <string name="live_avatars_description">Awatary bez zdjęcia się poruszają. Zużywa więcej baterii.</string>
+    <string name="settings_appearance_file_diffs_sidebar">Panel boczny zmian w plikach</string>
+    <string name="settings_appearance_file_diffs_sidebar_description">Pokazuj zmiany git obok czatu na komputerze</string>
+    <string name="chat_scroll_to_bottom">Przewiń na dół</string>
+    <string name="voice_clear_search">Wyczyść wyszukiwanie</string>
+    <string name="scan_unavailable">Skaner kodów QR jest niedostępny na tym urządzeniu. Zamiast tego wklej link.</string>
+    <string name="scan_not_happy_code">To nie jest kod QR Happy.</string>
+    <string name="scan_terminal_code_elsewhere">Ten kod łączy terminal. Zeskanuj go w Ustawienia › Zeskanuj kod QR, aby się uwierzytelnić.</string>
+    <string name="scan_account_code_elsewhere">Ten kod łączy nowe urządzenie. Zeskanuj go w Ustawienia › Kopia zapasowa i przywracanie › Połącz nowe urządzenie.</string>
+    <string name="scan_pairing_unavailable">Ten kod łączy agenta. Użyj opcji Dodaj w menu kont na ekranie głównym.</string>
+    <string name="scan_close">Zamknij</string>
+    <string name="scan_hint">Skieruj aparat na kod QR</string>
+    <string name="scan_open_settings">Otwórz ustawienia</string>
+    <string name="scan_torch_on">Włącz latarkę</string>
+    <string name="scan_torch_off">Wyłącz latarkę</string>
+    <string name="state_animation_replay">Odtwórz ponownie</string>
+    <string name="scan_no_camera">To urządzenie nie ma aparatu. Wklej link.</string>
+    <string name="scan_camera_failed">Nie udało się uruchomić aparatu. Spróbuj ponownie albo wklej link.</string>
+    <string name="voice_microphone_title">Wymagany dostęp do mikrofonu</string>
+    <string name="voice_microphone_ask">Happy potrzebuje dostępu do mikrofonu na potrzeby czatu głosowego. Zezwól na niego, gdy pojawi się pytanie.</string>
+    <string name="voice_microphone_settings">Happy potrzebuje dostępu do mikrofonu na potrzeby czatu głosowego. Włącz dostęp do mikrofonu w ustawieniach urządzenia.</string>
+</resources>

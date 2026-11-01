@@ -1,5 +1,7 @@
 package com.slopus.happy.ui.files
 
+import com.slopus.happy.text.Words
+import com.slopus.happy.R
 import com.slopus.happy.diff.DiffSource
 import com.slopus.happy.diff.FileChangeKind
 import com.slopus.happy.model.GitFileStatus
@@ -104,7 +106,7 @@ class SessionChangesTest {
         val changes = LegacyChanges(this as TestScope, ops, "s", "/repo")
         changes.refresh()
         advanceUntilIdle()
-        assertEquals("File is outside the session root.", changes.state.value.items.single().error)
+        assertEquals(Words.ours(R.string.files_outside_root), changes.state.value.items.single().error)
     }
 
     @Test
@@ -130,7 +132,7 @@ class SessionChangesTest {
         val changes = AgentChanges(this as TestScope, ops, "s", supported = true)
         changes.refresh()
         advanceUntilIdle()
-        val items = changes.state.value.items("File is empty")
+        val items = changes.state.value.items()
         assertEquals(listOf(FileChangeKind.Modified, FileChangeKind.Added), items.map { it.kind })
         assertEquals(3, items[0].additions)
         assertNull(items[0].source)
@@ -138,11 +140,11 @@ class SessionChangesTest {
         changes.requestContent("a.kt")
         advanceUntilIdle()
         assertEquals(listOf("a.kt"), ops.reads)
-        val source = changes.state.value.items("File is empty")[0].source as DiffSource.Contents
+        val source = changes.state.value.items()[0].source as DiffSource.Contents
         assertEquals("old\n" to "new\n", source.oldText to source.newText)
         assertEquals(AgentChanges.NATIVE_DIFF_BUDGET, source.diffBudget)
         changes.expandContext("a.kt")
-        assertEquals(GitStatusParser.FULL_FILE_CONTEXT, (changes.state.value.items("")[0].source as DiffSource.Contents).contextLines)
+        assertEquals(GitStatusParser.FULL_FILE_CONTEXT, (changes.state.value.items()[0].source as DiffSource.Contents).contextLines)
         assertEquals(2, changes.state.value.fileCount)
     }
 
@@ -151,7 +153,7 @@ class SessionChangesTest {
         val changes = AgentChanges(this as TestScope, FakeOps(), "s", supported = true)
         changes.refresh()
         advanceUntilIdle()
-        assertEquals(AgentChanges.Load.Error("no state"), changes.state.value.load)
+        assertEquals(AgentChanges.Load.Error(Words.Said("no state")), changes.state.value.load)
     }
 
     @Test
@@ -206,7 +208,7 @@ class SessionChangesTest {
 
         // A failure shows over the copy and leaves the cache alone.
         read = ReadFileResult(false, error = "gone")
-        assertEquals(FileLoad.Failed("gone"), ops.fileLoads(cache, "s", "/repo/a.kt", "/repo", "a.kt").toList().last())
+        assertEquals(FileLoad.Failed(Words.Said("gone")), ops.fileLoads(cache, "s", "/repo/a.kt", "/repo", "a.kt").toList().last())
         assertEquals("c\n", cache.file("s", "/repo/a.kt")?.content)
         // Binary by extension caches as binary; a deleted session's files go.
         assertEquals(listOf(FileLoad.Binary), ops.fileLoads(cache, "s", "/repo/logo.png", "/repo", "logo.png").toList())

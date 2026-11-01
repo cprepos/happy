@@ -25,7 +25,8 @@ import org.robolectric.annotation.GraphicsMode
  * SessionView's `chatListTopContentInset` and OlderEnd's default: beyond
  * the oldest row's 32 slot, nothing on a phone in portrait (the 52 + 12
  * inset ends where the 64 header does), 12 in landscape, and on a tablet
- * the 64 header, the status bar and 32.
+ * 32: the header and the status bar are the glass bar's room, which the
+ * list keeps as its top padding.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -65,11 +66,10 @@ class ChatOlderInsetTest {
 
     @Test
     @Config(qualifiers = "w1280dp-h800dp-xhdpi")
-    fun tabletLeavesTheHeaderTheStatusBarAnd32() {
+    fun tabletLeaves32PastTheBar() {
         show()
         val inset = rule.node(ChatListTags.OLDER_INSET).bounds
-        // Robolectric draws no status bar, so it is the 64 header and 32.
-        assertDp("64 + 32", 96, inset.bottom - inset.top)
+        assertDp("32 beyond the slot", 32, inset.bottom - inset.top)
         assertDp("the slot under the spacer", inset.bottom, rule.node(ChatListTags.OLDER_END).bounds.top)
     }
 }

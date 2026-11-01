@@ -1,5 +1,6 @@
 package com.slopus.happy.ui.session
 
+import com.slopus.happy.text.wordsResource
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
@@ -281,7 +282,7 @@ fun rememberSessionScreenSlots(
     prompt?.let { PromptModal(it, onDismiss = { prompt = null }) }
     failure?.let { message ->
         HappyAlert(
-            Alert(stringResource(R.string.common_error), message, listOf(AlertButton(stringResource(R.string.common_ok)))),
+            Alert(stringResource(R.string.common_error), wordsResource(message), listOf(AlertButton(stringResource(R.string.common_ok)))),
             onDismiss = services::dismissPendingChatFailure,
         )
     }

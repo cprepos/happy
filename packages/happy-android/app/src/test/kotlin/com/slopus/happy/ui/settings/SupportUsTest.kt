@@ -35,12 +35,14 @@ class SupportUsTest {
 
     @Test fun supportRowMatchesNativeSpecAndProRowHasNoAction() {
         rule.setHappyContent {
-            SettingsScreen("1", {}, {}, {}, {}, isPro = true, onSupport = { error("Pro row must be inert") })
+            SettingsScreen(SettingsFixtures.profile, AboutInfo("1", isPro = true), aboutActions = AboutActions(onSupport = { error("Pro row must be inert") }))
         }
-        val terminal = rule.onAllNodesWithTag(ItemGroupTags.CARD, useUnmergedTree = true)[0].bounds
-        val card = rule.onAllNodesWithTag(ItemGroupTags.CARD, useUnmergedTree = true)[1].bounds
+        rule.node(SettingsTags.SUPPORT).performScrollTo()
+        // After the header and the accounts, Account, look and terminal cards: the fifth.
+        val terminal = rule.onAllNodesWithTag(ItemGroupTags.CARD, useUnmergedTree = true)[3].bounds
+        val card = rule.onAllNodesWithTag(ItemGroupTags.CARD, useUnmergedTree = true)[4].bounds
         val support = rule.node(SettingsTags.SUPPORT).bounds
-        assertDp("16 under terminal group", terminal.bottom + 16.dp, card.top)
+        assertDp("16 under the terminal card", terminal.bottom + 16.dp, card.top)
         assertBox("support card", card, 16.dp, card.top, (PHONE_WIDTH - 32).dp, (76 + 2f / 3).dp)
         assertBox("support row", support, (16 + 1f / 3).dp, card.top + (1f / 3).dp, (PHONE_WIDTH - 32 - 2f / 3).dp, 76.dp)
         rule.node(SettingsTags.SUPPORT).assertHasNoClickAction()
@@ -59,7 +61,7 @@ class SupportUsTest {
         rule.setHappyContent {
             val alerts = remember { Alerts() }
             val support = rememberSupportAction(paywall, errorAlert(alerts))
-            SettingsScreen("1", {}, {}, {}, {}, isPro = false, onSupport = support::run)
+            SettingsScreen(SettingsFixtures.profile, AboutInfo("1"), aboutActions = AboutActions(onSupport = support::run))
             alerts.Host()
         }
         rule.onNodeWithText("Support us").performScrollTo().performClick()
@@ -76,7 +78,7 @@ class SupportUsTest {
         var errors = 0
         rule.setHappyContent {
             val support = rememberSupportAction(paywall) { errors++ }
-            SettingsScreen("1", {}, {}, {}, {}, onSupport = support::run)
+            SettingsScreen(SettingsFixtures.profile, AboutInfo("1"), aboutActions = AboutActions(onSupport = support::run))
         }
         rule.onNodeWithText("Support us").performScrollTo().performClick()
         rule.waitForIdle()

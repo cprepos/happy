@@ -5,7 +5,7 @@ import UIKit
 
 /// WorktreeTabStrip.tsx: grouped by project, a chat is one tab of its
 /// checkout, and this is where the checkout's other chats are reached. It
-/// hangs under the header in a capsule of the header's own glass (a solid
+/// hangs under the header in a capsule of the system's Liquid Glass (a solid
 /// surface on a tablet), scrolls sideways, and ends in a hairline and `+`.
 ///
 /// The screen owns what the tabs mean: a tap asks it to switch in place, a
@@ -72,7 +72,7 @@ final class ChatWorktreeTabStrip: UIView {
     }
     /// The last placement, for tests.
     private(set) var layout: WorktreeTabStripLayout?
-    private let glassView = HeaderGlassView()
+    private let glassView = GlassCapsuleView()
     private let solidView = UIView()
     private let clip = UIView()
     private let scroller = TabScroller()
@@ -254,9 +254,9 @@ final class ChatWorktreeTabStrip: UIView {
         clip.isHidden = !named
         solidView.backgroundColor = UIColor(Palette.surfaceHigh)
         solidView.layer.borderWidth = 1 / layoutScale
-        solidView.layer.borderColor = UIColor(Palette.divider).resolvedColor(with: traitCollection).cgColor
+        solidView.layer.borderColor = UIColor(Palette.legacyDivider).resolvedColor(with: traitCollection).cgColor
         solidView.layer.shadowOpacity = traitCollection.userInterfaceStyle == .dark ? HeaderGlassShadow.darkOpacity : HeaderGlassShadow.lightOpacity
-        divider.backgroundColor = UIColor(Palette.divider)
+        divider.backgroundColor = UIColor(Palette.legacyDivider)
         setNeedsLayout()
     }
 
@@ -324,7 +324,11 @@ final class ChatWorktreeTabStrip: UIView {
             isOpen = selected
             label.string = item.title
             label.color = selected ? Palette.headerTint : Palette.textSecondary
-            label.isShimmering = item.shimmers
+            // Desktop's busy tab: its own colour under a pale band
+            // (`Tabs.tsx`, sheen, inherit), toward the strip under the
+            // open tab's translucent chip.
+            label.ground = UIColor(Palette.surfaceHigh)
+            label.shimmering = item.shimmers
             dot.isHidden = !Self.hasDot(item, selected: selected)
             dot.backgroundColor = UIColor(item.blocked ? Palette.sessionBlockedDot : Palette.sessionReadyDot)
             dot.isPulsing = item.blocked
@@ -438,7 +442,7 @@ final class WorktreeTabNames: @unchecked Sendable {
     static func size(_ name: WorktreeTabName) -> CGSize {
         guard !name.title.isEmpty else { return .zero }
         // Before the first font, so no name is measured in the fallback.
-        Fonts.registerBundledFonts()
+        LegacyFonts.registerBundledFonts()
         let style = (name.selected ? TextStyles.worktreeTabSelected : TextStyles.worktreeTab).scaled(name.environment.scale)
         let storage = NSTextStorage(attributedString: style.attributedString(name.title, color: .black, lineBreakMode: .byTruncatingTail))
         let manager = NSLayoutManager()

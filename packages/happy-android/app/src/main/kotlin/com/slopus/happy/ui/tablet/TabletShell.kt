@@ -41,14 +41,15 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.toRoute
 import com.slopus.happy.AppGraph
 import com.slopus.happy.R
+import com.slopus.happy.ui.chat.COMPOSE_STARTED
 import com.slopus.happy.ui.chat.SessionRoute
+import com.slopus.happy.ui.chat.isComposeChatId
 import com.slopus.happy.ui.components.Icon
 import com.slopus.happy.ui.components.Ionicon
 import com.slopus.happy.ui.files.MessageDetailRoute
 import com.slopus.happy.ui.files.SessionChangesRoute
 import com.slopus.happy.ui.files.SessionFileRoute
 import com.slopus.happy.ui.home.HomeNavigation
-import com.slopus.happy.ui.home.HomeServices
 import com.slopus.happy.ui.home.LocalHomeInSidebar
 import com.slopus.happy.ui.layout.LocalTabletShell
 import com.slopus.happy.ui.layout.LocalWindowLayout
@@ -57,6 +58,7 @@ import com.slopus.happy.ui.onboarding.OnboardingSettingsRoute
 import com.slopus.happy.ui.session.SessionInfoRoute
 import com.slopus.happy.ui.theme.HappyTheme
 import kotlin.math.floor
+import kotlinx.coroutines.flow.flowOf
 
 object TabletShellTags {
     const val DETAIL = "tablet.detail"
@@ -86,24 +88,27 @@ object TabletShellSpec {
 /**
  * SidebarNavigator.tsx `isDesktopLayout`, with firstRunOnboarding.ts
  * `shouldSuppressTabletShell` on native Android: signed in, a window at least
- * 768 wide, and not on the first-run screens (the link page that takes the
- * home over while no computer is linked, or an `onboarding/` route).
+ * 840 wide (Material expanded; happy-app says 768), and not on an `onboarding/`
+ * route. Unlike happy-app, having no computer linked keeps the shell: the
+ * link state is home's empty state.
  */
 object TabletShellRule {
-    fun suppressesShell(signedIn: Boolean, isTablet: Boolean, showsInstallStep: Boolean, isOnboardingRoute: Boolean): Boolean =
-        signedIn && isTablet && (showsInstallStep || isOnboardingRoute)
+    fun suppressesShell(signedIn: Boolean, isTablet: Boolean, isOnboardingRoute: Boolean): Boolean =
+        signedIn && isTablet && isOnboardingRoute
 
-    fun showsShell(signedIn: Boolean, isTablet: Boolean, showsInstallStep: Boolean, isOnboardingRoute: Boolean): Boolean =
-        signedIn && isTablet && !suppressesShell(signedIn, isTablet, showsInstallStep, isOnboardingRoute)
+    fun showsShell(signedIn: Boolean, isTablet: Boolean, isOnboardingRoute: Boolean): Boolean =
+        signedIn && isTablet && !suppressesShell(signedIn, isTablet, isOnboardingRoute)
 
     /**
      * SessionsList.tsx `selectedSessionId`: the session under `/session/<id>/…`,
      * the chat and every screen under it (info, changes, a file, a message).
+     * A compose chat is the session its first send started ([composeStarted]),
+     * and nothing before.
      */
-    fun selectedSessionId(entry: NavBackStackEntry?): String? {
+    fun selectedSessionId(entry: NavBackStackEntry?, composeStarted: String? = null): String? {
         val destination = entry?.destination ?: return null
         return when {
-            destination.hasRoute<SessionRoute>() -> entry.toRoute<SessionRoute>().id
+            destination.hasRoute<SessionRoute>() -> entry.toRoute<SessionRoute>().id.let { if (isComposeChatId(it)) composeStarted else it }
             destination.hasRoute<SessionInfoRoute>() -> entry.toRoute<SessionInfoRoute>().id
             destination.hasRoute<SessionChangesRoute>() -> entry.toRoute<SessionChangesRoute>().id
             destination.hasRoute<SessionFileRoute>() -> entry.toRoute<SessionFileRoute>().id
@@ -129,7 +134,7 @@ object TabletShellRule {
  * snaps the drawer; the header's 28 controls stay put, centred in the header
  * row under the status bar. Back is dimmed to 0.3 with nothing to go back to.
  * The stack keeps its place in the tree whichever way the shell goes, so
- * crossing 768 (rotation, a fold, a resized window) keeps every screen's state.
+ * crossing 840 (rotation, a fold, a resized window) keeps every screen's state.
  */
 @Composable
 fun TabletShell(
@@ -143,27 +148,22 @@ fun TabletShell(
     ProvideWindowLayout {
         val window = LocalWindowLayout.current
         val entry by nav.currentBackStackEntryAsState()
-        val wide = signedIn && window.isTablet
-        val showsInstallStep = if (wide) {
-            val services = remember(graph) { HomeServices.of(graph) }
-            val state by services.list.state.collectAsStateWithLifecycle()
-            state?.showsInstallStep == true
-        } else {
-            false
-        }
         val onboardingRoute = entry?.destination?.hasRoute<OnboardingSettingsRoute>() == true
-        val shows = TabletShellRule.showsShell(signedIn, window.isTablet, showsInstallStep, onboardingRoute)
+        val shows = TabletShellRule.showsShell(signedIn, window.isTablet, onboardingRoute)
         val local by graph.localSettings.values.collectAsStateWithLifecycle()
         val zen = local.zenMode
+        // The session a compose chat in the detail pane has started, so its row shows selected.
+        val composeStarted by remember(entry) { entry?.savedStateHandle?.getStateFlow<String?>(COMPOSE_STARTED, null) ?: flowOf(null) }
+            .collectAsStateWithLifecycle(null)
 
         Box(Modifier.fillMaxSize()) {
             Row(Modifier.fillMaxSize()) {
                 if (shows && !zen) {
-                    val navigation = remember(nav, onOpenSession, onTroubleshoot) { HomeNavigation.of(nav, onOpenSession, onTroubleshoot) }
+                    val navigation = remember(nav, onOpenSession, onTroubleshoot) { HomeNavigation.of(graph, nav, onOpenSession, onTroubleshoot) }
                     TabletSidebar(
                         graph = graph,
                         navigation = navigation,
-                        selectedSessionId = TabletShellRule.selectedSessionId(entry),
+                        selectedSessionId = TabletShellRule.selectedSessionId(entry, composeStarted),
                         headerHeight = window.headerHeight,
                         modifier = Modifier.width(TabletShellSpec.sidebarWidth(window.width)).fillMaxHeight(),
                     )

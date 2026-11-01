@@ -9,22 +9,19 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.CircularProgressIndicator
+import com.slopus.happy.ui.components.PageProgressIndicator as CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -49,6 +46,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.slopus.happy.R
@@ -63,6 +61,9 @@ import com.slopus.happy.ui.components.Octicon
 import com.slopus.happy.ui.components.RoundButton
 import com.slopus.happy.ui.components.RoundButtonDisplay
 import com.slopus.happy.ui.components.RoundButtonSize
+import com.slopus.happy.ui.components.ShimmerSpec
+import com.slopus.happy.ui.components.rememberReduceMotion
+import com.slopus.happy.ui.components.shimmer
 import com.slopus.happy.ui.layout.LocalWindowLayout
 import com.slopus.happy.ui.theme.HappyTheme
 import com.slopus.happy.ui.theme.happyTextStyle
@@ -78,6 +79,7 @@ object ChatListTags {
     const val FOOTER = "chat.list.footer"
     const val CONTROLLED_WARNING = "chat.list.controlledWarning"
     const val SCROLL_BUTTON = "chat.list.scrollToBottom"
+    const val SCROLL_ARROW = "chat.list.scrollToBottom.arrow"
 }
 
 /** ChatList.tsx / ChatFooter.tsx. */
@@ -97,9 +99,9 @@ object ChatListSpec {
     /** Below the newest row (the inverted list's top padding). */
     val newestPadding = 8.dp
     val olderStatusHeight = 32.dp
-    /** Beyond the older-end slot in landscape on a phone, where the header doesn't overlap the list. */
+    /** Beyond the older-end slot in landscape on a phone, past the bar's room. */
     val olderInsetLandscape = 12.dp
-    /** On a tablet the spacer is a header, the status bar and this more (OlderEnd's default inset). */
+    /** Beyond the older-end slot on a tablet, past the bar's room (OlderEnd's default: the header, the status bar and this). */
     val olderInsetTabletExtra = 32.dp
     const val MAX_INVISIBLE_OLDER_PAGES = 5
     val footerPaddingTop = 4.dp
@@ -182,11 +184,14 @@ fun olderStatus(blocked: OlderBlock?, hasMoreOlder: Boolean, isLoadingOlder: Boo
  * once five pages in a row brought nothing visible (small inverted
  * RoundButtons), with a spacer beyond it ([olderInset]). History is fetched whenever the oldest row is within a
  * viewport of the screen. Past 300 from the newest row a 32 round button
- * (surface at 0.9, 1 divider border, Octicons arrow-down 14), centred,
+ * (surface at 0.9, 1 divider border, Octicons arrow-down 14, the arrow
+ * shimmering while [working], as iOS's jump does), centred,
  * scrolls back down: 16 above the composer card when the dock floats over
  * the list ([scrollButtonInset], the card's distance from the list's
  * bottom), else 4 above the list's end. [bottomInset] (the floating dock)
- * is added under the newest row so it scrolls clear of the dock.
+ * is added under the newest row so it scrolls clear of the dock, and
+ * [topInset] (the glass bar's room) beyond the oldest, so the list starts
+ * under the bar and scrolls on under it.
  * [onNewestVisibleChange] reports whether the reader is at the newest
  * message: false past 48 from it, true again within 16.
  *
@@ -209,12 +214,15 @@ fun ChatList(
     modifier: Modifier = Modifier,
     state: LazyListState = rememberLazyListState(),
     bottomInset: Dp = 0.dp,
+    topInset: Dp = 0.dp,
     scrollButtonInset: Dp? = null,
     onNewestVisibleChange: ((Boolean) -> Unit)? = null,
     sessionId: String = "",
     groupToolCalls: Boolean = false,
     currentTurnComplete: Boolean = true,
     foreground: Boolean = true,
+    /** The agent is working: the scroll button's arrow shimmers, as iOS's jump does. */
+    working: Boolean = false,
 ) {
     val colors = HappyTheme.colors
     val scope = rememberCoroutineScope()
@@ -278,7 +286,7 @@ fun ChatList(
         LazyColumn(
             state = state,
             reverseLayout = true,
-            contentPadding = PaddingValues(bottom = ChatListSpec.newestPadding + bottomInset),
+            contentPadding = PaddingValues(top = topInset, bottom = ChatListSpec.newestPadding + bottomInset),
             modifier = Modifier.testTag(ChatListTags.LIST).fillMaxSize(),
         ) {
             item(key = "footer", contentType = "footer") { ChatFooter(controlledByUser) }
@@ -300,6 +308,9 @@ fun ChatList(
         }
         if (showScrollButton) {
             val scrollLabel = stringResource(R.string.chat_scroll_to_bottom)
+            val workingState = stringResource(R.string.conversation_jump_working)
+            // Hidden, it isn't composed, so it doesn't sweep.
+            val sweeps = working && !rememberReduceMotion()
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -311,10 +322,20 @@ fun ChatList(
                     .background(colors.surface)
                     .border(1.dp, colors.divider, CircleShape)
                     .clickable(role = Role.Button) { scope.launch { state.animateScrollToItem(0) } }
-                    .semantics { contentDescription = scrollLabel },
+                    .semantics {
+                        contentDescription = scrollLabel
+                        if (working) stateDescription = workingState
+                    },
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(Octicon.ArrowDown, ChatListSpec.scrollIcon, colors.text)
+                Icon(
+                    Octicon.ArrowDown,
+                    ChatListSpec.scrollIcon,
+                    colors.text,
+                    modifier = Modifier
+                        .testTag(ChatListTags.SCROLL_ARROW)
+                        .then(if (sweeps) Modifier.shimmer(ShimmerSpec.sheen(colors.text, colors.surface)) else Modifier),
+                )
             }
         }
     }
@@ -324,16 +345,17 @@ private const val WORK_HEADER = "workHeader"
 
 /**
  * SessionView's `chatListTopContentInset` as the spacer beyond the oldest
- * row. A phone in portrait runs the list under its 64 header with 52 + 12
- * of inset, which ends where the header does: nothing here, as the list
- * starts below the header. Landscape keeps 12. A tablet passes no inset,
- * so OlderEnd's default holds: the header, the status bar and 32.
+ * row, past the glass bar's room ([ChatList]'s topInset). A phone in
+ * portrait runs the list under its 64 header with 52 + 12 of inset, which
+ * ends where the header does: nothing here. Landscape keeps 12. A tablet
+ * passes no inset, so OlderEnd's default holds: the header and the status
+ * bar (the bar's room), then 32.
  */
 @Composable
 private fun olderInset(): Dp {
     val layout = LocalWindowLayout.current
     return when {
-        layout.isTablet -> layout.headerHeight + WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + ChatListSpec.olderInsetTabletExtra
+        layout.isTablet -> ChatListSpec.olderInsetTabletExtra
         layout.isLandscape -> ChatListSpec.olderInsetLandscape
         else -> 0.dp
     }
@@ -404,7 +426,7 @@ fun ChatFooter(controlledByUser: Boolean, modifier: Modifier = Modifier) {
                 Icon(Ionicon.InformationCircle, ChatListSpec.warningIcon, colors.boxWarning.text)
                 Text(
                     // Literal in happy-app (ChatFooter.tsx).
-                    text = "Permissions shown in terminal only. Reset or send a message to control from app.",
+                    text = stringResource(R.string.chat_permissions_in_terminal),
                     style = ChatListSpec.warningText,
                     color = colors.boxWarning.text,
                 )

@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  values/strings_artifacts.xml in zh-Hant: Android-only strings, not in happy-app's
+  catalogs. AndroidStringsTranslatedTest fails while one is missing here.
+-->
+<resources>
+    <string name="artifact_untitled">無標題工件</string>
+    <string name="artifact_deleted">此工件已刪除。</string>
+    <string name="artifact_unavailable">無法載入此工件。請確認你的電腦已開機。</string>
+    <string name="artifact_file_unavailable">無法開啟此檔案。</string>
+    <string name="artifact_picture">圖片</string>
+    <string name="artifact_video">影片</string>
+    <plurals name="artifact_count_images">
+        <item quantity="other">%1$d 張圖片</item>
+    </plurals>
+    <plurals name="artifact_count_videos">
+        <item quantity="other">%1$d 部影片</item>
+    </plurals>
+    <string name="artifact_share">分享</string>
+    <string name="artifact_play">播放</string>
+    <string name="artifact_pause">暫停</string>
+    <string name="artifact_open_with">在其他 App 中開啟</string>
+    <string name="artifact_open_with_body">Android 無法在此顯示此檔案。它會在此手機上能讀取它的 App 中開啟。</string>
+    <string name="browser_via">經由 %1$s</string>
+    <string name="browser_default_computer">代理程式連線</string>
+    <string name="browser_unreachable">無法連線到 %1$s。\n請檢查代理程式連線，然後點一下「重新載入」。</string>
+    <string name="browser_unreachable_page">無法連線到 %1$s。\n請檢查連線或網頁位址，然後點一下「重新載入」。</string>
+    <string name="browser_unsupported">此手機的 WebView 無法透過你的電腦傳送網頁。請更新 Android System WebView，然後點一下「重新載入」。</string>
+    <string name="browser_forward">下一頁</string>
+    <string name="browser_close">關閉</string>
+    <string name="browser_share_link">分享連結</string>
+    <string name="browser_open_outside">在瀏覽器中開啟（不經代理）</string>
+    <string name="link_menu_open_in_app">在 Happy 瀏覽器中開啟</string>
+    <string name="link_menu_open_in_app_direct">在 App 內，使用此手機的網路</string>
+    <string name="link_menu_open_external">在外部瀏覽器中開啟</string>
+    <string name="link_menu_open_external_proxied">不經過代理程式的網路</string>
+    <string name="link_menu_copy">複製連結</string>
+    <string name="link_menu_share">分享</string>
+</resources>

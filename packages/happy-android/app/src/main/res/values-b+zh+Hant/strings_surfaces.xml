@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="surface_leave">退出</string>
+    <string name="surface_leave_title">退出「%1$s」？</string>
+    <string name="surface_leave_message">它會從你所有裝置上的清單中移除。其他成員仍會保留它。</string>
+    <string name="surface_leave_failed">無法退出「%1$s」</string>
+    <string name="surface_leave_no_answer">代理程式沒有回應。請稍後再試。</string>
+    <string name="conversation_jump_to_latest">跳到最新</string>
+    <string name="conversation_jump_working">工作中</string>
+</resources>

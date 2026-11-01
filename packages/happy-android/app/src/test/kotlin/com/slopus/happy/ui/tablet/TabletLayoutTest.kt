@@ -92,7 +92,8 @@ class TabletLayoutTest {
             )
         }
         val panel = rule.node(ComposerTags.PANEL).bounds
-        assertBox("panel", panel, centredLeft, panel.top, 800.dp, panel.bottom - panel.top)
+        // The composer is the 800 column; its panel 8 inside it, as on a phone.
+        assertBox("panel", panel, centredLeft + 8.dp, panel.top, 784.dp, panel.bottom - panel.top)
         assertDp("composer still spans the window", TABLET_WIDTH, rule.node(ComposerTags.COMPOSER).bounds.right)
     }
 

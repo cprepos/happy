@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  values/strings_chat.xml in ca: Android-only strings, not in happy-app's
+  catalogs. AndroidStringsTranslatedTest fails while one is missing here.
+-->
+<resources>
+    <string name="chat_send_failed">No s\'ha pogut enviar el missatge.</string>
+    <string name="chat_no_messages">Encara no hi ha missatges</string>
+    <string name="chat_created">Creada %1$s</string>
+    <string name="chat_permissions_in_terminal">Els permisos només es mostren al terminal. Restableix o envia un missatge per controlar-los des de l\'app.</string>
+    <string name="chat_stop">Atura</string>
+    <string name="chat_voice">Veu</string>
+    <string name="chat_send">Envia</string>
+    <string name="chat_markdown_image">Imatge de Markdown</string>
+    <string name="chat_remove_image">Treu %1$s</string>
+    <string name="chat_add_photo">Afegeix una foto</string>
+    <string name="diff_badge_new">NOU</string>
+    <string name="diff_badge_deleted">SUPRIMIT</string>
+    <string name="diff_badge_renamed">REANOMENAT</string>
+    <string name="files_no_session_path">No hi ha camí de sessió</string>
+    <string name="files_outside_root">El fitxer és fora de l\'arrel de la sessió.</string>
+    <string name="files_decode_failed">No s\'ha pogut descodificar el fitxer</string>
+    <string name="files_diff_failed">No s\'ha pogut obtenir el diff</string>
+    <string name="files_load_failed">No s\'ha pogut carregar el fitxer</string>
+    <string name="files_contents_match">El contingut del fitxer coincideix amb la base de comparació.</string>
+    <string name="files_truncated">Es mostren %1$s de %2$s fitxers modificats. Obre l\'espai de treball a l\'ordinador per veure la llista completa.</string>
+    <string name="files_counts_approximate">Els recomptes de canvis d\'aquest espai de treball són aproximats.</string>
+    <string name="files_conflicted">Aquest espai de treball té conflictes de fusió sense resoldre.</string>
+    <string name="files_changes_failed">No s\'han pogut carregar els canvis de Happy Agent.</string>
+    <string name="files_file_failed">No s\'ha pogut carregar aquest fitxer. Torna a carregar els canvis i torna-ho a provar.</string>
+    <string name="files_update_agent">Actualitza Happy Agent a l\'ordinador per veure els canvis d\'aquesta sessió.</string>
+    <string name="files_no_comparison">La comparació amb origin/main no està disponible per a aquest espai de treball.</string>
+    <string name="files_no_details">No hi ha detalls de fitxers per a aquesta comparació.</string>
+</resources>

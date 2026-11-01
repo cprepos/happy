@@ -1,6 +1,6 @@
 import XCTest
 
-/// Device QA for the UltraList chat (`HappyChatHarness -chatUltraList
+/// Device QA for the chat (`HappyChatHarness
 /// -qaProbe`): each test drives fixture chats with synthesized touches,
 /// takes screenshots, and attaches the probe's action windows per step
 /// (`ChatUltraQAProbe`): frame gaps, not-ready rows and drift. Fixture
@@ -72,16 +72,16 @@ final class ChatUltraQATests: XCTestCase {
 
     private var pass: String { ProcessInfo.processInfo.environment["QA_PASS"] ?? "pass" }
 
-    private func launchChat(_ fixture: String, clip: String, ultra: Bool = true, extra: [String] = []) {
+    private func launchChat(_ fixture: String, clip: String, extra: [String] = []) {
         let app = XCUIApplication()
-        app.launchArguments = ["-fixture", fixture, "-qaProbe", "-qaRun", "\(pass)-\(clip)"] + (ultra ? ["-chatUltraList"] : []) + extra
+        app.launchArguments = ["-fixture", fixture, "-qaProbe", "-qaRun", "\(pass)-\(clip)"] + extra
         launch(app, clip: clip)
     }
 
-    private func launchHome(clip: String, renderer: String = "UITableView", grouping: String = "flat", ultra: Bool = true) {
+    private func launchHome(clip: String, grouping: String = "flat") {
         let app = XCUIApplication()
-        app.launchArguments = ["-screen", "home", "-renderer", renderer, "-grouping", grouping, "-sessionCount", "0", "-archiveCount", "0",
-                               "-qaProbe", "-qaRun", "\(pass)-\(clip)"] + (ultra ? ["-chatUltraList"] : [])
+        app.launchArguments = ["-screen", "home", "-grouping", grouping, "-sessionCount", "0", "-archiveCount", "0",
+                               "-qaProbe", "-qaRun", "\(pass)-\(clip)"]
         launch(app, clip: clip)
     }
 
@@ -130,10 +130,10 @@ final class ChatUltraQATests: XCTestCase {
         return true
     }
 
-    /// The gate every clip starts with: the expected renderer, its list
-    /// mounted, no collection view in an UltraList chat, rows drawn. The
+    /// The gate every clip starts with: UltraList mounted, no collection
+    /// view in the chat, rows drawn. The
     /// windows so far (opening, first applies) are recorded as "ready".
-    private func assertReady(_ label: String, ultra: Bool = true, timeout: TimeInterval = 30) {
+    private func assertReady(_ label: String, timeout: TimeInterval = 30) {
         let ready = wait(timeout) {
             let s = state()
             return (s["listInWindow"] as? Bool) == true && (s["displayReady"] as? Bool) == true && int(s["rows"]) > 0
@@ -144,13 +144,9 @@ final class ChatUltraQATests: XCTestCase {
         if !ready, let data = try? JSONSerialization.data(withJSONObject: s["ultraNotReady"] ?? [:], options: [.prettyPrinted, .sortedKeys]) {
             attach("\(clip) \(label) UltraList not drawn", String(decoding: data, as: UTF8.self))
         }
-        if ultra {
-            XCTAssertEqual(s["renderer"] as? String, "UltraList", label)
-            XCTAssertEqual(s["ultraMounted"] as? Bool, true, label)
-            XCTAssertEqual(int(s["collectionViews"]), 0, label)
-        } else {
-            XCTAssertEqual(s["renderer"] as? String, "UICollectionView", label)
-        }
+        XCTAssertEqual(s["renderer"] as? String, "UltraList", label)
+        XCTAssertEqual(s["ultraMounted"] as? Bool, true, label)
+        XCTAssertEqual(int(s["collectionViews"]), 0, label)
         let frame = app.windows.firstMatch.frame
         if frame.width > 0 { size = frame.size }
         let all = windows()
@@ -498,19 +494,8 @@ final class ChatUltraQATests: XCTestCase {
     func testC1LongKeyboardAndHistory() {
         prepare()
         defer { finish() }
-        runLong(ultra: true, clip: "c1-long")
-    }
-
-    /// The same clip on the default renderer, for comparison.
-    func testL1LegacyLongKeyboardAndHistory() {
-        prepare()
-        defer { finish() }
-        runLong(ultra: false, clip: "l1-legacy-long")
-    }
-
-    private func runLong(ultra: Bool, clip: String) {
-        launchChat("long", clip: clip, ultra: ultra, extra: ["-keyboard"])
-        assertReady("open", ultra: ultra)
+        launchChat("long", clip: "c1-long", extra: ["-keyboard"])
+        assertReady("open")
         let keyboardUp = wait(10) { number(scrollProbe()["keyboardTop"]) < size.height - 150 }
         Thread.sleep(forTimeInterval: 1)
         step("keyboard shown", quiet: 0.5, requireWindow: false) {}
@@ -1204,7 +1189,7 @@ final class ChatUltraQATests: XCTestCase {
         }
     }
 
-    // MARK: C7 Home to chat, Details, renderer setting
+    // MARK: C7 Home to chat, Details
 
     private func row(_ title: String) -> XCUIElement {
         app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", title)).firstMatch
@@ -1216,7 +1201,7 @@ final class ChatUltraQATests: XCTestCase {
         Thread.sleep(forTimeInterval: 0.8)
     }
 
-    func testC7HomeOpensChatsDetailsAndSetting() {
+    func testC7HomeOpensChatsAndDetails() {
         prepare()
         defer { finish() }
         launchHome(clip: "c7-home")
@@ -1236,22 +1221,21 @@ final class ChatUltraQATests: XCTestCase {
                     step("fling the opened chat", quiet: 2.5, expect: .scroll) { fling(older: true) }
                 }
                 if label == "short", pass == "warm" {
-                    // The header's avatar, labelled with the chat's title; a
-                    // worktree tab below the header can carry the same label.
-                    let avatar = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", title)).allElementsBoundByIndex
-                        .first { $0.frame.midX > size.width * 0.75 && $0.frame.midY < 100 && $0.frame.width < 70 }
-                    if let avatar {
-                        let spot = avatar.frame
+                    // The title's capsule opens Details; at the right of the
+                    // bar is only Compose.
+                    let capsule = app.descendants(matching: .any)["chat-capsule"]
+                    if capsule.exists {
+                        let spot = capsule.frame
                         tap(CGPoint(x: spot.midX, y: spot.midY))
                         Thread.sleep(forTimeInterval: 1.5)
                         screenshot("details")
                         let texts = app.staticTexts.allElementsBoundByIndex.prefix(40).map { $0.label }.filter { !$0.isEmpty }
                         attach("\(clip) details texts", "\(texts)")
-                        require("header avatar opens Details with content", texts.count >= 4, "\(texts.count) texts")
+                        require("header title opens Details with content", texts.count >= 4, "\(texts.count) texts")
                         back()
                         Thread.sleep(forTimeInterval: 1.2)
                     } else {
-                        require("header avatar opens Details with content", false, "no header avatar")
+                        require("header title opens Details with content", false, "no title capsule")
                     }
                 }
                 backToHome()
@@ -1262,44 +1246,8 @@ final class ChatUltraQATests: XCTestCase {
         attach("\(clip) first visual responses", "\(state()["firstVisuals"] ?? [])")
         require("open chats from Home on UltraList", opens.count == 4 && opens.allSatisfy { ($0["renderer"] as? String) == "UltraList" && number($0["readyMs"]) > 0 },
                 "\(opens.count) openings: \(opens.map { "\($0["renderer"] ?? "") mount \($0["mountMs"] ?? "") visible \($0["visibleMs"] ?? "") ready \($0["readyMs"] ?? "") settled \($0["settledMs"] ?? "")" })")
-
-        func choose(_ renderer: String) {
-            app.buttons["Settings"].tap()
-            XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 10))
-            let appearance = row("Appearance,")
-            XCTAssertTrue(appearance.waitForExistence(timeout: 10)); appearance.tap()
-            let setting = row("Chat list renderer,")
-            XCTAssertTrue(setting.waitForExistence(timeout: 10)); setting.tap()
-            let choice = app.alerts.buttons[renderer]
-            XCTAssertTrue(choice.waitForExistence(timeout: 10)); choice.tap()
-            Thread.sleep(forTimeInterval: 0.8)
-            screenshot("setting-\(renderer)")
-            app.navigationBars["Appearance"].buttons.element(boundBy: 0).tap()
-            XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 10))
-            app.navigationBars["Settings"].buttons.element(boundBy: 0).tap()
-            XCTAssertTrue(app.buttons["Settings"].waitForExistence(timeout: 10))
-        }
-        choose("UICollectionView")
-        row("Scroll indicator").tap()
-        Thread.sleep(forTimeInterval: 2.5)
-        assertReady("after choosing UICollectionView", ultra: false)
-        screenshot("chat-collectionview")
-        backToHome()
-        choose("UltraList")
-        row("Scroll indicator").tap()
-        Thread.sleep(forTimeInterval: 2.5)
-        assertReady("after choosing UltraList")
-        screenshot("chat-ultralist-again")
         app.terminate()
 
-        launchHome(clip: "c7-home-relaunch", renderer: "stored", ultra: false)
-        let chat = row("Scroll indicator")
-        XCTAssertTrue(chat.waitForExistence(timeout: 20))
-        chat.tap()
-        Thread.sleep(forTimeInterval: 2.5)
-        assertReady("relaunch keeps UltraList")
-        screenshot("relaunch-ultralist")
-        app.terminate()
 
         // Worktree tabs: a chat shows its checkout's tabs only while Home is
         // grouped by project (`ChatServices.checkout`); the seeded worktree
@@ -1344,7 +1292,46 @@ final class ChatUltraQATests: XCTestCase {
         app.navigationBars.allElementsBoundByIndex.filter { $0.exists && $0.frame.height > 20 && $0.frame.maxY > 0 }
     }
 
-    /// Home floats its own header with no bar, a chat has the bar in
+    /// The legacy home's filter item has a label and no identifier yet.
+    private static let homeFilterLabel = "Filter"
+
+    /// Home's own bar (`HeaderBar`), as its owner states it: one bar, the
+    /// account switcher alone on the left, and filter, compose and
+    /// settings on the right, settings outermost (`HeaderBar.Trailing`,
+    /// emitted reversed). Home is the root, so nothing sits left of the
+    /// switcher: no back button. Home floated a header of its own with no
+    /// bar until 2621dfe58, which is what this clip used to require.
+    ///
+    /// A phone's contract only. A window at least 768 points wide is a
+    /// tablet layout, whose blank root beside the sidebar is changing in
+    /// the header work: it is recorded as not judged, not asserted.
+    private func requireHomeBar(_ when: String) {
+        guard app.windows.firstMatch.frame.width < 768 else {
+            covered("Home's bar \(when)", "not judged: tablet layout")
+            return
+        }
+        let bars = shownBars()
+        require("Home has its one bar \(when)", bars.count == 1, "\(bars.count) bars")
+        guard bars.count == 1, let bar = bars.first else { return }
+        let items = [
+            ("account-switcher", bar.buttons["account-switcher"]),
+            ("filter", bar.buttons[Self.homeFilterLabel]),
+            ("compose", bar.buttons["compose"]),
+            ("settings", bar.buttons["settings"]),
+        ]
+        let missing = items.filter { !$0.1.exists }.map(\.0)
+        require("Home's bar has the switcher, filter, compose and settings \(when)", missing.isEmpty, "missing \(missing)")
+        guard missing.isEmpty else { return }
+        let xs = items.map { $0.1.frame.midX }
+        require("Home's bar reads switcher, filter, compose, settings from the left \(when)",
+                zip(xs, xs.dropFirst()).allSatisfy { $0 < $1 }, "\(zip(items.map(\.0), xs).map { "\($0) \(Int($1))" })")
+        let switcher = items[0].1.frame
+        let lefter = bar.buttons.allElementsBoundByIndex.filter { $0.exists && $0.frame.width > 0 && $0.frame.maxX <= switcher.minX + 0.5 }
+        require("nothing left of the switcher on Home's bar \(when)", lefter.isEmpty,
+                "\(lefter.map { "\($0.identifier.isEmpty ? $0.label : $0.identifier) \($0.frame)" })")
+    }
+
+    /// Home has its own bar (`requireHomeBar`), a chat has the bar in
     /// portrait, and Settings has the ordinary bar. In landscape a chat has
     /// no bar on a phone layout; a window at least 768 points wide is a
     /// tablet layout (`TabletBreakpoint`), where the chat beside the sidebar
@@ -1362,7 +1349,7 @@ final class ChatUltraQATests: XCTestCase {
         launchHome(clip: "n1-bar")
         XCTAssertTrue(app.buttons["Settings"].waitForExistence(timeout: 20))
         Thread.sleep(forTimeInterval: 1)
-        require("Home has no navigation bar", shownBars().isEmpty, "\(shownBars().count) bars")
+        requireHomeBar("at launch")
         screenshot("01-home")
 
         let target = row("Scroll indicator")
@@ -1387,17 +1374,18 @@ final class ChatUltraQATests: XCTestCase {
         screenshot("03-chat-after-attempted-cancelled-swipe")
 
         backToHome()
-        require("Home has no bar again after the chat", shownBars().isEmpty, "\(shownBars().count) bars")
+        requireHomeBar("back from the chat")
         screenshot("04-home-again")
 
         app.buttons["Settings"].tap()
-        let settings = app.navigationBars["Settings"]
+        XCTAssertTrue(app.otherElements["settings"].waitForExistence(timeout: 10))
+        let settings = app.navigationBars.firstMatch
         require("Settings has the ordinary bar", settings.waitForExistence(timeout: 10) && settings.frame.height > 20, "\(settings.frame)")
         screenshot("05-settings")
         settings.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(app.buttons["Settings"].waitForExistence(timeout: 10))
         Thread.sleep(forTimeInterval: 0.8)
-        require("Home has no bar after Settings", shownBars().isEmpty, "\(shownBars().count) bars")
+        requireHomeBar("back from Settings")
 
         mark("rotate landscape")
         XCUIDevice.shared.orientation = .landscapeLeft
@@ -1424,7 +1412,7 @@ final class ChatUltraQATests: XCTestCase {
         require("the chat has its bar back in portrait", shownBars().count == 1, "\(shownBars().map { $0.frame })")
         screenshot("08-chat-portrait-again")
         backToHome()
-        require("Home has no bar after the rotated chat", shownBars().isEmpty, "\(shownBars().count) bars")
+        requireHomeBar("back from the rotated chat")
         attach("\(clip) openings", "\(state()["opens"] ?? [])")
         attach("\(clip) first visual responses", "\(state()["firstVisuals"] ?? [])")
     }
@@ -1678,10 +1666,10 @@ final class ChatUltraQATests: XCTestCase {
             XCTFail("not in a chat for Details")
             return
         }
-        let avatar = app.descendants(matching: .any).allElementsBoundByIndex.prefix(80)
-            .first { $0.elementType != .window && $0.frame.width < 70 && $0.frame.width > 30 && $0.frame.midX > size.width * 0.8 && $0.frame.midY < 100 && $0.frame.midY > 40 }
-        if let avatar {
-            let spot = avatar.frame
+        // The title's capsule opens Details; at the right is only Compose.
+        let capsule = app.descendants(matching: .any)["chat-capsule"]
+        if capsule.exists {
+            let spot = capsule.frame
             mark("open Details")
             tap(CGPoint(x: spot.midX, y: spot.midY))
             Thread.sleep(forTimeInterval: 3)
@@ -1691,7 +1679,7 @@ final class ChatUltraQATests: XCTestCase {
             back()
             Thread.sleep(forTimeInterval: 1.5)
         } else {
-            XCTFail("no header avatar to open Details")
+            XCTFail("no title capsule to open Details")
         }
         back()
         XCTAssertTrue(app.buttons["Settings"].waitForExistence(timeout: 10), "back on Home")
@@ -1708,16 +1696,15 @@ final class ChatUltraQATests: XCTestCase {
         prepare()
         defer { finish() }
         var results: [String] = []
-        let sequence: [(String, Bool)] = [("question", true), ("question", true), ("question", false), ("question", true),
-                                          ("markdown", true), ("question", true), ("tools", true), ("question", true), ("question", true)]
-        for (index, (fixture, ultra)) in sequence.enumerated() {
-            launchChat(fixture, clip: "q0-\(index)-\(fixture)-\(ultra ? "ultra" : "legacy")", ultra: ultra)
+        let sequence = ["question", "question", "question", "markdown", "question", "tools", "question", "question"]
+        for (index, fixture) in sequence.enumerated() {
+            launchChat(fixture, clip: "q0-\(index)-\(fixture)")
             let ready = wait(12) {
                 let s = state()
                 return (s["listInWindow"] as? Bool) == true && (s["displayReady"] as? Bool) == true && int(s["rows"]) > 0
             }
             let s = state()
-            results.append("\(index) \(fixture) \(ultra ? "ultra" : "legacy"): \(ready ? "drawn" : "NOT DRAWN") rows \(s["rows"] ?? "")")
+            results.append("\(index) \(fixture): \(ready ? "drawn" : "NOT DRAWN") rows \(s["rows"] ?? "")")
             if !ready {
                 screenshot("not-drawn")
                 if let data = try? JSONSerialization.data(withJSONObject: s["ultraNotReady"] ?? [:], options: [.prettyPrinted, .sortedKeys]) {
@@ -1730,20 +1717,18 @@ final class ChatUltraQATests: XCTestCase {
         XCTAssertFalse(results.contains { $0.contains("NOT DRAWN") }, results.joined(separator: "; "))
     }
 
-    // MARK: Legacy screens for pixel comparison
+    // MARK: Screens
 
-    func testL2LegacyAndUltraScreens() {
+    func testL2Screens() {
         prepare()
         defer { finish() }
         for fixture in ["markdown", "tools", "question", "sending"] {
-            for ultra in [false, true] {
-                launchChat(fixture, clip: "l2-\(fixture)-\(ultra ? "ultra" : "legacy")", ultra: ultra)
-                assertReady("open", ultra: ultra)
-                Thread.sleep(forTimeInterval: fixture == "markdown" ? 2 : 1)
-                screenshot("newest")
-                step("held drag back", quiet: 1.5, expect: .scroll) { move(older: true, by: size.height * 0.5) }
-                screenshot("history")
-            }
+            launchChat(fixture, clip: "l2-\(fixture)")
+            assertReady("open")
+            Thread.sleep(forTimeInterval: fixture == "markdown" ? 2 : 1)
+            screenshot("newest")
+            step("held drag back", quiet: 1.5, expect: .scroll) { move(older: true, by: size.height * 0.5) }
+            screenshot("history")
         }
     }
 }

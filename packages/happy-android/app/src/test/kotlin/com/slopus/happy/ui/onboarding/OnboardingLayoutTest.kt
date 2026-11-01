@@ -18,9 +18,10 @@ import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.max
 import androidx.compose.ui.unit.sp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.slopus.happy.ui.PHONE
@@ -30,10 +31,10 @@ import com.slopus.happy.ui.assertDp
 import com.slopus.happy.ui.bounds
 import com.slopus.happy.ui.components.HeaderTags
 import com.slopus.happy.ui.components.RoundButtonTags
-import com.slopus.happy.ui.components.wordmarkWidth
 import com.slopus.happy.ui.node
 import com.slopus.happy.ui.setHappyContent
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -50,20 +51,16 @@ class OnboardingLayoutTest {
     @get:Rule
     val rule = createComposeRule()
 
-    private fun setWelcome(customServerLabel: String? = null, density: Density? = null, height: Int? = null) {
+    private fun setLink(customServerLabel: String? = null, density: Density? = null, height: Int? = null) {
         rule.setHappyContent {
             val content = @Composable {
                 Box(if (height != null) Modifier.fillMaxWidth().height(height.dp) else Modifier.fillMaxSize()) {
-                    WelcomeScreen(
-                        customServerLabel = customServerLabel,
-                        creatingAccount = false,
-                        onCreateAccount = {},
-                        onRestore = {},
-                        onServer = {},
+                    OnboardingLinkComputerScreen(
+                        customServerLabel = customServerLabel, ticked = emptySet(), onToggle = {}, busy = false, error = null,
+                        onScan = {}, onPasteLink = {}, onSettings = {}, onOpenDesktopSite = {},
                     )
-                    // Invisible copies of both first-run contents at the block's content width, to measure.
+                    // An invisible copy of the checklist at the block's content width, to measure.
                     Column(Modifier.width((PHONE_WIDTH - 48).dp).alpha(0f)) {
-                        WelcomeContent(Modifier.clearAndSetSemantics { testTag = "measure.welcome" })
                         LinkComputerContent(Modifier.clearAndSetSemantics { testTag = "measure.link" })
                     }
                 }
@@ -73,10 +70,10 @@ class OnboardingLayoutTest {
     }
 
     @Test
-    fun welcomeBlockReservesBothContentsAndSitsCentred() {
-        setWelcome()
+    fun blockReservesTheChecklistAndSitsCentred() {
+        setLink()
         assertBox("header bar", rule.node(HeaderTags.BAR).bounds, 0.dp, 0.dp, PHONE_WIDTH.dp, 64.dp)
-        assertBox("gear slot", rule.node(HeaderTags.RIGHT).bounds, (PHONE_WIDTH - 16 - 48).dp, 8.dp, 48.dp, 48.dp)
+        assertBox("gear slot", rule.node(HeaderTags.RIGHT).bounds, (PHONE_WIDTH - 4 - 48).dp, 8.dp, 48.dp, 48.dp)
 
         // Footer: Get help, 36 high, 16 from the right, 12 above the bottom.
         val help = rule.node(OnboardingTags.GET_HELP).bounds
@@ -87,16 +84,15 @@ class OnboardingLayoutTest {
         val body = rule.node(OnboardingTags.BODY).bounds
         assertBox("body", body, 0.dp, 64.dp, PHONE_WIDTH.dp, (PHONE_HEIGHT - 64 - 48).dp)
 
-        val welcome = rule.node("measure.welcome").bounds
         val link = rule.node("measure.link").bounds
-        val reserved = max(welcome.bottom - welcome.top, link.bottom - link.top)
+        val reserved = link.bottom - link.top
 
         val content = rule.node(OnboardingTags.CONTENT).bounds
         val primary = rule.node(OnboardingTags.PRIMARY).bounds
         val secondary = rule.node(OnboardingTags.SECONDARY).bounds
         assertDp("content left", 24, content.left)
         assertDp("content width", PHONE_WIDTH - 48, content.right - content.left)
-        assertDp("content reserves the taller first-run content", reserved, content.bottom - content.top)
+        assertDp("content reserves the checklist", reserved, content.bottom - content.top)
         assertBox("primary", primary, 24.dp, content.bottom + 12.dp, (PHONE_WIDTH - 48).dp, 50.dp)
         assertBox("secondary", secondary, 24.dp, primary.bottom + 4.dp, (PHONE_WIDTH - 48).dp, 44.dp)
 
@@ -108,36 +104,22 @@ class OnboardingLayoutTest {
     }
 
     @Test
-    fun welcomeContentSpec() {
-        setWelcome()
-        val content = rule.node(OnboardingTags.CONTENT).bounds
-        // Merged tree: the invisible reserve copies are cleared from it.
-        val wordmark = rule.onNodeWithTag(OnboardingContentTags.WORDMARK).bounds
-        assertBox("wordmark", wordmark, 24.dp, content.top, wordmarkWidth(84.dp), 84.dp)
-        assertEquals("wordmark width rounds like the RN view box", 229f, wordmarkWidth(84.dp).value)
-        val headline = rule.onNodeWithTag(OnboardingContentTags.HEADLINE).bounds
-        assertBox("headline", headline, 24.dp, wordmark.bottom + 28.dp, headline.right - headline.left, 68.dp)
-        val props = rule.onNodeWithTag(OnboardingContentTags.PROPS).bounds
-        assertBox("props", props, 24.dp, headline.bottom + 12.dp, props.right - props.left, 72.dp)
-    }
-
-    @Test
     fun largeTextScrollsFromTheTopAndCapsTheHeadline() {
         // Largest system text on a short screen: the block no longer fits.
-        setWelcome(density = LARGE_TEXT, height = 600)
+        setLink(density = LARGE_TEXT, height = 600)
         val body = rule.node(OnboardingTags.BODY).bounds
         val block = rule.node(OnboardingTags.BLOCK).bounds
         assertDp("block starts under the body padding", body.top + 8.dp, block.top)
         // Titles grow at most 1.2x: never more than 34 * 1.2 = 40.8 per line.
         val line = minOf(with(LARGE_TEXT) { 34.sp.toDp() }, 40.8.dp)
-        val headline = rule.onNodeWithTag(OnboardingContentTags.HEADLINE).bounds
+        val headline = rule.onNodeWithTag(OnboardingContentTags.LINK_TITLE).bounds
         val lines = (headline.bottom - headline.top) / line
         assertEquals("headline is whole lines of $line", Math.round(lines).toFloat(), lines, 0.02f)
     }
 
     @Test
     fun customServerHostShowsUnderTheHeader() {
-        setWelcome(customServerLabel = "happy.example.com:3005")
+        setLink(customServerLabel = "happy.example.com:3005")
         val subtitle = rule.node(OnboardingTags.HEADER_SUBTITLE)
         subtitle.assertIsDisplayed().assertTextEquals("happy.example.com:3005")
         val box = subtitle.bounds
@@ -148,7 +130,7 @@ class OnboardingLayoutTest {
 
     @Test
     fun restoreScreenWaitsWithASpinnerInTheCodesPlace() {
-        rule.setHappyContent { RestoreScreen(qrUrl = null, onBack = {}, onUseSecretKey = {}) }
+        rule.setHappyContent { RestoreScreen(RestoreCode.Waiting, onBack = {}, onRetry = {}, onUseSecretKey = {}) }
         val instruction = rule.node(RestoreTags.INSTRUCTION).bounds
         val path = rule.node(RestoreTags.PATH).bounds
         val slot = rule.node(RestoreTags.QR_SLOT).bounds
@@ -163,7 +145,7 @@ class OnboardingLayoutTest {
 
     @Test
     fun restoreScreenShowsTheCodeInAWhiteFrame() {
-        rule.setHappyContent { RestoreScreen(qrUrl = "happy:///account?abc", onBack = {}, onUseSecretKey = {}) }
+        rule.setHappyContent { RestoreScreen(RestoreCode.Ready("happy:///account?abc"), onBack = {}, onRetry = {}, onUseSecretKey = {}) }
         rule.node(RestoreTags.QR_SLOT).assertDoesNotExist()
         val path = rule.node(RestoreTags.PATH).bounds
         val frame = rule.node(RestoreTags.QR_FRAME).bounds
@@ -173,6 +155,25 @@ class OnboardingLayoutTest {
         assertBox("code", code, frame.left + 12.dp, frame.top + 12.dp, 260.dp, 260.dp)
         val useKey = rule.node(RestoreTags.USE_KEY).bounds
         assertDp("use key 32 below the frame", frame.bottom + 32.dp, useKey.top)
+    }
+
+    @Test
+    fun aFailedRequestSaysSoInTheCodesPlaceWithRetry() {
+        var retried = 0
+        rule.setHappyContent { RestoreScreen(RestoreCode.Failed, onBack = {}, onRetry = { retried++ }, onUseSecretKey = {}) }
+        rule.node(RestoreTags.QR_SLOT).assertDoesNotExist()
+        rule.node(RestoreTags.QR_FRAME).assertDoesNotExist()
+        rule.onNodeWithText("Authentication failed").assertExists()
+        val path = rule.node(RestoreTags.PATH).bounds
+        val failed = rule.node(RestoreTags.FAILED).bounds
+        // The same 260 square the spinner had, so nothing around it moves.
+        assertBox("failed slot", failed, ((PHONE_WIDTH - 260) / 2f).dp, path.bottom + 32.dp, 260.dp, 260.dp)
+        val retry = rule.node(RestoreTags.RETRY).bounds
+        assertTrue("retry inside the slot", retry.top >= failed.top && retry.bottom <= failed.bottom)
+        assertDp("use key 32 below the slot", failed.bottom + 32.dp, rule.node(RestoreTags.USE_KEY).bounds.top)
+
+        rule.node(RestoreTags.RETRY).performClick()
+        assertEquals(1, retried)
     }
 
     @Test

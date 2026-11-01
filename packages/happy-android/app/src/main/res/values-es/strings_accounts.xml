@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  values/strings_accounts.xml in es: Android-only strings, not in happy-app's
+  catalogs. AndroidStringsTranslatedTest fails while one is missing here.
+-->
+<resources>
+    <string name="account_menu_title">Cuentas</string>
+    <string name="account_menu_add">Añadir</string>
+    <string name="account_menu_unnamed_account">Cuenta de Happy</string>
+    <string name="account_menu_unnamed_agent">Agente</string>
+    <string name="account_menu_agent">Conexión de agente</string>
+    <string name="agent_home_connected">Conectado a %1$s</string>
+</resources>

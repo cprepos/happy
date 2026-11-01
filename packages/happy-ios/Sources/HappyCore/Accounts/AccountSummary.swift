@@ -21,8 +21,24 @@ public struct AccountSummary: Equatable, Sendable, Identifiable {
     /// False when RN's server could not be imported safely. Such an account
     /// cannot open a session until the user has confirmed its server.
     public var serverConfirmed: Bool
-    public var isDirect: Bool = false
+    public var isAgentConnection: Bool = false
     public var connectionStatus: String? = nil
+    /// How the Happy account came to be here; agent connections are never
+    /// legacy.
+    public var origin: AccountOrigin = .legacy
+    /// The first computer paired with it, by name.
+    public var computerName: String?
+
+    /// An account carried over or restored from elsewhere, whose key can be
+    /// shown and handed on.
+    public var isLegacy: Bool { !isAgentConnection && origin == .legacy }
+
+    /// What it is called, when anything names it: an account made for a
+    /// computer goes by that computer, then like any other by its profile's
+    /// name or GitHub login. Nil when nothing does yet.
+    public var resolvedName: String? {
+        (isLegacy ? nil : computerName) ?? name ?? username
+    }
 
     public init(id: String, serverURL: URL, name: String? = nil, username: String? = nil, avatarURL: URL? = nil, avatarThumbhash: String? = nil, isActive: Bool, usesSharedItem: Bool, serverConfirmed: Bool = true) {
         self.id = id

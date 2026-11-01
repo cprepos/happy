@@ -20,7 +20,8 @@ import UIKit
 /// capsule keeps RN's 44 and cuts text taller than that, as
 /// `mobileTitlePillGlass`'s `overflow: 'hidden'` does.
 final class ChatHeaderTitleView: UIControl {
-    private let glass = HeaderGlassView()
+    /// The system's Liquid Glass, as the bar's own buttons beside it.
+    private let glass = GlassCapsuleView()
     /// The capsule's inside, cut to its shape.
     private let content = UIView()
     private let title = ChatTextView()
@@ -60,7 +61,7 @@ final class ChatHeaderTitleView: UIControl {
         addSubview(glass)
         content.isUserInteractionEnabled = false
         content.clipsToBounds = true
-        glass.addSubview(content)
+        glass.contentView.addSubview(content)
         for view in [title, subtitle] {
             view.isAccessibilityElement = false
             content.addSubview(view)
@@ -68,6 +69,7 @@ final class ChatHeaderTitleView: UIControl {
         content.addSubview(changes)
         isAccessibilityElement = true
         accessibilityTraits = [.button, .header]
+        accessibilityIdentifier = "chat-title"
         measure.onApply = { [weak self] in self?.planned() }
         registerForTraitChanges(UIView.textSizeTraits + [UITraitDisplayScale.self]) { (self: Self, _) in
             self.requestPlan()
@@ -188,8 +190,10 @@ final class ChatHeaderTitleView: UIControl {
         super.point(inside: point, with: event) || (!glass.isHidden && glass.frame.contains(point))
     }
 
+    /// The text dims, never the glass: a visual effect view's alpha
+    /// turns its material off.
     override var isHighlighted: Bool {
-        didSet { glass.alpha = isHighlighted ? 0.68 : 1 }
+        didSet { content.alpha = isHighlighted ? 0.68 : 1 }
     }
 }
 
@@ -221,120 +225,6 @@ final class ChatGitChangesView: UIView {
                 view.layout = text
             }
         }
-    }
-}
-
-/// ChatHeaderView on a tablet: no glass and no capsule. The title and its
-/// workspace or branch line sit at the start of the header's row
-/// (`ChatPlainHeaderLayout`), the subtitle in `textSecondary`. The view
-/// stretches across the navigation bar and places the column from the bar's
-/// own edges, wherever the bar put it. Tapping it opens the session's info.
-/// Its text follows the screen's text size (`text`), measured off the main
-/// thread at the column's width (`ChatHeaderMeasure.plain`); until the
-/// first plan is in it shows nothing. Taller text spills past the bar's
-/// height, as RN's header content, which doesn't clip, lets it.
-final class ChatPlainHeaderTitleView: UIControl {
-    private let column = UIView()
-    private let title = ChatTextView()
-    private let subtitle = ChatTextView()
-    private let changes = ChatGitChangesView()
-    private var model: ChatHeaderTitleModel?
-    let measure = OffMainPlan<ChatPlainHeaderInput, ChatPlainHeaderPlan> { ChatHeaderMeasure.plain($0) }
-    /// Told once a plan is taken.
-    var onPlanned: (() -> Void)?
-
-    /// The screen's text size and pixels, as `ChatHeaderTitleView.text`.
-    var text: TextEnvironment? {
-        didSet { if text != oldValue { setNeedsLayout() } }
-    }
-
-    /// `layout.headerMaxWidth`.
-    var maxWidth: CGFloat = .greatestFiniteMagnitude {
-        didSet { if maxWidth != oldValue { setNeedsLayout() } }
-    }
-
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-        column.isUserInteractionEnabled = false
-        addSubview(column)
-        for view in [title, subtitle] {
-            view.isAccessibilityElement = false
-            column.addSubview(view)
-        }
-        column.addSubview(changes)
-        isAccessibilityElement = true
-        accessibilityTraits = [.button, .header]
-        measure.onApply = { [weak self] in
-            self?.setNeedsLayout()
-            self?.onPlanned?()
-        }
-        registerForTraitChanges(UIView.textSizeTraits + [UITraitDisplayScale.self]) { (self: Self, _) in
-            self.setNeedsLayout()
-        }
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) is not supported")
-    }
-
-    func update(title: String, subtitle: String?, changes: SessionDetails.LineChanges?) {
-        let heading = title.isEmpty ? (subtitle ?? "") : title
-        model = ChatHeaderTitleModel(
-            heading: heading, subtitle: subtitle,
-            changes: changes.map { GitLineChanges(approximate: $0.approximate, insertions: $0.insertions, deletions: $0.deletions) }
-        )
-        accessibilityLabel = heading
-        accessibilityValue = subtitle
-        setNeedsLayout()
-    }
-
-    /// As wide as the bar lets a title view grow.
-    override var intrinsicContentSize: CGSize {
-        CGSize(width: UIView.layoutFittingExpandedSize.width, height: UIView.noIntrinsicMetric)
-    }
-
-    override func sizeThatFits(_ size: CGSize) -> CGSize {
-        size
-    }
-
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        // The row is the bar's, not this view's: UIKit insets a title view.
-        var bar: UIView? = superview
-        while let current = bar, !(current is UINavigationBar) { bar = current.superview }
-        let barFrame = bar.map { $0.convert($0.bounds, to: self) } ?? bounds
-        if let model {
-            let width = ChatPlainHeaderLayout.textWidth(bar: barFrame, size: bounds.size, maxWidth: maxWidth)
-            measure.request(ChatPlainHeaderInput(model: model, width: width, text: text ?? traitCollection.measuredTextEnvironment))
-        }
-        column.isHidden = measure.plan == nil
-        guard let plan = measure.plan else { return }
-        let layout = ChatPlainHeaderLayout(
-            bar: barFrame, size: bounds.size, maxWidth: maxWidth,
-            title: .fixed(plan.title.size), subtitle: plan.subtitle.map { .fixed($0.size) },
-            changes: plan.changes?.layout.size
-        )
-        // Bounds and centre rather than a frame: the column scales when pressed.
-        column.bounds = CGRect(origin: .zero, size: layout.column.size)
-        column.center = CGPoint(x: layout.column.midX, y: layout.column.midY)
-        title.setLayoutFrame(layout.title)
-        title.layout = plan.title
-        subtitle.isHidden = plan.subtitle == nil
-        if let rect = layout.subtitle, let text = plan.subtitle {
-            subtitle.setLayoutFrame(rect)
-            subtitle.layout = text
-        }
-        changes.isHidden = plan.changes == nil
-        if let rect = layout.changes, let parts = plan.changes {
-            changes.setLayoutFrame(rect)
-            changes.apply(parts)
-        }
-    }
-
-    /// BubblePressable's `bubbleScale={1.012}`.
-    override var isHighlighted: Bool {
-        didSet { column.transform = isHighlighted ? CGAffineTransform(scaleX: 1.012, y: 1.012) : .identity }
     }
 }
 
@@ -582,6 +472,8 @@ final class ChatPlaceholderView: UIView {
         icon.isHidden = true
         addSubview(icon)
         shimmer.isHidden = true
+        // A chat not there yet: dimmed letters under a full-strength band.
+        shimmer.sweep = .lift
         addSubview(shimmer)
         button.isHidden = true
         button.onTap = { [weak self] in self?.onAction?() }
@@ -630,7 +522,7 @@ final class ChatPlaceholderView: UIView {
             icon.setLayoutFrame(frame)
         }
         shimmer.isHidden = frames.title == nil
-        shimmer.isShimmering = frames.title != nil
+        shimmer.shimmering = frames.title != nil
         if let frame = frames.title, let title = model.title {
             if shimmer.string != title { shimmer.string = title }
             shimmer.setLayoutFrame(frame)

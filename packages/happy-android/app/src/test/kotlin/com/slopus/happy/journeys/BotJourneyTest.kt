@@ -1,6 +1,7 @@
 package com.slopus.happy.journeys
 
 import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasContentDescription
@@ -14,6 +15,8 @@ import com.slopus.happy.ui.HappyApp
 import com.slopus.happy.ui.PHONE
 import com.slopus.happy.ui.assertActionsLabelled
 import com.slopus.happy.ui.chat.ChatScreenTags
+import com.slopus.happy.ui.connect.DeepLinks
+import com.slopus.happy.ui.connect.parseDeepLink
 import com.slopus.happy.ui.home.BotFaceTags
 import com.slopus.happy.ui.home.FlatRowTags
 import com.slopus.happy.ui.home.HomeDockTags
@@ -36,9 +39,10 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
 /**
- * Bots in the dock: on a Happy Agent that publishes `capabilities.bots` the
- * dock offers Session | Bot; a named bot with a picked face is created on
- * it. Its face upload fails, so "Picture not set" offers to try again on the
+ * Bots: on a Happy Agent that publishes `capabilities.bots` the
+ * new-session screen (`/new`; compose's empty chat makes sessions only, as
+ * iOS's does) offers Session | Bot; a named bot with a picked face is
+ * created on it. Its face upload fails, so "Picture not set" offers to try again on the
  * bot already made, which uploads the face and has the bot wear it, and the
  * bot's chat opens; no second bot is made.
  */
@@ -94,11 +98,12 @@ class BotJourneyTest {
         rule.setContent { HappyApp(graph) }
         rule.waitFor(FlatRowTags.ROW)
 
-        // Session | Bot: a bot, named, wearing the third face.
-        rule.node(HomeDockTags.CAPSULE).performClick()
-        rule.waitFor(BotFaceTags.kind(true))
+        // `/new`, then Bot: named, wearing the third face.
+        DeepLinks.offer(parseDeepLink("happy://new")!!)
+        rule.waitFor(BotFaceTags.KIND)
         rule.node(BotFaceTags.kind(true)).performClick()
         rule.waitFor(BotFaceTags.PICKER)
+        rule.node(BotFaceTags.kind(true)).assertIsSelected()
         rule.node(BotFaceTags.face(2)).performClick()
         rule.node(HomeDockTags.INPUT).performTextInput("Release Bot")
         rule.assertActionsLabelled()

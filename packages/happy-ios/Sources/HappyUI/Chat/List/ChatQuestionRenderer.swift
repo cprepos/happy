@@ -106,7 +106,7 @@ extension ChatRowRenderer {
             return (items, [])
         }
         let background = ChatBox(
-            frame: .zero, fill: selected ? Palette.surfaceHighest : Palette.surface, border: selected ? Palette.radioActive : Palette.divider,
+            frame: .zero, fill: selected ? Palette.surfaceHighest : Palette.surface, border: selected ? Palette.radioActive : Palette.legacyDivider,
             borderWidth: 1, radius: 8, alpha: alpha
         )
         return ChatStackEntry(
@@ -128,31 +128,41 @@ extension ChatRowRenderer {
     static func submitButton(_ state: ChatQuestionState, toolId: String, text rowText: ChatRowText) -> ChatStackEntry {
         let ready = state.selections.allAnswered(state.form.questions) && !state.submitting
         let title = MeasuredText(ChatTextStyles.inlineSubmit.string(rowText.words.submitAnswer, color: Palette.text, in: rowText.environment), maxLines: 1)
-        let alpha: CGFloat = ready ? 1 : 0.5
+        // Busy, the shimmer says so at full contrast.
+        let alpha: CGFloat = ready || state.submitting ? 1 : 0.5
         let button = ChatPiece(measurable: Measurable { width in
             let size = title.layout(width: width).size
             return CGSize(width: size.width, height: max(size.height, 44 - 24))
         }) { frame in
             let box = frame.insetBy(dx: -20, dy: -12)
             var items: [ChatDrawItem] = []
+            let text = title.layout(width: frame.width)
+            let textFrame = CGRect(x: frame.minX, y: frame.midY - text.size.height / 2, width: frame.width, height: text.size.height)
             if state.submitting {
-                let spinner = CGRect(x: frame.midX - 10, y: frame.midY - 10, width: 20, height: 20)
-                items.append(.spinner(spinner, tint: Palette.text, scale: 1))
+                // Desktop's pending Submit: the label stays, shimmering
+                // (`lift`), at full contrast.
+                func layout(_ color: ColorToken) -> ChatTextLayout {
+                    MeasuredText(ChatTextStyles.inlineSubmit.string(rowText.words.submitAnswer, color: color, in: rowText.environment), maxLines: 1).layout(width: frame.width)
+                }
+                let ground = Palette.surfaceHighest
+                items.append(.shimmer(ChatShimmerText(
+                    ink: text,
+                    rest: layout(Shimmer.rest(.lift, ink: Palette.text, ground: ground)),
+                    band: layout(Shimmer.highlight(.lift, ink: Palette.text, ground: ground))
+                ), frame: textFrame))
             } else {
-                let text = title.layout(width: frame.width)
-                let textFrame = CGRect(x: frame.minX, y: frame.midY - text.size.height / 2, width: frame.width, height: text.size.height)
                 items.append(.text(alpha < 1 ? text.dimmed(alpha) : text, textFrame))
             }
             return (items, ready ? [ChatHit(frame: box, action: .questionSubmit(toolId: toolId))] : [])
         }
-        let background = ChatBox(frame: .zero, fill: Palette.surfaceHighest, border: ready ? Palette.radioActive : Palette.divider, borderWidth: 1, radius: 8, alpha: alpha)
+        let background = ChatBox(frame: .zero, fill: Palette.surfaceHighest, border: ready ? Palette.radioActive : Palette.legacyDivider, borderWidth: 1, radius: 8, alpha: alpha)
         let row = ChatPiece(measurable: Measurable { width in
-            let layout = ChatStackLayout(width: width, items: [ChatStackEntry(piece: button, padding: LayoutInsets(top: 12, left: 20, bottom: 12, right: 20), placement: .leading).item])
+            let layout = LegacyChatStackLayout(width: width, items: [ChatStackEntry(piece: button, padding: LayoutInsets(top: 12, left: 20, bottom: 12, right: 20), placement: .leading).item])
             return layout.size
         }) { frame in
             // Right-aligned (justifyContent: 'flex-end').
             let entry = ChatStackEntry(piece: button, padding: LayoutInsets(top: 12, left: 20, bottom: 12, right: 20), placement: .leading, background: background)
-            let width = ChatStackLayout(width: frame.width, items: [entry.item]).boxes[0].width
+            let width = LegacyChatStackLayout(width: frame.width, items: [entry.item]).boxes[0].width
             return ChatPiece.stack([entry]).draw(CGRect(x: frame.maxX - width, y: frame.minY, width: width, height: frame.height))
         }
         return ChatStackEntry(piece: row, marginTop: 8)

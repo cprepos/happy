@@ -30,8 +30,12 @@ foreground. It checks health and refreshes `config.node` every minute, using
 `GET /v0/node/avatar` with `If-None-Match` even when ThumbHash is unchanged.
 Transient failures reconnect with 1–30 second backoff. Background cancels and
 awaits the loops; 401/403 marks the device revoked and prevents retries across
-relaunch. Removal awaits teardown before erasing credentials and cached
-identity, so a stale request cannot recreate a removed account.
+relaunch. Disconnecting takes the agent off the list and out of the open
+slot at once (`AgentConnections.forget`): its identity loop and engine can
+no longer publish or save anything of it, so nothing waits for them.
+`finishRemoval` then erases the credentials and cached identity, gives the
+engine up to 10 s to close its database (one stuck on the network doesn't
+hold the rest back), and deletes the folder off the main thread.
 
 Device tokens cannot access connector management routes. Disconnect therefore
 forgets this phone's credentials locally; desktop device management handles
@@ -39,10 +43,33 @@ server-side revocation. There is no invented phone revocation endpoint.
 
 The combined home switcher lists both account kinds. A single account keeps
 the app logo; multiple accounts show the current avatar. Selecting a direct
-computer stops the legacy active session and shows connection status and
-“Sessions and messages are coming soon.” Direct accounts never create a
-LocalStore, HappyAPI, socket.io connection or SyncEngine. Their only ordinary
-API calls are health, config and avatar reads.
+computer stops the legacy active session. Its `DirectSyncEngine` owns the
+account's desktop snapshot, events, conversation checkpoints and durable
+message outbox. Direct accounts never create a LocalStore, HappyAPI,
+socket.io connection or relay SyncEngine.
+
+The direct composer accepts images, videos and documents up to 50 MiB per
+file. Picker copies become queue-owned files under the account's Application
+Support directory before the draft clears. Supported images up to 5 MiB
+(29 MiB total) accompany `/send` as image blocks; larger images and other
+files use the existing authenticated workspace file PUT over Tailcat. The
+agent response supplies the execution workspace ID, which is persisted
+before the first upload. Stable message paths, create-only writes and
+SHA-256 matching make a lost acknowledgement safe to retry. Per-file upload
+progress is saved before the message is sent with relative file paths.
+The API prepends the required top-level caption to the optional rich blocks;
+image blocks use `mimeType`, and image-only sends supply a short caption.
+
+An upload can take up to 15 minutes and writes its request body in cancellable
+chunks. Acknowledging the outbox row retains local copies: an older cached
+conversation may still need them after a crash. Only a successful serialized
+conversation checkpoint containing the daemon's echoed message removes its
+copies. A newer conversation instance owns that resource's cache; SQLite
+checks ownership in the same actor operation as the write, so a late flush
+from an older screen cannot restore deleted attachment references. Skipping
+an older screen's cache write still requires its send to reach the durable
+account outbox before the composer clears. Forgetting the account removes
+its entire offline directory.
 
 Tests pin the API's independent cryptographic vectors and emoji table hash,
 wire routing, HTTP framing, handshake outcomes, identity/ETag updates,

@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  values/strings_push.xml in es: Android-only strings, not in happy-app's
+  catalogs. AndroidStringsTranslatedTest fails while one is missing here.
+-->
+<resources>
+    <string name="push_background_send_pending_title">Mensaje no enviado</string>
+    <string name="push_background_send_pending_body">Un mensaje se sigue enviando en segundo plano. Fallará en 30 segundos si no se entrega.</string>
+    <string name="push_background_send_failed_title">Error al enviar el mensaje</string>
+    <string name="push_background_send_failed_body">No se pudo enviar un mensaje mientras la app estaba en segundo plano. Abre Happy y vuelve a intentarlo.</string>
+    <string name="push_permission">Permiso</string>
+    <string name="push_request_again">Volver a pedir permiso</string>
+    <string name="push_reregister">Volver a registrar este dispositivo</string>
+    <string name="push_current_token">Token actual %1$s</string>
+    <string name="push_label_loading">Cargando</string>
+    <string name="push_label_unavailable">No disponible</string>
+    <string name="push_label_allowed">Permitido</string>
+    <string name="push_label_denied">Denegado</string>
+    <string name="push_label_not_requested">No solicitado</string>
+    <string name="push_subtitle_checking">Comprobando los permisos de notificaciones push de este dispositivo.</string>
+    <string name="push_subtitle_unsupported">Los permisos de notificaciones push solo se gestionan en dispositivos móviles.</string>
+    <string name="push_subtitle_granted">Este dispositivo puede recibir notificaciones push.</string>
+    <string name="push_subtitle_can_ask">La app aún puede volver a mostrar el aviso del sistema.</string>
+    <string name="push_subtitle_stopped">El sistema ya no muestra el aviso. Abre los ajustes del sistema para volver a activar las notificaciones.</string>
+    <string name="push_request_unsupported">Los permisos de notificaciones push solo están disponibles en iPhone y Android.</string>
+    <string name="push_request_can_ask">Vuelve a mostrar el aviso del sistema si el sistema aún lo permite.</string>
+    <string name="push_request_settings">Abre los ajustes del sistema cuando el sistema ya no muestra el aviso.</string>
+    <string name="push_tokens_hint">Muestra todos los tokens push registrados en tu cuenta. Toca un token antiguo para eliminarlo.</string>
+    <string name="push_tokens_footer">Tokens registrados (%1$d). Los datos del dispositivo actual vienen de este teléfono. Los tokens antiguos usan su huella y las marcas de tiempo del servidor.</string>
+    <string name="push_no_tokens">No hay tokens push registrados</string>
+    <string name="push_this_device">Este dispositivo</string>
+    <string name="push_delete_title">Eliminar token push</string>
+    <string name="push_delete_message">¿Eliminar %1$s de tu cuenta?</string>
+    <string name="push_other_device">Otro dispositivo o registro obsoleto</string>
+    <string name="push_registered">Registrado: %1$s</string>
+    <string name="push_last_seen">Última vez: %1$s</string>
+    <string name="push_server_id">ID del servidor: %1$s</string>
+    <string name="push_token">Token: %1$s</string>
+    <string name="push_build">compilación %1$s</string>
+    <string name="push_simulator">emulador</string>
+    <string name="push_android_device">dispositivo Android</string>
+    <string name="push_load_failed">No se pudieron cargar los ajustes de notificaciones push.</string>
+    <string name="push_enabled">Las notificaciones push están activadas en este dispositivo.</string>
+    <string name="push_opened_settings">El sistema ya no mostrará el aviso de permiso, así que Happy abrió los ajustes.</string>
+    <string name="push_not_granted">No se concedió el permiso de notificaciones push.</string>
+    <string name="push_request_failed">No se pudo solicitar el permiso de notificaciones push.</string>
+    <string name="push_refreshed">Se actualizó el token push de este dispositivo.</string>
+    <string name="push_not_enabled">Las notificaciones push aún no están activadas en este dispositivo.</string>
+    <string name="push_refresh_failed">No se pudo actualizar el token push de este dispositivo.</string>
+    <string name="push_delete_failed">No se pudo eliminar el token push.</string>
+</resources>

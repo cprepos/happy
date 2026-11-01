@@ -21,17 +21,15 @@ import com.slopus.happy.AppGraph
 import com.slopus.happy.crypto.Base64Variant
 import com.slopus.happy.crypto.SecretKeyBackup
 import com.slopus.happy.crypto.encodeBase64
-import com.slopus.happy.model.NewSessionPage
 import com.slopus.happy.testing.FakeHappyServer
 import com.slopus.happy.testing.SoftwareKeys
 import com.slopus.happy.ui.chat.ChatListTags
 import com.slopus.happy.ui.chat.ChatScreenTags
-import com.slopus.happy.ui.chat.ComposerPickerTags
+import com.slopus.happy.ui.chat.ComposeChatTags
 import com.slopus.happy.ui.chat.ComposerTags
 import com.slopus.happy.ui.chat.MessageTags
-import com.slopus.happy.ui.components.PickerSheetTags
 import com.slopus.happy.ui.home.FlatRowTags
-import com.slopus.happy.ui.home.HomeDockTags
+import com.slopus.happy.ui.home.HomeTags
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -121,14 +119,14 @@ class StateRestorationTest {
         val restoration = StateRestorationTester(rule)
         val graph = graph()
         openChat(restoration) { graph }
-        rule.node(ComposerPickerTags.PERMISSION).performClick()
-        waitFor(PickerSheetTags.PANEL)
+        rule.node(ChatScreenTags.MORE).performClick()
+        waitFor(ChatScreenTags.MENU)
         val before = topMessage()
 
         restoration.emulateSavedInstanceStateRestore()
 
         waitFor(ChatScreenTags.SCREEN)
-        waitFor(PickerSheetTags.PANEL)
+        waitFor(ChatScreenTags.MENU)
         waitFor(ComposerTags.INPUT)
         rule.node(ComposerTags.INPUT).assertTextEquals("half a thought")
         assertTrue("scrolled back", before != null && before != "message 59")
@@ -159,30 +157,26 @@ class StateRestorationTest {
     }
 
     @Test
-    fun theHomeDockKeepsItsTextItsPickerAndStaysOpenThroughARecreationAndProcessDeath() {
+    fun theComposeChatKeepsItsTextAndStaysOpenThroughARecreationAndProcessDeath() {
         chatWithHistory()
         val restoration = StateRestorationTester(rule)
         var current by mutableStateOf(graph())
         runBlocking { current.auth.restore(SecretKeyBackup.format(encodeBase64(server.secret, Base64Variant.Url))) }
         restoration.setContent { HappyApp(current) }
-        waitFor(HomeDockTags.CAPSULE)
-        rule.node(HomeDockTags.CAPSULE).performClick()
-        waitFor(HomeDockTags.INPUT)
-        rule.node(HomeDockTags.INPUT).performTextInput("a new idea")
-        rule.node(HomeDockTags.row(NewSessionPage.Machine)).performClick()
-        waitFor(PickerSheetTags.PANEL)
+        waitFor(HomeTags.COMPOSE)
+        rule.node(HomeTags.COMPOSE).performClick()
+        waitFor(ComposeChatTags.TARGET)
+        rule.node(ComposerTags.INPUT).performTextInput("a new idea")
 
         restoration.emulateSavedInstanceStateRestore()
-        waitFor(HomeDockTags.FOCUS)
-        rule.node(HomeDockTags.INPUT).assertTextEquals("a new idea")
-        // The machine picker is still open in place of the rows.
-        waitFor(PickerSheetTags.PANEL)
+        waitFor(ComposeChatTags.TARGET)
+        rule.node(ComposerTags.INPUT).assertTextEquals("a new idea")
 
         runBlocking { current.account.value?.stop() }
         current = graph()
         restoration.emulateSavedInstanceStateRestore()
-        waitFor(HomeDockTags.FOCUS)
-        rule.node(HomeDockTags.INPUT).assertTextEquals("a new idea")
+        waitFor(ComposeChatTags.TARGET)
+        rule.node(ComposerTags.INPUT).assertTextEquals("a new idea")
     }
 
     /** The oldest message wholly on screen: what the reader was looking at. */

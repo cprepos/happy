@@ -45,6 +45,36 @@ final class HomeHeaderLayoutTests: XCTestCase {
         XCTAssertEqual(layout.title.midX, 393 / 2, accuracy: 0.001)
     }
 
+    /// A computer's search opens in place: the pill grows left across the
+    /// row into the field, its glyph riding at its start, beside the
+    /// circle that ends it. The logo and title keep their frames.
+    func testSearchGrowsThePillIntoTheField() {
+        var input = HomeHeaderLayout.Input(width: 402, safeTop: 62, hairline: hairline, title: text("Mac", lineHeight: 20, maxLines: 1), status: nil)
+        input.singleAction = true
+        let closed = HomeHeaderLayout(input)
+        assertFrame(closed.actions, rect(340, 65, 46, 46))
+        assertFrame(closed.filterButton, rect(341, 66, 44, 44))
+        // No width yet, at the glyph's end.
+        assertFrame(closed.searchField, rect(385, 66, 0, 44))
+        assertFrame(closed.searchCancel, rect(342, 66, 44, 44))
+        input.searching = true
+        let open = HomeHeaderLayout(input)
+        // 16 from the left, 8 short of the circle.
+        assertFrame(open.actions, rect(16, 65, 318, 46))
+        assertFrame(open.filterButton, rect(17, 66, 44, 44))
+        // After the glyph, 8 inside the rim at the end.
+        assertFrame(open.searchField, rect(61, 66, 264, 44))
+        assertFrame(open.searchCancel, rect(342, 66, 44, 44))
+        XCTAssertEqual(open.searchCancel.maxX, 402 - 16)
+        XCTAssertEqual(open.logoControl, closed.logoControl)
+        XCTAssertEqual(open.title, closed.title)
+        XCTAssertEqual(open.backdrop, closed.backdrop)
+        // Only a computer's single search opens: the two-button pill stays.
+        var two = HomeHeaderLayout.Input(width: 402, safeTop: 62, hairline: hairline, title: text("Mac", lineHeight: 20, maxLines: 1), status: nil)
+        two.searching = true
+        XCTAssertEqual(HomeHeaderLayout(two).actions, header(width: 402).actions.offsetBy(dx: 0, dy: 3))
+    }
+
     func testTheTitleIsCentredOnTheScreenNotBetweenTheControls() {
         let layout = header()
         assertFrame(layout.title, rect(164.5, 75, 64, 20))
@@ -84,6 +114,17 @@ final class HomeHeaderLayoutTests: XCTestCase {
         )
     }
 
+    /// Under a navigation bar the safe area already holds the bar (59 + 44).
+    func testContentInsetsUnderTheBarStartTwelveBelowIt() {
+        let insets = HomeContentInsets(underBar: LayoutInsets(top: 103, bottom: 34), dock: 108)
+        XCTAssertEqual(insets.chromeTop, 103)
+        XCTAssertEqual(insets.contentTop, 115)
+        XCTAssertEqual(insets.listBottom, 142)
+        XCTAssertEqual(insets.additionalSafeArea(over: LayoutInsets(top: 103, bottom: 34)), LayoutInsets(top: 12, bottom: 74))
+        // The indicator runs from the bar's foot to the dock's top.
+        XCTAssertEqual(insets.indicatorInsets, LayoutInsets(top: 103, bottom: 142))
+    }
+
     func testTheScreenFloatsTheHeaderAndItsScrimOverFullHeightContent() {
         let layout = HomeScreenLayout(size: phone, safeArea: phoneFullScreen, dock: 108)
         assertFrame(layout.content, rect(0, 0, 393, 852))
@@ -91,13 +132,26 @@ final class HomeHeaderLayoutTests: XCTestCase {
         XCTAssertEqual(layout.insets.contentTop, 123)
     }
 
-    func testTheScrimHoldsItsPeakThenFeathersOverTheLastThirtySixPoints() {
-        let stops = HeaderScrim.stops(height: 119, peak: HeaderScrim.strongPeakLight)
+    func testTheScrimHoldsItsPeakThenEasesOutOverTheLastEightyPoints() {
+        let stops = HeaderScrim.stops(height: 119)
+        // The hold, then 25 samples through the fade.
+        XCTAssertEqual(stops.count, 26)
+        XCTAssertEqual(stops[0].alpha, 1)
+        XCTAssertEqual(stops[1].location, 39.0 / 119, accuracy: 0.0001)
+        XCTAssertEqual(stops[1].alpha, 1)
+        XCTAssertEqual(stops[13].alpha, HeaderScrim.curve(0.5), accuracy: 0.0001)
+        XCTAssertEqual(stops[25].alpha, 0)
+        XCTAssertEqual(stops[25].location, 1)
+    }
+
+    /// The foot's fade: Telegram's light one at the screen's foot, none at
+    /// the scrim's top.
+    func testTheFootFadesLightlyIntoTheGroundAtTheFoot() {
+        let stops = HeaderScrim.footStops()
         XCTAssertEqual(stops.count, 25)
-        XCTAssertEqual(stops[0].alpha, 0.76)
-        XCTAssertEqual(stops[18].alpha, 0.7192, accuracy: 0.00001)
-        XCTAssertEqual(stops[20].alpha, 0.5604, accuracy: 0.00001)
+        XCTAssertEqual(stops[0].location, 0)
+        XCTAssertEqual(stops[0].alpha, 0.55)
+        XCTAssertEqual(stops[12].alpha, 0.1729, accuracy: 0.0001)
         XCTAssertEqual(stops[24].alpha, 0)
-        XCTAssertEqual(stops[24].location, 1)
     }
 }

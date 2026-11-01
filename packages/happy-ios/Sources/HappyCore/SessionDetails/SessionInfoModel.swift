@@ -18,8 +18,23 @@ public struct SessionInfoModel: Equatable, Sendable {
     /// A bot or a task: archived, never deleted.
     public var keepsConversation: Bool { isBot || isTask }
 
+    // The profile's head
+    /// The avatar home's row and the chat's header draw for it: the same
+    /// seed (`avatarSeed`), so the same placeholder. Its picture, which
+    /// needs the session's project, is the screen's to add.
+    public var avatar: SessionAvatar
+    public var avatarStyle: AvatarStyle
+    /// Black & White Avatars, as home draws it.
+    public var avatarMonochrome: Bool
+    /// What the chat's header says under its name.
+    public var status: ComposerStatus
+
     // Quick Actions
     public var git: SessionDetails.GitPresentation
+    /// The workspace's name, else the live branch, else the one it started
+    /// on: what the chat's header said under its name before its status
+    /// took that line (`ChatHeaderModel.subtitle`).
+    public var branch: String?
     public var machineId: String?
     public var resume: SessionDetails.ResumeAvailability
     public var canFork: Bool
@@ -76,8 +91,11 @@ public struct SessionInfoModel: Equatable, Sendable {
 
     /// `permissionMode` is the session's local pick (happy-app's
     /// `session.permissionMode`, here the composer's state), which the
-    /// "Dangerously Skip Permissions" row reads.
-    public init(session: SessionRecord, machine: MachineRecord?, settings: AccountSettings, gitStatus: GitStatus?, permissionMode: String?) {
+    /// "Dangerously Skip Permissions" row reads. The status reads its last
+    /// seen against `now` (ms; the clock's when nil), and its thinking as
+    /// `vibingWord`, as the chat's header does.
+    public init(session: SessionRecord, machine: MachineRecord?, settings: AccountSettings, gitStatus: GitStatus?, permissionMode: String?,
+                now: Int64? = nil, vibingWord: String = "Thinking") {
         let metadata = session.metadata
         let string = { (key: String) in metadata?[key]?.stringValue }
         sessionId = session.id
@@ -85,10 +103,15 @@ public struct SessionInfoModel: Equatable, Sendable {
         isConnected = SessionState(session) != .disconnected
         isBot = session.isBot
         isTask = session.isTask
+        avatar = Self.avatar(session, settings: settings)
+        avatarStyle = settings.avatarStyle
+        avatarMonochrome = settings.avatarMonochrome
+        status = ComposerStatus(record: session, now: now ?? Int64(Date().timeIntervalSince1970 * 1000), vibingWord: vibingWord)
         canArchive = !session.isTask || session.taskCanArchive
         canLeaveTask = session.canLeaveTask
 
         git = SessionDetails.gitPresentation(metadata, status: gitStatus)
+        branch = ChatHeaderModel.subtitle(metadata, gitStatus: gitStatus)
         machineId = SessionDetails.truthy(metadata?["machineId"])
         resume = SessionDetails.resumeAvailability(session, machine: machine)
         canFork = SessionDetails.canFork(session, machine: machine, settings: settings)
@@ -152,6 +175,18 @@ public struct SessionInfoModel: Equatable, Sendable {
         thinking = session.thinking
         thinkingAt = session.thinkingAt
         activity = SessionDetails.activity(metadata)
+    }
+
+    /// LegacyChatViewController's header avatar, but for its picture: the
+    /// session's seed, what it is, its harness's badge where that is on.
+    public static func avatar(_ session: SessionRecord, settings: AccountSettings) -> SessionAvatar {
+        let metadata = session.metadata
+        return SessionAvatar(
+            seed: session.avatarSeed, isBot: session.isBot, isTask: session.isTask,
+            harness: settings.bool("showHarnessIconInSessionHeader")
+                ? SessionAvatar.harness(flavor: metadata?["flavor"]?.stringValue, clientId: metadata?["client"]?["id"]?.stringValue)
+                : nil
+        )
     }
 
     /// JavaScript truthiness for a flag that may be missing or not a bool.

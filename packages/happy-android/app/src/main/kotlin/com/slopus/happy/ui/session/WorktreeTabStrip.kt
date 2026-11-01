@@ -19,13 +19,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -35,6 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -42,7 +41,6 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.slopus.happy.R
 import com.slopus.happy.model.PendingChat
@@ -52,10 +50,13 @@ import com.slopus.happy.model.WorktreeTabs
 import com.slopus.happy.model.neighbouringTabId
 import com.slopus.happy.ui.components.Icon
 import com.slopus.happy.ui.components.Ionicon
+import com.slopus.happy.ui.components.ShimmerSpec
 import com.slopus.happy.ui.components.ShimmerText
 import com.slopus.happy.ui.components.StatusDot
 import com.slopus.happy.ui.components.hairline
 import com.slopus.happy.ui.layout.LocalWindowLayout
+import com.slopus.happy.ui.layout.contentMaxWidth
+import com.slopus.happy.ui.theme.appWeight
 import com.slopus.happy.ui.theme.HappyTheme
 import com.slopus.happy.ui.theme.happyTextStyle
 
@@ -134,10 +135,8 @@ fun WorktreeTabStrip(
     Box(
         modifier = modifier
             .testTag(WorktreeTabTags.STRIP)
-            .fillMaxWidth()
             .padding(top = WorktreeTabSpec.gapAbove, bottom = WorktreeTabSpec.gapBelow)
-            .wrapContentWidth(Alignment.CenterHorizontally)
-            .then(if (layout.isTablet) Modifier.widthIn(max = layout.headerMaxWidth) else Modifier)
+            .contentMaxWidth(layout)
             .padding(horizontal = WorktreeTabSpec.paddingHorizontal),
     ) {
         Row(
@@ -244,17 +243,9 @@ private fun TabChip(
 @Composable
 private fun TabLabel(text: String, selected: Boolean, shimmer: Boolean, modifier: Modifier) {
     val colors = HappyTheme.colors
-    val style = if (selected) WorktreeTabSpec.tabText.copy(fontWeight = FontWeight.SemiBold) else WorktreeTabSpec.tabText
-    if (shimmer) {
-        ShimmerText(text, style, baseColor = colors.textSecondary, highlightColor = colors.header.tint, modifier = modifier)
-    } else {
-        Text(
-            text,
-            style = style,
-            color = if (selected) colors.header.tint else colors.textSecondary,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = modifier,
-        )
-    }
+    val style = if (selected) WorktreeTabSpec.tabText.copy(fontWeight = appWeight(FontWeight.SemiBold)) else WorktreeTabSpec.tabText
+    val ink = if (selected) colors.header.tint else colors.textSecondary
+    val ground = if (selected) WorktreeTabSpec.selected(colors.dark).compositeOver(colors.surfaceHigh) else colors.surfaceHigh
+    // Desktop's busy tab: its own colour, with the sheen wiping through.
+    ShimmerText(text, style, baseColor = ink, highlightColor = ShimmerSpec.sheen(ink, ground), modifier = modifier, shimmering = shimmer)
 }

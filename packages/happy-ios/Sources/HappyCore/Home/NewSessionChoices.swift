@@ -67,7 +67,7 @@ public struct NewSessionChoices: Equatable, Sendable {
             self.gitWorktrees = gitWorktrees
         }
 
-        public init(draft: NewSessionDraft, createsBot: Bool, snapshot: HomeSnapshot, gitWorktrees: [Worktrees.Entry] = []) {
+        public init(draft: NewSessionDraft, createsBot: Bool, snapshot: LegacyHomeSnapshot, gitWorktrees: [Worktrees.Entry] = []) {
             self.init(
                 draft: draft,
                 createsBot: createsBot,
@@ -90,6 +90,8 @@ public struct NewSessionChoices: Equatable, Sendable {
     /// first (online-first) option when the stored one is gone. Nil while
     /// the catalog is empty, which can be a sync still arriving.
     public var resolvedMachineId: String?
+    /// The draft names a computer offered here, under either daemon's id.
+    public var offersDraftMachine: Bool
     public var homeDir: String?
 
     public var projectOptions: [Option]
@@ -157,6 +159,7 @@ public struct NewSessionChoices: Equatable, Sendable {
         machineOptions = sortedChoices.map { Option(key: $0.id, name: $0.name) }
         currentMachine = Self.resolve(machineOptions, [selectedChoice?.id])
         resolvedMachineId = Self.resolveMachineSelection(selectedChoice?.id ?? draft.selectedMachineId, available: machineOptions.map(\.key))
+        offersDraftMachine = selectedChoice != nil
         let homeDir = selectedChoice?.happyMachine?.metadata?["homeDir"]?.stringValue
             ?? selectedChoice?.rigMachine?.metadata?["homeDir"]?.stringValue
         self.homeDir = homeDir

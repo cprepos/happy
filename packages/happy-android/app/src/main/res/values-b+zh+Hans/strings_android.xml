@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  values/strings_android.xml in zh-Hans: Android-only strings, not in happy-app's
+  catalogs. AndroidStringsTranslatedTest fails while one is missing here.
+-->
+<resources>
+    <plurals name="conversation_attached_picture_count">
+        <item quantity="other">%1$d 张附加图片</item>
+    </plurals>
+    <string name="server_url_empty">服务器 URL 不能为空</string>
+    <string name="server_url_protocol">服务器 URL 必须使用 HTTP 或 HTTPS 协议</string>
+    <string name="server_url_invalid">URL 格式无效</string>
+    <string name="settings_agents">智能体</string>
+    <string name="settings_agents_subtitle">已连接的电脑和智能体默认设置</string>
+    <string name="happy_action_unknown_error">未知错误</string>
+    <string name="live_avatars_title">动态头像</string>
+    <string name="live_avatars_description">没有照片的头像会动起来。耗电更多。</string>
+    <string name="settings_appearance_file_diffs_sidebar">文件差异侧边栏</string>
+    <string name="settings_appearance_file_diffs_sidebar_description">在桌面端于聊天旁显示 git 更改</string>
+    <string name="chat_scroll_to_bottom">滚动到底部</string>
+    <string name="voice_clear_search">清除搜索</string>
+    <string name="scan_unavailable">此设备无法使用二维码扫描器。请改为粘贴链接。</string>
+    <string name="scan_not_happy_code">这不是 Happy 的二维码。</string>
+    <string name="scan_terminal_code_elsewhere">此代码用于连接终端。请在“设置 › 扫描二维码进行认证”中扫描。</string>
+    <string name="scan_account_code_elsewhere">此代码用于链接新设备。请在“设置 › 备份与恢复 › 链接新设备”中扫描。</string>
+    <string name="scan_pairing_unavailable">此代码用于连接智能体。请使用主页账户菜单中的“添加”。</string>
+    <string name="scan_close">关闭</string>
+    <string name="scan_hint">将相机对准二维码</string>
+    <string name="scan_open_settings">打开设置</string>
+    <string name="scan_torch_on">打开手电筒</string>
+    <string name="scan_torch_off">关闭手电筒</string>
+    <string name="state_animation_replay">再次播放</string>
+    <string name="scan_no_camera">此设备没有摄像头。请粘贴链接。</string>
+    <string name="scan_camera_failed">无法启动摄像头。请重试或粘贴链接。</string>
+    <string name="voice_microphone_title">需要麦克风权限</string>
+    <string name="voice_microphone_ask">Happy 需要访问麦克风才能进行语音聊天。出现提示时请允许。</string>
+    <string name="voice_microphone_settings">Happy 需要访问麦克风才能进行语音聊天。请在设备设置中开启麦克风权限。</string>
+</resources>

@@ -4,16 +4,6 @@ import HappyLayout
 import UIKit
 
 @MainActor
-enum HomeRendererPreference {
-    static let didChange = Notification.Name("HappyHomeRendererPreferenceDidChange")
-    static func set(_ renderer: HomeListRenderer, settings: LocalSettings) {
-        guard renderer != settings.homeListRenderer else { return }
-        settings.homeListRenderer = renderer
-        NotificationCenter.default.post(name: didChange, object: settings)
-    }
-}
-
-@MainActor
 final class HomeUltraListAdapter {
     let view: HomeUltraListView
     var onSelect: ((HomeListRow.ID) -> Void)?
@@ -43,6 +33,10 @@ final class HomeUltraListAdapter {
     private var requested: Input?
     private var observation: ApplyObservation?
     private let language = AppLocalization.language
+    /// No ground behind the rows: the iPad's sidebar shows through.
+    var clearsGround = false {
+        didSet { if clearsGround != oldValue, plans != nil { applyGround() } }
+    }
 
     struct Input: Equatable, Sendable {
         var model: HomeListModel
@@ -50,16 +44,16 @@ final class HomeUltraListAdapter {
         var environment: HomeTextEnvironment
         var dark: Bool
         var selected: String?
-        var tablet: TabletGroupedList? = nil
         var language = "en"
         var archiveModels: HomeArchiveModels? = nil
         var viewportHeight: CGFloat = 0
 
-        var ids: [HomeListRow.ID] { tablet?.ids.map(\.ultraBridgeID) ?? model.ids }
+        var ids: [HomeListRow.ID] { model.ids }
     }
     struct Entry: Sendable {
         var row: HomeListRow?
-        var tabletRow: TabletGroupedRow? = nil
+        /// The row's place in its card, drawn with it.
+        var place: HomeCardPlace? = nil
         var plan: HomeRowDrawing
         var revision: UInt64
         var selected: Bool
@@ -81,30 +75,19 @@ final class HomeUltraListAdapter {
             var revisionSequence = previous?.revisionSequence ?? 0
             let catalog = TranslationCatalog.catalog(for: input.language)
             let sameEnvironment = previous.map { $0.input.language == input.language && $0.input.width == input.width && $0.input.environment == input.environment && $0.input.dark == input.dark && $0.input.model.grouped == input.model.grouped && $0.input.model.avatarStyle == input.model.avatarStyle && $0.input.model.avatarMonochrome == input.model.avatarMonochrome } ?? false
-            if let tablet = input.tablet {
-                for (tabletID, row) in zip(tablet.ids, tablet.rows) {
-                    let id = tabletID.ultraBridgeID
-                    let selected = input.selected != nil && row.sessionId == input.selected
-                    let old = previous?.entries[id]
-                    if sameEnvironment, let old, old.tabletRow == row, old.selected == selected { entries[id] = old; continue }
-                    revisionSequence += 1
-                    entries[id] = Entry(row: nil, tabletRow: row, plan: HomeRowDrawing.makeTablet(row, width: input.width, selected: selected, environment: input.environment, dark: input.dark, catalog: catalog), revision: revisionSequence, selected: selected)
-                }
-                let result = Prepared(input: input, entries: entries, revisionSequence: revisionSequence)
-                return (result, result)
-            }
             let archiveStart = input.archiveModels?.hidden.ids.last.flatMap { input.model.ids.firstIndex(of: $0) }
             for (index, pair) in zip(input.model.ids, input.model.rows).enumerated() {
                 let (id, row) = pair
+                let place = input.model.places[index]
                 let selected = input.selected != nil && row.sessionId == input.selected
                 let old = previous?.entries[id]
                 let usesBitmap: Bool
                 if let start = archiveStart {
                     usesBitmap = index >= start
                 } else { usesBitmap = false }
-                if sameEnvironment, let old, old.row == row, old.selected == selected, old.usesArchiveBitmap == usesBitmap { entries[id] = old; continue }
+                if sameEnvironment, let old, old.row == row, old.place == place, old.selected == selected, old.usesArchiveBitmap == usesBitmap { entries[id] = old; continue }
                 revisionSequence += 1
-                entries[id] = Entry(row: row, plan: HomeRowDrawing.make(row, width: input.width, grouped: input.model.grouped, selected: selected, environment: input.environment, dark: input.dark, catalog: catalog, deferArchiveText: true), revision: revisionSequence, selected: selected, usesArchiveBitmap: usesBitmap)
+                entries[id] = Entry(row: row, place: place, plan: HomeRowDrawing.make(row, width: input.width, grouped: input.model.grouped, selected: selected, place: place, carded: true, environment: input.environment, dark: input.dark, catalog: catalog, deferArchiveText: true), revision: revisionSequence, selected: selected, usesArchiveBitmap: usesBitmap)
             }
             var hiddenToggle: Entry?
             if let models = input.archiveModels, let row = models.hidden.rows.last,
@@ -112,7 +95,7 @@ final class HomeUltraListAdapter {
                 if sameEnvironment, let old = previous?.hiddenToggle, old.row == row { hiddenToggle = old }
                 else {
                     revisionSequence += 1
-                    hiddenToggle = Entry(row: row, plan: HomeRowDrawing.make(row, width: input.width, grouped: input.model.grouped, selected: false, environment: input.environment, dark: input.dark, catalog: catalog), revision: revisionSequence, selected: false, usesArchiveBitmap: true)
+                    hiddenToggle = Entry(row: row, plan: HomeRowDrawing.make(row, width: input.width, grouped: input.model.grouped, selected: false, carded: true, environment: input.environment, dark: input.dark, catalog: catalog), revision: revisionSequence, selected: false, usesArchiveBitmap: true)
                 }
                 // Only the first archive viewport, bounded independently of
                 // archive size. Later rows draw when mounted, never on tap.
@@ -158,7 +141,7 @@ final class HomeUltraListAdapter {
 
     func update(_ input: Input) {
         var input = input; input.language = language
-        if let models = input.archiveModels, input.tablet == nil { input.model = models.shown }
+        if let models = input.archiveModels { input.model = models.shown }
         guard active, input.width > 0 else { return }
         guard requested != input else { return }
         requested = input
@@ -235,11 +218,16 @@ final class HomeUltraListAdapter {
         onSelect = nil; onLongPress = nil; onArchive = nil; onCreateWorkspace = nil; onArchivePersistenceFailure = nil
     }
 
+    /// Home's rows stand in cards on the modern home's ground.
+    private func applyGround() {
+        let background = clearsGround ? UIColor.clear : UIColor(Palette.groupedGround)
+        view.backgroundColor = background; view.list.backgroundColor = background
+    }
+
     private func publish() {
         guard active, let prepared = plans else { return }
         let model = prepared.input.model
-        let background = UIColor(prepared.input.tablet != nil || model.grouped ? Palette.groupedBackground : Palette.flatListBackground)
-        view.backgroundColor = background; view.list.backgroundColor = background
+        applyGround()
         var rows: [HomeUltraRow] = []
         var nextRows: [HomeListRow.ID: HomeUltraRow] = [:]
         var changed = 0
@@ -257,15 +245,10 @@ final class HomeUltraListAdapter {
             }
             // As the table's long press: a flat session, or a project card
             // that can make a workspace.
-            let canHold = entry.tabletRow?.sessionId != nil || { if case .flat(.session)? = entry.row { return true }; if case .project(.task)? = entry.row { return true }; if case .project(.project(let project))? = entry.row { return project.origin != nil }; return false }()
-            let canSelect = entry.row?.sessionId != nil || entry.tabletRow?.sessionId != nil || {
+            let canHold = { if case .flat(.session)? = entry.row { return true }; if case .project(.task)? = entry.row { return true }; if case .project(.project(let project))? = entry.row { return project.origin != nil }; return false }()
+            let canSelect = entry.row?.sessionId != nil || {
                 switch entry.row {
                 case .flat(.archiveToggle)?, .project(.archiveToggle)?, .project(.worktreeToggle)?: return true
-                default: break
-                }
-                switch entry.tabletRow {
-                case .archiveToggle?: return true
-                case .machine(let id, _)?: return id?.isEmpty == false
                 default: return false
                 }
             }()
@@ -274,9 +257,6 @@ final class HomeUltraListAdapter {
             var leaves = false
             if case .flat(.session(let row))? = entry.row { leaves = row.avatar.isTask; archives = !row.archived && (!leaves || row.leaves) }
             else if case .project(.task(let row))? = entry.row { archives = row.leaves; leaves = true }
-            else if case .bot? = entry.tabletRow { archives = true }
-            else if case .task(let row)? = entry.tabletRow { archives = row.leaves; leaves = true }
-            else if case .chat? = entry.tabletRow { archives = true }
             else { archives = false }
             var select: (@MainActor () -> Void)?
             var hold: (@MainActor () -> Void)?
@@ -330,11 +310,7 @@ final class HomeUltraListAdapter {
     }
 }
 
-extension TabletGroupedRow.ID {
-    var ultraBridgeID: HomeListRow.ID { .project("tablet:\(String(reflecting: self))") }
-}
-
-private extension HomeListRow.ID {
+extension HomeListRow.ID {
     var ultraIdentity: String {
         switch self {
         case .session(let id): "session:\(id)"
@@ -360,36 +336,23 @@ final class HomeUltraOverlay: UIView {
             avatar.frame = plan.avatarFrame
             addSubview(avatar)
         }
-        if let (value, style, frame) = plan.shimmer {
-            let label = ShimmerLabel(style: style)
-            label.string = value; label.isShimmering = true; label.frame = frame
-            label.alpha = plan.contentAlpha
-            addSubview(label)
+        if let title = plan.shimmer {
+            // The bitmap drew the title; only the band is live, its copy
+            // drawn off the main thread.
+            let band = ShimmerBand(
+                frame: title.frame, run: CGRect(x: 0, y: 0, width: title.runWidth, height: title.frame.height),
+                scale: plan.environment.text.displayScale, draw: { plan.drawShimmerCopy(in: $0) }
+            )
+            band.alpha = plan.contentAlpha
+            band.accessibilityIdentifier = "shimmer"
+            addSubview(band)
         }
         for (color, frame) in plan.pulsingDots {
             let dot = StatusDotView(frame: frame)
             dot.backgroundColor = UIColor(color); dot.isPulsing = true
             addSubview(dot)
         }
-        if let (kind, frame) = plan.provider {
-            let provider = ProviderIconView(size: 13)
-            provider.kind = kind; provider.frame = frame; addSubview(provider)
-        }
         if let frame = plan.addFrame {
-            if plan.roundAdd {
-                let button = HitSlopControl()
-                button.hitSlop = TabletWorkspaceHeaderLayout.Metrics.addHitSlop
-                button.frame = frame; button.backgroundColor = UIColor(Palette.surfaceHighest)
-                button.layer.cornerRadius = frame.width / 2
-                button.isAccessibilityElement = true; button.accessibilityLabel = Strings.Tablet.newSession; button.accessibilityTraits = .button
-                let icon = IconView(.ionicons("add"), size: TabletWorkspaceHeaderLayout.Metrics.addIconSize, tint: Palette.text)
-                let side = TabletWorkspaceHeaderLayout.Metrics.addIconSize
-                icon.frame = CGRect(x: (frame.width - side) / 2, y: (frame.height - side) / 2, width: side, height: side)
-                icon.isUserInteractionEnabled = false; button.addSubview(icon)
-                button.addAction(UIAction { [weak self] _ in self?.onCreateWorkspace?() }, for: .touchUpInside)
-                addSubview(button)
-                return
-            }
             let button = HeaderIconButton(.ionicons("add"), size: 18, label: Strings.Home.createWorkspaceIn(plan.accessibilityLabel))
             button.iconView.tintColor = UIColor(Palette.textSecondary)
             button.frame = frame

@@ -1,5 +1,7 @@
 package com.slopus.happy.ui.home
 
+import com.slopus.happy.R
+import com.slopus.happy.text.Words
 import com.slopus.happy.model.GitWorktree
 import com.slopus.happy.model.Session
 import com.slopus.happy.model.WorktreePaths
@@ -8,7 +10,8 @@ import kotlin.random.Random
 
 sealed interface WorktreeOutcome {
     data class Created(val path: String, val branch: String) : WorktreeOutcome
-    data class Failed(val message: String) : WorktreeOutcome
+    /** git's words, or ours where it gave none. */
+    data class Failed(val message: Words) : WorktreeOutcome
 }
 
 private val adjectives = listOf(
@@ -32,7 +35,7 @@ suspend fun createWorktree(basePath: String, random: Random = Random, bash: susp
     val check = bash("git rev-parse --git-dir")
     if (!check.success) {
         return WorktreeOutcome.Failed(
-            if (check.exitCode == -1) check.stderr.ifEmpty { "Failed to connect to machine" } else "Not a Git repository",
+            if (check.exitCode == -1) Words.said(check.stderr, R.string.home_worktree_unreachable) else Words.ours(R.string.home_worktree_not_git),
         )
     }
     suspend fun add(branch: String): BashResult = bash("git worktree add -b $branch ${WorktreePaths.DIR}/$branch")
@@ -45,7 +48,7 @@ suspend fun createWorktree(basePath: String, random: Random = Random, bash: susp
             if (result.success) return WorktreeOutcome.Created("$basePath/${WorktreePaths.DIR}/$branch", branch)
         }
     }
-    return WorktreeOutcome.Failed(result.stderr.ifEmpty { "Failed to create worktree" })
+    return WorktreeOutcome.Failed(Words.said(result.stderr, R.string.home_worktree_failed))
 }
 
 /**

@@ -5,6 +5,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.slopus.happy.R
@@ -19,6 +20,12 @@ import com.slopus.happy.ui.components.ItemGroup
 import com.slopus.happy.ui.components.ItemList
 import com.slopus.happy.ui.components.Screen
 import com.slopus.happy.ui.components.StackHeader
+import com.slopus.happy.ui.components.revealRow
+
+object LanguageTags {
+    /** The row of [code], or Automatic's for null. */
+    fun row(code: String?) = "language.${code ?: "auto"}"
+}
 
 /**
  * Settings > Appearance > Language (settings/language.tsx): Automatic
@@ -60,6 +67,7 @@ fun LanguageScreen(
             },
             onClick = { choose(code) },
             showChevron = false,
+            modifier = Modifier.revealRow(LanguageTags.row(code)),
         )
     }
 
@@ -76,4 +84,22 @@ fun LanguageScreen(
         }
     }
     alert?.let { HappyAlert(it, onDismiss = { alert = null }) }
+}
+
+/** Language's rows as Settings' search finds them: Automatic, then every language by its own name. */
+@Composable
+fun languagePageEntries(preferredLanguage: String?, detectedLanguageName: String, open: (row: String) -> Unit): List<SettingsEntry> {
+    val current = Languages.byCode(preferredLanguage)?.code
+    fun row(code: String?, title: String, subtitle: String?) = SettingsEntry(
+        id = LanguageTags.row(code),
+        title = title,
+        subtitle = subtitle,
+        icon = { ItemIcon(Ionicon.LanguageOutline, SettingsSpec.blue) },
+        checked = current == code,
+        onClick = { open(LanguageTags.row(code)) },
+        page = true,
+    )
+    val automatic = "${stringResource(R.string.settings_language_automatic_subtitle)} ($detectedLanguageName)"
+    return listOf(row(null, stringResource(R.string.settings_language_automatic), automatic)) +
+        Languages.supported.map { row(it.code, it.nativeName, null) }
 }

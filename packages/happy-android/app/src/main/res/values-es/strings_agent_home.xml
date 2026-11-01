@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  values/strings_agent_home.xml in es: Android-only strings, not in happy-app's
+  catalogs. AndroidStringsTranslatedTest fails while one is missing here.
+-->
+<resources>
+    <string name="agent_home_working">Trabajando…</string>
+    <string name="agent_home_show_subtasks">Mostrar subtareas</string>
+    <string name="agent_home_hide_subtasks">Ocultar subtareas</string>
+    <string name="agent_home_connecting">Conectando con %1$s…</string>
+    <string name="agent_home_empty_title">Aún no hay conversaciones</string>
+    <string name="agent_home_empty_body">Empieza un chat con este agente y aparecerá aquí.</string>
+    <string name="agent_home_offline_title">No se puede contactar con %1$s</string>
+    <string name="agent_home_offline_body">Comprueba que el agente esté en marcha y en línea. Happy se reconecta solo.</string>
+    <string name="agent_home_revoked">Este teléfono se quitó en Happy Agent. Vuelve a conectar el agente para usarlo.</string>
+    <string name="agent_home_update_required">Este agente necesita una versión más reciente de Happy. Actualiza la app para usarlo.</string>
+    <string name="agent_home_status_offline">sin conexión</string>
+    <string name="agent_home_status_revoked">eliminado</string>
+    <string name="agent_home_status_update">requiere actualización</string>
+    <string name="agent_artifacts_untitled">Sin título</string>
+    <string name="agent_artifacts_empty">Aún no hay artefactos.</string>
+    <string name="agent_artifacts_failed">No se pudieron leer los artefactos</string>
+    <string name="agent_surface_add_todo">Añadir tarea</string>
+    <string name="agent_surface_no_todos">Aún no hay nada aquí.</string>
+    <string name="agent_surface_todo_done">hecho</string>
+    <string name="agent_surface_empty_document">Este documento está vacío.</string>
+    <string name="agent_surface_open_on_computer">Ábrelo en tu ordenador para usarlo.</string>
+    <string name="agent_surface_failed">No se pudo leer</string>
+    <string name="agent_search_placeholder">Buscar conversaciones y configuración</string>
+    <string name="agent_search_clear">Borrar</string>
+    <string name="agent_search_conversations">Conversaciones</string>
+    <string name="agent_search_actions">Acciones rápidas</string>
+    <string name="agent_search_no_results">No hay resultados para «%1$s»</string>
+    <string name="agent_search_add">Añadir cuenta o agente</string>
+    <string name="agent_search_open_settings">Abrir configuración</string>
+    <string name="agent_settings_edit_name">Editar nombre</string>
+    <string name="agent_settings_edit_avatar">Editar avatar</string>
+    <string name="agent_settings_edit_name_prefix">"Cambia tu nombre a "</string>
+    <string name="agent_settings_edit_avatar_prefix">"Cambia tu avatar a "</string>
+    <string name="agent_settings_profile_footer">El cambio lo hace tu Chief of Staff. No se envía nada hasta que lo envíes tú.</string>
+    <string name="agent_settings_connect">Conectar agente</string>
+    <string name="agent_settings_connected">Conectado</string>
+    <string name="agent_settings_connecting">Conectando</string>
+    <string name="agent_settings_offline">Sin conexión</string>
+    <string name="agent_settings_revoked">Eliminado de Happy Agent</string>
+    <string name="agent_settings_update">Requiere actualización</string>
+    <string name="agent_settings_remove">Eliminar conexión</string>
+    <string name="agent_settings_remove_title">¿Eliminar %1$s?</string>
+    <string name="agent_settings_remove_message">Happy olvida este agente en este teléfono. Happy Agent seguirá mostrando el teléfono hasta que también lo quites allí.</string>
+    <string name="agent_settings_remove_footer">Happy Agent seguirá mostrando este teléfono hasta que lo quites allí.</string>
+</resources>

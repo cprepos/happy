@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  values/strings_chat.xml in ru: Android-only strings, not in happy-app's
+  catalogs. AndroidStringsTranslatedTest fails while one is missing here.
+-->
+<resources>
+    <string name="chat_send_failed">Сообщение не отправилось.</string>
+    <string name="chat_no_messages">Пока нет сообщений</string>
+    <string name="chat_created">Создана %1$s</string>
+    <string name="chat_permissions_in_terminal">Разрешения показываются только в терминале. Сбросьте или отправьте сообщение, чтобы управлять из приложения.</string>
+    <string name="chat_stop">Остановить</string>
+    <string name="chat_voice">Голос</string>
+    <string name="chat_send">Отправить</string>
+    <string name="chat_markdown_image">Изображение Markdown</string>
+    <string name="chat_remove_image">Удалить %1$s</string>
+    <string name="chat_add_photo">Добавить фото</string>
+    <string name="diff_badge_new">НОВЫЙ</string>
+    <string name="diff_badge_deleted">УДАЛЁН</string>
+    <string name="diff_badge_renamed">ПЕРЕИМЕНОВАН</string>
+    <string name="files_no_session_path">Нет пути сессии</string>
+    <string name="files_outside_root">Файл находится вне корня сессии.</string>
+    <string name="files_decode_failed">Не удалось декодировать файл</string>
+    <string name="files_diff_failed">Не удалось получить diff</string>
+    <string name="files_load_failed">Не удалось загрузить файл</string>
+    <string name="files_contents_match">Содержимое файла совпадает с базой сравнения.</string>
+    <string name="files_truncated">Показано %1$s из %2$s изменённых файлов. Откройте рабочее пространство на компьютере, чтобы увидеть весь список.</string>
+    <string name="files_counts_approximate">Число изменений в этом рабочем пространстве приблизительное.</string>
+    <string name="files_conflicted">В этом рабочем пространстве есть неразрешённые конфликты слияния.</string>
+    <string name="files_changes_failed">Не удалось загрузить изменения из Happy Agent.</string>
+    <string name="files_file_failed">Не удалось загрузить этот файл. Обновите изменения и попробуйте снова.</string>
+    <string name="files_update_agent">Обновите Happy Agent на компьютере, чтобы видеть изменения в этой сессии.</string>
+    <string name="files_no_comparison">Для этого рабочего пространства сравнение с origin/main недоступно.</string>
+    <string name="files_no_details">Для этого сравнения нет сведений о файлах.</string>
+</resources>

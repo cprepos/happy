@@ -36,7 +36,7 @@ final class ChatRowsTextSizeTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        Fonts.registerBundledFonts()
+        LegacyFonts.registerBundledFonts()
     }
 
     private func environment(_ category: UIContentSizeCategory, scale: CGFloat = 3) -> TextEnvironment {
@@ -308,27 +308,28 @@ final class ChatRowsTextSizeTests: XCTestCase {
         XCTAssertGreaterThan(footers.last ?? 0, footers[3])
     }
 
-    // MARK: Cells
+    // MARK: Drawing
 
-    /// The cell draws the plan as planned under traits at its size: each
-    /// text where it was measured (on the screen's pixels), the timer at
-    /// the row's font in the room measured for it.
-    func testTheCellDrawsItsPlanAsPlanned() throws {
+    /// A row's canvas draws the plan as planned under traits at its size:
+    /// each text where it was measured (on the screen's pixels), the timer
+    /// at the row's font in the room measured for it.
+    func testTheCanvasDrawsItsPlanAsPlanned() throws {
         for category in [UIContentSizeCategory.large, .accessibilityMedium, .accessibilityExtraExtraExtraLarge] {
             let environment = environment(category)
             for row in rows(text(category)) {
                 let plan = ChatRowRenderer.plan(row.input, width: width)
-                let cell = ChatRowCell(frame: CGRect(origin: .zero, size: plan.size))
-                // As the list's traits are.
-                cell.traitOverrides.followsTextSize = true
-                cell.traitOverrides.preferredContentSizeCategory = category
-                cell.traitOverrides.displayScale = 3
-                cell.updateTraitsIfNeeded()
-                cell.apply(plan)
-                cell.layoutIfNeeded()
+                // A row's view, with the list's traits, around its canvas.
+                let host = UIView(frame: CGRect(origin: .zero, size: plan.size))
+                host.traitOverrides.followsTextSize = true
+                host.traitOverrides.preferredContentSizeCategory = category
+                host.traitOverrides.displayScale = 3
+                let canvas = ChatPlanView(frame: host.bounds)
+                host.addSubview(canvas)
+                host.updateTraitsIfNeeded()
+                canvas.apply(plan)
+                host.layoutIfNeeded()
+                canvas.layoutIfNeeded()
                 let at = "\(row.name) at \(category.rawValue)"
-                let canvas = try XCTUnwrap(cell.contentView.subviews.first as? ChatPlanView, at)
-                XCTAssertEqual(canvas.frame.size, plan.size, at)
                 let shown = canvas.subviews.filter { !$0.isHidden }
                 let texts = shown.compactMap { $0 as? ChatTextView }
                 let planned: [(ChatTextLayout, CGRect)] = plan.items.compactMap {
@@ -445,25 +446,34 @@ final class ChatRowsTextSizeTests: XCTestCase {
         return nil
     }
 
-    private func cells(_ list: ChatListView) -> [ChatRowCell] {
-        list.collectionView.visibleCells.compactMap { $0 as? ChatRowCell }.filter { $0.plan != nil }
+    /// A loaded row on screen and the box it was given.
+    private struct ShownRow {
+        let plan: ChatRowPlan
+        let height: CGFloat
     }
 
-    /// Every font the cells on screen draw.
+    private func shownRows(_ list: ChatListView) -> [ShownRow] {
+        list.ultra.list.loadedItemViews.compactMap { view in
+            (view as? ChatUltraRowView).map { ShownRow(plan: $0.row.plan, height: $0.bounds.height) }
+        }
+    }
+
+    /// Every font the rows on screen draw.
     private func shownFonts(_ list: ChatListView) -> [CGFloat] {
-        cells(list).flatMap { cell in
-            cell.plan.map { drawn($0).texts.flatMap { fonts($0.layout.string).map(\.pointSize) } } ?? []
+        shownRows(list).flatMap { row in
+            drawn(row.plan).texts.flatMap { fonts($0.layout.string).map(\.pointSize) }
         }
     }
 
     /// The fixture chat in a window: only its list follows the text size,
-    /// and a new size plans every row on screen again at it, each cell as
+    /// and a new size plans every row on screen again at it, each row as
     /// tall as its new plan.
     func testANewTextSizePlansTheChatsRowsAgain() async throws {
         let account = try await signedIn()
+        defer { Task { await account.signOut() } }
         let session = try XCTUnwrap(account.session)
         let context = AppContext(account: account, variant: .development, version: "test")
-        let chat = ChatViewController(context: context, session: session, sessionId: FixtureScenarios.prefix + FixtureScenario.markdown.rawValue)
+        let chat = LegacyChatViewController(context: context, session: session, sessionId: FixtureScenarios.prefix + FixtureScenario.markdown.rawValue)
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 393, height: 852))
         window.traitOverrides.preferredContentSizeCategory = .large
         window.traitOverrides.displayScale = 3
@@ -477,7 +487,7 @@ final class ChatRowsTextSizeTests: XCTestCase {
         XCTAssertEqual(list.traitCollection.textEnvironment, environment(.large))
         XCTAssertNil(chat.view.traitCollection.textEnvironment, "the rest of the screen keeps its own size")
 
-        let shown = try await until { !self.cells(list).isEmpty }
+        let shown = try await until { !self.shownRows(list).isEmpty }
         XCTAssertTrue(shown, "no rows")
         let designed = shownFonts(list)
         let smallest = try XCTUnwrap(designed.min())
@@ -493,11 +503,9 @@ final class ChatRowsTextSizeTests: XCTestCase {
         }
         XCTAssertTrue(replanned, "the rows on screen are at the new size: \(shownFonts(list))")
         list.layoutIfNeeded()
-        for cell in cells(list) {
-            let plan = try XCTUnwrap(cell.plan)
-            XCTAssertEqual(cell.bounds.height, plan.size.height, accuracy: 0.5, plan.id)
+        for row in shownRows(list) {
+            XCTAssertEqual(row.height, row.plan.size.height, accuracy: 0.5, row.plan.id)
         }
-        await account.signOut()
     }
     #endif
 }

@@ -62,7 +62,7 @@ final class TranslationCatalogTests: XCTestCase {
 
     func testEveryCatalogHasEnglishsKeys() {
         let english = Set(TranslationCatalog.english.keys)
-        XCTAssertEqual(english.count, 899)
+        XCTAssertEqual(english.filter { !$0.hasPrefix("native.") }.count, 900)
         for language in AppLanguage.supported.map(\.code) {
             XCTAssertEqual(Set(TranslationCatalog.catalog(for: language).keys), english, language)
         }
@@ -206,8 +206,8 @@ final class TranslationCatalogTests: XCTestCase {
             counts[name] = (strings, calls - strings)
         }
         // Home's: Strings.swift, Strings/Home.swift, Strings/SettingsPages.swift.
-        XCTAssertEqual(counts["Strings.swift"]?.strings, 231)
-        XCTAssertEqual(counts["Strings.swift"]?.functions, 10)
+        XCTAssertEqual(counts["Strings.swift"]?.strings, 206)
+        XCTAssertEqual(counts["Strings.swift"]?.functions, 6)
         XCTAssertEqual(counts["Home.swift"]?.strings, 36)
         XCTAssertEqual(counts["Home.swift"]?.functions, 1)
         XCTAssertEqual(counts["SettingsPages.swift"]?.strings, 1)
@@ -215,7 +215,7 @@ final class TranslationCatalogTests: XCTestCase {
         // The secondary screens': Strings/SecondaryStrings.swift, Strings/Tablet.swift.
         XCTAssertEqual(counts["SecondaryStrings.swift"]?.strings, 115)
         XCTAssertEqual(counts["SecondaryStrings.swift"]?.functions, 8)
-        XCTAssertEqual(counts["Tablet.swift"]?.strings, 3)
+        XCTAssertEqual(counts["Tablet.swift"]?.strings, 1)
         XCTAssertEqual(counts["Tablet.swift"]?.functions, 0)
     }
 
@@ -271,9 +271,9 @@ final class TranslationCatalogTests: XCTestCase {
                 XCTAssertTrue(body.contains(english), "\(at): \(english.debugDescription) is not in it any more")
             }
         }
-        XCTAssertEqual(counts["HappyUI/Strings.swift"], 40)
+        XCTAssertEqual(counts["HappyUI/Strings.swift"], 34)
         XCTAssertEqual(counts["HappyUI/Strings/Home.swift"], 43)
-        XCTAssertEqual(counts["HappyUI/Strings/SettingsPages.swift"], 7)
+        XCTAssertEqual(counts["HappyUI/Strings/SettingsPages.swift"], 6)
         XCTAssertEqual(counts["HappyCore/Settings/SettingsPages.swift"], 15)
         XCTAssertEqual(counts["HappyCore/Settings/AgentsPage.swift"], 4)
     }

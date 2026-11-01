@@ -1,5 +1,7 @@
 package com.slopus.happy.ui.home
 
+import com.slopus.happy.text.Words
+import com.slopus.happy.R
 import com.slopus.happy.model.PENDING_CHAT_PREFIX
 import com.slopus.happy.model.PendingChat
 import com.slopus.happy.model.PendingChatStatus
@@ -74,7 +76,7 @@ interface PendingChatSessions {
     suspend fun writeDraft(sessionId: String, text: String)
     /** The session is known on this device (the anchor a failed start returns its text to). */
     fun exists(sessionId: String): Boolean
-    fun alert(message: String)
+    fun alert(message: Words)
 }
 
 /**
@@ -102,7 +104,7 @@ class PendingChatHandover(private val store: PendingChatStore, private val sessi
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    sessions.alert(e.message?.takeIf { it.isNotBlank() } ?: "Failed to send the first message")
+                    sessions.alert(Words.said(e.message, R.string.home_first_message_failed))
                 }
                 // A message that failed must not be overtaken by the one written after it.
                 failed = true
@@ -150,7 +152,7 @@ class PendingChatStarter(
     private val handover: PendingChatHandover,
     private val scope: CoroutineScope,
     private val start: suspend (SessionStartRequest) -> StartResult,
-    private val failed: (String) -> Unit,
+    private val failed: (Words) -> Unit,
 ) {
     private val queue = Mutex()
 
@@ -163,7 +165,7 @@ class PendingChatStarter(
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    StartResult.Failed(e.message ?: "Failed to start session")
+                    StartResult.Failed(Words.said(e.message, R.string.home_start_failed))
                 }
                 when (result) {
                     is StartResult.Started -> handover.handOver(chat.id, result.sessionId)
@@ -172,7 +174,7 @@ class PendingChatStarter(
                         handover.retire(chat.id)
                     }
                     is StartResult.Refused -> {
-                        failed(result.refusal.message)
+                        failed(Words.ours(result.refusal.text))
                         handover.retire(chat.id)
                     }
                     is StartResult.NotSent, StartResult.Abandoned -> handover.retire(chat.id)

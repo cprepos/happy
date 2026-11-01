@@ -96,7 +96,7 @@ final class ChatHistoryTests: XCTestCase {
     private let newest = "2147483647"
     private let route = "GET /v3/sessions/s/messages"
 
-    private func texts(_ snapshot: ChatSnapshot?) -> [String] {
+    private func texts(_ snapshot: LegacyChatSnapshot?) -> [String] {
         snapshot?.messages.compactMap { if case .agentText(let message) = $0 { return message.text }; return nil } ?? []
     }
 
@@ -576,7 +576,7 @@ final class ChatHistoryTests: XCTestCase {
         await history.ensureNewest(sessionId: "s")
         XCTAssertEqual(try fixture.store.session(id: "s")?.syncedMessageSeq, 0)
         let api = HappyAPI(serverURL: testServer, clientID: "test", transport: fixture.http, token: "test")
-        let engine = SyncEngine(api: api, store: fixture.store, keys: fixture.keys)
+        let engine = LegacySyncEngine(api: api, store: fixture.store, keys: fixture.keys)
         let start = ContinuousClock.now
         try await engine.pullMessages(sessionId: "s")
         let elapsed = start.duration(to: .now)

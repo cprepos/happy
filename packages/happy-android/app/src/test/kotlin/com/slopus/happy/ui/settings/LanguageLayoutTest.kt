@@ -12,6 +12,7 @@ import com.slopus.happy.R
 import com.slopus.happy.ui.PHONE
 import com.slopus.happy.ui.assertDp
 import com.slopus.happy.ui.bounds
+import com.slopus.happy.ui.node
 import com.slopus.happy.ui.components.ItemTags
 import com.slopus.happy.ui.setHappyContent
 import org.junit.Assert.assertEquals
@@ -57,7 +58,7 @@ class LanguageLayoutTest {
     fun rowsAreStandardItems() {
         rule.setHappyContent { LanguageScreen(preferredLanguage = "en", detectedLanguageName = "English", onSelect = {}, onBack = {}) }
         val row = rule.onNodeWithText("English").performScrollTo()
-        assertDp("title-only row: 16 + 32 icon + 16", 64, rule.onAllNodes(androidx.compose.ui.test.hasTestTag(ItemTags.ROW), useUnmergedTree = true)[1].bounds.let { it.bottom - it.top })
+        assertDp("title-only row: 16 + 32 icon + 16", 64, rule.node(LanguageTags.row(com.slopus.happy.model.settings.Languages.supported.first().code)).bounds.let { it.bottom - it.top })
         row.assertIsDisplayed()
     }
 

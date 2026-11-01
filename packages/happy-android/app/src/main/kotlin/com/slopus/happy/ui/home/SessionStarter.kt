@@ -1,5 +1,7 @@
 package com.slopus.happy.ui.home
 
+import androidx.annotation.StringRes
+import com.slopus.happy.R
 import com.slopus.happy.attachments.AttachmentNotice
 import com.slopus.happy.attachments.AttachmentPreview
 import com.slopus.happy.model.AgentType
@@ -34,6 +36,7 @@ import com.slopus.happy.sync.AgentModeField
 import com.slopus.happy.sync.HappyAgentSpawnTarget
 import com.slopus.happy.sync.SpawnSessionOptions
 import com.slopus.happy.sync.SpawnSessionResult
+import com.slopus.happy.text.Words
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -48,18 +51,28 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
-/** Why a start was refused before anything was asked of a machine (useStartSessionFromDraft's alerts). */
-enum class StartRefusal(val message: String) {
-    NoMachine("Please select a machine"),
-    UnknownMachine("This session’s computer is not registered with this account, so nothing can start a session on it. Check that Happy is running there and signed in to this account."),
-    HappyAgentMissing("Happy Agent is not running on this computer"),
-    HappyCliMissing("Happy CLI is not available on your computer. Run `happy daemon start` on your computer, then try again."),
-    HappyAgentOffline("Machine is offline"),
-    HappyCliOffline("Happy CLI is offline on your computer. Run `happy daemon start` on your computer, then try again."),
-    CannotStartHappyAgent("This machine cannot start Happy agent sessions"),
-    ProjectNeedsHappyAgent("Only Happy Agent knows where this project is, so no other harness can open it. Switch the harness back to Happy Agent, or pick the project’s folder."),
-    WorkspaceUnavailable("The selected Happy Agent workspace is no longer available."),
-    BotsUnsupported("Happy Agent on this computer cannot create bots yet. Update it and try again."),
+/**
+ * Why a start was refused before anything was asked of a machine
+ * (useStartSessionFromDraft's alerts): [message] in English for logs and
+ * tests, [text] what the person reads, in their language.
+ */
+enum class StartRefusal(val message: String, @StringRes val text: Int) {
+    NoMachine("Please select a machine", R.string.home_start_no_machine),
+    UnknownMachine(
+        "This session’s computer is not registered with this account, so nothing can start a session on it. Check that Happy is running there and signed in to this account.",
+        R.string.home_start_unknown_machine,
+    ),
+    HappyAgentMissing("Happy Agent is not running on this computer", R.string.home_start_happy_agent_missing),
+    HappyCliMissing("Happy CLI is not available on your computer. Run `happy daemon start` on your computer, then try again.", R.string.home_start_happy_cli_missing),
+    HappyAgentOffline("Machine is offline", R.string.home_start_machine_offline),
+    HappyCliOffline("Happy CLI is offline on your computer. Run `happy daemon start` on your computer, then try again.", R.string.home_start_happy_cli_offline),
+    CannotStartHappyAgent("This machine cannot start Happy agent sessions", R.string.home_start_cannot_start_happy_agent),
+    ProjectNeedsHappyAgent(
+        "Only Happy Agent knows where this project is, so no other harness can open it. Switch the harness back to Happy Agent, or pick the project’s folder.",
+        R.string.home_start_project_needs_happy_agent,
+    ),
+    WorkspaceUnavailable("The selected Happy Agent workspace is no longer available.", R.string.home_start_workspace_unavailable),
+    BotsUnsupported("Happy Agent on this computer cannot create bots yet. Update it and try again.", R.string.home_start_bots_unsupported),
 }
 
 sealed interface StartResult {
@@ -71,8 +84,8 @@ sealed interface StartResult {
         val faceFailure: BotFaceFailure? = null,
     ) : StartResult
     data class Refused(val refusal: StartRefusal) : StartResult
-    /** The machine, git or the server said no; [message] in their words. */
-    data class Failed(val message: String) : StartResult
+    /** The machine, git or the server said no; [message] in their words, or ours where they gave none. */
+    data class Failed(val message: Words) : StartResult
     /** The session is there but the first message is not: the agent takes no images. Send again reuses it. */
     data class NotSent(val notices: List<AttachmentNotice>) : StartResult
     /** Stopped, declined, or nothing to send. */
@@ -81,9 +94,9 @@ sealed interface StartResult {
 
 private const val MAX_PENDING_RESULTS = 20
 
-/** git said no to the worktree; the message is git's. */
-private class WorktreeException(message: String) : Exception(message)
-private const val CONFIGURATION_UNAVAILABLE = "The selected agent configuration is unavailable"
+/** git said no to the worktree; [words] are git's, or ours where it gave none. */
+private class WorktreeException(val words: Words) : Exception(words.toString())
+private val CONFIGURATION_UNAVAILABLE = Words.ours(R.string.home_start_configuration_unavailable)
 
 /**
  * useStartSessionFromDraft: everything between Send and the new session's
@@ -155,8 +168,10 @@ class SessionStarter(
                     execute(prepared, draft, if (bot != null) emptyList() else attachments, confirmDirectory)
                 } catch (e: CancellationException) {
                     StartResult.Abandoned
+                } catch (e: WorktreeException) {
+                    StartResult.Failed(e.words)
                 } catch (e: Exception) {
-                    StartResult.Failed(e.message ?: "Failed to start session")
+                    StartResult.Failed(Words.said(e.message, R.string.home_start_failed))
                 },
             )
         }
@@ -173,7 +188,7 @@ class SessionStarter(
 
     private sealed interface Prepared {
         data class Refused(val refusal: StartRefusal) : Prepared
-        data class Unavailable(val message: String) : Prepared
+        data class Unavailable(val message: Words) : Prepared
         data class Ready(
             val machine: Machine,
             val agent: AgentType,
@@ -249,7 +264,7 @@ class SessionStarter(
             val config = try {
                 rigCreation.spawnConfiguration(model.key, permission.key, effort)
             } catch (e: RigSpawnException) {
-                return Prepared.Unavailable(e.message ?: CONFIGURATION_UNAVAILABLE)
+                return Prepared.Unavailable(e.message?.let(Words::Said) ?: CONFIGURATION_UNAVAILABLE)
             }
             SpawnSessionOptions(
                 machineId = machine.id,
@@ -309,8 +324,8 @@ class SessionStarter(
     ): StartResult {
         val sessionId = createdSessions[prepared.signature] ?: when (val spawned = create(prepared, confirmDirectory)) {
             is SpawnSessionResult.Success -> spawned.sessionId
-            is SpawnSessionResult.Error -> return StartResult.Failed(spawned.errorMessage)
-            is SpawnSessionResult.Pending -> return StartResult.Failed("The session was created, but it is still syncing. It should appear shortly.")
+            is SpawnSessionResult.Error -> return StartResult.Failed(Words.Said(spawned.errorMessage))
+            is SpawnSessionResult.Pending -> return StartResult.Failed(Words.ours(R.string.home_start_still_syncing))
             is SpawnSessionResult.RequestToApproveDirectoryCreation -> return StartResult.Abandoned
         }
         phaseState.value = StartPhase.Opening
@@ -321,7 +336,7 @@ class SessionStarter(
             if (!awaitSession(sessionId)) {
                 createdSessions.remove(prepared.signature)
                 requestIds.remove(prepared.signature)
-                return StartResult.Failed("Failed to start session")
+                return StartResult.Failed(Words.ours(R.string.home_start_failed))
             }
             prepared.modes?.let { sender.pinModes(sessionId, it) }
             // A face that cannot be painted or delivered is no reason to lose the bot: it opens without one.
