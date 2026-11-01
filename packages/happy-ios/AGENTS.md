@@ -149,12 +149,13 @@ nothing here is wired to the release skill or to EAS.
     navigator, web tab bar), purchases and analytics.
 - **Voice mode is included by the current product request, on two backends.**
   `GET /v1/voice/config` says which the account's server offers (a 404 is an
-  older server, treated as ElevenLabs only), and the synced `voiceBackend`
-  setting chooses; null follows the server's default. See the repo's
-  `docs/voice-architecture.md`.
+  older server, treated as ElevenLabs only; any other failure fails the call),
+  and the synced `voiceBackend` setting chooses; null follows the server's
+  default. See the repo's `docs/voice-architecture.md`.
   - **`stream`.** `VoiceStreamClient` speaks the server's `/v1/voice/stream`,
-    the protocol happy-app uses. LiveKit stays behind the server, so this
-    needs no SDK.
+    the protocol happy-app uses, and `StreamVoiceConnection` joins it to
+    `VoiceAudioEngine`, on `AVAudioEngine`. LiveKit stays behind the server, so
+    this needs no SDK.
   - **`elevenlabs`.** The official ElevenLabs Swift SDK provides WebRTC
     microphone and speaker transport. Happy's authenticated backend alone
     grants its free or subscribed allowance; a missing client RevenueCat

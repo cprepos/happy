@@ -1,8 +1,10 @@
 # Paid Voice — Rate Limiting & Auth
 
 > **Historical.** This describes the earlier ElevenLabs voice setup with paid
-> usage gating. The self-hosted build replaced it with LiveKit and has no
-> gate or quota; see `docs/voice-architecture.md` for the current design.
+> usage gating, from when it was the only voice path. The self-hosted build's
+> `stream` backend runs on LiveKit and has no gate or quota; a server can also
+> offer ElevenLabs with usage limits, for the native iOS app. See
+> `docs/voice-architecture.md` for the current design.
 
 ## Flow
 

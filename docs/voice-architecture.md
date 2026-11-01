@@ -69,20 +69,30 @@ recorded conversations with both limits at `VOICE_UNLIMITED`, and `elevenUserId`
 **Clients.**
 
 - The Expo app only speaks `stream`. It never reads the config and has no
-  picker. Its settings parser keeps keys it doesn't know, so it leaves
+  backend picker. Its settings parser keeps keys it doesn't know, so it leaves
   `voiceBackend` alone.
-- The native iOS app (`packages/happy-ios`) fetches the config, and treats a
-  404 as an older server offering only ElevenLabs. The synced `voiceBackend`
-  setting holds the user's choice; `null` follows the server's default, as does
-  a saved choice that can no longer run (`VoiceConfig.selection`). ElevenLabs
-  can be chosen on any server if the user has their own agent
-  (`voiceCustomAgentId` with `voiceBypassToken`), since that needs no grant.
+- The native iOS app (`packages/happy-ios`) fetches the config when a call
+  starts and when its voice settings open, and treats a 404 as an older server
+  offering only ElevenLabs. Any other failed fetch fails the call, even on the
+  user's own agent, instead of falling back to another backend; the settings
+  page keeps asking, with no error shown. The synced `voiceBackend` setting
+  holds the user's choice; `null` follows the server's default, as does a saved
+  choice that can no longer run (`VoiceConfig.selection`). ElevenLabs can be
+  chosen on any server if the user has their own agent (`voiceCustomAgentId`
+  with `voiceBypassToken`), since that needs no grant.
 - Its stream client (`HappyCore/Voice/VoiceStreamClient.swift`,
   `StreamVoiceConnection` in `HappyUI/Voice`) speaks the protocol below and needs
   no LiveKit SDK: one socket per call with no reconnect, a 15 s wait for `ready`,
   and `VoiceDsp` and `VoicePlaybackScheduler` ported from the Expo app's
   `voiceDsp.ts` and `voicePlaybackScheduler.ts`. Mute stops sending microphone
   frames locally, since the protocol has no mute message.
+- Its audio path is `VoiceAudioEngine` on `AVAudioEngine`: the microphone through
+  voice processing (echo cancellation), and playback through an
+  `AVAudioSourceNode` pulling from `VoicePlaybackBuffer`. The uplink is paced at
+  one frame per 20 ms with at most 12 queued, the oldest dropped first, because
+  the server drops frames that arrive in a burst. So frames wait for their tick,
+  unlike the app uplink under [Latency design](#latency-design), and there is no
+  AudioWorklet.
 
 ## Services
 
@@ -382,6 +392,9 @@ in `packages/happy-ios/docs/FEATURES.md`.
   `/v1/voice/stream` and reports latency and jitter.
 - `selfhost/cutover/check-no-public-livekit.sh` checks that no public path
   reaches LiveKit and the internal paths still do.
+
+Real ElevenLabs calls and the native iOS app's audio on a real device have not
+been tried.
 
 ## History
 
