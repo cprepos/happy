@@ -74,8 +74,8 @@ public struct MeteredHTTPTransport: HTTPTransport {
 }
 
 /// A WebSocket counted on `channel`: each one opened and closed (a closed
-/// socket's receive throwing counts as its close), its text frames' bytes,
-/// and a later one opened as a reconnect.
+/// socket's receive throwing counts as its close), its frames' bytes, and a
+/// later one opened as a reconnect.
 public struct MeteredWebSocketConnector: WebSocketConnector {
     public let base: WebSocketConnector
     public let metrics: ConnectionMetrics
@@ -145,6 +145,32 @@ final class MeteredWebSocketConnection: WebSocketConnection, @unchecked Sendable
         await base.close()
         markClosed()
     }
+
+    func send(binary: Data) async throws {
+        try await base.send(binary: binary)
+        metrics.sent(binary.count, on: channel)
+    }
+
+    func receiveFrame() async throws -> WebSocketFrame {
+        do {
+            let frame = try await base.receiveFrame()
+            switch frame {
+            case .text(let text): metrics.received(text.utf8.count, on: channel)
+            case .binary(let data): metrics.received(data.count, on: channel)
+            }
+            return frame
+        } catch {
+            markClosed()
+            throw error
+        }
+    }
+
+    func close(code: Int, reason: String) async {
+        await base.close(code: code, reason: reason)
+        markClosed()
+    }
+
+    var closure: WebSocketClosure? { base.closure }
 }
 
 /// A byte stream counted as one TCP flow over the tunnel: opened when

@@ -13,6 +13,8 @@ public enum ConnectionChannel: Int, CaseIterable, Sendable {
     case media
     /// The browser's and artifacts' proxy streams, over Tailcat.
     case browser
+    /// A voice call's audio and control frames, over its own WebSocket.
+    case voice
 
     public var name: String {
         switch self {
@@ -21,6 +23,7 @@ public enum ConnectionChannel: Int, CaseIterable, Sendable {
         case .tailcat: "Tailcat"
         case .media: "Media"
         case .browser: "Browser proxy"
+        case .voice: "Voice"
         }
     }
 }

@@ -64,47 +64,136 @@ extension HTTPRequest {
 /// A WebSocket whose server side is scripted by the test.
 final class FakeWebSocket: WebSocketConnection, @unchecked Sendable {
     private let lock = NSLock()
-    private var inbox: [String] = []
-    private var receivers: [CheckedContinuation<String, Error>] = []
+    private var inbox: [WebSocketFrame] = []
+    private var receivers: [CheckedContinuation<WebSocketFrame, Error>] = []
     private var closed = false
+    private var closedByServer = false
     private var _sent: [String] = []
+    private var _sentBinary: [Data] = []
+    private var _closes: [WebSocketClosure] = []
+    private var _closure: WebSocketClosure?
+    private var holding = false
+    private var heldSenders: [CheckedContinuation<Void, Error>] = []
 
+    /// Text frames sent, in order.
     var sent: [String] {
         lock.lock()
         defer { lock.unlock() }
         return _sent
     }
 
+    /// Binary frames sent, in order.
+    var sentBinary: [Data] {
+        lock.lock()
+        defer { lock.unlock() }
+        return _sentBinary
+    }
+
+    /// Each close(code:reason:) the client made.
+    var closes: [WebSocketClosure] {
+        lock.lock()
+        defer { lock.unlock() }
+        return _closes
+    }
+
+    var closure: WebSocketClosure? {
+        lock.lock()
+        defer { lock.unlock() }
+        return _closure
+    }
+
     /// Server → client frame.
     func push(_ text: String) {
+        deliver(.text(text))
+    }
+
+    /// Server → client binary frame.
+    func push(binary: Data) {
+        deliver(.binary(binary))
+    }
+
+    private func deliver(_ frame: WebSocketFrame) {
         lock.lock()
         if let receiver = receivers.first {
             receivers.removeFirst()
             lock.unlock()
-            receiver.resume(returning: text)
+            receiver.resume(returning: frame)
         } else {
-            inbox.append(text)
+            inbox.append(frame)
             lock.unlock()
         }
     }
 
+    /// The server closes the socket: frames it sent first still arrive, then
+    /// receives throw and `closure` reports the code.
+    func serverClose(code: Int, reason: String) async {
+        lock.withLock {
+            _closure = WebSocketClosure(code: code, reason: reason)
+            closedByServer = true
+        }
+        await close()
+    }
+
+    /// Sends stop completing, like a stalled network, until `releaseSends`.
+    func holdSends() {
+        lock.withLock { holding = true }
+    }
+
+    func releaseSends() {
+        let held = lock.withLock {
+            holding = false
+            defer { heldSenders = [] }
+            return heldSenders
+        }
+        for sender in held { sender.resume() }
+    }
+
+    private func waitIfHeld() async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            lock.lock()
+            if holding {
+                heldSenders.append(continuation)
+                lock.unlock()
+            } else {
+                lock.unlock()
+                continuation.resume()
+            }
+        }
+    }
+
     func send(_ text: String) async throws {
+        try await waitIfHeld()
         try lock.withLock {
             if closed { throw WebSocketError.closed }
             _sent.append(text)
         }
     }
 
+    func send(binary: Data) async throws {
+        try await waitIfHeld()
+        try lock.withLock {
+            if closed { throw WebSocketError.closed }
+            _sentBinary.append(binary)
+        }
+    }
+
     func receive() async throws -> String {
+        switch try await receiveFrame() {
+        case .text(let text): return text
+        case .binary: throw WebSocketError.binaryFrameUnsupported
+        }
+    }
+
+    func receiveFrame() async throws -> WebSocketFrame {
         try await withCheckedThrowingContinuation { continuation in
             lock.lock()
-            if closed {
+            if closed, !closedByServer || inbox.isEmpty {
                 lock.unlock()
                 continuation.resume(throwing: WebSocketError.closed)
             } else if !inbox.isEmpty {
-                let text = inbox.removeFirst()
+                let frame = inbox.removeFirst()
                 lock.unlock()
-                continuation.resume(returning: text)
+                continuation.resume(returning: frame)
             } else {
                 receivers.append(continuation)
                 lock.unlock()
@@ -112,14 +201,23 @@ final class FakeWebSocket: WebSocketConnection, @unchecked Sendable {
         }
     }
 
+    func close(code: Int, reason: String) async {
+        lock.withLock { _closes.append(WebSocketClosure(code: code, reason: reason)) }
+        await close()
+    }
+
     func close() async {
-        let pending = lock.withLock {
+        let (pending, held) = lock.withLock {
             closed = true
-            defer { receivers = [] }
-            return receivers
+            holding = false
+            defer { receivers = []; heldSenders = [] }
+            return (receivers, heldSenders)
         }
         for receiver in pending {
             receiver.resume(throwing: WebSocketError.closed)
+        }
+        for sender in held {
+            sender.resume(throwing: WebSocketError.closed)
         }
     }
 }
