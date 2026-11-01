@@ -19,6 +19,7 @@ import { accessKeysRoutes } from "./routes/accessKeysRoutes";
 import { enableMonitoring } from "./utils/enableMonitoring";
 import { enableErrorHandlers } from "./utils/enableErrorHandlers";
 import { enableAuthentication } from "./utils/enableAuthentication";
+import { replyToServerCheck, serverBanner } from "@/app/api/utils/replyToServerCheck";
 import { userRoutes } from "./routes/userRoutes";
 import { feedRoutes } from "./routes/feedRoutes";
 import { kvRoutes } from "./routes/kvRoutes";
@@ -63,10 +64,11 @@ export async function startApi(opts: StartApiOptions = {}) {
     );
 
     // Root handler — when not serving a static webapp, return a banner.
-    // When serving a static webapp, @fastify/static handles `/` via its index.
+    // When serving a static webapp, @fastify/static handles `/` via its index, and
+    // replyToServerCheck gives the banner to the apps validating this server.
     if (!opts.staticDir) {
         app.get('/', function (request, reply) {
-            reply.send('Welcome to Happy Server!');
+            reply.send(serverBanner);
         });
     }
 
@@ -131,6 +133,7 @@ export async function startApi(opts: StartApiOptions = {}) {
             // SPA fallback — if file not found, serve index.html
             wildcard: false,
         });
+        app.addHook('onRequest', replyToServerCheck);
         if (injectScript) {
             app.addHook('onSend', async (request, reply, payload) => {
                 const url = request.raw.url || '';
