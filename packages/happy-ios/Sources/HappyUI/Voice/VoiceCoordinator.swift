@@ -20,6 +20,8 @@ public final class VoiceCoordinator: NSObject {
     private let lifetime = VoiceConnectionLifetime()
     private weak var screen: VoiceStatusViewController?
     public private(set) var state: VoiceState = .idle
+    /// Who carries the current call; nil until it is known and once it is over.
+    public private(set) var activeBackend: VoiceBackend?
 
     private override init() {
         super.init()
@@ -44,16 +46,24 @@ public final class VoiceCoordinator: NSObject {
         show(from: presenting)
         preparation = Task { [weak self] in
             do {
-                let request = try await context.initial()
-                guard let self, !Task.isCancelled, current == generation else { return }
                 let api = account.api
+                let request = try await context.initial(config: api.voiceConfig())
+                guard let self, !Task.isCancelled, current == generation else { return }
+                self.activeBackend = request.backend
+                self.screen?.update(self.state)
                 let voice = VoiceSession(permission: {
                     await AVAudioApplication.requestRecordPermission()
                 }, credentials: {
                     try await api.voiceCredentials()
                 }, lifetime: lifetime, connect: { grant, request, activity, disconnected in
-                    try await ElevenLabsVoiceConnection.connect(grant: grant, request: request, context: context,
-                                                               activity: activity, disconnected: disconnected)
+                    switch request.backend {
+                    case .stream:
+                        return try await StreamVoiceConnection.connect(account: account, request: request, context: context,
+                                                                       activity: activity, disconnected: disconnected)
+                    case .elevenlabs:
+                        return try await ElevenLabsVoiceConnection.connect(grant: grant, request: request, context: context,
+                                                                           activity: activity, disconnected: disconnected)
+                    }
                 })
                 self.session = voice
                 voice.onState = { [weak self, weak voice] state in
@@ -75,7 +85,7 @@ public final class VoiceCoordinator: NSObject {
                 voice.start(request)
             } catch {
                 guard let self, current == generation, !Task.isCancelled else { return }
-                self.setState(.failed(.unavailable))
+                self.setState(.failed(error as? APIError == .unauthorized ? .authentication : .unavailable))
                 await context.stop()
             }
         }
@@ -127,6 +137,7 @@ public final class VoiceCoordinator: NSObject {
     private func setState(_ state: VoiceState) {
         guard state != self.state else { return }
         self.state = state
+        if state == .idle { activeBackend = nil }
         screen?.update(state)
         NotificationCenter.default.post(name: .voiceStateChanged, object: self)
     }
