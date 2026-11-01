@@ -40,6 +40,9 @@ public struct AccountSettings: Equatable, Sendable {
         "reviewPromptAnswered": .bool(false),
         "reviewPromptLikedApp": .null,
         "voiceAssistantLanguage": .null,
+        "voiceAssistantVoice": .null,
+        "voiceBySession": .object([:]),
+        "voiceBackend": .null,
         "voiceCustomAgentId": .null,
         "voiceBypassToken": .bool(false),
         "preferredLanguage": .null,
@@ -103,6 +106,14 @@ public struct AccountSettings: Equatable, Sendable {
     /// nil follows the device.
     public var preferredLanguage: String? { string("preferredLanguage") }
     public var agentDefaultOverrides: [String: JSONValue] { values["agentDefaultOverrides"]?.objectValue ?? [:] }
+    /// nil follows the server's default, as does a backend this build doesn't know.
+    public var voiceBackend: VoiceBackend? { string("voiceBackend").flatMap(VoiceBackend.init(rawValue:)) }
+    /// The default voice preset's id; nil is the server's default voice.
+    public var voiceAssistantVoice: String? { string("voiceAssistantVoice") }
+    /// Per-chat voice preset ids, by session id.
+    public var voiceBySession: [String: String] {
+        (values["voiceBySession"]?.objectValue ?? [:]).compactMapValues(\.stringValue)
+    }
 
     /// The body `POST /v1/account/settings` carries: everything, with empty
     /// per-agent overrides dropped (`settingsToSyncPayload`).

@@ -65,6 +65,16 @@ extension HappyAPI {
         try await voiceResponse(makeRequest("GET", "/v1/voice/usage"))
     }
 
+    /// The voice backends this server offers. A server from before the route
+    /// answers 404 and only knows ElevenLabs.
+    public func voiceConfig() async throws -> VoiceConfig {
+        do {
+            return try await voiceResponse(makeRequest("GET", "/v1/voice/config"))
+        } catch APIError.http(status: 404, body: _) {
+            return .elevenLabsOnly
+        }
+    }
+
     private func voiceResponse<Value: Decodable>(_ request: HTTPRequest) async throws -> Value {
         let response = try await transport.send(request)
         if response.status == 401 { throw APIError.unauthorized }
