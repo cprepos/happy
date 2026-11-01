@@ -172,6 +172,10 @@ final class VoiceAudioEngine: VoiceAudio, @unchecked Sendable {
             guard let self else { return }
             queue.async { self.configurationChanged(built: built) }
         }
+        // With voice processing on, an engine can stop itself just after starting.
+        // This read sometimes prevents it: observed, undocumented behaviour, so
+        // `configurationChanged` restarts the engine when it doesn't.
+        _ = engine.outputNode.outputFormat(forBus: 0)
         engine.prepare()
         try engine.start()
     }
@@ -222,7 +226,9 @@ final class VoiceAudioEngine: VoiceAudio, @unchecked Sendable {
 
     /// A new route or rate. The engine stops itself on a real change; one that
     /// leaves it running at the same rate, as switching voice processing on can
-    /// fire, needs nothing.
+    /// fire, needs nothing. One that stops it at the same rate gets a restart
+    /// first: an engine built right after a stop can find no microphone. Each
+    /// attempt counts towards the cap, so a restart loop still ends in `failed`.
     private func configurationChanged(built: Int) {
         guard isCurrent(built), let engine else { return }
         let rate = engine.inputNode.outputFormat(forBus: 0).sampleRate
@@ -231,6 +237,15 @@ final class VoiceAudioEngine: VoiceAudio, @unchecked Sendable {
         rebuilds = rebuilds.filter { now.timeIntervalSince($0) < Self.rebuildWindow } + [now]
         do {
             guard rebuilds.count <= Self.maxRebuilds else { throw VoiceAudioError.noMicrophone }
+            if !engine.isRunning, rate == inputRate {
+                do {
+                    try engine.start()
+                    Self.log.info("Audio configuration changed, restarted at \(rate) Hz")
+                    return
+                } catch {
+                    Self.log.warning("Audio restart failed: \(error.localizedDescription)")
+                }
+            }
             Self.log.info("Audio configuration changed, rebuilding at \(rate) Hz")
             tearDown()
             try build()
