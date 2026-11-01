@@ -101,33 +101,6 @@ final class ElevenLabsVoiceConnection: VoiceConnection {
     }
 }
 
-@MainActor
-private final class VoiceActivityTracker {
-    private let changed: @MainActor (VoiceActivity) -> Void
-    private var speaking = false
-    private var silence: Task<Void, Never>?
-    init(changed: @escaping @MainActor (VoiceActivity) -> Void) { self.changed = changed }
-    func agentSpeaking(_ value: Bool) {
-        speaking = value
-        silence?.cancel(); silence = nil
-        changed(value ? .agentSpeaking : .listening)
-    }
-    func vad(_ score: Double) {
-        guard !speaking else { return }
-        if score > 0.5 {
-            silence?.cancel(); silence = nil
-            changed(.userSpeaking)
-        } else if silence == nil {
-            silence = Task { [weak self] in
-                try? await Task.sleep(for: .milliseconds(300))
-                guard !Task.isCancelled, let self, !self.speaking else { return }
-                self.changed(.listening)
-                self.silence = nil
-            }
-        }
-    }
-}
-
 private enum VoicePrompt {
     static let system = """
     You are the voice interface for Happy, a coding agent orchestrator. You bridge the user and coding agents in their sessions. Be friendly, direct, and concise; answer in one short sentence unless asked to elaborate.

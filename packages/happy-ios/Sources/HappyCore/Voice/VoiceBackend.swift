@@ -68,3 +68,8 @@ public struct VoiceBackendSelection: Equatable, Sendable {
         self.savedUnavailable = savedUnavailable
     }
 }
+
+/// Nothing can carry a voice call: see `VoiceBackendSelection.backend`.
+public struct VoiceBackendUnavailable: Error, Equatable, Sendable {
+    public init() {}
+}

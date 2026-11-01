@@ -73,7 +73,9 @@ public actor VoiceContext {
         self.sending = sending; self.actions = actions
     }
 
-    public func initial() async throws -> VoiceStart {
+    /// What a call starts with, on the backend `config` and the saved setting
+    /// pick. Throws `VoiceBackendUnavailable` when nothing can carry a call.
+    public func initial(config: VoiceConfig = .elevenLabsOnly) async throws -> VoiceStart {
         let home = try account.store.homeSnapshot()
         let settings = AccountSettings(home.settings)
         records = Dictionary(home.sessions.map { ($0.id, $0) }, uniquingKeysWith: { _, value in value })
@@ -83,10 +85,17 @@ public actor VoiceContext {
         let metadata = records[focused]?.metadata
         let history = snapshot.messages.suffix(50).compactMap(VoiceContextReducer.format).joined(separator: "\n\n")
         let context = "\(directory)\n\nCURRENT SESSION: \(focused)\nProject: \(metadata?["path"]?.stringValue ?? "")\nSummary: \(metadata?["summary"]?["text"]?.stringValue ?? "")\n\n\(history)"
-        let custom = settings.bool("voiceBypassToken") ? settings.string("voiceCustomAgentId") : nil
+        let bypassed = settings.bool("voiceBypassToken") ? settings.string("voiceCustomAgentId") : nil
+        let custom = bypassed.flatMap { $0.isEmpty ? nil : $0 }
+        let selection = config.selection(saved: settings.voiceBackend, customAgentId: custom)
+        guard let backend = selection.backend else { throw VoiceBackendUnavailable() }
+        let language = settings.string("voiceAssistantLanguage")
         return VoiceStart(sessionId: focused, context: context,
-                          language: VoiceLanguage.selection(settings.string("voiceAssistantLanguage")).providerCode,
-                          customAgentId: custom.flatMap { $0.isEmpty ? nil : $0 })
+                          language: backend == .stream ? VoiceLanguage.streamCode(language) : VoiceLanguage.selection(language).providerCode,
+                          customAgentId: custom,
+                          backend: backend,
+                          voicePreset: VoicePreset.resolve(sessionId: focused, bySession: settings.voiceBySession, defaultId: settings.voiceAssistantVoice),
+                          savedBackendUnavailable: selection.savedUnavailable)
     }
 
     public func start(sink: @escaping @Sendable (VoiceContextUpdate) async -> Void) {
@@ -168,6 +177,8 @@ public struct VoiceToolResult: Sendable, Equatable {
 extension VoiceContext {
     /// Parameters are decoded at the boundary and permissions are looked up
     /// again immediately before execution, so stale requests cannot be approved.
+    /// The text is what the agent hears back, on either backend: these are the
+    /// strings of happy-app's realtimeClientTools.ts.
     public func tool(name: String, parameters: Data) async -> VoiceToolResult {
         do {
             try Task.checkCancellation()
@@ -175,23 +186,35 @@ extension VoiceContext {
             switch name {
             case "sendMessageToSession":
                 struct Parameters: Decodable { let sessionId: String; let message: String }
-                let value = try JSONDecoder().decode(Parameters.self, from: parameters)
-                guard !value.sessionId.isEmpty, !value.message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                      try account.store.session(id: value.sessionId) != nil else { return VoiceToolResult("error (invalid session or message)", isError: true) }
-                _ = try await sending.send(OutgoingMessage(text: value.message, source: .voice), sessionId: value.sessionId)
+                guard let value = try? JSONDecoder().decode(Parameters.self, from: parameters),
+                      !value.sessionId.isEmpty, !value.message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    return VoiceToolResult("error (invalid parameters)", isError: true)
+                }
+                // The model can invent a session id; refuse it instead of reporting success.
+                guard try account.store.session(id: value.sessionId) != nil else {
+                    return VoiceToolResult("error (unknown session id; use a sessionId from the session list in your context)", isError: true)
+                }
+                do { _ = try await sending.send(OutgoingMessage(text: value.message, source: .voice), sessionId: value.sessionId) }
+                catch { return VoiceToolResult("error (the message could not be sent to the session)", isError: true) }
                 return VoiceToolResult("sent [DO NOT say anything else, simply say 'sent']")
             case "processPermissionRequest":
                 struct Parameters: Decodable {
                     enum Decision: String, Decodable { case allow, deny }
                     let requestId: String; let decision: Decision
                 }
-                let value = try JSONDecoder().decode(Parameters.self, from: parameters)
+                guard let value = try? JSONDecoder().decode(Parameters.self, from: parameters), !value.requestId.isEmpty else {
+                    return VoiceToolResult("error (invalid parameters)", isError: true)
+                }
                 let matching = try account.store.sessions().filter { $0.agentState?["requests"]?[value.requestId]?.objectValue != nil }
-                guard !value.requestId.isEmpty, matching.count == 1, let session = matching.first else {
+                guard matching.count == 1, let session = matching.first else {
                     return VoiceToolResult("error (permission request not found)", isError: true)
                 }
-                if value.decision == .allow { try await actions.allow(sessionId: session.id, permissionId: value.requestId) }
-                else { try await actions.deny(sessionId: session.id, permissionId: value.requestId) }
+                do {
+                    if value.decision == .allow { try await actions.allow(sessionId: session.id, permissionId: value.requestId) }
+                    else { try await actions.deny(sessionId: session.id, permissionId: value.requestId) }
+                } catch {
+                    return VoiceToolResult("error (failed to \(value.decision.rawValue) permission)", isError: true)
+                }
                 return VoiceToolResult("done [DO NOT say anything else, simply say 'done']")
             default: return VoiceToolResult("error (unknown client tool)", isError: true)
             }

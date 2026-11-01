@@ -22,12 +22,28 @@ public struct VoiceStart: Sendable {
     public var context: String
     public var language: String?
     public var customAgentId: String?
-    public init(sessionId: String, context: String, language: String? = nil, customAgentId: String? = nil) {
+    /// Who carries the call. `language` is in this backend's codes.
+    public var backend: VoiceBackend
+    /// The voice to speak with on the stream; nil is the server's default voice.
+    public var voicePreset: VoicePreset?
+    /// The user saved a backend that can't run now, so `backend` is another.
+    public var savedBackendUnavailable: Bool
+
+    public init(sessionId: String, context: String, language: String? = nil, customAgentId: String? = nil,
+                backend: VoiceBackend = .elevenlabs, voicePreset: VoicePreset? = nil, savedBackendUnavailable: Bool = false) {
         self.sessionId = sessionId
         self.context = context
         self.language = language
         self.customAgentId = customAgentId
+        self.backend = backend
+        self.voicePreset = voicePreset
+        self.savedBackendUnavailable = savedBackendUnavailable
     }
+
+    /// Only a hosted ElevenLabs call is granted by the server. A custom agent is
+    /// the user's own, as in happy-app, and never pretends the server granted a
+    /// paid entitlement; the stream authenticates on its own socket.
+    public var needsGrant: Bool { backend == .elevenlabs && customAgentId == nil }
 }
 
 /// The SDK is confined to the UIKit target. Core controls cancellation and
@@ -38,6 +54,13 @@ public protocol VoiceConnection: AnyObject {
     func setMuted(_ muted: Bool) async throws
     func context(_ text: String) async throws
     func prompt(_ text: String) async throws
+    /// Why the call ended, read when the connection reports it disconnected;
+    /// nil is a plain end.
+    var failure: VoiceFailure? { get }
+}
+
+extension VoiceConnection {
+    public var failure: VoiceFailure? { nil }
 }
 
 /// Several UI sessions share one audio device. A new connection waits until
@@ -106,9 +129,7 @@ public final class VoiceSession {
                 }
                 try Task.checkCancellation()
                 let grant: VoiceGrant?
-                if request.customAgentId != nil {
-                    // Explicit BYO public agent, as in happy-app. Never pretends
-                    // that the Happy server granted a paid entitlement.
+                if !request.needsGrant {
                     grant = nil
                 } else {
                     switch try await credentials() {
@@ -130,7 +151,9 @@ public final class VoiceSession {
                     if activity == .listening { self.flushPrompts() }
                 }, { [weak self] in
                     guard let self, current == self.generation else { return }
+                    let failure = self.connection?.failure
                     self.stop()
+                    if let failure { self.state = .failed(failure) }
                     })
                 } catch { acquired.finish(); throw error }
                 guard !Task.isCancelled, current == generation else {

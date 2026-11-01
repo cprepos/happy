@@ -63,6 +63,8 @@ public final class AccountSession: Sendable {
     public let machineDetails: MachineDetailFeed
     /// This account's traffic, counted in memory while it is signed in.
     public let metrics = ConnectionMetrics()
+    /// Opens a voice call's socket, counted on its own channel.
+    public let voiceConnector: WebSocketConnector
     /// The server it talks to, and the Socket.IO endpoint.
     public let serverURL: URL
     public let socketURL: URL
@@ -150,6 +152,7 @@ public final class AccountSession: Sendable {
             throw ServerURLError.invalid
         }
         self.socketURL = socketURL
+        self.voiceConnector = MeteredWebSocketConnector(base: dependencies.connector, metrics: metrics, channel: .voice)
         let token = credentials.token
         let clientID = dependencies.clientID
         let appState = dependencies.appState
