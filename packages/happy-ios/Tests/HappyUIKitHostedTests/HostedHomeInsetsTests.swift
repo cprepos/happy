@@ -362,7 +362,7 @@ struct HomeApp {
         try await Task.detached {
             try SeededAccount.seed(store)
             try store.addPendingSettings(["sessionListGrouping": .string("flat")])
-            try store.upsertSessions((0..<40).map(Self.session))
+            try store.upsertSessions((0..<40).map(HomeApp.session))
         }.value
         let app = try await start(test, account: account, style: style) { $0 is LegacyHomeViewController }
         let shown = try await until { (app.legacyList?.items.count ?? 0) > 30 }

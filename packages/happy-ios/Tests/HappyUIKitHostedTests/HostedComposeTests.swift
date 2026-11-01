@@ -114,7 +114,7 @@ final class HostedComposeTests: XCTestCase {
             try SeededAccount.seed(store)
             try store.addPendingSettings(["sessionListGrouping": .string("flat")])
             if secondMachine, var machine = try store.machines().first, let template = try store.sessions().first {
-                machine.id = Self.studio
+                machine.id = HostedComposeTests.studio
                 machine.createdAt -= 1
                 var metadata = machine.metadata?.objectValue ?? [:]
                 metadata["displayName"] = .string("Studio Mac")
@@ -124,9 +124,9 @@ final class HostedComposeTests: XCTestCase {
                 var row = template
                 row.id = "studio-site"
                 var fields = row.metadata?.objectValue ?? [:]
-                fields["machineId"] = .string(Self.studio)
+                fields["machineId"] = .string(HostedComposeTests.studio)
                 fields["host"] = .string("studio-mac")
-                fields["path"] = .string(Self.studioFolder)
+                fields["path"] = .string(HostedComposeTests.studioFolder)
                 fields["summary"] = .object(["text": .string("Landing page")])
                 row.metadata = .object(fields)
                 try store.upsertSessions([row])
