@@ -6,7 +6,8 @@ extension TranslationCatalog {
     /// language has the same keys.
     ///
     /// The two kinds of account are named by their products, Happy Agent
-    /// and Happy CLI, which no language translates.
+    /// and Happy CLI, which no language translates. Nor are the voice
+    /// services' names, Happy Server and ElevenLabs.
     static let nativeSources: [String: [String: String]] = [
         "en": [
             "native.accountKind.addCLIAccount": "Add Happy CLI account",
@@ -21,6 +22,10 @@ extension TranslationCatalog {
             "native.accountKind.agentUnreachable": "Can’t reach ${name}.\nCheck the Happy Agent connection, then reload.",
             "native.accountKind.restoreAnotherCLIAccount": "Restore a Happy CLI Account",
             "native.accountKind.restoreAnotherFooter": "Sign in to another Happy CLI account with its secret key, or with a phone that has it. This account stays here.",
+            "native.voice.service": "Voice service",
+            "native.voice.needsOwnAgent": "Needs your own agent ID",
+            "native.voice.savedNotOffered": "${saved} isn’t offered by this server, so voice uses the server’s default, ${current}.",
+            "native.voice.noService": "This server offers no voice service. ElevenLabs works with your own agent ID.",
         ],
         "ru": [
             "native.accountKind.addCLIAccount": "Добавить аккаунт Happy CLI",
@@ -35,6 +40,10 @@ extension TranslationCatalog {
             "native.accountKind.agentUnreachable": "Не удаётся связаться с ${name}.\nПроверьте подключение к Happy Agent и обновите страницу.",
             "native.accountKind.restoreAnotherCLIAccount": "Восстановить аккаунт Happy CLI",
             "native.accountKind.restoreAnotherFooter": "Войдите в другой аккаунт Happy CLI с помощью его секретного ключа или телефона, на котором он есть. Этот аккаунт останется здесь.",
+            "native.voice.service": "Голосовой сервис",
+            "native.voice.needsOwnAgent": "Нужен ваш собственный ID агента",
+            "native.voice.savedNotOffered": "Этот сервер не предлагает ${saved}, поэтому голос использует сервис по умолчанию: ${current}.",
+            "native.voice.noService": "Этот сервер не предлагает голосовой сервис. ElevenLabs работает с вашим собственным ID агента.",
         ],
         "pl": [
             "native.accountKind.addCLIAccount": "Dodaj konto Happy CLI",
@@ -49,6 +58,10 @@ extension TranslationCatalog {
             "native.accountKind.agentUnreachable": "Nie można połączyć się z ${name}.\nSprawdź połączenie z Happy Agent i odśwież stronę.",
             "native.accountKind.restoreAnotherCLIAccount": "Przywróć konto Happy CLI",
             "native.accountKind.restoreAnotherFooter": "Zaloguj się na inne konto Happy CLI za pomocą jego klucza tajnego lub telefonu, na którym jest zalogowane. To konto tu zostanie.",
+            "native.voice.service": "Usługa głosowa",
+            "native.voice.needsOwnAgent": "Wymaga własnego ID agenta",
+            "native.voice.savedNotOffered": "Ten serwer nie oferuje ${saved}, więc głos korzysta z usługi domyślnej: ${current}.",
+            "native.voice.noService": "Ten serwer nie oferuje usługi głosowej. ElevenLabs działa z własnym ID agenta.",
         ],
         "es": [
             "native.accountKind.addCLIAccount": "Añadir cuenta de Happy CLI",
@@ -63,6 +76,10 @@ extension TranslationCatalog {
             "native.accountKind.agentUnreachable": "No se puede acceder a ${name}.\nComprueba la conexión con Happy Agent y vuelve a cargar.",
             "native.accountKind.restoreAnotherCLIAccount": "Restaurar una cuenta de Happy CLI",
             "native.accountKind.restoreAnotherFooter": "Inicia sesión en otra cuenta de Happy CLI con su clave secreta o con un teléfono que la tenga. Esta cuenta se queda aquí.",
+            "native.voice.service": "Servicio de voz",
+            "native.voice.needsOwnAgent": "Necesita tu propio ID de agente",
+            "native.voice.savedNotOffered": "Este servidor no ofrece ${saved}, así que la voz usa su servicio predeterminado: ${current}.",
+            "native.voice.noService": "Este servidor no ofrece ningún servicio de voz. ElevenLabs funciona con tu propio ID de agente.",
         ],
         "it": [
             "native.accountKind.addCLIAccount": "Aggiungi account Happy CLI",
@@ -77,6 +94,10 @@ extension TranslationCatalog {
             "native.accountKind.agentUnreachable": "Impossibile raggiungere ${name}.\nControlla la connessione a Happy Agent, poi ricarica.",
             "native.accountKind.restoreAnotherCLIAccount": "Ripristina un account Happy CLI",
             "native.accountKind.restoreAnotherFooter": "Accedi a un altro account Happy CLI con la sua chiave segreta o con un telefono che lo ha. Questo account resta qui.",
+            "native.voice.service": "Servizio vocale",
+            "native.voice.needsOwnAgent": "Richiede il tuo ID agente",
+            "native.voice.savedNotOffered": "Questo server non offre ${saved}, quindi la voce usa il servizio predefinito: ${current}.",
+            "native.voice.noService": "Questo server non offre alcun servizio vocale. ElevenLabs funziona con il tuo ID agente.",
         ],
         "pt": [
             "native.accountKind.addCLIAccount": "Adicionar conta do Happy CLI",
@@ -91,6 +112,10 @@ extension TranslationCatalog {
             "native.accountKind.agentUnreachable": "Não foi possível acessar ${name}.\nVerifique a conexão com o Happy Agent e recarregue.",
             "native.accountKind.restoreAnotherCLIAccount": "Restaurar uma conta do Happy CLI",
             "native.accountKind.restoreAnotherFooter": "Entre em outra conta do Happy CLI com a chave secreta dela ou com um telefone que a tenha. Esta conta continua aqui.",
+            "native.voice.service": "Serviço de voz",
+            "native.voice.needsOwnAgent": "Precisa do seu próprio ID de agente",
+            "native.voice.savedNotOffered": "Este servidor não oferece ${saved}, por isso a voz usa o serviço padrão: ${current}.",
+            "native.voice.noService": "Este servidor não oferece nenhum serviço de voz. O ElevenLabs funciona com o seu próprio ID de agente.",
         ],
         "ca": [
             "native.accountKind.addCLIAccount": "Afegeix un compte de Happy CLI",
@@ -105,6 +130,10 @@ extension TranslationCatalog {
             "native.accountKind.agentUnreachable": "No es pot accedir a ${name}.\nComprova la connexió amb Happy Agent i torna a carregar.",
             "native.accountKind.restoreAnotherCLIAccount": "Restaura un compte de Happy CLI",
             "native.accountKind.restoreAnotherFooter": "Inicia la sessió en un altre compte de Happy CLI amb la seva clau secreta o amb un telèfon que el tingui. Aquest compte es queda aquí.",
+            "native.voice.service": "Servei de veu",
+            "native.voice.needsOwnAgent": "Necessita el teu propi ID d'agent",
+            "native.voice.savedNotOffered": "Aquest servidor no ofereix ${saved}, així que la veu fa servir el servei predeterminat: ${current}.",
+            "native.voice.noService": "Aquest servidor no ofereix cap servei de veu. ElevenLabs funciona amb el teu propi ID d'agent.",
         ],
         "zh-Hans": [
             "native.accountKind.addCLIAccount": "添加 Happy CLI 账户",
@@ -119,6 +148,10 @@ extension TranslationCatalog {
             "native.accountKind.agentUnreachable": "无法连接 ${name}。\n请检查与 Happy Agent 的连接，然后重新加载。",
             "native.accountKind.restoreAnotherCLIAccount": "恢复 Happy CLI 账户",
             "native.accountKind.restoreAnotherFooter": "用另一个 Happy CLI 账户的密钥，或用已登录该账户的手机登录它。此账户会保留在这里。",
+            "native.voice.service": "语音服务",
+            "native.voice.needsOwnAgent": "需要您自己的代理 ID",
+            "native.voice.savedNotOffered": "此服务器不提供 ${saved}，因此语音使用服务器默认服务：${current}。",
+            "native.voice.noService": "此服务器不提供语音服务。ElevenLabs 可使用您自己的代理 ID。",
         ],
         "zh-Hant": [
             "native.accountKind.addCLIAccount": "新增 Happy CLI 帳戶",
@@ -133,6 +166,10 @@ extension TranslationCatalog {
             "native.accountKind.agentUnreachable": "無法連線到 ${name}。\n請檢查與 Happy Agent 的連線，然後重新載入。",
             "native.accountKind.restoreAnotherCLIAccount": "恢復 Happy CLI 帳戶",
             "native.accountKind.restoreAnotherFooter": "用另一個 Happy CLI 帳戶的金鑰，或用已登入該帳戶的手機登入它。此帳戶會保留在這裡。",
+            "native.voice.service": "語音服務",
+            "native.voice.needsOwnAgent": "需要您自己的代理 ID",
+            "native.voice.savedNotOffered": "此伺服器不提供 ${saved}，因此語音使用伺服器預設服務：${current}。",
+            "native.voice.noService": "此伺服器不提供語音服務。ElevenLabs 可使用您自己的代理 ID。",
         ],
         "ja": [
             "native.accountKind.addCLIAccount": "Happy CLI アカウントを追加",
@@ -147,6 +184,10 @@ extension TranslationCatalog {
             "native.accountKind.agentUnreachable": "${name} に接続できません。\nHappy Agent との接続を確認してから、再読み込みしてください。",
             "native.accountKind.restoreAnotherCLIAccount": "Happy CLI アカウントを復元",
             "native.accountKind.restoreAnotherFooter": "別の Happy CLI アカウントに、そのシークレットキーか、そのアカウントがあるスマートフォンでサインインします。このアカウントはここに残ります。",
+            "native.voice.service": "音声サービス",
+            "native.voice.needsOwnAgent": "自分のエージェント ID が必要です",
+            "native.voice.savedNotOffered": "このサーバーは ${saved} を提供していないため、音声にはサーバーのデフォルトの ${current} を使用します。",
+            "native.voice.noService": "このサーバーは音声サービスを提供していません。ElevenLabs は自分のエージェント ID で使えます。",
         ],
     ]
 }

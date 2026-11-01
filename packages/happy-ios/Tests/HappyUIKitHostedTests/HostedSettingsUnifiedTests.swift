@@ -273,9 +273,21 @@ final class HostedSettingsUnifiedTests: XCTestCase {
         settings.tapRow("voice")
         let opened = try await until { navigation.topViewController is VoiceSettingsViewController && navigation.transitionCoordinator == nil }
         XCTAssertTrue(opened, "Voice didn't open: \(navigation.viewControllers)")
-        let voice = try XCTUnwrap(navigation.topViewController as? VoiceSettingsViewController)
+        // Until the server answers there is no error and nothing to choose.
+        let opening = try XCTUnwrap(navigation.topViewController as? VoiceSettingsViewController)
+        XCTAssertEqual(opening.shownRowIDs, [["voice-service"], ["voice-language"]])
+        XCTAssertEqual(opening.shownRow("voice-service")?.value, Strings.Voice.connecting)
+        XCTAssertNil(opening.shownRow("voice-service")?.action)
+
+        // On a server that offers ElevenLabs.
+        let voice = VoiceSettingsViewController(context: context, session: session)
+        voice.fetchConfig = { .elevenLabsOnly }
+        navigation.pushViewController(voice, animated: false)
         _ = try await until { voice.shownRow("voice-usage-retry")?.action != nil }
-        XCTAssertEqual(voice.shownRowIDs, [["voice-usage-retry"], ["voice-upgrade"], ["voice-language"], ["voice-agent-id", "voice-direct"]])
+        XCTAssertEqual(voice.shownRowIDs, [["voice-service"], ["voice-usage-retry"], ["voice-upgrade"], ["voice-language"], ["voice-agent-id", "voice-direct"]])
+        XCTAssertEqual(voice.shownRow("voice-service")?.value, "ElevenLabs")
+        // Footers are laid out after the rows arrive.
+        voice.view.layoutIfNeeded()
         XCTAssertEqual(voice.shownFooters.count, 4)
 
         // A switch is kept.
@@ -300,6 +312,7 @@ final class HostedSettingsUnifiedTests: XCTestCase {
         // A page opened afresh reads them back.
         let again = VoiceSettingsViewController(context: context, session: session)
         again.loadsUsage = false
+        again.fetchConfig = { .elevenLabsOnly }
         navigation.pushViewController(again, animated: false)
         let reread = try await until { again.shownRow("voice-direct")?.isOn == true && again.shownRow("voice-language")?.value == "Deutsch" }
         XCTAssertTrue(reread)
@@ -307,6 +320,119 @@ final class HostedSettingsUnifiedTests: XCTestCase {
 
         try await capture(window, "voice")
         withExtendedLifetime(observation) {}
+    }
+
+    /// The page follows the service a call would use. On Happy Server: its
+    /// voice, no allowance and no agent. A choice is the synced setting, and
+    /// the server's default again undoes it.
+    func testTheVoicePageFollowsTheService() async throws {
+        let (account, context, _) = try await rig()
+        let session = try XCTUnwrap(account.session)
+        var latest = SettingsSnapshot()
+        let observation = session.store.observeSettings { latest = $0 }
+        let voice = VoiceSettingsViewController(context: context, session: session)
+        let both = VoiceConfig(backends: [.stream, .elevenlabs], defaultBackend: .stream)
+        voice.fetchConfig = { both }
+        voice.loadsUsage = false
+        let (navigation, _) = try await host(voice)
+        let onServer = try await until { voice.shownRow("voice-service")?.value == "Happy Server" }
+        XCTAssertTrue(onServer)
+        XCTAssertEqual(voice.shownRowIDs, [["voice-service"], ["voice-language"], ["voice-preset"]])
+        XCTAssertEqual(voice.shownRow("voice-preset")?.value, Strings.Voice.serverDefault)
+
+        voice.tapRow("voice-service")
+        let picker = try await top(VoiceServiceViewController.self, in: navigation)
+        XCTAssertEqual(picker.shownRowIDs, [["voice-service:default", "voice-service:stream", "voice-service:elevenlabs"]])
+        XCTAssertEqual(picker.shownRow("voice-service:default")?.value, "✓")
+        XCTAssertEqual(picker.shownRow("voice-service:default")?.subtitle, "Happy Server")
+        XCTAssertNil(picker.shownRow("voice-service:elevenlabs")?.subtitle)
+        picker.tapRow("voice-service:elevenlabs")
+        let eleven = try await until { AccountSettings(latest).voiceBackend == .elevenlabs && voice.shownRow("voice-service")?.value == "ElevenLabs" }
+        XCTAssertTrue(eleven)
+        XCTAssertEqual(voice.shownRowIDs, [["voice-service"], ["voice-usage-retry"], ["voice-upgrade"], ["voice-language"], ["voice-agent-id", "voice-direct"]])
+
+        _ = try await until { navigation.topViewController === voice && navigation.transitionCoordinator == nil }
+        voice.tapRow("voice-service")
+        let again = try await top(VoiceServiceViewController.self, in: navigation)
+        _ = try await until { again.shownRow("voice-service:elevenlabs")?.value == "✓" }
+        again.tapRow("voice-service:default")
+        let followed = try await until { AccountSettings(latest).voiceBackend == nil && voice.shownRow("voice-service")?.value == "Happy Server" }
+        XCTAssertTrue(followed)
+        withExtendedLifetime(observation) {}
+    }
+
+    /// Every preset and the server's default, as voices.tsx lists them.
+    func testTheVoicePickerKeepsTheDefaultVoice() async throws {
+        let (account, context, _) = try await rig()
+        let session = try XCTUnwrap(account.session)
+        var latest = SettingsSnapshot()
+        let observation = session.store.observeSettings { latest = $0 }
+        let voice = VoiceSettingsViewController(context: context, session: session)
+        voice.fetchConfig = { VoiceConfig(backends: [.stream], defaultBackend: .stream) }
+        let (navigation, _) = try await host(voice)
+        _ = try await until { voice.shownRow("voice-preset") != nil }
+        voice.tapRow("voice-preset")
+        let picker = try await top(VoicePresetViewController.self, in: navigation)
+        XCTAssertEqual(picker.shownRowIDs.first?.count, VoicePreset.all.count + 1)
+        XCTAssertEqual(VoicePreset.all.count, 13)
+        XCTAssertEqual(picker.shownRow("voice-preset:default")?.value, "✓")
+        XCTAssertEqual(picker.shownRow("voice-preset:fable")?.subtitle, "British · Lively")
+        XCTAssertEqual(picker.shownFooters, [Strings.Voice.voicesFooter])
+        picker.tapRow("voice-preset:fable")
+        let kept = try await until { AccountSettings(latest).voiceAssistantVoice == "fable" && voice.shownRow("voice-preset")?.value == "Fable" }
+        XCTAssertTrue(kept)
+        withExtendedLifetime(observation) {}
+    }
+
+    /// A server without ElevenLabs: it stays listed and says what it needs. A
+    /// saved choice that can't run is said on the row, and the server's
+    /// default carries the call.
+    func testAServerWithoutElevenLabs() async throws {
+        let (account, context, _) = try await rig()
+        let session = try XCTUnwrap(account.session)
+        session.updateSettings(["voiceBackend": .string("elevenlabs")])
+        let voice = VoiceSettingsViewController(context: context, session: session)
+        let streamOnly = VoiceConfig(backends: [.stream], defaultBackend: .stream)
+        voice.fetchConfig = { streamOnly }
+        let (navigation, _) = try await host(voice)
+        let told = try await until { voice.shownFooters.contains(Strings.Voice.savedNotOffered(saved: .elevenlabs, current: .stream)) }
+        XCTAssertTrue(told, "\(voice.shownFooters)")
+        XCTAssertEqual(voice.shownRow("voice-service")?.value, "Happy Server")
+        XCTAssertEqual(voice.shownRowIDs, [["voice-service"], ["voice-language"], ["voice-preset"]])
+
+        voice.tapRow("voice-service")
+        let picker = try await top(VoiceServiceViewController.self, in: navigation)
+        XCTAssertEqual(picker.shownRowIDs, [["voice-service:default", "voice-service:stream", "voice-service:elevenlabs"]])
+        XCTAssertEqual(picker.shownRow("voice-service:elevenlabs")?.subtitle, Strings.Voice.needsOwnAgent)
+        navigation.popViewController(animated: false)
+
+        // With an agent of one's own the call is ElevenLabs, with no allowance
+        // from a server that has none, and no connection to choose.
+        session.updateSettings(["voiceCustomAgentId": .string("agent_mine"), "voiceBypassToken": .bool(true)])
+        let own = try await until { voice.shownRow("voice-service")?.value == "ElevenLabs" }
+        XCTAssertTrue(own)
+        XCTAssertEqual(voice.shownRowIDs, [["voice-service"], ["voice-language"], ["voice-agent-id"]])
+        XCTAssertEqual(voice.shownRow("voice-agent-id")?.value, "agent_mine")
+    }
+
+    /// A server that offers nothing says so.
+    func testAServerOfferingNoVoice() async throws {
+        let (account, context, _) = try await rig()
+        let session = try XCTUnwrap(account.session)
+        let voice = VoiceSettingsViewController(context: context, session: session)
+        voice.fetchConfig = { VoiceConfig(backends: [], defaultBackend: nil) }
+        _ = try await host(voice)
+        let told = try await until { voice.shownFooters.contains(Strings.Voice.noService) }
+        XCTAssertTrue(told, "\(voice.shownFooters)")
+        XCTAssertEqual(voice.shownRowIDs, [["voice-service"], ["voice-language"]])
+        XCTAssertNil(voice.shownRow("voice-service")?.value)
+        XCTAssertNotNil(voice.shownRow("voice-service")?.action)
+    }
+
+    private func top<Page: UIViewController>(_ page: Page.Type, in navigation: UINavigationController) async throws -> Page {
+        let opened = try await until { navigation.topViewController is Page && navigation.transitionCoordinator == nil }
+        XCTAssertTrue(opened, "\(page) didn't open: \(navigation.viewControllers)")
+        return try XCTUnwrap(navigation.topViewController as? Page)
     }
 
     // MARK: Account, Backup & Restore

@@ -30,6 +30,12 @@ final class HostedVoiceTests: XCTestCase {
         XCTAssertTrue(navigation.topViewController is SupportUsViewController)
     }
 
+    func testOnlyAnElevenLabsCallSaysItSharesContextWithElevenLabs() {
+        XCTAssertEqual(VoiceStatusViewController.footer(for: .elevenlabs), Strings.Voice.callFooter)
+        XCTAssertNil(VoiceStatusViewController.footer(for: .stream))
+        XCTAssertNil(VoiceStatusViewController.footer(for: nil))
+    }
+
     func testPermissionFailureIsReadableAndMeasuredAtLargestTextSize() async throws {
         let screen = VoiceStatusViewController(coordinator: .shared)
         let scene = try await hostedActiveScene()

@@ -1,4 +1,5 @@
 import Foundation
+import HappyCore
 
 extension Strings {
     enum Voice {
@@ -41,5 +42,44 @@ extension Strings {
         static var notConfigured: String { localized("settingsVoice.customAgentIdNotSet", "Not configured") }
         static var direct: String { localized("settingsVoice.bypassToken", "Direct Connection") }
         static var directSubtitle: String { localized("settingsVoice.bypassTokenSubtitle", "Skip Happy server, connect straight to ElevenLabs") }
+
+        // Which service carries a call. Its two names aren't translated.
+        static var service: String { localized("native.voice.service", "Voice service") }
+        static var needsOwnAgent: String { localized("native.voice.needsOwnAgent", "Needs your own agent ID") }
+        static var noService: String { localized("native.voice.noService", "This server offers no voice service. ElevenLabs works with your own agent ID.") }
+        static func savedNotOffered(saved: VoiceBackend, current: VoiceBackend) -> String {
+            let saved = name(of: saved), current = name(of: current)
+            return localized("native.voice.savedNotOffered", ["saved": .text(saved), "current": .text(current)], "\(saved) isn’t offered by this server, so voice uses the server’s default, \(current).")
+        }
+        static func name(of backend: VoiceBackend) -> String {
+            switch backend {
+            case .stream: "Happy Server"
+            case .elevenlabs: "ElevenLabs"
+            }
+        }
+
+        // The default voice on Happy Server.
+        static var voice: String { localized("settingsVoice.voice", "Voice") }
+        static var voiceSubtitle: String { localized("settingsVoice.voiceSubtitle", "Voice used for spoken replies") }
+        static var voices: String { localized("settingsVoice.voicePicker.title", "Voices") }
+        static var voicesFooter: String { localized("settingsVoice.voicePicker.footer", "Voices apply to English replies. Changes take effect the next time you start voice.") }
+        static var serverDefault: String { localized("settingsVoice.voicePicker.serverDefault", "Server default") }
+        static var serverDefaultSubtitle: String { localized("settingsVoice.voicePicker.serverDefaultSubtitle", "The voice configured on your server") }
+        /// "American · Warm", as VoicePresetItems.tsx describes a preset.
+        static func description(of preset: VoicePreset) -> String {
+            let accent = switch preset.accent {
+            case .us: localized("settingsVoice.voicePicker.accentUs", "American")
+            case .uk: localized("settingsVoice.voicePicker.accentUk", "British")
+            }
+            let tone = switch preset.tone {
+            case .warm: localized("settingsVoice.voicePicker.toneWarm", "Warm")
+            case .bright: localized("settingsVoice.voicePicker.toneBright", "Bright")
+            case .soft: localized("settingsVoice.voicePicker.toneSoft", "Soft")
+            case .calm: localized("settingsVoice.voicePicker.toneCalm", "Calm")
+            case .deep: localized("settingsVoice.voicePicker.toneDeep", "Deep")
+            case .lively: localized("settingsVoice.voicePicker.toneLively", "Lively")
+            }
+            return "\(accent) · \(tone)"
+        }
     }
 }

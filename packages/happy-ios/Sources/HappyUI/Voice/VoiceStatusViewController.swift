@@ -24,6 +24,11 @@ final class VoiceStatusViewController: UIViewController {
         update(coordinator.state)
     }
 
+    /// Only a call through ElevenLabs shares context with it.
+    static func footer(for backend: VoiceBackend?) -> String? {
+        backend == .elevenlabs ? Strings.Voice.callFooter : nil
+    }
+
     func update(_ state: VoiceState) {
         guard isViewLoaded else { return }
         let title: String
@@ -71,7 +76,7 @@ final class VoiceStatusViewController: UIViewController {
             })
         default: break
         }
-        list.sections = [ItemGroupView(footer: Strings.Voice.callFooter, rows: [status] + rows)]
+        list.sections = [ItemGroupView(footer: Self.footer(for: coordinator.activeBackend), rows: [status] + rows)]
         // Error explanations must remain readable at accessibility sizes.
         // Groups finish configuring dividers before these measured limits.
         for row in [status] + rows { row.titleLabel.numberOfLines = 0 }
