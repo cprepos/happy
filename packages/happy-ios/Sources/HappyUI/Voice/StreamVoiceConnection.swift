@@ -42,8 +42,9 @@ final class StreamVoiceConnection: VoiceConnection {
                         disconnected: @escaping @MainActor () -> Void) async throws -> StreamVoiceConnection {
         let tracker = VoiceActivityTracker(changed: activity)
         let muted = OSAllocatedUnfairLock(initialState: false)
-        // Set once the connection exists; a failure before that fails the start.
-        let failed = OSAllocatedUnfairLock<(@Sendable () -> Void)?>(initialState: nil)
+        // The handler is set once the connection exists. A failure before that is
+        // noted, and fails the start below.
+        let audioFailure = OSAllocatedUnfairLock<(happened: Bool, handler: (@Sendable () -> Void)?)>(initialState: (false, nil))
         let handlers = VoiceAudioHandlers(frame: { frame in
             guard !muted.withLock({ $0 }) else { return }
             client.sendAudio(frame)
@@ -51,25 +52,37 @@ final class StreamVoiceConnection: VoiceConnection {
             guard !muted.withLock({ $0 }) else { return }
             Task { @MainActor in tracker.vad(speaking ? 1 : 0) }
         }, failed: {
-            failed.withLock { $0 }?()
+            let handler = audioFailure.withLock { state in
+                state.happened = true
+                return state.handler
+            }
+            // Ending the client also stops a handshake still waiting for `ready`.
+            if let handler { handler() } else { Task { await client.end() } }
         })
         do {
             try await withThrowingTaskGroup(of: Void.self) { group in
                 group.addTask { _ = try await client.start() }
                 group.addTask { try await audio.start(handlers) }
-                try await group.waitForAll()
+                // Not `waitForAll`, which lets the handshake run on after audio fails to start.
+                for try await _ in group {}
             }
+            let connection = StreamVoiceConnection(client: client, audio: audio, tracker: tracker, muted: muted, disconnected: disconnected)
+            let installed = audioFailure.withLock { state in
+                guard !state.happened else { return false }
+                state.handler = { [weak connection] in
+                    Task { @MainActor in await connection?.ended(.connection) }
+                }
+                return true
+            }
+            guard installed else { throw VoiceAudioError.noMicrophone }
+            connection.listen()
+            return connection
         } catch {
             await audio.stop()
             await client.end()
+            if audioFailure.withLock({ $0.happened }) { throw VoiceAudioError.noMicrophone }
             throw error
         }
-        let connection = StreamVoiceConnection(client: client, audio: audio, tracker: tracker, muted: muted, disconnected: disconnected)
-        failed.withLock { $0 = { [weak connection] in
-            Task { @MainActor in await connection?.ended(.connection) }
-        } }
-        connection.listen()
-        return connection
     }
 
     /// Off the main thread: a downlink frame must not wait for the UI.

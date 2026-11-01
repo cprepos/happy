@@ -256,15 +256,62 @@ final class StreamVoiceConnectionTests: XCTestCase {
     }
 
     func testAudioFailingToStartFailsTheStartAndClosesTheSocket() async throws {
+        // Held until the socket is open, or the start could fail before there is one to close.
+        let (hello, helloSent) = AsyncStream.makeStream(of: Void.self)
+        socket.onHello = { helloSent.finish() }
+        audio.onStart = { _ in for await _ in hello {} }
         audio.startError = VoiceAudioError.noMicrophone
-        socket.onHello = { [socket] in socket?.push(#"{"type":"ready","conversationId":"c"}"#) }
+        let began = ContinuousClock.now
         do {
             _ = try await start()
             XCTFail("must throw")
         } catch {
-            XCTAssertTrue(error is VoiceAudioError || error is CancellationError)
+            XCTAssertEqual(error as? VoiceAudioError, .noMicrophone)
+        }
+        XCTAssertLessThan(ContinuousClock.now - began, .seconds(5), "must not wait out the handshake's 15 s timeout")
+        XCTAssertTrue(order.events.contains("audio stop"))
+        await eventually("socket closed") { order.events.contains("socket closed") }
+    }
+
+    /// `ready` never comes, so only the failure can end this start before its timeout.
+    func testAudioGivingOutDuringTheHandshakeFailsTheStartAndClosesTheSocket() async throws {
+        let starting = Task { try await start() }
+        await eventually("handshake waiting, audio started") {
+            order.events.contains("audio started") && socket.texts.contains { $0.contains(#""type":"hello""#) }
+        }
+        audio.handlers?.failed()
+        do {
+            _ = try await starting.value
+            XCTFail("must throw")
+        } catch {
+            XCTAssertEqual(error as? VoiceAudioError, .noMicrophone)
         }
         XCTAssertTrue(order.events.contains("audio stop"))
+        await eventually("socket closed") { order.events.contains("socket closed") }
+        XCTAssertEqual(disconnects, 0, "the start reports it, not a disconnect")
+    }
+
+    /// The handshake is done and nothing is left to interrupt, so the failure
+    /// has to be remembered until the start finishes.
+    func testAudioGivingOutAfterReadyButBeforeItsStartReturnsFailsTheStart() async throws {
+        socket.onHello = { [socket] in socket?.push(#"{"type":"ready","conversationId":"c"}"#) }
+        audio.onStart = { [socket, uplink] handlers in
+            // The client only takes frames once it is ready.
+            while socket?.binary.isEmpty == true {
+                handlers.frame(uplink)
+                try? await Task.sleep(for: .milliseconds(5))
+            }
+            handlers.failed()
+        }
+        do {
+            _ = try await start()
+            XCTFail("must throw")
+        } catch {
+            XCTAssertEqual(error as? VoiceAudioError, .noMicrophone)
+        }
+        XCTAssertTrue(order.events.contains("audio stop"))
+        await eventually("socket closed") { order.events.contains("socket closed") }
+        XCTAssertEqual(disconnects, 0, "the start reports it, not a disconnect")
     }
 
     func testFramesBeforeReadyAreNotSent() async throws {
@@ -297,6 +344,7 @@ private final class VoiceTestAudio: VoiceAudio, @unchecked Sendable {
     private var _handlers: VoiceAudioHandlers?
     private var _played: [Data] = []
     private var _startError: Error?
+    private var _onStart: (@Sendable (VoiceAudioHandlers) async -> Void)?
 
     init(order: VoiceTestOrder) { self.order = order }
 
@@ -306,10 +354,17 @@ private final class VoiceTestAudio: VoiceAudio, @unchecked Sendable {
         get { lock.withLock { _startError } }
         set { lock.withLock { _startError = newValue } }
     }
+    /// Runs inside `start`, before it returns or throws.
+    var onStart: (@Sendable (VoiceAudioHandlers) async -> Void)? {
+        get { lock.withLock { _onStart } }
+        set { lock.withLock { _onStart = newValue } }
+    }
 
     func start(_ handlers: VoiceAudioHandlers) async throws {
-        if let startError { throw startError }
         lock.withLock { _handlers = handlers }
+        await onStart?(handlers)
+        if let startError { throw startError }
+        order.add("audio started")
     }
     func play(_ frame: Data) {
         lock.withLock { _played.append(frame) }
@@ -399,6 +454,7 @@ private final class VoiceTestSocket: WebSocketConnection, @unchecked Sendable {
     func close() async { await close(code: 1000, reason: "end") }
 
     func close(code: Int, reason: String) async {
+        order.add("socket closed")
         let receiver: CheckedContinuation<WebSocketFrame, Error>? = lock.withLock {
             isClosed = true
             let receiver = waiting
