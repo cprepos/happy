@@ -56,6 +56,7 @@ describe("voice stream", () => {
         vi.stubEnv("LIVEKIT_API_KEY", apiKey);
         vi.stubEnv("LIVEKIT_API_SECRET", apiSecret);
         vi.stubEnv("LIVEKIT_URL", undefined);
+        vi.stubEnv("VOICE_BACKENDS", undefined);
         dbMock.voiceConversation.create.mockReset().mockResolvedValue({});
         dbMock.voiceConversation.update.mockReset().mockResolvedValue({});
         dbMock.session.findFirst.mockReset().mockImplementation(async ({ where }) =>
@@ -213,6 +214,17 @@ describe("voice stream", () => {
         unreachable.send({ type: "hello", token: goodToken });
         expect(await unreachable.next("error")).toMatchObject({ code: "unavailable" });
         expect((await unreachable.closed).code).toBe(1011);
+    });
+
+    it("answers unavailable when VOICE_BACKENDS leaves the stream out", async () => {
+        vi.stubEnv("VOICE_BACKENDS", "elevenlabs");
+        vi.stubEnv("ELEVENLABS_API_KEY", "test-elevenlabs-key");
+        const client = await connect();
+        client.send({ type: "hello", token: goodToken });
+        expect(await client.next("error")).toMatchObject({ code: "unavailable" });
+        expect((await client.closed).code).toBe(1011);
+        expect(dbMock.voiceConversation.create).not.toHaveBeenCalled();
+        expect(rtcFake.rooms).toHaveLength(0);
     });
 
     it("drops audio sent before ready and captures it after", async () => {

@@ -1,19 +1,40 @@
 import { z } from "zod";
 import {
     VOICE_UNLIMITED,
+    VoiceConfigResponseSchema,
     VoiceConversationRequestSchema,
     VoiceConversationResponseSchema,
     VoiceUsageResponseSchema,
 } from "@slopus/happy-wire";
 import { type Fastify } from "../types";
 import { db } from "@/storage/db";
-import { log } from "@/utils/log";
+import { log, warn } from "@/utils/log";
+import { voiceBackendsCurrent } from "@/app/voice/voiceBackendsResolve";
 import { voiceConversationCreate } from "@/app/voice/voiceConversationCreate";
 import { voiceLiveKitConfig, voiceTokenCreate } from "@/app/voice/voiceTokenCreate";
 
 const USAGE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 export function voiceRoutes(app: Fastify) {
+    for (const warning of voiceBackendsCurrent().warnings) {
+        warn({ module: 'voice' }, warning);
+    }
+
+    /**
+     * The voice backends this server offers and the one clients use by default.
+     */
+    app.get('/v1/voice/config', {
+        preHandler: app.authenticate,
+        schema: {
+            response: {
+                200: VoiceConfigResponseSchema,
+            },
+        },
+    }, async (_request, reply) => {
+        const { backends, defaultBackend } = voiceBackendsCurrent();
+        return reply.send({ backends, defaultBackend });
+    });
+
     /**
      * Starts a voice conversation: records it and returns a LiveKit token for
      * its own room. The token dispatches the `happy-voice` agent worker.
@@ -27,6 +48,7 @@ export function voiceRoutes(app: Fastify) {
             response: {
                 200: VoiceConversationResponseSchema,
                 500: z.object({ error: z.string() }),
+                503: z.object({ error: z.string() }),
             },
         },
     }, async (request, reply) => {
@@ -37,6 +59,9 @@ export function voiceRoutes(app: Fastify) {
         if (!liveKit) {
             log({ module: 'voice' }, 'LIVEKIT_API_KEY / LIVEKIT_API_SECRET not configured');
             return reply.code(500).send({ error: 'LiveKit is not configured' });
+        }
+        if (!voiceBackendsCurrent().backends.includes('stream')) {
+            return reply.code(503).send({ error: 'Voice stream is not offered by this server' });
         }
 
         try {

@@ -11,6 +11,7 @@ import { auth } from "@/app/auth/auth";
 import { db } from "@/storage/db";
 import { log } from "@/utils/log";
 import { onShutdown } from "@/utils/shutdown";
+import { voiceBackendsCurrent } from "@/app/voice/voiceBackendsResolve";
 import { voiceConversationCreate } from "@/app/voice/voiceConversationCreate";
 import { voiceLiveKitConfig, voiceTokenCreate } from "@/app/voice/voiceTokenCreate";
 import { VOICE_UPLINK_FRAME_BYTES, VoiceBridge, voiceBridgeDispose } from "@/app/voice/voiceBridge";
@@ -277,6 +278,10 @@ class VoiceStreamConnection {
         if (!liveKit) {
             log({ module: 'voice-stream' }, 'LIVEKIT_API_KEY / LIVEKIT_API_SECRET not configured');
             this.fail('unavailable', 'LiveKit is not configured');
+            return;
+        }
+        if (!voiceBackendsCurrent().backends.includes('stream')) {
+            this.fail('unavailable', 'Voice stream is not offered by this server');
             return;
         }
 

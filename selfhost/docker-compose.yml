@@ -46,6 +46,9 @@ services:
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-}
       LIVEKIT_URL: ${LIVEKIT_URL:-ws://livekit:7880}
+      # Voice backends offered to apps. Empty means work it out from what is configured.
+      VOICE_BACKENDS: ${VOICE_BACKENDS:-}
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
     # Apply pending migrations, then start the server.
     command: ["sh", "-c", "pnpm exec prisma migrate deploy --schema=prisma/schema.prisma && exec pnpm run start"]
     volumes:

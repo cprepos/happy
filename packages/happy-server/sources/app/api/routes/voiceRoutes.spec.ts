@@ -3,6 +3,7 @@ import { serializerCompiler, validatorCompiler, ZodTypeProvider } from "fastify-
 import { TokenVerifier } from "livekit-server-sdk";
 import {
     VOICE_UNLIMITED,
+    VoiceConfigResponseSchema,
     VoiceConversationLiveKitGrantSchema,
     VoiceConversationResponseSchema,
     VoiceUsageResponseSchema,
@@ -10,7 +11,8 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type Fastify } from "../types";
 
-const { dbMock } = vi.hoisted(() => ({
+const { dbMock, warnMock } = vi.hoisted(() => ({
+    warnMock: vi.fn(),
     dbMock: {
         voiceConversation: {
             create: vi.fn(),
@@ -20,6 +22,7 @@ const { dbMock } = vi.hoisted(() => ({
 }));
 
 vi.mock("@/storage/db", () => ({ db: dbMock }));
+vi.mock("@/utils/log", () => ({ log: vi.fn(), warn: warnMock }));
 
 import { voiceRoutes } from "./voiceRoutes";
 
@@ -31,28 +34,36 @@ describe("voiceRoutes", () => {
     let app: Fastify;
     const fetchMock = vi.fn<typeof fetch>();
 
-    beforeEach(async () => {
-        vi.stubEnv("LIVEKIT_API_KEY", apiKey);
-        vi.stubEnv("LIVEKIT_API_SECRET", apiSecret);
-        vi.stubEnv("LIVEKIT_PUBLIC_URL", undefined);
-        dbMock.voiceConversation.create.mockReset().mockResolvedValue({});
-        dbMock.voiceConversation.aggregate.mockReset();
-        // No provider is called any more; any network request is a bug.
-        fetchMock.mockReset().mockRejectedValue(new Error("Unexpected network request"));
-        vi.stubGlobal("fetch", fetchMock);
-
-        app = fastify().withTypeProvider<ZodTypeProvider>();
-        app.setValidatorCompiler(validatorCompiler);
-        app.setSerializerCompiler(serializerCompiler);
-        app.decorate("authenticate", async (request: FastifyRequest, reply: FastifyReply) => {
+    async function startApp() {
+        const started = fastify().withTypeProvider<ZodTypeProvider>();
+        started.setValidatorCompiler(validatorCompiler);
+        started.setSerializerCompiler(serializerCompiler);
+        started.decorate("authenticate", async (request: FastifyRequest, reply: FastifyReply) => {
             const authenticatedUserId = request.headers["x-user-id"];
             if (typeof authenticatedUserId !== "string") {
                 return reply.code(401).send({ error: "Unauthorized" });
             }
             request.userId = authenticatedUserId;
         });
-        voiceRoutes(app);
-        await app.ready();
+        voiceRoutes(started);
+        await started.ready();
+        return started;
+    }
+
+    beforeEach(async () => {
+        vi.stubEnv("LIVEKIT_API_KEY", apiKey);
+        vi.stubEnv("LIVEKIT_API_SECRET", apiSecret);
+        vi.stubEnv("LIVEKIT_PUBLIC_URL", undefined);
+        vi.stubEnv("VOICE_BACKENDS", undefined);
+        vi.stubEnv("ELEVENLABS_API_KEY", undefined);
+        warnMock.mockReset();
+        dbMock.voiceConversation.create.mockReset().mockResolvedValue({});
+        dbMock.voiceConversation.aggregate.mockReset();
+        // No provider is called any more; any network request is a bug.
+        fetchMock.mockReset().mockRejectedValue(new Error("Unexpected network request"));
+        vi.stubGlobal("fetch", fetchMock);
+
+        app = await startApp();
     });
 
     afterEach(async () => {
@@ -153,6 +164,15 @@ describe("voiceRoutes", () => {
         expect(response.json()).toEqual({ error: "Failed to start voice conversation" });
     });
 
+    it("refuses a LiveKit grant when VOICE_BACKENDS leaves the stream out", async () => {
+        vi.stubEnv("ELEVENLABS_API_KEY", "test-elevenlabs-key");
+        vi.stubEnv("VOICE_BACKENDS", "elevenlabs");
+        const response = await requestConversation();
+        expect(response.statusCode).toBe(503);
+        expect(response.json()).toEqual({ error: "Voice stream is not offered by this server" });
+        expect(dbMock.voiceConversation.create).not.toHaveBeenCalled();
+    });
+
     it("requires authentication", async () => {
         const response = await requestConversation({}, false);
         expect(response.statusCode).toBe(401);
@@ -192,5 +212,64 @@ describe("voiceRoutes", () => {
             headers: { "x-user-id": userId },
         });
         expect(response.json()).toMatchObject({ usedSeconds: 0, conversationCount: 0 });
+    });
+
+    describe("GET /v1/voice/config", () => {
+        function requestConfig(authenticated = true) {
+            return app.inject({
+                method: "GET",
+                url: "/v1/voice/config",
+                headers: authenticated ? { "x-user-id": userId } : {},
+            });
+        }
+
+        it("requires authentication", async () => {
+            expect((await requestConfig(false)).statusCode).toBe(401);
+        });
+
+        it("offers what is configured, stream first", async () => {
+            expect((await requestConfig()).json()).toEqual({ backends: ["stream"], defaultBackend: "stream" });
+
+            vi.stubEnv("ELEVENLABS_API_KEY", "test-elevenlabs-key");
+            const response = await requestConfig();
+            expect(response.statusCode).toBe(200);
+            expect(VoiceConfigResponseSchema.parse(response.json())).toEqual({
+                backends: ["stream", "elevenlabs"],
+                defaultBackend: "stream",
+            });
+        });
+
+        it("follows VOICE_BACKENDS", async () => {
+            vi.stubEnv("ELEVENLABS_API_KEY", "test-elevenlabs-key");
+            vi.stubEnv("VOICE_BACKENDS", "elevenlabs,stream");
+            expect((await requestConfig()).json()).toEqual({
+                backends: ["elevenlabs", "stream"],
+                defaultBackend: "elevenlabs",
+            });
+        });
+
+        it("answers an empty list with a null default when nothing is offered", async () => {
+            vi.stubEnv("LIVEKIT_API_KEY", undefined);
+            const response = await requestConfig();
+            expect(response.statusCode).toBe(200);
+            expect(response.json()).toEqual({ backends: [], defaultBackend: null });
+        });
+
+        it("warns about a dropped backend at startup and not on each request", async () => {
+            expect(warnMock).not.toHaveBeenCalled();
+
+            vi.stubEnv("VOICE_BACKENDS", "stream,elevenlabs,livekit");
+            const started = await startApp();
+            try {
+                expect(warnMock.mock.calls.map(([, message]) => message)).toEqual([
+                    'VOICE_BACKENDS lists "elevenlabs" but it is not configured; dropped',
+                    'VOICE_BACKENDS lists unknown backend "livekit"; dropped',
+                ]);
+                await started.inject({ method: "GET", url: "/v1/voice/config", headers: { "x-user-id": userId } });
+                expect(warnMock).toHaveBeenCalledTimes(2);
+            } finally {
+                await started.close();
+            }
+        });
     });
 });
