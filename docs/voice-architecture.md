@@ -10,8 +10,79 @@ permission requests.
 The app never talks to LiveKit. LiveKit lives only on the docker network: it
 has no public URL, no Caddy site, no router forwards and no ufw rules.
 
-There is no ElevenLabs, RevenueCat gate or usage quota. The services are
-described in `selfhost/VOICE_SERVICES.md`.
+That is the `stream` backend, which has no RevenueCat gate or usage quota, and
+it is what this document describes unless a section says otherwise. A server
+can also offer ElevenLabs, for the native iOS app; see
+[Voice backends](#voice-backends). The Expo app (web and native) remains stream
+only. The services are described in `selfhost/VOICE_SERVICES.md`.
+
+## Voice backends
+
+| Wire value | How it works |
+|------------|--------------|
+| `stream` | Audio over `/v1/voice/stream`; LiveKit stays a server detail |
+| `elevenlabs` | The client joins ElevenLabs itself, with a grant from `POST /v1/voice/conversations` or the user's own agent |
+
+Schemas for everything in this section live in
+`packages/happy-wire/src/voice.ts`.
+
+**Config.** `GET /v1/voice/config` (authenticated) answers
+`{ backends: ["stream", "elevenlabs"], defaultBackend: "stream" }`: what this
+server offers, and what clients use unless the user chose otherwise. A server
+offering nothing answers `{ backends: [], defaultBackend: null }`.
+
+**`VOICE_BACKENDS`** (`voiceBackendsResolve.ts`, template in
+`selfhost/.env.example`) is an optional comma list whose first entry is the
+default. A listed backend that is unknown or not configured is dropped with a
+warning at startup, and never replaced by another. Unset or empty, the list is
+whatever is configured: the LiveKit keys give `stream`, `ELEVENLABS_API_KEY`
+gives `elevenlabs`, `stream` first. A list without `stream` also closes
+`/v1/voice/stream` (`unavailable`), which leaves the Expo app without voice on
+that server.
+
+**Grants.** `POST /v1/voice/conversations` dispatches on `agentId`:
+
+- With `agentId`, an ElevenLabs grant
+  (`{ allowed: true, conversationToken, conversationId, agentId, elevenUserId, usedSeconds, limitSeconds }`)
+  or a refusal (`{ allowed: false, reason, usedSeconds, limitSeconds, agentId }`).
+  It answers 500 without `ELEVENLABS_API_KEY` and 503 if `VOICE_BACKENDS` leaves
+  ElevenLabs out, never a LiveKit grant.
+- Without it, a LiveKit grant (`{ allowed: true, conversationId, roomName, token, url }`),
+  500 without the LiveKit keys and 503 if `VOICE_BACKENDS` leaves `stream` out.
+  This is a legacy path: no current app uses it, and `url`
+  (`LIVEKIT_PUBLIC_URL`) no longer reaches LiveKit from outside.
+
+**ElevenLabs limits.** Usage over the last 30 days, across all agents, is read
+from ElevenLabs under an identity keyed with the master secret; nothing is
+stored locally. 20 minutes are free, more needs an active RevenueCat
+entitlement, and 5 hours is the cap even with one. `selfhost/docker-compose.yml`
+passes no `REVENUECAT_API_KEY`, so on a self-hosted server every user counts as
+unsubscribed and is refused with `subscription_required` after 20 minutes per
+30 days. A user's own agent takes no grant, so none of this applies to it.
+
+**Usage.** `GET /v1/voice/usage` follows what the server offers, not what the
+user picked. While ElevenLabs is offered it reports ElevenLabs' numbers and
+limits, and stream conversations are not in them. Otherwise it reports the
+recorded conversations with both limits at `VOICE_UNLIMITED`, and `elevenUserId`
+(a legacy field name) carries the LiveKit identity.
+
+**Clients.**
+
+- The Expo app only speaks `stream`. It never reads the config and has no
+  picker. Its settings parser keeps keys it doesn't know, so it leaves
+  `voiceBackend` alone.
+- The native iOS app (`packages/happy-ios`) fetches the config, and treats a
+  404 as an older server offering only ElevenLabs. The synced `voiceBackend`
+  setting holds the user's choice; `null` follows the server's default, as does
+  a saved choice that can no longer run (`VoiceConfig.selection`). ElevenLabs
+  can be chosen on any server if the user has their own agent
+  (`voiceCustomAgentId` with `voiceBypassToken`), since that needs no grant.
+- Its stream client (`HappyCore/Voice/VoiceStreamClient.swift`,
+  `StreamVoiceConnection` in `HappyUI/Voice`) speaks the protocol below and needs
+  no LiveKit SDK: one socket per call with no reconnect, a 15 s wait for `ready`,
+  and `VoiceDsp` and `VoicePlaybackScheduler` ported from the Expo app's
+  `voiceDsp.ts` and `voicePlaybackScheduler.ts`. Mute stops sending microphone
+  frames locally, since the protocol has no mute message.
 
 ## Services
 
@@ -103,16 +174,8 @@ agent's `happy.interrupted` announcement into `flush`. Only the dispatched
 agent participant may call RPCs; anyone else gets an error.
 
 Env: `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` (same pair as
-`selfhost/.env.voice`), `LIVEKIT_URL`. Without the key pair the stream answers
-`unavailable`.
-
-**Legacy REST route.** `POST /v1/voice/conversations` still returns
-`{ allowed: true, conversationId, roomName, token, url }`, a LiveKit token for
-the app to join the room itself. No current app uses it (web and native both
-use the voice stream), and `url` (`LIVEKIT_PUBLIC_URL`) no longer reaches
-LiveKit from outside. `GET /v1/voice/usage` keeps its response shape but always
-reports unlimited. Zod schemas for both live in
-`packages/happy-wire/src/voice.ts`.
+`selfhost/.env.voice`), `LIVEKIT_URL`. Without the key pair, or if
+`VOICE_BACKENDS` leaves `stream` out, the stream answers `unavailable`.
 
 ## Latency design
 
@@ -203,6 +266,8 @@ room, the worker closes its session and the room empties.
 
 ## App components
 
+The Expo app's, under `packages/happy-app/sources`:
+
 ```text
 SessionView.tsx               UI: mic button, starts and stops voice
 RealtimeSession.ts            Lifecycle: start/stop, session routing state
@@ -221,7 +286,7 @@ voiceAgentConfig.ts           The happy.getConfig reply, including voice and spe
 voiceCatalog.ts               Voice presets and the per-chat / default voice choice
 voiceConfig.ts                Flags and constants
 types.ts                      VoiceSession interface and VoiceSessionConfig
-sync/apiVoice.ts              POST /v1/voice/conversations client (legacy, unused by the apps)
+sync/apiVoice.ts              POST /v1/voice/conversations client (legacy, unused by this app)
 ```
 
 `HappyVoiceSession` takes a `HappyVoiceAudio` (`prime`, `start`, `play`,
@@ -299,9 +364,12 @@ User taps mic again (or leaves)
 
 ## Settings
 
-The voice settings screen has one setting, the assistant language
-(`voiceAssistantLanguage`). The former custom-agent, direct-connection and
-usage/paywall settings were removed; old stored values are ignored.
+The Expo app's voice settings screen has the assistant language
+(`voiceAssistantLanguage`) and the default voice (`voiceAssistantVoice`). Its
+former custom-agent, direct-connection and usage/paywall settings were removed;
+it ignores old stored values but keeps them, and the native iOS app still reads
+`voiceCustomAgentId` and `voiceBypassToken`. That app's own voice settings are
+in `packages/happy-ios/docs/FEATURES.md`.
 
 ## Testing
 
@@ -319,4 +387,5 @@ usage/paywall settings were removed; old stored values are ignored.
 
 `docs/paid-voice.md` and `docs/plans/elevenlabs-voice-usage-gating.md` describe
 the earlier ElevenLabs design with paid gating. They are kept for reference
-only.
+only; the ElevenLabs grant and limits in use now are under
+[Voice backends](#voice-backends).

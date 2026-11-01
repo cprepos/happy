@@ -147,12 +147,23 @@ nothing here is wired to the release skill or to EAS.
   - artifacts and the recent-sessions screen, which have no entry point;
   - web and desktop-only UI (command palette, shortcut hints, sidebar
     navigator, web tab bar), purchases and analytics.
-- **Voice mode is included by the current product request.** The official
-  ElevenLabs Swift SDK provides WebRTC microphone and speaker transport.
-  Happy's authenticated backend alone grants its free or subscribed allowance;
-  a missing client RevenueCat configuration never prevents a valid grant.
-  Voice stops on background, account switch/sign-out, audio interruption or
-  headphone removal. Client tools use the existing outbox and permission RPCs.
+- **Voice mode is included by the current product request, on two backends.**
+  `GET /v1/voice/config` says which the account's server offers (a 404 is an
+  older server, treated as ElevenLabs only), and the synced `voiceBackend`
+  setting chooses; null follows the server's default. See the repo's
+  `docs/voice-architecture.md`.
+  - **`stream`.** `VoiceStreamClient` speaks the server's `/v1/voice/stream`,
+    the protocol happy-app uses. LiveKit stays behind the server, so this
+    needs no SDK.
+  - **`elevenlabs`.** The official ElevenLabs Swift SDK provides WebRTC
+    microphone and speaker transport. Happy's authenticated backend alone
+    grants its free or subscribed allowance; a missing client RevenueCat
+    configuration never prevents a valid grant. A user's own agent needs no
+    grant.
+
+  On both, voice stops on background, account switch/sign-out, audio
+  interruption or headphone removal, and client tools use the existing outbox
+  and permission RPCs.
 - **Offline first.** Everything the account has is kept in the local
   SQLite store, and the UI reads only from that store. The network only
   moves deltas:
