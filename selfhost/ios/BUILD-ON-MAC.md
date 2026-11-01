@@ -36,7 +36,7 @@ and the sync never copies or deletes it.
 
 ```
 APPLE_TEAM_ID=ABCDE12345
-APP_BUNDLE_ID_PREFIX=org.duckdns.girthbass   # letters/digits only; the bundle id gets ".preview" added
+APP_BUNDLE_ID_PREFIX=org.girthbass   # letters/digits only; the bundle id gets ".preview" added
 APP_DISPLAY_NAME=Happy
 APP_ENV=preview
 DEVICE=                                      # optional: iPhone name or UDID

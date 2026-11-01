@@ -44,7 +44,7 @@ Options:
 
 Environment (Linux side, forwarded to the Mac; each overrides the Mac config file):
   APPLE_TEAM_ID / DEVELOPMENT_TEAM   10-character Apple team ID
-  APP_BUNDLE_ID_PREFIX               reverse-DNS prefix, letters/digits only (default org.duckdns.girthbass)
+  APP_BUNDLE_ID_PREFIX               reverse-DNS prefix, letters/digits only (default org.girthbass)
   APP_DISPLAY_NAME                   home-screen name (default "Happy")
   APP_ENV                            development | preview | production (default preview)
   SELFHOST_SERVER_URL                server URL (default: PUBLIC_URL from selfhost/.env)
@@ -130,7 +130,7 @@ mac_load_config() {
         ok "config: $cfg"
     fi
     APPLE_TEAM_ID="${HB_APPLE_TEAM_ID:-${APPLE_TEAM_ID:-${DEVELOPMENT_TEAM:-}}}"
-    APP_BUNDLE_ID_PREFIX="${HB_APP_BUNDLE_ID_PREFIX:-${APP_BUNDLE_ID_PREFIX:-org.duckdns.girthbass}}"
+    APP_BUNDLE_ID_PREFIX="${HB_APP_BUNDLE_ID_PREFIX:-${APP_BUNDLE_ID_PREFIX:-org.girthbass}}"
     APP_DISPLAY_NAME="${HB_APP_DISPLAY_NAME:-${APP_DISPLAY_NAME:-Happy}}"
     APP_ENV="${HB_APP_ENV:-${APP_ENV:-preview}}"
     SERVER_URL="${HB_SERVER_URL:-${SELFHOST_SERVER_URL:-${HAPPY_PUBLIC_URL:-}}}"
@@ -140,7 +140,7 @@ mac_load_config() {
         *) die "APP_ENV must be development, preview or production (got '$APP_ENV')" ;; esac
     # Same rule as packages/happy-app/plugins/selfHost.js (no hyphens).
     [[ "$APP_BUNDLE_ID_PREFIX" =~ ^[A-Za-z][A-Za-z0-9]*(\.[A-Za-z][A-Za-z0-9]*)+$ ]] \
-        || die "APP_BUNDLE_ID_PREFIX '$APP_BUNDLE_ID_PREFIX' must be reverse-DNS, letters and digits only (e.g. org.duckdns.girthbass)"
+        || die "APP_BUNDLE_ID_PREFIX '$APP_BUNDLE_ID_PREFIX' must be reverse-DNS, letters and digits only (e.g. org.girthbass)"
     case "$APP_BUNDLE_ID_PREFIX" in com.slopus|com.slopus.*|com.ex3ndr|com.ex3ndr.*)
         die "APP_BUNDLE_ID_PREFIX must be your own, '$APP_BUNDLE_ID_PREFIX' belongs to the upstream app" ;; esac
     [[ "$SERVER_URL" =~ ^https?:// ]] || die "server URL missing or invalid ('$SERVER_URL'). Set SELFHOST_SERVER_URL."
