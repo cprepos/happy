@@ -11,6 +11,15 @@ import { db } from "@/storage/db";
 import { log, warn } from "@/utils/log";
 import { voiceBackendsCurrent } from "@/app/voice/voiceBackendsResolve";
 import { voiceConversationCreate } from "@/app/voice/voiceConversationCreate";
+import { voiceElevenLabsGrantCreate } from "@/app/voice/voiceElevenLabsGrantCreate";
+import {
+    VOICE_FREE_LIMIT_SECONDS,
+    VOICE_HARD_LIMIT_SECONDS,
+    VOICE_USAGE_PAGE_SIZE,
+    voiceElevenLabsUsageGet,
+    voiceElevenLabsUserId,
+} from "@/app/voice/voiceElevenLabsUsageGet";
+import { voiceSubscriptionCheck } from "@/app/voice/voiceSubscriptionCheck";
 import { voiceLiveKitConfig, voiceTokenCreate } from "@/app/voice/voiceTokenCreate";
 
 const USAGE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
@@ -36,14 +45,18 @@ export function voiceRoutes(app: Fastify) {
     });
 
     /**
-     * Starts a voice conversation: records it and returns a LiveKit token for
-     * its own room. The token dispatches the `happy-voice` agent worker.
-     * Voice is self-hosted, so there is no paywall and no quota.
+     * Starts a voice conversation, the backend chosen by the request.
+     *
+     * With `agentId`: an ElevenLabs grant, subject to that backend's usage limits.
+     * If ElevenLabs isn't offered this is an error, never a LiveKit grant.
+     *
+     * Without it: records the conversation and returns a LiveKit token for its
+     * own room. The token dispatches the `happy-voice` agent worker. Voice is
+     * self-hosted, so there is no paywall and no quota.
      */
     app.post('/v1/voice/conversations', {
         preHandler: app.authenticate,
         schema: {
-            // Unknown fields (the agentId older clients send) are stripped.
             body: VoiceConversationRequestSchema.nullish(),
             response: {
                 200: VoiceConversationResponseSchema,
@@ -53,7 +66,23 @@ export function voiceRoutes(app: Fastify) {
         },
     }, async (request, reply) => {
         const userId = request.userId;
-        const { sessionId, language } = request.body ?? {};
+        const { sessionId, language, agentId } = request.body ?? {};
+
+        if (agentId !== undefined) {
+            log({ module: 'voice' }, `Voice token request from user ${userId}`);
+            const elevenLabsApiKey = process.env.ELEVENLABS_API_KEY;
+            if (!elevenLabsApiKey) {
+                return reply.code(500).send({ error: 'ELEVENLABS_API_KEY not configured' });
+            }
+            if (!voiceBackendsCurrent().backends.includes('elevenlabs')) {
+                return reply.code(503).send({ error: 'ElevenLabs is not offered by this server' });
+            }
+            const result = await voiceElevenLabsGrantCreate(elevenLabsApiKey, userId, agentId);
+            if ('error' in result) {
+                return reply.code(500).send(result);
+            }
+            return reply.send(result);
+        }
 
         const liveKit = voiceLiveKitConfig();
         if (!liveKit) {
@@ -82,8 +111,10 @@ export function voiceRoutes(app: Fastify) {
     });
 
     /**
-     * Voice usage over the last 30 days. Voice is unlimited, so both limits are
-     * VOICE_UNLIMITED; the shape is kept for the settings screen.
+     * Voice usage over the last 30 days. When ElevenLabs is offered, its numbers
+     * and limits, queried from ElevenLabs. Otherwise from the recorded
+     * conversations: voice is unlimited, so both limits are VOICE_UNLIMITED; the
+     * shape is kept for the settings screen.
      */
     app.get('/v1/voice/usage', {
         preHandler: app.authenticate,
@@ -95,6 +126,29 @@ export function voiceRoutes(app: Fastify) {
         },
     }, async (request, reply) => {
         const userId = request.userId;
+
+        const elevenLabsApiKey = process.env.ELEVENLABS_API_KEY;
+        if (elevenLabsApiKey && voiceBackendsCurrent().backends.includes('elevenlabs')) {
+            const elevenUserId = voiceElevenLabsUserId(userId);
+            try {
+                const [{ usedSeconds, conversationCount }, subscribed] = await Promise.all([
+                    voiceElevenLabsUsageGet(elevenLabsApiKey, elevenUserId),
+                    voiceSubscriptionCheck(userId),
+                ]);
+                return reply.send({
+                    usedSeconds,
+                    limitSeconds: subscribed ? VOICE_HARD_LIMIT_SECONDS : VOICE_FREE_LIMIT_SECONDS,
+                    conversationCount,
+                    // Legacy display field required by shipped clients; page size no longer gates voice.
+                    conversationLimit: VOICE_USAGE_PAGE_SIZE,
+                    elevenUserId,
+                });
+            } catch (error) {
+                log({ module: 'voice' }, `Failed to get voice usage for user ${userId}: ${error}`);
+                return reply.code(500).send({ error: 'Failed to get voice usage' });
+            }
+        }
+
         try {
             const usage = await db.voiceConversation.aggregate({
                 where: {
