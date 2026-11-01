@@ -3,7 +3,7 @@ import { serializerCompiler, validatorCompiler, ZodTypeProvider } from "fastify-
 import { TokenVerifier } from "livekit-server-sdk";
 import {
     VOICE_UNLIMITED,
-    VoiceConversationGrantedSchema,
+    VoiceConversationLiveKitGrantSchema,
     VoiceConversationResponseSchema,
     VoiceUsageResponseSchema,
 } from "@slopus/happy-wire";
@@ -75,7 +75,7 @@ describe("voiceRoutes", () => {
         const response = await requestConversation({ sessionId: "session-1", language: "en" });
 
         expect(response.statusCode).toBe(200);
-        const body = VoiceConversationGrantedSchema.parse(response.json());
+        const body = VoiceConversationLiveKitGrantSchema.parse(response.json());
         expect(VoiceConversationResponseSchema.parse(response.json())).toEqual(body);
         expect(Object.keys(response.json()).sort()).toEqual(["allowed", "conversationId", "roomName", "token", "url"]);
         expect(body.roomName).toBe(`happy-voice-${body.conversationId}`);
@@ -110,8 +110,8 @@ describe("voiceRoutes", () => {
     });
 
     it("gives every request its own conversation and room", async () => {
-        const first = VoiceConversationGrantedSchema.parse((await requestConversation()).json());
-        const second = VoiceConversationGrantedSchema.parse((await requestConversation()).json());
+        const first = VoiceConversationLiveKitGrantSchema.parse((await requestConversation()).json());
+        const second = VoiceConversationLiveKitGrantSchema.parse((await requestConversation()).json());
         expect(first.conversationId).not.toBe(second.conversationId);
         expect(first.roomName).not.toBe(second.roomName);
     });
@@ -119,7 +119,7 @@ describe("voiceRoutes", () => {
     it("accepts the old client body and an empty body", async () => {
         const old = await requestConversation({ agentId: "legacy-agent" });
         expect(old.statusCode).toBe(200);
-        expect(VoiceConversationGrantedSchema.parse(old.json()).allowed).toBe(true);
+        expect(VoiceConversationLiveKitGrantSchema.parse(old.json()).allowed).toBe(true);
         expect(dbMock.voiceConversation.create).toHaveBeenLastCalledWith({
             data: expect.objectContaining({ sessionId: null, language: null }),
         });
@@ -134,7 +134,7 @@ describe("voiceRoutes", () => {
 
     it("uses LIVEKIT_PUBLIC_URL when set", async () => {
         vi.stubEnv("LIVEKIT_PUBLIC_URL", "wss://livekit.example.test");
-        const body = VoiceConversationGrantedSchema.parse((await requestConversation()).json());
+        const body = VoiceConversationLiveKitGrantSchema.parse((await requestConversation()).json());
         expect(body.url).toBe("wss://livekit.example.test");
     });
 
