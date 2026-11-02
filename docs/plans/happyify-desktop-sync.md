@@ -66,6 +66,18 @@ Constraints:
   the app bundle). **Unknown:** whether the desktop UI or config lets a user
   turn on a custom channel. Phase 0 answers this.
 
+## Phase 0 results (2026-11-02)
+
+| Spike | Result |
+|---|---|
+| `claude --desktop` with a prompt | **No.** It refuses: "--desktop doesn't take a prompt yet". With no prompt it opens the folder in the desktop, but no Claude process starts until someone types in the app. |
+| `claude --desktop --resume <id>` | **Works.** The desktop starts its Claude process right away, and SessionStart fires with `entrypoint=claude-desktop`. |
+| Seeding a session without a model turn | **Works.** `claude -p "/cost"` writes a session file holding only a local-command record (`/usage`). No assistant turn and no API call. Use `--session-id <uuid>` to choose the id. |
+| `asyncRewake` on **SessionStart** | **Works.** A freshly resumed desktop session ran the injected message without any typed turn. Phone-started sessions go: seed with `/cost` → `--desktop --resume` → first prompt delivered by the SessionStart rewake. |
+| Custom channels in the desktop | **No.** The desktop passes `--channels` but never `--dangerously-load-development-channels`, so a non-allowlisted channel can't load. Rewake is the inbound path. |
+| PermissionRequest hook in the desktop | **Fires** (`tool` request from an injected turn). Not yet tested: whether a hook decision suppresses the desktop's own dialog. The test was blocked because the test plugin is user-scoped and an auto-allow hook would also approve tools in every other Claude Code session. The real hook must be scoped to adopted desktop sessions and answer only with a decision relayed from the phone, never auto-allow. |
+| SessionEnd | **Fires** (seen on `-p` exit). Use it to archive the mirror. |
+
 ## Design
 
 ```
