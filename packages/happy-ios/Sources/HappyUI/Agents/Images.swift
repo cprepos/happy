@@ -76,6 +76,8 @@ final class MarkPicture: NSObject {
     private weak var images: Images?
     private weak var view: UIImageView?
     private var missing = false
+    /// The computer came back while `job` was reading.
+    private var retryAfterRead = false
     private var failed: (@MainActor () -> Void)?
     private var shown: (@MainActor () -> Void)?
 
@@ -110,6 +112,7 @@ final class MarkPicture: NSObject {
         job = nil
         wanted = nil
         missing = false
+        retryAfterRead = false
         failed = nil
         shown = nil
     }
@@ -121,9 +124,12 @@ final class MarkPicture: NSObject {
             let image = await images.picture(wanted.path, thumbhash: wanted.thumbhash, pixels: wanted.pixels)
             guard !Task.isCancelled, let self else { return }
             job = nil
+            let again = retryAfterRead
+            retryAfterRead = false
             guard let image, let view else {
                 missing = true
                 if view?.image == nil { failed?() }
+                if again { read(fade: true) }
                 return
             }
             shown?()
@@ -132,7 +138,14 @@ final class MarkPicture: NSObject {
     }
 
     @objc private func retry(_ notification: Notification) {
-        guard missing, job == nil, notification.object as AnyObject? === images else { return }
+        guard notification.object as AnyObject? === images else { return }
+        // A read still going began while the computer was away and can yet
+        // fail: it asks again when it ends, or this ask is lost.
+        if job != nil {
+            retryAfterRead = true
+            return
+        }
+        guard missing else { return }
         read(fade: true)
     }
 

@@ -82,7 +82,7 @@ final class HostedNavigationTimingTests: XCTestCase {
         defer { window.isHidden = true; hostWindow?.makeKey() }
         window.layoutIfNeeded()
         if fromHome {
-            try await until { root.view.subviews.contains { $0 is HomeDockView && !$0.isHidden } }
+            try await until { root.children.contains { $0 is SessionListViewController } }
             window.layoutIfNeeded()
         }
         let homeTurns = homeWatch.stop()
