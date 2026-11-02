@@ -48,10 +48,13 @@ public struct ChatReducer: Sendable {
     private var settled: Set<String> = []
     private var usageTime: Int64 = .min
     private var todosTime: Int64 = .min
+    private var subagentFold = SubagentFold()
     /// The newest model usage, including usage-only service records.
     public private(set) var usage: ChatUsage?
     /// The newest validated todos, updated only after a successful result.
     public private(set) var todos: JSONValue?
+    /// Every subagent the records name, by id, finished ones included.
+    public var subagents: [String: SubagentInfo] { subagentFold.agents }
     /// Number of distinct normalized records processed; useful for verifying
     /// that a feed append does not reduce the entire history again.
     public private(set) var processedRecordCount = 0
@@ -82,6 +85,10 @@ public struct ChatReducer: Sendable {
                 continue
             }
             processedRecordCount += 1
+            if case .subagent(let id, let event) = record.body {
+                subagentFold.apply(event, id: id, at: record.createdAt)
+                continue
+            }
             if record.parent == nil, let event = messageToEvent(record) {
                 record.body = .event(event)
             }
@@ -228,7 +235,7 @@ public struct ChatReducer: Sendable {
                 }
             case .unsupported(let kind):
                 put(.unsupported(UnsupportedMessage(id: record.id, createdAt: record.createdAt, kind: kind)))
-            case .event: break
+            case .event, .subagent: break
             }
         }
         // Trace again after every call is indexed; a session subagent may

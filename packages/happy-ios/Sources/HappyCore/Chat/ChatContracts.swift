@@ -59,8 +59,10 @@ public struct LegacyChatSnapshot: Equatable, Sendable {
     public var olderBoundary: Int?
     /// Changes only when a covered window discards previously included rows.
     public var windowEpoch: Int
+    /// Session.subagents: every subagent the records name, by id.
+    public var subagents: [String: SubagentInfo]
 
-    public init(sessionId: String, messages: [ChatMessage] = [], delivery: [String: OutboxDelivery] = [:], isLoaded: Bool = false, usage: ChatUsage? = nil, todos: JSONValue? = nil, hasMoreOlder: Bool = false, olderBoundary: Int? = nil, windowEpoch: Int = 0) {
+    public init(sessionId: String, messages: [ChatMessage] = [], delivery: [String: OutboxDelivery] = [:], isLoaded: Bool = false, usage: ChatUsage? = nil, todos: JSONValue? = nil, hasMoreOlder: Bool = false, olderBoundary: Int? = nil, windowEpoch: Int = 0, subagents: [String: SubagentInfo] = [:]) {
         self.sessionId = sessionId
         self.messages = messages
         self.delivery = delivery
@@ -70,6 +72,7 @@ public struct LegacyChatSnapshot: Equatable, Sendable {
         self.hasMoreOlder = hasMoreOlder
         self.olderBoundary = olderBoundary
         self.windowEpoch = windowEpoch
+        self.subagents = subagents
     }
 }
 
