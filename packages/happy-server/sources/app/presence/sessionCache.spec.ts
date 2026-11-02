@@ -211,4 +211,57 @@ describe("ActivityCache machine heartbeats", () => {
         await expect(activityCache.isSessionValid("session-1", "user-1")).resolves.toBe(true);
         activityCache.shutdown();
     });
+
+    it("takes heartbeats at once from a socket that connected after the stop", async () => {
+        const now = 1_700_000_000_000;
+        vi.setSystemTime(now);
+        dbMock.session.findUnique.mockResolvedValue({ id: "session-1", accountId: "user-1", active: false, lastActiveAt: new Date(now) });
+        dbMock.session.update.mockResolvedValue({});
+        const { activityCache } = await import("./sessionCache");
+
+        activityCache.clearSessionUpdates("session-1");
+
+        vi.setSystemTime(now + 10_000);
+        const connectedAt = now + 10_000;
+        await expect(activityCache.isSessionValid("session-1", "user-1", connectedAt)).resolves.toBe(true);
+        expect(activityCache.queueSessionUpdate("session-1", now + 10_000, connectedAt)).toBe(true);
+
+        await vi.advanceTimersByTimeAsync(5_000);
+
+        expect(dbMock.session.update).toHaveBeenCalledWith(expect.objectContaining({
+            where: { id: "session-1" },
+            data: { lastActiveAt: new Date(now + 10_000), active: true }
+        }));
+        activityCache.shutdown();
+    });
+
+    it("keeps ignoring a socket from before the stop while the new owner beats", async () => {
+        const now = 1_700_000_000_000;
+        vi.setSystemTime(now);
+        dbMock.session.findUnique.mockResolvedValue({ id: "session-1", accountId: "user-1", active: true, lastActiveAt: new Date(now) });
+        const { activityCache } = await import("./sessionCache");
+
+        activityCache.clearSessionUpdates("session-1");
+        vi.setSystemTime(now + 1_000);
+
+        await expect(activityCache.isSessionValid("session-1", "user-1", now - 5_000)).resolves.toBe(false);
+        expect(activityCache.queueSessionUpdate("session-1", now + 1_000, now - 5_000)).toBe(false);
+        // The same millisecond as the stop counts as before it.
+        await expect(activityCache.isSessionValid("session-1", "user-1", now)).resolves.toBe(false);
+
+        await expect(activityCache.isSessionValid("session-1", "user-1", now + 1_000)).resolves.toBe(true);
+        await expect(activityCache.isSessionValid("session-1", "user-1", now - 5_000)).resolves.toBe(false);
+        activityCache.shutdown();
+    });
+
+    it("does not write a beat of an active session within the threshold", async () => {
+        const now = 1_700_000_000_000;
+        vi.setSystemTime(now);
+        dbMock.session.findUnique.mockResolvedValue({ id: "session-1", accountId: "user-1", active: true, lastActiveAt: new Date(now) });
+        const { activityCache } = await import("./sessionCache");
+
+        await expect(activityCache.isSessionValid("session-1", "user-1", now)).resolves.toBe(true);
+        expect(activityCache.queueSessionUpdate("session-1", now + 2_000, now)).toBe(false);
+        activityCache.shutdown();
+    });
 });

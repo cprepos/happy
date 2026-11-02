@@ -10,6 +10,7 @@ import { Socket } from "socket.io";
 
 export function sessionUpdateHandler(userId: string, socket: Socket, connection: ClientConnection) {
     const labels = getMetricsLabelsFromSocket(socket);
+    const connectedAt = Date.now();
     socket.on('update-metadata', async (data: any, callback: (response: any) => void) => {
         try {
             const { sid, metadata, expectedVersion } = data;
@@ -163,13 +164,13 @@ export function sessionUpdateHandler(userId: string, socket: Socket, connection:
             const { sid, thinking } = data;
 
             // Check session validity using cache
-            const isValid = await activityCache.isSessionValid(sid, userId);
+            const isValid = await activityCache.isSessionValid(sid, userId, connectedAt);
             if (!isValid) {
                 return;
             }
 
             // Queue database update (will only update if time difference is significant)
-            activityCache.queueSessionUpdate(sid, t);
+            activityCache.queueSessionUpdate(sid, t, connectedAt);
 
             // Emit session activity update
             const sessionActivity = buildSessionActivityEphemeral(sid, true, t, thinking || false);
