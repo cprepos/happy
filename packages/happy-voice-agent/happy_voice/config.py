@@ -139,8 +139,12 @@ class Settings:
     # silence (s) before Silero VAD declares end of speech; below ~0.4 transport jitter splits utterances
     vad_min_silence: float = field(default_factory=lambda: float(_env("VAD_MIN_SILENCE", "0.5")))
     min_endpointing_delay: float = field(default_factory=lambda: float(_env("MIN_ENDPOINTING_DELAY", "0.4")))
-    # longest wait after speech ends when the turn detector thinks the user is not done
-    max_endpointing_delay: float = field(default_factory=lambda: float(_env("MAX_ENDPOINTING_DELAY", "1.5")))
+    # longest wait after speech ends when the turn detector thinks the user is not done. The
+    # English detector scores short questions as unfinished ("How's it going happy": 0.0066
+    # against a 0.0289 threshold), so on real calls nearly every turn waited out the full delay;
+    # at 1.5 s that was the largest part of reply latency. Preemptive generation and barge-in
+    # cover the turns this now cuts off early.
+    max_endpointing_delay: float = field(default_factory=lambda: float(_env("MAX_ENDPOINTING_DELAY", "0.8")))
     # Barge-in. Speech shorter than this (s) does not interrupt the agent: coughs, clicks, "uh".
     interrupt_min_duration: float = field(
         default_factory=lambda: _env_float("INTERRUPT_MIN_DURATION", 0.8)
