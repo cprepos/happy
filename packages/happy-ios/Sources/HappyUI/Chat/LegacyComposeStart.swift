@@ -284,7 +284,7 @@ final class LegacyComposeStart: NSObject {
         ]
     }
 
-    private static func section(_ title: String?, _ options: [NewSessionChoices.Option], selected: String?, select: @escaping (String) -> Void) -> UIMenu {
+    static func section(_ title: String?, _ options: [NewSessionChoices.Option], selected: String?, select: @escaping (String) -> Void) -> UIMenu {
         UIMenu(title: title ?? "", options: .displayInline, children: options.map { option in
             UIAction(
                 title: option.name,

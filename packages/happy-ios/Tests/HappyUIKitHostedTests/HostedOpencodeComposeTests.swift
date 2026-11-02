@@ -16,7 +16,7 @@ private struct OpencodeComposeNoSocket: WebSocketConnector {
 }
 
 /// The empty chat compose opens on an account of three computers, all
-/// reporting OpenCode, one of them offline: computer, folder, harness and
+/// reporting OpenCode, one of them offline: computer, folder, harness, mode and
 /// model before the first send, with the keyboard up. With
 /// `HAPPY_PREVIEW_DIR` set, it writes what it showed and holds the screen long
 /// enough for a real screenshot, as a window's own drawing has no keyboard.
@@ -112,10 +112,12 @@ final class HostedOpencodeComposeTests: XCTestCase {
         try await until { panel.harness.title == "OpenCode" }
         XCTAssertEqual(start.drafts.draft.agentType, .opencode)
 
-        // Its controls, before any session exists. The permission menu is
-        // configured but not on a phone's screen: the card draws no chip for
-        // it, and the profile that offers it needs a session.
-        try await until { card.configuration.permission?.menu != nil }
+        // Its controls, before any session exists: Build and Plan, each in
+        // auto and ask, on the panel's row, as the card draws no chip for them
+        // on a phone (HostedComposeModeTests), and no effort.
+        try await until { panel.modeRow.title == "Build-auto" }
+        XCTAssertFalse(panel.modeRow.isHidden)
+        XCTAssertEqual(Self.actions(start.modeMenuElements()).map(\.title), ["Build-auto", "Build-ask", "Plan-auto", "Plan-ask"])
         XCTAssertFalse(panel.harness.isHidden)
         XCTAssertFalse(panel.folder.isHidden)
         XCTAssertNotNil(card.configuration.model?.menu, "the model must be pickable before a session exists")

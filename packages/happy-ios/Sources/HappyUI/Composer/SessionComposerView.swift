@@ -160,7 +160,7 @@ final class SessionComposerView: UIView, ChatComposerView, AgentInputCardDelegat
 
     /// Read each time, in the screens' language (a `let` would keep the
     /// first one across a language change).
-    private static var titles: ComposerChipSet.Titles { ComposerChipSet.Titles(
+    static var titles: ComposerChipSet.Titles { ComposerChipSet.Titles(
         permission: Strings.Composer.permissionModeTitle,
         codexPermission: Strings.Composer.codexPermissionModeTitle,
         geminiPermission: Strings.Composer.geminiPermissionModeTitle,

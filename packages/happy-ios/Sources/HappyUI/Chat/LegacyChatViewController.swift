@@ -320,6 +320,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
             composeTarget.folder.menu = compose.folderMenu()
             composeTarget.harness.menu = compose.harnessMenu()
             composeTarget.harness.addAction(UIAction { [weak compose] _ in compose?.openHarnessHelp() }, for: .primaryActionTriggered)
+            composeTarget.modeRow.menu = compose.modeMenu()
             composeTarget.onSessionKind = { [weak compose] in compose?.setKind($0) }
             composeTarget.onBotName = { [weak compose] in compose?.setBotName($0) ?? $0 }
             composeTarget.onReturn = { [weak self] in self?.composer.focus() }
@@ -1393,6 +1394,8 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         harness.showsMenuAsPrimaryAction = !help
         harness.accessibilityLabel = help ? Strings.Home.harnessHelpLabel : Strings.Home.harnessTitle
         harness.accessibilityTraits = help ? .link : .button
+        composeTarget.modeTitle = compose.modeName
+        composeTarget.modeRow.accessibilityLabel = compose.modeChip?.accessibilityLabel
         view.setNeedsLayout()
     }
 

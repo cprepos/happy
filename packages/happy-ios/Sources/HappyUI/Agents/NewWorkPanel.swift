@@ -12,7 +12,8 @@ import UIKit
 ///   and a line saying what that kind is. Desktop asks a bot's name the
 ///   same way ("generated if left blank"); here a task's too.
 /// - `.session` (a legacy account): the computer, shown only when the
-///   account has more than one, the folder on it, and the harness. Where
+///   account has more than one, the folder on it, the harness, and its
+///   mode when it has modes. Where
 ///   the computer's Happy Agent makes bots or tasks, Session | Bot | Task
 ///   heads it, as home's dock did: a task asks only the computer, a bot
 ///   the computer and its name, which it can't go without.
@@ -30,6 +31,7 @@ final class NewWorkPanel: UIView, UITextFieldDelegate {
     let machine = NewWorkMenuRow(icon: .ionicons("desktop-outline"))
     let folder = NewWorkMenuRow(icon: .ionicons("folder-outline"))
     let harness = NewWorkMenuRow(icon: .ionicons("hardware-chip-outline"))
+    let modeRow = NewWorkMenuRow(icon: .ionicons("shield-outline"))
     private let note = UILabel()
 
     /// Every change, as it is made.
@@ -59,6 +61,22 @@ final class NewWorkPanel: UIView, UITextFieldDelegate {
         }
     }
 
+    /// `.session`: the harness's current mode; nil when it has none, which
+    /// hides the row.
+    var modeTitle: String? {
+        didSet {
+            modeRow.title = modeTitle ?? ""
+            showMode()
+        }
+    }
+
+    private func showMode() {
+        let hidden = modeTitle == nil || sessionKind != .session
+        guard modeRow.isHidden != hidden else { return }
+        modeRow.isHidden = hidden
+        superview?.setNeedsLayout()
+    }
+
     /// `.session`: the kinds this computer makes; one alone hides the
     /// control.
     private(set) var sessionKinds: [HomeDockKind] = [.session]
@@ -84,6 +102,7 @@ final class NewWorkPanel: UIView, UITextFieldDelegate {
         kind.isHidden = hidesKind
         folder.isHidden = current != .session
         harness.isHidden = current != .session
+        showMode()
         field.isHidden = current != .bot
         note.isHidden = current != .bot
         if current != .bot, name.isFirstResponder { onReturn?() }
@@ -132,8 +151,10 @@ final class NewWorkPanel: UIView, UITextFieldDelegate {
             machine.accessibilityIdentifier = "new-work-machine"
             folder.accessibilityIdentifier = "new-work-folder"
             harness.accessibilityIdentifier = "new-work-harness"
+            modeRow.accessibilityIdentifier = "new-work-mode"
             machine.isHidden = true
-            for view in [kind, machine, folder, harness, field, note] { addSubview(view) }
+            modeRow.isHidden = true
+            for view in [kind, machine, folder, harness, modeRow, field, note] { addSubview(view) }
         }
     }
 
@@ -148,7 +169,7 @@ final class NewWorkPanel: UIView, UITextFieldDelegate {
 
     /// `.session`'s rows, top to bottom, as the kind shows them.
     private var sessionRows: [UIView] {
-        [machine, folder, harness, field].filter { !$0.isHidden }
+        [machine, folder, harness, modeRow, field].filter { !$0.isHidden }
     }
 
     private var measuredNote: Measurable {
@@ -174,7 +195,8 @@ final class NewWorkPanel: UIView, UITextFieldDelegate {
                 width: width, top: top, bottom: bottom,
                 kindHeight: kind.isHidden ? nil : kind.intrinsicContentSize.height,
                 rows: sessionRows.count,
-                note: note.isHidden ? nil : measuredNote
+                note: note.isHidden ? nil : measuredNote,
+                compactsWhenShort: true
             )
         }
     }
@@ -188,6 +210,7 @@ final class NewWorkPanel: UIView, UITextFieldDelegate {
             field.frame = layout.rows[0]
         case .session:
             for (row, frame) in zip(sessionRows, layout.rows) { row.frame = frame }
+            field.layer.cornerRadius = field.bounds.height / 2
         }
         name.frame = field.bounds.insetBy(dx: 16, dy: 0)
     }
@@ -195,7 +218,7 @@ final class NewWorkPanel: UIView, UITextFieldDelegate {
     /// Only the controls take touches: a drag anywhere else is the
     /// transcript's, which takes the keyboard down.
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        let controls: [UIView] = mode == .work ? [kind, field] : [kind, machine, folder, harness, field]
+        let controls: [UIView] = mode == .work ? [kind, field] : [kind, machine, folder, harness, modeRow, field]
         return controls.contains { !$0.isHidden && $0.frame.insetBy(dx: -8, dy: -8).contains(point) }
     }
 
@@ -207,6 +230,7 @@ final class NewWorkPanel: UIView, UITextFieldDelegate {
             machine.isEnabled = !isLocked
             folder.isEnabled = !isLocked
             harness.isEnabled = !isLocked
+            modeRow.isEnabled = !isLocked
         }
     }
 
