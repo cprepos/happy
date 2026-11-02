@@ -1509,9 +1509,8 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         }
         goalBar.isHidden = goal == nil
         updateQuestionBanner()
-        let indicators = RigActivityIndicator.indicators(session.metadata)
-        rigActivity.show(indicators)
-        rigActivity.isHidden = indicators.isEmpty
+        rigActivity.show(RigActivityIndicator.indicators(session.metadata), running: facts?.runningSubagents ?? [])
+        rigActivity.isHidden = rigActivity.content.isEmpty
 
         let bars = dockBars
         for bar in bars { bar.view.alpha = dockDetailsVisible ? 1 : 0 }
@@ -1655,6 +1654,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
                 dismissAnsweredQuestions(facts)
                 updatePlaceholder()
                 updateComposer()
+                if rigActivity.show(RigActivityIndicator.indicators(session.metadata), running: facts.runningSubagents) { updateDockBars() }
             }
             if let forms = update.questionForms { questionForms = forms }
             scheduleGraceEnd(update.graceEnd, now: update.now)

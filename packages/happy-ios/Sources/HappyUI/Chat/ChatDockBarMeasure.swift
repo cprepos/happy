@@ -68,14 +68,84 @@ struct ChatQuestionBannerPlan: Sendable {
     var dismiss: ChatTextLayout?
 }
 
-/// RigActivityBar's counts, in order.
+/// RigActivityBar's counts, in order, which of them have a chevron, and the
+/// rows of its panel when it is open.
 struct ChatRigActivityModel: Equatable, Sendable {
     var labels: [String]
+    var chevrons: Set<Int> = []
+    var rows: [ChatRigAgentRowModel] = []
+}
+
+struct ChatRigAgentRowModel: Equatable, Sendable {
+    var content: RigAgentRowContent
+    var expanded: Bool
 }
 
 struct ChatRigActivityPlan: Sendable {
     var layout: RigActivityLayout
     var labels: [ChatTextLayout]
+    var rows: [ChatRigAgentRowPlan] = []
+}
+
+struct ChatRigAgentRowPlan: Sendable {
+    var content: RigAgentRowContent
+    var expanded: Bool
+    var title: ChatTextLayout
+    var type: ChatTextLayout?
+    var elapsed: ChatTextLayout
+    var tokens: ChatTextLayout?
+    var prompt: ChatTextLayout?
+    var summary: ChatTextLayout?
+    var lastTool: ChatTextLayout?
+}
+
+/// AgentRow's text measured off the main thread. What is folded away isn't.
+private struct ChatRigAgentRowTexts {
+    let row: ChatRigAgentRowModel
+    let title: MeasuredText
+    let type: MeasuredText?
+    let elapsed: MeasuredText
+    let tokens: MeasuredText?
+    let prompt: MeasuredText?
+    let summary: MeasuredText?
+    let lastTool: MeasuredText?
+
+    init(_ row: ChatRigAgentRowModel, in text: TextEnvironment) {
+        self.row = row
+        let content = row.content
+        func line(_ string: String, _ style: ChatTextStyle, _ color: ColorToken, maxLines: Int = 1) -> MeasuredText {
+            MeasuredText(style.string(string, color: color, lineBreakMode: .byTruncatingTail, in: text), maxLines: maxLines)
+        }
+        title = line(content.title, ChatTextStyles.rigAgentTitle, Palette.text)
+        type = content.type.map { line($0, ChatTextStyles.rigAgentType, Palette.textSecondary) }
+        elapsed = line(content.elapsed, ChatTextStyles.rigAgentNumber, Palette.textSecondary)
+        tokens = content.tokens.map { line($0, ChatTextStyles.rigAgentNumber, Palette.textSecondary) }
+        prompt = row.expanded ? content.prompt.map { line($0, ChatTextStyles.rigAgentDetail, Palette.textSecondary, maxLines: 3) } : nil
+        summary = row.expanded ? content.summary.map { line($0, ChatTextStyles.rigAgentDetail, Palette.text, maxLines: 2) } : nil
+        lastTool = row.expanded ? content.lastTool.map { MeasuredText(ChatTextStyles.rigAgentLastTool.string($0, color: Palette.textSecondary, in: text)) } : nil
+    }
+
+    var input: RigAgentRowLayout.Input {
+        RigAgentRowLayout.Input(
+            title: title.measurable, type: type?.measurable, elapsed: elapsed.measurable, tokens: tokens?.measurable,
+            indented: row.content.indented, expanded: row.expanded,
+            prompt: prompt?.measurable, summary: summary?.measurable, lastTool: lastTool?.measurable
+        )
+    }
+
+    func plan(_ layout: RigAgentRowLayout) -> ChatRigAgentRowPlan {
+        ChatRigAgentRowPlan(
+            content: row.content,
+            expanded: row.expanded,
+            title: title.layout(for: layout.title),
+            type: layout.type.flatMap { frame in type?.layout(for: frame) },
+            elapsed: elapsed.layout(for: layout.elapsed),
+            tokens: layout.tokens.flatMap { frame in tokens?.layout(for: frame) },
+            prompt: layout.prompt.flatMap { frame in prompt?.layout(for: frame) },
+            summary: layout.summary.flatMap { frame in summary?.layout(for: frame) },
+            lastTool: layout.lastTool.flatMap { frame in lastTool?.layout(for: frame) }
+        )
+    }
 }
 
 /// Lays each bar out with its HappyLayout layout, its text measured at the
@@ -165,8 +235,16 @@ enum ChatDockBarMeasure {
         let labels = input.model.labels.map {
             MeasuredText(ChatTextStyles.rigActivity.string($0, color: Palette.textSecondary, in: input.text), maxLines: 1)
         }
-        let layout = RigActivityLayout(width: input.width, labels: labels.map(\.measurable))
-        return ChatRigActivityPlan(layout: layout, labels: zip(labels, layout.labels).map { $0.layout(for: $1) })
+        let rows = input.model.rows.map { ChatRigAgentRowTexts($0, in: input.text) }
+        let items = labels.enumerated().map { index, label in
+            RigActivityLayout.Item(label: label.measurable, hasChevron: input.model.chevrons.contains(index))
+        }
+        let layout = RigActivityLayout(width: input.width, items: items, rows: rows.map(\.input))
+        return ChatRigActivityPlan(
+            layout: layout,
+            labels: zip(labels, layout.labels).map { $0.layout(for: $1) },
+            rows: zip(rows, layout.rows).map { $0.plan($1) }
+        )
     }
 }
 #endif
