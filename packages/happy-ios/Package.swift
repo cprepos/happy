@@ -143,3 +143,15 @@ let package = Package(
         ),
     ]
 )
+
+// swift-corelibs-xctest's XCTestCase is not Sendable, and awaiting from a test
+// sends it. Swift 6 language mode refuses that on Linux only, so the tests
+// compile in Swift 5 mode here; the code they test stays in Swift 6 mode.
+#if os(Linux)
+for target in package.targets where target.isTest {
+    target.swiftSettings = (target.swiftSettings ?? []) + [
+        .swiftLanguageMode(.v5),
+        .enableUpcomingFeature("BareSlashRegexLiterals"),
+    ]
+}
+#endif
