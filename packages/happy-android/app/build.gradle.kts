@@ -98,11 +98,6 @@ android {
 
         buildConfigField("String", "DEFAULT_SERVER_URL", "\"https://api.cluster-fluster.com\"")
         buildConfigField("String", "REVENUE_CAT_GOOGLE_KEY", groovy.json.JsonOutput.toJson(revenueCatGoogleKey))
-        // All three RN variants currently use productionElevenLabsAgentId.
-        val voiceAgentId = Regex("""const productionElevenLabsAgentId = ['"]([^'"]+)['"]""")
-            .find(providers.fileContents(layout.projectDirectory.file("../../happy-app/app.config.js")).asText.get())
-            ?.groupValues?.get(1) ?: error("app.config.js has no elevenLabsAgentId")
-        buildConfigField("String", "ELEVENLABS_AGENT_ID", "\"$voiceAgentId\"")
         buildConfigField("String", "BUILD_COMMIT_SHA", buildCommitSha?.let { "\"$it\"" } ?: "null")
         buildConfigField("String", "BUILD_COMMIT_TIMESTAMP", buildCommitTimestamp?.let { "\"$it\"" } ?: "null")
     }

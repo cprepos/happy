@@ -25,7 +25,7 @@ class VoiceApi(
     private val clientId: String,
     private val serverUrl: () -> String,
     private val voiceServerUrl: () -> String,
-    private val agentId: String,
+    private val agentId: String = DEFAULT_AGENT_ID,
 ) : VoiceService {
     private suspend fun endpoint(credentials: AuthCredentials): Pair<HappyHttp, String> {
         val url = voiceServerUrl()
@@ -49,6 +49,14 @@ class VoiceApi(
     }
 
     companion object {
+        /**
+         * Happy's ElevenLabs agent, the one the server grants conversations for,
+         * kept in code like iOS's `HappyAPI.voiceAgentID` (happy-app's config no
+         * longer carries it). A public id, never an API key. A custom agent with
+         * Direct Connection (VoiceOptions) bypasses this and the server grant.
+         */
+        const val DEFAULT_AGENT_ID = "agent_6701k211syvvegba4kt7m68nxjmw"
+
         private val strictJson = Json { ignoreUnknownKeys = true }
 
         /** happy-wire voice.ts: reject a partial grant or an unknown denial reason. */
