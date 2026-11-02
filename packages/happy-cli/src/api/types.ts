@@ -346,6 +346,13 @@ export type Metadata = {
    * applies; this only changes the harness the apps show.
    */
   harness?: 'claude-desktop'
+  /**
+   * Claude Desktop only: the earlier transcript is loaded on demand
+   * (`desktop-load-history` RPC). `before` counts the transcript entries
+   * `[0, before)` not loaded yet; absent or 0 means nothing to load.
+   * See docs/plans/happyify-desktop-sync.md, "Contract: on-demand history".
+   */
+  desktopHistory?: { before: number }
   sandbox?: SandboxConfig | null
   dangerouslySkipPermissions?: boolean | null
   /** Lineage for sessions created via the fork / duplicate flow. */

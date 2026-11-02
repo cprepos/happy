@@ -20,7 +20,7 @@ const INTERNAL_CLAUDE_EVENT_TYPES = new Set([
 
 export type ScannerTranscriptEvent = ClaudeGoalStatusTranscriptEvent;
 
-type SessionLogEntry =
+export type SessionLogEntry =
     | { kind: 'message'; key: string; message: RawJSONLines }
     | { kind: 'transcript-event'; key: string; event: ScannerTranscriptEvent };
 
@@ -239,8 +239,11 @@ function transcriptEventKey(event: ScannerTranscriptEvent): string {
  * Read and parse session log file
  * Returns only valid conversation messages and recognized side-channel events,
  * silently skipping internal events.
+ *
+ * Exported for on-demand desktop history, which indexes a transcript by this
+ * order (stable: the file is append-only). A missing file reads as empty.
  */
-async function readSessionEntries(projectDir: string, sessionId: string): Promise<SessionLogEntry[]> {
+export async function readSessionEntries(projectDir: string, sessionId: string): Promise<SessionLogEntry[]> {
     const expectedSessionFile = join(projectDir, `${sessionId}.jsonl`);
     logger.debug(`[SESSION_SCANNER] Reading session file: ${expectedSessionFile}`);
     let file: string;
