@@ -40,6 +40,13 @@ public final class AvatarView: UIView {
     private let placeholder = AvatarPlaceholderSlot()
     let badge = UIView()
     let badgeGlyph = UIImageView()
+    /// Claude Desktop's display, on a plate of the badge's colour that cuts
+    /// it out of Claude's mark (`AvatarBadge.desktopBadge`).
+    let badgePlate = UIView()
+    let badgeDisplay = UIImageView(image: UIImage(
+        systemName: "desktopcomputer",
+        withConfiguration: UIImage.SymbolConfiguration(weight: .semibold)
+    ))
 
     public override init(frame: CGRect) {
         super.init(frame: frame)
@@ -55,12 +62,18 @@ public final class AvatarView: UIView {
         badge.layer.shadowRadius = 2
         badge.layer.shadowOffset = CGSize(width: 0, height: 1)
         badgeGlyph.contentMode = .scaleAspectFit
+        badgePlate.backgroundColor = UIColor(Palette.surface)
+        badgePlate.isHidden = true
+        badgeDisplay.contentMode = .scaleAspectFit
+        badgeDisplay.tintColor = UIColor(Palette.text)
         addSubview(disc)
         disc.addSubview(glyph)
         disc.addSubview(photo)
         placeholder.liveHost = glyph
         addSubview(badge)
         badge.addSubview(badgeGlyph)
+        badge.addSubview(badgePlate)
+        badgePlate.addSubview(badgeDisplay)
         isUserInteractionEnabled = false
         apply()
     }
@@ -86,6 +99,17 @@ public final class AvatarView: UIView {
                 badge.setLayoutFrame(frames.circle)
                 badge.layer.cornerRadius = frames.circle.width / 2
                 badgeGlyph.setLayoutFrame(frames.glyph.offsetBy(dx: -frames.circle.minX, dy: -frames.circle.minY))
+                badgePlate.isHidden = true
+                if harness == .claudeDesktop {
+                    let desktop = AvatarBadge.desktopBadge(circle: frames.circle.width)
+                    badgeGlyph.setLayoutFrame(desktop.mark)
+                    if let plate = desktop.plate, let display = desktop.display {
+                        badgePlate.isHidden = false
+                        badgePlate.setLayoutFrame(plate)
+                        badgePlate.layer.cornerRadius = plate.width / 2
+                        badgeDisplay.setLayoutFrame(display.offsetBy(dx: -plate.minX, dy: -plate.minY))
+                    }
+                }
             }
         }
     }
@@ -156,6 +180,7 @@ enum AvatarImages {
         case .agy: UIImage.happy("icon-agy")
         case .rig: UIImage.happy("logo-black")
         case .opencode: UIImage.happy("icon-opencode")
+        case .claudeDesktop: UIImage.happy("icon-claude")
         }
     }
 }

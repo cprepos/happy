@@ -326,7 +326,7 @@ final class NewSessionAgentButton: UIControl {
         case "codex": "icon-gpt"
         case "agy": "icon-agy"
         case "opencode": "icon-opencode"
-        case "claude": "icon-claude"
+        case "claude", ClaudeDesktopHarness.key: "icon-claude"
         default: "logo-black"
         }
     }
