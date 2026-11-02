@@ -601,6 +601,36 @@ tells it apart from the legacy RN app.
   - swift-crypto, Linux only;
   - swift-asn1, which swift-crypto pulls in.
 
+## Adding a harness
+
+`HarnessCatalogDriftTests` reads `happy-app/sources/utils/harnessCatalog.ts` and
+fails when it lists a harness that is neither offered here nor in the test's
+`excluded`, so a pull that adds one says so. Gemini and OpenClaw are excluded:
+an existing session shows its name, and neither can be started.
+
+Follow OpenCode. A harness upstream doesn't have goes in files of its own, and
+upstream's files get one-liners or a `case`. There is no shared harness table on
+purpose: one would conflict on every pull.
+
+1. `HappyCore/Harness/<Name>Harness.swift`: key, name, order, availability,
+   defaults, resume field. `HarnessCatalog.names` gets its product name.
+2. `HappyCore/Composer/<Name>Modes.swift`: a port of the Expo modes file and
+   its tests, when the harness has modes of its own.
+3. `HappyUI/Strings/Harnesses.swift` and the icon.
+4. The hooks:
+   - `MachineChoice.agentOrder` and `agentAvailable`. A niche harness counts only
+     when its machine reports it (`EXPLICIT_REPORT_HARNESSES`).
+   - `NewSessionDraft.Agent` and `AgentDefaults.Agent`.
+   - The labels.
+5. Read the daemon before trusting a spawn option. `spawnModeArgs.ts` drops modes
+   for everything but Claude and Codex, so the first message must carry them.
+6. Resume: `SessionDetails.resumeCommand`, `resumeAvailability` and
+   `SessionQuickActions.Resume` each check the harness's id field.
+7. Tool names the harness has for interactive calls go in `ChatToolDisplay`,
+   `ChatToolPresentation` and `ChatRows`.
+
+An unknown flavor must stay itself: it never borrows Claude's catalogs.
+
 ## Workstreams
 
 The port is built by parallel workers, each on its own branch, merged into
@@ -610,10 +640,10 @@ change a file another workstream owns, ask the coordinator.
 | Workstream | Owns |
 | --- | --- |
 | Icons | `Sources/HappyIcons`, `scripts/generate-icons.*`, `Sources/HappyUI/Theme/IconImages.swift`, `ItemIcon`'s icon source, swapping SF Symbols for happy-app's icons in onboarding and troubleshoot, light/dark theme application |
-| Home | `Screens/HomeScreens.swift`, `Screens/SessionListScreens.swift`, `Screens/HomeUltraListView.swift`, `Screens/HomeRowDrawing.swift`, `Components/NoSessionsViews.swift`, home header and dock, new session screen, `Core/Home/` (including the new-session draft store and `SessionStarter`) |
+| Home | `Screens/HomeScreens.swift`, `Screens/SessionListScreens.swift`, `Screens/HomeUltraListView.swift`, `Screens/HomeRowDrawing.swift`, `Components/NoSessionsViews.swift`, home header, the empty chat's `NewWorkPanel` and `Chat/LegacyComposeStart.swift`, new session screen, `Core/Home/` (including the new-session draft store and `SessionStarter`) |
 | Settings | `Screens/SettingsScreens.swift` and every settings screen, the account switcher UI, `Core/Settings/` |
 | Chat | `Sources/HappyUI/Chat/`, `Sources/HappyLayout/Chat/`, the session screen, `docs/telegram-notes.md` |
-| Composer | `Sources/HappyUI/Composer/`, `Sources/HappyLayout/Composer/`, `Sources/HappyCore/Composer/` (model, permission and effort options; `useComposerModes`). The AgentInput card is shared: Home embeds it in the dock. The phone's new session screen draws its own glass composer (`new/index.tsx` `mobileInputBox`), not the card |
+| Composer | `Sources/HappyUI/Composer/`, `Sources/HappyLayout/Composer/`, `Sources/HappyCore/Composer/` (model, permission and effort options; `useComposerModes`). The AgentInput card is shared: the empty chat compose opens uses it, as every chat does. The phone's new session screen draws its own glass composer (`new/index.tsx` `mobileInputBox`), not the card |
 | Secondary | session info, files, changes, machine screens |
 | Accounts | `Core/Accounts/`, `AccountController`, `AccountSession` lifecycle, `CompositionRoot`, `Auth/` |
 | Sending | `Core/Chat/` sending and attachments, the outbox in `SyncEngine` and `LocalStore`, `HappyStore` schema |
