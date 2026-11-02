@@ -186,6 +186,13 @@ export const MetadataSchema = z.object({
     startedBy: z.enum(['daemon', 'terminal']).optional(),
     flavor: z.string().nullish(), // Session flavor/variant identifier
     /**
+     * The harness that hosts the session when it differs from `flavor`.
+     * `claude-desktop` marks a Claude Desktop session mirrored by the Happy
+     * plugin (its flavor stays `claude`). A plain string, so a newer CLI can
+     * add values without failing to parse here.
+     */
+    harness: z.string().nullish().catch(undefined),
+    /**
      * Rig's project / worktree identity. Every worktree of the same repo
      * reports the same `project.id`, and `workspace` names the individual git
      * worktree (absent when the session runs in the primary tree). `kind` is a
@@ -535,6 +542,7 @@ export const MachineMetadataSchema = z.object({
         agy: z.boolean().optional(), // optional: older CLIs don't report agy
         opencode: z.boolean().optional(), // optional: older CLIs don't report opencode
         rig: z.boolean().optional(), // Rig runs its own Happy-connected daemon
+        'claude-desktop': z.boolean().optional(), // true only while Claude Desktop runs with the Happy plugin
         detectedAt: z.number(),
     }).optional(),
     // Rig registers as its own machine instead of being launched by happy-cli.

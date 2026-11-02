@@ -44,6 +44,7 @@ type FieldConfig = {
 
 const agentLabels: Record<AgentKey, string> = {
     claude: getHarnessName('claude'),
+    'claude-desktop': getHarnessName('claude-desktop'),
     codex: getHarnessName('codex'),
     gemini: getHarnessName('gemini'),
     openclaw: getHarnessName('openclaw'),
@@ -53,8 +54,11 @@ const agentLabels: Record<AgentKey, string> = {
 
 // A retired harness keeps its stored defaults — the schema still carries them,
 // and "Reset all" still clears them — but there is nothing to configure for an
-// agent you can no longer start a session with.
-const configurableAgentKeys = agentKeys.filter((agent) => !isRetiredHarness(agent));
+// agent you can no longer start a session with. Claude Desktop has nothing to
+// configure either: the desktop app owns its model, permissions and effort.
+const configurableAgentKeys = agentKeys.filter((agent) => (
+    !isRetiredHarness(agent) && agent !== 'claude-desktop'
+));
 
 function optionName(options: ModeOption[], key: string | null | undefined): string {
     if (!key) return 'none';

@@ -2,7 +2,7 @@ import * as z from 'zod';
 import { compareVersionsWithPrerelease, isWellFormedVersion } from '@/utils/versionUtils';
 import { normalizeOpencodePermissionModeKey, OPENCODE_DEFAULT_PERMISSION_MODE } from './opencodeModes';
 
-export const agentKeys = ['claude', 'codex', 'gemini', 'openclaw', 'agy', 'opencode'] as const;
+export const agentKeys = ['claude', 'claude-desktop', 'codex', 'gemini', 'openclaw', 'agy', 'opencode'] as const;
 export type AgentKey = typeof agentKeys[number];
 
 export const AgentDefaultOverrideSchema = z.object({
@@ -13,6 +13,7 @@ export const AgentDefaultOverrideSchema = z.object({
 
 export const AgentDefaultOverridesSchema = z.object({
     claude: AgentDefaultOverrideSchema.optional(),
+    'claude-desktop': AgentDefaultOverrideSchema.optional(),
     codex: AgentDefaultOverrideSchema.optional(),
     gemini: AgentDefaultOverrideSchema.optional(),
     openclaw: AgentDefaultOverrideSchema.optional(),
@@ -35,6 +36,9 @@ const codeAgentDefaults: Record<AgentKey, AgentDefaultConfig> = {
     // old CLI fallback is applied only when a machine version is known below;
     // a user override is kept separate and is never rewritten here.
     claude: { permissionMode: 'auto', modelMode: 'claude-opus-5-5', effortLevel: 'medium' },
+    // The desktop app owns its model, permissions and effort. `default` is the
+    // ambient no-override value, so nothing is sent on spawn or per message.
+    'claude-desktop': { permissionMode: 'default', modelMode: 'default', effortLevel: null },
     codex: { permissionMode: 'auto', modelMode: 'gpt-6.1-sol', effortLevel: 'medium' },
     gemini: { permissionMode: 'default', modelMode: 'gemini-2.5-pro', effortLevel: null },
     openclaw: { permissionMode: 'default', modelMode: 'default', effortLevel: null },
@@ -90,7 +94,7 @@ function resolveCodeDefaultModelMode(
 }
 
 export function normalizeAgentKey(flavor: string | null | undefined): AgentKey {
-    if (flavor === 'codex' || flavor === 'gemini' || flavor === 'openclaw' || flavor === 'agy' || flavor === 'opencode') {
+    if (flavor === 'claude-desktop' || flavor === 'codex' || flavor === 'gemini' || flavor === 'openclaw' || flavor === 'agy' || flavor === 'opencode') {
         return flavor;
     }
     return 'claude';

@@ -7,6 +7,7 @@ import type { NewSessionAgentType } from '@/sync/persistence';
  */
 export const HARNESS_NAMES: Record<NewSessionAgentType, string> = {
     claude: 'Claude Code',
+    'claude-desktop': 'Claude Desktop',
     codex: 'Codex',
     rig: 'Happy',
     agy: 'Antigravity',
@@ -31,6 +32,7 @@ export const RETIRED_HARNESSES: ReadonlySet<NewSessionAgentType> = new Set([
 /** Pick order for every harness list: the ones people reach for come first. */
 export const HARNESS_ORDER: readonly NewSessionAgentType[] = [
     'claude',
+    'claude-desktop',
     'codex',
     'agy',
     'opencode',
@@ -46,8 +48,11 @@ export const HARNESS_ORDER: readonly NewSessionAgentType[] = [
  * fallback and being the current selection does not keep them listed.
  * OpenClaw additionally needs a reachable gateway, which only the machine
  * running it has, so a speculative row would be a dead end everywhere else.
+ * Claude Desktop is only reported while the desktop app is running with the
+ * Happy plugin, so it is listed for exactly as long as that holds.
  */
 export const EXPLICIT_REPORT_HARNESSES: ReadonlySet<NewSessionAgentType> = new Set([
+    'claude-desktop',
     'agy',
     'opencode',
     'openclaw',
@@ -66,6 +71,29 @@ export type HarnessOption = {
 
 export function getHarnessName(key: NewSessionAgentType | string): string {
     return HARNESS_NAMES[key as NewSessionAgentType] ?? key;
+}
+
+/**
+ * A Claude Desktop session mirrored into Happy by the desktop plugin. The
+ * desktop owns its model, permissions and lifecycle: the phone can only send
+ * it messages, so pickers, Stop and resume are not offered for it.
+ */
+export function isClaudeDesktopSession(
+    metadata: { harness?: string | null } | null | undefined,
+): boolean {
+    return metadata?.harness === 'claude-desktop';
+}
+
+/**
+ * The harness a session runs in, as a HARNESS_NAMES key. `harness` names the
+ * host when it differs from the transcript flavor: a Claude Desktop session
+ * reports `flavor: 'claude'` so every Claude renderer applies, and
+ * `harness: 'claude-desktop'` so it is still called what it is.
+ */
+export function getSessionHarnessKey(
+    metadata: { harness?: string | null; flavor?: string | null } | null | undefined,
+): string {
+    return metadata?.harness || metadata?.flavor || 'claude';
 }
 
 /** Whether this machine has given the app enough evidence to offer a harness. */

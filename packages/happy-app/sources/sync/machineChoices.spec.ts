@@ -293,3 +293,35 @@ describe('the harness a new session starts with', () => {
         expect(resolveNewSessionAgent(null, 'claude', 'codex')).toBe('codex');
     });
 });
+
+describe('Claude Desktop on a computer', () => {
+    function desktop(report: boolean | undefined) {
+        return machine(CLI, {
+            host: 'laptop.local',
+            cliAvailability: {
+                claude: true, codex: false, gemini: false, openclaw: false,
+                ...(report === undefined ? {} : { 'claude-desktop': report }),
+            },
+        });
+    }
+
+    it('is offered while the desktop app reports itself running with the plugin', () => {
+        const [choice] = collectMachineChoices([desktop(true)]);
+        expect(machineChoiceAgentAvailable(choice, 'claude-desktop')).toBe(true);
+        expect(listMachineChoiceAvailableAgents(choice)).toEqual(['claude', 'claude-desktop']);
+        expect(resolveAgentMachine(choice, 'claude-desktop')?.id).toBe(CLI);
+    });
+
+    it('is not offered when the report is false or missing', () => {
+        for (const report of [false, undefined]) {
+            const [choice] = collectMachineChoices([desktop(report)]);
+            expect(machineChoiceAgentAvailable(choice, 'claude-desktop')).toBe(false);
+            expect(listMachineChoiceAvailableAgents(choice)).toEqual(['claude']);
+        }
+    });
+
+    it('moves a draft off Claude Desktop once the desktop app is closed', () => {
+        const [choice] = collectMachineChoices([desktop(false)]);
+        expect(resolveChoiceAgent(choice, 'claude-desktop')).toBe('claude');
+    });
+});

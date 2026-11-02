@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { HARNESS_NAMES, isRetiredHarness, listAvailableHarnesses } from './harnessCatalog';
+import {
+    getHarnessName,
+    getSessionHarnessKey,
+    HARNESS_NAMES,
+    isClaudeDesktopSession,
+    isRetiredHarness,
+    listAvailableHarnesses,
+} from './harnessCatalog';
 
 describe('harness catalog', () => {
     it('names Happy and Antigravity by product, not by CLI id', () => {
@@ -150,5 +157,52 @@ describe('harness catalog', () => {
             happyAgentAvailable: false,
             selected: null,
         }).map((harness) => harness.key)).toEqual(['claude', 'codex', 'rig']);
+    });
+});
+
+describe('Claude Desktop harness', () => {
+    it('is named by product and sits directly after Claude Code', () => {
+        expect(HARNESS_NAMES['claude-desktop']).toBe('Claude Desktop');
+        expect(listAvailableHarnesses({
+            availability: { claude: true, 'claude-desktop': true, codex: true },
+            happyAgentAvailable: false,
+            selected: 'claude',
+        }).map((harness) => harness.key)).toEqual(['claude', 'claude-desktop', 'codex']);
+    });
+
+    // The daemon reports it only while the desktop app runs with the plugin,
+    // so a missing or false report means there is nothing to start it in.
+    it('is listed only on an explicit true report, never as a fallback or selection', () => {
+        expect(listAvailableHarnesses({
+            availability: { claude: true, codex: true },
+            happyAgentAvailable: false,
+            selected: 'claude-desktop',
+        }).map((harness) => harness.key)).toEqual(['claude', 'codex']);
+
+        expect(listAvailableHarnesses({
+            availability: { claude: true, 'claude-desktop': false },
+            happyAgentAvailable: false,
+            selected: 'claude-desktop',
+        }).map((harness) => harness.key)).toEqual(['claude']);
+
+        expect(listAvailableHarnesses({
+            availability: null,
+            happyAgentAvailable: false,
+            selected: null,
+        }).map((harness) => harness.key)).not.toContain('claude-desktop');
+    });
+
+    it('labels a session by its harness before its flavor', () => {
+        expect(getHarnessName(getSessionHarnessKey({ flavor: 'claude', harness: 'claude-desktop' }))).toBe('Claude Desktop');
+        expect(getHarnessName(getSessionHarnessKey({ flavor: 'claude' }))).toBe('Claude Code');
+        expect(getHarnessName(getSessionHarnessKey({ flavor: 'codex', harness: null }))).toBe('Codex');
+        expect(getSessionHarnessKey(null)).toBe('claude');
+    });
+
+    it('recognises a desktop session only by metadata.harness', () => {
+        expect(isClaudeDesktopSession({ harness: 'claude-desktop' })).toBe(true);
+        expect(isClaudeDesktopSession({ harness: 'something-newer' })).toBe(false);
+        expect(isClaudeDesktopSession({})).toBe(false);
+        expect(isClaudeDesktopSession(null)).toBe(false);
     });
 });

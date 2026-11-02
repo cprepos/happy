@@ -3,6 +3,7 @@ import { hackModes } from '@/sync/modeHacks';
 import { sortPermissionModes } from '@/utils/permissionModeLabels';
 import { sortRigModelsForPicker } from '@/utils/rigModelPickerOrder';
 import { compareVersionsWithPrerelease, isWellFormedVersion } from '@/utils/versionUtils';
+import { isClaudeDesktopSession } from '@/utils/harnessCatalog';
 import { CLI_VERSION_WITH_AUTO, getCodeAgentDefaults, normalizeAgentKey, retireModelMode } from '@/sync/agentDefaults';
 import {
     OPENCODE_DEFAULT_AGENTS,
@@ -397,7 +398,34 @@ export function filterPermissionModesForCli<T extends ModeOption>(
     return modes.filter((mode) => modeSupportedByCli(mode, cliVersion));
 }
 
+/**
+ * Whether the harness keeps model, permission and effort to itself. Claude
+ * Desktop runs its sessions with whatever the desktop app has picked, and the
+ * phone cannot change it, so it offers no pickers: `claude-desktop` as a new
+ * session's agent, or a running session's `metadata.harness`.
+ */
+export function harnessOwnsAgentModes(
+    flavor: AgentFlavor,
+    metadata?: Pick<Metadata, 'harness'> | null,
+): boolean {
+    return flavor === 'claude-desktop' || isClaudeDesktopSession(metadata);
+}
+
+// A new Claude Desktop session starts with the desktop app's own settings. One
+// ambient row each (never shown: pickers need two) lets the start flow resolve a
+// selection that sends nothing, the same `default` that means "no override".
+export function getClaudeDesktopPermissionModes(): PermissionMode[] {
+    return [{ key: 'default', name: 'Default', description: null }];
+}
+
+export function getClaudeDesktopModelModes(): ModelMode[] {
+    return [{ key: 'default', name: 'Default model', description: null }];
+}
+
 export function getHardcodedPermissionModes(flavor: AgentFlavor, translate: Translate): PermissionMode[] {
+    if (harnessOwnsAgentModes(flavor)) {
+        return getClaudeDesktopPermissionModes();
+    }
     if (flavor === 'codex') {
         return getCodexPermissionModes(translate);
     }
@@ -435,6 +463,9 @@ export function getAgyModelModes(): ModelMode[] {
 }
 
 export function getHardcodedModelModes(flavor: AgentFlavor, _translate: Translate): ModelMode[] {
+    if (harnessOwnsAgentModes(flavor)) {
+        return getClaudeDesktopModelModes();
+    }
     if (flavor === 'codex') {
         return getCodexModelModes();
     }
@@ -461,6 +492,9 @@ export function getAvailableModels(
     translate: Translate,
     selectedKey?: string | null,
 ): ModelMode[] {
+    if (harnessOwnsAgentModes(flavor, metadata)) {
+        return [];
+    }
     if (isRigMetadataV1(metadata)) {
         const models: ModelMode[] = sortRigModelsForPicker(getRigModels(metadata)).map((model) => ({
             key: model.key,
@@ -530,6 +564,9 @@ export function getAvailablePermissionModes(
     translate: Translate,
     selectedKey?: string | null,
 ): PermissionMode[] {
+    if (harnessOwnsAgentModes(flavor, metadata)) {
+        return [];
+    }
     if (isRigMetadataV1(metadata)) {
         const modes: PermissionMode[] = sortPermissionModes((metadata?.operatingModes ?? []).map((mode) => ({
             key: mode.code,
@@ -683,6 +720,9 @@ export function getEffortLevelsForModel(
     modelKey: string,
     metadata?: Metadata | null,
 ): EffortLevel[] {
+    if (harnessOwnsAgentModes(flavor, metadata)) {
+        return [];
+    }
     if (isRigMetadataV1(metadata)) {
         return getRigReasoningLevels(metadata, modelKey).map((level) => ({
             key: level,

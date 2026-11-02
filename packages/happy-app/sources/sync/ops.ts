@@ -11,7 +11,6 @@ import { markAgentModePushPending, clearAgentModePushPending, type AgentModeFiel
 import {
     isRigMetadata,
     isRigMetadataV1,
-    rigCanAbort,
     rigCanReadFiles,
     rigCanSearchFiles,
     rigCanUseShell,
@@ -19,6 +18,7 @@ import {
     rigHasRpcMethod,
 } from './rig';
 import { rigComposerSetMode } from './rigComposer';
+import { sessionCanAbort } from '@/utils/sessionAbort';
 import type { HappyAgentSpawnTarget } from './happyAgentSpawn';
 import { encodeBase64 } from '@/encryption/base64';
 
@@ -175,7 +175,7 @@ export interface SpawnSessionOptions {
     directory: string;
     approvedNewDirectoryCreation?: boolean;
     token?: string;
-    agent?: 'codex' | 'claude' | 'gemini' | 'openclaw' | 'agy' | 'opencode' | 'rig';
+    agent?: 'codex' | 'claude' | 'claude-desktop' | 'gemini' | 'openclaw' | 'agy' | 'opencode' | 'rig';
     permissionMode?: string;
     modelMode?: string;
     effortLevel?: string;
@@ -277,7 +277,7 @@ export async function machineSpawnNewSession(options: SpawnSessionOptions): Prom
             directory: string
             approvedNewDirectoryCreation?: boolean,
             token?: string,
-            agent?: 'codex' | 'claude' | 'gemini' | 'openclaw' | 'agy' | 'opencode' | 'rig',
+            agent?: 'codex' | 'claude' | 'claude-desktop' | 'gemini' | 'openclaw' | 'agy' | 'opencode' | 'rig',
             permissionMode?: string,
             modelMode?: string,
             effortLevel?: string,
@@ -886,7 +886,7 @@ export function sessionSetAgentModes(sessionId: string, patch: SessionAgentModes
  */
 export async function sessionAbort(sessionId: string): Promise<void> {
     const metadata = storage.getState().sessions[sessionId]?.metadata;
-    if (!rigCanAbort(metadata)) {
+    if (!sessionCanAbort(metadata)) {
         throw new Error('Abort is not available for this session');
     }
     await apiSocket.sessionRPC(sessionId, 'abort', isRigMetadata(metadata) ? {} : {

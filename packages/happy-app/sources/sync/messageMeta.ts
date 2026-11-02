@@ -3,8 +3,9 @@ import type { Settings } from './settings';
 import type { MessageMeta } from './typesMessageMeta';
 import { resolveSessionState } from './sessionState';
 import { getAgentDefaultOverride, resolveAgentDefaultConfig, retirePermissionMode } from './agentDefaults';
-import { permissionModeSupportedByCli } from '@/components/modelModeOptions';
+import { harnessOwnsAgentModes, permissionModeSupportedByCli } from '@/components/modelModeOptions';
 import type { PermissionModeKey } from '@/components/PermissionModeSelector';
+import { isClaudeDesktopSession } from '@/utils/harnessCatalog';
 import {
     getRigComposerMode,
     getRigCurrentModel,
@@ -21,6 +22,12 @@ export function resolveMessageDeliveryMeta(
     isNewSession = false,
     hasPendingUserMessage = false,
 ): Pick<MessageMeta, 'expectsAcceptance' | 'queuedWhileBusy'> {
+    // A Claude Desktop session takes a message only when the desktop turn
+    // ends, so a send during a turn is marked as waiting for it. No receipt
+    // comes back from the desktop, so acceptance is not awaited.
+    if (isClaudeDesktopSession(session.metadata)) {
+        return isNewSession || !session.thinking ? {} : { queuedWhileBusy: true };
+    }
     if (!rigSendsMessageReceipts(session.metadata)) return {};
     const state = resolveSessionState({
         agentState: session.agentState,
@@ -110,6 +117,11 @@ export function resolveMessageModeMeta(
     }
 
     const flavor = session.metadata?.flavor;
+    // Claude Desktop runs the turn with the desktop app's own model and
+    // permissions; a Claude default from this account must not ride along.
+    if (harnessOwnsAgentModes(flavor, session.metadata)) {
+        return {};
+    }
     const agentOverrides = getAgentDefaultOverride(settings?.agentDefaultOverrides, flavor);
     const meta: MessageModeMeta = {};
     // The happy-cli version running this session. A mode key saved before the

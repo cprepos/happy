@@ -140,6 +140,8 @@ export interface SessionRowData {
     subtitle: string;
     avatarId: string;
     flavor: string | null;
+    // Host harness when it differs from `flavor` (`claude-desktop`).
+    harness?: string | null;
     clientId: string | null;
     identityLine: string | null;
     providerKind: string | null;
@@ -224,6 +226,7 @@ function buildSessionRowData(
         subtitle: getSessionSubtitle(session),
         avatarId: getSessionAvatarId(session),
         flavor: session.metadata?.flavor ?? null,
+        harness: session.metadata?.harness ?? null,
         clientId: session.metadata?.client?.id ?? null,
         identityLine: rigIdentity ? `${rigIdentity.clientName} · ${rigIdentity.providerName}` : null,
         providerKind: rigIdentity?.providerKind ?? session.metadata?.provider?.kind ?? null,

@@ -108,6 +108,7 @@ import {
 const agentIcons = {
     rig: require('@/assets/images/logo-black.png'),
     claude: require('@/assets/images/icon-claude.png'),
+    'claude-desktop': require('@/assets/images/icon-claude.png'),
     codex: require('@/assets/images/icon-gpt.png'),
     openclaw: require('@/assets/images/icon-openclaw.png'),
     gemini: require('@/assets/images/icon-gemini.png'),
@@ -120,6 +121,7 @@ type AgentKey = NewSessionAgentType;
 // the Home composer's harness picker. Retired harnesses are absent from both.
 const ALL_AGENTS: { key: AgentKey; label: string }[] = [
     { key: 'claude', label: 'claude code' },
+    { key: 'claude-desktop', label: 'claude desktop' },
     { key: 'codex', label: 'codex' },
     { key: 'agy', label: 'antigravity' },
     { key: 'opencode', label: 'opencode' },

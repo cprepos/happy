@@ -2,6 +2,7 @@ export type ResumeCommandMetadata = {
     path?: string | null;
     os?: string | null;
     flavor?: string | null;
+    harness?: string | null;
     opencodeSessionId?: string | null;
     claudeSessionId?: string | null;
     codexThreadId?: string | null;
@@ -28,7 +29,13 @@ function isWindows(metadata: ResumeCommandMetadata): boolean {
 }
 
 function buildResumeInvocation(metadata: ResumeCommandMetadata): string | null {
-    if (metadata.client?.id === 'rig' || metadata.capabilities?.resume === false) {
+    // A Claude Desktop session lives in the desktop app; `happy claude
+    // --resume` would fork it into a second, unrelated process.
+    if (
+        metadata.client?.id === 'rig'
+        || metadata.harness === 'claude-desktop'
+        || metadata.capabilities?.resume === false
+    ) {
         return null;
     }
     if (metadata.flavor === 'opencode' && metadata.opencodeSessionId) {

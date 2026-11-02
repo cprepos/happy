@@ -20,6 +20,8 @@ interface AvatarProps {
     size?: number;
     monochrome?: boolean;
     flavor?: string | null;
+    /** Host harness when it differs from `flavor` (`claude-desktop`). */
+    harness?: string | null;
     clientId?: string | null;
     /** Where this avatar is rendered; omitted avatars never get a harness badge. */
     badgeLocation?: AvatarBadgeLocation;
@@ -29,6 +31,7 @@ interface AvatarProps {
 
 const harnessIcons: Record<AvatarHarnessIcon, number> = {
     claude: require('@/assets/images/icon-claude.png'),
+    'claude-desktop': require('@/assets/images/icon-claude.png'),
     codex: require('@/assets/images/icon-gpt.png'),
     agy: require('@/assets/images/icon-agy.png'),
     opencode: require('@/assets/images/icon-opencode.png'),
@@ -47,10 +50,49 @@ function harnessBadgeSizes(size: number, harness: AvatarHarnessIcon) {
         ? Math.round(size * 0.26)
         : harness === 'codex'
             ? Math.round(size * 0.3)
-            : harness === 'claude'
+            : harness === 'claude' || harness === 'claude-desktop'
                 ? Math.round(size * 0.34)
                 : Math.round(size * 0.42);
     return { circleSize, iconSize };
+}
+
+// Claude Desktop is the Claude mark with a desktop display tucked onto the
+// badge's lower right, the same way the badge itself sits on the avatar.
+// Below this badge size the glyph is a smudge, so the plain mark is shown.
+const DESKTOP_GLYPH_MIN_CIRCLE = 16;
+
+function HarnessBadge({ harness, size }: { harness: AvatarHarnessIcon; size: number }) {
+    const { theme } = useUnistyles();
+    const { circleSize, iconSize } = harnessBadgeSizes(size, harness);
+    const glyphCircle = Math.round(circleSize * 0.56);
+    return (
+        <View style={[styles.harnessIcon, {
+            width: circleSize,
+            height: circleSize,
+            alignItems: 'center',
+            justifyContent: 'center'
+        }]}>
+            <Image
+                source={harnessIcons[harness]}
+                style={{ width: iconSize, height: iconSize }}
+                contentFit="contain"
+                tintColor={harness === 'codex' || harness === 'rig' ? theme.colors.text : undefined}
+            />
+            {harness === 'claude-desktop' && circleSize >= DESKTOP_GLYPH_MIN_CIRCLE && (
+                <View style={[styles.desktopGlyph, {
+                    width: glyphCircle,
+                    height: glyphCircle,
+                    borderRadius: glyphCircle / 2,
+                }]}>
+                    <Ionicons
+                        name="desktop"
+                        size={Math.round(glyphCircle * 0.62)}
+                        color={theme.colors.text}
+                    />
+                </View>
+            )}
+        </View>
+    );
 }
 
 const styles = StyleSheet.create((theme) => ({
@@ -70,10 +112,18 @@ const styles = StyleSheet.create((theme) => ({
         shadowRadius: 2,
         elevation: 3,
     },
+    desktopGlyph: {
+        position: 'absolute',
+        bottom: -3,
+        right: -3,
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: theme.colors.surface,
+    },
 }));
 
 export const Avatar = React.memo((props: AvatarProps) => {
-    const { bot, flavor, clientId, badgeLocation = 'none', size = 48, imageUrl, thumbhash, ...avatarProps } = props;
+    const { bot, flavor, harness, clientId, badgeLocation = 'none', size = 48, imageUrl, thumbhash, ...avatarProps } = props;
     const avatarStyle = normalizeAvatarStyle(useSetting('avatarStyle'));
     // The black-and-white preference applies to every generated style; a
     // caller passing monochrome explicitly (e.g. offline rows) still wins.
@@ -89,7 +139,7 @@ export const Avatar = React.memo((props: AvatarProps) => {
         : badgeLocation === 'sessionList'
             ? showFlavorIcons
             : false;
-    const effectiveHarness = resolveAvatarHarness(flavor, clientId);
+    const effectiveHarness = resolveAvatarHarness(flavor, clientId, harness);
 
     if (bot && !imageUrl) {
         return (
@@ -128,25 +178,10 @@ export const Avatar = React.memo((props: AvatarProps) => {
 
         // Add harness icon overlay if enabled
         if (showHarnessIcon && effectiveHarness) {
-            const harnessIcon = harnessIcons[effectiveHarness];
-            const { circleSize, iconSize } = harnessBadgeSizes(size, effectiveHarness);
-
             return (
                 <View style={[styles.container, { width: size, height: size }]}>
                     {imageElement}
-                    <View style={[styles.harnessIcon, {
-                        width: circleSize,
-                        height: circleSize,
-                        alignItems: 'center',
-                        justifyContent: 'center'
-                    }]}>
-                        <Image
-                            source={harnessIcon}
-                            style={{ width: iconSize, height: iconSize }}
-                            contentFit="contain"
-                            tintColor={effectiveHarness === 'codex' || effectiveHarness === 'rig' ? theme.colors.text : undefined}
-                        />
-                    </View>
+                    <HarnessBadge harness={effectiveHarness} size={size} />
                 </View>
             );
         }
@@ -165,31 +200,13 @@ export const Avatar = React.memo((props: AvatarProps) => {
         AvatarComponent = AvatarGradient;
     }
 
-    // Determine harness icon for generated avatars
-    const harnessIcon = effectiveHarness ? harnessIcons[effectiveHarness] : null;
-    const { circleSize, iconSize } = effectiveHarness
-        ? harnessBadgeSizes(size, effectiveHarness)
-        : { circleSize: 0, iconSize: 0 };
-
     // Only wrap in a container when this caller explicitly opts into a badge
     // location and the session has an identifiable harness.
-    if (showHarnessIcon && effectiveHarness && harnessIcon) {
+    if (showHarnessIcon && effectiveHarness) {
         return (
             <View style={[styles.container, { width: size, height: size }]}>
                 <AvatarComponent {...avatarProps} size={size} />
-                <View style={[styles.harnessIcon, {
-                    width: circleSize,
-                    height: circleSize,
-                    alignItems: 'center',
-                    justifyContent: 'center'
-                }]}>
-                    <Image
-                        source={harnessIcon}
-                        style={{ width: iconSize, height: iconSize }}
-                        contentFit="contain"
-                        tintColor={effectiveHarness === 'codex' || effectiveHarness === 'rig' ? theme.colors.text : undefined}
-                    />
-                </View>
+                <HarnessBadge harness={effectiveHarness} size={size} />
             </View>
         );
     }

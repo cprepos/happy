@@ -3,10 +3,12 @@
  *
  * A Rig session is Happy's own harness even when its selected provider is
  * Codex or Claude, so the client identity always wins over provider/flavor
- * metadata. Only the active harnesses have badges; retired and unknown
- * flavors stay badge-free.
+ * metadata. A Claude Desktop session reports `flavor: 'claude'` with
+ * `harness: 'claude-desktop'`, and gets the Claude mark with a desktop glyph.
+ * Only the active harnesses have badges; retired and unknown flavors stay
+ * badge-free.
  */
-export type AvatarHarnessIcon = 'claude' | 'codex' | 'agy' | 'opencode' | 'openclaw' | 'rig';
+export type AvatarHarnessIcon = 'claude' | 'claude-desktop' | 'codex' | 'agy' | 'opencode' | 'openclaw' | 'rig';
 
 const ACTIVE_HARNESS_ICONS: ReadonlySet<string> = new Set([
     'claude',
@@ -19,8 +21,10 @@ const ACTIVE_HARNESS_ICONS: ReadonlySet<string> = new Set([
 export function resolveAvatarHarness(
     flavor?: string | null,
     clientId?: string | null,
+    harness?: string | null,
 ): AvatarHarnessIcon | null {
     if (clientId === 'rig') return 'rig';
+    if (harness === 'claude-desktop') return 'claude-desktop';
     if (flavor == null || !ACTIVE_HARNESS_ICONS.has(flavor)) return null;
-    return flavor as Exclude<AvatarHarnessIcon, 'rig'>;
+    return flavor as Exclude<AvatarHarnessIcon, 'rig' | 'claude-desktop'>;
 }

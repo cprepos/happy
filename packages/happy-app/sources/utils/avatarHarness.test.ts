@@ -14,6 +14,12 @@ describe('resolveAvatarHarness', () => {
         expect(resolveAvatarHarness(null, 'rig')).toBe('rig');
     });
 
+    it('badges a Claude Desktop session as claude-desktop, not plain Claude', () => {
+        expect(resolveAvatarHarness('claude', null, 'claude-desktop')).toBe('claude-desktop');
+        expect(resolveAvatarHarness('claude', undefined, undefined)).toBe('claude');
+        expect(resolveAvatarHarness('claude', null, 'future-host')).toBe('claude');
+    });
+
     it('does not badge retired or unknown flavors', () => {
         expect(resolveAvatarHarness('gemini')).toBeNull();
         expect(resolveAvatarHarness('future-harness')).toBeNull();
