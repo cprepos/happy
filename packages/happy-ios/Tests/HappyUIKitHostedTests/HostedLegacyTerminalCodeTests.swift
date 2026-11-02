@@ -148,6 +148,10 @@ final class HostedLegacyTerminalCodeTests: XCTestCase {
         if here != .nothing {
             let page = SettingsViewController(context: context, computer: nil)
             navigation.pushViewController(page, animated: false)
+            // In the window, as Settings is when its Add Agent is tapped: a
+            // push without animation puts the page there only when the
+            // stack is next laid out.
+            navigation.view.layoutIfNeeded()
             page.view.layoutIfNeeded()
             settings = page
         }

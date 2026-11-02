@@ -42,7 +42,8 @@ public actor SyncEngine {
     /// of it that began after it took them, so nothing flickers back in
     /// between: each with the number of the read last begun then.
     private var settling: [(intent: Intent, read: Int)] = []
-    /// Refused before the list said they were gone: not settling.
+    /// Refused before the list said they were gone: off the overlay, and
+    /// not settling.
     private var refusedIds: Set<String> = []
     /// Reads of the computer begun (`reconcile`).
     private var reads = 0
@@ -638,10 +639,13 @@ public actor SyncEngine {
     }
 
     private func intentsChanged(_ list: [Intent]) async {
+        // A refused one stays off until a list comes without it; after
+        // that no list holds it again.
+        refusedIds.formIntersection(list.map(\.id))
+        let list = list.filter { !refusedIds.contains($0.id) }
         let ids = Set(list.map(\.id)), slots = Set(list.map(\.slot))
         var taken = false
         for intent in waiting where !intent.kind.isTodo && !ids.contains(intent.id) && !slots.contains(intent.slot) {
-            if refusedIds.remove(intent.id) != nil { continue }
             settling.append((intent, reads))
             taken = true
         }
@@ -669,7 +673,12 @@ public actor SyncEngine {
             settling.removeAll { $0.intent.id == id }
             await layIntents()
         } else if waiting.contains(where: { $0.id == id }) {
+            // The outbox's list without it may come after this, on its own
+            // stream: off the overlay now, so what it hid is back by the
+            // time the notice says why.
             refusedIds.insert(id)
+            waiting.removeAll { $0.id == id }
+            await layIntents()
         }
         // A refused read is nothing to tell; a todo list tells its own.
         guard rejection.intent.kind != .read, !rejection.intent.kind.isTodo else { return }

@@ -103,10 +103,13 @@ public actor FixtureChatWorld {
 
     private func deliver(_ localId: String, sessionId: String, retrying: Bool = false) {
         Task {
+            // A chat reset or a message discarded meanwhile hears no more of
+            // this send: the chat opened next isn't given its reply.
             try? await Task.sleep(for: .milliseconds(400))
+            guard self.chats[sessionId]?.outgoing[localId] != nil else { return }
             self.setDelivery(localId, sessionId: sessionId, .sending)
             try? await Task.sleep(for: .milliseconds(700))
-            let text = self.chats[sessionId]?.outgoing[localId]?.text ?? ""
+            guard let text = self.chats[sessionId]?.outgoing[localId]?.text else { return }
             if text.localizedCaseInsensitiveContains("fail") && !retrying {
                 self.setDelivery(localId, sessionId: sessionId, .failed("Network unavailable"))
                 return
@@ -114,6 +117,7 @@ public actor FixtureChatWorld {
             self.setDelivery(localId, sessionId: sessionId, nil)
             // On the server; the agent takes it into its context a moment later.
             try? await Task.sleep(for: .milliseconds(900))
+            guard self.chats[sessionId]?.outgoing[localId] != nil else { return }
             self.settle(localId, sessionId: sessionId)
             self.reply(to: text, sessionId: sessionId)
         }
@@ -175,6 +179,7 @@ public actor FixtureChatWorld {
     /// Grows one agent message a few words at a time, the way a reply
     /// streams in.
     private func stream(_ text: String, sessionId: String, turn: String) async {
+        if Task.isCancelled { return }
         let id = "agent-\(UUID().uuidString.prefix(8))"
         append(.agentText(AgentTextMessage(id: id, createdAt: tick(), turn: turn, text: "")), sessionId: sessionId)
         var shown = text.startIndex

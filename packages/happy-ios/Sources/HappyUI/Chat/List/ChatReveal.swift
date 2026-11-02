@@ -338,13 +338,18 @@ final class ChatRevealDriver: NSObject {
     }
 }
 
-/// CADisplayLink holds its target strongly.
+/// CADisplayLink holds its target strongly. A driver that goes while a
+/// reply is still coming out (its chat closed mid-reveal) leaves its link
+/// running with nothing to do: the link stops itself on its next frame.
 @MainActor
 private final class ChatRevealTarget: NSObject {
     weak var driver: ChatRevealDriver?
     init(_ driver: ChatRevealDriver) { self.driver = driver }
-    @objc func tick() {
-        guard let driver else { return }
+    @objc func tick(_ link: CADisplayLink) {
+        guard let driver else {
+            link.invalidate()
+            return
+        }
         driver.tick()
     }
 }

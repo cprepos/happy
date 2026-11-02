@@ -6,7 +6,7 @@
 #   ALLOW_FROM=any ./install-service.sh        install; anyone on the LAN may connect
 #   ./install-service.sh --uninstall           remove the services and the firewall rules
 #
-# Settings (env): VOICE_DIR (~/happy-voice-local), VOICE_HOST (0.0.0.0), STT_PORT (8090),
+# Settings (env): VOICE_DIR (this folder), VOICE_HOST (0.0.0.0), STT_PORT (8090),
 # TTS_PORT (8880), ALLOW_FROM (192.168.2.72, or "any"), TTS_MODEL (prince-canuma/Kokoro-82M),
 # TTS_VOICE (af_heart), TTS_FIRST_MAX_WORDS (8).
 #
@@ -23,7 +23,7 @@
 # logging in, turn on automatic login (System Settings > Users & Groups).
 set -euo pipefail
 
-VOICE_DIR=${VOICE_DIR:-$HOME/happy-voice-local}
+VOICE_DIR=${VOICE_DIR:-$(cd "$(dirname "$0")" && pwd)}
 VOICE_HOST=${VOICE_HOST:-0.0.0.0}
 STT_PORT=${STT_PORT:-8090}
 TTS_PORT=${TTS_PORT:-8880}

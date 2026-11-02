@@ -367,7 +367,7 @@ final class TodoLibraryTests: XCTestCase {
         await account.library.showDeleted(surfaceId)
         try await eventually { watcher.state.deleted.map(\.text) == ["Old"] && watcher.state.deletedRead }
         await account.library.restore(surfaceId, "t000000000000000000000a2")
-        XCTAssertEqual(watcher.state.active.map(\.text), ["Milk", "Old"])
+        try await eventually { watcher.state.active.map(\.text) == ["Milk", "Old"] }
         let counts = await account.library.outstanding([surfaceId])
         XCTAssertEqual(counts, [surfaceId: 2])
     }

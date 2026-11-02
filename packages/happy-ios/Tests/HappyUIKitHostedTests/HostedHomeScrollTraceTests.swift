@@ -190,10 +190,14 @@ final class HostedHomeScrollTraceTests: XCTestCase {
         sidebar.view(for: id).map { $0.convert($0.box.origin, to: window).y }
     }
 
-    /// Where `id`'s box is drawn in the window this frame, mid-glide too.
+    /// Where `id`'s box is drawn in the window this frame, mid-glide too;
+    /// nil while it isn't drawn yet. A row mounted for this frame has a
+    /// presentation with no size, at the list's top, until the frame it
+    /// was placed in is on screen.
     private func shownY(_ id: String, _ sidebar: SidebarList, _ window: UIWindow) -> CGFloat? {
         guard let view = sidebar.view(for: id), let layer = view.layer.presentation(),
               let windowLayer = window.layer.presentation() else { return windowY(id, sidebar, window) }
+        guard !layer.bounds.isEmpty else { return nil }
         return layer.convert(view.box.origin, to: windowLayer).y
     }
 
@@ -235,21 +239,29 @@ final class HostedHomeScrollTraceTests: XCTestCase {
         let start = CACurrentMediaTime()
         let recorder = TickRecorder { _ in
             MainActor.assumeIsolated {
+                // The presentation is read first and stamped with the time it
+                // is read. A presentation is the glide at the first time it
+                // is read in a callback (later reads in the same callback
+                // return the same layer), and a callback can come a frame
+                // late, so neither the frame's timestamp nor a time taken
+                // after the updates below is when the rows were where it says.
                 let now = CACurrentMediaTime() - start
+                let shown = self.shownY(anchor, sidebar, window)
+                if let row = sidebar.view(for: anchor), let shown {
+                    samples.append(Sample(
+                        time: now,
+                        offset: sidebar.contentOffsetY,
+                        insetTop: sidebar.contentInsets.top,
+                        contentHeight: sidebar.edge.contentSize.height,
+                        anchorContentY: row.frame.minY,
+                        anchorWindowY: shown
+                    ))
+                }
                 while let next = pending.first, next.at <= now {
                     pending.removeFirst()
                     next.run()
                     sidebar.layoutIfNeeded()
                 }
-                guard let row = sidebar.view(for: anchor), let shown = self.shownY(anchor, sidebar, window) else { return }
-                samples.append(Sample(
-                    time: now,
-                    offset: sidebar.contentOffsetY,
-                    insetTop: sidebar.contentInsets.top,
-                    contentHeight: sidebar.edge.contentSize.height,
-                    anchorContentY: row.frame.minY,
-                    anchorWindowY: shown
-                ))
             }
         }
         try await Task.sleep(for: .milliseconds(Int(seconds * 1000)))
@@ -262,13 +274,26 @@ final class HostedHomeScrollTraceTests: XCTestCase {
     /// by a little from frame to frame, so each step is close to the
     /// middle of its neighbours'; a row moved by something other than the
     /// scroll breaks that in one frame. Returns the points it breaks it by.
+    ///
+    /// The samples are not always evenly spaced: a callback that comes a
+    /// frame late reads the glide two frames on from the one before, so
+    /// its step is two frames' travel. Each step is therefore taken as a
+    /// speed at the middle of its span, and the middle of its neighbours
+    /// is their speeds' line at that time, over this step's span. When the
+    /// frames are even that is the mean of the neighbours' steps.
     private func worstStep(_ name: String, _ samples: [Sample]) -> CGFloat {
-        let steps = zip(samples, samples.dropFirst()).map { (time: $1.time, step: $1.anchorWindowY - $0.anchorWindowY, sample: $1) }
+        let steps = zip(samples, samples.dropFirst()).map { previous, sample in
+            (time: sample.time, middle: (previous.time + sample.time) / 2, span: CGFloat(sample.time - previous.time),
+             step: sample.anchorWindowY - previous.anchorWindowY, sample: sample)
+        }
         guard steps.count > 4 else { return 0 }
         var odd: [(time: CFTimeInterval, by: CGFloat, sample: Sample)] = []
         for index in 1..<(steps.count - 1) {
-            let expected = (steps[index - 1].step + steps[index + 1].step) / 2
-            odd.append((steps[index].time, steps[index].step - expected, steps[index].sample))
+            let before = steps[index - 1], step = steps[index], after = steps[index + 1]
+            let speedBefore = before.step / before.span, speedAfter = after.step / after.span
+            let along = CGFloat((step.middle - before.middle) / (after.middle - before.middle))
+            let expected = (speedBefore + (speedAfter - speedBefore) * along) * step.span
+            odd.append((step.time, step.step - expected, step.sample))
         }
         let worst = odd.max { abs($0.by) < abs($1.by) }
         print("""

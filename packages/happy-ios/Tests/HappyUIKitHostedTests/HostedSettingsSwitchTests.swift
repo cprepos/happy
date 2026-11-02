@@ -482,6 +482,10 @@ final class HostedSettingsSwitchTests: XCTestCase {
             var captured = false
             let start = CACurrentMediaTime()
             let recorder = TickRecorder { [unowned self] _ in
+                // UIKit starts the pop on its next layout, and a tick can come
+                // first: Settings still stands, with none of home mounted. From
+                // the frame home joins the window, every frame counts.
+                guard !frames.isEmpty || home.view.window != nil else { return }
                 let time = CACurrentMediaTime() - start
                 frames.append(frame(app, home: home, at: time))
                 if !captured, time > 0.15 {

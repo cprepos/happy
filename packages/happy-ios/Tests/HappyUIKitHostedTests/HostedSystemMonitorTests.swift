@@ -318,7 +318,9 @@ final class HostedSystemMonitorTests: XCTestCase {
         meter.perform(NSSelectorFromString("runScript"))
         let deadline = ContinuousClock.now + .seconds(60)
         try await Task.sleep(for: .milliseconds(300))
-        while button.accessibilityValue?.contains("scripting=1") == true, ContinuousClock.now < deadline {
+        // Asked of the meter, not read off its button: the summary costs
+        // milliseconds of the main thread, inside the frames it counts.
+        while meter.isScripting, ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(100))
         }
         let summary = button.accessibilityValue ?? ""

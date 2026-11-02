@@ -38,6 +38,18 @@ class VoiceApiTest {
         }
     }
 
+    @Test fun withoutAnAgentIdAsksTheServerForHappysDefaultAgent() = runTest {
+        // iOS's HappyAPI.voiceAgentID; a custom agent goes through Direct Connection instead (VoiceEngineTest).
+        assertEquals("agent_6701k211syvvegba4kt7m68nxjmw", VoiceApi.DEFAULT_AGENT_ID)
+        MockWebServer().use { server ->
+            server.start()
+            server.enqueue(MockResponse.Builder().body(GRANT).build())
+            val url = server.url("/").toString().trimEnd('/')
+            VoiceApi(OkHttpClient(), "android/test", { url }, { url }).credentials(AuthCredentials("existing", "unused"))
+            assertEquals("""{"agentId":"${VoiceApi.DEFAULT_AGENT_ID}"}""", server.takeRequest().body!!.utf8())
+        }
+    }
+
     @Test fun differentVoiceServerSignsInWithSecretInsteadOfSendingForeignToken() = runTest {
         MockWebServer().use { server ->
             server.start()

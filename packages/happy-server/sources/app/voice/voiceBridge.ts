@@ -35,6 +35,8 @@ const TOOL_TIMEOUT_DEFAULT_MS = 30_000;
 const TOOL_TIMEOUT_MAX_MS = 60_000;
 /** How long an RPC from a not-yet-known participant waits for it to appear. */
 const AGENT_LOOKUP_TIMEOUT_MS = 3000;
+/** livekit-agents joins a dispatched job as `agent-<jobId>`. */
+const AGENT_IDENTITY_PREFIX = "agent-";
 /** Text sent before the agent joins waits here; the oldest is dropped past this. */
 export const VOICE_MAX_QUEUED_MESSAGES = 100;
 /**
@@ -427,13 +429,20 @@ export class VoiceBridge {
     }
 
     /**
-     * Only the dispatched agent may drive the app. Its first RPC can arrive
-     * before the update that adds it to the room, so an unknown caller gets a
-     * moment to show up.
+     * Only the dispatched agent may drive the app. Its first RPC, `happy.getConfig`,
+     * arrives before the update that adds it to the room, and rtc-node holds that
+     * update back until the RPC is answered (measured: announced 150 ms after the
+     * reply, or ~2.6 s later while the reply waited for it). So an unknown caller
+     * carrying the agent worker's identity is let through at once: only the server
+     * mints user tokens, and those are `user-<accountId>`. Any other unknown caller
+     * gets a moment to show up.
      */
     private async requireAgent(rtc: Rtc, data: RpcInvocationData) {
-        const deadline = Date.now() + AGENT_LOOKUP_TIMEOUT_MS;
         let caller = this.room?.remoteParticipants.get(data.callerIdentity);
+        if (!caller && data.callerIdentity.startsWith(AGENT_IDENTITY_PREFIX)) {
+            return;
+        }
+        const deadline = Date.now() + AGENT_LOOKUP_TIMEOUT_MS;
         while (!caller && Date.now() < deadline && !this.closed) {
             await new Promise((resolve) => setTimeout(resolve, 50));
             caller = this.room?.remoteParticipants.get(data.callerIdentity);

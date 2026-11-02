@@ -11,10 +11,12 @@ either one. MLX does all the work on the Mac. Nothing here runs an LLM.
 
 ## Setup and start
 
-Copy this directory to `~/happy-voice-local` on the Mac, then:
+Run it in place from a checkout of this repo on the Mac. The `.venv`, `logs/` and `bench/`
+output it creates here are gitignored, and the launchd services point at this folder, so what
+is checked out is what runs after a restart.
 
 ```sh
-cd ~/happy-voice-local
+cd selfhost/mac-voice
 ./run.sh setup     # uv into ~/.local/bin (no shell profile edits), Python 3.12, .venv, pinned requirements
 ./run.sh start     # both services in the background; waits for /health (about 5 s each once models are cached)
 ./run.sh status    # health and memory
@@ -59,6 +61,9 @@ Kokoro-82M with its voices is 0.34 GB. The `.venv` takes another 1.4 GB.
 | `TTS_PAUSE_PHRASE` | 0.05 | silence kept after a piece that stops mid-phrase |
 | `TTS_PAUSE` | | sets all three of the above at once, for an install that already uses it |
 | `TTS_MP3_KBPS` | 96 | bitrate of the streamed mp3 |
+| `TTS_CACHE_WORDS` | 12 | texts up to this many words have their audio kept and replayed, so a repeated phrase such as the greeting costs ~1 ms instead of ~300 ms |
+| `TTS_CACHE_ENTRIES` | 64 | how many phrases are kept, least recently used dropped first. 0 turns the cache off |
+| `TTS_PREWARM` | Hi, Happy here | phrases synthesized into the cache at startup with `TTS_VOICE`, separated by `\|` |
 
 `install-service.sh` writes `TTS_MODEL`, `TTS_VOICE` and `TTS_FIRST_MAX_WORDS` into the launchd
 plist, so they survive a reinstall and a reboot. Anything set only in a shell does not. Editing

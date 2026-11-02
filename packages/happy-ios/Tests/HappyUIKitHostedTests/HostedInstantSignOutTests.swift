@@ -104,7 +104,9 @@ private final class Phone {
             agentConnectionCredentialStore: agents,
             agentTransport: { _ in Agent(network: network) },
             rnServerImport: { .confirmed(ServerConfig.defaultServerURL) },
-            localSettingsFactory: { [unowned self] id in
+            // Held, not unowned: a removal goes on behind the screen, so the
+            // account can ask for settings after the test has let go of it.
+            localSettingsFactory: { [self] id in
                 if let kept = settings[id] { return kept }
                 let made = InMemoryKeyValueStore()
                 settings[id] = made

@@ -39,6 +39,7 @@ import { appendDaemonSpawnModeArgs, shouldForwardDaemonPermissionMode } from './
 import { hasPersistedProcessConflict, isPidAlive, machineBootTimeMs } from './sessionLiveness';
 import { createDesktopHub, runDesktopCommand, startDesktopSessionFromPhone } from './desktopHub';
 import { claudeCliPath } from '@/claude/claudeLocal';
+import { logsPrune } from '@/utils/logsPrune';
 
 /** Shell-escape a string for safe interpolation into tmux commands. */
 function shellescape(s: string): string {
@@ -1115,6 +1116,23 @@ export async function startDaemon(): Promise<void> {
     // Connect to server
     apiMachine.connect();
 
+    // Every CLI process leaves a log behind and nothing else removes them: keep a week, and at
+    // most 1 GB so one runaway day cannot fill the disk; never this daemon's own log or one a
+    // live session is still writing (logsPrune).
+    const pruneLogs = () => {
+      const { files, bytes } = logsPrune(configuration.logsDir, {
+        maxAgeMs: 7 * 24 * 60 * 60 * 1000,
+        maxTotalBytes: 1024 * 1024 * 1024,
+        keep: logger.logFilePath,
+      });
+      if (files > 0) {
+        logger.debug(`[DAEMON RUN] Pruned ${files} old log files (${Math.round(bytes / 1024 / 1024)} MB)`);
+      }
+    };
+    pruneLogs();
+    const pruneLogsInterval = setInterval(pruneLogs, 24 * 60 * 60 * 1000);
+    pruneLogsInterval.unref();
+
     // Every 60 seconds:
     // 1. Prune stale sessions
     // 2. Check if daemon needs update
@@ -1160,6 +1178,7 @@ export async function startDaemon(): Promise<void> {
         logger.debug('[DAEMON RUN] Daemon bundle replaced on disk, handing off to new daemon');
 
         clearInterval(restartOnStaleVersionAndHeartbeat);
+        clearInterval(pruneLogsInterval);
 
         // Release ownership BEFORE spawning the new daemon. Otherwise the spawned
         // `happy daemon start` reads our still-present daemon.state.json, sees
@@ -1222,6 +1241,7 @@ export async function startDaemon(): Promise<void> {
         clearInterval(restartOnStaleVersionAndHeartbeat);
         logger.debug('[DAEMON RUN] Health check interval cleared');
       }
+      clearInterval(pruneLogsInterval);
 
       // Update daemon state before shutting down
       await apiMachine.updateDaemonState((state: DaemonState | null) => ({

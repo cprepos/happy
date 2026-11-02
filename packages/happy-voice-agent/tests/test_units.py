@@ -588,7 +588,7 @@ def test_llm_and_interruption_defaults() -> None:
     assert (s.llm_base_url, s.llm_model) == ("http://127.0.0.1:8903/v1", "coder")
     assert s.llm_timeout == 60.0
     assert s.llm_max_retry == 0
-    assert s.max_endpointing_delay == 1.5
+    assert s.max_endpointing_delay == 0.8
     assert s.interrupt_min_duration == 0.8
     assert s.interrupt_min_words == 1
     assert s.false_interruption_timeout == 2.0
@@ -647,7 +647,7 @@ def test_session_options_follow_settings() -> None:
         "false_interruption_timeout": 2.0,
         "resume_false_interruption": True,
     }
-    assert th["endpointing"] == {"min_delay": 0.4, "max_delay": 1.5}
+    assert th["endpointing"] == {"min_delay": 0.4, "max_delay": 0.8}
 
 
 def test_warmer_passes_conn_options() -> None:

@@ -142,6 +142,9 @@ final class HomeArchiveVisibilityTests: XCTestCase {
             var shown = models().shown
             shown.ids = [.archiveToggle, .day(0)] + ordered.map { .session($0.id) }
             shown.rows = [.flat(.archiveToggle(hidden: false)), .flat(.dayHeader(.today))] + ordered.map { .flat(.session($0)) }
+            // Only the order moves: a row that changed its place in the card
+            // is drawn anew, and would rightly be a new revision here.
+            shown.places = shown.rows.map { _ in HomeCardPlace(first: false, last: false, separated: true) }
             let pair = HomeArchiveModels(hidden: hidden, shown: shown)
             adapter.receiveArchiveSettings(settings(false))
             adapter.update(.init(model: shown, width: 320, environment: environment, dark: false, selected: nil, archiveModels: pair, viewportHeight: 100))

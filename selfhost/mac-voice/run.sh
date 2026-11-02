@@ -1,5 +1,5 @@
 #!/bin/sh
-# Local STT + TTS on Apple Silicon. Everything lives in this directory (default ~/happy-voice-local);
+# Local STT + TTS on Apple Silicon. Everything lives in this directory (selfhost/mac-voice, run in place);
 # models go to the Hugging Face cache. Both services bind VOICE_HOST (default 127.0.0.1).
 # install-service.sh installs them as launchd services; start/stop/restart then go through launchctl.
 #

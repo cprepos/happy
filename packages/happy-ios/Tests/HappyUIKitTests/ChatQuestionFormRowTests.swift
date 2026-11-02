@@ -93,7 +93,13 @@ final class ChatQuestionFormRowTests: XCTestCase {
         let call = ask(permission: ToolPermission(id: "p", status: .denied), state: .error)
         let dismissed = plan(call) { $0.question = InlineQuestionForm.askUserQuestion(call).map { ChatQuestionState(form: $0) } }
         XCTAssertTrue(strings(dismissed).contains(ChatWords.english.questionDismissed))
-        XCTAssertFalse(strings(dismissed).contains("Which build?"))
+        // The card's header keeps the question as its subtitle, as ToolView
+        // does (knownTools' `extractSubtitle`); the card under it drops it
+        // and its options.
+        XCTAssertEqual(strings(dismissed).filter { $0 == "Which build?" }.count, 1)
+        XCTAssertFalse(strings(dismissed).contains("Debug"))
+        XCTAssertFalse(strings(dismissed).contains("Release"))
+        XCTAssertFalse(strings(dismissed).contains(ChatWords.english.submitAnswer))
         XCTAssertFalse(strings(dismissed).contains("—"))
         XCTAssertFalse(dismisses(dismissed))
     }

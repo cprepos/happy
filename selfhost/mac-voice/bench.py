@@ -1,6 +1,6 @@
 """Benchmarks for the local Mac STT/TTS services (same method as the GPU server's bench).
 
-usage (from ~/happy-voice-local, with the services running unless noted):
+usage (from selfhost/mac-voice, with the services running unless noted):
   .venv/bin/python bench.py stt  NAME [PORT]     24 clips streamed in real time + file transcription: WER, partial lag, final latency, memory
   .venv/bin/python bench.py tts  NAME [PORT]     time to first byte, RTF and memory for short/medium/long inputs
   .venv/bin/python bench.py sustained NAME [SECONDS]  continuous real-time STT + a TTS request every 20 s, thermal + timings over time

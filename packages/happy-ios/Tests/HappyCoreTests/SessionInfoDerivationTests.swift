@@ -67,15 +67,30 @@ final class SessionInfoDerivationTests: XCTestCase {
         XCTAssertNil(derive(Self.detail(Self.record, composer: .object(["model": .string("x")])), raw: false, after: first.state))
     }
 
-    func testTheCheckoutStatusRebuildsOnlyTheQuickActions() throws {
-        let first = try XCTUnwrap(derive(Self.detail(Self.record)))
+    private static func checkoutStatus(updatedAt: Int64) -> GitStatus {
         var status = GitStatusParser.parse(status: "# branch.head main\n1 .M N... 100644 100644 100644 abc def a.swift", unstagedNumstat: "4\t2\ta.swift")
-        status.lastUpdatedAt = 1
-        let update = try XCTUnwrap(derive(Self.detail(Self.record), git: status, after: first.state))
+        status.lastUpdatedAt = updatedAt
+        return status
+    }
+
+    func testTheCheckoutStatusRebuildsOnlyTheQuickActions() throws {
+        // The session started on the branch the status finds, so the Branch row reads the same.
+        let record = Fixture.session("s1", machine: "m1", path: "/work/happy", title: "Primary", metadata: ["gitBranch": .string("main")])
+        let first = try XCTUnwrap(derive(Self.detail(record)))
+        let update = try XCTUnwrap(derive(Self.detail(record), git: Self.checkoutStatus(updatedAt: 1), after: first.state))
         XCTAssertEqual(update.output.changes, SessionInfoChanges(rebuilt: [.quickActions]))
         // A refresh that finds the same files changes nothing drawn.
-        status.lastUpdatedAt = 2
-        XCTAssertNil(derive(Self.detail(Self.record), git: status, after: update.state))
+        XCTAssertNil(derive(Self.detail(record), git: Self.checkoutStatus(updatedAt: 2), after: update.state))
+    }
+
+    /// The live branch is the metadata group's Branch row, so a status that
+    /// names a branch the row didn't show rebuilds that group as well.
+    func testTheCheckoutStatusNamingABranchAlsoRebuildsTheMetadata() throws {
+        let first = try XCTUnwrap(derive(Self.detail(Self.record)))
+        XCTAssertNil(first.output.frame.model?.branch)
+        let update = try XCTUnwrap(derive(Self.detail(Self.record), git: Self.checkoutStatus(updatedAt: 1), after: first.state))
+        XCTAssertEqual(update.output.frame.model?.branch, "main")
+        XCTAssertEqual(update.output.changes, SessionInfoChanges(rebuilt: [.quickActions, .metadata]))
     }
 
     /// Home's record gives the title the first frame shows, so the screen's
