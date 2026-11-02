@@ -440,8 +440,10 @@ invisible, as in happy-app. Gemini ACP and `role: 'agent'` events are current.
 | Session `file` | Current | `happy-app/sources/sync/sync.ts:818`, `happy-cli/src/api/apiSession.ts:487`; completed `file` tool with optional image metadata. |
 | Session `turn-start` | Current | `happy-cli/src/claude/utils/sessionProtocolMapper.ts:405`, `happy-cli/src/agent/acp/AcpSessionManager.ts:84`; invisible lifecycle. |
 | Session `turn-end` | Current | `happy-cli/src/claude/utils/sessionProtocolMapper.ts:460`, `happy-cli/src/agent/acp/AcpSessionManager.ts:99`; invisible ready event. |
-| Session `start` | Current | `happy-cli/src/claude/utils/sessionProtocolMapper.ts:354`, `happy-cli/src/codex/utils/sessionProtocolMapper.ts:108`; invisible subagent lifecycle. |
-| Session `stop` | Current | `happy-cli/src/claude/utils/sessionProtocolMapper.ts:372`, `happy-cli/src/codex/utils/sessionProtocolMapper.ts:125`; invisible subagent lifecycle. |
+| Session `start` | Current | `happy-cli/src/claude/utils/sessionProtocolMapper.ts:354`, `happy-cli/src/codex/utils/sessionProtocolMapper.ts:108`; subagent lifecycle: no row, folded into the activity bar's panel (`SubagentFold`). |
+| Session `stop` | Current | `happy-cli/src/claude/utils/sessionProtocolMapper.ts:372`, `happy-cli/src/codex/utils/sessionProtocolMapper.ts:125`; subagent lifecycle: no row, folded into the activity bar's panel (`SubagentFold`). |
+| Session `progress` | Current | `happy-app/sources/sync/typesRaw.ts`, `happy-app/sources/sync/storage.ts`; a running subagent's numbers: no row, folded the same way. |
+| Session `agents` | Current | `happy-app/sources/sync/typesRaw.ts`; decoded, no row, and nothing folds it, as in happy-app. |
 | Session `user-message-accepted` / `user-message-rejected` | Current, external daemon, not in repo | Consumer evidence: `happy-app/sources/sync/rig.ts:188`, `happy-app/sources/sync/storageTypes.ts:115`, `happy-app/sources/sync/typesRaw.ts:111` and `:118`; settle original user row, never render receipts. |
 | Agent `event` / `switch` | Current | `happy-cli/src/claude/runClaude.ts:949`, transport `happy-cli/src/api/apiSession.ts:866`; mode event. |
 | Agent `event` / `message` | Current | `happy-cli/src/gemini/runGemini.ts:1161`, `happy-cli/src/codex/runCodex.ts:922`; centered event, reset/compaction handled. |
