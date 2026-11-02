@@ -273,7 +273,10 @@ nothing here is wired to the release skill or to EAS.
   - **Signing.** All three variants have `aps-environment` "development"
     and the `remote-notification` background mode, as the RN app's
     expo-notifications plugin writes them. Distribution signing swaps in
-    the profile's "production".
+    the profile's "production". A self-host build (see Build and test) has
+    neither, and `SelfHostBuild.pushDisabled` keeps it from asking for
+    permission or a token: without that it prompts, then APNs refuses the
+    token on every foreground.
 - **Onboarding follows happy-app step by step.** Signed in, home decides
   from the stored machines (`HomeState`, after happy-app's
   `shouldShowFirstRunInstall` and `resolveHomeEmptyState`):
@@ -563,7 +566,48 @@ identical and checks the variant keys:
 - `HappyAppVariant`;
 - ATS: local networking everywhere, arbitrary loads outside production.
 
-Only production has entitlements (associated domains).
+All variants have the push entitlement; production also has its associated
+domain.
+
+### Self-host build
+
+For a personal Apple team, which can't sign push or associated domains. It is
+opt-in: `project.yml`, `xtool.yml` and `App/Info-*.plist` don't mention it, and
+without its keys the app behaves as before (`SelfHostBuildTests`).
+
+```sh
+APPLE_TEAM_ID=ABCDE12345 APP_BUNDLE_ID_PREFIX=com.example.happy \
+SELFHOST_SERVER_URL=https://happy.example.com scripts/selfhost-project.sh
+open HappySelfHost.xcodeproj
+```
+
+`selfhost/ios/build-on-mac.sh --native` runs the same thing and installs the
+app. `scripts/selfhost-project.sh` validates the values, derives
+`.selfhost/Info-*.plist` from `App/` and generates the project from
+`project.selfhost.yml`, an overlay of `project.yml`. Both outputs are
+git-ignored and the team id only ever comes from the environment.
+
+| | Normal | Self-host |
+| --- | --- | --- |
+| Bundle id | the RN app's | `$APP_BUNDLE_ID_PREFIX` + `.dev`, `.preview` or nothing |
+| Name | Happy v2 | `$APP_DISPLAY_NAME`, default Happy |
+| Entitlements | push, associated domain | none (`App/Happy-SelfHost.entitlements`) |
+| Default server | `ServerConfig.defaultServerURL` | `HappyServerURL` in the plist |
+| Push | on | off: `HappyPushDisabled`, no `remote-notification` mode, no Settings rows |
+
+A self-host build resolves its server as the stored choice, then the baked URL.
+The hosted server stays reachable by typing it. `isCustomServer` compares to the
+baked URL, so the server form is empty on it and reset returns to it, and
+`isHostedServer` is what asks "is this the hosted one?". The RN importer defaults
+to the baked URL too: a build over a self-hosted RN app shares its Keychain token
+but has no `server-config`, and must not send that token to the hosted server.
+
+ATS is not relaxed. Release keeps only local networking and web content, so a
+remote server must be https there; the script refuses a plain-http remote with
+`APP_ENV=production`. http still works to an IP address, an undotted host or a
+`.local` name. Debug and Preview allow arbitrary loads already.
+
+xtool doesn't use any of this: `xtool.yml` stays on the dev variant.
 
 ### Versioning
 

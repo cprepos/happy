@@ -231,6 +231,8 @@ accident.
 ## Platform
 
 - [x] Credentials in the RN app's Keychain item
+- [x] Self-host build for a personal Apple team: own bundle id and name, no push or associated domains, opt-in (`scripts/selfhost-project.sh`, `selfhost/ios/build-on-mac.sh --native`). Generation, signing and install need a Mac pass — Self-host
+- [x] Fallback to a server URL baked into the build (`getBakedServerUrl`, `HappyServerURL`), including the RN account import — Self-host
 - [x] Multiple accounts with separate caches, RN custom server imported — Accounts
 - [x] Offline-first delta sync: sessions, machines, settings, profile, projects, messages
 - [x] Outbox for messages and attachments, with retry and failure states — Sending

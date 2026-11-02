@@ -10,6 +10,10 @@ notifications, associated domains, in-app purchase and EAS updates, because a
 personal team can't sign them. The script exits if any of them still appear in
 the generated entitlements.
 
+To build the native app (`packages/happy-ios`) instead, use
+`selfhost/ios/build-on-mac.sh --native`, described in `BUILD-ON-MAC.md`. Everything
+below, and `build.sh`, is the Expo app.
+
 ## Prerequisites (on the Mac)
 
 | Tool | Version | Install |
