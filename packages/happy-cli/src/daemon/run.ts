@@ -37,6 +37,8 @@ import {
 import { startHappyTerminalDaemon } from './happyTerminalBoot';
 import { appendDaemonSpawnModeArgs, shouldForwardDaemonPermissionMode } from './spawnModeArgs';
 import { hasPersistedProcessConflict, isPidAlive, machineBootTimeMs } from './sessionLiveness';
+import { createDesktopHub, runDesktopCommand, startDesktopSessionFromPhone } from './desktopHub';
+import { claudeCliPath } from '@/claude/claudeLocal';
 
 /** Shell-escape a string for safe interpolation into tmux commands. */
 function shellescape(s: string): string {
@@ -208,6 +210,35 @@ export async function startDaemon(): Promise<void> {
 
     // Helper functions
     const getCurrentChildren = () => Array.from(pidToTrackedSession.values());
+
+    // Claude Desktop sessions: each adopted desktop session gets a tracked
+    // `happy attach` child, which reports itself through /session-started like
+    // any other spawn (its metadata.hostPid is its own pid).
+    const desktopHub = createDesktopHub({
+      spawnAttach: async (request) => {
+        let attachPid = 0;
+        const result = await spawnTrackedHappyProcess({
+          args: [
+            'attach',
+            '--claude-session', request.claudeSessionId,
+            '--transcript', request.transcriptPath,
+            '--cwd', request.cwd,
+            '--host-pid', String(request.pid),
+          ],
+          cwd: request.cwd,
+          env: buildSessionChildEnvironment(ambientEnvironment),
+          onSpawned: (pid) => { attachPid = pid; },
+        });
+        switch (result.type) {
+          case 'success':
+            return { type: 'success', happySessionId: result.sessionId, attachPid };
+          case 'error':
+            return { type: 'error', errorMessage: result.errorMessage };
+          case 'requestToApproveDirectoryCreation':
+            return { type: 'error', errorMessage: `Desktop session folder ${result.directory} does not exist` };
+        }
+      },
+    });
 
     // Handle webhook from happy session reporting itself
     const onHappySessionWebhook = (sessionId: string, sessionMetadata: Metadata, encryption?: SessionEncryptionData) => {
@@ -409,6 +440,23 @@ export async function startDaemon(): Promise<void> {
           };
         }
 
+        // Claude Desktop runs the agent itself, so neither tmux nor a Happy
+        // child applies: open the session in the desktop and wait for its
+        // SessionStart to adopt it (contract "Phone-started session").
+        if (options.agent === 'claude-desktop') {
+          const result = await startDesktopSessionFromPhone({
+            hub: desktopHub,
+            directory,
+            claudeCommand: [process.execPath, claudeCliPath],
+            ttyWrapper: ['script', '-q', '/dev/null'],
+            env: buildSessionChildEnvironment(ambientEnvironment, extraEnv),
+            runCommand: runDesktopCommand,
+          });
+          return result.type === 'success'
+            ? { type: 'success', sessionId: result.happySessionId }
+            : { type: 'error', errorMessage: result.errorMessage };
+        }
+
         // Check if tmux is available and should be used
         const tmuxAvailable = await isTmuxAvailable();
         let useTmux = tmuxAvailable;
@@ -608,6 +656,7 @@ export async function startDaemon(): Promise<void> {
       directoryCreated = false,
       message,
       reconnect,
+      onSpawned,
     }: {
       args: string[];
       cwd: string;
@@ -615,6 +664,8 @@ export async function startDaemon(): Promise<void> {
       directoryCreated?: boolean;
       message?: string;
       reconnect?: Pick<TrackedSession, 'happySessionId' | 'happySessionMetadataFromLocalWebhook' | 'encryption'>;
+      /** Called with the child's pid as soon as it exists. */
+      onSpawned?: (pid: number) => void;
     }): Promise<SpawnSessionResult> => {
       const happyProcess = spawnHappyCLI(args, {
         cwd,
@@ -638,6 +689,7 @@ export async function startDaemon(): Promise<void> {
       }
 
       logger.debug(`[DAEMON RUN] Spawned process with PID ${happyProcess.pid}`);
+      onSpawned?.(happyProcess.pid);
 
       const trackedSession: TrackedSession = {
         startedBy: 'daemon',
@@ -982,6 +1034,7 @@ export async function startDaemon(): Promise<void> {
         logger.debug(`[DAEMON RUN] Removing exited process PID ${pid} from tracking`);
       }
       pidToTrackedSession.delete(pid);
+      desktopHub.attachExited(pid);
     };
 
     let connectionReady = () => false;
@@ -992,6 +1045,7 @@ export async function startDaemon(): Promise<void> {
       spawnSession,
       requestShutdown: () => requestShutdown('happy-cli'),
       onHappySessionWebhook,
+      desktopHub,
       getConnectionStatus: () => ({
         machineId,
         cliVersion: configuration.currentCliVersion,

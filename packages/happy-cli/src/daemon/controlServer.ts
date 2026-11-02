@@ -11,6 +11,16 @@ import { Metadata } from '@/api/types';
 import { decodeBase64 } from '@/api/encryption';
 import { TrackedSession, SessionEncryptionData } from './types';
 import { SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/registerCommonHandlers';
+import { DesktopHub, DESKTOP_MAX_WAIT_MS } from './desktopHub';
+
+/** Aborts when the client goes away before the reply is written (long-polls). */
+function abortOnClientClose(raw: { on: (event: 'close', listener: () => void) => void; writableEnded: boolean }): AbortSignal {
+  const controller = new AbortController();
+  raw.on('close', () => {
+    if (!raw.writableEnded) controller.abort();
+  });
+  return controller.signal;
+}
 
 export function startDaemonControlServer({
   getChildren,
@@ -19,6 +29,7 @@ export function startDaemonControlServer({
   requestShutdown,
   onHappySessionWebhook,
   getConnectionStatus,
+  desktopHub,
 }: {
   getChildren: () => TrackedSession[];
   stopSession: (sessionId: string) => boolean;
@@ -26,6 +37,8 @@ export function startDaemonControlServer({
   requestShutdown: () => void;
   onHappySessionWebhook: (sessionId: string, metadata: Metadata, encryption?: SessionEncryptionData) => void;
   getConnectionStatus?: () => { machineId: string; cliVersion: string; serverUrl: string; connected: boolean };
+  /** Claude Desktop sessions (docs/plans/happyify-desktop-sync.md, "Daemon routes"). */
+  desktopHub?: DesktopHub;
 }): Promise<{ port: number; stop: () => Promise<void> }> {
   return new Promise((resolve) => {
     const app = fastify({
@@ -133,7 +146,7 @@ export function startDaemonControlServer({
         body: z.object({
           directory: z.string(),
           sessionId: z.string().optional(),
-          agent: z.enum(['claude', 'codex', 'gemini', 'openclaw', 'agy', 'opencode']).optional(),
+          agent: z.enum(['claude', 'codex', 'gemini', 'openclaw', 'agy', 'opencode', 'claude-desktop']).optional(),
           permissionMode: z.string().optional(),
           modelMode: z.string().optional(),
           effortLevel: z.string().optional(),
@@ -196,6 +209,120 @@ export function startDaemonControlServer({
           };
       }
     });
+
+    if (desktopHub) {
+      const claudeSessionBody = z.object({ claudeSessionId: z.string().min(1) });
+      const okReply = { 200: z.object({ ok: z.literal(true) }), 404: z.object({ error: z.string() }) };
+      const sessionParams = z.object({ claudeSessionId: z.string().min(1) });
+      const unknownSession = (claudeSessionId: string) => ({ error: `Unknown desktop session ${claudeSessionId}` });
+
+      // SessionStart: mirror this desktop session (idempotent per id; a new id
+      // from the same pid re-points the existing mirror).
+      typed.post('/desktop/adopt', {
+        schema: {
+          body: z.object({
+            claudeSessionId: z.string().min(1),
+            transcriptPath: z.string().min(1),
+            cwd: z.string().min(1),
+            pid: z.number().int().positive(),
+          }),
+          response: {
+            200: z.object({ happySessionId: z.string() }),
+            500: z.object({ error: z.string() }),
+          }
+        }
+      }, async (request, reply) => {
+        logger.debug(`[CONTROL SERVER] Desktop adopt ${request.body.claudeSessionId} (PID ${request.body.pid})`);
+        const result = await desktopHub.adopt(request.body);
+        if (result.type === 'error') {
+          reply.code(500);
+          return { error: result.errorMessage };
+        }
+        return { happySessionId: result.happySessionId };
+      });
+
+      // UserPromptSubmit / Stop / SessionEnd.
+      for (const type of ['busy', 'idle', 'ended'] as const) {
+        typed.post(`/desktop/${type}`, {
+          schema: { body: claudeSessionBody, response: okReply }
+        }, async (request, reply) => {
+          if (!desktopHub.report(request.body.claudeSessionId, type)) {
+            reply.code(404);
+            return unknownSession(request.body.claudeSessionId);
+          }
+          return { ok: true as const };
+        });
+      }
+
+      // SessionStart / Stop (asyncRewake) long-poll. Only the newest waiter
+      // receives; older ones get 204 as soon as a newer one arrives.
+      typed.get('/desktop/inbox/:claudeSessionId', {
+        schema: {
+          params: sessionParams,
+          querystring: z.object({ wait: z.coerce.number().int().min(0).default(0) }),
+          response: {
+            200: z.object({ localId: z.string(), text: z.string() }),
+            204: z.null(),
+          }
+        }
+      }, async (request, reply) => {
+        const { claudeSessionId } = request.params;
+        // An id not adopted yet is held too: SessionStart's wait can beat its adopt.
+        const message = await desktopHub.waitForInbox(claudeSessionId, Math.min(request.query.wait, DESKTOP_MAX_WAIT_MS), abortOnClientClose(reply.raw));
+        if (!message) return reply.code(204).send(null);
+        return message;
+      });
+
+      // attach process: queue a phone message for the desktop session.
+      typed.post('/desktop/enqueue', {
+        schema: {
+          body: z.object({ claudeSessionId: z.string().min(1), localId: z.string().min(1), text: z.string() }),
+          response: {
+            200: z.object({ queued: z.number() }),
+            404: z.object({ error: z.string() }),
+          }
+        }
+      }, async (request, reply) => {
+        const { claudeSessionId, localId, text } = request.body;
+        const queued = desktopHub.enqueue(claudeSessionId, { localId, text });
+        if (queued === undefined) {
+          reply.code(404);
+          return unknownSession(claudeSessionId);
+        }
+        return { queued };
+      });
+
+      // attach process: busy / idle / ended / delivered, long-polled by seq.
+      typed.get('/desktop/events/:claudeSessionId', {
+        schema: {
+          params: sessionParams,
+          querystring: z.object({
+            after: z.coerce.number().int().min(0).default(0),
+            wait: z.coerce.number().int().min(0).default(0),
+          }),
+          response: {
+            200: z.object({
+              seq: z.number(),
+              events: z.array(z.object({
+                type: z.enum(['busy', 'idle', 'ended', 'delivered']),
+                localId: z.string().optional(),
+                claudeSessionId: z.string().optional(),
+                transcriptPath: z.string().optional(),
+              })),
+            }),
+            404: z.object({ error: z.string() }),
+          }
+        }
+      }, async (request, reply) => {
+        const { claudeSessionId } = request.params;
+        const result = await desktopHub.readEvents(claudeSessionId, request.query.after, Math.min(request.query.wait, DESKTOP_MAX_WAIT_MS), abortOnClientClose(reply.raw));
+        if (!result) {
+          reply.code(404);
+          return unknownSession(claudeSessionId);
+        }
+        return result;
+      });
+    }
 
     // Stop daemon
     typed.post('/stop', {
