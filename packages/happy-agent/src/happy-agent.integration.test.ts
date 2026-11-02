@@ -668,6 +668,20 @@ describe('happy-agent integration', { timeout: 180_000 }, () => {
         expect(sourceStatus.metadata?.path).toBe(testProjectDir);
         expect(sourceStatus.metadata?.flavor).toBe('codex');
 
+        // Resume reattaches a new process to the same Happy session. While the
+        // source process is alive the daemon answers "already running" without
+        // spawning anything, so stop it first: otherwise nothing is resumed.
+        const daemonState = readDaemonState(integrationEnvDir!);
+        expect(daemonState?.httpPort).toBeTruthy();
+        const httpPort = daemonState!.httpPort!;
+        const sourceChild = (await listDaemonSessions(httpPort)).find(child => child.happySessionId === sourceSessionId);
+        expect(sourceChild).toBeTruthy();
+        expect(await stopDaemonSession(httpPort, sourceSessionId)).toBe(true);
+        await waitFor(async () => {
+            const children = await listDaemonSessions(httpPort);
+            return !children.some(child => child.happySessionId === sourceSessionId);
+        }, 20_000, `source session ${sourceSessionId} process to exit`);
+
         const resumeResult = parseJson<{
             type: 'success' | 'requestToApproveDirectoryCreation' | 'error';
             sessionId?: string;
@@ -680,26 +694,28 @@ describe('happy-agent integration', { timeout: 180_000 }, () => {
         expect(resumeResult.type).toBe('success');
         expect(resumeResult.sourceSessionId).toBe(sourceSessionId);
         expect(resumeResult.machineId).toBe(activeMachineId);
-        expect(resumeResult.sessionId).toBeTruthy();
-        expect(resumeResult.sessionId).not.toBe(sourceSessionId);
+        // In place: the same session, so its history is kept.
+        expect(resumeResult.sessionId).toBe(sourceSessionId);
 
-        const resumedSessionId = resumeResult.sessionId!;
-        spawnedSessionIds.add(resumedSessionId);
-        await waitForSessionInList(resumedSessionId, agentEnv);
+        await waitFor(async () => {
+            const children = await listDaemonSessions(httpPort);
+            return children.some(child => child.happySessionId === sourceSessionId && child.pid !== sourceChild!.pid);
+        }, 20_000, `a new process to be tracked for resumed session ${sourceSessionId}`);
 
         const resumedStatus = await waitForSessionStatus<{
             id: string;
-            metadata?: { path?: string; flavor?: string };
+            metadata?: { path?: string; flavor?: string; codexThreadId?: string };
         }>(
-            resumedSessionId,
+            sourceSessionId,
             agentEnv,
             (status) => status.metadata?.path === testProjectDir,
-            `resumed session ${resumedSessionId} to report the original path`,
+            `resumed session ${sourceSessionId} to report the original path`,
         );
 
-        expect(resumedStatus.id).toBe(resumedSessionId);
+        expect(resumedStatus.id).toBe(sourceSessionId);
         expect(resumedStatus.metadata?.path).toBe(testProjectDir);
-        expect(resumedStatus.metadata?.flavor).toBe(sourceStatus.metadata?.flavor);
+        expect(resumedStatus.metadata?.flavor).toBe('codex');
+        expect(resumedStatus.metadata?.codexThreadId).toBe(sourceStatus.metadata?.codexThreadId);
     });
 
     it('spawns Codex, applies yolo permissions via message metadata, and creates a file in the test project', async () => {
