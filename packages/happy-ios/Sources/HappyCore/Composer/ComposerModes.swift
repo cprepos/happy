@@ -63,6 +63,12 @@ public struct ComposerModes: Equatable, Sendable {
     /// back to the defaults.
     public init(metadata: JSONValue?, picks: ComposerPicks, agentDefaultOverrides: [String: JSONValue]) {
         typealias Options = ModelModeOptions
+        // Claude Desktop's flavor is `claude`, but the desktop app owns its
+        // modes: nothing is offered, so nothing is sent.
+        if ClaudeDesktopHarness.isSession(metadata) {
+            self.init(availableModes: [], permissionMode: nil, availableModels: [], modelMode: nil, availableEffortLevels: [], effortLevel: nil)
+            return
+        }
         let flavor = metadata?["flavor"]?.stringValue
         let cliVersion = metadata?["version"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
         let isRig = RigCatalog.isRig(metadata)

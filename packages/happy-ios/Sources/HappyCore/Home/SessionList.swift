@@ -42,6 +42,7 @@ public struct SessionAvatar: Equatable, Sendable {
         case agy
         case rig
         case opencode
+        case claudeDesktop = "claude-desktop"
     }
 
     public init(seed: String, isBot: Bool = false, isTask: Bool = false, harness: Harness? = nil, image: AvatarImageSource? = nil) {
@@ -53,9 +54,12 @@ public struct SessionAvatar: Equatable, Sendable {
     }
 
     /// utils/avatarHarness.ts: Happy Agent wins over the provider it runs;
-    /// retired and unknown flavors get no badge.
-    public static func harness(flavor: String?, clientId: String?) -> Harness? {
+    /// retired and unknown flavors get no badge. `metadata.harness` names
+    /// the harness before the flavor does: a Claude Desktop session's
+    /// flavor is `claude`.
+    public static func harness(flavor: String?, clientId: String?, harness: String? = nil) -> Harness? {
         if clientId == "rig" { return .rig }
+        if harness == ClaudeDesktopHarness.key { return .claudeDesktop }
         switch flavor {
         case "claude": return .claude
         case "codex": return .codex
@@ -314,7 +318,7 @@ public struct SessionList: Equatable, Sendable {
                 isBot: session.isBot,
                 isTask: session.isTask,
                 harness: showFlavorIcons
-                    ? SessionAvatar.harness(flavor: metadata?["flavor"]?.stringValue, clientId: metadata?["client"]?["id"]?.stringValue)
+                    ? SessionAvatar.harness(flavor: metadata?["flavor"]?.stringValue, clientId: metadata?["client"]?["id"]?.stringValue, harness: metadata?["harness"]?.stringValue)
                     : nil,
                 image: AvatarImageSource.resolve(session, project: session.projectReference.flatMap { projects[$0] })
             ),

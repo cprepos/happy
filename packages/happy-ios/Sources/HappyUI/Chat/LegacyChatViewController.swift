@@ -1121,7 +1121,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
                     isBot: record.isBot,
                     isTask: record.isTask,
                     harness: settings.bool("showHarnessIconInSessionHeader")
-                        ? SessionAvatar.harness(flavor: metadata?["flavor"]?.stringValue, clientId: metadata?["client"]?["id"]?.stringValue)
+                        ? SessionAvatar.harness(flavor: metadata?["flavor"]?.stringValue, clientId: metadata?["client"]?["id"]?.stringValue, harness: metadata?["harness"]?.stringValue)
                         : nil,
                     image: session.avatarImage
                 ),

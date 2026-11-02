@@ -64,6 +64,10 @@ public enum UserMessageEncoder {
             let busy = requests || (!questions && session.thinking)
             let queued = try message.source != .newSession && (busy || hasPendingUserMessage())
             meta["queuedWhileBusy"] = .bool(queued)
+        } else if ClaudeDesktopHarness.isSession(metadata) {
+            // The desktop's Claude takes a message only between turns: one
+            // sent mid-turn waits for the Stop hook, and says so.
+            meta["queuedWhileBusy"] = .bool(message.source != .newSession && session.thinking)
         }
         meta["appendSystemPrompt"] = .string(systemPrompt)
         meta.merge(try modeMeta(metadata: metadata, composer: composer, settings: settings)) { _, value in value }

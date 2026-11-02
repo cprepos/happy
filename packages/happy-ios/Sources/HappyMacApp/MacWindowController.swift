@@ -177,7 +177,9 @@ final class MacWindowController: NSWindowController, NSMenuItemValidation {
         guard !available.isEmpty else { return showError("Connect an online Happy CLI computer first. Happy Agent catalog session creation is not yet available in this Mac interface.") }
         let machine = NSPopUpButton(); machine.addItems(withTitles: available.map { $0.metadata?["displayName"]?.stringValue ?? $0.metadata?["host"]?.stringValue ?? $0.id })
         let directory = NSTextField(); directory.placeholderString = "Absolute project path on that computer"
-        let agent = NSPopUpButton(); agent.addItems(withTitles: ["claude", "codex"])
+        // Claude Desktop only while some computer reports the desktop app running.
+        let desktop = available.contains { ClaudeDesktopHarness.available(cliAvailability: $0.metadata?["cliAvailability"]) }
+        let agent = NSPopUpButton(); agent.addItems(withTitles: desktop ? ["claude", ClaudeDesktopHarness.key, "codex"] : ["claude", "codex"])
         let stack = NSStackView(views: [machine, directory, agent]); stack.orientation = .vertical; stack.spacing = 12
         stack.frame = NSRect(x: 0, y: 0, width: 460, height: 110)
         let alert = NSAlert(); alert.messageText = "New Session"; alert.accessoryView = stack
@@ -185,6 +187,10 @@ final class MacWindowController: NSWindowController, NSMenuItemValidation {
         alert.beginSheetModal(for: window) { [weak self] response in
             guard response == .alertFirstButtonReturn, let self else { return }
             guard directory.stringValue.hasPrefix("/") else { return self.showError("Enter an absolute directory path.") }
+            if agent.titleOfSelectedItem == ClaudeDesktopHarness.key,
+               !ClaudeDesktopHarness.available(cliAvailability: available[machine.indexOfSelectedItem].metadata?["cliAvailability"]) {
+                return self.showError("Claude Desktop is not running with the Happy plugin on that computer.")
+            }
             var options = SpawnSessionOptions(machineId: available[machine.indexOfSelectedItem].id, directory: directory.stringValue, agent: agent.titleOfSelectedItem)
             options.token = session.credentials.token
             options.clientRequestId = UUID().uuidString

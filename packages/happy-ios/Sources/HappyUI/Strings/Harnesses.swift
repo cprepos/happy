@@ -7,5 +7,6 @@ import HappyCore
 extension Strings {
     enum Harnesses {
         static var opencode: String { OpencodeHarness.name }
+        static var claudeDesktop: String { ClaudeDesktopHarness.name }
     }
 }

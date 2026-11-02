@@ -187,7 +187,9 @@ final class MachineViewController: UIViewController {
             row.trailingView = DetailTrailingText(installed ? S.cliInstalled : S.cliNotFound, color: installed ? SecondaryPalette.green : Palette.textSecondary)
             return row
         }
-        var rows = [row("Claude", cli.claude), row("Codex", cli.codex), row("Gemini", cli.gemini), row("OpenClaw", cli.openclaw)]
+        var rows = [row("Claude", cli.claude)]
+        if let desktop = cli.claudeDesktop { rows.append(row(Strings.Harnesses.claudeDesktop, desktop)) }
+        rows += [row("Codex", cli.codex), row("Gemini", cli.gemini), row("OpenClaw", cli.openclaw)]
         if let opencode = cli.opencode { rows.append(row(Strings.Harnesses.opencode, opencode)) }
         if let rig = cli.rig { rows.append(row("Rig", rig)) }
         let detected = ItemRowView(title: S.lastDetected, subtitle: SessionDetails.localeDateTime(cli.detectedAt))

@@ -10,6 +10,7 @@ public struct NewSessionDraft: Equatable, Sendable {
     public enum Agent: String, CaseIterable, Sendable {
         case claude, codex, gemini, openclaw, agy, rig
         case opencode
+        case claudeDesktop = "claude-desktop"
 
         /// The harness's defaults, for every agent but Happy Agent, whose
         /// machine publishes its own.

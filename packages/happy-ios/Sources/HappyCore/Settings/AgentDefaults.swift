@@ -7,6 +7,7 @@ import HappyWire
 public enum AgentDefaults {
     public enum Agent: String, CaseIterable, Sendable {
         case claude
+        case claudeDesktop = "claude-desktop"
         case codex
         case gemini
         case openclaw
@@ -17,6 +18,7 @@ public enum AgentDefaults {
         public var name: String {
             switch self {
             case .claude: "Claude Code"
+            case .claudeDesktop: ClaudeDesktopHarness.name
             case .codex: "Codex"
             case .gemini: "Gemini"
             case .openclaw: "OpenClaw"
@@ -30,8 +32,9 @@ public enum AgentDefaults {
             self == .gemini || self == .openclaw
         }
 
+        /// Claude Desktop has nothing to configure: the desktop app owns it.
         public static var configurable: [Agent] {
-            allCases.filter { !$0.isRetired }
+            allCases.filter { !$0.isRetired && $0 != .claudeDesktop }
         }
     }
 
@@ -83,6 +86,7 @@ public enum AgentDefaults {
         case .openclaw: Config(permissionMode: "default", modelMode: "default", effortLevel: nil)
         case .agy: Config(permissionMode: "default", modelMode: "Gemini 3.8 Flash", effortLevel: "medium")
         case .opencode: OpencodeHarness.defaults
+        case .claudeDesktop: ClaudeDesktopHarness.defaults
         }
     }
 
@@ -214,6 +218,8 @@ public enum AgentDefaults {
             ]
         case .opencode:
             OpencodeModes.hardcodedOptions()
+        case .claudeDesktop:
+            []
         }
     }
 
@@ -252,6 +258,8 @@ public enum AgentDefaults {
             ]
         case .openclaw, .opencode:
             [Option("default", "Default model")]
+        case .claudeDesktop:
+            []
         case .agy:
             [
                 Option("Gemini 3.8 Flash", "Gemini 3.8 Flash"),
@@ -295,7 +303,7 @@ public enum AgentDefaults {
             keys = byModel[model] ?? ["low", "medium", "high", "xhigh"]
         case .agy:
             keys = model == "Gemini 3.8 Flash" ? ["low", "medium", "high"] : []
-        case .gemini, .openclaw, .opencode:
+        case .gemini, .openclaw, .opencode, .claudeDesktop:
             keys = []
         }
         return keys.map { Option($0, $0 == "xhigh" ? "xHigh" : $0.prefix(1).uppercased() + $0.dropFirst()) }

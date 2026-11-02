@@ -139,7 +139,9 @@ public struct SessionInfoModel: Equatable, Sendable {
                 let version = SessionDetails.truthy(metadata["client"]?["version"])
                 client = name + (version.map { " \($0)" } ?? "")
             }
-            let pid = metadata["hostPid"]
+            // A Claude Desktop session's `hostPid` is its mirror's, not the
+            // desktop's Claude: no process row rather than the wrong one.
+            let pid = ClaudeDesktopHarness.isSession(metadata) ? nil : metadata["hostPid"]
             self.metadata = Metadata(
                 host: string("host"),
                 path: SessionDetails.pathRelativeToHome(string("path") ?? "", homeDir: homeDir),
@@ -184,7 +186,7 @@ public struct SessionInfoModel: Equatable, Sendable {
         return SessionAvatar(
             seed: session.avatarSeed, isBot: session.isBot, isTask: session.isTask,
             harness: settings.bool("showHarnessIconInSessionHeader")
-                ? SessionAvatar.harness(flavor: metadata?["flavor"]?.stringValue, clientId: metadata?["client"]?["id"]?.stringValue)
+                ? SessionAvatar.harness(flavor: metadata?["flavor"]?.stringValue, clientId: metadata?["client"]?["id"]?.stringValue, harness: metadata?["harness"]?.stringValue)
                 : nil
         )
     }
@@ -241,6 +243,9 @@ public struct MachineDetailsModel: Equatable, Sendable {
         public var openclaw: Bool
         /// Only daemons that know OpenCode report it.
         public var opencode: Bool? = nil
+        /// Only daemons that know Claude Desktop report it: true while the
+        /// desktop app runs with the plugin.
+        public var claudeDesktop: Bool? = nil
         /// Only daemons that know Happy Agent report it.
         public var rig: Bool?
         public var detectedAt: Int64
@@ -289,6 +294,7 @@ public struct MachineDetailsModel: Equatable, Sendable {
                 gemini: SessionInfoModel.truthy(cli["gemini"]),
                 openclaw: SessionInfoModel.truthy(cli["openclaw"]),
                 opencode: cli[OpencodeHarness.key].map { SessionInfoModel.truthy($0) },
+                claudeDesktop: cli[ClaudeDesktopHarness.key].map { SessionInfoModel.truthy($0) },
                 rig: rig == nil ? nil : SessionInfoModel.truthy(rig),
                 detectedAt: Int64(cli["detectedAt"]?.numberValue ?? 0)
             )

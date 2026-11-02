@@ -5,7 +5,7 @@ import HappyWire
 extension MachineChoice {
     /// Ports harnessCatalog.HARNESS_ORDER; retired Gemini/OpenClaw are omitted.
     public static var agentOrder: [String] {
-        OpencodeHarness.placed(in: ["claude", "codex", "agy", "rig"])
+        ClaudeDesktopHarness.placed(in: OpencodeHarness.placed(in: ["claude", "codex", "agy", "rig"]))
     }
 
     /// Ports machineChoices.findMachineChoice, including a stored sibling id.
@@ -21,6 +21,7 @@ extension MachineChoice {
         let availability = happyMachine.metadata?["cliAvailability"]
         if agent == "agy" { return availability?["agy"]?.boolValue == true }
         if agent == OpencodeHarness.key { return OpencodeHarness.available(cliAvailability: availability) }
+        if agent == ClaudeDesktopHarness.key { return ClaudeDesktopHarness.available(cliAvailability: availability) }
         return availability == nil || availability == .null || availability?[agent]?.boolValue == true
     }
 
