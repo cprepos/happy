@@ -42,6 +42,29 @@ final class OpencodeQuestionTests: XCTestCase {
         XCTAssertTrue(AgentCommunications.usesFallback(pending))
     }
 
+    /// The ids and fields a real session writes: `que_` and `per_`, keys the
+    /// app treats as opaque.
+    func testTheShapesASessionWritesToAgentState() throws {
+        let agentState: JSONValue = ["communications": ["que_1": [
+            "kind": "form", "createdAt": 1, "toolUseId": "call_1", "form": ["questions": [question]],
+        ]]]
+        let pending = try XCTUnwrap(AgentCommunications.pending(agentState).first)
+        XCTAssertEqual(pending.id, "que_1")
+        XCTAssertTrue(AgentCommunications.canRenderInline(pending))
+        let form = try XCTUnwrap(AgentCommunications.form(agentState, toolUseId: "call_1"))
+        XCTAssertEqual(form.id, "que_1")
+        XCTAssertEqual(form.questions.map(\.question), ["Which one?"])
+
+        var reducer = ChatReducer()
+        _ = reducer.reduce([], agentState: ["requests": ["per_1": [
+            "tool": "execute", "arguments": ["command": "ls"], "createdAt": 1, "toolUseId": "call_1",
+        ]]])
+        let row = try ChatRecords.toolRow(reducer.messages)
+        XCTAssertEqual(row.tool.name, "execute")
+        XCTAssertEqual(row.tool.permission?.id, "per_1")
+        XCTAssertEqual(row.tool.permission?.status, .pending)
+    }
+
     func testOtherFormsStayInline() throws {
         let agentState = state(["kind": "form", "createdAt": 1, "inTranscript": .bool(true), "form": ["questions": [question]]])
         XCTAssertTrue(AgentCommunications.canRenderInline(try XCTUnwrap(AgentCommunications.pending(agentState).first)))
