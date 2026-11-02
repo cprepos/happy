@@ -348,8 +348,9 @@ flight waits for it and then loads the next chunk.
 
 ### Apps
 
+- iOS only: the Expo app is no longer being developed (decided 2026-11-02).
 - Show a **Load previous history** button at the top of the chat (iOS
-  `ChatOlderEndView`, Expo `OlderEnd`) when the session is a Claude Desktop
+  `ChatOlderEndView`) when the session is a Claude Desktop
   session (`metadata.harness == 'claude-desktop'`) and
   `metadata.desktopHistory.before > 0`, and the reader has reached the
   oldest server page.
