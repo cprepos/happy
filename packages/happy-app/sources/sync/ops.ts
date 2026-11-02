@@ -11,7 +11,6 @@ import { markAgentModePushPending, clearAgentModePushPending, type AgentModeFiel
 import {
     isRigMetadata,
     isRigMetadataV1,
-    rigCanAbort,
     rigCanReadFiles,
     rigCanSearchFiles,
     rigCanUseShell,
@@ -19,7 +18,7 @@ import {
     rigHasRpcMethod,
 } from './rig';
 import { rigComposerSetMode } from './rigComposer';
-import { isClaudeDesktopSession } from '@/utils/harnessCatalog';
+import { sessionCanAbort } from '@/utils/sessionAbort';
 import type { HappyAgentSpawnTarget } from './happyAgentSpawn';
 import { encodeBase64 } from '@/encryption/base64';
 
@@ -887,7 +886,7 @@ export function sessionSetAgentModes(sessionId: string, patch: SessionAgentModes
  */
 export async function sessionAbort(sessionId: string): Promise<void> {
     const metadata = storage.getState().sessions[sessionId]?.metadata;
-    if (!rigCanAbort(metadata) || isClaudeDesktopSession(metadata)) {
+    if (!sessionCanAbort(metadata)) {
         throw new Error('Abort is not available for this session');
     }
     await apiSocket.sessionRPC(sessionId, 'abort', isRigMetadata(metadata) ? {} : {

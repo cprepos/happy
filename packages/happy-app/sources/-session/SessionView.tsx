@@ -21,7 +21,7 @@ import { EmptyMessages } from '@/components/EmptyMessages';
 import { Avatar } from '@/components/Avatar';
 import { VoiceAssistantStatusBar, VOICE_PILL_TOTAL_HEIGHT } from '@/components/VoiceAssistantStatusBar';
 import { useComposerModes } from '@/hooks/useComposerModes';
-import { isClaudeDesktopSession } from '@/utils/harnessCatalog';
+import { sessionCanAbort } from '@/utils/sessionAbort';
 import { useDraft } from '@/hooks/useDraft';
 import { useSessionVisibility } from '@/hooks/useSessionVisibility';
 import { useImagePicker } from '@/hooks/useImagePicker';
@@ -72,7 +72,6 @@ import {
     isRigModelSelectionEnabled,
     isRigPermissionSelectionEnabled,
     isRigReasoningSelectionEnabled,
-    rigCanAbort,
     rigCanBrowseFiles,
     rigCanReadFiles,
     rigCanUseAttachments,
@@ -865,7 +864,7 @@ export function SessionViewLoaded({
     const flavor = composerSession?.metadata?.flavor;
     const isRig = isRigMetadata(session?.metadata);
     // The desktop app owns a Claude Desktop turn; the phone has no way to stop it.
-    const canAbortSession = rigCanAbort(session?.metadata) && !isClaudeDesktopSession(session?.metadata);
+    const canAbortSession = sessionCanAbort(session?.metadata);
     const {
         availableModes,
         permissionMode,

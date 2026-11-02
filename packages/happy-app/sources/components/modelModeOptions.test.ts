@@ -24,6 +24,16 @@ import {
     mapMetadataOptions,
     resolveCurrentOption,
 } from './modelModeOptions';
+import {
+    getAvailableModels as availableModelsForDesktop,
+    getAvailablePermissionModes as availablePermissionModesForDesktop,
+    getEffortLevelsForModel as effortLevelsForDesktop,
+    getHardcodedModelModes as hardcodedModelsForDesktop,
+    getHardcodedPermissionModes as hardcodedPermissionsForDesktop,
+    getHardcodedEffortLevels as hardcodedEffortsForDesktop,
+    harnessOwnsAgentModes,
+} from './modelModeOptions';
+import type { Metadata } from '@/sync/storageTypes';
 import { sortPermissionModes } from '@/utils/permissionModeLabels';
 import { rigMetadataFixture } from '@/sync/__testdata__/rigMetadata';
 
@@ -545,5 +555,33 @@ describe('modelModeOptions', () => {
             { key: 'plan:auto', name: 'Plan-auto', description: 'tr:agentInput.permissionMode.opencodeAuto' },
             { key: 'plan:ask', name: 'Plan-ask', description: 'tr:agentInput.permissionMode.opencodeAsk' },
         ]);
+    });
+});
+
+describe('Claude Desktop modes', () => {
+    const tr = (key: string) => `tr:${key}`;
+    const desktopSession = { path: '/r', host: 'h', flavor: 'claude', harness: 'claude-desktop' } as Metadata;
+
+    it('belongs to the desktop app, by agent key or by session harness', () => {
+        expect(harnessOwnsAgentModes('claude-desktop')).toBe(true);
+        expect(harnessOwnsAgentModes('claude', desktopSession)).toBe(true);
+        expect(harnessOwnsAgentModes('claude', { harness: null })).toBe(false);
+        expect(harnessOwnsAgentModes('claude')).toBe(false);
+    });
+
+    it('offers no model, permission or effort picker on a running desktop session', () => {
+        expect(availableModelsForDesktop('claude', desktopSession, tr as never, 'claude-opus-5-5')).toEqual([]);
+        expect(availablePermissionModesForDesktop('claude', desktopSession, tr as never, 'auto')).toEqual([]);
+        expect(effortLevelsForDesktop('claude', 'default', desktopSession)).toEqual([]);
+    });
+
+    // A new session resolves one ambient row each, so the start flow has a
+    // selection, while the pickers (shown only for two or more rows) stay hidden
+    // and `default` sends no override.
+    it('starts a new desktop session with a single ambient default and no effort', () => {
+        expect(hardcodedModelsForDesktop('claude-desktop', tr as never).map((mode) => mode.key)).toEqual(['default']);
+        expect(hardcodedPermissionsForDesktop('claude-desktop', tr as never).map((mode) => mode.key)).toEqual(['default']);
+        expect(hardcodedEffortsForDesktop('claude-desktop')).toEqual([]);
+        expect(effortLevelsForDesktop('claude-desktop', 'default')).toEqual([]);
     });
 });

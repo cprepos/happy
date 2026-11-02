@@ -102,3 +102,18 @@ describe('buildResumeCommandBlock', () => {
         });
     });
 });
+
+describe('Claude Desktop sessions', () => {
+    // The session lives in the desktop app. `happy claude --resume` would start
+    // a second Claude on the same transcript instead of reaching it.
+    it('never offers a resume command, even with a Claude session id', () => {
+        const metadata = {
+            path: '/tmp/project',
+            flavor: 'claude',
+            harness: 'claude-desktop',
+            claudeSessionId: '93a9705e-bc6a-406d-8dce-8acc014dedbd',
+        };
+        expect(buildResumeCommand(metadata)).toBeNull();
+        expect(buildResumeCommandBlock(metadata)).toBeNull();
+    });
+});

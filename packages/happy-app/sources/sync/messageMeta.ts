@@ -5,6 +5,7 @@ import { resolveSessionState } from './sessionState';
 import { getAgentDefaultOverride, resolveAgentDefaultConfig, retirePermissionMode } from './agentDefaults';
 import { harnessOwnsAgentModes, permissionModeSupportedByCli } from '@/components/modelModeOptions';
 import type { PermissionModeKey } from '@/components/PermissionModeSelector';
+import { isClaudeDesktopSession } from '@/utils/harnessCatalog';
 import {
     getRigComposerMode,
     getRigCurrentModel,
@@ -21,6 +22,12 @@ export function resolveMessageDeliveryMeta(
     isNewSession = false,
     hasPendingUserMessage = false,
 ): Pick<MessageMeta, 'expectsAcceptance' | 'queuedWhileBusy'> {
+    // A Claude Desktop session takes a message only when the desktop turn
+    // ends, so a send during a turn is marked as waiting for it. No receipt
+    // comes back from the desktop, so acceptance is not awaited.
+    if (isClaudeDesktopSession(session.metadata)) {
+        return isNewSession || !session.thinking ? {} : { queuedWhileBusy: true };
+    }
     if (!rigSendsMessageReceipts(session.metadata)) return {};
     const state = resolveSessionState({
         agentState: session.agentState,

@@ -154,3 +154,9 @@ describe('messageSentClient', () => {
         expect(messageSentClient('web', true)).toBe('desktop');
     });
 });
+
+describe('messageSentHarness for Claude Desktop', () => {
+    it('reports the desktop host rather than the claude flavor it carries', () => {
+        expect(messageSentHarness({ path: '/r', host: 'h', flavor: 'claude', harness: 'claude-desktop' } as Metadata)).toBe('claude-desktop');
+    });
+});

@@ -432,3 +432,36 @@ describe('resolveMessageModeMeta', () => {
         expect(meta.effort).toBe('high');
     });
 });
+
+describe('resolveMessageModeMeta for Claude Desktop', () => {
+    // The desktop app runs the turn with its own model and permissions, so a
+    // saved Claude pick or account default must not ride along.
+    it('sends no mode, model or effort', () => {
+        const meta = resolveMessageModeMeta({
+            permissionMode: 'bypassPermissions',
+            modelMode: 'claude-opus-5-5',
+            effortLevel: 'high',
+            metadata: { flavor: 'claude', harness: 'claude-desktop' },
+        } as any, {
+            agentDefaultOverrides: { claude: { permissionMode: 'acceptEdits', modelMode: 'claude-sonnet-5-5' } },
+        } as any);
+
+        expect(meta).toEqual({});
+    });
+});
+
+describe('resolveMessageDeliveryMeta for Claude Desktop', () => {
+    const desktop = {
+        metadata: { path: '/r', host: 'h', flavor: 'claude', harness: 'claude-desktop' },
+        agentState: null,
+    } as any;
+
+    it('marks a send during a desktop turn as waiting for that turn', () => {
+        expect(resolveMessageDeliveryMeta({ ...desktop, thinking: true })).toEqual({ queuedWhileBusy: true });
+    });
+
+    it('marks nothing when the desktop is idle or the session is new', () => {
+        expect(resolveMessageDeliveryMeta({ ...desktop, thinking: false })).toEqual({});
+        expect(resolveMessageDeliveryMeta({ ...desktop, thinking: true }, true)).toEqual({});
+    });
+});
