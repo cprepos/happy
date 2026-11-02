@@ -59,6 +59,9 @@ Kokoro-82M with its voices is 0.34 GB. The `.venv` takes another 1.4 GB.
 | `TTS_PAUSE_PHRASE` | 0.05 | silence kept after a piece that stops mid-phrase |
 | `TTS_PAUSE` | | sets all three of the above at once, for an install that already uses it |
 | `TTS_MP3_KBPS` | 96 | bitrate of the streamed mp3 |
+| `TTS_CACHE_WORDS` | 12 | texts up to this many words have their audio kept and replayed, so a repeated phrase such as the greeting costs ~1 ms instead of ~300 ms |
+| `TTS_CACHE_ENTRIES` | 64 | how many phrases are kept, least recently used dropped first. 0 turns the cache off |
+| `TTS_PREWARM` | Hi, Happy here | phrases synthesized into the cache at startup with `TTS_VOICE`, separated by `\|` |
 
 `install-service.sh` writes `TTS_MODEL`, `TTS_VOICE` and `TTS_FIRST_MAX_WORDS` into the launchd
 plist, so they survive a reinstall and a reboot. Anything set only in a shell does not. Editing

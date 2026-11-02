@@ -55,6 +55,7 @@ import re
 import struct
 import threading
 import time
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -103,6 +104,42 @@ MODEL = None
 VOICES: list[str] = []
 LOAD_S = 0.0
 STARTED = time.time()
+
+# Short phrases repeat -- every call opens with the same greeting -- so their synthesized pieces
+# are kept and replayed without touching the MLX thread, which also spares a hit from queueing
+# behind another request's synthesis. Keyed by everything that changes the audio.
+CACHE_WORDS = int(os.environ.get("TTS_CACHE_WORDS", "12"))
+CACHE_ENTRIES = int(os.environ.get("TTS_CACHE_ENTRIES", "64"))
+# Synthesized into the cache at startup with the default voice; `|` separates phrases.
+PREWARM_PHRASES = [p.strip() for p in os.environ.get("TTS_PREWARM", "Hi, Happy here").split("|") if p.strip()]
+_CACHE: OrderedDict[tuple, list[np.ndarray]] = OrderedDict()
+_CACHE_LOCK = threading.Lock()
+
+
+def _cache_key(text: str, voice: str, speed: float) -> tuple | None:
+    if CACHE_ENTRIES <= 0 or len(text.split()) > CACHE_WORDS:
+        return None
+    return (text, voice, round(speed, 3))
+
+
+def _cache_get(key: tuple | None) -> list[np.ndarray] | None:
+    if key is None:
+        return None
+    with _CACHE_LOCK:
+        hit = _CACHE.get(key)
+        if hit is not None:
+            _CACHE.move_to_end(key)
+        return hit
+
+
+def _cache_put(key: tuple | None, chunks: list[np.ndarray]) -> None:
+    if key is None:
+        return
+    with _CACHE_LOCK:
+        _CACHE[key] = chunks
+        _CACHE.move_to_end(key)
+        while len(_CACHE) > CACHE_ENTRIES:
+            _CACHE.popitem(last=False)
 
 _SENT = re.compile(r"(?<=[.!?])\s+|\n+")
 _CLAUSE = re.compile(r"(?<=[,;:])\s+|\s+[-–—]+\s+")
@@ -187,6 +224,8 @@ def _load():
     if WARMUP:
         for _ in _synth("Hello there. This warms up the model, the phonemizer and the pipeline.", DEFAULT_VOICE, 1.0, threading.Event()):
             pass
+    for phrase in PREWARM_PHRASES:
+        _cache_put(_cache_key(phrase, DEFAULT_VOICE, 1.0), list(_synth(phrase, DEFAULT_VOICE, 1.0, threading.Event())))
     LOAD_S = time.time() - t0
 
 
@@ -368,18 +407,29 @@ async def speech(request: Request):
     q: asyncio.Queue = asyncio.Queue()
     cancel = threading.Event()
     _END = object()
+    key = _cache_key(text, voice, speed)
+    cached = _cache_get(key)
 
     def worker():
+        made: list[np.ndarray] = []
         try:
             for chunk in _synth(text, voice, speed, cancel):
+                made.append(chunk)
                 loop.call_soon_threadsafe(q.put_nowait, chunk)
+            if not cancel.is_set():
+                _cache_put(key, made)
         except Exception as e:  # noqa: BLE001
             log.exception("synthesis failed")
             loop.call_soon_threadsafe(q.put_nowait, e)
         finally:
             loop.call_soon_threadsafe(q.put_nowait, _END)
 
-    loop.run_in_executor(MLX, worker)
+    if cached is not None:
+        for chunk in cached:
+            q.put_nowait(chunk)
+        q.put_nowait(_END)
+    else:
+        loop.run_in_executor(MLX, worker)
 
     async def chunks():
         try:

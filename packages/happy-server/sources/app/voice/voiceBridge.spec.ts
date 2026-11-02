@@ -188,13 +188,20 @@ describe("VoiceBridge", () => {
         expect(messages.filter((message) => message.type === "rpc")).toEqual([]);
     });
 
-    it("accepts an RPC from the agent that arrives before it is announced", async () => {
-        const { bridge, room } = await connectBridge();
+    it("forwards an RPC from the agent that arrives before it is announced without waiting", async () => {
+        const { bridge, room, messages } = await connectBridge();
         const call = room.callRpc("happy.getConfig", agent.identity);
-        setTimeout(() => room.join(agent), 20);
-        await new Promise((resolve) => setTimeout(resolve, 120));
+        await flush();
+        expect(messages).toEqual([{ type: "rpc", id: "1", method: "happy.getConfig", payload: "" }]);
         bridge.rpcResult("1", "{}", undefined);
         await expect(call).resolves.toBe("{}");
+    });
+
+    it("still refuses a known participant with an agent-like identity that is not an agent", async () => {
+        const { room } = await connectBridge();
+        const impostor: FakeParticipant = { identity: "agent-x", kind: ParticipantKind.STANDARD, attributes: {} };
+        room.join(impostor);
+        await expect(room.callRpc("happy.getConfig", impostor.identity)).rejects.toMatchObject({ code: 2403 });
     });
 
     it("times out happy.getConfig after 10 s", async () => {
