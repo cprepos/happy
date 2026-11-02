@@ -209,9 +209,8 @@ public struct NewSessionScreenModel: Equatable, Sendable {
         }
 
         agentItems = choices.agentOptions.map { Item(key: $0.key, label: Self.agentLabels[$0.key] ?? $0.name) }
-        let shown = Self.agentLabels[agent] != nil ? agent : "claude"
-        agentKey = shown
-        agentLabel = Self.agentLabels[shown] ?? shown
+        agentKey = agent
+        agentLabel = Self.agentLabels[agent] ?? choices.resolvedAgent.name
         isCodex = agent == "codex"
         placeholder = agent == "codex" ? "Ask Codex" : "Ask \(agentLabel)"
 

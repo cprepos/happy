@@ -66,7 +66,7 @@ public struct ComposerModes: Equatable, Sendable {
         let flavor = metadata?["flavor"]?.stringValue
         let cliVersion = metadata?["version"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
         let isRig = RigCatalog.isRig(metadata)
-        let defaults = AgentDefaults.resolve(agentDefaultOverrides, AgentDefaults.Agent(flavor: flavor), cliVersion: cliVersion)
+        let defaults = AgentDefaults.resolve(agentDefaultOverrides, sessionFlavor: flavor, cliVersion: cliVersion)
 
         // A pick on a since-retired row shows the row that runs the same
         // model; the key itself is left alone.

@@ -74,6 +74,19 @@ extension AgentDefaults.Agent {
     public init(flavor: String?) {
         self = flavor.flatMap(Self.init(rawValue:)) ?? .claude
     }
+
+    /// A session's flavor, when this app has catalogs for it: no flavor is
+    /// Claude, and `rig` keeps the Claude catalogs it always read. A flavor
+    /// this app doesn't know is nobody's, so Claude's lists and saved
+    /// defaults stay off it.
+    init?(sessionFlavor flavor: String?) {
+        switch flavor {
+        case nil, "", "rig": self = .claude
+        case let flavor?:
+            guard let agent = Self(rawValue: flavor) else { return nil }
+            self = agent
+        }
+    }
 }
 
 extension AgentDefaults {
@@ -81,11 +94,20 @@ extension AgentDefaults {
     /// list (`claude-opus-5[1m]`) onto the row that runs the same model.
     /// Other harnesses, Happy Agent's included, own their keys.
     public static func retireModelMode(_ mode: String?, flavor: String?) -> String? {
-        guard let mode, !mode.isEmpty, flavor != "rig", Agent(flavor: flavor) == .claude else {
+        guard let mode, !mode.isEmpty, flavor != "rig", Agent(sessionFlavor: flavor) == .claude else {
             return mode
         }
         return retiredClaudeModelModes[mode] ?? mode
     }
+
+    /// `resolve` for a session's flavor. A flavor this app doesn't know
+    /// reads no one's overrides and asks for nothing of its own.
+    static func resolve(_ overrides: [String: JSONValue], sessionFlavor flavor: String?, cliVersion: String?) -> Config {
+        guard let agent = Agent(sessionFlavor: flavor) else { return unknownFlavorDefaults }
+        return resolve(overrides, agent, cliVersion: cliVersion)
+    }
+
+    static let unknownFlavorDefaults = Config(permissionMode: "default", modelMode: "default", effortLevel: nil)
 }
 
 /// modelModeOptions.ts: what the composer's permission, model and effort
@@ -137,7 +159,8 @@ public enum ModelModeOptions {
     /// `getHardcodedPermissionModes`. `auto` is tagged with the CLI that
     /// first parses it.
     public static func hardcodedPermissionModes(flavor: String?) -> [ModeOption] {
-        AgentDefaults.permissionModes(hardcodedAgent(flavor)).map { option in
+        guard let agent = hardcodedAgent(flavor) else { return [] }
+        return AgentDefaults.permissionModes(agent).map { option in
             ModeOption(
                 key: option.key,
                 name: option.name,
@@ -149,7 +172,7 @@ public enum ModelModeOptions {
 
     /// `getHardcodedModelModes`, with each row's provider.
     public static func hardcodedModelModes(flavor: String?) -> [ModeOption] {
-        let agent = hardcodedAgent(flavor)
+        guard let agent = hardcodedAgent(flavor) else { return [] }
         return AgentDefaults.hardcodedModels(agent).map { option in
             let provider = provider(agent, model: option.key)
             return ModeOption(
@@ -166,7 +189,7 @@ public enum ModelModeOptions {
     /// stays as its own row, so the picker shows it rather than the head of
     /// the list. Claude, Codex and agy only.
     public static func includeConfiguredModel(flavor: String?, models: [ModeOption], configured: String?) -> [ModeOption] {
-        let isClaude = flavor != "rig" && AgentDefaults.Agent(flavor: flavor) == .claude
+        let isClaude = flavor != "rig" && AgentDefaults.Agent(sessionFlavor: flavor) == .claude
         guard
             flavor == "codex" || flavor == "agy" || isClaude,
             let key = AgentDefaults.retireModelMode(configured, flavor: flavor),
@@ -333,17 +356,20 @@ public enum ModelModeOptions {
 
     /// `getDefaultModelKey`.
     public static func defaultModelKey(flavor: String?, cliVersion: String? = nil) -> String {
-        AgentDefaults.codeDefaults(AgentDefaults.Agent(flavor: flavor), cliVersion: nonEmpty(cliVersion)).modelMode
+        guard let agent = AgentDefaults.Agent(sessionFlavor: flavor) else { return AgentDefaults.unknownFlavorDefaults.modelMode }
+        return AgentDefaults.codeDefaults(agent, cliVersion: nonEmpty(cliVersion)).modelMode
     }
 
     /// `getDefaultPermissionModeKey`.
     public static func defaultPermissionModeKey(flavor: String?) -> String {
-        AgentDefaults.codeDefaults(AgentDefaults.Agent(flavor: flavor), cliVersion: nil).permissionMode
+        guard let agent = AgentDefaults.Agent(sessionFlavor: flavor) else { return AgentDefaults.unknownFlavorDefaults.permissionMode }
+        return AgentDefaults.codeDefaults(agent, cliVersion: nil).permissionMode
     }
 
     /// `getDefaultEffortKey`.
     public static func defaultEffortKey(flavor: String?) -> String? {
-        AgentDefaults.codeDefaults(AgentDefaults.Agent(flavor: flavor), cliVersion: nil).effortLevel
+        guard let agent = AgentDefaults.Agent(sessionFlavor: flavor) else { return AgentDefaults.unknownFlavorDefaults.effortLevel }
+        return AgentDefaults.codeDefaults(agent, cliVersion: nil).effortLevel
     }
 
     // MARK: Effort
@@ -458,16 +484,10 @@ public enum ModelModeOptions {
     /// Names for Claude models that left the list but can still be saved.
     static let unlistedClaudeModelNames = ["claude-sonnet-5": "Sonnet 5"]
 
-    /// The hardcoded catalogs fall back to Claude's for any other flavor.
-    static func hardcodedAgent(_ flavor: String?) -> AgentDefaults.Agent {
-        switch flavor {
-        case "codex": .codex
-        case "gemini": .gemini
-        case "openclaw": .openclaw
-        case "agy": .agy
-        case OpencodeHarness.key: .opencode
-        default: .claude
-        }
+    /// Whose hardcoded catalogs a flavor reads. A flavor this app doesn't
+    /// know has none: it shows what its session reports, or nothing.
+    static func hardcodedAgent(_ flavor: String?) -> AgentDefaults.Agent? {
+        AgentDefaults.Agent(sessionFlavor: flavor)
     }
 
     static func provider(_ agent: AgentDefaults.Agent, model: String) -> (id: String, name: String)? {

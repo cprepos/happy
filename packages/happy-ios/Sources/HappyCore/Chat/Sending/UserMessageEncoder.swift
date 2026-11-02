@@ -141,17 +141,18 @@ public enum UserMessageEncoder {
             return result
         }
         let flavor = m["flavor"]?.stringValue ?? "claude"
-        let agent = AgentDefaults.Agent(rawValue: flavor) ?? .claude
+        // A flavor this app doesn't know reads no one's saved defaults.
+        let agent = AgentDefaults.Agent(sessionFlavor: flavor)
         let overrides = settings?["agentDefaultOverrides"]?.objectValue ?? [:]
         let version = m["version"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
         let concrete = flavor == "codex" || flavor == "agy"
         var permission = c["permissionMode"]?.stringValue
-            ?? AgentDefaults.override(overrides, agent, .permissionMode)
+            ?? agent.flatMap { AgentDefaults.override(overrides, $0, .permissionMode) }
         var model = c["modelMode"]?.stringValue
-            ?? AgentDefaults.override(overrides, agent, .modelMode)
+            ?? agent.flatMap { AgentDefaults.override(overrides, $0, .modelMode) }
         var effort = c["effortLevel"]?.stringValue
-            ?? AgentDefaults.override(overrides, agent, .effortLevel)
-        if concrete {
+            ?? agent.flatMap { AgentDefaults.override(overrides, $0, .effortLevel) }
+        if concrete, let agent {
             let defaults = AgentDefaults.resolve(overrides, agent, cliVersion: version)
             permission = permission ?? defaults.permissionMode
             model = model ?? defaults.modelMode
