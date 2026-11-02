@@ -861,6 +861,18 @@ export class ApiSessionClient extends EventEmitter {
         this.applyClaudeSessionMessageSideEffects(body);
     }
 
+    /**
+     * Post envelopes that were built elsewhere (on-demand Claude Desktop
+     * history) through the same outbox as live envelopes. They carry their own
+     * `time` and turns, so the live mapper state is not touched. Resolves once
+     * the outbox has been sent.
+     */
+    async sendHistoricalSessionEnvelopes(envelopes: SessionEnvelope[]): Promise<void> {
+        if (envelopes.length === 0) return;
+        this.enqueueSessionProtocolEnvelopes(envelopes, false);
+        await this.sendSync.invalidateAndAwait();
+    }
+
     closeClaudeSessionTurn(status: SessionTurnEndStatus = 'completed') {
         const mapped = closeClaudeTurnWithStatus(this.claudeSessionProtocolState, status);
         this.claudeSessionProtocolState.currentTurnId = mapped.currentTurnId;
