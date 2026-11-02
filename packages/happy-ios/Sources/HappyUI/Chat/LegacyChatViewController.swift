@@ -212,6 +212,10 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
     /// latest snapshot has it, and what the reader has done to it.
     private var questionForms: [String: ChatQuestionForm] = [:]
     private var questionDrafts: [String: ChatQuestionState] = [:]
+    /// The question tools still waiting for their data, and the one pull of
+    /// the sessions that goes after it if they go on waiting.
+    private var questionsAwaiting: Set<String> = []
+    private let questionRefetch = TaskHolder()
     /// How tall each diagram's page said it is: by row id, then by its
     /// place in the row. For as long as the screen lives.
     private var mermaidHeights: [String: [Int: CGFloat]] = [:]
@@ -747,6 +751,8 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         graceTick = 0
         questionForms = [:]
         questionDrafts = [:]
+        questionsAwaiting = []
+        questionRefetch.task?.cancel()
         questionsToDismiss = [:]
         mermaidHeights = [:]
     }
@@ -1657,6 +1663,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
                 updateComposer()
             }
             if let forms = update.questionForms { questionForms = forms }
+            if let awaiting = update.questionsAwaiting { scheduleQuestionRefetch(awaiting) }
             scheduleGraceEnd(update.graceEnd, now: update.now)
             // Before the list, which reports its scroll position as it
             // applies, and may ask for the next page.
@@ -1972,6 +1979,27 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
             if !failed { state.dismissedHere = true }
             self.questionDrafts[toolId] = state
             self.scheduleMeasure()
+        }
+    }
+
+    /// Two seconds after a question starts waiting for its data, pulls the
+    /// sessions once: on a live socket nothing else brings back an agent state
+    /// update that went missing. Only a newly waiting question asks again, so
+    /// this can't loop.
+    private func scheduleQuestionRefetch(_ awaiting: Set<String>) {
+        let added = !awaiting.subtracting(questionsAwaiting).isEmpty
+        questionsAwaiting = awaiting
+        if awaiting.isEmpty {
+            questionRefetch.task?.cancel()
+            return
+        }
+        guard added else { return }
+        questionRefetch.task?.cancel()
+        let refresh = services.refreshSessions
+        questionRefetch.task = Task {
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            await refresh()
         }
     }
 
