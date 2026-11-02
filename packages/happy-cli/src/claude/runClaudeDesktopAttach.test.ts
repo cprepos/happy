@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { reduceDesktopEvents, type DesktopStatus } from './runClaudeDesktopAttach';
+import { desktopSessionTag, reduceDesktopEvents, type DesktopStatus } from './runClaudeDesktopAttach';
 
 const idle: DesktopStatus = { thinking: false, ended: false };
 
@@ -27,5 +27,17 @@ describe('reduceDesktopEvents', () => {
     it('no events leaves the status unchanged', () => {
         const status: DesktopStatus = { thinking: true, ended: false };
         expect(reduceDesktopEvents(status, [])).toBe(status);
+    });
+});
+
+describe('desktopSessionTag', () => {
+    it('is the same every time a desktop session is attached, so reopening reattaches', () => {
+        const id = '5080bd4b-d549-411b-95e5-b62175d2396b';
+        expect(desktopSessionTag(id)).toBe(desktopSessionTag(id));
+        expect(desktopSessionTag(id)).toBe('claude-desktop:5080bd4b-d549-411b-95e5-b62175d2396b');
+    });
+
+    it('differs between desktop sessions', () => {
+        expect(desktopSessionTag('a')).not.toBe(desktopSessionTag('b'));
     });
 });

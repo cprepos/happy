@@ -80,6 +80,11 @@ export type DesktopStatus = {
  * Fold daemon events into the mirror's status. `delivered` counts as busy: a
  * rewake turn starts without a UserPromptSubmit, so no `busy` precedes it.
  */
+/** The Happy session tag for a desktop session: stable, so reopening reattaches. */
+export function desktopSessionTag(claudeSessionId: string): string {
+    return `claude-desktop:${claudeSessionId}`;
+}
+
 export function reduceDesktopEvents(status: DesktopStatus, events: DesktopEvent[]): DesktopStatus {
     return events.reduce<DesktopStatus>((current, event) => {
         switch (event.type) {
@@ -173,12 +178,17 @@ export async function runClaudeDesktopAttach(credentials: Credentials, options: 
         claudeSessionId: options.claudeSessionId,
     };
 
-    const response = await api.getOrCreateSession({ tag: randomUUID(), metadata, state: { controlledByUser: false } });
+    // One Happy session per desktop session: reopening a desktop chat brings
+    // its Happy session back instead of adding a copy next to the archived one.
+    const response = await api.getOrCreateSession({ tag: desktopSessionTag(options.claudeSessionId), metadata, state: { controlledByUser: false } });
     if (!response) {
         // No offline mode: without the server there is nothing to mirror to.
         throw new Error('Happy server unreachable, cannot create the mirror session');
     }
-    logger.debug(`[ATTACH] Session created: ${response.id}`);
+    // The server hands back an existing session as it was. Anything it
+    // already holds (its history and its title) is kept.
+    const reattached = response.seq > 0;
+    logger.debug(`[ATTACH] Session ${reattached ? 'reattached' : 'created'}: ${response.id}`);
 
     const reported = await notifyDaemonSessionStarted(response.id, metadata, {
         encryptionKey: encodeBase64(response.encryptionKey),
@@ -193,6 +203,11 @@ export async function runClaudeDesktopAttach(credentials: Credentials, options: 
 
     const session = api.sessionSyncClient(response);
     session.updateAgentState((current) => ({ ...current, controlledByUser: false }));
+    if (reattached) {
+        // Fresh process fields over the stored metadata: a new host pid and
+        // lifecycle, while the stored summary (the session's title) stays.
+        session.updateMetadata((current) => ({ ...current, ...metadata }));
+    }
 
     let claudeSessionId = options.claudeSessionId;
     let status: DesktopStatus = { thinking: false, ended: false };
@@ -203,13 +218,15 @@ export async function runClaudeDesktopAttach(credentials: Credentials, options: 
     session.keepAlive(status.thinking, 'local');
     const keepAliveInterval = setInterval(() => session.keepAlive(status.thinking, 'local'), KEEP_ALIVE_INTERVAL_MS);
 
-    // Mirror the transcript. The scanner starts with no session and is then
-    // pointed at the desktop's, so the existing history is sent to the fresh
-    // Happy session as well as everything written from now on.
+    // Mirror the transcript. For a fresh Happy session the scanner starts with
+    // no session and is then pointed at the desktop's, so the existing
+    // history is sent as well as everything written from now on. A reattached
+    // session already has that history, so the scanner starts on the desktop
+    // session, which marks what is on disk as sent.
     const echoes = createDesktopEchoMatcher();
     let sendChain = Promise.resolve();
     const scanner = await createSessionScanner({
-        sessionId: null,
+        sessionId: reattached ? claudeSessionId : null,
         workingDirectory: cwd,
         onMessage: (message) => {
             // Same as the local launcher: Happy generates its own summaries.
