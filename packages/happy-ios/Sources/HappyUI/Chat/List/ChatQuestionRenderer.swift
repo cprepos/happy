@@ -10,11 +10,15 @@ struct ChatQuestionState: Equatable, Sendable {
     var selections = InlineQuestionSelections()
     /// The answers sent from here, before the agent's own record of them.
     var sent: [String: [String]]?
+    /// An answer or a dismissal is on its way.
     var submitting = false
+    /// Dismissed from here, before the agent's own record of it.
+    var dismissedHere = false
 
+    var dismissed: Bool { form.dismissed || dismissedHere }
     /// What the summary shows once answered.
     var submitted: [String: [String]]? { form.submitted ?? sent }
-    var canInteract: Bool { form.canInteract && submitted == nil }
+    var canInteract: Bool { form.canInteract && submitted == nil && !dismissed }
 }
 
 // MARK: InlineQuestionForm.tsx
@@ -23,6 +27,9 @@ extension ChatRowRenderer {
     /// Its text at the rows' size; the marks, the 44 minimum and the
     /// paddings keep theirs.
     static func questionForm(_ state: ChatQuestionState, toolId: String, text: ChatRowText) -> ChatStackEntry {
+        if state.dismissed {
+            return section(nil, .text(MeasuredText(ChatTextStyles.inlineSubmittedHeader.string(text.words.questionDismissed, color: Palette.textSecondary, in: text.environment))), text: text)
+        }
         if let submitted = state.submitted {
             return section(nil, .stack(state.form.questions.map { question in
                 submittedLine(question, answer: submitted[question.id], text: text)
@@ -33,8 +40,72 @@ extension ChatRowRenderer {
         }
         if state.canInteract {
             sections.append(submitButton(state, toolId: toolId, text: text))
+            return section(nil, dismissable(.stack(sections, gap: 16), state: state, toolId: toolId), text: text)
         }
         return section(nil, .stack(sections, gap: 16), text: text)
+    }
+
+    /// The form with its X over the top right corner. Its hit comes first,
+    /// so it wins where its slop reaches over the form. Busy, the X stays
+    /// and takes no tap.
+    static func dismissable(_ form: ChatPiece, state: ChatQuestionState, toolId: String) -> ChatPiece {
+        ChatPiece(measurable: form.measurable) { frame in
+            let drawn = form.draw(frame)
+            let layout = InlineQuestionDismissLayout(form: frame)
+            var items = drawn.items
+            items.append(.icon(.ionicons("close"), size: InlineQuestionDismissLayout.Metrics.glyphSize, frame: layout.glyph, tint: Palette.textSecondary))
+            var hits: [ChatHit] = []
+            if !state.submitting { hits.append(ChatHit(frame: layout.hit, action: .questionDismiss(toolId: toolId))) }
+            hits += drawn.hits
+            return (items, hits)
+        }
+    }
+
+    /// The written answer's field, as tall as what it holds. The text view
+    /// itself is live (`ChatQuestionFieldView`); what it holds comes back
+    /// here through the draft, so the row grows with it.
+    static func questionField(_ question: InlineQuestion, state: ChatQuestionState, toolId: String, text rowText: ChatRowText) -> ChatStackEntry {
+        let environment = rowText.environment
+        let written = state.selections.custom[question.id] ?? ""
+        let style = ChatTextStyles.inlineCustomInput
+        let placeholder = MeasuredText(style.string(rowText.words.ownAnswerPlaceholder, color: Palette.textSecondary, in: environment))
+        // A last empty line counts: the text view shows the caret on it.
+        let measured = written.isEmpty ? placeholder : MeasuredText(style.string(written.hasSuffix("\n") ? written + " " : written, color: Palette.text, in: environment))
+        let piece = ChatPiece(measurable: Measurable { width in
+            InlineQuestionFieldLayout(width: width, text: measured.measurable, placeholder: placeholder.measurable).size
+        }) { frame in
+            let layout = InlineQuestionFieldLayout(width: frame.width, text: measured.measurable, placeholder: placeholder.measurable)
+            typealias Metrics = InlineQuestionFieldLayout.Metrics
+            let field = ChatQuestionField(
+                toolId: toolId, questionId: question.id, text: written, placeholder: rowText.words.ownAnswerPlaceholder,
+                placeholderFrame: layout.placeholder, environment: environment
+            )
+            return ([
+                .box(ChatBox(frame: frame, fill: Palette.surface, border: Palette.legacyDivider, borderWidth: Metrics.borderWidth, radius: Metrics.radius)),
+                .embed(.questionField(field), frame: frame),
+            ], [])
+        }
+        return ChatStackEntry(piece: piece)
+    }
+
+    /// RequestUserInputView's wait for the communication: a spinner and
+    /// "Loading question…" where the form will be.
+    static func questionLoader(text: ChatRowText) -> ChatStackEntry {
+        let label = MeasuredText(ChatTextStyles.inlineQuestionLoading.string(text.words.loadingQuestion, color: Palette.textSecondary, in: text.environment))
+        let spinner = CGSize(width: 20, height: 20)
+        let row = ChatPiece(measurable: Measurable { width in
+            ChatAccessoryRowLayout(width: width, leading: spinner, text: label.measurable, gap: 8, alignment: .center).size
+        }) { frame in
+            let layout = ChatAccessoryRowLayout(width: frame.width, leading: spinner, text: label.measurable, gap: 8, alignment: .center)
+            let textFrame = layout.text.offsetBy(dx: frame.minX, dy: frame.minY)
+            return ([
+                .spinner(layout.leading!.offsetBy(dx: frame.minX, dy: frame.minY), tint: Palette.textSecondary, scale: 1),
+                .text(label.layout(for: textFrame), textFrame),
+            ], [])
+        }
+        var entry = section(nil, row, text: text)
+        entry.padding = LayoutInsets(top: 12, left: 0, bottom: 12, right: 0)
+        return entry
     }
 
     /// "Header: answer", the header in secondary semibold.
@@ -71,6 +142,9 @@ extension ChatRowRenderer {
                          enabled: state.canInteract, action: .questionOption(toolId: toolId, questionId: question.id, option: index), text: rowText)
         }
         entries.append(ChatStackEntry(piece: .stack(options, gap: 4)))
+        if question.allowCustom && state.canInteract {
+            entries.append(questionField(question, state: state, toolId: toolId, text: rowText))
+        }
         return ChatStackEntry(piece: .stack(entries, gap: 8))
     }
 

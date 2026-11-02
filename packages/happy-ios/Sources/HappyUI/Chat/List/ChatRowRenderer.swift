@@ -51,6 +51,8 @@ struct ChatRowInput: Equatable, Sendable {
     var permissionBusy: PermissionButton.Kind?
     /// For a question tool: its form and what has been picked.
     var question: ChatQuestionState?
+    /// For a question tool: the communication its form is in hasn't arrived.
+    var questionLoading = false
     /// For a diff tool: the files the reader opened past "Show N more
     /// lines", by diff.
     var diffExpanded: [Int: Set<Int>] = [:]
@@ -102,7 +104,7 @@ enum ChatRowRenderer {
                 return userText(user, delivery: input.delivery, status: status, outgoing: input.outgoing, time: input.time, diagrams: diagrams, width: width, style: input.style)
             case .agentText(let agent): return agentText(agent, copied: input.copied, diagrams: diagrams, width: width, style: input.style)
             case .toolCall(let call):
-                let views = ChatToolViews(question: input.question, diffExpanded: input.diffExpanded, diagrams: diagrams, delivery: input.delivery)
+                let views = ChatToolViews(question: input.question, questionLoading: input.questionLoading, diffExpanded: input.diffExpanded, diagrams: diagrams, delivery: input.delivery)
                 return toolCall(call, expanded: input.expanded, busy: input.permissionBusy, views: views, width: width, style: input.style)
             case .agentEvent(let event): return agentEvent(event, width: width, style: input.style)
             case .unsupported(let unsupported): return unsupportedRow(unsupported, width: width, style: input.style)

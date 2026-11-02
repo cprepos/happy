@@ -188,6 +188,20 @@ enum ChatDrawItem {
 enum ChatEmbed: Equatable, Sendable {
     /// An HTML artifact's page (`InlinePageView`).
     case page(InlinePage)
+    /// A question's field for a written answer (`ChatQuestionFieldView`).
+    case questionField(ChatQuestionField)
+}
+
+/// A written answer's field in a question form.
+struct ChatQuestionField: Equatable, Sendable {
+    var toolId: String
+    var questionId: String
+    /// What the draft holds: the field's own text while it is being typed in.
+    var text: String
+    var placeholder: String
+    /// In the field's own coordinates.
+    var placeholderFrame: CGRect
+    var environment: TextEnvironment?
 }
 
 /// An artifact's page shown inline in a V2 conversation: the
@@ -295,6 +309,10 @@ enum ChatRowAction: Equatable, Sendable {
     /// An option in a tool's question form, by tool message id.
     case questionOption(toolId: String, questionId: String, option: Int)
     case questionSubmit(toolId: String)
+    /// The text in a question's field for a written answer.
+    case questionCustom(toolId: String, questionId: String, text: String)
+    /// The X on a question form: closed without an answer.
+    case questionDismiss(toolId: String)
     /// "Show N more lines" on file `file` of a tool's diff `chunk`.
     case diffShowMore(toolId: String, chunk: Int, file: Int)
     /// A diagram's page says how tall it is, in points.

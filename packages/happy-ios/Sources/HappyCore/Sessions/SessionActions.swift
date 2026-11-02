@@ -195,37 +195,47 @@ public struct SessionActions: Sendable {
         ))
     }
 
-    /// Denies a permission request (`sessionDeny`); `decision` is denied or abort.
+    /// Denies a permission request (`sessionDeny`); `decision` is denied or
+    /// abort. `reason` is what the agent is told instead of the CLI's default
+    /// refusal, which tells it to stop and wait.
     public func deny(
         sessionId: String,
         permissionId: String,
         mode: String? = nil,
         allowedTools: [String]? = nil,
-        decision: ToolPermission.Decision? = nil
+        decision: ToolPermission.Decision? = nil,
+        reason: String? = nil
     ) async throws {
         _ = try await call(sessionId: sessionId, method: "permission", params: Self.permission(
-            id: permissionId, approved: false, mode: mode, allowedTools: allowedTools, decision: decision, updatedInput: nil
+            id: permissionId, approved: false, mode: mode, allowedTools: allowedTools, decision: decision, updatedInput: nil, reason: reason
         ))
     }
 
     /// Answers a question the agent asked (`sessionAnswerQuestion`), echoing
     /// the `kind` the agent published.
     public func answerQuestion(sessionId: String, id: String, answers: JSONValue, kind: String = "form") async throws {
-        _ = try await call(sessionId: sessionId, method: "communication", params: .object([
+        try Self.throwCommunicationError(await call(sessionId: sessionId, method: "communication", params: .object([
             "id": .string(id),
             "kind": .string(kind),
             "status": .string("answered"),
             "answers": answers,
-        ]))
+        ])))
     }
 
     /// Dismisses a question without answering (`sessionCancelCommunication`).
     public func cancelQuestion(sessionId: String, id: String, kind: String = "form") async throws {
-        _ = try await call(sessionId: sessionId, method: "communication", params: .object([
+        try Self.throwCommunicationError(await call(sessionId: sessionId, method: "communication", params: .object([
             "id": .string(id),
             "kind": .string(kind),
             "status": .string("cancelled"),
-        ]))
+        ])))
+    }
+
+    /// The agent reports a reply it could not deliver (the question was
+    /// already answered elsewhere, or it refused) as `{ error }` instead of
+    /// failing the call. Thrown, so the form stays answerable.
+    static func throwCommunicationError(_ reply: JSONValue?) throws {
+        if let error = reply?["error"]?.stringValue { throw SessionActionError.failed(error) }
     }
 
     /// Stops the agent's current turn (`sessionAbort`). Rig sessions take no
@@ -243,12 +253,13 @@ public struct SessionActions: Sendable {
 
     /// `SessionPermissionRequest`; absent options are left out, as
     /// JSON.stringify leaves out undefined.
-    static func permission(id: String, approved: Bool, mode: String?, allowedTools: [String]?, decision: ToolPermission.Decision?, updatedInput: JSONValue?) -> JSONValue {
+    static func permission(id: String, approved: Bool, mode: String?, allowedTools: [String]?, decision: ToolPermission.Decision?, updatedInput: JSONValue?, reason: String? = nil) -> JSONValue {
         var request: [String: JSONValue] = ["id": .string(id), "approved": .bool(approved)]
         if let mode { request["mode"] = .string(mode) }
         if let allowedTools { request["allowTools"] = .array(allowedTools.map(JSONValue.string)) }
         if let decision { request["decision"] = .string(decision.rawValue) }
         if let updatedInput { request["updatedInput"] = updatedInput }
+        if let reason { request["reason"] = .string(reason) }
         return .object(request)
     }
 

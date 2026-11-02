@@ -127,6 +127,12 @@ public struct ChatWords: Equatable, Sendable {
     }
     /// tools.askUserQuestion.submit (views/InlineQuestionForm.tsx 191)
     public var submitAnswer: String { word("tools.askUserQuestion.submit", "Submit Answer") }
+    /// agentQuestion.dismissed (views/InlineQuestionForm.tsx)
+    public var questionDismissed: String { word("agentQuestion.dismissed", "Dismissed") }
+    /// agentQuestion.ownAnswerPlaceholder (views/InlineQuestionForm.tsx)
+    public var ownAnswerPlaceholder: String { word("agentQuestion.ownAnswerPlaceholder", "Write an answer instead") }
+    /// tools.requestUserInput.loading (views/RequestUserInputView.tsx)
+    public var loadingQuestion: String { word("tools.requestUserInput.loading", "Loading question…") }
     /// common.message: a message screen's title (ToolHeader.tsx 18).
     public var message: String { word("common.message", "Message") }
 

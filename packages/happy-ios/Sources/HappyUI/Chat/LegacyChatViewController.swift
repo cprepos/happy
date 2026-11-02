@@ -212,6 +212,10 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
     /// latest snapshot has it, and what the reader has done to it.
     private var questionForms: [String: ChatQuestionForm] = [:]
     private var questionDrafts: [String: ChatQuestionState] = [:]
+    /// The question tools still waiting for their data, and the one pull of
+    /// the sessions that goes after it if they go on waiting.
+    private var questionsAwaiting: Set<String> = []
+    private let questionRefetch = TaskHolder()
     /// How tall each diagram's page said it is: by row id, then by its
     /// place in the row. For as long as the screen lives.
     private var mermaidHeights: [String: [Int: CGFloat]] = [:]
@@ -761,6 +765,8 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         graceTick = 0
         questionForms = [:]
         questionDrafts = [:]
+        questionsAwaiting = []
+        questionRefetch.task?.cancel()
         questionsToDismiss = [:]
         mermaidHeights = [:]
     }
@@ -1751,6 +1757,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
                 updateComposer()
             }
             if let forms = update.questionForms { questionForms = forms }
+            if let awaiting = update.questionsAwaiting { scheduleQuestionRefetch(awaiting) }
             scheduleGraceEnd(update.graceEnd, now: update.now)
             // Before the list, which reports its scroll position as it
             // applies, and may ask for the next page.
@@ -1899,6 +1906,16 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
             scheduleMeasure()
         case .questionSubmit(let toolId):
             submitQuestion(toolId)
+        case .questionCustom(let toolId, let questionId, let text):
+            guard let form = questionForms[toolId]?.form else { return }
+            var state = questionDrafts[toolId] ?? ChatQuestionState(form: form)
+            state.form = form
+            guard state.canInteract, !state.submitting else { return }
+            state.selections.custom[questionId] = text
+            questionDrafts[toolId] = state
+            scheduleMeasure()
+        case .questionDismiss(let toolId):
+            dismissQuestion(toolId)
         case .mermaidHeight(let row, let index, let height):
             // Planned again off the main thread, only if the box grows.
             guard let kept = MarkdownLayout.mermaidHeightToKeep(
@@ -1997,7 +2014,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
                 if reply.allow {
                     try await controls.allow(sessionId: sessionId, permissionId: tap.permissionId, mode: reply.mode, allowedTools: reply.allowedTools, decision: reply.decision, updatedInput: nil)
                 } else {
-                    try await controls.deny(sessionId: sessionId, permissionId: tap.permissionId, mode: reply.mode, allowedTools: reply.allowedTools, decision: reply.decision)
+                    try await controls.deny(sessionId: sessionId, permissionId: tap.permissionId, mode: reply.mode, allowedTools: reply.allowedTools, decision: reply.decision, reason: nil)
                 }
                 if let mode = reply.permissionMode { await setPermissionMode(mode) }
             } catch {
@@ -2018,7 +2035,8 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         state.form = form
         guard state.canInteract, !state.submitting, state.selections.allAnswered(form.questions) else { return }
         let answers = state.selections.answers(form.questions)
-        state.sent = answers
+        let written = state.selections.written(form.questions)
+        state.sent = state.selections.shown(form.questions)
         state.submitting = true
         questionDrafts[toolId] = state
         scheduleMeasure()
@@ -2032,7 +2050,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
                     let input = InlineQuestionForm.askUserQuestionInput(tool, answers: answers)
                     try await controls.allow(sessionId: sessionId, permissionId: id, mode: nil, allowedTools: nil, decision: .approved, updatedInput: input)
                 case .communication(let id, let kind):
-                    try await controls.answerQuestion(sessionId: sessionId, id: id, answers: InlineQuestionForm.communicationAnswers(form.questions, answers: answers), kind: kind)
+                    try await controls.answerQuestion(sessionId: sessionId, id: id, answers: InlineQuestionForm.communicationAnswers(form.questions, answers: answers, written: written), kind: kind)
                 }
             } catch {
                 failed = true
@@ -2042,6 +2060,60 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
             if failed { state.sent = nil }
             self.questionDrafts[toolId] = state
             self.scheduleMeasure()
+        }
+    }
+
+    /// The X on a question form: closes it without an answer, telling the
+    /// agent to carry on rather than the default refusal's stop. If that
+    /// fails, the form stays as it was, and can still be answered.
+    private func dismissQuestion(_ toolId: String) {
+        guard let entry = questionForms[toolId], let reply = entry.form.reply else { return }
+        var state = questionDrafts[toolId] ?? ChatQuestionState(form: entry.form)
+        state.form = entry.form
+        guard state.canInteract, !state.submitting else { return }
+        state.submitting = true
+        questionDrafts[toolId] = state
+        scheduleMeasure()
+        let controls = services.controls
+        let sessionId = self.chatId
+        Task { [weak self] in
+            var failed = false
+            do {
+                switch reply {
+                case .permission(let id):
+                    try await controls.deny(sessionId: sessionId, permissionId: id, mode: nil, allowedTools: nil, decision: nil, reason: InlineQuestionForm.dismissReason)
+                case .communication(let id, let kind):
+                    try await controls.cancelQuestion(sessionId: sessionId, id: id, kind: kind)
+                }
+            } catch {
+                failed = true
+            }
+            guard let self, var state = self.questionDrafts[toolId] else { return }
+            state.submitting = false
+            if !failed { state.dismissedHere = true }
+            self.questionDrafts[toolId] = state
+            self.scheduleMeasure()
+        }
+    }
+
+    /// Two seconds after a question starts waiting for its data, pulls the
+    /// sessions once: on a live socket nothing else brings back an agent state
+    /// update that went missing. Only a newly waiting question asks again, so
+    /// this can't loop.
+    private func scheduleQuestionRefetch(_ awaiting: Set<String>) {
+        let added = !awaiting.subtracting(questionsAwaiting).isEmpty
+        questionsAwaiting = awaiting
+        if awaiting.isEmpty {
+            questionRefetch.task?.cancel()
+            return
+        }
+        guard added else { return }
+        questionRefetch.task?.cancel()
+        let refresh = services.refreshSessions
+        questionRefetch.task = Task {
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            await refresh()
         }
     }
 

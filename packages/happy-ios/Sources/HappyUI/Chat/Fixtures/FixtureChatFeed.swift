@@ -323,7 +323,7 @@ public struct FixtureChatControls: ChatControls {
         await world.resolvePermission(sessionId: sessionId, permissionId: permissionId, approved: true, mode: mode, allowedTools: allowedTools, decision: decision)
     }
 
-    public func deny(sessionId: String, permissionId: String, mode: String?, allowedTools: [String]?, decision: ToolPermission.Decision?) async throws {
+    public func deny(sessionId: String, permissionId: String, mode: String?, allowedTools: [String]?, decision: ToolPermission.Decision?, reason: String?) async throws {
         try await Task.sleep(for: .milliseconds(300))
         await world.resolvePermission(sessionId: sessionId, permissionId: permissionId, approved: false, decision: decision)
     }

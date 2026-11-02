@@ -63,6 +63,8 @@ struct ChatStackEntry {
 /// card's edges (a card) or sits inside a box (a compact row).
 struct ChatToolViews {
     var question: ChatQuestionState?
+    /// A question tool still waiting for the communication its form is in.
+    var questionLoading = false
     var diffExpanded: [Int: Set<Int>] = [:]
     var diagrams = ChatMermaidHeights()
     var flush = true
@@ -81,7 +83,7 @@ extension ChatRowRenderer {
         let environment = text.environment
         let context = ToolContext(root: style.root, flavor: style.flavor, compactMode: style.compactTools)
         guard let presentation = ChatToolPresentation.present(
-            tool, children: message.children, context: context, state: ToolDisplayState(expanded: expanded), words: text.words.toolActions
+            tool, children: message.children, context: context, state: ToolDisplayState(expanded: expanded, questionDismissed: views.question?.dismissed == true), words: text.words.toolActions
         ) else {
             return ChatRowPlan(id: message.id, size: CGSize(width: width, height: 0), items: [])
         }
@@ -248,7 +250,8 @@ extension ChatRowRenderer {
     static func toolView(_ kind: ToolViewKind, message: ToolCallMessage, views: ChatToolViews, style: ChatRowStyle) -> ChatStackEntry? {
         let text = style.text
         return switch kind {
-        case .askUserQuestion, .requestUserInput: views.question.map { questionForm($0, toolId: message.id, text: text) }
+        case .askUserQuestion, .requestUserInput:
+            views.question.map { questionForm($0, toolId: message.id, text: text) } ?? (views.questionLoading ? questionLoader(text: text) : nil)
         case .edit, .write, .multiEdit, .geminiEdit: diffView(kind, message: message, views: views, style: style)
         case .codexPatch: codexPatchView(message, views: views, style: style)
         case .codexDiff: codexDiffView(message, views: views, style: style)
