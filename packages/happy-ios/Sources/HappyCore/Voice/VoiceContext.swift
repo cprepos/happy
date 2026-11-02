@@ -113,7 +113,14 @@ public actor VoiceContext {
         guard sessionId != focused else { return }
         focused = sessionId
         watch(sessionId)
-        await sink?(VoiceContextUpdate(context: "Session became focused: \(sessionId). Send the user's next instructions here unless asked otherwise."))
+        await sink?(VoiceContextUpdate(context: Self.focusLine(sessionId)))
+    }
+
+    /// Bare, as happy-app's formatSessionFocus: the agent takes everything after
+    /// the colon up to the next whitespace as the session id, so anything
+    /// touching the id becomes part of it and the agent's sends get refused.
+    static func focusLine(_ sessionId: String) -> String {
+        "Session became focused: \(sessionId)"
     }
 
     public func stop() {
