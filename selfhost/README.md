@@ -231,5 +231,7 @@ use. To add a machine:
 3. Register/authenticate it
 4. It appears in the app's machine picker
 
+`cli-service/install-service.sh` keeps the daemon running across reboots: a launchd agent on macOS, a systemd user service on Linux.
+
 For voice services on a separate Mac, see Option B above — the Mac runs STT/TTS
 and the voice agent on your main server connects to it over the LAN.
