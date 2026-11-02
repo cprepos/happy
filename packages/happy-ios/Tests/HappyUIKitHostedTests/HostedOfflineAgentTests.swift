@@ -234,8 +234,12 @@ final class HostedOfflineAgentTests: XCTestCase {
         // The network is back: the header says so and what waited goes, once.
         await computer.set(online: true)
         NetworkPath.shared.force(true)
-        try await until("the read and the archive, sent", 10) { await computer.acts.count >= heardOnline.count + 2 }
+        try await until("the read and the archive, sent", 10) {
+            let heard = await computer.acts.dropFirst(heardOnline.count)
+            return heard.contains("read:ship-agent") && heard.contains("archive:old")
+        }
         let heard = Array(await computer.acts.dropFirst(heardOnline.count))
+        print("OFFLINE-AGENT heard \(heard)")
         XCTAssertEqual(heard.filter { $0 == "read:ship-agent" }.count, 1)
         XCTAssertEqual(heard.filter { $0 == "archive:old" }.count, 1)
         try await until("nothing waits") { await relaunched.engine.intents.pending().isEmpty }
