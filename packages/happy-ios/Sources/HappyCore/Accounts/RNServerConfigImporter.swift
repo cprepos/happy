@@ -10,26 +10,31 @@ public enum ImportedAccountServer: Equatable, Sendable {
 /// Read-only import of react-native-mmkv 3's unencrypted `server-config`.
 /// No migration writes to RN's files, including when their data is torn.
 public enum RNServerConfigImporter {
-    public static func readFromDocuments() -> ImportedAccountServer {
+    public static func readFromDocuments(
+        defaultServer: URL = ServerConfig.bakedServerURL() ?? ServerConfig.defaultServerURL
+    ) -> ImportedAccountServer {
         guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
             return .needsConfirmation
         }
-        return read(directory: documents.appendingPathComponent("mmkv", isDirectory: true))
+        return read(directory: documents.appendingPathComponent("mmkv", isDirectory: true), defaultServer: defaultServer)
     }
 
-    public static func read(directory: URL) -> ImportedAccountServer {
+    /// `defaultServer` is where RN goes when it stored no choice. A self-host
+    /// RN build keeps its server in its app config, not in MMKV, so its token
+    /// belongs to the server this build bakes in, never to Happy's.
+    public static func read(directory: URL, defaultServer: URL = ServerConfig.defaultServerURL) -> ImportedAccountServer {
         let file = directory.appendingPathComponent("server-config")
         do {
             let data: Data
             do {
                 data = try Data(contentsOf: file)
             } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
-                return .confirmed(ServerConfig.defaultServerURL)
+                return .confirmed(defaultServer)
             }
             let metaURL = directory.appendingPathComponent("server-config.crc")
             let meta = FileManager.default.fileExists(atPath: metaURL.path) ? try Data(contentsOf: metaURL) : nil
             let string = try MMKVStringDecoder.string(forKey: "custom-server-url", data: data, metadata: meta)
-            guard let string, !string.isEmpty else { return .confirmed(ServerConfig.defaultServerURL) }
+            guard let string, !string.isEmpty else { return .confirmed(defaultServer) }
             return .confirmed(try ServerConfig.validate(string))
         } catch {
             return .needsConfirmation

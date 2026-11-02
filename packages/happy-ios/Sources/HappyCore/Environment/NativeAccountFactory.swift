@@ -10,13 +10,14 @@ public enum NativeAccountFactory {
         directory: URL?,
         backend: any AccountKeychainBackend,
         defaultsNamespace: String? = nil,
+        bakedServerURL: URL? = ServerConfig.bakedServerURL(),
         importLegacyServer: @escaping @Sendable () -> ImportedAccountServer = { RNServerConfigImporter.readFromDocuments() },
         appState: @escaping @Sendable () async -> String = AccountSession.Dependencies.alwaysActive,
         deliveryActivity: @escaping @Sendable (Bool) async -> Void = AccountSession.Dependencies.noDeliveryActivity
     ) -> AccountController {
         func suite(_ name: String) -> String { defaultsNamespace.map { "\($0).\(name)" } ?? name }
         return AccountController(
-            serverConfig: ServerConfig(storage: UserDefaultsStore(suiteName: suite(ServerConfig.storageSuite))),
+            serverConfig: ServerConfig(storage: UserDefaultsStore(suiteName: suite(ServerConfig.storageSuite)), bakedServerURL: bakedServerURL),
             clientID: HappyClientID.make(version: version),
             credentialStore: SecureStoreCredentialStore(backend: backend),
             storeDirectory: directory,

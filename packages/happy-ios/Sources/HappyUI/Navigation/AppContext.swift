@@ -16,10 +16,10 @@ public final class AppContext {
         self.version = version
     }
 
-    /// The custom server's host (and port), shown under the title; nil on
-    /// the default server.
+    /// The self-hosted server's host (and port), shown under the title; nil
+    /// on Happy's own server.
     var customServerHost: String? {
-        account.serverConfig.isCustomServer ? account.serverConfig.displayHost : nil
+        account.serverConfig.isHostedServer ? nil : account.serverConfig.displayHost
     }
 }
 

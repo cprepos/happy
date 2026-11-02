@@ -775,7 +775,7 @@ public final class AccountController {
                 url = importedURL
             } else {
                 // Placeholder only; serverConfirmed gates every session.
-                url = ServerConfig.defaultServerURL
+                url = serverConfig.fallbackServerURL
             }
             values[sharedID] = StoredAccountCredentials(credentials: shared, serverURL: url)
         }
