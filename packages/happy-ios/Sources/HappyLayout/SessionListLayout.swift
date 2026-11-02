@@ -7,7 +7,7 @@ import CoreGraphics
 ///
 ///     |16| avatar 60 |12| title ……………………………… |8| 12:55 PM |16|
 ///     |          (centred) | project
-///     |                    | workspace ⑂ ……………………… ✎ |8| ≈ +12 -3 |16|
+///     |                    | workspace · harness ⑂ …… ✎ |8| ≈ +12 -3 |16|
 ///     ──────────── hairline from x 88 to the right edge ────────────
 ///
 /// At the designed text size the row is 10 + 22 + 20 + 1 + 18 + 10 = 81
@@ -104,6 +104,8 @@ public struct FlatSessionRowLayout: Equatable, Sendable {
         /// The avatar's side: 60, or home's card's smaller mark
         /// (`HomeCardLayout.Metrics.sessionAvatar`).
         public var avatarSize: CGFloat
+        /// The harness after the workspace, ahead of its glyph.
+        public var harness: HomeRowHarnessText?
 
         public init(
             width: CGFloat,
@@ -116,8 +118,10 @@ public struct FlatSessionRowLayout: Equatable, Sendable {
             draftIcon: CGSize? = nil,
             showsDivider: Bool,
             lines: Lines = .designed,
-            avatarSize: CGFloat = Metrics.avatarSize
+            avatarSize: CGFloat = Metrics.avatarSize,
+            harness: HomeRowHarnessText? = nil
         ) {
+            self.harness = harness
             self.avatarSize = avatarSize
             self.width = width
             self.title = title
@@ -175,6 +179,8 @@ public struct FlatSessionRowLayout: Equatable, Sendable {
     public var changes: CGRect?
     public var draftIcon: CGRect?
     public var divider: CGRect?
+    public var harnessSeparator: CGRect?
+    public var harness: CGRect?
 
     public init(_ input: Input) {
         typealias M = Metrics
@@ -237,15 +243,22 @@ public struct FlatSessionRowLayout: Equatable, Sendable {
         let locationWidth = max(0, contentWidth - metaWidth)
         if let workspace = input.workspace {
             let icon = input.branchIcon
-            let textSize = workspace.size(fitting: max(0, locationWidth - M.workspaceIconGap - icon.width))
+            let textLane = max(0, locationWidth - M.workspaceIconGap - icon.width)
+            let textSize = workspace.size(fitting: textLane)
+            let harnessLine = input.harness.map {
+                HomeRowHarnessLine($0, x: x, midY: workspaceY + workspaceRowHeight / 2, lane: textLane, label: textSize.width)
+            }
+            harnessSeparator = harnessLine?.separator
+            harness = harnessLine?.harness
+            let textWidth = harnessLine?.labelWidth ?? textSize.width
             self.workspace = CGRect(
                 x: x,
                 y: workspaceY + (workspaceRowHeight - textSize.height) / 2,
-                width: textSize.width,
+                width: textWidth,
                 height: textSize.height
             )
             branchIcon = CGRect(
-                x: x + textSize.width + M.workspaceIconGap,
+                x: (harnessLine?.harness.maxX ?? x + textWidth) + M.workspaceIconGap,
                 y: workspaceY + (workspaceRowHeight - icon.height) / 2,
                 width: icon.width,
                 height: icon.height
@@ -253,6 +266,8 @@ public struct FlatSessionRowLayout: Equatable, Sendable {
         } else {
             self.workspace = nil
             branchIcon = nil
+            harnessSeparator = nil
+            harness = nil
         }
 
         avatar = CGRect(x: M.paddingLeft, y: (height - input.avatarSize) / 2, width: input.avatarSize, height: input.avatarSize)

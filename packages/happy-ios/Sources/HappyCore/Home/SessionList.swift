@@ -104,6 +104,9 @@ public struct SessionRow: Equatable, Sendable {
     public var leaves: Bool = false
     /// Unsent text exists in this account's draft store.
     public var hasDraft: Bool = false
+    /// Which harness runs the chat, by product name, beside the worktree on
+    /// its line. A row with no worktree draws none.
+    public var harnessName: String? = nil
 }
 
 /// The home session list in happy-app's default flat layout
@@ -290,7 +293,9 @@ public struct SessionList: Equatable, Sendable {
             archived: archived,
             isBot: session.isBot,
             showsDivider: showsDivider,
-            leaves: session.canLeaveTask
+            leaves: session.canLeaveTask,
+            // `harness` is nil for Happy Agent, whose harness is Happy.
+            harnessName: SessionDetails.harness(metadata) ?? HarnessCatalog.name("rig")
         )
     }
 }

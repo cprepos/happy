@@ -139,8 +139,10 @@ public struct WorktreeRowLayout: Equatable, Sendable {
         public var showsDot: Bool
         public var changes: Measurable?
         public var last: Bool
+        /// The harness after a worktree's name; the name hugs its text then.
+        public var harness: HomeRowHarnessText?
 
-        public init(width: CGFloat, hairline: CGFloat, label: Measurable, chevron: CGSize? = nil, showsDot: Bool, changes: Measurable?, last: Bool) {
+        public init(width: CGFloat, hairline: CGFloat, label: Measurable, chevron: CGSize? = nil, showsDot: Bool, changes: Measurable?, last: Bool, harness: HomeRowHarnessText? = nil) {
             self.width = width
             self.hairline = hairline
             self.label = label
@@ -148,6 +150,7 @@ public struct WorktreeRowLayout: Equatable, Sendable {
             self.showsDot = showsDot
             self.changes = changes
             self.last = last
+            self.harness = harness
         }
     }
 
@@ -158,6 +161,8 @@ public struct WorktreeRowLayout: Equatable, Sendable {
     public var label: CGRect
     public var dot: CGRect?
     public var changes: CGRect?
+    public var harnessSeparator: CGRect?
+    public var harness: CGRect?
 
     public init(_ input: Input) {
         typealias M = ProjectListMetrics
@@ -182,10 +187,13 @@ public struct WorktreeRowLayout: Equatable, Sendable {
         dot = input.showsDot ? frames.popFirst() : nil
         changes = changesSize != nil ? frames.popFirst() : nil
         chevron = input.chevron.map { CGRect(x: M.nameX, y: midY - $0.height / 2, width: $0.width, height: $0.height) }
+        let harnessLine = input.harness.map { HomeRowHarnessLine($0, x: labelX, midY: midY, lane: lane, label: text.width) }
+        harnessSeparator = harnessLine?.separator
+        harness = harnessLine?.harness
         label = CGRect(
             x: labelX,
             y: midY - text.height / 2,
-            width: input.chevron == nil ? lane : min(text.width, lane),
+            width: harnessLine?.labelWidth ?? (input.chevron == nil ? lane : min(text.width, lane)),
             height: text.height
         )
     }

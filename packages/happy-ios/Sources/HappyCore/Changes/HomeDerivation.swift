@@ -143,6 +143,8 @@ public struct HomeListModel: Equatable, Sendable {
                     ids.append(.session(row.id))
                     row.lastActivityAt = 0
                     row.hasDraft = draftSessionIds.contains(row.id)
+                    // Drawn only beside a worktree.
+                    if row.workspaceName == nil { row.harnessName = nil }
                     rows.append(.flat(.session(row)))
                 case .archiveToggle:
                     ids.append(.archiveToggle)
@@ -170,16 +172,19 @@ public struct HomeListModel: Equatable, Sendable {
             session.lastActivityAt = 0
             session.changes = nil
             session.hasDraft = false
+            session.harnessName = nil
             return .bot(session)
         case .task(var session):
             session.lastActivityAt = 0
             session.changes = nil
             session.hasDraft = false
+            session.harnessName = nil
             return .task(session)
         case .archived(var session):
             session.lastActivityAt = 0
             session.changes = nil
             session.hasDraft = false
+            session.harnessName = nil
             return .archived(session)
         default:
             return row

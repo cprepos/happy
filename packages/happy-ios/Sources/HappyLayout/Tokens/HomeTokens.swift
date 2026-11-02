@@ -153,6 +153,13 @@ extension TextStyles {
     public static let gitLineCount = TextStyle(.semiBold, size: 13, lineHeight: 18)
 }
 
+/// `feature-x · OpenCode`: what parts a worktree's name from its harness.
+public enum HomeRowHarness {
+    public static let separator = "·"
+    /// Either side of the separator: about a space of the line's text.
+    public static let gap: CGFloat = 4
+}
+
 /// RowPressable's highlight: up in 70ms, gone over 240ms.
 public enum RowHighlight {
     public static let fadeIn: Double = 0.07

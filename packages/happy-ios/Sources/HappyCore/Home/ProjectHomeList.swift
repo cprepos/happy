@@ -433,7 +433,8 @@ public struct ProjectHomeData: Equatable, Sendable {
                 title: checkout.name ?? checkout.id,
                 sessionId: newest.row.id,
                 activity: HomeActivity(checkout.sessions),
-                changes: newest.git
+                changes: newest.git,
+                harnessName: newest.row.harnessName
             ), last: !togglable && index == shown.count - 1))
         }
         if togglable {
@@ -576,6 +577,9 @@ public struct ProjectWorktree: Equatable, Sendable {
     public var sessionId: String
     public var activity: HomeActivity
     public var changes: GitLineChanges?
+    /// The harness of the newest chat, the one a tap opens: a worktree can
+    /// hold chats on different ones.
+    public var harnessName: String? = nil
 }
 
 /// "Show all 7 workspaces" / "Show fewer", ending a project's worktrees.
