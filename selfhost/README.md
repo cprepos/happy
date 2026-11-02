@@ -104,8 +104,7 @@ somewhere (a cloud API, or a local model on another machine).
 
 ```sh
 # On the Mac:
-cp -r selfhost/mac-voice ~/happy-voice-local
-cd ~/happy-voice-local
+cd selfhost/mac-voice   # runs in place; .venv, logs and bench output are gitignored
 ./run.sh setup      # installs uv, Python 3.12, .venv, dependencies
 ./run.sh start      # starts STT (port 8090) and TTS (port 8880)
 ./run.sh status     # verify health + memory

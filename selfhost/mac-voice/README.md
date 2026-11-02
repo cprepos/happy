@@ -11,10 +11,12 @@ either one. MLX does all the work on the Mac. Nothing here runs an LLM.
 
 ## Setup and start
 
-Copy this directory to `~/happy-voice-local` on the Mac, then:
+Run it in place from a checkout of this repo on the Mac. The `.venv`, `logs/` and `bench/`
+output it creates here are gitignored, and the launchd services point at this folder, so what
+is checked out is what runs after a restart.
 
 ```sh
-cd ~/happy-voice-local
+cd selfhost/mac-voice
 ./run.sh setup     # uv into ~/.local/bin (no shell profile edits), Python 3.12, .venv, pinned requirements
 ./run.sh start     # both services in the background; waits for /health (about 5 s each once models are cached)
 ./run.sh status    # health and memory

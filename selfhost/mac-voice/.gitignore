@@ -1,0 +1,8 @@
+# Runtime state of a Mac install run from this folder (run.sh, install-service.sh, bench.py).
+.venv/
+logs/
+run/
+bench/
+trash/
+__pycache__/
+models/
