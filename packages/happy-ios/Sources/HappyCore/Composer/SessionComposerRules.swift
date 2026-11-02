@@ -6,9 +6,16 @@ import HappyWire
 /// record: whether Stop shows, whether a send is refused, whether pictures
 /// can be attached.
 public enum SessionComposerRules {
-    /// rig.ts `rigCanAbort`: Happy Agent sessions must advertise it.
+    /// rig.ts `rigCanAbort`: Happy Agent sessions must advertise it. Any
+    /// other session can be stopped unless it says it can't
+    /// (`capabilities.abort: false`). Claude Desktop's turns can't be
+    /// stopped from here, and the CLI publishes capabilities only for
+    /// Happy Agent, so the harness itself says so.
     public static func canAbortAgent(_ metadata: JSONValue?) -> Bool {
-        guard RigCatalog.isRigV1(metadata) else { return true }
+        if ClaudeDesktopHarness.isSession(metadata) { return false }
+        guard RigCatalog.isRigV1(metadata) else {
+            return metadata?["capabilities"]?["abort"]?.boolValue != false
+        }
         let capabilities = metadata?["capabilities"]
         return capabilities?["abort"]?.boolValue == true
             && capabilities?["rpcMethods"]?.arrayValue?.contains(.string("abort")) == true
@@ -46,6 +53,8 @@ public enum SessionComposerRules {
         if RigCatalog.isRigV1(metadata) {
             return metadata?["capabilities"]?["attachments"]?["enabled"]?.boolValue == true
         }
+        // The desktop's inbox hands Claude text only.
+        if ClaudeDesktopHarness.isSession(metadata) { return false }
         let flavor = metadata?["flavor"]?.stringValue ?? ""
         return flavor.isEmpty || flavor == "claude" || flavor == "codex"
     }
@@ -57,7 +66,7 @@ public enum SessionComposerRules {
     public static func canUseAttachments(starting agent: NewSessionDraft.Agent) -> Bool {
         switch agent {
         case .claude, .codex, .rig: true
-        case .gemini, .openclaw, .agy, .opencode: false
+        case .gemini, .openclaw, .agy, .opencode, .claudeDesktop: false
         }
     }
 }
@@ -491,9 +500,12 @@ public struct ComposerChipSet: Equatable, Sendable {
         let metadata = record?.metadata
         let flavor = metadata?["flavor"]?.stringValue
         let isRig = RigCatalog.isRig(metadata)
-        let canPickPermission = record != nil && RigCatalog.isPermissionSelectionEnabled(metadata)
-        let canPickModel = record != nil && RigCatalog.isModelSelectionEnabled(metadata)
-        let canPickEffort = record != nil && RigCatalog.isReasoningSelectionEnabled(metadata)
+        // The desktop app owns its session's modes: no chip opens, and the
+        // model chip names the harness instead, as the new-session dock does.
+        let isDesktop = ClaudeDesktopHarness.isSession(metadata)
+        let canPickPermission = record != nil && !isDesktop && RigCatalog.isPermissionSelectionEnabled(metadata)
+        let canPickModel = record != nil && !isDesktop && RigCatalog.isModelSelectionEnabled(metadata)
+        let canPickEffort = record != nil && !isDesktop && RigCatalog.isReasoningSelectionEnabled(metadata)
 
         let current = modes.permissionMode.map(ModeHacks.hack)
         let availableModes = ModeHacks.hack(modes.availableModes)
@@ -522,7 +534,8 @@ public struct ComposerChipSet: Equatable, Sendable {
             permission = nil
         }
 
-        let modelName = (modes.modelMode?.name ?? titles.model).trimmingCharacters(in: .whitespacesAndNewlines)
+        let modelName = (isDesktop ? ClaudeDesktopHarness.name : modes.modelMode?.name ?? titles.model)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         let canOpenModels = canPickModel && !modes.availableModels.isEmpty
         model = Chip(
             label: ModelModeOptions.truncateModelLabel(modelName),
