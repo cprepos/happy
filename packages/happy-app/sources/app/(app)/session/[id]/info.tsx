@@ -26,7 +26,7 @@ import { useWorktreeTabSuccessor } from '@/hooks/useProjectWorktree';
 import { copySessionMetadataToClipboard, copySessionMetadataAndLogsToClipboard } from '@/utils/copySessionMetadataToClipboard';
 import { HappyError } from '@/utils/errors';
 import { getRigIdentity, isRigMetadata } from '@/sync/rig';
-import { getHarnessName } from '@/utils/harnessCatalog';
+import { getHarnessName, getSessionHarnessKey } from '@/utils/harnessCatalog';
 import { MOBILE_GLASS_HEADER_HEIGHT } from '@/components/navigation/headerMetrics';
 import { navigateToSession } from '@/hooks/useNavigateToSession';
 
@@ -458,7 +458,7 @@ function SessionInfoContent({ session }: { session: Session }) {
                         ) : (
                             <Item
                                 title={t('sessionInfo.harness')}
-                                subtitle={getHarnessName(session.metadata.flavor || 'claude')}
+                                subtitle={getHarnessName(getSessionHarnessKey(session.metadata))}
                                 icon={<Ionicons name="sparkles-outline" size={29} color="#5856D6" />}
                                 showChevron={false}
                             />

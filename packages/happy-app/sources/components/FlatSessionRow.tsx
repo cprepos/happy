@@ -13,7 +13,7 @@ import { useSessionPressHandlers } from '@/hooks/useNavigateToSession';
 import { useSessionActionAlert, useSessionArchiveAction } from '@/hooks/useSessionQuickActions';
 import type { FlatSessionRowData } from '@/utils/flatSessionList';
 import { formatSessionListTimestamp } from '@/utils/sessionListTimestamp';
-import { getHarnessName } from '@/utils/harnessCatalog';
+import { getHarnessName, getSessionHarnessKey } from '@/utils/harnessCatalog';
 import type { Theme } from '@/theme';
 import { t } from '@/text';
 import { RigGitLineChanges } from './RigGitLineChanges';
@@ -149,6 +149,7 @@ export const FlatSessionRow = React.memo(({ row, selected, showBorder, archived,
                     size={AVATAR_SIZE}
                     monochrome={faded}
                     flavor={session.flavor}
+                    harness={session.harness}
                     clientId={session.clientId}
                     imageUrl={session.avatarUri}
                     thumbhash={session.avatarThumbhash}
@@ -222,7 +223,7 @@ export const FlatSessionRow = React.memo(({ row, selected, showBorder, archived,
                           * row itself.
                           */}
                         <Text style={styles.harness} numberOfLines={1}>
-                            {getHarnessName(session.flavor || 'claude')}
+                            {getHarnessName(getSessionHarnessKey(session))}
                         </Text>
                         {showHost && hostName && (
                             <>

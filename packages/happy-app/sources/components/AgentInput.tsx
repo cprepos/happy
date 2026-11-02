@@ -38,6 +38,7 @@ import { NativeSettingsMenu, type NativeSettingsMenuGroup, type NativeSettingsMe
 import { ProviderIcon } from './ProviderIcon';
 import { PickerSheet, PickerSheetOption, PickerSheetSection } from './PickerSheet';
 import { isRigMetadata } from '@/sync/rig';
+import { getHarnessName } from '@/utils/harnessCatalog';
 import {
     MOBILE_COMPOSER_LAYOUT,
     MOBILE_COMPOSER_METRICS,
@@ -119,7 +120,7 @@ interface AgentInputProps {
     /** Plan quota windows from agent state, for the week stat and its popup. */
     sessionStatusUsageLimits?: UsageLimitsLike | null;
     onFileViewerPress?: () => void;
-    agentType?: 'claude' | 'codex' | 'gemini' | 'openclaw' | 'agy' | 'opencode';
+    agentType?: 'claude' | 'claude-desktop' | 'codex' | 'gemini' | 'openclaw' | 'agy' | 'opencode';
     onAgentClick?: () => void;
     machineName?: string | null;
     onMachineClick?: () => void;
@@ -1561,6 +1562,8 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                 }}>
                                     {props.agentType === 'claude'
                                         ? t('agentInput.agent.claude')
+                                        : props.agentType === 'claude-desktop'
+                                            ? getHarnessName('claude-desktop')
                                         : props.agentType === 'codex'
                                             ? t('agentInput.agent.codex')
                                             : props.agentType === 'openclaw'

@@ -4,11 +4,13 @@ import type { NewSessionAgentType } from '@/sync/persistence';
 import type { PermissionModeKey } from '@/components/PermissionModeSelector';
 import { getRigReasoningSelection, getRigSelectedModelKey, isRigMetadata } from '@/sync/rig';
 import { formatPathRelativeToHome } from '@/utils/sessionUtils';
+import { isClaudeDesktopSession } from '@/utils/harnessCatalog';
 
 const AGENT_TYPES: readonly NewSessionAgentType[] = ['claude', 'codex', 'gemini', 'openclaw', 'agy', 'opencode', 'rig'];
 
 function agentTypeOf(session: Session): NewSessionAgentType {
     if (isRigMetadata(session.metadata)) return 'rig';
+    if (isClaudeDesktopSession(session.metadata)) return 'claude-desktop';
     const flavor = session.metadata?.flavor;
     return AGENT_TYPES.find((candidate) => candidate === flavor) ?? 'claude';
 }

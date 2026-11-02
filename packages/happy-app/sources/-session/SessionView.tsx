@@ -21,6 +21,7 @@ import { EmptyMessages } from '@/components/EmptyMessages';
 import { Avatar } from '@/components/Avatar';
 import { VoiceAssistantStatusBar, VOICE_PILL_TOTAL_HEIGHT } from '@/components/VoiceAssistantStatusBar';
 import { useComposerModes } from '@/hooks/useComposerModes';
+import { isClaudeDesktopSession } from '@/utils/harnessCatalog';
 import { useDraft } from '@/hooks/useDraft';
 import { useSessionVisibility } from '@/hooks/useSessionVisibility';
 import { useImagePicker } from '@/hooks/useImagePicker';
@@ -435,6 +436,7 @@ export const SessionView = React.memo((props: { id: string }) => {
                     size={28}
                     monochrome={!headerProps.isConnected}
                     flavor={session.metadata?.flavor}
+                    harness={session.metadata?.harness}
                     clientId={session.metadata?.client?.id}
                     badgeLocation="sessionHeader"
                     imageUrl={avatar?.uri}
@@ -862,6 +864,8 @@ export function SessionViewLoaded({
     const shouldShowCliWarning = isCliOutdated && !isAcknowledged;
     const flavor = composerSession?.metadata?.flavor;
     const isRig = isRigMetadata(session?.metadata);
+    // The desktop app owns a Claude Desktop turn; the phone has no way to stop it.
+    const canAbortSession = rigCanAbort(session?.metadata) && !isClaudeDesktopSession(session?.metadata);
     const {
         availableModes,
         permissionMode,
@@ -1186,8 +1190,8 @@ export function SessionViewLoaded({
                 onSend={handleSend}
                 onMicPress={(embedded || isDisconnected) ? undefined : micButtonState.onMicPress}
                 isMicActive={(embedded || isDisconnected) ? false : micButtonState.isMicActive}
-                onAbort={!session || isDisconnected || !rigCanAbort(session.metadata) ? undefined : handleAbort}
-                showAbortButton={!!session && rigCanAbort(session.metadata) && (
+                onAbort={!session || isDisconnected || !canAbortSession ? undefined : handleAbort}
+                showAbortButton={!!session && canAbortSession && (
                     sessionStatus.state === 'thinking'
                     // A pending selection or permission request parks the agent inside
                     // a tool call. Keep Stop reachable on every platform while either
