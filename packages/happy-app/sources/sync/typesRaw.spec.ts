@@ -1990,7 +1990,7 @@ describe('Zod Transform - WOLOG Content Normalization', () => {
             }
         });
 
-        it('drops start/stop lifecycle markers', () => {
+        it('turns subagent start/stop markers into lifecycle events', () => {
             const subagent = createId();
             const start = normalizeRawMessage('db-start-1', null, 1, {
                 ...base,
@@ -2006,7 +2006,9 @@ describe('Zod Transform - WOLOG Content Normalization', () => {
                     }
                 }
             });
-            expect(start).toBeNull();
+            expect(start?.role).toBe('event');
+            expect(start?.isSidechain).toBe(false);
+            expect(start?.content).toMatchObject({ type: 'subagent-start', subagent, title: 'Research agent' });
 
             const stop = normalizeRawMessage('db-stop-1', null, 1, {
                 ...base,
@@ -2022,7 +2024,28 @@ describe('Zod Transform - WOLOG Content Normalization', () => {
                     }
                 }
             });
-            expect(stop).toBeNull();
+            expect(stop?.role).toBe('event');
+            expect(stop?.isSidechain).toBe(false);
+            expect(stop?.content).toMatchObject({ type: 'subagent-stop', subagent });
+        });
+
+        it('drops start/stop markers that name no subagent', () => {
+            for (const ev of [{ t: 'start', title: 'Research agent' }, { t: 'stop' }]) {
+                const normalized = normalizeRawMessage(`db-${ev.t}-no-subagent`, null, 1, {
+                    ...base,
+                    content: {
+                        type: 'session',
+                        data: {
+                            id: `env-${ev.t}-no-subagent`,
+                            time: 1,
+                            role: 'agent',
+                            turn: 'turn-1',
+                            ev
+                        }
+                    }
+                } as any);
+                expect(normalized).toBeNull();
+            }
         });
 
         it('returns null for non-cuid subagent identifiers', () => {
