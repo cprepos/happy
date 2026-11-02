@@ -21,7 +21,7 @@ export function createPlanModeFixture(): { dir: string; cleanup: () => void } {
     const dir = join('/tmp', `happy-testing-ground-${randomBytes(4).toString('hex')}`);
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'hello-world.js'), HELLO_WORLD_JS);
-    execSync('git init && git add -A && git commit -m "init"', { cwd: dir, stdio: 'ignore' });
+    execSync('git init && git add -A && git -c user.name=fixture -c user.email=fixture@example.invalid commit -m "init"', { cwd: dir, stdio: 'ignore' });
     return {
         dir,
         cleanup: () => rmSync(dir, { force: true, recursive: true }),
