@@ -9,7 +9,7 @@ import HappyWire
 /// is the real one; the debug fixtures fake it.
 public protocol ChatControls: Sendable {
     func allow(sessionId: String, permissionId: String, mode: String?, allowedTools: [String]?, decision: ToolPermission.Decision?, updatedInput: JSONValue?) async throws
-    func deny(sessionId: String, permissionId: String, mode: String?, allowedTools: [String]?, decision: ToolPermission.Decision?) async throws
+    func deny(sessionId: String, permissionId: String, mode: String?, allowedTools: [String]?, decision: ToolPermission.Decision?, reason: String?) async throws
     func answerQuestion(sessionId: String, id: String, answers: JSONValue, kind: String) async throws
     func cancelQuestion(sessionId: String, id: String, kind: String) async throws
     func abort(sessionId: String) async throws

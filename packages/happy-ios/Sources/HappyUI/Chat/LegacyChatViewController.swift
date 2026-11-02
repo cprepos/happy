@@ -1883,7 +1883,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
                 if reply.allow {
                     try await controls.allow(sessionId: sessionId, permissionId: tap.permissionId, mode: reply.mode, allowedTools: reply.allowedTools, decision: reply.decision, updatedInput: nil)
                 } else {
-                    try await controls.deny(sessionId: sessionId, permissionId: tap.permissionId, mode: reply.mode, allowedTools: reply.allowedTools, decision: reply.decision)
+                    try await controls.deny(sessionId: sessionId, permissionId: tap.permissionId, mode: reply.mode, allowedTools: reply.allowedTools, decision: reply.decision, reason: nil)
                 }
                 if let mode = reply.permissionMode { await setPermissionMode(mode) }
             } catch {
