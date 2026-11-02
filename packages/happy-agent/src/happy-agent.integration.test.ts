@@ -121,7 +121,8 @@ function createGitProject(envDir: string): { projectDir: string; worktreeDir: st
     const worktreeDir = join(projectDir, '.dev', 'worktree', 'feature-branch');
 
     mkdirSync(projectDir, { recursive: true });
-    runCommand('git', ['init', '--initial-branch=main'], projectDir);
+    runCommand('git', ['init'], projectDir);
+    runCommand('git', ['symbolic-ref', 'HEAD', 'refs/heads/main'], projectDir);
     runCommand('git', ['config', 'user.name', 'Happy Agent Test'], projectDir);
     runCommand('git', ['config', 'user.email', 'happy-agent-tests@example.com'], projectDir);
 
