@@ -73,6 +73,18 @@ export class OpencodeHttpError extends Error {
     }
 }
 
+/**
+ * For requests answered only when a turn ends. fetch gives up on a silent
+ * response after five minutes, while the turn carries on and reports through
+ * the event stream, so that timeout is not a failure. Other errors still are.
+ */
+export function ignoreResponseTimeout(error: unknown): void {
+    const code = error instanceof Error ? (error.cause as { code?: unknown } | undefined)?.code : undefined;
+    if (code !== 'UND_ERR_HEADERS_TIMEOUT' && code !== 'UND_ERR_BODY_TIMEOUT') {
+        throw error;
+    }
+}
+
 export class OpencodeClient {
     private readonly authorization: string;
 
@@ -139,12 +151,12 @@ export class OpencodeClient {
             ...(command.model ? { model: `${command.model.providerID}/${command.model.modelID}` } : {}),
             ...(command.variant ? { variant: command.variant } : {}),
             ...(command.agent ? { agent: command.agent } : {}),
-        }, signal);
+        }, signal).catch(ignoreResponseTimeout);
     }
 
     /** Compact the session (`/compact`). Answers when the summary is done, like `runCommand`. */
     async summarize(sessionId: string, model: { providerID: string; modelID: string }, signal: AbortSignal): Promise<void> {
-        await this.request('POST', `/session/${encodeURIComponent(sessionId)}/summarize`, model, signal);
+        await this.request('POST', `/session/${encodeURIComponent(sessionId)}/summarize`, model, signal).catch(ignoreResponseTimeout);
     }
 
     async abort(sessionId: string): Promise<void> {

@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createOpencodeMessageId, OpencodeClient, OpencodeHttpError } from './opencodeClient';
+import { createOpencodeMessageId, ignoreResponseTimeout, OpencodeClient, OpencodeHttpError } from './opencodeClient';
 import type { OpencodeEvent } from './opencodeEventMapper';
 
 type Recorded = { method: string; path: string; query: URLSearchParams; auth?: string; body: string };
@@ -40,6 +40,16 @@ describe('createOpencodeMessageId', () => {
         expect([...ids].sort()).toEqual(ids);
         // Same prefix scheme as ids OpenCode generated at that time.
         expect(ids[0].slice(0, 10)).toBe('msg_177171');
+    });
+});
+
+describe('ignoreResponseTimeout', () => {
+    it('lets only fetch giving up on a silent response pass', () => {
+        const failure = (code: string) => new TypeError('fetch failed', { cause: Object.assign(new Error('x'), { code }) });
+        expect(() => ignoreResponseTimeout(failure('UND_ERR_HEADERS_TIMEOUT'))).not.toThrow();
+        expect(() => ignoreResponseTimeout(failure('UND_ERR_BODY_TIMEOUT'))).not.toThrow();
+        expect(() => ignoreResponseTimeout(failure('ECONNREFUSED'))).toThrow('fetch failed');
+        expect(() => ignoreResponseTimeout(new OpencodeHttpError(400, 'bad'))).toThrow('bad');
     });
 });
 
