@@ -45,7 +45,7 @@ final class AccountSettingsViewController: SettingsPageViewController {
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         // As account.tsx's focus effect: read again every time it shows.
-        if loadsPush { loadPush() }
+        if loadsPush, !SelfHostBuild.pushDisabled() { loadPush() }
     }
 
     override func makeRows() -> [[SettingsRow]] {
@@ -69,7 +69,7 @@ final class AccountSettingsViewController: SettingsPageViewController {
         let privacy = [Row(id: "analytics", title: Text.analytics, icon: ("analytics-outline", .blue), accessory: .toggle, isOn: !optOut, toggled: { [weak self] on in
             self?.session.updateSettings(["analyticsOptOut": .bool(!on)])
         }, footer: Text.privacyDescription)]
-        return [info, privacy] + pushCards()
+        return [info, privacy] + (SelfHostBuild.pushDisabled() ? [] : pushCards())
     }
 
     // MARK: Push notifications

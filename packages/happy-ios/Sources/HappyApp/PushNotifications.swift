@@ -104,6 +104,9 @@ final class PushNotifications: NSObject {
     /// the next account taking over after a sign-out. Profile updates of
     /// the same session change nothing.
     private func accountsChanged() {
+        // No entitlement on a self-host build: `active` stays nil, so
+        // `target` is nil and nothing asks for permission or a token.
+        guard !SelfHostBuild.pushDisabled() else { return }
         let session = context?.account.session
         guard session !== active?.session else { return }
         if let context, let session {
