@@ -37,6 +37,7 @@ final class HostedOpencodeComposeTests: XCTestCase {
         var ownFields = own.metadata?.objectValue ?? [:]
         ownFields["cliAvailability"] = availability
         own.metadata = .object(ownFields)
+        own.metadataVersion += 1
         try store.upsertMachine(own)
 
         for (index, computer) in [("studio-mac", "Studio Mac", true), ("old-mini", "Old Mini", false)].enumerated() {
@@ -72,7 +73,7 @@ final class HostedOpencodeComposeTests: XCTestCase {
         try await controller.signIn(Credentials(token: "t", secret: Data(repeating: 7, count: 32)))
         let account = try XCTUnwrap(controller.session)
         let store = account.store
-        try await Task.detached { [store] in try Self.seed(store) }.value
+        try await Task.detached { [store] in try HostedOpencodeComposeTests.seed(store) }.value
         let drafts = NewSessionDraftStore.shared(for: controller.localSettings)
         drafts.setMachineId(SeededAccount.machineId)
         drafts.setPath(SeededAccount.project)
