@@ -25,7 +25,7 @@ final class SelfHostBuildTests: XCTestCase {
             let info = try plist(at: package.appendingPathComponent("App/Info-\(variant).plist"))
             XCTAssertNil(info[ServerConfig.bakedServerURLInfoKey], variant)
             XCTAssertNil(info[SelfHostBuild.pushDisabledInfoKey], variant)
-            XCTAssertEqual(info["UIBackgroundModes"] as? [String], ["remote-notification"], variant)
+            XCTAssertEqual(info["UIBackgroundModes"] as? [String], ["audio", "remote-notification"], variant)
         }
     }
 
@@ -114,7 +114,8 @@ final class SelfHostBuildTests: XCTestCase {
 
             XCTAssertEqual(selfHost["CFBundleDisplayName"] as? String, "My Happy", variant)
             XCTAssertEqual(selfHost[SelfHostBuild.pushDisabledInfoKey] as? Bool, true, variant)
-            XCTAssertNil(selfHost["UIBackgroundModes"], variant)
+            // No push, but voice still runs with the screen locked.
+            XCTAssertEqual(selfHost["UIBackgroundModes"] as? [String], ["audio"], variant)
             for key in ["NSCameraUsageDescription", "NSLocalNetworkUsageDescription"] {
                 let string = try XCTUnwrap(selfHost[key] as? String, variant)
                 XCTAssertTrue(string.hasPrefix("Allow My Happy to "), string)

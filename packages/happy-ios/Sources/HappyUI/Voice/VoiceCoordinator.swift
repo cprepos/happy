@@ -142,7 +142,14 @@ public final class VoiceCoordinator: NSObject {
         NotificationCenter.default.post(name: .voiceStateChanged, object: self)
     }
 
-    @objc private func backgrounded() { stop() }
+    /// Locking the phone backgrounds the app. A call that is connecting or
+    /// live keeps going (the app has the `audio` background mode); anything
+    /// else has nothing to keep. Real interruptions (a phone call, Siri) and
+    /// a lost audio route still end the call below.
+    @objc private func backgrounded() {
+        guard !isRunning else { return }
+        stop()
+    }
     @objc private func audioReset() { stop() }
     @objc private func interrupted(_ notification: Notification) {
         guard let type = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,

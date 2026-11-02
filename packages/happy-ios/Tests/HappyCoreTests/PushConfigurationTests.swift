@@ -17,9 +17,10 @@ final class PushConfigurationTests: XCTestCase {
         return try XCTUnwrap(PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any])
     }
 
-    func testEveryVariantHasTheRemoteNotificationBackgroundMode() throws {
+    /// `audio` keeps a voice call going while the phone is locked.
+    func testEveryVariantHasTheRemoteNotificationAndAudioBackgroundModes() throws {
         for name in ["Info-Development", "Info-Preview", "Info-Production"] {
-            XCTAssertEqual(try plist("App/\(name).plist")["UIBackgroundModes"] as? [String], ["remote-notification"], name)
+            XCTAssertEqual(try plist("App/\(name).plist")["UIBackgroundModes"] as? [String], ["audio", "remote-notification"], name)
         }
     }
 
