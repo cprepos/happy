@@ -37,10 +37,11 @@ final class ComputerRestartHintTests: XCTestCase {
 
     func testTheLongerNoticePushesTheCommandsDown() async throws {
         let environment = UITraitCollection(preferredContentSizeCategory: .large).measuredTextEnvironment
+        let terminalNotice = Strings.Chat.resumeFromTerminal
         func plan(_ notice: String) async -> ChatInactiveHintPlan {
             await Task.detached {
                 ChatDockBarMeasure.inactiveHint(ChatDockBarInput(
-                    model: ChatInactiveHintModel(notice: notice, terminalNotice: Strings.Chat.resumeFromTerminal, action: .command("happy claude --resume c-1")),
+                    model: ChatInactiveHintModel(notice: notice, terminalNotice: terminalNotice, action: .command("happy claude --resume c-1")),
                     width: 361, text: environment
                 ))
             }.value
