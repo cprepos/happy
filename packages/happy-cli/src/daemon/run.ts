@@ -678,7 +678,7 @@ export async function startDaemon(): Promise<void> {
           logger.debug(`[DAEMON RUN] Session webhook timeout for PID ${happyProcess.pid}`);
           resolve({
             type: 'error',
-            errorMessage: `Session webhook timeout for PID ${happyProcess.pid}`
+            errorMessage: `The agent did not report in within 15 seconds (PID ${happyProcess.pid}). It may still come online; if it does not, try again.`
           });
         }, 15_000);
 
@@ -860,7 +860,12 @@ export async function startDaemon(): Promise<void> {
           launch.args.push('--permission-mode', resumePermissionMode);
         }
 
-        await fs.access(launch.cwd);
+        try {
+          await fs.access(launch.cwd);
+        } catch {
+          // Temporary folders in particular do not survive a reboot.
+          return { type: 'error', errorMessage: `The folder ${launch.cwd} is no longer on this computer, so this session cannot be resumed there.` };
+        }
 
         if (cancelledResumes.has(happySessionId)) {
           return { type: 'error', errorMessage: `Resume of session ${happySessionId} was cancelled by a stop request.` };

@@ -218,7 +218,7 @@ describe('daemon resume fallback', () => {
     mocks.spawn.mockReturnValue({ pid: 12345, on: vi.fn() });
     const first = mocks.handlers.resumeSession('old-session', { fallback });
     await vi.advanceTimersByTimeAsync(15_000);
-    expect(await first).toMatchObject({ type: 'error', errorMessage: expect.stringContaining('timeout') });
+    expect(await first).toMatchObject({ type: 'error', errorMessage: expect.stringContaining('did not report in within 15 seconds') });
     expect(await mocks.handlers.resumeSession('old-session', { fallback })).toMatchObject({ type: 'error' });
     expect(mocks.spawn.mock.calls.length).toBe(1);
     mocks.webhook('old-session', { ...metadata, hostPid: 12345 }, { ...fallback, encryptionKey: dataKey });
@@ -266,6 +266,14 @@ describe('daemon resume fallback', () => {
       { type: 'success', sessionId: 'one' }, { type: 'success', sessionId: 'two' },
     ]);
     expect(mocks.spawn.mock.calls.length).toBe(2);
+  });
+
+  it('says the folder is gone when a resume finds its directory missing', async () => {
+    await boot();
+    mocks.access.mockRejectedValueOnce(Object.assign(new Error("ENOENT: no such file or directory, access '/tmp/repo'"), { code: 'ENOENT' }));
+    const result = await mocks.handlers.resumeSession('old-session', { fallback });
+    expect(result).toEqual({ type: 'error', errorMessage: `The folder ${metadata.path} is no longer on this computer, so this session cannot be resumed there.` });
+    expect(mocks.spawn).not.toHaveBeenCalled();
   });
 
   it('cancels a resume stopped before directory validation completes', async () => {

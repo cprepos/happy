@@ -89,6 +89,10 @@ final class ChatInactiveHintView: UIView {
         didSet { if isHidden { measure.reset() } }
     }
 
+    static func notice(_ hint: InactiveSessionHint) -> String {
+        hint.machineOffline ? Strings.SessionResume.machineOffline : Strings.Chat.inactiveArchived
+    }
+
     func show(_ hint: InactiveSessionHint, resuming: Bool) {
         guard hint != self.hint || resuming != self.resuming else { return }
         if hint != self.hint {
@@ -106,7 +110,7 @@ final class ChatInactiveHintView: UIView {
         case .command(let lines): .command(lines.joined(separator: "\n"))
         case .noticeOnly: .none
         }
-        model = ChatInactiveHintModel(notice: Strings.Chat.inactiveArchived, terminalNotice: isCommand ? Strings.Chat.resumeFromTerminal : nil, action: action)
+        model = ChatInactiveHintModel(notice: Self.notice(hint), terminalNotice: isCommand ? Strings.Chat.resumeFromTerminal : nil, action: action)
         button.isEnabled = !resuming
         button.alpha = resuming ? InactiveHintLayout.Metrics.resumingOpacity : 1
         buttonLabel.isHidden = resuming
