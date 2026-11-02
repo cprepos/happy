@@ -42,7 +42,8 @@ public struct SessionQuickActions: Equatable, Sendable {
 
         public init(session: SessionRecord, machine: MachineRecord?) {
             let metadata = session.metadata
-            if session.isRig || metadata?["capabilities"]?["resume"]?.boolValue == false {
+            if session.isRig || metadata?["capabilities"]?["resume"]?.boolValue == false
+                || ClaudeDesktopHarness.isSession(metadata) {
                 self = .hidden
                 return
             }

@@ -88,6 +88,8 @@ public enum SessionDetails {
         if metadata?["client"]?["id"]?.stringValue == "rig" || metadata?["capabilities"]?["resume"]?.boolValue == false {
             return nil
         }
+        // The desktop app owns resuming its sessions.
+        if ClaudeDesktopHarness.isSession(metadata) { return nil }
         let flavor = metadata?["flavor"]?.stringValue
         if flavor == OpencodeHarness.key, let id = truthy(metadata?[OpencodeHarness.resumeIdField]) {
             return "happy opencode --resume \(id)"
@@ -164,6 +166,9 @@ public enum SessionDetails {
     /// list of names, so there is no switch to drift.
     public static func harness(_ metadata: JSONValue?) -> String? {
         if RigIdentity(metadata) != nil { return nil }
+        // `metadata.harness` first: a Claude Desktop session's flavor is
+        // `claude`.
+        if let harness = truthy(metadata?["harness"]) { return HarnessCatalog.name(harness) }
         let flavor = truthy(metadata?["flavor"]) ?? "claude"
         // `gpt` and `openai` are older spellings of the Codex flavor that the
         // replaced switch mapped, and sessions carrying them still exist.
@@ -231,6 +236,7 @@ public enum SessionDetails {
     public static func resumeAvailability(_ session: SessionRecord, machine: MachineRecord?) -> ResumeAvailability {
         let metadata = session.metadata
         if session.isRig || metadata?["capabilities"]?["resume"]?.boolValue == false { return .hidden }
+        if ClaudeDesktopHarness.isSession(metadata) { return .hidden }
         if SessionState(session) != .disconnected { return .hidden }
         guard truthy(metadata?["machineId"]) != nil else { return .missingMachine }
         let backendIds = ["claudeSessionId", "codexThreadId", "agyConversationId", OpencodeHarness.resumeIdField]
