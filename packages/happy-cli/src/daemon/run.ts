@@ -1062,10 +1062,13 @@ export async function startDaemon(): Promise<void> {
     // Connect to server
     apiMachine.connect();
 
-    // Every CLI process leaves a log behind and nothing else removes them: keep a week.
+    // Every CLI process leaves a log behind and nothing else removes them: keep a week, and at
+    // most 1 GB so one runaway day cannot fill the disk; never this daemon's own log or one a
+    // live session is still writing (logsPrune).
     const pruneLogs = () => {
       const { files, bytes } = logsPrune(configuration.logsDir, {
         maxAgeMs: 7 * 24 * 60 * 60 * 1000,
+        maxTotalBytes: 1024 * 1024 * 1024,
         keep: logger.logFilePath,
       });
       if (files > 0) {
