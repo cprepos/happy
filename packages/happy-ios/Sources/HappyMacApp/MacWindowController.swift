@@ -177,7 +177,7 @@ final class MacWindowController: NSWindowController, NSMenuItemValidation {
         guard !available.isEmpty else { return showError("Connect an online Happy CLI computer first. Happy Agent catalog session creation is not yet available in this Mac interface.") }
         let machine = NSPopUpButton(); machine.addItems(withTitles: available.map { $0.metadata?["displayName"]?.stringValue ?? $0.metadata?["host"]?.stringValue ?? $0.id })
         let directory = NSTextField(); directory.placeholderString = "Absolute project path on that computer"
-        let agent = NSPopUpButton(); agent.addItems(withTitles: ["claude", "codex", "gemini", "openclaw"])
+        let agent = NSPopUpButton(); agent.addItems(withTitles: ["claude", "codex"])
         let stack = NSStackView(views: [machine, directory, agent]); stack.orientation = .vertical; stack.spacing = 12
         stack.frame = NSRect(x: 0, y: 0, width: 460, height: 110)
         let alert = NSAlert(); alert.messageText = "New Session"; alert.accessoryView = stack
