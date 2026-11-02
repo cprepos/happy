@@ -43,6 +43,7 @@ vi.mock('@/sync/ops', () => ({
     sessionAnswerQuestion: (...args: unknown[]) => state.answer(...args),
     sessionCancelCommunication: (...args: unknown[]) => state.cancel(...args),
 }));
+vi.mock('@/sync/sync', () => ({ sync: { onSessionVisible: vi.fn() } }));
 vi.mock('./_all', () => ({}));
 
 import { RequestUserInputView } from './RequestUserInputView';
@@ -63,7 +64,7 @@ const tool = { name: 'question', state: 'running', callId: 'call_q', input: {} }
 const view = () => React.createElement(RequestUserInputView, { tool, sessionId: 'ses_1', metadata: null, messages: [] } as any);
 const buttons = (tree: ReturnType<typeof create>) => tree.root.findAllByType('TouchableOpacity');
 const submitButton = (tree: ReturnType<typeof create>) => buttons(tree).find((node: any) => textOf(node.children).includes('tools.askUserQuestion.submit'))!;
-const dismissButton = (tree: ReturnType<typeof create>) => buttons(tree).find((node: any) => textOf(node.children).includes('agentQuestion.dismiss'));
+const dismissButton = (tree: ReturnType<typeof create>) => buttons(tree).find((node: any) => node.props.accessibilityLabel === 'agentQuestion.dismiss');
 
 function pending(questions: any[]) {
     return { id: 'que_1', createdAt: 1, toolUseId: 'call_q', kind: 'form', questions, status: 'pending' };
