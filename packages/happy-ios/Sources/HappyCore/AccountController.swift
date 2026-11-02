@@ -928,6 +928,7 @@ public final class AccountController {
         let dependencies = AccountSession.Dependencies(
             serverURL: entry.serverURL, clientID: clientID, transport: transport,
             connector: connector, appState: appState, deliveryActivity: deliveryActivity)
+        let localSettings = settings(for: entry.id)
         let next = try await Task.detached {
             let store: LocalStore
             var files: URL?
@@ -941,7 +942,7 @@ public final class AccountController {
                 store = try existing ?? LocalStore.inMemory()
             }
             return try AccountSession(credentials: credentials, store: store, dependencies: dependencies,
-                                      filesDirectory: files, fileCacheDirectory: cacheDirectory)
+                                      filesDirectory: files, fileCacheDirectory: cacheDirectory, localSettings: localSettings)
         }.value
         if directory == nil { memoryStores[entry.id] = next.store }
         return next

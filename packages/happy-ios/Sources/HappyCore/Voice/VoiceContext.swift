@@ -267,6 +267,8 @@ extension VoiceContext {
                 }
                 do { _ = try await sending.send(OutgoingMessage(text: value.message, source: .voice), sessionId: value.sessionId) }
                 catch { return VoiceToolResult("error (the message could not be sent to the session)", isError: true) }
+                // Here rather than in a backend: a send counts on either one.
+                account.localSettings.voiceMessageCount += 1
                 return VoiceToolResult("sent [DO NOT say anything else, simply say 'sent']")
             case "processPermissionRequest":
                 struct Parameters: Decodable {
