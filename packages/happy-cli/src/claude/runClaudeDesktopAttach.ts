@@ -108,6 +108,13 @@ const TITLE_POLL_MS = 5_000;
 const DAEMON_RETRY_MS = 3_000;
 
 /** One request to the daemon's control server, which listens on 127.0.0.1:httpPort. Throws on failure. */
+/** A non-2xx reply from the daemon's control server. */
+class DaemonHttpError extends Error {
+    constructor(readonly status: number, message: string) {
+        super(message);
+    }
+}
+
 async function daemonRequest(method: 'GET' | 'POST', path: string, timeoutMs: number, body?: unknown): Promise<{ status: number; json: unknown }> {
     const state = await readDaemonState();
     if (!state?.httpPort) {
@@ -120,7 +127,7 @@ async function daemonRequest(method: 'GET' | 'POST', path: string, timeoutMs: nu
         signal: AbortSignal.timeout(timeoutMs),
     });
     if (!response.ok) {
-        throw new Error(`${method} ${path}: HTTP ${response.status}`);
+        throw new DaemonHttpError(response.status, `${method} ${path}: HTTP ${response.status}`);
     }
     return { status: response.status, json: response.status === 204 ? null : await response.json() };
 }
@@ -271,14 +278,34 @@ export async function runClaudeDesktopAttach(credentials: Credentials, options: 
     syncTitle();
     const titleInterval = setInterval(syncTitle, TITLE_POLL_MS);
 
+    // A daemon that restarted has forgotten this mirror (its hub is in
+    // memory) and answers 404. Register again; nothing new is spawned.
+    const reattachToDaemon = async () => {
+        await daemonRequest('POST', '/desktop/reattach', 10_000, {
+            claudeSessionId,
+            transcriptPath: join(dirname(options.transcriptPath), `${claudeSessionId}.jsonl`),
+            cwd,
+            pid: options.hostPid,
+            happySessionId: response.id,
+            attachPid: process.pid,
+        });
+        logger.debug(`[ATTACH] Re-registered ${claudeSessionId} with the daemon`);
+    };
+    const isUnknownToDaemon = (error: unknown) => error instanceof DaemonHttpError && error.status === 404;
+
     // Phone → desktop. The daemon queues the message until the plugin's
     // rewake hook takes it; the echo matcher drops it when it comes back.
     session.onUserMessage(async (message) => {
         const localId = message.localKey ?? randomUUID();
         const text = message.content.text;
         echoes.expect(localId, text);
+        const enqueue = () => daemonRequest('POST', '/desktop/enqueue', 10_000, { claudeSessionId, localId, text });
         try {
-            const result = await daemonRequest('POST', '/desktop/enqueue', 10_000, { claudeSessionId, localId, text });
+            const result = await enqueue().catch(async (error: unknown) => {
+                if (!isUnknownToDaemon(error)) throw error;
+                await reattachToDaemon();
+                return enqueue();
+            });
             const { queued } = EnqueueResponseSchema.parse(result.json);
             logger.debug(`[ATTACH] Enqueued phone message ${localId} (${queued} queued, desktop ${status.thinking ? 'busy' : 'idle'})`);
         } catch (error) {
@@ -385,6 +412,16 @@ export async function runClaudeDesktopAttach(credentials: Credentials, options: 
             }
         } catch (error) {
             if (stopping) break;
+            if (isUnknownToDaemon(error)) {
+                try {
+                    await reattachToDaemon();
+                    // A new hub numbers its events from the start.
+                    after = 0;
+                    continue;
+                } catch (reattachError) {
+                    logger.debug('[ATTACH] Re-registering with the daemon failed, retrying:', reattachError);
+                }
+            }
             logger.debug('[ATTACH] Desktop events poll failed, retrying:', error);
             await new Promise((resolveDelay) => setTimeout(resolveDelay, DAEMON_RETRY_MS));
         }

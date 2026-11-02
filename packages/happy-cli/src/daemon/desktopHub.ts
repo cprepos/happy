@@ -43,6 +43,7 @@ export type DesktopEventType = 'busy' | 'idle' | 'ended' | 'delivered';
 export type DesktopEvent = { type: DesktopEventType; localId?: string; claudeSessionId?: string; transcriptPath?: string };
 export type DesktopInboxMessage = { localId: string; text: string };
 export type DesktopAdoptRequest = { claudeSessionId: string; transcriptPath: string; cwd: string; pid: number };
+export type DesktopReattachRequest = DesktopAdoptRequest & { happySessionId: string; attachPid: number };
 export type DesktopAdoptResult = { type: 'success'; happySessionId: string } | { type: 'error'; errorMessage: string };
 export type DesktopAttachResult = { type: 'success'; happySessionId: string; attachPid: number } | { type: 'error'; errorMessage: string };
 
@@ -215,6 +216,26 @@ export function createDesktopHub({ spawnAttach }: { spawnAttach: DesktopAttachSp
         return startAttach(entry, request);
     };
 
+    /**
+     * A mirror that is already running registers itself again: the daemon
+     * restarted and its hub is empty, while the attach process and its Happy
+     * session live on. Nothing is spawned. A placeholder left by an early
+     * inbox wait is taken over, so a waiting hook keeps waiting on the mirror.
+     */
+    const reattach = (request: DesktopReattachRequest): void => {
+        const known = entries.get(request.claudeSessionId);
+        const entry = known && !known.ended ? known : newEntry(request.claudeSessionId, true);
+        entry.adopted = true;
+        entry.pid = request.pid;
+        entry.cwd = request.cwd;
+        entry.transcriptPath = request.transcriptPath;
+        entry.happySessionId = request.happySessionId;
+        entry.attachPid = request.attachPid;
+        entries.set(request.claudeSessionId, entry);
+        logger.debug(`[DESKTOP HUB] Reattached ${request.claudeSessionId} as ${request.happySessionId} (attach PID ${request.attachPid})`);
+        settlePending(entry.ids, { type: 'success', happySessionId: request.happySessionId });
+    };
+
     /** Records busy / idle / ended from a hook. False when the id is unknown. */
     const report = (claudeSessionId: string, type: 'busy' | 'idle' | 'ended'): boolean => {
         const entry = entries.get(claudeSessionId);
@@ -369,7 +390,7 @@ export function createDesktopHub({ spawnAttach }: { spawnAttach: DesktopAttachSp
         };
     };
 
-    return { adopt, report, waitForInbox, enqueue, readEvents, waitForAdoption, attachExited, get };
+    return { adopt, reattach, report, waitForInbox, enqueue, readEvents, waitForAdoption, attachExited, get };
 }
 
 export type DesktopCommandResult = { exitCode: number | null; output: string };

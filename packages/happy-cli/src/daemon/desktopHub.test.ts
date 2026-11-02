@@ -152,6 +152,34 @@ describe('desktop hub over the control server', () => {
         expect(await post(h.port, '/desktop/adopt', adoptBody('claude-E', 800))).toEqual({ status: 200, body: { happySessionId: 'happy-3' } });
     });
 
+    it('takes back a running mirror after a daemon restart, without spawning another', async () => {
+        const reattachBody = { ...adoptBody('claude-R', 2500), happySessionId: 'happy-kept', attachPid: 43_000 };
+        // A fresh hub knows nothing: this is what the mirror sees after a restart.
+        expect((await get(h.port, '/desktop/events/claude-R')).status).toBe(404);
+
+        expect(await post(h.port, '/desktop/reattach', reattachBody)).toEqual({ status: 200, body: { ok: true } });
+        expect(h.spawned).toEqual([]);
+        expect(h.hub.get('claude-R')).toMatchObject({ happySessionId: 'happy-kept', attachPid: 43_000, pid: 2500 });
+
+        // Hooks and the phone work again, and the next adopt reuses the mirror.
+        expect((await post(h.port, '/desktop/busy', { claudeSessionId: 'claude-R' })).status).toBe(200);
+        expect(await post(h.port, '/desktop/adopt', adoptBody('claude-R', 2500))).toEqual({ status: 200, body: { happySessionId: 'happy-kept' } });
+        expect(h.spawned).toEqual([]);
+        const waiting = get(h.port, '/desktop/inbox/claude-R?wait=5000');
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(await post(h.port, '/desktop/enqueue', { claudeSessionId: 'claude-R', localId: 'L1', text: 'after restart' })).toEqual({ status: 200, body: { queued: 0 } });
+        expect(await waiting).toMatchObject({ status: 200, body: { localId: 'L1', text: 'after restart' } });
+    });
+
+    it('lets a reattach take over a hook that was already waiting', async () => {
+        const waiting = get(h.port, '/desktop/inbox/claude-W?wait=5000');
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        await post(h.port, '/desktop/reattach', { ...adoptBody('claude-W', 2600), happySessionId: 'happy-W', attachPid: 43_100 });
+        await post(h.port, '/desktop/enqueue', { claudeSessionId: 'claude-W', localId: 'L2', text: 'to the early hook' });
+        expect(await waiting).toMatchObject({ status: 200, body: { localId: 'L2', text: 'to the early hook' } });
+        expect(h.spawned).toEqual([]);
+    });
+
     it('answers 404 for sessions it never adopted', async () => {
         expect((await post(h.port, '/desktop/busy', { claudeSessionId: 'nope' })).status).toBe(404);
         expect((await post(h.port, '/desktop/enqueue', { claudeSessionId: 'nope', localId: 'x', text: 'y' })).status).toBe(404);

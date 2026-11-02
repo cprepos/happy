@@ -241,6 +241,25 @@ export function startDaemonControlServer({
         return { happySessionId: result.happySessionId };
       });
 
+      // A running mirror re-registers after a daemon restart.
+      typed.post('/desktop/reattach', {
+        schema: {
+          body: z.object({
+            claudeSessionId: z.string().min(1),
+            transcriptPath: z.string().min(1),
+            cwd: z.string().min(1),
+            pid: z.number().int().positive(),
+            happySessionId: z.string().min(1),
+            attachPid: z.number().int().positive(),
+          }),
+          response: okReply,
+        }
+      }, async (request) => {
+        logger.debug(`[CONTROL SERVER] Desktop reattach ${request.body.claudeSessionId} as ${request.body.happySessionId}`);
+        desktopHub.reattach(request.body);
+        return { ok: true as const };
+      });
+
       // UserPromptSubmit / Stop / SessionEnd.
       for (const type of ['busy', 'idle', 'ended'] as const) {
         typed.post(`/desktop/${type}`, {
