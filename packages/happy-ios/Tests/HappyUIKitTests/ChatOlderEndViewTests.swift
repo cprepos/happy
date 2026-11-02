@@ -82,5 +82,46 @@ final class ChatOlderEndViewTests: XCTestCase {
         button.onTap?()
         XCTAssertEqual(pressed, 1)
     }
+
+    func testTheHistoryButtonSharesTheSlotAndReachesItsOwnAction() throws {
+        let (window, view) = shown(.idle)
+        defer { window.isHidden = true }
+        let spinner = try XCTUnwrap(spinner(view))
+        let button = try XCTUnwrap(button(view))
+        var paging = 0
+        var history = 0
+        view.onAction = { paging += 1 }
+        view.onHistoryAction = { history += 1 }
+
+        view.history = .ready
+        view.layoutIfNeeded()
+        XCTAssertFalse(button.isHidden)
+        XCTAssertEqual(button.title, Strings.Chat.loadPreviousHistory)
+        XCTAssertEqual(button.center.y, 16, accuracy: 0.5)
+        XCTAssertEqual(view.sizeThatFits(CGSize(width: 393, height: 1000)).height, 32)
+        button.onTap?()
+        XCTAssertEqual(history, 1)
+
+        view.history = .loading
+        XCTAssertTrue(button.isHidden)
+        XCTAssertTrue(spinner.isAnimating)
+
+        view.history = .failed
+        XCTAssertFalse(spinner.isAnimating)
+        XCTAssertEqual(button.title, Strings.Chat.retry)
+        button.onTap?()
+        XCTAssertEqual(history, 2)
+
+        // The server's own paging shows first, and its button is its own.
+        view.status = .error
+        button.onTap?()
+        XCTAssertEqual(paging, 1)
+        XCTAssertEqual(history, 2)
+
+        view.status = .idle
+        view.history = .hidden
+        XCTAssertTrue(button.isHidden)
+        XCTAssertFalse(spinner.isAnimating)
+    }
 }
 #endif

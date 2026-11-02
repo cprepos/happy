@@ -20,6 +20,9 @@ extension Strings {
         public static var retry: String { localized("common.retry", "Retry") }
         /// common.loadMore (ChatList.tsx OlderEnd, EmptyMessages.tsx)
         public static var loadMore: String { localized("common.loadMore", "Load more") }
+        /// A Claude Desktop chat's earlier transcript, at its older end
+        /// (not in happy-app's catalog: `TranslationCatalog.nativeSources`).
+        public static var loadPreviousHistory: String { localized("native.chat.loadPreviousHistory", "Load previous history") }
         /// pendingChatHandover.ts' fallback when the first message's error
         /// has no words of its own (not in en.ts).
         public static let firstMessageFailed = "Failed to send the first message"

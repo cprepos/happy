@@ -52,6 +52,9 @@ struct ChatServices {
     var refreshSessions: @Sendable () async -> Void = {}
     /// sessionGoalAction: the goal bar's edit and clear.
     var goalAction: @Sendable (_ action: SessionGoalAction, _ objective: String?) async throws -> Void = { _, _ in }
+    /// `desktop-load-history`: a Claude Desktop chat's next chunk of earlier
+    /// history, which then arrives by sync. Throws for Retry.
+    var loadDesktopHistory: @Sendable (_ sessionId: String) async throws -> Void = { _ in throw URLError(.unsupportedURL) }
     /// useSessionQuickActions' resume, for the inactive hint: the session
     /// to open, or nil when there is nothing to open yet.
     var resume: @MainActor (_ session: SessionRecord, _ machine: MachineRecord?) async throws -> String? = { _, _ in nil }
@@ -106,6 +109,9 @@ struct ChatServices {
             refreshSessions: { [sync = account.sync] in await sync.invalidate(.sessions) },
             goalAction: { [actions = account.actions] action, objective in
                 try await actions.sessionGoalAction(sessionId: sessionId, action: action, objective: objective)
+            },
+            loadDesktopHistory: { [actions = account.actions] id in
+                _ = try await actions.sessionLoadDesktopHistory(sessionId: id)
             },
             resume: { session, machine in
                 // A tap, but still no SQL on the main thread.

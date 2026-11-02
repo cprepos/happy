@@ -338,6 +338,18 @@ final class MessageRowLayoutTests: XCTestCase {
         assertFrame(layout.control, rect(186.5, 6, 20, 20))
         XCTAssertEqual(layout.size.height, 32)
     }
+
+    /// A Claude Desktop chat's "Load previous history" is the same small
+    /// action as Retry and Load more: the full width, 33 tall, centred on
+    /// the same 32 slot, so swapping one for another moves nothing.
+    func testOlderEndSlotHoldsTheHistoryButtonLikeRetry() {
+        let button = CGSize(width: 393, height: 33)
+        let history = ChatOlderEndLayout(width: 393, control: button)
+        assertFrame(history.control, rect(0, -0.5, 393, 33))
+        XCTAssertEqual(history.size, CGSize(width: 393, height: 32))
+        let spinner = ChatOlderEndLayout(width: 393, control: CGSize(width: 20, height: 20))
+        XCTAssertEqual(spinner.size, history.size)
+    }
 }
 
 final class FileViewLayoutTests: XCTestCase {

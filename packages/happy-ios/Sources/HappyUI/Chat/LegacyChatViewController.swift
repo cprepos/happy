@@ -186,6 +186,9 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
     /// The chat's history paging (`ChatHistoryPager`): a real chat's, not
     /// a stand-in's or a fixture's.
     private var historyPager: ChatHistoryPager?
+    /// A Claude Desktop chat's own `desktop-load-history` call
+    /// (`DesktopHistoryButtonState`): one at a time.
+    private var desktopHistoryLoad: DesktopHistoryButtonState.Load = .idle
     /// How far the oldest rendered row is past the visible area, and what
     /// it is (`ChatOlderPaging.boundary`).
     private var oldestDistance: CGFloat = .greatestFiniteMagnitude
@@ -306,6 +309,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         seedTask = Task.detached(priority: .userInitiated) { seed() }
         list.delegate = self
         list.olderEnd.onAction = { [weak self] in self?.historyPager?.olderAction() }
+        list.olderEnd.onHistoryAction = { [weak self] in self?.loadDesktopHistory() }
         // The rows are planned at the list's text size (`ChatRowText`); the
         // placeholder, the header, the CLI warning and the bars over the
         // composer each carry the trait and measure their text off main at
@@ -716,6 +720,30 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
 
     private func updateOlderEnd() {
         list.olderEnd.status = historyPager?.olderStatus(windowReachesOldest: reachesOldest) ?? .idle
+        list.olderEnd.history = DesktopHistoryButtonState.resolve(
+            metadata: session.metadata,
+            reachedOldest: historyPager?.reachedOldest(windowReachesOldest: reachesOldest) ?? false,
+            load: desktopHistoryLoad
+        )
+    }
+
+    /// Load previous history: `desktop-load-history` with no params. A
+    /// spinner while it runs and Retry if it fails; on success the messages
+    /// and the lower `before` arrive by sync, so nothing else is done.
+    private func loadDesktopHistory() {
+        guard desktopHistoryLoad != .running else { return }
+        let generation = chatGeneration
+        let sessionId = chatId
+        let load = services.loadDesktopHistory
+        desktopHistoryLoad = .running
+        updateOlderEnd()
+        Task { [weak self] in
+            let failed: Bool
+            do { try await load(sessionId); failed = false } catch { failed = true }
+            guard let self, self.chatGeneration == generation else { return }
+            self.desktopHistoryLoad = failed ? .failed : .idle
+            self.updateOlderEnd()
+        }
     }
 
     /// EmptyMessages' Retry and Load more are older fetches; the loading
@@ -741,6 +769,8 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         oldestDistance = .greatestFiniteMagnitude
         oldestBoundary = nil
         list.olderEnd.status = .idle
+        desktopHistoryLoad = .idle
+        list.olderEnd.history = .hidden
         observation?.cancel()
         observation = nil
         rowsObservation?.cancel()
@@ -993,6 +1023,8 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         updatePlaceholder()
         updateDockBars()
         updateComposer()
+        // metadata.desktopHistory.before falls as history arrives.
+        updateOlderEnd()
         scheduleMeasure()
         opening?.check()
     }

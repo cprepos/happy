@@ -21,6 +21,14 @@ extension SessionActions {
         catch { return SessionBashResponse(success: false, stdout: "", stderr: opsError(error), exitCode: -1, error: opsError(error)) }
     }
 
+    /// `desktop-load-history` (docs/plans/happyify-desktop-sync.md, "Contract:
+    /// on-demand history"): posts the next chunk of a Claude Desktop chat's
+    /// earlier transcript, at the CLI's default chunk size. Throws when the
+    /// computer can't, so the chat can offer Retry.
+    public func sessionLoadDesktopHistory(sessionId: String) async throws -> DesktopHistoryLoadResult {
+        try opsDecode(await call(sessionId: sessionId, method: ClaudeDesktopHarness.loadHistoryMethod, params: .object([:])))
+    }
+
     /// Ports ops.ts sessionReadFile.
     public func sessionReadFile(sessionId: String, path: String) async throws -> SessionReadFileResponse {
         do { return try await decodedCall(sessionId: sessionId, method: "readFile", params: .object(["path": .string(path)])) }

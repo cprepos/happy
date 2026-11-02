@@ -315,8 +315,9 @@ public struct ChatFooterLayout: Equatable, Sendable {
 }
 
 /// ChatList's OlderEnd: the 32 pt slot past the oldest message holding the
-/// spinner, Retry or Load more. Always there, so a status change never
-/// moves the conversation.
+/// spinner, Retry or Load more, or a Claude Desktop chat's "Load previous
+/// history" (the same small action, so the same frame). Always there, so a
+/// status change never moves the conversation.
 public struct ChatOlderEndLayout: Equatable, Sendable {
     public static let height: CGFloat = 32
 
