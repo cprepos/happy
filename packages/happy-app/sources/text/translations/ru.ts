@@ -77,6 +77,7 @@ export const ru: TranslationStructure = {
         loading: 'Загрузка...',
         retry: 'Повторить',
         loadMore: 'Загрузить ещё',
+        loadPreviousHistory: 'Загрузить предыдущую историю',
         delete: 'Удалить',
         optional: 'необязательно',
     },

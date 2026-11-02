@@ -81,6 +81,7 @@ export const en: TranslationStructure = {
         loading: 'Loading...',
         retry: 'Retry',
         loadMore: 'Load more',
+        loadPreviousHistory: 'Load previous history',
         delete: 'Delete',
         optional: 'optional',
     },

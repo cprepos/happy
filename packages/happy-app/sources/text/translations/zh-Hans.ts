@@ -68,6 +68,7 @@ export const zhHans: TranslationStructure = {
         loading: '加载中...',
         retry: '重试',
         loadMore: '加载更多',
+        loadPreviousHistory: '加载更早的历史记录',
         delete: '删除',
         optional: '可选的',
     },

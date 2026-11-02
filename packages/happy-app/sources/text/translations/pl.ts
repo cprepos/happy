@@ -77,6 +77,7 @@ export const pl: TranslationStructure = {
         loading: 'Ładowanie...',
         retry: 'Ponów',
         loadMore: 'Załaduj więcej',
+        loadPreviousHistory: 'Załaduj wcześniejszą historię',
         delete: 'Usuń',
         optional: 'opcjonalnie',
     },

@@ -68,6 +68,7 @@ export const zhHant: TranslationStructure = {
         loading: '載入中...',
         retry: '重試',
         loadMore: '載入更多',
+        loadPreviousHistory: '載入更早的歷史記錄',
         delete: '刪除',
         optional: '選填',
     },

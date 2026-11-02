@@ -66,6 +66,7 @@ export const ca: TranslationStructure = {
         loading: 'Carregant...',
         retry: 'Torna-ho a provar',
         loadMore: 'Carrega més',
+        loadPreviousHistory: "Carrega l'historial anterior",
         delete: 'Elimina',
         optional: 'Opcional',
     },
