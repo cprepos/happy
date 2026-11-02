@@ -84,6 +84,10 @@ public struct SessionRow: Equatable, Sendable {
     /// Which harness runs this chat, by product name: Claude Code, Codex.
     /// Nil on rows that don't draw it (`HomeListModel`).
     public var harnessName: String? = nil
+    /// The computer a chat runs on, on the flat list of an account whose
+    /// chats span more than one (`SessionList.spansHosts`). Nil otherwise,
+    /// on a bot, and on every other list.
+    public var hostName: String? = nil
     /// The line counts Happy Agent publishes for the session's checkout,
     /// drawn at the end of the workspace's row (RigGitLineChanges); nil
     /// for a clean comparison and for every other agent.
@@ -180,8 +184,9 @@ public struct SessionList: Equatable, Sendable {
         }
         archived.sort(by: Self.precedes)
 
+        let showsHosts = Self.spansHosts(live + archived)
         func row(_ session: SessionRecord, archived: Bool, divider: Bool) -> SessionRow {
-            Self.row(
+            var built = Self.row(
                 session,
                 archived: archived,
                 showsDivider: divider,
@@ -190,6 +195,8 @@ public struct SessionList: Equatable, Sendable {
                 showFlavorIcons: settings.showFlavorIcons,
                 formatter: formatter
             )
+            if showsHosts, !session.isBot { built.hostName = Self.hostName(session, machines: machines) }
+            return built
         }
 
         var items: [Item] = live.enumerated().map { index, session in
@@ -226,6 +233,30 @@ public struct SessionList: Equatable, Sendable {
         self.avatarMonochrome = settings.avatarMonochrome
         self.grouping = settings.sessionListGrouping
         self.projects = settings.sessionListGrouping == .project ? ProjectHomeData(snapshot, clock: clock, unknownMachine: unknownMachine) : nil
+    }
+
+    /// Whether these chats run on more than one computer, the only time
+    /// naming one on each row tells the reader anything (flatSessionList.ts
+    /// `hasMultipleHosts`). It counts machines, not names: two computers that
+    /// share a name are still two places the work can be. Bots don't count.
+    static func spansHosts(_ sessions: [SessionRecord]) -> Bool {
+        var machineIds = Set<String>()
+        for session in sessions where !session.isBot {
+            if let id = session.metadata?["machineId"]?.stringValue, !id.isEmpty { machineIds.insert(id) }
+            if machineIds.count > 1 { return true }
+        }
+        return false
+    }
+
+    /// utils/flatSessionList.ts `toFlatSessionRow`: the computer's own name,
+    /// then its host, then the host the chat itself recorded. Nil, and no
+    /// host on the row, when none of them says.
+    static func hostName(_ session: SessionRecord, machines: [String: MachineRecord]) -> String? {
+        func nonEmpty(_ value: String?) -> String? { value?.isEmpty == false ? value : nil }
+        let machine = session.metadata?["machineId"]?.stringValue.flatMap { machines[$0] }
+        return nonEmpty(machine?.metadata?["displayName"]?.stringValue)
+            ?? nonEmpty(machine?.metadata?["host"]?.stringValue)
+            ?? nonEmpty(session.metadata?["host"]?.stringValue)
     }
 
     /// Newest activity first; ties in id order so the list never shuffles.
