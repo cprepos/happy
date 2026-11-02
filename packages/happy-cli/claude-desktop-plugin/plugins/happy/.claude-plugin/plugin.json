@@ -1,5 +1,6 @@
 {
   "name": "happy",
   "version": "1.0.0",
-  "description": "Mirror Claude desktop Code sessions into Happy and deliver phone messages to them"
+  "description": "Mirror Claude desktop Code sessions into Happy and deliver phone messages to them",
+  "author": { "name": "Happy" }
 }

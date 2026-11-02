@@ -1,6 +1,7 @@
 {
   "name": "happy",
   "owner": { "name": "Happy" },
+  "description": "Happy's Claude Code plugin for the Claude desktop app",
   "plugins": [
     {
       "name": "happy",
