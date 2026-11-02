@@ -1,0 +1,31 @@
+# Self-host overlay of project.yml, for a personal Apple team. Opt-in: nothing
+# reads this file unless you run scripts/selfhost-project.sh, which validates
+# the environment, derives .selfhost/Info-*.plist and generates
+# HappySelfHost.xcodeproj. Both outputs are git-ignored; the team id comes from
+# the environment and is never committed.
+#
+#   Debug   -> $APP_BUNDLE_ID_PREFIX.dev
+#   Preview -> $APP_BUNDLE_ID_PREFIX.preview
+#   Release -> $APP_BUNDLE_ID_PREFIX
+include:
+  - path: project.yml
+    relativePaths: true
+name: HappySelfHost
+targets:
+  Happy:
+    settings:
+      base:
+        DEVELOPMENT_TEAM: ${APPLE_TEAM_ID}
+      configs:
+        Debug:
+          PRODUCT_BUNDLE_IDENTIFIER: ${APP_BUNDLE_ID_PREFIX}.dev
+          INFOPLIST_FILE: .selfhost/Info-Development.plist
+          CODE_SIGN_ENTITLEMENTS: App/Happy-SelfHost.entitlements
+        Preview:
+          PRODUCT_BUNDLE_IDENTIFIER: ${APP_BUNDLE_ID_PREFIX}.preview
+          INFOPLIST_FILE: .selfhost/Info-Preview.plist
+          CODE_SIGN_ENTITLEMENTS: App/Happy-SelfHost.entitlements
+        Release:
+          PRODUCT_BUNDLE_IDENTIFIER: ${APP_BUNDLE_ID_PREFIX}
+          INFOPLIST_FILE: .selfhost/Info-Production.plist
+          CODE_SIGN_ENTITLEMENTS: App/Happy-SelfHost.entitlements
