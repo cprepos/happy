@@ -36,6 +36,7 @@ import { applySandboxPermissionPolicy, normalizeRemotePermissionMode, resolveIni
 import { decodeBase64, encodeBase64 } from '@/api/encryption';
 import type { Session as ApiSession } from '@/api/types';
 import { getProjectPath } from './utils/path';
+import { createDesktopTitleReader } from '@/claude/utils/desktopTitle';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { RawJSONLinesSchema, type RawJSONLines } from './types';
@@ -340,6 +341,21 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         // metadata is consistent the moment the app opens this session — even
         // before the SDK's hook callback fires. Done regardless of backfill.
         session.updateMetadata((meta) => ({ ...meta, claudeSessionId: forkClaudeSessionId }));
+
+        // Keep the conversation's title. A resumed or forked conversation
+        // starts a new Happy session with no summary, while its transcript
+        // still carries the title Claude Code (ai-title) or the desktop
+        // (custom-title) gave it. Side chats start empty and stay untitled.
+        if (!isSideChat) {
+            const title = await createDesktopTitleReader({
+                claudeSessionId: forkClaudeSessionId,
+                transcriptPath: join(getProjectPath(workingDirectory), `${forkClaudeSessionId}.jsonl`),
+            }).read();
+            if (title) {
+                session.updateMetadata((meta) => meta.summary ? meta : { ...meta, summary: { text: title, updatedAt: Date.now() } });
+                logger.debug(`[FORK BACKFILL] Kept the conversation title: ${title}`);
+            }
+        }
     }
 
     // Ring buffer of user prompts that just arrived from the app via the
