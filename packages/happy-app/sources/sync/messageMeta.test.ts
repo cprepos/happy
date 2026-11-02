@@ -80,11 +80,44 @@ describe('resolveMessageModeMeta', () => {
             metadata: { flavor: 'codex' },
         } as any);
 
+        // Nothing picked: an explicit null, so Codex uses its own default.
         expect(meta).toEqual({
             permissionMode: 'auto',
-            model: 'gpt-6.1-sol',
+            model: null,
             effort: 'medium',
         });
+    });
+
+    it('sends a picked Codex model exactly, the old default included', () => {
+        const fromSession = resolveMessageModeMeta({
+            permissionMode: null,
+            modelMode: 'gpt-6.1-sol',
+            effortLevel: null,
+            metadata: { flavor: 'codex' },
+        } as any);
+        expect(fromSession.model).toBe('gpt-6.1-sol');
+
+        const fromSettings = resolveMessageModeMeta({
+            permissionMode: null,
+            modelMode: null,
+            effortLevel: null,
+            metadata: { flavor: 'codex' },
+        } as any, {
+            agentDefaultOverrides: { codex: { modelMode: 'gpt-6.1-sol' } },
+        } as any);
+        expect(fromSettings.model).toBe('gpt-6.1-sol');
+    });
+
+    it('sends no Codex model when Default model is picked', () => {
+        const meta = resolveMessageModeMeta({
+            permissionMode: null,
+            modelMode: 'default',
+            effortLevel: null,
+            metadata: { flavor: 'codex' },
+        } as any, {
+            agentDefaultOverrides: { codex: { modelMode: 'gpt-5.6-terra' } },
+        } as any);
+        expect(meta.model).toBeNull();
     });
 
     it('always sends the displayed Agy model and effort pair', () => {

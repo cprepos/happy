@@ -35,7 +35,9 @@ const codeAgentDefaults: Record<AgentKey, AgentDefaultConfig> = {
     // old CLI fallback is applied only when a machine version is known below;
     // a user override is kept separate and is never rewritten here.
     claude: { permissionMode: 'auto', modelMode: 'claude-opus-5-5', effortLevel: 'medium' },
-    codex: { permissionMode: 'auto', modelMode: 'gpt-6.1-sol', effortLevel: 'medium' },
+    // `default` sends no model, so Codex runs its own default for the
+    // account. A named model fails on every account that does not offer it.
+    codex: { permissionMode: 'auto', modelMode: 'default', effortLevel: 'medium' },
     gemini: { permissionMode: 'default', modelMode: 'gemini-2.5-pro', effortLevel: null },
     openclaw: { permissionMode: 'default', modelMode: 'default', effortLevel: null },
     agy: { permissionMode: 'default', modelMode: 'Gemini 3.8 Flash', effortLevel: 'medium' },

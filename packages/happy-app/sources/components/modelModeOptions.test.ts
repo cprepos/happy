@@ -123,9 +123,10 @@ describe('modelModeOptions', () => {
         expect(keys).not.toContain('plan');
     });
 
-    it('only offers the curated codex harness models, most capable first', () => {
+    it('only offers the curated codex harness models, Default first, then most capable', () => {
         const models = getCodexModelModes();
         expect(models.map((model) => model.key)).toEqual([
+            'default',
             'gpt-6-astra',
             'gpt-6.1-sol',
             'gpt-6-sol',
@@ -134,7 +135,8 @@ describe('modelModeOptions', () => {
             'gpt-5.6-terra',
             'gpt-5.6-luna',
         ]);
-        expect(models[0].name).toBe('GPT-6 Astra');
+        expect(models[0].name).toBe('Default model');
+        expect(models[1].name).toBe('GPT-6 Astra');
     });
 
     it('adds a configured custom codex model without expanding the shared catalog', () => {
@@ -142,6 +144,7 @@ describe('modelModeOptions', () => {
         const withCustom = includeConfiguredModel('codex', models, 'my-workspace-model');
 
         expect(withCustom.map((model) => model.key)).toEqual([
+            'default',
             'gpt-6-astra',
             'gpt-6.1-sol',
             'gpt-6-sol',
@@ -151,7 +154,9 @@ describe('modelModeOptions', () => {
             'gpt-5.6-luna',
             'my-workspace-model',
         ]);
-        expect(models).toHaveLength(7);
+        expect(models).toHaveLength(8);
+        expect(includeConfiguredModel('codex', models, 'default')).toBe(models);
+        expect(includeConfiguredModel('codex', models, 'gpt-6.1-sol')).toBe(models);
         expect(includeConfiguredModel('gemini', models, 'my-workspace-model')).toBe(models);
         expect(includeConfiguredModel('openclaw', models, 'my-workspace-model')).toBe(models);
     });
@@ -256,7 +261,7 @@ describe('modelModeOptions', () => {
         expect(getDefaultModelKey('claude', '1.2.6-beta.0')).toBe('claude-opus-5-5');
         expect(getDefaultEffortKey('claude')).toBe('medium');
         expect(getDefaultPermissionModeKey('codex')).toBe('auto');
-        expect(getDefaultModelKey('codex')).toBe('gpt-6.1-sol');
+        expect(getDefaultModelKey('codex')).toBe('default');
         expect(getDefaultEffortKey('codex')).toBe('medium');
         expect(getDefaultPermissionModeKey('agy')).toBe('default');
         expect(getDefaultModelKey('agy')).toBe('Gemini 3.8 Flash');

@@ -205,8 +205,18 @@ const UNLISTED_CLAUDE_MODEL_NAMES: Record<string, string> = {
     'claude-sonnet-5': 'Sonnet 5',
 };
 
+// "Leave it to the agent": the row whose key is never sent as a model
+// (messageMeta sends `model: null`, the daemon skips `--model`), so the agent
+// runs whatever its own config or account selects.
+const DEFAULT_MODEL_MODE: ModelMode = { key: 'default', name: 'Default model', description: null };
+
+// Default comes first and is what Codex starts on: Happy sends no model, and
+// Codex runs its own default for the signed-in account. Which models an account
+// may use differs (a ChatGPT plan has no GPT-6.1 Sol), so naming one here
+// would fail every turn on the accounts that lack it.
 export function getCodexModelModes(): ModelMode[] {
     return [
+        DEFAULT_MODEL_MODE,
         { key: 'gpt-6-astra', name: 'GPT-6 Astra', description: 'most capable', providerId: 'openai', providerName: 'OpenAI' },
         { key: 'gpt-6.1-sol', name: 'GPT-6.1 Sol', description: null, providerId: 'openai', providerName: 'OpenAI' },
         { key: 'gpt-6-sol', name: 'GPT-6 Sol', description: null, providerId: 'openai', providerName: 'OpenAI' },
@@ -417,9 +427,7 @@ export function getHardcodedPermissionModes(flavor: AgentFlavor, translate: Tran
 }
 
 export function getOpenClawModelModes(): ModelMode[] {
-    return [
-        { key: 'default', name: 'Default model', description: null },
-    ];
+    return [DEFAULT_MODEL_MODE];
 }
 
 // Gemini effort is deliberately not encoded into separate model rows. Happy's
