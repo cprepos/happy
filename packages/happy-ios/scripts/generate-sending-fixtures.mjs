@@ -10,7 +10,7 @@ const defaults = read('sync/agentDefaults.ts').slice(read('sync/agentDefaults.ts
 const options = read('components/modelModeOptions.ts');
 const start = options.indexOf('export function modeSupportedByCli(');
 const end = options.indexOf('/**\n * Drops modes', start);
-const source = [read('utils/versionUtils.ts'), read('utils/trimIdent.ts'), defaults,
+const source = [read('utils/versionUtils.ts'), read('utils/trimIdent.ts'), read('sync/opencodeModes.ts'), defaults,
     read('sync/rig.ts'), read('sync/agentCommunications.ts'), read('sync/sessionState.ts'),
     options.slice(start, end), read('sync/messageMeta.ts'), read('sync/prompt/systemPrompt.ts')].map(clean).join('\n');
 const { resolveMessageDeliveryMeta, resolveMessageModeMeta, systemPrompt } = new Function(source + '\nreturn {resolveMessageDeliveryMeta,resolveMessageModeMeta,systemPrompt};')();

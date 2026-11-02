@@ -39,7 +39,9 @@ const codeAgentDefaults: Record<AgentKey, AgentDefaultConfig> = {
     // The desktop app owns its model, permissions and effort. `default` is the
     // ambient no-override value, so nothing is sent on spawn or per message.
     'claude-desktop': { permissionMode: 'default', modelMode: 'default', effortLevel: null },
-    codex: { permissionMode: 'auto', modelMode: 'gpt-6.1-sol', effortLevel: 'medium' },
+    // `default` sends no model, so Codex runs its own default for the
+    // account. A named model fails on every account that does not offer it.
+    codex: { permissionMode: 'auto', modelMode: 'default', effortLevel: 'medium' },
     gemini: { permissionMode: 'default', modelMode: 'gemini-2.5-pro', effortLevel: null },
     openclaw: { permissionMode: 'default', modelMode: 'default', effortLevel: null },
     agy: { permissionMode: 'default', modelMode: 'Gemini 3.8 Flash', effortLevel: 'medium' },

@@ -160,25 +160,30 @@ final class ModelModeOptionsTests: XCTestCase {
         XCTAssertFalse(keys.contains("plan"))
     }
 
-    func testCuratedCodexModelsMostCapableFirst() {
+    func testCuratedCodexModelsDefaultThenMostCapable() {
         let models = Options.hardcodedModelModes(flavor: "codex")
         XCTAssertEqual(keys(models), [
+            "default",
             "gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
         ])
-        XCTAssertEqual(models[0].name, "GPT-6 Astra")
-        XCTAssertEqual(models[0].providerId, "openai")
-        XCTAssertEqual(models[0].providerName, "OpenAI")
+        XCTAssertEqual(models[0], ModeOption(key: "default", name: "Default model"), "names no model and no provider")
+        XCTAssertEqual(models[1].name, "GPT-6 Astra")
+        XCTAssertEqual(models[1].providerId, "openai")
+        XCTAssertEqual(models[1].providerName, "OpenAI")
     }
 
     func testAConfiguredCustomCodexModelGetsARow() {
         let models = Options.hardcodedModelModes(flavor: "codex")
         let withCustom = Options.includeConfiguredModel(flavor: "codex", models: models, configured: "my-workspace-model")
         XCTAssertEqual(keys(withCustom), [
+            "default",
             "gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
             "my-workspace-model",
         ])
         XCTAssertEqual(withCustom.last, ModeOption(key: "my-workspace-model", name: "my-workspace-model", description: "custom model"))
-        XCTAssertEqual(models.count, 7)
+        XCTAssertEqual(models.count, 8)
+        XCTAssertEqual(Options.includeConfiguredModel(flavor: "codex", models: models, configured: "default"), models)
+        XCTAssertEqual(Options.includeConfiguredModel(flavor: "codex", models: models, configured: "gpt-6.1-sol"), models)
         XCTAssertEqual(Options.includeConfiguredModel(flavor: "gemini", models: models, configured: "my-workspace-model"), models)
         XCTAssertEqual(Options.includeConfiguredModel(flavor: "openclaw", models: models, configured: "my-workspace-model"), models)
     }
@@ -257,7 +262,7 @@ final class ModelModeOptionsTests: XCTestCase {
         XCTAssertEqual(Options.defaultModelKey(flavor: "claude", cliVersion: "1.2.6-beta.0"), "claude-opus-5-5")
         XCTAssertEqual(Options.defaultEffortKey(flavor: "claude"), "medium")
         XCTAssertEqual(Options.defaultPermissionModeKey(flavor: "codex"), "auto")
-        XCTAssertEqual(Options.defaultModelKey(flavor: "codex"), "gpt-6.1-sol")
+        XCTAssertEqual(Options.defaultModelKey(flavor: "codex"), "default")
         XCTAssertEqual(Options.defaultEffortKey(flavor: "codex"), "medium")
         XCTAssertEqual(Options.defaultPermissionModeKey(flavor: "agy"), "default")
         XCTAssertEqual(Options.defaultModelKey(flavor: "agy"), "Gemini 3.8 Flash")
@@ -719,12 +724,12 @@ final class ComposerModesTests: XCTestCase {
     func testAnUnlistedPickFallsThroughToTheDefault() {
         let modes = ComposerModes(
             metadata: json(#"{ "flavor": "codex", "version": "1.2.6" }"#),
-            picks: ComposerPicks(permissionMode: "acceptEdits", effortLevel: "ultra"),
+            picks: ComposerPicks(permissionMode: "acceptEdits", effortLevel: "xhigh"),
             agentDefaultOverrides: [:]
         )
         XCTAssertEqual(modes.permissionMode?.key, "auto")
-        XCTAssertEqual(modes.modelMode?.key, "gpt-6.1-sol")
-        XCTAssertEqual(modes.effortLevel?.key, "ultra")
+        XCTAssertEqual(modes.modelMode?.key, "default")
+        XCTAssertEqual(modes.effortLevel?.key, "xhigh")
         let luna = ComposerModes(
             metadata: json(#"{ "flavor": "codex", "version": "1.2.6" }"#),
             picks: ComposerPicks(modelMode: "gpt-6-luna", effortLevel: "ultra"),

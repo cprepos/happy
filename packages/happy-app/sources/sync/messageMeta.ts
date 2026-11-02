@@ -146,6 +146,8 @@ export function resolveMessageModeMeta(
         const defaults = resolveAgentDefaultConfig(settings?.agentDefaultOverrides, flavor, cliVersion);
         meta.permissionMode = supported(retirePermissionMode(session.permissionMode ?? defaults.permissionMode));
 
+        // Codex's Default model goes out as an explicit `model: null`: it
+        // clears an earlier pick and leaves the model to Codex.
         const modelMode = session.modelMode ?? defaults.modelMode;
         meta.model = modelMode === 'default' ? null : modelMode;
 

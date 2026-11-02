@@ -120,7 +120,10 @@ function isAppServerAvailable(): boolean {
         return false;
     }
     const { major, minor } = version;
-    // GPT-6.1 Sol, Happy's default Codex model, requires Codex 0.153.0+.
+    // Happy's app-server client is maintained against Codex 0.153.0+. The
+    // floor was raised from 0.100 when Happy forced GPT-6.1 Sol by default; it
+    // no longer forces a model, but nothing has shown that an older app-server
+    // speaks the protocol this client uses, so the floor stays.
     return major > 0 || minor >= 153;
 }
 

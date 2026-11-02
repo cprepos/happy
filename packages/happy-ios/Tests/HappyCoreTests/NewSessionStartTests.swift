@@ -1452,7 +1452,7 @@ final class NewSessionChoicesTests: XCTestCase {
         ).get()
         XCTAssertEqual(launch.agent, .codex)
         XCTAssertEqual(launch.permissionMode, "auto")
-        XCTAssertEqual(launch.modelMode, "gpt-6.1-sol")
+        XCTAssertEqual(launch.modelMode, "default")
     }
 
     func testRefusals() {

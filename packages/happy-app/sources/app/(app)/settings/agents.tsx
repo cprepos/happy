@@ -246,11 +246,14 @@ export default function AgentsSettingsScreen() {
                 const codeDefaults = getCodeAgentDefaults(agent, defaultsCliVersion);
                 const effectiveDefaults = resolveAgentDefaultConfig(agentDefaultOverrides, agent, defaultsCliVersion);
                 const permissionOptions = getHardcodedPermissionModes(agent, t);
+                // A lone Default row (OpenClaw, OpenCode) is no choice, so the
+                // field is hidden. Beside real models (Codex) it is one, and it
+                // names the code default instead of a raw `default` key.
                 const modelOptions = includeConfiguredModel(
                     agent,
                     getHardcodedModelModes(agent, t),
                     effectiveDefaults.modelMode,
-                ).filter((option) => option.key !== 'default');
+                ).filter((option, _, all) => option.key !== 'default' || all.length > 1);
                 const effortOptions = getEffortLevelsForModel(agent, effectiveDefaults.modelMode);
                 const fields: FieldConfig[] = [
                     {

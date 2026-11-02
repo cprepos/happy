@@ -40,6 +40,8 @@ final class AgentDefaultsTests: XCTestCase {
     func testModelRowsKeepASavedModelThatLeftTheCatalog() {
         let codex = AgentDefaults.modelModes(.codex, configured: "my-model")
         XCTAssertEqual(codex.last, AgentDefaults.Option("my-model", "my-model", "custom model"))
+        XCTAssertEqual(codex.first, AgentDefaults.Option("default", "Default model"), "beside real models, Default is a choice")
+        XCTAssertEqual(AgentDefaults.modelModes(.openclaw, configured: nil), [], "a lone Default row is no choice")
         let claude = AgentDefaults.modelModes(.claude, configured: "claude-sonnet-5")
         XCTAssertEqual(claude.last?.name, "Sonnet 5")
         XCTAssertEqual(AgentDefaults.modelModes(.claude, configured: "claude-opus-5-5[1m]").count, 6, "maps onto an existing row")

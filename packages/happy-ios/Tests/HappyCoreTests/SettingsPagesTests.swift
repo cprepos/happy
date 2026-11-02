@@ -242,6 +242,17 @@ final class AgentsPageTests: XCTestCase {
         XCTAssertEqual(fields[2].options.map(\.key), ["low", "medium", "high", "xhigh"])
     }
 
+    func testCodexModelDefaultsToCodexsOwnChoice() {
+        let model = AgentsPage.fields(.codex, overrides: [:], cliVersion: "1.3.0")[1]
+        XCTAssertEqual(model.detail, "Default (Default model)")
+        XCTAssertEqual(model.codeDefaultName, "Default model")
+        XCTAssertFalse(model.hasOverride)
+
+        let picked: [String: JSONValue] = ["codex": .object(["modelMode": .string("gpt-6.1-sol")])]
+        let pickedModel = AgentsPage.fields(.codex, overrides: picked, cliVersion: "1.3.0")[1]
+        XCTAssertEqual(pickedModel.detail, "GPT-6.1 Sol", "an explicit pick of the old default is kept")
+    }
+
     func testAgentsWithoutModelsOrEffort() {
         XCTAssertEqual(AgentsPage.fields(.openclaw, overrides: [:], cliVersion: nil).map(\.field), [.permissionMode])
         XCTAssertEqual(AgentsPage.fields(.gemini, overrides: [:], cliVersion: nil).map(\.field), [.permissionMode, .modelMode])
