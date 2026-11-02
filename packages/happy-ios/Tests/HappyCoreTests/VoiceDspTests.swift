@@ -10,7 +10,10 @@ final class VoiceDspTests: XCTestCase {
         return (0..<Int(rate * seconds)).map { i in
             seed = (seed * 75 + 74) % 65537
             let noise = (Double(seed) / 65537 - 0.5) * 0.2
-            return Float(0.6 * sin(2 * .pi * (200 + Double(i) / 20) * Double(i) / rate) + noise)
+            let time = Double(i) / rate
+            let frequency: Double = 200 + Double(i) / 20
+            let phase: Double = 2 * Double.pi * frequency * time
+            return Float(0.6 * sin(phase) + noise)
         }
     }
 
