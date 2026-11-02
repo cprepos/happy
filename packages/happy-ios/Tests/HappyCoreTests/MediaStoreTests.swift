@@ -360,7 +360,8 @@ final class MediaDownloadsTests: XCTestCase {
     func testAutomaticDownloadsWaitTheirTurn() async throws {
         let gate = MediaGate()
         let servers = (0..<3).map { _ in FakeMediaServer(mediaBytes(10)) }
-        for server in servers.prefix(2) { server.gate = { await gate.wait() } }
+        // All three hold, or the lifted one can finish and leave before it is asked about.
+        for server in servers { server.gate = { await gate.wait() } }
         let downloads = MediaDownloads(store: MediaStore(directory: directory), board: DownloadBoard())
         for (index, server) in servers.enumerated() {
             await downloads.download("f\(index)", source: server.source(), priority: .background)
@@ -374,6 +375,10 @@ final class MediaDownloadsTests: XCTestCase {
         let lifted = await downloads.isRunning("f2")
         XCTAssertTrue(lifted)
         await gate.open()
+        for (index, server) in servers.enumerated() {
+            let data = try await downloads.data("f\(index)", source: server.source())
+            XCTAssertEqual(data, mediaBytes(10))
+        }
     }
 }
 
