@@ -42,6 +42,7 @@ export type OpencodePromptInput = {
     text: string;
     messageId: string;
     model?: { providerID: string; modelID: string };
+    variant?: string;
     agent?: string;
 };
 
@@ -115,9 +116,35 @@ export class OpencodeClient {
         await this.request('POST', `/session/${encodeURIComponent(sessionId)}/prompt_async`, {
             messageID: prompt.messageId,
             ...(prompt.model ? { model: prompt.model } : {}),
+            ...(prompt.variant ? { variant: prompt.variant } : {}),
             ...(prompt.agent ? { agent: prompt.agent } : {}),
             parts: [{ type: 'text', text: prompt.text }],
         });
+    }
+
+    /**
+     * Run a slash command. Unlike `prompt_async` the server answers when the
+     * command's turn ends, so this takes the caller's lifetime signal rather
+     * than the default request timeout; progress arrives on the event stream.
+     */
+    async runCommand(
+        sessionId: string,
+        command: { name: string; args: string; messageId: string; model?: { providerID: string; modelID: string }; variant?: string; agent?: string },
+        signal: AbortSignal,
+    ): Promise<void> {
+        await this.request('POST', `/session/${encodeURIComponent(sessionId)}/command`, {
+            command: command.name,
+            arguments: command.args,
+            messageID: command.messageId,
+            ...(command.model ? { model: `${command.model.providerID}/${command.model.modelID}` } : {}),
+            ...(command.variant ? { variant: command.variant } : {}),
+            ...(command.agent ? { agent: command.agent } : {}),
+        }, signal);
+    }
+
+    /** Compact the session (`/compact`). Answers when the summary is done, like `runCommand`. */
+    async summarize(sessionId: string, model: { providerID: string; modelID: string }, signal: AbortSignal): Promise<void> {
+        await this.request('POST', `/session/${encodeURIComponent(sessionId)}/summarize`, model, signal);
     }
 
     async abort(sessionId: string): Promise<void> {
@@ -161,6 +188,11 @@ export class OpencodeClient {
 
     agents(): Promise<OpencodeAgent[]> {
         return this.request('GET', '/agent');
+    }
+
+    /** Slash commands of this project; only the name is read. */
+    commands(): Promise<Array<{ name: string }>> {
+        return this.request('GET', '/command');
     }
 
     /** Liveness probe: true when the server answers authenticated requests. */

@@ -70,7 +70,15 @@ import {
     linkedHappySessionId,
     rememberHappySession,
 } from './opencodeHappySession';
-import { buildOpencodePickers, opencodePromptOptions, parseOpencodeMode, type OpencodePermissionPolicy } from './opencodeSessionConfig';
+import { opencodeModePolicy } from '@/opencode/acpPermissionModes';
+import {
+    buildOpencodePickers,
+    opencodeModeCode,
+    opencodePromptOptions,
+    parseOpencodeMode,
+    parseOpencodeSlashCommand,
+    type OpencodePermissionPolicy,
+} from './opencodeSessionConfig';
 
 /**
  * Sent by a restart to an owner that records it in its state file: stop
@@ -84,6 +92,9 @@ const STREAM_FLUSH_MS = 1000;
 
 /** How long to wait after the TUI exits for a SIGHUP that explains it. */
 const HANGUP_SETTLE_MS = 300;
+
+/** Not one of the server's commands: `opencode acp` adds it, and so does this mirror. */
+const COMPACT_COMMAND = 'compact';
 
 export function opencodeTuiStateDir(): string {
     return join(configuration.happyHomeDir, 'opencode-tui');
@@ -386,10 +397,14 @@ export async function runOpencodeTui(opts: {
     }
 
     let agentNames: string[] = [];
+    let knownModels: string[] = [];
+    let currentModelId: string | undefined;
     try {
         const [providers, agents, config] = await Promise.all([client.providers(), client.agents(), client.config()]);
         const pickers = buildOpencodePickers({ providers, agents, config, launchPolicy });
         agentNames = (pickers.modes?.availableModes ?? []).map((mode) => mode.id).filter((id) => !id.includes(':'));
+        knownModels = (pickers.models?.availableModels ?? []).map((model) => model.modelId);
+        currentModelId = pickers.models?.currentModelId;
         session.updateMetadata((current) => mergeAcpSessionConfigIntoMetadata(current, {
             ...(pickers.models ? { models: pickers.models } : {}),
             ...(pickers.modes ? { modes: pickers.modes } : {}),
@@ -397,6 +412,16 @@ export async function runOpencodeTui(opts: {
     } catch (error) {
         logger.debug('[OpenCode] Could not read models/agents for the app pickers:', error);
     }
+
+    // The same list `opencode acp` offers: the project's commands plus compaction.
+    let projectCommands: string[] = [];
+    try {
+        projectCommands = (await client.commands()).map((command) => command.name);
+    } catch (error) {
+        logger.debug('[OpenCode] Could not read slash commands:', error);
+    }
+    const commandNames = [...new Set([...projectCommands, COMPACT_COMMAND])];
+    session.updateMetadata((current) => ({ ...current, slashCommands: commandNames }));
 
     let thinking = false;
     let tuiAttached = !opts.headless;
@@ -442,6 +467,7 @@ export async function runOpencodeTui(opts: {
                 router.handleAsked(action);
                 break;
             case 'permission-replied':
+                router.handleReplied(action.id, action.reply);
                 bridge.resolveExternally(action.id, action.reply);
                 break;
             case 'question-asked':
@@ -527,17 +553,32 @@ export async function runOpencodeTui(opts: {
         }
         const messageId = createOpencodeMessageId();
         mapper.markOwnMessage(messageId);
-        const { policy } = parseOpencodeMode(message.meta?.permissionMode, agentNames, launchPolicy);
+        requestedMode = message.meta?.permissionMode ?? requestedMode;
+        const { agent, policy: parsedPolicy } = parseOpencodeMode(requestedMode, agentNames, launchPolicy);
+        // Before the agent list is known, `<agent>:<policy>` still sets the policy.
+        const policy = parsedPolicy ?? (requestedMode ? opencodeModePolicy(requestedMode) : null);
         if (policy) {
             router.setPolicy(policy);
         }
         const options = opencodePromptOptions({
             model: message.meta?.model,
-            permissionMode: message.meta?.permissionMode,
+            permissionMode: requestedMode,
             agentNames,
             launchPolicy,
+            knownModels,
         });
-        client.promptAsync(mapper.sessionId, { text, messageId, ...options }).catch((error) => {
+        if (options.model) {
+            currentModelId = `${options.model.providerID}/${options.model.modelID}`;
+        }
+        // The app falls back to these for a device that has no local pick.
+        session.updateMetadata((current) => ({
+            ...mergeAcpSessionConfigIntoMetadata(current, agent ? { currentModeId: opencodeModeCode(agent, router.policy, launchPolicy) } : {}),
+            ...(options.model ? { currentModelCode: currentModelId } : {}),
+        }));
+        sendToOpencode(text, messageId, options).catch((error) => {
+            if (events.signal.aborted) {
+                return;
+            }
             logger.debug('[OpenCode] Failed to send prompt:', error);
             session.sendSessionEvent({ type: 'message', message: `OpenCode error: ${error instanceof Error ? error.message : String(error)}` });
         });

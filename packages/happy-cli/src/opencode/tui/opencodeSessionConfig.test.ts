@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { OpencodeProviders } from './opencodeClient';
-import { buildOpencodePickers, opencodePromptOptions, parseOpencodeMode } from './opencodeSessionConfig';
+import {
+    buildOpencodePickers,
+    opencodeModeCode,
+    opencodePromptOptions,
+    parseOpencodeMode,
+    parseOpencodeSlashCommand,
+} from './opencodeSessionConfig';
 
 const providers: OpencodeProviders = {
     providers: [
@@ -71,6 +77,22 @@ describe('opencodePromptOptions', () => {
         expect(opencodePromptOptions({ model: null, permissionMode: null, agentNames })).toEqual({});
         expect(opencodePromptOptions({ permissionMode: 'plan:ask', agentNames })).toEqual({ agent: 'plan' });
     });
+
+    it('reads a known model plus one segment as a variant, as opencode acp lists them', () => {
+        const knownModels = ['openrouter/anthropic/x', 'coder/coder'];
+        const agentNames = ['build'];
+        expect(opencodePromptOptions({ model: 'openrouter/anthropic/x', agentNames, knownModels })).toEqual({
+            model: { providerID: 'openrouter', modelID: 'anthropic/x' },
+        });
+        expect(opencodePromptOptions({ model: 'coder/coder/high', agentNames, knownModels })).toEqual({
+            model: { providerID: 'coder', modelID: 'coder' },
+            variant: 'high',
+        });
+    });
+
+    it('drops a model the known list does not have', () => {
+        expect(opencodePromptOptions({ model: 'gone/model', agentNames: [], knownModels: ['coder/coder'] })).toEqual({});
+    });
 });
 
 describe('parseOpencodeMode', () => {
@@ -93,5 +115,28 @@ describe('parseOpencodeMode', () => {
         expect(parseOpencodeMode('review:ask', agentNames, 'auto')).toEqual({});
         expect(parseOpencodeMode('build:sometimes', agentNames, 'auto')).toEqual({});
         expect(parseOpencodeMode(undefined, agentNames, 'auto')).toEqual({});
+    });
+});
+
+describe('opencodeModeCode', () => {
+    it('uses the plain id for the launch policy and the explicit key for the other', () => {
+        expect(opencodeModeCode('build', 'auto', 'auto')).toBe('build');
+        expect(opencodeModeCode('build', 'ask', 'auto')).toBe('build:ask');
+        expect(opencodeModeCode('plan', 'auto', 'ask')).toBe('plan:auto');
+    });
+});
+
+describe('parseOpencodeSlashCommand', () => {
+    const known = ['init', 'compact'];
+
+    it('splits a known command from its arguments', () => {
+        expect(parseOpencodeSlashCommand('/compact', known)).toEqual({ name: 'compact', args: '' });
+        expect(parseOpencodeSlashCommand('  /init fix the\nreadme ', known)).toEqual({ name: 'init', args: 'fix the\nreadme' });
+    });
+
+    it('treats anything else as an ordinary prompt', () => {
+        expect(parseOpencodeSlashCommand('/etc/hosts looks wrong', known)).toBeNull();
+        expect(parseOpencodeSlashCommand('/unknown', known)).toBeNull();
+        expect(parseOpencodeSlashCommand('please /init', known)).toBeNull();
     });
 });
