@@ -152,9 +152,23 @@ describe('Daemon Integration Tests', { timeout: 180_000 }, () => {
     const stopResults = await Promise.all(sessionIds.map(sessionId => stopDaemonSession(sessionId)));
     expect(stopResults.every(r => r), 'Not all sessions reported stopped').toBe(true);
 
-    // Verify all sessions are stopped
-    const emptySessions = await listDaemonSessions();
-    expect(emptySessions).toHaveLength(0);
+    // Stopping only sends SIGTERM. The daemon keeps ownership until the child's
+    // exit confirms it, so a session is still listed until then (see the
+    // "retains a stopping owner until exit" test in run.resume.test.ts).
+    const stopStartedAt = Date.now();
+    await waitFor(async () => (await listDaemonSessions()).length === 0, 30_000);
+    console.log(`[TEST] ${sessionCount} sessions exited ${Date.now() - stopStartedAt}ms after stop`);
+
+    // Delisted must mean gone: nothing is left in any session's process group.
+    const survivors = sessions.filter((session: any) => {
+      try {
+        process.kill(-session.pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    expect(survivors.map((session: any) => session.pid)).toEqual([]);
   });
 
   it('should handle daemon stop request gracefully', async () => {    
