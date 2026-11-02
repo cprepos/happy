@@ -54,6 +54,9 @@ public struct AgentInputDesktopLayout: Equatable, Sendable {
         public static let sendMarginLeft: CGFloat = 8
         public static let sendIconSize: CGFloat = 16
         public static let lockIconSize: CGFloat = 15
+        /// The voice glyph send shows in an empty composer
+        /// (`icon-voice-white.png`, 24 square).
+        public static let voiceIconSize: CGFloat = 24
         /// A small ActivityIndicator.
         public static let spinnerSize: CGFloat = 20
         /// Stop, image and send: `hitSlop={{ top: 5, bottom: 10 }}`.
@@ -136,6 +139,14 @@ public struct AgentInputDesktopLayout: Equatable, Sendable {
     public var left: CGRect?
     public var leftContent: LeftContent
     public var send: CGRect
+
+    /// The voice glyph in send's bounds, centred as the Pressable centres it.
+    public static let sendVoiceGlyph = CGRect(
+        x: (Metrics.sendSize - Metrics.voiceIconSize) / 2,
+        y: (Metrics.sendSize - Metrics.voiceIconSize) / 2,
+        width: Metrics.voiceIconSize,
+        height: Metrics.voiceIconSize
+    )
 
     /// The text view's width at a panel `width`: measure its text there.
     public static func textWidth(panelWidth: CGFloat) -> CGFloat {

@@ -97,7 +97,6 @@ final class AgentInputDesktopControlsView: UIView {
         left.addSubview(stopButton)
         imageButton.addTarget(self, action: #selector(imageTapped), for: .touchUpInside)
         left.addSubview(imageButton)
-        sendButton.accessibilityLabel = Strings.Composer.send
         sendButton.addTarget(self, action: #selector(sendTapped), for: .touchUpInside)
         addSubview(sendButton)
     }
@@ -316,9 +315,11 @@ final class DesktopSettingsButton: UIButton {
 }
 
 /// `sendButton`: 32 round, filled by the send's state; the press dims the
-/// glyph, not the fill.
+/// glyph, not the fill. In an empty composer it is the voice button.
 final class DesktopSendButton: DesktopPressable {
     private let iconView = IconView(size: AgentInputDesktopLayout.Metrics.sendIconSize)
+    /// happy-app's `icon-voice-white.png`, tinted as a template.
+    let voiceView = UIImageView(image: UIImage.happy("icon-voice-white")?.withRenderingMode(.alwaysTemplate))
     private let spinner = UIActivityIndicatorView(style: .medium)
 
     var send = AgentInputDesktopSend(hasText: false, hasComposerContent: false, isSendBlocked: false) {
@@ -332,9 +333,11 @@ final class DesktopSendButton: DesktopPressable {
         super.init(frame: frame)
         clipsToBounds = true
         addSubview(iconView)
+        voiceView.contentMode = .scaleAspectFit
+        addSubview(voiceView)
         spinner.hidesWhenStopped = true
         addSubview(spinner)
-        pressedContent = [iconView, spinner]
+        pressedContent = [iconView, voiceView, spinner]
         isAccessibilityElement = true
         accessibilityTraits = .button
         apply()
@@ -350,10 +353,16 @@ final class DesktopSendButton: DesktopPressable {
 
     private func apply() {
         isEnabled = send.isEnabled
+        voiceView.isHidden = send.glyph != .voice
+        // As the phone's voice action is read.
+        accessibilityLabel = send.glyph == .voice ? Strings.Voice.title : Strings.Composer.send
         switch send.glyph {
         case .spinner:
             iconView.isHidden = true
             spinner.startAnimating()
+        case .voice:
+            spinner.stopAnimating()
+            iconView.isHidden = true
         case .lock:
             spinner.stopAnimating()
             iconView.isHidden = false
@@ -381,6 +390,7 @@ final class DesktopSendButton: DesktopPressable {
             backgroundColor = UIColor(Palette.composerSendDisabled)
         }
         iconView.tintColor = UIColor(send.glyph == .lock ? Palette.textSecondary : Palette.composerSendIcon)
+        voiceView.tintColor = UIColor(Palette.composerSendIcon)
         spinner.color = UIColor(Palette.composerSendIcon)
     }
 
@@ -388,6 +398,7 @@ final class DesktopSendButton: DesktopPressable {
         super.layoutSubviews()
         layer.cornerRadius = bounds.height / 2
         iconView.frame = bounds
+        voiceView.setLayoutFrame(AgentInputDesktopLayout.sendVoiceGlyph)
         spinner.center = CGPoint(x: bounds.midX, y: bounds.midY)
     }
 }
