@@ -531,8 +531,10 @@ public final class VoiceStreamClient: @unchecked Sendable {
 extension VoiceStreamClient {
     /// A call for this account, its tools running through `context`.
     public convenience init(account: AccountSession, context: VoiceContext, start: VoiceStart) {
-        self.init(serverURL: account.serverURL, token: account.credentials.token, config: VoiceAgentConfig(start: start),
-                  connector: account.voiceConnector) { name, parameters in
+        let count = account.localSettings.voiceMessageCount
+        self.init(serverURL: account.serverURL, token: account.credentials.token,
+                  config: VoiceAgentConfig(start: start, voiceMessageCount: count),
+                  connector: account.voiceConnector, voiceMessageCount: count) { name, parameters in
             await context.tool(name: name, parameters: parameters)
         }
     }

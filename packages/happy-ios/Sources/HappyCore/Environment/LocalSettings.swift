@@ -147,8 +147,16 @@ public final class LocalSettings: Sendable {
         set { storage.set(newValue?.json, forKey: NewSessionDraft.storageKey) }
     }
 
+    /// How many messages the user has sent with voice, across calls
+    /// (persistence.ts `voice-message-count`). The voice prompt's onboarding
+    /// phases go by it, so a new call can't start back at zero.
+    public var voiceMessageCount: Int {
+        get { storage.string(forKey: Keys.voiceMessageCount).flatMap(Int.init) ?? 0 }
+        set { storage.set(String(newValue), forKey: Keys.voiceMessageCount) }
+    }
+
     public func clear() {
-        for key in [Keys.linkComputerChecklist, Keys.themePreference, Keys.devModeEnabled, Keys.markdownCopyV2, Keys.expandedProjects, Keys.acknowledgedCliVersions, Keys.registeredPushToken, Keys.zenMode, NewSessionDraft.storageKey] {
+        for key in [Keys.linkComputerChecklist, Keys.themePreference, Keys.devModeEnabled, Keys.markdownCopyV2, Keys.expandedProjects, Keys.acknowledgedCliVersions, Keys.registeredPushToken, Keys.zenMode, Keys.voiceMessageCount, NewSessionDraft.storageKey] {
             storage.set(nil, forKey: key)
         }
     }
@@ -173,5 +181,6 @@ public final class LocalSettings: Sendable {
         static let acknowledgedCliVersions = "acknowledgedCliVersions"
         static let registeredPushToken = "registered-push-token-v1"
         static let zenMode = "zenMode"
+        static let voiceMessageCount = "voice-message-count"
     }
 }
