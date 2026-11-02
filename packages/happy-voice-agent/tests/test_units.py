@@ -647,7 +647,7 @@ def test_session_options_follow_settings() -> None:
         "false_interruption_timeout": 2.0,
         "resume_false_interruption": True,
     }
-    assert th["endpointing"] == {"min_delay": 0.4, "max_delay": 1.5}
+    assert th["endpointing"] == {"min_delay": 0.4, "max_delay": 0.8}
 
 
 def test_warmer_passes_conn_options() -> None:
