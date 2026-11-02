@@ -1,6 +1,8 @@
 #if (DEBUG || HAPPY_FIXTURES) && canImport(UIKit)
+import CryptoKit
 import Foundation
 import HappyCore
+import HappyStore
 import HappyWire
 @testable import HappyUI
 import UIKit
@@ -75,6 +77,11 @@ private actor DemoComputer: AgentTransport {
         } else if path.hasSuffix("/bootstrap"), path.hasPrefix("/v0/agents/") {
             let id = String(path.split(separator: "/")[2])
             value = .object(["agent": .object(["id": .string(id), "workspaceId": .string("w"), "status": .string("idle")]), "pending": .array([])])
+        } else if method == "PUT", path.hasSuffix("/file"), let body,
+                  let content = try JSONDecoder().decode(JSONValue.self, from: body)["content"]?.stringValue,
+                  let bytes = Data(base64Encoded: content) {
+            // A picked video is kept in the workspace, as the computer would.
+            value = .object(["hash": .string(SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined())])
         } else if method == "POST" {
             value = .object([:])
         } else {
@@ -93,6 +100,58 @@ private actor DemoComputer: AgentTransport {
     func close() {}
 }
 
+/// The seeded computer's Happy CLI with `-composeMachine`: compose's first
+/// send makes a Claude session there at once (its row written, as sync
+/// would) instead of asking a computer that is offline.
+private struct SplitComposeMachine: HomeOps, HomeSessionOps {
+    static let sessionId = "split-compose-session"
+    let store: LocalStore
+
+    func machineSpawnNewSession(options: SpawnSessionOptions) async -> SpawnSessionResult {
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        let record = SessionRecord(
+            id: Self.sessionId, seq: 0, createdAt: now, updatedAt: now, active: true, activeAt: now, projectId: nil,
+            metadataVersion: 1, metadataCipher: "harness",
+            metadata: .object([
+                "path": .string(options.directory), "host": .string("harness-mac"), "homeDir": .string(SeededAccount.home),
+                "machineId": .string(options.machineId), "flavor": .string(options.agent ?? "claude"), "version": .string("1.2.6"),
+            ]),
+            agentStateVersion: 1, agentStateCipher: nil, agentState: .object(["controlledByUser": .bool(false)]),
+            dataKeyCipher: nil, decryptable: true
+        )
+        try? await Task.detached { [store] in try store.upsertSessions([record]) }.value
+        return .success(sessionId: Self.sessionId)
+    }
+    func machineResumeSession(machineId: String, sessionId: String, model: String?, permissionMode: String?) async -> SpawnSessionResult { .error(errorMessage: "") }
+    func forkAndSpawn(source: ForkSource, options: ForkOptions) async -> SpawnSessionResult { .error(errorMessage: "") }
+    func machineStopSession(machineId: String, sessionId: String) async -> MachineOperationResult { try! JSONDecoder().decode(MachineOperationResult.self, from: Data(#"{"success":true}"#.utf8)) }
+    func machineBash(machineId: String, command: String, cwd: String) async throws -> SessionBashResponse { throw URLError(.cannotConnectToHost) }
+
+    func sessionKill(sessionId: String) async throws -> SessionKillResponse { throw URLError(.cannotConnectToHost) }
+    func sessionSetAgentModes(sessionId: String, patch: SessionAgentModesPatch, transport: any MetadataUpdateTransport) async throws {}
+    func sessionSetAvatar(sessionId: String, picture: SessionAvatarPicture) async throws {}
+    func archive(sessionId: String) async throws {}
+    func ensureSessionReady(sessionId: String) async throws {}
+    func uploadSessionBlob(sessionId: String, name: String, bytes: Data) async throws -> (ref: String, size: Int) { throw URLError(.cannotConnectToHost) }
+
+    @MainActor static func install() {
+        LegacyComposeStart.makeStarter = { account in
+            let machine = SplitComposeMachine(store: account.store)
+            return SessionStarter(environment: .init(
+                ops: machine,
+                sessionOps: machine,
+                sender: account.sender,
+                metadataTransport: account.realtime,
+                saveInitialModes: { [sender = account.sender] in try await sender.saveInitialModes(sessionId: $0, patch: $1) },
+                refreshSessions: {},
+                paintBotFace: { _ in throw URLError(.cannotConnectToHost) },
+                attachmentPlan: { [sender = account.sender] message, sessionId in try await sender.attachmentPlan(for: message, sessionId: sessionId) },
+                spawnRequests: account.spawnRequests
+            ))
+        }
+    }
+}
+
 /// The whole app, offline, as an iPad shows it (`-screen split`): the
 /// seeded Happy CLI account (`SeededAccount`), or with `-agent` a Happy
 /// Agent answering from fixtures, under AppCoordinator's own split view.
@@ -102,10 +161,16 @@ private actor DemoComputer: AgentTransport {
 /// `-settings` opens Settings instead, `-hideSidebar` hides the sidebar,
 /// `-dark` darkens the window, `-landscape` turns it on its side,
 /// `-resizeLoop` narrows and widens the window in turn, `-narrow` leaves
-/// an iPad's window 600 wide, `-probe` reads the open chat's list
+/// an iPad's window 600 wide, `-animated` pushes the chat `-open` opens as
+/// a tap does, for a recording of the push, `-linkLoop` has the switcher
+/// say the link is down and up again in turn, `-pushLoop <chat id,
+/// artifacts or settings>` pushes it from home and pops it in turn,
+/// `-infoLoop` does the same with the open chat's detail, for recordings
+/// of the header's glass going over, `-probe` reads the open chat's list
 /// (`ChatScrollProbe`), `-pageProbe` the open page's scroll view
 /// (`PageScrollProbe`), `-long` gives the agent's conversation 60 more
-/// rounds.
+/// rounds, `-composeMachine` lets compose's first send make a session on
+/// the seeded computer (`SplitComposeMachine`).
 @MainActor
 final class SplitAppHarness {
     private var coordinator: AppCoordinator?
@@ -117,6 +182,7 @@ final class SplitAppHarness {
             arguments.firstIndex(of: name).flatMap { arguments.indices.contains($0 + 1) ? arguments[$0 + 1] : nil }
         }
         let agent = arguments.contains("-agent")
+        if arguments.contains("-composeMachine") { SplitComposeMachine.install() }
         let computer = DemoComputer(rounds: arguments.contains("-long") ? 60 : 0)
         let controller = AccountController(
             serverConfig: ServerConfig(storage: InMemoryKeyValueStore()), clientID: "ios/split-harness",
@@ -161,7 +227,7 @@ final class SplitAppHarness {
                     home.push(.settings, context: context)
                 }
             } else if let id = option("-open") {
-                Self.open(id, from: home, context: context, agent: agent)
+                Self.open(id, from: home, context: context, agent: agent, animated: arguments.contains("-animated"))
                 try? await Task.sleep(for: .seconds(1))
                 if arguments.contains("-info"), let chat = shell.topViewController {
                     if let legacy = chat as? LegacyChatViewController {
@@ -184,6 +250,31 @@ final class SplitAppHarness {
                 shell.setSidebarHidden(true)
             }
             if arguments.contains("-resizeLoop") { await Self.resizeLoop(window) }
+            if arguments.contains("-pushLoop") {
+                await Self.pushLoop(option("-pushLoop"), from: home, context: context, agent: agent)
+            }
+            if arguments.contains("-infoLoop"), let id = option("-open"), let chat = shell.topViewController {
+                for _ in 0..<3 {
+                    try? await Task.sleep(for: .seconds(2))
+                    if let legacy = chat as? LegacyChatViewController {
+                        legacy.push(.sessionInfo(id: legacy.sessionId), context: context)
+                    } else if let session = controller.agentConnections.activeID.flatMap({ Session.session(for: $0, context: context) }) {
+                        chat.navigationController?.pushViewController(SessionDetailViewController(session: session, agentId: id, title: "iPad split view", spaceId: nil), animated: true)
+                    }
+                    try? await Task.sleep(for: .seconds(2))
+                    chat.navigationController?.popToViewController(chat, animated: true)
+                }
+            }
+            if arguments.contains("-linkLoop"), let bar = home.navigationController?.navigationBar {
+                func find(_ view: UIView) -> AccountSwitcherButton? {
+                    if let button = view as? AccountSwitcherButton { return button }
+                    return view.subviews.lazy.compactMap(find).first
+                }
+                for step in 0..<6 {
+                    try? await Task.sleep(for: .seconds(1.5))
+                    find(bar)?.setStatus(step.isMultiple(of: 2) ? "Waiting for network…" : nil, animated: true, bar: bar)
+                }
+            }
         }
     }
 
@@ -199,14 +290,39 @@ final class SplitAppHarness {
         }
     }
 
+    /// Pushes and pops in turn, every 2 s, for a recording of the header's
+    /// glass going over: `what` is a chat's id (session or agent),
+    /// `artifacts` or `settings`.
+    private static func pushLoop(_ what: String?, from home: UIViewController, context: AppContext, agent: Bool) async {
+        guard let what, let navigation = home.navigationController else { return }
+        for _ in 0..<3 {
+            try? await Task.sleep(for: .seconds(2))
+            switch what {
+            case "settings":
+                if agent {
+                    SettingsViewController.open(context: context, computer: context.account.agentConnections.activeID, from: home)
+                } else {
+                    home.push(.settings, context: context)
+                }
+            case "artifacts":
+                guard let session = context.account.agentConnections.activeID.flatMap({ Session.session(for: $0, context: context) }) else { return }
+                navigation.pushViewController(ArtifactsViewController(session: session), animated: true)
+            default:
+                open(what, from: home, context: context, agent: agent, animated: true)
+            }
+            try? await Task.sleep(for: .seconds(2))
+            navigation.popToRootViewController(animated: true)
+        }
+    }
+
     /// What tapping the row does: a chat from the sidebar.
-    private static func open(_ id: String, from home: UIViewController, context: AppContext, agent: Bool) {
+    private static func open(_ id: String, from home: UIViewController, context: AppContext, agent: Bool, animated: Bool = false) {
         if agent {
             guard let session = context.account.agentConnections.activeID.flatMap({ Session.session(for: $0, context: context) }),
                   let row = session.home.rows.first(where: { $0.agentId == id }) else { return }
-            home.navigationController?.pushViewController(ChatViewController(session: session, agentId: id, title: row.label, spaceId: row.spaceId, intro: nil), animated: false)
+            home.navigationController?.pushViewController(ChatViewController(session: session, agentId: id, title: row.label, spaceId: row.spaceId, intro: nil), animated: animated)
         } else {
-            home.push(.session(id: id), context: context, animated: false)
+            home.push(.session(id: id), context: context, animated: animated)
         }
     }
 }

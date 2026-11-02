@@ -30,7 +30,7 @@ import UltraView
 /// `ApplyPipeline`). The main thread hands over what it decides (the width,
 /// what the reader opened) and applies only what changed. While a pass
 /// runs, newer snapshots merge into the next one.
-final class LegacyChatViewController: UIViewController, ChatListViewDelegate, ChatComposerDelegate, ComposeHosting {
+final class LegacyChatViewController: UIViewController, ChatListViewDelegate, ChatComposerDelegate, ComposeHosting, KeyboardPushed {
     private let context: AppContext
     private let account: AccountSession
     /// Read by `AppCoordinator` to skip reopening the chat a tapped
@@ -236,8 +236,6 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         headerTitle = navigationItem.title ?? ""
         applyTitleAndStatus()
         navigationItem.titleView = header
-        // Compose too, so the bar never makes room for it later.
-        navigationItem.rightBarButtonItems = composeItems
         if ComposeChat.isComposeId(sessionId) {
             let compose = LegacyComposeStart(context: context, account: account)
             compose.host = self
@@ -245,6 +243,9 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
             composing = compose
             composeFocusOwed = true
         }
+        // Compose too, so the bar never makes room for it later; an empty
+        // compose chat has Back alone until its first send.
+        showHeader(animated: false)
     }
 
     private func makeComposer() -> any ChatComposerView {
@@ -260,7 +261,8 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
                     return try await compose.start(message)
                 },
                 controls: services.controls,
-                draftStorage: ComposeDraftStorage(drafts: compose.drafts)
+                draftStorage: ComposeDraftStorage(drafts: compose.drafts),
+                newSession: compose.composer
             ))
         }
         let pending = PendingChats.isPendingChatId(sessionId)
@@ -316,6 +318,11 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         if let compose = composing {
             composeTarget.machine.menu = compose.machineMenu()
             composeTarget.folder.menu = compose.folderMenu()
+            composeTarget.harness.menu = compose.harnessMenu()
+            composeTarget.harness.addAction(UIAction { [weak compose] _ in compose?.openHarnessHelp() }, for: .primaryActionTriggered)
+            composeTarget.onSessionKind = { [weak compose] in compose?.setKind($0) }
+            composeTarget.onBotName = { [weak compose] in compose?.setBotName($0) ?? $0 }
+            composeTarget.onReturn = { [weak self] in self?.composer.focus() }
             view.addSubview(composeTarget)
             #if DEBUG
             if ComposeTrace.isOn { composeTrace = ComposeTrace(self) }
@@ -445,7 +452,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
     private func startConstruction() {
         guard !constructionStarted else { return }
         constructionStarted = true
-        construction = ChatConstruction(steps: [
+        let installs: [() -> Void] = prebuilt ? [] : [
             { [weak self] in self?.installList() },
             { [weak self] in self?.installHeader() },
             { [weak self] in self?.installDock() },
@@ -453,6 +460,8 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
             { [weak self] in self?.installTabStrip() },
             { [weak self] in self?.installKeyboardTracker() },
             { [weak self] in self?.installComposer() },
+        ]
+        construction = ChatConstruction(steps: installs + [
             { [weak self] in self?.connectContent() },
         ], isCurrent: { [weak self] in
             guard let self else { return false }
@@ -462,6 +471,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        header.ride(transitionCoordinator, appearing: true)
         appeared = true
         startConstruction()
         // An empty compose has no transcript to stage: built now, its
@@ -499,7 +509,9 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         #if DEBUG
         composeTrace?.event("isAppearing restored=\(composer.isRestored)")
         #endif
-        takeComposeFocus()
+        // Pushed with the keyboard already coming (`KeyboardPush`), the
+        // composer takes it once the push is over, not inside it.
+        if !keyboardPushed { takeComposeFocus() }
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -511,6 +523,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         ultraKeyboard?.refresh()
         VoiceCoordinator.shared.focus(account: account, sessionId: chatId)
         takeComposeFocus()
+        keyboardPushed = false
     }
 
     override func viewDidDisappear(_ animated: Bool) {
@@ -753,6 +766,8 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        header.ride(transitionCoordinator, appearing: false)
+        MessageLiftOverlay.putBack(from: self)
         if contentInstalled { keepStripOffset() }
         if ultraKeyboard?.isDriving == true { ultraKeyboard?.dismissImmediately() }
         // Screens pushed from here, and the one under it, have their bar.
@@ -806,7 +821,8 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
             docked: docksList,
             accessoryPaddingH: docksList ? TabletBranches.Metrics.tabletInputPaddingH : TabletBranches.Metrics.phoneInputPaddingH,
             hidesHeader: hidesHeader,
-            headerAccessory: tabStrip.isHidden ? 0 : WorktreeTabStripLayout.Metrics.height
+            headerAccessory: tabStrip.isHidden ? 0 : WorktreeTabStripLayout.Metrics.height,
+            keyboardMovesInset: ultraKeyboard != nil
         ))
         list.setLayoutFrame(screen.list)
         list.setEdgeInsets(newest: screen.newestEdgeInset, oldest: screen.oldestEdgeInset, keyboard: keyboard)
@@ -841,16 +857,17 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         if let strip = screen.statusBarShadow { statusBarStrip.setLayoutFrame(strip) }
     }
 
-    /// One `ChatUltraKeyboard` for the list under the floating dock, none
-    /// otherwise.
+    /// One `ChatUltraKeyboard` for the chat's list in every layout.
     ///
-    /// Docked (a tablet, a phone on its side) the list's own frame ends at
-    /// the dock and changes height with the keyboard. UltraView has no
-    /// public way yet to carry a list's frame or clip on its viewport
-    /// motion, so there the keyboard layout guide moves the screen.
+    /// Under an iPad's dock, the
+    /// keyboard moves the list's newest inset instead of its frame, which
+    /// UltraView can't carry on its viewport motion, and a backdrop under
+    /// the dock covers the rows the list now runs under it
+    /// (`LegacyChatScreenLayout`'s `keyboardMovesInset`). UltraView chooses
+    /// whether to drive this keyboard or keep the system's fallback.
     private func updateUltraKeyboard() {
         // A layout after the chat has left its navigation makes none.
-        let current = floatingDock && parent != nil ? list.ultra.list : nil
+        let current = parent != nil ? list.ultra.list : nil
         if let keyboard = ultraKeyboard, current != nil, keyboard.list === current { return }
         if let old = ultraKeyboard {
             // Its list may already be off screen: it keeps it for this.
@@ -868,6 +885,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
                 }
             )
         }
+        if keyboardPushed, keyboardStartsDown { ultraKeyboard?.startsDown = true }
         if appeared { ultraKeyboard?.activate() }
     }
 
@@ -944,7 +962,10 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
     private func floatingDockChanged() {
         guard contentInstalled else { return }
         headerScrim.isHidden = !floatingDock
-        scrim.isHidden = !floatingDock || dock.isHidden
+        // Docked, the scrim is the backdrop under the dock, empty unless
+        // the keyboard moves the list's inset.
+        scrim.isBackdrop = !floatingDock
+        scrim.isHidden = dock.isHidden
         if !floatingDock && !dockDetailsVisible { setDockDetailsVisible(true) }
     }
 
@@ -1324,24 +1345,54 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
             return
         }
         let chat = LegacyChatViewController(context: context, session: account, sessionId: ComposeChat.makeId())
-        ComposeNavigation.replace(self, with: chat)
+        ComposeNavigation.replace(self, with: chat, keyboardUp: composer.isTextFocused)
     }
 
     private func composeChanged() {
         guard isComposing else { return }
         updateHeader()
         updateComposeTarget()
+        if contentInstalled { updateComposer() }
+        showHeader(animated: true)
     }
 
-    /// The machine and folder the first send goes to; while it starts the
+    /// The header shown: Back alone while an empty compose chat has
+    /// nothing sent; its name, status and Compose once the first send
+    /// starts the session (`ConversationHeader`). A refused start is
+    /// empty again.
+    private var headerShown: Bool?
+
+    private func showHeader(animated: Bool) {
+        let shown = !isComposing || composing?.isStarting == true
+        guard shown != headerShown else { return }
+        headerShown = shown
+        ConversationHeader.show(shown, title: header, items: composeItems, on: navigationItem, animated: animated)
+    }
+
+    /// What the first send makes and where it goes; while it starts the
     /// target is fixed, and once the chat is real it goes.
     private func updateComposeTarget() {
         guard let compose = composing else { return }
         if !isComposing { composeTarget.isHidden = true }
+        // Made: the panel stays as it was while it goes, though the draft
+        // already offers a session again.
+        guard compose.sessionId == nil else { return }
         composeTarget.isLocked = compose.isStarting
-        composeTarget.showsMachine = compose.asksMachine
+        composeTarget.setSessionKinds(compose.kinds, current: compose.kind, botName: compose.drafts.botName)
+        // A bot or a task lives on a computer and nowhere else: the
+        // computer is asked even on an account with one.
+        composeTarget.showsMachine = compose.asksMachine || compose.kind != .session
         composeTarget.machine.title = compose.machineName
         composeTarget.folder.title = compose.folderName
+        // Nothing to run: the row is setup help, as home's dock had it.
+        let help = compose.offersHarnessHelp
+        let harness = composeTarget.harness
+        harness.title = help ? Strings.Home.harnessHelp : compose.composer.choices.currentAgent.name
+        harness.icon = .ionicons(help ? "help-circle-outline" : "hardware-chip-outline")
+        harness.menu = help ? nil : harness.menu ?? compose.harnessMenu()
+        harness.showsMenuAsPrimaryAction = !help
+        harness.accessibilityLabel = help ? Strings.Home.harnessHelpLabel : Strings.Home.harnessTitle
+        harness.accessibilityTraits = help ? .link : .button
         view.setNeedsLayout()
     }
 
@@ -1357,6 +1408,41 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         #endif
     }
 
+    /// Pushed by `KeyboardPush`: the keyboard comes up with the push, held
+    /// by a stand-in until the push is over.
+    private var keyboardPushed = false
+    /// Built before the push, while the keyboard came (`keyboardPushWillWait`).
+    private var prebuilt = false
+    private var keyboardStartsDown = false
+
+    /// An empty compose builds all but its connection while the keyboard
+    /// comes, nothing moving yet, rather than in the push's first frame;
+    /// the connection waits for the screen to be in its stack.
+    func keyboardPushWillWait() {
+        guard isComposing, !constructionStarted, !prebuilt else { return }
+        prebuilt = true
+        installList()
+        installHeader()
+        installDock()
+        installButtons()
+        installTabStrip()
+        installKeyboardTracker()
+        installComposer()
+    }
+
+    /// Laid out with the keyboard down, unless it was up already.
+    func keyboardPushWillStart(keyboardUp: Bool) {
+        keyboardPushed = true
+        keyboardStartsDown = !keyboardUp
+    }
+
+    /// Built as the push started, this screen's keyboard wasn't listening
+    /// when the notification was posted: it hears it now, the dock riding
+    /// the keyboard up from where it was laid out.
+    func keyboardPushStarted(_ keyboard: Notification) {
+        ultraKeyboard?.hear(keyboard)
+    }
+
     /// The session the first send started: the screen becomes its chat in
     /// place, keeping the composer, its keyboard and whatever was typed
     /// since (`becomeChat`).
@@ -1366,6 +1452,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         composing = nil
         composeTarget.dismiss()
         updateHeader()
+        showHeader(animated: true)
         updatePlaceholder()
         list.scrollToNewest(animated: true)
     }
@@ -1477,7 +1564,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         list.isHidden = fullScreen
         if dock.isHidden != fullScreen {
             dock.isHidden = fullScreen
-            scrim.isHidden = fullScreen || !floatingDock
+            scrim.isHidden = fullScreen
             view.setNeedsLayout()
         }
     }
@@ -1633,7 +1720,11 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
             usage: facts?.usage,
             delivery: facts?.delivery ?? [:],
             isLoaded: facts?.isLoaded ?? false,
-            hasPendingQuestion: facts?.hasPendingQuestion ?? false
+            hasPendingQuestion: facts?.hasPendingQuestion ?? false,
+            newSessionChoices: isComposing ? composing?.composer.choices : nil,
+            newSessionPlaceholder: isComposing ? composing?.placeholder : nil,
+            isStartingNewSession: isComposing && composing?.isStarting == true,
+            newSessionTakesAttachments: isComposing && composing?.takesAttachments == true
         ))
     }
 
@@ -1847,7 +1938,23 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         }
     }
 
-    func chatList(_ list: ChatListView, hold action: ChatRowAction, frame: CGRect, at point: CGPoint) {
+    func chatList(_ list: ChatListView, hold action: ChatRowAction, frame: CGRect, at point: CGPoint, canvas: ChatPlanView?) {
+        // A message lifts, Telegram's way, with Copy and Select.
+        if let plan = canvas?.plan, let selection = plan.selection, let window = view.window {
+            switch action {
+            case .copyMenu, .markdownSelectable:
+                let adapter = list.ultra
+                let source = MessageLiftSource(
+                    plan: plan, selection: selection,
+                    canvas: { [weak adapter] in adapter?.canvas(forPlan: plan.id) },
+                    setLifted: { [weak adapter] lifted in adapter?.liftedId = lifted ? plan.id : nil },
+                    host: self
+                )
+                if MessageLiftOverlay.present(source, in: window) != nil { return }
+            default:
+                break
+            }
+        }
         switch action {
         case .copyMenu(let text):
             ChatCopyMenu.present(copying: text, anchor: frame, in: list)
@@ -1862,6 +1969,10 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         default:
             chatList(list, perform: action)
         }
+    }
+
+    func chatList(_ list: ChatListView, selectText text: String) {
+        push(.textSelection(text: text), context: context)
     }
 
     func chatList(_ list: ChatListView, openLink url: String) {
@@ -1968,7 +2079,15 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         view.layoutIfNeeded()
         composerReveal.restored(generation: generation)
         opening?.check()
-        takeComposeFocus()
+        // During a `KeyboardPush` the composer waits for the push's end.
+        if !keyboardPushed { takeComposeFocus() }
+    }
+
+    /// Telegram's send: at the newest message it flies in from the
+    /// composer; further up, `didSend` scrolls down to it instead.
+    func composerWillSend(_ composer: any ChatComposerView, from card: AgentInputCardView) {
+        guard !isComposing, ChatSendFlight.flies(distance: list.distanceFromNewest) else { return }
+        list.ultra.flight = ChatSendFlight(source: ChatSendFlight.source(from: card, in: view), host: view, message: nil)
     }
 
     func composer(_ composer: any ChatComposerView, didSend localId: String) {
@@ -1977,6 +2096,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
             composeStarted(real)
             return
         }
+        list.ultra.flight?.identify(localId)
         list.scrollToNewest(animated: true)
         // A message sent while the agent waits on questions answers them:
         // once it is delivered, the forms are dismissed (SessionView's
@@ -2043,6 +2163,12 @@ private final class TaskHolder {
 final class ChatScrimView: UIView {
     override class var layerClass: AnyClass { CAGradientLayer.self }
 
+    /// The docked layout's backdrop under the dock: the screen's ground,
+    /// solid, where the list used to stop.
+    var isBackdrop = false {
+        didSet { if isBackdrop != oldValue { update() } }
+    }
+
     override init(frame: CGRect) {
         super.init(frame: frame)
         isUserInteractionEnabled = false
@@ -2059,6 +2185,11 @@ final class ChatScrimView: UIView {
 
     private func update() {
         guard let gradient = layer as? CAGradientLayer else { return }
+        backgroundColor = isBackdrop ? UIColor(Palette.surface) : nil
+        guard !isBackdrop else {
+            gradient.colors = nil
+            return
+        }
         let dark = traitCollection.userInterfaceStyle == .dark
         let base: UIColor = dark ? .black : .white
         let stops: [CGFloat] = dark ? [0, 0.20, 0.66] : [0, 0.18, 0.74]

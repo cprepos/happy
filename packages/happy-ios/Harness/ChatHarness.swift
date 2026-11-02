@@ -15,7 +15,7 @@ import UltraView
 /// Launch arguments: `-fixture <name>` picks the chat (`long` by default);
 /// `-keyboard` opens the keyboard once the rows are in; `-scrollTo
 /// <fraction>` goes that far back through the history once the rows are
-/// in.
+/// in; `-qaLandscape` turns the window on its side.
 ///
 /// `ChatScrollProbe` reports the list to the tests as the accessibility value
 /// of an element named `chat-scroll-probe`. With `-hideKeyboardButton`, an
@@ -62,6 +62,7 @@ final class HarnessSceneDelegate: UIResponder, UIWindowSceneDelegate {
     private var realArchive: RealArchiveHarness?
     private var qaProbe: ChatUltraQAProbe?
     private var motionScript: ChatMotionScript?
+    private var keyboardScript: ChatKeyboardScript?
     private var qaReal: ChatUltraQAReal?
     private var homeControllerScroll: HomeControllerScrollHarness?
     private var homeScrollDiagnostic: HomeScrollDiagnosticHarness?
@@ -70,6 +71,7 @@ final class HarnessSceneDelegate: UIResponder, UIWindowSceneDelegate {
     private var avatarSpeeds: AvatarSpeedHarness?
     private var agentChat: AgentChatHarness?
     private var splitApp: SplitAppHarness?
+    private var glassReference: GlassReferenceHarness?
     #endif
 
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
@@ -80,6 +82,8 @@ final class HarnessSceneDelegate: UIResponder, UIWindowSceneDelegate {
         window.makeKeyAndVisible()
         self.window = window
         let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains("-chatDark") { window.overrideUserInterfaceStyle = .dark }
+        if arguments.contains("-chatLight") { window.overrideUserInterfaceStyle = .light }
         #if DEBUG || HAPPY_FIXTURES
         if arguments.contains("-homeScrollDiagnostic") {
             homeScrollDiagnostic = HomeScrollDiagnosticHarness(window: window, arguments: arguments)
@@ -121,6 +125,10 @@ final class HarnessSceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
         if let index = arguments.firstIndex(of: "-screen"), arguments.indices.contains(index + 1), arguments[index + 1] == "avatarSpeeds" {
             avatarSpeeds = AvatarSpeedHarness(window: window, arguments: arguments)
+            return
+        }
+        if let index = arguments.firstIndex(of: "-screen"), arguments.indices.contains(index + 1), arguments[index + 1] == "glassReference" {
+            glassReference = GlassReferenceHarness(window: window, arguments: arguments)
             return
         }
         if let index = arguments.firstIndex(of: "-screen"), arguments.indices.contains(index + 1), arguments[index + 1] == "split" {
@@ -176,6 +184,10 @@ final class HarnessSceneDelegate: UIResponder, UIWindowSceneDelegate {
         let navigation = UINavigationController(rootViewController: home)
         navigation.pushViewController(chat, animated: false)
         window.rootViewController = ShellViewController(context: context, phone: navigation)
+        if ProcessInfo.processInfo.arguments.contains("-qaLandscape") {
+            // A run without UI automation can't turn the phone.
+            window.windowScene?.requestGeometryUpdate(.iOS(interfaceOrientations: .landscapeRight))
+        }
         let probe = ChatScrollProbe(window: window, chat: chat)
         probe.scrollTo = scrollTo
         self.probe = probe
@@ -184,7 +196,8 @@ final class HarnessSceneDelegate: UIResponder, UIWindowSceneDelegate {
         let arguments = ProcessInfo.processInfo.arguments
         if let index = arguments.firstIndex(of: "-qaScript"), arguments.indices.contains(index + 1) {
             let run = arguments.firstIndex(of: "-qaRun").flatMap { arguments.indices.contains($0 + 1) ? arguments[$0 + 1] : nil } ?? "script"
-            motionScript = ChatMotionScript(chat: chat, name: arguments[index + 1], run: run)
+            if arguments[index + 1] == "keyboard" { keyboardScript = ChatKeyboardScript(chat: chat, run: run) }
+            else { motionScript = ChatMotionScript(chat: chat, name: arguments[index + 1], run: run) }
         }
         #endif
         if keyboard { probe.focusComposerWhenFilled() }
@@ -238,7 +251,8 @@ final class ChatScrollProbe: NSObject {
     private weak var chat: UIViewController?
     private let element = ProbeElement(frame: CGRect(x: 0, y: 0, width: 2, height: 2))
     private let endEditing = UIButton(type: .custom)
-    /// Runs only while a finger is down, and for `releaseDuration` after.
+    /// Runs while a finger is down, after its release and through any
+    /// keyboard animation that follows it.
     private var link: CADisplayLink?
     /// What happens after the finger lifts: the keyboard's release.
     private var releaseSamples: [Sample] = []
@@ -252,8 +266,16 @@ final class ChatScrollProbe: NSObject {
     /// it was seen in, in order: a pan the split view or the swipe back
     /// cancelled or held shows here.
     private var path: [(name: String, recognizer: UIGestureRecognizer, states: [String])] = []
-    /// Frames sampled while the current finger is down.
+    /// Frames sampled while the current finger is down. The first is taken
+    /// as the finger lands, before the window hands it on; the second just
+    /// after, once the list's pan has caught any glide.
     private var samples: [Sample] = []
+    /// Where the list was drawn as the finger landed, and where its pan
+    /// stopped it, in the scroll host's bounds: a glide caught under the
+    /// finger runs on to the frame the screen already had in hand.
+    private var landedAt: CGFloat?
+    private var caughtAt: CGFloat?
+    private var caughtIndex = 0
     private var lastTouch: [String: Any] = [:]
     private var touches = 0
     private var focusWhenFilled = false
@@ -274,6 +296,9 @@ final class ChatScrollProbe: NSObject {
         var dockPresentedMinY: CGFloat
         /// UltraView's keyboard controller owned the keyboard.
         var driving: Bool
+        /// The list had the system's hidden interactive keyboard input,
+        /// whose pan runs beside the list's on every drag.
+        var systemInput: Bool
     }
 
     init(window: HarnessWindow, chat: UIViewController) {
@@ -295,6 +320,12 @@ final class ChatScrollProbe: NSObject {
             window.addSubview(endEditing)
         }
         window.onTouch = { [weak self] touch in self?.touched(touch) }
+        NotificationCenter.default.addObserver(self, selector: #selector(keyboardMotion(_:)), name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
+        let previousAfter = window.afterTouch
+        window.afterTouch = { [weak self] touch in
+            previousAfter?(touch)
+            self?.delivered(touch)
+        }
         // Slow enough to leave the app idle in between: the composer's focus
         // once the rows are in.
         let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
@@ -344,12 +375,11 @@ final class ChatScrollProbe: NSObject {
             currentTouch = touch
             path = []
             samples = []
+            landedAt = list.map { ($0.scrollGestureView.layer.presentation() ?? $0.scrollGestureView.layer).bounds.minY }
+            caughtAt = nil
+            caughtIndex = 0
             sample()
-            if link == nil {
-                let link = CADisplayLink(target: self, selector: #selector(tick))
-                link.add(to: .main, forMode: .common)
-                self.link = link
-            }
+            startSampling()
         case .moved, .stationary:
             finger = point
         case .ended, .cancelled:
@@ -362,6 +392,33 @@ final class ChatScrollProbe: NSObject {
         default:
             break
         }
+    }
+
+    private func startSampling() {
+        guard link == nil else { return }
+        let link = CADisplayLink(target: self, selector: #selector(tick))
+        link.add(to: .main, forMode: .common)
+        self.link = link
+    }
+
+    /// The first keyboard after a simulator boots can start showing after
+    /// the tap's release window has already elapsed. Observe its actual
+    /// animation, retaining any controller motion sampled before it.
+    @objc private func keyboardMotion(_ notification: Notification) {
+        guard finger == nil, !lastTouch.isEmpty else { return }
+        let duration = notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double ?? 0
+        lastTouch.removeValue(forKey: "release")
+        releaseEnd = max(releaseEnd ?? 0, CACurrentMediaTime() + max(Self.releaseDuration, duration))
+        startSampling()
+    }
+
+    /// The window has handed the landing finger to the recognizers: the
+    /// list's pan has caught a glide by now, wherever UIKit asked it to.
+    private func delivered(_ touch: UITouch) {
+        guard touch.phase == .began, touch === currentTouch, caughtAt == nil else { return }
+        caughtAt = list?.scrollGestureView.layer.bounds.minY
+        caughtIndex = samples.count
+        sample()
     }
 
     @objc private func tick() {
@@ -428,7 +485,8 @@ final class ChatScrollProbe: NSObject {
             tracking: list.isTracking, dragging: list.isDragging,
             active: activeRecognizers(list.scrollGestureView),
             dockPresentedMinY: dock?.superview.map { $0.convert(CGPoint(x: 0, y: presented), to: window).y } ?? .nan,
-            driving: ultraKeyboard(chat)?.isDriving ?? false
+            driving: ultraKeyboard(chat)?.isDriving ?? false,
+            systemInput: list.hasKeyboardInput
         )
     }
 
@@ -489,9 +547,13 @@ final class ChatScrollProbe: NSObject {
 
     /// What the finger did, from its samples: how far it, the content and
     /// the keyboard travelled, in total and over the frames where the
-    /// keyboard moved.
+    /// keyboard moved. The finger and the content are measured from where
+    /// the pan caught the list; how far a caught glide ran on, and whether
+    /// the list then held still under the resting finger, separately.
     private func finishTouch() {
-        guard let first = samples.first, let last = samples.last else { return }
+        guard let landed = samples.first, let last = samples.last else { return }
+        let start = samples.indices.contains(caughtIndex) ? caughtIndex : 0
+        let first = samples[start]
         touches += 1
         var fingerWithKeyboard: CGFloat = 0
         var offsetWithKeyboard: CGFloat = 0
@@ -512,6 +574,12 @@ final class ChatScrollProbe: NSObject {
         touch["samples"] = samples.count
         touch["fingerTravel"] = last.fingerY - first.fingerY
         touch["offsetTravel"] = last.offset - first.offset
+        touch["offsetTravelFromLanding"] = last.offset - landed.offset
+        if let landedAt, let caughtAt { touch["catchTravel"] = caughtAt - landedAt }
+        // Until the finger first moves, the caught list stays put.
+        let resting = samples[start...].prefix { $0.fingerY == first.fingerY }
+        touch["restingSamples"] = resting.count
+        touch["restingDrift"] = resting.map { abs($0.offset - first.offset) }.max() ?? 0
         touch["keyboardTravel"] = last.keyboardTop - first.keyboardTop
         touch["fingerTravelWithKeyboard"] = fingerWithKeyboard
         touch["offsetTravelWithKeyboard"] = offsetWithKeyboard
@@ -529,6 +597,7 @@ final class ChatScrollProbe: NSObject {
         }
         touch["path"] = path.map { "\($0.name): \($0.states.joined(separator: ">"))" }
         touch["keyboardDriven"] = samples.contains { $0.driving }
+        touch["systemInput"] = samples.contains { $0.systemInput }
         lastTouch = touch
         var trace: [String] = []
         for sample in samples {
@@ -541,6 +610,18 @@ final class ChatScrollProbe: NSObject {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("touch-\(touches).csv")
         try? (["time,fingerY,offset,keyboardTop,contentHeight,rows,visibleMinY"] + trace)
             .joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    /// Rows hiding their drawing for a lifted copy: none once it is back.
+    private func liftedRows(_ chat: UIViewController) -> Int {
+        var count = 0
+        func walk(_ view: UIView) {
+            if let row = view as? AgentChatRowView, row.isLifted { count += 1 }
+            if let row = view as? ChatUltraRowView, row.isLifted { count += 1 }
+            view.subviews.forEach(walk)
+        }
+        walk(chat.view)
+        return count
     }
 
     private func rect(_ rect: CGRect?) -> [CGFloat]? {
@@ -575,6 +656,7 @@ final class ChatScrollProbe: NSObject {
         }
         value["keyboardTop"] = keyboardTop(chat)
         value["keyboard"] = keyboardDriver(chat)
+        value["systemInput"] = list.hasKeyboardInput
         value["window"] = [window.bounds.width, window.bounds.height]
         value["tracking"] = list.isTracking
         value["dragging"] = list.isDragging
@@ -582,6 +664,12 @@ final class ChatScrollProbe: NSObject {
         value["fingerDown"] = finger != nil
         value["lastTouch"] = lastTouch
         value["events"] = window.events
+        // A lifted message, what is selected in it, and what was copied.
+        #if DEBUG || HAPPY_FIXTURES
+        value["lift"] = MessageLiftOverlay.shown?.probe as Any
+        #endif
+        value["pasteboard"] = UIPasteboard.general.string as Any
+        value["liftedRows"] = liftedRows(chat)
         guard let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]) else { return "{}" }
         return String(decoding: data, as: UTF8.self)
     }
@@ -604,10 +692,12 @@ protocol ProbedChatList {
     var isDragging: Bool { get }
     var isDecelerating: Bool { get }
     var scrollGestureView: UIView { get }
+    var hasKeyboardInput: Bool { get }
     func setVisibleMinY(_ distance: CGFloat)
 }
 
 extension ChatListView: ProbedChatList {
+    var hasKeyboardInput: Bool { ultra.list.hasKeyboardInput }
     var listView: UIView { self }
     var rows: Int { plans.count }
     var newestInset: CGFloat { contentInsets.top }
@@ -619,6 +709,7 @@ extension ChatListView: ProbedChatList {
 struct AgentProbedList: ProbedChatList {
     let chat: ChatViewController
     let transcript: AgentChatUltraList
+    var hasKeyboardInput: Bool { transcript.list.hasKeyboardInput }
     var listView: UIView { transcript.list }
     var rows: Int { chat.plans.count }
     var isDisplayReady: Bool { !chat.plans.isEmpty && transcript.list.loadedItemView(at: 0) != nil }

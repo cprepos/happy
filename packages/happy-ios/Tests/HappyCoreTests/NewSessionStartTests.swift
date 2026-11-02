@@ -551,8 +551,13 @@ private enum StartTestError: Error, LocalizedError {
 
 private actor FakeSender: ChatSending {
     var sent: [(OutgoingMessage, String)] = []
+    var initialModes: SessionAgentModesPatch?
+    var modesAtSend: [SessionAgentModesPatch?] = []
+
+    func saveInitialModes(_ patch: SessionAgentModesPatch) { initialModes = patch }
 
     func send(_ message: OutgoingMessage, sessionId: String) async throws -> String {
+        modesAtSend.append(initialModes)
         sent.append((message, sessionId))
         return "local-\(sent.count)"
     }
@@ -658,13 +663,17 @@ final class SessionStarterTests: XCTestCase {
     private var phases: [NewSessionStartPhase?] = []
     private lazy var requests = SpawnRequests()
 
-    private func makeStarter(spawnRequests: SpawnRequests? = nil, ops: FakeOps? = nil) -> SessionStarter {
+    private func makeStarter(spawnRequests: SpawnRequests? = nil, ops: FakeOps? = nil, failInitialModes: Bool = false) -> SessionStarter {
         let recorder = self.recorder
         let starter = SessionStarter(environment: .init(
             ops: ops ?? self.ops,
             sessionOps: sessionOps,
             sender: sender,
             metadataTransport: FakeTransport(),
+            saveInitialModes: { [sender] _, patch in
+                if failInitialModes { throw StartTestError.notSynced }
+                await sender.saveInitialModes(patch)
+            },
             refreshSessions: { await recorder.refreshed() },
             paintBotFace: { try await recorder.paint($0) },
             attachmentPlan: { [pictures, planGate] message, _ in
@@ -747,6 +756,8 @@ final class SessionStarterTests: XCTestCase {
         let sent = await sender.sent
         XCTAssertEqual(sent.first?.0, OutgoingMessage(text: "Fix the build", source: .newSession))
         XCTAssertEqual(sent.first?.1, "s1")
+        let modesAtSend = await sender.modesAtSend
+        XCTAssertEqual(modesAtSend.first ?? nil, modes.first?.1, "creation picks must be saved before encoding the first message")
         XCTAssertTrue(presenter.errors.isEmpty)
     }
 
@@ -756,6 +767,17 @@ final class SessionStarterTests: XCTestCase {
         let options = await ops.spawned
         XCTAssertEqual(options.first?.permissionMode, "default")
         XCTAssertEqual(options.first?.modelMode, "gpt-6.1-sol")
+    }
+
+    func testInitialModeSaveFailureKeepsTheFirstMessageUnsent() async {
+        await ops.script([.success(sessionId: "s1")])
+        let starter = makeStarter(failInitialModes: true)
+        let result = await starter.start(launch(agent: .codex, model: "gpt-6.1-sol"), isCurrentTarget: { true })
+        XCTAssertNil(result)
+        let sent = await sender.sent
+        XCTAssertTrue(sent.isEmpty)
+        XCTAssertFalse(presenter.errors.isEmpty)
+        XCTAssertFalse(starter.isStarting)
     }
 
     func testANewWorktreeIsCreatedFirst() async {
@@ -1476,10 +1498,10 @@ final class NewSessionChoicesTests: XCTestCase {
         let bot = try NewSessionLaunch.resolve(
             draft: NewSessionDraft(input: "", selectedMachineId: "m1"),
             pickedAgent: nil, bot: (name: " Captain ", faceSeed: "abc"), machines: machines, sessions: sessions,
-            agentDefaultOverrides: [:], prompt: "ignored", attachments: []
+            agentDefaultOverrides: [:], prompt: " Plan the release ", attachments: []
         ).get()
         XCTAssertEqual(bot.target, .bot(name: "Captain"))
-        XCTAssertEqual(bot.prompt, "")
+        XCTAssertEqual(bot.prompt, "Plan the release", "an empty chat's first send is the bot's first message")
         XCTAssertEqual(bot.signature.bot?.name, "Captain")
         XCTAssertEqual(bot.bot, NewSessionLaunch.Bot(name: "Captain", faceSeed: "abc"), "the start knows the face to put on")
         XCTAssertNil(workspace.bot)
@@ -1598,8 +1620,11 @@ final class NewSessionChoicesTests: XCTestCase {
         XCTAssertEqual(draft.pickedAgentType, .codex)
         XCTAssertEqual(draft.permissionMode, defaults.permissionMode)
         XCTAssertEqual(draft.modelMode, defaults.modelMode)
+        XCTAssertEqual(draft.effortLevel, defaults.effortLevel)
         composer.selectAgent("vim")
         XCTAssertEqual(composer.drafts.draft.agentType, .codex)
+        composer.drafts.selectAgent(.rig, picked: true, defaults: AgentDefaults.Config(permissionMode: "default", modelMode: "default", effortLevel: nil))
+        XCTAssertNil(composer.drafts.draft.effortLevel, "a harness with no effort default must clear the previous harness's effort")
     }
 
     @MainActor
@@ -1970,5 +1995,131 @@ extension NewSessionChoicesTests {
         unable.update(snapshot: unable.snapshot)
         await unable.waitForIdle()
         XCTAssertFalse(unable.drafts.createsTask)
+    }
+
+    // MARK: Session | Bot | Task in a legacy empty chat
+
+    private static let chipTitles = ComposerChipSet.Titles(permission: "Permission", codexPermission: "Codex permission", geminiPermission: "Gemini permission", model: "Model", effort: "Effort")
+
+    @MainActor
+    private static func starter(ops: FakeOps, sender: FakeSender) -> SessionStarter {
+        SessionStarter(environment: .init(
+            ops: ops,
+            sessionOps: FakeSessionOps(),
+            sender: sender,
+            metadataTransport: FakeTransport(),
+            saveInitialModes: { _, _ in },
+            refreshSessions: {},
+            paintBotFace: { Data("png:\($0)".utf8) },
+            attachmentPlan: { message, _ in
+                AttachmentSendPlan(accepted: message.attachments, rejected: [], shouldShowUnsupportedAlert: false, shouldSendText: true)
+            },
+            spawnRequests: SpawnRequests(),
+            sleep: { _ in }
+        ))
+    }
+
+    /// A task or a bot is Happy Agent's, so picking one moves the harness
+    /// there: the model, permission and effort the chips then offer are
+    /// Happy Agent's, and what is picked in them reaches the spawn, with the
+    /// composer's text as the first message.
+    @MainActor
+    func testATaskOrABotTakesHappyAgentsPicksToTheSpawnAndItsFirstMessage() async throws {
+        let machines = [machine("m1"), rigMachine("rig1", sibling: "m1", bots: true, tasks: true)]
+        let composer = await composer(NewSessionDraft(selectedMachineId: "m1", agentType: .claude, pickedAgentType: .claude), machines: machines)
+        XCTAssertEqual(composer.drafts.draft.agentType, .claude)
+        XCTAssertEqual(HomeDockKind.offered(supportsBots: composer.choices.supportsBots, supportsTasks: composer.choices.supportsTasks), [.session, .bot, .task])
+
+        composer.selectKind(.task)
+        await composer.waitForIdle()
+        XCTAssertTrue(composer.drafts.createsTask)
+        XCTAssertEqual(composer.drafts.draft.agentType, .rig, "a task is Happy Agent's: the pickers follow it")
+        XCTAssertEqual(composer.drafts.draft.pickedAgentType, .rig)
+        XCTAssertEqual(composer.choices.modelOptions.map(\.key), ["codex:shared-model", "claude:shared-model"])
+        composer.selectModel("claude:shared-model")
+        composer.selectEffort("max")
+        composer.selectPermission("read_only")
+        await composer.waitForIdle()
+        let chips = ComposerChipSet(choices: composer.choices, titles: Self.chipTitles)
+        XCTAssertEqual(chips.model.selectedKey, "claude:shared-model")
+        XCTAssertEqual(chips.effort?.selectedKey, "max")
+        XCTAssertEqual(chips.permission?.selectedKey, "read_only")
+
+        let ops = FakeOps()
+        let sender = FakeSender()
+        let starter = Self.starter(ops: ops, sender: sender)
+        await ops.script([.success(sessionId: "t1"), .success(sessionId: "b1")])
+        let task = try await composer.launchTaskPrepared(prompt: " Ship it ", attachments: []).get()
+        let taskId = await starter.start(task, isCurrentTarget: { true })
+        XCTAssertEqual(taskId, "t1")
+
+        composer.selectKind(.bot)
+        composer.drafts.setBotName("Captain")
+        await composer.waitForIdle()
+        XCTAssertFalse(composer.drafts.createsTask, "a bot or a task, never both")
+        XCTAssertEqual(composer.drafts.draft.modelMode, "claude:shared-model", "already Happy Agent's: the picks stay")
+        let bot = try await composer.launchBotPrepared(prompt: "Plan the release", attachments: []).get()
+        let botId = await starter.start(bot, isCurrentTarget: { true })
+        XCTAssertEqual(botId, "b1")
+
+        let spawned = await ops.spawned
+        XCTAssertEqual(spawned.map(\.machineId), ["rig1", "rig1"])
+        XCTAssertEqual(spawned.map(\.agent), ["rig", "rig"])
+        XCTAssertEqual(spawned.map(\.providerId), ["claude", "claude"])
+        XCTAssertEqual(spawned.map(\.modelId), ["shared-model", "shared-model"])
+        XCTAssertEqual(spawned.map(\.permissionMode), ["read_only", "read_only"])
+        XCTAssertEqual(spawned.map(\.effort), ["max", "max"])
+        XCTAssertEqual(spawned.map(\.happyAgentTarget), [
+            .object(["kind": .string("task")]),
+            .object(["kind": .string("bot"), "name": .string("Captain")]),
+        ])
+        let payload = try MachineActions.spawnPayload(spawned[0])
+        XCTAssertEqual(payload["agentConfiguration"]?["providerId"], .string("claude"))
+        XCTAssertEqual(payload["agentConfiguration"]?["modelId"], .string("shared-model"))
+        let sent = await sender.sent
+        XCTAssertEqual(sent.map(\.0.text), ["Ship it", "Plan the release"])
+        XCTAssertEqual(sent.map(\.1), ["t1", "b1"])
+
+        composer.selectKind(.session)
+        await composer.waitForIdle()
+        XCTAssertFalse(composer.drafts.createsBot)
+        XCTAssertFalse(composer.drafts.createsTask)
+        XCTAssertEqual(composer.drafts.draft.agentType, .rig, "back to Session, the harness stays until another is picked")
+        let dock = try await composer.launchBotPrepared().get()
+        XCTAssertEqual(dock.prompt, "", "home's dock still makes a bot from its name alone")
+    }
+
+    /// Another computer whose Happy Agent can't make them drops the task,
+    /// offers Session alone, and moves the harness to one it runs; a task
+    /// or a bot can't be picked there.
+    @MainActor
+    func testAComputerWithoutHappyAgentOffersSessionOnly() async throws {
+        let machines = [
+            machine("m1"), rigMachine("rig1", sibling: "m1", bots: true, tasks: true),
+            machine("m2", name: "Mini", createdAt: 3),
+        ]
+        let composer = await composer(NewSessionDraft(selectedMachineId: "m1", agentType: .claude, pickedAgentType: .claude), machines: machines)
+        composer.selectKind(.task)
+        await composer.waitForIdle()
+        XCTAssertEqual(composer.drafts.draft.agentType, .rig)
+
+        composer.selectMachine("m2")
+        await composer.waitForIdle()
+        XCTAssertEqual(composer.drafts.draft.selectedMachineId, "m2")
+        XCTAssertFalse(composer.drafts.createsTask)
+        XCTAssertEqual(HomeDockKind.offered(supportsBots: composer.choices.supportsBots, supportsTasks: composer.choices.supportsTasks), [.session])
+        XCTAssertFalse(composer.choices.agentOptions.contains { $0.key == "rig" })
+        XCTAssertEqual(composer.drafts.draft.agentType, .claude, "a harness this computer runs")
+
+        composer.selectKind(.task)
+        composer.selectKind(.bot)
+        await composer.waitForIdle()
+        XCTAssertFalse(composer.drafts.createsTask)
+        XCTAssertFalse(composer.drafts.createsBot)
+        XCTAssertEqual(composer.drafts.draft.agentType, .claude)
+        guard case .failure(let refusal) = await composer.launchTaskPrepared(prompt: "x", attachments: []) else {
+            return XCTFail("a Happy CLI computer makes no task")
+        }
+        XCTAssertEqual(refusal, .happyAgentNotRunning)
     }
 }

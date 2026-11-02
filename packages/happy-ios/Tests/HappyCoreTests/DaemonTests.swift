@@ -73,6 +73,29 @@ final class DaemonTests: XCTestCase {
         XCTAssertEqual(hello?.event, "hello")
     }
 
+    /// As the app makes it, the endpoint over the per-category clients: the
+    /// event stream stays open while a query and a file go, and while the
+    /// query clients are let go and made again.
+    func testEachCategoryGoesOverItsOwnClient() async throws {
+        let credentials = try await credentials()
+        let endpoint = AgentEndpoint(credentials) { _ in }
+        let transport = AgentEndpointTransport(endpoint: endpoint) { AgentHTTPTransport(address: $0.address, port: $0.port, publicUrl: $0.publicUrl, tailcatAvailable: $0.tailcatAvailable != false) }
+        let client = AgentClient(transport: transport, token: credentials.deviceToken)
+        let health = try await client.health()
+        XCTAssertTrue(health.ready)
+        var frames = try await client.events(after: nil).makeAsyncIterator()
+        let hello = try await frames.next()
+        XCTAssertEqual(hello?.event, "hello")
+        let bots = try await client.bots()
+        XCTAssertFalse(bots.isEmpty)
+        let avatar = try await transport.request(method: "GET", path: "/v0/node/avatar", credential: credentials.deviceToken, body: nil, headers: ["Accept": "image/*"], category: .file)
+        XCTAssertTrue([200, 404].contains(avatar.status), "\(avatar.status)")
+        await transport.reset(.query)
+        let again = try await client.bots()
+        XCTAssertEqual(again.count, bots.count)
+        await transport.close()
+    }
+
     func testStoreFoldsAndHearsItsOwnEcho() async throws {
         let credentials = try await credentials()
         let (api, _) = try daemon()
@@ -165,8 +188,8 @@ final class DaemonTests: XCTestCase {
         let client = client(credentials)
         let (api, _) = try daemon()
         let list = try XCTUnwrap(call(api, ["POST", "/v0/surfaces", #"{"type":"todo","name":"Read list"}"#])["surface"]?["id"]?.stringValue)
-        try await client.addTodo(list, id: ClientID.make(), text: "Buy oranges")
-        let todos = try await client.todos(list)
+        _ = try await client.createTodo(list, id: TodoID.make(), text: "Buy oranges", mutationId: ClientID.make())
+        let todos = try await client.todos(list, scope: .active)
         XCTAssertEqual(todos.map(\.text), ["Buy oranges"])
         let made = try call(api, ["POST", "/v0/surfaces", ##"{"type":"document","name":"Read notes","text":"# Read notes\n"}"##])
         guard let document = made["surface"]?["id"]?.stringValue else { throw XCTSkip("This daemon serves no documents") }

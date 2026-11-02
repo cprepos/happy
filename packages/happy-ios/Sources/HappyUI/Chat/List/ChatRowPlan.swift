@@ -25,8 +25,17 @@ final class ChatRowPlan: @unchecked Sendable {
     let proposals: [(artifactId: String, layout: SidebarProposalLayout, frame: CGRect)]
     /// What its tap toggles (Show full, Show less), as a VoiceOver action.
     let toggles: String?
+    /// The person's own message: what its send transition flies in.
+    let flight: ChatRowFlight?
+    /// An agent's words, which may still be arriving: shown a character at
+    /// a time as they grow (`ChatRevealDriver`).
+    let revealable: Bool
+    private let reveal = ChatRevealMapBox()
+    /// The words a person can select once the message is lifted, and the
+    /// whole message as Copy copies it; nil where there are none.
+    let selection: ChatSelectable?
 
-    init(id: String, size: CGSize, items: [ChatDrawItem], hits: [ChatHit] = [], alpha: CGFloat = 1, accessibilityLabel: String? = nil, proposals: [(artifactId: String, layout: SidebarProposalLayout, frame: CGRect)] = [], toggles: String? = nil) {
+    init(id: String, size: CGSize, items: [ChatDrawItem], hits: [ChatHit] = [], alpha: CGFloat = 1, accessibilityLabel: String? = nil, proposals: [(artifactId: String, layout: SidebarProposalLayout, frame: CGRect)] = [], toggles: String? = nil, flight: ChatRowFlight? = nil, revealable: Bool = false, selection: ChatSelectable? = nil) {
         self.id = id
         self.size = size
         self.items = items
@@ -35,6 +44,81 @@ final class ChatRowPlan: @unchecked Sendable {
         self.accessibilityLabel = accessibilityLabel
         self.proposals = proposals
         self.toggles = toggles
+        self.flight = flight
+        self.revealable = revealable
+        self.selection = selection
+    }
+
+    /// Where its words are, in reading order, for a revealable plan. Worked
+    /// out once, on whichever thread asks first: the planners ask off the
+    /// main thread for the rows that may stream (`warmReveal`).
+    var revealMap: RevealMap? {
+        revealable ? reveal.value { ChatRevealMapping.map(self) } : nil
+    }
+
+    /// The map if it has been worked out already: never works it out.
+    var preparedRevealMap: RevealMap? { revealable ? reveal.prepared : nil }
+
+    func warmReveal() { _ = revealMap }
+}
+
+/// A value worked out once, on any thread.
+private final class ChatRevealMapBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var map: RevealMap?
+
+    func value(_ make: () -> RevealMap) -> RevealMap {
+        lock.lock()
+        defer { lock.unlock() }
+        if let map { return map }
+        let made = make()
+        map = made
+        return made
+    }
+
+    var prepared: RevealMap? {
+        lock.lock()
+        defer { lock.unlock() }
+        return map
+    }
+}
+
+/// A message's selectable words (`MessageTextSelectionView`): the texts it
+/// draws, in reading order, each the very layout drawn in the row at its
+/// frame there, so a selection's highlight lies on its glyphs; what
+/// copying puts back between them; and the message whole, as Copy copies it.
+struct ChatSelectable {
+    struct Text {
+        let layout: ChatTextLayout
+        /// Where it is drawn, in row coordinates.
+        var frame: CGRect
+        /// Copied before it when its start is (a list item's marker).
+        var lead = ""
+        /// Copied between the text before it and this one.
+        var joiner = "\n\n"
+        /// The strip it shows through (a code block, a table), which a
+        /// highlight never runs past.
+        var clip: CGRect? = nil
+    }
+
+    var texts: [Text]
+    /// What Copy copies: the message as written.
+    var whole: String
+    /// The message's own shape in its row (a bubble, or what its marks
+    /// cover), which is what lifts.
+    var frame: CGRect
+    /// No bubble of its own (an agent's words): it lifts on a card.
+    var card: Bool
+
+    var run: SelectionText {
+        SelectionText(texts.map { SelectionText.Piece($0.layout.string.string, lead: $0.lead, joiner: $0.joiner) })
+    }
+
+    /// What an agent's words lift as: the marks of `items` together.
+    static func covering(_ items: [ChatDrawItem], texts: [Text], whole: String) -> ChatSelectable? {
+        guard !texts.isEmpty else { return nil }
+        let frame = items.map(\.markFrame).filter { !$0.isEmpty }.reduce(CGRect.null) { $0.union($1) }
+        return ChatSelectable(texts: texts, whole: whole, frame: frame, card: true)
     }
 }
 
@@ -96,6 +180,8 @@ enum ChatDrawItem {
     case fileStatus(ChatFileStatus, frame: CGRect)
     /// Live content of its own, drawn by a view that reads and follows it.
     case embed(ChatEmbed, frame: CGRect)
+    /// A person's own message's clock or checks (`ChatDeliveryView`).
+    case delivery(ChatDeliveryMark, frame: CGRect)
 }
 
 /// What an embedded view shows.

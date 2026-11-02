@@ -27,6 +27,38 @@ earlier live content. The pooled native overlay retains scrollers, diff
 controls, images, timers and Mermaid pages across revisions of the same row.
 Row opacity applies once to each drawing and overlay.
 
+The person's own bubble draws its time with the row, and its clock or checks
+live over it (`ChatDrawItem.delivery`, `ChatDeliveryView`). The mark is the
+row's last item, so it always sits above the bitmap. A send made at the
+newest edge flies in from the composer (`ChatSendFlight`, see
+docs/telegram-notes.md §7). The list veils the row the flight waits for from
+the pass that inserts it, and that pass uses the flight's curve. The row is
+unveiled in the transaction where the copy goes. Every other pass keeps its
+own transition.
+
+The agent's newest words come out a character at a time as they stream
+(`ChatRevealDriver`, see docs/telegram-notes.md §8). A revealing row is as
+tall as the lines it shows, and a pass for it growing a line runs 0.15 s.
+A pass that moves nothing lands at once, so it never retimes a growth in
+flight. Each row view keeps its canvas at the plan's full size from its top.
+Its `ChatRevealPresenter` masks what is still to come and lays the glyph
+copies over the row. In the legacy chat a revealing row draws on the native
+canvas, its text drawn off the main thread, and stays there once revealed.
+Which row reveals is `RevealFocus`'s (HappyLayout, tested in
+`RevealFocusTests`): only the newest, with words that arrive on screen, and
+any other finishes in 0.3 s. Both transcripts hand it their rows on every
+apply and carry out its steps through `ChatRevealDriver.perform`.
+`HostedStreamingRevealTests` streams replies into both chats at 35 ms
+chunks. It samples every frame from the presentation layers: the row only
+grows, smoothly, its words never move, and the newest row stays on the
+composer. It also checks the reveal's own main-thread time. In both chats it
+also checks five more cases from the reveal's own state each frame:
+- a newer segment or message finishes the one before within 0.3 s;
+- a burst shows whole;
+- opening a chat mid-reply shows it whole;
+- a row scrolled away and back goes on from where it was;
+- the catch-up after the background shows whole.
+
 The adapter reads positions from the library's committed row descriptors and
 frames. Ordinary mutations carry no absolute scroll target, so background
 preparation cannot replay an old target after a drag starts. Following near
@@ -35,7 +67,7 @@ committed window and a user-motion generation. Insets compensate for dock
 and keyboard movement while idle; under a finger they preserve physical
 content movement. Reduce Motion drops the follow animations.
 
-With the floating dock (a phone in portrait) the keyboard comes from
+In every layout the keyboard comes from
 UltraView's own integration (`ChatUltraKeyboard` over the library's
 `KeyboardDismissalController`), only while the chat is shown. A finger
 dragging down from the list carries the keyboard, the dock and the newest
@@ -46,10 +78,18 @@ scrim and an empty chat's placeholder ride the inset's motion through
 `applyViewportMotion`. Where the controller can't drive the keyboard, the
 list keeps the system's interactive dismissal.
 
-Docked (a tablet, a phone on its side) the list's frame ends at the dock and
-changes height with the keyboard, and UltraView has no public way yet to
-carry a list's frame or clip on that motion. There the keyboard layout guide
-moves the screen and the controller is never made.
+Under the iPad's dock, the list's
+frame stays where the dock rests and the keyboard moves its newest inset
+instead, because UltraView has no public way yet to carry a list's frame or
+clip on that motion. A backdrop
+under the dock covers the rows the list runs under it
+(`LegacyChatScreenLayout`'s `keyboardMovesInset`).
+The phone keeps its floating dock and full-height list in both orientations.
+
+The controller moves a docked keyboard only when the app's window covers the
+screen: on a phone, and on an iPad running the app full screen. A smaller
+iPad window (windowed apps, Stage Manager) and a floating, undocked or split
+keyboard keep the system's interactive dismissal.
 
 The agents' chat has the same keyboard (`ChatViewController.ultraKeyboard`)
 wherever it is shown, since its list always runs under the card: the card,

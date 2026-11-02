@@ -30,6 +30,11 @@ public actor SyncEngine {
     /// given (docs/offline-first.md). Shown at once over what the computer
     /// last said, kept in `direct.sqlite`, sent once the account is live.
     public nonisolated let intents: IntentOutbox
+    /// The documents open on this account and those with changes still to
+    /// send; the stream's live document frames go to them.
+    public nonisolated let documents: DocumentLibrary
+    /// The todo lists open on this account or with changes on their way.
+    public nonisolated let todos: TodoLibrary
     private var overlay = IntentOverlay()
     /// What waits in `intents`, as last published.
     private var waiting: [Intent] = []
@@ -75,6 +80,9 @@ public actor SyncEngine {
     private var usersAgain: Set<String> = []
     private var usersDirty = false
     private var usersRead: Task<Void, Never>?
+    private var gitWatcher: Task<Void, Never>?
+    private var gitInterest: Set<String> = []
+    private var gitSnapshots: [String: WorkspaceLineChanges] = [:]
 
     public init(client: AgentClient, directory: URL?) {
         self.client = client
@@ -83,10 +91,19 @@ public actor SyncEngine {
         attachmentDirectory = (directory ?? FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
             .appendingPathComponent("outbox-files", isDirectory: true)
         let forward = EngineIntentStorage()
-        let intents = IntentOutbox(storage: forward, deliver: { try await SyncEngine.deliver($0, client: client) })
+        let todoDelivery = TodoDelivery()
+        let intents = IntentOutbox(storage: forward, deliver: { intent in
+            if intent.kind.isTodo { try await todoDelivery.deliver(intent) } else { try await SyncEngine.deliver(intent, client: client) }
+        })
         self.intents = intents
-        spaces = Store(client: client, offline: offline, intents: intents)
+        documents = DocumentLibrary(client: client, directory: directory)
+        let spaces = Store(client: client, offline: offline, intents: intents)
+        self.spaces = spaces
+        let keep = EngineResources()
+        todos = TodoLibrary(routes: client, outbox: intents, keep: keep, events: { await spaces.events(matching: ["todo."]) })
+        todoDelivery.library = todos
         forward.engine = self
+        keep.engine = self
     }
 
     public func snapshots() -> AsyncStream<HomeSnapshot> {
@@ -134,12 +151,14 @@ public actor SyncEngine {
         generation += 1
         verified = false
         let pausedGeneration = generation
-        let tasks = [runner, refresh, delivery, messageDelivery, usersRead].compactMap { $0 }
+        let tasks = [runner, refresh, delivery, messageDelivery, usersRead, gitWatcher].compactMap { $0 }
+        gitWatcher = nil; gitInterest = []
         runner = nil; refresh = nil; delivery = nil; messageDelivery = nil; usersRead = nil
         tasks.forEach { $0.cancel() }
         for task in tasks { await task.value }
         await intents.setOnline(false)
         guard generation == pausedGeneration else { return }
+        await documents.closed()
         await spaces.pause()
         guard generation == pausedGeneration else { return }
         snapshot.live = false
@@ -162,6 +181,8 @@ public actor SyncEngine {
         stopped = true
         await pause()
         await spaces.stop()
+        await documents.stop()
+        await todos.stop()
         intentsFollowing?.cancel()
         await intents.close()
         try? await storage?.close()
@@ -222,10 +243,12 @@ public actor SyncEngine {
                         sidebarSyncing = true
                         snapshot.syncing = true
                         snapshot.live = true; snapshot.error = nil; attempt = 0
+                        watchGit()
                         publish()
                         // The bootstrap cursor precedes its reads. Opening from
                         // it is safe even after a crash, replay or daemon replacement.
                         let hello = try JSONDecoder().decode(JSONValue.self, from: Data(frame.data.utf8))
+                        await documents.opened(hello)
                         if hello["gap"] == .bool(true) { scheduleReconcile(generation) }
                         profileChanged()
                         // Faces may have changed while away.
@@ -234,9 +257,19 @@ public actor SyncEngine {
                         try await resyncSidebar(generation)
                         continue
                     }
+                    if DocumentStreams.isDocumentFrame(frame.event) {
+                        await documents.frame(frame.event, data: frame.data)
+                        continue
+                    }
                     guard let event = try? JSONDecoder().decode(JSONValue.self, from: Data(frame.data.utf8)) else { continue }
                     await spaces.externalEvent(event)
                     guard current(generation) else { return }
+                    if event["type"] == .string("git.updated"),
+                       let id = event["payload"]?["workspaceId"]?.stringValue,
+                       gitInterest.contains(id), let value = event["payload"]?["git"],
+                       let state = try? JSONDecoder().decode(WorkspaceLineChanges.self, from: JSONEncoder().encode(value)) {
+                        receiveGit([id: state])
+                    }
                     if event["type"] == .string("profile.updated") {
                         profileChanged()
                         authorChanged(event["payload"]?["userId"]?.stringValue, generation)
@@ -263,6 +296,7 @@ public actor SyncEngine {
                 snapshot.live = false; snapshot.error = Store.describe(error)
                 publish()
             }
+            await documents.closed()
             guard current(generation) else { return }
             snapshot.live = false; publish()
             do { try await Task.sleep(for: .seconds(min(30, 1 << min(attempt, 5)))) } catch { return }
@@ -487,13 +521,56 @@ public actor SyncEngine {
         snapshot.loaded = desktop != nil
         if let desktop {
             snapshot.allRows = overlay.apply(SidebarRows.make(desktop, settings: snapshot.settings, users: users))
+            for index in snapshot.allRows.indices {
+                snapshot.allRows[index].lineChanges = snapshot.allRows[index].workspaceId.flatMap { gitSnapshots[$0]?.visible }
+            }
             snapshot.rows = Rows.visible(snapshot.allRows)
             snapshot.userId = desktop.profile?.userId
         }
         publish()
     }
 
-    private func publish() { for listener in listeners.values { listener.yield(snapshot) } }
+    private func publish() {
+        if !snapshot.live { gitWatcher?.cancel(); gitWatcher = nil; gitInterest = [] }
+        for listener in listeners.values { listener.yield(snapshot) }
+        watchGit()
+    }
+
+    /// One subscription set per open account, never one request per row.
+    /// Renewing keeps the daemon's bounded watcher interest alive; changes
+    /// themselves arrive on the existing event stream.
+    private func watchGit() {
+        guard snapshot.live, !stopped else { return }
+        let ids = Set(snapshot.rows.compactMap(\.workspaceId))
+        guard gitWatcher == nil || ids != gitInterest else { return }
+        gitWatcher?.cancel()
+        gitInterest = ids
+        gitSnapshots = gitSnapshots.filter { ids.contains($0.key) }
+        let generation = generation
+        gitWatcher = Task {
+            while current(generation), snapshot.live {
+                do {
+                    struct Response: Decodable { var snapshots: [String: WorkspaceLineChanges] }
+                    let response = try await client.decode(Response.self, "POST", "/v0/git/watch", json: .object([
+                        "workspaceIds": .array(ids.sorted().map(JSONValue.string)),
+                    ]))
+                    guard current(generation), gitInterest == ids else { return }
+                    receiveGit(response.snapshots)
+                } catch { if Task.isCancelled { return } }
+                do { try await Task.sleep(for: .seconds(30)) } catch { return }
+            }
+        }
+    }
+
+    private func receiveGit(_ states: [String: WorkspaceLineChanges]) {
+        var changed = false
+        for (id, state) in states where gitInterest.contains(id) {
+            guard state.scannedAt >= (gitSnapshots[id]?.scannedAt ?? 0), state != gitSnapshots[id] else { continue }
+            gitSnapshots[id] = state
+            changed = true
+        }
+        if changed { derive() }
+    }
 
     // MARK: Intents
 
@@ -563,7 +640,7 @@ public actor SyncEngine {
     private func intentsChanged(_ list: [Intent]) async {
         let ids = Set(list.map(\.id)), slots = Set(list.map(\.slot))
         var taken = false
-        for intent in waiting where !ids.contains(intent.id) && !slots.contains(intent.slot) {
+        for intent in waiting where !intent.kind.isTodo && !ids.contains(intent.id) && !slots.contains(intent.slot) {
             if refusedIds.remove(intent.id) != nil { continue }
             settling.append((intent, reads))
             taken = true
@@ -594,8 +671,8 @@ public actor SyncEngine {
         } else if waiting.contains(where: { $0.id == id }) {
             refusedIds.insert(id)
         }
-        // A refused read is nothing to tell.
-        guard rejection.intent.kind != .read else { return }
+        // A refused read is nothing to tell; a todo list tells its own.
+        guard rejection.intent.kind != .read, !rejection.intent.kind.isTodo else { return }
         snapshot.notice = rejection.reason
         publish()
         noticeClearing?.cancel()
@@ -625,6 +702,7 @@ public actor SyncEngine {
                 switch kind {
                 case "task": try await client.renameTask(intent.target, name: title, mutationId: intent.id)
                 case "bot": try await client.renameBot(intent.target, name: title, mutationId: intent.id)
+                case "surface": try await client.renameSurface(intent.target, name: title, mutationId: intent.id)
                 default: return
                 }
             case .archive:
@@ -639,6 +717,9 @@ public actor SyncEngine {
                 guard let agentId = intent.value["agentId"]?.stringValue, let answers = answers(intent.value) else { return }
                 _ = try await client.answerQuestion(agentId, questionId: intent.target, answers: answers, mutationId: intent.id)
             case .unarchive, .delete:
+                throw IntentRefusal("")
+            case .todoCreate, .todoText, .todoStatus, .todoMove:
+                // `TodoLibrary.deliver` sends these.
                 throw IntentRefusal("")
             }
         } catch AgentClientError.status(let status, _, _) where status == 404 || (status == 409 && intent.kind == .answer) {
@@ -796,4 +877,14 @@ extension SyncEngine {
     func intentStorage() throws -> SyncStorage {
         try database()
     }
+}
+
+/// The engine's checkpoints as the todo lists' keep, made with the engine
+/// like `EngineIntentStorage`.
+final class EngineResources: TodoKeep, @unchecked Sendable {
+    /// Set once, as the engine finishes its init.
+    weak var engine: SyncEngine?
+
+    func read(_ key: String) async -> JSONValue? { try? await engine?.cachedResource(key) }
+    func write(_ key: String, _ value: JSONValue) async { try? await engine?.keepResource(key, value: value) }
 }

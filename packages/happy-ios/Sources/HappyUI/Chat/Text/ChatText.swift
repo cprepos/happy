@@ -229,6 +229,120 @@ final class ChatTextLayout: @unchecked Sendable {
         guard let index = characterIndex(at: point), index < string.length else { return nil }
         return string.attribute(.chatLink, at: index, effectiveRange: nil) as? String
     }
+
+    /// How far the last line reaches from the left (Telegram's
+    /// `trailingLineWidth`): the room after it is where a bubble's time
+    /// may go.
+    var trailingWidth: CGFloat {
+        access.lock()
+        defer { access.unlock() }
+        guard string.length > 0 else { return 0 }
+        let glyphs = manager.glyphRange(for: container)
+        guard glyphs.length > 0 else { return 0 }
+        let used = manager.lineFragmentUsedRect(forGlyphAt: NSMaxRange(glyphs) - 1, effectiveRange: nil)
+        // A text ending in a line break ends on an empty line.
+        if string.string.last?.isNewline == true { return 0 }
+        return min(width, used.maxX)
+    }
+
+    /// Each line as drawn at `origin`, with where each of its characters
+    /// ends, for showing a reply a character at a time (`RevealMap`). Off
+    /// the main thread: it walks every glyph.
+    func revealLines(at origin: CGPoint) -> [RevealMap.Line] {
+        access.lock()
+        defer { access.unlock() }
+        guard string.length > 0 else { return [] }
+        var lines: [RevealMap.Line] = []
+        let all = manager.glyphRange(for: container)
+        manager.enumerateLineFragments(forGlyphRange: all) { [manager] fragment, used, _, glyphs, _ in
+            let characters = manager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+            guard characters.length > 0, glyphs.length > 0 else { return }
+            // A glyph's place is where it starts; a character ends where
+            // the next glyph starts, the last at the line's used end.
+            var starts: [CGFloat] = []
+            starts.reserveCapacity(glyphs.length)
+            for glyph in glyphs.location..<NSMaxRange(glyphs) {
+                starts.append(fragment.minX + manager.location(forGlyphAt: glyph).x)
+            }
+            var ends: [CGFloat] = []
+            ends.reserveCapacity(characters.length)
+            var last = used.minX
+            for character in characters.location..<NSMaxRange(characters) {
+                let glyph = min(max(0, manager.glyphIndexForCharacter(at: character) - glyphs.location), starts.count - 1)
+                let end = glyph + 1 < starts.count ? starts[glyph + 1] : used.maxX
+                last = max(last, end)
+                ends.append(origin.x + last)
+            }
+            let frame = CGRect(x: origin.x + used.minX, y: origin.y + fragment.minY, width: used.width, height: fragment.height)
+            lines.append(RevealMap.Line(frame: frame, ends: ends))
+        }
+        return lines
+    }
+
+    // MARK: Selection
+
+    /// The characters a selection of `range` covers, one rect per line
+    /// fragment, from the layout that draws the glyphs: each line's full
+    /// height, from the first glyph's left to the last one's right.
+    func selectionRects(for range: NSRange) -> [CGRect] {
+        access.lock()
+        defer { access.unlock() }
+        let range = NSIntersectionRange(range, NSRange(location: 0, length: string.length))
+        guard range.length > 0 else { return [] }
+        let glyphs = manager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+        let ns = string.string as NSString
+        var rects: [CGRect] = []
+        manager.enumerateLineFragments(forGlyphRange: glyphs) { line, _, _, lineGlyphs, _ in
+            var part = NSIntersectionRange(lineGlyphs, glyphs)
+            // A wrapped line's trailing space and a paragraph's newline are
+            // not highlighted: the line's rect stops on its last glyph.
+            while part.length > 0, NSMaxRange(part) == NSMaxRange(lineGlyphs) {
+                let character = ns.character(at: self.manager.characterIndexForGlyph(at: NSMaxRange(part) - 1))
+                guard let scalar = UnicodeScalar(character), CharacterSet.whitespacesAndNewlines.contains(scalar) else { break }
+                part.length -= 1
+            }
+            guard part.length > 0 else { return }
+            let box = self.manager.boundingRect(forGlyphRange: part, in: self.container)
+            if box.width > 0 { rects.append(CGRect(x: box.minX, y: line.minY, width: box.width, height: line.height)) }
+        }
+        return rects
+    }
+
+    /// The place between characters nearest `point`, in the text's own
+    /// coordinates, wherever the point is: a dragged handle's.
+    func caretIndex(nearest point: CGPoint) -> Int {
+        access.lock()
+        defer { access.unlock() }
+        guard string.length > 0 else { return 0 }
+        var fraction: CGFloat = 0
+        let glyph = manager.glyphIndex(for: point, in: container, fractionOfDistanceThroughGlyph: &fraction)
+        // Past the last line's foot: its end. Above the first: the start.
+        if point.y >= manager.usedRect(for: container).maxY { return string.length }
+        if point.y < 0 { return 0 }
+        var index = manager.characterIndexForGlyph(at: glyph)
+        if fraction > 0.5 { index += 1 }
+        // Never after a line's breaking newline: on the line it ends.
+        let ns = string.string as NSString
+        if index > 0, index <= ns.length, fraction > 0.5, ns.character(at: index - 1) == 0x0A { index -= 1 }
+        return min(max(0, index), string.length)
+    }
+
+    /// The word around character `index`, as Telegram finds it
+    /// (`CFStringTokenizer` by word in the current locale), or the one
+    /// character when there is no word there.
+    func wordRange(at index: Int) -> NSRange {
+        let ns = string.string as NSString
+        guard ns.length > 0 else { return NSRange(location: 0, length: 0) }
+        let index = min(max(0, index), ns.length - 1)
+        let tokenizer = CFStringTokenizerCreate(kCFAllocatorDefault, ns as CFString, CFRange(location: 0, length: ns.length), kCFStringTokenizerUnitWord, CFLocaleCopyCurrent())
+        var token = CFStringTokenizerGoToTokenAtIndex(tokenizer, index)
+        if token.isEmpty { token = CFStringTokenizerAdvanceToNextToken(tokenizer) }
+        let found = CFStringTokenizerGetCurrentTokenRange(tokenizer)
+        if !token.isEmpty, found.location <= index, found.location + found.length > index {
+            return NSRange(location: found.location, length: found.length)
+        }
+        return ns.rangeOfComposedCharacterSequence(at: index)
+    }
 }
 
 /// One piece of text measured at whatever widths a layout asks for. The
@@ -246,6 +360,12 @@ final class MeasuredText {
 
     var measurable: Measurable {
         Measurable { [self] width in layout(width: width).size }
+    }
+
+    /// The last line's width when wrapped at a width (`trailingWidth`), as
+    /// the width of what it measures.
+    var trailing: Measurable {
+        Measurable { [self] width in CGSize(width: layout(width: width).trailingWidth, height: 0) }
     }
 
     func layout(width: CGFloat) -> ChatTextLayout {
@@ -278,6 +398,9 @@ class ChatTextView: UIView {
             accessibilityLabel = layout?.string.string
         }
     }
+
+    /// Its words are on screen, or it has none to draw.
+    var isDrawn: Bool { layer.contents != nil || layout == nil || bounds.isEmpty }
 
     /// The same words at the same width, planned again as a reply streams
     /// on below them: what is drawn stands.
@@ -331,6 +454,13 @@ final class ChatOffMainTextView: ChatTextView {
     private var drawing: Task<Void, Never>?
     /// The width the shown bitmap was drawn at.
     private var drawnWidth: CGFloat?
+    /// The words the shown bitmap was drawn for.
+    private var drawnLayout: ChatTextLayout?
+    /// What shows is a drawing of its words as they are now, not of the
+    /// fewer they were (a reply coming out reads its glyphs from it).
+    var showsItsLayout: Bool {
+        layer.contents != nil && (drawnLayout === layout || Self.drawsAlike(drawnLayout, layout))
+    }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -366,6 +496,7 @@ final class ChatOffMainTextView: ChatTextView {
         drawing = nil
         layer.contents = nil
         drawnWidth = nil
+        drawnLayout = nil
         setNeedsDisplay()
     }
 
@@ -375,6 +506,7 @@ final class ChatOffMainTextView: ChatTextView {
         guard let layout, bounds.width > 0, bounds.height > 0 else {
             layer.contents = nil
             drawnWidth = nil
+            drawnLayout = nil
             return
         }
         let size = bounds.size
@@ -388,6 +520,7 @@ final class ChatOffMainTextView: ChatTextView {
         if layer.contents == nil, let window, !isInHiddenView, convert(bounds, to: window).intersects(window.bounds) {
             layer.contents = Self.draw(layout, size: size, scale: scale, traits: traits)
             drawnWidth = size.width
+            drawnLayout = layout
             return
         }
         drawing = Task { [weak self] in
@@ -396,6 +529,7 @@ final class ChatOffMainTextView: ChatTextView {
             guard !Task.isCancelled, let self, self.layout === layout, self.bounds.size == size else { return }
             self.layer.contents = image
             self.drawnWidth = size.width
+            self.drawnLayout = layout
         }
     }
 

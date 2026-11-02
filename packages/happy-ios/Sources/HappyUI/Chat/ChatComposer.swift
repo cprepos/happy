@@ -36,19 +36,23 @@ public struct ChatComposerEnvironment {
     /// Where the draft is kept. `account.sender` for a session; a chat still
     /// being started (`pending-chat:`) keeps it in its own record.
     public var draftStorage: any ComposerStorage
+    /// Before the first send, mode picks belong to the creation draft.
+    public var newSession: NewSessionComposer?
 
     public init(
         sessionId: String,
         account: AccountSession,
         sender: any ChatSending,
         controls: any ChatControls,
-        draftStorage: (any ComposerStorage)? = nil
+        draftStorage: (any ComposerStorage)? = nil,
+        newSession: NewSessionComposer? = nil
     ) {
         self.sessionId = sessionId
         self.account = account
         self.sender = sender
         self.controls = controls
         self.draftStorage = draftStorage ?? account.sender
+        self.newSession = newSession
     }
 }
 
@@ -67,13 +71,25 @@ public struct ChatComposerState: Equatable, Sendable {
     /// The agent is waiting on a question the person can answer by typing
     /// (AskUserQuestion / request_user_input); sending answers it.
     public var hasPendingQuestion: Bool
+    public var newSessionChoices: NewSessionChoices?
+    /// What the empty chat's first message asks for: a task's, or the
+    /// harness's ("Ask Claude Code").
+    public var newSessionPlaceholder: String?
+    public var isStartingNewSession: Bool
+    /// The empty chat's first send can carry pictures and files: "+" shows
+    /// before there is a session to ask (`canUseAttachments(starting:)`).
+    public var newSessionTakesAttachments: Bool
 
-    public init(session: ChatSessionState, usage: ChatUsage? = nil, delivery: [String: OutboxDelivery] = [:], isLoaded: Bool = false, hasPendingQuestion: Bool = false) {
+    public init(session: ChatSessionState, usage: ChatUsage? = nil, delivery: [String: OutboxDelivery] = [:], isLoaded: Bool = false, hasPendingQuestion: Bool = false, newSessionChoices: NewSessionChoices? = nil, newSessionPlaceholder: String? = nil, isStartingNewSession: Bool = false, newSessionTakesAttachments: Bool = false) {
         self.session = session
         self.usage = usage
         self.delivery = delivery
         self.isLoaded = isLoaded
         self.hasPendingQuestion = hasPendingQuestion
+        self.newSessionChoices = newSessionChoices
+        self.newSessionPlaceholder = newSessionPlaceholder
+        self.isStartingNewSession = isStartingNewSession
+        self.newSessionTakesAttachments = newSessionTakesAttachments
     }
 }
 
@@ -182,6 +198,10 @@ public protocol ChatComposerDelegate: AnyObject {
     /// the agent was waiting on, since the message answers it.
     func composer(_ composer: any ChatComposerView, didSend localId: String)
 
+    /// A message is about to go, `card` still showing it: the screen may
+    /// take its words to fly them in (`ChatSendFlight`).
+    func composerWillSend(_ composer: any ChatComposerView, from card: AgentInputCardView)
+
     /// `headerStatus` changed.
     func composerDidChangeHeaderStatus(_ composer: any ChatComposerView)
 }
@@ -189,6 +209,7 @@ public protocol ChatComposerDelegate: AnyObject {
 extension ChatComposerDelegate {
     public func composerDidRestore(_ composer: any ChatComposerView, generation: Int) {}
     public func composerDidChangeHeaderStatus(_ composer: any ChatComposerView) {}
+    public func composerWillSend(_ composer: any ChatComposerView, from card: AgentInputCardView) {}
 }
 
 /// How long the chat waits for its composer's opening draft.

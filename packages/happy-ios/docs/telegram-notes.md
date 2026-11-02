@@ -44,6 +44,12 @@ October 2026), read as raw files over the web:
   `ChatControllerNode.swift` the list's insets and scroll indicator insets
   and `dismissedInputByDragging`; in `WindowContent.swift` the keyboard pan
   and `dismissedKeyboardByCurrentGesture` (section 6).
+- `submodules/TelegramUI/Components/StreamingTextReveal/Sources/TextRevealController.swift`,
+  `updateRevealMask` in
+  `submodules/TelegramUI/Components/InteractiveTextComponent/Sources/InteractiveTextComponent.swift`,
+  and the draft handling in
+  `submodules/TelegramUI/Components/Chat/ChatMessageTextBubbleContentNode/Sources/ChatMessageTextBubbleContentNode.swift`:
+  a streaming reply coming out (section 8).
 
 ## 1. The inverted list and keeping the scroll position
 
@@ -149,11 +155,10 @@ two precomputed layouts.
   `performBatchUpdates` + `invalidateLayout(with:)`. `UICollectionView`
   interpolates both the cell frame and every neighbour's position, which
   gives the `apparentHeight` effect without a custom display link.
-- Streaming agent text arrives several times a second. Updates are coalesced
-  to one per display frame (`CADisplayLink`-free: a main-queue coalescer
-  keyed by message id). Growth at index 0 extends away from the scroll
-  origin, so the bubble grows upward smoothly while the newest edge stays
-  pinned above the composer.
+- Streaming agent text arrives several times a second, and comes out a
+  character at a time, the row growing a line at a time (section 8).
+  Growth at index 0 extends away from the scroll origin, so the bubble grows
+  upward smoothly while the newest edge stays pinned above the composer.
 - Status changes that keep the height (pending → sent, the fixed-height
   status line `MessageView.tsx` reserves) are reconfigured in place with no
   layout invalidation, so they never jump.
@@ -275,6 +280,196 @@ rendering the resulting `file` tool rows.
   flipped list it needed insets of its own. happy-app's FlashList shows the
   platform's default indicator; this is a deliberate difference
   (docs/FEATURES.md).
+
+## 7. Sending, and the time and checks
+
+**What Telegram does.**
+
+- *The send.* `ChatMessageTransitionNode`'s `.textInput` source runs for
+  0.3 s. The container moves additively, on two curves: across on
+  (0.23, 1, 0.32, 1), and up and down on (0.19919, 0.01064, 0.27921, 0.91025).
+  - The bubble's frame grows from the input field's on those same curves
+    (`ChatMessageBackground.animateFrom`), and its image fades in over 0.1 s.
+  - The typed text's copy fades out over 0.1 s while the bubble's text fades
+    in over 0.08 s. The bubble's text moves additively from where the copy
+    was (`ChatMessageTextBubbleContentNode.animateFrom`).
+  - The status fades in over 0.25 s, coming from the input field's right
+    edge.
+  - Only a send made within 20 points of the end flies
+    (`shouldAnimateMessageTransition`). Any other send scrolls down to the
+    end.
+- *The status.* `ChatMessageDateAndStatusNode` at the 17-point base:
+  - the date is 11 points, 5 after the text, with a 13-wide slot after it;
+  - the clock is an 11-point frame turning once in 6 s, with a minute hand
+    turning once in 1 s, both linear and endless, from `beginTime` 1;
+  - the checks are drawn from two SVG paths, the second 6 points after the
+    first; each pops in from scale 1.3 to 1 over 0.1 s;
+  - the box rides on the last line when it fits there (`trailingLineWidth`),
+    and otherwise takes a line of its own.
+
+**What we do.**
+
+- `ChatSendFlight` adapts the send.
+  - The new row is laid out in the list as usual but veiled (its canvas and
+    bitmap at alpha 0).
+  - A copy flies over it from the composer: the bubble, the words and the
+    time each run on Telegram's curves and fades.
+  - In the transaction where the copy goes, the row shows, once its text has
+    drawn. The pass that inserts it uses the vertical curve, so the rows
+    above make room in step.
+  - The copy's place is the row's, and the flight is additive on top of it.
+    An inset pass during the flight (the keyboard going down) moves the copy
+    on the list's own viewport motion (`applyViewportMotion`), so it never
+    fights `ChatUltraKeyboard`.
+  - A send with pictures fades its row in and slides it up instead.
+  - A send from further back than 20 points scrolls down to the end and
+    flies nothing.
+  - The row's identity is the send's id in both chats, so the server's echo
+    reconfigures it in place and never flies a second time.
+- `MessageStatusLayout` (HappyLayout) places the time and the slot inline or
+  on a line of their own. The slot is always kept, so the clock turning into
+  checks never resizes the bubble.
+  - The time is drawn with the row.
+  - `ChatDeliveryView` draws the mark live over the row as `CAShapeLayer`s:
+    the turning clock, the checks' pop, and the refused send's red "!".
+- Nothing in the bubble moves while its mark moves on
+  (`HostedDeliveryStabilityTests` reads every step off the screen):
+  - The mark's view is `MessageStatusLayout.mark`, the union of the clock's
+    square (which the red "!" shares) and both checks, rounded out to whole
+    points: one frame, and one tap target, for every state. Past the box
+    only the second check's 5 points reach, inside the bubble's 12 of
+    padding and the pill's 7.
+  - The time is in tabular digits, so times of one format are one width.
+  - A row keeps the time it first showed. The computer's or the server's
+    `createdAt` replaces this phone's when a send is taken, and a minute's
+    difference ("12:59 PM" to "1:00 PM") would narrow the bubble or move
+    the time onto the last line. The agent chat's `ChatPlanner` and the
+    Happy CLI chat's `ChatRowsApplied.times` hold it.
+  - A refused send in the agent chat is the red mark alone, as Telegram's;
+    there is no "Send failed" line under the bubble to grow the row. Tapping
+    the bubble or the mark sends it again.
+  - The marks follow the text size as Telegram's follow its font size. Past
+    the designed size the overhang stays 5 and the slot takes the rest.
+- The states, and the signal behind each:
+  - the agent chat: `ChatItem.Delivery`, kept with the conversation:
+    `.sending` is the clock, `.pending` (the daemon accepted it) is one
+    check, `.sent` (taken into a run) is two checks;
+  - the Happy CLI chat: the outbox's queued or sending is the clock, stored
+    and `pending` is one check, and the agent's `user-message-accepted`
+    receipt is two checks. A session without receipts shows two checks once
+    the agent has answered after the message.
+
+## 8. A streaming reply coming out
+
+**What Telegram does.**
+
+- *How fast.* `TextRevealController` paces the characters shown against
+  the characters received. It keeps an average of the gap between chunks
+  (EWMA, weight 0.4, starting at 0.5 s) and aims to show the lag by when the
+  next chunk is due, never slower than 10% of it a second. The speed eases
+  toward that aim with a 0.12 s time constant, a frame counting at most
+  0.05 s; it starts at 40 characters a second. Once the text is final, what
+  is left comes out in 0.3 s.
+- *How a character comes out* (`updateRevealMask`). A mask shows the lines
+  above and the current line up to the last character shown. Each new
+  character is a snippet layer with the text's contents, cut to its rect
+  (`contentsRect`), and runs for 0.2 s: alpha 0 → 1, 6 points up additively,
+  scale 0.5 → 1, and a blur 2 → 0 over 0.22 s. The mask leaves out the
+  first snippet still running, so it never shows twice.
+- *The bubble.* Whenever the size for the characters shown changes, the
+  bubble asks for a full update with a 0.15 s ease-in-out transition. The
+  status fades in over 0.2 s once the text is whole.
+
+**What we do.**
+
+- `TextReveal` (HappyLayout) is the controller with Telegram's constants,
+  with two changes so words already here never crawl out. Telegram shows a
+  first chunk at 40 characters a second however long it is, so a whole
+  message or a reconnect's text took many seconds; here the first chunk is
+  paced like the others, out by when the next is due, never slower than 40.
+  Telegram's finish eases the speed up and takes up to half a second; here
+  `finish` takes the speed at once, and the rest is out in 0.3 s.
+- *Which message.* Telegram reveals only a message with a typing draft
+  (`TypingDraftMessageAttribute`). There is one per chat, it is the newest
+  message, and it finishes (`finalize`, 0.3 s) the moment its draft ends. A
+  message read from history has no draft, so it never reveals.
+  `RevealFocus` does the same for our rows. Only the newest row reveals,
+  while the agent works. A row that stops being the newest (a tool call, a
+  newer segment or message came after it, or the agent stopped) finishes in
+  0.3 s. A reveal starts only for words that arrive while the chat is on
+  screen. It never starts for the history a chat opens with, for what came
+  while another screen was over it, for the catch-up after the app was in
+  the background, for several rows arriving in one update, or for a row
+  that grew by more than 400 characters at once. The person's queued sends,
+  under the work in the agents' chat, don't count as newer.
+- `RevealMap` is where each character of a row ends, line by line, worked
+  out off the main thread from the row's plan (`ChatRevealMapping`, warmed by
+  the planners). Pictures, code scrollers and tables come out whole, as
+  blocks.
+- `ChatRevealDriver` runs one display link per transcript. Each frame it
+  ticks every revealing row, and `ChatRevealPresenter` masks the row's
+  canvas and adds snippet layers that copy the drawn text (`contentsRect`),
+  with Telegram's 0.2 s alpha, rise and scale. A burst of more than 48
+  characters fades a line at a time instead. The blur is not copied.
+- A revealing row is as tall as the lines it shows (`RevealMap.height`).
+  When that changes, the list takes a pass on Telegram's 0.15 s ease-in-out,
+  so the rows above slide and the newest row stays on the composer. A row
+  never gets shorter while it reveals (a table is a paragraph until its rule
+  arrives); it settles once whole.
+- "The agent works" is the agent chat's working state, or, in the Happy CLI
+  chat, the session thinking. A row grows only from the words it had. A
+  pass that moves nothing lands at once, so a growth in flight is never
+  retimed. A second of quiet finishes the reveal in 0.3 s. A row scrolled
+  off the list mid-reveal keeps revealing, and its view shows on from there
+  when it comes back. The Happy CLI chat keeps a row that revealed on its
+  native canvas, so it never swaps to a bitmap on screen. The CLI sends
+  each message whole, so there a new message at the newest end comes out
+  in about half a second, and the one before it finishes.
+- Reduce Motion, or `HAPPY_REVEAL_OFF` (for comparing), shows replies as
+  they come.
+
+## 9. Holding a message, and selecting its text
+
+**What Telegram does.**
+
+- *The lift* (`ContextControllerExtractedPresentationNode`). The message is
+  taken out of the list and shown over a blurred, dimmed chat (light
+  `0x000a26` at 0.2, dark black at 0.6, fading in over 0.2 s). The actions
+  sit 7 under it (`contentActionsSpacing`), inside the status bar + 8 and
+  10 from the foot. They are 12 in from the screen's side and lean 2 or 7 in
+  toward the message. A message taller than the room is cut to at least 200
+  and scrolls. Everything moves on one spring (`makeSpringBounceAnimation`:
+  mass 5, stiffness 900, damping 104, 0.42 s). The menu fades in over 0.05 s
+  and grows from 0.01 out of the message's edge. Going back takes 0.2 s
+  ease-in-ease-out to the row's place.
+- *Selecting* (`TextSelectionNode`). A 0.3 s press on a word selects it
+  (`CFStringTokenizer`, by word). Select in the context menu selects it all.
+  Highlight rects come from the text layout, a rect a line, with lines 4 or
+  less apart joined and corners of 2. The handles are a 12 dot on a 2 stem.
+  They are caught 4/8 around, then 14 around, by the middle of the stem.
+  Copy, then Select All or Share, sit over the selection with 12 clear. The
+  highlight fades in over 0.3 s and the handles spring in after 0.25 s.
+
+**What we do.**
+
+- `MessageLiftLayout` (HappyLayout) places the lifted message and its menu
+  with those values. `MessageLiftOverlay` hides the row (`isHidden`, with
+  the reveal overlay) and draws the message again from the row's frozen
+  `ChatRowPlan`, so a streaming or pending message lifts as it was when it
+  was pressed. The agent's words lift on a card; a person's bubble lifts as
+  itself. The menu is the hold menu (`HoldMenuView`): Copy and Select.
+- `ChatSelectable`, in the plan, lists every text the row drew with its
+  frame: paragraphs, list items, code, and table cells. Each is the very
+  `ChatTextLayout` that drew it, so highlight rects (`selectionRects`) and
+  hit-testing (`caretIndex`, `wordRange`) lie on the glyphs. Copying puts
+  markdown's list markers, paragraph breaks and table tabs back between the
+  pieces (`SelectionText`). The time and the delivery mark are never in it.
+- `MessageTextSelectionView` takes Telegram's press, handles, highlight and
+  menu (`UIEditMenuInteraction`). When both handles are in reach (one
+  selected character), the nearer dot takes the finger. Telegram's start
+  handle always wins there.
+- VoiceOver reads the lifted message and offers Copy. Rows in both chats
+  have Copy and Select Text as custom actions.
 
 ## What we deliberately don't copy
 

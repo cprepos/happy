@@ -57,6 +57,11 @@ struct ChatRowInput: Equatable, Sendable {
     /// For a user's message: its status line and dimming, decided at the
     /// time the inputs were made (the pending grace runs on the clock).
     var userStatus: UserMessageStatus?
+    /// For the person's own message: its clock or checks (`outgoing`).
+    var outgoing: MessageDelivery?
+    /// For the person's own message: the time it shows, in ms, which is
+    /// the first it showed (`ChatRowsApplied.times`); nil is its `createdAt`.
+    var time: Int64?
     /// For an agent's message: copied a moment ago, so its button shows a tick.
     var copied = false
     /// The heights the row's diagrams reported, by their place in the row.
@@ -94,7 +99,7 @@ enum ChatRowRenderer {
             switch message {
             case .userText(let user):
                 let status = input.userStatus ?? userStatus(user, delivery: input.delivery, now: Int64(Date().timeIntervalSince1970 * 1000))
-                return userText(user, delivery: input.delivery, status: status, diagrams: diagrams, width: width, style: input.style)
+                return userText(user, delivery: input.delivery, status: status, outgoing: input.outgoing, time: input.time, diagrams: diagrams, width: width, style: input.style)
             case .agentText(let agent): return agentText(agent, copied: input.copied, diagrams: diagrams, width: width, style: input.style)
             case .toolCall(let call):
                 let views = ChatToolViews(question: input.question, diffExpanded: input.diffExpanded, diagrams: diagrams, delivery: input.delivery)
@@ -137,8 +142,24 @@ enum ChatRowRenderer {
         )
     }
 
+    /// The mark on the person's own message, nil on another's: the clock
+    /// while it is in this device's outbox, one check once the server has
+    /// it, two once the agent took it in (its receipt, or with no receipts
+    /// its answer after it).
+    static func outgoing(_ message: UserTextMessage, delivery: OutboxDelivery?, receipts: Bool, answered: Bool) -> MessageDelivery? {
+        guard message.author == nil || message.author?.owner == true else { return nil }
+        if message.sendError != nil { return .failed }
+        switch delivery {
+        case .failed: return .failed
+        case .queued, .sending: return .sending
+        case nil: break
+        }
+        if message.pending || !receipts && !answered { return .received }
+        return .accepted
+    }
+
     static func userText(
-        _ message: UserTextMessage, delivery: OutboxDelivery?, status messageStatus: UserMessageStatus, diagrams: ChatMermaidHeights,
+        _ message: UserTextMessage, delivery: OutboxDelivery?, status messageStatus: UserMessageStatus, outgoing: MessageDelivery? = nil, time shownAt: Int64? = nil, diagrams: ChatMermaidHeights,
         width: CGFloat, style: ChatRowStyle
     ) -> ChatRowPlan {
         let palette = bubblePalette(style.bubble)
@@ -175,7 +196,13 @@ enum ChatRowRenderer {
             return ChatRowPlan(id: message.id, size: CGSize(width: width, height: 0), items: [])
         }
 
-        let layout = UserMessageLayout(.init(width: width, maxContentWidth: style.maxContentWidth, author: authorText?.measurable, content: content))
+        let time = outgoing.flatMap { _ in MessageTime.text(Double(shownAt ?? message.createdAt), ink: Palette.deliveryInk, in: environment) }
+        let deliveryStatus = outgoing.map { _ in MessageTime.status(time, in: environment) }
+        let trailing: Measurable? = if case .text = content { markdown?.trailing } else { nil }
+        let layout = UserMessageLayout(.init(
+            width: width, maxContentWidth: style.maxContentWidth, author: authorText?.measurable, content: content,
+            delivery: deliveryStatus, trailing: trailing
+        ))
         var items: [ChatDrawItem] = []
         var hits: [ChatHit] = []
         if let frame = layout.author, let authorText { items.append(.text(authorText.layout(for: frame), frame)) }
@@ -188,10 +215,14 @@ enum ChatRowRenderer {
         if !copyTarget.isNull {
             hits.append(ChatHit(frame: copyTarget, action: .copyMenu(copyText), hold: true))
         }
+        var firstText: CGRect?
+        var selectable: [ChatSelectable.Text] = []
         if let placed = layout.markdown, let markdown {
             let drawn = markdown.draw(placed, origin: layout.markdownOrigin)
             items += drawn.items
             hits = drawn.hits + hits
+            firstText = drawn.items.lazy.compactMap { if case .text(_, let frame) = $0 { frame } else { nil } }.first
+            selectable = drawn.texts
         }
         if let chip = layout.chip, let label = layout.chipLabel, let chipText {
             items.append(.box(ChatBox(frame: chip, fill: palette.background, border: palette.border, borderWidth: UserMessageLayout.Metrics.chipBorder, radius: UserMessageLayout.Metrics.chipRadius)))
@@ -202,15 +233,24 @@ enum ChatRowRenderer {
             items.append(.text(sentText.layout(for: label), label))
         }
 
+        if let outgoing, let box = layout.delivery, let deliveryStatus {
+            let placed = ChatDeliveryMark.items(deliveryStatus, box: box, time: time, state: outgoing, tint: Palette.deliveryInk, message: message.id)
+            items += placed.items
+            if outgoing == .failed, case .failed = delivery, let localId = message.localId {
+                hits.insert(ChatHit(frame: placed.mark.insetBy(dx: -8, dy: -8), action: .retry(localId: localId)), at: 0)
+            }
+        }
+
         // The status line is always there at one line's height, so a row
         // never changes height when a message settles. Its height is RN's
         // fixed 14 at every text size (`pendingStatusText`), so a larger
-        // size's text is cut at it.
+        // size's text is cut at it. On the person's own message the clock
+        // says it is on its way.
         let status: String
         var failed = false
         switch messageStatus.line {
         case .none: status = ""
-        case .sending: status = text.words.sending
+        case .sending: status = outgoing == nil ? text.words.sending : String()
         case .sendsAfterThisTurn: status = text.words.sendsAfterThisTurn
         case .failed(let reason):
             status = text.words.sendFailed(reason)
@@ -227,12 +267,19 @@ enum ChatRowRenderer {
                 hits.insert(ChatHit(frame: layout.status, action: .retry(localId: localId)), at: 0)
             }
         }
-        // A message the agent hasn't read yet is dimmed once its status
-        // shows; a refused one is not.
+        // Another's message the agent hasn't read yet is dimmed once its
+        // status shows; a refused one is not, nor one with its own mark.
         return ChatRowPlan(
             id: message.id, size: layout.size, items: items, hits: hits,
-            alpha: messageStatus.dimmed ? UserMessageLayout.Metrics.pendingOpacity : 1,
-            accessibilityLabel: [author?.name, copyText, status.isEmpty ? nil : status].compactMap { $0 }.joined(separator: ", ")
+            alpha: messageStatus.dimmed && outgoing == nil ? UserMessageLayout.Metrics.pendingOpacity : 1,
+            accessibilityLabel: [author?.name, copyText, status.isEmpty ? nil : status].compactMap { $0 }.joined(separator: ", "),
+            flight: outgoing == nil || layout.chip != nil || layout.goalLabel != nil ? nil : layout.bubble.map {
+                ChatRowFlight(
+                    bubble: ChatBox(frame: $0, fill: palette.background, border: palette.border, borderWidth: 1, radius: UserMessageLayout.Metrics.bubbleRadius),
+                    text: firstText, status: layout.delivery
+                )
+            },
+            selection: copyTarget.isNull || selectable.isEmpty ? nil : ChatSelectable(texts: selectable, whole: copyText, frame: copyTarget, card: false)
         )
     }
 
@@ -258,7 +305,9 @@ enum ChatRowRenderer {
             id: message.id, size: layout.size,
             items: drawn.items + [.icon(.ionicons(copied ? "checkmark" : "copy-outline"), size: AgentTextLayout.Metrics.copyIconSize, frame: layout.copyIcon, tint: Palette.text)],
             hits: [ChatHit(frame: copyTarget, action: .copyMessage(id: message.id, text: message.text))] + drawn.hits,
-            accessibilityLabel: message.text
+            accessibilityLabel: message.text,
+            revealable: true,
+            selection: .covering(drawn.items, texts: drawn.texts, whole: message.text)
         )
     }
 
@@ -325,8 +374,21 @@ struct MarkdownDocument: Sendable {
 /// A markdown text measured block by block: the blocks for a pure layout,
 /// and once that layout has placed them, what to draw where.
 struct MarkdownPiece {
+    /// One placed block: its marks, its long-press targets, and the texts
+    /// in it a lifted message lets a person select.
+    struct Drawn {
+        var items: [ChatDrawItem]
+        var hits: [ChatHit]
+        var texts: [ChatSelectable.Text] = []
+    }
+
+    typealias Drawer = (MarkdownLayout.Placed, CGPoint) -> Drawn
+
     let blocks: [MarkdownLayout.Block]
-    private let drawers: [(MarkdownLayout.Placed, CGPoint) -> ([ChatDrawItem], [ChatHit])]
+    /// The last line's width of the paragraph the markdown ends with; nil
+    /// when it ends with any other block (`MeasuredText.trailing`).
+    let trailing: Measurable?
+    private let drawers: [Drawer]
 
     static let bullets = ["•", "◦", "▪"]
 
@@ -353,26 +415,30 @@ struct MarkdownPiece {
         document: MarkdownDocument? = nil
     ) {
         var blocks: [MarkdownLayout.Block] = []
-        var drawers: [(MarkdownLayout.Placed, CGPoint) -> ([ChatDrawItem], [ChatHit])] = []
+        var drawers: [Drawer] = []
 
         func hold(_ frame: CGRect, _ paragraph: String) -> [ChatHit] {
             selectable ? [ChatHit(frame: frame, action: .markdownSelectable(paragraph: paragraph, markdown: markdown), hold: true)] : []
         }
 
-        func text(_ measured: MeasuredText) -> (MarkdownLayout.Placed, CGPoint) -> ([ChatDrawItem], [ChatHit]) {
+        func text(_ measured: MeasuredText) -> Drawer {
             { placed, origin in
                 let frame = placed.frame.offsetBy(dx: origin.x, dy: origin.y)
-                return ([.text(measured.layout(for: placed.frame), frame)], hold(frame, measured.string.string))
+                let layout = measured.layout(for: placed.frame)
+                return Drawn(items: [.text(layout, frame)], hits: hold(frame, measured.string.string), texts: [.init(layout: layout, frame: frame)])
             }
         }
 
         var diagramIndex = 0
+        var paragraph: MeasuredText?
         for block in LegacyMarkdown.parse(markdown) {
+            paragraph = nil
             switch block {
             case .text(let spans):
                 let measured = MeasuredText(ChatSpans.string(spans, style: body, color: color, in: environment, everyLink: document != nil))
                 blocks.append(.text(measured.measurable))
                 drawers.append(text(measured))
+                paragraph = measured
 
             case .header(let level, let spans):
                 let measured = MeasuredText(ChatSpans.string(spans, style: header(level), color: color, in: environment, everyLink: document != nil))
@@ -382,7 +448,7 @@ struct MarkdownPiece {
             case .horizontalRule:
                 blocks.append(.rule)
                 drawers.append { placed, origin in
-                    ([.box(ChatBox(frame: placed.frame.offsetBy(dx: origin.x, dy: origin.y), fill: Palette.legacyDivider))], [])
+                    Drawn(items: [.box(ChatBox(frame: placed.frame.offsetBy(dx: origin.x, dy: origin.y), fill: Palette.legacyDivider))], hits: [])
                 }
 
             case .list(let items):
@@ -391,15 +457,15 @@ struct MarkdownPiece {
                      MeasuredText(ChatSpans.string(item.spans, style: body, color: color, in: environment, everyLink: document != nil)), item.depth)
                 }
                 blocks.append(.list(rows.map { .init(depth: $0.2, marker: $0.0.measurable, text: $0.1.measurable) }))
-                drawers.append(Self.listDrawer(rows.map { ($0.0, $0.1) }, hold: hold))
+                drawers.append(Self.listDrawer(rows.map { ($0.0, $0.1, Self.copiedMarker("-", depth: $0.2)) }, hold: hold))
 
             case .numberedList(let items):
                 let rows = items.map { item in
                     (MeasuredText(body.string("\(item.number).", color: color, in: environment)),
-                     MeasuredText(ChatSpans.string(item.spans, style: body, color: color, in: environment, everyLink: document != nil)), item.depth)
+                     MeasuredText(ChatSpans.string(item.spans, style: body, color: color, in: environment, everyLink: document != nil)), item.depth, item.number)
                 }
                 blocks.append(.list(rows.map { .init(depth: $0.2, marker: $0.0.measurable, text: $0.1.measurable) }))
-                drawers.append(Self.listDrawer(rows.map { ($0.0, $0.1) }, hold: hold))
+                drawers.append(Self.listDrawer(rows.map { ($0.0, $0.1, Self.copiedMarker("\($0.3).", depth: $0.2)) }, hold: hold))
 
             case .codeBlock(let language, let content):
                 Self.code(language: language, content: content, syntax: syntax, environment: environment, blocks: &blocks, drawers: &drawers, hold: hold)
@@ -411,14 +477,14 @@ struct MarkdownPiece {
                 blocks.append(.mermaid(reported: diagrams.heights[diagramIndex]))
                 diagramIndex += 1
                 drawers.append { placed, origin in
-                    ([.mermaid(diagram, frame: placed.frame.offsetBy(dx: origin.x, dy: origin.y))], [])
+                    Drawn(items: [.mermaid(diagram, frame: placed.frame.offsetBy(dx: origin.x, dy: origin.y))], hits: [])
                 }
 
             case .options(let options):
                 let labels = options.map { MeasuredText(ChatTextStyles.option.string($0, color: color, in: environment)) }
                 blocks.append(.options(labels.map(\.measurable)))
                 drawers.append { placed, origin in
-                    guard case .options(_, let buttons, let frames) = placed else { return ([], []) }
+                    guard case .options(_, let buttons, let frames) = placed else { return Drawn(items: [], hits: []) }
                     var items: [ChatDrawItem] = []
                     var hits: [ChatHit] = []
                     for (index, button) in buttons.enumerated() where index < labels.count {
@@ -427,7 +493,7 @@ struct MarkdownPiece {
                         items.append(.text(labels[index].layout(for: frames[index]), frames[index].offsetBy(dx: origin.x, dy: origin.y)))
                         hits.append(ChatHit(frame: frame, action: .option(options[index])))
                     }
-                    return (items, hits)
+                    return Drawn(items: items, hits: hits)
                 }
 
             case .table(let headers, let rows):
@@ -438,8 +504,11 @@ struct MarkdownPiece {
                 let lengths = all.map { row in row.map { $0.reduce(0) { $0 + $1.text.utf16.count } } }
                 blocks.append(.table(.init(columnWidths: MarkdownLayout.columnWidths(lengths: lengths), rows: measured.map { $0.map(\.measurable) })))
                 drawers.append { placed, origin in
-                    guard case .table(let table) = placed else { return ([], []) }
+                    guard case .table(let table) = placed else { return Drawn(items: [], hits: []) }
                     let frame = table.frame.offsetBy(dx: origin.x, dy: origin.y)
+                    let scroll = table.scroll.offsetBy(dx: frame.minX, dy: frame.minY)
+                    // Cells copy as tab-separated lines.
+                    var texts: [ChatSelectable.Text] = []
                     // The border stays put; the grid inside scrolls sideways,
                     // clipped to the border's rounded inside (overflow: hidden).
                     var grid: [ChatDrawItem] = []
@@ -452,18 +521,21 @@ struct MarkdownPiece {
                     var hits: [ChatHit] = []
                     for (rowIndex, cells) in table.cells.enumerated() where rowIndex < measured.count {
                         for (column, cell) in cells.enumerated() where column < measured[rowIndex].count {
-                            grid.append(.text(measured[rowIndex][column].layout(for: cell), cell))
+                            let layout = measured[rowIndex][column].layout(for: cell)
+                            grid.append(.text(layout, cell))
                             hits += hold(cell, measured[rowIndex][column].string.string)
+                            let joiner = texts.isEmpty ? "\n\n" : column == 0 ? "\n" : "\t"
+                            texts.append(.init(layout: layout, frame: cell.offsetBy(dx: scroll.minX, dy: scroll.minY), joiner: joiner, clip: scroll))
                         }
                     }
                     let content = ChatRowPlan(id: "table", size: table.contentSize, items: grid, hits: hits)
-                    return ([
+                    return Drawn(items: [
                         .box(ChatBox(frame: frame, border: Palette.legacyDivider, borderWidth: MarkdownLayout.Metrics.tableBorder, radius: MarkdownLayout.Metrics.tableRadius)),
                         .scroller(
-                            content, frame: table.scroll.offsetBy(dx: frame.minX, dy: frame.minY),
+                            content, frame: scroll,
                             radius: MarkdownLayout.Metrics.tableRadius - MarkdownLayout.Metrics.tableBorder
                         ),
-                    ], [])
+                    ], hits: [], texts: texts)
                 }
 
             case .image(let alt, let url) where document != nil:
@@ -473,7 +545,7 @@ struct MarkdownPiece {
                 let picture = document?.pictures[url]
                 blocks.append(.picture(caption: caption?.measurable, size: picture?.size))
                 drawers.append { placed, origin in
-                    guard case .image(let frame, let box, let captionFrame) = placed else { return ([], []) }
+                    guard case .image(let frame, let box, let captionFrame) = placed else { return Drawn(items: [], hits: []) }
                     let shifted = frame.offsetBy(dx: origin.x, dy: origin.y)
                     let pictureFrame = box.offsetBy(dx: shifted.minX, dy: shifted.minY)
                     var items: [ChatDrawItem] = []
@@ -488,7 +560,7 @@ struct MarkdownPiece {
                     if let caption, let captionFrame {
                         items.append(.text(caption.layout(for: captionFrame), captionFrame.offsetBy(dx: shifted.minX, dy: shifted.minY)))
                     }
-                    return (items, hits)
+                    return Drawn(items: items, hits: hits)
                 }
 
             case .image(let alt, let url):
@@ -496,7 +568,7 @@ struct MarkdownPiece {
                 let source = URL(string: url)
                 blocks.append(.image(caption: caption?.measurable))
                 drawers.append { placed, origin in
-                    guard case .image(let frame, let picture, let captionFrame) = placed else { return ([], []) }
+                    guard case .image(let frame, let picture, let captionFrame) = placed else { return Drawn(items: [], hits: []) }
                     let shifted = frame.offsetBy(dx: origin.x, dy: origin.y)
                     let pictureFrame = picture.offsetBy(dx: shifted.minX, dy: shifted.minY)
                     var items: [ChatDrawItem] = [.box(ChatBox(frame: pictureFrame, fill: Palette.surfaceHighest, radius: MarkdownLayout.Metrics.imageRadius))]
@@ -505,40 +577,53 @@ struct MarkdownPiece {
                     if let caption, let captionFrame {
                         items.append(.text(caption.layout(for: captionFrame), captionFrame.offsetBy(dx: shifted.minX, dy: shifted.minY)))
                     }
-                    return (items, [])
+                    return Drawn(items: items, hits: [])
                 }
             }
         }
         self.blocks = blocks
         self.drawers = drawers
+        trailing = paragraph?.trailing
     }
 
-    func draw(_ layout: MarkdownLayout, origin: CGPoint) -> (items: [ChatDrawItem], hits: [ChatHit]) {
+    func draw(_ layout: MarkdownLayout, origin: CGPoint) -> (items: [ChatDrawItem], hits: [ChatHit], texts: [ChatSelectable.Text]) {
         var items: [ChatDrawItem] = []
         var hits: [ChatHit] = []
+        var texts: [ChatSelectable.Text] = []
         for (placed, drawer) in zip(layout.blocks, drawers) {
             let drawn = drawer(placed, origin)
-            items += drawn.0
-            hits += drawn.1
+            items += drawn.items
+            hits += drawn.hits
+            texts += drawn.texts
         }
-        return (items, hits)
+        return (items, hits, texts)
     }
 
-    /// A list: the marker isn't selectable, the item's text is.
+    /// What a list item's marker copies as: markdown's own, indented two
+    /// spaces a level, never the drawn bullet.
+    static func copiedMarker(_ marker: String, depth: Int) -> String {
+        String(repeating: "  ", count: max(0, depth)) + marker + " "
+    }
+
+    /// A list: the marker isn't selectable, the item's text is, and copies
+    /// with its marker (`lead`), one item a line.
     private static func listDrawer(
-        _ rows: [(marker: MeasuredText, text: MeasuredText)], hold: @escaping (CGRect, String) -> [ChatHit]
-    ) -> (MarkdownLayout.Placed, CGPoint) -> ([ChatDrawItem], [ChatHit]) {
+        _ rows: [(marker: MeasuredText, text: MeasuredText, copied: String)], hold: @escaping (CGRect, String) -> [ChatHit]
+    ) -> Drawer {
         { placed, origin in
-            guard case .list(_, let items) = placed else { return ([], []) }
+            guard case .list(_, let items) = placed else { return Drawn(items: [], hits: []) }
             var drawn: [ChatDrawItem] = []
             var hits: [ChatHit] = []
+            var texts: [ChatSelectable.Text] = []
             for (index, item) in items.enumerated() where index < rows.count {
                 let text = item.text.offsetBy(dx: origin.x, dy: origin.y)
+                let layout = rows[index].text.layout(for: item.text)
                 drawn.append(.text(rows[index].marker.layout(for: item.marker), item.marker.offsetBy(dx: origin.x, dy: origin.y)))
-                drawn.append(.text(rows[index].text.layout(for: item.text), text))
+                drawn.append(.text(layout, text))
                 hits += hold(text, rows[index].text.string.string)
+                texts.append(.init(layout: layout, frame: text, lead: rows[index].copied, joiner: index == 0 ? "\n\n" : "\n"))
             }
-            return (drawn, hits)
+            return Drawn(items: drawn, hits: hits, texts: texts)
         }
     }
 
@@ -546,21 +631,24 @@ struct MarkdownPiece {
     /// code scrolling sideways under it.
     private static func code(
         language: String?, content: String, syntax: CodeSyntaxService, environment: TextEnvironment?, blocks: inout [MarkdownLayout.Block],
-        drawers: inout [(MarkdownLayout.Placed, CGPoint) -> ([ChatDrawItem], [ChatHit])], hold: @escaping (CGRect, String) -> [ChatHit]
+        drawers: inout [Drawer], hold: @escaping (CGRect, String) -> [ChatHit]
     ) {
         let label = language.map { MeasuredText(ChatTextStyles.codeLanguage.string($0, color: Palette.textSecondary, in: environment), maxLines: 1) }
         let code = ChatTextLayout(unwrapped: ChatSyntax.string(content, language: language, service: syntax, in: environment))
         blocks.append(.code(language: label?.measurable, code: code.size))
         drawers.append { placed, origin in
-            guard case .code(let placedCode) = placed else { return ([], []) }
+            guard case .code(let placedCode) = placed else { return Drawn(items: [], hits: []) }
             let frame = placedCode.frame.offsetBy(dx: origin.x, dy: origin.y)
             var items: [ChatDrawItem] = [.box(ChatBox(frame: frame, fill: Palette.surfaceHighest, radius: MarkdownLayout.Metrics.codeRadius))]
             if let label, let languageFrame = placedCode.language {
                 items.append(.text(label.layout(for: languageFrame), languageFrame.offsetBy(dx: frame.minX, dy: frame.minY)))
             }
             let strip = ChatRowPlan(id: "code", size: placedCode.contentSize, items: [.text(code, placedCode.text)])
-            items.append(.scroller(strip, frame: placedCode.scroll.offsetBy(dx: frame.minX, dy: frame.minY)))
-            return (items, hold(frame, content))
+            let scroll = placedCode.scroll.offsetBy(dx: frame.minX, dy: frame.minY)
+            items.append(.scroller(strip, frame: scroll))
+            // The code as written, its lines kept; the language isn't copied.
+            let text = ChatSelectable.Text(layout: code, frame: placedCode.text.offsetBy(dx: scroll.minX, dy: scroll.minY), clip: scroll)
+            return Drawn(items: items, hits: hold(frame, content), texts: [text])
         }
     }
 }

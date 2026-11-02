@@ -61,6 +61,24 @@ final class AgentChatUltraList: UIView {
     /// As close to the newest row as counts as on it, 24pt, not the
     /// sessions' 200.
     static let followThreshold: CGFloat = 24
+    /// A send flying in from the composer: the row it waits for is
+    /// veiled from the pass that inserts it until the copy lands.
+    var flight: ChatSendFlight? {
+        didSet {
+            oldValue?.cancel()
+            flight?.onFinish = { [weak self, weak flight] in
+                guard let self, self.flight === flight else { return }
+                self.flight = nil
+                self.unveil()
+            }
+        }
+    }
+    private(set) var veiled: String?
+    /// A reply still arriving comes out a character at a time.
+    let reveal = ChatRevealDriver()
+    /// What `apply` was last handed, to hand over again as a revealing
+    /// row grows a line.
+    private var latest: (plans: [ChatRowPlan], intro: (view: UIView, height: CGFloat)?)?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -77,6 +95,7 @@ final class AgentChatUltraList: UIView {
             onReachedOldest?()
         }
         addSubview(list)
+        reveal.host = self
     }
 
     @available(*, unavailable)
@@ -120,6 +139,7 @@ final class AgentChatUltraList: UIView {
                           anchorMode: .preserveVisibleContent,
                           compensatesInsetChange: keyboard?.compensates ?? !list.isTracking,
                           transition: keyboard?.transition ?? .none)
+        flight?.follow(in: list)
     }
 
     /// The conversation's rows, oldest first as the screen plans them,
@@ -131,26 +151,70 @@ final class AgentChatUltraList: UIView {
     /// rows under it fill the screen.
     /// `animated` eases rows in while the newest is followed; `moves` eases
     /// a turn opening or folding wherever the reader is, the rows they see
-    /// staying put.
-    func apply(_ plans: [ChatRowPlan], intro: (view: UIView, height: CGFloat)? = nil, animated: Bool = false, moves: Bool = false) {
+    /// staying put. `streaming`: the agent is at work, so its newest words
+    /// may grow, and come out as they do (`ChatRevealDriver`). The last
+    /// `queued` rows are the person's sends waiting under the work: the
+    /// agent's newest row is the one above them.
+    func apply(_ plans: [ChatRowPlan], intro: (view: UIView, height: CGFloat)? = nil, animated: Bool = false, moves: Bool = false, streaming: Bool = false, queued: Int = 0) {
+        if isActive { startReveals(plans.dropLast(queued), streaming: streaming) }
+        latest = (plans, intro)
+        submit(plans, intro: intro, transition: (animated || moves) && !UIAccessibility.isReduceMotionEnabled ? .easeInOut(0.2) : .none, followOnly: !moves)
+    }
+
+    /// Only the newest row comes out as it streams, and only with words
+    /// that arrive while the chat is on screen; any other finishes coming
+    /// out (`RevealFocus`).
+    private func startReveals(_ plans: ArraySlice<ChatRowPlan>, streaming: Bool) {
+        var focus: [RevealFocus.Row] = []
+        focus.reserveCapacity(plans.count)
+        for plan in plans {
+            let identity = "chat:row:\(plan.id)"
+            focus.append(.init(id: identity, revealable: plan.revealable, change: ChatRevealMapping.change(from: rows[identity]?.plan, to: plan)))
+        }
+        let steps = reveal.focus(focus, streaming: streaming, onScreen: window != nil)
+        // The rows revealing are at the newest end, where the search starts.
+        func plan(_ identity: String) -> ChatRowPlan? {
+            let id = identity.dropFirst("chat:row:".count)
+            return plans.last { $0.revealable && $0.id == id }
+        }
+        _ = reveal.perform(steps, plan: plan, previous: { [rows] in rows[$0]?.plan })
+        reveal.keep { plan($0) != nil }
+    }
+
+    private func submit(_ plans: [ChatRowPlan], intro: (view: UIView, height: CGFloat)?, transition: ListTransition, followOnly: Bool) {
         var items: [any ListRow] = []
         var next: [String: AgentChatRow] = [:]
         var places: [String: CGFloat] = [:]
         var start: CGFloat = 0
+        // What moves: a row's height or the rows there are, and of that, a
+        // revealing row growing a line.
+        var moved = false
+        var grew = false
         items.reserveCapacity(plans.count + 1)
+        var landing: (identity: String, plan: ChatRowPlan)?
         for plan in plans.reversed() {
             let identity = "chat:row:\(plan.id)"
+            if rows[identity] == nil, landing == nil, let flight, flight.awaits(plan) {
+                landing = (identity, plan)
+                veiled = identity
+            }
+            // A row coming out is as tall as what of it shows.
+            let revealing = reveal.height(identity)
+            let height = revealing ?? plan.size.height
+            if let kept = rows[identity], kept.height != height {
+                if revealing != nil { grew = true } else { moved = true }
+            }
             let row: AgentChatRow
-            if let kept = rows[identity], kept.plan === plan {
+            if let kept = rows[identity], kept.plan === plan, kept.height == height {
                 row = kept
             } else {
                 // A revision is never reused, even where an identity comes back.
                 revision &+= 1
-                row = AgentChatRow(identity: identity, revision: revision, plan: plan, transcript: self)
+                row = AgentChatRow(identity: identity, revision: revision, plan: plan, height: height, transcript: self)
             }
             next[identity] = row
             places[identity] = start
-            start += plan.size.height
+            start += height
             items.append(row)
         }
         rows = next
@@ -159,13 +223,14 @@ final class AgentChatUltraList: UIView {
             items.append(AgentChatIntroRow(content: intro.view, height: intro.height))
             start += intro.height
         }
+        if contentHeight != start || submitted?.rows.map(\.identity) != items.map(\.identity) { moved = true }
         contentHeight = start
         // The screen hands its rows over on every layout, the keyboard's
         // included. The same rows again are no pass: one would land the
         // viewport's keyboard motion where it ends, at once.
         let submission = Submission(rows: items.map { .init(identity: $0.identity, revision: $0.revision) },
                                     room: showsNewestFromItsStart ? viewportHeight : nil)
-        guard submission != submitted || animated || moves else { return }
+        guard submission != submitted || !transition.isImmediate else { return }
         submitted = submission
         let follows = followsNewest && !list.isTracking && !list.isDragging && !list.isDecelerating
         let target: ListScrollTarget?
@@ -177,11 +242,62 @@ final class AgentChatUltraList: UIView {
         } else {
             target = follows ? .init(index: 0, identity: items.first?.identity) : nil
         }
+        let eased: ListTransition = if landing != nil && follows {
+            // The rows above make room as the send flies in.
+            ChatSendFlight.Motion.list
+        } else {
+            followOnly && !follows ? .none : transition
+        }
         list.applyChanges(items: items, newSize: viewportSize,
                           newInsets: .init(top: insets.top, bottom: insets.bottom),
                           scrollTo: target,
                           anchorMode: .preserveVisibleContent,
-                          transition: (animated && follows || moves) && !UIAccessibility.isReduceMotionEnabled ? .easeInOut(0.2) : .none)
+                          transition: Self.transition(eased, moved: moved, grew: grew))
+        if let landing { land(landing.identity, plan: landing.plan) }
+    }
+
+    /// Flies the send in over its row once the pass placed it.
+    private func land(_ identity: String, plan: ChatRowPlan) {
+        list.performAfterCurrentPass { [weak self] in
+            guard let self, let flight, veiled == identity else { return }
+            guard let index = list.items.firstIndex(where: { $0.identity == identity }),
+                  let view = list.loadedItemView(at: index) as? AgentChatRowView else {
+                flight.cancel()
+                return
+            }
+            flight.land(on: view, plan: plan, drawn: { [weak view] in view?.canvas.isDrawn ?? true }, reveal: { [weak self] in self?.unveil() })
+        }
+    }
+
+    private func unveil() {
+        guard let identity = veiled else { return }
+        veiled = nil
+        guard let index = list.items.firstIndex(where: { $0.identity == identity }) else { return }
+        (list.loadedItemView(at: index) as? AgentChatRowView)?.canvas.veiled = false
+    }
+
+    /// A pass's motion: a revealing row growing a line takes Telegram's
+    /// 0.15 s even in a pass that would land at once; a pass that moves
+    /// nothing lands at once, so it never retimes a growth in flight onto
+    /// a curve of its own.
+    static func transition(_ transition: ListTransition, moved: Bool, grew: Bool) -> ListTransition {
+        if UIAccessibility.isReduceMotionEnabled { return .none }
+        if transition.isImmediate { return grew ? .easeInOut(StreamingRevealMotion.heightDuration) : .none }
+        return moved || grew ? transition : .none
+    }
+
+    /// The plan whose message is lifted over the chat (`MessageLiftOverlay`):
+    /// its row draws nothing meanwhile, whatever view shows it.
+    var liftedId: String? {
+        didSet {
+            guard liftedId != oldValue else { return }
+            for case let view as AgentChatRowView in list.loadedItemViews { view.isLifted = view.row.plan.id == liftedId }
+        }
+    }
+
+    /// The view plan `id` is drawn in now, in its coordinates, if on screen.
+    func canvas(forPlan id: String) -> ChatPlanView? {
+        list.loadedItemViews.lazy.compactMap { $0 as? AgentChatRowView }.first { $0.row.plan.id == id }?.canvas
     }
 
     func scrollToNewest(animated: Bool) {
@@ -189,8 +305,8 @@ final class AgentChatUltraList: UIView {
         list.scrollTo(newestTarget(), transition: animated && !UIAccessibility.isReduceMotionEnabled ? .easeInOut(0.2) : .none)
     }
 
-    /// What arrives next is followed: a send by a reader at the end, or
-    /// near it (`SendFollow`), carries them to it.
+    /// What arrives next is followed: a send carries the reader to it
+    /// (`SendFollow`).
     func follow() { followsNewest = true }
 
     private func newestTarget() -> ListScrollTarget {
@@ -205,14 +321,17 @@ final class AgentChatUltraList: UIView {
 
     /// Let go of: the rows go, and nothing of this list answers a touch.
     func deactivate() {
+        flight = nil
         isActive = false
         host = nil
         list.onScroll = nil
         list.onVisibleWindowChanged = nil
         list.willBeginDragging = nil
         list.didEndDragging = nil
+        reveal.stopAll()
         list.applyChanges(items: [], transition: .none)
         submitted = nil
+        latest = nil
         rows.removeAll()
         removeFromSuperview()
     }
@@ -240,6 +359,20 @@ final class AgentChatUltraList: UIView {
     fileprivate func placedChunks(of plan: ChatRowPlan, in view: ChatPlanView) {
         guard isActive else { return }
         host?.placedChunks(of: plan, in: view)
+    }
+}
+
+extension AgentChatUltraList: ChatRevealHost {
+    func revealPresenter(_ identity: String) -> ChatRevealPresenter? {
+        guard let index = list.items.firstIndex(where: { $0.identity == identity }) else { return nil }
+        return (list.loadedItemView(at: index) as? AgentChatRowView)?.reveal
+    }
+
+    /// A reply came onto a new line: the row grows on Telegram's 0.15 s,
+    /// the rows above it riding up by as much.
+    func revealHeightsChanged() {
+        guard isActive, let latest else { return }
+        submit(latest.plans, intro: latest.intro, transition: .easeInOut(StreamingRevealMotion.heightDuration), followOnly: false)
     }
 }
 
@@ -289,12 +422,15 @@ final class AgentChatRow: ListRow {
     let identity: String
     let revision: UInt64
     let plan: ChatRowPlan
+    /// The plan's height, or less while its words are coming out.
+    let height: CGFloat
     weak var transcript: AgentChatUltraList?
 
-    init(identity: String, revision: UInt64, plan: ChatRowPlan, transcript: AgentChatUltraList) {
+    init(identity: String, revision: UInt64, plan: ChatRowPlan, height: CGFloat? = nil, transcript: AgentChatUltraList) {
         self.identity = identity
         self.revision = revision
         self.plan = plan
+        self.height = height ?? plan.size.height
         self.transcript = transcript
     }
 
@@ -309,6 +445,8 @@ final class AgentChatRowView: ListRowView, UIGestureRecognizerDelegate {
     /// media and cards, and is what is read out.
 
     let canvas = ChatPlanView()
+    /// Its words coming out while a reply streams.
+    let reveal = ChatRevealPresenter()
     private let hold = UILongPressGestureRecognizer()
 
     init(row: AgentChatRow) {
@@ -328,6 +466,7 @@ final class AgentChatRowView: ListRowView, UIGestureRecognizerDelegate {
         }
         canvas.onAction = { [weak self] action in self?.row.transcript?.tapped(action) }
         addSubview(canvas)
+        reveal.attach(content: canvas, host: self)
         let tap = UITapGestureRecognizer(target: self, action: #selector(tapped(_:)))
         tap.cancelsTouchesInView = false
         tap.delegate = self
@@ -343,17 +482,40 @@ final class AgentChatRowView: ListRowView, UIGestureRecognizerDelegate {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
+    /// Its message is lifted over the chat: the copy shows, not the row.
+    var isLifted = false {
+        didSet {
+            canvas.isHidden = isLifted
+            reveal.overlay.isHidden = isLifted
+        }
+    }
+
     func apply(_ row: AgentChatRow) {
         self.row = row
+        canvas.veiled = row.transcript?.veiled == row.identity
         row.transcript?.show(row.plan, in: canvas)
+        layoutCanvas()
+        // In the same transaction as the plan it draws: none of its new
+        // words show before they come out.
+        if let state = row.transcript?.reveal.state(row.identity) { reveal.show(state.map, count: state.count) }
+        else if reveal.isActive { reveal.clear() }
+        isLifted = row.transcript?.liftedId == row.plan.id
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        canvas.frame = bounds
+        layoutCanvas()
     }
 
-    override func update(width: Double, transition: ListTransition) -> Double { row.plan.size.height }
+    /// The plan at its own size from the row's top: a row coming out is
+    /// shorter, and clips what is still to come.
+    private func layoutCanvas() {
+        let frame = CGRect(x: 0, y: 0, width: bounds.width, height: max(bounds.height, row.plan.size.height))
+        if canvas.frame != frame { canvas.frame = frame }
+        reveal.layout(frame)
+    }
+
+    override func update(width: Double, transition: ListTransition) -> Double { row.height }
 
     /// A tall row has views only for the part on screen (`ChatChunks`).
     /// The list says which part in its own coordinates, which run the
@@ -362,7 +524,7 @@ final class AgentChatRowView: ListRowView, UIGestureRecognizerDelegate {
     /// as it came, the foot of a long reply on screen mounted its head,
     /// and the screen showed nothing.
     override func visibleRectUpdated(_ rect: CGRect?) {
-        canvas.band = rect.map { Self.band(of: $0, height: row.plan.size.height) } ?? .null
+        canvas.band = rect.map { Self.band(of: $0, height: row.height) } ?? .null
     }
 
     /// `rect`, the part on screen in the list's coordinates, in the row's.
