@@ -65,6 +65,8 @@ final class ChatMediaView: UIView, UploadRingTile, DownloadShowing {
     private var media: ChatMedia?
     private var loadedPixels = 0
     private var task: Task<Void, Never>?
+    /// A retry came while `task` was reading.
+    private var retryAfterRead = false
     /// The download it follows, and where it is.
     private(set) var download: ChatDownload?
     private(set) var downloadPhase: DownloadPhase?
@@ -140,6 +142,7 @@ final class ChatMediaView: UIView, UploadRingTile, DownloadShowing {
         }
         task?.cancel()
         task = nil
+        retryAfterRead = false
         self.media = media
         loadedPixels = 0
         setFailed(false)
@@ -338,12 +341,15 @@ final class ChatMediaView: UIView, UploadRingTile, DownloadShowing {
                 self.download = found
                 self.refreshRing(animated: false)
             }
+            let again = self.retryAfterRead
+            self.retryAfterRead = false
             guard let image else {
                 // Not again until asked: the computer may be away.
                 self.loadedPixels = pixels
                 // Waiting for a tap, or showing how its download went: the ring says so.
                 let waiting = self.download != nil && self.downloadPhase?.isComplete != true
                 if self.picture.image == nil, !waiting { self.setFailed(true) }
+                if again { self.readAgain() }
                 return
             }
             self.show(image, pixels: pixels, fade: true)
@@ -353,7 +359,17 @@ final class ChatMediaView: UIView, UploadRingTile, DownloadShowing {
     /// Every tile still without its picture asks again: one that failed,
     /// and one whose ring stood in for it (a recording's first frame).
     @objc private func retry(_ notification: Notification) {
-        guard failed || picture.image == nil, task == nil, let source = source(), notification.object as AnyObject? === source else { return }
+        guard failed || picture.image == nil, let source = source(), notification.object as AnyObject? === source else { return }
+        // A read still going began while the computer was away and can yet
+        // fail: it asks again when it ends, or this ask is lost.
+        guard task == nil else {
+            retryAfterRead = true
+            return
+        }
+        readAgain()
+    }
+
+    private func readAgain() {
         setFailed(false)
         loadedPixels = 0
         loadIfNeeded()
