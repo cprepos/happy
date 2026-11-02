@@ -80,7 +80,9 @@ public struct ComposerModes: Equatable, Sendable {
 
         let permissionMode = Options.resolveCurrentOption(
             availableModes,
-            preferredKeys: [picks.permissionMode] + (isRig
+            preferredKeys: flavor == OpencodeHarness.key
+                ? OpencodeModes.preferredPermissionKeys(pick: picks.permissionMode, overrides: agentDefaultOverrides, metadata: metadata)
+                : [picks.permissionMode] + (isRig
                 ? [
                     metadata?["currentOperatingModeCode"]?.stringValue,
                     metadata?["permissionMode"]?.stringValue,
@@ -138,7 +140,7 @@ public struct ComposerModes: Equatable, Sendable {
             configured: defaults.modelMode
         )
         let permission = Options.resolveCurrentOption(permissionOptions, preferredKeys: [
-            picks.permissionMode,
+            agent == .opencode ? OpencodeModes.normalize(picks.permissionMode) : picks.permissionMode,
             defaults.permissionMode,
             AgentDefaults.codeDefaults(agent, cliVersion: cliVersion).permissionMode,
         ])

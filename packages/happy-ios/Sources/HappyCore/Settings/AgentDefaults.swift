@@ -11,6 +11,7 @@ public enum AgentDefaults {
         case gemini
         case openclaw
         case agy
+        case opencode
 
         /// utils/harnessCatalog.ts `HARNESS_NAMES`.
         public var name: String {
@@ -20,6 +21,7 @@ public enum AgentDefaults {
             case .gemini: "Gemini"
             case .openclaw: "OpenClaw"
             case .agy: "Antigravity"
+            case .opencode: OpencodeHarness.name
             }
         }
 
@@ -78,6 +80,7 @@ public enum AgentDefaults {
         case .gemini: Config(permissionMode: "default", modelMode: "gemini-2.5-pro", effortLevel: nil)
         case .openclaw: Config(permissionMode: "default", modelMode: "default", effortLevel: nil)
         case .agy: Config(permissionMode: "default", modelMode: "Gemini 3.8 Flash", effortLevel: "medium")
+        case .opencode: OpencodeHarness.defaults
         }
     }
 
@@ -129,7 +132,7 @@ public enum AgentDefaults {
     public static func override(_ overrides: [String: JSONValue], _ agent: Agent, _ field: Field) -> String? {
         guard let value = overrides[agent.rawValue]?[field.rawValue]?.stringValue else { return nil }
         switch field {
-        case .permissionMode: return retirePermissionMode(value)
+        case .permissionMode: return agent == .opencode ? OpencodeModes.normalize(value) : retirePermissionMode(value)
         case .modelMode: return agent == .claude ? retiredClaudeModelModes[value] ?? value : value
         case .effortLevel: return value
         }
@@ -207,6 +210,8 @@ public enum AgentDefaults {
                 Option("default", "Default", "agy sandbox"),
                 Option("bypassPermissions", "Yolo", "never asks"),
             ]
+        case .opencode:
+            OpencodeModes.hardcodedOptions()
         }
     }
 
@@ -240,7 +245,7 @@ public enum AgentDefaults {
                 Option("gemini-2.5-flash", "Gemini 2.5 Flash", "fast & efficient"),
                 Option("gemini-2.5-flash-lite", "Gemini 2.5 Flash Lite", "fastest"),
             ]
-        case .openclaw:
+        case .openclaw, .opencode:
             [Option("default", "Default model")]
         case .agy:
             [
@@ -284,7 +289,7 @@ public enum AgentDefaults {
             keys = byModel[model] ?? ["low", "medium", "high", "xhigh"]
         case .agy:
             keys = model == "Gemini 3.8 Flash" ? ["low", "medium", "high"] : []
-        case .gemini, .openclaw:
+        case .gemini, .openclaw, .opencode:
             keys = []
         }
         return keys.map { Option($0, $0 == "xhigh" ? "xHigh" : $0.prefix(1).uppercased() + $0.dropFirst()) }

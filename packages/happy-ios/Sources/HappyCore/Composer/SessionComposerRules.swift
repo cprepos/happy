@@ -57,7 +57,7 @@ public enum SessionComposerRules {
     public static func canUseAttachments(starting agent: NewSessionDraft.Agent) -> Bool {
         switch agent {
         case .claude, .codex, .rig: true
-        case .gemini, .openclaw, .agy: false
+        case .gemini, .openclaw, .agy, .opencode: false
         }
     }
 }

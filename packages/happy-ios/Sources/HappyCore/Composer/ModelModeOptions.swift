@@ -299,6 +299,7 @@ public enum ModelModeOptions {
             }
             return modes
         }
+        if flavor == OpencodeHarness.key { return OpencodeModes.sessionPermissionModes(metadata: metadata) }
         if flavor == "claude" || flavor == "codex" || flavor == "openclaw" || flavor == "agy" {
             return ModeHacks.hack(filterPermissionModesForCli(
                 hardcodedPermissionModes(flavor: flavor),
@@ -464,6 +465,7 @@ public enum ModelModeOptions {
         case "gemini": .gemini
         case "openclaw": .openclaw
         case "agy": .agy
+        case OpencodeHarness.key: .opencode
         default: .claude
         }
     }
@@ -480,7 +482,7 @@ public enum ModelModeOptions {
             } else {
                 ("openai", "OpenAI")
             }
-        case .gemini, .openclaw: nil
+        case .gemini, .openclaw, .opencode: nil
         }
     }
 

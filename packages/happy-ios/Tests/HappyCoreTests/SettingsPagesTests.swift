@@ -258,7 +258,7 @@ final class AgentsPageTests: XCTestCase {
 /// Settings › Agents worked out off the main thread: the groups a change
 /// rebuilds, and the ones it leaves on screen.
 final class AgentsPageDerivationTests: XCTestCase {
-    private let allGroups: Set<AgentsPage.Group> = [.machines, .defaults, .agent(.claude), .agent(.codex), .agent(.agy)]
+    private let allGroups: Set<AgentsPage.Group> = [.machines, .defaults, .agent(.claude), .agent(.codex), .agent(.agy), .agent(.opencode)]
 
     override func setUp() async throws {
         // Catalogs are decoded off the main thread; these tests derive on it.
@@ -296,7 +296,7 @@ final class AgentsPageDerivationTests: XCTestCase {
         let first = AgentsPage.derive(input, applied: nil)
         XCTAssertEqual(first?.output.rebuilt, allGroups)
         XCTAssertEqual(first?.state.machines, [])
-        XCTAssertEqual(first?.state.groups, [.machines, .defaults, .agent(.claude), .agent(.codex), .agent(.agy)])
+        XCTAssertEqual(first?.state.groups, [.machines, .defaults, .agent(.claude), .agent(.codex), .agent(.agy), .agent(.opencode)])
     }
 
     func testTheContentIsThePageFunctions() throws {
@@ -312,7 +312,7 @@ final class AgentsPageDerivationTests: XCTestCase {
         XCTAssertTrue(content.hasOverrides)
         XCTAssertEqual(content.agents.map(\.agent), AgentDefaults.Agent.configurable)
         XCTAssertEqual(content.agents[0].fields, AgentsPage.fields(.claude, overrides: overrides, cliVersion: "1.3.0"))
-        XCTAssertEqual(content.agents.map(\.open), [nil, .modelMode, nil])
+        XCTAssertEqual(content.agents.map(\.open), [nil, .modelMode, nil, nil])
     }
 
     /// A heartbeat moves `activeAt` and nothing the page draws: the main
@@ -532,7 +532,7 @@ final class AgentsPageDerivationTests: XCTestCase {
         }
         XCTAssertEqual(pipeline.counts.applies, 1)
         XCTAssertEqual(recorder.outputs.count, 1)
-        XCTAssertEqual(recorder.outputs.first?.rebuilt.count, 5)
+        XCTAssertEqual(recorder.outputs.first?.rebuilt.count, allGroups.count)
         XCTAssertEqual(pipeline.applied?.machines.count, 1000)
         pipeline.cancel()
     }

@@ -112,6 +112,7 @@ public struct NewSessionScreenModel: Equatable, Sendable {
         "claude": "claude code",
         "codex": "codex",
         "agy": "antigravity",
+        OpencodeHarness.key: OpencodeHarness.label,
         "rig": "happy",
     ]
 

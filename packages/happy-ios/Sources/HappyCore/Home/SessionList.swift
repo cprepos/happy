@@ -41,6 +41,7 @@ public struct SessionAvatar: Equatable, Sendable {
         case codex
         case agy
         case rig
+        case opencode
     }
 
     public init(seed: String, isBot: Bool = false, isTask: Bool = false, harness: Harness? = nil, image: AvatarImageSource? = nil) {
@@ -59,6 +60,7 @@ public struct SessionAvatar: Equatable, Sendable {
         case "claude": return .claude
         case "codex": return .codex
         case "agy": return .agy
+        case OpencodeHarness.key: return .opencode
         default: return nil
         }
     }

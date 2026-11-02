@@ -188,6 +188,7 @@ final class MachineViewController: UIViewController {
             return row
         }
         var rows = [row("Claude", cli.claude), row("Codex", cli.codex), row("Gemini", cli.gemini), row("OpenClaw", cli.openclaw)]
+        if let opencode = cli.opencode { rows.append(row(Strings.Harnesses.opencode, opencode)) }
         if let rig = cli.rig { rows.append(row("Rig", rig)) }
         let detected = ItemRowView(title: S.lastDetected, subtitle: SessionDetails.localeDateTime(cli.detectedAt))
         detected.showsChevron = false

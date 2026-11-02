@@ -5,9 +5,9 @@ import Foundation
 /// This is deliberately its own list rather than a property of
 /// `AgentDefaults.Agent`, which is where the Swift side used to keep it. That
 /// enum models the harnesses Settings > Agents can configure defaults for, so
-/// it has no `opencode` or `rig` case -- and asking it for a name therefore
-/// could not answer "which harness is this session?" for an OpenCode session
-/// at all. happy-app keeps HARNESS_NAMES in utils/harnessCatalog.ts, separate
+/// it has no `rig` case or anything it does not ship yet -- and asking it for a
+/// name therefore could not answer "which harness is this session?" for every
+/// session. happy-app keeps HARNESS_NAMES in utils/harnessCatalog.ts, separate
 /// from sync/agentDefaults.ts, for the same reason.
 public enum HarnessCatalog {
     public static let names: [String: String] = [

@@ -155,6 +155,7 @@ enum AvatarImages {
         case .codex: UIImage.happy("icon-gpt")
         case .agy: UIImage.happy("icon-agy")
         case .rig: UIImage.happy("logo-black")
+        case .opencode: UIImage.happy("icon-opencode")
         }
     }
 }
