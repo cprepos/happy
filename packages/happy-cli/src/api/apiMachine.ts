@@ -610,7 +610,8 @@ export class ApiMachineClient {
             || prev.gemini !== newAvailability.gemini
             || prev.openclaw !== newAvailability.openclaw
             || prev.agy !== newAvailability.agy
-            || prev.opencode !== newAvailability.opencode;
+            || prev.opencode !== newAvailability.opencode
+            || prev['claude-desktop'] !== newAvailability['claude-desktop'];
         const resumeSupportChanged = !prevResume
             || prevResume.rpcAvailable !== newResumeSupport.rpcAvailable
             || prevResume.happyAgentAuthenticated !== newResumeSupport.happyAgentAuthenticated;
