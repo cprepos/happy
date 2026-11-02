@@ -17,6 +17,9 @@ public struct SessionInfoInput: Sendable {
     public var vibingWord = "Thinking"
     /// The clock a last seen is read against (ms); now when nil.
     public var now: Int64?
+    /// What the server offers, which the Voice row follows; nil until it
+    /// first answers.
+    public var voiceConfig: VoiceConfig?
 
     public init(includesRaw: Bool = false) {
         self.includesRaw = includesRaw
@@ -38,6 +41,8 @@ public struct SessionInfoFrame: Equatable, Sendable {
     public var copiedResumeCommand: Bool
     /// The raw JSON blocks, in order; empty without the group.
     public var raw: [SessionInfoRawBlock]
+    /// The quick actions' Voice row; nil without one.
+    public var voice: ChatVoice?
 
     public init(_ input: SessionInfoInput, detail: SessionDetailSnapshot) {
         forking = input.forking
@@ -48,10 +53,12 @@ public struct SessionInfoFrame: Equatable, Sendable {
             return
         }
         let permissionMode = detail.composer["permissionMode"]?.stringValue ?? record.metadata?["permissionMode"]?.stringValue
+        let settings = AccountSettings(detail.settings)
+        voice = ChatVoice(sessionId: record.id, settings: settings, config: input.voiceConfig)
         content = .shown(SessionInfoModel(
             session: record,
             machine: detail.machine,
-            settings: AccountSettings(detail.settings),
+            settings: settings,
             gitStatus: input.git,
             permissionMode: permissionMode,
             now: input.now,
@@ -235,7 +242,7 @@ public enum SessionInfoDerivation {
                 if before.git != after.git || before.machineId != after.machineId || before.resume != after.resume
                     || before.canFork != after.canFork || before.parentSessionId != after.parentSessionId
                     || before.keepsConversation != after.keepsConversation || before.canArchive != after.canArchive
-                    || before.canLeaveTask != after.canLeaveTask || old.forking != new.forking {
+                    || before.canLeaveTask != after.canLeaveTask || old.forking != new.forking || old.voice != new.voice {
                     changes.rebuilt.insert(section)
                 }
             case .cliWarning:
