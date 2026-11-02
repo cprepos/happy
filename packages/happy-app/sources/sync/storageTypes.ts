@@ -193,6 +193,15 @@ export const MetadataSchema = z.object({
      */
     harness: z.string().nullish().catch(undefined),
     /**
+     * Claude Desktop history not yet uploaded: `before` counts the transcript
+     * entries still on the desktop, loaded on demand through the
+     * `desktop-load-history` session RPC. Absent or 0 means nothing to load.
+     * A malformed value is dropped rather than failing the whole parse.
+     */
+    desktopHistory: z.object({
+        before: z.number().int().nonnegative(),
+    }).passthrough().optional().catch(undefined),
+    /**
      * Rig's project / worktree identity. Every worktree of the same repo
      * reports the same `project.id`, and `workspace` names the individual git
      * worktree (absent when the session runs in the primary tree). `kind` is a

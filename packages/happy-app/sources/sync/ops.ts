@@ -999,6 +999,35 @@ export async function sessionGoalAction(
     } satisfies SessionGoalActionRequest);
 }
 
+export interface DesktopLoadHistoryRequest {
+    /** Transcript entries per chunk; the CLI defaults to 100, capped at 500. */
+    limit?: number;
+}
+
+export interface DesktopLoadHistoryResponse {
+    /** Transcript entries mapped and posted in this chunk. */
+    loaded: number;
+    /** Entries still not loaded; mirrors `metadata.desktopHistory.before`. */
+    before: number;
+}
+
+/**
+ * Pull the next chunk of a Claude Desktop chat's earlier transcript. The
+ * messages arrive through normal sync, stamped with their transcript times,
+ * and the CLI lowers `metadata.desktopHistory.before`. Throws when the RPC
+ * fails, so the caller can offer Retry.
+ */
+export async function sessionDesktopLoadHistory(
+    sessionId: string,
+    request: DesktopLoadHistoryRequest = {},
+): Promise<DesktopLoadHistoryResponse> {
+    return await apiSocket.sessionRPC<DesktopLoadHistoryResponse, DesktopLoadHistoryRequest>(
+        sessionId,
+        'desktop-load-history',
+        request,
+    );
+}
+
 /**
  * Execute a bash command in the session
  */
