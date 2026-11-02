@@ -493,7 +493,8 @@ public enum ModelModeOptions {
     static func provider(_ agent: AgentDefaults.Agent, model: String) -> (id: String, name: String)? {
         switch agent {
         case .claude: ("anthropic", "Anthropic")
-        case .codex: ("openai", "OpenAI")
+        // The Default row names no model, so it has no provider either.
+        case .codex: model == "default" ? nil : ("openai", "OpenAI")
         case .agy:
             if model.hasPrefix("Gemini") {
                 ("google", "Google")

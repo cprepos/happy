@@ -76,7 +76,9 @@ public enum AgentDefaults {
     static func codeDefaults(_ agent: Agent) -> Config {
         switch agent {
         case .claude: Config(permissionMode: "auto", modelMode: "claude-opus-5-5", effortLevel: "medium")
-        case .codex: Config(permissionMode: "auto", modelMode: "gpt-6.1-sol", effortLevel: "medium")
+        // `default` sends no model, so Codex runs its own default for the
+        // account. A named model fails on every account that does not offer it.
+        case .codex: Config(permissionMode: "auto", modelMode: "default", effortLevel: "medium")
         case .gemini: Config(permissionMode: "default", modelMode: "gemini-2.5-pro", effortLevel: nil)
         case .openclaw: Config(permissionMode: "default", modelMode: "default", effortLevel: nil)
         case .agy: Config(permissionMode: "default", modelMode: "Gemini 3.8 Flash", effortLevel: "medium")
@@ -228,6 +230,9 @@ public enum AgentDefaults {
             ]
         case .codex:
             [
+                // Default first: Happy sends no model and Codex picks the
+                // account's own (modelModeOptions.ts getCodexModelModes).
+                Option("default", "Default model"),
                 Option("gpt-6-astra", "GPT-6 Astra", "most capable"),
                 Option("gpt-6.1-sol", "GPT-6.1 Sol"),
                 Option("gpt-6-sol", "GPT-6 Sol"),
@@ -258,7 +263,8 @@ public enum AgentDefaults {
     }
 
     /// The model rows Settings › Agents lists: the catalog plus a saved model
-    /// that left it (`includeConfiguredModel`), without the `default` row.
+    /// that left it (`includeConfiguredModel`). A lone `default` row is
+    /// dropped (no choice to make); beside real models (Codex) it stays.
     public static func modelModes(_ agent: Agent, configured: String?) -> [Option] {
         var models = hardcodedModels(agent)
         let key = agent == .claude ? configured.map { retiredClaudeModelModes[$0] ?? $0 } : configured
@@ -267,7 +273,7 @@ public enum AgentDefaults {
             let name = agent == .claude && key == "claude-sonnet-5" ? "Sonnet 5" : key
             models.append(Option(key, name, agent == .codex ? "custom model" : "saved model"))
         }
-        return models.filter { $0.key != "default" }
+        return models.count > 1 ? models : models.filter { $0.key != "default" }
     }
 
     /// Effort levels per model: one scale for Claude, Codex per model.
