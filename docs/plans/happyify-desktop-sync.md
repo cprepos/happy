@@ -301,3 +301,67 @@ Minimal changes:
 - Manual: `claude --desktop --resume <id>` (needs a TTY: `script -q /dev/null
   claude --desktop ...`) opens a known session in the desktop for end-to-end
   checks.
+
+## Contract: on-demand history (2026-11-02)
+
+A Claude Desktop chat no longer uploads its earlier transcript when the mirror
+starts. The phone pulls it in chunks with a "Load previous history" button.
+
+### Why it sorts correctly
+
+The server numbers messages by arrival (`seq`) and cannot insert earlier
+ones. Both apps sort a chat by the envelope's `time`, not by `seq`: iOS
+`ChatMessage.sortKey` (`createdAt` = `envelope.time`, `ChatNormalizer.swift`)
+and Expo `messageSortKey` (`typesRaw.ts`: `createdAt = envelope.time`). History
+posted late but stamped with its original transcript times therefore lands
+above the live messages.
+
+### Metadata
+
+`metadata.desktopHistory?: { before: number }`. `before` counts the transcript
+entries not loaded yet: entries `[0, before)` of the desktop session's
+transcript, in file order (the scanner's `readSessionEntries` order, which is
+stable because the file is append-only). Set by `happy attach` when it creates
+a fresh mirror session (`before` = number of entries on disk at that moment),
+kept as-is on a reattach, and lowered after every load. Absent or `0`: nothing
+to load, no button.
+
+### Session RPC `desktop-load-history`
+
+Registered by `happy attach` on the Happy session.
+
+- Params: `{ limit?: number }`. Entries per chunk, default 100, capped at 500.
+- Effect: the CLI takes entries `[max(0, before - limit), before)`, maps them to
+  session-protocol envelopes with a fresh mapper state (turns closed at the end
+  of the chunk), stamps each envelope's `time` with its transcript line's
+  `timestamp` (envelopes from the same line, or lines with equal timestamps,
+  get +1 ms each so order is kept), and posts them as ordinary session
+  messages. Phone echoes (`[Happy] …` rewake lines) map back to plain user
+  text, as in the live mirror. Images are not uploaded for history.
+- Then sets `metadata.desktopHistory.before` to the new lower bound.
+- Result: `{ loaded: number; before: number }`. `loaded` is the number of
+  entries mapped; `before` is what remains.
+- Throws (RPC error) if the transcript cannot be read.
+
+Only one load runs at a time per session. A second call while one is in
+flight waits for it and then loads the next chunk.
+
+### Apps
+
+- Show a **Load previous history** button at the top of the chat (iOS
+  `ChatOlderEndView`, Expo `OlderEnd`) when the session is a Claude Desktop
+  session (`metadata.harness == 'claude-desktop'`) and
+  `metadata.desktopHistory.before > 0`, and the reader has reached the
+  oldest server page.
+- Tap: call `desktop-load-history` with no params. While it runs, show a
+  spinner in place of the button. On error, show Retry. On success the
+  messages arrive through normal sync and sort above; the button stays while
+  `before > 0`.
+- Label strings go through each app's string tables.
+
+### Re-point
+
+When the desktop session id changes (resume or fork) the new transcript
+already contains the old history, so the scanner treats the new file's
+existing entries as already sent (`onNewSession(id, { treatExistingAsProcessed: true })`)
+and `before` is recomputed against the new file.
