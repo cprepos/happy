@@ -25,7 +25,7 @@ extension Route {
     /// is what SessionsList.tsx reads its selected row from.
     var sessionId: String? {
         switch self {
-        case .session(let id), .sessionInfo(let id), .sessionFiles(let id), .sessionChanges(let id):
+        case .session(let id), .sessionInfo(let id), .sessionFiles(let id), .sessionChanges(let id), .sessionVoice(let id):
             id
         case .sessionFile(let id, _), .sessionMessage(let id, _, _):
             id

@@ -66,42 +66,79 @@ final class VoiceServiceViewController: SettingsPageViewController {
     }
 }
 
-/// Voice › Voice on Happy Server (settings/voice/voices.tsx): the server's
-/// default voice, then every preset. The chosen one ticked; a choice goes
-/// back. A saved id this build doesn't know reads as the server's default.
+/// The voice picker. Voice › Voice on Happy Server (settings/voice/voices.tsx)
+/// picks the account's default: the server's default voice, then every preset.
+/// A chat's info screen (session/[id]/voice.tsx) picks that chat's own: Use
+/// default, which takes its override away, then every preset. The chosen one
+/// ticked; a choice goes back. A saved id this build doesn't know reads as no
+/// choice.
 final class VoicePresetViewController: SettingsPageViewController {
-    private let session: AccountSession
-    private var observation: StoreObservation?
-    private var selected: VoicePreset?
+    enum Scope: Equatable {
+        case account
+        case chat(sessionId: String)
+    }
 
-    init(session: AccountSession) {
+    private let session: AccountSession
+    private let scope: Scope
+    private var observation: StoreObservation?
+    /// nil until the store is first read.
+    private var settings: AccountSettings?
+
+    init(session: AccountSession, scope: Scope = .account) {
         self.session = session
-        super.init(title: Strings.Voice.voices)
+        self.scope = scope
+        super.init(title: scope == .account ? Strings.Voice.voices : Strings.Voice.voice)
     }
 
     override func viewDidLoad() {
         super.viewDidLoad()
         observation = session.store.observeSettings { [weak self] snapshot in
-            self?.selected = VoicePreset.find(AccountSettings(snapshot).voiceAssistantVoice)
+            self?.settings = AccountSettings(snapshot)
             self?.reload()
         }
     }
 
     override func makeRows() -> [[SettingsRow]] {
         typealias Text = Strings.Voice
-        let serverDefault = SettingsRow(id: "voice-preset:default", title: Text.serverDefault, icon: ("server-outline", .blue), value: selected == nil ? "✓" : nil, accessory: .none, subtitle: Text.serverDefaultSubtitle, action: { [weak self] in
-            self?.choose(nil)
-        })
+        let first: SettingsRow
+        let selected: VoicePreset?
+        let footer: String
+        switch scope {
+        case .account:
+            selected = VoicePreset.find(settings?.voiceAssistantVoice)
+            first = SettingsRow(id: "voice-preset:default", title: Text.serverDefault, icon: ("server-outline", .blue), value: selected == nil ? "✓" : nil, accessory: .none, subtitle: Text.serverDefaultSubtitle, action: { [weak self] in
+                self?.choose(nil)
+            })
+            footer = Text.voicesFooter
+        case .chat(let sessionId):
+            // A choice writes every chat's overrides, so there is nothing to
+            // choose from until they have been read.
+            guard let settings else { return [] }
+            selected = settings.chatVoice(sessionId: sessionId)
+            let fallback = VoicePreset.find(settings.voiceAssistantVoice)?.label ?? Text.serverDefault
+            first = SettingsRow(id: "voice-preset:default", title: Text.useDefault, icon: ("settings-outline", .blue), value: selected == nil ? "✓" : nil, accessory: .none, subtitle: Text.useDefaultSubtitle(name: fallback), action: { [weak self] in
+                self?.choose(nil)
+            })
+            // Settings' cards have no heading, so the group's title leads its
+            // footer, as Voice's usage card has it.
+            footer = "\(Text.chatVoiceTitle). \(Text.chatVoiceFooter) \(Text.voicesFooter)"
+        }
         let presets = VoicePreset.all.map { preset in
             SettingsRow(id: "voice-preset:\(preset.id)", title: preset.label, icon: ("person-circle-outline", .blue), value: selected == preset ? "✓" : nil, accessory: .none, subtitle: Text.description(of: preset), action: { [weak self] in
                 self?.choose(preset)
             })
         }
-        return [([serverDefault] + presets).withFooter(Text.voicesFooter)]
+        return [([first] + presets).withFooter(footer)]
     }
 
     private func choose(_ preset: VoicePreset?) {
-        session.updateSettings(["voiceAssistantVoice": preset.map { .string($0.id) } ?? .null])
+        switch scope {
+        case .account:
+            session.updateSettings(["voiceAssistantVoice": preset.map { .string($0.id) } ?? .null])
+        case .chat(let sessionId):
+            guard let settings else { return }
+            session.updateSettings(settings.chatVoiceDelta(sessionId: sessionId, presetId: preset?.id))
+        }
         navigationController?.popViewController(animated: true)
     }
 }
