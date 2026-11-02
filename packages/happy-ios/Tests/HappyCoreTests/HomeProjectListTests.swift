@@ -82,6 +82,7 @@ final class HomeProjectListTests: XCTestCase {
             case .section(_, let label): "section:\(label)"
             case .bot(let row): "bot:\(row.id)"
             case .task(let row): "task:\(row.id)"
+            case .chat(let row): "chat:\(row.id)"
             case .project(let entry): "project:\(entry.name)(\(entry.worktreeCount))"
             case .worktree(let worktree, let last): "worktree:\(worktree.title)\(last ? ":last" : "")"
             case .worktreeToggle(let toggle): toggle.expanded ? "toggle:less" : "toggle:+\(toggle.hiddenCount)"

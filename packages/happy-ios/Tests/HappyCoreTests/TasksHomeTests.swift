@@ -68,6 +68,7 @@ final class TasksHomeTests: XCTestCase {
             case .section(_, let label): "section:\(label)"
             case .bot(let row): "bot:\(row.id)"
             case .task(let row): "task:\(row.id)"
+            case .chat(let row): "chat:\(row.id)"
             case .project(let entry): "project:\(entry.name)"
             case .worktree(let worktree, _): "worktree:\(worktree.title)"
             case .worktreeToggle: "toggle"

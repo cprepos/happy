@@ -11,6 +11,10 @@ import HappyWire
 /// is the card. Chats are not rows: a checkout opens its newest chat. The
 /// archive trails as the flat list's day-grouped tail.
 ///
+/// Grouped by host (`sessionListGrouping: 'machine'`) there is one more cut:
+/// under each computer come its bots and tasks as above, then its chats as
+/// flat rows, with no cards and no tree. The archive is the same.
+///
 /// `ProjectHomeData` is everything but the expansion, which is a device
 /// setting; `rows(expanded:)` lays it out.
 public struct ProjectHomeData: Equatable, Sendable {
@@ -61,6 +65,9 @@ public struct ProjectHomeData: Equatable, Sendable {
         /// By name, as `buildSessionProjectDisplayGroups` sorts them.
         public var projects: [Project]
         public var lastActivityAt: Int64
+        /// Grouped by host, in place of `projects`: live first, then by the
+        /// last meaningful message.
+        public var chats: [SessionRow] = []
     }
 
     public enum ArchivedItem: Equatable, Sendable {
@@ -71,8 +78,9 @@ public struct ProjectHomeData: Equatable, Sendable {
     /// Ordered: Happy Agent computers, then Happy CLI ones, then chats that
     /// name no computer; most recently worked on first within each.
     public var sections: [MachineSection]
-    /// The account has more than one computer, or chats on more than one:
-    /// only then does each computer head its own rows.
+    /// The account has more than one computer, or chats on more than one,
+    /// or the list is grouped by host: only then does each computer head its
+    /// own rows.
     public var showsMachines: Bool
     public var hasArchived: Bool
     public var archiveHidden: Bool
@@ -82,7 +90,8 @@ public struct ProjectHomeData: Equatable, Sendable {
     /// `unknownMachine` is `status.unknown` in the screens' language, read
     /// on the main thread: the section of chats that name no computer is
     /// `<unknown>` (ProjectHomeList.tsx 128).
-    public init(_ snapshot: LegacyHomeSnapshot, clock: SessionList.Clock = SessionList.Clock(), unknownMachine: String = ProjectHomeData.unknownMachineText) {
+    public init(_ snapshot: LegacyHomeSnapshot, clock: SessionList.Clock = SessionList.Clock(), unknownMachine: String = ProjectHomeData.unknownMachineText, grouping: SessionListGrouping = .project) {
+        let byHost = grouping == .machine
         let settings = AccountSettings(snapshot.settings)
         let machines = Dictionary(snapshot.machines.machines.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let projects = Dictionary(snapshot.projects.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -161,9 +170,11 @@ public struct ProjectHomeData: Equatable, Sendable {
         }
         taskSessions.sort(by: Self.taskPrecedes)
 
-        let allProjects = Self.catalogProjects(rigProjectSessions, member: { member($0, archived: false) })
+        let allProjects = byHost ? [] : Self.catalogProjects(rigProjectSessions, member: { member($0, archived: false) })
             + Self.pathProjects(rigPathSessions, prefix: "rig", member: { member($0, archived: false) })
             + Self.pathProjects(happySessions, prefix: "happy", member: { member($0, archived: false) })
+        var hostChats = byHost ? rigProjectSessions + rigPathSessions + happySessions : []
+        sortLive(&hostChats)
 
         // Sections, in the order a machine is first seen.
         var order: [String?] = []
@@ -201,6 +212,14 @@ public struct ProjectHomeData: Equatable, Sendable {
             entry.lastActivityAt = max(entry.lastActivityAt, built.row.lastActivityAt)
             byMachine[machineId] = entry
         }
+        for session in hostChats {
+            let machineId = session.metadata?["machineId"]?.stringValue
+            var entry = section(machineId)
+            let built = member(session, archived: false)
+            entry.chats.append(built.row)
+            entry.lastActivityAt = max(entry.lastActivityAt, built.row.lastActivityAt)
+            byMachine[machineId] = entry
+        }
         for project in allProjects {
             var entry = section(project.machineId)
             entry.projects.append(project)
@@ -218,6 +237,10 @@ public struct ProjectHomeData: Equatable, Sendable {
                 if byName != .orderedSame { return byName == .orderedAscending }
                 return Collation.precedes(a.id, b.id)
             }
+            // The section's last chat closes it without a hairline.
+            for chat in sections[index].chats.indices {
+                sections[index].chats[chat].showsDivider = chat < sections[index].chats.count - 1
+            }
         }
         sections.sort { a, b in
             let rankA = Self.rank(a)
@@ -227,7 +250,7 @@ public struct ProjectHomeData: Equatable, Sendable {
             return Collation.precedes(a.name, b.name)
         }
         self.sections = sections
-        showsMachines = machines.count > 1 || sections.count > 1
+        showsMachines = byHost || machines.count > 1 || sections.count > 1
 
         archivedSessions.sort { a, b in
             if a.lastActivityAt != b.lastActivityAt { return a.lastActivityAt > b.lastActivityAt }
@@ -371,7 +394,7 @@ public struct ProjectHomeData: Equatable, Sendable {
         var rows: [ProjectHomeRow] = []
         for section in sections {
             let projectRows = section.projects.flatMap { Self.projectRows($0, expanded: expanded.contains($0.id)) }
-            guard !section.bots.isEmpty || !section.tasks.isEmpty || !projectRows.isEmpty else { continue }
+            guard !section.bots.isEmpty || !section.tasks.isEmpty || !section.chats.isEmpty || !projectRows.isEmpty else { continue }
             let key = section.machineId ?? "unknown"
             if showsMachines {
                 rows.append(.machine(id: section.machineId, name: section.name))
@@ -384,6 +407,12 @@ public struct ProjectHomeData: Equatable, Sendable {
             if !section.tasks.isEmpty {
                 rows.append(.section(id: "tasks:\(key)", label: .tasks))
                 rows.append(contentsOf: section.tasks.map(ProjectHomeRow.task))
+            }
+            // No heading of their own: the gap parts their card from the
+            // bots' and tasks' above, and is dropped when there are none.
+            if !section.chats.isEmpty {
+                rows.append(.section(id: "chats:\(key)", label: .projects))
+                rows.append(contentsOf: section.chats.map(ProjectHomeRow.chat))
             }
             if !projectRows.isEmpty {
                 rows.append(.section(id: "projects:\(key)", label: .projects))
@@ -601,6 +630,8 @@ public enum ProjectHomeRow: Equatable, Sendable {
     /// A task: drawn as a bot is, with a checkbox glyph for a face; left, or
     /// archived by its owner, from its own row.
     case task(SessionRow)
+    /// A chat grouped by host: drawn as the flat list's row is.
+    case chat(SessionRow)
     case project(ProjectHomeEntry)
     /// `last` closes the tree line.
     case worktree(ProjectWorktree, last: Bool)
@@ -616,6 +647,7 @@ public enum ProjectHomeRow: Equatable, Sendable {
         case .section(let id, _): "section-\(id)"
         case .bot(let row): "bot-\(row.id)"
         case .task(let row): "task-\(row.id)"
+        case .chat(let row): "chat-\(row.id)"
         case .project(let entry): "project-\(entry.id)"
         case .worktree(let worktree, _): "worktree-\(worktree.id)"
         case .worktreeToggle(let toggle): "worktree-toggle-\(toggle.projectId)"

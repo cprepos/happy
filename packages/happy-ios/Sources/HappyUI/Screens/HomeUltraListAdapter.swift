@@ -245,7 +245,7 @@ final class HomeUltraListAdapter {
             }
             // As the table's long press: a flat session, or a project card
             // that can make a workspace.
-            let canHold = { if case .flat(.session)? = entry.row { return true }; if case .project(.task)? = entry.row { return true }; if case .project(.project(let project))? = entry.row { return project.origin != nil }; return false }()
+            let canHold = { if case .flat(.session)? = entry.row { return true }; if case .project(.chat)? = entry.row { return true }; if case .project(.task)? = entry.row { return true }; if case .project(.project(let project))? = entry.row { return project.origin != nil }; return false }()
             let canSelect = entry.row?.sessionId != nil || {
                 switch entry.row {
                 case .flat(.archiveToggle)?, .project(.archiveToggle)?, .project(.worktreeToggle)?: return true
@@ -256,6 +256,7 @@ final class HomeUltraListAdapter {
             // A task's swipe leaves it, as Happy Desktop's row control does.
             var leaves = false
             if case .flat(.session(let row))? = entry.row { leaves = row.avatar.isTask; archives = !row.archived && (!leaves || row.leaves) }
+            else if case .project(.chat(let row))? = entry.row { archives = !row.archived }
             else if case .project(.task(let row))? = entry.row { archives = row.leaves; leaves = true }
             else { archives = false }
             var select: (@MainActor () -> Void)?

@@ -232,7 +232,7 @@ public struct SessionList: Equatable, Sendable {
         self.avatarStyle = settings.avatarStyle
         self.avatarMonochrome = settings.avatarMonochrome
         self.grouping = settings.sessionListGrouping
-        self.projects = settings.sessionListGrouping == .project ? ProjectHomeData(snapshot, clock: clock, unknownMachine: unknownMachine) : nil
+        self.projects = settings.sessionListGrouping == .flat ? nil : ProjectHomeData(snapshot, clock: clock, unknownMachine: unknownMachine, grouping: settings.sessionListGrouping)
     }
 
     /// Whether these chats run on more than one computer, the only time

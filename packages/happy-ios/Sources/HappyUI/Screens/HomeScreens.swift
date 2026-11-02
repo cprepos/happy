@@ -349,6 +349,7 @@ public final class LegacyHomeViewController: UIViewController, ComposeHosting {
         let options: [(SessionListGrouping, String)] = [
             (.flat, Strings.SessionsFilter.flatList),
             (.project, Strings.SessionsFilter.groupByProject),
+            (.machine, Strings.SessionsFilter.groupByMachine),
         ]
         let choices: [UIMenuElement] = options.map { mode, title in
             UIAction(title: title, state: current == mode ? .on : .off) { [weak self] _ in
