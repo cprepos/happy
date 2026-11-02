@@ -312,11 +312,11 @@ enum ChatRows {
     }
 
     /// AskUserQuestion answers through its permission; request_user_input
-    /// through the communication it raised.
+    /// and OpenCode's question through the communication they raised.
     static func questionForm(_ tool: ToolCall, agentState: JSONValue?) -> InlineQuestionForm? {
         switch tool.name {
         case "AskUserQuestion": InlineQuestionForm.askUserQuestion(tool)
-        case "request_user_input": InlineQuestionForm.requestUserInput(tool, communication: AgentCommunications.form(agentState, toolUseId: tool.callId))
+        case "request_user_input", "question": InlineQuestionForm.requestUserInput(tool, communication: AgentCommunications.form(agentState, toolUseId: tool.callId))
         default: nil
         }
     }

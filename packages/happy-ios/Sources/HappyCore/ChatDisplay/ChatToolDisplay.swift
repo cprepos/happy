@@ -50,7 +50,7 @@ public enum ChatToolDisplay {
         "agent_me", "agent_send", "spawn_agent", "stop_workflow", "update_goal", "update_plan", "wait_agent", "wait_for_workflow",
         "workflow", "workflow_status",
     ]
-    static let interactiveQuestionNames: Set<String> = ["AskUserQuestion", "request_user_input"]
+    static let interactiveQuestionNames: Set<String> = ["AskUserQuestion", "request_user_input", "question"]
     /// knownTools entries marked `hidden`: never rendered at all.
     static let hiddenNames: Set<String> = [
         "CodexReasoning", "GeminiReasoning", "think", "change_title", "Skill", "ToolSearch", "tool_search",

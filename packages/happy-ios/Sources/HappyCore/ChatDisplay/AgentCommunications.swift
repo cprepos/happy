@@ -86,6 +86,9 @@ public struct PendingAgentCommunication: Equatable, Sendable {
     public var createdAt: Double
     public var toolUseId: String?
     public var kind: Kind
+    /// False when no transcript tool call can show this form: a sub-agent's
+    /// OpenCode question has none. Nil is the usual, a call that will.
+    public var inTranscript: Bool? = nil
 
     /// The wire `kind`, for answering or cancelling.
     public var rawKind: String {
@@ -142,7 +145,7 @@ public enum AgentCommunications {
             }
             let questions = readQuestions(communication)
             if questions.isEmpty { continue }
-            pending.append(PendingAgentCommunication(id: id, createdAt: createdAt, toolUseId: toolUseId, kind: .form(questions)))
+            pending.append(PendingAgentCommunication(id: id, createdAt: createdAt, toolUseId: toolUseId, kind: .form(questions), inTranscript: communication["inTranscript"]?.boolValue))
         }
         // Equal times keep a stable order by id (a decoded object has none).
         return pending.sorted { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
@@ -173,10 +176,10 @@ public enum AgentCommunications {
         return nil
     }
 
-    /// Choice forms render in the chat; text-only forms and unknown kinds
-    /// go to the banner above the composer.
+    /// Choice forms render in the chat; text-only forms, unknown kinds and
+    /// forms no tool call can show go to the banner above the composer.
     public static func canRenderInline(_ communication: PendingAgentCommunication) -> Bool {
-        guard case .form(let questions) = communication.kind else { return false }
+        guard case .form(let questions) = communication.kind, communication.inTranscript != false else { return false }
         return !questions.isEmpty && questions.allSatisfy { !$0.options.isEmpty }
     }
 

@@ -50,7 +50,7 @@ public enum ToolViewKind: Equatable, Sendable {
         "Edit": .edit, "Bash": .bash, "CodexBash": .codexBash, "CodexPatch": .codexPatch, "CodexDiff": .codexDiff,
         "Write": .write, "write": .write, "search_replace": .edit, "TodoWrite": .todo,
         "ExitPlanMode": .exitPlan, "exit_plan_mode": .exitPlan, "MultiEdit": .multiEdit, "Task": .task, "Agent": .task,
-        "AskUserQuestion": .askUserQuestion, "request_user_input": .requestUserInput,
+        "AskUserQuestion": .askUserQuestion, "request_user_input": .requestUserInput, "question": .requestUserInput,
         "edit": .geminiEdit, "execute": .geminiExecute, "GeminiDiff": .codexDiff, "GeminiPatch": .codexPatch,
         "apply_patch": .codexPatch, "file": .file,
     ]
@@ -184,7 +184,7 @@ public enum ChatToolPresentation {
         "CodexReasoning", "GeminiReasoning", "think", "change_title", "search", "shell", "GeminiBash", "GeminiPatch", "Skill",
     ]
     static let noStatusNames: Set<String> = [
-        "TodoWrite", "change_title", "CodexDiff", "GeminiDiff", "AskUserQuestion", "request_user_input",
+        "TodoWrite", "change_title", "CodexDiff", "GeminiDiff", "AskUserQuestion", "request_user_input", "question",
     ]
     static let hideDefaultErrorNames: Set<String> = [
         "Bash", "CodexBash", "CodexPatch", "apply_patch", "GeminiBash", "GeminiPatch", "CodexDiff", "GeminiDiff",
@@ -389,7 +389,7 @@ public enum ChatToolPresentation {
             return .name(.applyChanges)
         case "CodexDiff", "GeminiDiff":
             return .name(.viewDiff)
-        case "AskUserQuestion":
+        case "AskUserQuestion", "question":
             if let header = input["questions"]?.arrayValue?.first?["header"]?.stringValue, !header.isEmpty { return .literal(header) }
             return .name(.question)
         case "request_user_input":
@@ -435,6 +435,9 @@ public enum ChatToolPresentation {
         case "AskUserQuestion":
             guard let questions = input["questions"]?.arrayValue else { return nil }
             value = questions.count == 1 ? questions[0]["question"]?.stringValue.map(ToolText.literal) : .multipleQuestions(questions.count)
+        case "question":
+            guard let questions = input["questions"]?.arrayValue, !questions.isEmpty else { return nil }
+            value = questions.count == 1 ? questions[0]["question"]?.stringValue.map(ToolText.literal) : .multipleQuestions(questions.count)
         case "request_user_input":
             value = firstUserInputQuestion(input)?["question"]?.stringValue.map(ToolText.literal)
         default:
@@ -470,7 +473,7 @@ public enum ChatToolPresentation {
             if let string = command?.stringValue, !string.trimmed.isEmpty { return false }
             if let parts = command?.arrayValue, parts.contains(where: { !($0.stringValue?.trimmed.isEmpty ?? true) }) { return false }
             return true
-        case "CodexPatch", "apply_patch", "CodexDiff", "GeminiDiff", "AskUserQuestion", "request_user_input":
+        case "CodexPatch", "apply_patch", "CodexDiff", "GeminiDiff", "AskUserQuestion", "request_user_input", "question":
             return false
         default:
             return nil
@@ -488,7 +491,7 @@ public enum ChatToolPresentation {
         case "WebFetch", "WebSearch": .web
         case "TodoWrite": .todo
         case "CodexReasoning", "GeminiReasoning", "think": .reasoning
-        case "AskUserQuestion", "request_user_input": .question
+        case "AskUserQuestion", "request_user_input", "question": .question
         default: nil
         }
     }
