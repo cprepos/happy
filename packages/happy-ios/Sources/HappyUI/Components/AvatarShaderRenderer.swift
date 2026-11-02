@@ -101,6 +101,10 @@ final class LiveAvatarView: UIView {
 @MainActor
 final class AvatarShaderRenderer {
     static let shared = AvatarShaderRenderer()
+    /// `shared` once something has made it, without making it: the first
+    /// `shared` sets up Metal on the main thread, tens of milliseconds.
+    static var made: AvatarShaderRenderer? { isMade ? shared : nil }
+    private static var isMade = false
     static let maxLive = 32
     /// `AvatarShader.framesPerSecond`, unless a harness compares another.
     static var framesPerSecond = AvatarShader.framesPerSecond
@@ -138,6 +142,7 @@ final class AvatarShaderRenderer {
         guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() else { return nil }
         self.device = device
         self.queue = queue
+        Self.isMade = true
         // Turning Reduce Motion or Low Power Mode on or off draws each
         // again, still or moving.
         for name in [UIAccessibility.reduceMotionStatusDidChangeNotification, Notification.Name.NSProcessInfoPowerStateDidChange] {

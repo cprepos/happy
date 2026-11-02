@@ -224,7 +224,8 @@ public final class GymFrameMeter: NSObject {
         started = CACurrentMediaTime()
         peakFootprint = Self.footprint()
         scriptPoints = 0
-        AvatarShaderRenderer.shared?.resetCost()
+        // Not made just to be reset: the run's first frame would wait for it.
+        AvatarShaderRenderer.made?.resetCost()
     }
 
     /// `key=value` pairs, milliseconds unless named otherwise.
@@ -285,7 +286,7 @@ public final class GymFrameMeter: NSObject {
         var extra: [(String, String)] = [("scripting", script == nil ? "0" : "1")]
         // The live avatars (Animated Avatars): frames
         // drawn, the GPU's time on each and the main thread's encoding it.
-        if let cost = AvatarShaderRenderer.shared?.cost {
+        if let cost = AvatarShaderRenderer.made?.cost {
             extra += [
                 ("shaderFrames", "\(cost.ticks)"),
                 ("shaderGpuMean", String(format: "%.3f", cost.gpuMean * 1000)),
