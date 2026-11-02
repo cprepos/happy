@@ -100,7 +100,7 @@ public struct AccountSettings: Equatable, Sendable {
     public var avatarMonochrome: Bool { bool("avatarMonochrome") }
     public var showFlavorIcons: Bool { bool("showFlavorIcons") }
     public var sessionListGrouping: SessionListGrouping {
-        string("sessionListGrouping") == SessionListGrouping.project.rawValue ? .project : .flat
+        string("sessionListGrouping").flatMap(SessionListGrouping.init(rawValue:)) ?? .flat
     }
     public var userMessageBubbleColor: BubbleColor { BubbleColor(normalizing: string("userMessageBubbleColor")) }
     /// nil follows the device.
@@ -144,9 +144,20 @@ public enum AvatarStyle: String, CaseIterable, Sendable {
     }
 }
 
-public enum SessionListGrouping: String, Sendable {
+public enum SessionListGrouping: String, CaseIterable, Sendable {
     case flat
     case project
+    /// Each computer's chats as flat rows under its heading.
+    case machine
+
+    /// What a tap on Appearance's row moves to (settings/appearance.tsx).
+    public var next: SessionListGrouping {
+        switch self {
+        case .flat: .project
+        case .project: .machine
+        case .machine: .flat
+        }
+    }
 }
 
 /// utils/userMessageBubbleColor.ts presets.

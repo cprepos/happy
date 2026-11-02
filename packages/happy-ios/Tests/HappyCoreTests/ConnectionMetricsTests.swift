@@ -70,7 +70,7 @@ final class MetricsRingTests: XCTestCase {
         XCTAssertEqual(ring.totals(at: 1_599).bytesPerMinute, [3, 4, 0, 0, 0, 0, 0, 0, 0, 8])
         // Ten seconds on the minutes move with the buckets: the window starts
         // at bucket 101, so 1000's byte is out and minute 0 is 1010–1069.
-        XCTAssertEqual(ring.totals(at: 1_609).bytesPerMinute, [2 + 4, 0, 0, 0, 0, 0, 0, 0, 0, 8])
+        XCTAssertEqual(ring.totals(at: 1_609).bytesPerMinute, [Int64(2 + 4), 0, 0, 0, 0, 0, 0, 0, 0, 8])
         // From bucket 106 (1060 s): 1599 is in the ninth minute of ten.
         XCTAssertEqual(ring.totals(at: 1_650).bytesPerMinute, [4, 0, 0, 0, 0, 0, 0, 0, 8, 0])
     }

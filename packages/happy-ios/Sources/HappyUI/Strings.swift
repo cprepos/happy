@@ -242,6 +242,16 @@ public enum Strings {
         public static var groupingTitle: String { localized("sessionsFilter.groupingTitle", "Grouping") }
         public static var flatList: String { localized("sessionsFilter.flatList", "Flat List") }
         public static var groupByProject: String { localized("sessionsFilter.groupByProject", "Group by Project") }
+        public static var groupByMachine: String { localized("sessionsFilter.groupByMachine", "Group by Host") }
+
+        /// A grouping's name, as Appearance's row shows it.
+        public static func title(_ grouping: SessionListGrouping) -> String {
+            switch grouping {
+            case .flat: flatList
+            case .project: groupByProject
+            case .machine: groupByMachine
+            }
+        }
     }
 
     public enum SettingsFeatures {

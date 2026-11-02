@@ -99,6 +99,7 @@ private extension HomeListRow {
         case .project(.section): "gap"
         case .project(.bot): "bot"
         case .project(.task): "task"
+        case .project(.chat): "chat"
         case .project(.project): "project"
         case .project(.worktree): "worktree"
         case .project(.worktreeToggle): "toggle"

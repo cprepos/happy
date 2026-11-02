@@ -334,7 +334,8 @@ public actor MediaDownloads {
     }
 
     private func serveReaders(_ job: Job, partial: PartialFile) {
-        let ready = job.readers.filter { satisfied($0, job: job) }
+        var ready: [Reader] = []
+        for reader in job.readers where satisfied(reader, job: job) { ready.append(reader) }
         guard !ready.isEmpty else { return }
         let tokens = Set(ready.map(\.token))
         job.readers.removeAll { tokens.contains($0.token) }

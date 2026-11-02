@@ -197,14 +197,14 @@ struct HomeRowDrawing: Sendable {
             guard let frame else { return }
             parts.append(to: &plan, at: frame)
         }
-        func session(_ row: SessionRow, archived: Bool) {
+        func session(_ row: SessionRow, archived: Bool, flatLayout: Bool) {
             let name = row.title ?? catalog("session.newChat")
-            plan.accessibilityLabel = [name, row.state == .permissionRequired ? catalog("status.permissionRequired") : row.state == .inputRequired ? catalog("status.inputRequired") : row.corner != .timestamp ? catalog("status.unread") : nil, row.projectName, row.workspaceName, row.timestamp].compactMap { $0 }.joined(separator: ", ")
+            plan.accessibilityLabel = [name, row.state == .permissionRequired ? catalog("status.permissionRequired") : row.state == .inputRequired ? catalog("status.inputRequired") : row.corner != .timestamp ? catalog("status.unread") : nil, row.projectName, row.harnessName, row.hostName, row.workspaceName, row.timestamp].compactMap { $0 }.joined(separator: ", ")
             plan.avatar = row.avatar
-            if grouped { plan.avatar?.harness = nil }
-            plan.avatarAlpha = archived || (!grouped && row.faded) ? 0.6 : 1
-            plan.contentAlpha = archived || (!grouped && row.faded) ? 0.6 : 1
-            if grouped {
+            if !flatLayout { plan.avatar?.harness = nil }
+            plan.avatarAlpha = archived || (flatLayout && row.faded) ? 0.6 : 1
+            plan.contentAlpha = archived || (flatLayout && row.faded) ? 0.6 : 1
+            if !flatLayout {
                 plan.accessibilityLabel = [name, row.timestamp].joined(separator: ", ")
                 let layout = ProjectChatRowLayout(width: rowWidth, name: measured(name, TextStyles.projectName), corner: row.corner == .timestamp ? measured(row.timestamp, TextStyles.projectTimestamp) : .fixed(width: ProjectListMetrics.chatDotSize, height: ProjectListMetrics.chatDotSize))
                 plan.size = layout.size
@@ -218,7 +218,7 @@ struct HomeRowDrawing: Sendable {
                 let avatarSize = inCard ? HomeCardLayout.Metrics.sessionAvatar : FlatSessionRowLayout.Metrics.avatarSize
                 separatorX = FlatSessionRowLayout.Metrics.contentX(avatar: avatarSize)
                 // In a card, the card draws the hairline.
-                let layout = FlatSessionRowLayout(.init(width: rowWidth, title: measured(name, TextStyles.sessionTitle), timestamp: measured(row.timestamp, TextStyles.sessionTimestamp), project: measured(row.projectName, TextStyles.sessionProject), workspace: row.workspaceName.map { measured($0, TextStyles.sessionWorkspace) }, branchIcon: environment.rows.branchIcon, changes: row.changes == nil ? nil : changesSize(parts).size, draftIcon: row.hasDraft ? draftBox : nil, showsDivider: !inCard && row.showsDivider, lines: environment.rows.sessionLines, avatarSize: avatarSize))
+                let layout = FlatSessionRowLayout(.init(width: rowWidth, title: measured(name, TextStyles.sessionTitle), timestamp: measured(row.timestamp, TextStyles.sessionTimestamp), project: measured(row.projectName, TextStyles.sessionProject), workspace: row.workspaceName.map { measured($0, TextStyles.sessionWorkspace) }, harness: row.harnessName.map { measured($0, TextStyles.sessionHarness) }, host: row.hostName.map { measured($0, TextStyles.sessionWorkspace) }, branchIcon: environment.rows.branchIcon, changes: row.changes == nil ? nil : changesSize(parts).size, draftIcon: row.hasDraft ? draftBox : nil, showsDivider: !inCard && row.showsDivider, lines: environment.rows.sessionLines, avatarSize: avatarSize))
                 plan.size = layout.size
                 plan.avatarFrame = layout.avatar
                 plan.avatarAlpha = row.faded ? 0.5 : 1
@@ -227,6 +227,9 @@ struct HomeRowDrawing: Sendable {
                 if row.corner == .timestamp { text(row.timestamp, TextStyles.sessionTimestamp, Palette.textSecondary, layout.timestamp) }
                 else { fill(row.corner == .blockedDot ? Palette.sessionBlockedDot : Palette.sessionReadyDot, layout.dot, round: true) }
                 text(row.projectName, TextStyles.sessionProject, Palette.textSecondary, layout.project)
+                if let name = row.harnessName, let frame = layout.harness { text(name, TextStyles.sessionHarness, Palette.textSecondary, frame) }
+                if let frame = layout.hostIcon { plan.marks.append(.icon("desktop-outline", 13, Palette.textSecondary, frame)) }
+                if let name = row.hostName, let frame = layout.host { text(name, TextStyles.sessionWorkspace, Palette.textSecondary, frame) }
                 if let name = row.workspaceName, let frame = layout.workspace { text(name, TextStyles.sessionWorkspace, Palette.textSecondary, frame) }
                 if let frame = layout.branchIcon { plan.marks.append(.icon("git-branch-outline", 13, Palette.textSecondary, frame)) }
                 if let frame = layout.draftIcon { plan.marks.append(.icon("create-outline", 13, Palette.textSecondary, frame)) }
@@ -236,9 +239,11 @@ struct HomeRowDrawing: Sendable {
             }
         }
         switch row {
-        case .flat(.session(let row)): session(row, archived: false)
-        case .project(.bot(let row)), .project(.task(let row)): session(row, archived: false)
-        case .project(.archived(let row)): session(row, archived: true)
+        case .flat(.session(let row)): session(row, archived: false, flatLayout: !grouped)
+        case .project(.bot(let row)), .project(.task(let row)): session(row, archived: false, flatLayout: !grouped)
+        // A chat grouped by host is the flat list's row, under a heading.
+        case .project(.chat(let row)): session(row, archived: false, flatLayout: true)
+        case .project(.archived(let row)): session(row, archived: true, flatLayout: !grouped)
         case .flat(.dayHeader), .project(.section), .project(.archiveHeader):
             // Only the room between two cards.
             plan.size = CGSize(width: width, height: HomeCardLayout.Metrics.gap)
@@ -282,8 +287,8 @@ struct HomeRowDrawing: Sendable {
             plan.accessibilityLabel = value; plan.accessibilityValue = toggle.expanded ? "expanded" : "collapsed"
         }
         switch row {
-        case .flat(.session) where !carded: plan.press = .fill(Palette.surfaceSelected)
-        case .flat(.session), .project(.project), .project(.worktree), .project(.worktreeToggle), .project(.bot), .project(.task), .project(.archived):
+        case .flat(.session) where !carded, .project(.chat) where !carded: plan.press = .fill(Palette.surfaceSelected)
+        case .flat(.session), .project(.chat), .project(.project), .project(.worktree), .project(.worktreeToggle), .project(.bot), .project(.task), .project(.archived):
             plan.press = .fill(carded ? Palette.groupedCellHighlight : Palette.surfacePressed)
         case .flat(.archiveToggle), .project(.archiveToggle): plan.press = .dim
         case .flat(.dayHeader), .project(.machine), .project(.section), .project(.archiveHeader): plan.press = .none

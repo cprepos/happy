@@ -25,7 +25,7 @@ public enum HomeListRow: Equatable, Sendable {
     /// The chat a tap on the row opens, if any.
     public var sessionId: String? {
         switch self {
-        case .flat(.session(let row)), .project(.bot(let row)), .project(.task(let row)), .project(.archived(let row)): row.id
+        case .flat(.session(let row)), .project(.bot(let row)), .project(.task(let row)), .project(.chat(let row)), .project(.archived(let row)): row.id
         case .project(.project(let entry)): entry.sessionId
         case .project(.worktree(let worktree, _)): worktree.sessionId
         default: nil
@@ -36,7 +36,7 @@ public enum HomeListRow: Equatable, Sendable {
     /// between two cards or the archive toggle.
     public var isCardRow: Bool {
         switch self {
-        case .flat(.session), .project(.bot), .project(.task), .project(.project), .project(.worktree),
+        case .flat(.session), .project(.bot), .project(.task), .project(.chat), .project(.project), .project(.worktree),
              .project(.worktreeToggle), .project(.archived):
             true
         case .flat(.dayHeader), .flat(.archiveToggle), .project(.machine), .project(.section), .project(.archiveToggle),
@@ -132,7 +132,7 @@ public struct HomeListModel: Equatable, Sendable {
                 case .archiveToggle: ids.append(.projectArchiveToggle)
                 default: ids.append(.project(row.key))
                 }
-                rows.append(.project(Self.rendered(row)))
+                rows.append(.project(Self.rendered(row, draftSessionIds: draftSessionIds)))
             }
         } else {
             ids.reserveCapacity(list.items.count)
@@ -163,22 +163,30 @@ public struct HomeListModel: Equatable, Sendable {
     }
 
     /// A bot's, a task's or an archived chat's row (ProjectHomeList.tsx
-    /// `ChatRow`) draws no line changes either.
-    private static func rendered(_ row: ProjectHomeRow) -> ProjectHomeRow {
+    /// `ChatRow`) draws no line changes or harness name either. A chat
+    /// grouped by host draws what the flat list's row draws.
+    private static func rendered(_ row: ProjectHomeRow, draftSessionIds: Set<String>) -> ProjectHomeRow {
         switch row {
+        case .chat(var session):
+            session.lastActivityAt = 0
+            session.hasDraft = draftSessionIds.contains(session.id)
+            return .chat(session)
         case .bot(var session):
             session.lastActivityAt = 0
             session.changes = nil
+            session.harnessName = nil
             session.hasDraft = false
             return .bot(session)
         case .task(var session):
             session.lastActivityAt = 0
             session.changes = nil
+            session.harnessName = nil
             session.hasDraft = false
             return .task(session)
         case .archived(var session):
             session.lastActivityAt = 0
             session.changes = nil
+            session.harnessName = nil
             session.hasDraft = false
             return .archived(session)
         default:

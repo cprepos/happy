@@ -22,6 +22,11 @@ extension Palette {
     )
 }
 
+extension TextStyles {
+    /// FlatSessionRow's `harness`: the workspace's size and line, heavier.
+    public static let sessionHarness = TextStyle(.semiBold, size: 13, lineHeight: 18)
+}
+
 /// The glass controls' drop shadow (Header.tsx): black, 0/4 offset, radius
 /// 20, at 0.06 in light and 0.24 in dark.
 public enum HeaderGlassShadow {

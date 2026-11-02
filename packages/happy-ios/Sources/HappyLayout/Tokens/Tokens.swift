@@ -1,6 +1,13 @@
 import Foundation
 #if canImport(CoreGraphics)
 import CoreGraphics
+#else
+/// CoreGraphics' vector, which Foundation lacks where there is no CoreGraphics.
+public struct CGVector: Equatable, Sendable {
+    public var dx: CGFloat
+    public var dy: CGFloat
+    public init(dx: CGFloat, dy: CGFloat) { self.dx = dx; self.dy = dy }
+}
 #endif
 
 // V2: happy-desktop-ui's spaces sidebar (`Sidebar.tsx`,

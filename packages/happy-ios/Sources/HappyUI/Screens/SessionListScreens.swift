@@ -100,6 +100,8 @@ final class SessionListViewController: UIViewController {
             switch self.row(id) {
             case .flat(.session(let row))? where !row.archived:
                 if !row.avatar.isTask { self.actions.archive(row.id) } else if row.leaves { self.actions.leave(row.id) }
+            case .project(.chat(let row))?:
+                self.actions.archive(row.id)
             case .project(.task(let row))? where row.leaves:
                 self.actions.leave(row.id)
             default:
@@ -377,7 +379,7 @@ final class SessionListViewController: UIViewController {
     private func hold(_ id: HomeListRow.ID) {
         guard context.account.session === session, let item = self.row(id) else { return }
         switch item {
-        case .flat(.session(let row)), .project(.task(let row)): actions.present(sessionId: row.id)
+        case .flat(.session(let row)), .project(.chat(let row)), .project(.task(let row)): actions.present(sessionId: row.id)
         case .project(.project(let entry)): showProjectActions(entry)
         default: break
         }

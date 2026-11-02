@@ -179,10 +179,10 @@ public final class SettingsAppearanceViewController: UIViewController {
         sections.append(ItemGroupView(title: Strings.SettingsAppearance.display, footer: Strings.SettingsAppearance.displayDescription, rows: [
             ItemRowView(
                 title: Strings.SessionsFilter.groupingTitle,
-                detail: grouping == .project ? Strings.SessionsFilter.groupByProject : Strings.SessionsFilter.flatList,
+                detail: Strings.SessionsFilter.title(grouping),
                 icon: ItemIcon(.ionicons("list-outline"), tint: purple)
             ) { [weak self] in
-                self?.set("sessionListGrouping", .string(grouping == .project ? SessionListGrouping.flat.rawValue : SessionListGrouping.project.rawValue))
+                self?.set("sessionListGrouping", .string(grouping.next.rawValue))
                 self?.rebuild()
             },
             toggle(

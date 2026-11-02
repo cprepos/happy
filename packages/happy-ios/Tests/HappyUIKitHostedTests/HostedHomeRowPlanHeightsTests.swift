@@ -53,7 +53,7 @@ final class HostedHomeRowPlanHeightsTests: XCTestCase {
             let environment = await HomeTextEnvironment.make(text)
             let lines = environment.rows.sessionLines
             let avatar = HomeCardLayout.Metrics.sessionAvatar
-            let sessionHeights = [false, true].map { FlatSessionRowLayout.height(lines: lines, workspace: $0, branchIcon: environment.rows.branchIcon.height, avatarSize: avatar) }
+            let sessionHeights = [false, true].map { FlatSessionRowLayout.height(lines: lines, workspace: $0, harness: true, branchIcon: environment.rows.branchIcon.height, avatarSize: avatar) }
             var sessions = 0
             var drawn = 0
             for index in list.loadedIndexRange {
