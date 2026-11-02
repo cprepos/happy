@@ -58,6 +58,7 @@ final class ChatPlanView: UIView {
     private var media: [ChatMediaView] = []
     private var fileStatuses: [ChatFileStatusView] = []
     private var pages: [InlinePageView] = []
+    private var questionFields: [ChatQuestionFieldView] = []
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -158,6 +159,7 @@ final class ChatPlanView: UIView {
         var mediaIndex = 0
         var fileStatusIndex = 0
         var pageIndex = 0
+        var questionFieldIndex = 0
         var order: [UIView] = []
         for item in items {
             switch item {
@@ -278,6 +280,16 @@ final class ChatPlanView: UIView {
                 view.setLayoutFrame(frame)
                 view.apply(page)
                 order.append(view)
+            case .embed(.questionField(let field), let frame):
+                // Taken in order, so a row planned for each keystroke keeps
+                // the view being typed in, and with it the keyboard.
+                let view = take(&questionFields, &questionFieldIndex) { ChatQuestionFieldView() }
+                view.onChange = { [weak self] text in
+                    self?.onAction?(.questionCustom(toolId: field.toolId, questionId: field.questionId, text: text))
+                }
+                view.setLayoutFrame(frame)
+                view.apply(field)
+                order.append(view)
             }
         }
         for view in boxes[boxIndex...] { view.isHidden = true }
@@ -326,6 +338,11 @@ final class ChatPlanView: UIView {
             view.isHidden = true
         }
         for view in pages[pageIndex...] {
+            view.apply(nil)
+            view.isHidden = true
+        }
+        for view in questionFields[questionFieldIndex...] {
+            view.onChange = nil
             view.apply(nil)
             view.isHidden = true
         }

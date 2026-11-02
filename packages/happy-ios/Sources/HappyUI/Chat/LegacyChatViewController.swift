@@ -1805,6 +1805,16 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
             scheduleMeasure()
         case .questionSubmit(let toolId):
             submitQuestion(toolId)
+        case .questionCustom(let toolId, let questionId, let text):
+            guard let form = questionForms[toolId]?.form else { return }
+            var state = questionDrafts[toolId] ?? ChatQuestionState(form: form)
+            state.form = form
+            guard state.canInteract, !state.submitting else { return }
+            state.selections.custom[questionId] = text
+            questionDrafts[toolId] = state
+            scheduleMeasure()
+        case .questionDismiss(let toolId):
+            dismissQuestion(toolId)
         case .mermaidHeight(let row, let index, let height):
             // Planned again off the main thread, only if the box grows.
             guard let kept = MarkdownLayout.mermaidHeightToKeep(
@@ -1904,7 +1914,8 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         state.form = form
         guard state.canInteract, !state.submitting, state.selections.allAnswered(form.questions) else { return }
         let answers = state.selections.answers(form.questions)
-        state.sent = answers
+        let written = state.selections.written(form.questions)
+        state.sent = state.selections.shown(form.questions)
         state.submitting = true
         questionDrafts[toolId] = state
         scheduleMeasure()
@@ -1918,7 +1929,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
                     let input = InlineQuestionForm.askUserQuestionInput(tool, answers: answers)
                     try await controls.allow(sessionId: sessionId, permissionId: id, mode: nil, allowedTools: nil, decision: .approved, updatedInput: input)
                 case .communication(let id, let kind):
-                    try await controls.answerQuestion(sessionId: sessionId, id: id, answers: InlineQuestionForm.communicationAnswers(form.questions, answers: answers), kind: kind)
+                    try await controls.answerQuestion(sessionId: sessionId, id: id, answers: InlineQuestionForm.communicationAnswers(form.questions, answers: answers, written: written), kind: kind)
                 }
             } catch {
                 failed = true
@@ -1926,6 +1937,39 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
             guard let self, var state = self.questionDrafts[toolId] else { return }
             state.submitting = false
             if failed { state.sent = nil }
+            self.questionDrafts[toolId] = state
+            self.scheduleMeasure()
+        }
+    }
+
+    /// The X on a question form: closes it without an answer, telling the
+    /// agent to carry on rather than the default refusal's stop. If that
+    /// fails, the form stays as it was, and can still be answered.
+    private func dismissQuestion(_ toolId: String) {
+        guard let entry = questionForms[toolId], let reply = entry.form.reply else { return }
+        var state = questionDrafts[toolId] ?? ChatQuestionState(form: entry.form)
+        state.form = entry.form
+        guard state.canInteract, !state.submitting else { return }
+        state.submitting = true
+        questionDrafts[toolId] = state
+        scheduleMeasure()
+        let controls = services.controls
+        let sessionId = self.chatId
+        Task { [weak self] in
+            var failed = false
+            do {
+                switch reply {
+                case .permission(let id):
+                    try await controls.deny(sessionId: sessionId, permissionId: id, mode: nil, allowedTools: nil, decision: nil, reason: InlineQuestionForm.dismissReason)
+                case .communication(let id, let kind):
+                    try await controls.cancelQuestion(sessionId: sessionId, id: id, kind: kind)
+                }
+            } catch {
+                failed = true
+            }
+            guard let self, var state = self.questionDrafts[toolId] else { return }
+            state.submitting = false
+            if !failed { state.dismissedHere = true }
             self.questionDrafts[toolId] = state
             self.scheduleMeasure()
         }

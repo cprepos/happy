@@ -107,7 +107,8 @@ final class ChatRowsTextSizeTests: XCTestCase {
                     json(["label": .string("Release")]),
                 ]),
             ])])]),
-            createdAt: 0
+            createdAt: 0,
+            permission: ToolPermission(id: "q1", status: .pending)
         )
         let todos = ToolCall(
             name: "TodoWrite", state: .completed,

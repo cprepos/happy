@@ -191,7 +191,7 @@ final class ChatUltraRowView: ListRowView, UIGestureRecognizerDelegate {
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
         var target = touch.view
         while let view = target, view !== self {
-            if view is UIControl { return false }
+            if view is UIControl || view is UITextView { return false }
             target = view.superview
         }
         return true

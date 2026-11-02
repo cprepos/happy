@@ -67,7 +67,8 @@ final class ChatRowWordsTests: XCTestCase {
                 "question": .string("Which build?"), "header": .string("Build"),
                 "options": .array([.object(["label": .string("Debug")]), .object(["label": .string("Release")])]),
             ])])]),
-            createdAt: 0
+            createdAt: 0,
+            permission: ToolPermission(id: "q1", status: .pending)
         )
         let done = ToolCall(name: "Bash", state: .completed, input: .object(["command": .string("ls")]), createdAt: 0, startedAt: 0, completedAt: 3000)
         let group = ChatWorkGroup(id: "g1", turnUserMessageId: nil, messages: [.toolCall(ToolCallMessage(id: "g1-t", createdAt: 0, tool: done))], startedAt: 0, completedAt: 12_000)

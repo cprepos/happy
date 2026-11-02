@@ -326,6 +326,9 @@ public enum ChatTextStyles {
     public static let inlineSubmit = ChatTextStyle(.system(.semibold), size: 14)
     public static let inlineSubmittedHeader = ChatTextStyle(.system(.semibold), size: 13)
     public static let inlineSubmittedValue = ChatTextStyle(.system(.regular), size: 13)
+    public static let inlineCustomInput = ChatTextStyle(.system(.regular), size: 14)
+    // RequestUserInputView.tsx
+    public static let inlineQuestionLoading = ChatTextStyle(.system(.regular), size: 14)
 
     // AgentQuestionModal.tsx
     public static let sheetAction = ChatTextStyle(.plex(.regular), size: 16)

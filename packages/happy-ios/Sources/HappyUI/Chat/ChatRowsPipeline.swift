@@ -71,6 +71,7 @@ struct ChatRowsApplied: Sendable {
     var footer: Footer?
     var facts: ChatSnapshotFacts?
     var questionForms: [String: ChatQuestionForm] = [:]
+    var questionsAwaiting: Set<String> = []
     var graceEnd: Int64?
     var pins = 0
     var ticks = 0
@@ -98,6 +99,8 @@ struct ChatRowsUpdate: Sendable {
     var list: ChatListUpdate?
     var facts: ChatSnapshotFacts?
     var questionForms: [String: ChatQuestionForm]?
+    /// The question tools still waiting for their data, by message id.
+    var questionsAwaiting: Set<String>?
     var graceEnd: Int64?
     var now: Int64
     /// Pages of history the rendered window has taken in.
@@ -166,6 +169,7 @@ enum ChatRows {
         )
         var graceEnd: Int64?
         var forms: [String: ChatQuestionForm] = [:]
+        var awaiting: Set<String> = []
         let result = ChatRowsDerivation.derive(
             messages: snapshot.messages,
             window: state.window,
@@ -177,7 +181,7 @@ enum ChatRows {
             planner: planner,
             applied: applied.rows,
             makeRows: { items, groups in
-                rows(items, groups: groups, delivery: snapshot.delivery, agentState: session.agentState, view: view, style: style, now: now, graceEnd: &graceEnd, forms: &forms)
+                rows(items, groups: groups, delivery: snapshot.delivery, agentState: session.agentState, view: view, style: style, now: now, graceEnd: &graceEnd, forms: &forms, awaiting: &awaiting)
             },
             id: \.id,
             recolour: input.recolour
@@ -193,6 +197,11 @@ enum ChatRows {
         if forms != applied.questionForms {
             update.questionForms = forms
             state.questionForms = forms
+            changed = true
+        }
+        if awaiting != applied.questionsAwaiting {
+            update.questionsAwaiting = awaiting
+            state.questionsAwaiting = awaiting
             changed = true
         }
         if graceEnd != applied.graceEnd {
@@ -232,7 +241,8 @@ enum ChatRows {
     }
 
     /// One input per shown row, newest first. Collects the question forms
-    /// in the window and the next time a waiting message's status is due.
+    /// in the window, the questions still waiting for their data, and the
+    /// next time a waiting message's status is due.
     static func rows(
         _ items: [ChatListItem],
         groups: ChatWorkGroupState,
@@ -242,7 +252,8 @@ enum ChatRows {
         style: ChatRowStyle,
         now: Int64,
         graceEnd: inout Int64?,
-        forms: inout [String: ChatQuestionForm]
+        forms: inout [String: ChatQuestionForm],
+        awaiting: inout Set<String>
     ) -> [ChatRowInput] {
         items.filter { ChatRowRenderer.isShown($0, style: style) }.map { item in
             var delivery: OutboxDelivery?
@@ -265,6 +276,7 @@ enum ChatRows {
             }
             var busy: PermissionButton.Kind?
             var question: ChatQuestionState?
+            var questionLoading = false
             var diffs: [Int: Set<Int>] = [:]
             if case .message(.toolCall(let call)) = item {
                 // An attachment is its own outbox item, under its call id.
@@ -278,9 +290,14 @@ enum ChatRows {
                     state.form = form
                     question = state
                 }
+                if InlineQuestionForm.isWaitingForData(call.tool, agentState: agentState) {
+                    awaiting.insert(call.id)
+                    // AskUserQuestion already has its questions, from the input.
+                    questionLoading = call.tool.name != "AskUserQuestion"
+                }
             }
             return ChatRowInput(
-                item: item, delivery: delivery, expanded: expanded, permissionBusy: busy, question: question, diffExpanded: diffs,
+                item: item, delivery: delivery, expanded: expanded, permissionBusy: busy, question: question, questionLoading: questionLoading, diffExpanded: diffs,
                 userStatus: userStatus, copied: copied, mermaid: view.mermaidHeights[item.id] ?? [:], style: style
             )
         }
