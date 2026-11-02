@@ -26,6 +26,9 @@ public actor SessionPresence {
         /// Whether its beats reach this account, so that silence means
         /// anything. Happy Agent's chats and tasks shared by others don't.
         var heartbeats = true
+        /// On this phone's clock, when it last had news of it. `latestAt` is
+        /// the computer's clock, so it can't be held against `now`.
+        var heardAt: Int64 = 0
         var overlay: PresenceOverlayValue {
             PresenceOverlayValue(active: active, thinking: thinking, latestAt: latestAt,
                                  displayedAt: displayedAt, thinkingAt: thinkingAt)
@@ -82,6 +85,8 @@ public actor SessionPresence {
         guard !stopped else { return }
         let time = now()
         if sessions[id] == nil, let row = try? store.session(id: id) { seed(row) }
+        // Before the stamp check: a beat from a clock running behind is still a beat.
+        if active { sessions[id]?.heardAt = time }
         guard var state = sessions[id], activeAt >= state.latestAt else { return }
         let criticalTimestamp = activeAt - state.persistedAt > options.persistenceIntervalMs
         let flip = state.active != active || state.thinking != (active && thinking)
@@ -109,6 +114,7 @@ public actor SessionPresence {
         guard !stopped else { return }
         let time = now()
         if machines[id] == nil, let row = try? store.machine(id: id) { seed(row) }
+        if active { machines[id]?.heardAt = time }
         guard var state = machines[id], activeAt >= state.latestAt else { return }
         let criticalTimestamp = activeAt - state.persistedAt > options.persistenceIntervalMs
         let flip = state.active != active
@@ -131,6 +137,8 @@ public actor SessionPresence {
             if var state = sessions[row.id] {
                 guard row.updatedAt >= (previous[row.id]?.updatedAt ?? 0), row.activeAt >= state.latestAt else { continue }
                 let changed = row.active != state.active
+                // Its first beat can come well after the row says it's back.
+                if row.active, row.activeAt > state.latestAt { state.heardAt = now() }
                 state.active = row.active
                 state.thinking = state.thinking && row.active
                 state.latestAt = row.activeAt
@@ -148,6 +156,7 @@ public actor SessionPresence {
             if var state = machines[row.id] {
                 guard row.activeAt >= state.latestAt else { continue }
                 if row.active != state.active { state.displayedAt = row.activeAt }
+                if row.active, row.activeAt > state.latestAt { state.heardAt = now() }
                 state.active = row.active
                 state.latestAt = row.activeAt
                 machines[row.id] = state
@@ -265,7 +274,7 @@ public actor SessionPresence {
 
     private func isSilent(_ state: State, at time: Int64) -> Bool {
         guard let listeningSince, state.active, state.heartbeats else { return false }
-        return time - max(listeningSince, state.latestAt) >= options.silenceLimitMs
+        return time - max(listeningSince, state.heardAt) >= options.silenceLimitMs
     }
 
     private static func heartbeats(_ row: SessionRecord) -> Bool { !row.isRig && !row.isTask }
@@ -279,14 +288,14 @@ public actor SessionPresence {
         let state = State(active: row.active, thinking: row.thinking, latestAt: row.activeAt, persistedAt: row.activeAt,
                           displayedAt: row.activeAt, thinkingAt: row.thinkingAt,
                           lastSeen: row.active ? nil : ComposerStatus.lastSeen(activeAt: row.activeAt, now: now()),
-                          heartbeats: Self.heartbeats(row))
+                          heartbeats: Self.heartbeats(row), heardAt: now())
         sessions[row.id] = state
         store.setSessionPresenceOverlay(id: row.id, value: state.overlay)
     }
 
     private func seed(_ row: MachineRecord) {
         let state = State(active: row.active, thinking: false, latestAt: row.activeAt, persistedAt: row.activeAt,
-                          displayedAt: row.activeAt, thinkingAt: 0, lastSeen: nil)
+                          displayedAt: row.activeAt, thinkingAt: 0, lastSeen: nil, heardAt: now())
         machines[row.id] = state
         store.setMachinePresenceOverlay(id: row.id, value: state.overlay)
     }

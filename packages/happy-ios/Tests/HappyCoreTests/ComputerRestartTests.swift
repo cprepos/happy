@@ -75,6 +75,74 @@ final class ComputerRestartPresenceTests: XCTestCase {
         XCTAssertEqual(try store.machine(id: "m1")?.active, true)
     }
 
+    func testAComputerWhoseClockRunsBehindThePhoneIsNotSilent() async throws {
+        let (store, clock, presence) = try fixture()
+        await presence.tick()
+        await presence.setListening(true)
+        // Five minutes behind: inside what the server passes on, and stamps
+        // older than the row's, which `activity` won't take as news.
+        for _ in 0..<40 {
+            await pass(tickStep, clock, presence)
+            await presence.activity(id: "s", active: true, activeAt: clock.now - 300_000, thinking: false)
+            await presence.machineActivity(id: "m1", active: true, activeAt: clock.now - 300_000)
+            XCTAssertEqual(try store.session(id: "s")?.active, true)
+            XCTAssertEqual(try store.machine(id: "m1")?.active, true)
+        }
+    }
+
+    func testARowThatSaysItIsBackGetsTheWholeWaitForItsFirstBeat() async throws {
+        let (store, clock, presence) = try fixture()
+        await presence.tick()
+        await presence.setListening(true)
+        await pass(90_000, clock, presence)
+        var row = try XCTUnwrap(store.session(id: "s"))
+        XCTAssertFalse(row.active)
+
+        // The computer's clock, a little behind: the row is newer than what
+        // was last heard, and far older than the phone's now.
+        let previous = row
+        row.active = true
+        row.activeAt += 1_000
+        row.updatedAt += 1
+        await presence.prepareSessions([row], previous: ["s": previous])
+        try store.upsertSessions([row])
+
+        await pass(75_000, clock, presence)
+        XCTAssertEqual(try store.session(id: "s")?.active, true)
+        await pass(15_000, clock, presence)
+        XCTAssertEqual(try store.session(id: "s")?.active, false, "and only that")
+    }
+
+    /// The chat's hint and the lists read the same feed, so one beat clears
+    /// both, however the session came to be stopped.
+    func testABeatEndsTheStoppedStateOnTheChatAndInTheLists() async throws {
+        let claude: JSONValue = ["machineId": "m1", "claudeSessionId": "c-1", "path": "/Users/a/repo"]
+        for silent in [true, false] {
+            let (store, clock, presence) = try fixture(metadata: claude)
+            await presence.tick()
+            await presence.setListening(true)
+            let home = HomeFeed(store: store).snapshots()
+            _ = try await syncPerfNext(home)
+
+            if silent {
+                await pass(90_000, clock, presence)
+            } else {
+                clock.now += 1_000
+                await presence.activity(id: "s", active: false, activeAt: clock.now, thinking: false)
+            }
+            var stopped = try await syncPerfNext(home)
+            while hint(stopped) == nil { stopped = try await syncPerfNext(home) }
+
+            clock.now += 1_000
+            await presence.activity(id: "s", active: true, activeAt: clock.now, thinking: false)
+            XCTAssertEqual(try store.session(id: "s")?.active, true, "without waiting for a checkpoint")
+            var back = try await syncPerfNext(home)
+            while hint(back) != nil { back = try await syncPerfNext(home) }
+            let row = try XCTUnwrap(back?.sessions.first { $0.id == "s" })
+            XCTAssertEqual(SessionState(row), .waiting)
+        }
+    }
+
     func testSilenceOnlyCountsWhileTheSocketIsUp() async throws {
         let (store, clock, presence) = try fixture()
         await pass(600_000, clock, presence)
