@@ -10,6 +10,9 @@ public struct NormalizedChatRecord: Equatable, Sendable {
         case user(String)
         case agent([Block])
         case event(AgentEvent)
+        /// A subagent's start, stop or progress: folded into the session's
+        /// subagents (`SubagentFold`), never a row.
+        case subagent(id: String, event: SessionEvent)
         case unsupported(String)
     }
 
@@ -108,11 +111,15 @@ public enum ChatNormalizer {
             }
             switch envelope.ev {
             case .turnStart: return nil
-            case .start, .stop:
+            case .start, .stop, .progress:
                 guard envelope.role == .agent else {
                     return record
                 }
-                return nil
+                // typesRaw.ts: without its subagent it says nothing.
+                guard let subagent = envelope.subagent else { return nil }
+                record.body = .subagent(id: subagent, event: envelope.ev)
+            // typesRaw.ts normalizes it, and nothing in the app folds it.
+            case .agents: return nil
             case .turnEnd: record.body = .event(.ready)
             case .userMessageAccepted(_, let ref, _): record.body = .event(.userMessageAccepted(ref: ref))
             case .userMessageRejected(let ref, let reason):

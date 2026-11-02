@@ -385,22 +385,32 @@ final class ChatGoalActionButton: UIControl {
 
 /// RigActivityBar.tsx: "2 agents · 1 processes", each with its glyph,
 /// wrapping onto more lines when it must. Full width, under the other bars.
-/// Its counts follow the text size, laid out off the main thread
-/// (`ChatDockBarMeasure.rigActivity`) at the width the dock offers; until
-/// its plan is in it has no height. The 12 pt glyphs keep their size.
+/// With agents running, their count opens a panel of them, whose rows open on
+/// their prompt and progress; both stay as they were left while the screen
+/// lasts, as RN's state does. Its text follows the text size, laid out off the
+/// main thread (`ChatDockBarMeasure.rigActivity`) at the width the dock offers;
+/// until its plan is in it has no height. The glyphs keep their size.
 final class ChatRigActivityView: UIView {
     /// Its plan came in: the dock is laid out again with its height.
     var onNeedsLayout: (() -> Void)?
 
-    private(set) var indicators: [RigActivityIndicator] = []
+    private(set) var content = RigActivityBarContent(indicators: [], running: [])
+    private var panelOpen = false
+    private var expanded: Set<String> = []
     private var model: ChatRigActivityModel?
     let measure = OffMainPlan<ChatDockBarInput<ChatRigActivityModel>, ChatRigActivityPlan> { ChatDockBarMeasure.rigActivity($0) }
     private var icons: [UIImageView] = []
     private var labels: [ChatTextView] = []
+    private var chevrons: [IconView?] = []
+    private var counts: [ChatRigCountControl] = []
+    private let divider = UIView()
+    private var rows: [ChatRigAgentRowView] = []
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        isUserInteractionEnabled = false
+        divider.backgroundColor = UIColor(Palette.legacyDivider)
+        divider.isHidden = true
+        addSubview(divider)
         isAccessibilityElement = true
         accessibilityTraits = .staticText
         measure.onApply = { [weak self] in
@@ -423,12 +433,29 @@ final class ChatRigActivityView: UIView {
         didSet { if isHidden { measure.reset() } }
     }
 
-    func show(_ indicators: [RigActivityIndicator]) {
-        guard indicators != self.indicators else { return }
-        self.indicators = indicators
+    /// Returns whether what it draws changed, so the dock needs laying out: a
+    /// running agent's numbers don't, while the panel is closed.
+    @discardableResult
+    func show(_ indicators: [RigActivityIndicator], running agents: [SubagentInfo] = []) -> Bool {
+        let content = RigActivityBarContent(indicators: indicators, running: agents)
+        guard content != self.content else { return false }
+        let sameViews = content.items.elementsEqual(self.content.items) {
+            $0.indicator.kind == $1.indicator.kind && $0.opensPanel == $1.opensPanel
+        }
+        self.content = content
+        // A finished agent's row goes, and whether it was open goes with it.
+        expanded.formIntersection(agents.map(\.id))
+        if !sameViews { makeCounts() }
+        return updateModel()
+    }
+
+    /// The glyphs, chevrons and touches of the counts: a new count alone keeps them.
+    private func makeCounts() {
         for view in icons { view.removeFromSuperview() }
-        icons = indicators.map { indicator in
-            let name = switch indicator.kind {
+        for view in chevrons { view?.removeFromSuperview() }
+        for view in counts { view.removeFromSuperview() }
+        icons = content.items.map { item in
+            let name = switch item.indicator.kind {
             case .subagents: "people-outline"
             case .workflows: "git-network-outline"
             case .processes: "terminal-outline"
@@ -440,10 +467,71 @@ final class ChatRigActivityView: UIView {
             addSubview(view)
             return view
         }
-        let words = indicators.map(Strings.Chat.rigActivity)
-        model = ChatRigActivityModel(labels: words)
-        accessibilityLabel = words.joined(separator: ", ")
+        chevrons = content.items.map { item in
+            guard item.opensPanel else { return nil }
+            let view = IconView(.ionicons("chevron-down"), size: RigActivityLayout.Metrics.chevronSize, tint: Palette.textSecondary)
+            addSubview(view)
+            return view
+        }
+        counts = content.items.map { item in
+            let control = ChatRigCountControl()
+            control.isUserInteractionEnabled = item.opensPanel
+            control.accessibilityTraits = item.opensPanel ? .button : .staticText
+            if item.opensPanel { control.addTarget(self, action: #selector(countTapped), for: .touchUpInside) }
+            addSubview(control)
+            return control
+        }
+        // Counts that open something are VoiceOver's one by one; otherwise
+        // the bar reads as one line.
+        let opens = content.items.contains(where: \.opensPanel)
+        isAccessibilityElement = !opens
+        accessibilityTraits = opens ? [] : .staticText
+    }
+
+    @objc private func countTapped() {
+        togglePanel()
+    }
+
+    /// RigActivityBar's `togglePanel`.
+    func togglePanel() {
+        panelOpen.toggle()
+        updateModel()
         setNeedsLayout()
+        onNeedsLayout?()
+    }
+
+    /// RigActivityBar's `toggleAgent`.
+    func toggleAgent(_ id: String) {
+        if expanded.remove(id) == nil { expanded.insert(id) }
+        updateModel()
+        onNeedsLayout?()
+    }
+
+    /// What the plan is made from. The time is read here, so a row's elapsed
+    /// is as of what last changed, as RN's is of its last render: nothing ticks.
+    @discardableResult
+    private func updateModel() -> Bool {
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        let words = content.items.map { item in
+            item.isFallback ? Strings.RigActivity.running(item.indicator.count) : Strings.Chat.rigActivity(item.indicator)
+        }
+        let next = ChatRigActivityModel(
+            labels: words,
+            chevrons: Set(content.items.indices.filter { content.items[$0].opensPanel }),
+            rows: panelOpen ? content.agents.map {
+                ChatRigAgentRowModel(content: RigAgentRowContent($0, now: now), expanded: expanded.contains($0.id))
+            } : []
+        )
+        for (index, count) in counts.enumerated() where index < words.count {
+            count.accessibilityLabel = words[index]
+            count.accessibilityValue = content.items[index].opensPanel
+                ? (panelOpen ? Strings.RigActivity.expanded : Strings.RigActivity.collapsed) : nil
+        }
+        accessibilityLabel = isAccessibilityElement ? words.joined(separator: ", ") : nil
+        guard next != model else { return false }
+        model = next
+        setNeedsLayout()
+        return true
     }
 
     var barMeasurable: Measurable {
@@ -460,6 +548,7 @@ final class ChatRigActivityView: UIView {
         while labels.count < plan?.labels.count ?? 0 {
             let label = ChatTextView()
             label.isAccessibilityElement = false
+            label.isUserInteractionEnabled = false
             addSubview(label)
             labels.append(label)
         }
@@ -477,6 +566,51 @@ final class ChatRigActivityView: UIView {
             label.setLayoutFrame(plan.layout.labels[index])
             label.layout = plan.labels[index]
         }
+        for (index, chevron) in chevrons.enumerated() {
+            guard let chevron else { continue }
+            let frame = plan.flatMap { index < $0.layout.chevrons.count ? $0.layout.chevrons[index] : nil }
+            chevron.isHidden = frame == nil
+            chevron.icon = .ionicons(panelOpen ? "chevron-up" : "chevron-down")
+            if let frame { arrive(chevron) { chevron.setLayoutFrame(frame) } }
+        }
+        for (index, count) in counts.enumerated() {
+            let frames = plan?.layout.items ?? []
+            count.isHidden = index >= frames.count
+            if index < frames.count { count.setLayoutFrame(frames[index]) }
+        }
+        divider.isHidden = plan?.layout.divider == nil
+        if let frame = plan?.layout.divider { arrive(divider) { divider.setLayoutFrame(frame) } }
+        layoutRows(plan)
+    }
+
+    private func layoutRows(_ plan: ChatRigActivityPlan?) {
+        let planned = plan?.rows ?? []
+        while rows.count < planned.count {
+            let row = ChatRigAgentRowView()
+            row.isHidden = true
+            row.onTap = { [weak self] id in self?.toggleAgent(id) }
+            addSubview(row)
+            rows.append(row)
+        }
+        for (index, row) in rows.enumerated() {
+            guard let plan, index < planned.count, index < plan.layout.rows.count else {
+                row.isHidden = true
+                continue
+            }
+            let layout = plan.layout.rows[index]
+            let place = {
+                row.setLayoutFrame(layout.frame)
+                row.apply(planned[index], layout: layout)
+            }
+            // The dock lays out inside an animation: a row that comes shows
+            // where it belongs, rather than flying in from nothing.
+            if row.isHidden { UIView.performWithoutAnimation(place) } else { place() }
+            row.isHidden = false
+        }
+    }
+
+    private func arrive(_ view: UIView, _ place: () -> Void) {
+        if view.frame.isEmpty { UIView.performWithoutAnimation(place) } else { place() }
     }
 }
 #endif

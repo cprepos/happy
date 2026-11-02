@@ -361,7 +361,9 @@ public struct GoalBarLayout: Equatable, Sendable {
 }
 
 /// RigActivityBar: "2 agents · 1 processes", wrapping, 16 in, 5 above and
-/// below, 10 between indicators, a 12 pt glyph 4 before each count.
+/// below, 10 between indicators, a 12 pt glyph 4 before each count. A count
+/// that opens the panel has a 10 pt chevron 4 after it; the open panel sits 6
+/// under the counts, a hairline and 4 above its rows.
 public struct RigActivityLayout: Equatable, Sendable {
     public enum Metrics {
         public static let paddingH: CGFloat = 16
@@ -369,13 +371,40 @@ public struct RigActivityLayout: Equatable, Sendable {
         public static let gap: CGFloat = 10
         public static let iconSize: CGFloat = 12
         public static let iconGap: CGFloat = 4
+        public static let chevronSize: CGFloat = 10
+        public static let chevronGap: CGFloat = 4
+        public static let panelTop: CGFloat = 6
+        public static let panelDivider: CGFloat = 0.5
+        public static let panelPaddingTop: CGFloat = 4
+    }
+
+    /// One count, and whether it opens the panel.
+    public struct Item {
+        public var label: Measurable
+        public var hasChevron: Bool
+
+        public init(label: Measurable, hasChevron: Bool = false) {
+            self.label = label
+            self.hasChevron = hasChevron
+        }
     }
 
     public var size: CGSize
     public var icons: [CGRect]
     public var labels: [CGRect]
+    /// By item; nil for a count that opens nothing.
+    public var chevrons: [CGRect?]
+    /// By item: all of it, the line's height, for its touches.
+    public var items: [CGRect]
+    /// The panel's hairline, when it has rows.
+    public var divider: CGRect?
+    public var rows: [RigAgentRowLayout]
 
     public init(width: CGFloat, labels input: [Measurable]) {
+        self.init(width: width, items: input.map { Item(label: $0) })
+    }
+
+    public init(width: CGFloat, items input: [Item], rows rowInputs: [RigAgentRowLayout.Input] = []) {
         typealias M = Metrics
         let width = max(0, width)
         let right = width - M.paddingH
@@ -384,7 +413,9 @@ public struct RigActivityLayout: Equatable, Sendable {
         var lineHeight: CGFloat = 0
         var icons: [CGRect] = []
         var labels: [CGRect] = []
-        var placed: [(icon: CGRect, label: CGRect)] = []
+        var chevrons: [CGRect?] = []
+        var items: [CGRect] = []
+        var placed: [(icon: CGRect, label: CGRect, chevronX: CGFloat?, right: CGFloat)] = []
         var line: [Int] = []
         func closeLine() {
             // Items on a line are centred on it.
@@ -392,19 +423,28 @@ public struct RigActivityLayout: Equatable, Sendable {
                 let item = placed[index]
                 icons.append(CGRect(x: item.icon.minX, y: y + (lineHeight - M.iconSize) / 2, width: M.iconSize, height: M.iconSize))
                 labels.append(CGRect(x: item.label.minX, y: y + (lineHeight - item.label.height) / 2, width: item.label.width, height: item.label.height))
+                chevrons.append(item.chevronX.map { CGRect(x: $0, y: y + (lineHeight - M.chevronSize) / 2, width: M.chevronSize, height: M.chevronSize) })
+                items.append(CGRect(x: item.icon.minX, y: y, width: item.right - item.icon.minX, height: lineHeight))
             }
             line = []
         }
-        for label in input {
-            let text = label.size(fitting: max(0, right - M.paddingH - M.iconSize - M.iconGap))
-            let itemWidth = M.iconSize + M.iconGap + text.width
+        for item in input {
+            let chevronWidth = item.hasChevron ? M.chevronGap + M.chevronSize : 0
+            let text = item.label.size(fitting: max(0, right - M.paddingH - M.iconSize - M.iconGap - chevronWidth))
+            let itemWidth = M.iconSize + M.iconGap + text.width + chevronWidth
             if !line.isEmpty, x + itemWidth > right {
                 closeLine()
                 y += lineHeight + M.gap
                 x = M.paddingH
                 lineHeight = 0
             }
-            placed.append((CGRect(x: x, y: 0, width: M.iconSize, height: M.iconSize), CGRect(x: x + M.iconSize + M.iconGap, y: 0, width: text.width, height: text.height)))
+            let labelX = x + M.iconSize + M.iconGap
+            placed.append((
+                CGRect(x: x, y: 0, width: M.iconSize, height: M.iconSize),
+                CGRect(x: labelX, y: 0, width: text.width, height: text.height),
+                item.hasChevron ? labelX + text.width + M.chevronGap : nil,
+                x + itemWidth
+            ))
             line.append(placed.count - 1)
             lineHeight = max(lineHeight, M.iconSize, text.height)
             x += itemWidth + M.gap
@@ -412,7 +452,24 @@ public struct RigActivityLayout: Equatable, Sendable {
         closeLine()
         self.icons = icons
         self.labels = labels
-        size = CGSize(width: width, height: input.isEmpty ? 0 : y + lineHeight + M.paddingV)
+        self.chevrons = chevrons
+        self.items = items
+        var bottom = y + lineHeight
+        var rows: [RigAgentRowLayout] = []
+        var divider: CGRect?
+        if !input.isEmpty, !rowInputs.isEmpty {
+            let panelWidth = max(0, width - 2 * M.paddingH)
+            divider = CGRect(x: M.paddingH, y: bottom + M.panelTop, width: panelWidth, height: M.panelDivider)
+            bottom += M.panelTop + M.panelDivider + M.panelPaddingTop
+            for input in rowInputs {
+                let row = RigAgentRowLayout(x: M.paddingH, y: bottom, width: panelWidth, input)
+                rows.append(row)
+                bottom = row.frame.maxY
+            }
+        }
+        self.divider = divider
+        self.rows = rows
+        size = CGSize(width: width, height: input.isEmpty ? 0 : bottom + M.paddingV)
     }
 }
 
