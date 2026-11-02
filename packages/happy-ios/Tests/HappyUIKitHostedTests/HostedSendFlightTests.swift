@@ -105,6 +105,10 @@ final class HostedSendFlightTests: XCTestCase {
     }
 
     private func legacyChat() async throws -> (Screen, AccountController) {
+        // The fixture chats outlive a test: the last test's send would reply
+        // into this one, between the row it watches and the row it flies.
+        let sessionId = FixtureScenarios.prefix + FixtureScenario.long.rawValue
+        await FixtureChatWorld.shared.reset(sessionId)
         let controller = AccountController(
             serverConfig: ServerConfig(storage: InMemoryKeyValueStore()), clientID: "ios/test",
             credentialStore: InMemoryCredentialStore(), storeDirectory: nil,
@@ -116,7 +120,7 @@ final class HostedSendFlightTests: XCTestCase {
         let context = AppContext(account: controller, variant: .development, version: "test")
         let scene = try await hostedActiveScene()
         let hostWindow = scene.keyWindow
-        let chat = LegacyChatViewController(context: context, session: account, sessionId: FixtureScenarios.prefix + FixtureScenario.long.rawValue)
+        let chat = LegacyChatViewController(context: context, session: account, sessionId: sessionId)
         let navigation = UINavigationController(rootViewController: UIViewController())
         navigation.pushViewController(chat, animated: false)
         let window = hostedKeyWindow(in: scene, root: navigation)
