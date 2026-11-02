@@ -123,6 +123,10 @@ function completeCommunication(
 
 export class OpencodeQuestionBridge {
     private readonly pending = new Map<string, OpencodeQuestionRequest>();
+    /** Questions whose answer from the app is on its way to OpenCode. */
+    private readonly answering = new Set<string>();
+    /** Questions that are over. A stale listing of one must not reopen its form. */
+    private readonly finished = new Set<string>();
 
     constructor(
         private session: ApiSessionClient,
@@ -145,20 +149,25 @@ export class OpencodeQuestionBridge {
                 if (!request) {
                     throw new Error('This question is no longer waiting for an answer');
                 }
-                if (reply.status === 'cancelled') {
-                    await this.transport.reject(request.id);
-                    this.complete(request.id, 'cancelled');
-                    logger.debug(`[OpenCode] Question ${request.id} dismissed from the app`);
-                    return { success: true };
-                }
-                if (reply.status !== 'answered') {
+                if (reply.status !== 'cancelled' && reply.status !== 'answered') {
                     throw new Error(`Unknown communication status: ${String(reply.status)}`);
                 }
-                const answers = opencodeAnswersFromForm(request.questions, reply.answers);
-                await this.transport.reply(request.id, answers);
-                this.complete(request.id, 'answered', formAnswersFromOpencode(request.questions, answers));
-                logger.debug(`[OpenCode] Question ${request.id} answered from the app`);
-                return { success: true };
+                this.answering.add(request.id);
+                try {
+                    if (reply.status === 'cancelled') {
+                        await this.transport.reject(request.id);
+                        this.complete(request.id, 'cancelled');
+                        logger.debug(`[OpenCode] Question ${request.id} dismissed from the app`);
+                        return { success: true };
+                    }
+                    const answers = opencodeAnswersFromForm(request.questions, reply.answers);
+                    await this.transport.reply(request.id, answers);
+                    this.complete(request.id, 'answered', formAnswersFromOpencode(request.questions, answers));
+                    logger.debug(`[OpenCode] Question ${request.id} answered from the app`);
+                    return { success: true };
+                } finally {
+                    this.answering.delete(request.id);
+                }
             },
         );
     }
@@ -167,14 +176,15 @@ export class OpencodeQuestionBridge {
         if (!this.pending.delete(id)) {
             return false;
         }
+        this.finished.add(id);
         this.session.updateAgentState((state) => completeCommunication(state, id, status, answers))
             .catch((e) => logger.debug(`[OpenCode] Failed to complete question ${id}:`, e));
         return true;
     }
 
-    /** Show a question in the app. Questions already shown are left alone. */
+    /** Show a question in the app. Questions already shown, or already over, are left alone. */
     ask(request: OpencodeQuestionRequest): void {
-        if (this.pending.has(request.id) || request.questions.length === 0) {
+        if (this.pending.has(request.id) || this.finished.has(request.id) || request.questions.length === 0) {
             return;
         }
         this.pending.set(request.id, request);
@@ -236,8 +246,32 @@ export class OpencodeQuestionBridge {
         }).catch((e) => logger.debug('[OpenCode] Failed to reset communications:', e));
     }
 
-    /** Ids of the questions currently shown in the app. */
+    /** Ids of the questions shown in the app and not being answered from it right now. */
     pendingIds(): string[] {
-        return [...this.pending.keys()];
+        return [...this.pending.keys()].filter((id) => !this.answering.has(id));
+    }
+}
+
+/**
+ * Catch up with OpenCode's list of waiting questions after the event stream
+ * was down: show the new ones and close the ones that ended meanwhile.
+ *
+ * The list is a snapshot and events keep arriving while it is fetched, so only
+ * a question already showing before the fetch can be judged by its absence. One
+ * raised during the fetch is missing from the list and still waiting.
+ */
+export async function syncOpencodeQuestions<T extends { id: string }>(
+    bridge: OpencodeQuestionBridge,
+    list: () => Promise<T[]>,
+    show: (request: T) => void,
+): Promise<void> {
+    const shownBefore = bridge.pendingIds();
+    const waiting = await list();
+    waiting.forEach(show);
+    const open = new Set(waiting.map((request) => request.id));
+    for (const id of shownBefore) {
+        if (!open.has(id)) {
+            bridge.resolveExternally(id, 'cancelled');
+        }
     }
 }

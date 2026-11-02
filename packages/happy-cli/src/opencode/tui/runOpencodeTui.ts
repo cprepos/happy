@@ -46,7 +46,7 @@ import { connectionState } from '@/utils/serverConnectionErrors';
 import { createOpencodeMessageId, OpencodeClient, type OpencodeSessionInfo } from './opencodeClient';
 import { OpencodeEventMapper, type OpencodeMirrorAction } from './opencodeEventMapper';
 import { OpencodePermissionBridge } from './opencodePermissionBridge';
-import { OpencodeQuestionBridge } from './opencodeQuestionBridge';
+import { OpencodeQuestionBridge, syncOpencodeQuestions } from './opencodeQuestionBridge';
 import { OpencodePermissionRouter } from './opencodePermissionPolicy';
 import {
     attachOpencodeTui,
@@ -476,19 +476,11 @@ export async function runOpencodeTui(opts: {
             logger.debug('[OpenCode] Could not list pending permissions:', error);
         }
         try {
-            const pending = await client.listQuestions();
-            for (const request of pending) {
+            await syncOpencodeQuestions(questions, () => client.listQuestions(), (request) => {
                 for (const action of mapper.handle({ type: 'question.asked', properties: request })) {
                     apply(action);
                 }
-            }
-            // Questions answered or dismissed while the stream was down.
-            const open = new Set(pending.map((request) => request.id));
-            for (const id of questions.pendingIds()) {
-                if (!open.has(id)) {
-                    questions.resolveExternally(id, 'cancelled');
-                }
-            }
+            });
         } catch (error) {
             logger.debug('[OpenCode] Could not list pending questions:', error);
         }
