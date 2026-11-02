@@ -35,7 +35,12 @@ export const DESKTOP_PHONE_ADOPT_TIMEOUT_MS = 30_000;
 const EVENT_LOG_LIMIT = 500;
 
 export type DesktopEventType = 'busy' | 'idle' | 'ended' | 'delivered';
-export type DesktopEvent = { type: DesktopEventType; localId?: string };
+/**
+ * `claudeSessionId` / `transcriptPath` are set only when the desktop process
+ * moved to a new id (re-point): attach switches transcripts and polls the new
+ * id from then on. Both ids share one log, so the old id's poller sees it.
+ */
+export type DesktopEvent = { type: DesktopEventType; localId?: string; claudeSessionId?: string; transcriptPath?: string };
 export type DesktopInboxMessage = { localId: string; text: string };
 export type DesktopAdoptRequest = { claudeSessionId: string; transcriptPath: string; cwd: string; pid: number };
 export type DesktopAdoptResult = { type: 'success'; happySessionId: string } | { type: 'error'; errorMessage: string };
@@ -55,12 +60,23 @@ type DesktopEntry = {
     happySessionId?: string;
     attachPid?: number;
     attaching?: Promise<DesktopAdoptResult>;
+    /**
+     * False for a placeholder: a hook's inbox long-poll can arrive before the
+     * adopt for the same id, so the inbox creates the entry and adopt fills it.
+     */
+    adopted: boolean;
     ended: boolean;
     queue: DesktopInboxMessage[];
-    inboxWaiter?: (message: DesktopInboxMessage | null) => void;
+    inboxWaiter?: InboxWaiter;
     events: Array<DesktopEvent & { seq: number }>;
     seq: number;
     eventWaiters: Set<() => void>;
+};
+
+type InboxWaiter = {
+    /** Entry currently holding this waiter; moves when a placeholder is merged. */
+    owner: DesktopEntry;
+    finish: (message: DesktopInboxMessage | null) => void;
 };
 
 export type DesktopSessionSnapshot = {
@@ -103,9 +119,27 @@ export function createDesktopHub({ spawnAttach }: { spawnAttach: DesktopAttachSp
         return message;
     };
 
+    const newEntry = (claudeSessionId: string, adopted: boolean): DesktopEntry => ({
+        claudeSessionId,
+        ids: new Set([claudeSessionId]),
+        pid: 0,
+        cwd: '',
+        transcriptPath: '',
+        adopted,
+        ended: false,
+        queue: [],
+        events: [],
+        seq: 0,
+        eventWaiters: new Set(),
+    });
+
+    const releaseWaiter = (entry: DesktopEntry): void => {
+        entry.inboxWaiter?.finish(null);
+    };
+
     const findLiveByPid = (pid: number): DesktopEntry | undefined => {
         for (const entry of new Set(entries.values())) {
-            if (entry.pid === pid && !entry.ended) return entry;
+            if (entry.adopted && entry.pid === pid && !entry.ended) return entry;
         }
         return undefined;
     };
@@ -119,6 +153,7 @@ export function createDesktopHub({ spawnAttach }: { spawnAttach: DesktopAttachSp
                 for (const id of entry.ids) {
                     if (entries.get(id) === entry) entries.delete(id);
                 }
+                releaseWaiter(entry);
                 settlePending(entry.ids, result);
                 return result;
             }
@@ -138,11 +173,12 @@ export function createDesktopHub({ spawnAttach }: { spawnAttach: DesktopAttachSp
 
     const adopt = (request: DesktopAdoptRequest): Promise<DesktopAdoptResult> => {
         const known = entries.get(request.claudeSessionId);
-        if (known && !known.ended) {
-            known.pid = request.pid;
-            known.cwd = request.cwd;
-            known.transcriptPath = request.transcriptPath;
-            return existingResult(known);
+        const live = known && !known.ended ? known : undefined;
+        if (live?.adopted) {
+            live.pid = request.pid;
+            live.cwd = request.cwd;
+            live.transcriptPath = request.transcriptPath;
+            return existingResult(live);
         }
 
         const samePid = findLiveByPid(request.pid);
@@ -153,24 +189,27 @@ export function createDesktopHub({ spawnAttach }: { spawnAttach: DesktopAttachSp
             samePid.cwd = request.cwd;
             samePid.transcriptPath = request.transcriptPath;
             entries.set(request.claudeSessionId, samePid);
+            // SessionStart runs with the session idle, so the re-point is an idle beat.
+            emit(samePid, { type: 'idle', claudeSessionId: request.claudeSessionId, transcriptPath: request.transcriptPath });
+            // A hook that started waiting on the new id before this adopt is
+            // the newest waiter for this desktop process.
+            if (live?.inboxWaiter) {
+                releaseWaiter(samePid);
+                samePid.inboxWaiter = live.inboxWaiter;
+                samePid.inboxWaiter.owner = samePid;
+                live.inboxWaiter = undefined;
+            }
             if (samePid.happySessionId) {
                 settlePending([request.claudeSessionId], { type: 'success', happySessionId: samePid.happySessionId });
             }
             return existingResult(samePid);
         }
 
-        const entry: DesktopEntry = {
-            claudeSessionId: request.claudeSessionId,
-            ids: new Set([request.claudeSessionId]),
-            pid: request.pid,
-            cwd: request.cwd,
-            transcriptPath: request.transcriptPath,
-            ended: false,
-            queue: [],
-            events: [],
-            seq: 0,
-            eventWaiters: new Set(),
-        };
+        const entry = live ?? newEntry(request.claudeSessionId, true);
+        entry.adopted = true;
+        entry.pid = request.pid;
+        entry.cwd = request.cwd;
+        entry.transcriptPath = request.transcriptPath;
         entries.set(request.claudeSessionId, entry);
         logger.debug(`[DESKTOP HUB] Adopting ${request.claudeSessionId} (PID ${request.pid}, cwd ${request.cwd})`);
         return startAttach(entry, request);
@@ -182,8 +221,7 @@ export function createDesktopHub({ spawnAttach }: { spawnAttach: DesktopAttachSp
         if (!entry) return false;
         if (type === 'ended') {
             entry.ended = true;
-            entry.inboxWaiter?.(null);
-            entry.inboxWaiter = undefined;
+            releaseWaiter(entry);
         }
         emit(entry, { type });
         return true;
@@ -191,32 +229,50 @@ export function createDesktopHub({ spawnAttach }: { spawnAttach: DesktopAttachSp
 
     /**
      * Long-polls the inbox. Resolves with a message, or null on timeout, abort,
-     * end, or when a newer waiter replaces this one. Undefined for an unknown id.
+     * end, or when a newer waiter replaces this one. An id not adopted yet gets
+     * a placeholder entry: SessionStart's wait can beat its own adopt.
      */
-    const waitForInbox = (claudeSessionId: string, waitMs: number, signal?: AbortSignal): Promise<DesktopInboxMessage | null> | undefined => {
-        const entry = entries.get(claudeSessionId);
-        if (!entry) return undefined;
+    const waitForInbox = (claudeSessionId: string, waitMs: number, signal?: AbortSignal): Promise<DesktopInboxMessage | null> => {
+        // An ended id can come back (the desktop resumes it); its SessionStart
+        // wait belongs to the mirror the coming adopt creates.
+        const known = entries.get(claudeSessionId);
+        const entry = known && !known.ended ? known : newEntry(claudeSessionId, false);
+        entries.set(claudeSessionId, entry);
 
         // Only the newest waiter may receive; release the one before it now.
-        entry.inboxWaiter?.(null);
-        entry.inboxWaiter = undefined;
+        releaseWaiter(entry);
 
         const queued = entry.queue.shift();
         if (queued) return Promise.resolve(deliver(entry, queued));
-        if (entry.ended || waitMs <= 0 || signal?.aborted) return Promise.resolve(null);
+        if (waitMs <= 0 || signal?.aborted) {
+            dropUnusedPlaceholder(entry);
+            return Promise.resolve(null);
+        }
 
         return new Promise((resolve) => {
-            const finish = (message: DesktopInboxMessage | null): void => {
-                clearTimeout(timer);
-                signal?.removeEventListener('abort', onAbort);
-                if (entry.inboxWaiter === finish) entry.inboxWaiter = undefined;
-                resolve(message);
+            const waiter: InboxWaiter = {
+                owner: entry,
+                finish: (message) => {
+                    clearTimeout(timer);
+                    signal?.removeEventListener('abort', onAbort);
+                    if (waiter.owner.inboxWaiter === waiter) waiter.owner.inboxWaiter = undefined;
+                    dropUnusedPlaceholder(waiter.owner);
+                    resolve(message);
+                },
             };
-            const onAbort = (): void => finish(null);
-            const timer = setTimeout(() => finish(null), Math.min(waitMs, DESKTOP_MAX_WAIT_MS));
+            const onAbort = (): void => waiter.finish(null);
+            const timer = setTimeout(onAbort, Math.min(waitMs, DESKTOP_MAX_WAIT_MS));
             signal?.addEventListener('abort', onAbort, { once: true });
-            entry.inboxWaiter = finish;
+            entry.inboxWaiter = waiter;
         });
+    };
+
+    /** A placeholder nobody waits on and nothing was queued for is forgotten. */
+    const dropUnusedPlaceholder = (entry: DesktopEntry): void => {
+        if (entry.adopted || entry.inboxWaiter || entry.queue.length > 0) return;
+        for (const id of entry.ids) {
+            if (entries.get(id) === entry) entries.delete(id);
+        }
     };
 
     /** Queues a phone message, or hands it straight to a waiting hook. */
@@ -226,8 +282,7 @@ export function createDesktopHub({ spawnAttach }: { spawnAttach: DesktopAttachSp
         // A waiter only exists while the queue is empty.
         const waiter = entry.inboxWaiter;
         if (waiter) {
-            entry.inboxWaiter = undefined;
-            waiter(deliver(entry, message));
+            waiter.finish(deliver(entry, message));
             return 0;
         }
         entry.queue.push(message);
@@ -259,7 +314,7 @@ export function createDesktopHub({ spawnAttach }: { spawnAttach: DesktopAttachSp
         const fresh = entry.events.filter((event) => event.seq > after);
         return {
             seq: entry.seq,
-            events: fresh.map(({ type, localId }) => (localId === undefined ? { type } : { type, localId })),
+            events: fresh.map(({ seq: _seq, ...event }) => event),
         };
     };
 
@@ -295,8 +350,7 @@ export function createDesktopHub({ spawnAttach }: { spawnAttach: DesktopAttachSp
             if (entry.attachPid !== attachPid || entry.ended) continue;
             logger.debug(`[DESKTOP HUB] Attach PID ${attachPid} for ${entry.claudeSessionId} exited`);
             entry.ended = true;
-            entry.inboxWaiter?.(null);
-            entry.inboxWaiter = undefined;
+            releaseWaiter(entry);
             emit(entry, { type: 'ended' });
         }
     };

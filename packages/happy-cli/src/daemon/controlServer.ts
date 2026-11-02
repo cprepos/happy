@@ -263,17 +263,12 @@ export function startDaemonControlServer({
           response: {
             200: z.object({ localId: z.string(), text: z.string() }),
             204: z.null(),
-            404: z.object({ error: z.string() }),
           }
         }
       }, async (request, reply) => {
         const { claudeSessionId } = request.params;
-        const waiting = desktopHub.waitForInbox(claudeSessionId, Math.min(request.query.wait, DESKTOP_MAX_WAIT_MS), abortOnClientClose(reply.raw));
-        if (!waiting) {
-          reply.code(404);
-          return unknownSession(claudeSessionId);
-        }
-        const message = await waiting;
+        // An id not adopted yet is held too: SessionStart's wait can beat its adopt.
+        const message = await desktopHub.waitForInbox(claudeSessionId, Math.min(request.query.wait, DESKTOP_MAX_WAIT_MS), abortOnClientClose(reply.raw));
         if (!message) return reply.code(204).send(null);
         return message;
       });
@@ -311,6 +306,8 @@ export function startDaemonControlServer({
               events: z.array(z.object({
                 type: z.enum(['busy', 'idle', 'ended', 'delivered']),
                 localId: z.string().optional(),
+                claudeSessionId: z.string().optional(),
+                transcriptPath: z.string().optional(),
               })),
             }),
             404: z.object({ error: z.string() }),
