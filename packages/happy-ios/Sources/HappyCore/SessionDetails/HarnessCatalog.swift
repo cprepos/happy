@@ -12,6 +12,7 @@ import Foundation
 public enum HarnessCatalog {
     public static let names: [String: String] = [
         "claude": "Claude Code",
+        ClaudeDesktopHarness.key: ClaudeDesktopHarness.name,
         "codex": "Codex",
         "rig": "Happy",
         "agy": "Antigravity",

@@ -127,7 +127,7 @@ final class OpencodeHarnessTests: XCTestCase {
     }
 
     func testOpenCodeSitsAfterAgyBeforeHappy() throws {
-        XCTAssertEqual(MachineChoice.agentOrder, ["claude", "codex", "agy", "opencode", "rig"])
+        XCTAssertEqual(MachineChoice.agentOrder, ["claude", "claude-desktop", "codex", "agy", "opencode", "rig"])
         XCTAssertEqual(OpencodeHarness.placed(in: ["claude", "rig"]), ["claude", "opencode", "rig"])
         XCTAssertEqual(OpencodeHarness.placed(in: ["claude"]), ["claude", "opencode"])
         let everything = try choice(machine("m", cli: ["claude": .bool(true), "codex": .bool(true), "agy": .bool(true), "opencode": .bool(true)]))

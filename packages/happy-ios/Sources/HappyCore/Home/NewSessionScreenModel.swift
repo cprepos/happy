@@ -110,6 +110,7 @@ public struct NewSessionScreenModel: Equatable, Sendable {
     /// new/index.tsx's `ALL_AGENTS`: lowercased, in the dock's pick order.
     public static let agentLabels: [String: String] = [
         "claude": "claude code",
+        ClaudeDesktopHarness.key: ClaudeDesktopHarness.label,
         "codex": "codex",
         "agy": "antigravity",
         OpencodeHarness.key: OpencodeHarness.label,

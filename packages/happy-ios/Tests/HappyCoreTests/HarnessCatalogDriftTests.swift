@@ -9,6 +9,10 @@ final class HarnessCatalogDriftTests: XCTestCase {
     /// on this path: an existing session still shows its name, and neither
     /// can be started.
     private let excluded: Set<String> = ["gemini", "openclaw"]
+    /// Offered here before happy-app's catalog lists it: Claude Desktop
+    /// (docs/plans/happyify-desktop-sync.md). Its place is checked once
+    /// happy-app orders it.
+    private let ahead: Set<String> = ["claude-desktop"]
 
     private func catalog() throws -> String {
         let root = URL(fileURLWithPath: #filePath)
@@ -36,11 +40,11 @@ final class HarnessCatalogDriftTests: XCTestCase {
     }
 
     private func names() throws -> [String] {
-        try matches(#"^\s*([a-z_]+):\s*'"#, in: body(of: "HARNESS_NAMES", in: catalog(), closing: "\n};"))
+        try matches(#"^\s*'?([a-z_-]+)'?:\s*'"#, in: body(of: "HARNESS_NAMES", in: catalog(), closing: "\n};"))
     }
 
     private func order() throws -> [String] {
-        try matches(#"^\s*'([a-z_]+)',"#, in: body(of: "HARNESS_ORDER", in: catalog(), closing: "\n];"))
+        try matches(#"^\s*'([a-z_-]+)',"#, in: body(of: "HARNESS_ORDER", in: catalog(), closing: "\n];"))
     }
 
     func testTheCatalogStillParses() throws {
@@ -67,7 +71,9 @@ final class HarnessCatalogDriftTests: XCTestCase {
     }
 
     func testTheOfferedHarnessesKeepHappyAppsOrder() throws {
-        XCTAssertEqual(MachineChoice.agentOrder, try order().filter { !excluded.contains($0) })
+        let order = try order()
+        let offered = MachineChoice.agentOrder.filter { !ahead.contains($0) || order.contains($0) }
+        XCTAssertEqual(offered, order.filter { !excluded.contains($0) })
     }
 
     func testEveryHarnessHappyAppNamesHasItsNameHere() throws {

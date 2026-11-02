@@ -502,7 +502,7 @@ public enum ModelModeOptions {
             } else {
                 ("openai", "OpenAI")
             }
-        case .gemini, .openclaw, .opencode: nil
+        case .gemini, .openclaw, .opencode, .claudeDesktop: nil
         }
     }
 
