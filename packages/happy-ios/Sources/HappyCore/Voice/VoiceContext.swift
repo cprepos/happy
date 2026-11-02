@@ -93,6 +93,7 @@ public actor VoiceContext {
     private var reducers: [String: VoiceContextReducer] = [:]
     private var records: [String: SessionRecord] = [:]
     private var focused: String
+    private var recentContext = VoiceContextRepeatFilter()
     private var closed = false
     private var sink: (@Sendable (VoiceContextUpdate) async -> Void)?
 
@@ -185,7 +186,7 @@ public actor VoiceContext {
             if oldRecords[record.id]?.thinking == true, !record.thinking, record.active,
                !record.hasPendingPermissionRequests {
                 await showHistory(of: record.id)
-                await sink?(VoiceContextUpdate(prompts: ["Coding agent done working in session: \(record.id). Report its summary to the human."]))
+                await send(VoiceContextUpdate(prompts: ["Coding agent done working in session: \(record.id). Report its summary to the human."]))
             }
         }
         let remaining = Set(snapshot.sessions.filter { $0.active || $0.id == focused }.map(\.id))
@@ -211,14 +212,24 @@ public actor VoiceContext {
         var reducer = reducers[sessionId] ?? VoiceContextReducer()
         let history = reducer.history(snapshot, metadata: records[sessionId]?.metadata)
         reducers[sessionId] = reducer
-        if let history { await sink?(VoiceContextUpdate(context: history)) }
+        if let history { await send(VoiceContextUpdate(context: history)) }
+    }
+
+    /// Every update but the focus line passes here. The agent acts on each focus
+    /// line, and going A, B, A within the window is the user moving, not an echo.
+    /// A prompt asks for something new each time, so only context is filtered.
+    private func send(_ update: VoiceContextUpdate) async {
+        var update = update
+        if !update.context.isEmpty, recentContext.isRepeat(update.context) { update.context = "" }
+        guard !update.context.isEmpty || !update.prompts.isEmpty else { return }
+        await sink?(update)
     }
 
     func chat(_ snapshot: LegacyChatSnapshot) async {
         var reducer = reducers[snapshot.sessionId] ?? VoiceContextReducer()
         let update = reducer.apply(snapshot, metadata: records[snapshot.sessionId]?.metadata)
         reducers[snapshot.sessionId] = reducer
-        if !update.context.isEmpty || !update.prompts.isEmpty { await sink?(update) }
+        await send(update)
     }
 
     private static func directory(_ records: [SessionRecord]) -> String {

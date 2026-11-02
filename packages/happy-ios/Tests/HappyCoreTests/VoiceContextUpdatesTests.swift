@@ -142,6 +142,34 @@ final class VoiceContextUpdatesTests: XCTestCase {
         await fixture.finish()
     }
 
+    private func tool(_ state: ToolCall.State) -> ChatMessage {
+        .toolCall(ToolCallMessage(id: "tool", createdAt: 1, tool: ToolCall(name: "Read", state: state, input: .object([:]), createdAt: 1, description: "file.ts")))
+    }
+
+    func testAToolCallsArrivalAndResultReachTheAgentOnce() async throws {
+        let fixture = try fixture()
+        _ = try await fixture.context.initial()
+        await attach(fixture)
+        await fixture.context.chat(LegacyChatSnapshot(sessionId: "a"))
+        await fixture.context.chat(LegacyChatSnapshot(sessionId: "a", messages: [tool(.running)]))
+        await fixture.context.chat(LegacyChatSnapshot(sessionId: "a", messages: [tool(.completed)]))
+        let contexts = await fixture.heard.contexts
+        XCTAssertEqual(contexts, ["Messages in session a:\nCoding agent uses Read: file.ts"])
+        await fixture.finish()
+    }
+
+    func testARepeatedContextStillLetsItsPromptThrough() async throws {
+        let fixture = try fixture()
+        _ = try await fixture.context.initial()
+        await attach(fixture)
+        let done = ChatMessage.agentEvent(AgentEventMessage(id: "ready", createdAt: 2, event: .ready))
+        await fixture.context.chat(LegacyChatSnapshot(sessionId: "a", messages: [tool(.running)]))
+        await fixture.context.chat(LegacyChatSnapshot(sessionId: "a", messages: [tool(.completed), done]))
+        let prompts = await fixture.heard.prompts
+        XCTAssertEqual(prompts.count, 1)
+        await fixture.finish()
+    }
+
     func testABackgroundSessionsFirstMessageBringsItsHistory() async throws {
         let fixture = try fixture()
         _ = try await fixture.context.initial()
