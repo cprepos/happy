@@ -1,3 +1,4 @@
+import { existsSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -36,11 +37,17 @@ async function loadEnvironmentManager(): Promise<EnvironmentsModule> {
     return await import(ENVIRONMENTS_MODULE_URL) as EnvironmentsModule;
 }
 
-export async function createIntegrationEnvironment(options?: { template?: EnvironmentTemplate; up?: boolean }): Promise<IntegrationEnvironment> {
+export async function createIntegrationEnvironment(options?: {
+    template?: EnvironmentTemplate;
+    up?: boolean;
+    /** Called with the name as soon as the environment exists, before any service starts. */
+    onCreated?: (name: string) => void;
+}): Promise<IntegrationEnvironment> {
     const template = options?.template ?? 'authenticated-empty';
     const shouldStart = options?.up ?? true;
     const environments = await loadEnvironmentManager();
     const name = await environments.createEnvironment({ noSwitch: true });
+    options?.onCreated?.(name);
 
     try {
         environments.setEnvironmentTemplate(name, template);
@@ -86,4 +93,35 @@ export async function destroyIntegrationEnvironment(env: IntegrationEnvironment)
     const environments = await loadEnvironmentManager();
     environments.stopEnvironment(env.name);
     environments.removeEnvironment(env.name);
+}
+
+// A file's afterAll does not run when every test in it is skipped, which is
+// what happens on any machine without the agent it tests. Each environment is
+// therefore also recorded in a per-run ledger, and the global teardown destroys
+// whatever is still recorded there.
+
+export function recordIntegrationEnvironment(ledgerDir: string, name: string) {
+    writeFileSync(join(ledgerDir, name), name);
+}
+
+export function forgetIntegrationEnvironment(ledgerDir: string, name: string) {
+    rmSync(join(ledgerDir, name), { force: true });
+}
+
+export async function destroyRecordedIntegrationEnvironments(ledgerDir: string) {
+    if (!existsSync(ledgerDir)) {
+        return;
+    }
+
+    const environments = await loadEnvironmentManager();
+    for (const name of readdirSync(ledgerDir)) {
+        if (existsSync(environments.getEnvironmentDir(name))) {
+            try {
+                environments.stopEnvironment(name);
+            } finally {
+                environments.removeEnvironment(name);
+            }
+        }
+        forgetIntegrationEnvironment(ledgerDir, name);
+    }
 }

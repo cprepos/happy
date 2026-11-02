@@ -1,8 +1,10 @@
-import { afterAll } from 'vitest';
+import { afterAll, inject } from 'vitest';
 import {
     applyEnvironmentToProcess,
     createIntegrationEnvironment,
     destroyIntegrationEnvironment,
+    forgetIntegrationEnvironment,
+    recordIntegrationEnvironment,
     type EnvironmentTemplate,
     type IntegrationEnvironment,
 } from './integrationEnvironment';
@@ -27,13 +29,24 @@ export async function installIntegrationEnvironment(profile: IntegrationEnvironm
         DEBUG: process.env.DEBUG,
     };
 
-    const env = await createIntegrationEnvironment(profile);
+    // afterAll below never runs for a file whose tests are all skipped, so the
+    // global teardown in src/test-setup.ts destroys whatever this ledger still lists.
+    const ledgerDir = inject('integrationEnvironmentLedger');
+    if (!ledgerDir) {
+        throw new Error('No integration environment ledger; src/test-setup.ts must run as globalSetup');
+    }
+
+    const env = await createIntegrationEnvironment({
+        ...profile,
+        onCreated: (name) => recordIntegrationEnvironment(ledgerDir, name),
+    });
     applyEnvironmentToProcess(env);
     globalThis.__happyIntegrationEnv = env;
 
     afterAll(async () => {
         try {
             await destroyIntegrationEnvironment(env);
+            forgetIntegrationEnvironment(ledgerDir, env.name);
         } finally {
             for (const [key, value] of Object.entries(previousEnv)) {
                 if (value === undefined) {
