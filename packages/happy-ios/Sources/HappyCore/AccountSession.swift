@@ -65,6 +65,9 @@ public final class AccountSession: Sendable {
     public let metrics = ConnectionMetrics()
     /// Opens a voice call's socket, counted on its own channel.
     public let voiceConnector: WebSocketConnector
+    /// This account's device settings; the same object as the controller's
+    /// while this account is the active one.
+    public let localSettings: LocalSettings
     /// The server it talks to, and the Socket.IO endpoint.
     public let serverURL: URL
     public let socketURL: URL
@@ -112,8 +115,10 @@ public final class AccountSession: Sendable {
     }
 
     public init(credentials: Credentials, store: LocalStore, dependencies: Dependencies,
-                filesDirectory: URL? = nil, fileCacheDirectory: URL? = nil) throws {
+                filesDirectory: URL? = nil, fileCacheDirectory: URL? = nil,
+                localSettings: LocalSettings = LocalSettings(storage: InMemoryKeyValueStore())) throws {
         guard let secret = credentials.secretData else { throw CryptoError.invalidInput("credentials secret") }
+        self.localSettings = localSettings
         self.credentials = credentials
         self.keys = try AccountKeys(secret: secret)
         self.store = store

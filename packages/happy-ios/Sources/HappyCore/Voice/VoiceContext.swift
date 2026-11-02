@@ -86,8 +86,8 @@ public actor VoiceContext {
     /// Sessions the model has the history of, from the prompt or from a focus.
     private var historySent = Set<String>()
     private var records: [String: SessionRecord] = [:]
-    private var directory = ""
     private var focused: String
+    private var recentContext = VoiceContextRepeatFilter()
     private var closed = false
     private var sink: (@Sendable (VoiceContextUpdate) async -> Void)?
 
@@ -107,14 +107,13 @@ public actor VoiceContext {
         let home = try account.store.homeSnapshot()
         let settings = AccountSettings(home.settings)
         records = Dictionary(home.sessions.map { ($0.id, $0) }, uniquingKeysWith: { _, value in value })
-        directory = Self.directory(home.sessions)
         var iterator = account.chatFeed.snapshots(sessionId: focused).makeAsyncIterator()
         let snapshot = await iterator.next() ?? LegacyChatSnapshot(sessionId: focused)
         let metadata = records[focused]?.metadata
         let history = snapshot.messages.suffix(50).compactMap(VoiceContextReducer.format).joined(separator: "\n\n")
         reducers[focused] = VoiceContextReducer(prompted: snapshot)
         if snapshot.isLoaded { historySent.insert(focused) }
-        let context = "\(directory)\n\nCURRENT SESSION: \(focused)\nProject: \(metadata?["path"]?.stringValue ?? "")\nSummary: \(metadata?["summary"]?["text"]?.stringValue ?? "")\n\n\(history)"
+        let context = "\(Self.directory(home.sessions))\n\nCURRENT SESSION: \(focused)\nProject: \(metadata?["path"]?.stringValue ?? "")\nSummary: \(metadata?["summary"]?["text"]?.stringValue ?? "")\n\n\(history)"
         let bypassed = settings.bool("voiceBypassToken") ? settings.string("voiceCustomAgentId") : nil
         let custom = bypassed.flatMap { $0.isEmpty ? nil : $0 }
         let selection = config.selection(saved: settings.voiceBackend, customAgentId: custom)
@@ -130,7 +129,7 @@ public actor VoiceContext {
 
     public func start(sink: @escaping @Sendable (VoiceContextUpdate) async -> Void) {
         guard !closed, homeTask == nil else { return }
-        self.sink = sink
+        attach(sink: sink)
         homeTask = Task { [weak self, account] in
             for await snapshot in account.homeFeed.snapshots() {
                 guard !Task.isCancelled else { break }
@@ -139,12 +138,25 @@ public actor VoiceContext {
         }
     }
 
+    func attach(sink: @escaping @Sendable (VoiceContextUpdate) async -> Void) {
+        self.sink = sink
+    }
+
     public func focus(_ sessionId: String) async {
         guard sessionId != focused else { return }
         focused = sessionId
         watch(sessionId)
         await sendHistoryOnce(sessionId)
-        await sink?(VoiceContextUpdate(context: "Session became focused: \(sessionId). Send the user's next instructions here unless asked otherwise."))
+        // A newer focus may have landed during that send; the last one must win.
+        guard focused == sessionId else { return }
+        await sink?(VoiceContextUpdate(context: Self.focusLine(sessionId)))
+    }
+
+    /// Bare, as happy-app's formatSessionFocus: the agent takes everything after
+    /// the colon up to the next whitespace as the session id, so anything
+    /// touching the id becomes part of it and the agent's sends get refused.
+    static func focusLine(_ sessionId: String) -> String {
+        "Session became focused: \(sessionId)"
     }
 
     public func stop() {
@@ -154,13 +166,10 @@ public actor VoiceContext {
         chatTasks.removeAll(); reducers.removeAll(); historySent.removeAll(); records.removeAll(); sink = nil
     }
 
-    private func home(_ snapshot: LegacyHomeSnapshot) async {
+    /// The session directory went out in the opening context and isn't re-sent,
+    /// as in happy-app: a session's own updates name it when it matters.
+    func home(_ snapshot: LegacyHomeSnapshot) async {
         await sendHistoryOnce(focused)
-        let next = Self.directory(snapshot.sessions)
-        if next != directory {
-            directory = next
-            await sink?(VoiceContextUpdate(context: next))
-        }
         let oldRecords = records
         records = Dictionary(snapshot.sessions.map { ($0.id, $0) }, uniquingKeysWith: { _, value in value })
         for record in snapshot.sessions where record.active || record.id == focused {
@@ -169,7 +178,7 @@ public actor VoiceContext {
             // presence's thinking flip is the same completion signal.
             if oldRecords[record.id]?.thinking == true, !record.thinking, record.active,
                !record.hasPendingPermissionRequests {
-                await sink?(VoiceContextUpdate(prompts: ["Coding agent done working in session: \(record.id). Report its summary to the human."]))
+                await send(VoiceContextUpdate(prompts: ["Coding agent done working in session: \(record.id). Report its summary to the human."]))
             }
         }
         let remaining = Set(snapshot.sessions.filter { $0.active || $0.id == focused }.map(\.id))
@@ -186,12 +195,22 @@ public actor VoiceContext {
         }
     }
 
-    private func chat(_ snapshot: LegacyChatSnapshot) async {
+    /// Every update but the focus line passes here. The agent acts on each focus
+    /// line, and going A, B, A within the window is the user moving, not an echo.
+    /// A prompt asks for something new each time, so only context is filtered.
+    private func send(_ update: VoiceContextUpdate) async {
+        var update = update
+        if !update.context.isEmpty, recentContext.isRepeat(update.context) { update.context = "" }
+        guard !update.context.isEmpty || !update.prompts.isEmpty else { return }
+        await sink?(update)
+    }
+
+    func chat(_ snapshot: LegacyChatSnapshot) async {
         var reducer = reducers[snapshot.sessionId] ?? VoiceContextReducer()
         let update = reducer.apply(snapshot)
         reducers[snapshot.sessionId] = reducer
         if snapshot.sessionId == focused { await sendHistoryOnce(snapshot.sessionId) }
-        if !update.context.isEmpty || !update.prompts.isEmpty { await sink?(update) }
+        await send(update)
     }
 
     /// The focused session's history, once per call, as happy-app's
@@ -199,10 +218,9 @@ public actor VoiceContext {
     /// from `chat` when it has loaded; only focus sends it, never a background
     /// session's own activity.
     private func sendHistoryOnce(_ sessionId: String) async {
-        guard let sink, let reducer = reducers[sessionId], reducer.loaded,
+        guard sink != nil, let reducer = reducers[sessionId], reducer.loaded,
               historySent.insert(sessionId).inserted else { return }
-        let history = reducer.history(sessionId: sessionId)
-        if !history.isEmpty { await sink(VoiceContextUpdate(context: history)) }
+        await send(VoiceContextUpdate(context: reducer.history(sessionId: sessionId)))
     }
 
     private static func directory(_ records: [SessionRecord]) -> String {
@@ -240,6 +258,8 @@ extension VoiceContext {
                 }
                 do { _ = try await sending.send(OutgoingMessage(text: value.message, source: .voice), sessionId: value.sessionId) }
                 catch { return VoiceToolResult("error (the message could not be sent to the session)", isError: true) }
+                // Here rather than in a backend: a send counts on either one.
+                account.localSettings.voiceMessageCount += 1
                 return VoiceToolResult("sent [DO NOT say anything else, simply say 'sent']")
             case "processPermissionRequest":
                 struct Parameters: Decodable {
