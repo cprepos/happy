@@ -55,8 +55,8 @@ public struct SessionQuickActions: Equatable, Sendable {
                 self.init(canResume: false, canShowResume: true, blocker: .missingMachine)
                 return
             }
-            let backendId = [metadata?["claudeSessionId"]?.stringValue, metadata?["codexThreadId"]?.stringValue]
-                .contains { !($0 ?? "").isEmpty }
+            let backendId = ["claudeSessionId", "codexThreadId", "agyConversationId", OpencodeHarness.resumeIdField]
+                .contains { !(metadata?[$0]?.stringValue ?? "").isEmpty }
             guard backendId else {
                 self.init(canResume: false, canShowResume: true, blocker: .missingBackendId)
                 return
