@@ -7,6 +7,7 @@
 #   selfhost/ios/build-on-mac.sh --sync-only     rsync + pnpm install only
 #   selfhost/ios/build-on-mac.sh --build-only    prebuild + xcodebuild (no sync, no install)
 #   selfhost/ios/build-on-mac.sh --install-only  install the last build on the iPhone
+#   selfhost/ios/build-on-mac.sh --native        the native app (packages/happy-ios), not Expo
 #
 # Run with -h for all options. See selfhost/ios/BUILD-ON-MAC.md.
 set -euo pipefail
@@ -29,7 +30,7 @@ warn() { printf '  %swarn%s %s\n' "$c_ylw" "$c_off" "$*" >&2; }
 die()  { printf '\n%serror:%s %s\n' "$c_red" "$c_off" "$*" >&2; exit 1; }
 
 usage() {
-    sed -n '2,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
     cat <<'EOF'
 
 Options:
@@ -37,6 +38,10 @@ Options:
   --build-only      On the Mac: expo prebuild + Release xcodebuild. No sync, no install.
   --install-only    Install the last built .app on the iPhone (devicectl).
   --skip-prebuild   Reuse the Mac's existing packages/happy-app/ios (JS-only changes).
+  --native          Build packages/happy-ios instead of the Expo app. Needs Xcode 26 and
+                    xcodegen on the Mac; no pnpm install, prebuild or CocoaPods. Combines
+                    with --sync-only and --build-only. --install-only needs no flag: it
+                    installs whichever app was built last.
   --skip-deps       Skip pnpm install during sync.
   --device X        Device name, UDID or CoreDevice id (default: the only paired iPhone).
   --host H          ssh host of the Mac (default: $MAC_HOST or prep-air).
@@ -57,7 +62,7 @@ EOF
 }
 
 DO_SYNC=1; DO_BUILD=1; DO_INSTALL=1
-SKIP_PREBUILD=0; SKIP_DEPS=0
+SKIP_PREBUILD=0; SKIP_DEPS=0; NATIVE=0
 MAC_STAGE=""
 DEVICE_ARG="${DEVICE:-}"
 
@@ -68,6 +73,7 @@ while [[ $# -gt 0 ]]; do
         --install-only) DO_SYNC=0; DO_BUILD=0; DO_INSTALL=1 ;;
         --skip-prebuild) SKIP_PREBUILD=1 ;;
         --skip-deps)    SKIP_DEPS=1 ;;
+        --native)       NATIVE=1 ;;
         --device)       [[ $# -ge 2 ]] || die "--device needs a value"; DEVICE_ARG="$2"; shift ;;
         --device=*)     DEVICE_ARG="${1#--device=}" ;;
         --host)         [[ $# -ge 2 ]] || die "--host needs a value"; MAC_HOST="$2"; shift ;;
@@ -78,6 +84,9 @@ while [[ $# -gt 0 ]]; do
     esac
     shift
 done
+
+# Expo SDK 55 needs less; project.yml's deployment target (iOS 26) needs this.
+if [[ $NATIVE -eq 1 ]]; then MIN_XCODE="26.0"; fi
 
 # ======================================================================
 # Mac side. Invoked over ssh as: build-on-mac.sh --mac-stage deps|build|install
@@ -171,8 +180,10 @@ mac_check_xcode() {
     xcodebuild -runFirstLaunch"
     version_ge "$xver" "$MIN_XCODE" || die "Xcode $xver is too old, need $MIN_XCODE+"
     ok "Xcode $xver ($dev_dir)"
-    command -v pod >/dev/null || die "CocoaPods missing. Run: brew install cocoapods"
-    ok "CocoaPods $(pod --version)"
+    if [[ $NATIVE -eq 0 ]]; then
+        command -v pod >/dev/null || die "CocoaPods missing. Run: brew install cocoapods"
+        ok "CocoaPods $(pod --version)"
+    fi
 }
 
 mac_require_team() {
@@ -191,6 +202,27 @@ mac_export_build_env() {
     # No .git on the Mac copy; the Linux side forwards the commit.
     export HAPPY_BUILD_COMMIT_SHA="${HB_COMMIT_SHA:-unknown}"
     export HAPPY_BUILD_COMMIT_TIMESTAMP="${HB_COMMIT_TS:-}"
+}
+
+mac_explain_build_failure() {   # mac_explain_build_failure LOG EXIT_CODE
+    local log="$1" rc="$2" native_flag=""
+    if [[ $NATIVE -eq 1 ]]; then native_flag=" --native"; fi
+    if grep -q 'errSecInternalComponent' "$log"; then
+        die "codesign could not use the login keychain over ssh (errSecInternalComponent).
+Either run the build once in Terminal on the Mac:   bash ~/$REMOTE_DIR/$SELF_REL --build-only$native_flag
+and click 'Always Allow' when codesign asks, or unlock the keychain for ssh sessions:
+    security unlock-keychain ~/Library/Keychains/login.keychain-db
+Full log: $log"
+    fi
+    if grep -qE 'No Account for Team|No accounts? (with|for)|requires a provisioning profile|No profiles for' "$log"; then
+        die "Xcode has no signing account/profile for team $APPLE_TEAM_ID. Open Xcode > Settings > Accounts,
+sign in to your Apple ID, and make sure the team ID matches. Full log: $log"
+    fi
+    if grep -qE 'Failed Registering Bundle Identifier|identifier .* is not available' "$log"; then
+        die "bundle id under '$APP_BUNDLE_ID_PREFIX' is taken by another team; choose another APP_BUNDLE_ID_PREFIX. Full log: $log"
+    fi
+    die "xcodebuild failed (exit $rc). Last lines of $log:
+$(grep -E 'error' "$log" | tail -n 15)"
 }
 
 mac_stage_build() {
@@ -284,28 +316,59 @@ mac_stage_build() {
     local rc="${PIPESTATUS[0]}"
     set -e
     if [[ "$rc" -ne 0 ]]; then
-        if grep -q 'errSecInternalComponent' "$log"; then
-            die "codesign could not use the login keychain over ssh (errSecInternalComponent).
-Either run the build once in Terminal on the Mac:   bash ~/$REMOTE_DIR/$SELF_REL --build-only
-and click 'Always Allow' when codesign asks, or unlock the keychain for ssh sessions:
-    security unlock-keychain ~/Library/Keychains/login.keychain-db
-Full log: $log"
-        fi
-        if grep -qE 'No Account for Team|No accounts? (with|for)|requires a provisioning profile|No profiles for' "$log"; then
-            die "Xcode has no signing account/profile for team $APPLE_TEAM_ID. Open Xcode > Settings > Accounts,
-sign in to your Apple ID, and make sure the team ID matches. Full log: $log"
-        fi
-        if grep -qE 'Failed Registering Bundle Identifier|identifier .* is not available' "$log"; then
-            die "bundle id under '$APP_BUNDLE_ID_PREFIX' is taken by another team; choose another APP_BUNDLE_ID_PREFIX. Full log: $log"
-        fi
-        die "xcodebuild failed (exit $rc). Last lines of $log:
-$(grep -E 'error' "$log" | tail -n 15)"
+        mac_explain_build_failure "$log" "$rc"
     fi
 
     local app
     app="$(find "$DERIVED_DIR/Build/Products/Release-iphoneos" -maxdepth 1 -name '*.app' -newer "$pbx" | head -n1)"
     [[ -n "$app" ]] || app="$(find "$DERIVED_DIR/Build/Products/Release-iphoneos" -maxdepth 1 -name '*.app' | head -n1)"
     [[ -n "$app" && -d "$app" ]] || die "build succeeded but no .app under $DERIVED_DIR/Build/Products/Release-iphoneos"
+    printf '%s\n' "$app" > "$LAST_APP_FILE"
+    ok "built $app"
+    ok "bundle id $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist")"
+}
+
+# The native app has no node_modules, prebuild or pods: scripts/selfhost-project.sh
+# derives the plists and generates the project, with the signing already in it.
+mac_stage_build_native() {
+    step "Preflight (Mac, native app)"
+    mac_check_xcode
+    mac_load_config
+    mac_require_team
+    local pkg="$REPO_ROOT/packages/happy-ios" config
+    case "$APP_ENV" in
+        development) config=Debug ;;
+        preview)     config=Preview ;;
+        production)  config=Release ;;
+    esac
+    command -v xcodegen >/dev/null || die "xcodegen missing. Run: brew install xcodegen"
+    ok "team=$APPLE_TEAM_ID prefix=$APP_BUNDLE_ID_PREFIX name='$APP_DISPLAY_NAME' env=$APP_ENV ($config)"
+    ok "server=$SERVER_URL"
+    if [[ $SKIP_PREBUILD -eq 1 ]]; then warn "--skip-prebuild only applies to the Expo app; ignored"; fi
+
+    step "Generating HappySelfHost.xcodeproj"
+    env APPLE_TEAM_ID="$APPLE_TEAM_ID" APP_BUNDLE_ID_PREFIX="$APP_BUNDLE_ID_PREFIX" \
+        APP_DISPLAY_NAME="$APP_DISPLAY_NAME" APP_ENV="$APP_ENV" SELFHOST_SERVER_URL="$SERVER_URL" \
+        bash "$pkg/scripts/selfhost-project.sh"
+
+    step "xcodebuild $config for a physical iPhone"
+    local derived="$BUILD_HOME/DerivedData-native"
+    local log="$BUILD_HOME/xcodebuild-native-$TS.log"
+    set +e
+    xcodebuild \
+        -project "$pkg/HappySelfHost.xcodeproj" -scheme Happy -configuration "$config" \
+        -destination 'generic/platform=iOS' \
+        -derivedDataPath "$derived" \
+        -allowProvisioningUpdates \
+        build 2>&1 | tee "$log" | grep -E --line-buffered '^(\*\*|error:|.*: error:|warning: .*(sign|provision))|Signing Identity|Provisioning Profile'
+    local rc="${PIPESTATUS[0]}"
+    set -e
+    if [[ "$rc" -ne 0 ]]; then
+        mac_explain_build_failure "$log" "$rc"
+    fi
+
+    local app="$derived/Build/Products/$config-iphoneos/Happy.app"
+    [[ -d "$app" ]] || die "build succeeded but $app is missing"
     printf '%s\n' "$app" > "$LAST_APP_FILE"
     ok "built $app"
     ok "bundle id $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist")"
@@ -376,7 +439,8 @@ if [[ -n "$MAC_STAGE" ]]; then
     mac_env
     case "$MAC_STAGE" in
         deps)    mac_stage_deps ;;
-        build)   mac_stage_build ;;
+        build)
+            if [[ $NATIVE -eq 1 ]]; then mac_stage_build_native; else mac_stage_build; fi ;;
         install) mac_stage_install ;;
         *)       die "unknown --mac-stage '$MAC_STAGE'" ;;
     esac
@@ -416,6 +480,7 @@ forward_env() {
 
 STAGE_ARGS=()
 [[ $SKIP_PREBUILD -eq 1 ]] && STAGE_ARGS+=(--skip-prebuild)
+[[ $NATIVE -eq 1 ]] && STAGE_ARGS+=(--native)
 [[ -n "$DEVICE_ARG" ]] && STAGE_ARGS+=(--device "$DEVICE_ARG")
 
 run_stage() {   # run_stage deps|build|install
@@ -470,7 +535,7 @@ do_sync() {
 if [[ "$(uname -s)" != "Darwin" && $DO_SYNC -eq 1 ]]; then
     do_sync
 fi
-if [[ $DO_SYNC -eq 1 && $SKIP_DEPS -eq 0 ]]; then run_stage deps; fi
+if [[ $DO_SYNC -eq 1 && $SKIP_DEPS -eq 0 && $NATIVE -eq 0 ]]; then run_stage deps; fi
 if [[ $DO_BUILD -eq 1 ]]; then run_stage build; fi
 if [[ $DO_INSTALL -eq 1 ]]; then run_stage install; fi
 

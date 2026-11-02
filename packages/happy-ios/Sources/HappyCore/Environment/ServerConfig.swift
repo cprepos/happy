@@ -62,21 +62,50 @@ public struct ServerConfig: Sendable {
     public static let storageSuite = "server-config"
     static let customServerKey = "custom-server-url"
 
-    private let storage: KeyValueStore
+    /// Info.plist key a self-host build bakes its server into
+    /// (scripts/selfhost-project.sh). Absent from every other build.
+    public static let bakedServerURLInfoKey = "HappyServerURL"
 
-    public init(storage: KeyValueStore) {
+    private let storage: KeyValueStore
+    private let bakedServerURL: URL?
+
+    public init(storage: KeyValueStore, bakedServerURL: URL? = nil) {
         self.storage = storage
+        self.bakedServerURL = bakedServerURL
     }
 
+    /// The server the build itself names, if it names a usable one.
+    public static func bakedServerURL(bundle: Bundle = .main) -> URL? {
+        bakedServerURL(infoValue: bundle.object(forInfoDictionaryKey: bakedServerURLInfoKey))
+    }
+
+    static func bakedServerURL(infoValue: Any?) -> URL? {
+        (infoValue as? String).flatMap { try? validate($0) }
+    }
+
+    /// The user's choice, then the server baked into the build, then Happy's.
     public var serverURL: URL {
         if let custom = storage.string(forKey: Self.customServerKey), let url = try? Self.validate(custom) {
             return url
         }
-        return Self.defaultServerURL
+        return fallbackServerURL
     }
 
+    /// Where the app goes with no choice of the user's, and where a reset
+    /// returns to.
+    public var fallbackServerURL: URL {
+        bakedServerURL ?? Self.defaultServerURL
+    }
+
+    /// The user moved off the build's own server. Picking Happy's server on
+    /// a self-host build counts, so that it can be reset back.
     public var isCustomServer: Bool {
-        serverURL != Self.defaultServerURL
+        serverURL != fallbackServerURL
+    }
+
+    /// On Happy's own server, however the app came to be on it.
+    public var isHostedServer: Bool {
+        serverURL == Self.defaultServerURL
     }
 
     /// Host (and port when not the default), for the settings row.
@@ -89,7 +118,7 @@ public struct ServerConfig: Sendable {
         return host
     }
 
-    /// Saves a custom server, or resets to the default with nil/empty.
+    /// Saves a custom server, or resets to the build's fallback with nil/empty.
     public func setCustomServerURL(_ string: String?) throws {
         guard let string, !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             storage.set(nil, forKey: Self.customServerKey)

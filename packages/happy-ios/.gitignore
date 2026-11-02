@@ -1,5 +1,6 @@
 # SwiftPM
 .build/
+.selfhost/
 .swiftpm/
 # xtool output and its build-server config
 xtool/

@@ -178,6 +178,9 @@ selfhost/ios/build-on-mac.sh --build-only   # expo prebuild + xcodebuild
 selfhost/ios/build-on-mac.sh --install-only # install on connected iPhone
 ```
 
+Add `--native` to build the native app (`packages/happy-ios`) instead of the
+Expo app.
+
 See `selfhost/ios/README.md` and `selfhost/ios/BUILD-ON-MAC.md` for details,
 including free-team limitations and troubleshooting.
 

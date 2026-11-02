@@ -13,6 +13,7 @@ selfhost/ios/build-on-mac.sh --build-only    # prebuild + xcodebuild on the Mac
 selfhost/ios/build-on-mac.sh --install-only  # reinstall the last build
 selfhost/ios/build-on-mac.sh --skip-prebuild # keep the Mac's ios/ (JS-only changes)
 APPLE_TEAM_ID=ABCDE12345 selfhost/ios/build-on-mac.sh   # team ID without the config file
+selfhost/ios/build-on-mac.sh --native        # the native app instead (see below)
 ```
 
 `-h` lists every option. Each run is safe to repeat.
@@ -80,6 +81,28 @@ Variables you set on the Linux command line take priority over this file.
 7. **Trust the developer profile** after the first install. On the iPhone, go
    to Settings > General > VPN & Device Management > Apple Development: you >
    Trust.
+
+## The native app
+
+The script builds the Expo app (`packages/happy-app`) unless you pass
+`--native`, which builds `packages/happy-ios` from the same config: team, prefix,
+name, `APP_ENV` and server. It also combines with `--sync-only` and
+`--build-only`; `--install-only` installs whichever app was built last.
+
+- **Mac tools.** Xcode 26 and `brew install xcodegen`. `node@24` is still
+  needed, to pick the device. There's no `pnpm install`, prebuild or CocoaPods.
+- **`APP_ENV`** picks the configuration: development is Debug, preview is
+  Preview, production is Release.
+- **Server.** A production build refuses plain http to a remote host, because
+  its App Transport Security blocks it. Use https, or `APP_ENV=preview`.
+- **Same id, same slot.** With the same `APP_BUNDLE_ID_PREFIX` and `APP_ENV` as
+  your Expo build, the native app replaces it on the phone and is meant to keep
+  your login. Use a different prefix to keep both; that counts against the
+  limits below.
+- **No push**, same as the Expo self-host build.
+
+`packages/happy-ios/AGENTS.md` (Self-host build) has the details. `build.sh`
+stays Expo-only.
 
 ## Free Apple ID limits
 
