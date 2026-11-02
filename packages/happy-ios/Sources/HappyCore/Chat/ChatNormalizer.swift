@@ -108,11 +108,13 @@ public enum ChatNormalizer {
             }
             switch envelope.ev {
             case .turnStart: return nil
-            case .start, .stop:
+            case .start, .stop, .progress:
                 guard envelope.role == .agent else {
                     return record
                 }
                 return nil
+            // typesRaw.ts normalizes it, and nothing in the app folds it.
+            case .agents: return nil
             case .turnEnd: record.body = .event(.ready)
             case .userMessageAccepted(_, let ref, _): record.body = .event(.userMessageAccepted(ref: ref))
             case .userMessageRejected(let ref, let reason):

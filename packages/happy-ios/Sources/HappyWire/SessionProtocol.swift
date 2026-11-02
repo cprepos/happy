@@ -39,6 +39,28 @@ public struct SessionFileImage: Codable, Hashable, Sendable {
     public var thumbhash: String?
 }
 
+/// How a subagent ended (`stop`'s `status`).
+public enum SessionSubagentStatus: String, Codable, Hashable, Sendable {
+    case completed
+    case failed
+    case stopped
+}
+
+/// One entry of the `agents` event.
+public struct SessionAgentEntry: Codable, Hashable, Sendable {
+    public var id: String
+    public var type: String?
+    public var description: String?
+    public var parentId: String?
+
+    public init(id: String, type: String? = nil, description: String? = nil, parentId: String? = nil) {
+        self.id = id
+        self.type = type
+        self.description = description
+        self.parentId = parentId
+    }
+}
+
 public enum SessionEvent: Hashable, Sendable {
     case text(text: String, thinking: Bool)
     case service(text: String)
@@ -46,9 +68,11 @@ public enum SessionEvent: Hashable, Sendable {
     case toolCallEnd(call: String, result: String?, isError: Bool?)
     case file(ref: String, name: String, size: Double, mimeType: String?, image: SessionFileImage?)
     case turnStart
-    case start(title: String?)
+    case start(title: String? = nil, subagentType: String? = nil, model: String? = nil, prompt: String? = nil, spawnDepth: Int? = nil, parentTaskId: String? = nil)
     case turnEnd(status: SessionTurnEndStatus)
-    case stop
+    case stop(status: SessionSubagentStatus? = nil, summary: String? = nil, tokens: Int? = nil, toolUses: Int? = nil, durationMs: Double? = nil)
+    case progress(tokens: Int? = nil, toolUses: Int? = nil, durationMs: Double? = nil, lastToolName: String? = nil, summary: String? = nil)
+    case agents([SessionAgentEntry])
     case userMessageAccepted(id: String?, ref: String, runId: String?)
     case userMessageRejected(ref: String, reason: String)
     case unknown(type: String, raw: JSONValue)
@@ -67,6 +91,8 @@ extension SessionEvent: Codable {
     private enum Keys: String, CodingKey {
         case t, text, thinking, call, name, title, description, args, result, isError
         case ref, size, mimeType, image, status, id, runId, reason
+        case subagentType, model, prompt, spawnDepth, parentTaskId
+        case summary, tokens, toolUses, durationMs, lastToolName, agents
     }
 
     public init(from decoder: Decoder) throws {
@@ -105,11 +131,37 @@ extension SessionEvent: Codable {
         case "turn-start":
             self = .turnStart
         case "start":
-            self = .start(title: try container.decodeIfPresent(String.self, forKey: .title))
+            // What a subagent reports about itself never costs its boundary:
+            // a field of the wrong shape, or a status this version doesn't
+            // know, reads as absent. Older records have none of them.
+            self = .start(
+                title: try container.decodeIfPresent(String.self, forKey: .title),
+                subagentType: try? container.decodeIfPresent(String.self, forKey: .subagentType),
+                model: try? container.decodeIfPresent(String.self, forKey: .model),
+                prompt: try? container.decodeIfPresent(String.self, forKey: .prompt),
+                spawnDepth: try? container.decodeIfPresent(Int.self, forKey: .spawnDepth),
+                parentTaskId: try? container.decodeIfPresent(String.self, forKey: .parentTaskId)
+            )
         case "turn-end":
             self = .turnEnd(status: try container.decode(SessionTurnEndStatus.self, forKey: .status))
         case "stop":
-            self = .stop
+            self = .stop(
+                status: try? container.decodeIfPresent(SessionSubagentStatus.self, forKey: .status),
+                summary: try? container.decodeIfPresent(String.self, forKey: .summary),
+                tokens: try? container.decodeIfPresent(Int.self, forKey: .tokens),
+                toolUses: try? container.decodeIfPresent(Int.self, forKey: .toolUses),
+                durationMs: try? container.decodeIfPresent(Double.self, forKey: .durationMs)
+            )
+        case "progress":
+            self = .progress(
+                tokens: try? container.decodeIfPresent(Int.self, forKey: .tokens),
+                toolUses: try? container.decodeIfPresent(Int.self, forKey: .toolUses),
+                durationMs: try? container.decodeIfPresent(Double.self, forKey: .durationMs),
+                lastToolName: try? container.decodeIfPresent(String.self, forKey: .lastToolName),
+                summary: try? container.decodeIfPresent(String.self, forKey: .summary)
+            )
+        case "agents":
+            self = .agents((try? container.decodeIfPresent([SessionAgentEntry].self, forKey: .agents)) ?? [])
         case "user-message-accepted":
             self = .userMessageAccepted(
                 id: try container.decodeIfPresent(String.self, forKey: .id),
@@ -161,14 +213,34 @@ extension SessionEvent: Codable {
             try container.encodeIfPresent(image, forKey: .image)
         case .turnStart:
             try container.encode("turn-start", forKey: .t)
-        case .start(let title):
+        case .start(let title, let subagentType, let model, let prompt, let spawnDepth, let parentTaskId):
             try container.encode("start", forKey: .t)
             try container.encodeIfPresent(title, forKey: .title)
+            try container.encodeIfPresent(subagentType, forKey: .subagentType)
+            try container.encodeIfPresent(model, forKey: .model)
+            try container.encodeIfPresent(prompt, forKey: .prompt)
+            try container.encodeIfPresent(spawnDepth, forKey: .spawnDepth)
+            try container.encodeIfPresent(parentTaskId, forKey: .parentTaskId)
         case .turnEnd(let status):
             try container.encode("turn-end", forKey: .t)
             try container.encode(status, forKey: .status)
-        case .stop:
+        case .stop(let status, let summary, let tokens, let toolUses, let durationMs):
             try container.encode("stop", forKey: .t)
+            try container.encodeIfPresent(status, forKey: .status)
+            try container.encodeIfPresent(summary, forKey: .summary)
+            try container.encodeIfPresent(tokens, forKey: .tokens)
+            try container.encodeIfPresent(toolUses, forKey: .toolUses)
+            try container.encodeIfPresent(durationMs, forKey: .durationMs)
+        case .progress(let tokens, let toolUses, let durationMs, let lastToolName, let summary):
+            try container.encode("progress", forKey: .t)
+            try container.encodeIfPresent(tokens, forKey: .tokens)
+            try container.encodeIfPresent(toolUses, forKey: .toolUses)
+            try container.encodeIfPresent(durationMs, forKey: .durationMs)
+            try container.encodeIfPresent(lastToolName, forKey: .lastToolName)
+            try container.encodeIfPresent(summary, forKey: .summary)
+        case .agents(let agents):
+            try container.encode("agents", forKey: .t)
+            try container.encode(agents, forKey: .agents)
         case .userMessageAccepted(let id, let ref, let runId):
             try container.encode("user-message-accepted", forKey: .t)
             try container.encodeIfPresent(id, forKey: .id)
