@@ -42,9 +42,11 @@ public enum AgentInputPrimaryAction: String, Equatable, Sendable {
 }
 
 /// AgentInput.tsx's wide composer (`desktopActionControls`, a window wider
-/// than 700 points): its send button is only send. Stop has its own button
-/// beside the gear. The compact iPhone card owns the initial microphone;
-/// an active call can also be reopened through the shared status row.
+/// than 700 points): its send button sends, and with nothing to send it is
+/// the voice button (`handleSendPress` calls `onMicPress`). Stop has its own
+/// button beside the gear. While a call runs SessionView passes no
+/// `onMicPress`, so the button is a plain send again and the shared status
+/// row reopens the call.
 public struct AgentInputDesktopSend: Equatable, Sendable {
     public enum Fill: Equatable, Sendable {
         /// `sendButtonLocked`: surfaceHigh in a 1pt divider ring.
@@ -61,6 +63,8 @@ public struct AgentInputDesktopSend: Equatable, Sendable {
         case lock
         /// Octicons `arrow-up` 16, button.primary.tint.
         case arrow
+        /// `icon-voice-white.png` 24, button.primary.tint.
+        case voice
     }
 
     public var fill: Fill
@@ -68,11 +72,33 @@ public struct AgentInputDesktopSend: Equatable, Sendable {
     /// `desktopCanPressSendButton`.
     public var isEnabled: Bool
 
+    /// A press starts voice instead of sending.
+    public var startsVoice: Bool {
+        glyph == .voice && isEnabled
+    }
+
     /// `hasText` is the text alone (it colours the button); content counts
-    /// picked images too (it enables it).
-    public init(hasText: Bool, hasComposerContent: Bool, isSendBlocked: Bool, isSending: Bool = false, isSendDisabled: Bool = false) {
-        fill = isSendBlocked ? .locked : hasText || isSending ? .active : .inactive
-        glyph = isSending ? .spinner : isSendBlocked ? .lock : .arrow
-        isEnabled = !isSending && !isSendDisabled && hasComposerContent
+    /// picked images too (it enables it). `canVoice` is `onMicPress &&
+    /// !isMicActive`: voice can start here and no call is running.
+    ///
+    /// happy-app draws the voice glyph whenever there is no text, so
+    /// pictures alone show it although a press sends them. Here the glyph
+    /// is voice only when a press starts voice: with pictures it is the
+    /// arrow, on the same filled button.
+    public init(
+        hasText: Bool,
+        hasComposerContent: Bool,
+        isSendBlocked: Bool,
+        isSending: Bool = false,
+        isSendDisabled: Bool = false,
+        canVoice: Bool = false
+    ) {
+        fill = isSendBlocked ? .locked : hasText || isSending || canVoice ? .active : .inactive
+        glyph = isSending ? .spinner
+            : isSendBlocked ? .lock
+            : !hasComposerContent && canVoice ? .voice
+            : .arrow
+        isEnabled = !isSending && !isSendDisabled
+            && (isSendBlocked ? hasComposerContent : hasComposerContent || canVoice)
     }
 }

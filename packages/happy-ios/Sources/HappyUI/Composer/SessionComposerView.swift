@@ -624,13 +624,14 @@ final class SessionComposerView: UIView, ChatComposerView, AgentInputCardDelegat
         let record = state?.session.record
         let chips = state?.newSessionChoices.map { ComposerChipSet(choices: $0, titles: Self.titles) }
             ?? ComposerChipSet(modes: modes, record: record, titles: Self.titles)
+        let canVoice = record != nil && !environment.sessionId.hasPrefix("pending-chat:")
         let primary = AgentInputPrimaryAction.resolve(
             hasComposerContent: hasComposerContent,
             isSendBlocked: SessionComposerRules.isSendBlocked(record),
             isSendDisabled: false,
             showAbortButton: SessionComposerRules.showsAbortButton(record),
             canAbort: SessionComposerRules.canAbort(record) && !stopRequested,
-            canVoice: record != nil && !environment.sessionId.hasPrefix("pending-chat:")
+            canVoice: canVoice
         )
         var configuration = card.configuration
         configuration.permission = chips.permission.map(Self.chip)
@@ -650,10 +651,12 @@ final class SessionComposerView: UIView, ChatComposerView, AgentInputCardDelegat
             showsStop: SessionComposerRules.canAbort(record),
             isStopBusy: isAborting,
             // SessionView passes no `isSending`: a send never spins here.
+            // Nor `onMicPress` while a call runs: the voice row reopens it.
             send: AgentInputDesktopSend(
                 hasText: card.hasContent,
                 hasComposerContent: hasComposerContent,
-                isSendBlocked: SessionComposerRules.isSendBlocked(record)
+                isSendBlocked: SessionComposerRules.isSendBlocked(record),
+                canVoice: canVoice && !isVoiceRunning
             )
         ) : nil
         card.configuration = configuration
@@ -761,9 +764,7 @@ final class SessionComposerView: UIView, ChatComposerView, AgentInputCardDelegat
     /// Stop and send share the button; which one fires comes from the live
     /// text, not the configuration, which can lag a fast type-then-tap.
     func agentInputCardDidPressPrimary(_ card: AgentInputCardView) {
-        if !hasComposerContent, card.configuration.primaryAction == .voice, let host = hostViewController {
-            blur()
-            VoiceCoordinator.shared.start(account: environment.account, sessionId: environment.sessionId, presenting: host)
+        if !hasComposerContent, card.configuration.primaryAction == .voice, startVoice() {
             return
         }
         if !hasComposerContent, card.configuration.primaryAction == .stop {
@@ -773,9 +774,24 @@ final class SessionComposerView: UIView, ChatComposerView, AgentInputCardDelegat
         sendPressed()
     }
 
-    /// The flat panel's send and stop are buttons of their own.
+    /// The flat panel's send and stop are buttons of their own. With
+    /// nothing to send, send is the voice button (`handleSendPress` calls
+    /// `onMicPress`); the live content decides, as for the phone's.
     func agentInputCardDidPressSend(_ card: AgentInputCardView) {
+        if !hasComposerContent, card.configuration.desktop?.send.startsVoice == true, startVoice() {
+            return
+        }
         sendPressed()
+    }
+
+    /// Starts the voice conversation, or reopens the one running; false
+    /// before the composer is on a screen.
+    @discardableResult
+    private func startVoice() -> Bool {
+        guard let host = hostViewController else { return false }
+        blur()
+        VoiceCoordinator.shared.start(account: environment.account, sessionId: environment.sessionId, presenting: host)
+        return true
     }
 
     func agentInputCardDidPressStop(_ card: AgentInputCardView) {
@@ -1182,16 +1198,24 @@ final class SessionComposerView: UIView, ChatComposerView, AgentInputCardDelegat
         }
     }
 
+    /// A call connecting or connected (SessionView's `voiceSessionActive`).
+    private var isVoiceRunning: Bool {
+        switch VoiceCoordinator.shared.state(for: environment.account) {
+        case .connecting, .active: true
+        default: false
+        }
+    }
+
     @objc private func voiceChanged() {
         applyDetails()
+        // The flat panel's send stops or starts being the voice button.
+        if card.configuration.desktop != nil { applyConfiguration() }
         setNeedsLayout()
         composerDelegate?.composerDidInvalidateHeight(self)
     }
 
     @objc private func voiceStatusTapped() {
-        guard let host = hostViewController else { return }
-        blur()
-        VoiceCoordinator.shared.start(account: environment.account, sessionId: environment.sessionId, presenting: host)
+        startVoice()
     }
 
     @objc private func contextTapped() {
