@@ -903,6 +903,115 @@ describe('CodexAppServerClient sandbox integration', () => {
         await client.disconnect();
     });
 
+    it('sends no model when none is picked, and a picked model exactly', async () => {
+        const requests: MockRpcMessage[] = [];
+        let turnCount = 0;
+        const threadResult = {
+            thread: { id: 'thread-model', path: '/tmp/thread-model' },
+            model: 'gpt-6-luna',
+            modelProvider: 'openai',
+            cwd: '/tmp/project',
+            approvalPolicy: 'on-request',
+            sandbox: { type: 'workspaceWrite' },
+            reasoningEffort: null,
+        };
+        const proc = createMockProcess({
+            pid: 2803,
+            onRequest: (msg, stdout) => {
+                requests.push(msg);
+
+                if ((msg.method === 'thread/start' || msg.method === 'thread/resume') && msg.id != null) {
+                    setTimeout(() => {
+                        pushJsonLine(stdout, { id: msg.id, result: threadResult });
+                    }, 0);
+                }
+
+                if (msg.method === 'turn/start' && msg.id != null) {
+                    const turnId = `turn-model-${++turnCount}`;
+                    setTimeout(() => {
+                        const turn = { id: turnId, items: [], status: 'completed', error: null };
+                        pushJsonLine(stdout, { id: msg.id, result: { turn } });
+                        pushJsonLine(stdout, {
+                            method: 'turn/completed',
+                            params: { threadId: 'thread-model', turn },
+                        });
+                    }, 0);
+                }
+            },
+        });
+        mockSpawn.mockImplementation(() => proc);
+
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+        const paramsOf = (method: string) => requests.filter((msg) => msg.method === method).map((msg) => msg.params);
+
+        await client.connect();
+        // Nothing picked: Codex chooses the account's own default.
+        const started = await client.startThread({
+            cwd: '/tmp/project',
+            approvalPolicy: 'on-request',
+            sandbox: 'workspace-write',
+        });
+        expect(started.model).toBe('gpt-6-luna');
+        expect(paramsOf('thread/start')[0].model).toBeNull();
+
+        await client.sendTurnAndWait('no pick', { approvalPolicy: 'on-request', sandbox: 'workspace-write', effort: 'medium' });
+        expect(paramsOf('turn/start')[0]).not.toHaveProperty('model');
+        expect(paramsOf('turn/start')[0]).toMatchObject({ effort: 'medium' });
+
+        // Resuming a thread nobody picked a model for leaves its model alone.
+        await client.resumeThread({ threadId: 'thread-model' });
+        expect(paramsOf('thread/resume')[0]).toMatchObject({ threadId: 'thread-model', model: null });
+
+        await client.sendTurnAndWait('after resume');
+        expect(paramsOf('turn/start')[1]).not.toHaveProperty('model');
+
+        // A pick, including the old default, is sent exactly as given.
+        await client.sendTurnAndWait('picked', { model: 'gpt-6.1-sol' });
+        expect(paramsOf('turn/start')[2]).toMatchObject({ model: 'gpt-6.1-sol' });
+
+        await client.disconnect();
+    });
+
+    it('starts and resumes a thread with the picked model', async () => {
+        const requests: MockRpcMessage[] = [];
+        const proc = createMockProcess({
+            pid: 2804,
+            onRequest: (msg, stdout) => {
+                requests.push(msg);
+                if ((msg.method === 'thread/start' || msg.method === 'thread/resume') && msg.id != null) {
+                    setTimeout(() => {
+                        pushJsonLine(stdout, {
+                            id: msg.id,
+                            result: {
+                                thread: { id: 'thread-picked', path: '/tmp/thread-picked' },
+                                model: 'gpt-5.6-terra',
+                                modelProvider: 'openai',
+                                cwd: '/tmp/project',
+                                approvalPolicy: 'on-request',
+                                sandbox: { type: 'workspaceWrite' },
+                                reasoningEffort: null,
+                            },
+                        });
+                    }, 0);
+                }
+            },
+        });
+        mockSpawn.mockImplementation(() => proc);
+
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+
+        await client.connect();
+        await client.startThread({ model: 'gpt-5.6-terra', cwd: '/tmp/project' });
+        await client.resumeThread({ threadId: 'thread-picked' });
+
+        expect(requests.find((msg) => msg.method === 'thread/start')?.params.model).toBe('gpt-5.6-terra');
+        expect(requests.find((msg) => msg.method === 'thread/resume')?.params.model).toBe('gpt-5.6-terra');
+
+        await client.disconnect();
+    });
+
     it('maps raw item notifications into legacy events and deduplicates turn completion', async () => {
         const requests: MockRpcMessage[] = [];
         const proc = createMockProcess({

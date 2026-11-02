@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { CodexRemoteModeState } from '../remoteModeState';
+import { CodexRemoteModeState, createCodexRemoteModeState } from '../remoteModeState';
 
 describe('CodexRemoteModeState', () => {
     it('uses the exact launch permission, model, and effort before any app override', () => {
@@ -116,5 +116,35 @@ describe('CodexRemoteModeState', () => {
             permission: { kind: 'ignored', incoming: 'plan' },
             effortResolution: { kind: 'ignored', incoming: 'impossible' },
         });
+    });
+
+    it('picks no model when the session was launched without one', () => {
+        const state = createCodexRemoteModeState({ permissionMode: 'auto' });
+
+        expect(state.resolve(undefined)).toMatchObject({
+            permissionMode: 'auto',
+            model: undefined,
+            effort: 'medium',
+            modelResolution: { kind: 'retained', value: undefined },
+        });
+        // A current app with nothing picked sends `model: null`.
+        expect(state.resolve({ model: null })).toMatchObject({
+            model: undefined,
+            modelResolution: { kind: 'updated', value: undefined },
+        });
+    });
+
+    it('passes a picked model through exactly, at launch or from a message', () => {
+        expect(createCodexRemoteModeState({ permissionMode: 'auto', model: 'gpt-6.1-sol' })
+            .resolve(undefined).model).toBe('gpt-6.1-sol');
+
+        const state = createCodexRemoteModeState({ permissionMode: 'auto' });
+        expect(state.resolve({ model: 'gpt-6.1-sol' }).model).toBe('gpt-6.1-sol');
+        expect(state.resolve({}).model).toBe('gpt-6.1-sol');
+    });
+
+    it('keeps a launch effort and defaults to medium without one', () => {
+        expect(createCodexRemoteModeState({ permissionMode: 'auto', effort: 'high' }).currentEffort).toBe('high');
+        expect(createCodexRemoteModeState({ permissionMode: 'auto' }).currentEffort).toBe('medium');
     });
 });

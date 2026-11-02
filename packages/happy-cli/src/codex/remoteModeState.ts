@@ -7,6 +7,8 @@ const VALID_REMOTE_EFFORTS: readonly ReasoningEffort[] = [
     'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra',
 ];
 
+const DEFAULT_CODEX_EFFORT: ReasoningEffort = 'medium';
+
 type Resolution<T> =
     | { kind: 'updated'; value: T }
     | { kind: 'retained'; value: T }
@@ -107,4 +109,25 @@ export class CodexRemoteModeState {
         this.currentPermissionMode = this.initialPermissionMode;
         this.currentPermissionModeExplicitlySet = false;
     }
+}
+/**
+ * The mode state a Codex session launches with.
+ *
+ * There is no default Codex model on purpose. With nothing picked, the model
+ * stays undefined, so thread/start carries `model: null` and turn/start no
+ * `model` at all, and Codex runs its own default for the signed-in account.
+ * A hard-coded name breaks accounts that do not offer it: a ChatGPT plan
+ * rejects GPT-6.1 Sol with `modelNotFound`. A picked model, from `--model` or
+ * a message's `meta.model`, is still sent exactly as given.
+ */
+export function createCodexRemoteModeState(options: {
+    permissionMode: PermissionMode;
+    model?: string;
+    effort?: ReasoningEffort;
+}): CodexRemoteModeState {
+    return new CodexRemoteModeState({
+        permissionMode: options.permissionMode,
+        model: options.model,
+        effort: options.effort ?? DEFAULT_CODEX_EFFORT,
+    });
 }

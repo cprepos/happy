@@ -47,7 +47,7 @@ import {
     type CodexEnhancedMode,
 } from './codexPrompt';
 import { discoverCodexSkillCommands } from './codexSkills';
-import { CodexRemoteModeState } from './remoteModeState';
+import { createCodexRemoteModeState } from './remoteModeState';
 import {
     codexGoalActionCapabilities,
     mapCodexGoalEventToAgentGoalStatus,
@@ -81,8 +81,6 @@ function hasCodexSubagentReference(message: Record<string, unknown>): boolean {
     return false;
 }
 
-const DEFAULT_CODEX_MODEL = 'gpt-6.1-sol';
-const DEFAULT_CODEX_EFFORT: ReasoningEffort = 'medium';
 // Codex's app-server protocol requires a concrete approval policy and sandbox
 // on every turn, so unlike Claude there is no "send nothing" here. This is the
 // closest honest equivalent: `auto` is Codex's own shipped default preset
@@ -272,10 +270,10 @@ export async function runCodex(opts: {
 
     // Track current overrides to apply per message
     // Use shared PermissionMode type from api/types for cross-agent compatibility
-    const remoteModeState = new CodexRemoteModeState({
+    const remoteModeState = createCodexRemoteModeState({
         permissionMode: initialPermissionMode,
-        model: opts.model ?? DEFAULT_CODEX_MODEL,
-        effort: opts.effort ?? DEFAULT_CODEX_EFFORT,
+        model: opts.model,
+        effort: opts.effort,
     });
     let currentAppendSystemPrompt: string | undefined = undefined;
 
