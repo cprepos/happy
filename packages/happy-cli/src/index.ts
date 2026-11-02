@@ -36,6 +36,7 @@ import { extractNoSandboxFlag } from './utils/sandboxFlags'
 import { handleResumeCommand } from '@/resume/handleResumeCommand'
 import { ensureDaemonRunning } from './daemon/ensureDaemonRunning'
 import { handleCodexCommand } from './commands/codexCommand'
+import { handleDesktopCommand } from './commands/desktop'
 import { sanitizeSessionEnvironment } from './daemon/sessionEnvironment'
 
 
@@ -806,6 +807,17 @@ ${chalk.bold('Note:')} The daemon runs in the background and manages Claude sess
 
 ${chalk.bold('To clean up runaway processes:')} Use ${chalk.cyan('happy doctor clean')}
 `)
+    }
+    return;
+  } else if (subcommand === 'desktop') {
+    try {
+      await handleDesktopCommand(args.slice(1));
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      if (process.env.DEBUG) {
+        console.error(error)
+      }
+      process.exit(1)
     }
     return;
   } else {

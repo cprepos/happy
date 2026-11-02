@@ -1,6 +1,6 @@
 import { execSync } from 'child_process';
 import os from 'os';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { findAgyBin } from '@/agy/constants';
 import { findOpencodeBin } from '@/opencode/constants';
@@ -82,11 +82,50 @@ function detectWindows(): CLIAvailability {
   return { claude, codex, gemini, openclaw, agy, opencode, 'claude-desktop': claudeDesktop, detectedAt: Date.now() };
 }
 
+/** Plugin id of Happy's Claude desktop plugin (`<plugin>@<marketplace>`). */
+export const HAPPY_DESKTOP_PLUGIN_ID = 'happy@happy';
+
+/** Path of Claude.app in /Applications or ~/Applications, or null when it is not installed. */
+export function findClaudeDesktopApp(): string | null {
+  const candidates = ['/Applications/Claude.app', join(os.homedir(), 'Applications', 'Claude.app')];
+  return candidates.find((candidate) => existsSync(candidate)) ?? null;
+}
+
+/** Whether the Claude desktop app's main process (named `Claude`) is running. */
+export function isClaudeDesktopRunning(): boolean {
+  try {
+    execSync('pgrep -x Claude', { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Claude Desktop as a harness. Contract stub: wave 2 replaces this with the
- * real check (Claude.app installed, its process running, and Happy's plugin
- * listed in ~/.claude/plugins/installed_plugins.json).
+ * Whether Claude Code lists `pluginId` in its installed_plugins.json, under
+ * CLAUDE_CONFIG_DIR when set, else ~/.claude. A missing or unreadable file
+ * means nothing is installed.
+ */
+export function isClaudePluginInstalled(pluginId: string): boolean {
+  const configDir = process.env.CLAUDE_CONFIG_DIR || join(os.homedir(), '.claude');
+  try {
+    const installed = JSON.parse(readFileSync(join(configDir, 'plugins', 'installed_plugins.json'), 'utf8')) as {
+      plugins?: Record<string, unknown>;
+    };
+    const entries = installed.plugins?.[pluginId];
+    return Array.isArray(entries) && entries.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Claude Desktop as a harness: macOS only, Claude.app installed, its process
+ * running, and Happy's plugin listed in installed_plugins.json.
  */
 function detectClaudeDesktop(): boolean {
-  return false;
+  return os.platform() === 'darwin'
+    && findClaudeDesktopApp() !== null
+    && isClaudeDesktopRunning()
+    && isClaudePluginInstalled(HAPPY_DESKTOP_PLUGIN_ID);
 }

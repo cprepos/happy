@@ -54,6 +54,7 @@
     "dist",
     "bin",
     "scripts",
+    "claude-desktop-plugin",
     "native",
     "tools/archives",
     "tools/licenses",

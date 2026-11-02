@@ -1,0 +1,12 @@
+{
+  "name": "happy",
+  "owner": { "name": "Happy" },
+  "description": "Happy's Claude Code plugin for the Claude desktop app",
+  "plugins": [
+    {
+      "name": "happy",
+      "source": "./plugins/happy",
+      "description": "Mirror Claude desktop Code sessions into Happy and deliver phone messages to them"
+    }
+  ]
+}
