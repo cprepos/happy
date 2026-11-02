@@ -502,6 +502,24 @@ export async function runOpencodeTui(opts: {
         onError: (error) => logger.debug('[OpenCode] Event stream dropped, reconnecting:', error),
     });
 
+    // A message without a mode keeps the last one: OpenCode would otherwise run
+    // it on its default agent, moving a plan session back to build.
+    let requestedMode: string | undefined;
+    const sendToOpencode = (text: string, messageId: string, options: ReturnType<typeof opencodePromptOptions>): Promise<void> => {
+        const command = parseOpencodeSlashCommand(text, commandNames);
+        if (!command) {
+            return client.promptAsync(mapper.sessionId, { text, messageId, ...options });
+        }
+        if (command.name !== COMPACT_COMMAND || projectCommands.includes(COMPACT_COMMAND)) {
+            return client.runCommand(mapper.sessionId, { ...command, messageId, ...options }, events.signal);
+        }
+        const model = options.model ?? opencodePromptOptions({ model: currentModelId, agentNames }).model;
+        if (!model) {
+            return Promise.reject(new Error('No model is selected to compact the session with'));
+        }
+        return client.summarize(mapper.sessionId, model, events.signal);
+    };
+
     session.onUserMessage((message) => {
         const text = message.content.text;
         if (!text) {
