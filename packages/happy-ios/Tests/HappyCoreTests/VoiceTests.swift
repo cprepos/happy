@@ -191,26 +191,38 @@ private actor ConnectionGate {
 final class VoiceContextTests: XCTestCase {
     func testContextForwardsVisibleTextOnlyAndDoesNotRepeatPendingPermission() {
         let permission = ToolPermission(id: "permission", status: .pending)
-        let snapshot = LegacyChatSnapshot(sessionId: "s", messages: [
-            .agentText(AgentTextMessage(id: "thinking", createdAt: 1, text: "private reasoning", isThinking: true)),
-            .agentText(AgentTextMessage(id: "answer", createdAt: 2, text: "answer", isThinking: false)),
-            .toolCall(ToolCallMessage(id: "tool", createdAt: 3, tool: ToolCall(name: "Bash", state: .running, input: .object([:]), createdAt: 3, permission: permission))),
-        ])
+        let tool = ChatMessage.toolCall(ToolCallMessage(id: "tool", createdAt: 3, tool: ToolCall(name: "Bash", state: .running, input: .object([:]), createdAt: 3, permission: permission)))
         var reducer = VoiceContextReducer()
-        let first = reducer.apply(snapshot)
-        XCTAssertTrue(first.context.contains("answer"))
-        XCTAssertFalse(first.context.contains("private reasoning"))
+        let first = reducer.apply(LegacyChatSnapshot(sessionId: "s", messages: [tool], isLoaded: true))
+        XCTAssertEqual(first.context, "")
         XCTAssertEqual(first.prompts.count, 1)
+        let snapshot = LegacyChatSnapshot(sessionId: "s", messages: [
+            tool,
+            .agentText(AgentTextMessage(id: "thinking", createdAt: 4, text: "private reasoning", isThinking: true)),
+            .agentText(AgentTextMessage(id: "answer", createdAt: 5, text: "answer", isThinking: false)),
+        ], isLoaded: true)
         let second = reducer.apply(snapshot)
-        XCTAssertEqual(second, VoiceContextUpdate())
+        XCTAssertTrue(second.context.contains("answer"))
+        XCTAssertFalse(second.context.contains("private reasoning"))
+        XCTAssertEqual(second.prompts, [])
+        let third = reducer.apply(snapshot)
+        XCTAssertEqual(third, VoiceContextUpdate())
     }
 
     func testLatestFiftyMessagesAndLanguageMapping() {
         let messages = (0..<75).map { ChatMessage.userText(UserTextMessage(id: "m\($0)", createdAt: Int64($0), text: "text-\($0)")) }
         var reducer = VoiceContextReducer()
-        let update = reducer.apply(LegacyChatSnapshot(sessionId: "s", messages: messages))
-        XCTAssertFalse(update.context.contains("text-0\n"))
-        XCTAssertTrue(update.context.contains("text-74"))
+        XCTAssertEqual(reducer.apply(LegacyChatSnapshot(sessionId: "s", messages: messages, isLoaded: true)), VoiceContextUpdate())
+        let history = reducer.history(sessionId: "s")
+        XCTAssertFalse(history.contains("text-0\n"))
+        XCTAssertFalse(history.contains("text-24\n"))
+        XCTAssertTrue(history.contains("text-25\n"))
+        XCTAssertTrue(history.contains("text-74"))
+        let burst = (75..<150).map { ChatMessage.userText(UserTextMessage(id: "m\($0)", createdAt: Int64($0), text: "text-\($0)")) }
+        let update = reducer.apply(LegacyChatSnapshot(sessionId: "s", messages: messages + burst, isLoaded: true))
+        XCTAssertFalse(update.context.contains("text-99\n"))
+        XCTAssertTrue(update.context.contains("text-100\n"))
+        XCTAssertTrue(update.context.contains("text-149"))
         XCTAssertEqual(VoiceLanguage.selection("fr-CA").providerCode, "fr")
         XCTAssertNil(VoiceLanguage.selection(nil).providerCode)
         XCTAssertNil(VoiceLanguage.selection("unknown").providerCode)
