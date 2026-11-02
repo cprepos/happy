@@ -190,10 +190,14 @@ final class HostedHomeScrollTraceTests: XCTestCase {
         sidebar.view(for: id).map { $0.convert($0.box.origin, to: window).y }
     }
 
-    /// Where `id`'s box is drawn in the window this frame, mid-glide too.
+    /// Where `id`'s box is drawn in the window this frame, mid-glide too;
+    /// nil while it isn't drawn yet. A row mounted for this frame has a
+    /// presentation with no size, at the list's top, until the frame it
+    /// was placed in is on screen.
     private func shownY(_ id: String, _ sidebar: SidebarList, _ window: UIWindow) -> CGFloat? {
         guard let view = sidebar.view(for: id), let layer = view.layer.presentation(),
               let windowLayer = window.layer.presentation() else { return windowY(id, sidebar, window) }
+        guard !layer.bounds.isEmpty else { return nil }
         return layer.convert(view.box.origin, to: windowLayer).y
     }
 
