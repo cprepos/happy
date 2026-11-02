@@ -205,7 +205,10 @@ final class ChatDeliveryView: UIView {
         guard next > 0, next != scale else { return }
         scale = next
         var transform = CGAffineTransform(scaleX: next, y: next)
-        func scaled(_ path: CGPath) -> CGPath { path.copy(using: &transform) ?? path }
+        func scaled(_ path: CGPath) -> CGPath {
+            if let copy = path.copy(using: &transform) { return copy }
+            return path
+        }
         sent.path = scaled(Self.fullCheck)
         read.path = scaled(Self.partialCheck)
         clockFrame.path = scaled(Self.clockFrame)
