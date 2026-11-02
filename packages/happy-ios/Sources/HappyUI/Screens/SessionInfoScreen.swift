@@ -34,6 +34,12 @@ final class SessionInfoViewController: UIViewController, UIScrollViewDelegate {
     private var observation: ApplyObservation?
     private var pipeline: ApplyPipeline<SessionInfoInput, SessionInfoFrame?, SessionInfoUpdate>?
     private var gitTask: Task<Void, Never>?
+    /// What the server offers, which the Voice row follows; nil until it
+    /// first answers.
+    private var voiceConfig: VoiceConfig?
+    private var voiceConfigTask: Task<Void, Never>?
+    /// Tests stand in for the server.
+    var fetchVoiceConfig: @Sendable () async throws -> VoiceConfig
     /// What the screen shows now.
     private var frame: SessionInfoFrame?
     private var busy = Set<Action>()
@@ -73,6 +79,8 @@ final class SessionInfoViewController: UIViewController, UIScrollViewDelegate {
         self.firstPaintTimeout = firstPaintTimeout
         let feed = session.sessionDetails
         self.snapshots = snapshots ?? { feed.snapshots(sessionId: sessionId, onError: $0) }
+        let api = session.api
+        fetchVoiceConfig = { try await api.voiceConfig() }
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -83,6 +91,7 @@ final class SessionInfoViewController: UIViewController, UIScrollViewDelegate {
 
     deinit {
         gitTask?.cancel()
+        voiceConfigTask?.cancel()
         copiedReset?.cancel()
         loadWatchdog?.cancel()
         NotificationCenter.default.removeObserver(self)
@@ -131,6 +140,25 @@ final class SessionInfoViewController: UIViewController, UIScrollViewDelegate {
         NotificationCenter.default.addObserver(self, selector: #selector(appDidBecomeActive), name: UIApplication.didBecomeActiveNotification, object: nil)
         showLoadStatus(.loading)
         beginObservation()
+        loadVoiceConfig()
+    }
+
+    /// Asks until the server answers. Meanwhile the Voice row stands on the
+    /// saved service, as Settings' Voice page does.
+    private func loadVoiceConfig() {
+        let fetch = fetchVoiceConfig
+        voiceConfigTask = Task { [weak self] in
+            var wait = 1
+            while !Task.isCancelled {
+                if let config = try? await fetch() {
+                    self?.voiceConfig = config
+                    self?.pipeline?.update { $0.voiceConfig = config }
+                    return
+                }
+                try? await Task.sleep(for: .seconds(wait))
+                wait = min(wait * 2, 30)
+            }
+        }
     }
 
     private func beginObservation() {
@@ -147,6 +175,7 @@ final class SessionInfoViewController: UIViewController, UIScrollViewDelegate {
         input.forking = busy.contains(.fork)
         input.copiedResumeCommand = frame?.copiedResumeCommand ?? false
         input.vibingWord = vibingWord
+        input.voiceConfig = voiceConfig
         let pipeline = ApplyPipeline<SessionInfoInput, SessionInfoFrame?, SessionInfoUpdate>(
             input: input,
             state: nil,
@@ -337,7 +366,7 @@ final class SessionInfoViewController: UIViewController, UIScrollViewDelegate {
 
     private func plan(_ section: SessionInfoSection, model: SessionInfoModel, frame: SessionInfoFrame) -> [ProfileSection] {
         switch section {
-        case .quickActions: return [quickActions(model, forking: frame.forking)]
+        case .quickActions: return [quickActions(model, forking: frame.forking, voice: frame.voice)]
         case .cliWarning: return [cliWarning()]
         case .details: return [details(model, copied: frame.copiedResumeCommand)]
         case .metadata: return model.metadata.map { [metadataGroup($0, model: model)] } ?? []
@@ -563,7 +592,7 @@ final class SessionInfoViewController: UIViewController, UIScrollViewDelegate {
         return row
     }
 
-    private func quickActions(_ model: SessionInfoModel, forking: Bool) -> ProfileSection {
+    private func quickActions(_ model: SessionInfoModel, forking: Bool, voice: ChatVoice?) -> ProfileSection {
         typealias S = Strings.SessionDetail
         var rows: [SettingsRow] = []
         var changes = act("changes", Strings.FilesDetail.changes, glyph: "git-compare-outline", tile: .blue) { [weak self] in
@@ -572,6 +601,14 @@ final class SessionInfoViewController: UIViewController, UIScrollViewDelegate {
         }
         if model.git.hasAccessory { changes.valueView = DetailChangesAccessoryView(model.git, chevron: false) }
         rows.append(changes)
+        if let voice {
+            var row = act("voice", Strings.Voice.voice, glyph: "mic-outline", tile: .blue) { [weak self] in
+                guard let self else { return }
+                push(.sessionVoice(id: sessionId), context: context)
+            }
+            row.value = voice.preset?.label ?? Strings.Voice.useDefault
+            rows.append(row)
+        }
         if let machineId = model.machineId {
             rows.append(act("view-machine", S.viewMachine, subtitle: S.viewMachineSubtitle, glyph: "server-outline", tile: .blue) { [weak self] in
                 guard let self else { return }

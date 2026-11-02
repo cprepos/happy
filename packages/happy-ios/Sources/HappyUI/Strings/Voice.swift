@@ -65,6 +65,15 @@ extension Strings {
         static var voicesFooter: String { localized("settingsVoice.voicePicker.footer", "Voices apply to English replies. Changes take effect the next time you start voice.") }
         static var serverDefault: String { localized("settingsVoice.voicePicker.serverDefault", "Server default") }
         static var serverDefaultSubtitle: String { localized("settingsVoice.voicePicker.serverDefaultSubtitle", "The voice configured on your server") }
+
+        // A chat's own voice (session/[id]/voice.tsx).
+        static var chatVoiceTitle: String { localized("settingsVoice.voicePicker.chatTitle", "Voice for this chat") }
+        static var chatVoiceFooter: String { localized("settingsVoice.voicePicker.chatFooter", "Only this chat uses this voice; other chats keep the default.") }
+        static var useDefault: String { localized("settingsVoice.voicePicker.useDefault", "Use default") }
+        static func useDefaultSubtitle(name: String) -> String {
+            localized("settingsVoice.voicePicker.useDefaultSubtitle", ["name": .text(name)], "Default: \(name)")
+        }
+
         /// "American · Warm", as VoicePresetItems.tsx describes a preset.
         static func description(of preset: VoicePreset) -> String {
             let accent = switch preset.accent {

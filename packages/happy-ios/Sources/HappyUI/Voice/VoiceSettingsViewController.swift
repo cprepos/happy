@@ -76,16 +76,9 @@ final class VoiceSettingsViewController: SettingsPageViewController {
         }
     }
 
-    /// The custom agent a call would use, as `VoiceContext` reads it.
-    private var customAgentId: String? {
-        settings.bool("voiceBypassToken") ? Self.agentID(in: settings) : nil
-    }
-
-    /// The service the page's rows follow: the one a call would use, or the
-    /// saved one until the server has answered.
+    /// The service the page's rows follow.
     private var shownBackend: VoiceBackend? {
-        guard let config else { return settings.voiceBackend }
-        return config.selection(saved: settings.voiceBackend, customAgentId: customAgentId).backend
+        settings.activeVoiceBackend(config: config)
     }
 
     /// ElevenLabs with the server's allowance. On a server that doesn't offer
@@ -141,7 +134,7 @@ final class VoiceSettingsViewController: SettingsPageViewController {
         guard let config else {
             return SettingsRow(id: "voice-service", title: Text.service, icon: ("server-outline", .blue), value: Text.connecting, accessory: .none, dimmed: true)
         }
-        let selection = config.selection(saved: settings.voiceBackend, customAgentId: customAgentId)
+        let selection = config.selection(saved: settings.voiceBackend, customAgentId: settings.voiceCallAgentId)
         let footer: String?
         if let backend = selection.backend {
             footer = selection.savedUnavailable ? settings.voiceBackend.map { Text.savedNotOffered(saved: $0, current: backend) } : nil
