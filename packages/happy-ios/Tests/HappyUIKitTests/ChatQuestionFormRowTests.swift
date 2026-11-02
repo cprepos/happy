@@ -1,5 +1,5 @@
 #if canImport(UIKit)
-import HappyCore
+@testable import HappyCore
 import HappyLayout
 @testable import HappyUI
 import HappyWire
