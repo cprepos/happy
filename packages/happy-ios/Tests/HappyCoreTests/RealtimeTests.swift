@@ -117,6 +117,61 @@ final class SocketIOClientTests: XCTestCase {
         }
         await client.disconnect()
     }
+
+    /// Its first connect waits until the test lets it finish.
+    private final class HeldConnector: WebSocketConnector, @unchecked Sendable {
+        let base = FakeConnector()
+        private let lock = NSLock()
+        private var first = true
+        private var held: CheckedContinuation<Void, Never>?
+
+        var holding: Bool { lock.withLock { held != nil } }
+
+        func connect(to url: URL) async throws -> WebSocketConnection {
+            if lock.withLock({ defer { first = false }; return first }) {
+                await withCheckedContinuation { continuation in lock.withLock { held = continuation } }
+            }
+            return try await base.connect(to: url)
+        }
+
+        func release() {
+            lock.withLock { defer { held = nil }; return held }?.resume()
+        }
+    }
+
+    func testADisconnectWhileConnectingClosesTheSocketThatArrivesLate() async throws {
+        let connector = HeldConnector()
+        let metrics = ConnectionMetrics()
+        let client = SocketIOClient(url: URL(string: "wss://x/")!, connector: MeteredWebSocketConnector(base: connector, metrics: metrics)) { .object([:]) }
+        await client.connect()
+        await eventually { connector.holding }
+        await client.disconnect()
+        connector.release()
+        await eventually { await metrics.snapshot().totals.count(.streamsClosed, .socket) == 1 }
+        let status = await client.status
+        XCTAssertEqual(status, .disconnected)
+    }
+
+    func testAReconnectWhileConnectingKeepsTheNewSocketWhenTheOldOneArrivesLate() async throws {
+        let connector = HeldConnector()
+        let metrics = ConnectionMetrics()
+        let client = SocketIOClient(url: URL(string: "wss://x/")!, connector: MeteredWebSocketConnector(base: connector, metrics: metrics)) { .object([:]) }
+        await client.connect()
+        await eventually { connector.holding }
+        await client.reconnect()
+        await eventually { connector.base.latest != nil }
+        let socket = connector.base.latest!
+        socket.push(#"0{"sid":"s","upgrades":[],"pingInterval":25000,"pingTimeout":20000}"#)
+        socket.push(#"40{"sid":"ns"}"#)
+        await eventually { await client.status == .connected }
+
+        connector.release()
+        await eventually { await metrics.snapshot().totals.count(.streamsClosed, .socket) == 1 }
+        try await client.emit("still-here", .null)
+        XCTAssertTrue(socket.sent.contains { $0.contains("still-here") })
+        await client.disconnect()
+        await eventually { await metrics.snapshot().totals.count(.streamsClosed, .socket) == 2 }
+    }
 }
 
 final class AccountSessionTests: XCTestCase {

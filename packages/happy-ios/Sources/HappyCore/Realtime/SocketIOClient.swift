@@ -136,9 +136,11 @@ public actor SocketIOClient {
             } catch {
                 failed = true
             }
+            // After a disconnect the socket and acks are already let go of,
+            // and a reconnect's new loop may hold its own by now.
+            guard wantsConnection && !Task.isCancelled else { break }
             connection = nil
             failPendingAcks(SocketIOError.closed)
-            guard wantsConnection && !Task.isCancelled else { break }
             setStatus(failed ? .error : .disconnected)
             attempt += 1
             try? await sleep(backoff.delay(attempt: attempt))
@@ -147,6 +149,11 @@ public actor SocketIOClient {
 
     private func runConnection(onConnected: () -> Void) async throws {
         let connection = try await connector.connect(to: url)
+        // A disconnect while this was connecting had no socket to close.
+        guard !Task.isCancelled else {
+            await connection.close()
+            return
+        }
         self.connection = connection
         defer { Task { await connection.close() } }
 
