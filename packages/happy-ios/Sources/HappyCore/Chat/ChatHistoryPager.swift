@@ -295,6 +295,13 @@ public final class ChatHistoryPager {
         paging.status(hasMore: facts?.hasMoreOlder ?? false, loading: status?.loadingOlder ?? false, windowReachesOldest: windowReachesOldest)
     }
 
+    /// The window renders the oldest message the server holds: the chat
+    /// has loaded and no older page is left. Where a Claude Desktop chat
+    /// offers its earlier history (`DesktopHistoryButtonState`).
+    public func reachedOldest(windowReachesOldest: Bool) -> Bool {
+        windowReachesOldest && facts?.isLoaded == true && facts?.hasMoreOlder == false
+    }
+
     /// What EmptyMessages shows under the session's details.
     public var emptyStatus: ChatOlderPaging.EmptyStatus {
         paging.emptyStatus(hasMore: facts?.hasMoreOlder ?? false)

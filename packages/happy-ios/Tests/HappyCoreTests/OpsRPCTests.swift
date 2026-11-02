@@ -88,6 +88,18 @@ final class OpsRPCTests: XCTestCase {
         XCTAssertEqual(failed.error, "offline")
     }
 
+    func testDesktopLoadHistorySendsNoParamsAndThrowsForRetry() async throws {
+        answer(.object(["loaded": .number(100), "before": .number(20)]))
+        let result = try await sessions.sessionLoadDesktopHistory(sessionId: "s")
+        XCTAssertEqual(result, DesktopHistoryLoadResult(loaded: 100, before: 20))
+        try assertLast("s:desktop-load-history", .object([:]))
+        rpc.answer = { _ in RPCCallResult(ok: false, error: "transcript unreadable") }
+        do {
+            _ = try await sessions.sessionLoadDesktopHistory(sessionId: "s")
+            XCTFail("a failed call must throw")
+        } catch { XCTAssertEqual(error as? SessionActionError, .failed("transcript unreadable")) }
+    }
+
     func testReadAndWritePreserveBase64AndHashPresence() async throws {
         answer(.object(["success": .bool(true), "content": .string("AAEC/w==")]))
         let file = try await sessions.sessionReadFile(sessionId: "s", path: "space path")
