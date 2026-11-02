@@ -337,7 +337,7 @@ final class HostedChatProfileTests: XCTestCase {
             Strings.ChatActions.permissionMode,
             Strings.FilesDetail.changes, S.viewMachine, S.archiveSession, S.deleteSession,
             S.happySessionId, S.claudeCodeSessionId, S.connectionStatus, S.created, S.lastUpdated, S.sequence,
-            S.host, S.path, Strings.ChatActions.branch, S.cliVersion, S.operatingSystem, S.aiProvider, S.copyMetadata, S.copyMetadataAndLogs,
+            S.host, S.path, Strings.ChatActions.branch, S.cliVersion, S.operatingSystem, S.harness, S.copyMetadata, S.copyMetadataAndLogs,
             S.controlledByUser, S.thinking, S.rawAgentState, S.rawMetadata, S.rawSession,
         ] {
             XCTAssertTrue(titles.contains(title), "no \(title) row")
