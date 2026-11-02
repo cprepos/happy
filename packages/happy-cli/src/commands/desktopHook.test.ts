@@ -181,9 +181,37 @@ describe('claude desktop hook.mjs', () => {
         };
         const result = await runHook('wait', desktopEnv());
         expect(result).toMatchObject({ code: 0, stdout: '', stderr: '' });
-        expect(requests).toEqual([
-            { method: 'GET', url: '/desktop/inbox/claude-session-1?wait=600000', body: undefined },
-        ]);
+        expect(requests).toHaveLength(1);
+        expect(requests[0]).toMatchObject({ method: 'GET', body: undefined });
+        // The wait asks for the hook's remaining time, at most 600 s.
+        const wait = Number(new URL(requests[0].url, 'http://x').searchParams.get('wait'));
+        expect(new URL(requests[0].url, 'http://x').pathname).toBe('/desktop/inbox/claude-session-1');
+        expect(wait).toBeGreaterThan(590_000);
+        expect(wait).toBeLessThanOrEqual(600_000);
+    });
+
+    it('keeps waiting across a daemon restart and delivers from the new daemon', async () => {
+        // The restarted daemon comes up on another port and has the message.
+        const restarted = createServer((req, res) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ localId: 'L1', text: 'after the restart' }));
+            void req;
+        });
+        await new Promise<void>((done) => restarted.listen(0, '127.0.0.1', done));
+        const restartedPort = (restarted.address() as AddressInfo).port;
+        // The old daemon drops the long-poll as it goes away.
+        handler = (_req, res) => {
+            writeFileSync(join(homeDir, 'daemon.state.json'), JSON.stringify({ pid: process.pid, httpPort: restartedPort }));
+            res.socket?.destroy();
+        };
+        try {
+            const result = await runHook('wait', desktopEnv());
+            expect(result).toMatchObject({ code: 2, stdout: '[Happy] after the restart\n' });
+            expect(requests.map((r) => new URL(r.url, 'http://x').pathname)).toEqual(['/desktop/inbox/claude-session-1']);
+        } finally {
+            restarted.closeAllConnections();
+            await new Promise<void>((done) => restarted.close(() => done()));
+        }
     });
 
     it('stop does not wait when idle is rejected', async () => {

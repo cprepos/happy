@@ -29,6 +29,8 @@ import { join } from 'node:path';
 
 const INBOX_WAIT_MS = 600_000;
 const SHORT_REQUEST_TIMEOUT_MS = 5_000;
+/** Pause before trying a daemon that dropped the inbox wait. */
+const DAEMON_RETRY_MS = 2_000;
 
 /**
  * Sends one request to the daemon. Resolves `{status, body}`, or null on any
@@ -89,28 +91,49 @@ function readDaemonPort() {
 
 /**
  * Long-polls the inbox. On a message, prints it and sets exit code 2.
+ *
+ * A dropped connection means the daemon went away (a restart, an upgrade):
+ * the wait carries on against whichever daemon comes back, re-reading its
+ * port, until the hook's own time is up. Without that, an idle desktop
+ * session could not hear from the phone again until its next turn. A 204 is
+ * an answer, not a failure: the wait ran out or a newer hook took over.
  * @param {number} port
  * @param {string} claudeSessionId
  */
 async function waitForMessage(port, claudeSessionId) {
-    const res = await daemonRequest(
-        port,
-        'GET',
-        `/desktop/inbox/${encodeURIComponent(claudeSessionId)}?wait=${INBOX_WAIT_MS}`,
-        undefined,
-        INBOX_WAIT_MS + 30_000,
-    );
-    if (res?.status !== 200) {
+    const deadline = Date.now() + INBOX_WAIT_MS;
+    let currentPort = port;
+    while (Date.now() < deadline) {
+        const remaining = deadline - Date.now();
+        const res = await daemonRequest(
+            currentPort,
+            'GET',
+            `/desktop/inbox/${encodeURIComponent(claudeSessionId)}?wait=${remaining}`,
+            undefined,
+            remaining + 30_000,
+        );
+        if (res === null) {
+            await new Promise((resolve) => setTimeout(resolve, DAEMON_RETRY_MS));
+            try {
+                currentPort = readDaemonPort() ?? currentPort;
+            } catch {
+                // No state file while the daemon restarts; keep the old port.
+            }
+            continue;
+        }
+        if (res.status !== 200) {
+            return;
+        }
+        const message = JSON.parse(res.body);
+        if (typeof message.text !== 'string') {
+            return;
+        }
+        const line = `[Happy] ${message.text}\n`;
+        process.stderr.write(line);
+        process.stdout.write(line);
+        process.exitCode = 2;
         return;
     }
-    const message = JSON.parse(res.body);
-    if (typeof message.text !== 'string') {
-        return;
-    }
-    const line = `[Happy] ${message.text}\n`;
-    process.stderr.write(line);
-    process.stdout.write(line);
-    process.exitCode = 2;
 }
 
 /**
