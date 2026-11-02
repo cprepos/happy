@@ -10,14 +10,23 @@ public struct VoiceContextUpdate: Equatable, Sendable {
 
 /// Incremental context uses only rendered records. Streaming text is sent
 /// when its text changes; tokens do not rebuild history for other sessions.
+///
+/// A session's recent history goes to the agent once per call, the first time
+/// something happens in it (happy-app's injectSessionContext). The first
+/// snapshot is only where changes count from: at call start it is history, not
+/// news, and sending it would dump every active session on the agent.
 public struct VoiceContextReducer: Sendable {
     private var messages: [String: ChatMessage] = [:]
     private var permissions = Set<String>()
     private var loaded = false
+    private var shown = false
     public init() {}
 
-    public mutating func apply(_ snapshot: LegacyChatSnapshot) -> VoiceContextUpdate {
-        let changed = snapshot.messages.suffix(50).filter { messages[$0.id] != $0 }
+    /// Whether the agent already has this session's history.
+    var isShown: Bool { shown }
+
+    public mutating func apply(_ snapshot: LegacyChatSnapshot, metadata: JSONValue? = nil) -> VoiceContextUpdate {
+        let changed: [ChatMessage] = loaded ? snapshot.messages.suffix(50).filter { messages[$0.id] != $0 } : []
         let lines = changed.compactMap(Self.format)
         var prompts: [String] = []
         for message in snapshot.messages {
@@ -29,9 +38,34 @@ public struct VoiceContextReducer: Sendable {
                 prompts.append("Coding agent done working in session: \(snapshot.sessionId). Report the preceding summary to the human.")
             }
         }
+        remember(snapshot)
+        guard !lines.isEmpty || !prompts.isEmpty else { return VoiceContextUpdate() }
+        // The history already holds the messages that just changed.
+        if !shown {
+            shown = true
+            return VoiceContextUpdate(context: Self.history(heading: "SESSION", sessionId: snapshot.sessionId, metadata: metadata, messages: snapshot.messages), prompts: prompts)
+        }
+        return VoiceContextUpdate(context: lines.isEmpty ? "" : "Messages in session \(snapshot.sessionId):\n" + lines.joined(separator: "\n\n"), prompts: prompts)
+    }
+
+    /// The session's history if the agent doesn't have it yet, for when
+    /// something happens that no snapshot reports. Changes count from here on.
+    public mutating func history(_ snapshot: LegacyChatSnapshot, metadata: JSONValue? = nil) -> String? {
+        guard !shown else { return nil }
+        shown = true
+        remember(snapshot)
+        return Self.history(heading: "SESSION", sessionId: snapshot.sessionId, metadata: metadata, messages: snapshot.messages)
+    }
+
+    private mutating func remember(_ snapshot: LegacyChatSnapshot) {
         messages = Dictionary(snapshot.messages.suffix(50).map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
         loaded = true
-        return VoiceContextUpdate(context: lines.isEmpty ? "" : "Messages in session \(snapshot.sessionId):\n" + lines.joined(separator: "\n\n"), prompts: prompts)
+    }
+
+    /// The same words the call's opening context uses for its session.
+    static func history(heading: String, sessionId: String, metadata: JSONValue?, messages: [ChatMessage]) -> String {
+        let lines = messages.suffix(50).compactMap(format).joined(separator: "\n\n")
+        return "\(heading): \(sessionId)\nProject: \(metadata?["path"]?.stringValue ?? "")\nSummary: \(metadata?["summary"]?["text"]?.stringValue ?? "")\n\n\(lines)"
     }
 
     public static func format(_ message: ChatMessage) -> String? {
@@ -58,7 +92,6 @@ public actor VoiceContext {
     private var chatTasks: [String: Task<Void, Never>] = [:]
     private var reducers: [String: VoiceContextReducer] = [:]
     private var records: [String: SessionRecord] = [:]
-    private var directory = ""
     private var focused: String
     private var closed = false
     private var sink: (@Sendable (VoiceContextUpdate) async -> Void)?
@@ -79,12 +112,15 @@ public actor VoiceContext {
         let home = try account.store.homeSnapshot()
         let settings = AccountSettings(home.settings)
         records = Dictionary(home.sessions.map { ($0.id, $0) }, uniquingKeysWith: { _, value in value })
-        directory = Self.directory(home.sessions)
         var iterator = account.chatFeed.snapshots(sessionId: focused).makeAsyncIterator()
         let snapshot = await iterator.next() ?? LegacyChatSnapshot(sessionId: focused)
         let metadata = records[focused]?.metadata
-        let history = snapshot.messages.suffix(50).compactMap(VoiceContextReducer.format).joined(separator: "\n\n")
-        let context = "\(directory)\n\nCURRENT SESSION: \(focused)\nProject: \(metadata?["path"]?.stringValue ?? "")\nSummary: \(metadata?["summary"]?["text"]?.stringValue ?? "")\n\n\(history)"
+        // The prompt carries this session's history, so it never goes again, and
+        // what lands between this read and the call's first update still counts.
+        var reducer = VoiceContextReducer()
+        _ = reducer.history(snapshot, metadata: metadata)
+        reducers[focused] = reducer
+        let context = "\(Self.directory(home.sessions))\n\n" + VoiceContextReducer.history(heading: "CURRENT SESSION", sessionId: focused, metadata: metadata, messages: snapshot.messages)
         let bypassed = settings.bool("voiceBypassToken") ? settings.string("voiceCustomAgentId") : nil
         let custom = bypassed.flatMap { $0.isEmpty ? nil : $0 }
         let selection = config.selection(saved: settings.voiceBackend, customAgentId: custom)
@@ -100,7 +136,7 @@ public actor VoiceContext {
 
     public func start(sink: @escaping @Sendable (VoiceContextUpdate) async -> Void) {
         guard !closed, homeTask == nil else { return }
-        self.sink = sink
+        attach(sink: sink)
         homeTask = Task { [weak self, account] in
             for await snapshot in account.homeFeed.snapshots() {
                 guard !Task.isCancelled else { break }
@@ -109,10 +145,17 @@ public actor VoiceContext {
         }
     }
 
+    func attach(sink: @escaping @Sendable (VoiceContextUpdate) async -> Void) {
+        self.sink = sink
+    }
+
     public func focus(_ sessionId: String) async {
         guard sessionId != focused else { return }
         focused = sessionId
         watch(sessionId)
+        await showHistory(of: sessionId)
+        // A newer focus may have landed during that read; the last one must win.
+        guard focused == sessionId else { return }
         await sink?(VoiceContextUpdate(context: Self.focusLine(sessionId)))
     }
 
@@ -130,12 +173,9 @@ public actor VoiceContext {
         chatTasks.removeAll(); reducers.removeAll(); records.removeAll(); sink = nil
     }
 
-    private func home(_ snapshot: LegacyHomeSnapshot) async {
-        let next = Self.directory(snapshot.sessions)
-        if next != directory {
-            directory = next
-            await sink?(VoiceContextUpdate(context: next))
-        }
+    /// The session directory went out in the opening context and isn't re-sent,
+    /// as in happy-app: a session's own updates name it when it matters.
+    func home(_ snapshot: LegacyHomeSnapshot) async {
         let oldRecords = records
         records = Dictionary(snapshot.sessions.map { ($0.id, $0) }, uniquingKeysWith: { _, value in value })
         for record in snapshot.sessions where record.active || record.id == focused {
@@ -144,6 +184,7 @@ public actor VoiceContext {
             // presence's thinking flip is the same completion signal.
             if oldRecords[record.id]?.thinking == true, !record.thinking, record.active,
                !record.hasPendingPermissionRequests {
+                await showHistory(of: record.id)
                 await sink?(VoiceContextUpdate(prompts: ["Coding agent done working in session: \(record.id). Report its summary to the human."]))
             }
         }
@@ -161,9 +202,21 @@ public actor VoiceContext {
         }
     }
 
-    private func chat(_ snapshot: LegacyChatSnapshot) async {
+    /// Reads the session rather than waiting for its watch: the agent is about
+    /// to be asked about it. Not before the call can hear, or the history is lost.
+    private func showHistory(of sessionId: String) async {
+        guard sink != nil, reducers[sessionId]?.isShown != true else { return }
+        var iterator = account.chatFeed.snapshots(sessionId: sessionId).makeAsyncIterator()
+        guard let snapshot = await iterator.next(), !closed else { return }
+        var reducer = reducers[sessionId] ?? VoiceContextReducer()
+        let history = reducer.history(snapshot, metadata: records[sessionId]?.metadata)
+        reducers[sessionId] = reducer
+        if let history { await sink?(VoiceContextUpdate(context: history)) }
+    }
+
+    func chat(_ snapshot: LegacyChatSnapshot) async {
         var reducer = reducers[snapshot.sessionId] ?? VoiceContextReducer()
-        let update = reducer.apply(snapshot)
+        let update = reducer.apply(snapshot, metadata: records[snapshot.sessionId]?.metadata)
         reducers[snapshot.sessionId] = reducer
         if !update.context.isEmpty || !update.prompts.isEmpty { await sink?(update) }
     }

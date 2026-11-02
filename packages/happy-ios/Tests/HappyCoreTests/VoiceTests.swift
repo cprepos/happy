@@ -197,6 +197,7 @@ final class VoiceContextTests: XCTestCase {
             .toolCall(ToolCallMessage(id: "tool", createdAt: 3, tool: ToolCall(name: "Bash", state: .running, input: .object([:]), createdAt: 3, permission: permission))),
         ])
         var reducer = VoiceContextReducer()
+        // A pending permission is something happening, so its history goes with it.
         let first = reducer.apply(snapshot)
         XCTAssertTrue(first.context.contains("answer"))
         XCTAssertFalse(first.context.contains("private reasoning"))
@@ -205,12 +206,49 @@ final class VoiceContextTests: XCTestCase {
         XCTAssertEqual(second, VoiceContextUpdate())
     }
 
-    func testLatestFiftyMessagesAndLanguageMapping() {
-        let messages = (0..<75).map { ChatMessage.userText(UserTextMessage(id: "m\($0)", createdAt: Int64($0), text: "text-\($0)")) }
+    private func userText(_ index: Int) -> ChatMessage {
+        .userText(UserTextMessage(id: "m\(index)", createdAt: Int64(index), text: "text-\(index)"))
+    }
+
+    func testAFirstSnapshotIsHistoryNotNews() {
         var reducer = VoiceContextReducer()
-        let update = reducer.apply(LegacyChatSnapshot(sessionId: "s", messages: messages))
-        XCTAssertFalse(update.context.contains("text-0\n"))
-        XCTAssertTrue(update.context.contains("text-74"))
+        XCTAssertEqual(reducer.apply(LegacyChatSnapshot(sessionId: "s", messages: [userText(0)])), VoiceContextUpdate())
+        XCTAssertFalse(reducer.isShown)
+    }
+
+    func testTheFirstChangeBringsTheHistoryAndLaterOnesOnlyThemselves() {
+        var reducer = VoiceContextReducer()
+        _ = reducer.apply(LegacyChatSnapshot(sessionId: "s", messages: [userText(0)]))
+
+        let dump = reducer.apply(LegacyChatSnapshot(sessionId: "s", messages: [userText(0), userText(1)]), metadata: .object(["path": .string("/project")]))
+        XCTAssertTrue(dump.context.hasPrefix("SESSION: s\nProject: /project\n"))
+        XCTAssertTrue(dump.context.contains("User: text-0"))
+        XCTAssertEqual(dump.context.components(separatedBy: "User: text-1").count, 2, "the change is in the history, once")
+
+        let next = reducer.apply(LegacyChatSnapshot(sessionId: "s", messages: [userText(0), userText(1), userText(2)]))
+        XCTAssertEqual(next.context, "Messages in session s:\nUser: text-2")
+    }
+
+    func testHistoryIsOffTheLatestFiftyMessages() {
+        var reducer = VoiceContextReducer()
+        let messages = (0..<75).map(userText)
+        _ = reducer.apply(LegacyChatSnapshot(sessionId: "s", messages: messages))
+        let update = reducer.apply(LegacyChatSnapshot(sessionId: "s", messages: messages + [userText(75)]))
+        XCTAssertFalse(update.context.contains("text-25\n"))
+        XCTAssertTrue(update.context.contains("text-26\n"))
+        XCTAssertTrue(update.context.contains("text-75"))
+    }
+
+    func testHistoryGoesOnceAndCountsChangesFromThere() {
+        var reducer = VoiceContextReducer()
+        let history = reducer.history(LegacyChatSnapshot(sessionId: "s", messages: [userText(0)]))
+        XCTAssertEqual(history, "SESSION: s\nProject: \nSummary: \n\nUser: text-0")
+        XCTAssertNil(reducer.history(LegacyChatSnapshot(sessionId: "s", messages: [userText(0)])))
+        XCTAssertEqual(reducer.apply(LegacyChatSnapshot(sessionId: "s", messages: [userText(0), userText(1)])).context,
+                       "Messages in session s:\nUser: text-1")
+    }
+
+    func testLanguageMapping() {
         XCTAssertEqual(VoiceLanguage.selection("fr-CA").providerCode, "fr")
         XCTAssertNil(VoiceLanguage.selection(nil).providerCode)
         XCTAssertNil(VoiceLanguage.selection("unknown").providerCode)
