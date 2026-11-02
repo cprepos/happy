@@ -210,8 +210,8 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
     private var diffExpanded: [String: [Int: Set<Int>]] = [:]
     /// Question forms in the chat, by tool message id: the form as the
     /// latest snapshot has it, and what the reader has done to it.
-    private var questionForms: [String: ChatQuestionForm] = [:]
-    private var questionDrafts: [String: ChatQuestionState] = [:]
+    private(set) var questionForms: [String: ChatQuestionForm] = [:]
+    private(set) var questionDrafts: [String: ChatQuestionState] = [:]
     /// How tall each diagram's page said it is: by row id, then by its
     /// place in the row. For as long as the screen lives.
     private var mermaidHeights: [String: [Int: CGFloat]] = [:]
@@ -2010,7 +2010,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
     }
 
     /// Sends a question form's answers. The summary shows at once; if the
-    /// answer fails, the form comes back as it was.
+    /// answer fails, the form comes back as it was and an alert says why.
     private func submitQuestion(_ toolId: String) {
         guard let entry = questionForms[toolId], let reply = entry.form.reply else { return }
         let (tool, form) = (entry.tool, entry.form)
@@ -2025,7 +2025,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         let controls = services.controls
         let sessionId = self.chatId
         Task { [weak self] in
-            var failed = false
+            var failure: (any Error)?
             do {
                 switch reply {
                 case .permission(let id):
@@ -2035,13 +2035,18 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
                     try await controls.answerQuestion(sessionId: sessionId, id: id, answers: InlineQuestionForm.communicationAnswers(form.questions, answers: answers), kind: kind)
                 }
             } catch {
-                failed = true
+                failure = error
             }
             guard let self, var state = self.questionDrafts[toolId] else { return }
             state.submitting = false
-            if failed { state.sent = nil }
+            if failure != nil { state.sent = nil }
             self.questionDrafts[toolId] = state
             self.scheduleMeasure()
+            if let failure {
+                var front: UIViewController = self
+                while let presented = front.presentedViewController { front = presented }
+                Alerts.show(Strings.AgentQuestion.submitFailed, QuestionAnswerFailure.reason(failure), on: front)
+            }
         }
     }
 

@@ -211,21 +211,29 @@ public struct SessionActions: Sendable {
     /// Answers a question the agent asked (`sessionAnswerQuestion`), echoing
     /// the `kind` the agent published.
     public func answerQuestion(sessionId: String, id: String, answers: JSONValue, kind: String = "form") async throws {
-        _ = try await call(sessionId: sessionId, method: "communication", params: .object([
+        try Self.throwCommunicationError(await call(sessionId: sessionId, method: "communication", params: .object([
             "id": .string(id),
             "kind": .string(kind),
             "status": .string("answered"),
             "answers": answers,
-        ]))
+        ])))
     }
 
     /// Dismisses a question without answering (`sessionCancelCommunication`).
     public func cancelQuestion(sessionId: String, id: String, kind: String = "form") async throws {
-        _ = try await call(sessionId: sessionId, method: "communication", params: .object([
+        try Self.throwCommunicationError(await call(sessionId: sessionId, method: "communication", params: .object([
             "id": .string(id),
             "kind": .string(kind),
             "status": .string("cancelled"),
-        ]))
+        ])))
+    }
+
+    /// The agent reports a reply it could not deliver (the question was
+    /// already answered elsewhere, or it refused) as `{ error }` instead of
+    /// failing the RPC (`throwCommunicationError`, ops.ts). Thrown here so
+    /// the form stays answerable.
+    private static func throwCommunicationError(_ answer: JSONValue?) throws {
+        if let error = answer?["error"]?.stringValue { throw SessionActionError.failed(error) }
     }
 
     /// Stops the agent's current turn (`sessionAbort`). Rig sessions take no
