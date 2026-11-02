@@ -2,9 +2,9 @@
  * OpenCode Constants
  *
  * Binary resolution and fixed ACP arguments for the OpenCode integration.
- * OpenCode speaks the Agent Client Protocol through `opencode acp`, so the
- * session itself runs on the generic ACP runner (`src/agent/acp/runAcp.ts`);
- * this module only has to find the executable.
+ * Sessions normally run on `opencode serve` (see opencodeRoute.ts); `--acp`
+ * still picks `opencode acp` on the generic ACP runner
+ * (`src/agent/acp/runAcp.ts`). Both need the executable found the same way.
  */
 
 import os from 'node:os';

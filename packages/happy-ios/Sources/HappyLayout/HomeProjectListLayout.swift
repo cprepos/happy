@@ -14,10 +14,11 @@ import CoreGraphics
 /// avatar through its worktrees; each worktree branches off it with an
 /// elbow from the lane's centre to its edge.
 ///
-/// A project's and a worktree's row also name the harness that runs the chat
-/// a tap opens: at the name lane's right edge, keeping its width while the
-/// name truncates. Where that would leave the name too little to read, the
-/// harness drops under it and the row grows (`ProjectRowText`).
+/// A project's row also names the harness that runs the chat a tap opens: at
+/// the name lane's right edge, keeping its width while the name truncates.
+/// Where that would leave the name too little to read, the harness drops under
+/// it and the row grows (`ProjectRowText`). A worktree's row says it after its
+/// name instead, `feature-x · OpenCode` (`HomeRowHarnessLine`).
 public enum ProjectListMetrics {
     public static let paddingX: CGFloat = 16
     public static let avatarSize: CGFloat = 28
@@ -228,23 +229,23 @@ public struct WorktreeRowLayout: Equatable, Sendable {
         public var hairline: CGFloat
         /// The name, or the toggle's label.
         public var label: Measurable
-        /// What runs the chat a tap opens; a toggle has none.
-        public var harness: Measurable?
         /// The toggle's chevron box, ahead of its label.
         public var chevron: CGSize?
         public var showsDot: Bool
         public var changes: Measurable?
         public var last: Bool
+        /// The harness after a worktree's name; the name hugs its text then.
+        public var harness: HomeRowHarnessText?
 
-        public init(width: CGFloat, hairline: CGFloat, label: Measurable, harness: Measurable? = nil, chevron: CGSize? = nil, showsDot: Bool, changes: Measurable?, last: Bool) {
+        public init(width: CGFloat, hairline: CGFloat, label: Measurable, chevron: CGSize? = nil, showsDot: Bool, changes: Measurable?, last: Bool, harness: HomeRowHarnessText? = nil) {
             self.width = width
             self.hairline = hairline
             self.label = label
-            self.harness = harness
             self.chevron = chevron
             self.showsDot = showsDot
             self.changes = changes
             self.last = last
+            self.harness = harness
         }
     }
 
@@ -253,9 +254,10 @@ public struct WorktreeRowLayout: Equatable, Sendable {
     public var elbow: CGRect
     public var chevron: CGRect?
     public var label: CGRect
-    public var harness: CGRect?
     public var dot: CGRect?
     public var changes: CGRect?
+    public var harnessSeparator: CGRect?
+    public var harness: CGRect?
 
     public init(_ input: Input) {
         typealias M = ProjectListMetrics
@@ -267,27 +269,28 @@ public struct WorktreeRowLayout: Equatable, Sendable {
         // An empty trailing column still takes its margin.
         let laneRight = trailingFrames(sizes, right: width - M.paddingX, midY: 0, gap: M.trailingGap).minX - M.trailingMarginLeft
         let labelX = M.nameX + (input.chevron.map { $0.width + M.toggleIconGap } ?? 0)
-        let text = ProjectRowText(x: labelX, right: laneRight, rowRight: width - M.paddingX, name: input.label, harness: input.harness)
-        let trailingHeight = sizes.map(\.height).max() ?? 0
+        let lane = max(0, laneRight - labelX)
+        let text = input.label.size(fitting: lane)
 
-        let height = text.rowHeight(designed: M.worktreeRowHeight, trailing: trailingHeight, changes: changesSize?.height ?? 0)
+        let height = M.rowHeight(M.worktreeRowHeight, text: max(text.height, changesSize?.height ?? 0))
         let midY = height / 2
-        let textMidY = text.midY(rowMidY: midY, trailing: trailingHeight)
         size = CGSize(width: width, height: height)
         let line = M.treeLineWidth(hairline: input.hairline)
         trunk = CGRect(x: M.paddingX + (M.avatarSize - line) / 2, y: 0, width: line, height: input.last ? height / 2 : height)
         elbow = CGRect(x: M.paddingX + M.avatarSize / 2, y: midY - line / 2, width: M.avatarSize / 2, height: line)
-        var frames = trailingFrames(sizes, right: width - M.paddingX, midY: text.trailingMidY(midY: midY), gap: M.trailingGap).frames[...]
+        var frames = trailingFrames(sizes, right: width - M.paddingX, midY: midY, gap: M.trailingGap).frames[...]
         dot = input.showsDot ? frames.popFirst() : nil
         changes = changesSize != nil ? frames.popFirst() : nil
         chevron = input.chevron.map { CGRect(x: M.nameX, y: midY - $0.height / 2, width: $0.width, height: $0.height) }
+        let harnessLine = input.harness.map { HomeRowHarnessLine($0, x: labelX, midY: midY, lane: lane, label: text.width) }
+        harnessSeparator = harnessLine?.separator
+        harness = harnessLine?.harness
         label = CGRect(
             x: labelX,
-            y: text.nameY(midY: textMidY),
-            width: input.chevron == nil ? text.lane : min(text.name.width, text.lane),
-            height: text.name.height
+            y: midY - text.height / 2,
+            width: harnessLine?.labelWidth ?? (input.chevron == nil ? lane : min(text.width, lane)),
+            height: text.height
         )
-        harness = text.harnessFrame(midY: textMidY)
     }
 }
 

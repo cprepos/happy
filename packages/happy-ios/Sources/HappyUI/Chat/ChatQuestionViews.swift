@@ -177,6 +177,21 @@ final class ChatQuestionBannerView: UIView {
 
 // MARK: AgentQuestionModal.tsx
 
+/// Why an answer to the agent's question didn't land, in the agent's words
+/// when it gave any; nil when there is nothing more to say than that it failed.
+enum QuestionAnswerFailure {
+    static func reason(_ error: any Error) -> String? {
+        let reason: String?
+        if case SessionActionError.failed(let text) = error {
+            reason = text
+        } else {
+            reason = (error as? LocalizedError)?.errorDescription
+        }
+        guard let text = reason?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+        return text
+    }
+}
+
 /// The full-screen answer sheet: each question's options as checkboxes,
 /// and a field for a written answer where the agent allows one.
 final class AgentQuestionSheetController: UIViewController, UITextViewDelegate {
@@ -187,7 +202,7 @@ final class AgentQuestionSheetController: UIViewController, UITextViewDelegate {
 
     private var drafts: [String: AgentQuestionDraft] = [:]
     private var submitting = false
-    private var errorText: String?
+    private(set) var errorText: String?
 
     private let header = UIView()
     private let headerDivider = UIView()
@@ -512,8 +527,7 @@ final class AgentQuestionSheetController: UIViewController, UITextViewDelegate {
             } catch {
                 // The form stays open with the answers, so they can retry.
                 guard let self else { return }
-                let message = (error as? LocalizedError)?.errorDescription
-                self.errorText = message ?? Strings.AgentQuestion.submitFailed
+                self.errorText = QuestionAnswerFailure.reason(error) ?? Strings.AgentQuestion.submitFailed
                 self.submitting = false
                 self.update()
             }

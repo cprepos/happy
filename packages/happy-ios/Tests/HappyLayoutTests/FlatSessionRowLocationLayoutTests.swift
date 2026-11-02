@@ -26,7 +26,7 @@ final class FlatSessionRowLocationLayoutTests: XCTestCase {
             timestamp: line(56, height: 22),
             project: line(80, height: 20),
             workspace: workspace.map { line($0) },
-            harness: harness.map { line($0) },
+            leadingHarness: harness.map { line($0) },
             changes: changes,
             draftIcon: draft,
             showsDivider: false
@@ -94,7 +94,7 @@ final class FlatSessionRowLocationLayoutTests: XCTestCase {
             timestamp: line(56, height: 40),
             project: line(80, height: 36),
             workspace: nil,
-            harness: line(88, height: 32),
+            leadingHarness: line(88, height: 32),
             showsDivider: false,
             lines: lines
         ))

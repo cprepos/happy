@@ -7,7 +7,7 @@ import CoreGraphics
 ///
 ///     |16| avatar 60 |12| title ……………………………… |8| 12:55 PM |16|
 ///     |          (centred) | project
-///     |                    | Claude Code workspace ⑂ …… ✎ |8| ≈ +12 -3 |16|
+///     |                    | workspace · harness ⑂ …… ✎ |8| ≈ +12 -3 |16|
 ///     ──────────── hairline from x 88 to the right edge ────────────
 ///
 /// At the designed text size the row is 10 + 22 + 20 + 1 + 18 + 10 = 81
@@ -20,13 +20,16 @@ import CoreGraphics
 /// holds the row up as the workspace's does. A draft's 13 glyph
 /// (`create-outline`) comes first in that meta, right against the counts'
 /// 8; it keeps its size at every text size, so its box (13.33 tall at most)
-/// never reaches the row's 18 and never changes a height. The harness's
-/// name starts that row and keeps its width while the workspace truncates;
-/// it is one of the workspace's line (same size and line height), so a row
-/// with one holds a line even without a workspace. An account on more than
-/// one computer has the computer's name after it, behind a 13 `desktop-outline`;
-/// that name and the workspace share what the harness leaves, in proportion
-/// to their widths (`flexShrink: 1` on both). The avatar is
+/// never reaches the row's 18 and never changes a height. Beside a worktree
+/// the harness's name follows it, `feature-x · OpenCode`, whole while the
+/// worktree truncates (`HomeRowHarnessLine`). With no worktree, or grouped by
+/// host, it is its own text at the start of that row instead, keeping its
+/// width while what follows truncates; it is one of the workspace's line (same
+/// size and line height), so a row with one holds a line even without a
+/// workspace. An account on more than one computer has the computer's name
+/// on that row too, behind a 13 `desktop-outline`; that name and the workspace
+/// share what the harness leaves, in proportion to their widths (`flexShrink: 1`
+/// on both). The avatar is
 /// centred in the row, and the text column too when the avatar is the
 /// taller. The corner slot is at least 56 wide and sized by the timestamp,
 /// which stays measured while a dot covers it, so the title never jumps.
@@ -96,9 +99,10 @@ public struct FlatSessionRowLayout: Equatable, Sendable {
         public var project: Measurable
         /// nil in a project's primary checkout.
         public var workspace: Measurable?
-        /// The harness's name, ahead of the workspace on its row; nil
-        /// without one (the rows that draw no such line).
-        public var harness: Measurable?
+        /// The harness's name as its own text at the head of the row, for a
+        /// chat with no worktree to say it after, and a chat grouped by host
+        /// (`SessionRow.hostName`'s list); nil on the rest. Beats `harness`.
+        public var leadingHarness: Measurable?
         /// The computer's name, after the harness and its glyph; nil unless
         /// the account's chats span more than one (`SessionRow.hostName`).
         public var host: Measurable?
@@ -116,6 +120,8 @@ public struct FlatSessionRowLayout: Equatable, Sendable {
         /// The avatar's side: 60, or home's card's smaller mark
         /// (`HomeCardLayout.Metrics.sessionAvatar`).
         public var avatarSize: CGFloat
+        /// The harness after the workspace, ahead of its glyph.
+        public var harness: HomeRowHarnessText?
 
         public init(
             width: CGFloat,
@@ -123,22 +129,24 @@ public struct FlatSessionRowLayout: Equatable, Sendable {
             timestamp: Measurable,
             project: Measurable,
             workspace: Measurable?,
-            harness: Measurable? = nil,
+            leadingHarness: Measurable? = nil,
             host: Measurable? = nil,
             branchIcon: CGSize = CGSize(width: Metrics.branchIconSize, height: Metrics.branchIconSize),
             changes: CGSize? = nil,
             draftIcon: CGSize? = nil,
             showsDivider: Bool,
             lines: Lines = .designed,
-            avatarSize: CGFloat = Metrics.avatarSize
+            avatarSize: CGFloat = Metrics.avatarSize,
+            harness: HomeRowHarnessText? = nil
         ) {
+            self.harness = harness
             self.avatarSize = avatarSize
             self.width = width
             self.title = title
             self.timestamp = timestamp
             self.project = project
             self.workspace = workspace
-            self.harness = harness
+            self.leadingHarness = leadingHarness
             self.host = host
             self.branchIcon = branchIcon
             self.changes = changes
@@ -188,7 +196,6 @@ public struct FlatSessionRowLayout: Equatable, Sendable {
     /// The dot shares the timestamp's right edge and is centred on its line.
     public var dot: CGRect
     public var project: CGRect
-    public var harness: CGRect?
     public var hostIcon: CGRect?
     public var host: CGRect?
     public var workspace: CGRect?
@@ -196,6 +203,10 @@ public struct FlatSessionRowLayout: Equatable, Sendable {
     public var changes: CGRect?
     public var draftIcon: CGRect?
     public var divider: CGRect?
+    /// The dot ahead of a harness after the worktree; a harness of its own has none.
+    public var harnessSeparator: CGRect?
+    /// The harness's name, wherever this row has it.
+    public var harness: CGRect?
 
     public init(_ input: Input) {
         typealias M = Metrics
@@ -205,7 +216,9 @@ public struct FlatSessionRowLayout: Equatable, Sendable {
         let contentWidth = right - x
         let lines = input.lines
         let hasWorkspace = input.workspace != nil
-        let hasHarness = input.harness != nil
+        let hasHarness = input.leadingHarness != nil
+        // Only ever one of the two, and this one only beside a worktree.
+        let lineHarness = hasHarness || !hasWorkspace ? nil : input.harness
         let hasHost = input.host != nil
         let hasChanges = input.changes != nil
         let draftHeight = input.draftIcon?.height ?? 0
@@ -261,7 +274,7 @@ public struct FlatSessionRowLayout: Equatable, Sendable {
         // The harness keeps its width (`flexShrink: 0`), only ever held to
         // the row; the workspace has what it leaves.
         var cursor = x
-        if let harness = input.harness {
+        if let harness = input.leadingHarness {
             let textSize = harness.size(fitting: locationWidth)
             self.harness = CGRect(x: x, y: workspaceY + (workspaceRowHeight - textSize.height) / 2, width: textSize.width, height: textSize.height)
             cursor += textSize.width
@@ -282,9 +295,11 @@ public struct FlatSessionRowLayout: Equatable, Sendable {
             let hostWidth = host.size(fitting: .greatestFiniteMagnitude).width
             let workspaceWidth = workspace.size(fitting: .greatestFiniteMagnitude).width
             let wanted = hostWidth + workspaceWidth
-            if wanted > room {
-                hostRoom = room * hostWidth / wanted
-                workspaceRoom = room * workspaceWidth / wanted
+            // A harness after the workspace keeps its width too.
+            let shared = max(0, room - (lineHarness.map { HomeRowHarnessLine.tail($0, lane: room) } ?? 0))
+            if wanted > shared {
+                hostRoom = shared * hostWidth / wanted
+                workspaceRoom = shared * workspaceWidth / wanted
             }
         }
         if hasHarness, hasHost || hasWorkspace { cursor += gap }
@@ -301,14 +316,20 @@ public struct FlatSessionRowLayout: Equatable, Sendable {
         }
         if let workspace = input.workspace {
             let textSize = workspace.size(fitting: workspaceRoom)
+            let harnessLine = lineHarness.map {
+                HomeRowHarnessLine($0, x: cursor, midY: workspaceY + workspaceRowHeight / 2, lane: max(0, x + locationWidth - cursor - gap - icon.width), label: textSize.width)
+            }
+            harnessSeparator = harnessLine?.separator
+            if let harnessLine { self.harness = harnessLine.harness }
+            let textWidth = harnessLine?.labelWidth ?? textSize.width
             self.workspace = CGRect(
                 x: cursor,
                 y: workspaceY + (workspaceRowHeight - textSize.height) / 2,
-                width: textSize.width,
+                width: textWidth,
                 height: textSize.height
             )
             branchIcon = CGRect(
-                x: cursor + textSize.width + M.workspaceIconGap,
+                x: (harnessLine?.harness.maxX ?? cursor + textWidth) + M.workspaceIconGap,
                 y: workspaceY + (workspaceRowHeight - icon.height) / 2,
                 width: icon.width,
                 height: icon.height

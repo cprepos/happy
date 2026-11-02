@@ -197,9 +197,21 @@ struct HomeRowDrawing: Sendable {
             guard let frame else { return }
             parts.append(to: &plan, at: frame)
         }
-        func session(_ row: SessionRow, archived: Bool, flatLayout: Bool) {
+        func harnessText(_ name: String?, _ style: TextStyle) -> HomeRowHarnessText? {
+            name.map { HomeRowHarnessText(name: measured($0, style), separator: measured(HomeRowHarness.separator, style)) }
+        }
+        func drawHarness(_ name: String?, _ style: TextStyle, _ color: ColorToken, separator: CGRect?, frame: CGRect?) {
+            if let separator { text(HomeRowHarness.separator, style, color, separator) }
+            if let name, let frame, frame.width > 0 { text(name, style, color, frame) }
+        }
+        func session(_ row: SessionRow, archived: Bool, flatLayout: Bool, groupedByHost: Bool = false) {
             let name = row.title ?? catalog("session.newChat")
-            plan.accessibilityLabel = [name, row.state == .permissionRequired ? catalog("status.permissionRequired") : row.state == .inputRequired ? catalog("status.inputRequired") : row.corner != .timestamp ? catalog("status.unread") : nil, row.projectName, row.harnessName, row.hostName, row.workspaceName, row.timestamp].compactMap { $0 }.joined(separator: ", ")
+            // After the worktree on its line, `feature-x · OpenCode`. A chat with
+            // no worktree, or grouped by host, has it as its own text at the head.
+            let onWorktreeLine = !groupedByHost && row.workspaceName != nil
+            let status = row.state == .permissionRequired ? catalog("status.permissionRequired") : row.state == .inputRequired ? catalog("status.inputRequired") : row.corner != .timestamp ? catalog("status.unread") : nil
+            let place = onWorktreeLine ? [row.hostName, row.workspaceName, row.harnessName] : [row.harnessName, row.hostName, row.workspaceName]
+            plan.accessibilityLabel = ([name, status, row.projectName] + place + [row.timestamp]).compactMap { $0 }.joined(separator: ", ")
             plan.avatar = row.avatar
             if !flatLayout { plan.avatar?.harness = nil }
             plan.avatarAlpha = archived || (flatLayout && row.faded) ? 0.6 : 1
@@ -218,7 +230,7 @@ struct HomeRowDrawing: Sendable {
                 let avatarSize = inCard ? HomeCardLayout.Metrics.sessionAvatar : FlatSessionRowLayout.Metrics.avatarSize
                 separatorX = FlatSessionRowLayout.Metrics.contentX(avatar: avatarSize)
                 // In a card, the card draws the hairline.
-                let layout = FlatSessionRowLayout(.init(width: rowWidth, title: measured(name, TextStyles.sessionTitle), timestamp: measured(row.timestamp, TextStyles.sessionTimestamp), project: measured(row.projectName, TextStyles.sessionProject), workspace: row.workspaceName.map { measured($0, TextStyles.sessionWorkspace) }, harness: row.harnessName.map { measured($0, TextStyles.sessionHarness) }, host: row.hostName.map { measured($0, TextStyles.sessionWorkspace) }, branchIcon: environment.rows.branchIcon, changes: row.changes == nil ? nil : changesSize(parts).size, draftIcon: row.hasDraft ? draftBox : nil, showsDivider: !inCard && row.showsDivider, lines: environment.rows.sessionLines, avatarSize: avatarSize))
+                let layout = FlatSessionRowLayout(.init(width: rowWidth, title: measured(name, TextStyles.sessionTitle), timestamp: measured(row.timestamp, TextStyles.sessionTimestamp), project: measured(row.projectName, TextStyles.sessionProject), workspace: row.workspaceName.map { measured($0, TextStyles.sessionWorkspace) }, leadingHarness: onWorktreeLine ? nil : row.harnessName.map { measured($0, TextStyles.sessionHarness) }, host: row.hostName.map { measured($0, TextStyles.sessionWorkspace) }, branchIcon: environment.rows.branchIcon, changes: row.changes == nil ? nil : changesSize(parts).size, draftIcon: row.hasDraft ? draftBox : nil, showsDivider: !inCard && row.showsDivider, lines: environment.rows.sessionLines, avatarSize: avatarSize, harness: onWorktreeLine ? harnessText(row.harnessName, TextStyles.sessionWorkspace) : nil))
                 plan.size = layout.size
                 plan.avatarFrame = layout.avatar
                 plan.avatarAlpha = row.faded ? 0.5 : 1
@@ -227,10 +239,12 @@ struct HomeRowDrawing: Sendable {
                 if row.corner == .timestamp { text(row.timestamp, TextStyles.sessionTimestamp, Palette.textSecondary, layout.timestamp) }
                 else { fill(row.corner == .blockedDot ? Palette.sessionBlockedDot : Palette.sessionReadyDot, layout.dot, round: true) }
                 text(row.projectName, TextStyles.sessionProject, Palette.textSecondary, layout.project)
-                if let name = row.harnessName, let frame = layout.harness { text(name, TextStyles.sessionHarness, Palette.textSecondary, frame) }
+                if !onWorktreeLine, let name = row.harnessName, let frame = layout.harness { text(name, TextStyles.sessionHarness, Palette.textSecondary, frame) }
                 if let frame = layout.hostIcon { plan.marks.append(.icon("desktop-outline", 13, Palette.textSecondary, frame)) }
-                if let name = row.hostName, let frame = layout.host { text(name, TextStyles.sessionWorkspace, Palette.textSecondary, frame) }
-                if let name = row.workspaceName, let frame = layout.workspace { text(name, TextStyles.sessionWorkspace, Palette.textSecondary, frame) }
+                // A name with no room left is not drawn: at width 0 text isn't held to its frame.
+                if let name = row.hostName, let frame = layout.host, frame.width > 0 || layout.harness == nil { text(name, TextStyles.sessionWorkspace, Palette.textSecondary, frame) }
+                if let name = row.workspaceName, let frame = layout.workspace, frame.width > 0 || layout.harness == nil { text(name, TextStyles.sessionWorkspace, Palette.textSecondary, frame) }
+                if onWorktreeLine { drawHarness(row.harnessName, TextStyles.sessionWorkspace, Palette.textSecondary, separator: layout.harnessSeparator, frame: layout.harness) }
                 if let frame = layout.branchIcon { plan.marks.append(.icon("git-branch-outline", 13, Palette.textSecondary, frame)) }
                 if let frame = layout.draftIcon { plan.marks.append(.icon("create-outline", 13, Palette.textSecondary, frame)) }
                 drawChanges(parts, at: layout.changes)
@@ -242,7 +256,7 @@ struct HomeRowDrawing: Sendable {
         case .flat(.session(let row)): session(row, archived: false, flatLayout: !grouped)
         case .project(.bot(let row)), .project(.task(let row)): session(row, archived: false, flatLayout: !grouped)
         // A chat grouped by host is the flat list's row, under a heading.
-        case .project(.chat(let row)): session(row, archived: false, flatLayout: true)
+        case .project(.chat(let row)): session(row, archived: false, flatLayout: true, groupedByHost: true)
         case .project(.archived(let row)): session(row, archived: true, flatLayout: !grouped)
         case .flat(.dayHeader), .project(.section), .project(.archiveHeader):
             // Only the room between two cards.
@@ -271,10 +285,11 @@ struct HomeRowDrawing: Sendable {
             drawChanges(parts, at: layout.changes); plan.accessibilityLabel = [entry.name, entry.harnessName].compactMap { $0 }.joined(separator: ", ")
         case .project(.worktree(let worktree, let last)):
             let parts = changes(worktree.changes, flat: false)
-            let layout = WorktreeRowLayout(.init(width: rowWidth, hairline: environment.rows.hairline, label: measured(worktree.title, TextStyles.worktreeName), harness: worktree.harnessName.map { measured($0, TextStyles.sessionHarness) }, showsDot: worktree.activity.blocked || worktree.activity.unread, changes: worktree.changes == nil ? nil : .fixed(changesSize(parts).size), last: last))
+            let layout = WorktreeRowLayout(.init(width: rowWidth, hairline: environment.rows.hairline, label: measured(worktree.title, TextStyles.worktreeName), showsDot: worktree.activity.blocked || worktree.activity.unread, changes: worktree.changes == nil ? nil : .fixed(changesSize(parts).size), last: last, harness: harnessText(worktree.harnessName, TextStyles.worktreeName)))
             plan.size = layout.size
-            title(worktree.title, style: TextStyles.worktreeName, frame: layout.label, working: worktree.activity.working)
-            if let name = worktree.harnessName, let frame = layout.harness { text(name, TextStyles.sessionHarness, Palette.textSecondary, frame) }
+            // A name with no room left is not drawn: at width 0 text isn't held to its frame.
+            if layout.label.width > 0 || layout.harness == nil { title(worktree.title, style: TextStyles.worktreeName, frame: layout.label, working: worktree.activity.working) }
+            drawHarness(worktree.harnessName, TextStyles.worktreeName, Palette.text, separator: layout.harnessSeparator, frame: layout.harness)
             fill(Palette.textSecondary, layout.trunk); fill(Palette.textSecondary, layout.elbow)
             activity(worktree.activity, frame: layout.dot); drawChanges(parts, at: layout.changes)
             plan.accessibilityLabel = [worktree.title, worktree.harnessName].compactMap { $0 }.joined(separator: ", ")

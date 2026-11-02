@@ -1,6 +1,6 @@
 /**
  * Auto/ask permission policy for OpenCode sessions on the ACP runner
- * (`opencode acp`, which daemon- and app-started sessions use).
+ * (`opencode acp`, used only on request; see opencodeRoute.ts).
  *
  * `opencode acp` reports its primary agents (build, plan, ...) as the mode
  * list. The app has a single mode picker, so the permission policy is folded

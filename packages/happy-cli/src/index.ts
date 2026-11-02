@@ -10,6 +10,7 @@
 import chalk from 'chalk'
 import { runClaude, StartOptions } from '@/claude/runClaude'
 import { opencodeModePolicy } from '@/opencode/acpPermissionModes'
+import { selectOpencodeRoute } from '@/opencode/opencodeRoute'
 import { logger } from './ui/logger'
 import { readCredentials, readSettings } from './persistence'
 import { authAndSetupMachineIfNeeded } from './ui/auth'
@@ -484,9 +485,10 @@ Conversation history is preserved on the server, but in-flight tool calls are in
   } else if (subcommand === 'opencode') {
     // In a terminal, `happy opencode` runs the real OpenCode TUI against a
     // local `opencode serve` and mirrors that session to the app. Without a
-    // terminal (daemon spawns, `--happy-starting-mode remote`, `--acp`, or
-    // HAPPY_OPENCODE_MODE=acp) it runs on the generic ACP runner
-    // (`opencode acp`), passing anything after `--` straight to it.
+    // terminal (daemon spawns, `--happy-starting-mode remote`) it runs that
+    // same server without the TUI. `--acp` or HAPPY_OPENCODE_MODE=acp picks the
+    // generic ACP runner (`opencode acp`), passing anything after `--` to it.
+    // See selectOpencodeRoute for why app sessions do not use ACP.
     try {
       const { runAcp } = await import('@/agent/acp');
       const { resolveOpencodeBin, OPENCODE_ACP_ARGS } = await import('@/opencode/constants');
@@ -593,19 +595,22 @@ Conversation history is preserved on the server, but in-flight tool calls are in
         process.exit(0);
       }
 
-      const useTui = !forceAcp
-        && startedBy !== 'daemon'
-        && startingMode !== 'remote'
-        && process.stdin.isTTY === true
-        && process.stdout.isTTY === true;
-      if (useTui || (headless && !forceAcp)) {
+      const route = selectOpencodeRoute({
+        forceAcp,
+        headless,
+        startedBy,
+        startingMode,
+        isTerminal: process.stdin.isTTY === true && process.stdout.isTTY === true,
+        hasPassthroughArgs: passthroughArgs.length > 0,
+      });
+      if (route !== 'acp') {
         const { runOpencodeTui } = await import('@/opencode/tui/runOpencodeTui');
         await runOpencodeTui({
           credentials,
           startedBy,
           resumeSessionId,
           permissionPolicy,
-          headless,
+          headless: route === 'headless',
           happySessionId,
           bin: resolveOpencodeBin(),
         });

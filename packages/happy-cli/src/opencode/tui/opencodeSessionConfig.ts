@@ -114,6 +114,49 @@ export function parseOpencodeMode(
 }
 
 /**
+ * The key `buildOpencodePickers` lists for this agent and policy: the plain id
+ * for the launch policy, `<agent>:<policy>` for the other.
+ */
+export function opencodeModeCode(
+    agent: string,
+    policy: OpencodePermissionPolicy,
+    launchPolicy: OpencodePermissionPolicy,
+): string {
+    return policy === launchPolicy ? agent : `${agent}${POLICY_SEPARATOR}${policy}`;
+}
+
+function splitModelKey(key: string): { providerID: string; modelID: string } | undefined {
+    const slash = key.indexOf('/');
+    return slash > 0 && slash < key.length - 1
+        ? { providerID: key.slice(0, slash), modelID: key.slice(slash + 1) }
+        : undefined;
+}
+
+/**
+ * A model pick from the app -> OpenCode's model and variant. `opencode acp`
+ * lists variants as `<provider>/<model>/<variant>`, and a session started there
+ * can keep sending one, so a pick that is a known model plus one more segment
+ * means that variant. Against a known list anything else is dropped, as the ACP
+ * runner drops it; model ids can contain slashes, so only the list can tell.
+ */
+function resolveModelPick(
+    pick: string | null | undefined,
+    knownModels: readonly string[] | undefined,
+): { model?: { providerID: string; modelID: string }; variant?: string } {
+    if (!pick) {
+        return {};
+    }
+    if (!knownModels || knownModels.length === 0 || knownModels.includes(pick)) {
+        const model = splitModelKey(pick);
+        return model ? { model } : {};
+    }
+    const slash = pick.lastIndexOf('/');
+    const base = slash > 0 ? pick.slice(0, slash) : '';
+    const model = knownModels.includes(base) ? splitModelKey(base) : undefined;
+    return model ? { model, variant: pick.slice(slash + 1) } : {};
+}
+
+/**
  * The prompt options for the app's picks. Unknown or empty picks are left
  * out, so OpenCode falls back to the session's own model and agent.
  */
@@ -122,11 +165,23 @@ export function opencodePromptOptions(input: {
     permissionMode?: string | null;
     agentNames: string[];
     launchPolicy?: OpencodePermissionPolicy;
-}): { model?: { providerID: string; modelID: string }; agent?: string } {
-    const slash = input.model ? input.model.indexOf('/') : -1;
-    const model = input.model && slash > 0 && slash < input.model.length - 1
-        ? { providerID: input.model.slice(0, slash), modelID: input.model.slice(slash + 1) }
-        : undefined;
+    /** The models the pickers offer, when they could be read. */
+    knownModels?: readonly string[];
+}): { model?: { providerID: string; modelID: string }; variant?: string; agent?: string } {
+    const { model, variant } = resolveModelPick(input.model, input.knownModels);
     const { agent } = parseOpencodeMode(input.permissionMode, input.agentNames, input.launchPolicy ?? 'auto');
-    return { ...(model ? { model } : {}), ...(agent ? { agent } : {}) };
+    return { ...(model ? { model } : {}), ...(variant ? { variant } : {}), ...(agent ? { agent } : {}) };
+}
+
+/**
+ * `/name some args` -> the command, when `name` is one of `known`. Anything
+ * else is an ordinary prompt: a message that merely starts with a path must
+ * still reach the model.
+ */
+export function parseOpencodeSlashCommand(
+    text: string,
+    known: readonly string[],
+): { name: string; args: string } | null {
+    const match = text.trim().match(/^\/(\S+)(?:\s+([\s\S]*))?$/);
+    return match && known.includes(match[1]) ? { name: match[1], args: match[2] ?? '' } : null;
 }

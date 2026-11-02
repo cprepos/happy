@@ -609,7 +609,8 @@ public struct ProjectWorktree: Equatable, Sendable {
     public var sessionId: String
     public var activity: HomeActivity
     public var changes: GitLineChanges?
-    /// What runs the chat a tap opens.
+    /// The harness of the newest chat, the one a tap opens: a worktree can
+    /// hold chats on different ones.
     public var harnessName: String? = nil
 }
 

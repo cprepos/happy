@@ -306,7 +306,8 @@ public struct SessionList: Equatable, Sendable {
             projectName: place.projectName,
             workspaceName: place.workspaceName,
             // FlatSessionRow: `getHarnessName(session.flavor || 'claude')`.
-            harnessName: HarnessCatalog.name(metadata?["flavor"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 } ?? "claude"),
+            // `harness` is nil for Happy Agent, whose harness is Happy.
+            harnessName: SessionDetails.harness(metadata) ?? HarnessCatalog.name("rig"),
             changes: session.isRig ? GitLineChanges(rigSummary: metadata?["git"]) : nil,
             avatar: SessionAvatar(
                 seed: session.avatarSeed,

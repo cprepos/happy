@@ -7,6 +7,7 @@ import {
     OpencodeQuestionBridge,
     opencodeAnswersFromForm,
     opencodeFormQuestions,
+    syncOpencodeQuestions,
 } from './opencodeQuestionBridge';
 
 type RpcHandler = (params: any) => Promise<unknown>;
@@ -199,5 +200,80 @@ describe('OpencodeQuestionBridge', () => {
         bridge.reset();
         expect(fake.state().communications).toEqual({});
         expect(fake.state().completedCommunications?.que_old).toMatchObject({ status: 'cancelled' });
+    });
+});
+
+describe('syncOpencodeQuestions', () => {
+    const question = (id: string) => ({ id, questions: [COLOR] });
+
+    it('does not reopen a form answered while the list was being fetched', async () => {
+        const { fake, bridge, replies } = setup();
+        bridge.ask(question('que_1'));
+
+        await syncOpencodeQuestions(
+            bridge,
+            async () => {
+                // The list was read while the question still waited; the answer lands before it returns.
+                await fake.callRpc('communication', { id: 'que_1', status: 'answered', answers: { q0: { options: ['Red'] } } });
+                return [question('que_1')];
+            },
+            (request) => bridge.ask(request),
+        );
+
+        expect(replies).toEqual([['que_1', [['Red']]]]);
+        expect(fake.state().communications).toEqual({});
+        expect(fake.state().completedCommunications?.que_1).toMatchObject({ status: 'answered', answers: { q0: { options: ['Red'] } } });
+    });
+
+    it('leaves alone a question raised while the list was being fetched', async () => {
+        const { fake, bridge } = setup();
+
+        await syncOpencodeQuestions(
+            bridge,
+            async () => {
+                bridge.ask(question('que_new'));
+                return [];
+            },
+            (request) => bridge.ask(request),
+        );
+
+        expect(fake.state().communications?.que_new).toBeDefined();
+        expect(bridge.pendingIds()).toEqual(['que_new']);
+    });
+
+    it('does not cancel a question whose answer is still on its way to OpenCode', async () => {
+        const fake = fakeSession();
+        let release: () => void = () => {};
+        const held = new Promise<void>((resolve) => { release = resolve; });
+        const bridge = new OpencodeQuestionBridge(fake.session, {
+            reply: () => held,
+            reject: async () => {},
+        });
+        bridge.ask(question('que_1'));
+
+        const answering = fake.callRpc('communication', { id: 'que_1', status: 'answered', answers: { q0: { options: ['Red'] } } });
+        await syncOpencodeQuestions(bridge, async () => [], (request) => bridge.ask(request));
+        release();
+        await answering;
+
+        expect(fake.state().completedCommunications?.que_1).toMatchObject({ status: 'answered' });
+    });
+
+    it('shows questions it missed and closes ones that ended meanwhile', async () => {
+        const { fake, bridge } = setup();
+        bridge.ask(question('que_gone'));
+
+        await syncOpencodeQuestions(bridge, async () => [question('que_missed')], (request) => bridge.ask(request));
+
+        expect(Object.keys(fake.state().communications ?? {})).toEqual(['que_missed']);
+        expect(fake.state().completedCommunications?.que_gone).toMatchObject({ status: 'cancelled' });
+    });
+
+    it('ignores a late event for a question that is over', async () => {
+        const { fake, bridge } = setup();
+        bridge.ask(question('que_1'));
+        await fake.callRpc('communication', { id: 'que_1', status: 'cancelled' });
+        bridge.ask(question('que_1'));
+        expect(fake.state().communications).toEqual({});
     });
 });

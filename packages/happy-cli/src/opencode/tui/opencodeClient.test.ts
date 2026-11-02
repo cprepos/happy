@@ -79,6 +79,35 @@ describe('OpencodeClient', () => {
         expect(JSON.parse(stub.requests[2].body)).toEqual({ reply: 'always' });
     });
 
+    it('runs slash commands and compaction past the default timeout, on the signal given', async () => {
+        const stub = await startStub((req, res) => {
+            res.setHeader('content-type', 'application/json');
+            res.end(req.method === 'GET' ? JSON.stringify([{ name: 'init' }]) : '{}');
+        });
+        servers.push(stub.server);
+        const client = new OpencodeClient({ url: stub.url, password: 'pw', directory: '/tmp' });
+        const { signal } = new AbortController();
+
+        expect(await client.commands()).toEqual([{ name: 'init' }]);
+        await client.runCommand('ses_1', { name: 'init', args: 'now', messageId: 'msg_x', model: { providerID: 'p', modelID: 'a/b' }, variant: 'high', agent: 'plan' }, signal);
+        await client.summarize('ses_1', { providerID: 'p', modelID: 'm' }, signal);
+
+        expect(stub.requests.map((r) => `${r.method} ${r.path}`)).toEqual([
+            'GET /command',
+            'POST /session/ses_1/command',
+            'POST /session/ses_1/summarize',
+        ]);
+        expect(JSON.parse(stub.requests[1].body)).toEqual({
+            command: 'init',
+            arguments: 'now',
+            messageID: 'msg_x',
+            model: 'p/a/b',
+            variant: 'high',
+            agent: 'plan',
+        });
+        expect(JSON.parse(stub.requests[2].body)).toEqual({ providerID: 'p', modelID: 'm' });
+    });
+
     it('lists, answers and dismisses questions', async () => {
         const stub = await startStub((req, res) => {
             res.setHeader('content-type', 'application/json');

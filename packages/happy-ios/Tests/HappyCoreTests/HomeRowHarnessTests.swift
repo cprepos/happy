@@ -1,207 +1,163 @@
+import Foundation
 import XCTest
-@testable import HappyCore
 import HappyStore
 import HappyWire
+@testable import HappyCore
 
-/// The harness's name on a chat's row (FlatSessionRow.tsx), and that a list
-/// which doesn't draw it never redraws for it.
+/// The harness's name on home's rows: which name, on which rows, and that a
+/// change of it reaches the row it is on and no other.
 final class HomeRowHarnessTests: XCTestCase {
-    private typealias Fixture = LegacyHomeFixtures
+    private static let own = "/work/project"
+    private static let worktree = "/work/project/.dev/worktree/feature-x"
 
-    private func snapshot(_ sessions: [SessionRecord], grouping: String = "flat") -> LegacyHomeSnapshot {
-        LegacyHomeSnapshot(
-            machines: MachinesSnapshot(synced: true, machines: [Fixture.machine("m1", active: true, name: "Studio")]),
-            sessions: sessions,
-            settings: SettingsSnapshot(pending: ["sessionListGrouping": .string(grouping), "hideInactiveSessions": .bool(false)]),
-            sessionsSynced: true
-        )
-    }
-
-    private func session(_ id: String, flavor: String?, extra: [String: JSONValue] = [:], active: Bool = true) -> SessionRecord {
-        var metadata = extra
+    private func record(_ index: Int, path: String = HomeRowHarnessTests.worktree, flavor: String? = nil, rig: Bool = false, extra: [String: JSONValue] = [:]) -> SessionRecord {
+        var record = ApplyPerfFixtures.session(index)
+        var metadata = record.metadata?.objectValue ?? [:]
+        metadata["path"] = .string(path)
         if let flavor { metadata["flavor"] = .string(flavor) }
-        return Fixture.session(id, machine: "m1", path: "/work/\(id)", active: active, metadata: metadata)
+        if rig { metadata["client"] = .object(["id": .string("rig")]) }
+        metadata.merge(extra) { $1 }
+        record.metadata = .object(metadata)
+        return record
     }
 
-    private func flatRows(_ snapshot: LegacyHomeSnapshot) -> [String: SessionRow] {
+    private func flavored(_ record: SessionRecord, _ flavor: String) -> SessionRecord {
+        var record = record
+        var metadata = record.metadata?.objectValue ?? [:]
+        metadata["flavor"] = .string(flavor)
+        record.metadata = .object(metadata)
+        return record
+    }
+
+    private func snapshot(_ sessions: [SessionRecord], grouping: String) -> LegacyHomeSnapshot {
+        var snapshot = LegacyHomeSnapshot(machines: MachinesSnapshot(synced: true, machines: [ApplyPerfFixtures.machine]), sessions: sessions, sessionsSynced: true)
+        snapshot.settings = SettingsSnapshot(pending: ["sessionListGrouping": .string(grouping)])
+        return snapshot
+    }
+
+    private func list(_ snapshot: LegacyHomeSnapshot) throws -> HomeListModel {
+        try XCTUnwrap(ApplyPerfFixtures.derive(snapshot, after: nil)?.output.content.list)
+    }
+
+    private func flatRows(_ model: HomeListModel) -> [String: SessionRow] {
         var rows: [String: SessionRow] = [:]
-        for item in SessionList(snapshot, clock: ApplyPerfFixtures.clock).items {
-            if case .session(let row) = item { rows[row.id] = row }
-        }
+        for case .flat(.session(let row)) in model.rows { rows[row.id] = row }
         return rows
     }
 
-    private func derive(_ snapshot: LegacyHomeSnapshot, after applied: HomeDerivation.Applied) -> (output: HomeUpdate, state: HomeDerivation.Applied)? {
-        HomeDerivation.derive(HomeDerivation.Input(snapshot: snapshot, clock: ApplyPerfFixtures.clock), applied: applied)
-    }
-
-    // MARK: Grouped by project
-
-    private func chat(_ id: String, path: String, flavor: String?, at: Int64 = Fixture.now - Fixture.minute, extra: [String: JSONValue] = [:]) -> SessionRecord {
-        var metadata = extra
-        if let flavor { metadata["flavor"] = .string(flavor) }
-        return Fixture.session(id, machine: "m1", path: path, at: at, metadata: metadata)
-    }
-
-    private func projectRows(_ snapshot: LegacyHomeSnapshot) -> [ProjectHomeRow] {
-        HomeListModel(SessionList(snapshot, clock: ApplyPerfFixtures.clock), offline: nil, expandedProjects: []).rows.compactMap {
-            if case .project(let row) = $0 { return row }
+    private func worktrees(_ model: HomeListModel) -> [ProjectWorktree] {
+        model.rows.compactMap { row in
+            if case .project(.worktree(let worktree, _)) = row { return worktree }
             return nil
         }
     }
 
-    /// The card and each worktree open a chat, and name what runs it, with
-    /// the flat row's source and fallback.
-    func testAProjectAndItsWorktreesNameTheirHarness() {
-        let rows = projectRows(snapshot([
-            chat("own", path: "/work/happy", flavor: "codex"),
-            chat("wt", path: "/work/happy/.dev/worktree/fix-x", flavor: "agy"),
-            chat("plain", path: "/work/plain", flavor: nil),
-            chat("empty", path: "/work/plain/.dev/worktree/fix-y", flavor: ""),
-        ], grouping: "project"))
-        var names: [String: String?] = [:]
-        for row in rows {
-            switch row {
-            case .project(let entry): names[entry.name] = entry.harnessName
-            case .worktree(let worktree, _): names[worktree.title] = worktree.harnessName
-            default: break
-            }
-        }
-        XCTAssertEqual(names["happy"], "Codex")
-        XCTAssertEqual(names["fix-x"], "Antigravity")
-        XCTAssertEqual(names["plain"], "Claude Code")
-        XCTAssertEqual(names["fix-y"], "Claude Code")
+    // MARK: Names
+
+    func testTheNamesOnAFlatRow() throws {
+        let rows = flatRows(try list(snapshot([
+            record(0, flavor: "opencode"),
+            record(1),
+            record(2, flavor: "something-new"),
+            record(3, rig: true),
+            record(4, flavor: "codex"),
+        ], grouping: "flat")))
+        XCTAssertEqual(rows[ApplyPerfFixtures.session(0).id]?.harnessName, "OpenCode")
+        XCTAssertEqual(rows[ApplyPerfFixtures.session(1).id]?.harnessName, "Claude Code", "no flavor is Claude Code")
+        XCTAssertEqual(rows[ApplyPerfFixtures.session(2).id]?.harnessName, "something-new", "an unknown flavor goes by itself")
+        XCTAssertEqual(rows[ApplyPerfFixtures.session(3).id]?.harnessName, "Happy", "Happy Agent")
+        XCTAssertEqual(rows[ApplyPerfFixtures.session(4).id]?.harnessName, "Codex")
     }
 
-    /// A card with no chat of its own opens nothing, so it names nothing.
-    func testAProjectWithOnlyWorktreesNamesNoHarness() throws {
-        let rows = projectRows(snapshot([chat("wt", path: "/work/happy/.dev/worktree/fix-x", flavor: "codex")], grouping: "project"))
-        let entry = try XCTUnwrap(rows.lazy.compactMap { row -> ProjectHomeEntry? in
-            if case .project(let entry) = row { return entry }
+    func testTheNamesOnAWorktreeRow() throws {
+        func name(_ session: SessionRecord) throws -> String? {
+            let rows = worktrees(try list(snapshot([session, record(9, path: Self.own)], grouping: "project")))
+            XCTAssertEqual(rows.count, 1)
+            return rows.first?.harnessName
+        }
+        XCTAssertEqual(try name(record(0, flavor: "opencode")), "OpenCode")
+        XCTAssertEqual(try name(record(0)), "Claude Code")
+        XCTAssertEqual(try name(record(0, flavor: "something-new")), "something-new")
+        XCTAssertEqual(try name(record(0, rig: true)), "Happy")
+    }
+
+    // MARK: Which rows
+
+    func testAMixedWorktreeShowsItsNewestChatsHarness() throws {
+        // session(0) is the newest, and what a tap opens.
+        let rows = worktrees(try list(snapshot([
+            record(0, flavor: "codex"),
+            record(1, flavor: "opencode"),
+            record(9, path: Self.own),
+        ], grouping: "project")))
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.first?.sessionId, ApplyPerfFixtures.session(0).id)
+        XCTAssertEqual(rows.first?.harnessName, "Codex")
+    }
+
+    func testAFlatRowWithNoWorktreeKeepsItsHarness() throws {
+        let rows = flatRows(try list(snapshot([record(0, path: Self.own, flavor: "opencode")], grouping: "flat")))
+        XCTAssertNil(rows[ApplyPerfFixtures.session(0).id]?.workspaceName)
+        XCTAssertEqual(rows[ApplyPerfFixtures.session(0).id]?.harnessName, "OpenCode")
+    }
+
+    func testABotInTheProjectListKeepsNoHarness() throws {
+        let bot = record(0, path: Self.own, flavor: "opencode", extra: ["bot": .object(["username": .string("ops"), "name": .string("Ops")])])
+        let model = try list(snapshot([bot, record(9, path: Self.own)], grouping: "project"))
+        let bots: [SessionRow] = model.rows.compactMap { row in
+            if case .project(.bot(let row)) = row { return row }
             return nil
-        }.first)
-        XCTAssertNil(entry.harnessName)
-        XCTAssertNil(entry.sessionId)
-    }
-
-    /// A checkout with several chats names the one a tap opens: its first.
-    func testACheckoutNamesTheHarnessOfTheChatATapOpens() throws {
-        let rows = projectRows(snapshot([
-            chat("old", path: "/work/happy", flavor: "claude", at: Fixture.now - 2 * Fixture.minute),
-            chat("new", path: "/work/happy", flavor: "codex", at: Fixture.now - Fixture.minute),
-            chat("wt-old", path: "/work/happy/.dev/worktree/fix-x", flavor: "codex", at: Fixture.now - 2 * Fixture.minute),
-            chat("wt-new", path: "/work/happy/.dev/worktree/fix-x", flavor: "claude", at: Fixture.now - Fixture.minute),
-        ], grouping: "project"))
-        var checked = 0
-        for row in rows {
-            switch row {
-            case .project(let entry):
-                XCTAssertEqual(entry.sessionId, "new")
-                XCTAssertEqual(entry.harnessName, "Codex")
-                checked += 1
-            case .worktree(let worktree, _):
-                XCTAssertEqual(worktree.sessionId, "wt-new")
-                XCTAssertEqual(worktree.harnessName, "Claude Code")
-                checked += 1
-            default: break
-            }
         }
-        XCTAssertEqual(checked, 2)
+        XCTAssertEqual(bots.count, 1)
+        XCTAssertNil(bots.first?.harnessName)
     }
 
-    /// Only the rows that draw it have it: a bot, a task and an archived chat
-    /// don't, and neither does the toggle.
-    func testBotsTasksAndArchivedChatsNameNoHarnessGroupedByProject() {
-        let bot: [String: JSONValue] = ["bot": .object(["id": .string("b"), "name": .string("Helper"), "username": .string("helper"), "orderKey": .string("a")])]
-        let task: [String: JSONValue] = ["task": .object(["id": .string("t"), "name": .string("Fix"), "folderName": .string("fix"), "orderKey": .string("a")])]
-        let rows = projectRows(snapshot([
-            chat("bot", path: "/work/bot", flavor: "codex", extra: bot),
-            chat("task", path: "/work/task", flavor: "codex", extra: task),
-            session("old", flavor: "codex", active: false),
-        ], grouping: "project"))
-        var seen: Set<String> = []
-        for row in rows {
-            switch row {
-            case .bot(let session), .task(let session), .archived(let session):
-                XCTAssertNil(session.harnessName, session.id)
-                seen.insert(session.id)
-            default: break
-            }
-        }
-        XCTAssertEqual(seen, ["bot", "task", "old"])
+    // MARK: Changes
+
+    // These flavors have no avatar glyph, so only the harness's name differs
+    // between them: a redraw is the name's doing.
+
+    func testAChangeOfHarnessReconfiguresOneFlatRow() throws {
+        var sessions = (0..<10).map { record($0, flavor: "one") }
+        let applied = try XCTUnwrap(ApplyPerfFixtures.derive(snapshot(sessions, grouping: "flat"), after: nil)).state
+        sessions[4] = flavored(sessions[4], "two")
+        let update = try XCTUnwrap(ApplyPerfFixtures.derive(snapshot(sessions, grouping: "flat"), after: applied)).output
+        let model = try XCTUnwrap(update.content.list)
+        let index = try XCTUnwrap(model.ids.firstIndex(of: .session(sessions[4].id)))
+        XCTAssertEqual(update.changeset, RowChangeset(reconfigures: [index]))
+        XCTAssertEqual(flatRows(model)[sessions[4].id]?.harnessName, "two")
     }
 
-    func testAChangedHarnessReconfiguresOnlyTheRowThatNamesIt() throws {
-        func sessions(own: String, worktree: String, other: String) -> [SessionRecord] {
-            [
-                chat("own", path: "/work/happy", flavor: own),
-                chat("wt", path: "/work/happy/.dev/worktree/fix-x", flavor: worktree),
-                chat("other", path: "/work/other", flavor: other),
-            ]
-        }
-        let first = try XCTUnwrap(derive(snapshot(sessions(own: "claude", worktree: "claude", other: "claude"), grouping: "project"), after: HomeDerivation.Applied()))
-        let list = try XCTUnwrap(first.output.content.list)
-        let card = try XCTUnwrap(list.index(ofSession: "own"))
-        let worktree = try XCTUnwrap(list.index(ofSession: "wt"))
-        XCTAssertNotEqual(card, worktree)
-
-        let cardChange = try XCTUnwrap(derive(snapshot(sessions(own: "codex", worktree: "claude", other: "claude"), grouping: "project"), after: first.state))
-        XCTAssertEqual(cardChange.output.changeset, RowChangeset(reconfigures: [card]))
-        let worktreeChange = try XCTUnwrap(derive(snapshot(sessions(own: "claude", worktree: "codex", other: "claude"), grouping: "project"), after: first.state))
-        XCTAssertEqual(worktreeChange.output.changeset, RowChangeset(reconfigures: [worktree]))
+    func testAChangeOfTheNewestChatsHarnessReconfiguresOneWorktreeRow() throws {
+        var sessions = [record(0, flavor: "one"), record(1, flavor: "one"), record(9, path: Self.own, flavor: "one")]
+        let applied = try XCTUnwrap(ApplyPerfFixtures.derive(snapshot(sessions, grouping: "project"), after: nil)).state
+        sessions[0] = flavored(sessions[0], "two")
+        let update = try XCTUnwrap(ApplyPerfFixtures.derive(snapshot(sessions, grouping: "project"), after: applied)).output
+        let model = try XCTUnwrap(update.content.list)
+        let index = try XCTUnwrap(model.rows.firstIndex { row in
+            if case .project(.worktree) = row { return true }
+            return false
+        })
+        XCTAssertEqual(update.changeset, RowChangeset(reconfigures: [index]))
+        XCTAssertEqual(worktrees(model).first?.harnessName, "two")
     }
 
-    /// A chat behind the newest one is on no row: its harness is unrendered.
-    func testTheHarnessOfAChatNoRowOpensChangesNothing() throws {
-        func sessions(behind: String) -> [SessionRecord] {
-            [
-                chat("new", path: "/work/happy", flavor: "claude", at: Fixture.now - Fixture.minute),
-                chat("old", path: "/work/happy", flavor: behind, at: Fixture.now - 2 * Fixture.minute),
-            ]
-        }
-        let first = try XCTUnwrap(derive(snapshot(sessions(behind: "claude"), grouping: "project"), after: HomeDerivation.Applied()))
-        XCTAssertNil(derive(snapshot(sessions(behind: "codex"), grouping: "project"), after: first.state))
+    func testAChangeOfAnOlderChatsHarnessTouchesNoRow() throws {
+        var sessions = [record(0, flavor: "one"), record(1, flavor: "one"), record(9, path: Self.own, flavor: "one")]
+        let applied = try XCTUnwrap(ApplyPerfFixtures.derive(snapshot(sessions, grouping: "project"), after: nil)).state
+        sessions[1] = flavored(sessions[1], "two")
+        let update = ApplyPerfFixtures.derive(snapshot(sessions, grouping: "project"), after: applied)?.output
+        XCTAssertEqual(update?.changeset.touchedRows ?? 0, 0)
     }
 
-    // MARK: Flat
-
-    func testEveryChatNamesItsHarnessAndNoFlavorIsClaudeCode() {
-        let rows = flatRows(snapshot([
-            session("a", flavor: "claude"),
-            session("b", flavor: "codex"),
-            session("c", flavor: "agy"),
-            session("d", flavor: nil),
-            session("e", flavor: ""),
-            session("f", flavor: "something-new"),
-            session("g", flavor: "codex", active: false),
-        ]))
-        XCTAssertEqual(rows["a"]?.harnessName, "Claude Code")
-        XCTAssertEqual(rows["b"]?.harnessName, "Codex")
-        XCTAssertEqual(rows["c"]?.harnessName, "Antigravity")
-        XCTAssertEqual(rows["d"]?.harnessName, "Claude Code")
-        XCTAssertEqual(rows["e"]?.harnessName, "Claude Code")
-        XCTAssertEqual(rows["f"]?.harnessName, "something-new")
-        XCTAssertEqual(rows["g"]?.harnessName, "Codex")
-    }
-
-    func testAChangedHarnessReconfiguresOnlyItsFlatRow() throws {
-        let before = snapshot([session("a", flavor: "claude"), session("b", flavor: "claude"), session("c", flavor: "claude")])
-        let first = try XCTUnwrap(derive(before, after: HomeDerivation.Applied()))
-        let index = try XCTUnwrap(first.output.content.list?.ids.firstIndex(of: .session("b")))
-        let after = snapshot([session("a", flavor: "claude"), session("b", flavor: "codex"), session("c", flavor: "claude")])
-        let second = try XCTUnwrap(derive(after, after: first.state))
-        XCTAssertEqual(second.output.changeset, RowChangeset(reconfigures: [index]))
-    }
-
-    /// The project list's bots draw a name and a time: their harness is a
-    /// field nothing renders, so it never causes an apply.
-    func testAHarnessARowDoesNotDrawChangesNothing() throws {
-        let bot: [String: JSONValue] = ["bot": .object(["id": .string("b"), "name": .string("Helper"), "username": .string("helper"), "orderKey": .string("a")])]
-        let before = snapshot([session("b", flavor: "claude", extra: bot)], grouping: "project")
-        let first = try XCTUnwrap(derive(before, after: HomeDerivation.Applied()))
-        guard case .project(.bot(let row))? = first.output.content.list?.rows.first(where: { $0.sessionId == "b" }) else { return XCTFail("a bot's row") }
-        XCTAssertNil(row.harnessName)
-        let after = snapshot([session("b", flavor: "codex", extra: bot)], grouping: "project")
-        XCTAssertNil(derive(after, after: first.state))
+    func testAChangeOfFlavorOnARowWithNoWorktreeReconfiguresThatRow() throws {
+        var sessions = [record(0, path: Self.own, flavor: "one"), record(1, flavor: "one")]
+        let applied = try XCTUnwrap(ApplyPerfFixtures.derive(snapshot(sessions, grouping: "flat"), after: nil)).state
+        sessions[0] = flavored(sessions[0], "two")
+        let update = try XCTUnwrap(ApplyPerfFixtures.derive(snapshot(sessions, grouping: "flat"), after: applied)).output
+        let model = try XCTUnwrap(update.content.list)
+        let index = try XCTUnwrap(model.ids.firstIndex(of: .session(sessions[0].id)))
+        XCTAssertEqual(update.changeset, RowChangeset(reconfigures: [index]))
+        XCTAssertEqual(flatRows(model)[sessions[0].id]?.harnessName, "two")
     }
 }

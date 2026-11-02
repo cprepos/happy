@@ -161,24 +161,6 @@ final class ProjectListLayoutTests: XCTestCase {
         assertFrame(layout.harness, rect(56, 66, 88, 18))
     }
 
-    func testWhereTheTrailingItemsTakeAWorktreesLaneTheTextGoesUnderThem() {
-        let layout = WorktreeRowLayout(.init(
-            width: 200,
-            hairline: hairline,
-            label: text("fix-login", lineHeight: 21, maxLines: 1),
-            harness: text("Claude Code", lineHeight: 18, maxLines: 1),
-            showsDot: true,
-            changes: fixed(52, 18),
-            last: false
-        ))
-        assertSize(layout.size, CGSize(width: 200, height: 81))
-        assertFrame(layout.trunk, rect(29.667, 0, 0.667, 81))
-        assertFrame(layout.dot, rect(117, 17.5, 7, 7))
-        assertFrame(layout.changes, rect(132, 12, 52, 18))
-        assertFrame(layout.label, rect(56, 30, 128, 21))
-        assertFrame(layout.harness, rect(56, 51, 88, 18))
-    }
-
     /// Wider than the row has room for, the harness is held to the row's edge.
     func testAnEnormousHarnessStopsAtTheRowsEdge() {
         let layout = ProjectCardLayout(.init(
@@ -197,54 +179,21 @@ final class ProjectListLayoutTests: XCTestCase {
         assertFrame(layout.harness, rect(56, 66, 248, 18))
     }
 
-    func testAWorktreeNamesItsHarnessBesideItsChanges() {
-        let layout = WorktreeRowLayout(.init(
-            width: 393,
-            hairline: hairline,
-            label: text("fix-login", lineHeight: 21, maxLines: 1),
-            harness: text("Codex", lineHeight: 18, maxLines: 1),
-            showsDot: false,
-            changes: fixed(52, 18),
-            last: false
-        ))
-        assertSize(layout.size, CGSize(width: 393, height: 48))
-        assertFrame(layout.label, rect(56, 13.5, 213, 21))
-        assertFrame(layout.harness, rect(277, 15, 40, 18))
-        assertFrame(layout.changes, rect(325, 15, 52, 18))
-    }
-
-    /// 240 wide, the lane is 93 and the name would be left nothing.
-    func testOnANarrowRowAWorktreesHarnessDropsUnderIt() {
-        let layout = WorktreeRowLayout(.init(
-            width: 240,
-            hairline: hairline,
-            label: text("fix-login", lineHeight: 21, maxLines: 1),
-            harness: text("Claude Code", lineHeight: 18, maxLines: 1),
-            showsDot: true,
-            changes: fixed(52, 18),
-            last: false
-        ))
-        assertSize(layout.size, CGSize(width: 240, height: 63))
-        assertFrame(layout.trunk, rect(29.667, 0, 0.667, 63))
-        assertFrame(layout.elbow, rect(30, 31.167, 14, 0.667))
-        assertFrame(layout.label, rect(56, 12, 93, 21))
-        assertFrame(layout.harness, rect(56, 33, 88, 18))
-    }
-
     /// A harness taller than the name holds the row up as the name does.
     func testATallHarnessHoldsTheRowUp() {
-        let layout = WorktreeRowLayout(.init(
+        let layout = ProjectCardLayout(.init(
             width: 393,
             hairline: hairline,
-            label: text("fix-login", lineHeight: 21, maxLines: 1),
+            name: text("happy", lineHeight: 22, maxLines: 1),
             harness: text("Codex", lineHeight: 30, maxLines: 1),
             showsDot: false,
             changes: nil,
-            last: false
+            showsAdd: false,
+            showsTree: false
         ))
         assertSize(layout.size, CGSize(width: 393, height: 54))
-        assertFrame(layout.label, rect(56, 16.5, 265, 21))
-        assertFrame(layout.harness, rect(329, 12, 40, 30))
+        assertFrame(layout.name, rect(56, 16, 273, 22))
+        assertFrame(layout.harness, rect(337, 12, 40, 30))
     }
 
     func testAToggleHasNoHarness() {

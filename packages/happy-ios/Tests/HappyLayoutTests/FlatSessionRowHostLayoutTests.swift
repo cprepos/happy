@@ -19,7 +19,7 @@ final class FlatSessionRowHostLayoutTests: XCTestCase {
             timestamp: line(56, height: 22),
             project: line(80, height: 20),
             workspace: workspace.map { line($0) },
-            harness: line(harness),
+            leadingHarness: line(harness),
             host: host.map { line($0) },
             showsDivider: false
         ))

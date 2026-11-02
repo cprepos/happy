@@ -247,12 +247,16 @@ enum ChatRowRenderer {
         // never changes height when a message settles. Its height is RN's
         // fixed 14 at every text size (`pendingStatusText`), so a larger
         // size's text is cut at it. On the person's own message the clock
-        // says it is on its way.
+        // says it is on its way, which VoiceOver can't see, so it still hears
+        // the word.
         let status: String
         var failed = false
+        var spokenStatus: String?
         switch messageStatus.line {
         case .none: status = ""
-        case .sending: status = outgoing == nil ? text.words.sending : String()
+        case .sending:
+            status = outgoing == nil ? text.words.sending : String()
+            spokenStatus = text.words.sending
         case .sendsAfterThisTurn: status = text.words.sendsAfterThisTurn
         case .failed(let reason):
             status = text.words.sendFailed(reason)
@@ -274,7 +278,7 @@ enum ChatRowRenderer {
         return ChatRowPlan(
             id: message.id, size: layout.size, items: items, hits: hits,
             alpha: messageStatus.dimmed && outgoing == nil ? UserMessageLayout.Metrics.pendingOpacity : 1,
-            accessibilityLabel: [author?.name, copyText, status.isEmpty ? nil : status].compactMap { $0 }.joined(separator: ", "),
+            accessibilityLabel: [author?.name, copyText, spokenStatus ?? (status.isEmpty ? nil : status)].compactMap { $0 }.joined(separator: ", "),
             flight: outgoing == nil || layout.chip != nil || layout.goalLabel != nil ? nil : layout.bubble.map {
                 ChatRowFlight(
                     bubble: ChatBox(frame: $0, fill: palette.background, border: palette.border, borderWidth: 1, radius: UserMessageLayout.Metrics.bubbleRadius),

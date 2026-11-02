@@ -20,7 +20,13 @@ import UltraView
 @MainActor
 public final class GymFrameMeter: NSObject {
     public static func installIfAsked(in window: UIWindow) {
-        guard ProcessInfo.processInfo.environment["HAPPY_GYM_METER"] == "1", shared == nil else { return }
+        guard ProcessInfo.processInfo.environment["HAPPY_GYM_METER"] == "1" else { return }
+        // One meter a process, on the window asked for last: a script looks
+        // for what it scrolls in the meter's own window.
+        if let shared {
+            shared.place(in: window)
+            return
+        }
         let meter = GymFrameMeter(window: window)
         shared = meter
         // `-avatar-fps N` (`gym.py run --avatar-fps`): live avatars at N
@@ -34,6 +40,7 @@ public final class GymFrameMeter: NSObject {
     private let button = MeterButton()
     private let run = UIButton()
     private var script: GymScroll?
+    private var onTop: Timer?
     private var link: CADisplayLink?
     private var observer: CFRunLoopObserver?
     private var intervals: [Double] = []
@@ -63,17 +70,13 @@ public final class GymFrameMeter: NSObject {
         button.alpha = 0.02
         button.backgroundColor = .black
         button.addTarget(self, action: #selector(reset), for: .touchUpInside)
-        window.addSubview(button)
-        button.frame = CGRect(x: 0, y: window.bounds.height - 8, width: 8, height: 8)
         button.autoresizingMask = [.flexibleTopMargin, .flexibleRightMargin]
         run.accessibilityIdentifier = "gym-run"
         run.alpha = 0.02
         run.backgroundColor = .black
         run.addTarget(self, action: #selector(runScript), for: .touchUpInside)
-        window.addSubview(run)
-        run.frame = CGRect(x: 0, y: window.bounds.height - 20, width: 8, height: 8)
         run.autoresizingMask = [.flexibleTopMargin, .flexibleRightMargin]
-        keepOnTop(window)
+        place(in: window)
         let link = CADisplayLink(target: self, selector: #selector(tick(_:)))
         link.add(to: .main, forMode: .common)
         self.link = link
@@ -100,8 +103,18 @@ public final class GymFrameMeter: NSObject {
     nonisolated static let resetNotification = "com.slopus.happy.gym.reset"
     nonisolated static let runNotification = "com.slopus.happy.gym.run"
 
+    private func place(in window: UIWindow) {
+        guard button.window !== window else { return }
+        window.addSubview(button)
+        button.frame = CGRect(x: 0, y: window.bounds.height - 8, width: 8, height: 8)
+        window.addSubview(run)
+        run.frame = CGRect(x: 0, y: window.bounds.height - 20, width: 8, height: 8)
+        keepOnTop(window)
+    }
+
     private func keepOnTop(_ window: UIWindow) {
-        Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self, weak window] _ in
+        onTop?.invalidate()
+        onTop = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self, weak window] _ in
             MainActor.assumeIsolated {
                 guard let self, let window else { return }
                 if window.subviews.last !== self.button {
