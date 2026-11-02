@@ -7,7 +7,9 @@
  * - creates a Happy session (flavor 'claude', harness 'claude-desktop') and
  *   reports it to the daemon like any other session;
  * - mirrors the desktop's transcript to it with the session scanner, dropping
- *   the rewake echoes of phone messages (see desktopEcho.ts);
+ *   the rewake echoes of phone messages (see desktopEcho.ts). Only what is
+ *   written after attach starts is mirrored live; the earlier transcript is
+ *   loaded on demand by the phone (`desktop-load-history`, desktopHistory.ts);
  * - hands phone messages to the daemon (`POST /desktop/enqueue`), whose inbox
  *   the plugin's Stop / SessionStart hook delivers into the desktop session;
  * - follows busy / idle from `GET /desktop/events/:claudeSessionId` for the
@@ -37,7 +39,15 @@ import { initialMachineMetadata } from '@/daemon/run';
 import { Credentials, readDaemonState, readSettings } from '@/persistence';
 import { logger } from '@/ui/logger';
 import { connectionState } from '@/utils/serverConnectionErrors';
-import { createSessionScanner } from '@/claude/utils/sessionScanner';
+import { createSessionScanner, readSessionEntries } from '@/claude/utils/sessionScanner';
+import {
+    historyBeforeAfterRepoint,
+    mapHistoryEntries,
+    planHistoryChunk,
+    readDesktopTranscript,
+    type DesktopLoadHistoryParams,
+    type DesktopLoadHistoryResult,
+} from '@/claude/utils/desktopHistory';
 import { createDesktopEchoMatcher } from '@/claude/utils/desktopEcho';
 import { getProjectPath } from '@/claude/utils/path';
 import { registerKillSessionHandler } from './registerKillSessionHandler';
@@ -228,15 +238,26 @@ export async function runClaudeDesktopAttach(credentials: Credentials, options: 
     session.keepAlive(status.thinking, 'local');
     const keepAliveInterval = setInterval(() => session.keepAlive(status.thinking, 'local'), KEEP_ALIVE_INTERVAL_MS);
 
-    // Mirror the transcript. For a fresh Happy session the scanner starts with
-    // no session and is then pointed at the desktop's, so the existing
-    // history is sent as well as everything written from now on. A reattached
-    // session already has that history, so the scanner starts on the desktop
-    // session, which marks what is on disk as sent.
+    // On-demand history: entries [0, historyBefore) of the current transcript
+    // are not on the phone yet. A fresh session counts what is on disk now;
+    // a reattached one keeps its stored count. (Absent on a session made
+    // before on-demand history: that one was backfilled, so 0.)
+    // Read right before the scanner marks the same entries as sent; a line
+    // appended in between is in neither.
+    let historyBefore = reattached
+        ? session.getMetadata()?.desktopHistory?.before ?? 0
+        : (await readSessionEntries(projectDir, claudeSessionId)).length;
+    if (!reattached || session.getMetadata()?.desktopHistory === undefined) {
+        session.updateMetadata((current) => ({ ...current, desktopHistory: { before: historyBefore } }));
+    }
+
+    // Mirror the transcript from now on. The scanner starts on the desktop
+    // session, which marks what is on disk as sent: earlier history is not
+    // backfilled but loaded on demand.
     const echoes = createDesktopEchoMatcher();
     let sendChain = Promise.resolve();
     const scanner = await createSessionScanner({
-        sessionId: reattached ? claudeSessionId : null,
+        sessionId: claudeSessionId,
         workingDirectory: cwd,
         onMessage: (message) => {
             // Same as the local launcher: Happy generates its own summaries.
@@ -256,7 +277,34 @@ export async function runClaudeDesktopAttach(credentials: Credentials, options: 
             });
         },
     });
-    await scanner.onNewSession(claudeSessionId);
+
+    // History loads and re-points both move historyBefore, so they run one
+    // at a time. A load that arrives while one is in flight loads the next chunk.
+    let historyChain: Promise<unknown> = Promise.resolve();
+    const serializeHistory = <T>(task: () => Promise<T>): Promise<T> => {
+        const run = historyChain.then(task);
+        historyChain = run.catch(() => undefined);
+        return run;
+    };
+    session.rpcHandlerManager.registerHandler<DesktopLoadHistoryParams | undefined, DesktopLoadHistoryResult>(
+        'desktop-load-history',
+        (params) => serializeHistory(async () => {
+            const chunk = planHistoryChunk(historyBefore, params?.limit);
+            if (chunk.end === 0) {
+                return { loaded: 0, before: 0 };
+            }
+            const entries = await readDesktopTranscript(projectDir, claudeSessionId);
+            if (chunk.end > entries.length) {
+                throw new Error(`Transcript ${claudeSessionId} has ${entries.length} entries, fewer than the ${chunk.end} history expects`);
+            }
+            const envelopes = mapHistoryEntries(entries.slice(chunk.start, chunk.end));
+            await session.sendHistoricalSessionEnvelopes(envelopes);
+            historyBefore = chunk.start;
+            session.updateMetadata((current) => ({ ...current, desktopHistory: { before: historyBefore } }));
+            logger.debug(`[ATTACH] Loaded history entries [${chunk.start}, ${chunk.end}) as ${envelopes.length} envelopes`);
+            return { loaded: chunk.end - chunk.start, before: historyBefore };
+        }),
+    );
 
     // The session's title is the one the desktop shows. With no title from
     // the desktop yet, whatever title the session already has stays.
@@ -392,9 +440,22 @@ export async function runClaudeDesktopAttach(credentials: Credentials, options: 
             for (const event of events) {
                 if (event.claudeSessionId && event.claudeSessionId !== claudeSessionId) {
                     logger.debug(`[ATTACH] Claude session id changed: ${claudeSessionId} -> ${event.claudeSessionId}`);
-                    claudeSessionId = event.claudeSessionId;
-                    session.updateMetadata((current) => ({ ...current, claudeSessionId: event.claudeSessionId }));
-                    await scanner.onNewSession(claudeSessionId);
+                    const previousId = claudeSessionId;
+                    const nextId = event.claudeSessionId;
+                    // The new transcript repeats the old history: mark it all
+                    // as sent and count what is still unloaded in it.
+                    await serializeHistory(async () => {
+                        const oldEntries = await readSessionEntries(projectDir, previousId);
+                        const newEntries = await readSessionEntries(projectDir, nextId);
+                        claudeSessionId = nextId;
+                        await scanner.onNewSession(nextId, { treatExistingAsProcessed: true });
+                        historyBefore = historyBeforeAfterRepoint(oldEntries, historyBefore, newEntries);
+                        session.updateMetadata((current) => ({
+                            ...current,
+                            claudeSessionId: nextId,
+                            desktopHistory: { before: historyBefore },
+                        }));
+                    });
                     titles.repoint(claudeSessionId, join(dirname(options.transcriptPath), `${claudeSessionId}.jsonl`));
                     syncTitle();
                 }
