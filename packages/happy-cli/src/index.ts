@@ -635,6 +635,43 @@ Conversation history is preserved on the server, but in-flight tool calls are in
       process.exit(1)
     }
     return;
+  } else if (subcommand === 'attach') {
+    // Mirror a Claude session owned by the Claude desktop app. Started by the
+    // daemon from the happy plugin's SessionStart hook (POST /desktop/adopt).
+    try {
+      const { runClaudeDesktopAttach } = await import('@/claude/runClaudeDesktopAttach');
+
+      let claudeSessionId: string | undefined;
+      let transcriptPath: string | undefined;
+      let cwd: string | undefined;
+      let hostPid: number | undefined;
+      for (let i = 1; i < args.length; i++) {
+        if (args[i] === '--claude-session') {
+          claudeSessionId = args[++i];
+        } else if (args[i] === '--transcript') {
+          transcriptPath = args[++i];
+        } else if (args[i] === '--cwd') {
+          cwd = args[++i];
+        } else if (args[i] === '--host-pid') {
+          hostPid = Number(args[++i]);
+        } else {
+          throw new Error(`happy attach: unknown argument ${args[i]}`);
+        }
+      }
+      if (!claudeSessionId || !transcriptPath || !cwd || !hostPid || !Number.isInteger(hostPid)) {
+        throw new Error('Usage: happy attach --claude-session <id> --transcript <path> --cwd <cwd> --host-pid <pid>');
+      }
+
+      const { credentials } = await authAndSetupMachineIfNeeded();
+      await runClaudeDesktopAttach(credentials, { claudeSessionId, transcriptPath, cwd, hostPid });
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      if (process.env.DEBUG) {
+        console.error(error)
+      }
+      process.exit(1)
+    }
+    return;
   } else if (subcommand === 'logout') {
     // Keep for backward compatibility - redirect to auth logout
     console.log(chalk.yellow('Note: "happy logout" is deprecated. Use "happy auth logout" instead.\n'));
