@@ -81,6 +81,9 @@ public struct SessionRow: Equatable, Sendable {
     public var projectName: String
     /// Null in a project's primary checkout.
     public var workspaceName: String?
+    /// Which harness runs this chat, by product name: Claude Code, Codex.
+    /// Nil on rows that don't draw it (`HomeListModel`).
+    public var harnessName: String? = nil
     /// The line counts Happy Agent publishes for the session's checkout,
     /// drawn at the end of the workspace's row (RigGitLineChanges); nil
     /// for a clean comparison and for every other agent.
@@ -269,6 +272,8 @@ public struct SessionList: Equatable, Sendable {
             title: session.title,
             projectName: place.projectName,
             workspaceName: place.workspaceName,
+            // FlatSessionRow: `getHarnessName(session.flavor || 'claude')`.
+            harnessName: HarnessCatalog.name(metadata?["flavor"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 } ?? "claude"),
             changes: session.isRig ? GitLineChanges(rigSummary: metadata?["git"]) : nil,
             avatar: SessionAvatar(
                 seed: session.avatarSeed,

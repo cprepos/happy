@@ -163,22 +163,25 @@ public struct HomeListModel: Equatable, Sendable {
     }
 
     /// A bot's, a task's or an archived chat's row (ProjectHomeList.tsx
-    /// `ChatRow`) draws no line changes either.
+    /// `ChatRow`) draws no line changes or harness name either.
     private static func rendered(_ row: ProjectHomeRow) -> ProjectHomeRow {
         switch row {
         case .bot(var session):
             session.lastActivityAt = 0
             session.changes = nil
+            session.harnessName = nil
             session.hasDraft = false
             return .bot(session)
         case .task(var session):
             session.lastActivityAt = 0
             session.changes = nil
+            session.harnessName = nil
             session.hasDraft = false
             return .task(session)
         case .archived(var session):
             session.lastActivityAt = 0
             session.changes = nil
+            session.harnessName = nil
             session.hasDraft = false
             return .archived(session)
         default:
