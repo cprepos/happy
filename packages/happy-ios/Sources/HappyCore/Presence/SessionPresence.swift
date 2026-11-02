@@ -7,6 +7,11 @@ public actor SessionPresence {
     public struct Options: Sendable {
         public var persistenceIntervalMs: Int64 = 60_000
         public var timerInterval: Duration = .seconds(15)
+        /// How long a live CLI can go unheard while this phone is listening.
+        /// Sessions beat every 2s and daemons every 20s; the server only gives
+        /// up on either after 10 minutes, which is how long a computer that
+        /// lost power would otherwise look alive (and thinking).
+        public var silenceLimitMs: Int64 = 90_000
         public init() { }
     }
 
@@ -18,6 +23,9 @@ public actor SessionPresence {
         var displayedAt: Int64
         var thinkingAt: Int64
         var lastSeen: ComposerStatus.LastSeen?
+        /// Whether its beats reach this account, so that silence means
+        /// anything. Happy Agent's chats and tasks shared by others don't.
+        var heartbeats = true
         var overlay: PresenceOverlayValue {
             PresenceOverlayValue(active: active, thinking: thinking, latestAt: latestAt,
                                  displayedAt: displayedAt, thinkingAt: thinkingAt)
@@ -34,6 +42,9 @@ public actor SessionPresence {
     private var timer: Task<Void, Never>?
     private var seeded = false
     private var stopped = false
+    /// Since when the socket has been up; silence only counts from here.
+    private var listeningSince: Int64?
+    private var lastTick: Int64?
 
     public init(store: LocalStore, options: Options = Options(), now: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }) {
         self.store = store
@@ -55,6 +66,16 @@ public actor SessionPresence {
                 await self.tick()
             }
         }
+    }
+
+    /// The socket came or went. Heartbeats missed while it was down say
+    /// nothing about the computer.
+    public func setListening(_ listening: Bool) {
+        guard listening else {
+            listeningSince = nil
+            return
+        }
+        if listeningSince == nil { listeningSince = now() }
     }
 
     public func activity(id: String, active: Bool, activeAt: Int64, thinking: Bool) async {
@@ -115,6 +136,7 @@ public actor SessionPresence {
                 state.latestAt = row.activeAt
                 if changed || !row.active { state.displayedAt = row.activeAt }
                 state.lastSeen = row.active ? nil : ComposerStatus.lastSeen(activeAt: row.activeAt, now: now())
+                state.heartbeats = Self.heartbeats(row)
                 sessions[row.id] = state
                 store.setSessionPresenceOverlay(id: row.id, value: state.overlay)
             } else { seed(row) }
@@ -180,9 +202,31 @@ public actor SessionPresence {
             seeded = true
         }
         let time = now()
+        // A gap this long means the process was suspended and the socket may
+        // not know yet that it is dead: what it missed is not silence.
+        if let lastTick, time - lastTick >= options.silenceLimitMs / 2, listeningSince != nil { listeningSince = time }
+        lastTick = time
         var changed = false
+        for id in Array(machines.keys) {
+            guard var state = machines[id], isSilent(state, at: time) else { continue }
+            state.active = false
+            state.displayedAt = state.latestAt
+            machines[id] = state
+            dirtyMachines.insert(id)
+            store.setMachinePresenceOverlay(id: id, value: state.overlay)
+            changed = true
+        }
         for id in Array(sessions.keys) {
             guard var state = sessions[id] else { continue }
+            if isSilent(state, at: time) {
+                // As `activity(active: false)` would have; its next beat undoes it.
+                state.active = false
+                state.thinking = false
+                state.displayedAt = state.latestAt
+                state.thinkingAt = state.latestAt
+                dirtySessions.insert(id)
+                changed = true
+            }
             let token = state.active ? nil : ComposerStatus.lastSeen(activeAt: state.latestAt, now: time)
             if token != state.lastSeen {
                 state.lastSeen = token
@@ -219,6 +263,13 @@ public actor SessionPresence {
         try flush()
     }
 
+    private func isSilent(_ state: State, at time: Int64) -> Bool {
+        guard let listeningSince, state.active, state.heartbeats else { return false }
+        return time - max(listeningSince, state.latestAt) >= options.silenceLimitMs
+    }
+
+    private static func heartbeats(_ row: SessionRecord) -> Bool { !row.isRig && !row.isTask }
+
     private func checkpoint() {
         do { try flush() }
         catch { print("HappyStore presence checkpoint failed: \(error)") }
@@ -227,7 +278,8 @@ public actor SessionPresence {
     private func seed(_ row: SessionRecord) {
         let state = State(active: row.active, thinking: row.thinking, latestAt: row.activeAt, persistedAt: row.activeAt,
                           displayedAt: row.activeAt, thinkingAt: row.thinkingAt,
-                          lastSeen: row.active ? nil : ComposerStatus.lastSeen(activeAt: row.activeAt, now: now()))
+                          lastSeen: row.active ? nil : ComposerStatus.lastSeen(activeAt: row.activeAt, now: now()),
+                          heartbeats: Self.heartbeats(row))
         sessions[row.id] = state
         store.setSessionPresenceOverlay(id: row.id, value: state.overlay)
     }

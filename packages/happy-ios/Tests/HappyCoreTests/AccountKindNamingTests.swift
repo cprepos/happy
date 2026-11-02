@@ -48,7 +48,7 @@ final class AccountKindNamingTests: XCTestCase {
         let english = TranslationCatalog.nativeSources["en"] ?? [:]
         // The voice service's words have their own test, VoiceNativeStringsTests.
         XCTAssertEqual(Set(english.keys.filter { $0.hasPrefix("native.accountKind.") }), Set(Self.kindKeys))
-        XCTAssertEqual(english.keys.filter { !$0.hasPrefix("native.accountKind.") && !$0.hasPrefix("native.voice.") }, [])
+        XCTAssertEqual(english.keys.filter { !$0.hasPrefix("native.accountKind.") && !$0.hasPrefix("native.voice.") && !$0.hasPrefix("native.sessionResume.") }, [])
         for language in languages {
             let words = TranslationCatalog.nativeSources[language] ?? [:]
             let catalog = TranslationCatalog.catalog(for: language)

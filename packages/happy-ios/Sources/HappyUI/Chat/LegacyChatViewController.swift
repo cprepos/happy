@@ -72,7 +72,8 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
     /// session that has stopped, the goal, a request the chat can't show
     /// inline, what a Happy Agent session has running.
     private lazy var inactiveHint = ChatInactiveHintView()
-    private var resuming = false
+    private var resumeProgress = ResumeProgress()
+    private var resumeWait: Task<Void, Never>?
     private lazy var goalBar = ChatGoalBarView()
     private var goalInFlight: SessionGoalAction?
     private lazy var questionBanner = ChatQuestionBannerView()
@@ -1595,8 +1596,9 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
     private func updateDockBars() {
         let before = dockBars.map { $0.view }
         let hint = InactiveSessionHint(session: session.record, machine: session.machine)
+        if hint == nil, resumeProgress.agentCameBack() { resumeWait?.cancel() }
         if let hint {
-            inactiveHint.show(hint, resuming: resuming)
+            inactiveHint.show(hint, resuming: resumeProgress.isSpinning)
         }
         inactiveHint.isHidden = hint == nil
         let goal = session.record.flatMap(VisibleAgentGoal.init)
@@ -1676,24 +1678,41 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
 
     /// useSessionQuickActions' performResume: one at a time, spinning until
     /// it is done; a failure is an alert. The session reconnects under its
-    /// own id, so the hint just goes once it is back.
+    /// own id, so the hint just goes once it is back. The machine answers
+    /// before the agent's first heartbeat, so it keeps spinning until then
+    /// rather than offering Resume again.
     private func resume() {
-        guard !resuming, let record = session.record else { return }
+        guard let record = session.record, resumeProgress.begin() else { return }
         let resume = services.resume
         let machine = session.machine
-        resuming = true
         updateDockBars()
         Task { [weak self] in
             do {
                 let opened = try await resume(record, machine)
-                if let self, let opened, opened != self.chatId {
-                    self.push(.session(id: opened), context: self.context)
+                guard let self else { return }
+                if opened == self.chatId {
+                    self.resumeProgress.machineAnswered()
+                    self.waitForAgent()
+                } else {
+                    self.resumeProgress.finished()
+                    if let opened { self.push(.session(id: opened), context: self.context) }
                 }
             } catch {
+                self?.resumeProgress.finished()
                 if let self { DetailActionAlert.show(error, on: self) }
             }
-            self?.resuming = false
             self?.updateDockBars()
+        }
+    }
+
+    /// An agent that never shows up gets its Resume back.
+    private func waitForAgent() {
+        resumeWait?.cancel()
+        resumeWait = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(ResumeProgress.agentWaitSeconds))
+            guard !Task.isCancelled, let self else { return }
+            self.resumeProgress.finished()
+            self.updateDockBars()
         }
     }
 

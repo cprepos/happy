@@ -106,7 +106,8 @@ final class ChatInactiveHintView: UIView {
         case .command(let lines): .command(lines.joined(separator: "\n"))
         case .noticeOnly: .none
         }
-        model = ChatInactiveHintModel(notice: Strings.Chat.inactiveArchived, terminalNotice: isCommand ? Strings.Chat.resumeFromTerminal : nil, action: action)
+        let notice = hint.machineOffline ? Strings.SessionResume.machineOffline : Strings.Chat.inactiveArchived
+        model = ChatInactiveHintModel(notice: notice, terminalNotice: isCommand ? Strings.Chat.resumeFromTerminal : nil, action: action)
         button.isEnabled = !resuming
         button.alpha = resuming ? InactiveHintLayout.Metrics.resumingOpacity : 1
         buttonLabel.isHidden = resuming

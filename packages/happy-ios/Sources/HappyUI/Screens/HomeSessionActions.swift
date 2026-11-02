@@ -167,7 +167,7 @@ final class HomeSessionActions {
         case .requestToApproveDirectoryCreation:
             throw HomeActionError(Strings.Home.resumeSessionUnexpectedDirectoryPrompt)
         case .error(let message):
-            throw HomeActionError(message)
+            throw HomeActionError(ResumeProgress.failureText(message, machineOffline: Strings.Home.resumeSessionMachineOffline))
         case .pending:
             throw HomeActionError(Strings.Home.actionUnknownError)
         }

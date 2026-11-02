@@ -138,7 +138,7 @@ public struct SessionDetailActions: Sendable {
         case .requestToApproveDirectoryCreation:
             throw Failure(messages.unexpectedDirectoryPrompt)
         case .error(let message):
-            throw Failure(message)
+            throw Failure(ResumeProgress.failureText(message, machineOffline: messages.machineOffline))
         case .pending:
             // happy-app's switch has no case for it and does nothing.
             return nil

@@ -171,6 +171,7 @@ public actor LegacySyncEngine {
     /// The socket came or went: what waits goes while it is up.
     public func setConnected(_ connected: Bool) async {
         reachable = connected
+        await presence.setListening(connected && !stopped)
         if !stopped { followIntents() }
         await intents.setOnline(connected && !stopped)
     }
