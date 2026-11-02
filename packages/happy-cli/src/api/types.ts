@@ -150,6 +150,9 @@ export const MachineMetadataSchema = z.object({
     agy: z.boolean().optional(),
     // Optional for the same reason as agy.
     opencode: z.boolean().optional(),
+    // Claude Desktop: the app is installed and running and Happy's plugin is
+    // installed in it. Optional for the same reason as agy.
+    'claude-desktop': z.boolean().optional(),
     detectedAt: z.number(),
   }).optional(),
   resumeSupport: z.object({
@@ -337,6 +340,12 @@ export type Metadata = {
   archivedBy?: string,
   archiveReason?: string,
   flavor?: string
+  /**
+   * The app that owns the agent process, when it is not Happy. Flavor stays
+   * 'claude' for Claude Desktop sessions so every Claude renderer still
+   * applies; this only changes the harness the apps show.
+   */
+  harness?: 'claude-desktop'
   sandbox?: SandboxConfig | null
   dangerouslySkipPermissions?: boolean | null
   /** Lineage for sessions created via the fork / duplicate flow. */

@@ -257,9 +257,12 @@ export async function claudeLocal(opts: {
             // Prepare environment variables
             // Note: Local mode uses global Claude installation with --session-id flag
             // Launcher only intercepts fetch for thinking state tracking
+            // HAPPY_MANAGED tells Happy's Claude Desktop plugin hooks that this
+            // Claude already belongs to Happy, so they do not adopt it again.
             const env = {
                 ...process.env,
-                ...opts.claudeEnvVars
+                ...opts.claudeEnvVars,
+                HAPPY_MANAGED: '1'
             }
 
             if (opts.mcpServers && Object.keys(opts.mcpServers).length > 0) {

@@ -66,6 +66,8 @@ export function query(params: { prompt: QueryPrompt; options?: QueryOptions }): 
         if (typeof value === 'string') env[key] = value
     }
     env.CLAUDE_CODE_ENTRYPOINT = resolveHappyEntrypoint(process.env.CLAUDE_CODE_ENTRYPOINT)
+    // Happy's Claude Desktop plugin hooks skip any Claude carrying this.
+    env.HAPPY_MANAGED = '1'
     if (opts?.mcpServers && Object.keys(opts.mcpServers).length > 0) {
         ensureLocalProxyBypass(env)
     }

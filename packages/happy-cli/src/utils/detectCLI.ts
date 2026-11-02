@@ -12,6 +12,8 @@ export interface CLIAvailability {
   openclaw: boolean;
   agy: boolean;
   opencode: boolean;
+  /** Claude Desktop is installed and running, with Happy's plugin installed. */
+  'claude-desktop': boolean;
   detectedAt: number;
 }
 
@@ -43,6 +45,7 @@ function detectPosix(): CLIAvailability {
   const gemini = commandExists('gemini');
   const agy = findAgyBin() !== undefined;
   const opencode = findOpencodeBin() !== undefined;
+  const claudeDesktop = detectClaudeDesktop();
 
   // OpenClaw: check command, config file, or env var
   const openclawCommand = commandExists('openclaw');
@@ -50,7 +53,7 @@ function detectPosix(): CLIAvailability {
   const openclawEnv = !!process.env.OPENCLAW_GATEWAY_URL;
   const openclaw = openclawCommand || openclawConfig || openclawEnv;
 
-  return { claude, codex, gemini, openclaw, agy, opencode, detectedAt: Date.now() };
+  return { claude, codex, gemini, openclaw, agy, opencode, 'claude-desktop': claudeDesktop, detectedAt: Date.now() };
 }
 
 function detectWindows(): CLIAvailability {
@@ -68,6 +71,7 @@ function detectWindows(): CLIAvailability {
   const gemini = checkCommand('gemini');
   const agy = findAgyBin() !== undefined;
   const opencode = findOpencodeBin() !== undefined;
+  const claudeDesktop = detectClaudeDesktop();
 
   // OpenClaw: check command, config file, or env var
   const openclawCommand = checkCommand('openclaw');
@@ -75,5 +79,14 @@ function detectWindows(): CLIAvailability {
   const openclawEnv = !!process.env.OPENCLAW_GATEWAY_URL;
   const openclaw = openclawCommand || openclawConfig || openclawEnv;
 
-  return { claude, codex, gemini, openclaw, agy, opencode, detectedAt: Date.now() };
+  return { claude, codex, gemini, openclaw, agy, opencode, 'claude-desktop': claudeDesktop, detectedAt: Date.now() };
+}
+
+/**
+ * Claude Desktop as a harness. Contract stub: wave 2 replaces this with the
+ * real check (Claude.app installed, its process running, and Happy's plugin
+ * listed in ~/.claude/plugins/installed_plugins.json).
+ */
+function detectClaudeDesktop(): boolean {
+  return false;
 }

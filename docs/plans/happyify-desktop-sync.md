@@ -78,6 +78,93 @@ Constraints:
 | PermissionRequest hook in the desktop | **Fires** (`tool` request from an injected turn). Not yet tested: whether a hook decision suppresses the desktop's own dialog. The test was blocked because the test plugin is user-scoped and an auto-allow hook would also approve tools in every other Claude Code session. The real hook must be scoped to adopted desktop sessions and answer only with a decision relayed from the phone, never auto-allow. |
 | SessionEnd | **Fires** (seen on `-p` exit). Use it to archive the mirror. |
 
+## Contract (wave 1, binding for every wave 2 branch)
+
+### Identity
+
+- The harness key is `claude-desktop`, used the same way everywhere: the spawn
+  `agent` value, the `cliAvailability` key, `metadata.harness`, and the app
+  harness catalogs.
+- Session metadata: `flavor: 'claude'` (unchanged, so every Claude renderer
+  applies) plus `harness: 'claude-desktop'`. No new `startedBy` value: the
+  app's zod enum for it is strict.
+- `cliAvailability['claude-desktop']`: true only when Claude.app is installed,
+  its process is running, and `happy@happy` is listed in
+  `~/.claude/plugins/installed_plugins.json`. It is re-detected on every
+  machine-alive, so the picker follows "the app is on".
+- Every Claude that Happy spawns carries `HAPPY_MANAGED=1`
+  (`claudeLocal.ts`, `sdk/query.ts`). The plugin hooks ignore those sessions.
+
+### Hook script guard
+
+The script exits 0 and prints nothing unless all three hold:
+`CLAUDE_CODE_ENTRYPOINT === 'claude-desktop'`, `HAPPY_MANAGED` is unset, and
+the daemon answers.
+
+The daemon port is `httpPort` in `$HAPPY_HOME_DIR/daemon.state.json`, where
+`HAPPY_HOME_DIR` defaults to `~/.happy`. Every request goes to `127.0.0.1`.
+
+### Daemon routes (existing control server; JSON bodies)
+
+Hooks → daemon:
+
+| Route | Body | Reply | Sent by |
+|---|---|---|---|
+| `POST /desktop/adopt` | `{claudeSessionId, transcriptPath, cwd, pid}` | `{happySessionId}` (idempotent per `claudeSessionId`; a new id with the same `pid` re-points that mirror) | SessionStart |
+| `POST /desktop/busy` | `{claudeSessionId}` | `{ok:true}` | UserPromptSubmit |
+| `POST /desktop/idle` | `{claudeSessionId}` | `{ok:true}` | Stop, before it starts waiting |
+| `POST /desktop/ended` | `{claudeSessionId}` | `{ok:true}` | SessionEnd |
+| `GET /desktop/inbox/:claudeSessionId?wait=<ms>` | – | `200 {localId, text}` or `204` | SessionStart and Stop (asyncRewake) |
+
+- Only the **newest** inbox waiter receives a message. When a new waiter
+  arrives, older ones are answered `204` straight away.
+- `wait` is capped at 600000 ms. The hooks set `timeout: 660` seconds.
+
+attach process ↔ daemon:
+
+| Route | Body | Reply |
+|---|---|---|
+| `POST /desktop/enqueue` | `{claudeSessionId, localId, text}` | `{queued: number}` |
+| `GET /desktop/events/:claudeSessionId?after=<seq>&wait=<ms>` | – | `{seq, events: [{type: 'busy' \| 'idle' \| 'ended' \| 'delivered', localId?}]}` |
+
+- `delivered` is emitted when the inbox hands a message to a hook.
+
+### Delivery format
+
+The hook prints `[Happy] <text>` to stderr and stdout, then exits 2. Claude Code
+records it in the transcript as a user entry whose content contains:
+
+```
+Stop hook blocking error from command "<event>": [Happy] <text>
+```
+
+(SessionStart rewakes use the same wrapper with their own event name.) attach
+matches the `[Happy] <text>` part to the `localId` of a message it enqueued.
+That entry is not forwarded as a new message, because the phone already shows
+it.
+
+### attach process
+
+The daemon starts it as `happy attach --claude-session <id> --transcript <path>
+--cwd <cwd> --host-pid <pid>` through `spawnTrackedHappyProcess`.
+- It creates the Happy session and mirrors the transcript.
+- Phone messages go to `/desktop/enqueue`.
+- `/desktop/events` drives `keepAlive(thinking, 'local')`.
+- On `ended`, or when the host pid dies, it archives the session and exits.
+
+### Phone-started session
+
+`spawn-happy-session {agent:'claude-desktop', directory}`:
+1. Pick a uuid.
+2. `claude -p --session-id <uuid> "/cost"` in `directory`. This seeds the
+   session without a model call.
+3. `script -q /dev/null claude --desktop --resume <uuid>`.
+4. Wait up to 30 s for `/desktop/adopt` with that uuid.
+5. Reply with the Happy session id.
+
+The app then sends its first prompt as an ordinary message. attach enqueues it,
+and the SessionStart rewake that is already waiting delivers it.
+
 ## Design
 
 ```
