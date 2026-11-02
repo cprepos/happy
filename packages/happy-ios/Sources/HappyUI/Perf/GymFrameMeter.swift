@@ -100,6 +100,10 @@ public final class GymFrameMeter: NSObject {
         }
     }
 
+    /// A script is running. Cheap to ask, unlike the summary, so a test in
+    /// the same process can wait on it without holding the frames it counts.
+    var isScripting: Bool { script != nil }
+
     nonisolated static let resetNotification = "com.slopus.happy.gym.reset"
     nonisolated static let runNotification = "com.slopus.happy.gym.run"
 
