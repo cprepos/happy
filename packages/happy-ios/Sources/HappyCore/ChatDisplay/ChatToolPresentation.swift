@@ -100,9 +100,14 @@ extension ToolPresentation.Body {
 public struct ToolDisplayState: Equatable, Sendable {
     /// They tapped its header open.
     public var expanded: Bool
+    /// The person dismissed this question. A finished tool otherwise folds
+    /// to its header, which would hide the "Dismissed" that says what became
+    /// of it, so this one starts open and the header folds it.
+    public var questionDismissed: Bool
 
-    public init(expanded: Bool = false) {
+    public init(expanded: Bool = false, questionDismissed: Bool = false) {
         self.expanded = expanded
+        self.questionDismissed = questionDismissed
     }
 }
 
@@ -274,7 +279,7 @@ public enum ChatToolPresentation {
         let awaitingDecision = tool.permission?.status == .pending
             || (ChatToolDisplay.isInteractiveQuestion(name) && tool.state == .running)
         let body: ToolPresentation.Body
-        if form == .inline || state.expanded {
+        if form == .inline || state.expanded != state.questionDismissed {
             // An attachment is the person's own picture, not tool output.
             body = full
         } else if awaitingDecision {

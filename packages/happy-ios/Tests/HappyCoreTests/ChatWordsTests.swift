@@ -42,6 +42,9 @@ final class ChatWordsTests: XCTestCase {
         Word(ask: { $0.readingFile("a.swift") }, key: "tools.desc.readingFile", values: ["file": "a.swift"]),
         Word(ask: { $0.writingFile("a.swift") }, key: "tools.desc.writingFile", values: ["file": "a.swift"]),
         Word(ask: { $0.submitAnswer }, key: "tools.askUserQuestion.submit"),
+        Word(ask: { $0.questionDismissed }, key: "agentQuestion.dismissed"),
+        Word(ask: { $0.ownAnswerPlaceholder }, key: "agentQuestion.ownAnswerPlaceholder"),
+        Word(ask: { $0.loadingQuestion }, key: "tools.requestUserInput.loading"),
         Word(ask: { $0.message }, key: "common.message"),
         Word(ask: { $0.fullDescription }, key: "tools.fullView.description"),
         Word(ask: { $0.fullInputParams }, key: "tools.fullView.inputParams"),
@@ -80,7 +83,7 @@ final class ChatWordsTests: XCTestCase {
             XCTAssertEqual(word.ask(.english), word.ask(read), word.key)
             XCTAssertEqual(word.ask(.english), TranslationCatalog.english(word.key, word.values), word.key)
         }
-        XCTAssertEqual(Self.words.count, 67)
+        XCTAssertEqual(Self.words.count, 70)
     }
 
     func testEveryLanguageReadsHappyAppsKeys() {

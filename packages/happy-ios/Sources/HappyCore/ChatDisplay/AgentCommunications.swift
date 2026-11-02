@@ -252,23 +252,30 @@ public struct InlineQuestion: Equatable, Sendable {
     public var options: [AgentQuestionOption]
     public var multiSelect: Bool
     public var required: Bool?
+    /// The person may write an answer instead of choosing one.
+    public var allowCustom: Bool
 
-    public init(id: String, question: String, header: String, options: [AgentQuestionOption], multiSelect: Bool = false, required: Bool? = nil) {
+    public init(id: String, question: String, header: String, options: [AgentQuestionOption], multiSelect: Bool = false, required: Bool? = nil, allowCustom: Bool = false) {
         self.id = id
         self.question = question
         self.header = header
         self.options = options
         self.multiSelect = multiSelect
         self.required = required
+        self.allowCustom = allowCustom
     }
 }
 
-/// What the person has picked so far, by question id, in the order picked.
+/// What the person has picked so far, by question id, in the order picked,
+/// and what they have written.
 public struct InlineQuestionSelections: Equatable, Sendable {
     public var picked: [String: [Int]] = [:]
+    /// The text in each question's field, as typed.
+    public var custom: [String: String] = [:]
 
-    public init(picked: [String: [Int]] = [:]) {
+    public init(picked: [String: [Int]] = [:], custom: [String: String] = [:]) {
         self.picked = picked
+        self.custom = custom
     }
 
     /// Multiple choice toggles; single choice selects (a second tap on the
@@ -288,7 +295,26 @@ public struct InlineQuestionSelections: Equatable, Sendable {
     }
 
     public func allAnswered(_ questions: [InlineQuestion]) -> Bool {
-        questions.allSatisfy { $0.required == false || !(picked[$0.id] ?? []).isEmpty }
+        let written = written(questions)
+        return questions.allSatisfy { $0.required == false || written[$0.id] != nil || !(picked[$0.id] ?? []).isEmpty }
+    }
+
+    /// The written answers, by question id: trimmed, blank ones dropped, and
+    /// only where the question takes one.
+    public func written(_ questions: [InlineQuestion]) -> [String: String] {
+        var written: [String: String] = [:]
+        for question in questions where question.allowCustom {
+            let text = (custom[question.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty { written[question.id] = text }
+        }
+        return written
+    }
+
+    /// What the answered summary shows: the labels, then the written answer.
+    public func shown(_ questions: [InlineQuestion]) -> [String: [String]] {
+        var shown = answers(questions)
+        for (id, text) in written(questions) { shown[id, default: []].append(text) }
+        return shown
     }
 
     /// The chosen labels, by question id.
@@ -317,10 +343,29 @@ public struct InlineQuestionForm: Equatable, Sendable {
     /// Set once answered: the summary replaces the form ({} shows "—").
     public var submitted: [String: [String]]?
     public var reply: Reply?
+    /// The person closed it without answering: "Dismissed" replaces the form.
+    public var dismissed = false
+
+    /// What the agent is told when AskUserQuestion is dismissed
+    /// (AskUserQuestionView's DISMISS_REASON). The CLI's default refusal
+    /// tells it to stop and wait, which would stall the turn over a question
+    /// the person only wanted out of the way.
+    public static let dismissReason = "The user dismissed this question without answering it. Do not ask it again as-is: continue with your best judgement, or ask something more specific if you genuinely cannot proceed."
+
+    /// True while a running question call has nothing to answer through yet:
+    /// AskUserQuestion's permission, or the communication its form is in. Both
+    /// arrive in agent state, separately from the message that draws the
+    /// call, and on a live socket a lost update is not pulled again by itself.
+    public static func isWaitingForData(_ tool: ToolCall, agentState: JSONValue?) -> Bool {
+        guard tool.state == .running, ChatToolDisplay.isInteractiveQuestion(tool.name) else { return false }
+        if tool.name == "AskUserQuestion" { return tool.permission == nil }
+        return AgentCommunications.form(agentState, toolUseId: tool.callId) == nil
+    }
 
     /// AskUserQuestionView: questions from the input, all required; the
-    /// form is live while the tool runs, and a completed call shows the
-    /// summary.
+    /// form is live once the running tool's permission has arrived, since
+    /// there is nothing to answer through before then, and a completed call
+    /// shows the summary. A denied permission is a dismissed question.
     public static func askUserQuestion(_ tool: ToolCall) -> InlineQuestionForm? {
         let raw = tool.input["questions"]?.arrayValue ?? []
         let questions = raw.enumerated().map { index, question in
@@ -336,11 +381,13 @@ public struct InlineQuestionForm: Equatable, Sendable {
             )
         }
         guard !questions.isEmpty else { return nil }
+        let dismissed = tool.permission?.status == .denied
         return InlineQuestionForm(
             questions: questions,
-            canInteract: tool.state == .running,
-            submitted: tool.state == .completed ? [:] : nil,
-            reply: tool.permission.map { .permission(id: $0.id) }
+            canInteract: tool.state == .running && tool.permission != nil && !dismissed,
+            submitted: tool.state == .completed && !dismissed ? [:] : nil,
+            reply: tool.permission.map { .permission(id: $0.id) },
+            dismissed: dismissed
         )
     }
 
@@ -371,20 +418,25 @@ public struct InlineQuestionForm: Equatable, Sendable {
         }
         return InlineQuestionForm(
             questions: communication.questions.map {
-                InlineQuestion(id: $0.id, question: $0.question, header: $0.header, options: $0.options, multiSelect: $0.multiSelect, required: $0.required)
+                InlineQuestion(id: $0.id, question: $0.question, header: $0.header, options: $0.options, multiSelect: $0.multiSelect, required: $0.required, allowCustom: $0.allowCustom != false)
             },
             canInteract: tool.state == .running && communication.status == .pending,
             submitted: submitted,
-            reply: .communication(id: communication.id, kind: "form")
+            reply: .communication(id: communication.id, kind: "form"),
+            dismissed: communication.status == .cancelled
         )
     }
 
-    /// request_user_input's answers: the chosen labels, one for a single choice.
-    public static func communicationAnswers(_ questions: [InlineQuestion], answers: [String: [String]]) -> JSONValue {
+    /// request_user_input's answers: the chosen labels, one for a single
+    /// choice, and the written answer in its own field. A question with
+    /// neither is left out.
+    public static func communicationAnswers(_ questions: [InlineQuestion], answers: [String: [String]], written: [String: String] = [:]) -> JSONValue {
         var result: [String: AgentQuestionAnswer] = [:]
         for question in questions {
-            guard let selected = answers[question.id], !selected.isEmpty else { continue }
-            result[question.id] = AgentQuestionAnswer(options: question.multiSelect ? selected : Array(selected.prefix(1)))
+            let selected = answers[question.id] ?? []
+            let custom = written[question.id]
+            if selected.isEmpty && custom == nil { continue }
+            result[question.id] = AgentQuestionAnswer(options: question.multiSelect ? selected : Array(selected.prefix(1)), custom: custom)
         }
         return AgentCommunications.json(result)
     }
