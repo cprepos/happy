@@ -263,19 +263,21 @@ struct HomeRowDrawing: Sendable {
             plan.accessibilityLabel = name; plan.isHeading = true
         case .project(.project(let entry)):
             let parts = changes(entry.changes, flat: false)
-            let layout = ProjectCardLayout(.init(width: rowWidth, hairline: environment.rows.hairline, name: measured(entry.name, TextStyles.projectName), showsDot: entry.activity.blocked || entry.activity.unread, changes: entry.changes == nil ? nil : .fixed(changesSize(parts).size), showsAdd: entry.origin != nil, showsTree: entry.worktreeCount > 0))
+            let layout = ProjectCardLayout(.init(width: rowWidth, hairline: environment.rows.hairline, name: measured(entry.name, TextStyles.projectName), harness: entry.harnessName.map { measured($0, TextStyles.sessionHarness) }, showsDot: entry.activity.blocked || entry.activity.unread, changes: entry.changes == nil ? nil : .fixed(changesSize(parts).size), showsAdd: entry.origin != nil, showsTree: entry.worktreeCount > 0))
             plan.size = layout.size; plan.avatar = entry.avatar; plan.avatarFrame = layout.avatar; plan.addFrame = layout.add
             title(entry.name, style: TextStyles.projectName, frame: layout.name, working: entry.activity.working)
+            if let name = entry.harnessName, let frame = layout.harness { text(name, TextStyles.sessionHarness, Palette.textSecondary, frame) }
             fill(Palette.textSecondary, layout.stem); activity(entry.activity, frame: layout.dot)
-            drawChanges(parts, at: layout.changes); plan.accessibilityLabel = entry.name
+            drawChanges(parts, at: layout.changes); plan.accessibilityLabel = [entry.name, entry.harnessName].compactMap { $0 }.joined(separator: ", ")
         case .project(.worktree(let worktree, let last)):
             let parts = changes(worktree.changes, flat: false)
-            let layout = WorktreeRowLayout(.init(width: rowWidth, hairline: environment.rows.hairline, label: measured(worktree.title, TextStyles.worktreeName), showsDot: worktree.activity.blocked || worktree.activity.unread, changes: worktree.changes == nil ? nil : .fixed(changesSize(parts).size), last: last))
+            let layout = WorktreeRowLayout(.init(width: rowWidth, hairline: environment.rows.hairline, label: measured(worktree.title, TextStyles.worktreeName), harness: worktree.harnessName.map { measured($0, TextStyles.sessionHarness) }, showsDot: worktree.activity.blocked || worktree.activity.unread, changes: worktree.changes == nil ? nil : .fixed(changesSize(parts).size), last: last))
             plan.size = layout.size
             title(worktree.title, style: TextStyles.worktreeName, frame: layout.label, working: worktree.activity.working)
+            if let name = worktree.harnessName, let frame = layout.harness { text(name, TextStyles.sessionHarness, Palette.textSecondary, frame) }
             fill(Palette.textSecondary, layout.trunk); fill(Palette.textSecondary, layout.elbow)
             activity(worktree.activity, frame: layout.dot); drawChanges(parts, at: layout.changes)
-            plan.accessibilityLabel = worktree.title
+            plan.accessibilityLabel = [worktree.title, worktree.harnessName].compactMap { $0 }.joined(separator: ", ")
         case .project(.worktreeToggle(let toggle)):
             let value = toggle.expanded ? catalog("sidebar.showFewerWorkspaces") : catalog("sidebar.showAllWorkspaces", ["count": .number(toggle.worktreeCount)])
             let layout = WorktreeRowLayout(.init(width: rowWidth, hairline: environment.rows.hairline, label: measured(value, TextStyles.worktreeToggle), chevron: environment.rows.branchIcon, showsDot: toggle.activity.blocked || toggle.activity.unread, changes: nil, last: true))

@@ -449,7 +449,8 @@ public struct ProjectHomeData: Equatable, Sendable {
             activity: HomeActivity(ownTabs),
             live: ownTabs.contains { $0.active && !$0.machineOffline },
             changes: primary?.sessions.first?.git,
-            origin: origin
+            origin: origin,
+            harnessName: primary?.sessions.first?.row.harnessName
         ))]
 
         let shown = expanded ? worktrees : Array(worktrees.prefix(worktreePreviewCount))
@@ -462,7 +463,8 @@ public struct ProjectHomeData: Equatable, Sendable {
                 title: checkout.name ?? checkout.id,
                 sessionId: newest.row.id,
                 activity: HomeActivity(checkout.sessions),
-                changes: newest.git
+                changes: newest.git,
+                harnessName: newest.row.harnessName
             ), last: !togglable && index == shown.count - 1))
         }
         if togglable {
@@ -595,6 +597,8 @@ public struct ProjectHomeEntry: Equatable, Sendable {
     public var changes: GitLineChanges?
     /// Nil when no chat says where it runs: nowhere to create a workspace.
     public var origin: WorkspaceOrigin?
+    /// What runs the chat a tap opens; nil for a project with only worktrees.
+    public var harnessName: String? = nil
 }
 
 /// One worktree on its project's tree line.
@@ -605,6 +609,8 @@ public struct ProjectWorktree: Equatable, Sendable {
     public var sessionId: String
     public var activity: HomeActivity
     public var changes: GitLineChanges?
+    /// What runs the chat a tap opens.
+    public var harnessName: String? = nil
 }
 
 /// "Show all 7 workspaces" / "Show fewer", ending a project's worktrees.

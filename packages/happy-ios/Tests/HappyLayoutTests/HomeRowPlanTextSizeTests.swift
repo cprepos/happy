@@ -101,6 +101,8 @@ final class HomeRowPlanTextSizeTests: XCTestCase {
             ("phone.machine", MachineHeaderLayout(width: 393, icon: machine, name: text(90, line("projectMachine", TextStyles.projectMachine)))),
             ("phone.project", ProjectCardLayout(.init(width: phone, hairline: hairline, name: text(120, line("projectName", TextStyles.projectName)), showsDot: true, changes: .fixed(cardChanges), showsAdd: true, showsTree: true))),
             ("phone.worktree", WorktreeRowLayout(.init(width: phone, hairline: hairline, label: text(90, line("worktreeName", TextStyles.worktreeName)), showsDot: true, changes: .fixed(cardChanges), last: false))),
+            ("phone.project.harness", ProjectCardLayout(.init(width: phone, hairline: hairline, name: text(120, line("projectName", TextStyles.projectName)), harness: text(88, line("sessionHarness", TextStyles.sessionHarness)), showsDot: true, changes: .fixed(cardChanges), showsAdd: true, showsTree: true))),
+            ("phone.worktree.harness", WorktreeRowLayout(.init(width: phone, hairline: hairline, label: text(90, line("worktreeName", TextStyles.worktreeName)), harness: text(88, line("sessionHarness", TextStyles.sessionHarness)), showsDot: true, changes: .fixed(cardChanges), last: false))),
             ("phone.worktreeToggle", WorktreeRowLayout(.init(width: phone, hairline: hairline, label: text(140, line("worktreeToggle", TextStyles.worktreeToggle)), chevron: branch, showsDot: false, changes: nil, last: true))),
             ("phone.chat", ProjectChatRowLayout(width: phone, name: text(150, line("projectName", TextStyles.projectName)), corner: text(50, line("projectTimestamp", TextStyles.projectTimestamp)))),
         ]
@@ -158,7 +160,7 @@ final class HomeRowPlanTextSizeTests: XCTestCase {
     /// size, where their text fits with room around it, and grow past it.
     /// The rest follow their text at every size.
     static let designedUpToLarge: Set<String> = [
-        "phone.project", "phone.worktree", "phone.worktreeToggle", "phone.chat",
+        "phone.project", "phone.worktree", "phone.project.harness", "phone.worktree.harness", "phone.worktreeToggle", "phone.chat",
     ]
 
     /// From the smallest text size to the largest, every row grows with its
@@ -234,9 +236,11 @@ final class HomeRowPlanTextSizeTests: XCTestCase {
         phone.archiveToggle.banded: size 1179x141 label 424.5,72,330,45 leadingLine 72,94.005,316.5,0.99 trailingLine 790.5,94.005,316.5,0.99
         phone.archiveToggle: size 1179x141 label 424.5,60,330,45 leadingLine 72,82.005,316.5,0.99 trailingLine 790.5,82.005,316.5,0.99
         phone.machine: size 1179x121 icon 96,60,36,37 name 150,61.00000000000001,270,35
-        phone.project: size 1083x156 avatar 48,36,84,84 stem 89,120,2,36 name 168,50.50000000000001,474,55 dot 666,67.5,21,21 changes 711,55.5,216,45 add 951,30,84,96
-        phone.worktree: size 1083x144 trunk 89,0,2,144 elbow 90,71,42,2 chevron - label 168,46,582,52 dot 774,61.5,21,21 changes 819,49.5,216,45
-        phone.worktreeToggle: size 1083x144 trunk 89,0,2,72 elbow 90,71,42,2 chevron 168,52,39,40 label 222,47,420,50 dot - changes -
+        phone.project: size 1083x156 avatar 48,36,84,84 stem 89,120,2,36 name 168,50.50000000000001,474,55 harness - dot 666,67.5,21,21 changes 711,55.5,216,45 add 951,30,84,96
+        phone.worktree: size 1083x144 trunk 89,0,2,144 elbow 90,71,42,2 chevron - label 168,46,582,52 harness - dot 774,61.5,21,21 changes 819,49.5,216,45
+        phone.project.harness: size 1083x156 avatar 48,36,84,84 stem 89,120,2,36 name 168,50.50000000000001,186,55 harness 378,55.5,264,45 dot 666,67.5,21,21 changes 711,55.5,216,45 add 951,30,84,96
+        phone.worktree.harness: size 1083x144 trunk 89,0,2,144 elbow 90,71,42,2 chevron - label 168,46,294,52 harness 486,49.5,264,45 dot 774,61.5,21,21 changes 819,49.5,216,45
+        phone.worktreeToggle: size 1083x144 trunk 89,0,2,72 elbow 90,71,42,2 chevron 168,52,39,40 label 222,47,420,50 harness - dot - changes -
         phone.chat: size 1083x144 avatar 48,30,84,84 name 168,44.5,693,55 corner 885,49.5,150,45
         """,
         .small: """
@@ -251,9 +255,11 @@ final class HomeRowPlanTextSizeTests: XCTestCase {
         phone.archiveToggle.banded: size 1179x144 label 424.5,72,330,48 leadingLine 72,95.505,316.5,0.99 trailingLine 790.5,95.505,316.5,0.99
         phone.archiveToggle: size 1179x144 label 424.5,60,330,48 leadingLine 72,83.505,316.5,0.99 trailingLine 790.5,83.505,316.5,0.99
         phone.machine: size 1179x122 icon 96,60.49999999999999,36,37 name 150,60,270,38
-        phone.project: size 1083x156 avatar 48,36,84,84 stem 89,120,2,36 name 168,48.49999999999999,474,59 dot 666,67.5,21,21 changes 711,54,216,48 add 951,30,84,96
-        phone.worktree: size 1083x144 trunk 89,0,2,144 elbow 90,71,42,2 chevron - label 168,44,582,56 dot 774,61.5,21,21 changes 819,48,216,48
-        phone.worktreeToggle: size 1083x144 trunk 89,0,2,72 elbow 90,71,42,2 chevron 168,52,39,40 label 222,45.5,420,53 dot - changes -
+        phone.project: size 1083x156 avatar 48,36,84,84 stem 89,120,2,36 name 168,48.49999999999999,474,59 harness - dot 666,67.5,21,21 changes 711,54,216,48 add 951,30,84,96
+        phone.worktree: size 1083x144 trunk 89,0,2,144 elbow 90,71,42,2 chevron - label 168,44,582,56 harness - dot 774,61.5,21,21 changes 819,48,216,48
+        phone.project.harness: size 1083x156 avatar 48,36,84,84 stem 89,120,2,36 name 168,48.49999999999999,186,59 harness 378,54,264,48 dot 666,67.5,21,21 changes 711,54,216,48 add 951,30,84,96
+        phone.worktree.harness: size 1083x144 trunk 89,0,2,144 elbow 90,71,42,2 chevron - label 168,44,294,56 harness 486,48,264,48 dot 774,61.5,21,21 changes 819,48,216,48
+        phone.worktreeToggle: size 1083x144 trunk 89,0,2,72 elbow 90,71,42,2 chevron 168,52,39,40 label 222,45.5,420,53 harness - dot - changes -
         phone.chat: size 1083x144 avatar 48,30,84,84 name 168,42.5,693,59 corner 885,48,150,48
         """,
         .medium: """
@@ -268,9 +274,11 @@ final class HomeRowPlanTextSizeTests: XCTestCase {
         phone.archiveToggle.banded: size 1179x147 label 424.5,72,330,51 leadingLine 72,97.005,316.5,0.99 trailingLine 790.5,97.005,316.5,0.99
         phone.archiveToggle: size 1179x147 label 424.5,60,330,51 leadingLine 72,85.005,316.5,0.99 trailingLine 790.5,85.005,316.5,0.99
         phone.machine: size 1179x124 icon 96,61.5,36,37 name 150,60,270,40
-        phone.project: size 1083x156 avatar 48,36,84,84 stem 89,120,2,36 name 168,46.5,474,63 dot 666,67.5,21,21 changes 711,52.5,216,51 add 951,30,84,96
-        phone.worktree: size 1083x144 trunk 89,0,2,144 elbow 90,71,42,2 chevron - label 168,42,582,60 dot 774,61.5,21,21 changes 819,46.5,216,51
-        phone.worktreeToggle: size 1083x144 trunk 89,0,2,72 elbow 90,71,42,2 chevron 168,52,39,40 label 222,43.5,420,57 dot - changes -
+        phone.project: size 1083x156 avatar 48,36,84,84 stem 89,120,2,36 name 168,46.5,474,63 harness - dot 666,67.5,21,21 changes 711,52.5,216,51 add 951,30,84,96
+        phone.worktree: size 1083x144 trunk 89,0,2,144 elbow 90,71,42,2 chevron - label 168,42,582,60 harness - dot 774,61.5,21,21 changes 819,46.5,216,51
+        phone.project.harness: size 1083x156 avatar 48,36,84,84 stem 89,120,2,36 name 168,46.5,186,63 harness 378,52.5,264,51 dot 666,67.5,21,21 changes 711,52.5,216,51 add 951,30,84,96
+        phone.worktree.harness: size 1083x144 trunk 89,0,2,144 elbow 90,71,42,2 chevron - label 168,42,294,60 harness 486,46.5,264,51 dot 774,61.5,21,21 changes 819,46.5,216,51
+        phone.worktreeToggle: size 1083x144 trunk 89,0,2,72 elbow 90,71,42,2 chevron 168,52,39,40 label 222,43.5,420,57 harness - dot - changes -
         phone.chat: size 1083x144 avatar 48,30,84,84 name 168,40.5,693,63 corner 885,46.5,150,51
         """,
         .large: """
@@ -285,9 +293,11 @@ final class HomeRowPlanTextSizeTests: XCTestCase {
         phone.archiveToggle.banded: size 1179x150 label 424.5,72,330,54 leadingLine 72,98.505,316.5,0.99 trailingLine 790.5,98.505,316.5,0.99
         phone.archiveToggle: size 1179x150 label 424.5,60,330,54 leadingLine 72,86.505,316.5,0.99 trailingLine 790.5,86.505,316.5,0.99
         phone.machine: size 1179x126 icon 96,62.5,36,37 name 150,60,270,42
-        phone.project: size 1083x156 avatar 48,36,84,84 stem 89,120,2,36 name 168,45,474,66 dot 666,67.5,21,21 changes 711,51,216,54 add 951,30,84,96
-        phone.worktree: size 1083x144 trunk 89,0,2,144 elbow 90,71,42,2 chevron - label 168,40.5,582,63 dot 774,61.5,21,21 changes 819,45,216,54
-        phone.worktreeToggle: size 1083x144 trunk 89,0,2,72 elbow 90,71,42,2 chevron 168,52,39,40 label 222,42,420,60 dot - changes -
+        phone.project: size 1083x156 avatar 48,36,84,84 stem 89,120,2,36 name 168,45,474,66 harness - dot 666,67.5,21,21 changes 711,51,216,54 add 951,30,84,96
+        phone.worktree: size 1083x144 trunk 89,0,2,144 elbow 90,71,42,2 chevron - label 168,40.5,582,63 harness - dot 774,61.5,21,21 changes 819,45,216,54
+        phone.project.harness: size 1083x156 avatar 48,36,84,84 stem 89,120,2,36 name 168,45,186,66 harness 378,51,264,54 dot 666,67.5,21,21 changes 711,51,216,54 add 951,30,84,96
+        phone.worktree.harness: size 1083x144 trunk 89,0,2,144 elbow 90,71,42,2 chevron - label 168,40.5,294,63 harness 486,45,264,54 dot 774,61.5,21,21 changes 819,45,216,54
+        phone.worktreeToggle: size 1083x144 trunk 89,0,2,72 elbow 90,71,42,2 chevron 168,52,39,40 label 222,42,420,60 harness - dot - changes -
         phone.chat: size 1083x144 avatar 48,30,84,84 name 168,39,693,66 corner 885,45,150,54
         """,
         .extraLarge: """
@@ -302,9 +312,11 @@ final class HomeRowPlanTextSizeTests: XCTestCase {
         phone.archiveToggle.banded: size 1179x157 label 424.5,72,330,61 leadingLine 72,102.005,316.5,0.99 trailingLine 790.5,102.005,316.5,0.99
         phone.archiveToggle: size 1179x157 label 424.5,60,330,61 leadingLine 72,90.005,316.5,0.99 trailingLine 790.5,90.005,316.5,0.99
         phone.machine: size 1179x131 icon 96,65,36,37 name 150,60,270,47
-        phone.project: size 1083x156 avatar 48,36,84,84 stem 89,120,2,36 name 168,41,474,74 dot 666,67.5,21,21 changes 711,47.5,216,61 add 951,30,84,96
-        phone.worktree: size 1083x144 trunk 89,0,2,144 elbow 90,71,42,2 chevron - label 168,36.5,582,71 dot 774,61.5,21,21 changes 819,41.5,216,61
-        phone.worktreeToggle: size 1083x144 trunk 89,0,2,72 elbow 90,71,42,2 chevron 168,52,39,40 label 222,38,420,68 dot - changes -
+        phone.project: size 1083x156 avatar 48,36,84,84 stem 89,120,2,36 name 168,41,474,74 harness - dot 666,67.5,21,21 changes 711,47.5,216,61 add 951,30,84,96
+        phone.worktree: size 1083x144 trunk 89,0,2,144 elbow 90,71,42,2 chevron - label 168,36.5,582,71 harness - dot 774,61.5,21,21 changes 819,41.5,216,61
+        phone.project.harness: size 1083x156 avatar 48,36,84,84 stem 89,120,2,36 name 168,41,186,74 harness 378,47.5,264,61 dot 666,67.5,21,21 changes 711,47.5,216,61 add 951,30,84,96
+        phone.worktree.harness: size 1083x144 trunk 89,0,2,144 elbow 90,71,42,2 chevron - label 168,36.5,294,71 harness 486,41.5,264,61 dot 774,61.5,21,21 changes 819,41.5,216,61
+        phone.worktreeToggle: size 1083x144 trunk 89,0,2,72 elbow 90,71,42,2 chevron 168,52,39,40 label 222,38,420,68 harness - dot - changes -
         phone.chat: size 1083x146 avatar 48,31.000000000000007,84,84 name 168,36.00000000000001,693,74 corner 885,42.50000000000001,150,61
         """,
         .extraExtraLarge: """
@@ -319,9 +331,11 @@ final class HomeRowPlanTextSizeTests: XCTestCase {
         phone.archiveToggle.banded: size 1179x163 label 424.5,72,330,67 leadingLine 72,105.005,316.5,0.99 trailingLine 790.5,105.005,316.5,0.99
         phone.archiveToggle: size 1179x163 label 424.5,60,330,67 leadingLine 72,93.005,316.5,0.99 trailingLine 790.5,93.005,316.5,0.99
         phone.machine: size 1179x136 icon 96,67.49999999999999,36,37 name 150,60,270,52
-        phone.project: size 1083x156 avatar 48,36,84,84 stem 89,120,2,36 name 168,37,474,82 dot 666,67.5,21,21 changes 711,44.5,216,67 add 951,30,84,96
-        phone.worktree: size 1083x150 trunk 89,0,2,150 elbow 90,74,42,2 chevron - label 168,36,582,78 dot 774,64.5,21,21 changes 819,41.5,216,67
-        phone.worktreeToggle: size 1083x147 trunk 89,0,2,73.5 elbow 90,72.5,42,2 chevron 168,53.5,39,40 label 222,36,420,75 dot - changes -
+        phone.project: size 1083x156 avatar 48,36,84,84 stem 89,120,2,36 name 168,37,474,82 harness - dot 666,67.5,21,21 changes 711,44.5,216,67 add 951,30,84,96
+        phone.worktree: size 1083x150 trunk 89,0,2,150 elbow 90,74,42,2 chevron - label 168,36,582,78 harness - dot 774,64.5,21,21 changes 819,41.5,216,67
+        phone.project.harness: size 1083x156 avatar 48,36,84,84 stem 89,120,2,36 name 168,37,186,82 harness 378,44.5,264,67 dot 666,67.5,21,21 changes 711,44.5,216,67 add 951,30,84,96
+        phone.worktree.harness: size 1083x150 trunk 89,0,2,150 elbow 90,74,42,2 chevron - label 168,36,294,78 harness 486,41.5,264,67 dot 774,64.5,21,21 changes 819,41.5,216,67
+        phone.worktreeToggle: size 1083x147 trunk 89,0,2,73.5 elbow 90,72.5,42,2 chevron 168,53.5,39,40 label 222,36,420,75 harness - dot - changes -
         phone.chat: size 1083x154 avatar 48,34.99999999999999,84,84 name 168,35.99999999999999,693,82 corner 885,43.49999999999999,150,67
         """,
         .extraExtraExtraLarge: """
@@ -336,9 +350,11 @@ final class HomeRowPlanTextSizeTests: XCTestCase {
         phone.archiveToggle.banded: size 1179x170 label 424.5,72,330,74 leadingLine 72,108.50500000000001,316.5,0.99 trailingLine 790.5,108.50500000000001,316.5,0.99
         phone.archiveToggle: size 1179x170 label 424.5,60,330,74 leadingLine 72,96.50500000000001,316.5,0.99 trailingLine 790.5,96.50500000000001,316.5,0.99
         phone.machine: size 1179x141 icon 96,70,36,37 name 150,60,270,57
-        phone.project: size 1083x162 avatar 48,39,84,84 stem 89,123,2,39 name 168,36,474,90 dot 666,70.5,21,21 changes 711,44,216,74 add 951,33,84,96
-        phone.worktree: size 1083x158 trunk 89,0,2,158 elbow 90,78.00000000000001,42,2 chevron - label 168,36.00000000000001,582,86 dot 774,68.5,21,21 changes 819,42.00000000000001,216,74
-        phone.worktreeToggle: size 1083x154 trunk 89,0,2,77 elbow 90,76,42,2 chevron 168,56.999999999999986,39,40 label 222,35.99999999999999,420,82 dot - changes -
+        phone.project: size 1083x162 avatar 48,39,84,84 stem 89,123,2,39 name 168,36,474,90 harness - dot 666,70.5,21,21 changes 711,44,216,74 add 951,33,84,96
+        phone.worktree: size 1083x158 trunk 89,0,2,158 elbow 90,78.00000000000001,42,2 chevron - label 168,36.00000000000001,582,86 harness - dot 774,68.5,21,21 changes 819,42.00000000000001,216,74
+        phone.project.harness: size 1083x162 avatar 48,39,84,84 stem 89,123,2,39 name 168,36,186,90 harness 378,44,264,74 dot 666,70.5,21,21 changes 711,44,216,74 add 951,33,84,96
+        phone.worktree.harness: size 1083x158 trunk 89,0,2,158 elbow 90,78.00000000000001,42,2 chevron - label 168,36.00000000000001,294,86 harness 486,42.00000000000001,264,74 dot 774,68.5,21,21 changes 819,42.00000000000001,216,74
+        phone.worktreeToggle: size 1083x154 trunk 89,0,2,77 elbow 90,76,42,2 chevron 168,56.999999999999986,39,40 label 222,35.99999999999999,420,82 harness - dot - changes -
         phone.chat: size 1083x162 avatar 48,39,84,84 name 168,36,693,90 corner 885,44,150,74
         """,
         .accessibilityMedium: """
@@ -353,9 +369,11 @@ final class HomeRowPlanTextSizeTests: XCTestCase {
         phone.archiveToggle.banded: size 1179x193.00000000000003 label 424.5,72,330,97 leadingLine 72,120.00500000000002,316.5,0.99 trailingLine 790.5,120.00500000000002,316.5,0.99
         phone.archiveToggle: size 1179x193.00000000000003 label 424.5,60,330,97 leadingLine 72,108.00500000000002,316.5,0.99 trailingLine 790.5,108.00500000000002,316.5,0.99
         phone.machine: size 1179x160 icon 96,79.49999999999999,36,37 name 150,60,270,76
-        phone.project: size 1083x190 avatar 48,53,84,84 stem 89,137,2,52.99999999999999 name 168,36,474,118 dot 666,84.5,21,21 changes 711,46.5,216,97 add 951,47,84,96
-        phone.worktree: size 1083x185 trunk 89,0,2,185 elbow 90,91.5,42,2 chevron - label 168,36,582,113 dot 774,82,21,21 changes 819,43.99999999999999,216,97
-        phone.worktreeToggle: size 1083x180 trunk 89,0,2,90 elbow 90,89,42,2 chevron 168,70,39,40 label 222,36,420,108 dot - changes -
+        phone.project: size 1083x190 avatar 48,53,84,84 stem 89,137,2,52.99999999999999 name 168,36,474,118 harness - dot 666,84.5,21,21 changes 711,46.5,216,97 add 951,47,84,96
+        phone.worktree: size 1083x185 trunk 89,0,2,185 elbow 90,91.5,42,2 chevron - label 168,36,582,113 harness - dot 774,82,21,21 changes 819,43.99999999999999,216,97
+        phone.project.harness: size 1083x287 avatar 48,101.5,84,84 stem 89,185.5,2,101.5 name 168,36,474,118 harness 168,154,264,97 dot 666,133,21,21 changes 711,95,216,97 add 951,95.5,84,96
+        phone.worktree.harness: size 1083x185 trunk 89,0,2,185 elbow 90,91.5,42,2 chevron - label 168,36,294,113 harness 486,43.99999999999999,264,97 dot 774,82,21,21 changes 819,43.99999999999999,216,97
+        phone.worktreeToggle: size 1083x180 trunk 89,0,2,90 elbow 90,89,42,2 chevron 168,70,39,40 label 222,36,420,108 harness - dot - changes -
         phone.chat: size 1083x190 avatar 48,53,84,84 name 168,36,693,118 corner 885,46.5,150,97
         """,
         .accessibilityLarge: """
@@ -370,9 +388,11 @@ final class HomeRowPlanTextSizeTests: XCTestCase {
         phone.archiveToggle.banded: size 1179x211.99999999999997 label 424.5,72,330,116 leadingLine 72,129.505,316.5,0.99 trailingLine 790.5,129.505,316.5,0.99
         phone.archiveToggle: size 1179x211.99999999999997 label 424.5,60,330,116 leadingLine 72,117.505,316.5,0.99 trailingLine 790.5,117.505,316.5,0.99
         phone.machine: size 1179x175 icon 96,86.99999999999999,36,37 name 150,60,270,91
-        phone.project: size 1083x214.00000000000003 avatar 48,65.00000000000001,84,84 stem 89,149,2,65.00000000000001 name 168,36.000000000000014,474,142 dot 666,96.50000000000001,21,21 changes 711,49.000000000000014,216,116 add 951,59.000000000000014,84,96
-        phone.worktree: size 1083x208.00000000000003 trunk 89,0,2,208.00000000000003 elbow 90,103,42,2 chevron - label 168,36.000000000000014,582,136 dot 774,93.50000000000001,21,21 changes 819,46.000000000000014,216,116
-        phone.worktreeToggle: size 1083x201 trunk 89,0,2,100.5 elbow 90,99.5,42,2 chevron 168,80.5,39,40 label 222,36,420,129 dot - changes -
+        phone.project: size 1083x214.00000000000003 avatar 48,65.00000000000001,84,84 stem 89,149,2,65.00000000000001 name 168,36.000000000000014,474,142 harness - dot 666,96.50000000000001,21,21 changes 711,49.000000000000014,216,116 add 951,59.000000000000014,84,96
+        phone.worktree: size 1083x208.00000000000003 trunk 89,0,2,208.00000000000003 elbow 90,103,42,2 chevron - label 168,36.000000000000014,582,136 harness - dot 774,93.50000000000001,21,21 changes 819,46.000000000000014,216,116
+        phone.project.harness: size 1083x330 avatar 48,123,84,84 stem 89,207,2,123 name 168,36,474,142 harness 168,178,264,116 dot 666,154.5,21,21 changes 711,107.00000000000001,216,116 add 951,117,84,96
+        phone.worktree.harness: size 1083x208.00000000000003 trunk 89,0,2,208.00000000000003 elbow 90,103,42,2 chevron - label 168,36.000000000000014,294,136 harness 486,46.000000000000014,264,116 dot 774,93.50000000000001,21,21 changes 819,46.000000000000014,216,116
+        phone.worktreeToggle: size 1083x201 trunk 89,0,2,100.5 elbow 90,99.5,42,2 chevron 168,80.5,39,40 label 222,36,420,129 harness - dot - changes -
         phone.chat: size 1083x214.00000000000003 avatar 48,65.00000000000001,84,84 name 168,36.000000000000014,693,142 corner 885,49.000000000000014,150,116
         """,
         .accessibilityExtraLarge: """
@@ -387,9 +407,11 @@ final class HomeRowPlanTextSizeTests: XCTestCase {
         phone.archiveToggle.banded: size 1179x238.99999999999997 label 424.5,72,330,143 leadingLine 72,143.005,316.5,0.99 trailingLine 790.5,143.005,316.5,0.99
         phone.archiveToggle: size 1179x238.99999999999997 label 424.5,60,330,143 leadingLine 72,131.005,316.5,0.99 trailingLine 790.5,131.005,316.5,0.99
         phone.machine: size 1179x196.00000000000003 icon 96,97.50000000000003,36,37 name 150,60.000000000000014,270,112
-        phone.project: size 1083x247.00000000000003 avatar 48,81.50000000000001,84,84 stem 89,165.5,2,81.50000000000001 name 168,36.000000000000014,474,175 dot 666,113.00000000000001,21,21 changes 711,52.000000000000014,216,143 add 951,75.50000000000001,84,96
-        phone.worktree: size 1083x238.99999999999997 trunk 89,0,2,238.99999999999997 elbow 90,118.49999999999997,42,2 chevron - label 168,35.999999999999986,582,167 dot 774,108.99999999999999,21,21 changes 819,47.999999999999986,216,143
-        phone.worktreeToggle: size 1083x231 trunk 89,0,2,115.5 elbow 90,114.5,42,2 chevron 168,95.5,39,40 label 222,36,420,159 dot - changes -
+        phone.project: size 1083x247.00000000000003 avatar 48,81.50000000000001,84,84 stem 89,165.5,2,81.50000000000001 name 168,36.000000000000014,474,175 harness - dot 666,113.00000000000001,21,21 changes 711,52.000000000000014,216,143 add 951,75.50000000000001,84,96
+        phone.worktree: size 1083x238.99999999999997 trunk 89,0,2,238.99999999999997 elbow 90,118.49999999999997,42,2 chevron - label 168,35.999999999999986,582,167 harness - dot 774,108.99999999999999,21,21 changes 819,47.999999999999986,216,143
+        phone.project.harness: size 1083x390 avatar 48,153,84,84 stem 89,237,2,153 name 168,36,474,175 harness 168,211.00000000000003,264,143 dot 666,184.5,21,21 changes 711,123.50000000000001,216,143 add 951,147,84,96
+        phone.worktree.harness: size 1083x238.99999999999997 trunk 89,0,2,238.99999999999997 elbow 90,118.49999999999997,42,2 chevron - label 168,35.999999999999986,294,167 harness 486,47.999999999999986,264,143 dot 774,108.99999999999999,21,21 changes 819,47.999999999999986,216,143
+        phone.worktreeToggle: size 1083x231 trunk 89,0,2,115.5 elbow 90,114.5,42,2 chevron 168,95.5,39,40 label 222,36,420,159 harness - dot - changes -
         phone.chat: size 1083x247.00000000000003 avatar 48,81.50000000000001,84,84 name 168,36.000000000000014,693,175 corner 885,52.000000000000014,150,143
         """,
         .accessibilityExtraExtraLarge: """
@@ -404,9 +426,11 @@ final class HomeRowPlanTextSizeTests: XCTestCase {
         phone.archiveToggle.banded: size 1179x266 label 424.5,72,330,170 leadingLine 72,156.505,316.5,0.99 trailingLine 790.5,156.505,316.5,0.99
         phone.archiveToggle: size 1179x266 label 424.5,60,330,170 leadingLine 72,144.505,316.5,0.99 trailingLine 790.5,144.505,316.5,0.99
         phone.machine: size 1179x217.00000000000003 icon 96,108.00000000000003,36,37 name 150,60.000000000000014,270,133
-        phone.project: size 1083x280 avatar 48,98,84,84 stem 89,182,2,98 name 168,36,474,208 dot 666,129.5,21,21 changes 711,55,216,170 add 951,92,84,96
-        phone.worktree: size 1083x271 trunk 89,0,2,271 elbow 90,134.5,42,2 chevron - label 168,36,582,199 dot 774,125,21,21 changes 819,50.5,216,170
-        phone.worktreeToggle: size 1083x261 trunk 89,0,2,130.5 elbow 90,129.5,42,2 chevron 168,110.5,39,40 label 222,36,420,189 dot - changes -
+        phone.project: size 1083x280 avatar 48,98,84,84 stem 89,182,2,98 name 168,36,474,208 harness - dot 666,129.5,21,21 changes 711,55,216,170 add 951,92,84,96
+        phone.worktree: size 1083x271 trunk 89,0,2,271 elbow 90,134.5,42,2 chevron - label 168,36,582,199 harness - dot 774,125,21,21 changes 819,50.5,216,170
+        phone.project.harness: size 1083x450 avatar 48,183,84,84 stem 89,267,2,183 name 168,36,474,208 harness 168,244,264,170 dot 666,214.5,21,21 changes 711,140,216,170 add 951,177,84,96
+        phone.worktree.harness: size 1083x271 trunk 89,0,2,271 elbow 90,134.5,42,2 chevron - label 168,36,294,199 harness 486,50.5,264,170 dot 774,125,21,21 changes 819,50.5,216,170
+        phone.worktreeToggle: size 1083x261 trunk 89,0,2,130.5 elbow 90,129.5,42,2 chevron 168,110.5,39,40 label 222,36,420,189 harness - dot - changes -
         phone.chat: size 1083x280 avatar 48,98,84,84 name 168,36,693,208 corner 885,55,150,170
         """,
         .accessibilityExtraExtraExtraLarge: """
@@ -421,9 +445,11 @@ final class HomeRowPlanTextSizeTests: XCTestCase {
         phone.archiveToggle.banded: size 1179x289 label 424.5,72,330,193 leadingLine 72,168.005,316.5,0.99 trailingLine 790.5,168.005,316.5,0.99
         phone.archiveToggle: size 1179x289 label 424.5,60,330,193 leadingLine 72,156.005,316.5,0.99 trailingLine 790.5,156.005,316.5,0.99
         phone.machine: size 1179x234 icon 96,116.5,36,37 name 150,60,270,150
-        phone.project: size 1083x308 avatar 48,112,84,84 stem 89,196.00000000000003,2,111.99999999999999 name 168,36,474,236 dot 666,143.5,21,21 changes 711,57.500000000000014,216,193 add 951,106,84,96
-        phone.worktree: size 1083x297 trunk 89,0,2,297 elbow 90,147.5,42,2 chevron - label 168,36,582,225 dot 774,138,21,21 changes 819,52.00000000000001,216,193
-        phone.worktreeToggle: size 1083x287 trunk 89,0,2,143.5 elbow 90,142.5,42,2 chevron 168,123.50000000000001,39,40 label 222,36,420,215 dot - changes -
+        phone.project: size 1083x308 avatar 48,112,84,84 stem 89,196.00000000000003,2,111.99999999999999 name 168,36,474,236 harness - dot 666,143.5,21,21 changes 711,57.500000000000014,216,193 add 951,106,84,96
+        phone.worktree: size 1083x297 trunk 89,0,2,297 elbow 90,147.5,42,2 chevron - label 168,36,582,225 harness - dot 774,138,21,21 changes 819,52.00000000000001,216,193
+        phone.project.harness: size 1083x501 avatar 48,208.5,84,84 stem 89,292.5,2,208.5 name 168,36,474,236 harness 168,272,264,193 dot 666,240,21,21 changes 711,154,216,193 add 951,202.5,84,96
+        phone.worktree.harness: size 1083x297 trunk 89,0,2,297 elbow 90,147.5,42,2 chevron - label 168,36,294,225 harness 486,52.00000000000001,264,193 dot 774,138,21,21 changes 819,52.00000000000001,216,193
+        phone.worktreeToggle: size 1083x287 trunk 89,0,2,143.5 elbow 90,142.5,42,2 chevron 168,123.50000000000001,39,40 label 222,36,420,215 harness - dot - changes -
         phone.chat: size 1083x308 avatar 48,112,84,84 name 168,36,693,236 corner 885,57.500000000000014,150,193
         """,
     ]
