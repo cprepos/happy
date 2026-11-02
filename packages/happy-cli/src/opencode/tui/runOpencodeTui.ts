@@ -247,6 +247,11 @@ export async function runOpencodeTui(opts: {
     if (opts.resumeSessionId) {
         const owner = findLiveOwner(stateDir, opts.resumeSessionId);
         if (owner) {
+            // Headless has no terminal to attach a TUI to, and this session
+            // already has an owner serving the app.
+            if (opts.headless) {
+                throw new Error(`OpenCode session ${opts.resumeSessionId} is already running (pid ${owner.ownerPid}). Use --restart to replace it.`);
+            }
             await attachToRunningSession(opts.bin, owner, stateDir);
             return;
         }
