@@ -24,12 +24,13 @@
 
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { z } from 'zod';
 
 import { ApiClient } from '@/api/api';
 import type { Metadata } from '@/api/types';
 import { encodeBase64 } from '@/api/encryption';
+import { createDesktopTitleReader } from '@/claude/utils/desktopTitle';
 import { configuration } from '@/configuration';
 import { notifyDaemonSessionStarted } from '@/daemon/controlClient';
 import { initialMachineMetadata } from '@/daemon/run';
@@ -102,6 +103,8 @@ export function reduceDesktopEvents(status: DesktopStatus, events: DesktopEvent[
 const EVENTS_WAIT_MS = 25_000;
 const KEEP_ALIVE_INTERVAL_MS = 2_000;
 const HOST_PID_POLL_MS = 2_000;
+/** How often the desktop's title for the session is re-read. */
+const TITLE_POLL_MS = 5_000;
 const DAEMON_RETRY_MS = 3_000;
 
 /** One request to the daemon's control server, which listens on 127.0.0.1:httpPort. Throws on failure. */
@@ -248,6 +251,26 @@ export async function runClaudeDesktopAttach(credentials: Credentials, options: 
     });
     await scanner.onNewSession(claudeSessionId);
 
+    // The session's title is the one the desktop shows. With no title from
+    // the desktop yet, whatever title the session already has stays.
+    const titles = createDesktopTitleReader({ claudeSessionId, transcriptPath: options.transcriptPath });
+    let titleChain = Promise.resolve();
+    const syncTitle = () => {
+        titleChain = titleChain.then(async () => {
+            try {
+                const title = await titles.read();
+                if (!title) return;
+                session.updateMetadata((current) => current.summary?.text === title
+                    ? current
+                    : { ...current, summary: { text: title, updatedAt: Date.now() } });
+            } catch (error) {
+                logger.debug('[ATTACH] Failed to read the desktop title', error);
+            }
+        });
+    };
+    syncTitle();
+    const titleInterval = setInterval(syncTitle, TITLE_POLL_MS);
+
     // Phone → desktop. The daemon queues the message until the plugin's
     // rewake hook takes it; the echo matcher drops it when it comes back.
     session.onUserMessage(async (message) => {
@@ -274,6 +297,7 @@ export async function runClaudeDesktopAttach(credentials: Credentials, options: 
         stopping = true;
         logger.debug(`[ATTACH] Cleaning up (archive=${opts.archive}): ${opts.reason}`);
         clearInterval(keepAliveInterval);
+        clearInterval(titleInterval);
         if (hostPidInterval) clearInterval(hostPidInterval);
         try {
             if (opts.archive) {
@@ -344,6 +368,8 @@ export async function runClaudeDesktopAttach(credentials: Credentials, options: 
                     claudeSessionId = event.claudeSessionId;
                     session.updateMetadata((current) => ({ ...current, claudeSessionId: event.claudeSessionId }));
                     await scanner.onNewSession(claudeSessionId);
+                    titles.repoint(claudeSessionId, join(dirname(options.transcriptPath), `${claudeSessionId}.jsonl`));
+                    syncTitle();
                 }
                 if (event.type === 'delivered') {
                     logger.debug(`[ATTACH] Phone message ${event.localId ?? '(no localId)'} delivered to the desktop`);
