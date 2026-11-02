@@ -21,6 +21,8 @@ import { handleInvertedChatWheel } from '@/utils/invertedChatWheel';
 import { DiffSyntaxCell, SyntaxViewport, SYNTAX_VIEWABILITY } from './diff/syntax/viewport';
 import { RoundButton } from './RoundButton';
 import { t } from '@/text';
+import { sessionDesktopLoadHistory } from '@/sync/ops';
+import { desktopHistoryButtonState, type DesktopHistoryButtonState, type DesktopHistoryRequestState } from '@/utils/desktopHistory';
 
 const SCROLL_THRESHOLD = 300;
 const DOCK_DETAILS_SHOW_OFFSET = 16;
@@ -215,8 +217,20 @@ export const ChatList = React.memo((props: {
  *
  * The status slot is always mounted at a fixed height. It sits beyond every
  * row, so a height change here moves the whole conversation.
+ *
+ * Once the server has no older page, a Claude Desktop chat with transcript
+ * history still on the desktop shows Load previous history in the same slot
+ * (spinner while it runs, Retry after a failure). The server status takes the
+ * slot first; the two cannot both apply, as one needs older pages and the
+ * other needs none.
  */
-const OlderEnd = React.memo((props: { status: 'idle' | 'loading' | 'error' | 'load-more'; onAction: () => void; topContentInset?: number }) => {
+const OlderEnd = React.memo((props: {
+    status: 'idle' | 'loading' | 'error' | 'load-more';
+    onAction: () => void;
+    desktopHistory: DesktopHistoryButtonState;
+    onLoadDesktopHistory: () => void;
+    topContentInset?: number;
+}) => {
     const headerHeight = useHeaderHeight();
     const safeArea = useSafeAreaInsets();
     return (
@@ -226,6 +240,9 @@ const OlderEnd = React.memo((props: { status: 'idle' | 'loading' | 'error' | 'lo
                 {props.status === 'loading' && <ActivityIndicator size="small" />}
                 {props.status === 'error' && <RoundButton size="small" display="inverted" title={t('common.retry')} onPress={props.onAction} />}
                 {props.status === 'load-more' && <RoundButton size="small" display="inverted" title={t('common.loadMore')} onPress={props.onAction} />}
+                {props.status === 'idle' && props.desktopHistory === 'loading' && <ActivityIndicator size="small" />}
+                {props.status === 'idle' && props.desktopHistory === 'failed' && <RoundButton size="small" display="inverted" title={t('common.retry')} onPress={props.onLoadDesktopHistory} />}
+                {props.status === 'idle' && props.desktopHistory === 'ready' && <RoundButton size="small" display="inverted" title={t('common.loadPreviousHistory')} onPress={props.onLoadDesktopHistory} />}
             </View>
         </View>
     );
@@ -779,6 +796,32 @@ const ChatListInternal = React.memo((props: {
         : olderBlocked === 'limit' && props.hasMoreOlder ? 'load-more'
         : props.isLoadingOlder && windowedMessages.length >= messages.length ? 'loading' : 'idle';
 
+    // Claude Desktop history still on the desktop, offered once the server
+    // has no older page and every stored message is rendered. Loaded messages
+    // arrive through normal sync and sort above by their transcript times;
+    // `metadata.desktopHistory.before` drops as they do, hiding the button at 0.
+    const [desktopHistoryRequest, setDesktopHistoryRequest] = React.useState<{ sessionId: string; state: DesktopHistoryRequestState }>(
+        () => ({ sessionId, state: 'idle' }),
+    );
+    const desktopHistoryRequestState = desktopHistoryRequest.sessionId === sessionId ? desktopHistoryRequest.state : 'idle';
+    const desktopHistory = desktopHistoryButtonState({
+        metadata: props.metadata,
+        reachedOldest: !props.hasMoreOlder && !props.isLoadingOlder && windowedMessages.length >= messages.length,
+        request: desktopHistoryRequestState,
+    });
+    const desktopHistoryLoadingRef = React.useRef(false);
+    const loadDesktopHistory = useCallback(() => {
+        if (desktopHistoryLoadingRef.current) return;
+        desktopHistoryLoadingRef.current = true;
+        setDesktopHistoryRequest({ sessionId, state: 'loading' });
+        sessionDesktopLoadHistory(sessionId).then(
+            () => setDesktopHistoryRequest({ sessionId, state: 'idle' }),
+            () => setDesktopHistoryRequest({ sessionId, state: 'failed' }),
+        ).finally(() => {
+            desktopHistoryLoadingRef.current = false;
+        });
+    }, [sessionId]);
+
     // FlashList lacks React Native Web FlatList's inverted-wheel correction.
     // Keep the mobile coordinate system, correcting only web chat gestures.
     React.useEffect(() => {
@@ -831,6 +874,8 @@ const ChatListInternal = React.memo((props: {
                         // shows, and a failure shows only while it applies.
                         status={olderStatus}
                         onAction={olderStatus === 'load-more' ? loadMoreOlder : retryOlder}
+                        desktopHistory={desktopHistory}
+                        onLoadDesktopHistory={loadDesktopHistory}
                         topContentInset={props.topContentInset}
                     />
                 )}
