@@ -40,6 +40,7 @@ from .context import (
 from .names import persona_for
 from .nemotron_stt import NemotronSTT
 from .prompt import (
+    INTERRUPTED_MARKER,
     PERMISSION_SCHEMA,
     READ_ALOUD_SCHEMA,
     SEND_MESSAGE_SCHEMA,
@@ -94,6 +95,19 @@ def read_aloud_note(handle: Any, chars: int) -> str | None:
         f"Your readAloud stopped after {played} of {chars} characters because the user spoke. "
         "Answer them, and offer to continue from where it stopped."
     )
+
+
+def _count_marked(chat_ctx: llm.ChatContext) -> int:
+    """Assistant messages in `chat_ctx` whose text ends with INTERRUPTED_MARKER."""
+    marker = INTERRUPTED_MARKER.strip()
+    count = 0
+    for item in chat_ctx.items:
+        if not isinstance(item, llm.ChatMessage) or item.role != "assistant":
+            continue
+        last = next((c for c in reversed(item.content) if isinstance(c, str)), None)
+        if last is not None and last.rstrip().endswith(marker):
+            count += 1
+    return count
 
 
 def _number(value: Any) -> float | None:
@@ -274,6 +288,10 @@ class HappyAssistant(Agent):
             # (same tokens over more characters), and the cap overshoot more each time.
             # The tools go with it: their schemas are part of the prompt the usage counts.
             compactor.note_request(request, tools)
+        # The marker is added only on the way out (context.mark_interrupted), so this is the
+        # one place a call's logs can show the model was told a reply was cut off.
+        if marked := _count_marked(request):
+            logger.info("llm request: %d items, %d interrupted replies marked", len(request.items), marked)
         return request
 
     async def llm_node(self, chat_ctx, tools, model_settings):  # type: ignore[override]

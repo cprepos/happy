@@ -1461,6 +1461,34 @@ def test_llm_node_request_is_byte_identical_when_off_or_below_the_trigger() -> N
             assert agent.compactor._task is None
 
 
+def test_request_logs_interrupted_replies_marked(caplog) -> None:
+    import logging
+
+    ctx = llm.ChatContext.empty()
+    ctx.add_message(role="system", content="instructions")
+    ctx.add_message(role="user", content="how far did it drop?")
+    ctx.add_message(role="assistant", content="It dropped from about 33", interrupted=True)
+    ctx.add_message(role="user", content="and now?")
+    ctx.add_message(role="assistant", content="", interrupted=True)  # nothing played: not marked
+    ctx.add_message(role="user", content="go on")
+    agent = _assistant(_compaction_settings(), ctx, compactor=True)
+    with caplog.at_level(logging.INFO, logger="happy-voice"):
+        (sent,) = _run_llm_node(agent, ctx)
+    assert f"llm request: {len(sent.items)} items, 1 interrupted replies marked" in caplog.text
+
+
+def test_request_logs_nothing_when_no_reply_is_marked(caplog) -> None:
+    import logging
+
+    ctx = _history(6)
+    for has_compactor in (False, True):
+        caplog.clear()
+        agent = _assistant(_compaction_settings(), ctx, compactor=has_compactor)
+        with caplog.at_level(logging.INFO, logger="happy-voice"):
+            _run_llm_node(agent, ctx)
+        assert "interrupted replies marked" not in caplog.text
+
+
 def test_backstop_trims_only_the_request_copy() -> None:
     ctx = _history(40)
     settings = _compaction_settings(
