@@ -29,6 +29,7 @@ from livekit.agents.voice.agent_session import SessionConnectOptions
 from livekit.agents import tts as tts_mod
 from livekit.plugins import openai, silero
 
+from .compaction import Compactor, cap_request
 from .config import Settings
 from .context import (
     RecentUpdates,
@@ -46,7 +47,7 @@ from .prompt import (
 )
 from .tts_trim import trim_leading_artifact
 from .voices import fetch_known_voices, resolve_tts
-from .warmup import PrefixWarmer
+from .warmup import WARMUP_PLACEHOLDER, PrefixWarmer
 
 logger = logging.getLogger("happy-voice")
 
@@ -56,7 +57,6 @@ TOPIC_TEXT = "happy.text"
 # bridging its audio) drops agent speech it has buffered but not played.
 TOPIC_INTERRUPTED = "happy.interrupted"
 RPC_GET_CONFIG = "happy.getConfig"
-WARMUP_PLACEHOLDER = "(warm-up)"
 # Longest a context update waits for the exchange to go quiet before being applied anyway (s).
 CONTEXT_DEFER_MAX = 10.0
 
@@ -119,6 +119,20 @@ def _make_llm(settings: Settings) -> openai.LLM:
         temperature=settings.llm_temperature,
         parallel_tool_calls=False,
         max_completion_tokens=settings.llm_max_tokens,
+        extra_body=settings.llm_extra_body,
+    )
+
+
+def _make_summarizer_llm(settings: Settings) -> openai.LLM:
+    """The compaction summarizer's own client: same model and request shape as a turn (so the
+    prefix cache applies), room for a summary, and none of the session's metrics or speech."""
+    return openai.LLM(
+        base_url=settings.llm_base_url,
+        api_key=settings.llm_api_key,
+        model=settings.llm_model,
+        temperature=settings.llm_temperature,
+        parallel_tool_calls=False,
+        max_completion_tokens=settings.compact_summary_tokens,
         extra_body=settings.llm_extra_body,
     )
 
@@ -194,6 +208,16 @@ class HappyAssistant(Agent):
         self._state = state
         self._settings = settings
         self.warmer: PrefixWarmer | None = None
+        self.compactor: Compactor | None = None
+
+    def _request_ctx(self, chat_ctx: llm.ChatContext) -> llm.ChatContext:
+        request = fold_system_messages(chat_ctx)
+        compactor = self.compactor
+        if compactor is not None:
+            compactor.note_request(request)
+            # the same object back unless it is over the cap; the history is never touched
+            request = cap_request(request, self._settings.context_hard_cap, compactor.estimator)
+        return request
 
     async def llm_node(self, chat_ctx, tools, model_settings):  # type: ignore[override]
         warmer = self.warmer
@@ -203,7 +227,7 @@ class HappyAssistant(Agent):
             t0 = time.monotonic()
             first = True
             async for chunk in Agent.default.llm_node(
-                self, fold_system_messages(chat_ctx), tools, model_settings
+                self, self._request_ctx(chat_ctx), tools, model_settings
             ):
                 if first:
                     waited = time.monotonic() - t0
@@ -500,7 +524,15 @@ async def entrypoint(ctx: JobContext) -> None:
                 m.transcription_delay * 1000,
             )
         elif isinstance(m, metrics.LLMMetrics):
-            logger.info("llm: ttft=%.0fms total=%.0fms", m.ttft * 1000, m.duration * 1000)
+            logger.info(
+                "llm: ttft=%.0fms total=%.0fms prompt=%d cached=%d",
+                m.ttft * 1000,
+                m.duration * 1000,
+                m.prompt_tokens,
+                m.prompt_cached_tokens,
+            )
+            if agent.compactor is not None and not m.cancelled:
+                agent.compactor.on_llm_usage(m.prompt_tokens, m.prompt_cached_tokens)
         elif isinstance(m, metrics.TTSMetrics):
             logger.info("tts: ttfb=%.0fms", m.ttfb * 1000)
 
@@ -585,6 +617,32 @@ async def entrypoint(ctx: JobContext) -> None:
     session.on("user_state_changed", _recheck_quiet)
     session.on("agent_state_changed", _recheck_quiet)
 
+    # Summarizes the old part of a long call in the background; see happy_voice/compaction.py.
+    # Shares the context updates' lock and quiet window, and the warm-ups' turn bookkeeping.
+    agent.compactor = Compactor(
+        agent=lambda: session.current_agent,
+        summarizer=_make_summarizer_llm(settings),
+        warm=warmer.warm,
+        lock=lock,
+        quiet=quiet,
+        trigger=settings.compact_trigger,
+        keep=settings.compact_keep,
+        summary_tokens=settings.compact_summary_tokens,
+        enabled=settings.compaction,
+        turn_idle=warmer.wait_idle,
+        on_swapped=warmer.schedule,
+        timeout=max(settings.llm_timeout, 120.0),
+        conn_options=llm_conn_options(settings),
+    )
+    logger.info(
+        "compaction %s: trigger=%d keep=%d summary<=%d; backstop at %d tokens",
+        "on" if settings.compaction else "off",
+        settings.compact_trigger,
+        settings.compact_keep,
+        settings.compact_summary_tokens,
+        settings.context_hard_cap,
+    )
+
     async def handle_inbox() -> None:
         while True:
             topic, text = await inbox.get()
@@ -623,6 +681,8 @@ async def entrypoint(ctx: JobContext) -> None:
 
     async def _cleanup(reason: str = "") -> None:
         inbox_task.cancel()
+        if agent.compactor is not None:
+            await agent.compactor.aclose()
         await warmer.aclose()
 
     ctx.add_shutdown_callback(_cleanup)
