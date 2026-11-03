@@ -42,8 +42,8 @@ public struct SessionQuickActions: Equatable, Sendable {
 
         public init(session: SessionRecord, machine: MachineRecord?) {
             let metadata = session.metadata
-            if session.isRig || metadata?["capabilities"]?["resume"]?.boolValue == false
-                || ClaudeDesktopHarness.isSession(metadata) {
+            // A Claude Desktop chat resumes by reopening in the desktop app.
+            if session.isRig || metadata?["capabilities"]?["resume"]?.boolValue == false {
                 self = .hidden
                 return
             }

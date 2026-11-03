@@ -236,7 +236,8 @@ public enum SessionDetails {
     public static func resumeAvailability(_ session: SessionRecord, machine: MachineRecord?) -> ResumeAvailability {
         let metadata = session.metadata
         if session.isRig || metadata?["capabilities"]?["resume"]?.boolValue == false { return .hidden }
-        if ClaudeDesktopHarness.isSession(metadata) { return .hidden }
+        // A Claude Desktop chat resumes too: the daemon asks the desktop app
+        // to reopen it, and its mirror brings this same session back.
         if SessionState(session) != .disconnected { return .hidden }
         guard truthy(metadata?["machineId"]) != nil else { return .missingMachine }
         let backendIds = ["claudeSessionId", "codexThreadId", "agyConversationId", OpencodeHarness.resumeIdField]

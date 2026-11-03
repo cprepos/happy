@@ -175,13 +175,15 @@ final class ClaudeDesktopHarnessTests: XCTestCase {
         XCTAssertEqual(claudeModel.metadata?.processId, "4242")
     }
 
-    func testNoResume() {
+    /// An archived desktop chat resumes from the app: the daemon reopens it
+    /// in Claude Desktop. There is still no terminal command to copy.
+    func testResumesThroughTheDesktopButHasNoTerminalCommand() {
         let resumable = machine("m1", extra: ["resumeSupport": .object(["rpcAvailable": .bool(true)])])
         XCTAssertNil(SessionDetails.resumeCommand(.object(desktop)))
-        XCTAssertEqual(SessionDetails.resumeAvailability(session(desktop), machine: resumable), .hidden)
+        XCTAssertEqual(SessionDetails.resumeAvailability(session(desktop), machine: resumable), .available)
         let resume = SessionQuickActions.Resume(session: session(desktop), machine: resumable)
-        XCTAssertFalse(resume.canResume)
-        XCTAssertFalse(resume.canShowResume)
+        XCTAssertTrue(resume.canResume)
+        XCTAssertTrue(resume.canShowResume)
         // The same session without the harness field resumes as Claude Code.
         var claude = desktop
         claude.removeValue(forKey: "harness")
