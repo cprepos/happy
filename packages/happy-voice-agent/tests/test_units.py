@@ -336,16 +336,22 @@ class _FakeStream:
             raise StopAsyncIteration
         self._left -= 1
         self._owner.chunks_read += 1
-        return object()
+        if self._owner.text is None:
+            return object()
+        # a text reply, streamed as `.delta.content` pieces like a real LLMStream
+        piece = self._owner.text[len(self._owner.text) - self._left - 1]
+        return llm.ChatChunk(id="c", delta=llm.ChoiceDelta(role="assistant", content=piece))
 
     async def aclose(self) -> None:
         self._owner.closed_streams += 1
 
 
 class _FakeLLM:
-    def __init__(self, delay: float = 0.0, fail: bool = False) -> None:
+    def __init__(self, delay: float = 0.0, fail: bool = False, text: str | None = None) -> None:
         self.delay = delay
         self.fail = fail
+        # when set, the stream yields this text one character per chunk
+        self.text = text
         self.requests: list[tuple[object, object]] = []
         self.kwargs: list[dict] = []
         self.chunks_read = 0
@@ -355,7 +361,7 @@ class _FakeLLM:
     def chat(self, *, chat_ctx, tools, **kwargs):
         self.requests.append((chat_ctx, tools))
         self.kwargs.append(kwargs)
-        return _FakeStream(self, chunks=50)
+        return _FakeStream(self, chunks=50 if self.text is None else len(self.text))
 
     async def aclose(self) -> None:
         self.closed = True
@@ -876,6 +882,623 @@ def test_the_scan_is_the_same_over_arbitrary_chunk_boundaries() -> None:
         if scanner.cut_offset() is not None:
             break
     assert scanner.cut_offset() == find_speech_onset(pcm, sample_rate=24000)
+
+
+# --- history compaction (happy_voice/compaction.py) ------------------------------------------
+
+_COMPACTION_ENV = (
+    "VOICE_COMPACTION",
+    "VOICE_COMPACT_TRIGGER",
+    "VOICE_COMPACT_KEEP",
+    "VOICE_CONTEXT_HARD_CAP",
+    "VOICE_COMPACT_SUMMARY_TOKENS",
+)
+
+
+def _compaction_settings(**env: str) -> Settings:
+    saved = {k: os.environ.pop(k, None) for k in _COMPACTION_ENV}
+    try:
+        os.environ.update(env)
+        return Settings()
+    finally:
+        for k in _COMPACTION_ENV:
+            os.environ.pop(k, None)
+            if saved[k] is not None:
+                os.environ[k] = saved[k]
+
+
+def test_compaction_settings_defaults_overrides_and_bad_order() -> None:
+    s = _compaction_settings()
+    assert s.compaction is True
+    assert (s.compact_keep, s.compact_trigger, s.context_hard_cap) == (8000, 32000, 235929)
+    assert s.compact_summary_tokens == 1200
+    s = _compaction_settings(
+        VOICE_COMPACTION="0",
+        VOICE_COMPACT_TRIGGER="3000",
+        VOICE_COMPACT_KEEP="1000",
+        VOICE_CONTEXT_HARD_CAP="50000",
+        VOICE_COMPACT_SUMMARY_TOKENS="300",
+    )
+    assert s.compaction is False
+    assert (s.compact_keep, s.compact_trigger, s.context_hard_cap) == (1000, 3000, 50000)
+    assert s.compact_summary_tokens == 300
+    # KEEP < TRIGGER < HARD_CAP must hold, or all three fall back together
+    s = _compaction_settings(VOICE_COMPACT_TRIGGER="5000", VOICE_COMPACT_KEEP="9000")
+    assert (s.compact_keep, s.compact_trigger, s.context_hard_cap) == (8000, 32000, 235929)
+    s = _compaction_settings(VOICE_COMPACT_TRIGGER="300000")
+    assert (s.compact_keep, s.compact_trigger, s.context_hard_cap) == (8000, 32000, 235929)
+    assert _compaction_settings(VOICE_COMPACT_KEEP="lots").compact_keep == 8000
+
+
+def _ping_tool():
+    from livekit.agents import function_tool
+
+    @function_tool
+    async def ping() -> str:
+        """Ping."""
+        return "pong"
+
+    return ping
+
+
+def _history(turns: int, *, words: int = 40, tool_every: int = 3) -> llm.ChatContext:
+    """instructions, the app's initial context, a greeting, then `turns` exchanges: some carry
+    a tool call and its result, and a context update follows every other one."""
+    from happy_voice.compaction import INSTRUCTIONS_MESSAGE_ID
+
+    t = 1000.0
+    ctx = llm.ChatContext.empty()
+
+    def at() -> float:
+        nonlocal t
+        t += 1.0
+        return t
+
+    ctx.add_message(role="system", content="instructions", id=INSTRUCTIONS_MESSAGE_ID, created_at=at())
+    ctx.add_message(role="system", content="Conversation history so far:\nsess_1 is open", created_at=at())
+    ctx.add_message(role="assistant", content="Hi, Happy here", created_at=at())
+    filler = " ".join(["word"] * words)
+    for n in range(turns):
+        ctx.add_message(role="user", content=f"question {n} {filler}", created_at=at())
+        if n % tool_every == 0:
+            ctx.items.append(llm.FunctionCall(call_id=f"call_{n}", name="ping", arguments="{}", created_at=at()))
+            ctx.items.append(
+                llm.FunctionCallOutput(
+                    call_id=f"call_{n}", name="ping", output="pong", is_error=False, created_at=at()
+                )
+            )
+        ctx.add_message(role="assistant", content=f"answer {n} {filler}", created_at=at())
+        if n % 2 == 1:
+            ctx.add_message(role="system", content=f"New messages in session sess_1: step {n}", created_at=at())
+    return ctx
+
+
+def _agent(ctx: llm.ChatContext):
+    from livekit.agents import Agent
+
+    return Agent(instructions="instructions", chat_ctx=ctx, tools=[_ping_tool()])
+
+
+def _estimator():
+    from happy_voice.compaction import TokenEstimator
+
+    return TokenEstimator(0.25)
+
+
+def test_split_keeps_the_tail_budget_on_a_turn_boundary_without_orphaned_calls() -> None:
+    from happy_voice.compaction import INSTRUCTIONS_MESSAGE_ID, split_history
+
+    est = _estimator()
+    items = _history(30).items
+    for keep in (50, 120, 300, 700, 1500):
+        split = split_history(items, keep, est)
+        assert split is not None, keep
+        assert [i.id for i in split.prefix] == [INSTRUCTIONS_MESSAGE_ID]
+        assert split.prefix + split.head + split.tail == list(items)
+        assert est.total(split.tail) >= keep
+        first = split.tail[0]
+        # a turn boundary: a user message, or a context update after a finished exchange
+        assert isinstance(first, llm.ChatMessage) and first.role in ("user", "system"), keep
+        if first.role == "system":
+            last = [i for i in split.head if not (isinstance(i, llm.ChatMessage) and i.role == "system")][-1]
+            assert not (isinstance(last, llm.ChatMessage) and last.role == "user")
+        calls = {i.call_id for i in split.head if isinstance(i, llm.FunctionCall)}
+        outputs = {i.call_id for i in split.head if isinstance(i, llm.FunctionCallOutput)}
+        assert calls == outputs, keep
+
+
+def test_split_never_cuts_between_a_call_and_its_result_or_a_question_and_its_reply() -> None:
+    from happy_voice.compaction import split_history
+
+    est = _estimator()
+    ctx = _history(4, words=5)
+    # a long tool result, so the budget runs out right inside the call
+    ctx.add_message(role="user", content="run the tests")
+    ctx.items.append(llm.FunctionCall(call_id="c_last", name="ping", arguments="{}"))
+    ctx.items.append(llm.FunctionCallOutput(call_id="c_last", name="ping", output="x" * 400, is_error=False))
+    ctx.add_message(role="assistant", content="done")
+    split = split_history(ctx.items, 20, est)
+    assert split is not None
+    assert split.tail[0].text_content == "run the tests"
+    # a context update between a question and its answer is not a boundary
+    ctx = _history(4, words=5)
+    ctx.add_message(role="user", content="what changed?")
+    ctx.add_message(role="system", content="New messages in session sess_1: " + "y" * 200)
+    ctx.add_message(role="assistant", content="the tests pass")
+    split = split_history(ctx.items, 20, est)
+    assert split is not None
+    assert split.tail[0].text_content == "what changed?"
+
+
+def test_split_has_nothing_to_do_when_the_history_fits_the_budget() -> None:
+    from happy_voice.compaction import INSTRUCTIONS_MESSAGE_ID, split_history
+
+    est = _estimator()
+    assert split_history(_history(2).items, 100_000, est) is None
+    ctx = llm.ChatContext.empty()
+    ctx.add_message(role="system", content="instructions", id=INSTRUCTIONS_MESSAGE_ID)
+    ctx.add_message(role="user", content="x" * 1000)
+    assert split_history(ctx.items, 10, est) is None
+
+
+def test_estimator_calibrates_from_real_usage() -> None:
+    from happy_voice.compaction import TokenEstimator
+
+    est = TokenEstimator()
+    ctx = llm.ChatContext.empty()
+    ctx.add_message(role="user", content="x" * 1000)
+    est.note_request(ctx)
+    est.observe_usage(500)
+    assert est.tokens_per_char == 0.5
+    est.observe_usage(0)  # a request with no usage changes nothing
+    assert est.tokens_per_char == 0.5
+
+
+def _run_llm_node(agent, chat_ctx) -> list:
+    """The ctx llm_node hands to the LLM, with the library's default llm_node stubbed."""
+    from livekit.agents import Agent
+
+    seen: list = []
+    original = Agent.default.__dict__["llm_node"]
+
+    async def fake(_agent, ctx, tools, model_settings):
+        seen.append(ctx)
+        if False:
+            yield None
+
+    async def run() -> None:
+        async for _ in agent.llm_node(chat_ctx, [], None):
+            pass
+
+    Agent.default.llm_node = fake
+    try:
+        asyncio.run(run())
+    finally:
+        Agent.default.llm_node = original
+    return seen
+
+
+def _dump(ctx: llm.ChatContext) -> str:
+    """A history, whole."""
+    import json
+
+    return json.dumps([i.model_dump(mode="json") for i in ctx.items], sort_keys=True)
+
+
+def _wire(ctx: llm.ChatContext) -> str:
+    """A request: the messages as sent, and the items they came from. Not created_at, which
+    is never sent and which fold_system_messages stamps afresh on the system message."""
+    import json
+
+    messages, _ = ctx.to_provider_format("openai")
+    items = [i.model_dump(mode="json", exclude={"created_at"}) for i in ctx.items]
+    return json.dumps({"messages": messages, "items": items}, sort_keys=True)
+
+
+def _assistant(settings: Settings, ctx: llm.ChatContext, *, compactor: bool, enabled: bool = True):
+    from happy_voice.assistant import ConversationState, HappyAssistant
+    from happy_voice.compaction import Compactor
+
+    agent = HappyAssistant(
+        instructions="instructions", room=None, state=ConversationState(), settings=settings, chat_ctx=ctx
+    )
+    if compactor:
+        agent.compactor = Compactor(
+            agent=lambda: agent,
+            summarizer=_FakeLLM(text="never"),
+            warm=None,
+            lock=asyncio.Lock(),
+            quiet=asyncio.Event(),
+            trigger=settings.compact_trigger,
+            keep=settings.compact_keep,
+            summary_tokens=settings.compact_summary_tokens,
+            enabled=enabled,
+        )
+    return agent
+
+
+def test_llm_node_request_is_byte_identical_when_off_or_below_the_trigger() -> None:
+    ctx = _history(12)
+    # what llm_node sent before compaction existed: the folded history, nothing else
+    expected = _wire(fold_system_messages(ctx))
+    off = _compaction_settings(VOICE_COMPACTION="0")
+    on = _compaction_settings()
+    for settings, has_compactor, enabled in (
+        (off, False, False),
+        (off, True, False),
+        (on, True, True),
+    ):
+        agent = _assistant(settings, ctx, compactor=has_compactor, enabled=enabled)
+        before = _dump(agent.chat_ctx)
+        (sent,) = _run_llm_node(agent, ctx)
+        assert _wire(sent) == expected, (settings.compaction, has_compactor)
+        assert _dump(agent.chat_ctx) == before
+        if agent.compactor is not None:
+            # below the trigger: nothing is scheduled
+            agent.compactor.on_llm_usage(1000, 900)
+            assert agent.compactor._task is None
+
+
+def test_backstop_trims_only_the_request_copy() -> None:
+    ctx = _history(40)
+    settings = _compaction_settings(
+        VOICE_COMPACT_KEEP="10", VOICE_COMPACT_TRIGGER="20", VOICE_CONTEXT_HARD_CAP="400"
+    )
+    agent = _assistant(settings, ctx, compactor=True, enabled=False)
+    agent.compactor.estimator.tokens_per_char = 0.25
+    history_before = _dump(agent.chat_ctx)
+    ctx_before = _dump(ctx)
+    (sent,) = _run_llm_node(agent, ctx)
+    assert _dump(agent.chat_ctx) == history_before
+    assert _dump(ctx) == ctx_before
+    folded = fold_system_messages(ctx)
+    assert len(sent.items) < len(folded.items)
+    assert agent.compactor.estimator.total(sent.items) <= 400
+    # the system prompt is kept whole, and the history resumes at a user message
+    assert _wire(llm.ChatContext(sent.items[:1])) == _wire(llm.ChatContext(folded.items[:1]))
+    assert sent.items[1].role == "user"
+    # the newest items are the request's newest items
+    assert [i.id for i in sent.items[-5:]] == [i.id for i in folded.items[-5:]]
+    calls = {i.call_id for i in sent.items if isinstance(i, llm.FunctionCall)}
+    outputs = {i.call_id for i in sent.items if isinstance(i, llm.FunctionCallOutput)}
+    assert calls == outputs
+
+
+def _make_compactor(agent, summarizer, *, quiet=None, lock=None, warm=None, keep=150, trigger=400, **kw):
+    from happy_voice.compaction import Compactor
+
+    warmed: list = []
+
+    async def default_warm(ctx, tools) -> bool:
+        warmed.append((ctx, tools))
+        return True
+
+    if quiet is None:
+        quiet = asyncio.Event()
+        quiet.set()
+    c = Compactor(
+        agent=lambda: agent,
+        summarizer=summarizer,
+        warm=warm or default_warm,
+        lock=lock or asyncio.Lock(),
+        quiet=quiet,
+        trigger=trigger,
+        keep=keep,
+        summary_tokens=kw.pop("summary_tokens", 20),
+        estimator=_estimator(),
+        **kw,
+    )
+    c.warmed = warmed
+    return c
+
+
+SUMMARY = "The user is refactoring auth in sess_1; tests pass."
+
+
+def test_compaction_swaps_the_head_for_one_summary_and_keeps_the_tail() -> None:
+    from happy_voice.compaction import INSTRUCTIONS_MESSAGE_ID, SUMMARY_PREFIX
+
+    async def run():
+        agent = _agent(_history(30))
+        before = list(agent.chat_ctx.items)
+        model = _FakeLLM(text=SUMMARY)
+        swapped: list = []
+        c = _make_compactor(agent, model, on_swapped=lambda: swapped.append(1))
+        assert await c.compact_once(5000) is True
+        return agent, before, model, c, swapped
+
+    agent, before, model, c, swapped = asyncio.run(run())
+    after = agent.chat_ctx.items
+    assert after[0].id == INSTRUCTIONS_MESSAGE_ID and after[0].text_content == "instructions"
+    assert after[1].role == "system" and after[1].text_content == SUMMARY_PREFIX + SUMMARY
+    tail = after[2:]
+    # the tail is the old history's last items, untouched and in order
+    assert [i.id for i in tail] == [i.id for i in before[-len(tail) :]]
+    assert _estimator().total(tail) >= 150
+    assert len(after) < len(before)
+    # still ordered by creation time, which later inserts rely on
+    assert [i.created_at for i in after[1:]] == sorted(i.created_at for i in after[1:])
+    assert swapped == [1]
+    # the warm-up was of exactly what the next turn sends
+    ((warm_ctx, warm_tools),) = c.warmed
+    assert _wire(warm_ctx) == _wire(fold_system_messages(agent.chat_ctx))
+    assert [t.info.name for t in warm_tools] == ["ping"]
+    # one summary request, text only
+    assert len(model.requests) == 1
+    assert model.kwargs[0]["tool_choice"] == "none"
+
+
+def test_summary_request_has_the_turn_request_as_its_prefix() -> None:
+    from happy_voice.compaction import SUMMARY_INSTRUCTION, split_history
+
+    async def run():
+        agent = _agent(_history(30))
+        turn_request = fold_system_messages(agent.chat_ctx)
+        turn_tools = llm.ToolContext(agent.tools).flatten()
+        model = _FakeLLM(text=SUMMARY)
+        c = _make_compactor(agent, model)
+        split = split_history(agent.chat_ctx.items, c.keep, c.estimator)
+        await c.compact_once(5000)
+        return turn_request, turn_tools, model, split
+
+    turn_request, turn_tools, model, split = asyncio.run(run())
+    ((request, tools),) = model.requests
+    *conversation, instruction = request.items
+    assert instruction.role == "user" and instruction.text_content == SUMMARY_INSTRUCTION
+    # byte-identical to the turn's own request up to the split, with the same tools
+    assert _wire(llm.ChatContext(conversation)) == _wire(
+        llm.ChatContext(turn_request.items[: len(conversation)])
+    )
+    assert turn_request.items[len(conversation)].id == split.tail[0].id
+    assert [t.info.name for t in tools] == [t.info.name for t in turn_tools]
+
+
+def test_items_added_during_the_summary_survive_the_swap() -> None:
+    async def run():
+        agent = _agent(_history(30))
+        model = _FakeLLM(text=SUMMARY, delay=0.002)
+        c = _make_compactor(agent, model)
+        task = asyncio.create_task(c.compact_once(5000))
+        await asyncio.sleep(0.01)
+        assert model.requests, "the summary is being written"
+        # what handle_inbox does with a context update, and what a turn does with its reply
+        new_ctx = agent.chat_ctx.copy()
+        update = new_ctx.add_message(role="system", content="Session became focused: sess_2")
+        reply = new_ctx.add_message(role="assistant", content="Switched to sess_2.")
+        await agent.update_chat_ctx(new_ctx)
+        assert await task is True
+        return agent, update, reply
+
+    agent, update, reply = asyncio.run(run())
+    ids = [i.id for i in agent.chat_ctx.items]
+    assert ids[-2:] == [update.id, reply.id]
+    assert agent.chat_ctx.items[1].text_content.endswith(SUMMARY)
+
+
+def test_a_failed_or_empty_summary_or_warm_up_leaves_the_history_untouched() -> None:
+    async def failing_warm(ctx, tools) -> bool:
+        return False
+
+    cases = (
+        dict(summarizer=_FakeLLM(fail=True)),
+        dict(summarizer=_FakeLLM(text="")),
+        dict(summarizer=_FakeLLM(text="   \n ")),
+        dict(summarizer=_FakeLLM(text=SUMMARY), warm=failing_warm),
+    )
+    for case in cases:
+
+        async def run():
+            agent = _agent(_history(30))
+            before = _dump(agent.chat_ctx)
+            c = _make_compactor(agent, case.pop("summarizer"), **case)
+            ok = await c.compact_once(5000)
+            return agent, before, ok
+
+        agent, before, ok = asyncio.run(run())
+        assert ok is False
+        assert _dump(agent.chat_ctx) == before
+
+
+def test_a_failure_backs_off_and_one_compaction_runs_at_a_time() -> None:
+    now = [100.0]
+
+    async def run():
+        agent = _agent(_history(30))
+        model = _FakeLLM(fail=True, delay=0.001)
+        c = _make_compactor(agent, model, clock=lambda: now[0])
+        c.on_llm_usage(100, 0)  # below the trigger
+        assert c._task is None
+        c.on_llm_usage(5000, 0)
+        first = c._task
+        c.on_llm_usage(5000, 0)  # one at a time
+        assert c._task is first
+        await first
+        c.on_llm_usage(5000, 0)  # backing off: 30 s after the first failure
+        assert c._task is first
+        now[0] += 31
+        c.on_llm_usage(5000, 0)
+        second = c._task
+        assert second is not first
+        await second
+        now[0] += 31  # the second failure doubled the wait to 60 s
+        c.on_llm_usage(5000, 0)
+        assert c._task is second
+        now[0] += 30
+        c.on_llm_usage(5000, 0)
+        assert c._task is not second
+        await c._task
+        return model, c
+
+    model, c = asyncio.run(run())
+    assert len(model.requests) == 3
+    assert c._failures == 3
+
+
+def test_compaction_off_never_schedules() -> None:
+    async def run():
+        agent = _agent(_history(30))
+        model = _FakeLLM(text=SUMMARY)
+        c = _make_compactor(agent, model, enabled=False)
+        c.on_llm_usage(10**6, 0)
+        await asyncio.sleep(0.01)
+        return c, model
+
+    c, model = asyncio.run(run())
+    assert c._task is None and model.requests == []
+
+
+def test_the_swap_waits_for_quiet() -> None:
+    async def run():
+        agent = _agent(_history(30))
+        before = _dump(agent.chat_ctx)
+        quiet = asyncio.Event()
+        quiet.set()
+        model = _FakeLLM(text=SUMMARY, delay=0.001)
+        warm_started = asyncio.Event()
+
+        async def warm(ctx, tools) -> bool:
+            # the user starts talking while the compacted history is prefilled
+            quiet.clear()
+            warm_started.set()
+            return True
+
+        c = _make_compactor(agent, model, quiet=quiet, warm=warm)
+        task = asyncio.create_task(c.compact_once(5000))
+        await warm_started.wait()
+        await asyncio.sleep(0.05)
+        unchanged_while_busy = _dump(agent.chat_ctx) == before
+        quiet.set()
+        assert await task is True
+        return agent, before, unchanged_while_busy
+
+    agent, before, unchanged_while_busy = asyncio.run(run())
+    assert unchanged_while_busy
+    assert _dump(agent.chat_ctx) != before
+
+
+def test_the_swap_also_waits_for_the_context_lock() -> None:
+    async def run():
+        agent = _agent(_history(30))
+        lock = asyncio.Lock()
+        c = _make_compactor(agent, _FakeLLM(text=SUMMARY), lock=lock)
+        await lock.acquire()
+        task = asyncio.create_task(c.compact_once(5000))
+        await asyncio.sleep(0.2)
+        held = not task.done()
+        lock.release()
+        return held, await task
+
+    held, ok = asyncio.run(run())
+    assert held and ok
+
+
+def test_the_swap_emits_nothing_and_the_summary_reaches_neither_speech_nor_transcript() -> None:
+    """Runs the library's own AgentActivity.update_chat_ctx: it must not touch the session."""
+    from types import SimpleNamespace
+
+    from livekit.agents.voice.agent_activity import AgentActivity
+
+    class Recorder:
+        def __init__(self) -> None:
+            self.touched: list[str] = []
+
+        def __getattr__(self, name: str):
+            self.touched.append(name)
+            return lambda *a, **k: self.touched.append(f"{name}()")
+
+    async def run():
+        agent = _agent(_history(30))
+        session = Recorder()
+        activity = SimpleNamespace(_agent=agent, _rt_session=None, tools=agent.tools, _session=session)
+        activity.update_chat_ctx = lambda ctx, **kw: AgentActivity.update_chat_ctx(activity, ctx, **kw)
+        agent._activity = activity
+        model = _FakeLLM(text=SUMMARY)
+        c = _make_compactor(agent, model)
+        try:
+            assert await c.compact_once(5000) is True
+        finally:
+            agent._activity = None
+        return agent, session
+
+    agent, session = asyncio.run(run())
+    assert session.touched == []
+    summaries = [
+        i for i in agent.chat_ctx.items if isinstance(i, llm.ChatMessage) and SUMMARY in (i.text_content or "")
+    ]
+    # only in the history, as a system message: never an assistant line to speak or transcribe
+    assert [m.role for m in summaries] == ["system"]
+
+
+def test_a_second_compaction_rolls_the_first_summary_forward() -> None:
+    from happy_voice.compaction import SUMMARY_PREFIX
+
+    async def run():
+        agent = _agent(_history(30))
+        c = _make_compactor(agent, _FakeLLM(text=SUMMARY))
+        assert await c.compact_once(5000) is True
+        # the call goes on
+        new_ctx = agent.chat_ctx.copy()
+        for item in _history(30).items[3:]:
+            new_ctx.items.append(
+                item.model_copy(update={"id": "late_" + item.id, "created_at": item.created_at + 10**6})
+            )
+        await agent.update_chat_ctx(new_ctx)
+        second = _FakeLLM(text="Second summary.")
+        c._summarizer = second
+        assert await c.compact_once(5000) is True
+        return agent, second
+
+    agent, second = asyncio.run(run())
+    ((request, _),) = second.requests
+    # the first summary went into the second one's input (folded into the system prompt)
+    assert SUMMARY in request.items[0].text_content
+    summaries = [
+        i.text_content
+        for i in agent.chat_ctx.items
+        if isinstance(i, llm.ChatMessage) and (i.text_content or "").startswith(SUMMARY_PREFIX)
+    ]
+    assert summaries == [SUMMARY_PREFIX + "Second summary."]
+
+
+def test_one_shot_warm_shares_the_turn_bookkeeping() -> None:
+    async def run():
+        model = _FakeLLM(delay=0.05)
+        warmer = PrefixWarmer(model, lambda: ("snapshot", []), debounce=0)
+        # waits for a turn in progress, then prefills
+        await warmer.begin_turn()
+        task = asyncio.create_task(warmer.warm("compacted", ["tool"]))
+        await asyncio.sleep(0.02)
+        sent_during_turn = len(model.requests)
+        warmer.end_turn()
+        await asyncio.sleep(0.01)
+        # a turn that starts while it is in flight cancels it at once instead of waiting
+        t0 = time.monotonic()
+        await warmer.begin_turn()
+        turn_waited = time.monotonic() - t0
+        warmer.end_turn()
+        ok = await task
+        await warmer.aclose()
+        return model, sent_during_turn, turn_waited, ok, warmer
+
+    model, sent_during_turn, turn_waited, ok, warmer = asyncio.run(run())
+    assert sent_during_turn == 0
+    assert turn_waited < 0.02
+    assert ok is True
+    # sent, given way to the turn, sent again
+    assert [r[0] for r in model.requests] == ["compacted", "compacted"]
+    assert model.chunks_read == 1
+    # a one-shot does not skew the estimate begin_turn() uses for scheduled warm-ups
+    assert warmer._durations == [] and warmer.completed == 0
+
+
+def test_one_shot_warm_failure_is_false_not_raised() -> None:
+    async def run():
+        warmer = PrefixWarmer(_FakeLLM(fail=True), lambda: ("x", []), debounce=0)
+        ok = await warmer.warm("compacted", [])
+        await warmer.aclose()
+        return ok
+
+    assert asyncio.run(run()) is False
 
 
 if __name__ == "__main__":
