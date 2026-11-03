@@ -26,6 +26,10 @@ logger = logging.getLogger("happy-voice")
 # history compaction defaults, in tokens; see Settings.compaction
 COMPACT_TRIGGER = 32000
 COMPACT_KEEP = 8000
+# The newest history a compaction always keeps verbatim, whatever VOICE_COMPACT_KEEP says: the
+# summary never reaches into it, and a configuration that leaves no room above it turns
+# compaction off rather than shrinking it.
+COMPACT_KEEP_FLOOR = 8000
 CONTEXT_HARD_CAP = 235929  # 90% of the model's 262144-token window
 COMPACT_SUMMARY_TOKENS = 1200
 
@@ -192,8 +196,9 @@ class Settings:
 
     def __post_init__(self) -> None:
         # KEEP < TRIGGER < HARD_CAP must hold. The hard cap is the one that protects the call
-        # (it is what the server can take), so a valid cap is kept and the other two are
-        # lowered to fit under it, rather than all three thrown away for the defaults.
+        # (it is what the server can take), so a valid cap is kept and the trigger lowered to
+        # fit under it, rather than all three thrown away for the defaults. KEEP has a floor
+        # and is never lowered; when it no longer fits, compaction is off.
         if self.compact_trigger >= self.context_hard_cap:
             trigger = min(COMPACT_TRIGGER, self.context_hard_cap * 3 // 4)
             logger.warning(
@@ -203,20 +208,28 @@ class Settings:
                 trigger,
             )
             self.compact_trigger = trigger
-        if self.compact_keep >= self.compact_trigger:
-            keep = min(COMPACT_KEEP, self.compact_trigger // 4)
+        if self.compact_keep < COMPACT_KEEP_FLOOR:
             logger.warning(
-                "VOICE_COMPACT_KEEP=%d is not below VOICE_COMPACT_TRIGGER=%d; using %d",
+                "VOICE_COMPACT_KEEP=%d is below the %d tokens always kept verbatim; using %d",
+                self.compact_keep,
+                COMPACT_KEEP_FLOOR,
+                COMPACT_KEEP_FLOOR,
+            )
+            self.compact_keep = COMPACT_KEEP_FLOOR
+        # KEEP is never lowered to fit: what it keeps is the point. A trigger at or below it
+        # turns compaction off instead.
+        if self.compaction and self.compact_keep >= self.compact_trigger:
+            logger.warning(
+                "compaction off: VOICE_COMPACT_KEEP=%d is not below VOICE_COMPACT_TRIGGER=%d",
                 self.compact_keep,
                 self.compact_trigger,
-                keep,
             )
-            self.compact_keep = keep
+            self.compaction = False
         # A compaction replaces what lies between KEEP and TRIGGER with a summary of up to
         # SUMMARY_TOKENS. If the summary may be as large as half that, compacting gains little
         # and would run again on the next turn; with no room at all it cannot run.
         room = self.compact_trigger - self.compact_keep
-        if self.compaction and (self.compact_keep < 1 or 2 * self.compact_summary_tokens >= room):
+        if self.compaction and 2 * self.compact_summary_tokens >= room:
             logger.warning(
                 "compaction off: VOICE_COMPACT_SUMMARY_TOKENS=%d leaves no room between "
                 "VOICE_COMPACT_KEEP=%d and VOICE_COMPACT_TRIGGER=%d (needs 2 x summary < "

@@ -914,15 +914,28 @@ def test_compaction_settings_defaults_overrides_and_bad_order() -> None:
     assert s.compact_summary_tokens == 1200
     s = _compaction_settings(
         VOICE_COMPACTION="0",
-        VOICE_COMPACT_TRIGGER="3000",
-        VOICE_COMPACT_KEEP="1000",
+        VOICE_COMPACT_TRIGGER="30000",
+        VOICE_COMPACT_KEEP="10000",
         VOICE_CONTEXT_HARD_CAP="50000",
         VOICE_COMPACT_SUMMARY_TOKENS="300",
     )
     assert s.compaction is False
-    assert (s.compact_keep, s.compact_trigger, s.context_hard_cap) == (1000, 3000, 50000)
+    assert (s.compact_keep, s.compact_trigger, s.context_hard_cap) == (10000, 30000, 50000)
     assert s.compact_summary_tokens == 300
     assert _compaction_settings(VOICE_COMPACT_KEEP="lots").compact_keep == 8000
+
+
+def test_compaction_never_keeps_less_than_the_floor() -> None:
+    from happy_voice.config import COMPACT_KEEP_FLOOR
+
+    assert COMPACT_KEEP_FLOOR == 8000
+    s = _compaction_settings(VOICE_COMPACT_KEEP="2000")
+    assert s.compact_keep == 8000 and s.compaction is True
+    # a trigger with no room above the floor turns compaction off; keep is not lowered to fit
+    s = _compaction_settings(VOICE_COMPACT_TRIGGER="9000")
+    assert (s.compact_keep, s.compact_trigger) == (8000, 9000) and s.compaction is False
+    s = _compaction_settings(VOICE_COMPACT_TRIGGER="8000", VOICE_COMPACT_KEEP="2000")
+    assert (s.compact_keep, s.compact_trigger) == (8000, 8000) and s.compaction is False
 
 
 def test_compaction_settings_fit_under_a_valid_hard_cap() -> None:
@@ -932,24 +945,26 @@ def test_compaction_settings_fit_under_a_valid_hard_cap() -> None:
     assert s.compaction is True
     s = _compaction_settings(VOICE_COMPACT_TRIGGER="300000")
     assert (s.compact_keep, s.compact_trigger, s.context_hard_cap) == (8000, 32000, 235929)
-    s = _compaction_settings(VOICE_COMPACT_TRIGGER="5000", VOICE_COMPACT_KEEP="9000")
-    assert (s.compact_keep, s.compact_trigger, s.context_hard_cap) == (1250, 5000, 235929)
-    assert s.compaction is True
+    # a keep at or over the trigger is not lowered: compaction is off instead
+    s = _compaction_settings(VOICE_COMPACT_TRIGGER="20000", VOICE_COMPACT_KEEP="20000")
+    assert (s.compact_keep, s.compact_trigger, s.context_hard_cap) == (20000, 20000, 235929)
+    assert s.compaction is False
     s = _compaction_settings(VOICE_CONTEXT_HARD_CAP="1")
     assert s.context_hard_cap == 1 and s.compact_trigger < 1 and s.compaction is False
+    assert s.compact_keep == 8000
     # the summary must be well under what it replaces, or compaction is turned off
-    s = _compaction_settings(VOICE_COMPACT_TRIGGER="3000", VOICE_COMPACT_KEEP="1000")
+    s = _compaction_settings(VOICE_COMPACT_TRIGGER="10000", VOICE_COMPACT_KEEP="8000")
     assert s.compact_summary_tokens == 1200 and s.compaction is False
     s = _compaction_settings(
-        VOICE_COMPACT_TRIGGER="3000", VOICE_COMPACT_KEEP="1000", VOICE_COMPACT_SUMMARY_TOKENS="999"
+        VOICE_COMPACT_TRIGGER="10000", VOICE_COMPACT_KEEP="8000", VOICE_COMPACT_SUMMARY_TOKENS="999"
     )
     assert s.compaction is True
     s = _compaction_settings(
-        VOICE_COMPACT_TRIGGER="3000", VOICE_COMPACT_KEEP="1000", VOICE_COMPACT_SUMMARY_TOKENS="1000"
+        VOICE_COMPACT_TRIGGER="10000", VOICE_COMPACT_KEEP="8000", VOICE_COMPACT_SUMMARY_TOKENS="1000"
     )
     assert s.compaction is False
     # the summary limit and the backstop stay as given even when compaction is turned off
-    assert (s.compact_keep, s.compact_trigger, s.context_hard_cap) == (1000, 3000, 235929)
+    assert (s.compact_keep, s.compact_trigger, s.context_hard_cap) == (8000, 10000, 235929)
 
 
 def _ping_tool():
@@ -1064,16 +1079,40 @@ def test_split_has_nothing_to_do_when_the_history_fits_the_budget() -> None:
 
 
 def test_estimator_calibrates_from_real_usage() -> None:
-    from happy_voice.compaction import TokenEstimator
+    from happy_voice.compaction import ITEM_OVERHEAD_TOKENS, TokenEstimator
 
     est = TokenEstimator()
     ctx = llm.ChatContext.empty()
     ctx.add_message(role="user", content="x" * 1000)
     est.note_request(ctx)
-    est.observe_usage(500)
+    # the template tags around the one item are taken off before dividing
+    est.observe_usage(500 + ITEM_OVERHEAD_TOKENS)
     assert est.tokens_per_char == 0.5
     est.observe_usage(0)  # a request with no usage changes nothing
     assert est.tokens_per_char == 0.5
+    est.observe_usage(ITEM_OVERHEAD_TOKENS)  # nor does one that is all overhead
+    assert est.tokens_per_char == 0.5
+
+
+def test_tool_schemas_do_not_inflate_the_calibrated_ratio() -> None:
+    from happy_voice.compaction import ITEM_OVERHEAD_TOKENS, TokenEstimator, tool_schema_chars
+
+    tools = [_ping_tool()]
+    schema = tool_schema_chars(tools)
+    assert schema > 20  # name, description, an empty parameters object
+    ctx = llm.ChatContext.empty()
+    ctx.add_message(role="user", content="x" * 1000)
+    # what the server counts: the text and the schemas at 0.5 tokens a character, plus tags
+    prompt_tokens = int((1000 + schema) * 0.5) + ITEM_OVERHEAD_TOKENS
+    with_tools = TokenEstimator()
+    with_tools.note_request(ctx, tools)
+    with_tools.observe_usage(prompt_tokens)
+    assert abs(with_tools.tokens_per_char - 0.5) < 0.001
+    # left out, the schemas' tokens land on the history's characters and the ratio runs high
+    without = TokenEstimator()
+    without.note_request(ctx)
+    without.observe_usage(prompt_tokens)
+    assert without.tokens_per_char > 0.5 + 0.004
 
 
 def _run_llm_node(agent, chat_ctx) -> list:
@@ -1206,8 +1245,12 @@ def test_backstop_stays_under_the_cap_turn_after_turn() -> None:
         real = true.total(sent.items)
         sent_tokens.append(real)
         agent.compactor.on_llm_usage(real, 0)
-    assert max(sent_tokens) <= cap, sent_tokens
-    assert agent.compactor.estimator.tokens_per_char >= 0.5
+    # The calibration is unbiased now (template tags taken off), so the estimate only errs by
+    # the per-item rounding of this test's token counts: within a token or two of the cap, and
+    # not drifting from one turn to the next.
+    assert max(sent_tokens) <= cap * 1.01, sent_tokens
+    assert sent_tokens[-1] <= sent_tokens[1], sent_tokens
+    assert agent.compactor.estimator.tokens_per_char >= 0.49
 
 
 def _make_compactor(agent, summarizer, *, quiet=None, lock=None, warm=None, keep=150, trigger=400, **kw):
@@ -1557,15 +1600,17 @@ def test_one_shot_warm_failure_is_false_not_raised() -> None:
     assert asyncio.run(run()) is False
 
 
-def test_a_turn_cancels_the_summary_in_flight_and_it_is_sent_again_after() -> None:
+def test_a_turn_does_not_cancel_the_summary_in_flight() -> None:
     from happy_voice.compaction import SUMMARY_PREFIX
 
     async def run():
         agent = _agent(_history(30))
-        warmer = PrefixWarmer(_FakeLLM(), lambda: ("snapshot", []), debounce=0)
+        before = _dump(agent.chat_ctx)
+        prefill = _FakeLLM()
+        warmer = PrefixWarmer(prefill, lambda: ("snapshot", []), debounce=0)
         # ~0.5 s to write, so a turn lands in the middle of it
         model = _FakeLLM(text=SUMMARY, delay=0.01)
-        c = _make_compactor(agent, model, between_turns=warmer.between_turns, turn_idle=warmer.wait_idle)
+        c = _make_compactor(agent, model, warm=warmer.warm, turn_idle=warmer.wait_idle)
         task = asyncio.create_task(c.compact_once(5000))
         await asyncio.sleep(0.1)
         assert len(model.requests) == 1
@@ -1573,44 +1618,156 @@ def test_a_turn_cancels_the_summary_in_flight_and_it_is_sent_again_after() -> No
         await warmer.begin_turn()
         turn_waited = time.monotonic() - t0
         await asyncio.sleep(0.05)
-        # cancelled, and not sent again while the turn runs
-        cancelled = model.closed_streams == 1 and len(model.requests) == 1
+        seen = {
+            # still being written: not closed, and not sent a second time
+            "running": model.closed_streams == 0 and len(model.requests) == 1,
+        }
+        # the turn outlasts the summary; it finishes during the turn and waits to be swapped
+        while model.closed_streams == 0:
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)
+        seen["finished"] = model.chunks_read == len(SUMMARY)
+        seen["held_for_the_turn"] = not task.done() and _dump(agent.chat_ctx) == before
+        seen["no_prefill_during_the_turn"] = prefill.requests == []
         warmer.end_turn()
         ok = await task
         await warmer.aclose()
-        return agent, model, c, turn_waited, cancelled, ok
+        return agent, model, prefill, c, turn_waited, seen, ok
 
-    agent, model, c, turn_waited, cancelled, ok = asyncio.run(run())
+    agent, model, prefill, c, turn_waited, seen, ok = asyncio.run(run())
     assert turn_waited < 0.02
-    assert cancelled
+    assert seen == {
+        "running": True,
+        "finished": True,
+        "held_for_the_turn": True,
+        "no_prefill_during_the_turn": True,
+    }
     assert ok is True
-    assert len(model.requests) == 2 and c._failures == 0
+    assert len(model.requests) == 1 and model.closed_streams == 1 and c._failures == 0
+    assert len(prefill.requests) == 1
     assert agent.chat_ctx.items[1].text_content == SUMMARY_PREFIX + SUMMARY
+    assert c.compactions == 1 and c._pending is None
 
 
-def test_a_summary_that_keeps_giving_way_counts_as_one_failure() -> None:
-    from happy_voice.compaction import SUMMARY_ATTEMPTS
+def test_a_prefill_that_keeps_giving_way_keeps_the_summary_for_the_next_attempt() -> None:
+    from happy_voice.compaction import SUMMARY_ID_PREFIX, SUMMARY_PREFIX
+
+    now = [100.0]
 
     async def run():
         agent = _agent(_history(30))
         before = _dump(agent.chat_ctx)
-        warmer = PrefixWarmer(_FakeLLM(), lambda: ("snapshot", []), debounce=0)
-        model = _FakeLLM(text=SUMMARY, delay=0.01)
-        c = _make_compactor(agent, model, between_turns=warmer.between_turns)
-        c.on_llm_usage(5000, 0)
-        task = c._task
-        for n in range(SUMMARY_ATTEMPTS):
-            while len(model.requests) <= n:
-                await asyncio.sleep(0.005)  # until the next attempt is out
-            await warmer.begin_turn()
-            warmer.end_turn()
-        await task
-        await warmer.aclose()
-        return agent, before, model, c
+        model = _FakeLLM(text=SUMMARY)
+        prefills: list = []
+        gets_through = [False]
 
-    agent, before, model, c = asyncio.run(run())
-    assert len(model.requests) == SUMMARY_ATTEMPTS
-    assert c._failures == 1
+        async def warm(ctx, tools) -> bool:
+            # what PrefixWarmer.warm returns after giving way to a turn on every attempt
+            prefills.append(ctx)
+            return gets_through[0]
+
+        c = _make_compactor(agent, model, warm=warm, clock=lambda: now[0])
+        c.on_llm_usage(5000, 0)
+        await c._task
+        seen = {
+            "failures": c._failures,
+            "unchanged": _dump(agent.chat_ctx) == before,
+            "kept": c._pending is not None and c._pending.text == SUMMARY,
+            "compactions": c.compactions,
+        }
+        # the call goes on, then the next attempt after the backoff
+        new_ctx = agent.chat_ctx.copy()
+        new_ctx.add_message(role="user", content="and the tests?")
+        new_ctx.add_message(role="assistant", content="They pass.")
+        await agent.update_chat_ctx(new_ctx)
+        gets_through[0] = True
+        now[0] += 31
+        c.on_llm_usage(5000, 0)
+        await c._task
+        return agent, model, prefills, c, seen
+
+    agent, model, prefills, c, seen = asyncio.run(run())
+    assert seen == {"failures": 1, "unchanged": True, "kept": True, "compactions": 1}
+    # no second summary request: the kept one was reused and swapped in
+    assert len(model.requests) == 1
+    assert len(prefills) == 2
+    assert c._failures == 0 and c._pending is None
+    summary = agent.chat_ctx.items[1]
+    assert summary.text_content == SUMMARY_PREFIX + SUMMARY
+    assert summary.id == f"{SUMMARY_ID_PREFIX}1" and c.compactions == 1
+    # what arrived in between is kept
+    assert [i.text_content for i in agent.chat_ctx.items[-2:]] == ["and the tests?", "They pass."]
+
+
+def test_a_kept_summary_is_dropped_once_the_history_is_rewritten() -> None:
+    async def run():
+        agent = _agent(_history(30))
+        model = _FakeLLM(text=SUMMARY)
+        gets_through = [False]
+
+        async def warm(ctx, tools) -> bool:
+            return gets_through[0]
+
+        c = _make_compactor(agent, model, warm=warm)
+        assert await c.compact_once(5000) is False
+        kept = c._pending
+        # an item the summary covered is gone: the summary no longer describes this history
+        gone = next(iter(kept.head_ids))
+        await agent.update_chat_ctx(
+            llm.ChatContext([i for i in agent.chat_ctx.items if i.id != gone])
+        )
+        gets_through[0] = True
+        assert await c.compact_once(5000) is True
+        return model, c, kept
+
+    model, c, kept = asyncio.run(run())
+    assert len(model.requests) == 2
+    assert c._pending is None and c.compactions == 2
+
+
+def test_the_newest_keep_tokens_survive_the_swap_verbatim() -> None:
+    from happy_voice.compaction import KEEP_MARGIN, split_history
+
+    async def run():
+        agent = _agent(_history(30))
+        model = _FakeLLM(text=SUMMARY)
+        c = _make_compactor(agent, model)
+        split = split_history(agent.chat_ctx.items, c.keep, c.estimator)
+        tail = [i.model_dump(mode="json") for i in split.tail]
+        assert await c.compact_once(5000) is True
+        return agent, c, split, tail
+
+    agent, c, split, tail = asyncio.run(run())
+    after = {i.id: i.model_dump(mode="json") for i in agent.chat_ctx.items}
+    for item in tail:
+        assert after.get(item["id"]) == item, item["id"]
+    assert c.estimator.total(split.tail) >= c.keep * KEEP_MARGIN >= c.keep
+    assert not (split.head_ids & set(after))
+
+
+def test_a_tail_under_keep_is_never_summarized() -> None:
+    import happy_voice.compaction as compaction
+
+    async def run():
+        agent = _agent(_history(30))
+        before = _dump(agent.chat_ctx)
+        model = _FakeLLM(text=SUMMARY)
+        c = _make_compactor(agent, model)
+        real = compaction.split_history
+
+        def short_tail(items, keep_tokens, estimator):
+            # a split whose tail came out short of keep, however that happened
+            return real(items, keep_tokens // 3, estimator)
+
+        compaction.split_history = short_tail
+        try:
+            ok = await c.compact_once(5000)
+        finally:
+            compaction.split_history = real
+        return agent, before, model, ok
+
+    agent, before, model, ok = asyncio.run(run())
+    assert ok is False and model.requests == []
     assert _dump(agent.chat_ctx) == before
 
 

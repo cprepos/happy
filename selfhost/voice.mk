@@ -14,6 +14,8 @@
 #   make voice-agent-up    build and (re)start only the voice-agent worker (other services untouched)
 #   make voice-agent-logs  follow the voice-agent worker logs
 #   make voice-agent-e2e   headless fake-app conversation against the running worker (tests/e2e_fake_app.py)
+#   make voice-agent-test  the worker's unit tests (tests/test_units.py, no services needed);
+#                          VOICE_AGENT_TEST_ARGS=... extra pytest flags, e.g. "-k compaction"
 #   make voice-tts-lead-sweep  measure Kokoro's pre-speech lead per voice (tests/tts_lead_sweep.py)
 #   make voice-stream-e2e  same idea through happy-server's /v1/voice/stream (scripts/voice-stream-e2e.mjs):
 #                          end-of-speech -> first agent audio and downlink jitter. Token: HAPPY_TOKEN or
@@ -24,7 +26,7 @@ VOICE_ENV := $(VOICE_DIR)/.env.voice
 VOICE_COMPOSE := docker compose -p happy-voice -f $(VOICE_DIR)/compose.voice.yml --env-file $(VOICE_ENV)
 SVC ?=
 
-.PHONY: voice-keys voice-build voice-up voice-down voice-status voice-logs voice-smoke voice-try voice-agent-up voice-agent-logs voice-agent-e2e voice-stream-e2e voice-agent-venv voice-tts-lead-sweep
+.PHONY: voice-keys voice-build voice-up voice-down voice-status voice-logs voice-smoke voice-try voice-agent-up voice-agent-logs voice-agent-e2e voice-stream-e2e voice-agent-venv voice-tts-lead-sweep voice-agent-test
 
 VOICE_TRY_VENV ?= $(HOME)/.cache/happy-voice-try-venv
 # 8899 was the old default; the host's agentgateway took it (it serves the virtual `coder`).
@@ -104,6 +106,21 @@ voice-agent-venv:
 		if command -v uv >/dev/null 2>&1; then uv venv -q -p 3.12 "$(VOICE_AGENT_VENV)" && uv pip install -q -p "$(VOICE_AGENT_VENV)/bin/python" -r $(VOICE_AGENT_DIR)/requirements.txt; \
 		else python3 -m venv "$(VOICE_AGENT_VENV)" && "$(VOICE_AGENT_VENV)/bin/pip" install -q -r $(VOICE_AGENT_DIR)/requirements.txt; fi; \
 	fi
+
+# Unit tests in the same venv. pytest is not a worker requirement, so it is added here once
+# (with uv when it is on PATH or in ~/.local/bin, as a uv-made venv has no pip).
+# tests/test_units.py puts the package root on sys.path itself; -I keeps the caller's cwd and
+# environment out of the imports.
+VOICE_AGENT_PYTEST ?= pytest==8.3.5
+VOICE_AGENT_TEST_ARGS ?=
+voice-agent-test: voice-agent-venv
+	@if ! "$(VOICE_AGENT_VENV)/bin/python" -I -c "import pytest" >/dev/null 2>&1; then \
+		echo "== installing $(VOICE_AGENT_PYTEST) into $(VOICE_AGENT_VENV)"; \
+		if command -v uv >/dev/null 2>&1; then uv pip install -q -p "$(VOICE_AGENT_VENV)/bin/python" "$(VOICE_AGENT_PYTEST)"; \
+		elif [ -x "$(HOME)/.local/bin/uv" ]; then "$(HOME)/.local/bin/uv" pip install -q -p "$(VOICE_AGENT_VENV)/bin/python" "$(VOICE_AGENT_PYTEST)"; \
+		else "$(VOICE_AGENT_VENV)/bin/python" -m ensurepip -q 2>/dev/null; "$(VOICE_AGENT_VENV)/bin/python" -m pip install -q "$(VOICE_AGENT_PYTEST)"; fi; \
+	fi
+	cd $(VOICE_AGENT_DIR) && "$(VOICE_AGENT_VENV)/bin/python" -I -m pytest -q -p no:cacheprovider tests/test_units.py $(VOICE_AGENT_TEST_ARGS)
 
 # e.g. make voice-agent-e2e VOICE_AGENT_E2E_ARGS="--dump-audio-native /tmp/agent.wav"
 VOICE_AGENT_E2E_ARGS ?=

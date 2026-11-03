@@ -149,7 +149,8 @@ class PrefixWarmer:
         """Runs `request()` between turns and returns its result, or raises GaveWay.
 
         For background requests to the same server that a turn must never wait for: the
-        compaction summary, and the prefill of a compacted history. It is sent only once no
+        prefill of a compacted history (the compaction summary itself runs alongside turns
+        and does not come through here). It is sent only once no
         turn is running, and a turn that starts while it is in flight cancels it (begin_turn)
         instead of waiting, which is raised here as GaveWay; the caller decides whether to
         send it again. Its own failures are raised as they are.

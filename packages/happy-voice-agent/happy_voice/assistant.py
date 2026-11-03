@@ -230,7 +230,7 @@ class HappyAssistant(Agent):
         self.warmer: PrefixWarmer | None = None
         self.compactor: Compactor | None = None
 
-    def _request_ctx(self, chat_ctx: llm.ChatContext) -> llm.ChatContext:
+    def _request_ctx(self, chat_ctx: llm.ChatContext, tools: list[Any] | None = None) -> llm.ChatContext:
         request = fold_system_messages(chat_ctx)
         compactor = self.compactor
         if compactor is not None:
@@ -239,7 +239,8 @@ class HappyAssistant(Agent):
             # Noted after the cap: the usage that calibrates the estimate measures what was
             # sent. Noting the untrimmed request made the ratio drift low on every capped turn
             # (same tokens over more characters), and the cap overshoot more each time.
-            compactor.note_request(request)
+            # The tools go with it: their schemas are part of the prompt the usage counts.
+            compactor.note_request(request, tools)
         return request
 
     async def llm_node(self, chat_ctx, tools, model_settings):  # type: ignore[override]
@@ -250,7 +251,7 @@ class HappyAssistant(Agent):
             t0 = time.monotonic()
             first = True
             async for chunk in Agent.default.llm_node(
-                self, self._request_ctx(chat_ctx), tools, model_settings
+                self, self._request_ctx(chat_ctx, tools), tools, model_settings
             ):
                 if first:
                     waited = time.monotonic() - t0
@@ -659,7 +660,6 @@ async def entrypoint(ctx: JobContext) -> None:
         summary_tokens=settings.compact_summary_tokens,
         enabled=settings.compaction,
         turn_idle=warmer.wait_idle,
-        between_turns=warmer.between_turns,
         quiet_for=lambda: time.monotonic() - quiet_since,
         settle=settings.max_endpointing_delay + SWAP_SETTLE_MARGIN,
         no_reply_pending=lambda: no_reply_pending(session, warmer),

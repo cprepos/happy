@@ -13,11 +13,14 @@ Nothing about it may be seen, heard, or waited for:
   the session's metrics, transcript or TTS. The request is the turn's own prompt (folded the
   same way, same tools) cut at the split point, plus one instruction, so vLLM's prefix cache
   covers almost all of it.
-- The summary and the prefill below are sent only between turns, and a turn that starts while
-  either is in flight cancels it instead of queueing behind it (PrefixWarmer.between_turns);
-  it is sent again after the turn.
+- The summary is sent as soon as a turn's usage crosses the trigger, and runs alongside the
+  turns that follow: the coder server runs four sequences at a time, so a turn does not queue
+  behind it, and a turn never cancels it. It ends only by finishing, failing or timing out.
 - The compacted history is prefilled (PrefixWarmer.warm) before it is swapped in, so the next
-  turn finds it cached.
+  turn finds it cached. That prefill is sent only between turns, and a turn that starts while
+  it is in flight cancels it (PrefixWarmer.between_turns); it is sent again after the turn. A
+  summary whose prefill never gets through is kept and reused by the next attempt, which goes
+  straight to the prefill as long as the history still holds what it summarized.
 - The swap happens under the context-update lock, and only once no reply can be in the
   making: see Compactor._swap. Changing the history under a preemptive reply throws it away.
   It rebuilds from the *current* history and removes only the summarized items, so whatever
@@ -32,6 +35,7 @@ estimated above the hard cap loses its oldest items, on the request copy only.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from collections.abc import Awaitable, Callable, Sequence
@@ -42,7 +46,7 @@ from livekit.agents import APIConnectOptions, llm
 from livekit.agents.llm.chat_context import DYNAMIC_INSTRUCTIONS_MESSAGE_ID
 
 from .context import fold_system_messages
-from .warmup import WARMUP_PLACEHOLDER, GaveWay
+from .warmup import WARMUP_PLACEHOLDER
 
 logger = logging.getLogger("happy-voice")
 
@@ -59,6 +63,10 @@ SUMMARY_PREFIX = "Summary of earlier conversation: "
 DEFAULT_TOKENS_PER_CHAR = 1 / 3.5
 # chat-template tags around every message, roughly
 ITEM_OVERHEAD_TOKENS = 6
+# The tail is grown until its estimate is this much over `keep`: the estimate is calibrated on
+# whole requests and can still read low for any one stretch of the history, and the newest
+# `keep` tokens must stay verbatim however it errs.
+KEEP_MARGIN = 1.15
 
 SUMMARY_INSTRUCTION = """\
 Stop. Do not reply to the user and do not call any tool. This message is from the system, \
@@ -96,23 +104,43 @@ def _is_conversation(item: Any) -> bool:
     return isinstance(item, (llm.ChatMessage, llm.FunctionCall, llm.FunctionCallOutput))
 
 
+def tool_schema_chars(tools: Sequence[Any] | None) -> int:
+    """The characters the tools' schemas add to a request, roughly as the openai plugin sends them."""
+    if not tools:
+        return 0
+    try:
+        schemas = llm.ToolContext(list(tools)).parse_function_tools("openai", strict=False)
+    except Exception:  # an estimate only; a tool the formatter cannot render counts as nothing
+        return 0
+    return len(json.dumps(schemas, separators=(",", ":")))
+
+
 class TokenEstimator:
     """Estimates token counts from characters, calibrated by the last turn's real usage."""
 
     def __init__(self, tokens_per_char: float = DEFAULT_TOKENS_PER_CHAR) -> None:
         self.tokens_per_char = tokens_per_char
         self._request_chars = 0
+        self._request_items = 0
 
-    def note_request(self, chat_ctx: llm.ChatContext) -> None:
-        """Called with each turn's request; its usage arrives later in observe_usage()."""
-        self._request_chars = sum(item_chars(i) for i in chat_ctx.items)
+    def note_request(self, chat_ctx: llm.ChatContext, tools: Sequence[Any] | None = None) -> None:
+        """Called with each turn's request and tools; its usage arrives later in observe_usage()."""
+        items = [i for i in chat_ctx.items if _is_conversation(i)]
+        self._request_items = len(items)
+        self._request_chars = sum(item_chars(i) for i in items) + tool_schema_chars(tools)
 
     def observe_usage(self, prompt_tokens: int) -> None:
         if prompt_tokens <= 0 or self._request_chars <= 0:
             return
-        # tool schemas and template tags are in prompt_tokens but not in the characters, so
-        # this runs slightly high: estimates err towards compacting sooner, never later
-        ratio = prompt_tokens / self._request_chars
+        # prompt_tokens also counts the tool schemas and the template tags around each item.
+        # The schemas are in the characters (note_request) and the tags are taken off here, at
+        # the same per-item rate tokens() adds back, so the ratio is that of the text alone.
+        # Counting neither made it run high, and a tail grown to `keep` estimated tokens came
+        # out short of `keep` real ones.
+        content = prompt_tokens - ITEM_OVERHEAD_TOKENS * self._request_items
+        if content <= 0:
+            return
+        ratio = content / self._request_chars
         self.tokens_per_char = min(1.0, max(0.1, ratio))
 
     def tokens(self, item: Any) -> int:
@@ -174,17 +202,19 @@ def split_history(
 ) -> Split | None:
     """Splits the history into instructions, a head to summarize and a tail of >= keep_tokens.
 
-    The tail is grown backwards from the newest item until it holds `keep_tokens`, then the
-    cut moves further back to the nearest turn boundary. None when no boundary leaves anything
-    to summarize.
+    The tail is grown backwards from the newest item until its estimate holds `keep_tokens`
+    times KEEP_MARGIN, then the cut moves further back to the nearest turn boundary: it only
+    ever moves backwards, so the tail never holds less. `keep_tokens` is a floor the summary
+    never touches. None when no boundary leaves anything to summarize.
     """
     items = list(items)
     start = _instruction_prefix_len(items)
+    target = keep_tokens * KEEP_MARGIN
     kept = 0
     candidate = None
     for i in range(len(items) - 1, start - 1, -1):
         kept += estimator.tokens(items[i])
-        if kept >= keep_tokens:
+        if kept >= target:
             candidate = i
             break
     if candidate is None:
@@ -325,8 +355,19 @@ BACKOFF_MAX = 600.0
 SWAP_WAIT_MAX = 120.0
 # how often a swap that found a reply in the making looks again (s)
 SWAP_RECHECK = 0.1
-# how many times a summary is sent again after giving way to a turn, before it counts as failed
-SUMMARY_ATTEMPTS = 3
+
+
+@dataclass
+class PendingSummary:
+    """A summary that was written but not swapped in yet, kept for the next attempt."""
+
+    head_ids: set[str]
+    message: llm.ChatMessage
+    text: str
+    head_tokens: int
+    tail_items: int
+    tail_tokens: int
+    summary_ms: float
 
 
 class Compactor:
@@ -346,7 +387,6 @@ class Compactor:
         enabled: bool = True,
         estimator: TokenEstimator | None = None,
         turn_idle: Callable[[], Awaitable[Any]] | None = None,
-        between_turns: Callable[[Callable[[], Awaitable[str]]], Awaitable[str]] | None = None,
         quiet_for: Callable[[], float] | None = None,
         settle: float = 0.0,
         no_reply_pending: Callable[[], bool] | None = None,
@@ -367,8 +407,6 @@ class Compactor:
         self.enabled = enabled
         self.estimator = estimator or TokenEstimator()
         self._turn_idle = turn_idle
-        # PrefixWarmer.between_turns: runs the summary request so that a turn cancels it
-        self._between_turns = between_turns
         # how long `quiet` has been set, and how long it must have been before a swap
         self._quiet_for = quiet_for
         self._settle = settle
@@ -385,12 +423,15 @@ class Compactor:
         # usage is logged (a usage arriving in between belongs to a request made before it)
         self._swapped = False
         self._log_next_usage = False
+        # a finished summary whose prefill or swap did not get through; the next attempt
+        # reuses it instead of writing another
+        self._pending: PendingSummary | None = None
         self.compactions = 0
 
     # -- called from the session --------------------------------------------------------------
 
-    def note_request(self, chat_ctx: llm.ChatContext) -> None:
-        self.estimator.note_request(chat_ctx)
+    def note_request(self, chat_ctx: llm.ChatContext, tools: Sequence[Any] | None = None) -> None:
+        self.estimator.note_request(chat_ctx, tools)
         self._log_next_usage, self._swapped = self._swapped, False
 
     def on_llm_usage(self, prompt_tokens: int, cached_tokens: int) -> None:
@@ -439,11 +480,83 @@ class Compactor:
         logger.info("compaction: next attempt in %.0fs at the earliest", backoff)
 
     async def compact_once(self, prompt_tokens: int = 0) -> bool:
-        """One compaction. True when the history was compacted (or there was nothing to do)."""
-        await self._quiet.wait()
-        if self._turn_idle is not None:
-            await self._turn_idle()
+        """One compaction. True when the history was compacted (or there was nothing to do).
+
+        It starts at once, even with a turn running: the split takes only the old head, and
+        the swap rebuilds from whatever the history is by then. Only the prefill of the
+        compacted history and the swap wait for a gap between turns.
+        """
         agent = self._agent()
+        tools = llm.ToolContext(agent.tools).flatten()
+        pending = self._pending
+        if pending is not None and (
+            compacted_items(agent.chat_ctx.items, pending.head_ids, pending.message.model_copy()) is None
+        ):
+            logger.info("compaction: the history was rewritten since the last summary; writing a new one")
+            self._pending = pending = None
+        if pending is None:
+            pending = await self._write_summary(agent, tools)
+            if not isinstance(pending, PendingSummary):
+                return pending
+            self._pending = pending
+        else:
+            logger.info("compaction: reusing the summary written by the last attempt")
+
+        head_ids, summary = pending.head_ids, pending.message
+        preview = compacted_items(agent.chat_ctx.items, head_ids, summary.model_copy())
+        if preview is None:
+            self._pending = None
+            logger.warning("compaction: history was rewritten during the summary; not swapped")
+            return False
+        t1 = time.monotonic()
+        warmed = await self._warm(warm_request(preview), tools)
+        warm_ms = (time.monotonic() - t1) * 1000
+        if not warmed:
+            logger.warning(
+                "compaction: warm-up failed after %.0fms; history unchanged, summary kept for the "
+                "next attempt",
+                warm_ms,
+            )
+            return False
+
+        # the swap may change the message's created_at; a summary kept for later must not carry it
+        swapped = await self._swap(head_ids, summary.model_copy())
+        if swapped is None:
+            logger.warning("compaction: no quiet moment to swap in; history unchanged, summary kept")
+            return False
+        if swapped is False:
+            self._pending = None
+            logger.warning("compaction: history was rewritten before the swap; not swapped")
+            return False
+        self._pending = None
+        after = self.estimator.total(self._agent().chat_ctx.items)
+        logger.info(
+            "compaction: prompt %d -> ~%d tokens; summarized %d items (~%d tokens) into %d chars, "
+            "kept %d items (~%d tokens); summary %.0fms, warm-up %.0fms",
+            prompt_tokens,
+            after,
+            len(head_ids),
+            pending.head_tokens,
+            len(pending.text),
+            pending.tail_items,
+            pending.tail_tokens,
+            pending.summary_ms,
+            warm_ms,
+        )
+        self._swapped = True
+        # the compacted prompt is below the trigger by design; this only stops a prompt that is
+        # still over it (instructions or summary near the trigger) from compacting again at once
+        self._next_attempt = self._clock() + BACKOFF_BASE
+        if self._on_swapped is not None:
+            self._on_swapped()
+        return True
+
+    async def _write_summary(self, agent: Any, tools: list[Any]) -> PendingSummary | bool:
+        """Splits the history and summarizes its head.
+
+        The summary, or what compact_once returns when there is none: True when there was
+        nothing worth summarizing, False when it could not be written.
+        """
         split = split_history(agent.chat_ctx.items, self.keep, self.estimator)
         # Not worth a request unless the summary is much smaller than what it replaces, and
         # unless it frees a good part of what the trigger allows above `keep`: a call whose
@@ -456,7 +569,15 @@ class Compactor:
             )
             self._next_attempt = self._clock() + BACKOFF_BASE
             return True
-        tools = llm.ToolContext(agent.tools).flatten()
+        # split_history already grows the tail past `keep`; this is the last guard that the
+        # newest `keep` tokens are never summarized, whatever changes in it later
+        if split.tail_tokens < self.keep:
+            logger.warning(
+                "compaction: the kept tail is ~%d tokens, under the %d to keep; not summarized",
+                split.tail_tokens,
+                self.keep,
+            )
+            return False
 
         t0 = time.monotonic()
         try:
@@ -466,91 +587,37 @@ class Compactor:
         except Exception as e:
             logger.warning("compaction: summary failed after %.0fms: %s", (time.monotonic() - t0) * 1000, e)
             return False
-        if text is None:
-            logger.warning(
-                "compaction: the summary gave way to %d turns in a row; history unchanged", SUMMARY_ATTEMPTS
-            )
-            return False
         summary_ms = (time.monotonic() - t0) * 1000
         if not text:
             logger.warning("compaction: empty summary after %.0fms; history unchanged", summary_ms)
             return False
-
+        # counted once per summary written, however many attempts it takes to swap it in
         self.compactions += 1
-        summary = summary_message(text, self.compactions)
-        head_ids = split.head_ids
-        preview = compacted_items(agent.chat_ctx.items, head_ids, summary.model_copy())
-        if preview is None:
-            logger.warning("compaction: history was rewritten during the summary; not swapped")
-            return False
-        t1 = time.monotonic()
-        warmed = await self._warm(warm_request(preview), tools)
-        warm_ms = (time.monotonic() - t1) * 1000
-        if not warmed:
-            logger.warning("compaction: warm-up failed after %.0fms; history unchanged", warm_ms)
-            return False
-
-        swapped = await self._swap(head_ids, summary)
-        if swapped is None:
-            logger.warning("compaction: no quiet moment to swap in; history unchanged")
-            return False
-        if swapped is False:
-            logger.warning("compaction: history was rewritten before the swap; not swapped")
-            return False
-        after = self.estimator.total(self._agent().chat_ctx.items)
-        logger.info(
-            "compaction: prompt %d -> ~%d tokens; summarized %d items (~%d tokens) into %d chars, "
-            "kept %d items (~%d tokens); summary %.0fms, warm-up %.0fms",
-            prompt_tokens,
-            after,
-            len(head_ids),
-            split.head_tokens,
-            len(text),
-            len(split.tail),
-            split.tail_tokens,
-            summary_ms,
-            warm_ms,
+        return PendingSummary(
+            head_ids=split.head_ids,
+            message=summary_message(text, self.compactions),
+            text=text,
+            head_tokens=split.head_tokens,
+            tail_items=len(split.tail),
+            tail_tokens=split.tail_tokens,
+            summary_ms=summary_ms,
         )
-        self._swapped = True
-        # the compacted prompt is below the trigger by design; this only stops a prompt that is
-        # still over it (instructions or summary near the trigger) from compacting again at once
-        self._next_attempt = self._clock() + BACKOFF_BASE
-        if self._on_swapped is not None:
-            self._on_swapped()
-        return True
 
-    async def _summarize(self, request: llm.ChatContext, tools: list[Any]) -> str | None:
-        """The summary text, or None if it gave way to a turn SUMMARY_ATTEMPTS times.
+    async def _summarize(self, request: llm.ChatContext, tools: list[Any]) -> str:
+        """The summary text; raises if the request fails or times out.
 
-        The summary runs on the same server as the turns. A turn that starts while it is being
-        written cancels it rather than queue behind it (via between_turns), and it is sent again
-        once that turn is over: the request is the same prefix, so a retry mostly hits the cache.
-        A retry is not a failure and does not back off.
+        The summary runs on the same server as the turns, alongside them: the server runs
+        four sequences at a time, so a turn neither waits for it nor cancels it. The request
+        is the turn's own prompt cut at the split, so it mostly hits the prefix cache, and it
+        ends only by finishing, failing or timing out.
         """
-
-        def send() -> Awaitable[str]:
-            return summarize(
-                self._summarizer,
-                request,
-                tools,
-                timeout=self._timeout,
-                conn_options=self._conn_options,
-            )
-
-        if self._between_turns is None:
-            return await send()
-        for attempt in range(1, SUMMARY_ATTEMPTS + 1):
-            t0 = time.monotonic()
-            try:
-                return await self._between_turns(send)
-            except GaveWay:
-                logger.info(
-                    "compaction: summary gave way to a turn after %.0fms (attempt %d of %d)",
-                    (time.monotonic() - t0) * 1000,
-                    attempt,
-                    SUMMARY_ATTEMPTS,
-                )
-        return None
+        return await summarize(
+            self._summarizer,
+            request,
+            tools,
+            timeout=self._timeout,
+            conn_options=self._conn_options,
+        )
 
     def _min_head(self) -> int:
         return max(2 * self.summary_tokens, (self.trigger - self.keep) // 2)
