@@ -101,3 +101,40 @@ public enum ChatOlderEndContent: Equatable, Sendable {
     /// The button is the history's, not the server paging's.
     public var isHistoryAction: Bool { self == .loadHistory || self == .retryHistory }
 }
+
+/// What EmptyMessages shows under the session's details, a chat with no
+/// message in the store: the server's paging first, and once the server
+/// has nothing (`noMessages`, where the oldest page is trivially reached),
+/// a Claude Desktop chat's history button in place of "No messages yet".
+/// A new Claude Desktop mirror starts here, with all its history on the
+/// computer.
+public enum ChatEmptyContent: Equatable, Sendable {
+    /// "No messages yet".
+    case noMessages
+    case spinner
+    /// The server's older page failed.
+    case retry
+    case loadMore
+    /// "Load previous history".
+    case loadHistory
+    /// `desktop-load-history` failed.
+    case retryHistory
+
+    public init(paging: ChatOlderPaging.EmptyStatus, history: DesktopHistoryButtonState) {
+        switch paging {
+        case .loading: self = .spinner
+        case .error: self = .retry
+        case .loadMore: self = .loadMore
+        case .noMessages:
+            switch history {
+            case .hidden: self = .noMessages
+            case .ready: self = .loadHistory
+            case .loading: self = .spinner
+            case .failed: self = .retryHistory
+            }
+        }
+    }
+
+    /// The button is the history's, not the server paging's.
+    public var isHistoryAction: Bool { self == .loadHistory || self == .retryHistory }
+}

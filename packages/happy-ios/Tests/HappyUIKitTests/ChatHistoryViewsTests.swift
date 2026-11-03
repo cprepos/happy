@@ -129,6 +129,39 @@ final class ChatHistoryViewsTests: XCTestCase {
         XCTAssertFalse(placeholder.button.isHidden)
     }
 
+    /// A new Claude Desktop mirror has no messages: "Load previous history"
+    /// takes "No messages yet"'s place, spins while it loads, offers Retry
+    /// after a failure, and presses reach the history, not the paging.
+    func testAnEmptyDesktopChatOffersItsHistory() async {
+        let placeholder = ChatPlaceholderView(frame: CGRect(x: 0, y: 0, width: 393, height: 600))
+        var paging = 0
+        var history = 0
+        placeholder.onAction = { paging += 1 }
+        placeholder.onHistoryAction = { history += 1 }
+
+        await show(.empty(state(), .noMessages, history: .ready), in: placeholder)
+        XCTAssertFalse(placeholder.button.isHidden)
+        XCTAssertEqual(placeholder.button.title, Strings.Chat.loadPreviousHistory)
+        XCTAssertGreaterThan(placeholder.button.frame.height, 0)
+        placeholder.button.onTap?()
+        XCTAssertEqual(history, 1)
+
+        await show(.empty(state(), .noMessages, history: .loading), in: placeholder)
+        XCTAssertTrue(placeholder.button.isHidden)
+        XCTAssertTrue(placeholder.pagingSpinner.isAnimating)
+
+        await show(.empty(state(), .noMessages, history: .failed), in: placeholder)
+        XCTAssertEqual(placeholder.button.title, Strings.Chat.retry)
+        placeholder.button.onTap?()
+        XCTAssertEqual(history, 2)
+
+        // The server's own paging shows first, and its Retry is its own.
+        await show(.empty(state(), .error, history: .ready), in: placeholder)
+        placeholder.button.onTap?()
+        XCTAssertEqual(paging, 1)
+        XCTAssertEqual(history, 2)
+    }
+
     func testAFailedFirstLoadOffersRetryInTheSpinnersPlace() async {
         let placeholder = ChatPlaceholderView(frame: CGRect(x: 0, y: 0, width: 393, height: 600))
         var actions = 0

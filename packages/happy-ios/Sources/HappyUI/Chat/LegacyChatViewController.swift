@@ -323,6 +323,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         placeholder.traitOverrides.followsTextSize = true
         placeholder.isHidden = true
         placeholder.onAction = { [weak self] in self?.placeholderAction() }
+        placeholder.onHistoryAction = { [weak self] in self?.loadDesktopHistory() }
         view.addSubview(placeholder)
         if let compose = composing {
             composeTarget.machine.menu = compose.machineMenu()
@@ -729,7 +730,8 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
 
     /// Load previous history: `desktop-load-history` with no params. A
     /// spinner while it runs and Retry if it fails; on success the messages
-    /// and the lower `before` arrive by sync, so nothing else is done.
+    /// and the lower `before` arrive by sync, so nothing else is done. The
+    /// same call from the older end and from the empty chat's placeholder.
     private func loadDesktopHistory() {
         guard desktopHistoryLoad != .running else { return }
         let generation = chatGeneration
@@ -737,12 +739,14 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         let load = services.loadDesktopHistory
         desktopHistoryLoad = .running
         updateOlderEnd()
+        updatePlaceholder()
         Task { [weak self] in
             let failed: Bool
             do { try await load(sessionId); failed = false } catch { failed = true }
             guard let self, self.chatGeneration == generation else { return }
             self.desktopHistoryLoad = failed ? .failed : .idle
             self.updateOlderEnd()
+            self.updatePlaceholder()
         }
     }
 
@@ -1585,7 +1589,10 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
             } else if facts?.isLoaded == true {
                 content = .empty(
                     ChatEmptyState(metadata: record.metadata, createdAt: record.createdAt, now: Int64(Date().timeIntervalSince1970 * 1000)),
-                    historyPager?.emptyStatus ?? .noMessages
+                    historyPager?.emptyStatus ?? .noMessages,
+                    // Nothing in the store: the oldest page is reached once
+                    // the server has nothing either (`ChatEmptyContent`).
+                    history: DesktopHistoryButtonState.resolve(metadata: record.metadata, reachedOldest: true, load: desktopHistoryLoad)
                 )
             } else {
                 content = historyPager?.firstLoadFailed == true ? .loadFailed : .loading

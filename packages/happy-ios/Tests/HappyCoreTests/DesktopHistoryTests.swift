@@ -59,6 +59,32 @@ final class DesktopHistoryTests: XCTestCase {
         XCTAssertEqual([C.empty, .spinner, .retry, .loadMore, .loadHistory, .retryHistory].filter(\.isHistoryAction), [.loadHistory, .retryHistory])
     }
 
+    /// A new mirror starts with no messages: EmptyMessages offers the
+    /// history once the server has nothing (`noMessages`), where the
+    /// oldest page is trivially reached.
+    func testAnEmptyChatOffersTheHistoryInPlaceOfNoMessages() {
+        typealias C = ChatEmptyContent
+        let histories: [DesktopHistoryButtonState] = [.hidden, .ready, .loading, .failed]
+        for history in histories {
+            XCTAssertEqual(C(paging: .loading, history: history), .spinner)
+            XCTAssertEqual(C(paging: .error, history: history), .retry)
+            XCTAssertEqual(C(paging: .loadMore, history: history), .loadMore)
+        }
+        XCTAssertEqual(C(paging: .noMessages, history: .hidden), .noMessages)
+        XCTAssertEqual(C(paging: .noMessages, history: .ready), .loadHistory)
+        XCTAssertEqual(C(paging: .noMessages, history: .loading), .spinner)
+        XCTAssertEqual(C(paging: .noMessages, history: .failed), .retryHistory)
+        XCTAssertEqual([C.noMessages, .spinner, .retry, .loadMore, .loadHistory, .retryHistory].filter(\.isHistoryAction), [.loadHistory, .retryHistory])
+
+        // The screen's input: a fresh mirror with everything still on the
+        // computer, and a Claude Code chat that merely has the field.
+        let fresh = DesktopHistoryButtonState.resolve(metadata: desktop(before: .number(240)), reachedOldest: true, load: .idle)
+        XCTAssertEqual(C(paging: .noMessages, history: fresh), .loadHistory)
+        let claudeCode: JSONValue = .object(["flavor": .string("claude"), "desktopHistory": .object(["before": .number(40)])])
+        let other = DesktopHistoryButtonState.resolve(metadata: claudeCode, reachedOldest: true, load: .idle)
+        XCTAssertEqual(C(paging: .noMessages, history: other), .noMessages)
+    }
+
     func testEveryLanguageSaysTheLabelItsOwnWay() async {
         let key = "native.chat.loadPreviousHistory"
         let english = TranslationCatalog.nativeSources["en"]?[key]

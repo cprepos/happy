@@ -51,7 +51,7 @@ struct ChatPlaceholderModel: Equatable, Sendable {
             loading = true
         case .loadFailed:
             button = Strings.Chat.retry
-        case .empty(let state, let paging):
+        case .empty(let state, let paging, let history):
             icon = Glyph(icon: .ionicons(state.osIcon), size: 72)
             // EmptyMessages' margins: each line sits the previous line's
             // marginBottom below it (icon 12, host 4, path 40, status 8).
@@ -67,13 +67,21 @@ struct ChatPlaceholderModel: Equatable, Sendable {
             // The title and the spinner keep 8 under them; RoundButton
             // has no margin.
             var createdSpacing: CGFloat = 8
-            switch paging {
+            // A Claude Desktop chat's history button takes "No messages
+            // yet"'s place, in the same status slot as Retry and Load more.
+            let shown = ChatEmptyContent(paging: paging, history: history)
+            switch shown {
             case .noMessages:
                 lines.append(Line(text: Strings.Chat.noMessages, style: ChatTextStyles.emptyTitle, color: Palette.textSecondary, spacing: spacing, padding: 48))
-            case .loading:
+            case .spinner:
                 status = Status(index: lines.count, spacing: spacing)
-            case .error, .loadMore:
-                status = Status(index: lines.count, spacing: spacing, button: paging == .error ? Strings.Chat.retry : Strings.Chat.loadMore)
+            case .retry, .loadMore, .loadHistory, .retryHistory:
+                let title = switch shown {
+                case .loadMore: Strings.Chat.loadMore
+                case .loadHistory: Strings.Chat.loadPreviousHistory
+                default: Strings.Chat.retry
+                }
+                status = Status(index: lines.count, spacing: spacing, button: title)
                 createdSpacing = 0
             }
             lines.append(Line(
