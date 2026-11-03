@@ -55,6 +55,7 @@ import { Avatar } from './Avatar';
 import { StatusDot } from './StatusDot';
 import { ShimmerText } from './ShimmerText';
 import { FlatSessionRow } from './FlatSessionRow';
+import { toFlatSessionRow } from '@/utils/flatSessionList';
 import { HomeListHeader } from './HomeListHeader';
 import { layout } from './layout';
 
@@ -260,7 +261,10 @@ export const ProjectHomeListView = React.memo(({
                     </View>
                 );
             case 'archived':
-                return <ChatRow session={item.session} archived />;
+                // Retired chats belong to no checkout any more. They use the
+                // flat list's row, faded, so the archive still names each
+                // chat's project, computer and harness.
+                return <FlatSessionRow row={toFlatSessionRow(item.session)} archived />;
         }
     }, [onToggle, onToggleArchive, styles, theme]);
 
@@ -698,22 +702,19 @@ const BotRow = React.memo(({ session }: { session: SessionRowData }) => (
 ));
 
 /**
- * One chat as a row of its own: a bot, which is a single standing chat, or a
- * retired chat in the archive, which belongs to no checkout any more. Both
- * open the chat directly. The archive is drawn faded, the way the flat layout
- * fades it.
+ * One chat as a row of its own: a bot, which is a single standing chat. It
+ * opens the chat directly. (Archived chats use the flat list's row.)
  */
-const ChatRow = React.memo(({ session, bot = false, archived = false }: {
+const ChatRow = React.memo(({ session, bot = false }: {
     session: SessionRowData;
     bot?: boolean;
-    archived?: boolean;
 }) => {
     const styles = stylesheet;
     const pressHandlers = useSessionPressHandlers(session.id);
     const presentation = resolveFlatSessionRowPresentation({
         state: session.state,
         hasUnread: session.hasUnread,
-        faded: archived || session.machineOffline,
+        faded: session.machineOffline,
     });
     const timestamp = React.useMemo(
         () => formatSessionListTimestamp(session.lastActivityAt),
@@ -725,7 +726,7 @@ const ChatRow = React.memo(({ session, bot = false, archived = false }: {
             {...pressHandlers}
             accessibilityRole="button"
             accessibilityLabel={session.name}
-            style={[styles.botRow, archived && styles.archivedRow]}
+            style={styles.botRow}
         >
             <View style={styles.avatarLane}>
                 {/*
@@ -926,9 +927,6 @@ const stylesheet = StyleSheet.create((theme) => ({
         alignItems: 'center',
         height: BOT_ROW_HEIGHT,
         paddingHorizontal: ROW_PADDING_X,
-    },
-    archivedRow: {
-        opacity: 0.6,
     },
     // The divider that opens the archive, drawn as the flat layout draws it.
     archiveToggle: {
