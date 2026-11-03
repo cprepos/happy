@@ -922,12 +922,34 @@ def test_compaction_settings_defaults_overrides_and_bad_order() -> None:
     assert s.compaction is False
     assert (s.compact_keep, s.compact_trigger, s.context_hard_cap) == (1000, 3000, 50000)
     assert s.compact_summary_tokens == 300
-    # KEEP < TRIGGER < HARD_CAP must hold, or all three fall back together
-    s = _compaction_settings(VOICE_COMPACT_TRIGGER="5000", VOICE_COMPACT_KEEP="9000")
-    assert (s.compact_keep, s.compact_trigger, s.context_hard_cap) == (8000, 32000, 235929)
+    assert _compaction_settings(VOICE_COMPACT_KEEP="lots").compact_keep == 8000
+
+
+def test_compaction_settings_fit_under_a_valid_hard_cap() -> None:
+    # KEEP < TRIGGER < HARD_CAP must hold; a valid cap is kept and the others lowered to fit
+    s = _compaction_settings(VOICE_CONTEXT_HARD_CAP="20000")
+    assert (s.compact_keep, s.compact_trigger, s.context_hard_cap) == (8000, 15000, 20000)
+    assert s.compaction is True
     s = _compaction_settings(VOICE_COMPACT_TRIGGER="300000")
     assert (s.compact_keep, s.compact_trigger, s.context_hard_cap) == (8000, 32000, 235929)
-    assert _compaction_settings(VOICE_COMPACT_KEEP="lots").compact_keep == 8000
+    s = _compaction_settings(VOICE_COMPACT_TRIGGER="5000", VOICE_COMPACT_KEEP="9000")
+    assert (s.compact_keep, s.compact_trigger, s.context_hard_cap) == (1250, 5000, 235929)
+    assert s.compaction is True
+    s = _compaction_settings(VOICE_CONTEXT_HARD_CAP="1")
+    assert s.context_hard_cap == 1 and s.compact_trigger < 1 and s.compaction is False
+    # the summary must be well under what it replaces, or compaction is turned off
+    s = _compaction_settings(VOICE_COMPACT_TRIGGER="3000", VOICE_COMPACT_KEEP="1000")
+    assert s.compact_summary_tokens == 1200 and s.compaction is False
+    s = _compaction_settings(
+        VOICE_COMPACT_TRIGGER="3000", VOICE_COMPACT_KEEP="1000", VOICE_COMPACT_SUMMARY_TOKENS="999"
+    )
+    assert s.compaction is True
+    s = _compaction_settings(
+        VOICE_COMPACT_TRIGGER="3000", VOICE_COMPACT_KEEP="1000", VOICE_COMPACT_SUMMARY_TOKENS="1000"
+    )
+    assert s.compaction is False
+    # the summary limit and the backstop stay as given even when compaction is turned off
+    assert (s.compact_keep, s.compact_trigger, s.context_hard_cap) == (1000, 3000, 235929)
 
 
 def _ping_tool():

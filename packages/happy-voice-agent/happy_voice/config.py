@@ -191,20 +191,41 @@ class Settings:
     )
 
     def __post_init__(self) -> None:
-        if not self.compact_keep < self.compact_trigger < self.context_hard_cap:
+        # KEEP < TRIGGER < HARD_CAP must hold. The hard cap is the one that protects the call
+        # (it is what the server can take), so a valid cap is kept and the other two are
+        # lowered to fit under it, rather than all three thrown away for the defaults.
+        if self.compact_trigger >= self.context_hard_cap:
+            trigger = min(COMPACT_TRIGGER, self.context_hard_cap * 3 // 4)
             logger.warning(
-                "VOICE_COMPACT_KEEP=%d < VOICE_COMPACT_TRIGGER=%d < VOICE_CONTEXT_HARD_CAP=%d does not "
-                "hold; using %d, %d and %d",
-                self.compact_keep,
+                "VOICE_COMPACT_TRIGGER=%d is not below VOICE_CONTEXT_HARD_CAP=%d; using %d",
                 self.compact_trigger,
                 self.context_hard_cap,
-                COMPACT_KEEP,
-                COMPACT_TRIGGER,
-                CONTEXT_HARD_CAP,
+                trigger,
             )
-            self.compact_keep = COMPACT_KEEP
-            self.compact_trigger = COMPACT_TRIGGER
-            self.context_hard_cap = CONTEXT_HARD_CAP
+            self.compact_trigger = trigger
+        if self.compact_keep >= self.compact_trigger:
+            keep = min(COMPACT_KEEP, self.compact_trigger // 4)
+            logger.warning(
+                "VOICE_COMPACT_KEEP=%d is not below VOICE_COMPACT_TRIGGER=%d; using %d",
+                self.compact_keep,
+                self.compact_trigger,
+                keep,
+            )
+            self.compact_keep = keep
+        # A compaction replaces what lies between KEEP and TRIGGER with a summary of up to
+        # SUMMARY_TOKENS. If the summary may be as large as half that, compacting gains little
+        # and would run again on the next turn; with no room at all it cannot run.
+        room = self.compact_trigger - self.compact_keep
+        if self.compaction and (self.compact_keep < 1 or 2 * self.compact_summary_tokens >= room):
+            logger.warning(
+                "compaction off: VOICE_COMPACT_SUMMARY_TOKENS=%d leaves no room between "
+                "VOICE_COMPACT_KEEP=%d and VOICE_COMPACT_TRIGGER=%d (needs 2 x summary < "
+                "trigger - keep)",
+                self.compact_summary_tokens,
+                self.compact_keep,
+                self.compact_trigger,
+            )
+            self.compaction = False
 
     def voice_for(self, language: str | None) -> str:
         if not language:
