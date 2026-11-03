@@ -8,6 +8,10 @@ Read it in full before running `eas update`, `eas build`, `eas submit`, any
 That covers preview and production OTA updates, native builds, store
 submissions, and CLI publishes.
 
+The native iOS app (`packages/happy-ios`, bundle `org.girthbass.native`) is
+not an EAS app. Installing it on the user's iPhone or iPad, directly or over the
+air, goes through `.agents/skills/happy-ios-ota/SKILL.md`.
+
 The rule the skill opens with is the one that is never skipped: **release from
 a local `main` that is exactly `origin/main`, checked against a fetch made right
 then, with a clean tree.** Not from a worktree. Not from a branch. Not from a
