@@ -23,6 +23,12 @@ KOKORO_VOICES = {
 
 logger = logging.getLogger("happy-voice")
 
+# history compaction defaults, in tokens; see Settings.compaction
+COMPACT_TRIGGER = 32000
+COMPACT_KEEP = 8000
+CONTEXT_HARD_CAP = 235929  # 90% of the model's 262144-token window
+COMPACT_SUMMARY_TOKENS = 1200
+
 
 def _env(name: str, default: str) -> str:
     value = os.environ.get(name)
@@ -166,6 +172,39 @@ class Settings:
     )
     config_timeout: float = field(default_factory=lambda: float(_env("CONFIG_RPC_TIMEOUT", "10")))
     tool_timeout: float = field(default_factory=lambda: float(_env("TOOL_RPC_TIMEOUT", "30")))
+    # History compaction (happy_voice/compaction.py). A warm turn stays under 2 s even at 250k
+    # tokens, but a prefix-cache miss re-prefills the whole history at ~1.1-1.6k tokens/s: 21 s
+    # at 32k, past the LLM timeout above ~85k. So once a turn's prompt reaches the trigger, the
+    # old part is summarized in the background and the newest ~KEEP tokens stay verbatim.
+    # VOICE_COMPACTION=0 turns it off; the request is then exactly what it was without it.
+    compaction: bool = field(default_factory=lambda: _env_bool("VOICE_COMPACTION", True))
+    compact_trigger: int = field(default_factory=lambda: _env_int("VOICE_COMPACT_TRIGGER", COMPACT_TRIGGER, minimum=1))
+    compact_keep: int = field(default_factory=lambda: _env_int("VOICE_COMPACT_KEEP", COMPACT_KEEP, minimum=1))
+    # Above this estimated size a request loses its oldest items (on the request only, never the
+    # history). Only reached if compaction is off or keeps failing; 90% of the 262144 window.
+    context_hard_cap: int = field(
+        default_factory=lambda: _env_int("VOICE_CONTEXT_HARD_CAP", CONTEXT_HARD_CAP, minimum=1)
+    )
+    # max_completion_tokens of the summary request
+    compact_summary_tokens: int = field(
+        default_factory=lambda: _env_int("VOICE_COMPACT_SUMMARY_TOKENS", COMPACT_SUMMARY_TOKENS, minimum=1)
+    )
+
+    def __post_init__(self) -> None:
+        if not self.compact_keep < self.compact_trigger < self.context_hard_cap:
+            logger.warning(
+                "VOICE_COMPACT_KEEP=%d < VOICE_COMPACT_TRIGGER=%d < VOICE_CONTEXT_HARD_CAP=%d does not "
+                "hold; using %d, %d and %d",
+                self.compact_keep,
+                self.compact_trigger,
+                self.context_hard_cap,
+                COMPACT_KEEP,
+                COMPACT_TRIGGER,
+                CONTEXT_HARD_CAP,
+            )
+            self.compact_keep = COMPACT_KEEP
+            self.compact_trigger = COMPACT_TRIGGER
+            self.context_hard_cap = CONTEXT_HARD_CAP
 
     def voice_for(self, language: str | None) -> str:
         if not language:
