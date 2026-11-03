@@ -450,6 +450,35 @@ export async function startDesktopSessionFromPhone({
         return { type: 'error', errorMessage: `Could not create the Claude session (exit ${seed.exitCode}): ${seed.output.trim()}` };
     }
 
+    return openDesktopSession({ hub, claudeSessionId, directory, claudeCommand, ttyWrapper, env, runCommand, adoptTimeoutMs });
+}
+
+/**
+ * Opens an existing Claude session in Claude Desktop and waits for the
+ * plugin's SessionStart to adopt it. Used to start a phone-started session
+ * and to resume an archived desktop chat: the mirror's tag is derived from
+ * the Claude session id, so a reopened chat comes back as the same Happy
+ * session.
+ */
+export async function openDesktopSession({
+    hub,
+    claudeSessionId,
+    directory,
+    claudeCommand,
+    ttyWrapper,
+    env,
+    runCommand,
+    adoptTimeoutMs = DESKTOP_PHONE_ADOPT_TIMEOUT_MS,
+}: {
+    hub: DesktopHub;
+    claudeSessionId: string;
+    directory: string;
+    claudeCommand: string[];
+    ttyWrapper: string[];
+    env: NodeJS.ProcessEnv;
+    runCommand: DesktopCommandRunner;
+    adoptTimeoutMs?: number;
+}): Promise<DesktopAdoptResult> {
     // Register before launching so a fast SessionStart cannot be missed.
     const adopted = hub.waitForAdoption(claudeSessionId, adoptTimeoutMs);
 

@@ -37,7 +37,7 @@ import {
 import { startHappyTerminalDaemon } from './happyTerminalBoot';
 import { appendDaemonSpawnModeArgs, shouldForwardDaemonPermissionMode } from './spawnModeArgs';
 import { hasPersistedProcessConflict, isPidAlive, machineBootTimeMs } from './sessionLiveness';
-import { createDesktopHub, runDesktopCommand, startDesktopSessionFromPhone } from './desktopHub';
+import { createDesktopHub, openDesktopSession, runDesktopCommand, startDesktopSessionFromPhone } from './desktopHub';
 import { claudeCliPath } from '@/claude/claudeLocal';
 import { logsPrune } from '@/utils/logsPrune';
 
@@ -898,6 +898,29 @@ export async function startDaemon(): Promise<void> {
               tracked.happySessionMetadataFromLocalWebhook = serverMetadata;
             }
           }
+        }
+
+        // A Claude Desktop chat is run by the desktop app, not by Happy:
+        // resuming it means asking the desktop to reopen that Claude session.
+        // Its SessionStart re-adopts it, and the mirror's stable tag brings
+        // back this same Happy session, unarchived.
+        if (metadata.harness === 'claude-desktop') {
+          if (!metadata.claudeSessionId || !metadata.path) {
+            return { type: 'error', errorMessage: `Claude Desktop session ${happySessionId} has no Claude session id or folder to reopen.` };
+          }
+          logger.debug(`[DAEMON RUN] Reopening Claude Desktop session ${metadata.claudeSessionId} for ${happySessionId}`);
+          const reopened = await openDesktopSession({
+            hub: desktopHub,
+            claudeSessionId: metadata.claudeSessionId,
+            directory: metadata.path,
+            claudeCommand: [process.execPath, claudeCliPath],
+            ttyWrapper: ['script', '-q', '/dev/null'],
+            env: buildSessionChildEnvironment(ambientEnvironment),
+            runCommand: runDesktopCommand,
+          });
+          return reopened.type === 'success'
+            ? { type: 'success', sessionId: reopened.happySessionId }
+            : { type: 'error', errorMessage: reopened.errorMessage };
         }
 
         const launch = buildResumeLaunch(

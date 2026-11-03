@@ -16,6 +16,7 @@ import {
     DesktopAdoptRequest,
     DesktopAttachResult,
     DesktopHub,
+    openDesktopSession,
     runDesktopCommand,
     startDesktopSessionFromPhone,
 } from './desktopHub';
@@ -365,6 +366,26 @@ if (args.includes('--desktop') && resume !== -1) {
         // The desktop's own Claude must be adoptable.
         expect(launch.managed).toBeNull();
         expect(h.spawned[0].claudeSessionId).toBe(seed.args[2]);
+    });
+
+    it('reopens an existing session in the desktop without seeding (resume)', async () => {
+        const result = await openDesktopSession({
+            hub: h.hub,
+            claudeSessionId: 'existing-claude-session',
+            directory: dir,
+            claudeCommand: [process.execPath, fakeClaude],
+            ttyWrapper,
+            env: { ...process.env, FAKE_CLAUDE_LOG: callLog, FAKE_DAEMON_PORT: String(h.port), HAPPY_MANAGED: '1' },
+            runCommand: runDesktopCommand,
+            adoptTimeoutMs: 10_000,
+        });
+
+        expect(result).toEqual({ type: 'success', happySessionId: 'happy-1' });
+        const launched = calls();
+        expect(launched).toHaveLength(1);
+        expect(launched[0].args).toEqual(['--desktop', '--resume', 'existing-claude-session']);
+        expect(launched[0].managed).toBeNull();
+        expect(h.spawned[0].claudeSessionId).toBe('existing-claude-session');
     });
 
     it('fails fast when the seed fails', async () => {
