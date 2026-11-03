@@ -9,6 +9,8 @@ import { t } from '@/text';
 import { RoundButton } from './RoundButton';
 import { useSessionMessages } from '@/sync/storage';
 import { sync } from '@/sync/sync';
+import { sessionDesktopLoadHistory } from '@/sync/ops';
+import { desktopHistoryButtonState, type DesktopHistoryRequestState } from '@/utils/desktopHistory';
 
 const MAX_INVISIBLE_OLDER_PAGES = 5;
 
@@ -122,6 +124,31 @@ export function EmptyMessages({ session }: EmptyMessagesProps) {
             () => { if (pendingRef.current === request) { pendingRef.current = null; setBlocked('error'); } },
         );
     }, [session.id, hasMoreOlder, isLoadingOlder, blocked, settled]);
+    // A fresh Claude Desktop mirror starts with no messages: its transcript
+    // stays on the desktop until asked for (docs/plans/happyify-desktop-sync.md,
+    // "Contract: on-demand history"). Offer it once the server has no older
+    // page; loaded messages arrive through sync and replace this placeholder.
+    const [desktopHistoryRequest, setDesktopHistoryRequest] = React.useState<{ sessionId: string; state: DesktopHistoryRequestState }>(
+        () => ({ sessionId: session.id, state: 'idle' }),
+    );
+    const desktopHistory = desktopHistoryButtonState({
+        metadata: session.metadata,
+        reachedOldest: !hasMoreOlder && !isLoadingOlder,
+        request: desktopHistoryRequest.sessionId === session.id ? desktopHistoryRequest.state : 'idle',
+    });
+    const desktopHistoryLoadingRef = React.useRef(false);
+    const loadDesktopHistory = React.useCallback(() => {
+        if (desktopHistoryLoadingRef.current) return;
+        desktopHistoryLoadingRef.current = true;
+        const sessionId = session.id;
+        setDesktopHistoryRequest({ sessionId, state: 'loading' });
+        sessionDesktopLoadHistory(sessionId).then(
+            () => setDesktopHistoryRequest({ sessionId, state: 'idle' }),
+            () => setDesktopHistoryRequest({ sessionId, state: 'failed' }),
+        ).finally(() => {
+            desktopHistoryLoadingRef.current = false;
+        });
+    }, [session.id]);
     const { theme } = useUnistyles();
     const styles = stylesheet;
     const osIcon = getOSIcon(session.metadata?.os);
@@ -160,6 +187,14 @@ export function EmptyMessages({ session }: EmptyMessagesProps) {
                 }} />
             ) : (
                 <ActivityIndicator size="small" color={theme.colors.textSecondary} style={{ marginBottom: 8 }} />
+            )}
+
+            {desktopHistory !== 'hidden' && (
+                <View style={{ marginBottom: 8 }}>
+                    {desktopHistory === 'loading' && <ActivityIndicator size="small" color={theme.colors.textSecondary} />}
+                    {desktopHistory === 'failed' && <RoundButton size="small" display="inverted" title={t('common.retry')} onPress={loadDesktopHistory} />}
+                    {desktopHistory === 'ready' && <RoundButton size="small" display="inverted" title={t('common.loadPreviousHistory')} onPress={loadDesktopHistory} />}
+                </View>
             )}
             
             <Text style={styles.createdText}>
