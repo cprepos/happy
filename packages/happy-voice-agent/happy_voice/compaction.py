@@ -288,6 +288,12 @@ async def summarize(
     conn_options: APIConnectOptions | None = None,
 ) -> str:
     """The text the summarizer wrote; tool calls it makes instead are ignored."""
+    # The tools are sent, with tool_choice "none", rather than left out: the prefix cache only
+    # covers the turn's prompt if the tool schemas are rendered into it the same way. That
+    # relies on vLLM rendering the tools into the chat template under tool_choice "none",
+    # which is its default; a server started with --exclude-tools-when-tool-choice-none drops
+    # them, and the summary then re-prefills the whole history (slower, not wrong).
+    # The openai plugin sends both as given (test_summary_request_sends_the_turn_tools...).
     kwargs: dict[str, Any] = {"tool_choice": "none"}
     if conn_options is not None:
         kwargs["conn_options"] = conn_options

@@ -1439,39 +1439,49 @@ def test_the_swap_also_waits_for_the_context_lock() -> None:
 
 
 def test_the_swap_emits_nothing_and_the_summary_reaches_neither_speech_nor_transcript() -> None:
-    """Runs the library's own AgentActivity.update_chat_ctx: it must not touch the session."""
-    from types import SimpleNamespace
-
+    """Swaps through LiveKit's own AgentSession and AgentActivity: the session's history (the
+    transcript) and its events are untouched, and the summary is a system message only."""
+    from livekit.agents import AgentSession
     from livekit.agents.voice.agent_activity import AgentActivity
-
-    class Recorder:
-        def __init__(self) -> None:
-            self.touched: list[str] = []
-
-        def __getattr__(self, name: str):
-            self.touched.append(name)
-            return lambda *a, **k: self.touched.append(f"{name}()")
 
     async def run():
         agent = _agent(_history(30))
-        session = Recorder()
-        activity = SimpleNamespace(_agent=agent, _rt_session=None, tools=agent.tools, _session=session)
-        activity.update_chat_ctx = lambda ctx, **kw: AgentActivity.update_chat_ctx(activity, ctx, **kw)
+        session = AgentSession()
+        for item in _history(30).items:  # the transcript as the session recorded it
+            session._chat_ctx.items.append(item.model_copy())
+        transcript_before = _dump(session.history)
+        emitted: list[str] = []
+        real_emit = session.emit
+
+        def emit(event, *args):
+            emitted.append(event)
+            return real_emit(event, *args)
+
+        session.emit = emit
+        activity = AgentActivity(agent, session)
         agent._activity = activity
-        model = _FakeLLM(text=SUMMARY)
-        c = _make_compactor(agent, model)
+        session._activity = activity
+        speech_before = (activity._current_speech, list(activity._speech_q))
+        before = _dump(agent.chat_ctx)
+        c = _make_compactor(agent, _FakeLLM(text=SUMMARY))
         try:
             assert await c.compact_once(5000) is True
         finally:
             agent._activity = None
-        return agent, session
+            session._activity = None
+        speech_after = (activity._current_speech, list(activity._speech_q))
+        return agent, session, before, transcript_before, emitted, speech_before, speech_after
 
-    agent, session = asyncio.run(run())
-    assert session.touched == []
+    agent, session, before, transcript_before, emitted, speech_before, speech_after = asyncio.run(run())
+    assert _dump(agent.chat_ctx) != before  # it did swap, through the activity
+    assert emitted == []
+    assert _dump(session.history) == transcript_before
+    assert not any(SUMMARY in (getattr(i, "text_content", None) or "") for i in session.history.items)
+    assert speech_after == speech_before == (None, [])
     summaries = [
         i for i in agent.chat_ctx.items if isinstance(i, llm.ChatMessage) and SUMMARY in (i.text_content or "")
     ]
-    # only in the history, as a system message: never an assistant line to speak or transcribe
+    # only in the agent's history, as a system message: never an assistant line to speak
     assert [m.role for m in summaries] == ["system"]
 
 
@@ -1807,6 +1817,53 @@ def test_closing_the_compactor_stops_it_for_good() -> None:
     assert task.cancelled() and c._task is None and c.enabled is False
     assert model.closed and model.closed_streams == 1
     assert _dump(agent.chat_ctx) == before
+
+
+def test_summary_request_sends_the_turn_tools_with_tool_choice_none() -> None:
+    """Through the real openai plugin: the summary request carries the same tool schemas as a
+    turn (so vLLM renders the same prompt prefix) and tool_choice "none" (so it writes text)."""
+    from livekit.agents import APIConnectOptions
+
+    from happy_voice.assistant import _make_llm, _make_summarizer_llm
+    from happy_voice.compaction import summarize
+
+    settings = _compaction_settings()
+
+    async def capture(model, call) -> dict:
+        seen: list[dict] = []
+
+        async def create(**kwargs):
+            seen.append(kwargs)
+            raise RuntimeError("captured")
+
+        model._client.chat.completions.create = create
+        try:
+            await call(model)
+        except Exception:
+            pass
+        await model.aclose()
+        return seen[0]
+
+    async def run():
+        ctx = _history(2)
+        tools = llm.ToolContext([_ping_tool()]).flatten()
+        no_retry = APIConnectOptions(max_retry=0)
+
+        async def summary(model):
+            await summarize(model, ctx, tools, timeout=5, conn_options=no_retry)
+
+        async def turn(model):
+            async with model.chat(chat_ctx=ctx, tools=tools, conn_options=no_retry) as stream:
+                async for _ in stream:
+                    pass
+
+        return await capture(_make_summarizer_llm(settings), summary), await capture(_make_llm(settings), turn)
+
+    summary_kwargs, turn_kwargs = asyncio.run(run())
+    assert summary_kwargs["tool_choice"] == "none"
+    assert summary_kwargs["tools"] and summary_kwargs["tools"] == turn_kwargs["tools"]
+    assert summary_kwargs["messages"] == turn_kwargs["messages"]
+    assert summary_kwargs["max_completion_tokens"] == settings.compact_summary_tokens
 
 
 if __name__ == "__main__":
