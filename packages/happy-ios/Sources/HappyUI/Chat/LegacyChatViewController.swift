@@ -1449,7 +1449,9 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         harness.accessibilityLabel = help ? Strings.Home.harnessHelpLabel : Strings.Home.harnessTitle
         harness.accessibilityTraits = help ? .link : .button
         composeTarget.modeTitle = compose.modeName
-        composeTarget.modeRow.accessibilityLabel = compose.modeChip?.accessibilityLabel
+        composeTarget.modeRow.accessibilityLabel = compose.modeLabel
+        // While the computers arrive the row shows the default, not a menu.
+        composeTarget.modeRow.isEnabled = !compose.isStarting && compose.modeChip != nil
         view.setNeedsLayout()
     }
 

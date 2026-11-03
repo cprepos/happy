@@ -145,9 +145,13 @@ final class HostedComposeModeTests: XCTestCase {
         var card: AgentInputCardView
         var panel: NewWorkPanel
         var start: LegacyComposeStart
+        /// The computers held back until the test lets them arrive.
+        var arriving: [MachineRecord] = []
     }
 
-    private func emptyChat(machines: Int = 1, happyAgent: HappyAgent = .none) async throws -> Screen {
+    /// `computersArriving`: the chat opens before the account's computers are
+    /// in, on a Codex draft, as a relaunch before the list is fetched.
+    private func emptyChat(machines: Int = 1, happyAgent: HappyAgent = .none, computersArriving: Bool = false) async throws -> Screen {
         let controller = AccountController(
             serverConfig: ServerConfig(storage: InMemoryKeyValueStore()), clientID: "ios/test",
             credentialStore: InMemoryCredentialStore(), storeDirectory: nil,
@@ -157,12 +161,23 @@ final class HostedComposeModeTests: XCTestCase {
         try await controller.signIn(Credentials(token: "t", secret: Data(repeating: 7, count: 32)))
         let account = try XCTUnwrap(controller.session)
         let store = account.store
-        try await Task.detached { [store] in try HostedComposeModeTests.seed(store, machines: machines, happyAgent: happyAgent) }.value
+        let arriving = try await Task.detached { [store] () -> [MachineRecord] in
+            guard computersArriving else {
+                try HostedComposeModeTests.seed(store, machines: machines, happyAgent: happyAgent)
+                return []
+            }
+            // Nothing synced yet: the computers come from a seed of their own.
+            let held = try LocalStore.inMemory()
+            try HostedComposeModeTests.seed(held, machines: machines, happyAgent: happyAgent)
+            try store.addPendingSettings(["sessionListGrouping": .string("flat")])
+            return try held.machines()
+        }.value
         let drafts = NewSessionDraftStore.shared(for: controller.localSettings)
         drafts.setMachineId(SeededAccount.machineId)
         drafts.setPath(SeededAccount.project)
         drafts.setInput("")
         if happyAgent != .none { drafts.pickAgentType(.claude) }
+        if computersArriving { drafts.pickAgentType(.codex) }
         LegacyComposeStart.makeStarter = { account in
             SessionStarter(environment: .init(
                 ops: ModeMachine(store: account.store),
@@ -184,7 +199,7 @@ final class HostedComposeModeTests: XCTestCase {
         let window = hostedKeyWindow(in: scene, root: navigation)
         window.overrideUserInterfaceStyle = .light
         window.layoutIfNeeded()
-        try await until { home.children.contains { $0 is SessionListViewController } && home.canCompose }
+        try await until { (computersArriving || home.children.contains { $0 is SessionListViewController }) && home.canCompose }
         home.compose()
         try await until { navigation.transitionCoordinator == nil && navigation.topViewController is LegacyChatViewController }
         let chat = try XCTUnwrap(navigation.topViewController as? LegacyChatViewController)
@@ -193,7 +208,7 @@ final class HostedComposeModeTests: XCTestCase {
         try await until { card.textView.isFirstResponder }
         let panel = try XCTUnwrap(Self.subview(NewWorkPanel.self, in: chat.view))
         let start = try XCTUnwrap(chat.composeStart)
-        return Screen(navigation: navigation, window: window, account: account, chat: chat, card: card, panel: panel, start: start)
+        return Screen(navigation: navigation, window: window, account: account, chat: chat, card: card, panel: panel, start: start, arriving: arriving)
     }
 
     private func pickHarness(_ title: String, _ screen: Screen) async throws {
@@ -330,6 +345,42 @@ final class HostedComposeModeTests: XCTestCase {
         // And back when the harness has them again.
         try await pickHarness("OpenCode", screen)
         try await until { !panel.modeRow.isHidden && panel.modeRow.title == "Build-auto" }
+    }
+
+    /// Before the computers are in, the row shows the draft's default where
+    /// it will stay, with nothing to pick; once they arrive it is a menu, and
+    /// nothing moved.
+    func testTheRowHoldsItsPlaceWhileTheComputersArrive() async throws {
+        let screen = try await emptyChat(computersArriving: true)
+        defer { screen.window.isHidden = true }
+        let panel = screen.panel
+        let start = screen.start
+        XCTAssertTrue(start.composer.choices.awaitsComputers)
+        XCTAssertEqual(panel.machine.title, "Loading computers…")
+        let loadingName = try XCTUnwrap(start.composer.choices.currentPermission?.name, "Codex has a default mode before its computer is known")
+        XCTAssertFalse(panel.modeRow.isHidden)
+        XCTAssertEqual(panel.modeRow.title, loadingName)
+        XCTAssertEqual(panel.modeRow.accessibilityLabel, Strings.Composer.codexPermissionModeTitle)
+        XCTAssertFalse(panel.modeRow.isEnabled, "nothing to pick yet")
+        XCTAssertTrue(start.modeMenuElements().isEmpty)
+        screen.chat.view.layoutIfNeeded()
+        let loading = panel.modeRow.convert(panel.modeRow.bounds, to: screen.chat.view)
+        let rows = panel.layout(width: screen.chat.view.bounds.width, top: 100, bottom: 700).rows.count
+
+        let store = screen.account.store
+        let arriving = screen.arriving
+        try await Task.detached {
+            for machine in arriving { try store.upsertMachine(machine) }
+            try store.setCursor(.machinesLastSync, 1)
+        }.value
+        try await until { !start.composer.choices.awaitsComputers && panel.modeRow.isEnabled }
+        try await Task.sleep(for: .milliseconds(300))
+        screen.chat.view.layoutIfNeeded()
+        XCTAssertFalse(panel.modeRow.isHidden)
+        XCTAssertEqual(panel.harness.title, "Codex")
+        XCTAssertFalse(Self.actions(start.modeMenuElements()).isEmpty, "a menu once they are in")
+        XCTAssertEqual(panel.modeRow.convert(panel.modeRow.bounds, to: screen.chat.view), loading, "the computers arriving moved the row")
+        XCTAssertEqual(panel.layout(width: screen.chat.view.bounds.width, top: 100, bottom: 700).rows.count, rows)
     }
 
     /// A task has no harness row, so no mode either; Session brings both back.

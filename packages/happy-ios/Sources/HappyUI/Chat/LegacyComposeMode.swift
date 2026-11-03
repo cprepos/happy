@@ -13,8 +13,17 @@ extension LegacyComposeStart {
     }
 
     /// The current mode as its menu names it; nil when there are no modes.
+    /// While the computers arrive it is the draft harness's default, so the
+    /// row holds its place rather than appear under the keyboard.
     var modeName: String? {
-        modeChip == nil ? nil : composer.choices.currentPermission?.name
+        modeChip == nil && !composer.choices.awaitsComputers ? nil : composer.choices.currentPermission?.name
+    }
+
+    /// The row's name, the chip's; nil when there is no row.
+    var modeLabel: String? {
+        guard modeName != nil else { return nil }
+        let titles = SessionComposerView.titles
+        return modeChip?.accessibilityLabel ?? (composer.choices.currentAgent.key == "codex" ? titles.codexPermission : titles.permission)
     }
 
     func modeMenu() -> UIMenu {
