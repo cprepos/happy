@@ -123,6 +123,26 @@ def _make_llm(settings: Settings) -> openai.LLM:
     )
 
 
+# Past the max endpointing delay, how much longer the call must stay quiet before compaction
+# swaps the history (s): the final transcript can land after the end of speech, and the user's
+# turn completes only an endpointing delay after that. See Compactor._swap.
+SWAP_SETTLE_MARGIN = 1.0
+
+
+def no_reply_pending(session: Any, warmer: PrefixWarmer) -> bool:
+    """No turn's request is in flight and the session holds no preemptive generation.
+
+    A preemptive generation runs on a copy of the history and is thrown away if the history
+    changed by the time the user's turn completes. LiveKit has no public way to see one, so
+    this reads AgentActivity._preemptive_generation; if a later version renames it, this sees
+    none and the swap relies on its settle delay alone (tests pin the name).
+    """
+    if warmer.turn_active:
+        return False
+    activity = getattr(session, "_activity", None)
+    return getattr(activity, "_preemptive_generation", None) is None
+
+
 def _make_summarizer_llm(settings: Settings) -> openai.LLM:
     """The compaction summarizer's own client: same model and request shape as a turn (so the
     prefix cache applies), room for a summary, and none of the session's metrics or speech."""
@@ -612,10 +632,16 @@ async def entrypoint(ctx: JobContext) -> None:
     # which is the one warm-up that decides how long the first reply takes.
     quiet = asyncio.Event()
     quiet.set()
+    quiet_since = time.monotonic()  # when `quiet` was last set; compaction waits for it to settle
 
     def _recheck_quiet(_: Any = None) -> None:
+        nonlocal quiet_since
         busy = session.user_state == "speaking" or session.agent_state == "thinking"
-        quiet.clear() if busy else quiet.set()
+        if busy:
+            quiet.clear()
+        elif not quiet.is_set():
+            quiet_since = time.monotonic()
+            quiet.set()
 
     session.on("user_state_changed", _recheck_quiet)
     session.on("agent_state_changed", _recheck_quiet)
@@ -634,6 +660,9 @@ async def entrypoint(ctx: JobContext) -> None:
         enabled=settings.compaction,
         turn_idle=warmer.wait_idle,
         between_turns=warmer.between_turns,
+        quiet_for=lambda: time.monotonic() - quiet_since,
+        settle=settings.max_endpointing_delay + SWAP_SETTLE_MARGIN,
+        no_reply_pending=lambda: no_reply_pending(session, warmer),
         on_swapped=warmer.schedule,
         timeout=max(settings.llm_timeout, 120.0),
         conn_options=llm_conn_options(settings),

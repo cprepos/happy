@@ -1618,6 +1618,103 @@ def test_closing_the_warmer_waits_for_a_one_shot_in_flight() -> None:
     assert closed_streams == 1 and closed
 
 
+def test_the_swap_waits_out_the_end_of_a_user_turn_and_any_preemptive_reply() -> None:
+    """VAD end of speech sets `quiet` before the user's turn completes, and a preemptive
+    generation may be holding a copy of the history in that window: the swap must not land
+    until the quiet has settled and no reply is in the making."""
+    from types import SimpleNamespace
+
+    async def run():
+        agent = _agent(_history(30))
+        before = _dump(agent.chat_ctx)
+        warmer = PrefixWarmer(_FakeLLM(), lambda: ("snapshot", []), debounce=0)
+        activity = SimpleNamespace(_preemptive_generation=None)
+        session = SimpleNamespace(_activity=activity)
+        quiet = asyncio.Event()
+        quiet_since = [time.monotonic()]
+        seen: dict = {}
+
+        async def warm(ctx, tools) -> bool:
+            # the user stops speaking: quiet again, and a preemptive reply starts on a copy
+            quiet_since[0] = time.monotonic()
+            quiet.set()
+            activity._preemptive_generation = SimpleNamespace(chat_ctx=agent.chat_ctx.copy())
+            return True
+
+        from happy_voice.assistant import no_reply_pending
+
+        c = _make_compactor(
+            agent,
+            _FakeLLM(text=SUMMARY),
+            quiet=quiet,
+            warm=warm,
+            quiet_for=lambda: time.monotonic() - quiet_since[0],
+            settle=0.2,
+            no_reply_pending=lambda: no_reply_pending(session, warmer),
+            turn_idle=warmer.wait_idle,
+        )
+        quiet.set()  # quiet long enough when the compaction starts
+        quiet_since[0] -= 10
+        task = asyncio.create_task(c.compact_once(5000))
+        await asyncio.sleep(0.1)
+        seen["inside_settle"] = _dump(agent.chat_ctx) == before
+        await asyncio.sleep(0.3)
+        # settled, but the preemptive reply is still pending
+        seen["preemptive_pending"] = _dump(agent.chat_ctx) == before
+        # the user's turn completes: LiveKit checks the copy against the history, then drops it
+        preemptive = activity._preemptive_generation
+        seen["preemptive_still_valid"] = preemptive.chat_ctx.is_equivalent(agent.chat_ctx)
+        await warmer.begin_turn()  # the reply's request is in flight
+        activity._preemptive_generation = None
+        await asyncio.sleep(0.2)
+        seen["turn_running"] = _dump(agent.chat_ctx) == before
+        warmer.end_turn()
+        assert await task is True
+        await warmer.aclose()
+        return agent, before, seen
+
+    agent, before, seen = asyncio.run(run())
+    assert seen == {
+        "inside_settle": True,
+        "preemptive_pending": True,
+        "preemptive_still_valid": True,
+        "turn_running": True,
+    }
+    assert _dump(agent.chat_ctx) != before
+
+
+def test_no_reply_pending_reads_the_session_the_library_builds() -> None:
+    """Pins the private attribute no_reply_pending() reads to LiveKit's own AgentActivity."""
+    from types import SimpleNamespace
+
+    from livekit.agents import AgentSession
+    from livekit.agents.voice.agent_activity import AgentActivity
+
+    from happy_voice.assistant import no_reply_pending
+
+    async def run():
+        warmer = PrefixWarmer(_FakeLLM(), lambda: ("snapshot", []), debounce=0)
+        session = AgentSession()
+        activity = AgentActivity(_agent(_history(2)), session)
+        assert hasattr(activity, "_preemptive_generation")
+        session._activity = activity
+        results = [no_reply_pending(session, warmer)]
+        activity._preemptive_generation = SimpleNamespace()
+        results.append(no_reply_pending(session, warmer))
+        activity._preemptive_generation = None
+        await warmer.begin_turn()
+        results.append(no_reply_pending(session, warmer))
+        warmer.end_turn()
+        results.append(no_reply_pending(session, warmer))
+        # no activity yet (or a version without the attribute): nothing to wait for
+        results.append(no_reply_pending(SimpleNamespace(), warmer))
+        session._activity = None
+        await warmer.aclose()
+        return results
+
+    assert asyncio.run(run()) == [True, False, False, True, True]
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):

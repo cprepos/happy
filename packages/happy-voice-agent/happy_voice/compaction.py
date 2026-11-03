@@ -18,8 +18,8 @@ Nothing about it may be seen, heard, or waited for:
   it is sent again after the turn.
 - The compacted history is prefilled (PrefixWarmer.warm) before it is swapped in, so the next
   turn finds it cached.
-- The swap happens under the context-update lock and only while the call is quiet: changing
-  the history while the user speaks or the agent thinks would invalidate a preemptive reply.
+- The swap happens under the context-update lock, and only once no reply can be in the
+  making: see Compactor._swap. Changing the history under a preemptive reply throws it away.
   It rebuilds from the *current* history and removes only the summarized items, so whatever
   arrived while the summary was being written is kept. `Agent.update_chat_ctx` emits no
   conversation events.
@@ -317,6 +317,8 @@ BACKOFF_BASE = 30.0
 BACKOFF_MAX = 600.0
 # how long a finished summary may wait for a quiet moment to be swapped in (s)
 SWAP_WAIT_MAX = 120.0
+# how often a swap that found a reply in the making looks again (s)
+SWAP_RECHECK = 0.1
 # how many times a summary is sent again after giving way to a turn, before it counts as failed
 SUMMARY_ATTEMPTS = 3
 
@@ -339,6 +341,9 @@ class Compactor:
         estimator: TokenEstimator | None = None,
         turn_idle: Callable[[], Awaitable[Any]] | None = None,
         between_turns: Callable[[Callable[[], Awaitable[str]]], Awaitable[str]] | None = None,
+        quiet_for: Callable[[], float] | None = None,
+        settle: float = 0.0,
+        no_reply_pending: Callable[[], bool] | None = None,
         on_swapped: Callable[[], None] | None = None,
         timeout: float = 120.0,
         conn_options: APIConnectOptions | None = None,
@@ -358,6 +363,11 @@ class Compactor:
         self._turn_idle = turn_idle
         # PrefixWarmer.between_turns: runs the summary request so that a turn cancels it
         self._between_turns = between_turns
+        # how long `quiet` has been set, and how long it must have been before a swap
+        self._quiet_for = quiet_for
+        self._settle = settle
+        # False while a reply is being prepared (a turn's request, a preemptive generation)
+        self._no_reply_pending = no_reply_pending
         self._on_swapped = on_swapped
         self._timeout = timeout
         self._conn_options = conn_options
@@ -526,21 +536,54 @@ class Compactor:
                 )
         return None
 
+    def _settled_for(self) -> float:
+        """How much longer the quiet must last before a swap; 0 once it has lasted long enough."""
+        if self._quiet_for is None:
+            return 0.0
+        return max(0.0, self._settle - self._quiet_for())
+
+    def _can_swap(self) -> bool:
+        if not self._quiet.is_set() or self._settled_for() > 0:
+            return False
+        return self._no_reply_pending is None or self._no_reply_pending()
+
     async def _swap(self, head_ids: set[str], summary: llm.ChatMessage) -> bool | None:
-        """Swaps under the lock while quiet. None if no quiet moment came, False if stale."""
+        """Swaps under the lock once no reply can be in the making.
+
+        None if that moment did not come within SWAP_WAIT_MAX, False if the history no longer
+        holds the summarized items.
+
+        `quiet` alone is not enough. It is set when the user stops speaking (VAD end of speech),
+        but the user's turn completes only after the endpointing delay, and in that window a
+        preemptive generation runs on a copy of the history: LiveKit throws it away when the
+        history no longer matches at turn completion, and the agent's state shows "thinking"
+        only after that. So the swap waits for three things, re-checked under the lock:
+
+        - the quiet has lasted `settle` (the max endpointing delay plus a margin for the final
+          transcript), so the user's turn, if one was ending, has completed;
+        - no turn's request is in flight (turn_idle, the same bookkeeping as the warm-ups);
+        - `no_reply_pending`: no preemptive generation is held by the session. It reads a
+          private attribute and so may stop seeing it after an upgrade; the first two hold
+          without it.
+        """
         try:
             async with asyncio.timeout(SWAP_WAIT_MAX):
                 while True:
                     await self._quiet.wait()
+                    if self._turn_idle is not None:
+                        await self._turn_idle()
+                    if (wait := self._settled_for()) > 0:
+                        await asyncio.sleep(wait)
+                        continue
                     async with self._lock:
                         # a context update may have held the lock while the user started talking
-                        if not self._quiet.is_set():
-                            continue
-                        agent = self._agent()
-                        items = compacted_items(agent.chat_ctx.items, head_ids, summary)
-                        if items is None:
-                            return False
-                        await agent.update_chat_ctx(llm.ChatContext(items))
-                        return True
+                        if self._can_swap():
+                            agent = self._agent()
+                            items = compacted_items(agent.chat_ctx.items, head_ids, summary)
+                            if items is None:
+                                return False
+                            await agent.update_chat_ctx(llm.ChatContext(items))
+                            return True
+                    await asyncio.sleep(SWAP_RECHECK)
         except TimeoutError:
             return None

@@ -136,6 +136,11 @@ class PrefixWarmer:
             finally:
                 await stream.aclose()
 
+    @property
+    def turn_active(self) -> bool:
+        """True while a turn is between begin_turn() and end_turn()."""
+        return not self._idle.is_set()
+
     async def wait_idle(self) -> None:
         """Returns once no turn is between begin_turn() and end_turn()."""
         await self._idle.wait()
