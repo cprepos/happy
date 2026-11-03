@@ -440,14 +440,19 @@ final class ChatPlaceholderView: UIView {
         /// The chat's first page failed: Retry in the spinner's place.
         case loadFailed
         /// EmptyMessages, with what shows under the path: "No messages
-        /// yet", the spinner while it pages back, Retry or Load more.
-        case empty(ChatEmptyState, ChatOlderPaging.EmptyStatus)
+        /// yet", the spinner while it pages back, Retry or Load more; and
+        /// for a Claude Desktop chat with history left on the computer,
+        /// "Load previous history" in place of "No messages yet"
+        /// (`ChatEmptyContent`).
+        case empty(ChatEmptyState, ChatOlderPaging.EmptyStatus, history: DesktopHistoryButtonState = .hidden)
         case pendingChat(PendingChatPlaceholderModel)
         case deleted
     }
 
     /// Retry or Load more was pressed; which one is `content`.
     var onAction: (() -> Void)?
+    /// Load previous history, or its Retry, was pressed.
+    var onHistoryAction: (() -> Void)?
 
     private(set) var content: Content?
     private let spinner = UIActivityIndicatorView(style: .medium)
@@ -476,7 +481,14 @@ final class ChatPlaceholderView: UIView {
         shimmer.sweep = .lift
         addSubview(shimmer)
         button.isHidden = true
-        button.onTap = { [weak self] in self?.onAction?() }
+        button.onTap = { [weak self] in
+            guard let self else { return }
+            if case .empty(_, let paging, let history)? = content, ChatEmptyContent(paging: paging, history: history).isHistoryAction {
+                onHistoryAction?()
+            } else {
+                onAction?()
+            }
+        }
         addSubview(button)
         pagingSpinner.color = UIColor(Palette.textSecondary)
         pagingSpinner.hidesWhenStopped = true
