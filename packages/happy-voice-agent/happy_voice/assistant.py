@@ -8,7 +8,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from livekit import rtc
 from livekit.agents import (
@@ -66,6 +66,34 @@ CONTEXT_DEFER_MAX = 10.0
 # "sent [DO NOT say anything else, simply say 'sent']". Speaking them directly saves a second LLM
 # round trip (the most expensive part of a tool turn); the result still goes into the history.
 _SCRIPTED_REPLY_RE = re.compile(r"\[\s*DO NOT say anything else,\s*simply say\s*'([^']{1,80})'\s*\]\s*$")
+
+
+def read_aloud_note(handle: Any, chars: int) -> str | None:
+    """What a finished readAloud `say` handle means for the model: None when it played to the
+    end, otherwise a context note saying how much of the `chars` characters the user heard.
+
+    Without the note the model cannot tell: livekit holds an interruptible `say` until the user
+    is silent, and a user turn that ends meanwhile interrupts it before any audio plays, so
+    nothing is stored. In the 2026-11-03 call the model then stayed silent for three turns.
+    """
+    if not handle.interrupted:
+        logger.info("readAloud: finished")
+        return None
+    played = 0
+    for item in handle.chat_items:
+        if isinstance(item, llm.ChatMessage) and item.role == "assistant":
+            played += len(item.text_content or "")
+    if not played:
+        logger.info("readAloud: not heard (the user spoke before it started)")
+        return (
+            f"Your readAloud of {chars} characters was not heard: the user started talking "
+            "before it began. Answer what they said, and offer to read it again."
+        )
+    logger.info("readAloud: stopped after %d of %d chars", played, chars)
+    return (
+        f"Your readAloud stopped after {played} of {chars} characters because the user spoke. "
+        "Answer them, and offer to continue from where it stopped."
+    )
 
 
 def _number(value: Any) -> float | None:
@@ -231,6 +259,9 @@ class HappyAssistant(Agent):
         self._settings = settings
         self.warmer: PrefixWarmer | None = None
         self.compactor: Compactor | None = None
+        # Posts a context note the way the app's updates arrive (the entrypoint queues it for
+        # handle_inbox), so it is applied under the same lock and quiet window.
+        self.note_context: Callable[[str], None] = lambda text: None
 
     def _request_ctx(self, chat_ctx: llm.ChatContext, tools: list[Any] | None = None) -> llm.ChatContext:
         request = fold_system_messages(chat_ctx)
@@ -341,8 +372,15 @@ class HappyAssistant(Agent):
         logger.info("readAloud: %d chars", len(text))
         # If the user talks over it, the stored reply is clipped and flagged like any other,
         # and the next request marks it (context.mark_interrupted).
-        context.session.say(text, allow_interruptions=True, add_to_chat_ctx=True)
+        # Not awaited: that keeps the agent "thinking" for the whole reading, and livekit cancels
+        # the tool after its interruption timeout. The outcome comes back as a note instead.
+        handle = context.session.say(text, allow_interruptions=True, add_to_chat_ctx=True)
+        handle.add_done_callback(lambda h, chars=len(text): self._read_aloud_done(h, chars))
         return llm.ToolResult("read aloud", reply_required=False)
+
+    def _read_aloud_done(self, handle: Any, chars: int) -> None:
+        if note := read_aloud_note(handle, chars):
+            self.note_context(note)
 
     @function_tool(raw_schema=SKIP_TURN_SCHEMA)
     async def skip_turn(self, raw_arguments: dict[str, Any], context: RunContext) -> None:
@@ -612,6 +650,7 @@ async def entrypoint(ctx: JobContext) -> None:
         settings=settings,
         chat_ctx=chat_ctx,
     )
+    agent.note_context = lambda text: inbox.put_nowait((TOPIC_CONTEXT, text))
 
     await session.start(
         agent=agent,

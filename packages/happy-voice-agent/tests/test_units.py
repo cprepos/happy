@@ -265,12 +265,23 @@ def test_clip_for_speech_cuts_at_a_sentence_end_or_a_space() -> None:
     assert clip_for_speech("x" * 50, 10) == "x" * 10
 
 
+class _SayHandle:
+    def __init__(self) -> None:
+        self.done = None
+
+    def add_done_callback(self, fn) -> None:
+        self.done = fn
+
+
 class _SaySession:
     def __init__(self) -> None:
         self.said: list[tuple[str, dict]] = []
+        self.handles: list[_SayHandle] = []
 
     def say(self, text: str, **kwargs):
         self.said.append((text, kwargs))
+        self.handles.append(_SayHandle())
+        return self.handles[-1]
 
 
 class _ToolContext:
@@ -319,6 +330,81 @@ def test_read_aloud_caps_the_text_at_a_word_boundary() -> None:
     assert text.startswith(spoken) and text[len(spoken)] == " "
 
 
+class _ReadHandle:
+    def __init__(self, interrupted: bool, played: str | None = None) -> None:
+        self.interrupted = interrupted
+        self.chat_items = [] if played is None else [llm.ChatMessage(role="assistant", content=[played])]
+
+
+def _read_aloud_outcome(handle: _ReadHandle, text: str = "x" * 120):
+    """Notes and update_chat_ctx calls after a readAloud of `text` ends as `handle` says."""
+    from happy_voice.assistant import ConversationState, HappyAssistant
+
+    agent = HappyAssistant(
+        instructions="instructions", room=None, state=ConversationState(), settings=_settings_with()
+    )
+    notes: list[str] = []
+    updated: list = []
+    agent.note_context = notes.append
+
+    async def update_chat_ctx(ctx) -> None:
+        updated.append(ctx)
+
+    agent.update_chat_ctx = update_chat_ctx
+    context = _ToolContext()
+    asyncio.run(agent.readAloud({"text": text}, context))
+    (said,) = context.session.handles
+    said.done(handle)
+    return notes, updated
+
+
+def test_read_aloud_not_heard_posts_a_note() -> None:
+    notes, updated = _read_aloud_outcome(_ReadHandle(interrupted=True))
+    assert notes == [
+        "Your readAloud of 120 characters was not heard: the user started talking before it "
+        "began. Answer what they said, and offer to read it again."
+    ]
+    # the note goes through the inbox, never straight into the history
+    assert updated == []
+
+
+def test_read_aloud_stopped_partway_posts_how_far_it_got() -> None:
+    notes, updated = _read_aloud_outcome(_ReadHandle(interrupted=True, played="x" * 45))
+    assert notes == [
+        "Your readAloud stopped after 45 of 120 characters because the user spoke. "
+        "Answer them, and offer to continue from where it stopped."
+    ]
+    assert updated == []
+
+
+def test_read_aloud_counts_the_clipped_text() -> None:
+    text = " ".join(f"word{n}" for n in range(100))
+    from happy_voice.assistant import ConversationState, HappyAssistant
+
+    agent = HappyAssistant(
+        instructions="instructions",
+        room=None,
+        state=ConversationState(),
+        settings=_settings_with(VOICE_READ_ALOUD_MAX_CHARS="50"),
+    )
+    notes: list[str] = []
+    agent.note_context = notes.append
+    context = _ToolContext()
+    asyncio.run(agent.readAloud({"text": text}, context))
+    ((spoken, _),) = context.session.said
+    context.session.handles[0].done(_ReadHandle(interrupted=True))
+    assert notes and f"of {len(spoken)} characters" in notes[0]
+
+
+def test_read_aloud_finished_posts_no_note(caplog) -> None:
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="happy-voice"):
+        notes, updated = _read_aloud_outcome(_ReadHandle(interrupted=False))
+    assert notes == [] and updated == []
+    assert "readAloud: finished" in caplog.text
+
+
 def test_read_aloud_is_registered_with_text_required() -> None:
     from happy_voice.assistant import ConversationState, HappyAssistant
 
@@ -329,6 +415,7 @@ def test_read_aloud_is_registered_with_text_required() -> None:
     assert "readAloud" in tools
     assert tools["readAloud"].info.raw_schema["parameters"]["required"] == ["text"]
     assert "readAloud(text)" in BASE_PROMPT
+    assert "do not stay silent: answer the user and offer to read it again" in BASE_PROMPT
 
 
 def test_voice_config_tolerates_bad_payloads() -> None:

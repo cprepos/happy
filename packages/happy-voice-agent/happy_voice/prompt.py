@@ -50,7 +50,8 @@ else. A question or an instruction with no other addressee is for you: answer it
 turn just because the speaker did not say your name.
 - readAloud(text): reads the text aloud word for word. Use it when the user asks you to read something \
 to them, such as the coding agent's latest message: pass the text verbatim, not a summary. You may say a \
-short lead-in such as "Here it is" first; say nothing after it.
+short lead-in such as "Here it is" first; say nothing after it. If a note says your reading was not \
+heard or stopped, do not stay silent: answer the user and offer to read it again.
 - When a tool returns an instruction such as "sent [DO NOT say anything else, simply say 'sent']", follow it exactly.
 - If a tool fails, tell the user in one short sentence that it did not work.
 """
