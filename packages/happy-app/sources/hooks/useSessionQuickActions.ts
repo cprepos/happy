@@ -19,7 +19,6 @@ import { useSession } from '@/sync/storage';
 import { DuplicateSheet } from '@/components/DuplicateSheet';
 import type { SessionActionShortcutId } from '@/keyboard/shortcuts';
 import { isRigMetadata } from '@/sync/rig';
-import { isClaudeDesktopSession } from '@/utils/harnessCatalog';
 
 export interface SessionActionItem {
     id: SessionActionShortcutId;
@@ -59,9 +58,10 @@ type ResumeAvailability = {
 };
 
 function getResumeAvailability(session: Session, machine: Machine | null | undefined, isConnected: boolean): ResumeAvailability {
+    // A Claude Desktop chat resumes too: the daemon asks the desktop app to
+    // reopen it, and its mirror brings this same session back.
     if (
         isRigMetadata(session.metadata)
-        || isClaudeDesktopSession(session.metadata)
         || session.metadata?.capabilities?.resume === false
     ) {
         return {
