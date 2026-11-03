@@ -1,0 +1,31 @@
+#!/bin/bash
+B=~/happy-phone-build/__TS__
+exec > >(tee "$B/logs/sign.log") 2>&1
+ID=F1C9288B3C0B4B64B321C964CB4E60880A157DFE
+PROFILE=~/Library/Developer/Xcode/UserData/Provisioning\ Profiles/291cee66-3b90-4ddc-9b32-27115cb23304.mobileprovision
+cd $B || { echo "SIGN EXIT 90"; exit 90; }
+if [ -e signed ]; then echo "signed already exists"; echo "SIGN EXIT 91"; exit 91; fi
+mkdir signed && ditto unsigned/Happy.app signed/Happy.app
+APP=signed/Happy.app
+cp "$PROFILE" "$APP/embedded.mobileprovision"
+cat > app.entitlements <<"P"
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>application-identifier</key><string>74YS5XP5GW.org.girthbass.native</string>
+	<key>com.apple.developer.team-identifier</key><string>74YS5XP5GW</string>
+	<key>get-task-allow</key><true/>
+</dict>
+</plist>
+P
+RC=0
+sign_nested() { codesign --force --sign "$ID" --timestamp=none --generate-entitlement-der "$1" || RC=1; }
+while IFS= read -r f; do echo "dylib: $f"; sign_nested "$f"; done < <(find "$APP" -type f -name "*.dylib" | awk "{print length, \$0}" | sort -rn | cut -d" " -f2-)
+while IFS= read -r f; do echo "bundle: $f"; sign_nested "$f"; done < <(find "$APP" -type d \( -name "*.framework" -o -name "*.appex" \) | awk "{print length, \$0}" | sort -rn | cut -d" " -f2-)
+if [ $RC -eq 0 ]; then
+  codesign --force --sign "$ID" --timestamp=none --generate-entitlement-der --entitlements app.entitlements "$APP" || RC=1
+fi
+if [ $RC -eq 0 ]; then codesign --verify --deep --strict "$APP" || RC=2; fi
+echo "SIGN EXIT $RC"
+exit $RC

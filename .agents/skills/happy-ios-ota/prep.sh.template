@@ -1,0 +1,27 @@
+#!/bin/zsh
+export PATH=/opt/homebrew/bin:$PATH
+set -e
+B=~/happy-phone-build/__TS__
+cd $B/src/packages/happy-ios
+/usr/bin/python3 - <<"P"
+s=open("project.yml").read()
+assert s.count("    SWIFT_VERSION: \"6.0\"\n")>=1
+s=s.replace("    SWIFT_VERSION: \"6.0\"\n","    SWIFT_VERSION: \"6.0\"\n    DEVELOPMENT_TEAM: 74YS5XP5GW\n",1)
+b="PRODUCT_BUNDLE_IDENTIFIER: com.slopus.happy.preview"
+i=s.index("        Preview:\n          "+b)
+s=s[:i]+s[i:].replace(b,"PRODUCT_BUNDLE_IDENTIFIER: org.girthbass.native",1)
+open("project.yml","w").write(s)
+P
+cat > App/Happy.entitlements <<"P"
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict/>
+</plist>
+P
+/opt/homebrew/bin/xcodegen > $B/logs/xcodegen.log 2>&1
+tail -1 $B/logs/xcodegen.log
+mkdir -p $B/dd
+cp -cR ~/happy-phone-build/20261101_221505/dd/SourcePackages $B/dd/SourcePackages
+xcodebuild build -project Happy.xcodeproj -scheme Happy -configuration Preview -destination "generic/platform=iOS" -derivedDataPath $B/dd CODE_SIGNING_ALLOWED=NO > $B/logs/compile.log 2>&1
+echo "COMPILE EXIT $?" >> $B/logs/compile.log
