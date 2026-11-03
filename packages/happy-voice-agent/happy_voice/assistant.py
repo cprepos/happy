@@ -633,6 +633,7 @@ async def entrypoint(ctx: JobContext) -> None:
         summary_tokens=settings.compact_summary_tokens,
         enabled=settings.compaction,
         turn_idle=warmer.wait_idle,
+        between_turns=warmer.between_turns,
         on_swapped=warmer.schedule,
         timeout=max(settings.llm_timeout, 120.0),
         conn_options=llm_conn_options(settings),

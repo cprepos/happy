@@ -1547,6 +1547,77 @@ def test_one_shot_warm_failure_is_false_not_raised() -> None:
     assert asyncio.run(run()) is False
 
 
+def test_a_turn_cancels_the_summary_in_flight_and_it_is_sent_again_after() -> None:
+    from happy_voice.compaction import SUMMARY_PREFIX
+
+    async def run():
+        agent = _agent(_history(30))
+        warmer = PrefixWarmer(_FakeLLM(), lambda: ("snapshot", []), debounce=0)
+        # ~0.5 s to write, so a turn lands in the middle of it
+        model = _FakeLLM(text=SUMMARY, delay=0.01)
+        c = _make_compactor(agent, model, between_turns=warmer.between_turns, turn_idle=warmer.wait_idle)
+        task = asyncio.create_task(c.compact_once(5000))
+        await asyncio.sleep(0.1)
+        assert len(model.requests) == 1
+        t0 = time.monotonic()
+        await warmer.begin_turn()
+        turn_waited = time.monotonic() - t0
+        await asyncio.sleep(0.05)
+        # cancelled, and not sent again while the turn runs
+        cancelled = model.closed_streams == 1 and len(model.requests) == 1
+        warmer.end_turn()
+        ok = await task
+        await warmer.aclose()
+        return agent, model, c, turn_waited, cancelled, ok
+
+    agent, model, c, turn_waited, cancelled, ok = asyncio.run(run())
+    assert turn_waited < 0.02
+    assert cancelled
+    assert ok is True
+    assert len(model.requests) == 2 and c._failures == 0
+    assert agent.chat_ctx.items[1].text_content == SUMMARY_PREFIX + SUMMARY
+
+
+def test_a_summary_that_keeps_giving_way_counts_as_one_failure() -> None:
+    from happy_voice.compaction import SUMMARY_ATTEMPTS
+
+    async def run():
+        agent = _agent(_history(30))
+        before = _dump(agent.chat_ctx)
+        warmer = PrefixWarmer(_FakeLLM(), lambda: ("snapshot", []), debounce=0)
+        model = _FakeLLM(text=SUMMARY, delay=0.01)
+        c = _make_compactor(agent, model, between_turns=warmer.between_turns)
+        c.on_llm_usage(5000, 0)
+        task = c._task
+        for n in range(SUMMARY_ATTEMPTS):
+            while len(model.requests) <= n:
+                await asyncio.sleep(0.005)  # until the next attempt is out
+            await warmer.begin_turn()
+            warmer.end_turn()
+        await task
+        await warmer.aclose()
+        return agent, before, model, c
+
+    agent, before, model, c = asyncio.run(run())
+    assert len(model.requests) == SUMMARY_ATTEMPTS
+    assert c._failures == 1
+    assert _dump(agent.chat_ctx) == before
+
+
+def test_closing_the_warmer_waits_for_a_one_shot_in_flight() -> None:
+    async def run():
+        model = _FakeLLM(delay=0.05)
+        warmer = PrefixWarmer(model, lambda: ("snapshot", []), debounce=0)
+        task = asyncio.create_task(warmer.warm("compacted", []))
+        await asyncio.sleep(0.01)
+        await warmer.aclose()
+        # the stream was closed before the model was
+        return model.closed_streams, model.closed, task
+
+    closed_streams, closed, task = asyncio.run(run())
+    assert closed_streams == 1 and closed
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):

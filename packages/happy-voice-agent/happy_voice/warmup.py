@@ -27,8 +27,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable
-from typing import Any
+from collections.abc import Awaitable, Callable
+from typing import Any, TypeVar
 
 from livekit.agents import APIConnectOptions, llm
 
@@ -37,6 +37,12 @@ logger = logging.getLogger("happy-voice")
 # The model's chat template rejects a request without a user message; a warm-up made before the
 # user first speaks ends with this stand-in for the turn that will follow.
 WARMUP_PLACEHOLDER = "(warm-up)"
+
+T = TypeVar("T")
+
+
+class GaveWay(Exception):
+    """A between_turns() request was cancelled because a turn started."""
 
 
 class PrefixWarmer:
@@ -76,8 +82,8 @@ class PrefixWarmer:
         self._turns = 0
         self._idle = asyncio.Event()
         self._idle.set()
-        # the request of a one-shot warm() in flight; a turn cancels it rather than wait
-        self._oneshot: asyncio.Task[None] | None = None
+        # requests in flight from between_turns(); a turn cancels them rather than wait
+        self._background: set[asyncio.Future[Any]] = set()
         self.completed = 0
 
     @property
@@ -134,34 +140,49 @@ class PrefixWarmer:
         """Returns once no turn is between begin_turn() and end_turn()."""
         await self._idle.wait()
 
+    async def between_turns(self, request: Callable[[], Awaitable[T]]) -> T:
+        """Runs `request()` between turns and returns its result, or raises GaveWay.
+
+        For background requests to the same server that a turn must never wait for: the
+        compaction summary, and the prefill of a compacted history. It is sent only once no
+        turn is running, and a turn that starts while it is in flight cancels it (begin_turn)
+        instead of waiting, which is raised here as GaveWay; the caller decides whether to
+        send it again. Its own failures are raised as they are.
+        """
+        while not self._idle.is_set():  # a turn may begin between the wake-up and this check
+            await self._idle.wait()
+        task = asyncio.ensure_future(request())
+        self._background.add(task)
+        try:
+            # asyncio.wait: a cancellation by begin_turn() is not raised into the caller
+            await asyncio.wait({task})
+        except asyncio.CancelledError:
+            task.cancel()
+            await asyncio.wait({task})
+            raise
+        finally:
+            self._background.discard(task)
+        if task.cancelled():
+            raise GaveWay()
+        return task.result()
+
     async def warm(self, chat_ctx: llm.ChatContext, tools: list[Any], *, attempts: int = 3) -> bool:
         """Prefills one given prompt and waits for it; True once it is cached.
 
         For a prompt the history does not hold yet (a compacted history before it is swapped
-        in), so it does not go through the debounced snapshot. It keeps the same manners as the
-        scheduled warm-ups: it is sent only between turns, and a turn that starts while it is
-        in flight cancels it instead of waiting for it, after which it is sent again once the
-        turn is over, up to `attempts` times. Its duration is not recorded: it is a different,
-        larger prefill than the warm-ups begin_turn() estimates from.
+        in), so it does not go through the debounced snapshot. It is sent between_turns(), and
+        once more after each turn it gives way to, up to `attempts` times. Its duration is not
+        recorded: it is a different, larger prefill than the warm-ups begin_turn() estimates
+        from.
         """
         for _ in range(attempts):
-            await self._idle.wait()
             started = time.monotonic()
-            request = asyncio.create_task(self._prefill(chat_ctx, tools))
-            self._oneshot = request
             try:
-                # asyncio.wait: a cancellation by begin_turn() is not raised into the caller
-                await asyncio.wait({request})
-            except asyncio.CancelledError:
-                request.cancel()
-                raise
-            finally:
-                if self._oneshot is request:
-                    self._oneshot = None
-            if request.cancelled():
+                await self.between_turns(lambda: self._prefill(chat_ctx, tools))
+            except GaveWay:
                 logger.info("one-shot warm-up gave way to a turn after %.0fms", (time.monotonic() - started) * 1000)
                 continue
-            if (e := request.exception()) is not None:
+            except Exception as e:
                 logger.warning("one-shot warm-up failed after %.0fms: %s", (time.monotonic() - started) * 1000, e)
                 return False
             logger.info("one-shot warm-up: %.0fms", (time.monotonic() - started) * 1000)
@@ -185,9 +206,9 @@ class PrefixWarmer:
         """
         self._turns += 1
         self._idle.clear()
-        if self._oneshot is not None and not self._oneshot.done():
-            # a compacted history being prefilled; the turn never waits for compaction
-            self._oneshot.cancel()
+        for request in self._background:
+            # compaction's requests; a turn never waits for compaction
+            request.cancel()
         task = self._task
         if task is None or task.done():
             return
@@ -233,4 +254,10 @@ class PrefixWarmer:
                 await task
             except BaseException:
                 pass
+        # a one-shot warm-up still holds a stream on the model; let it unwind before closing it
+        background = list(self._background)
+        for request in background:
+            request.cancel()
+        if background:
+            await asyncio.wait(background)
         await self._model.aclose()

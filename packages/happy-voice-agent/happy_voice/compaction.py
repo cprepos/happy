@@ -13,6 +13,9 @@ Nothing about it may be seen, heard, or waited for:
   the session's metrics, transcript or TTS. The request is the turn's own prompt (folded the
   same way, same tools) cut at the split point, plus one instruction, so vLLM's prefix cache
   covers almost all of it.
+- The summary and the prefill below are sent only between turns, and a turn that starts while
+  either is in flight cancels it instead of queueing behind it (PrefixWarmer.between_turns);
+  it is sent again after the turn.
 - The compacted history is prefilled (PrefixWarmer.warm) before it is swapped in, so the next
   turn finds it cached.
 - The swap happens under the context-update lock and only while the call is quiet: changing
@@ -39,7 +42,7 @@ from livekit.agents import APIConnectOptions, llm
 from livekit.agents.llm.chat_context import DYNAMIC_INSTRUCTIONS_MESSAGE_ID
 
 from .context import fold_system_messages
-from .warmup import WARMUP_PLACEHOLDER
+from .warmup import WARMUP_PLACEHOLDER, GaveWay
 
 logger = logging.getLogger("happy-voice")
 
@@ -314,6 +317,8 @@ BACKOFF_BASE = 30.0
 BACKOFF_MAX = 600.0
 # how long a finished summary may wait for a quiet moment to be swapped in (s)
 SWAP_WAIT_MAX = 120.0
+# how many times a summary is sent again after giving way to a turn, before it counts as failed
+SUMMARY_ATTEMPTS = 3
 
 
 class Compactor:
@@ -333,6 +338,7 @@ class Compactor:
         enabled: bool = True,
         estimator: TokenEstimator | None = None,
         turn_idle: Callable[[], Awaitable[Any]] | None = None,
+        between_turns: Callable[[Callable[[], Awaitable[str]]], Awaitable[str]] | None = None,
         on_swapped: Callable[[], None] | None = None,
         timeout: float = 120.0,
         conn_options: APIConnectOptions | None = None,
@@ -350,6 +356,8 @@ class Compactor:
         self.enabled = enabled
         self.estimator = estimator or TokenEstimator()
         self._turn_idle = turn_idle
+        # PrefixWarmer.between_turns: runs the summary request so that a turn cancels it
+        self._between_turns = between_turns
         self._on_swapped = on_swapped
         self._timeout = timeout
         self._conn_options = conn_options
@@ -429,17 +437,16 @@ class Compactor:
 
         t0 = time.monotonic()
         try:
-            text = await summarize(
-                self._summarizer,
-                summary_request(split),
-                tools,
-                timeout=self._timeout,
-                conn_options=self._conn_options,
-            )
+            text = await self._summarize(summary_request(split), tools)
         except asyncio.CancelledError:
             raise
         except Exception as e:
             logger.warning("compaction: summary failed after %.0fms: %s", (time.monotonic() - t0) * 1000, e)
+            return False
+        if text is None:
+            logger.warning(
+                "compaction: the summary gave way to %d turns in a row; history unchanged", SUMMARY_ATTEMPTS
+            )
             return False
         summary_ms = (time.monotonic() - t0) * 1000
         if not text:
@@ -485,6 +492,39 @@ class Compactor:
         if self._on_swapped is not None:
             self._on_swapped()
         return True
+
+    async def _summarize(self, request: llm.ChatContext, tools: list[Any]) -> str | None:
+        """The summary text, or None if it gave way to a turn SUMMARY_ATTEMPTS times.
+
+        The summary runs on the same server as the turns. A turn that starts while it is being
+        written cancels it rather than queue behind it (via between_turns), and it is sent again
+        once that turn is over: the request is the same prefix, so a retry mostly hits the cache.
+        A retry is not a failure and does not back off.
+        """
+
+        def send() -> Awaitable[str]:
+            return summarize(
+                self._summarizer,
+                request,
+                tools,
+                timeout=self._timeout,
+                conn_options=self._conn_options,
+            )
+
+        if self._between_turns is None:
+            return await send()
+        for attempt in range(1, SUMMARY_ATTEMPTS + 1):
+            t0 = time.monotonic()
+            try:
+                return await self._between_turns(send)
+            except GaveWay:
+                logger.info(
+                    "compaction: summary gave way to a turn after %.0fms (attempt %d of %d)",
+                    (time.monotonic() - t0) * 1000,
+                    attempt,
+                    SUMMARY_ATTEMPTS,
+                )
+        return None
 
     async def _swap(self, head_ids: set[str], summary: llm.ChatMessage) -> bool | None:
         """Swaps under the lock while quiet. None if no quiet moment came, False if stale."""
