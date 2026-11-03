@@ -36,6 +36,7 @@ from happy_voice.voices import (  # noqa: E402
 from happy_voice.prompt import (  # noqa: E402
     BASE_PROMPT,
     CONTEXT_PREFIX,
+    INTERRUPTED_MARKER,
     PERMISSION_SCHEMA,
     SEND_MESSAGE_SCHEMA,
     SKIP_TURN_SCHEMA,
@@ -56,6 +57,62 @@ def test_fold_moves_late_system_messages_to_user_role() -> None:
     assert out[2].text_content == CONTEXT_PREFIX + "Session became focused: abc"
     # input untouched
     assert ctx.items[3].role == "system"
+
+
+def _clipped_history() -> llm.ChatContext:
+    ctx = llm.ChatContext.empty()
+    ctx.add_message(role="system", content="instructions")
+    ctx.add_message(role="user", content="how did the loss go")
+    ctx.add_message(role="assistant", content="It dropped from about 33", interrupted=True, id="clipped")
+    ctx.add_message(role="user", content="and now")
+    ctx.add_message(role="assistant", content="It is at 12 now.", id="whole")
+    ctx.add_message(role="assistant", content="", interrupted=True, id="silent")
+    return ctx
+
+
+def test_fold_marks_interrupted_replies_on_the_request_only() -> None:
+    ctx = _clipped_history()
+    out = {m.id: m for m in fold_system_messages(ctx).items if isinstance(m, llm.ChatMessage)}
+    assert out["clipped"].text_content == "It dropped from about 33" + INTERRUPTED_MARKER
+    assert out["whole"].text_content == "It is at 12 now."
+    # nothing was played, so there is nothing to mark
+    assert out["silent"].text_content == ""
+    # the stored history is untouched
+    stored = {m.id: m for m in ctx.items}
+    assert stored["clipped"].text_content == "It dropped from about 33"
+    assert out["clipped"] is not stored["clipped"] and out["whole"] is stored["whole"]
+    # folding a folded request does not mark twice
+    again = {m.id: m for m in fold_system_messages(fold_system_messages(ctx)).items}
+    assert again["clipped"].text_content == "It dropped from about 33" + INTERRUPTED_MARKER
+
+
+def test_the_prompt_explains_the_interrupted_marker() -> None:
+    assert INTERRUPTED_MARKER.strip() in BASE_PROMPT
+
+
+def test_summary_and_warm_requests_carry_the_marker_and_the_swap_keeps_raw_items() -> None:
+    from happy_voice.compaction import (
+        Split,
+        compacted_items,
+        summary_message,
+        summary_request,
+        warm_request,
+    )
+
+    ctx = _clipped_history()
+    items = list(ctx.items)
+    split = Split(prefix=items[:1], head=items[1:3], tail=items[3:], head_tokens=0, tail_tokens=0)
+    summary = {m.id: m for m in summary_request(split).items}
+    assert summary["clipped"].text_content.endswith(INTERRUPTED_MARKER)
+    warm = {m.id: m for m in warm_request(items).items}
+    assert warm["clipped"].text_content.endswith(INTERRUPTED_MARKER)
+    # a swap rebuilds the history from the raw items: a clipped reply in the kept tail stays
+    # the stored, unmarked message
+    swapped = compacted_items(items, {items[1].id}, summary_message("so far", 1))
+    kept = {m.id: m for m in swapped}
+    assert kept["clipped"] is items[2]
+    assert kept["clipped"].text_content == "It dropped from about 33"
+    assert all(INTERRUPTED_MARKER not in (m.text_content or "") for m in ctx.items)
 
 
 def test_recent_updates_drops_a_repeat_inside_the_window_only() -> None:

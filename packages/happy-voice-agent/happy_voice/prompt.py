@@ -23,6 +23,8 @@ Everything you write is converted to speech and played to the user.
 - Never read out file paths, code, JSON, ids or long identifiers. Describe them in a few words instead.
 - Say numbers, symbols and abbreviations the way a person would say them aloud.
 - The user's words come from speech recognition and may contain recognition errors. Interpret them generously.
+- A reply of yours ending in [interrupted: the user started talking] was cut off when the user spoke over it. \
+It is not an example to copy. Always finish your own sentences, and never write that marker yourself.
 
 # How you receive information
 - Some messages start with "[App context]". They are updates sent by the app, not words spoken by the user: \
@@ -119,6 +121,9 @@ def build_instructions(
 
 
 CONTEXT_PREFIX = "[App context] "
+# Appended, on the request only, to a reply the user talked over (context.mark_interrupted).
+# The base prompt quotes it; keep the two in step.
+INTERRUPTED_MARKER = " [interrupted: the user started talking]"
 
 # Tool schemas. Names and parameter names must match realtimeClientTools.ts exactly.
 SEND_MESSAGE_SCHEMA = {

@@ -5,6 +5,11 @@ the beginning"). The worker keeps app context updates as `system` messages in th
 history (so they are clearly not user speech, and the turn detector ignores them), and right
 before each LLM request folds them into a form the template accepts: leading system messages are
 merged into one, later ones become user messages tagged with CONTEXT_PREFIX.
+
+It also tags assistant replies the user talked over with INTERRUPTED_MARKER. LiveKit keeps only
+the part that played and flags the message `interrupted`; untagged, the model reads its own
+replies ending mid-phrase and copies them ("It dropped from about 33", "About", "I"), which is
+what the 2026-11-03 call did after compaction left a tail of mostly clipped turns.
 """
 
 from __future__ import annotations
@@ -13,7 +18,7 @@ import re
 
 from livekit.agents import llm
 
-from .prompt import CONTEXT_PREFIX
+from .prompt import CONTEXT_PREFIX, INTERRUPTED_MARKER
 
 _FOCUS_RE = re.compile(r"Session became focused:\s*(\S+)")
 
@@ -27,6 +32,27 @@ def focused_session_from(update: str) -> str | None:
 
 def _text(msg: llm.ChatMessage) -> str:
     return msg.text_content or ""
+
+
+def mark_interrupted(msg: llm.ChatMessage) -> llm.ChatMessage:
+    """`msg` with INTERRUPTED_MARKER after its text when it is a reply the user cut off.
+
+    A copy with the same id, so the stored history never carries the marker: every request
+    builder folds through here, which keeps turns, warm-ups and summaries rendered alike (and
+    the prefix cache stable). A reply with no played text, or one already marked, is returned
+    as is.
+    """
+    if msg.role != "assistant" or not msg.interrupted:
+        return msg
+    content = list(msg.content)
+    last = next((i for i in range(len(content) - 1, -1, -1) if isinstance(content[i], str)), None)
+    if last is None:
+        return msg
+    text = content[last].rstrip()
+    if not text or text.endswith(INTERRUPTED_MARKER.strip()):
+        return msg
+    content[last] = text + INTERRUPTED_MARKER
+    return msg.model_copy(update={"content": content})
 
 
 def fold_system_messages(chat_ctx: llm.ChatContext) -> llm.ChatContext:
@@ -48,6 +74,8 @@ def fold_system_messages(chat_ctx: llm.ChatContext) -> llm.ChatContext:
             items.append(llm.ChatMessage(role="user", content=[text], id=item.id))
             continue
         seen_other = True
+        if isinstance(item, llm.ChatMessage):
+            item = mark_interrupted(item)
         items.append(item)
     return llm.ChatContext(items)
 
