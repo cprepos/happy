@@ -127,7 +127,14 @@ class Settings:
     llm_model: str = field(default_factory=lambda: _env("LLM_MODEL", "coder"))
     llm_api_key: str = field(default_factory=lambda: _env("LLM_API_KEY", "not-needed"))
     llm_temperature: float = field(default_factory=lambda: float(_env("LLM_TEMPERATURE", "0.2")))
-    llm_max_tokens: int = field(default_factory=lambda: int(_env("LLM_MAX_TOKENS", "250")))
+    # max_completion_tokens of a turn. A readAloud call's argument counts against it: the
+    # longest text it reads (read_aloud_max_chars, 6000) is ~1.5k tokens, and at the old 250 the
+    # call was cut off as broken JSON. Spoken replies stay short because the prompt says so.
+    llm_max_tokens: int = field(default_factory=lambda: _env_int("LLM_MAX_TOKENS", 2048, minimum=1))
+    # Longest text one readAloud call speaks (characters); longer text is cut at a sentence end.
+    read_aloud_max_chars: int = field(
+        default_factory=lambda: _env_int("VOICE_READ_ALOUD_MAX_CHARS", 6000, minimum=1)
+    )
     # extra JSON merged into every chat completion request (vLLM: thinking off for Qwen3)
     # Per-request LLM timeout (s). It bounds each wait for the next bytes of the streamed reply,
     # so the first one covers queueing plus prefill. livekit-agents' default is 10 s, which a

@@ -38,10 +38,12 @@ from happy_voice.prompt import (  # noqa: E402
     CONTEXT_PREFIX,
     INTERRUPTED_MARKER,
     PERMISSION_SCHEMA,
+    READ_ALOUD_SCHEMA,
     SEND_MESSAGE_SCHEMA,
     SKIP_TURN_SCHEMA,
     build_instructions,
 )
+from happy_voice.speech_text import clip_for_speech, strip_markdown  # noqa: E402
 
 
 def test_fold_moves_late_system_messages_to_user_role() -> None:
@@ -217,10 +219,116 @@ def test_name_section_is_last_and_happy_is_omitted() -> None:
 
 
 def test_tool_schemas_have_no_client_scope_params() -> None:
-    for schema in (SEND_MESSAGE_SCHEMA, PERMISSION_SCHEMA):
+    for schema in (SEND_MESSAGE_SCHEMA, PERMISSION_SCHEMA, READ_ALOUD_SCHEMA):
         props = schema["parameters"]["properties"]
         assert not {"client_id", "clientId", "email"} & set(props)
     assert PERMISSION_SCHEMA["parameters"]["properties"]["decision"]["enum"] == ["allow", "deny"]
+
+
+def test_strip_markdown_removes_markup_and_keeps_every_word() -> None:
+    cases = {
+        "# Results\n## Next step": "Results\nNext step",
+        "> quoted line\n> > nested": "quoted line\nnested",
+        "- one\n* two\n+ three\n1. four\n  2) five": "one\ntwo\nthree\nfour\n  five",
+        "**bold** and __strong__ and *em* and _em_": "bold and strong and em and em",
+        "run `make test` now": "run make test now",
+        "see [the docs](https://example.com/x) and ![a chart](c.png)": "see the docs and a chart",
+        "| file | lines |\n|---|:--:|\n| a.py | 12 |": "file, lines\na.py, 12",
+        "above\n\n---\n\nbelow": "above\n\nbelow",
+        "one\n\n\n\ntwo": "one\n\ntwo",
+    }
+    for markdown, spoken in cases.items():
+        assert strip_markdown(markdown) == spoken, markdown
+    # the fence lines go, the code between them stays as written
+    assert strip_markdown("Run:\n```bash\nmake voice-agent-test\n- not a list\n```\nDone.") == (
+        "Run:\nmake voice-agent-test\n- not a list\nDone."
+    )
+
+
+def test_strip_markdown_leaves_plain_prose_byte_identical() -> None:
+    prose = (
+        "The loss dropped from about 33 to 12. It took 5 * 3 minutes, and snake_case_names "
+        "stay whole -- as do 2*x, a_b and costs of $5.\nNew line, same paragraph.\n\nDone!"
+    )
+    assert strip_markdown(prose) == prose
+
+
+def test_clip_for_speech_cuts_at_a_sentence_end_or_a_space() -> None:
+    text = "First sentence here. Second one is longer than the cap allows."
+    assert clip_for_speech(text, 1000) == text
+    assert clip_for_speech(text, 30) == "First sentence here."
+    # no sentence end late enough: the last space before the cap
+    words = "alpha beta gamma delta epsilon"
+    assert clip_for_speech(words, 14) == "alpha beta"
+    assert clip_for_speech(words, 16) == "alpha beta gamma"
+    # one unbroken word: a hard cut
+    assert clip_for_speech("x" * 50, 10) == "x" * 10
+
+
+class _SaySession:
+    def __init__(self) -> None:
+        self.said: list[tuple[str, dict]] = []
+
+    def say(self, text: str, **kwargs):
+        self.said.append((text, kwargs))
+
+
+class _ToolContext:
+    def __init__(self) -> None:
+        self.session = _SaySession()
+
+
+def _read_aloud(text: str, **env: str):
+    from happy_voice.assistant import ConversationState, HappyAssistant
+
+    agent = HappyAssistant(
+        instructions="instructions",
+        room=None,
+        state=ConversationState(),
+        settings=_settings_with(**env),
+    )
+    context = _ToolContext()
+    result = asyncio.run(agent.readAloud({"text": text}, context))
+    return result, context.session.said
+
+
+def test_read_aloud_speaks_the_stripped_text_with_no_follow_up_reply() -> None:
+    result, said = _read_aloud("## Done\n\nI fixed **two** bugs in `compaction.py`.\n")
+    assert said == [
+        ("Done\n\nI fixed two bugs in compaction.py.", {"allow_interruptions": True, "add_to_chat_ctx": True})
+    ]
+    assert isinstance(result, llm.ToolResult) and result.reply_required is False
+
+
+def test_read_aloud_refuses_empty_or_markup_only_text() -> None:
+    from livekit.agents import ToolError
+
+    for text in ("", "   ", "```\n```\n---\n**"):
+        try:
+            _read_aloud(text)
+        except ToolError as e:
+            assert "nothing to read" in str(e)
+        else:
+            raise AssertionError(f"no ToolError for {text!r}")
+
+
+def test_read_aloud_caps_the_text_at_a_word_boundary() -> None:
+    text = " ".join(f"word{n}" for n in range(100))
+    _, ((spoken, _),) = _read_aloud(text, VOICE_READ_ALOUD_MAX_CHARS="50")
+    assert len(spoken) <= 50
+    assert text.startswith(spoken) and text[len(spoken)] == " "
+
+
+def test_read_aloud_is_registered_with_text_required() -> None:
+    from happy_voice.assistant import ConversationState, HappyAssistant
+
+    agent = HappyAssistant(
+        instructions="instructions", room=None, state=ConversationState(), settings=_settings_with()
+    )
+    tools = {t.info.name: t for t in llm.ToolContext(agent.tools).flatten()}
+    assert "readAloud" in tools
+    assert tools["readAloud"].info.raw_schema["parameters"]["required"] == ["text"]
+    assert "readAloud(text)" in BASE_PROMPT
 
 
 def test_voice_config_tolerates_bad_payloads() -> None:
@@ -627,6 +735,8 @@ _TUNING_ENV = (
     "INTERRUPT_MIN_WORDS",
     "FALSE_INTERRUPTION_TIMEOUT",
     "RESUME_FALSE_INTERRUPTION",
+    "LLM_MAX_TOKENS",
+    "VOICE_READ_ALOUD_MAX_CHARS",
 )
 
 
@@ -656,6 +766,9 @@ def test_llm_and_interruption_defaults() -> None:
     assert s.interrupt_min_words == 1
     assert s.false_interruption_timeout == 2.0
     assert s.resume_false_interruption is True
+    # room for a readAloud argument of read_aloud_max_chars (~1.5k tokens)
+    assert s.llm_max_tokens == 2048
+    assert s.read_aloud_max_chars == 6000
 
 
 def test_llm_and_interruption_env_overrides() -> None:
@@ -666,7 +779,11 @@ def test_llm_and_interruption_env_overrides() -> None:
         INTERRUPT_MIN_WORDS="3",
         FALSE_INTERRUPTION_TIMEOUT="off",
         RESUME_FALSE_INTERRUPTION="false",
+        LLM_MAX_TOKENS="300",
+        VOICE_READ_ALOUD_MAX_CHARS="1200",
     )
+    assert (s.llm_max_tokens, s.read_aloud_max_chars) == (300, 1200)
+    assert _settings_with(VOICE_READ_ALOUD_MAX_CHARS="0").read_aloud_max_chars == 6000
     assert s.llm_timeout == 90.0
     assert s.llm_max_retry == 2
     assert s.interrupt_min_duration == 0.6

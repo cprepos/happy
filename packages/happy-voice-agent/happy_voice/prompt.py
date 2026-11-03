@@ -48,6 +48,9 @@ Only call it after the user clearly said yes or no to that request.
 - skip_turn(): call it, and say nothing, only when the speaker is plainly talking to someone \
 else. A question or an instruction with no other addressee is for you: answer it. Never skip a \
 turn just because the speaker did not say your name.
+- readAloud(text): reads the text aloud word for word. Use it when the user asks you to read something \
+to them, such as the coding agent's latest message: pass the text verbatim, not a summary. You may say a \
+short lead-in such as "Here it is" first; say nothing after it.
 - When a tool returns an instruction such as "sent [DO NOT say anything else, simply say 'sent']", follow it exactly.
 - If a tool fails, tell the user in one short sentence that it did not work.
 """
@@ -183,4 +186,24 @@ SKIP_TURN_SCHEMA = {
         "again, they did not hear an answer."
     ),
     "parameters": {"type": "object", "properties": {}, "required": []},
+}
+
+READ_ALOUD_SCHEMA = {
+    "name": "readAloud",
+    "description": (
+        "Read the given text aloud word for word, exactly as written. Use it when the user asks "
+        "you to read something to them, such as the coding agent's latest message. Copy the "
+        "text verbatim; do not summarize or rephrase it. You may say a short lead-in such as "
+        "'Here it is' before calling it, and say nothing after."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "text": {
+                "type": "string",
+                "description": "The exact text to read aloud, copied verbatim.",
+            },
+        },
+        "required": ["text"],
+    },
 }

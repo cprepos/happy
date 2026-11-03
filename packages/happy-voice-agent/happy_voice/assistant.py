@@ -41,10 +41,12 @@ from .names import persona_for
 from .nemotron_stt import NemotronSTT
 from .prompt import (
     PERMISSION_SCHEMA,
+    READ_ALOUD_SCHEMA,
     SEND_MESSAGE_SCHEMA,
     SKIP_TURN_SCHEMA,
     build_instructions,
 )
+from .speech_text import clip_for_speech, strip_markdown
 from .tts_trim import trim_leading_artifact
 from .voices import fetch_known_voices, resolve_tts
 from .warmup import WARMUP_PLACEHOLDER, PrefixWarmer
@@ -323,6 +325,24 @@ class HappyAssistant(Agent):
             "processPermissionRequest", {"requestId": request_id, "decision": decision}
         )
         return self._reply_with(result, context)
+
+    @function_tool(raw_schema=READ_ALOUD_SCHEMA)
+    async def readAloud(self, raw_arguments: dict[str, Any], context: RunContext) -> llm.ToolResult:
+        # Spoken straight to TTS, like _reply_with: a second LLM pass would paraphrase the very
+        # text the user asked to hear. Nothing goes to the app.
+        text = strip_markdown(str(raw_arguments.get("text") or "")).strip()
+        if not text:
+            raise ToolError("error (nothing to read)")
+        cap = self._settings.read_aloud_max_chars
+        if len(text) > cap:
+            clipped = clip_for_speech(text, cap)
+            logger.info("readAloud: %d chars cut to %d (cap %d)", len(text), len(clipped), cap)
+            text = clipped
+        logger.info("readAloud: %d chars", len(text))
+        # If the user talks over it, the stored reply is clipped and flagged like any other,
+        # and the next request marks it (context.mark_interrupted).
+        context.session.say(text, allow_interruptions=True, add_to_chat_ctx=True)
+        return llm.ToolResult("read aloud", reply_required=False)
 
     @function_tool(raw_schema=SKIP_TURN_SCHEMA)
     async def skip_turn(self, raw_arguments: dict[str, Any], context: RunContext) -> None:
