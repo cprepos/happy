@@ -1715,6 +1715,100 @@ def test_no_reply_pending_reads_the_session_the_library_builds() -> None:
     assert asyncio.run(run()) == [True, False, False, True, True]
 
 
+class _LogCapture:
+    def __init__(self) -> None:
+        import logging
+
+        class _H(logging.Handler):
+            def emit(inner, record: logging.LogRecord) -> None:
+                self.messages.append(record.getMessage())
+
+        self.messages: list[str] = []
+        self._logger = logging.getLogger("happy-voice")
+        self._handler = _H()
+
+    def __enter__(self) -> "_LogCapture":
+        import logging
+
+        self._was = self._logger.level
+        self._logger.setLevel(logging.INFO)
+        self._logger.addHandler(self._handler)
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._logger.removeHandler(self._handler)
+        self._logger.setLevel(self._was)
+
+
+def test_after_a_swap_no_compaction_starts_at_once_and_the_first_compacted_turn_is_logged() -> None:
+    now = [100.0]
+
+    async def run():
+        agent = _agent(_history(30))
+        model = _FakeLLM(text=SUMMARY)
+        c = _make_compactor(agent, model, clock=lambda: now[0])
+        c.on_llm_usage(5000, 0)
+        await c._task
+        assert c.compactions == 1
+        with _LogCapture() as log:
+            # usage of a request made before the swap: not the first compacted turn, and a
+            # prompt still over the trigger does not start another compaction straight away
+            c.on_llm_usage(5000, 0)
+            assert c._task.done() and len(model.requests) == 1
+            c.note_request(fold_system_messages(agent.chat_ctx))
+            c.on_llm_usage(450, 400)
+            c.note_request(fold_system_messages(agent.chat_ctx))
+            c.on_llm_usage(460, 450)
+        first = [m for m in log.messages if "first turn after the swap" in m]
+        assert first == ["compaction: first turn after the swap: prompt=450 cached=400"]
+        now[0] += 31
+        c.on_llm_usage(5000, 0)
+        assert not c._task.done()
+        await c._task
+        return model
+
+    model = asyncio.run(run())
+    assert len(model.requests) == 2
+
+
+def test_a_head_too_small_for_the_trigger_is_not_summarized_over_and_over() -> None:
+    async def run():
+        agent = _agent(_history(30))
+        before = _dump(agent.chat_ctx)
+        model = _FakeLLM(text=SUMMARY)
+        # the head is well over twice the summary, but frees little of the room under the trigger
+        c = _make_compactor(agent, model, keep=150, trigger=20000, summary_tokens=20)
+        from happy_voice.compaction import split_history
+
+        split = split_history(agent.chat_ctx.items, c.keep, c.estimator)
+        assert 2 * c.summary_tokens < split.head_tokens < (c.trigger - c.keep) // 2
+        ok = await c.compact_once(20000)
+        return agent, before, model, ok
+
+    agent, before, model, ok = asyncio.run(run())
+    assert ok is True and model.requests == []
+    assert _dump(agent.chat_ctx) == before
+
+
+def test_closing_the_compactor_stops_it_for_good() -> None:
+    async def run():
+        agent = _agent(_history(30))
+        before = _dump(agent.chat_ctx)
+        model = _FakeLLM(text=SUMMARY, delay=0.01)
+        c = _make_compactor(agent, model)
+        c.on_llm_usage(5000, 0)
+        task = c._task
+        await asyncio.sleep(0.05)
+        await c.aclose()
+        c.on_llm_usage(5000, 0)  # a usage report that arrives during shutdown
+        return agent, before, model, c, task
+
+    agent, before, model, c, task = asyncio.run(run())
+    assert task.cancelled() and c._task is None and c.enabled is False
+    assert model.closed and model.closed_streams == 1
+    assert _dump(agent.chat_ctx) == before
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):

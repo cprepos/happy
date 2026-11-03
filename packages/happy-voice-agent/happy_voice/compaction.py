@@ -375,19 +375,23 @@ class Compactor:
         self._task: asyncio.Task[None] | None = None
         self._failures = 0
         self._next_attempt = 0.0
-        self._swapped_pending_log = False
+        # set by a swap; the next request noted is the first on the compacted history, and its
+        # usage is logged (a usage arriving in between belongs to a request made before it)
+        self._swapped = False
+        self._log_next_usage = False
         self.compactions = 0
 
     # -- called from the session --------------------------------------------------------------
 
     def note_request(self, chat_ctx: llm.ChatContext) -> None:
         self.estimator.note_request(chat_ctx)
+        self._log_next_usage, self._swapped = self._swapped, False
 
     def on_llm_usage(self, prompt_tokens: int, cached_tokens: int) -> None:
         """A turn's usage: calibrates the estimate and starts a compaction past the trigger."""
         self.estimator.observe_usage(prompt_tokens)
-        if self._swapped_pending_log:
-            self._swapped_pending_log = False
+        if self._log_next_usage:
+            self._log_next_usage = False
             logger.info(
                 "compaction: first turn after the swap: prompt=%d cached=%d", prompt_tokens, cached_tokens
             )
@@ -400,6 +404,7 @@ class Compactor:
         self._task = asyncio.create_task(self._run(prompt_tokens))
 
     async def aclose(self) -> None:
+        self.enabled = False  # a late usage report must not start another one
         task, self._task = self._task, None
         if task is not None and not task.done():
             task.cancel()
@@ -434,9 +439,11 @@ class Compactor:
             await self._turn_idle()
         agent = self._agent()
         split = split_history(agent.chat_ctx.items, self.keep, self.estimator)
-        # Not worth a request unless the summary is much smaller than what it replaces; also
-        # keeps a call whose instructions alone are past the trigger from summarizing every turn.
-        if split is None or split.head_tokens < 2 * self.summary_tokens:
+        # Not worth a request unless the summary is much smaller than what it replaces, and
+        # unless it frees a good part of what the trigger allows above `keep`: a call whose
+        # instructions (or rolled-forward summary) alone sit near the trigger would otherwise
+        # summarize a few turns again on every turn.
+        if split is None or split.head_tokens < self._min_head():
             logger.info(
                 "compaction: nothing worth summarizing (head ~%d tokens)",
                 split.head_tokens if split else 0,
@@ -498,7 +505,10 @@ class Compactor:
             summary_ms,
             warm_ms,
         )
-        self._swapped_pending_log = True
+        self._swapped = True
+        # the compacted prompt is below the trigger by design; this only stops a prompt that is
+        # still over it (instructions or summary near the trigger) from compacting again at once
+        self._next_attempt = self._clock() + BACKOFF_BASE
         if self._on_swapped is not None:
             self._on_swapped()
         return True
@@ -535,6 +545,9 @@ class Compactor:
                     SUMMARY_ATTEMPTS,
                 )
         return None
+
+    def _min_head(self) -> int:
+        return max(2 * self.summary_tokens, (self.trigger - self.keep) // 2)
 
     def _settled_for(self) -> float:
         """How much longer the quiet must last before a swap; 0 once it has lasted long enough."""
