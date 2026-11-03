@@ -162,9 +162,10 @@ public struct HomeListModel: Equatable, Sendable {
         )
     }
 
-    /// A bot's, a task's or an archived chat's row (ProjectHomeList.tsx
-    /// `ChatRow`) draws no line changes or harness name either. A chat
-    /// grouped by host draws what the flat list's row draws.
+    /// A bot's or a task's row (ProjectHomeList.tsx `ChatRow`) draws no line
+    /// changes or harness name either. An archived chat, like a chat grouped
+    /// by host, draws what the flat list's row draws, harness name included,
+    /// so the archive still says which harness ran each chat.
     private static func rendered(_ row: ProjectHomeRow, draftSessionIds: Set<String>) -> ProjectHomeRow {
         switch row {
         case .chat(var session):
@@ -186,7 +187,6 @@ public struct HomeListModel: Equatable, Sendable {
         case .archived(var session):
             session.lastActivityAt = 0
             session.changes = nil
-            session.harnessName = nil
             session.hasDraft = false
             return .archived(session)
         default:

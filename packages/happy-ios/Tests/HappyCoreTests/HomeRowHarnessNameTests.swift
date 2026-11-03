@@ -109,9 +109,10 @@ final class HomeRowHarnessNameTests: XCTestCase {
         XCTAssertEqual(checked, 2)
     }
 
-    /// Only the rows that draw it have it: a bot, a task and an archived chat
-    /// don't, and neither does the toggle.
-    func testBotsTasksAndArchivedChatsNameNoHarnessGroupedByProject() {
+    /// Only the rows that draw it have it: a bot and a task don't, and neither
+    /// does the toggle. An archived chat does, so the archive says which
+    /// harness ran each chat.
+    func testBotsAndTasksNameNoHarnessButArchivedChatsDoGroupedByProject() {
         let bot: [String: JSONValue] = ["bot": .object(["id": .string("b"), "name": .string("Helper"), "username": .string("helper"), "orderKey": .string("a")])]
         let task: [String: JSONValue] = ["task": .object(["id": .string("t"), "name": .string("Fix"), "folderName": .string("fix"), "orderKey": .string("a")])]
         let rows = projectRows(snapshot([
@@ -122,8 +123,11 @@ final class HomeRowHarnessNameTests: XCTestCase {
         var seen: Set<String> = []
         for row in rows {
             switch row {
-            case .bot(let session), .task(let session), .archived(let session):
+            case .bot(let session), .task(let session):
                 XCTAssertNil(session.harnessName, session.id)
+                seen.insert(session.id)
+            case .archived(let session):
+                XCTAssertEqual(session.harnessName, "Codex", session.id)
                 seen.insert(session.id)
             default: break
             }

@@ -257,7 +257,9 @@ struct HomeRowDrawing: Sendable {
         case .project(.bot(let row)), .project(.task(let row)): session(row, archived: false, flatLayout: !grouped)
         // A chat grouped by host is the flat list's row, under a heading.
         case .project(.chat(let row)): session(row, archived: false, flatLayout: true, groupedByHost: true)
-        case .project(.archived(let row)): session(row, archived: true, flatLayout: !grouped)
+        // An archived chat belongs to no checkout any more: the flat list's
+        // row, faded, so it keeps its project, host and harness name.
+        case .project(.archived(let row)): session(row, archived: true, flatLayout: true)
         case .flat(.dayHeader), .project(.section), .project(.archiveHeader):
             // Only the room between two cards.
             plan.size = CGSize(width: width, height: HomeCardLayout.Metrics.gap)
