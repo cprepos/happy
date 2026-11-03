@@ -214,9 +214,12 @@ class HappyAssistant(Agent):
         request = fold_system_messages(chat_ctx)
         compactor = self.compactor
         if compactor is not None:
-            compactor.note_request(request)
             # the same object back unless it is over the cap; the history is never touched
             request = cap_request(request, self._settings.context_hard_cap, compactor.estimator)
+            # Noted after the cap: the usage that calibrates the estimate measures what was
+            # sent. Noting the untrimmed request made the ratio drift low on every capped turn
+            # (same tokens over more characters), and the cap overshoot more each time.
+            compactor.note_request(request)
         return request
 
     async def llm_node(self, chat_ctx, tools, model_settings):  # type: ignore[override]

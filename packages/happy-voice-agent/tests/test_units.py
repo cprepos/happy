@@ -1164,6 +1164,30 @@ def test_backstop_trims_only_the_request_copy() -> None:
     assert calls == outputs
 
 
+def test_backstop_stays_under_the_cap_turn_after_turn() -> None:
+    """The usage of a capped turn calibrates against what was sent, not the untrimmed history:
+    otherwise the ratio drifts low each turn and the cap overshoots more each time."""
+    from happy_voice.compaction import TokenEstimator
+
+    cap = 1000
+    true = TokenEstimator(0.5)  # what the server counts
+    ctx = _history(60)
+    settings = _compaction_settings(
+        VOICE_COMPACT_KEEP="10", VOICE_COMPACT_TRIGGER="200", VOICE_CONTEXT_HARD_CAP=str(cap)
+    )
+    agent = _assistant(settings, ctx, compactor=True, enabled=False)
+    agent.compactor.estimator.tokens_per_char = 0.5
+    assert true.total(fold_system_messages(ctx).items) > 3 * cap
+    sent_tokens = []
+    for _ in range(6):
+        (sent,) = _run_llm_node(agent, ctx)
+        real = true.total(sent.items)
+        sent_tokens.append(real)
+        agent.compactor.on_llm_usage(real, 0)
+    assert max(sent_tokens) <= cap, sent_tokens
+    assert agent.compactor.estimator.tokens_per_char >= 0.5
+
+
 def _make_compactor(agent, summarizer, *, quiet=None, lock=None, warm=None, keep=150, trigger=400, **kw):
     from happy_voice.compaction import Compactor
 
