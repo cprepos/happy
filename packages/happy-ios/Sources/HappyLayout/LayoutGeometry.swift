@@ -28,6 +28,14 @@ public struct LayoutInsets: Equatable, Sendable {
 
     public var horizontal: CGFloat { left + right }
     public var vertical: CGFloat { top + bottom }
+
+    /// What these insets' sides leave of a view `size`, top to bottom:
+    /// where a screen's content stands. A phone held sideways keeps its
+    /// rows, text and controls off the camera and the rounded corners on
+    /// either side, while backgrounds and scrims still run edge to edge.
+    public func sides(of size: CGSize) -> CGRect {
+        CGRect(x: max(0, left), y: 0, width: max(0, size.width - max(0, left) - max(0, right)), height: max(0, size.height))
+    }
 }
 
 /// Content whose size depends on the width it is offered, such as wrapping
@@ -118,3 +126,16 @@ extension CGRect {
         CGRect(x: originX + (width - size.width) / 2, y: y, width: size.width, height: size.height)
     }
 }
+
+#if !canImport(CoreGraphics)
+/// CoreGraphics' vector, which swift-corelibs-foundation lacks.
+public struct CGVector: Equatable, Sendable {
+    public var dx: CGFloat
+    public var dy: CGFloat
+
+    public init(dx: CGFloat, dy: CGFloat) {
+        self.dx = dx
+        self.dy = dy
+    }
+}
+#endif

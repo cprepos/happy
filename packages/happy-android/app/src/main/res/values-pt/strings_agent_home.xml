@@ -5,20 +5,13 @@
 -->
 <resources>
     <string name="agent_home_working">Trabalhando…</string>
-    <string name="agent_home_show_subtasks">Mostrar subtarefas</string>
-    <string name="agent_home_hide_subtasks">Ocultar subtarefas</string>
-    <string name="agent_home_connecting">Conectando a %1$s…</string>
     <string name="agent_home_empty_title">Nenhuma conversa ainda</string>
     <string name="agent_home_empty_body">Comece um chat com este agente e ele aparecerá aqui.</string>
     <string name="agent_home_offline_title">Não foi possível acessar %1$s</string>
     <string name="agent_home_offline_body">Verifique se o agente está em execução e online. O Happy se reconecta sozinho.</string>
     <string name="agent_home_revoked">Este telefone foi removido no Happy Agent. Conecte o agente de novo para usá-lo.</string>
     <string name="agent_home_update_required">Este agente precisa de uma versão mais recente do Happy. Atualize o app para usá-lo.</string>
-    <string name="agent_home_status_offline">offline</string>
-    <string name="agent_home_status_revoked">removido</string>
-    <string name="agent_home_status_update">atualização necessária</string>
     <string name="agent_artifacts_untitled">Sem título</string>
-    <string name="agent_artifacts_empty">Nenhum artefato ainda.</string>
     <string name="agent_artifacts_failed">Não foi possível ler os artefatos</string>
     <string name="agent_surface_add_todo">Adicionar tarefa</string>
     <string name="agent_surface_no_todos">Nada aqui ainda.</string>
@@ -26,13 +19,22 @@
     <string name="agent_surface_empty_document">Este documento está vazio.</string>
     <string name="agent_surface_open_on_computer">Abra isto no computador para usar.</string>
     <string name="agent_surface_failed">Não foi possível ler</string>
-    <string name="agent_search_placeholder">Buscar conversas e configurações</string>
     <string name="agent_search_clear">Limpar</string>
-    <string name="agent_search_conversations">Conversas</string>
     <string name="agent_search_actions">Ações rápidas</string>
-    <string name="agent_search_no_results">Nenhum resultado para “%1$s”</string>
-    <string name="agent_search_add">Adicionar conta ou agente</string>
     <string name="agent_search_open_settings">Abrir configurações</string>
+    <string name="agent_search_documents">Documentos</string>
+    <string name="agent_search_todos">Tarefas</string>
+    <string name="agent_search_shared">Compartilhados</string>
+    <string name="agent_search_kind_todo">Lista de tarefas</string>
+    <string name="agent_search_kind_document">Documento</string>
+    <string name="agent_search_kind_calendar">Calendário</string>
+    <string name="agent_search_kind_system_monitor">Monitor do sistema</string>
+    <string name="agent_search_kind_chat">Chat</string>
+    <string name="agent_search_kind_web_page">Página web</string>
+    <string name="agent_search_kind_image">Imagem</string>
+    <string name="agent_search_kind_image_series">Série de imagens</string>
+    <string name="agent_search_kind_video">Vídeo</string>
+    <string name="agent_search_kind_artifact">Artefato</string>
     <string name="agent_settings_edit_name">Editar nome</string>
     <string name="agent_settings_edit_avatar">Editar avatar</string>
     <string name="agent_settings_edit_name_prefix">"Mude seu nome para "</string>

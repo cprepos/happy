@@ -334,6 +334,10 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
             composeTarget.onSessionKind = { [weak compose] in compose?.setKind($0) }
             composeTarget.onBotName = { [weak compose] in compose?.setBotName($0) ?? $0 }
             composeTarget.onReturn = { [weak self] in self?.composer.focus() }
+            compose.askName = { [weak self] reason in
+                guard let self, !composeTarget.isHidden, composeTarget.sessionKind == .bot else { return false }
+                return composeTarget.askName(reason)
+            }
             view.addSubview(composeTarget)
             #if DEBUG
             if ComposeTrace.isOn { composeTrace = ComposeTrace(self) }
@@ -482,7 +486,6 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        header.ride(transitionCoordinator, appearing: true)
         appeared = true
         startConstruction()
         // An empty compose has no transcript to stage: built now, its
@@ -808,7 +811,6 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
-        header.ride(transitionCoordinator, appearing: false)
         MessageLiftOverlay.putBack(from: self)
         if contentInstalled { keepStripOffset() }
         if ultraKeyboard?.isDriving == true { ultraKeyboard?.dismissImmediately() }
@@ -829,7 +831,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         layoutScreen(keyboard: insetMotion)
         ultraKeyboard?.refresh()
         updatePermissionListMaxHeight()
-        if list.bounds.width != sentRowsView.width || list.traitCollection.textEnvironment != sentRowsView.text.environment {
+        if list.contentWidth != sentRowsView.width || list.traitCollection.textEnvironment != sentRowsView.text.environment {
             scheduleMeasure()
         }
     }
@@ -846,12 +848,15 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
     /// composer's, for the list to take its inset on.
     private func layoutScreen(keyboard: ChatUltraKeyboard.Change? = nil) {
         let size = view.bounds.size
-        let composerHeight = composer.composerHeight(fitting: size.width)
+        let safeArea = LayoutInsets(view.safeAreaInsets)
+        // What reads keeps inside the safe area's sides (`LegacyChatScreenLayout`).
+        let band = safeArea.sides(of: size)
+        let composerHeight = composer.composerHeight(fitting: band.width)
         // Restored while answering: it shows in this frame.
         composerReveal.heightRead()
         let screen = LegacyChatScreenLayout(.init(
             size: size,
-            safeArea: LayoutInsets(view.safeAreaInsets),
+            safeArea: safeArea,
             // The guide's top is the safe area's bottom while the keyboard
             // is down, and the layout never goes below that.
             keyboardTop: ultraKeyboard?.keyboardTop(guideTop: keyboardTracker.frame.minY) ?? keyboardTracker.frame.minY,
@@ -873,8 +878,8 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
             tabStrip.maxWidth = ContentWidth.headerMaxWidth
             tabStrip.setLayoutFrame(frame)
         }
-        if !cliWarning.isHidden, let label = cliWarning.label(width: size.width) {
-            cliWarning.place(CliWarningPillLayout(width: size.width, top: screen.headerBottom, label: label))
+        if !cliWarning.isHidden, let label = cliWarning.label(width: band.width) {
+            cliWarning.place(CliWarningPillLayout(width: size.width, sides: safeArea, top: screen.headerBottom, label: label))
         }
         // Loading the session and the deleted state take the whole screen;
         // an empty chat sits between the bar and the dock.
@@ -884,11 +889,11 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
             // keyboard: the panel moves with it, in the same pass.
             let area = screen.placeholder
             composeRoom = area
-            let layout = composeTarget.layout(width: size.width, top: area.minY, bottom: area.maxY)
+            let layout = composeTarget.layout(width: size.width, sides: safeArea, top: area.minY, bottom: area.maxY)
             composeTarget.place(layout)
             composeTarget.isHidden = !layout.fits
         }
-        header.maxWidth = ChatTitleLayout.maxWidth(barWidth: size.width)
+        header.maxWidth = ChatTitleLayout.maxWidth(barWidth: band.width)
         dock.setLayoutFrame(screen.dock)
         for (bar, frame) in zip(dockBars, screen.accessories) { bar.view.setLayoutFrame(frame) }
         composer.setLayoutFrame(screen.composer)
@@ -1020,6 +1025,10 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
 
     private func sessionChanged(_ state: ChatSessionState) {
         session = state
+        if awaitingRecord, state.record != nil {
+            awaitingRecord = false
+            awaitingRecordTask.task?.cancel()
+        }
         sessionApplied = true
         rows?.update { $0.session = state }
         updateHeader()
@@ -1128,7 +1137,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         // a stand-in's title is "New chat" for as long as it stands.
         let pending = PendingChats.isPendingChatId(sessionId)
         let headerRecord = session.record ?? (pending ? anchorRecord : nil)
-        var model = ChatHeaderModel(session: headerRecord, dataReady: session.dataReady || isFixture, gitStatus: gitStatus, pending: pending && headerRecord == nil)
+        var model = ChatHeaderModel(session: headerRecord, dataReady: (session.dataReady && !awaitingRecord) || isFixture, gitStatus: gitStatus, pending: pending && headerRecord == nil)
         if pending, model.title != .loading { model.title = .name(nil) }
         var title = switch model.title {
         case .loading: ""
@@ -1141,7 +1150,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         if let checkout {
             title = checkout.workspaceName ?? model.subtitle ?? checkout.projectName
         }
-        if isComposing { title = Strings.Session.newChat }
+        if isComposing || (awaitingRecord && session.record == nil) { title = Strings.Session.newChat }
         navigationItem.title = title
         headerTitle = title
         applyTitleAndStatus()
@@ -1422,11 +1431,13 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         // already offers a session again.
         guard compose.sessionId == nil else { return }
         composeTarget.isLocked = compose.isStarting
-        composeTarget.setSessionKinds(compose.kinds, current: compose.kind, botName: compose.drafts.botName)
-        // A bot or a task lives on a computer and nowhere else: the
-        // computer is asked even on an account with one.
-        composeTarget.showsMachine = compose.asksMachine || compose.kind != .session
+        // Every kind and the computer show from the first frame, whatever
+        // has arrived: a big account's computers can take a while, and the
+        // panel fills in where it stands rather than grow under the keyboard.
+        composeTarget.setSessionKinds(LegacyComposeStart.shownKinds, enabled: compose.enabledKinds, current: compose.kind, botName: compose.drafts.botName)
+        composeTarget.showsMachine = true
         composeTarget.machine.title = compose.machineName
+        composeTarget.machine.status = compose.machineStatus
         composeTarget.folder.title = compose.folderName
         // Nothing to run: the row is setup help, as home's dock had it.
         let help = compose.offersHarnessHelp
@@ -1493,6 +1504,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
     /// place, keeping the composer, its keyboard and whatever was typed
     /// since (`becomeChat`).
     private func composeStarted(_ real: String) {
+        awaitRecord()
         becomeChat(real)
         composing?.cancel()
         composing = nil
@@ -1502,6 +1514,33 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         updatePlaceholder()
         list.scrollToNewest(animated: true)
     }
+
+    /// A session this screen just made, whose row the account's home
+    /// snapshot hasn't brought yet: the daemon has answered and the store
+    /// confirmed it (`ensureSessionReady`), but the shared snapshot the chat
+    /// reads can still be the one from before. Until the record is seen,
+    /// a missing one is on its way, not deleted: the chat waits with its
+    /// composer. A record seen and then gone is deleted, as is one that
+    /// never comes.
+    private var awaitingRecord = false
+    private let awaitingRecordTask = TaskHolder()
+    /// How long a missing row is on its way; shorter in tests.
+    var recordWait: Duration = .seconds(15)
+
+    private func awaitRecord() {
+        awaitingRecord = true
+        let wait = recordWait
+        awaitingRecordTask.task = Task { [weak self] in
+            try? await Task.sleep(for: wait)
+            guard !Task.isCancelled, let self, self.awaitingRecord else { return }
+            self.awaitingRecord = false
+            self.updateHeader()
+            self.updatePlaceholder()
+        }
+    }
+
+    /// Whether the screen is waiting for its fresh session's row, for tests.
+    var isAwaitingRecord: Bool { awaitingRecord }
 
     private func pendingChatChanged(_ chat: PendingChat?) {
         guard chat != pendingChat else { return }
@@ -1600,6 +1639,9 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         } else if isComposing {
             // The empty chat: the composer, and where it goes.
             content = nil
+        } else if awaitingRecord {
+            // Just made, its row on its way: the composer stays.
+            content = .loading
         } else if isPendingChat {
             // The composer stays: it is the one thing on this screen that
             // survives the chat's arrival.
@@ -1799,7 +1841,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
     /// has the new one.
     private func applyRows(_ update: ChatRowsUpdate) -> Bool {
         if update.list != nil,
-           update.width != list.bounds.width || update.text != list.traitCollection.textEnvironment {
+           update.width != list.contentWidth || update.text != list.traitCollection.textEnvironment {
             return false
         }
         ApplyPerf.measure(.chatList) {
@@ -1861,7 +1903,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
     private func scheduleMeasure() {
         guard let rows else { return }
         let view = ChatRowsView(
-            width: list.bounds.width,
+            width: list.contentWidth,
             maxContentWidth: maxContentWidth,
             text: ChatRowText(environment: list.traitCollection.textEnvironment, words: words),
             permissionListMaxHeight: permissionListMaxHeight,
@@ -2000,8 +2042,8 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         case .copyMenu, .selectable, .markdownSelectable:
             // Long presses; see `chatList(_:hold:frame:at:)`.
             break
-        case .openMedia, .openArtifact, .toggleTurn:
-            // Only V2 conversations show media, artifacts and turns.
+        case .openMedia, .openArtifact, .toggleTurn, .openURL:
+            // Only V2 conversations show media, artifacts, turns and tool screens.
             break
         case .toggleDownload(let ref):
             chatAttachments?.toggle(ref)

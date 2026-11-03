@@ -31,12 +31,36 @@ class HttpsTransport internal constructor(
     private val socketFactory: SSLSocketFactory = SSLSocketFactory.getDefault() as SSLSocketFactory,
     private val requestTimeoutMillis: Long = 35_000,
     private val fileTimeoutMillis: Long = 15 * 60_000,
+    private val webSockets: okhttp3.OkHttpClient = WebSocketTunnel.client,
 ) : Transport {
     private val lock = Any()
     private val sockets = mutableSetOf<TlsSocket>()
+    private val tunnels = mutableSetOf<TransportSocket>()
     private var closed = false
 
     override suspend fun socket(): TransportSocket = socket(RequestCategory.File)
+
+    override suspend fun overHttps(): Boolean = true
+
+    override suspend fun webSocketTunnel(path: String, credential: String): TransportSocket {
+        if (!path.startsWith("/") || path.any { it.code <= 32 || it.code >= 127 } || credential.any { it.code < 32 || it.code >= 127 }) {
+            throw AgentConnectionException(AgentConnectionException.Reason.InvalidResponse)
+        }
+        synchronized(lock) { if (closed) throw AgentConnectionException(AgentConnectionException.Reason.Unavailable) }
+        val tunnel = WebSocketTunnel.open(origin.authority, path, credential, webSockets)
+        val kept = synchronized(lock) { (!closed).also { if (it) tunnels.add(tunnel) } }
+        if (!kept) {
+            tunnel.close()
+            throw AgentConnectionException(AgentConnectionException.Reason.Unavailable)
+        }
+        // Forgotten when it closes, so a long-lived transport doesn't hold every tunnel it made.
+        return object : TransportSocket by tunnel {
+            override fun close() {
+                synchronized(lock) { tunnels.remove(tunnel) }
+                tunnel.close()
+            }
+        }
+    }
 
     private suspend fun socket(category: RequestCategory): TlsSocket {
         val raw = Socket()
@@ -71,7 +95,11 @@ class HttpsTransport internal constructor(
                 val stream = socket(category)
                 try {
                     stream.write(head)
-                    if (body != null) stream.write(body)
+                    val progress = currentCoroutineContext()[BodyProgress]
+                    if (body != null) {
+                        if (progress == null) stream.write(body)
+                        else progress.write(body) { stream.write(it) }
+                    }
                     val parser = HttpResponseParser()
                     var response: TransportResponse? = null
                     while (response == null) {
@@ -105,11 +133,14 @@ class HttpsTransport internal constructor(
     override suspend fun reset(category: RequestCategory) {
         val old = synchronized(lock) { sockets.filter { it.category == category }.also { sockets.removeAll(it.toSet()) } }
         old.forEach { it.close() }
+        // Tunnels are the browser's, as File sockets are.
+        if (category == RequestCategory.File) synchronized(lock) { tunnels.toList().also { tunnels.clear() } }.forEach { it.close() }
     }
 
     override suspend fun reset() {
         val old = synchronized(lock) { sockets.toList().also { sockets.clear() } }
         old.forEach { it.close() }
+        synchronized(lock) { tunnels.toList().also { tunnels.clear() } }.forEach { it.close() }
     }
 
     override suspend fun close() {

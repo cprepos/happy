@@ -5,7 +5,7 @@ import UIKit
 import XCTest
 @testable import HappyUI
 
-/// `Sources/HappyUI/Resources/Animations`: desktop's five state pictures,
+/// `Sources/HappyUI/Resources/Animations`: desktop's state pictures and the first screens' art,
 /// and the view that draws one of them.
 @MainActor
 final class StateSceneTests: XCTestCase {
@@ -17,6 +17,10 @@ final class StateSceneTests: XCTestCase {
         .robot: "eeabc392ba20328ce97452eb826dddf3e306129e360ce4847c3b48470ffc053b",
         .sparkles: "b14e504ce3467a6ba1c519348dee9fc4e05286b9e4f058f33df9175865bde4b9",
         .owl: "95402270d116a310aa4b1606f88a2bbc79d2b4d947b5d84181c0b126c7aaba59",
+        .alienMonster: "e0875ef4ae4aa214a3d9de567ea39e9429465addabc91d177ea883302146ae89",
+        .llama: "ff16ee4b8a19a782b5e5b12dbe103d145410f16b8801af5723b6636c56a0a0ff",
+        // The 📺 sticker Kirill supplied, not desktop's (PROVENANCE.md).
+        .tv: "3aad5efeefedef3fcbb2020a12873a40866141ec898a05f7eb67f15482f765fe",
     ]
 
     private func url(_ scene: StateScene) throws -> URL {

@@ -10,9 +10,8 @@ import com.slopus.happy.conversation.UnsentWork
 import com.slopus.happy.data.DiskThread
 import com.slopus.happy.diagnostics.traced
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
@@ -37,13 +36,13 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.scan
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -51,6 +50,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -59,7 +59,11 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.random.Random
 
 /** How an agent connection's live link stands, as its home and chats show it. */
-enum class AgentLinkStatus { Connecting, Connected, Offline, Revoked, UpdateRequired }
+enum class AgentLinkStatus {
+    Connecting, Connected, Offline, Revoked, UpdateRequired,
+    /** A team server's sign-in expired (edge SSO): the person signs in again, then the link resumes. */
+    SignInRequired,
+}
 
 /**
  * One agent connection while the phone talks to it (iOS's DirectSyncEngine):
@@ -82,22 +86,31 @@ class AgentSession internal constructor(
     parent: CoroutineScope,
     makeTransport: (com.slopus.happy.connection.AgentConnectionCredentials) -> Transport = { agentTransport(it.address, it.port, it.publicUrl, it.tailcatAvailable != false) },
     private val random: Random = Random.Default,
+    /** Plays desktop's completion chime ([CompletionWatch] decides when). */
+    private val chime: () -> Unit = {},
 ) {
     private val scope = CoroutineScope(parent.coroutineContext + SupervisorJob(parent.coroutineContext[Job]) + Dispatchers.IO)
     private val linkLock = Mutex()
     private val snapshotQueued = AtomicBoolean(false)
     // Asks for the settings changed here to be sent; one ask covers every change made meanwhile.
     private val settingsQueued = Channel<Unit>(Channel.CONFLATED)
-    private var link: AgentClient.Link? = null
-    private val token = MutableStateFlow<String?>(null)
+    private var route: Pair<com.slopus.happy.connection.AgentConnectionCredentials, Transport>? = null
 
+    /**
+     * The transport is made once; the bearer is asked for on every request,
+     * so a team server's access token is refreshed as it nears expiry.
+     */
     val client: AgentClient = AgentClient.lazy {
-        linkLock.withLock {
-            link ?: run {
-                val credentials = connections.credentials(connectionId) ?: throw AgentConnectionException(AgentConnectionException.Reason.Revoked)
-                AgentClient.Link(connections.transport(connectionId, credentials, makeTransport), credentials.deviceToken).also { link = it }
+        val (credentials, transport) = linkLock.withLock {
+            route ?: run {
+                val credentials = connections.linkCredentials(connectionId) ?: throw AgentConnectionException(AgentConnectionException.Reason.Revoked)
+                (credentials to connections.transport(connectionId, credentials, makeTransport)).also { route = it }
             }
         }
+        val renew: (suspend (String) -> String)? = if (credentials.oauth != null) { stale -> connections.renew(connectionId, stale) } else null
+        // The sign-in this request is made under: only its refusal signs out, never a newer one's.
+        val grant = connections.grant(connectionId)
+        AgentClient.Link(transport, connections.bearer(connectionId, credentials), renew, credentials.oauth?.let { { profile -> connections.signedOut(connectionId, profile, grant) } })
     }
 
     // Empty until the kept catalog is read off the main thread (init), then live.
@@ -123,13 +136,29 @@ class AgentSession internal constructor(
      */
     val events: SharedFlow<AgentEvent> = eventFlow.asSharedFlow()
 
-    /** The Surfaces being left, each with the agent's answer on its way ([leaveSurface]). */
-    private val leaving = MutableStateFlow<Map<String, Deferred<String?>>>(emptyMap())
     private val gitSnapshots = MutableStateFlow<Map<String, WorkspaceLineChanges>>(emptyMap())
     private val gitRenewal = MutableStateFlow(0)
 
+    /**
+     * What the person did here that the computer has yet to hear: reads,
+     * archives, leaves and renames (iOS's `IntentOutbox`), kept beside the
+     * catalog through a kill and sent while the link is up. Another
+     * library adds its own kinds with [IntentOutbox.handle].
+     */
+    val intents = IntentOutbox(
+        scope,
+        cacheFile?.let { FileIntentStorage(File(it.parentFile, it.nameWithoutExtension + ".intents.json")) } ?: MemoryIntentStorage(),
+    )
+
+    private val noticeState = MutableStateFlow<String?>(null)
+
+    /** A refusal the computer gave to something done here, for home's notice; it clears after [NOTICE_MILLIS]. */
+    val notice: StateFlow<String?> = noticeState.asStateFlow()
+
     /** Home's rows, derived off the main thread; equal rows keep their instances. */
-    val feed: StateFlow<AgentFeed> = combine(catalogState, leaving, gitSnapshots) { catalog, leaving, git -> AgentFeed.derive(catalog, leaving.keys, git) }
+    val feed: StateFlow<AgentFeed> = combine(catalogState, intents.pending, gitSnapshots) { catalog, pending, git ->
+        AgentFeed.derive(catalog, git = git, intents = IntentOverlay.of(pending))
+    }
         .distinctUntilChanged()
         .scan(null as AgentFeed?) { previous, next -> AgentFeed.reuse(previous, next) }
         // The seed is no feed: never shown, so a cached home never blinks empty.
@@ -152,6 +181,17 @@ class AgentSession internal constructor(
         scope.launch { setSetting(DesktopSettings.PROJECTS_VISIBILITY, DesktopSettings.projectsVisibility(hidden)) }
     }
 
+    /** Desktop's Completion sound for this connection, which the chime follows ([CompletionWatch]). */
+    val completionSound: StateFlow<CompletionSound> = catalogState
+        .map { DesktopSettings.completionSound(it.settingValues) }
+        .distinctUntilChanged()
+        .stateIn(scope, SharingStarted.Eagerly, DesktopSettings.completionSound(catalogState.value.settingValues))
+
+    /** Sets the Completion sound, here and on every device this connection is used from. */
+    fun setCompletionSound(sound: CompletionSound) {
+        scope.launch { setSetting(DesktopSettings.COMPLETION_SOUND, DesktopSettings.completionSoundValue(sound)) }
+    }
+
     /**
      * Sets one of the person's user settings (API.md, `PUT /v0/user-settings/:key`):
      * shown at once, kept on this phone first, then sent with the time the
@@ -169,7 +209,17 @@ class AgentSession internal constructor(
     /** The person's own profile on this agent, as Settings' Profile row and page show it. */
     val profile: AgentProfileSource by lazy { AgentProfileSource(client, events, scope) }
 
+    /** The computer's accounts' plan usage, followed while a composer shows ([AgentUsageSource.follow]). */
+    val usage: AgentUsageSource by lazy {
+        AgentUsageSource({ client.decode<JsonObject>("GET", "/v0/usage") }, events, scope) { accounts ->
+            client.send("POST", "/v0/usage/refresh", buildJsonObject { put("providerIds", JsonArray(accounts.map(::JsonPrimitive))) })
+        }
+    }
+
     /** Bots' pictures, as home's rows draw them. */
+    /** Chat media kept on this phone for good, beside the catalog (iOS `MediaLibrary.agent`); null where nothing is kept. */
+    val media: com.slopus.happy.media.MediaLibrary? = cacheFile?.let { com.slopus.happy.media.MediaLibrary(File(it.parentFile, it.nameWithoutExtension + ".media")) }
+
     val pictures = AgentPictures(connectionId, cacheFile?.let { File(it.parentFile, it.nameWithoutExtension + ".pictures") }) { path -> client.send("GET", path, category = RequestCategory.File).body }
 
     /** One conversation as the catalog knows it, live; null while unknown. */
@@ -190,36 +240,103 @@ class AgentSession internal constructor(
     }
 
     /**
-     * Leaves a Surface (`POST /v0/surfaces/:id/leave`), as iOS's
-     * `leave(surfaceId:)`: its row goes from home at once and comes back if
-     * the agent refuses. It takes the Surface out of the person's own list;
-     * its content stays for everyone in it. A second ask while one is on its
-     * way sends nothing and shares its answer. Gone already on the agent
-     * (404) counts as left. Null once left; otherwise the agent's own words
-     * for the refusal, empty where it gave none (the screen says it in its
-     * own). The request runs in the session, so leaving the screen doesn't
-     * cancel it.
+     * Opening a chat reads it (iOS's `markRead`): its dot goes from home at
+     * once and stays gone until the computer has heard, through a kill.
+     */
+    suspend fun markRead(agentId: String) {
+        if (intents.pending.value.any { it.kind == Intent.READ && it.target == agentId }) return
+        intents.enqueue(Intent.READ, agentId)
+    }
+
+    /** Archives a task, bot (`kind`) or subtask (`agent`): its row goes at once, with what nests under it, and comes back only if the computer refuses. */
+    suspend fun archive(kind: String, id: String): Intent = intents.enqueue(Intent.ARCHIVE, id, of(kind))
+
+    /** Leaves a task or Surface (`kind`): out of this person's list at once. */
+    suspend fun leave(kind: String, id: String): Intent = intents.enqueue(Intent.LEAVE, id, of(kind))
+
+    /** Names a task or bot (`kind`): the row wears it at once. */
+    suspend fun rename(kind: String, id: String, title: String): Intent =
+        intents.enqueue(Intent.RENAME, id, buildJsonObject { put("kind", kind); put("title", title) })
+
+    /**
+     * Leaves a Surface (iOS's `leave(surfaceId:)`): its row goes from home
+     * at once and comes back if the agent refuses. It takes the Surface out
+     * of the person's own list; its content stays for everyone in it. The
+     * leave is tried at once and kept until the computer hears it, so one
+     * that can't go yet goes when the link is back. Null once left or on
+     * its way; otherwise the
+     * agent's own words for the refusal, empty where it gave none (the
+     * screen says it in its own).
      */
     suspend fun leaveSurface(surfaceId: String): String? {
-        val answer = CompletableDeferred<String?>()
-        val pending = leaving.updateAndGet { if (surfaceId in it) it else it + (surfaceId to answer) }.getValue(surfaceId)
-        if (pending !== answer) return pending.await()
-        scope.launch {
-            val refusal = try {
-                client.send("POST", "/v0/surfaces/${AgentClient.escape(surfaceId)}/leave", buildJsonObject { put("mutationId", AgentClient.newId()) })
-                null
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: AgentApiException) {
-                if (e.status == 404) null else e.message.orEmpty()
-            } catch (_: Exception) {
-                ""
+        // A second ask while one is on its way sends nothing more and shares its answer.
+        val intent = intents.pending.value.firstOrNull { it.kind == Intent.LEAVE && it.target == surfaceId } ?: leave("surface", surfaceId)
+        // The person confirmed and waits on it: tried at once, link or not (iOS's `attempt`).
+        return (intents.attempt(intent.id) as? IntentOutbox.Verdict.Refused)?.reason
+    }
+
+    private fun of(kind: String) = buildJsonObject { put("kind", kind) }
+
+    /**
+     * Sends [intent] (iOS SyncEngine's `deliver`). Gone already (404)
+     * counts as done; any other 4xx but a timeout or rate limit is the
+     * computer's no, and drops it; everything else is tried again.
+     */
+    private suspend fun deliver(intent: Intent) {
+        val id = AgentClient.escape(intent.target)
+        val mutation = buildJsonObject { put("mutationId", intent.id) }
+        try {
+            when (intent.kind) {
+                Intent.READ -> client.send("POST", "/v0/agents/$id/read", JsonObject(emptyMap()))
+                Intent.LEAVE -> client.send("POST", if (intent.of == "surface") "/v0/surfaces/$id/leave" else "/v0/tasks/$id/leave", mutation)
+                Intent.ARCHIVE -> when (intent.of) {
+                    "agent" -> client.send("POST", "/v0/agents/$id/archive", mutation)
+                    "bot" -> archiveAt("/v0/bots/$id", "bot")
+                    else -> archiveAt("/v0/tasks/$id", "task")
+                }
+                Intent.RENAME -> {
+                    val title = (intent.value["title"] as? JsonPrimitive)?.contentOrNull ?: return
+                    when (intent.of) {
+                        "bot" -> renameAt("/v0/bots/$id", "bot", title, intent.id)
+                        "surface" -> renameAt("/v0/surfaces/$id", "surface", title, intent.id)
+                        else -> renameAt("/v0/tasks/$id", "task", title, intent.id)
+                    }
+                }
+                else -> throw IntentRefusal("")
             }
-            if (refusal == null) catalogLock.withLock { catalogState.update { it.withoutSurface(surfaceId) } }
-            leaving.update { it - surfaceId }
-            answer.complete(refusal)
-        }.invokeOnCompletion { cause -> if (cause != null) answer.complete("") }
-        return answer.await()
+        } catch (e: AgentApiException) {
+            if (e.status in 400..499 && e.status != 404 && e.status != 408 && e.status != 429) throw IntentRefusal(e.message.orEmpty())
+            if (e.status != 404) throw e
+        }
+        // Left or archived: out of the catalog too, so it stays gone once the intent is.
+        if (intent.kind == Intent.LEAVE || intent.kind == Intent.ARCHIVE) {
+            catalogLock.withLock { catalogState.update { it.withoutListed(intent.of ?: "task", intent.target) } }
+        }
+        val title = (intent.value["title"] as? JsonPrimitive)?.contentOrNull
+        if (intent.kind == Intent.RENAME && title != null) catalogLock.withLock { catalogState.update { it.withName(intent.of ?: "task", intent.target, title) } }
+    }
+
+    /** Archival names the version it archives (`If-Match`). */
+    private suspend fun archiveAt(path: String, key: String) {
+        val version = versionOf(path, key)
+        client.send("POST", "$path/archive", JsonObject(emptyMap()), headers = mapOf("If-Match" to version))
+    }
+
+    /** A rename names the version it renames (`If-Match`); one that lost a race reads the newer version and renames that. */
+    private suspend fun renameAt(path: String, key: String, name: String, mutationId: String) {
+        repeat(2) { attempt ->
+            try {
+                client.send("PATCH", path, buildJsonObject { put("name", name); put("mutationId", mutationId) }, headers = mapOf("If-Match" to versionOf(path, key)))
+                return
+            } catch (e: AgentApiException) {
+                if (e.status != 409 || attempt == 1) throw e
+            }
+        }
+    }
+
+    private suspend fun versionOf(path: String, key: String): String {
+        val body = AgentClient.json.parseToJsonElement(client.send("GET", path).text) as? JsonObject
+        return ((body?.get(key) as? JsonObject)?.get("version") as? JsonPrimitive)?.contentOrNull ?: throw AgentApiException(500, "invalid_response", null)
     }
 
     /** A bot as `POST /v0/bots` answered: home lists it before `bot.created` comes. */
@@ -235,20 +352,42 @@ class AgentSession internal constructor(
     @Volatile var unsentWork: UnsentWork? = null
 
     init {
+        intents.handle(setOf(Intent.READ, Intent.ARCHIVE, Intent.LEAVE, Intent.RENAME), ::deliver)
+        // Sent while the link is up; every connect sends what waits at once.
+        scope.launch { statusState.collect { intents.setOnline(it == AgentLinkStatus.Connected) } }
+        scope.launch {
+            intents.rejections.collectLatest { rejection ->
+                // A refused read is nothing to tell; a screen that heard the refusal said it already.
+                if (rejection.intent.kind == Intent.READ || rejection.heard) return@collectLatest
+                noticeState.value = rejection.reason
+                delay(NOTICE_MILLIS)
+                if (noticeState.value == rejection.reason) noticeState.value = null
+            }
+        }
         scope.launch {
             // The kept catalog first: home draws it, and the link resumes from its cursor.
             traced("AgentSession.readCache") { readCache() }?.let { cached -> catalogLock.withLock { catalogState.update { if (it.loaded) it else cached } } }
-            active.distinctUntilChanged().collectLatest { on -> if (on) coroutineScope {
-                launch { watchGit() }
-                live()
-            } }
+            // A team server that wants signing in again (a refused refresh) stops the link at once,
+            // even with its event stream still open, and it resumes from its cursor after.
+            val signedIn = connections.accounts.map { list -> list.none { it.id == connectionId && it.signInRequired } }.distinctUntilChanged()
+            combine(active.distinctUntilChanged(), signedIn, ::Pair).collectLatest { (on, signedIn) ->
+                when {
+                    !signedIn -> statusState.value = AgentLinkStatus.SignInRequired
+                    on -> coroutineScope {
+                        launch { watchGit() }
+                        live()
+                    }
+                    statusState.value == AgentLinkStatus.SignInRequired -> statusState.value = AgentLinkStatus.Connecting
+                }
+            }
         }
         scope.launch {
             settingsQueued.receiveAsFlow().collect { deliverSettings() }
         }
         if (cacheFile != null) {
+            // Undispatched: watching from the first value, so a load that comes first is not dropped as it.
             @OptIn(FlowPreview::class)
-            scope.launch {
+            scope.launch(start = CoroutineStart.UNDISPATCHED) {
                 catalogState.drop(1).filter { it.loaded }.debounce(1_000).collect { writeCache(it) }
             }
         }
@@ -258,7 +397,8 @@ class AgentSession internal constructor(
     suspend fun close() {
         scope.cancel()
         withContext(kotlinx.coroutines.NonCancellable) {
-            linkLock.withLock { link?.transport?.close(); link = null }
+            media?.stop()
+            linkLock.withLock { route?.second?.close(); route = null }
         }
     }
 
@@ -268,7 +408,14 @@ class AgentSession internal constructor(
         // there; only a gap or a refused cursor reads the whole snapshot again.
         var snapshotRead = catalogState.value.let { it.loaded && it.cursor != null }
         while (true) {
-            if (statusState.value != AgentLinkStatus.Connected) statusState.value = AgentLinkStatus.Connecting
+            awaitSignedIn()
+            // A computer that did not answer stays offline while it's asked again (iOS's `Session.headerState`):
+            // home's notice says so until the stream opens, rather than coming and going with every retry.
+            if (statusState.value != AgentLinkStatus.Connected && statusState.value != AgentLinkStatus.Offline) {
+                statusState.value = AgentLinkStatus.Connecting
+            }
+            // The sign-in this attempt runs under: a refusal it meets signs out only that one.
+            val grant = connections.grant(connectionId)
             try {
                 refreshIdentity()
                 if (!snapshotRead) {
@@ -289,27 +436,48 @@ class AgentSession internal constructor(
                         statusState.value = AgentLinkStatus.UpdateRequired
                         return
                     }
-                    else -> statusState.value = AgentLinkStatus.Offline
+                    AgentConnectionException.Reason.SignInRequired, AgentConnectionException.Reason.ProfileRequired -> {
+                        val profile = e.reason == AgentConnectionException.Reason.ProfileRequired
+                        connections.signedOut(connectionId, profile, grant)
+                        backoff = INITIAL_BACKOFF
+                        continue
+                    }
+                    else -> unanswered()
                 }
             } catch (e: AgentApiException) {
                 // A 409 cursor_unavailable or any refused read: read the snapshot again.
                 snapshotRead = false
-                statusState.value = AgentLinkStatus.Offline
+                unanswered()
             } catch (_: Exception) {
-                statusState.value = AgentLinkStatus.Offline
+                unanswered()
             }
             delay(backoff + (backoff * JITTER * (random.nextDouble() * 2 - 1)).toLong())
             backoff = (backoff * 2).coerceAtMost(MAX_BACKOFF)
         }
     }
 
+    /** An attempt failed: a stream that was open is on its way back; one that never opened did not answer. */
+    private fun unanswered() {
+        statusState.value = if (statusState.value == AgentLinkStatus.Connected) AgentLinkStatus.Connecting else AgentLinkStatus.Offline
+    }
+
+    /**
+     * While a team server wants signing in again, the link waits, saying so,
+     * and resumes from its cursor once the person has.
+     */
+    private suspend fun awaitSignedIn() {
+        if (connections.accounts.value.none { it.id == connectionId && it.signInRequired }) return
+        statusState.value = AgentLinkStatus.SignInRequired
+        connections.accounts.first { list -> list.none { it.id == connectionId && it.signInRequired } }
+    }
+
     /** Health (protocol 27 or later) and the agent's own name and avatar, shown in the account menu. */
     private suspend fun refreshIdentity() {
         val known = connections.accounts.value.firstOrNull { it.id == connectionId }
-        val link = client.resolve()
-        val info = AgentIdentity.refresh(link.transport, link.token, known?.name.orEmpty(), known?.avatarFile?.let { known.avatarETag })
+        val info = AgentIdentity.refresh(client.requester, known?.name.orEmpty(), known?.avatarFile?.let { known.avatarETag }, oauth = client.isOAuth())
+        client.noteHealth(info)
         if (known != null) {
-            connections.update(connectionId, info.avatar) { it.copy(name = info.name, thumbhash = info.thumbhash ?: it.thumbhash, revoked = false) }
+            connections.update(connectionId, info.avatar) { it.copy(name = info.name, thumbhash = info.thumbhash ?: it.thumbhash, revoked = false, instanceId = info.instanceId) }
         }
     }
 
@@ -322,6 +490,8 @@ class AgentSession internal constructor(
             reads.update { it - 1 }
         }
     }
+
+    private val completions = CompletionWatch()
 
     /** The journal from the catalog's cursor until the stream ends or fails. */
     private suspend fun follow(onConnected: () -> Unit) {
@@ -348,6 +518,8 @@ class AgentSession internal constructor(
                         }
                         apply(event)
                     }
+                    val listed = { agentId: String -> feed.value.conversations.any { it.agentId == agentId } }
+                    if (completions.finished(event, catalogState.value, listed, System.currentTimeMillis()) != null) chime()
                     eventFlow.emit(event)
                 }
             }
@@ -547,6 +719,9 @@ class AgentSession internal constructor(
         /** Surface events that come together read the snapshot once. */
         const val SNAPSHOT_COALESCE = 300L
         const val INITIAL_BACKOFF = 1_000L
+
+        /** How long a refusal stays in home's notice (iOS SyncEngine's 5 s). */
+        const val NOTICE_MILLIS = 5_000L
         const val MAX_BACKOFF = 5_000L
         const val JITTER = 0.5
     }

@@ -18,7 +18,8 @@ enum AccountAdding {
         }
     }
 
-    /// Entering a link, restoring an account, and the relay server.
+    /// Entering a link, restoring an account, and the relay server. A team
+    /// server is added by scanning the code Happy Desktop shows.
     static func otherWays(context: AppContext, from controller: UIViewController, busy: @escaping (Bool) -> Void = { _ in }) -> [ScannerWay] {
         [
             ScannerWay(title: Strings.Start.enterLink, symbol: "link") { [weak controller] in
@@ -36,6 +37,13 @@ enum AccountAdding {
                 show(ServerConfigViewController(context: context), context: context, from: controller)
             },
         ]
+    }
+
+    /// Signing in to the team server at `server`: one a scanned code named
+    /// (`instanceId` is the installation it must be), or one here already
+    /// whose sign-in is renewed.
+    static func signInToServer(context: AppContext, from controller: UIViewController, server: String, instanceId: String?) {
+        show(ServerSignInViewController(context: context, server: server, instanceId: instanceId), context: context, from: controller)
     }
 
     /// Restore: the code another phone scans, with a secret key under it.

@@ -1,5 +1,7 @@
 package com.slopus.happy.ui.connect
 
+import com.slopus.happy.ui.guest.GuestChatEntry
+import com.slopus.happy.ui.guest.GuestChatRoute
 import com.slopus.happy.ui.page
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -37,6 +39,7 @@ fun NavGraphBuilder.connectRoutes(graph: AppGraph, nav: NavHostController) {
         )
     }
     page<TerminalWebRoute> { TerminalWebScreen(onBack = { nav.popBackStack() }) }
+    page<GuestChatRoute> { entry -> GuestChatEntry(nav, entry.toRoute()) }
 }
 
 /**
@@ -46,17 +49,36 @@ fun NavGraphBuilder.connectRoutes(graph: AppGraph, nav: NavHostController) {
  * others too, onto screens with nothing loaded); the rest are dropped.
  * Session links go to [onOpenSession], which the chat screen provides;
  * without it they are dropped too. Protocol V2 pairing codes open signed
- * in or out, through [LocalAgentPairing].
+ * in or out, through [LocalAgentPairing]. Happy URLs (edge SSO §7) go to
+ * [onHappyLink] ([com.slopus.happy.ui.connection.HappyLinks.take]), signed
+ * in or out; one waiting for a connection to open is left for that
+ * connection's stack ([openConnection] is this one's).
  */
 @Composable
-fun DeepLinkEffect(nav: NavHostController, signedIn: Boolean, onOpenSession: ((String) -> Unit)? = null) {
+fun DeepLinkEffect(
+    nav: NavHostController,
+    signedIn: Boolean,
+    onOpenSession: ((String) -> Unit)? = null,
+    openConnection: String? = null,
+    onHappyLink: ((DeepLink) -> Unit)? = null,
+) {
     val pending by DeepLinks.pending.collectAsStateWithLifecycle()
     val connectAgent = LocalAgentPairing.current
     LaunchedEffect(pending, signedIn) {
         val link = pending ?: return@LaunchedEffect
+        if (link is DeepLink.OnConnection && link.connectionId != openConnection) return@LaunchedEffect
         if (!DeepLinks.consume(link)) return@LaunchedEffect
+        if (link is DeepLink.Instance || link is DeepLink.OnConnection) {
+            onHappyLink?.invoke(link)
+            return@LaunchedEffect
+        }
         if (link is DeepLink.AgentPairing) {
             connectAgent?.invoke(link.code)
+            return@LaunchedEffect
+        }
+        // A guest chat needs no account, and is no account's: it opens over whatever is up.
+        if (link is DeepLink.GuestInvite) {
+            nav.navigate(GuestChatRoute(link.url))
             return@LaunchedEffect
         }
         if (!signedIn) {
@@ -69,7 +91,7 @@ fun DeepLinkEffect(nav: NavHostController, signedIn: Boolean, onOpenSession: ((S
             is DeepLink.Session -> onOpenSession?.invoke(link.id)
             is DeepLink.Screen -> nav.navigate(link.route)
             DeepLink.Home -> nav.popBackStack(HomeRoute, inclusive = false)
-            is DeepLink.AgentPairing -> Unit
+            is DeepLink.AgentPairing, is DeepLink.Instance, is DeepLink.OnConnection, is DeepLink.GuestInvite -> Unit
         }
     }
 }

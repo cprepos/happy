@@ -53,6 +53,8 @@ final class ChatPlanView: UIView {
     }
     private var boxes: [UIView] = []
     private var texts: [ChatTextView] = []
+    /// Text taller than `ChatTextTiling.threshold`, drawn a tile at a time.
+    private var tiledTexts: [ChatTiledTextView] = []
     private var icons: [UIImageView] = []
     private var spinners: [UIActivityIndicatorView] = []
     private var timers: [ChatElapsedLabel] = []
@@ -155,6 +157,7 @@ final class ChatPlanView: UIView {
         // means a box always sits under the text that follows it.
         var boxIndex = 0
         var textIndex = 0
+        var tiledTextIndex = 0
         var iconIndex = 0
         var spinnerIndex = 0
         var timerIndex = 0
@@ -178,6 +181,13 @@ final class ChatPlanView: UIView {
                 guard drawsStaticContent else { continue }
                 let view = take(&boxes, &boxIndex) { UIView() }
                 style(view, box)
+                order.append(view)
+            case .text(let layout, let frame) where ChatTextTiling.tiles(height: frame.height):
+                guard drawsStaticContent else { continue }
+                let view = take(&tiledTexts, &tiledTextIndex) { ChatTiledTextView() }
+                view.isAccessibilityElement = false
+                view.setLayoutFrame(frame)
+                view.layout = layout
                 order.append(view)
             case .text(let layout, let frame):
                 guard drawsStaticContent else { continue }
@@ -310,6 +320,10 @@ final class ChatPlanView: UIView {
         }
         for view in boxes[boxIndex...] { view.isHidden = true }
         for view in texts[textIndex...] { view.isHidden = true }
+        for view in tiledTexts[tiledTextIndex...] {
+            view.layout = nil
+            view.isHidden = true
+        }
         for view in icons[iconIndex...] { view.isHidden = true }
         for view in spinners[spinnerIndex...] {
             view.stopAnimating()
@@ -423,7 +437,7 @@ final class ChatPlanView: UIView {
         if let scroller = scroller(at: point), let link = scroller.content.link(at: scroller.content.convert(point, from: self)) {
             return link
         }
-        for view in texts where !view.isHidden && view.frame.contains(point) {
+        for view in texts as [ChatTextView] + tiledTexts where !view.isHidden && view.frame.contains(point) {
             if let link = view.link(at: CGPoint(x: point.x - view.frame.minX, y: point.y - view.frame.minY)) {
                 return link
             }

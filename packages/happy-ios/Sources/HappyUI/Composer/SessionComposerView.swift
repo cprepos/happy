@@ -113,6 +113,8 @@ final class SessionComposerView: UIView, ChatComposerView, AgentInputCardDelegat
     /// (`stopRequested`), so a late status update can't leave it up.
     private var stopRequested = false
     private var isSending = false
+    /// A send is on its way, for tests.
+    var sending: Bool { isSending }
     /// Picked images wait here until the outbox has its own copies.
     private let staging: ComposerAttachmentStaging
     private let images: ComposerImagePicker
@@ -644,7 +646,7 @@ final class SessionComposerView: UIView, ChatComposerView, AgentInputCardDelegat
         configuration.isPrimaryBusy = isAborting
         configuration.showsAdd = canAttach
         configuration.attachments = canAttach
-            ? images.images.map { AgentInputAttachmentPreview(id: $0.id, fileURL: $0.attachment.fileURL) }
+            ? images.images.map { AgentInputAttachmentPreview(id: $0.id, fileURL: $0.attachment.fileURL, preparing: $0.preparing) }
             : []
         configuration.desktop = isWide ? AgentInputDesktopConfiguration(
             settings: chips.showsSettings ? AgentInputSettingsMenu(sections: chips.settings.map(Self.settingsSection)) : nil,
@@ -830,7 +832,8 @@ final class SessionComposerView: UIView, ChatComposerView, AgentInputCardDelegat
     private func send() {
         guard !isSending else { return }
         let text = card.text
-        let picked = images.images
+        // A picture still being read stays, ring and all, for the next send.
+        let picked = images.images.filter { !$0.preparing }
         let message = OutgoingMessage(text: text, attachments: picked.map(\.attachment))
         // sync.ts: images the agent can't take are named before anything
         // goes; with nothing else to send, nothing does. A few pictures

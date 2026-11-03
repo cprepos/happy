@@ -10,6 +10,10 @@ import UIKit
 final class Session {
     let accountID: String
     private(set) var computerName: String
+    /// The installation's health `instanceId`: what a link copied out of
+    /// Happy names (`happy://<instanceId>/…`). Nil for an older daemon,
+    /// which gets no such link.
+    private(set) var instanceId: String?
     let engine: SyncEngine
     let client: AgentClient
     let store: Store
@@ -25,6 +29,9 @@ final class Session {
     let drafts: Drafts
     /// Colours the code blocks its conversations show.
     let syntax = CodeSyntaxService()
+    /// Builds and colours the diffs its tool calls and workspaces show.
+    let diffDocuments = DiffDocumentCache()
+    let diffSyntax = DiffSyntaxService()
     /// The conversations read ahead and kept, so they open drawn.
     let warm: WarmChats
     /// The person's settings for this phone.
@@ -129,6 +136,7 @@ final class Session {
         media = MediaLibrary.agent(accountID)
         self.accountID = accountID
         computerName = account.agentConnections.accounts.first { $0.id == accountID }?.name ?? Strings.agentConnection
+        instanceId = account.agentConnections.accounts.first { $0.id == accountID }?.instanceId
         placeholderSeed = account.agentConnections.placeholderSeed(for: accountID) ?? accountID
         self.engine = engine
         self.localSettings = account.localSettings
@@ -166,6 +174,7 @@ final class Session {
         connectionObservation = account.observeAccounts { [weak self, weak account] _ in
             guard let self, let account else { return }
             computerName = account.agentConnections.accounts.first { $0.id == accountID }?.name ?? computerName
+            instanceId = account.agentConnections.accounts.first { $0.id == accountID }?.instanceId
             receive(status: account.agentConnections.accounts.first { $0.id == accountID }?.status ?? .paused)
         }
         connectionFollowing = Task { [weak self, engine] in

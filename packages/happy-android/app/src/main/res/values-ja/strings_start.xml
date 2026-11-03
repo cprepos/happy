@@ -8,9 +8,16 @@
     <string name="start_connect">接続</string>
     <string name="start_more">その他</string>
     <string name="start_enter_link">リンクを手動で入力</string>
-    <string name="start_restore_legacy">旧アカウントを復元</string>
-    <string name="start_legacy_server">旧サーバー</string>
     <string name="start_enter_link_title">リンクを入力</string>
-    <string name="start_enter_link_message">コンピュータの Happy か Happy Agent のリンクを貼り付けてください。</string>
-    <string name="start_account_code">このコードはアカウントにスマートフォンを追加します。サインイン済みのスマートフォンでスキャンしてください。</string>
+    <string name="start_slide_happy_title">どんなモデルでも。あなたのチームで。ひとつのアプリで。</string>
+    <string name="start_slide_happy_body">Happy はモデル、チーム、コンピューティングをひとつのオープンソースのアプリに統合します。</string>
+    <string name="start_slide_team_title">ネイティブにマルチプレイヤー</string>
+    <string name="start_slide_team_body">すべてのエージェントがいるひとつのセッションにチームを招きましょう。</string>
+    <string name="start_slide_mix_title">ひとつのアプリで、すべてのエージェントを。</string>
+    <string name="start_slide_mix_body">Claude が計画し、Codex が作り、Grok がレビュー。並べて動かすこともできます。</string>
+    <string name="start_slide_open_title">動かすのも、変えるのも、あなた次第。</string>
+    <string name="start_slide_open_body">自分のハードウェアでも、自分のクラウドでも、私たちのクラウドでも動かせます。</string>
+    <string name="start_install_choose">初期設定で Link\u00A0Mobile\u00A0App を選びます。</string>
+    <string name="start_install_settings">または Settings\u00A0›\u00A0Mobile\u00A0Access を開きます。</string>
+    <string name="start_install_download">%1$s からダウンロード</string>
 </resources>

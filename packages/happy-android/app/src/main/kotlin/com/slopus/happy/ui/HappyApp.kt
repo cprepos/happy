@@ -33,6 +33,7 @@ import com.slopus.happy.payments.PaywallHost
 import com.slopus.happy.ui.artifacts.AgentArtifactsRoute
 import com.slopus.happy.ui.artifacts.BrowserRoute
 import com.slopus.happy.ui.artifacts.computerName
+import com.slopus.happy.ui.artifacts.openArtifact
 import com.slopus.happy.ui.browser.LinkOpener
 import com.slopus.happy.ui.browser.ProvideLinks
 import androidx.compose.ui.platform.LocalContext
@@ -47,8 +48,19 @@ import com.slopus.happy.ui.connection.AgentHome
 import com.slopus.happy.ui.connection.AgentSurfaceRoute
 import com.slopus.happy.ui.connect.LocalAddFlow
 import com.slopus.happy.ui.connect.LocalAgentPairing
+import com.slopus.happy.ui.connection.LocalServerSignIn
+import com.slopus.happy.ui.connection.LocalHappyLinks
+import com.slopus.happy.ui.connection.rememberHappyLinks
+import com.slopus.happy.ui.connection.signInToServer
+import com.slopus.happy.ui.connection.signInToServerAgain
+import com.slopus.happy.connection.ServerInvite
 import com.slopus.happy.ui.connect.rememberAddFlow
+import com.slopus.happy.ui.start.rememberCustomServerLabel
 import com.slopus.happy.ui.tablet.TabletShell
+import com.slopus.happy.ui.tablet.MainPanelKey
+import com.slopus.happy.ui.tablet.MainPanelOpener
+import com.slopus.happy.ui.tablet.MainPanelPlaceholder
+import com.slopus.happy.ui.home.LocalHomeInSidebar
 import com.slopus.happy.ui.connect.connectRoutes
 import com.slopus.happy.ui.files.filesRoutes
 import com.slopus.happy.ui.home.homeRoutes
@@ -63,6 +75,8 @@ import com.slopus.happy.ui.conversation.composeConversation
 import com.slopus.happy.ui.conversation.conversationRoutes
 import com.slopus.happy.ui.conversation.openConversation
 import com.slopus.happy.ui.session.SessionInfoRoute
+import com.slopus.happy.ui.start.InstallDesktop
+import com.slopus.happy.ui.start.InstallDesktopRoute
 import com.slopus.happy.ui.start.Start
 import com.slopus.happy.ui.server.ServerScreen
 import com.slopus.happy.ui.settings.LocalizedContent
@@ -123,38 +137,53 @@ fun HappyApp(graph: AppGraph, onNavigationReady: (NavHostController) -> Unit = {
             val openSession = { id: String -> nav.navigate(SessionRoute(id)) }
             val troubleshoot = { nav.navigate(TroubleshootRoute) }
             val connectAgent = remember(nav) { { code: String -> nav.connectAgent(graph, code) } }
+            val signInToServer = remember(nav) { { invite: ServerInvite -> nav.signInToServer(graph, invite) } }
+            // Happy URLs (edge SSO §7): external ones only on their own installation's connection.
+            val happyLinks = rememberHappyLinks(graph, nav, agent)
             // Every scanner, signed in or out, sends happy://direct? codes here.
-            CompositionLocalProvider(LocalAgentPairing provides connectAgent) {
+            CompositionLocalProvider(LocalAgentPairing provides connectAgent, LocalServerSignIn provides signInToServer, LocalHappyLinks provides happyLinks) {
               // Add (the first screen's Connect, the account menu's Add): scan, then route the code.
-              val add = rememberAddFlow(graph)
+              val add = rememberAddFlow(
+                  graph,
+                  onRestore = { nav.navigate(RestoreRoute) },
+                  onServer = { nav.navigate(ServerRoute) },
+                  serverLabel = rememberCustomServerLabel(graph),
+              )
               CompositionLocalProvider(LocalAddFlow provides add) {
                 // Links: through the open agent connection in its browser, or as ever on a Happy account.
                 ProvideLinks(rememberLinks(graph, nav, agent)) {
-                // The tablet shell (sidebar beside the stack) or, on a phone, just the stack.
-                TabletShell(graph, nav, signedIn = signedIn, onOpenSession = openSession, onTroubleshoot = troubleshoot) {
+                // The account's home, sending what it opens through [go]: the stack's own pushes on its page, the
+                // main panel's new root from the tablet's sidebar. A switch made in Settings changes the covered home too.
+                val home: @Composable (MainPanelOpener) -> Unit = { go ->
+                    key(open.key) {
+                        when (val account = open) {
+                            is OpenAccount.Agent -> AgentHome(
+                                graph,
+                                account.id,
+                                onOpenConversation = { agentId -> go.open(MainPanelKey.conversation(agentId)) { nav.openConversation(account.id, agentId) } },
+                                onCompose = { go.open(null) { nav.composeConversation(account.id) } },
+                                onComposeWithPicture = { go.open(null) { nav.composeConversation(account.id, attach = true) } },
+                                onSettings = { go.open(MainPanelKey.SETTINGS) { nav.navigate(SettingsRoute()) } },
+                                onSettingsRow = { row -> go.open(null) { nav.openAgentSettingsRow(account.id, row) } },
+                                onOpenArtifacts = { go.open(MainPanelKey.ARTIFACTS) { nav.navigate(AgentArtifactsRoute(account.id)) } },
+                                onOpenSurface = { go.open(MainPanelKey.surface(it.id)) { nav.navigate(AgentSurfaceRoute(account.id, it.id, it.type, it.name)) } },
+                                onOpenArtifact = { go.open(null) { nav.openArtifact(account.id, it) } },
+                                onSignIn = { server -> go.open(null) { nav.signInToServerAgain(graph, server, replacing = account.id) } },
+                            )
+                            is OpenAccount.Happy -> LegacyHome(graph, nav, onOpenSession = openSession, onTroubleshoot = troubleshoot, go = go)
+                            OpenAccount.None -> Unit
+                        }
+                    }
+                }
+                // The tablet shell (home in a sidebar beside the stack) or, on a phone, just the stack.
+                TabletShell(graph, nav, hasHome = open != OpenAccount.None, sidebar = home) {
                     val start: Any = if (open == OpenAccount.None) StartRoute else HomeRoute
                     val motion = rememberNavMotion()
                     RetainedNavHost(nav, start, motion, modifier = Modifier.backdrop(nav)) {
                         page<StartRoute> { Start(graph, nav, add) }
-                        page<HomeRoute> {
-                        // A switch made in Settings changes the covered home too.
-                        key(open.key) {
-                            when (val account = open) {
-                                is OpenAccount.Agent -> AgentHome(
-                                    graph,
-                                    account.id,
-                                    onOpenConversation = { agentId -> nav.openConversation(account.id, agentId) },
-                                    onCompose = { nav.composeConversation(account.id) },
-                                    onSettings = { nav.navigate(SettingsRoute()) },
-                                    onSettingsRow = { row -> nav.openAgentSettingsRow(account.id, row) },
-                                    onOpenArtifacts = { nav.navigate(AgentArtifactsRoute(account.id)) },
-                                    onOpenSurface = { nav.navigate(AgentSurfaceRoute(account.id, it.id, it.type, it.name)) },
-                                )
-                                is OpenAccount.Happy -> LegacyHome(graph, nav, onOpenSession = openSession, onTroubleshoot = troubleshoot)
-                                OpenAccount.None -> Unit
-                            }
-                        }
-                        }
+                        page<InstallDesktopRoute> { InstallDesktop(graph, nav, add) }
+                        // Home itself, or with home in the tablet's sidebar the empty main panel.
+                        page<HomeRoute> { if (LocalHomeInSidebar.current) MainPanelPlaceholder() else home(MainPanelOpener.Push) }
                         // The open account's Settings, of either kind; a switch made here changes it in place.
                         page<SettingsRoute> { entry ->
                             ProvideRowReveal(entry.toRoute<SettingsRoute>().reveal) { AccountSettings(graph, nav, open) }
@@ -173,7 +202,7 @@ fun HappyApp(graph: AppGraph, onNavigationReady: (NavHostController) -> Unit = {
                     }
                 }
                 }
-                DeepLinkEffect(nav, signedIn = signedIn, onOpenSession = { id -> nav.navigate(SessionRoute(id)) })
+                DeepLinkEffect(nav, signedIn = signedIn, onOpenSession = { id -> nav.navigate(SessionRoute(id)) }, openConnection = agent, onHappyLink = happyLinks::take)
               }
             }
             PushRegistrationEffect(graph)

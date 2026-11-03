@@ -28,11 +28,35 @@ final class NewWorkPanel: UIView, UITextFieldDelegate {
     let name = UITextField()
     private let field = UIView()
     /// `.session`'s rows.
-    let machine = NewWorkMenuRow(icon: .ionicons("desktop-outline"))
+    let machine = NewWorkMenuRow(icon: .ionicons("desktop-outline"), showsStatus: true)
     let folder = NewWorkMenuRow(icon: .ionicons("folder-outline"))
     let harness = NewWorkMenuRow(icon: .ionicons("hardware-chip-outline"))
     let modeRow = NewWorkMenuRow(icon: .ionicons("shield-outline"))
     private let note = UILabel()
+
+    /// `.session`: why the bot's name is refused, until it is typed into:
+    /// a red edge on the field and the reason, in red, in place of its
+    /// placeholder. Nothing is added around the field, so nothing moves.
+    var validation: String? {
+        didSet {
+            guard validation != oldValue else { return }
+            field.layer.borderWidth = validation == nil ? 0 : 1
+            name.attributedPlaceholder = validation.map { Self.placeholder($0, color: UIColor(Palette.textDestructive)) }
+                ?? Self.placeholder(NewSessionChoices.botNamePlaceholder)
+            name.accessibilityHint = validation
+        }
+    }
+
+    /// `.session`: the bot needs a name before it is made. The field takes
+    /// the keyboard and says why; false when what is typed hides the
+    /// reason, for the caller to say it another way.
+    @discardableResult
+    func askName(_ reason: String) -> Bool {
+        validation = reason
+        name.becomeFirstResponder()
+        Haptics.play(.pick)
+        return name.text?.isEmpty ?? true
+    }
 
     /// Every change, as it is made.
     var onChange: ((NewTask.Choice) -> Void)?
@@ -83,8 +107,9 @@ final class NewWorkPanel: UIView, UITextFieldDelegate {
     /// `.session`: what the first send makes.
     private(set) var sessionKind: HomeDockKind = .session
 
-    /// `.session`: the kinds on offer, the one picked, and the bot's name.
-    func setSessionKinds(_ kinds: [HomeDockKind], current: HomeDockKind, botName: String) {
+    /// `.session`: the kinds shown, those that can be picked (the rest
+    /// show disabled), the one picked, and the bot's name.
+    func setSessionKinds(_ kinds: [HomeDockKind], enabled: Set<HomeDockKind>? = nil, current: HomeDockKind, botName: String) {
         guard mode == .session else { return }
         if kinds != sessionKinds {
             sessionKinds = kinds
@@ -92,6 +117,9 @@ final class NewWorkPanel: UIView, UITextFieldDelegate {
             for (index, offered) in kinds.enumerated() {
                 kind.insertSegment(withTitle: Strings.Home.composerKind(offered), at: index, animated: false)
             }
+        }
+        for (index, shown) in kinds.enumerated() {
+            kind.setEnabled(enabled?.contains(shown) ?? true, forSegmentAt: index)
         }
         let current = kinds.contains(current) ? current : .session
         kind.selectedSegmentIndex = kinds.firstIndex(of: current) ?? 0
@@ -105,6 +133,7 @@ final class NewWorkPanel: UIView, UITextFieldDelegate {
         showMode()
         field.isHidden = current != .bot
         note.isHidden = current != .bot
+        if current != .bot { validation = nil }
         if current != .bot, name.isFirstResponder { onReturn?() }
         superview?.setNeedsLayout()
     }
@@ -154,16 +183,17 @@ final class NewWorkPanel: UIView, UITextFieldDelegate {
             modeRow.accessibilityIdentifier = "new-work-mode"
             machine.isHidden = true
             modeRow.isHidden = true
+            field.layer.borderColor = UIColor(Palette.textDestructive).cgColor
             for view in [kind, machine, folder, harness, modeRow, field, note] { addSubview(view) }
         }
     }
 
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
 
-    private static func placeholder(_ text: String) -> NSAttributedString {
+    private static func placeholder(_ text: String, color: UIColor = UIColor(Palette.inputPlaceholder)) -> NSAttributedString {
         NSAttributedString(string: text, attributes: [
             .font: Fonts.ui(.regular, size: 16),
-            .foregroundColor: UIColor(Palette.inputPlaceholder),
+            .foregroundColor: color,
         ])
     }
 
@@ -172,29 +202,30 @@ final class NewWorkPanel: UIView, UITextFieldDelegate {
         [machine, folder, harness, modeRow, field].filter { !$0.isHidden }
     }
 
-    private var measuredNote: Measurable {
-        let note = note
-        return Measurable { width in
-            let size = note.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+    private var measuredNote: Measurable { Self.measured(note) }
+
+    private static func measured(_ label: UILabel) -> Measurable {
+        Measurable { width in
+            let size = label.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
             return CGSize(width: ceil(size.width), height: ceil(size.height))
         }
     }
 
     /// Laid out between `top` and `bottom` in its superview, which it
     /// fills across; it places itself.
-    func layout(width: CGFloat, top: CGFloat, bottom: CGFloat) -> NewWorkLayout {
+    func layout(width: CGFloat, sides: LayoutInsets = .zero, top: CGFloat, bottom: CGFloat) -> NewWorkLayout {
         switch mode {
         case .work:
             return NewWorkLayout(
-                width: width, top: top, bottom: bottom,
+                width: width, sides: sides, top: top, bottom: bottom,
                 kindHeight: kind.intrinsicContentSize.height, rows: 1,
                 note: measuredNote
             )
         case .session:
             return NewWorkLayout(
-                width: width, top: top, bottom: bottom,
+                width: width, sides: sides, top: top, bottom: bottom,
                 kindHeight: kind.isHidden ? nil : kind.intrinsicContentSize.height,
-                rows: sessionRows.count,
+                givingWay: sessionRows.count,
                 note: note.isHidden ? nil : measuredNote,
                 compactsWhenShort: true
             )
@@ -211,6 +242,8 @@ final class NewWorkPanel: UIView, UITextFieldDelegate {
         case .session:
             for (row, frame) in zip(sessionRows, layout.rows) { row.frame = frame }
             field.layer.cornerRadius = field.bounds.height / 2
+            // Short of room the note gives way first (`NewWorkLayout`).
+            note.alpha = layout.showsNote ? 1 : 0
         }
         name.frame = field.bounds.insetBy(dx: 16, dy: 0)
     }
@@ -270,6 +303,7 @@ final class NewWorkPanel: UIView, UITextFieldDelegate {
         case .work:
             onChange?(choice)
         case .session:
+            validation = nil
             guard let kept = onBotName?(name.text ?? ""), kept != name.text else { return }
             name.text = kept
         }
@@ -282,9 +316,18 @@ final class NewWorkPanel: UIView, UITextFieldDelegate {
 }
 
 /// One of `.session`'s rows: an icon, what is chosen, and the menu that
-/// chooses it, on the name field's ground.
+/// chooses it, on the name field's ground, centred. The computer's row
+/// also says whether it answers, in a small chip on its top-right corner
+/// (`NewWorkStatusLayout`): laid over the row, it takes no part in its
+/// layout, so the icon and the name sit as in any row and a status
+/// coming, going or changing moves nothing.
 final class NewWorkMenuRow: UIButton {
-    init(icon: Icon) {
+    let showsStatus: Bool
+    private let chip = UIView()
+    private let statusLabel = UILabel()
+
+    init(icon: Icon, showsStatus: Bool = false) {
+        self.showsStatus = showsStatus
         super.init(frame: .zero)
         var configuration = UIButton.Configuration.plain()
         configuration.image = .icon(icon, size: 16)
@@ -301,6 +344,20 @@ final class NewWorkMenuRow: UIButton {
         }
         self.configuration = configuration
         showsMenuAsPrimaryAction = true
+        if showsStatus {
+            chip.backgroundColor = UIColor(Palette.surface)
+            chip.layer.cornerRadius = NewWorkStatusLayout.height / 2
+            chip.layer.cornerCurve = .continuous
+            chip.layer.borderWidth = 1
+            chip.layer.borderColor = UIColor(Palette.legacyDivider).cgColor
+            chip.isUserInteractionEnabled = false
+            chip.isHidden = true
+            chip.accessibilityIdentifier = "new-work-machine-status"
+            statusLabel.font = Fonts.ui(.medium, size: NewWorkStatusLayout.fontSize)
+            statusLabel.lineBreakMode = .byTruncatingTail
+            chip.addSubview(statusLabel)
+            addSubview(chip)
+        }
     }
 
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
@@ -310,7 +367,7 @@ final class NewWorkMenuRow: UIButton {
         set {
             guard configuration?.title != newValue else { return }
             configuration?.title = newValue
-            accessibilityValue = newValue
+            updateAccessibility()
         }
     }
 
@@ -319,6 +376,43 @@ final class NewWorkMenuRow: UIButton {
             guard let icon, icon != oldValue else { return }
             configuration?.image = .icon(icon, size: 16)
         }
+    }
+
+    /// The computer's row: "● Online", or a warning ("● Offline · 2h",
+    /// "● Happy Agent offline") in its colour, "● …" while the computers are
+    /// still arriving; nil for no chip.
+    var status: (text: String, color: UIColor)? {
+        didSet {
+            guard showsStatus, status?.text != oldValue?.text || status?.color != oldValue?.color else { return }
+            statusLabel.text = status?.text
+            statusLabel.textColor = status?.color
+            chip.isHidden = status == nil
+            setNeedsLayout()
+            updateAccessibility()
+        }
+    }
+
+    /// The chip's text, for tests.
+    var statusText: String? { statusLabel.text }
+    /// Where the chip is, in the row, for tests.
+    var statusFrame: CGRect { chip.frame }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard showsStatus else { return }
+        let text = statusLabel.sizeThatFits(CGSize(width: CGFloat.greatestFiniteMagnitude, height: NewWorkStatusLayout.height))
+        chip.frame = NewWorkStatusLayout.chip(rowWidth: bounds.width, textWidth: text.width)
+        statusLabel.frame = chip.bounds.insetBy(dx: NewWorkStatusLayout.padding, dy: 0)
+        bringSubviewToFront(chip)
+    }
+
+    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+        super.traitCollectionDidChange(previousTraitCollection)
+        chip.layer.borderColor = UIColor(Palette.legacyDivider).resolvedColor(with: traitCollection).cgColor
+    }
+
+    private func updateAccessibility() {
+        accessibilityValue = [title, status?.text].compactMap { $0 }.joined(separator: ", ")
     }
 }
 #endif

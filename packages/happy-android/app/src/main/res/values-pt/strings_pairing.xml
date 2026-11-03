@@ -4,7 +4,7 @@
   catalogs. AndroidStringsTranslatedTest fails while one is missing here.
 -->
 <resources>
-    <string name="pairing_title">Conectar agente</string>
+    <string name="pairing_title">Conectar Happy Agent</string>
     <string name="pairing_connecting">Conectando a %1$s…</string>
     <string name="pairing_unverified">O nome vem do código e só é verificado quando a conexão termina.</string>
     <string name="pairing_compare">Verifique se %1$s mostra os mesmos quatro emojis na mesma ordem.</string>
@@ -22,5 +22,6 @@
     <string name="pairing_error_invalid_proof">Não foi possível verificar o agente. Gere um novo código.</string>
     <string name="pairing_error_invalid_response">O agente retornou uma resposta inválida.</string>
     <string name="pairing_error_unavailable">Não foi possível acessar o agente. Verifique a conexão dele e tente de novo.</string>
+    <string name="pairing_error_disabled">O pareamento de celulares está desativado neste agente.</string>
     <string name="pairing_error_revoked">Este dispositivo não está mais autorizado. Conecte o agente de novo.</string>
 </resources>

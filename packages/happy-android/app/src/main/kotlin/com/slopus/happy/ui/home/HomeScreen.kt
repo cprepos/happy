@@ -1,5 +1,9 @@
 package com.slopus.happy.ui.home
 
+import com.slopus.happy.ui.tablet.LocalSidebarHome
+import com.slopus.happy.ui.tablet.MainPanelKey
+import com.slopus.happy.ui.tablet.SidebarFootBar
+import com.slopus.happy.ui.tablet.SidebarSpec
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -40,6 +44,7 @@ import androidx.compose.ui.unit.dp
 import com.slopus.happy.R
 import com.slopus.happy.model.DayTitle
 import com.slopus.happy.model.HomeEmptyState
+import com.slopus.happy.model.ProjectHomeRow
 import com.slopus.happy.model.SessionListGrouping
 import com.slopus.happy.net.ConnectionStatus
 import com.slopus.happy.text.pluralResource
@@ -53,7 +58,8 @@ import com.slopus.happy.ui.components.hairline
 import com.slopus.happy.ui.connection.AgentHomeSpec
 import com.slopus.happy.ui.connection.AgentTopBar
 import com.slopus.happy.ui.connection.BarIconButton
-import com.slopus.happy.ui.connection.BarStatus
+import com.slopus.happy.connection.LinkState
+import com.slopus.happy.connection.accountLinkState
 import com.slopus.happy.ui.connection.BarTitle
 import com.slopus.happy.ui.connection.ComposeFab
 import com.slopus.happy.ui.layout.LocalWindowLayout
@@ -75,7 +81,6 @@ object HomeTags {
     /** Home's empty state with no computer linked: Make art and Scan QR code, under the usual header. */
     const val LINK = "home.link"
     /** The tablet detail with no session open: blank, as MainView.tsx leaves it. */
-    const val TABLET_BLANK = "home.tabletBlank"
     const val LIST = "home.list"
     const val ARCHIVE_TOGGLE = "home.archiveToggle"
     const val DAY_HEADER = "home.dayHeader"
@@ -146,8 +151,12 @@ fun HomeScreen(
     accounts: AccountMenu = AccountMenu(),
     listState: LazyListState = rememberLazyListState(),
     syncing: Boolean = false,
+    /** What the title shows of the link, debounced ([com.slopus.happy.ui.chat.rememberShownLinkState]) by [LegacyHome]; as the socket stands by default. */
+    link: LinkState = accountLinkState(connectionStatus == ConnectionStatus.CONNECTED, catchingUp = syncing || state == null, network = true),
 ) {
     val colors = HappyTheme.colors
+    // As the tablet's sidebar, home wears its chrome: no settings in the bar, settings and compose at its foot.
+    val sidebar = LocalSidebarHome.current
     val listed = state != null && state.emptyState != HomeEmptyState.Link && state.emptyState != HomeEmptyState.Offline &&
         state.emptyState != HomeEmptyState.NoSessions
     // The bar is glass over the page, as agent home's: the cards scroll on under it, softened.
@@ -158,7 +167,7 @@ fun HomeScreen(
         feathered = listed,
         bar = {
             Column {
-                HomeHeader(connectionStatus, accounts, actions, syncing || state == null)
+                HomeHeader(link, accounts, actions, settings = sidebar == null)
                 com.slopus.happy.ui.voice.VoiceStatusBar()
             }
         },
@@ -193,47 +202,47 @@ fun HomeScreen(
                     update,
                     contentTop = top + HomeCardSpec.contentTop,
                     listState = listState,
-                    // Room for the last card to scroll clear of the compose button.
-                    bottomSpacer = { Spacer(Modifier.windowInsetsPadding(WindowInsets.navigationBars).height(AgentHomeSpec.fabClearance)) },
+                    // Room for the last card to scroll clear of the compose button, or the sidebar's foot.
+                    bottomSpacer = {
+                        if (sidebar != null) Spacer(Modifier.height(SidebarSpec.listClearance()))
+                        else Spacer(Modifier.windowInsetsPadding(WindowInsets.navigationBars).height(AgentHomeSpec.fabClearance))
+                    },
                     carded = true,
+                    selectedSessionId = MainPanelKey.sessionId(sidebar?.selected),
                 )
             }
             // With no computer there is nothing to start work on.
-            if (state != null && state.emptyState != HomeEmptyState.Link) ComposeFab(actions.onCompose, HomeTags.COMPOSE)
+            val canStart = state != null && state.emptyState != HomeEmptyState.Link
+            if (sidebar != null) {
+                SidebarFootBar(if (canStart) stringResource(R.string.sidebar_new_session) else null, actions.onSettings, actions.onCompose)
+            } else if (canStart) {
+                ComposeFab(actions.onCompose, HomeTags.COMPOSE)
+            }
         }
     }
 }
 
 /**
  * Home's top bar, the agent connection home's ([AgentTopBar]): the account
- * menu, the open account's name, then settings. How the connection stands
- * follows the name while it isn't online (connecting, offline, or catching
- * up after a connect); online says nothing.
+ * menu, the open account's name, then settings. While the socket is on its
+ * way back, or catching up after a connect, its status stands in the
+ * name's place ([BarTitle]); online says nothing.
  */
 @Composable
-private fun HomeHeader(connectionStatus: ConnectionStatus, accounts: AccountMenu, actions: HomeScreenActions, syncing: Boolean) {
+private fun HomeHeader(link: LinkState, accounts: AccountMenu, actions: HomeScreenActions, settings: Boolean = true) {
     val colors = HappyTheme.colors
-    val name = accounts.active?.name ?: stringResource(R.string.account_menu_unnamed_account)
+    // Named as its kind until it has a name of its own (iOS 64edb6a34).
+    val name = accounts.active?.name ?: stringResource(R.string.account_kind_cli)
     AgentTopBar(
         tag = HomeTags.BAR,
         container = colors.surface,
         navigationIcon = { AccountMenuButton(accounts, actions.onSwitchAccount) },
-        title = { BarTitle(name, homeBarStatus(connectionStatus, syncing), HomeTags.TITLE, HomeTags.STATUS) },
+        title = { BarTitle(name, link, HomeTags.TITLE, HomeTags.STATUS) },
         actions = {
-            BarIconButton(Ionicon.SettingsOutline, stringResource(R.string.settings_title), actions.onSettings, Modifier.testTag(HomeTags.SETTINGS))
+            if (settings) BarIconButton(Ionicon.SettingsOutline, stringResource(R.string.settings_title), actions.onSettings, Modifier.testTag(HomeTags.SETTINGS))
         },
         inset = HomeCardSpec.inset,
     )
-}
-
-/** The connection as the bar says it; a healthy socket can still be catching up. */
-@Composable
-private fun homeBarStatus(status: ConnectionStatus, syncing: Boolean): BarStatus? {
-    val catchingUp = status == ConnectionStatus.CONNECTED && syncing
-    if (status == ConnectionStatus.CONNECTED && !catchingUp) return null
-    val color = connectionStatusColor(HappyTheme.colors, if (catchingUp) ConnectionStatus.CONNECTING else status)
-    val text = stringResource(if (catchingUp) R.string.status_syncing else status.label)
-    return BarStatus(text, color, pulsing = status == ConnectionStatus.CONNECTING || catchingUp)
 }
 
 fun connectionStatusColor(colors: HappyColors, status: ConnectionStatus) = when (status) {
@@ -242,13 +251,6 @@ fun connectionStatusColor(colors: HappyColors, status: ConnectionStatus) = when 
     ConnectionStatus.DISCONNECTED -> colors.status.disconnected
     ConnectionStatus.ERROR -> colors.status.error
 }
-
-private val ConnectionStatus.label: Int
-    get() = when (this) {
-        ConnectionStatus.CONNECTED -> R.string.status_online
-        ConnectionStatus.CONNECTING -> R.string.status_connecting
-        ConnectionStatus.DISCONNECTED, ConnectionStatus.ERROR -> R.string.status_offline
-    }
 
 /**
  * SessionsList: the banners, then the rows. The phone home draws them
@@ -292,7 +294,7 @@ fun HomeList(
         }
         if (carded) {
             items(state.cards, key = { it.key }, contentType = { (it.row as? HomeRow.Project)?.row?.let { row -> row::class } ?: it.row::class }) { entry ->
-                HomeCardItem(entry, callbacks)
+                HomeCardItem(entry, callbacks, selectedSessionId)
             }
         } else items(state.rows, key = { it.key }, contentType = { it::class }) { row ->
             when (row) {
@@ -308,24 +310,34 @@ fun HomeList(
 
 /** One row of the phone's home: in its card ([HomeCardRow]) at its kind's fixed height, or on the page between cards. */
 @Composable
-private fun HomeCardItem(entry: HomeCardEntry, callbacks: HomeListCallbacks) {
+private fun HomeCardItem(entry: HomeCardEntry, callbacks: HomeListCallbacks, selectedSessionId: String?) {
     val place = entry.place
     when (val row = entry.row) {
         is HomeRow.Chat -> if (place != null) {
             HomeCardRow(place, FlatRowSpec.cardRowHeight(), FlatRowSpec.paddingLeft + FlatRowSpec.cardAvatar + FlatRowSpec.avatarGap, tag = HomeTags.CARD_ROW) {
-                FlatSessionRow(row.row, showBorder = false, archived = row.archived, callbacks = callbacks, carded = true)
+                FlatSessionRow(row.row, showBorder = false, archived = row.archived, callbacks = callbacks, selected = row.row.session.id == selectedSessionId, carded = true)
             }
         }
         is HomeRow.ArchiveToggle -> ArchiveToggleRow(row.hidden, row.banded, callbacks, carded = true)
         is HomeRow.DayHeader -> Unit
         is HomeRow.Project -> if (place != null) {
-            HomeCardRow(place, ProjectListSpec.cardRowHeight(row.row), ProjectListSpec.nameX, tag = HomeTags.CARD_ROW) {
+            HomeCardRow(place, ProjectListSpec.cardRowHeight(row.row), ProjectListSpec.nameX, tag = HomeTags.CARD_ROW, selected = selectedSessionId != null && row.row.shows(selectedSessionId)) {
                 ProjectHomeRowContent(row.row, callbacks, carded = true)
             }
         } else {
             ProjectHomeRowContent(row.row, callbacks, carded = true)
         }
     }
+}
+
+/** Whether [sessionId]'s chat is what this row opens: a bot's, a task's, a project's checkout, or one of a worktree's tabs. */
+private fun ProjectHomeRow.shows(sessionId: String): Boolean = when (this) {
+    is ProjectHomeRow.Bot -> session.id == sessionId
+    is ProjectHomeRow.Task -> session.id == sessionId
+    is ProjectHomeRow.Archived -> session.id == sessionId
+    is ProjectHomeRow.ProjectCard -> project.session?.id == sessionId
+    is ProjectHomeRow.Worktree -> worktree.tabs.any { it.id == sessionId } || worktree.session.id == sessionId
+    else -> false
 }
 
 /** A date heading between archived rows: 14 semibold section title; in the flat list it drops the grey band. */

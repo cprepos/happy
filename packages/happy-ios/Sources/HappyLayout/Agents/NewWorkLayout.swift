@@ -51,11 +51,13 @@ public struct NewWorkLayout: Equatable, Sendable {
 
     /// `top` is the bar's foot and `bottom` the composer's top, in the
     /// screen; `kindHeight` is the control's, nil for none; `note` wraps,
-    /// centred, at the block's width. `compactsWhenShort` tightens the rows
-    /// and their gaps when the regular ones would not fit.
-    public init(width: CGFloat, top: CGFloat, bottom: CGFloat, kindHeight: CGFloat?, rows count: Int, note: Measurable?, compactsWhenShort: Bool = false) {
+    /// centred, at the block's width. The block stands centred in what the
+    /// safe area's `sides` leave of the screen's `width`. `compactsWhenShort`
+    /// tightens the rows and their gaps when the regular ones would not fit.
+    public init(width: CGFloat, sides: LayoutInsets = .zero, top: CGFloat, bottom: CGFloat, kindHeight: CGFloat?, rows count: Int, note: Measurable?, compactsWhenShort: Bool = false) {
         typealias M = Metrics
-        let blockWidth = max(0, min(M.maxWidth, width - 2 * M.side))
+        let band = sides.sides(of: CGSize(width: width, height: 0))
+        let blockWidth = max(0, min(M.maxWidth, band.width - 2 * M.side))
         let noteHeight = note?.size(fitting: blockWidth).height
         let room = bottom - top
         func stack(rowHeight: CGFloat, rowGap: CGFloat, kindToRows: CGFloat) -> (kind: CGRect?, rows: [CGRect], note: CGRect?, height: CGFloat) {
@@ -91,6 +93,111 @@ public struct NewWorkLayout: Equatable, Sendable {
         self.note = stacked.note
         fits = room >= stacked.height + 2 * margin
         let origin = fits ? top + (room - stacked.height) / 2 : top + margin
-        block = CGRect(x: (width - blockWidth) / 2, y: origin, width: blockWidth, height: stacked.height)
+        showsNote = stacked.note != nil
+        block = CGRect(x: band.minX + (band.width - blockWidth) / 2, y: origin, width: blockWidth, height: stacked.height)
+    }
+
+    /// Whether `note` is laid out: with little room it goes first.
+    public var showsNote: Bool
+
+    /// A legacy account's block, which gives way rather than go: what it
+    /// asks (the kind, the computer, a bot's name) is what the first send
+    /// makes, so with the keyboard up on a small phone the note goes, then
+    /// the gaps close, and only when even that has no room (a phone held
+    /// sideways) does it not fit. Nothing a row says (a computer offline, a
+    /// name refused) adds to it: that is said inside the row. With four rows
+    /// (computer, folder, harness, mode) and the kind on a 375x667 phone, the
+    /// rows themselves then shorten when `compactsWhenShort` (`compactRowHeight`),
+    /// first keeping the gap the status chip clears, then closing it too.
+    ///
+    ///     bar ─────────────────────────
+    ///               [ Session | Bot | Task ]
+    ///               [ computer          ]
+    ///               [ Name your bot     ]
+    ///               what a bot is              note, dropped first
+    ///     composer ────────────────────
+    public init(width: CGFloat, sides: LayoutInsets = .zero, top: CGFloat, bottom: CGFloat, kindHeight: CGFloat?, givingWay count: Int, note: Measurable?, compactsWhenShort: Bool = false) {
+        typealias M = Metrics
+        let band = sides.sides(of: CGSize(width: width, height: 0))
+        let blockWidth = max(0, min(M.maxWidth, band.width - 2 * M.side))
+        let room = bottom - top
+        let noteHeight = note.map { ceil($0.size(fitting: blockWidth).height) }
+        func stack(kindGap: CGFloat, rowGap: CGFloat, withNote: Bool, rowHeight: CGFloat = M.rowHeight, margin: CGFloat = M.margin) -> (kind: CGRect?, rows: [CGRect], note: CGRect?, height: CGFloat, margin: CGFloat) {
+            var y: CGFloat = 0
+            var kind: CGRect?
+            if let kindHeight {
+                let kindWidth = min(M.kindWidth, blockWidth)
+                kind = CGRect(x: (blockWidth - kindWidth) / 2, y: 0, width: kindWidth, height: kindHeight)
+                y = kindHeight + kindGap
+            }
+            var frames: [CGRect] = []
+            for index in 0..<max(0, count) {
+                if index > 0 { y += rowGap }
+                frames.append(CGRect(x: 0, y: y, width: blockWidth, height: rowHeight))
+                y += rowHeight
+            }
+            var noteFrame: CGRect?
+            if withNote, let noteHeight {
+                y += M.rowsToNote
+                noteFrame = CGRect(x: 0, y: y, width: blockWidth, height: noteHeight)
+                y += noteHeight
+            }
+            return (kind, frames, noteFrame, y, margin)
+        }
+        var attempts = [
+            stack(kindGap: M.kindToRows, rowGap: M.rowGap, withNote: true),
+            stack(kindGap: M.kindToRows, rowGap: M.rowGap, withNote: false),
+            stack(kindGap: M.tightKindToRows, rowGap: M.tightRowGap, withNote: false),
+        ]
+        if compactsWhenShort {
+            attempts += [
+                stack(kindGap: M.tightKindToRows, rowGap: M.compactRowGap, withNote: false, rowHeight: M.compactRowHeight, margin: M.compactMargin),
+                stack(kindGap: M.compactKindToRows, rowGap: M.compactRowGap, withNote: false, rowHeight: M.compactRowHeight, margin: M.compactMargin),
+            ]
+        }
+        let chosen = attempts.first { room >= $0.height + 2 * $0.margin } ?? attempts[attempts.count - 1]
+        kind = chosen.kind
+        self.rows = chosen.rows
+        self.note = chosen.note
+        showsNote = chosen.note != nil
+        fits = room >= chosen.height + 2 * chosen.margin
+        let origin = fits ? top + (room - chosen.height) / 2 : top + chosen.margin
+        block = CGRect(x: band.minX + (band.width - blockWidth) / 2, y: origin, width: blockWidth, height: chosen.height)
+    }
+}
+
+extension NewWorkLayout.Metrics {
+    /// The gaps once the room is short; under the kind the computer's
+    /// status chip still clears it (`NewWorkStatusLayout.overhang`).
+    public static let tightKindToRows: CGFloat = NewWorkStatusLayout.overhang + 5
+    public static let tightRowGap: CGFloat = 6
+}
+
+/// The computer row's status: a small chip pinned to the row's top-right
+/// corner, straddling its top edge like a badge, as wide as what it says.
+/// It is laid over the row and takes no part in its layout: the icon and
+/// the name are centred as in any row, and the chip's text changing, or
+/// the chip going, moves nothing. Its top half rises into the gap over the
+/// row, which is always deeper than `overhang`.
+///
+///                            ( ● Online )   chip: on the top edge
+///     (   [icon] MacBook-Pro-7.local    )   name: centred, as any row's
+public enum NewWorkStatusLayout {
+    public static let fontSize: CGFloat = 11
+    public static let height: CGFloat = 18
+    /// Either side of the text.
+    public static let padding: CGFloat = 7
+    /// From the row's trailing edge to the chip's, as the icon is from the
+    /// leading one.
+    public static let trailing: CGFloat = 16
+    public static let maxWidth: CGFloat = 150
+    /// How far the chip rises over the row's top.
+    public static let overhang: CGFloat = height / 2
+
+    /// The chip, in a row of `rowWidth`, for a text `textWidth` wide: its
+    /// trailing end and its middle are the same for any text.
+    public static func chip(rowWidth: CGFloat, textWidth: CGFloat) -> CGRect {
+        let width = min(maxWidth, ceil(textWidth) + 2 * padding)
+        return CGRect(x: rowWidth - trailing - width, y: -overhang, width: width, height: height)
     }
 }

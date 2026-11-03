@@ -5,21 +5,14 @@
 -->
 <resources>
     <string name="agent_home_working">Working…</string>
-    <string name="agent_home_show_subtasks">Show subtasks</string>
-    <string name="agent_home_hide_subtasks">Hide subtasks</string>
-    <string name="agent_home_connecting">Connecting to %1$s…</string>
     <string name="agent_home_empty_title">No conversations yet</string>
     <string name="agent_home_empty_body">Start a chat with this agent and it shows here.</string>
     <string name="agent_home_offline_title">Can\'t reach %1$s</string>
     <string name="agent_home_offline_body">Check that the agent is running and online. Happy reconnects by itself.</string>
     <string name="agent_home_revoked">This phone was removed in Happy Agent. Connect the agent again to use it.</string>
     <string name="agent_home_update_required">This agent needs a newer Happy. Update the app to use it.</string>
-    <string name="agent_home_status_offline">offline</string>
-    <string name="agent_home_status_revoked">removed</string>
-    <string name="agent_home_status_update">update required</string>
 
     <string name="agent_artifacts_untitled">Untitled</string>
-    <string name="agent_artifacts_empty">No artifacts yet.</string>
     <string name="agent_artifacts_failed">Couldn\'t read the artifacts</string>
     <string name="agent_surface_add_todo">Add a todo</string>
     <string name="agent_surface_no_todos">Nothing here yet.</string>
@@ -28,13 +21,24 @@
     <string name="agent_surface_open_on_computer">Open this on your computer to use it.</string>
     <string name="agent_surface_failed">Couldn\'t read this</string>
 
-    <string name="agent_search_placeholder">Search conversations and settings</string>
     <string name="agent_search_clear">Clear</string>
-    <string name="agent_search_conversations">Conversations</string>
     <string name="agent_search_actions">Quick actions</string>
-    <string name="agent_search_no_results">No results for “%1$s”</string>
-    <string name="agent_search_add">Add account or agent</string>
     <string name="agent_search_open_settings">Open settings</string>
+    <!-- What search also finds, as desktop's ⌘K palette (28342477): its sections, and the kinds a query finds a row by too. -->
+    <string name="agent_search_documents">Documents</string>
+    <string name="agent_search_todos">Todos</string>
+    <string name="agent_search_shared">Shared</string>
+    <string name="agent_search_kind_todo">Todo list</string>
+    <string name="agent_search_kind_document">Document</string>
+    <string name="agent_search_kind_calendar">Calendar</string>
+    <string name="agent_search_kind_system_monitor">System monitor</string>
+    <string name="agent_search_kind_chat">Chat</string>
+    <string name="agent_search_kind_markdown" translatable="false">Markdown</string>
+    <string name="agent_search_kind_web_page">Web page</string>
+    <string name="agent_search_kind_image">Image</string>
+    <string name="agent_search_kind_image_series">Image series</string>
+    <string name="agent_search_kind_video">Video</string>
+    <string name="agent_search_kind_artifact">Artifact</string>
 
     <string name="agent_settings_edit_name">Edit name</string>
     <string name="agent_settings_edit_avatar">Edit avatar</string>

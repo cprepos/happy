@@ -1,5 +1,6 @@
 package com.slopus.happy.ui.connection
 
+import com.slopus.happy.ui.tablet.BackOrSidebarToggle
 import com.slopus.happy.ui.settings.SettingsTags
 import com.slopus.happy.ui.components.ProvideRowReveal
 import android.graphics.BitmapFactory
@@ -35,6 +36,7 @@ import com.slopus.happy.AppGraph
 import com.slopus.happy.R
 import com.slopus.happy.agent.AgentLinkStatus
 import com.slopus.happy.agent.AgentProfileState
+import com.slopus.happy.agent.CompletionSound
 import com.slopus.happy.ui.components.Avatar
 import com.slopus.happy.ui.components.Ionicon
 import com.slopus.happy.ui.components.ItemList
@@ -157,6 +159,8 @@ class AgentSettingsActions(
     /** The person's own name and picture on this agent. */
     val onProfile: () -> Unit = {},
     val onAppearance: () -> Unit = {},
+    /** Data and Storage: the media kept on this phone; null where nothing is kept. */
+    val onDataStorage: (() -> Unit)? = null,
     /** Disconnects this connection; asked for only after the person confirmed. */
     val onRemove: () -> Unit = {},
     /** Opens this connection's Chief of Staff with [prefix] typed, unsent. */
@@ -225,6 +229,15 @@ fun AgentConnectionSettingsScreen(
                     icon = { SettingsTile(Ionicon.ColorPaletteOutline, SettingsTiles.purple) },
                     onClick = actions.onAppearance,
                 ),
+            ) + listOfNotNull(
+                actions.onDataStorage?.let { open ->
+                    SettingsEntry(
+                        id = DataStorageTags.ROW,
+                        title = stringResource(R.string.data_storage_title),
+                        icon = { SettingsTile(Ionicon.FolderOutline, SettingsTiles.blue) },
+                        onClick = open,
+                    )
+                },
             ),
         ),
         SettingsSection(listOf(supportEntry(about, aboutActions))),
@@ -239,7 +252,7 @@ fun AgentConnectionSettingsScreen(
                 AgentTopBar(
                     tag = AgentSettingsTags.BAR,
                     container = HappyTheme.colors.grouped.background,
-                    navigationIcon = { BarIconButton(Ionicon.ArrowBack, stringResource(R.string.common_back), actions.onBack) },
+                    navigationIcon = { BackOrSidebarToggle { BarIconButton(Ionicon.ArrowBack, stringResource(R.string.common_back), actions.onBack) } },
                     title = { Text(stringResource(R.string.settings_title), style = MaterialTheme.typography.titleLarge, maxLines = 1) },
                     actions = { SettingsSearchButton(search) },
                 )
@@ -293,6 +306,7 @@ internal fun statusText(status: AgentLinkStatus): String = stringResource(
         AgentLinkStatus.Offline -> R.string.agent_settings_offline
         AgentLinkStatus.Revoked -> R.string.agent_settings_revoked
         AgentLinkStatus.UpdateRequired -> R.string.agent_settings_update
+        AgentLinkStatus.SignInRequired -> R.string.team_server_settings_signed_out
     },
 )
 
@@ -357,6 +371,7 @@ internal fun AgentConnectionSettings(graph: AppGraph, nav: NavHostController, co
     val personState = session?.profile?.state?.collectAsStateWithLifecycle()?.value ?: AgentProfileState()
     val personPhoto = rememberPhoto(session?.profile?.photo?.collectAsStateWithLifecycle()?.value)
     val theme by graph.localSettings.themePreference.collectAsStateWithLifecycle()
+    val sound = session?.completionSound?.collectAsStateWithLifecycle()?.value ?: CompletionSound.Always
     val projectsHidden = session?.projectsHidden?.collectAsStateWithLifecycle()?.value ?: false
     // Read every time the page shows, as iOS's Profile row is.
     LaunchedEffect(session) { session?.profile?.refresh() }
@@ -368,6 +383,7 @@ internal fun AgentConnectionSettings(graph: AppGraph, nav: NavHostController, co
             onBack = { nav.popBackStack() },
             onProfile = { nav.navigate(AgentProfileRoute(connectionId)) },
             onAppearance = { nav.navigate(AgentAppearanceRoute(connectionId)) },
+            onDataStorage = { nav.navigate(AgentDataStorageRoute(connectionId)) },
             onAskChief = { prefix -> nav.openChiefOfStaff(connectionId, prefix) },
             onRemove = {
                 if (switcher != null) switcher.removingFromSettings { removeAgentConnection(graph, connectionId) }
@@ -390,7 +406,7 @@ internal fun AgentConnectionSettings(graph: AppGraph, nav: NavHostController, co
         accountActions = rememberAccountsCardActions(graph),
         aboutActions = rememberAboutActions(graph, nav),
         person = AgentPerson(personState.name, personPhoto),
-        appearance = agentAppearanceSections(theme, graph.localSettings::setThemePreference, projectsHidden, { session?.setProjectsHidden(it) }).flatMap { it.rows },
+        appearance = agentAppearanceSections(theme, graph.localSettings::setThemePreference, projectsHidden, { session?.setProjectsHidden(it) }, sound, { session?.setCompletionSound(it) }).flatMap { it.rows },
         scroll = scroll,
     )
 }

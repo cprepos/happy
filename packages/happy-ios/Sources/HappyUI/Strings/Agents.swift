@@ -15,8 +15,8 @@ extension Strings {
     // (commandPaletteResults.ts `actionRows`).
     public static let quickActions = "Quick actions"
     public static let settingsResults = "Settings"
-    public static let newWork = "New work"
-    public static let newWorkWithPicture = "New work with a picture"
+    public static let newWork = "New task"
+    public static let newWorkWithPicture = "New task with a picture"
     public static let openSettingsAction = "Open settings"
     /// `happyAgentSpaceLabel`: work is "New" until it has a name.
     public static let untitled = "New"
@@ -38,7 +38,7 @@ extension Strings {
     public static func filesNotSent(_ names: [String]) -> String {
         names.count == 1 ? "\(names[0]) wasn't attached" : "\(names.count) files weren't attached"
     }
-    public static let closeNewWork = "Close new work"
+    public static let closeNewWork = "Close new task"
     public static let leaveTask = "Leave task"
     /// A Surface's, as desktop's menu says it.
     public static let leaveSurface = "Leave"
@@ -83,10 +83,6 @@ extension Strings {
     public static let unanswered = "The computer did not answer."
     /// An action the computer refused, undone here.
     public static let refused = "The computer refused that, so it was undone."
-    /// New work's first message couldn't make it; nothing was sent.
-    public static func newWorkFailed(_ kind: NewTask.Kind, _ reason: String) -> String {
-        "The \(kind == .bot ? "bot" : "task") could not be started.\(reason.isEmpty ? "" : " \(reason)") Your text and attachments are still here."
-    }
 
     // New work (MakeStuffView.tsx).
     public static let introLine = "Say what it is — it’ll find its place."

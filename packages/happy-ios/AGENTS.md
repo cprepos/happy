@@ -396,6 +396,15 @@ nothing here is wired to the release skill or to EAS.
     the others. Their items and caches stay on disk, unused, and are picked
     up again when this app is reinstalled. If the shared account was
     signed out here, the RN build starts signed out.
+- **Team servers sign in with OAuth, not pairing.** A server added by its
+  HTTPS address (`ServerSignInFlow`) is an agent connection whose
+  credentials hold a sign-in grant instead of a device token. Its
+  `SignedInTransport` puts the in-memory access token in `Authorization`,
+  asks `/v0/authentication` after Happy's own `401`, and takes a redirect or
+  an edge `401`/`403` as "sign in again". Previews use WebSocket tunnels where
+  CONNECT can't pass. The redirect URI (`happy://oauth/callback`) is fixed
+  and shared with Android and desktop, so don't change it. See
+  [docs/SERVER-SIGN-IN.md](docs/SERVER-SIGN-IN.md).
 - **Credentials stay in the RN app's Keychain item.** This app reads and
   writes happy-app's `auth_credentials` exactly as expo-secure-store 55
   stores it, so an in-place upgrade (same bundle ids) stays signed in and a
@@ -613,17 +622,15 @@ xtool doesn't use any of this: `xtool.yml` stays on the dev variant.
 
 ### Versioning
 
-This app uses a new versioning scheme, separate from happy-app's semver
-(`1.x.y`): **`vYYYY.MM.N`**, where `N` counts releases within that month,
-starting at 1 (e.g. `v2026.10.1`). The "v2" in the display names likewise
-tells it apart from the legacy RN app.
+Production continues the existing `com.ex3ndr.happy` listing with semver
+`2.0.0` (following the RN app's `1.x` releases). Development and preview
+retain the calendar version `2026.10.1` on their separate listings.
 
-- `CFBundleShortVersionString` must be integers only, so it holds the
-  version without the `v` (`2026.10.1`).
-- Bump it in all three `App/Info-*.plist` files, `MARKETING_VERSION` in
-  `project.yml` and the assertion in `AppConfigurationTests`.
+- Bump production in `App/Info-Production.plist`, the Happy target's Release
+  settings in `project.yml`, and `AppConfigurationTests`. The project-wide
+  defaults remain the development/preview version.
 - `CFBundleVersion` (`CURRENT_PROJECT_VERSION`) stays the build number.
-- The version also goes out as `X-Happy-Client: ios/2026.10.1`. The
+- The version also goes out as `X-Happy-Client: ios/<version>`. The
   server uses it only for metrics labels.
 
 ## Conventions

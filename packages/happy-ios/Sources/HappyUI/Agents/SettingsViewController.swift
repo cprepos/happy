@@ -245,7 +245,7 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
         let direct = context.account.agentConnections.accounts
         profiles = (accounts.filter(\.isAgentConnection) + accounts.filter { !$0.isAgentConnection }).map { account in
             if account.isAgentConnection, let computer = direct.first(where: { $0.id == account.id }) {
-                return Profile(id: account.id, name: computer.name, subtitle: Strings.AccountKind.subtitle(Strings.agentConnection, computer.status.title), isAgentConnection: true, isActive: account.isActive)
+                return Profile(id: account.id, name: computer.name, subtitle: Strings.AccountKind.subtitle(Strings.agentConnection, computer.revoked && computer.server != nil ? Strings.ServerSignIn.needsSignIn : computer.status.title), isAgentConnection: true, isActive: account.isActive)
             }
             // One with no name of its own is already called by its kind.
             let username = account.username.map { "@\($0)" }
@@ -425,7 +425,8 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
         // the page shows the first in the order shown, the connection, the
         // same one the switcher names.
         var rows: [SettingsRow] = profiles.enumerated().map { index, profile in
-            Row(
+            let server = context.account.agentConnections.server(for: profile.id)
+            return Row(
                 id: "account:\(profile.id)",
                 title: profile.name,
                 avatar: true,
@@ -435,7 +436,7 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
                 accessory: .none,
                 action: { [weak self] in self?.choose(index) },
                 // Any of them goes from here, the shown one or not.
-                menu: [Row.MenuItem(title: profile.isAgentConnection ? Strings.disconnect : Strings.signOut, glyph: "log-out-outline", destructive: true) { [weak self] in
+                menu: [Row.MenuItem(title: profile.isAgentConnection && server == nil ? Strings.disconnect : Strings.signOut, glyph: "log-out-outline", destructive: true) { [weak self] in
                     self?.remove(profile.id, direct: profile.isAgentConnection)
                 }]
             )
@@ -449,8 +450,24 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
         typealias Index = SettingsIndex
         let id = profile.id
         if profile.isAgentConnection {
+            let server = context.account.agentConnections.server(for: id)
+            let revoked = context.account.agentConnections.accounts.first { $0.id == id }?.revoked == true
+            let serverRows: [[SettingsRow]] = server.map { origin in
+                [[
+                    Row(id: "server", title: Strings.ServerSignIn.server, value: URLComponents(string: origin)?.host ?? origin, accessory: .none),
+                    Row(id: "server-sign-in", title: revoked ? Strings.ServerSignIn.needsSignIn : Strings.ServerSignIn.signInAgain, accessory: .none, action: { [weak self] in
+                        guard let self else { return }
+                        let instanceId = context.account.agentConnections.accounts.first { $0.id == id }?.instanceId
+                        AccountAdding.signInToServer(context: context, from: self, server: origin, instanceId: instanceId)
+                    }),
+                ]]
+            } ?? []
+            let removal: [[SettingsRow]] = [[
+                Row(id: "disconnect", title: server == nil ? Strings.disconnect : Strings.ServerSignIn.signOut, accessory: .none, destructive: true, action: { [weak self] in self?.remove(id, direct: true) }),
+            ]]
             return [
                 accountRows(),
+            ] + serverRows + [
                 [Row(Index.profile, image: profilePhoto, value: profileName.isEmpty ? nil : profileName, action: { [weak self] in self?.openProfile() })],
                 [
                     Row(Index.appearance, action: { [weak self] in self?.open(.appearance) }),
@@ -458,8 +475,7 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
                 ],
                 [Row(Index.supportUs, action: { [weak self] in self?.open(.supportUs) })],
                 aboutRows(),
-                [Row(id: "disconnect", title: Strings.disconnect, accessory: .none, destructive: true, action: { [weak self] in self?.remove(id, direct: true) })],
-            ]
+            ] + removal
         }
         return [
             accountRows(),
@@ -795,6 +811,11 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
             // The last one: the first screen follows the confirm, its
             // gradient ready by then.
             if context.account.accounts.count == 1 { GrainGradientView.prepare() }
+            let server = context.account.agentConnections.server(for: id) != nil
+            if server {
+                guard await Alerts.confirm(Strings.ServerSignIn.signOutTitle, Strings.ServerSignIn.signOutDetail, confirmTitle: Strings.ServerSignIn.signOut, destructive: true, on: self) else { return }
+                return signOut(id, direct: direct)
+            }
             let detail = account.map { direct ? Strings.removeDetail : $0.isLegacy ? Strings.SettingsAccount.logoutConfirm : Strings.AccountSwitcher.signOutMadeForComputer($0.shownName) } ?? Strings.removeDetail
             guard await Alerts.confirm(direct ? Strings.disconnectTitle : Strings.signOutTitle, detail, confirmTitle: direct ? Strings.disconnect : Strings.signOut, destructive: true, on: self) else { return }
             signOut(id, direct: direct)

@@ -23,6 +23,13 @@ public struct AgentConnection: Codable, Equatable, Sendable, Identifiable {
     public var revoked: Bool = false
     public var status: ConnectionStatus = .paused
     public var addedAt: Date
+    /// The team server's origin when this is a sign-in, not a pairing. A
+    /// revoked one needs signing in again rather than pairing.
+    public var server: String? = nil
+    /// The installation's health `instanceId`, once read: what an instance
+    /// link (`happy://<instanceId>/…`) must name to open here. Older
+    /// daemons have none.
+    public var instanceId: String? = nil
 
     public init(id: String, name: String, addedAt: Date = Date()) {
         self.id = id; self.name = name; self.addedAt = addedAt
@@ -47,15 +54,30 @@ public struct KeychainAgentConnectionCredentialStore: AgentConnectionCredentialS
         var result: [String: AgentConnectionCredentials] = [:]
         for id in try backend.accounts(service: Self.service) {
             guard let data = try backend.copyData(query(id)),
-                  let value = try? JSONDecoder().decode(AgentConnectionCredentials.self, from: data),
-                  value.port > 0, !value.address.isEmpty, !value.deviceID.isEmpty,
-                  CanonicalBase64URL.decode(value.deviceToken)?.count == 32 else { continue }
+                  let value = try? JSONDecoder().decode(AgentConnectionCredentials.self, from: data) else { continue }
+            if value.signIn != nil {
+                guard let url = value.publicUrl, (try? AgentOrigin(url)) != nil else { continue }
+            } else {
+                guard value.port > 0, !value.address.isEmpty, !value.deviceID.isEmpty,
+                      CanonicalBase64URL.decode(value.deviceToken)?.count == 32 else { continue }
+            }
             result[id] = value
         }
         return result
     }
+    /// A team server's refresh token stays on this device and in this app:
+    /// readable after the first unlock (so a refresh works in the
+    /// background), never synced to iCloud Keychain, never restored to or
+    /// migrated onto another device, and rewritten that way when an older
+    /// item had looser protection.
     public func save(_ credentials: AgentConnectionCredentials, id: String) throws {
         let data = try JSONEncoder().encode(credentials)
+        if credentials.signIn != nil {
+            if try backend.add(query(id), data: data, accessibility: .afterFirstUnlockThisDeviceOnly) == .duplicate {
+                try backend.update(query(id), data: data, accessibility: .afterFirstUnlockThisDeviceOnly)
+            }
+            return
+        }
         if try backend.add(query(id), data: data, accessibility: .whenUnlocked) == .duplicate { try backend.update(query(id), data: data) }
     }
     public func remove(id: String) throws { try backend.removeAccount(query(id)) }

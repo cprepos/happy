@@ -1,10 +1,17 @@
 package com.slopus.happy.ui.connection
 
+import com.slopus.happy.ui.tablet.MainPanelKey
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.layout.onPlaced
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -90,6 +97,7 @@ object AgentHomeTags {
     const val EMPTY = "agentHome.empty"
     const val OFFLINE = "agentHome.offline"
     const val BANNER = "agentHome.banner"
+    const val BANNER_ACTION = "agentHome.bannerAction"
     const val SEARCH = "agentHome.search"
     const val SETTINGS = "agentHome.settings"
     const val COMPOSE = "agentHome.compose"
@@ -241,7 +249,7 @@ internal fun FolderMarkView(mark: FolderMark, size: Dp) {
 
 /** A picture the agent serves, read once ([AgentPictures]), a rounded square over its ThumbHash. */
 @Composable
-private fun AgentPicture(path: String, thumbhash: String?, size: Dp, radius: Dp = AgentHomeSpec.tileRadius) {
+internal fun AgentPicture(path: String, thumbhash: String?, size: Dp, radius: Dp = AgentHomeSpec.tileRadius) {
     val pictures = LocalAgentPictures.current
     val bytes by produceState(pictures?.kept(path, thumbhash), pictures, path, thumbhash) {
         value = pictures?.kept(path, thumbhash) ?: try {
@@ -309,6 +317,10 @@ fun LazyListScope.agentHomeRows(
     onOpenSurface: (AgentFeedRow.Surface) -> Unit,
     /** A Surface row's hold offers Leave, which comes here; null offers nothing. */
     onLeaveSurface: ((AgentFeedRow.Surface) -> Unit)? = null,
+    /** A conversation row's hold, with where the row is in the window: its preview ([ChatPreviewOverlay]); null offers nothing. */
+    onHold: ((AgentFeedRow.Conversation, Rect) -> Unit)? = null,
+    /** The tablet sidebar's selection, what its main panel shows ([MainPanelKey]). */
+    selected: String? = null,
 ) {
     items(items, key = { it.key }, contentType = { (it as? AgentHomeItem.Row)?.row?.let { row -> row::class } ?: it::class }) { item ->
         val motion = if (reduceMotion) Modifier else Modifier.animateItem(
@@ -323,29 +335,93 @@ fun LazyListScope.agentHomeRows(
                     .height(if (item.first) AgentHomeSpec.contentTop else AgentHomeSpec.cardGap)
                     .testTag(AgentHomeTags.row(item.key)),
             )
-            is AgentHomeItem.Row -> CardRow(item, motion) {
-                when (val row = item.row) {
-                    is AgentFeedRow.Conversation -> ConversationRow(row, onOpen)
-                    is AgentFeedRow.Folder -> FolderRow(row)
-                    AgentFeedRow.Artifacts -> PlaceRow(stringResource(R.string.artifacts_title), Ionicon.DocumentTextOutline, RowTile.Purple, onOpenArtifacts)
-                    is AgentFeedRow.Surface -> SurfaceRow(row, { onOpenSurface(row) }, onLeaveSurface)
-                    is AgentFeedRow.Section -> Unit
-                }
-            }
+            is AgentHomeItem.Row -> AgentHomeCardRow(
+                item, motion, selected != null && selected == item.row.panelKey(), AgentHomeTags.row(item.key),
+                onOpen, onOpenArtifacts, onOpenSurface, onLeaveSurface, onHold,
+            )
         }
     }
 }
 
-/** One row's part of its card ([HomeCardRow]), 48 high at the default font scale, the hairline from its title. */
+/**
+ * One row in its part of its card ([HomeCardRow]), 48 high at the default
+ * font scale, the hairline from its title: home's, and search's, which
+ * draws home's rows as home does ([AgentSearchResults]).
+ */
 @Composable
-private fun CardRow(item: AgentHomeItem.Row, modifier: Modifier, content: @Composable () -> Unit) {
+internal fun AgentHomeCardRow(
+    item: AgentHomeItem.Row,
+    modifier: Modifier,
+    selected: Boolean,
+    tag: String,
+    onOpen: (String) -> Unit,
+    onOpenArtifacts: () -> Unit,
+    onOpenSurface: (AgentFeedRow.Surface) -> Unit,
+    onLeaveSurface: ((AgentFeedRow.Surface) -> Unit)? = null,
+    onHold: ((AgentFeedRow.Conversation, Rect) -> Unit)? = null,
+) {
     HomeCardRow(
         place = HomeCardPlace(item.first, item.last),
         height = AgentHomeSpec.rowHeight(),
         dividerStart = titleStart(item.row),
         modifier = modifier,
-        tag = AgentHomeTags.row(item.key),
-    ) { content() }
+        tag = tag,
+        selected = selected,
+    ) {
+        when (val row = item.row) {
+            is AgentFeedRow.Conversation -> ConversationRow(row, onOpen, onHold)
+            is AgentFeedRow.Folder -> FolderRow(row)
+            AgentFeedRow.Artifacts -> PlaceRow(stringResource(R.string.artifacts_title), Ionicon.DocumentTextOutline, RowTile.Purple, onOpenArtifacts)
+            is AgentFeedRow.Surface -> SurfaceRow(row, { onOpenSurface(row) }, onLeaveSurface)
+            is AgentFeedRow.Section -> Unit
+        }
+    }
+}
+
+/**
+ * A quick action or a setting search found, in its card: its glyph plain
+ * in the mark's lane (no tile: iOS's `RowView.tint` is a home row's), and
+ * its title as a home row's.
+ */
+@Composable
+internal fun AgentSearchEntryRow(title: String, glyph: Ionicon, place: HomeCardPlace, tag: String, onClick: () -> Unit) {
+    val colors = HappyTheme.colors
+    HomeCardRow(
+        place = place,
+        height = AgentHomeSpec.rowHeight(),
+        dividerStart = AgentHomeSpec.markInset + AgentHomeSpec.mark + AgentHomeSpec.markGap,
+        tag = tag,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .clickable(role = Role.Button, onClick = onClick)
+                .padding(start = AgentHomeSpec.markInset, end = AgentHomeSpec.paddingEnd),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(modifier = Modifier.size(AgentHomeSpec.mark), contentAlignment = Alignment.Center) { Icon(glyph, 22.dp, colors.text) }
+            Text(
+                title,
+                style = AgentHomeSpec.title,
+                color = colors.text,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .padding(start = AgentHomeSpec.markGap)
+                    .weight(1f)
+                    .wrapContentHeight(unbounded = true)
+                    .agentTitleBaseline(),
+            )
+        }
+    }
+}
+
+/** What a row opens, as the tablet's main panel names its root. */
+internal fun AgentFeedRow.panelKey(): String? = when (val row = this) {
+    is AgentFeedRow.Conversation -> MainPanelKey.conversation(row.agentId)
+    is AgentFeedRow.Surface -> MainPanelKey.surface(row.id)
+    AgentFeedRow.Artifacts -> MainPanelKey.ARTIFACTS
+    else -> null
 }
 
 /** Where a card row's title starts, from its card's edge: its level's lane, then its mark's when it wears one. */
@@ -366,15 +442,29 @@ private fun titleStart(row: AgentFeedRow): Dp {
  * row opens it.
  */
 @Composable
-private fun ConversationRow(row: AgentFeedRow.Conversation, onOpen: (String) -> Unit) {
+private fun ConversationRow(row: AgentFeedRow.Conversation, onOpen: (String) -> Unit, onHold: ((AgentFeedRow.Conversation, Rect) -> Unit)? = null) {
     val colors = HappyTheme.colors
+    val haptics = LocalHapticFeedback.current
+    // Where the row is, for the preview to grow out of; read only when held.
+    val placed = remember { arrayOfNulls<LayoutCoordinates>(1) }
     val marked = AgentHomeSpec.hasMark(row.kind)
     val title = row.title ?: stringResource(R.string.session_new_chat)
     val working = stringResource(R.string.agent_home_working)
     Row(
         modifier = Modifier
             .fillMaxSize()
-            .clickable(role = Role.Button) { onOpen(row.agentId) }
+            .onPlaced { placed[0] = it }
+            .combinedClickable(
+                role = Role.Button,
+                onLongClick = onHold?.let { hold ->
+                    {
+                        placed[0]?.takeIf { it.isAttached }?.let { at ->
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            hold(row, at.boundsInWindow())
+                        }
+                    }
+                },
+            ) { onOpen(row.agentId) }
             .then(if (row.working) Modifier.semantics { stateDescription = working } else Modifier)
             .padding(start = AgentHomeSpec.markInset + AgentHomeSpec.indent * row.depth, end = AgentHomeSpec.paddingEnd),
         verticalAlignment = Alignment.CenterVertically,
@@ -543,8 +633,10 @@ fun AgentHomeList(
     onOpenArtifacts: () -> Unit = {},
     onOpenSurface: (AgentFeedRow.Surface) -> Unit = {},
     onLeaveSurface: ((AgentFeedRow.Surface) -> Unit)? = null,
+    onHold: ((AgentFeedRow.Conversation, Rect) -> Unit)? = null,
     header: (LazyListScope.() -> Unit)? = null,
     bottom: @Composable () -> Unit = {},
+    selected: String? = null,
 ) {
     val reduceMotion = rememberReduceMotion()
     LazyColumn(
@@ -553,7 +645,7 @@ fun AgentHomeList(
         contentPadding = contentPadding,
     ) {
         header?.invoke(this)
-        agentHomeRows(items, reduceMotion, onOpen, onOpenArtifacts, onOpenSurface, onLeaveSurface)
+        agentHomeRows(items, reduceMotion, onOpen, onOpenArtifacts, onOpenSurface, onLeaveSurface, onHold, selected)
         item(key = "bottom", contentType = "bottom") { bottom() }
     }
 }

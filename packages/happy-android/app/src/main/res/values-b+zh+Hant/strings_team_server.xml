@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  values/strings_team_server.xml in zh-Hant: Android-only strings, not in happy-app's
+  catalogs. AndroidStringsTranslatedTest fails while one is missing here.
+-->
+<resources>
+    <string name="team_server_title">登入伺服器</string>
+    <string name="team_server_checking">正在檢查 %1$s…</string>
+    <string name="team_server_continue_with">使用 %1$s 繼續</string>
+    <string name="team_server_browser_host">你會在瀏覽器中登入 %1$s。</string>
+    <string name="team_server_waiting">請在瀏覽器中完成登入。</string>
+    <string name="team_server_reopen">重新開啟瀏覽器</string>
+    <string name="team_server_finishing">正在登入…</string>
+    <string name="team_server_name_title">你叫什麼名字?</string>
+    <string name="team_server_name_detail">%1$s 上的成員會看到這個名字。</string>
+    <string name="team_server_name_placeholder">你的名字</string>
+    <string name="team_server_name_failed">無法儲存你的名字。請再試一次。</string>
+    <string name="team_server_failed">無法登入</string>
+    <string name="team_server_try_again">再試一次</string>
+    <string name="team_server_no_browser">沒有瀏覽器可以開啟登入頁面。</string>
+    <string name="team_server_error_invalid_address">此伺服器的位址不是有效的 https:// 位址。</string>
+    <string name="team_server_error_no_sign_in">此伺服器沒有可在手機上使用的登入方式，因此無法在這裡新增。請聯絡管理員。</string>
+    <string name="team_server_error_edge_blocked">伺服器的負載平衡器沒有放行登入。請要求管理員允許無需登入存取 /v0/authentication。</string>
+    <string name="team_server_error_unreachable">無法連線到伺服器。請檢查位址和網路連線。</string>
+    <string name="team_server_error_denied">登入已取消或遭拒。</string>
+    <string name="team_server_error_expired">此次登入已過期。請再試一次。</string>
+    <string name="team_server_error_invalid_token">登入服務沒有傳回可用的權杖。</string>
+    <string name="team_server_error_rejected">伺服器沒有接受此次登入。</string>
+    <string name="team_server_error_sign_in_required">你在此伺服器上的登入已過期。請重新登入。</string>
+    <string name="team_server_sign_in_again">重新登入</string>
+    <string name="team_server_status_signed_out">已登出</string>
+    <string name="team_server_settings_signed_out">已登出</string>
+    <string name="browser_tunnels_blocked">此伺服器的網路不允許預覽。</string>
+    <string name="team_server_profile_required">新增你的名字以繼續使用此伺服器。</string>
+    <string name="team_server_add_name">新增名字</string>
+    <string name="happy_link_unknown_title">無法開啟此連結</string>
+    <string name="happy_link_unknown_server">此連結屬於你未連線的 Happy 伺服器。</string>
+    <string name="team_server_code_invalid">無法使用此伺服器代碼。請重新掃描電腦上 Happy 中顯示的代碼。</string>
+    <string name="team_server_error_wrong_server">此代碼與它指向的伺服器不相符。</string>
+    <string name="team_server_code_path">此伺服器設定在某個網址路徑下，Android 版 Happy 暫時無法連線這樣的伺服器。</string>
+    <string name="team_server_code_scan_only">伺服器代碼只能透過掃描使用。請掃描電腦上 Happy 中顯示的代碼。</string>
+    <string name="team_server_error_cross_origin">此伺服器的登入設定會把你的登入資訊傳送到其他網站，因此無法使用。</string>
+    <string name="team_server_error_wrong_audience">此登入屬於其他伺服器。</string>
+</resources>

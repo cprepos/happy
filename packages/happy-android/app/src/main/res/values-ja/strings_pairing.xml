@@ -4,7 +4,7 @@
   catalogs. AndroidStringsTranslatedTest fails while one is missing here.
 -->
 <resources>
-    <string name="pairing_title">エージェントを接続</string>
+    <string name="pairing_title">Happy Agent を接続</string>
     <string name="pairing_connecting">%1$s に接続中…</string>
     <string name="pairing_unverified">名前はコードから取得したもので、接続が完了するまで検証されていません。</string>
     <string name="pairing_compare">%1$s に同じ 4 つの絵文字が同じ順番で表示されているか確認してください。</string>
@@ -22,5 +22,6 @@
     <string name="pairing_error_invalid_proof">エージェントを検証できませんでした。新しいコードを生成してください。</string>
     <string name="pairing_error_invalid_response">エージェントから無効な応答が返されました。</string>
     <string name="pairing_error_unavailable">エージェントに接続できませんでした。接続を確認して、もう一度お試しください。</string>
+    <string name="pairing_error_disabled">このエージェントではスマートフォンのペアリングがオフになっています。</string>
     <string name="pairing_error_revoked">このデバイスは認可されなくなりました。エージェントをもう一度接続してください。</string>
 </resources>

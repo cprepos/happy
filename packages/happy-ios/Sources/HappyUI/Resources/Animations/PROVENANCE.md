@@ -30,3 +30,15 @@ desktop and here: a glyph at most.
 came from the Happy Coder app (https://github.com/slopus/happy), MIT,
 Copyright (c) 2024 Happy Coder Contributors — a different copyright holder from
 happy-desktop, whose licence requires the notice to travel.
+
+## The first screens' art
+
+Three more files draw the first screen's slides and the screen after it
+(`StartGalleryView`, `InstallDesktopViewController`):
+
+| File                 | SHA-256                                                            | Where from |
+| -------------------- | ------------------------------------------------------------------ | ---------- |
+| `alien-monster.json` | `e0875ef4ae4aa214a3d9de567ea39e9429465addabc91d177ea883302146ae89` | happy-desktop's, as above (its welcome deck's "Natively multiplayer"); MIT, Happy Coder Contributors |
+| `llama.json`         | `ff16ee4b8a19a782b5e5b12dbe103d145410f16b8801af5723b6636c56a0a0ff` | happy-desktop's, as above (its welcome deck's "One harness. Every agent."), supplied by its owner; upstream unrecorded there |
+| `tv.json`            | `3aad5efeefedef3fcbb2020a12873a40866141ec898a05f7eb67f15482f765fe` | a 📺 animated sticker supplied by Kirill on 2 November 2026 (`AnimatedSticker.tgs`, a Telegram sticker: gzip of Lottie JSON), decompressed and otherwise unmodified; upstream and licence not recorded |
+

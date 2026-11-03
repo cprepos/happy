@@ -80,6 +80,9 @@ final class SidebarList: UIView {
     /// The room above the rows and below them, and the indicator's.
     private(set) var contentInsets = UIEdgeInsets.zero
     private var prepared: Prepared?
+    /// The slots at another width, for a width change that lays the rows
+    /// on screen out again before the list derives them there.
+    private(set) var replan: ListReplan<Entry>?
     private var items: [String: SidebarItem] = [:]
     private var noticeItem: SidebarNoticeItem?
     private var requested: Input?
@@ -189,11 +192,30 @@ final class SidebarList: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        if edge.frame != bounds {
-            edge.frame = bounds
-            list.frame = CGRect(origin: edge.bounds.origin, size: bounds.size)
-        }
+        resizeList()
         update()
+    }
+
+    override func safeAreaInsetsDidChange() {
+        super.safeAreaInsetsDidChange()
+        setNeedsLayout()
+    }
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        list.takingMargins(super.hitTest(point, with: event), of: self)
+    }
+
+    /// Where the rows stand: this view less the safe area's sides, so a
+    /// phone held sideways keeps them off the camera.
+    private var band: CGRect { sidesBand }
+
+    /// The list in its band, laid out now: a new width goes in place,
+    /// before an apply that brings rows or insets.
+    private func resizeList() {
+        let band = band
+        guard band.width > 0 else { return }
+        if edge.frame != band { edge.frame = band }
+        list.resize(to: CGRect(origin: edge.bounds.origin, size: band.size))
     }
 
     override func willMove(toWindow newWindow: UIWindow?) {
@@ -231,10 +253,10 @@ final class SidebarList: UIView {
     }
 
     private func update() {
-        guard bounds.width > 0 else { return }
+        guard band.width > 0 else { return }
         let traits = traitCollection
         let input = Input(
-            rows: rows, width: bounds.width, dark: traits.userInterfaceStyle == .dark,
+            rows: rows, width: band.width, dark: traits.userInterfaceStyle == .dark,
             displayScale: traits.displayScale > 0 ? traits.displayScale : 3,
             selected: selectedRowId, notice: notice
         )
@@ -293,10 +315,19 @@ final class SidebarList: UIView {
         }
         var kept: [String: SidebarItem] = [:]
         var touched = 0
+        // The slots at another width, laid out together when a row first asks.
+        let input = next.input
+        replan = ListReplan { width in
+            var input = input
+            input.width = width
+            return Dictionary(Self.derive(input, previous: nil).entries.map { ($0.row.id, $0) }, uniquingKeysWith: { first, _ in first })
+        }
         for entry in next.entries {
             let item: SidebarItem
             if let existing = items[entry.row.id], existing.revision == entry.revision {
-                item = existing
+                // Drawn the same: a row that changed only what isn't drawn
+                // keeps its node, so it is neither measured nor drawn again.
+                item = existing.entry.row == entry.row ? existing : SidebarItem(entry: entry, owner: self, node: existing.node)
             } else {
                 item = SidebarItem(entry: entry, owner: self)
                 touched += 1
@@ -308,8 +339,9 @@ final class SidebarList: UIView {
         let structural = previousIDs != nil && previousIDs != next.identities
         let animated = structural && !startsEachChangeAtTop && window != nil && !UIAccessibility.isReduceMotionEnabled
         if animated, next.notice == nil, previousIDs?.first == SidebarNoticeItem.id { departNotice() }
+        resizeList()
         ApplyPerf.measure(.homeList) {
-            list.applyChanges(items: shown, newSize: bounds.size, scrollTo: target, anchorMode: .automatic, compensatesInsetChange: false, transition: animated ? .easeInOut(0.25) : .none)
+            list.applyChanges(items: shown, newSize: band.size, scrollTo: target, anchorMode: .automatic, compensatesInsetChange: false, transition: animated ? .easeInOut(0.25) : .none)
             // A notice coming in slides down from above with the rows it
             // pushes, rather than fading in over them where they were.
             if animated, next.notice != nil, previousIDs?.first != SidebarNoticeItem.id {
@@ -317,7 +349,7 @@ final class SidebarList: UIView {
             }
             return touched
         }
-        edge.contentSize = CGSize(width: bounds.width, height: next.contentHeight)
+        edge.contentSize = CGSize(width: band.width, height: next.contentHeight)
         mirror()
         let waiting = waiters
         waiters = []
@@ -388,7 +420,8 @@ final class SidebarList: UIView {
         guard insets != contentInsets else { return }
         contentInsets = insets
         edge.contentInset = insets
-        list.applyChanges(newSize: bounds.width > 0 ? bounds.size : nil, newInsets: .init(top: insets.top, bottom: insets.bottom), anchorMode: keepsTop ? .automatic : .preserveVisibleContent, compensatesInsetChange: keepsTop, transition: .none)
+        resizeList()
+        list.applyChanges(newSize: band.width > 0 ? band.size : nil, newInsets: .init(top: insets.top, bottom: insets.bottom), anchorMode: keepsTop ? .automatic : .preserveVisibleContent, compensatesInsetChange: keepsTop, transition: .none)
         mirror()
     }
 
@@ -591,25 +624,56 @@ final class SidebarItem: ListRow {
     let entry: SidebarList.Entry
     let node: NodeRow
     weak var owner: SidebarList?
+    /// The list's slots at another width (`SidebarList.replan`).
+    var replan: ListReplan<SidebarList.Entry>? { owner?.replan }
     var measuresAsynchronously: Bool { true }
+    /// A slot is as tall as its kind's row, at any width.
+    var hasFixedHeight: Bool { true }
 
-    init(entry: SidebarList.Entry, owner: SidebarList) {
+    /// `node`: the one an item of the same revision already drew, for a
+    /// row that changed only what isn't drawn.
+    init(entry: SidebarList.Entry, owner: SidebarList, node: NodeRow? = nil) {
         identity = entry.row.id
         revision = entry.revision
         self.entry = entry
         self.owner = owner
-        let drawing = entry.drawing
-        let height = entry.size.height
-        node = NodeRow(identity: entry.row.id, revision: entry.revision) {
-            var style = Style()
-            style.height = .points(height)
-            let root = UltraNode(style: style)
-            root.drawing = drawing
-            return root
+        self.node = node ?? NodeRow(identity: entry.row.id, revision: entry.revision) { Self.root(entry) }
+    }
+
+    /// The revision is what is drawn; the row itself changes more often
+    /// (a tap opens where it says), and its view takes the new row in place.
+    func isEqual(to other: any ListRow) -> Bool {
+        guard let other = other as? SidebarItem else { return false }
+        return identity == other.identity && revision == other.revision && entry.row == other.entry.row
+    }
+
+    private nonisolated static func root(_ entry: SidebarList.Entry) -> UltraNode {
+        var style = Style()
+        style.height = .points(entry.size.height)
+        let root = UltraNode(style: style)
+        root.drawing = entry.drawing
+        return root
+    }
+
+    /// The slot as the list shows it at `width`: its own, or the one made
+    /// there for a width change, once it is made.
+    func entry(at width: Double) -> SidebarList.Entry {
+        guard abs(width - entry.size.width) > 0.5, let replan else { return entry }
+        return replan.made(identity, width: CGFloat(width)) ?? entry
+    }
+
+    /// The node row at `width`: its own, or one that lays the slot out
+    /// again there before it is measured and drawn.
+    private func node(at width: Double) -> NodeRow {
+        guard let replan, abs(width - entry.size.width) > 0.5 else { return node }
+        let id = identity, kept = entry
+        return NodeRow(identity: identity, revision: revision) {
+            Self.root(replan.value(id, width: CGFloat(width)) ?? kept)
         }
     }
 
-    func prepare(width: Double, environment: RenderEnvironment) async -> ListPreparation? { await node.prepare(width: width, environment: environment) }
+    func prepare(width: Double, environment: RenderEnvironment) async -> ListPreparation? { await node(at: width).prepare(width: width, environment: environment) }
+    func prepareInPlace(width: Double, environment: RenderEnvironment) -> ListInPlacePreparation? { node(at: width).prepareInPlace(width: width, environment: environment) }
     func makeView() -> ListRowView { SidebarItemView(item: self) }
     func apply(to view: ListRowView, transition: ListTransition) { (view as? SidebarItemView)?.apply(self, transition: transition) }
 }

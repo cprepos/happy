@@ -70,8 +70,9 @@ final class HarnessSceneDelegate: UIResponder, UIWindowSceneDelegate {
     private var chatHeader: ChatHeaderHarness?
     private var avatarSpeeds: AvatarSpeedHarness?
     private var agentChat: AgentChatHarness?
+    private var agentFeed: AgentFeedHarness?
+    private var agentTools: AgentToolsHarness?
     private var splitApp: SplitAppHarness?
-    private var glassReference: GlassReferenceHarness?
     #endif
 
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
@@ -127,10 +128,6 @@ final class HarnessSceneDelegate: UIResponder, UIWindowSceneDelegate {
             avatarSpeeds = AvatarSpeedHarness(window: window, arguments: arguments)
             return
         }
-        if let index = arguments.firstIndex(of: "-screen"), arguments.indices.contains(index + 1), arguments[index + 1] == "glassReference" {
-            glassReference = GlassReferenceHarness(window: window, arguments: arguments)
-            return
-        }
         if let index = arguments.firstIndex(of: "-screen"), arguments.indices.contains(index + 1), arguments[index + 1] == "split" {
             splitApp = SplitAppHarness(window: window, arguments: arguments)
             return
@@ -139,8 +136,16 @@ final class HarnessSceneDelegate: UIResponder, UIWindowSceneDelegate {
             chatHeader = ChatHeaderHarness(window: window, arguments: arguments)
             return
         }
+        if let index = arguments.firstIndex(of: "-screen"), arguments.indices.contains(index + 1), arguments[index + 1] == "agentTools" {
+            agentTools = AgentToolsHarness(window: window, arguments: arguments)
+            return
+        }
         if let index = arguments.firstIndex(of: "-screen"), arguments.indices.contains(index + 1), arguments[index + 1] == "agentChat" {
             agentChat = AgentChatHarness(window: window, arguments: arguments)
+            return
+        }
+        if let index = arguments.firstIndex(of: "-screen"), arguments.indices.contains(index + 1), arguments[index + 1] == "agentFeed" {
+            agentFeed = AgentFeedHarness(window: window, arguments: arguments)
             return
         }
 

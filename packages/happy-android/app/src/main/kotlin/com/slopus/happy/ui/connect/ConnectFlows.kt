@@ -26,6 +26,7 @@ import com.slopus.happy.ui.components.AlertButton
 import com.slopus.happy.ui.components.HappyAlert
 import com.slopus.happy.ui.components.Prompt
 import com.slopus.happy.ui.components.PromptModal
+import com.slopus.happy.connection.ServerInvite
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -49,7 +50,20 @@ class ConnectFlow internal constructor(
     internal var okTitle = ""
     internal var messages = ScanMessages()
     internal var scanner: QrScanner = QrScanner { ScanResult.Cancelled }
+
+    /** What the scanner's ⋮ offers (Add's other ways in); empty, no ⋮. */
+    internal var request = ScanRequest()
+
+    /** Restore or the server, picked from the scanner's ⋮; a pasted link is the flow's own prompt. */
+    internal var onWay: (ScannerWay) -> Unit = {}
     internal var connectAgent: ((String) -> Unit)? = null
+
+    /**
+     * A team server's code, from any scanner: opens that server or signs in
+     * to it (edge SSO §8). False when it can't: a new server under a path
+     * prefix.
+     */
+    internal var signInToServer: ((ServerInvite) -> Boolean)? = null
 
     /** No scanner on this device: instead of saying so, Add asks for the link. */
     internal var onUnavailable: (() -> Unit)? = null
@@ -69,8 +83,9 @@ class ConnectFlow internal constructor(
         scanning = true
         scope.launch {
             try {
-                when (val result = scanner.scan()) {
+                when (val result = scanner.scan(request)) {
                     ScanResult.Cancelled -> Unit
+                    is ScanResult.Chose -> if (result.way == ScannerWay.EnterLink) enteringLink = true else onWay(result.way)
                     is ScanResult.Failed -> onUnavailable?.invoke() ?: run { alert = errorAlert(messages.failure(result.reason)) }
                     is ScanResult.Scanned -> route(result.value)
                 }
@@ -93,10 +108,21 @@ class ConnectFlow internal constructor(
                 if (kind == ConnectKind.Terminal || kind == ConnectKind.Add) process(code.url) else alert = errorAlert(messages.terminalElsewhere)
             is HappyCode.Account -> when (kind) {
                 ConnectKind.Account -> process(code.url)
-                ConnectKind.Add -> alert = errorAlert(messages.accountSignedOut)
+                ConnectKind.Add -> alert = Alert(messages.accountSignedOutTitle, messages.accountSignedOut, listOf(AlertButton(okTitle)))
                 else -> alert = errorAlert(messages.accountElsewhere)
             }
-            is HappyCode.UnknownHappy, is HappyCode.NotHappy -> alert = errorAlert(messages.notHappy)
+            is HappyCode.Server -> {
+                val signIn = signInToServer
+                val invite = ServerInvite.parse(code.text)
+                when {
+                    // Only outside the app's root, which always provides it.
+                    signIn == null -> alert = errorAlert(messages.notHappy)
+                    invite == null -> alert = errorAlert(messages.serverInvalid)
+                    // Opened if connected already; else, under a path prefix, not reachable yet.
+                    !signIn(invite) -> alert = errorAlert(messages.serverAtPath)
+                }
+            }
+            is HappyCode.NotHappy, is HappyCode.UnknownHappy -> alert = errorAlert(messages.notHappy)
         }
     }
 
@@ -104,13 +130,16 @@ class ConnectFlow internal constructor(
      * connectWithUrl: a pasted link, routed by [route] exactly as the same
      * code read by the camera is, so typing a terminal link into Link New
      * Device names the screen it belongs to instead of calling it invalid.
-     * Only a link of no kind this app knows reads differently: it is
-     * "Invalid authentication URL", since nothing was scanned.
+     * Two read differently: a link of no kind this app knows is "Invalid
+     * authentication URL", since nothing was scanned, and a team server's
+     * is refused, since one is taken only from the camera.
      */
     fun connectWithUrl(url: String) {
         scope.launch {
-            when (HappyCode.classify(url)) {
-                is HappyCode.UnknownHappy, is HappyCode.NotHappy -> alert = errorAlert(messages.invalidUrl)
+            when (val code = HappyCode.classify(url)) {
+                is HappyCode.NotHappy, is HappyCode.UnknownHappy -> alert = errorAlert(messages.invalidUrl)
+                // A team server is added only from the camera (contract §8), never a pasted link.
+                is HappyCode.Server -> alert = errorAlert(messages.serverScanOnly)
                 else -> route(url)
             }
         }
@@ -144,8 +173,12 @@ internal data class ScanMessages(
     val terminalElsewhere: String = "",
     val accountElsewhere: String = "",
     val pairingUnavailable: String = "",
+    val accountSignedOutTitle: String = "",
     val accountSignedOut: String = "",
     val invalidUrl: String = "",
+    val serverInvalid: String = "",
+    val serverAtPath: String = "",
+    val serverScanOnly: String = "",
 ) {
     /** What a scan that couldn't run says, by [reason]. */
     fun failure(reason: ScanFailure) = when (reason) {
@@ -262,11 +295,16 @@ private fun rememberConnectFlow(
         terminalElsewhere = stringResource(R.string.scan_terminal_code_elsewhere),
         accountElsewhere = stringResource(R.string.scan_account_code_elsewhere),
         pairingUnavailable = stringResource(R.string.scan_pairing_unavailable),
-        accountSignedOut = stringResource(R.string.start_account_code),
+        accountSignedOutTitle = stringResource(R.string.account_kind_device_needs_account_title),
+        accountSignedOut = stringResource(R.string.account_kind_device_needs_cli_account),
         invalidUrl = invalid,
+        serverInvalid = stringResource(R.string.team_server_code_invalid),
+        serverAtPath = stringResource(R.string.team_server_code_path),
+        serverScanOnly = stringResource(R.string.team_server_code_scan_only),
     )
     flow.scanner = rememberQrScanner()
     flow.connectAgent = LocalAgentPairing.current
+    flow.signInToServer = com.slopus.happy.ui.connection.LocalServerSignIn.current
     val prefix = kind.prefix
     flow.process = process@{ url ->
         if (!url.startsWith(prefix)) {
@@ -298,29 +336,43 @@ private fun rememberConnectFlow(
  * approves the terminal with it in one step; the account is kept only if
  * the approval went through, and it opens. A pairing code pairs an agent.
  * Without a scanner, or from the first screen's menu, it asks for the link
- * instead ([ConnectFlow.enteringLink]). A failure is an alert.
+ * instead ([ConnectFlow.enteringLink]). A failure is an alert. The
+ * scanner's ⋮ has the other ways in (iOS's `AccountAdding.otherWays`): the
+ * link, [onRestore] and [onServer], whose custom host [serverLabel] names.
  */
 @Composable
-fun rememberAddFlow(graph: AppGraph): ConnectFlow = rememberAddConnect(
+fun rememberAddFlow(graph: AppGraph, onRestore: () -> Unit, onServer: () -> Unit, serverLabel: String?): ConnectFlow = rememberAddConnect(
     approve = { url ->
         graph.auth.createAccount { account -> approveTerminal(graph.authApi, account.credentials, account.encryption, url) }
     },
+    onRestore = onRestore,
+    onServer = onServer,
+    serverLabel = serverLabel,
 )
 
 /** [rememberAddFlow] with the approval passed in, for tests. */
 @Composable
-fun rememberAddConnect(approve: suspend (url: String) -> Unit): ConnectFlow {
+fun rememberAddConnect(
+    approve: suspend (url: String) -> Unit,
+    onRestore: () -> Unit = {},
+    onServer: () -> Unit = {},
+    serverLabel: String? = null,
+): ConnectFlow {
     val haptics = LocalHapticFeedback.current
     val failed = stringResource(R.string.modals_failed_to_connect_terminal)
     val flow = rememberConnectFlow(ConnectKind.Add, approve) { flow, error ->
         if (error == null) haptics.performHapticFeedback(HapticFeedbackType.Confirm) else flow.alert = flow.errorAlert(failed)
     }
     flow.onUnavailable = { flow.enteringLink = true }
+    val currentOnRestore by rememberUpdatedState(onRestore)
+    val currentOnServer by rememberUpdatedState(onServer)
+    flow.request = ScanRequest(listOf(ScannerWay.EnterLink, ScannerWay.Restore, ScannerWay.Server), serverLabel)
+    flow.onWay = { way -> if (way == ScannerWay.Server) currentOnServer() else currentOnRestore() }
     if (flow.enteringLink) {
         PromptModal(
             prompt = Prompt(
                 title = stringResource(R.string.start_enter_link_title),
-                message = stringResource(R.string.start_enter_link_message),
+                message = stringResource(R.string.account_kind_enter_link_message),
                 placeholder = "happy://…",
                 confirmText = stringResource(R.string.start_connect),
                 onResult = { url -> url?.trim()?.takeIf { it.isNotEmpty() }?.let(flow::connectWithUrl) },

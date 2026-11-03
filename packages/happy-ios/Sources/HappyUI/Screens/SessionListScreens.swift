@@ -255,7 +255,7 @@ final class SessionListViewController: UIViewController {
             return
         }
         guard let environment = textEnvironment else { return }
-        let key = HeaderKey(banners: state, width: view.bounds.width, maxWidth: ContentWidth.maxWidth, environment: environment)
+        let key = HeaderKey(banners: state, width: rendered.contentWidth, maxWidth: ContentWidth.maxWidth, environment: environment)
         guard key.width > 0, key != headerRequested else { return }
         headerRequested = key
         headerTask = Task { @MainActor [weak self] in
@@ -274,7 +274,9 @@ final class SessionListViewController: UIViewController {
         // The words the height was measured with.
         banners.content = key.banners
         banners.frame = CGRect(x: 0, y: 0, width: key.width, height: height)
-        ultraList.setBanner(banners, height: height)
+        ultraList.setBanner(banners, height: height) { width in
+            HomeRowMeasurer.headerHeight(key.banners, width: width, maxWidth: key.maxWidth, environment: key.environment)
+        }
     }
 
     private func openTroubleshoot() {
@@ -336,7 +338,7 @@ final class SessionListViewController: UIViewController {
 
     private func updateUltraList() {
         guard isViewLoaded, let environment = textEnvironment else { return }
-        ultraList.update(.init(model: model, width: view.bounds.width, environment: environment, dark: traitCollection.userInterfaceStyle == .dark, selected: selectedSessionId, archiveModels: archiveModels, viewportHeight: view.bounds.height))
+        ultraList.update(.init(model: model, width: rendered.contentWidth, environment: environment, dark: traitCollection.userInterfaceStyle == .dark, selected: selectedSessionId, archiveModels: archiveModels, viewportHeight: view.bounds.height))
     }
 
     func setArchiveModels(_ models: HomeArchiveModels?, settings: HomeArchiveSettings?) {

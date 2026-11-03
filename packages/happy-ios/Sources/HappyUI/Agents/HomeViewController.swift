@@ -382,13 +382,13 @@ final class HomeViewController: UIViewController {
         // On a wide window the list, what search finds and the empty state
         // all hold to `ContentWidth.maxWidth` and sit in the middle; a
         // phone is as wide as it ever was.
-        let layout = HomeLayout(size: bounds.size, contentTop: contentInsets.contentTop, chromeTop: contentInsets.chromeTop, listBottom: contentInsets.listBottom, maxWidth: ContentWidth.maxWidth)
+        let layout = HomeLayout(size: bounds.size, contentTop: contentInsets.contentTop, chromeTop: contentInsets.chromeTop, listBottom: contentInsets.listBottom, maxWidth: ContentWidth.maxWidth, sides: LayoutInsets(view.safeAreaInsets))
         resultsView.frame = layout.content
         // The results start right at the bar's foot, with no gap of home's.
         let searchInsets = searchContentInsets ?? contentInsets
         resultsView.insets = UIEdgeInsets(top: searchInsets.chromeTop, left: 0, bottom: searchInsets.listBottom, right: 0)
         sidebar.frame = layout.content
-        session?.warm.layOut(width: layout.content.width, environment: traitCollection.textEnvironment)
+        session?.warm.layOut(width: layout.column.width, environment: traitCollection.textEnvironment)
         let insets = UIEdgeInsets(layout.listInsets)
         let indicator = UIEdgeInsets(layout.indicatorInsets)
         if sidebar.contentInsets != insets {
@@ -427,6 +427,7 @@ final class HomeViewController: UIViewController {
         }
         if shown is ArtifactsViewController { return rows.first { $0.targetKind == "artifacts" }?.id }
         if shown is TodoListsViewController { return rows.first { $0.targetKind == "todos" }?.id }
+        if shown is FeedViewController { return rows.first { $0.targetKind == "feed" }?.id }
         return nil
     }
 
@@ -458,6 +459,9 @@ final class HomeViewController: UIViewController {
         case .space where row.targetKind == "todos":
             sidebar.selectedRowId = row.id
             show(TodoListsViewController(session: session), for: row, animated: animated)
+        case .space where row.targetKind == "feed":
+            sidebar.selectedRowId = row.id
+            show(FeedViewController(session: session), for: row, animated: animated)
         case .search:
             beginSearch()
         case .create:

@@ -79,6 +79,33 @@ final class AgentChatUltraList: UIView {
     /// What `apply` was last handed, to hand over again as a revealing
     /// row grows a line.
     private var latest: (plans: [ChatRowPlan], intro: (view: UIView, height: CGFloat)?)?
+    /// Rows planned again at a new width for the pass that shows it
+    /// (`showInPlace`), by identity, each with the plan it stands in for:
+    /// the screen's own plans at that width replace them.
+    private var inPlace: [String: (replaces: ChatRowPlan, plan: ChatRowPlan)] = [:]
+
+    /// The rows near the screen, by plan ID, newest first: those the list
+    /// has loaded and a few past them, which a new width may bring on.
+    var planIDsNearScreen: [String] {
+        let loaded = list.loadedIndexRange
+        guard !loaded.isEmpty else { return [] }
+        return (loaded.lowerBound..<min(list.items.count, loaded.upperBound + 8)).compactMap { (list.items[$0] as? AgentChatRow)?.plan.id }
+    }
+
+    /// `plans`, by plan ID, made at a new width for the rows shown now: the
+    /// pass that lays the rows out at that width shows them (`AgentChatRowView.update`).
+    /// A row coming out as it streams keeps its plan.
+    func showInPlace(_ plans: [String: ChatRowPlan]) {
+        for row in rows.values {
+            guard let plan = plans[row.plan.id], plan !== row.plan, !reveal.isRevealing(row.identity) else { continue }
+            inPlace[row.identity] = (row.plan, plan)
+        }
+    }
+
+    /// The plan `row` shows at a new width, if one was made for it.
+    func inPlacePlan(for row: AgentChatRow) -> ChatRowPlan? {
+        inPlace[row.identity].flatMap { $0.replaces === row.plan ? $0.plan : nil }
+    }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -103,7 +130,12 @@ final class AgentChatUltraList: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        list.frame = bounds
+        // Then where the screen puts the rows (`setViewport`).
+        if viewportSize == .zero { list.frame = bounds }
+    }
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        list.takingMargins(super.hitTest(point, with: event), of: self)
     }
 
     /// The room the rows have between the bar and the composer.
@@ -124,12 +156,33 @@ final class AgentChatUltraList: UIView {
         return 0
     }
 
-    func setViewport(size: CGSize, insets: UIEdgeInsets, keyboard: ChatUltraKeyboard.Change? = nil) {
+    /// The rows stand in `frame`, in this view: all of it but the safe
+    /// area's sides (`ChatScreenLayout.list`), so a phone held sideways
+    /// keeps them off the camera while the view runs edge to edge. A touch
+    /// in those margins drags the list.
+    func setViewport(frame: CGRect, insets: UIEdgeInsets, keyboard: ChatUltraKeyboard.Change? = nil) {
+        let size = frame.size
         guard size.width > 0, size.height > 0 else { return }
         let sizeChanged = viewportSize != size
         let changed = self.insets != insets || sizeChanged
+        if abs(viewportSize.width - size.width) > 0.5 {
+            // New insets first, at the old width, then the new width alone:
+            // the rows the change puts on screen are laid out again in
+            // place (`showInPlace`), where the new insets put them, on the
+            // curve of the animation it is in.
+            if self.insets != insets {
+                self.insets = insets
+                list.applyChanges(newInsets: .init(top: insets.top, bottom: insets.bottom), anchorMode: .preserveVisibleContent,
+                                  compensatesInsetChange: keyboard?.compensates ?? !list.isTracking, transition: keyboard?.transition ?? .none)
+            }
+            list.resize(to: frame)
+            viewportSize = size
+            flight?.follow(in: list)
+            return
+        }
         self.insets = insets
         viewportSize = size
+        if list.frame.origin != frame.origin { list.frame.origin = frame.origin }
         guard changed else {
             if keyboard?.finishes == true { list.finishViewportTransition() }
             return
@@ -219,6 +272,8 @@ final class AgentChatUltraList: UIView {
         }
         rows = next
         starts = places
+        // The screen's plans replace what a width change made.
+        inPlace = inPlace.filter { next[$0.key]?.plan === $0.value.replaces }
         if let intro {
             items.append(AgentChatIntroRow(content: intro.view, height: intro.height))
             start += intro.height
@@ -441,6 +496,9 @@ final class AgentChatRow: ListRow {
 @MainActor
 final class AgentChatRowView: ListRowView, UIGestureRecognizerDelegate {
     private(set) var row: AgentChatRow
+    /// What the row shows: its plan, or the one a width change made for it
+    /// (`AgentChatUltraList.showInPlace`).
+    private(set) var plan: ChatRowPlan
     /// The row's own view: it draws the plan's marks itself, keeps its
     /// media and cards, and is what is read out.
 
@@ -451,6 +509,7 @@ final class AgentChatRowView: ListRowView, UIGestureRecognizerDelegate {
 
     init(row: AgentChatRow) {
         self.row = row
+        plan = row.plan
         super.init(frame: .zero)
         // The list is upside down; each row stands the right way up in it.
         transform = ChatListView.flip
@@ -462,7 +521,7 @@ final class AgentChatRowView: ListRowView, UIGestureRecognizerDelegate {
         canvas.accessibilityIdentifier = "message"
         canvas.onChunksPlaced = { [weak self] in
             guard let self else { return }
-            self.row.transcript?.placedChunks(of: self.row.plan, in: self.canvas)
+            self.row.transcript?.placedChunks(of: self.plan, in: self.canvas)
         }
         canvas.onAction = { [weak self] action in self?.row.transcript?.tapped(action) }
         addSubview(canvas)
@@ -492,8 +551,9 @@ final class AgentChatRowView: ListRowView, UIGestureRecognizerDelegate {
 
     func apply(_ row: AgentChatRow) {
         self.row = row
+        plan = row.transcript?.inPlacePlan(for: row) ?? row.plan
         canvas.veiled = row.transcript?.veiled == row.identity
-        row.transcript?.show(row.plan, in: canvas)
+        row.transcript?.show(plan, in: canvas)
         layoutCanvas()
         // In the same transaction as the plan it draws: none of its new
         // words show before they come out.
@@ -510,12 +570,23 @@ final class AgentChatRowView: ListRowView, UIGestureRecognizerDelegate {
     /// The plan at its own size from the row's top: a row coming out is
     /// shorter, and clips what is still to come.
     private func layoutCanvas() {
-        let frame = CGRect(x: 0, y: 0, width: bounds.width, height: max(bounds.height, row.plan.size.height))
+        let frame = CGRect(x: 0, y: 0, width: bounds.width, height: max(bounds.height, plan.size.height))
         if canvas.frame != frame { canvas.frame = frame }
         reveal.layout(frame)
     }
 
-    override func update(width: Double, transition: ListTransition) -> Double { row.height }
+    /// The row's height: its own, or a width change's plan's, which it
+    /// shows from the pass that lays the rows out at that width.
+    private var height: CGFloat { plan === row.plan ? row.height : plan.size.height }
+
+    override func update(width: Double, transition: ListTransition) -> Double {
+        if let shown = row.transcript?.inPlacePlan(for: row), shown !== plan {
+            plan = shown
+            row.transcript?.show(shown, in: canvas)
+            layoutCanvas()
+        }
+        return height
+    }
 
     /// A tall row has views only for the part on screen (`ChatChunks`).
     /// The list says which part in its own coordinates, which run the
@@ -524,7 +595,7 @@ final class AgentChatRowView: ListRowView, UIGestureRecognizerDelegate {
     /// as it came, the foot of a long reply on screen mounted its head,
     /// and the screen showed nothing.
     override func visibleRectUpdated(_ rect: CGRect?) {
-        canvas.band = rect.map { Self.band(of: $0, height: row.height) } ?? .null
+        canvas.band = rect.map { Self.band(of: $0, height: height) } ?? .null
     }
 
     /// `rect`, the part on screen in the list's coordinates, in the row's.

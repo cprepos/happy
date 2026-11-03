@@ -19,6 +19,7 @@ actor NewSessionChoiceDeriver {
         var metadata: JSONValue?
     }
     private struct Catalog: Equatable {
+        var synced: Bool
         var machines: [Machine]
         var places: [JSONValue?]
         var projectNames: [String: String]
@@ -28,6 +29,7 @@ actor NewSessionChoiceDeriver {
         var catalog: UInt64
         var draft: NewSessionDraft
         var createsBot: Bool
+        var createsTask: Bool
         var worktrees: [Worktrees.Entry]
     }
 
@@ -54,7 +56,7 @@ actor NewSessionChoiceDeriver {
     }
 
     func choices(snapshot: LegacyHomeSnapshot, revision: UInt64, generation: UInt64, draft: NewSessionDraft,
-                 createsBot: Bool, worktrees: [Worktrees.Entry]) async -> DerivedChoices? {
+                 createsBot: Bool, createsTask: Bool = false, worktrees: [Worktrees.Entry]) async -> DerivedChoices? {
         guard generation >= latestGeneration else { return nil }
         latestGeneration = generation
         await beforeDerivation(snapshot, draft)
@@ -69,6 +71,7 @@ actor NewSessionChoiceDeriver {
             let rows = Self.canonicalPool(snapshot.sessions)
             orderedSessions = rows
             let next = Catalog(
+                synced: snapshot.machines.synced,
                 machines: snapshot.machines.machines.map {
                     Machine(id: $0.id, createdAt: $0.createdAt, active: $0.active, activeAt: $0.activeAt, metadata: $0.metadata)
                 },
@@ -99,13 +102,14 @@ actor NewSessionChoiceDeriver {
         var pickerDraft = draft
         pickerDraft.input = ""
         pickerDraft.updatedAt = 0
-        let nextRequest = Request(catalog: catalogVersion, draft: pickerDraft, createsBot: createsBot, worktrees: worktrees)
+        let nextRequest = Request(catalog: catalogVersion, draft: pickerDraft, createsBot: createsBot, createsTask: createsTask, worktrees: worktrees)
         result?.sessions = orderedSessions
         if nextRequest == request, let result { return result }
         let next = NewSessionChoices(.init(
-            draft: pickerDraft, createsBot: createsBot, machines: snapshot.machines.machines,
+            draft: pickerDraft, createsBot: createsBot, createsTask: createsTask, machines: snapshot.machines.machines,
             sessions: orderedSessions, projectNames: catalog?.projectNames ?? [:],
-            agentDefaultOverrides: catalog?.overrides ?? [:], gitWorktrees: worktrees))
+            agentDefaultOverrides: catalog?.overrides ?? [:], gitWorktrees: worktrees,
+            machinesSynced: catalog?.synced ?? snapshot.machines.synced))
         derivationCount += 1
         request = nextRequest
         if next != result?.value {

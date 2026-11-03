@@ -34,6 +34,9 @@
     <application
         android:name=".HappyApplication"
         android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        tools:targetApi="31"
         android:enableOnBackInvokedCallback="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
@@ -52,12 +55,21 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- app.config.js scheme: happy://terminal?<key> (ui/connect/DeepLinks.kt) -->
+            <!-- app.config.js scheme: happy://terminal?<key> (ui/connect/DeepLinks.kt), and
+                 happy://oauth/callback, team server sign-in's redirect URI (MainActivity.oauthCallback) -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="happy" />
+            </intent-filter>
+            <!-- A bot invitation (guest/GuestInvitation.kt, happy-ios docs/APP-CLIP.md): this one path, in every
+                 build; production's overlay (src/release) takes the host's other paths as well. -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="app.happy.engineering" android:pathPrefix="/bot/invite/" />
             </intent-filter>
         </activity>
         <!-- Our QR scanner (ui/connect/QrScanner.kt): a full-screen camera, started for a result. -->

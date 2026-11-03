@@ -22,13 +22,18 @@ import com.slopus.happy.AppGraph
 import com.slopus.happy.R
 import com.slopus.happy.agent.AgentEvent
 import com.slopus.happy.agent.AgentSession
+import com.slopus.happy.agent.HappyLink
+import com.slopus.happy.agent.HappyReferenceKind
+import com.slopus.happy.agent.HappyUrls
 import com.slopus.happy.artifacts.ArtifactClient
 import com.slopus.happy.artifacts.ArtifactRef
 import com.slopus.happy.browser.BrowserPolicy
 import com.slopus.happy.browser.BrowserProxy
 import com.slopus.happy.browser.browserWorkspace
 import com.slopus.happy.ui.browser.BrowserPage
+import com.slopus.happy.ui.browser.BrowserScreen
 import com.slopus.happy.ui.browser.openOutside
+import com.slopus.happy.ui.connection.LocalHappyLinks
 import kotlinx.coroutines.flow.filter
 import kotlinx.serialization.Serializable
 
@@ -114,6 +119,7 @@ private class ArtifactHolder(session: AgentSession?, route: ArtifactRoute, resou
             labels = { isVideo, name ->
                 resources.getString(R.string.artifact_media_label, resources.getString(if (isVideo) R.string.artifact_video else R.string.artifact_picture), name)
             },
+            library = it.media,
         ).also(ArtifactLoader::load)
     }
 
@@ -129,6 +135,7 @@ private fun ArtifactEntry(graph: AppGraph, nav: NavHostController, route: Artifa
     val holder = viewModel { ArtifactHolder(session, route, resources) }
     val context = LocalContext.current
     val computer = computerName(graph, route.connectionId)
+    val happyLinks = LocalHappyLinks.current
     val loader = holder.loader
     if (loader == null) {
         ArtifactScreen(route.title, ArtifactUi.Message(deleted = false), null, computer, ArtifactActions(onBack = { nav.popBackStack() }))
@@ -147,7 +154,12 @@ private fun ArtifactEntry(graph: AppGraph, nav: NavHostController, route: Artifa
                 link = loader::link,
                 onOpenFile = { version, path -> nav.navigate(route.copy(openedVersion = version, path = path)) },
                 onOpenWeb = { url -> nav.navigate(BrowserRoute(route.connectionId, url)) },
-                onOpenExternal = { url -> openOutside(context, url) },
+                // A Happy URL stays in the app: an internal one means this connection, an external one its own.
+                onOpenExternal = { url -> if (happyLinks?.open(url, route.connectionId) != true) openOutside(context, url) },
+                artifactLink = { id ->
+                    graph.agentConnections.accounts.value.firstOrNull { it.id == route.connectionId }?.instanceId
+                        ?.let { HappyUrls.format(HappyLink.Reference(HappyReferenceKind.Artifact, id), it) }
+                },
                 fileReader = { file ->
                     val version = loader.version ?: throw IllegalStateException("not read")
                     ArtifactClient(session!!.client).bytes(route.artifactId, version.number, file.path)

@@ -1,5 +1,6 @@
 package com.slopus.happy.ui.components
 
+import com.slopus.happy.ui.tablet.BackOrSidebarToggle
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -41,7 +42,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.slopus.happy.R
-import com.slopus.happy.ui.layout.LocalTabletShell
 import com.slopus.happy.ui.layout.LocalWindowLayout
 import com.slopus.happy.ui.layout.contentMaxWidth
 
@@ -77,17 +77,18 @@ fun Screen(
  * A pushed screen's header: back arrow and title. Start-aligned, it is the
  * Material top app bar every agent screen has (home's, its settings'): the
  * arrow in the navigation slot on the 16 keyline, the title in Material's
- * title large, [actions] at the end, held to the content width. On a
+ * title large, [actions] at the end, held to the content width ([fullWidth]:
+ * the window's, for a screen whose frame is the window's own). On a
  * [Screen] it is glass. [titleAlpha] is read while drawing, for a page
  * whose own large name fades the bar's title in as it scrolls under it.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun StackHeader(title: String, onBack: () -> Unit, titleAlpha: (() -> Float)? = null, actions: @Composable RowScope.() -> Unit = {}) {
+fun StackHeader(title: String, onBack: () -> Unit, titleAlpha: (() -> Float)? = null, fullWidth: Boolean = false, actions: @Composable RowScope.() -> Unit = {}) {
     val colors = HappyTheme.colors
     Box(Modifier.fillMaxWidth().then(if (LocalBarOnGlass.current) Modifier else Modifier.background(colors.grouped.background))) {
         TopAppBar(
-            modifier = Modifier.contentMaxWidth(LocalWindowLayout.current).testTag(HeaderTags.BAR),
+            modifier = (if (fullWidth) Modifier.fillMaxWidth() else Modifier.contentMaxWidth(LocalWindowLayout.current)).testTag(HeaderTags.BAR),
             colors = TopAppBarDefaults.topAppBarColors(
                 containerColor = Color.Transparent,
                 scrolledContainerColor = Color.Transparent,
@@ -96,8 +97,8 @@ fun StackHeader(title: String, onBack: () -> Unit, titleAlpha: (() -> Float)? = 
                 actionIconContentColor = colors.text,
             ),
             navigationIcon = {
-                // The tablet shell has its own back, as [HeaderBackButton] knows.
-                if (!LocalTabletShell.current) {
+                // The tablet main panel's root has the sidebar's toggle here instead.
+                BackOrSidebarToggle {
                     IconButton(onClick = onBack, modifier = Modifier.testTag(HeaderTags.LEFT)) {
                         Icon(Ionicon.ArrowBack, 24.dp, LocalContentColor.current, contentDescription = stringResource(R.string.common_back))
                     }

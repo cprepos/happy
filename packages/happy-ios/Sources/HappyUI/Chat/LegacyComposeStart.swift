@@ -1,5 +1,6 @@
 #if canImport(UIKit)
 import HappyCore
+import HappyLayout
 import HappyStore
 import UIKit
 
@@ -58,8 +59,12 @@ final class LegacyComposeStart: NSObject {
 
     init(context: AppContext, account: AccountSession) {
         let snapshot = account.homeFeed.latest ?? LegacyHomeSnapshot(machines: MachinesSnapshot(synced: false, machines: []), sessions: [])
+        let drafts = NewSessionDraftStore.shared(for: context.account.localSettings)
+        // A computer picked on an earlier compose holds a kept bot or task
+        // no longer: this one routes it again.
+        drafts.pickedMachineId = nil
         composer = NewSessionComposer(
-            drafts: NewSessionDraftStore.shared(for: context.account.localSettings),
+            drafts: drafts,
             snapshot: snapshot,
             ops: account.homeOps
         )
@@ -98,14 +103,28 @@ final class LegacyComposeStart: NSObject {
 
     // MARK: Kind
 
-    /// Session, and Bot and Task where the computer's Happy Agent makes
-    /// them; a Happy CLI computer alone offers Session only.
+    /// Session, and Bot and Task where some computer's Happy Agent on the
+    /// account makes them (picking one goes there); an account of Happy
+    /// CLI computers alone offers Session only.
     var kinds: [HomeDockKind] {
-        HomeDockKind.offered(supportsBots: composer.choices.supportsBots, supportsTasks: composer.choices.supportsTasks)
+        HomeDockKind.offered(supportsBots: composer.choices.offersBots, supportsTasks: composer.choices.offersTasks)
     }
 
     var kind: HomeDockKind {
         HomeDockKind.current(createsBot: drafts.createsBot, createsTask: drafts.createsTask)
+    }
+
+    /// Every kind the panel shows, always, so the control never comes or
+    /// goes as the computers arrive.
+    static let shownKinds: [HomeDockKind] = [.session, .bot, .task]
+
+    /// The kinds that can be picked: those some computer makes, the one
+    /// already picked, and while the computers are still arriving, all
+    /// (where it goes is settled when they are in).
+    var enabledKinds: Set<HomeDockKind> {
+        var enabled = Set(kinds).union([kind])
+        if !composer.choices.machinesSynced { enabled.formUnion(Self.shownKinds) }
+        return enabled
     }
 
     func setKind(_ kind: HomeDockKind) {
@@ -139,11 +158,51 @@ final class LegacyComposeStart: NSObject {
         SessionComposerRules.canUseAttachments(starting: kind == .session ? composer.choices.resolvedAgent : .rig)
     }
 
-    /// The machine is asked only when there is more than one to choose.
-    var asksMachine: Bool { composer.choices.machineOptions.count > 1 }
+    /// The machine the first send goes to, as its picker names it; while
+    /// the computers are still arriving, that they are.
+    var machineName: String {
+        let choices = composer.choices
+        if choices.awaitsComputers { return Strings.ComposeTarget.loading }
+        return choices.currentMachine?.name ?? Strings.Home.selectMachine
+    }
 
-    /// The machine the first send goes to, as its picker names it.
-    var machineName: String { composer.choices.currentMachine?.name ?? Strings.Home.selectMachine }
+    /// The computer row's chip: online in green, what doesn't answer in
+    /// the warning colour, grey while the computers are still arriving.
+    var machineStatus: (text: String, color: UIColor)? {
+        if composer.choices.awaitsComputers { return (Strings.ComposeTarget.loadingStatus, UIColor(Palette.textSecondary)) }
+        guard let target = composer.choices.currentTarget else { return nil }
+        let offline = composer.choices.offline
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        return (Strings.ComposeTarget.label(target, offline: offline, now: now),
+                UIColor(offline == nil ? Palette.sessionStatusOnline : Palette.warningText))
+    }
+
+    /// Why the first send can't reach the computer now, in full; nil while
+    /// it can.
+    var machineWarning: String? {
+        if composer.choices.awaitsComputers { return Strings.ComposeTarget.stillLoading }
+        return composer.choices.offline.map(Strings.ComposeTarget.offline)
+    }
+
+    /// The status dot a computer wears in the menu, as the session list's.
+    static func dot(_ color: UIColor) -> UIImage {
+        let side: CGFloat = 8
+        return UIGraphicsImageRenderer(size: CGSize(width: side, height: side)).image { _ in
+            color.setFill()
+            UIBezierPath(ovalIn: CGRect(x: 0, y: 0, width: side, height: side)).fill()
+        }.withRenderingMode(.alwaysOriginal)
+    }
+
+    private static func status(_ target: MachineTarget, for kind: HomeDockKind) -> (text: String, color: UIColor) {
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        let online = target.isOnline(for: kind)
+        return (Strings.ComposeTarget.status(target, for: kind, now: now),
+                UIColor(online ? Palette.sessionStatusOnline : Palette.sessionStatusDisconnected))
+    }
+
+    /// A bot's name refused before anything starts: true when the screen
+    /// asked for it in place; false leaves it to an alert.
+    var askName: ((String) -> Bool)?
 
     /// The folder on it, as its picker names it.
     var folderName: String { composer.choices.currentProject?.name ?? Strings.Home.noProject }
@@ -174,10 +233,21 @@ final class LegacyComposeStart: NSObject {
         let bot = drafts.bot
         let createsTask = drafts.createsTask
         let attachments = message.attachments
+        // A bot's name is asked for where it is typed, before anything
+        // starts; the text stays in the composer.
+        if bot.createsBot, let problem = BotName.problem(bot.botName) {
+            if askName?(problem) != true { showStartError(problem) }
+            throw Refused(message: problem)
+        }
+        // A computer that doesn't answer is said so in full before anything
+        // is asked of it; the text stays.
+        if let warning = machineWarning {
+            showStartError(warning)
+            throw Refused(message: warning)
+        }
         onChange?()
         // A bot or a task is Happy Agent's on the chosen computer; the
-        // text is its first message either way. A bot's missing name is
-        // refused by the launch, which says so.
+        // text is its first message either way.
         let resolved = bot.createsBot
             ? await composer.launchBotPrepared(prompt: text, attachments: attachments)
             : createsTask
@@ -253,7 +323,9 @@ final class LegacyComposeStart: NSObject {
     }
 
     /// The harness row with nothing to run: setup help, not a menu.
-    var offersHarnessHelp: Bool { !composer.choices.hasAvailableHarness }
+    /// Nothing to run on the computer: the row is setup help. Not while the
+    /// computers are still arriving, when nothing is known yet.
+    var offersHarnessHelp: Bool { !composer.choices.hasAvailableHarness && !composer.choices.awaitsComputers }
 
     func openHarnessHelp() {
         guard offersHarnessHelp else { return }
@@ -267,11 +339,28 @@ final class LegacyComposeStart: NSObject {
         }]
     }
 
+    /// Online first, each with whether it answers; for a bot or a task only
+    /// the computers whose Happy Agent makes it.
     func machineMenuElements() -> [UIMenuElement] {
         let composer = composer
-        return [Self.section(Strings.Home.machineTitle, composer.choices.machineOptions, selected: composer.choices.currentMachine?.key) {
-            composer.selectMachine($0)
-        }]
+        let kind = kind
+        let selected = composer.choices.currentTarget?.id
+        let actions = composer.choices.machines(for: kind).map { target in
+            let status = Self.status(target, for: kind)
+            return UIAction(
+                title: target.name,
+                subtitle: status.text,
+                image: Self.dot(status.color),
+                state: target.id == selected ? .on : .off
+            ) { _ in composer.selectMachine(target.id) }
+        }
+        if actions.isEmpty, composer.choices.awaitsComputers {
+            let loading = UIAction(title: Strings.ComposeTarget.loading, attributes: .disabled) { _ in }
+            return [UIMenu(title: Strings.ComposeTarget.machinesTitle(kind), options: .displayInline, children: [loading])]
+        }
+        // Tapping the row while the computer is offline says why at the head.
+        let title = machineWarning ?? Strings.ComposeTarget.machinesTitle(kind)
+        return [UIMenu(title: title, options: .displayInline, children: actions)]
     }
 
     func folderMenuElements() -> [UIMenuElement] {

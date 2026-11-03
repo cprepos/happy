@@ -82,6 +82,8 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
     private let jump = ChatJumpButton()
     private var jumpShown = false
     let card = AgentInputCardView(configuration: AgentInputCardConfiguration(placeholder: Strings.Composer.inputPlaceholder))
+    /// The agent's slash commands over the card, while the draft is one.
+    private lazy var slash = SlashPalette(images: session.images)
     /// How much of the context window the conversation has spent, under
     /// the card at its far end, as desktop's under its composer.
     let meter = ContextMeterView()
@@ -103,6 +105,8 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
     private(set) var ultraKeyboard: ChatUltraKeyboard?
 
     private var chat = ChatSnapshot()
+    /// The tool calls opened from here (`AgentToolViewController`).
+    private let toolScreens = NSHashTable<AgentToolViewController>.weakObjects()
     private var following: Task<Void, Never>?
     private var planning: Task<Void, Never>?
     private var planned: (items: [ChatItem], key: ChatPlanner.Key, copied: String?, opened: Set<String>, proposals: [String: ProposalShown], queued: Set<String>)?
@@ -267,7 +271,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         pictures.onChange = { [weak self] in
             guard let self else { return }
             card.configuration.attachments = pictures.images.map {
-                AgentInputAttachmentPreview(id: $0.id, fileURL: $0.attachment.fileURL, name: $0.attachment.name, mimeType: $0.attachment.mimeType)
+                AgentInputAttachmentPreview(id: $0.id, fileURL: $0.attachment.fileURL, name: $0.attachment.name, mimeType: $0.attachment.mimeType, preparing: $0.preparing)
             }
             updatePrimary()
         }
@@ -283,6 +287,9 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         jump.addTarget(self, action: #selector(jumpToLatest), for: .touchUpInside)
         view.addSubview(jump)
         view.addSubview(card)
+        slash.onPick = { [weak self] command in self?.picked(command) }
+        slash.onChange = { [weak self] in self?.placeSlash() }
+        view.addSubview(slash.list)
         meter.isHidden = true
         view.addSubview(meter)
         header.onOpen = { [weak self] in self?.openDetail() }
@@ -358,7 +365,6 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        header.ride(transitionCoordinator, appearing: true)
         // A preview is only looked at: what it shows stays unread.
         if previewing { return }
         #if DEBUG
@@ -410,7 +416,6 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
-        header.ride(transitionCoordinator, appearing: false)
         MessageLiftOverlay.putBack(from: self)
         #if DEBUG
         probe?.observePop()
@@ -566,7 +571,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
     }
 
     /// What rides the keyboard: placed from its top, so carried with it.
-    private var keyboardRiders: [UIView] { [card, meter, jump, composerScrim] + (newWorkPanel.map { [$0] } ?? []) }
+    private var keyboardRiders: [UIView] { [card, meter, jump, composerScrim, slash.list] + (newWorkPanel.map { [$0] } ?? []) }
 
     /// The list's keyboard moved: the screen takes its new layout at once,
     /// the list's inset moving on `change`, and what rides the keyboard is
@@ -699,7 +704,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
     /// and goes.
     private func layoutNewWorkPanel(above card: CGRect) {
         guard let newWorkPanel, !newWorkPanelGone else { return }
-        let layout = newWorkPanel.layout(width: view.bounds.width, top: view.safeAreaInsets.top, bottom: card.minY)
+        let layout = newWorkPanel.layout(width: view.bounds.width, sides: LayoutInsets(view.safeAreaInsets), top: view.safeAreaInsets.top, bottom: card.minY)
         newWorkPanel.place(layout)
         newWorkPanel.isHidden = !layout.fits
     }
@@ -848,6 +853,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         }
         let wasSettled = settled(chat)
         chat = snapshot
+        updateToolScreens()
         applyTitle()
         if picked == snapshot.mode { picked = nil }
         media.register(snapshot.items)
@@ -864,6 +870,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         if !snapshot.items.isEmpty { dismissNewWorkPanel() }
         updatePrimary()
         updateChips()
+        updateSlash()
         replan()
         view.setNeedsLayout()
     }
@@ -885,7 +892,8 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
             addControl: { [weak self] in self?.card.addControl },
             text: { [weak self] in self?.card.text ?? "" },
             setText: { [weak self] text in self?.card.setText(text, selection: NSRange(location: (text as NSString).length, length: 0)) },
-            send: { [weak self] in self?.send() }
+            send: { [weak self] in self?.send() },
+            sendsWhilePreparing: true
         ))
         presenter.onSettled = { [weak self] added, keyboardWasUp in self?.settleFocus(added: added, keyboardWasUp: keyboardWasUp) }
         return presenter
@@ -967,8 +975,14 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         }
     }
 
+    /// The transcript's width: the screen less the safe area's sides
+    /// (`ChatScreenLayout.list`), which its rows are planned at.
+    private var transcriptWidth: CGFloat {
+        LayoutInsets(view.safeAreaInsets).sides(of: view.bounds.size).width
+    }
+
     private var planKey: ChatPlanner.Key {
-        var key = ChatPlanner.Key(width: view.bounds.width, maxContentWidth: ContentWidth.maxWidth, environment: traitCollection.textEnvironment, references: subagentReferences, subagentTitles: chat.subagentTitles, pageHeights: pageHeights)
+        var key = ChatPlanner.Key(width: transcriptWidth, maxContentWidth: ContentWidth.maxWidth, environment: traitCollection.textEnvironment, references: subagentReferences, subagentTitles: chat.subagentTitles, pageHeights: pageHeights)
         // Only a failure card reads the composer's model; without one the
         // key stays the warm chat's, so its rows planned ahead are taken.
         if chat.items.contains(where: { if case .failure = $0.role { true } else { false } }) {
@@ -1049,6 +1063,28 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         let conversation = conversation
         Task { await conversation.answer(ask.picked) }
     }
+
+    /// The width changed (a rotation, the sidebar, a window drag): the rows
+    /// near the screen are planned again at the new width while the main
+    /// thread waits, within UltraView's in-place time limit, so the frame
+    /// that shows the new width shows them at it. The rest follow with the
+    /// whole transcript's plans, which take these.
+    private func planInPlace() {
+        let width = transcriptWidth
+        guard let planned, width > 0, abs(planned.key.width - width) > 0.5 else { return }
+        let ids = ultra.planIDsNearScreen
+        guard !ids.isEmpty else { return }
+        let started = CACurrentMediaTime()
+        let plans = planner.plansInPlace(ids, width: width, until: .now() + ultra.list.inPlaceResizeTimeLimit)
+        ultra.showInPlace(plans)
+        inPlaceMilliseconds = (CACurrentMediaTime() - started) * 1000
+        inPlaceRows = plans.count
+    }
+
+    /// The last width change's wait for the rows near the screen, for the
+    /// tests: main-thread milliseconds, and the rows planned in time.
+    private(set) var inPlaceMilliseconds: Double = 0
+    private(set) var inPlaceRows = 0
 
     /// Plans the rows off the main thread, then shows them in one frame.
     private func replan() {
@@ -1260,6 +1296,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         if previewing { return layoutPreview() }
+        planInPlace()
         replan()
         if firstFrame == nil {
             firstFrame = drawn
@@ -1267,7 +1304,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
             ultra.list.accessibilityIdentifier = "transcript"
         }
         timeShown()
-        header.maxWidth = ChatTitleLayout.maxWidth(barWidth: view.bounds.width)
+        header.maxWidth = ChatTitleLayout.maxWidth(barWidth: transcriptWidth)
         // From where the keyboard rests, not the finger dragging it: the
         // card keeps its shape through a drag and changes once it settles.
         let compact = compacts
@@ -1285,6 +1322,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         ) { [card] width in card.height(fitting: width) }
         transcriptHeaderScrim.setLayoutFrame(screen.headerScrim)
         card.setLayoutFrame(screen.card)
+        placeSlash()
         meter.isHidden = screen.meter == nil
         if let frame = screen.meter { meter.setLayoutFrame(frame) }
         layoutNewWorkPanel(above: screen.card)
@@ -1295,7 +1333,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         // The transcript starts under the navigation bar and scrolls under
         // it. The list is inverted: its top edge is the composer's edge.
         if ultra.frame != view.bounds { ultra.frame = view.bounds }
-        ultra.setViewport(size: view.bounds.size, insets: UIEdgeInsets(top: screen.listBottom, left: 0, bottom: view.safeAreaInsets.top, right: 0),
+        ultra.setViewport(frame: screen.list, insets: UIEdgeInsets(top: screen.listBottom, left: 0, bottom: view.safeAreaInsets.top, right: 0),
                           keyboard: insetMotion)
         layoutTranscript()
         updateHeaderEdge()
@@ -1333,7 +1371,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         previewTitle.frame = layout.title.offsetBy(dx: -layout.pill.minX, dy: -layout.pill.minY)
         ultra.frame = view.bounds
         // Inverted: the list's top edge is the card's foot.
-        ultra.setViewport(size: view.bounds.size, insets: UIEdgeInsets(top: layout.listBottom, left: 0, bottom: layout.listTop, right: 0))
+        ultra.setViewport(frame: view.bounds, insets: UIEdgeInsets(top: layout.listBottom, left: 0, bottom: layout.listTop, right: 0))
         layoutTranscript()
         previewFade.frame = CGRect(x: 0, y: 0, width: view.bounds.width, height: layout.fadeOpaque)
         previewFade.clearFrom = layout.fadeClear / max(1, layout.fadeOpaque)
@@ -1349,7 +1387,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
 
     private func layoutTranscript() {
         var introLayout: MakeStuffIntroLayout?
-        if intro != nil { introLayout = introView.layout(width: view.bounds.width) }
+        if intro != nil { introLayout = introView.layout(width: transcriptWidth) }
         // Steering the turn hasn't taken waits under the newest settled
         // row, as next in the queue (desktop's
         // `conversationPendingSteering`). What the agent is at is the
@@ -1456,9 +1494,21 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
     private func send() {
         guard !acceptingSend else { return }
         let text = card.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let picked = pictures.images.map(\.attachment)
-        let pickedIDs = pictures.images.map(\.id)
-        guard !text.isEmpty || !picked.isEmpty else { return }
+        // Pictures still being read go as their thumbnails, and the message
+        // waits for them (`PreviewAttachment`).
+        let ready = pictures.images.filter { !$0.preparing }
+        let waiting = pictures.images.filter(\.preparing)
+        let picked = ready.map(\.attachment)
+        let pickedIDs = ready.map(\.id)
+        let previews = waiting.map {
+            PreviewAttachment(id: $0.id, thumbnail: $0.attachment.fileURL, width: $0.attachment.width, height: $0.attachment.height)
+        }
+        guard !text.isEmpty || !picked.isEmpty || !previews.isEmpty else { return }
+        // One of the agent's commands, typed out: it runs, never sent as
+        // words. Pictures make it a message.
+        if picked.isEmpty, previews.isEmpty, let invocation = SlashCommands.invocation(text, in: chat.slashCommands) {
+            return run(invocation.command, arguments: invocation.arguments)
+        }
         // A question waiting takes what is typed as its answer, as on
         // desktop: each prompt its ticked options, else the words. Words
         // no prompt needed still go as a message.
@@ -1489,7 +1539,6 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         let conversation = conversation
         let store = session.store
         let staged = pictures
-        let kind = newTask?.choice.kind ?? .task
         #if DEBUG
         composeTrace?.event("send choice=\(String(describing: newTask?.choice))")
         #endif
@@ -1497,7 +1546,9 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         newWorkPanel?.isLocked = true
         Task {
             await store.attentionInput()
-            let accepted = await conversation.send(id: id, text: text, attachments: picked)
+            // New work's first message is drawn at once; the task is made
+            // behind it, and a refusal leaves it failed, to retry.
+            let accepted = await conversation.send(id: id, text: text, attachments: picked, previews: previews)
             acceptingSend = false
             if !accepted, !newWorkPanelGone { newWorkPanel?.isLocked = false }
             if accepted {
@@ -1505,13 +1556,70 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
                     card.setText("", selection: NSRange(location: 0, length: 0))
                 }
                 staged.removeSent(pickedIDs)
+                let handed = staged.handOff(waiting.map(\.id))
+                guard !handed.isEmpty else { return }
+                // The rest go once they are read, as one message.
+                var read: [String: OutgoingAttachment] = [:]
+                for pick in handed {
+                    if let picture = await pick.picture.value { read[pick.id] = picture }
+                }
+                await conversation.prepared(id, read)
+                staged.discard(read.values.map(\.fileURL))
+                // The transcript may still draw a thumbnail a moment longer.
+                try? await Task.sleep(for: .seconds(5))
+                staged.discard(handed.map(\.thumbnail))
             } else {
-                let refusal = await conversation.sendRefusal
-                let message = refusal.map { Strings.newWorkFailed(kind, $0) } ?? "The message could not be saved. Your text and attachments are still here."
+                let message = "The message could not be saved. Your text and attachments are still here."
                 let alert = UIAlertController(title: Strings.Common.error, message: message, preferredStyle: .alert)
                 alert.addAction(UIAlertAction(title: Strings.Common.ok, style: .default))
                 present(alert, animated: true)
             }
+        }
+    }
+
+    // MARK: Slash commands
+
+    private func updateSlash() {
+        slash.update(draft: card.text, catalog: chat.slashCommands, agentId: media.agentId)
+    }
+
+    private func placeSlash() {
+        slash.place(card: card.frame, top: view.safeAreaInsets.top + SlashPaletteLayout.gap, scale: traitCollection.displayScale)
+    }
+
+    /// A pick from the palette: one that takes arguments waits for them
+    /// after its name, any other runs now.
+    private func picked(_ command: AgentWire.SlashCommand) {
+        switch SlashCommands.pick(command) {
+        case .fill(let text):
+            card.setText(text, selection: NSRange(location: (text as NSString).length, length: 0))
+            agentInputCardDidChangeText(card)
+        case .run:
+            run(command, arguments: nil)
+        }
+    }
+
+    /// Runs `command`: the composer clears and the reader goes to where
+    /// what it does will show. Refused, the command goes back in an empty
+    /// composer and the screen says why in its own words.
+    private func run(_ command: AgentWire.SlashCommand, arguments: String?) {
+        let typed = SlashCommands.text(command, arguments: arguments)
+        Haptics.play(.send)
+        card.setText("", selection: NSRange(location: 0, length: 0))
+        agentInputCardDidChangeText(card)
+        followsNewest = true
+        ultra.scrollToNewest(animated: !UIAccessibility.isReduceMotionEnabled)
+        let conversation = conversation
+        Task {
+            let outcome = await conversation.run(command, arguments: arguments)
+            guard let problem = Strings.SlashCommands.problem(outcome, name: command.name) else { return }
+            if card.text.isEmpty, outcome != .unavailable {
+                card.setText(typed, selection: NSRange(location: (typed as NSString).length, length: 0))
+                agentInputCardDidChangeText(card)
+            }
+            let alert = UIAlertController(title: Strings.Common.error, message: problem, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: Strings.Common.ok, style: .default))
+            present(alert, animated: true)
         }
     }
 
@@ -1652,6 +1760,15 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         else if let url = URL(string: link) { openBrowser(url, session: session, agentID: media.agentId) }
     }
 
+    private func updateToolScreens() {
+        guard toolScreens.count > 0 else { return }
+        for screen in toolScreens.allObjects {
+            for item in chat.items {
+                if case .tool(let tool) = item.role, tool.callId == screen.callId { screen.update(tool) }
+            }
+        }
+    }
+
     /// What a tap on a row's action does, from either transcript.
     func act(_ action: ChatRowAction) {
         switch action {
@@ -1680,6 +1797,10 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
             navigationController?.pushViewController(ArtifactViewController(session: session, artifact: artifact), animated: true)
         case .toggleTool(let messageId):
             toggle(messageId)
+        case .openMessage(let itemId):
+            openTool(itemId)
+        case .openURL(let link):
+            open(link: link)
         case .toggleTurn(let turn):
             toggleTurn(turn)
         case .questionOption(let questionId, let promptId, let option):
@@ -1689,6 +1810,16 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         default:
             break
         }
+    }
+
+    /// A tool call's own screen, over this one, kept current while the
+    /// call runs (`apply`).
+    private func openTool(_ itemId: String) {
+        guard !previewing, let item = chat.items.first(where: { $0.id == itemId }), case .tool(let tool) = item.role else { return }
+        card.blur()
+        let screen = AgentToolViewController(session: session, conversation: conversation, agentId: media.agentId, tool: tool)
+        toolScreens.add(screen)
+        navigationController?.pushViewController(screen, animated: true)
     }
 
     /// What a long press on a row does, from either transcript.
@@ -1720,6 +1851,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
 extension ChatViewController: AgentInputCardDelegate {
     func agentInputCardDidChangeText(_ card: AgentInputCardView) {
         updatePrimary()
+        updateSlash()
         guard !showingDraft else { return }
         draftEdited(card.text)
     }
@@ -1779,6 +1911,10 @@ extension ChatViewController: AgentInputCardDelegate {
     }
 
     func agentInputCardDidPressSend(_ card: AgentInputCardView) { send() }
+
+    /// Return and a hardware keyboard's Tab pick from an open palette.
+    func agentInputCardShouldInsertNewline(_ card: AgentInputCardView) -> Bool { !slash.pickOnKey() }
+    func agentInputCardShouldInsertTab(_ card: AgentInputCardView) -> Bool { !slash.pickOnKey() }
 
     /// The add button opens the "+" menu: the library, the camera and files.
     func agentInputCardDidPressAdd(_ card: AgentInputCardView) {

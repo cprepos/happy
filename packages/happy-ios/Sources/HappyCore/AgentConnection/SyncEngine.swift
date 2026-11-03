@@ -12,6 +12,8 @@ public struct HomeSnapshot: Equatable, Sendable {
     public var settings: [String: JSONValue] = [:]
     /// The person signed in as a team user; nil outside a team.
     public var userId: String?
+    /// The person's own picture's ThumbHash, for the faces that are theirs.
+    public var profilePhoto: String?
     public var error: String?
     /// An action the computer refused, said for a moment while it rolls back.
     public var notice: String?
@@ -35,6 +37,12 @@ public actor SyncEngine {
     public nonisolated let documents: DocumentLibrary
     /// The todo lists open on this account or with changes on their way.
     public nonisolated let todos: TodoLibrary
+    /// The person's Feed on this computer (`FeedLibrary`), followed for as
+    /// long as the account is.
+    public nonisolated let feed: FeedLibrary
+    /// The Feed's row as home lists it: nil while there is no feed.
+    private var feedRow: SidebarRows.FeedRow?
+    private var feedFollowing: Task<Void, Never>?
     private var overlay = IntentOverlay()
     /// What waits in `intents`, as last published.
     private var waiting: [Intent] = []
@@ -93,8 +101,11 @@ public actor SyncEngine {
             .appendingPathComponent("outbox-files", isDirectory: true)
         let forward = EngineIntentStorage()
         let todoDelivery = TodoDelivery()
+        let feedDelivery = FeedDelivery()
         let intents = IntentOutbox(storage: forward, deliver: { intent in
-            if intent.kind.isTodo { try await todoDelivery.deliver(intent) } else { try await SyncEngine.deliver(intent, client: client) }
+            if intent.kind.isTodo { try await todoDelivery.deliver(intent) }
+            else if intent.kind.isFeed { try await feedDelivery.deliver(intent) }
+            else { try await SyncEngine.deliver(intent, client: client) }
         })
         self.intents = intents
         documents = DocumentLibrary(client: client, directory: directory)
@@ -103,6 +114,8 @@ public actor SyncEngine {
         let keep = EngineResources()
         todos = TodoLibrary(routes: client, outbox: intents, keep: keep, events: { await spaces.events(matching: ["todo."]) })
         todoDelivery.library = todos
+        feed = FeedLibrary(routes: client, outbox: intents, keep: keep)
+        feedDelivery.library = feed
         forward.engine = self
         keep.engine = self
     }
@@ -153,6 +166,7 @@ public actor SyncEngine {
         verified = false
         let pausedGeneration = generation
         let tasks = [runner, refresh, delivery, messageDelivery, usersRead, gitWatcher].compactMap { $0 }
+        await feed.disconnected()
         gitWatcher = nil; gitInterest = []
         runner = nil; refresh = nil; delivery = nil; messageDelivery = nil; usersRead = nil
         tasks.forEach { $0.cancel() }
@@ -184,6 +198,8 @@ public actor SyncEngine {
         await spaces.stop()
         await documents.stop()
         await todos.stop()
+        await feed.stop()
+        feedFollowing?.cancel()
         intentsFollowing?.cancel()
         await intents.close()
         try? await storage?.close()
@@ -219,6 +235,7 @@ public actor SyncEngine {
             waiting = await intents.pending()
             overlay = IntentOverlay(settling.map(\.intent) + waiting)
             followIntents()
+            await followFeed()
             guard current(generation) else { return }
             derive()
             await spaces.startExternal()
@@ -252,6 +269,8 @@ public actor SyncEngine {
                         await documents.opened(hello)
                         if hello["gap"] == .bool(true) { scheduleReconcile(generation) }
                         profileChanged()
+                        // Reads the newest page each time, so a gap loses nothing.
+                        await feed.connected()
                         // Faces may have changed while away.
                         usersMissing = []
                         readAuthors(generation, again: Set(users.keys))
@@ -265,6 +284,7 @@ public actor SyncEngine {
                     guard let event = try? JSONDecoder().decode(JSONValue.self, from: Data(frame.data.utf8)) else { continue }
                     await spaces.externalEvent(event)
                     guard current(generation) else { return }
+                    if event["type"]?.stringValue?.hasPrefix("feed.") == true { await feed.receive(event) }
                     if event["type"] == .string("git.updated"),
                        let id = event["payload"]?["workspaceId"]?.stringValue,
                        gitInterest.contains(id), let value = event["payload"]?["git"],
@@ -289,7 +309,8 @@ public actor SyncEngine {
                        type != "agent.draft.updated" { scheduleReconcile(generation) }
                 }
             } catch AgentClientError.revoked {
-                snapshot.live = false; snapshot.error = "This device was disconnected. Pair it again."
+                snapshot.live = false
+                snapshot.error = client.signsIn ? "Your sign-in to this server has ended. Sign in again." : "This device was disconnected. Pair it again."
                 publish()
                 return
             } catch {
@@ -300,7 +321,10 @@ public actor SyncEngine {
             await documents.closed()
             guard current(generation) else { return }
             snapshot.live = false; publish()
-            do { try await Task.sleep(for: .seconds(min(30, 1 << min(attempt, 5)))) } catch { return }
+            // A signed-in server's edge closes idle connections; come back
+            // quickly (edge SSO contract §5: 0.1 s doubling to 10 s).
+            let delay: Duration = client.signsIn ? .milliseconds(min(10_000, 100 << min(attempt, 7))) : .seconds(min(30, 1 << min(attempt, 5)))
+            do { try await Task.sleep(for: delay) } catch { return }
             attempt += 1
         }
     }
@@ -380,6 +404,7 @@ public actor SyncEngine {
         self.desktop = desktop
         verified = true
         cursor = desktop.cursor
+        await feed.bootstrap(unread: desktop.feedUnread, cursor: desktop.cursor)
         snapshot.settings = try await database.settings()
         // This read began after these were taken, so it has them.
         if settling.contains(where: { $0.read < read }) {
@@ -521,12 +546,13 @@ public actor SyncEngine {
     private func derive() {
         snapshot.loaded = desktop != nil
         if let desktop {
-            snapshot.allRows = overlay.apply(SidebarRows.make(desktop, settings: snapshot.settings, users: users))
+            snapshot.allRows = overlay.apply(SidebarRows.make(desktop, settings: snapshot.settings, users: users, feed: feedRow))
             for index in snapshot.allRows.indices {
                 snapshot.allRows[index].lineChanges = snapshot.allRows[index].workspaceId.flatMap { gitSnapshots[$0]?.visible }
             }
             snapshot.rows = Rows.visible(snapshot.allRows)
             snapshot.userId = desktop.profile?.userId
+            snapshot.profilePhoto = desktop.profile?.photo?.thumbhash
         }
         publish()
     }
@@ -571,6 +597,28 @@ public actor SyncEngine {
             changed = true
         }
         if changed { derive() }
+    }
+
+    // MARK: Feed
+
+    /// The Feed's row follows its library: shown while there is a feed,
+    /// with its count; a state that changes neither redraws nothing.
+    private func followFeed() async {
+        guard feedFollowing == nil else { return }
+        await feed.start()
+        let states = await feed.states()
+        feedFollowing = Task { [weak self] in
+            for await state in states {
+                guard let self else { return }
+                await self.feedChanged(state.available == true ? SidebarRows.FeedRow(unread: state.unread) : nil)
+            }
+        }
+    }
+
+    private func feedChanged(_ row: SidebarRows.FeedRow?) {
+        guard row != feedRow else { return }
+        feedRow = row
+        if desktop != nil { derive() }
     }
 
     // MARK: Intents
@@ -645,7 +693,7 @@ public actor SyncEngine {
         let list = list.filter { !refusedIds.contains($0.id) }
         let ids = Set(list.map(\.id)), slots = Set(list.map(\.slot))
         var taken = false
-        for intent in waiting where !intent.kind.isTodo && !ids.contains(intent.id) && !slots.contains(intent.slot) {
+        for intent in waiting where !intent.kind.isTodo && !intent.kind.isFeed && !ids.contains(intent.id) && !slots.contains(intent.slot) {
             settling.append((intent, reads))
             taken = true
         }
@@ -680,8 +728,8 @@ public actor SyncEngine {
             waiting.removeAll { $0.id == id }
             await layIntents()
         }
-        // A refused read is nothing to tell; a todo list tells its own.
-        guard rejection.intent.kind != .read, !rejection.intent.kind.isTodo else { return }
+        // A refused read or seen entry is nothing to tell; a todo list tells its own.
+        guard rejection.intent.kind != .read, !rejection.intent.kind.isTodo, !rejection.intent.kind.isFeed else { return }
         snapshot.notice = rejection.reason
         publish()
         noticeClearing?.cancel()
@@ -727,8 +775,8 @@ public actor SyncEngine {
                 _ = try await client.answerQuestion(agentId, questionId: intent.target, answers: answers, mutationId: intent.id)
             case .unarchive, .delete:
                 throw IntentRefusal("")
-            case .todoCreate, .todoText, .todoStatus, .todoMove:
-                // `TodoLibrary.deliver` sends these.
+            case .todoCreate, .todoText, .todoStatus, .todoMove, .feedSeen, .feedReadAll:
+                // `TodoLibrary.deliver` and `FeedLibrary.deliver` send these.
                 throw IntentRefusal("")
             }
         } catch AgentClientError.status(let status, _, _) where status == 404 || (status == 409 && intent.kind == .answer) {
@@ -890,7 +938,7 @@ extension SyncEngine {
 
 /// The engine's checkpoints as the todo lists' keep, made with the engine
 /// like `EngineIntentStorage`.
-final class EngineResources: TodoKeep, @unchecked Sendable {
+final class EngineResources: TodoKeep, FeedKeep, @unchecked Sendable {
     /// Set once, as the engine finishes its init.
     weak var engine: SyncEngine?
 

@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import HappyCore
 
 // The in-app browser has no screen in happy-app; these are this app's own,
@@ -41,6 +44,10 @@ extension Strings {
                 return ("This Page Stopped Working", "A problem kept happening while it loaded. Try opening it again.")
             case .unsupported(let scheme):
                 return (cantOpenLink, scheme.isEmpty ? "No app on this iPhone opens this link." : "No app on this iPhone opens “\(scheme):” links.")
+            case .tunnelsBlocked:
+                return ("Previews Aren’t Available", "This server’s network doesn’t allow previews. Ask your administrator to allow WebSocket connections to Happy.")
+            case .signInRequired:
+                return ("Sign In Again", "Your sign-in to \(computer) has ended. Sign in again from Settings to open pages through it.")
             case .other(let description):
                 return ("Can’t Open This Page", description)
             }

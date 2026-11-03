@@ -4,7 +4,7 @@
   catalogs. AndroidStringsTranslatedTest fails while one is missing here.
 -->
 <resources>
-    <string name="pairing_title">连接智能体</string>
+    <string name="pairing_title">连接 Happy Agent</string>
     <string name="pairing_connecting">正在连接 %1$s…</string>
     <string name="pairing_unverified">名称来自代码，连接完成前尚未验证。</string>
     <string name="pairing_compare">确认 %1$s 显示相同的四个表情符号，且顺序相同。</string>
@@ -22,5 +22,6 @@
     <string name="pairing_error_invalid_proof">无法验证智能体。请生成新代码。</string>
     <string name="pairing_error_invalid_response">智能体返回了无效的响应。</string>
     <string name="pairing_error_unavailable">无法连接智能体。请检查它的连接后重试。</string>
+    <string name="pairing_error_disabled">此智能体已关闭手机配对。</string>
     <string name="pairing_error_revoked">此设备已不再获得授权。请重新连接智能体。</string>
 </resources>

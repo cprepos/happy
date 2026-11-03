@@ -8,7 +8,9 @@ extension TranslationCatalog {
     /// The two kinds of account are named by their products, Happy Agent
     /// and Happy CLI, which no language translates. Nor are the voice
     /// services' names, Happy Server and ElevenLabs.
-    static let nativeSources: [String: [String: String]] = [
+    static let nativeSources: [String: [String: String]] = accountAndCommandSources.merging(feedSources) { kept, feed in kept.merging(feed) { first, _ in first } }
+
+    private static let accountAndCommandSources: [String: [String: String]] = [
         "en": [
             "native.accountKind.addCLIAccount": "Add Happy CLI account",
             "native.accountKind.connectAgent": "Connect Happy Agent",
@@ -28,6 +30,13 @@ extension TranslationCatalog {
             "native.voice.noService": "This server offers no voice service. ElevenLabs works with your own agent ID.",
             "native.sessionResume.machineOffline": "This session's computer is offline. Resume appears here once the computer is on and Happy CLI is running on it.",
             "native.chat.loadPreviousHistory": "Load previous history",
+            "native.slashCommands.unavailable": "/${name} is no longer available.",
+            "native.slashCommands.busy": "/${name} can’t run right now. Try again when the agent is idle.",
+            "native.slashCommands.unreachable": "Couldn’t reach Happy Agent to run /${name}. Try again when it’s back.",
+            "native.slashCommands.refused": "Happy Agent couldn’t run /${name}.",
+            "native.slashCommands.notSaved": "/${name} could not be saved on this phone. Your text is still here.",
+            "native.slashCommands.kindSkill": "Skill",
+            "native.slashCommands.kindCompaction": "Compaction",
         ],
         "ru": [
             "native.accountKind.addCLIAccount": "Добавить аккаунт Happy CLI",
@@ -48,6 +57,13 @@ extension TranslationCatalog {
             "native.voice.noService": "Этот сервер не предлагает голосовой сервис. ElevenLabs работает с вашим собственным ID агента.",
             "native.sessionResume.machineOffline": "Компьютер этой сессии не в сети. Кнопка возобновления появится здесь, когда компьютер будет включён и на нём будет запущен Happy CLI.",
             "native.chat.loadPreviousHistory": "Загрузить предыдущую историю",
+            "native.slashCommands.unavailable": "Команда /${name} больше недоступна.",
+            "native.slashCommands.busy": "Команду /${name} сейчас нельзя выполнить. Попробуйте снова, когда агент освободится.",
+            "native.slashCommands.unreachable": "Не удалось связаться с Happy Agent, чтобы выполнить /${name}. Попробуйте снова, когда связь вернётся.",
+            "native.slashCommands.refused": "Happy Agent не смог выполнить /${name}.",
+            "native.slashCommands.notSaved": "Не удалось сохранить /${name} на этом телефоне. Ваш текст остался здесь.",
+            "native.slashCommands.kindSkill": "Навык",
+            "native.slashCommands.kindCompaction": "Сжатие",
         ],
         "pl": [
             "native.accountKind.addCLIAccount": "Dodaj konto Happy CLI",
@@ -68,6 +84,13 @@ extension TranslationCatalog {
             "native.voice.noService": "Ten serwer nie oferuje usługi głosowej. ElevenLabs działa z własnym ID agenta.",
             "native.sessionResume.machineOffline": "Komputer tej sesji jest offline. Wznowienie pojawi się tutaj, gdy komputer będzie włączony i będzie na nim działać Happy CLI.",
             "native.chat.loadPreviousHistory": "Wczytaj wcześniejszą historię",
+            "native.slashCommands.unavailable": "Polecenie /${name} nie jest już dostępne.",
+            "native.slashCommands.busy": "Nie można teraz uruchomić /${name}. Spróbuj ponownie, gdy agent skończy pracę.",
+            "native.slashCommands.unreachable": "Nie udało się połączyć z Happy Agent, aby uruchomić /${name}. Spróbuj ponownie, gdy połączenie wróci.",
+            "native.slashCommands.refused": "Happy Agent nie mógł uruchomić /${name}.",
+            "native.slashCommands.notSaved": "Nie udało się zapisać /${name} na tym telefonie. Twój tekst nadal tu jest.",
+            "native.slashCommands.kindSkill": "Umiejętność",
+            "native.slashCommands.kindCompaction": "Kompaktowanie",
         ],
         "es": [
             "native.accountKind.addCLIAccount": "Añadir cuenta de Happy CLI",
@@ -88,6 +111,13 @@ extension TranslationCatalog {
             "native.voice.noService": "Este servidor no ofrece ningún servicio de voz. ElevenLabs funciona con tu propio ID de agente.",
             "native.sessionResume.machineOffline": "El ordenador de esta sesión está sin conexión. Reanudar aparecerá aquí cuando el ordenador esté encendido y Happy CLI se esté ejecutando en él.",
             "native.chat.loadPreviousHistory": "Cargar historial anterior",
+            "native.slashCommands.unavailable": "El comando /${name} ya no está disponible.",
+            "native.slashCommands.busy": "No se puede ejecutar /${name} ahora. Inténtalo de nuevo cuando el agente esté libre.",
+            "native.slashCommands.unreachable": "No se pudo conectar con Happy Agent para ejecutar /${name}. Inténtalo de nuevo cuando vuelva.",
+            "native.slashCommands.refused": "Happy Agent no pudo ejecutar /${name}.",
+            "native.slashCommands.notSaved": "No se pudo guardar /${name} en este teléfono. Tu texto sigue aquí.",
+            "native.slashCommands.kindSkill": "Habilidad",
+            "native.slashCommands.kindCompaction": "Compactación",
         ],
         "it": [
             "native.accountKind.addCLIAccount": "Aggiungi account Happy CLI",
@@ -108,6 +138,13 @@ extension TranslationCatalog {
             "native.voice.noService": "Questo server non offre alcun servizio vocale. ElevenLabs funziona con il tuo ID agente.",
             "native.sessionResume.machineOffline": "Il computer di questa sessione è offline. Riprendi comparirà qui quando il computer sarà acceso e Happy CLI sarà in esecuzione.",
             "native.chat.loadPreviousHistory": "Carica la cronologia precedente",
+            "native.slashCommands.unavailable": "Il comando /${name} non è più disponibile.",
+            "native.slashCommands.busy": "Impossibile eseguire /${name} adesso. Riprova quando l’agente è libero.",
+            "native.slashCommands.unreachable": "Impossibile raggiungere Happy Agent per eseguire /${name}. Riprova quando torna disponibile.",
+            "native.slashCommands.refused": "Happy Agent non è riuscito a eseguire /${name}.",
+            "native.slashCommands.notSaved": "Impossibile salvare /${name} su questo telefono. Il tuo testo è ancora qui.",
+            "native.slashCommands.kindSkill": "Abilità",
+            "native.slashCommands.kindCompaction": "Compattazione",
         ],
         "pt": [
             "native.accountKind.addCLIAccount": "Adicionar conta do Happy CLI",
@@ -128,6 +165,13 @@ extension TranslationCatalog {
             "native.voice.noService": "Este servidor não oferece nenhum serviço de voz. O ElevenLabs funciona com o seu próprio ID de agente.",
             "native.sessionResume.machineOffline": "O computador desta sessão está offline. Retomar aparecerá aqui quando o computador estiver ligado e o Happy CLI estiver em execução nele.",
             "native.chat.loadPreviousHistory": "Carregar histórico anterior",
+            "native.slashCommands.unavailable": "O comando /${name} não está mais disponível.",
+            "native.slashCommands.busy": "Não é possível executar /${name} agora. Tente novamente quando o agente estiver livre.",
+            "native.slashCommands.unreachable": "Não foi possível conectar ao Happy Agent para executar /${name}. Tente novamente quando ele voltar.",
+            "native.slashCommands.refused": "O Happy Agent não conseguiu executar /${name}.",
+            "native.slashCommands.notSaved": "Não foi possível salvar /${name} neste telefone. Seu texto continua aqui.",
+            "native.slashCommands.kindSkill": "Habilidade",
+            "native.slashCommands.kindCompaction": "Compactação",
         ],
         "ca": [
             "native.accountKind.addCLIAccount": "Afegeix un compte de Happy CLI",
@@ -148,6 +192,13 @@ extension TranslationCatalog {
             "native.voice.noService": "Aquest servidor no ofereix cap servei de veu. ElevenLabs funciona amb el teu propi ID d'agent.",
             "native.sessionResume.machineOffline": "L'ordinador d'aquesta sessió està fora de línia. Reprèn apareixerà aquí quan l'ordinador estigui engegat i Happy CLI s'hi estigui executant.",
             "native.chat.loadPreviousHistory": "Carrega l'historial anterior",
+            "native.slashCommands.unavailable": "L’ordre /${name} ja no està disponible.",
+            "native.slashCommands.busy": "Ara no es pot executar /${name}. Torna-ho a provar quan l’agent estigui lliure.",
+            "native.slashCommands.unreachable": "No s’ha pogut connectar amb Happy Agent per executar /${name}. Torna-ho a provar quan torni.",
+            "native.slashCommands.refused": "Happy Agent no ha pogut executar /${name}.",
+            "native.slashCommands.notSaved": "No s’ha pogut desar /${name} en aquest telèfon. El text encara és aquí.",
+            "native.slashCommands.kindSkill": "Habilitat",
+            "native.slashCommands.kindCompaction": "Compactació",
         ],
         "zh-Hans": [
             "native.accountKind.addCLIAccount": "添加 Happy CLI 账户",
@@ -168,6 +219,13 @@ extension TranslationCatalog {
             "native.voice.noService": "此服务器不提供语音服务。ElevenLabs 可使用您自己的代理 ID。",
             "native.sessionResume.machineOffline": "此会话所在的电脑已离线。电脑开机并运行 Happy CLI 后，恢复选项会显示在这里。",
             "native.chat.loadPreviousHistory": "加载更早的历史记录",
+            "native.slashCommands.unavailable": "/${name} 已不可用。",
+            "native.slashCommands.busy": "现在无法运行 /${name}。请在代理空闲时重试。",
+            "native.slashCommands.unreachable": "无法连接 Happy Agent 来运行 /${name}。连接恢复后请重试。",
+            "native.slashCommands.refused": "Happy Agent 无法运行 /${name}。",
+            "native.slashCommands.notSaved": "无法在此手机上保存 /${name}。你的文字仍在这里。",
+            "native.slashCommands.kindSkill": "技能",
+            "native.slashCommands.kindCompaction": "压缩",
         ],
         "zh-Hant": [
             "native.accountKind.addCLIAccount": "新增 Happy CLI 帳戶",
@@ -188,6 +246,13 @@ extension TranslationCatalog {
             "native.voice.noService": "此伺服器不提供語音服務。ElevenLabs 可使用您自己的代理 ID。",
             "native.sessionResume.machineOffline": "此工作階段所在的電腦已離線。電腦開機並執行 Happy CLI 後，繼續選項會顯示在這裡。",
             "native.chat.loadPreviousHistory": "載入更早的歷史記錄",
+            "native.slashCommands.unavailable": "/${name} 已無法使用。",
+            "native.slashCommands.busy": "現在無法執行 /${name}。請在代理閒置時重試。",
+            "native.slashCommands.unreachable": "無法連線到 Happy Agent 來執行 /${name}。連線恢復後請重試。",
+            "native.slashCommands.refused": "Happy Agent 無法執行 /${name}。",
+            "native.slashCommands.notSaved": "無法在這支手機上儲存 /${name}。你的文字仍在這裡。",
+            "native.slashCommands.kindSkill": "技能",
+            "native.slashCommands.kindCompaction": "壓縮",
         ],
         "ja": [
             "native.accountKind.addCLIAccount": "Happy CLI アカウントを追加",
@@ -208,6 +273,13 @@ extension TranslationCatalog {
             "native.voice.noService": "このサーバーは音声サービスを提供していません。ElevenLabs は自分のエージェント ID で使えます。",
             "native.sessionResume.machineOffline": "このセッションのコンピューターはオフラインです。コンピューターの電源が入り Happy CLI が実行されると、ここに再開が表示されます。",
             "native.chat.loadPreviousHistory": "以前の履歴を読み込む",
+            "native.slashCommands.unavailable": "/${name} は使用できなくなりました。",
+            "native.slashCommands.busy": "/${name} は今は実行できません。エージェントが空いてからもう一度お試しください。",
+            "native.slashCommands.unreachable": "/${name} を実行するために Happy Agent に接続できませんでした。接続が戻ってからもう一度お試しください。",
+            "native.slashCommands.refused": "Happy Agent は /${name} を実行できませんでした。",
+            "native.slashCommands.notSaved": "/${name} をこのスマートフォンに保存できませんでした。テキストはそのまま残っています。",
+            "native.slashCommands.kindSkill": "スキル",
+            "native.slashCommands.kindCompaction": "コンパクション",
         ],
     ]
 }

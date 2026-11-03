@@ -61,6 +61,20 @@ interface Transport {
      */
     suspend fun socket(): TransportSocket = throw AgentConnectionException(AgentConnectionException.Reason.Unavailable)
 
+    /**
+     * A tunnel over a WebSocket (edge SSO contract §4): `GET [path]`
+     * upgraded with [credential], carrying what the route's `CONNECT` twin
+     * would after its `200`. Null where the transport has no WebSockets
+     * (Tailcat, which carries CONNECT). A refusal throws [UpgradeRefused].
+     */
+    suspend fun webSocketTunnel(path: String, credential: String): TransportSocket? = null
+
+    /**
+     * The agent is reached over public HTTPS, maybe through a load balancer
+     * that refuses CONNECT; over Tailcat CONNECT always works.
+     */
+    suspend fun overHttps(): Boolean = false
+
     /** Lets go of [category]'s clients, so its next request makes new ones; the other categories' stay. */
     suspend fun reset(category: RequestCategory) {}
 
@@ -119,6 +133,7 @@ class TailcatTransport internal constructor(
         category: RequestCategory,
     ): TransportResponse {
         val head = TailcatHttp.requestHead(method, path, port, credential, body, headers)
+        val progress = kotlinx.coroutines.currentCoroutineContext()[BodyProgress]
         val lease = clients.lease(category)
         val deadline = if (category == RequestCategory.File) fileTimeoutMillis else requestTimeoutMillis
         return try {
@@ -127,7 +142,10 @@ class TailcatTransport internal constructor(
                     val stream: TailcatConnection = lease.client.openTCP(port)
                     try {
                         stream.write(head, timeoutMillis = requestTimeoutMillis)
-                        if (body != null) stream.write(body, timeoutMillis = requestTimeoutMillis)
+                        if (body != null) {
+                            if (progress == null) stream.write(body, timeoutMillis = requestTimeoutMillis)
+                            else progress.write(body) { stream.write(it, timeoutMillis = requestTimeoutMillis) }
+                        }
                         val parser = HttpResponseParser()
                         while (true) {
                             val bytes = stream.read(65536, timeoutMillis = requestTimeoutMillis)

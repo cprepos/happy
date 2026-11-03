@@ -1035,6 +1035,18 @@ public final class AccountController {
         try await activateAgentConnection(account.id)
     }
 
+    /// Keeps a team server signed in to (`ServerSignInFlow`), or signs an
+    /// account already there in again, and opens it.
+    public func addServer(_ signedIn: ServerSignInFlow.SignedIn) async throws {
+        guard !busy else { throw AccountSwitchError.operationInProgress }
+        busy = true; defer { finishOperation() }
+        _ = await prepareStorageDirectory()
+        let name = URLComponents(string: signedIn.origin.value)?.host ?? signedIn.origin.value
+        let account = try await agentConnections.addServer(signedIn.origin, signIn: signedIn.record, access: signedIn.access, name: name)
+        isAddingAccount = false
+        try await activateAgentConnection(account.id)
+    }
+
     /// Shows or hides the paired computers. Hidden while one is open, the
     /// Happy account chosen last opens instead, or Welcome with none. Shown
     /// again with nothing open, a paired computer opens, as at launch.

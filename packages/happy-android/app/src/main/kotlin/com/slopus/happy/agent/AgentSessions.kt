@@ -8,6 +8,7 @@ import com.slopus.happy.connection.AgentIdentity
 import com.slopus.happy.connection.AgentConnectionException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
@@ -35,6 +36,8 @@ class AgentSessions(
     private val openId: StateFlow<String?>,
     private val foreground: StateFlow<Boolean>,
     private val identityRefreshMillis: Long = 60_000,
+    /** Desktop's completion chime, for a conversation that finished while its connection is open ([CompletionWatch]). */
+    private val chime: () -> Unit = {},
     private val makeTransport: (AgentConnectionCredentials) -> Transport = { agentTransport(it.address, it.port, it.publicUrl, it.tailcatAvailable != false) },
 ) {
     private val sessions = HashMap<String, AgentSession>()
@@ -53,17 +56,19 @@ class AgentSessions(
             }
         }
         scope.launch {
+            var known: Set<String>? = null
             connections.accounts.collect { list ->
                 val ids = list.map { it.id }.toSet()
                 val gone = synchronized(sessions) { sessions.keys.filter { it !in ids }.map { sessions.remove(it)!! } }
-                gone.forEach { session ->
-                    session.close()
-                    cacheFile(session.connectionId)?.let { file ->
-                        file.delete()
-                        // And what is kept beside it: resources and conversations (`AgentSession.keepResource`), pictures.
-                        file.parentFile?.listFiles { f -> f.name.startsWith(file.nameWithoutExtension + ".") }?.forEach { it.deleteRecursively() }
-                    }
+                gone.forEach { it.close() }
+                // Every connection that went, open or not (another member's replaced, one forgotten), and at the
+                // start whatever a connection gone while the app wasn't running left behind.
+                val wiped = known?.let { it - ids }.orEmpty() + gone.map { it.connectionId }
+                withContext(Dispatchers.IO) {
+                    wiped.forEach(::deleteCache)
+                    if (known == null) sweep(ids)
                 }
+                known = ids
             }
         }
     }
@@ -71,19 +76,31 @@ class AgentSessions(
     private suspend fun refreshIdentity(id: String) {
         val credentials = connections.credentials(id) ?: return
         val transport = connections.transport(id, credentials, makeTransport)
+        val renew: (suspend (String) -> String)? = if (credentials.oauth != null) { stale -> connections.renew(id, stale) } else null
+        val client = AgentClient.lazy {
+            // The sign-in this request is made under: only its refusal signs out, never a newer one's.
+            val grant = connections.grant(id)
+            AgentClient.Link(transport, connections.bearer(id, credentials), renew, credentials.oauth?.let { { profile -> connections.signedOut(id, profile, grant) } })
+        }
         try {
             while (true) {
                 val known = connections.accounts.value.firstOrNull { it.id == id && !it.revoked } ?: return
-                try {
+                val grant = connections.grant(id)
+                // A team server that wants signing in again waits for the person.
+                if (!known.signInRequired) try {
                     val etag = known.avatarFile?.takeIf { File(it).isFile }?.let { known.avatarETag }
-                    val info = AgentIdentity.refresh(transport, credentials.deviceToken, known.name, etag)
-                    connections.update(id, info.avatar) { it.copy(name = info.name, thumbhash = info.thumbhash ?: it.thumbhash) }
+                    val info = AgentIdentity.refresh(client.requester, known.name, etag, oauth = credentials.oauth != null)
+                    connections.update(id, info.avatar) { it.copy(name = info.name, thumbhash = info.thumbhash ?: it.thumbhash, instanceId = info.instanceId) }
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: AgentConnectionException) {
                     if (error.reason == AgentConnectionException.Reason.Revoked) {
                         connections.update(id) { it.copy(revoked = true) }
                         return
+                    }
+                    if (error.reason == AgentConnectionException.Reason.SignInRequired || error.reason == AgentConnectionException.Reason.ProfileRequired) {
+                        val profile = error.reason == AgentConnectionException.Reason.ProfileRequired
+                        connections.signedOut(id, profile, grant)
                     }
                     transport.reset()
                 } catch (_: Exception) {
@@ -110,8 +127,24 @@ class AgentSessions(
                     active = combine(openId, foreground) { open, front -> open == connectionId && front },
                     parent = scope,
                     makeTransport = makeTransport,
+                    chime = chime,
                 )
             }
+        }
+    }
+
+    /** [connectionId]'s catalog and what is kept beside it: resources and conversations (`AgentSession.keepResource`), pictures. */
+    private fun deleteCache(connectionId: String) {
+        val file = cacheFile(connectionId) ?: return
+        file.delete()
+        file.parentFile?.listFiles { f -> f.name.startsWith(file.nameWithoutExtension + ".") }?.forEach { it.deleteRecursively() }
+    }
+
+    /** Deletes the caches of connections not in [ids]. */
+    private fun sweep(ids: Set<String>) {
+        val keep = ids.mapNotNull { cacheFile(it)?.nameWithoutExtension }.toSet()
+        cacheDir?.listFiles()?.forEach { f ->
+            if (f.name.substringBefore('.') !in keep) f.deleteRecursively()
         }
     }
 

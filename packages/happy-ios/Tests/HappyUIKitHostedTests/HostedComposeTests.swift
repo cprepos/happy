@@ -327,9 +327,11 @@ final class HostedComposeTests: XCTestCase {
         let panel = try XCTUnwrap(Self.subview(NewWorkPanel.self, in: chat.view))
         let start = try XCTUnwrap(chat.composeStart)
         try await until { panel.folder.title.contains("happy") }
-        XCTAssertTrue(panel.kind.isHidden, "Happy CLI alone makes sessions: no Session | Bot | Task")
         XCTAssertEqual(start.kinds, [.session])
-        XCTAssertTrue(panel.machine.isHidden, "one computer, and it was asked")
+        XCTAssertFalse(panel.kind.isHidden, "Session | Bot | Task always show")
+        XCTAssertEqual(start.enabledKinds, [.session], "Happy CLI alone makes sessions")
+        XCTAssertEqual((0..<3).map(panel.kind.isEnabledForSegment), [true, false, false], "Bot and Task show disabled")
+        XCTAssertFalse(panel.machine.isHidden, "the computer shows, with whether it answers")
         XCTAssertFalse(panel.folder.isHidden)
         XCTAssertFalse(panel.harness.isHidden)
         XCTAssertGreaterThan(panel.harness.frame.minY, panel.folder.frame.maxY)
@@ -385,8 +387,7 @@ final class HostedComposeTests: XCTestCase {
         let card = try await composerCard(in: chat)
         let panel = try XCTUnwrap(Self.subview(NewWorkPanel.self, in: chat.view))
         let start = try XCTUnwrap(chat.composeStart)
-        try await until { !panel.machine.isHidden }
-        XCTAssertEqual(panel.machine.title, "Harness Mac")
+        try await until { panel.machine.title == "Harness Mac" }
         XCTAssertTrue(panel.folder.title.contains("happy"))
         XCTAssertLessThan(panel.machine.frame.maxY, panel.folder.frame.minY, "the computer is over its folder")
         assertCentred(panel, in: chat)
@@ -439,7 +440,7 @@ final class HostedComposeTests: XCTestCase {
         let card = try await composerCard(in: chat)
         let panel = try XCTUnwrap(Self.subview(NewWorkPanel.self, in: chat.view))
         let start = try XCTUnwrap(chat.composeStart)
-        try await until { !panel.kind.isHidden }
+        try await until { start.kinds == [.session, .bot, .task] }
         XCTAssertEqual(panel.sessionKinds, [.session, .bot, .task])
         XCTAssertEqual(start.drafts.draft.agentType, .claude)
         XCTAssertFalse(panel.folder.isHidden)
@@ -475,7 +476,8 @@ final class HostedComposeTests: XCTestCase {
         try await until { panel.isHidden }
     }
 
-    /// A bot needs its name: without one it is refused and the text stays;
+    /// A bot needs its name: without one the name field asks for it in
+    /// place (no alert), and the text stays;
     /// named, it is made on Happy Agent, and a face that couldn't be
     /// painted is offered again over the chat.
     func testLegacyBotNeedsItsNameAndTakesTheFirstMessage() async throws {
@@ -488,7 +490,7 @@ final class HostedComposeTests: XCTestCase {
         let card = try await composerCard(in: chat)
         let panel = try XCTUnwrap(Self.subview(NewWorkPanel.self, in: chat.view))
         let start = try XCTUnwrap(chat.composeStart)
-        try await until { !panel.kind.isHidden }
+        try await until { start.kinds.contains(.bot) }
         try pick(.bot, in: panel)
         try await until { panel.sessionKind == .bot && start.drafts.draft.agentType == .rig }
         XCTAssertTrue(panel.folder.isHidden)
@@ -499,9 +501,10 @@ final class HostedComposeTests: XCTestCase {
         card.setText("Plan the release", selection: NSRange(location: 16, length: 0))
         card.delegate?.agentInputCardDidChangeText(card)
         card.delegate?.agentInputCardDidPressSend(card)
-        try await until { chat.presentedViewController is UIAlertController }
-        XCTAssertEqual((chat.presentedViewController as? UIAlertController)?.message, "Give the bot a name")
-        try await dismissAlert(on: chat)
+        try await until { panel.name.isFirstResponder }
+        XCTAssertNil(chat.presentedViewController, "asked in place, not in an alert")
+        XCTAssertEqual(panel.validation, "Give the bot a name")
+        XCTAssertEqual(panel.name.attributedPlaceholder?.string, "Give the bot a name")
         XCTAssertTrue(chat.isComposing)
         XCTAssertEqual(card.text, "Plan the release", "the text stays to send again")
         XCTAssertTrue(log.spawned.isEmpty)
@@ -510,6 +513,8 @@ final class HostedComposeTests: XCTestCase {
         panel.name.sendActions(for: .editingChanged)
         XCTAssertEqual(start.drafts.botName, "Release Captain")
         XCTAssertEqual(panel.name.text, "Release Captain")
+        let composerView = try XCTUnwrap(Self.subview(SessionComposerView.self, in: chat.view))
+        try await until { !composerView.sending }
         card.delegate?.agentInputCardDidPressSend(card)
         try await until { chat.presentedViewController is UIAlertController }
         let offer = try XCTUnwrap(chat.presentedViewController as? UIAlertController)
