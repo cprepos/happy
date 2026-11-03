@@ -34,6 +34,10 @@ from livekit.agents import APIConnectOptions, llm
 
 logger = logging.getLogger("happy-voice")
 
+# The model's chat template rejects a request without a user message; a warm-up made before the
+# user first speaks ends with this stand-in for the turn that will follow.
+WARMUP_PLACEHOLDER = "(warm-up)"
+
 
 class PrefixWarmer:
     """Debounced warm-up requests; a newer request supersedes one still in flight."""
@@ -72,6 +76,8 @@ class PrefixWarmer:
         self._turns = 0
         self._idle = asyncio.Event()
         self._idle.set()
+        # the request of a one-shot warm() in flight; a turn cancels it rather than wait
+        self._oneshot: asyncio.Task[None] | None = None
         self.completed = 0
 
     @property
@@ -97,16 +103,7 @@ class PrefixWarmer:
         self._sending_since = started
         try:
             chat_ctx, tools = self._snapshot()
-            kwargs: dict[str, Any] = {}
-            if self._conn_options is not None:
-                kwargs["conn_options"] = self._conn_options
-            async with asyncio.timeout(self._timeout):
-                stream = self._model.chat(chat_ctx=chat_ctx, tools=tools, **kwargs)
-                try:
-                    async for _ in stream:
-                        break  # the first chunk means the prompt is prefilled and cached
-                finally:
-                    await stream.aclose()
+            await self._prefill(chat_ctx, tools)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # a failed warm-up only costs latency; never break the session
@@ -120,6 +117,56 @@ class PrefixWarmer:
         self._durations.append(elapsed)
         del self._durations[:-5]
         logger.info("llm warm-up: %.0fms", elapsed * 1000)
+
+    async def _prefill(self, chat_ctx: llm.ChatContext, tools: list[Any]) -> None:
+        kwargs: dict[str, Any] = {}
+        if self._conn_options is not None:
+            kwargs["conn_options"] = self._conn_options
+        async with asyncio.timeout(self._timeout):
+            stream = self._model.chat(chat_ctx=chat_ctx, tools=tools, **kwargs)
+            try:
+                async for _ in stream:
+                    break  # the first chunk means the prompt is prefilled and cached
+            finally:
+                await stream.aclose()
+
+    async def wait_idle(self) -> None:
+        """Returns once no turn is between begin_turn() and end_turn()."""
+        await self._idle.wait()
+
+    async def warm(self, chat_ctx: llm.ChatContext, tools: list[Any], *, attempts: int = 3) -> bool:
+        """Prefills one given prompt and waits for it; True once it is cached.
+
+        For a prompt the history does not hold yet (a compacted history before it is swapped
+        in), so it does not go through the debounced snapshot. It keeps the same manners as the
+        scheduled warm-ups: it is sent only between turns, and a turn that starts while it is
+        in flight cancels it instead of waiting for it, after which it is sent again once the
+        turn is over, up to `attempts` times. Its duration is not recorded: it is a different,
+        larger prefill than the warm-ups begin_turn() estimates from.
+        """
+        for _ in range(attempts):
+            await self._idle.wait()
+            started = time.monotonic()
+            request = asyncio.create_task(self._prefill(chat_ctx, tools))
+            self._oneshot = request
+            try:
+                # asyncio.wait: a cancellation by begin_turn() is not raised into the caller
+                await asyncio.wait({request})
+            except asyncio.CancelledError:
+                request.cancel()
+                raise
+            finally:
+                if self._oneshot is request:
+                    self._oneshot = None
+            if request.cancelled():
+                logger.info("one-shot warm-up gave way to a turn after %.0fms", (time.monotonic() - started) * 1000)
+                continue
+            if (e := request.exception()) is not None:
+                logger.warning("one-shot warm-up failed after %.0fms: %s", (time.monotonic() - started) * 1000, e)
+                return False
+            logger.info("one-shot warm-up: %.0fms", (time.monotonic() - started) * 1000)
+            return True
+        return False
 
     async def begin_turn(self) -> None:
         """Called before a turn's LLM request; pair with end_turn().
@@ -138,6 +185,9 @@ class PrefixWarmer:
         """
         self._turns += 1
         self._idle.clear()
+        if self._oneshot is not None and not self._oneshot.done():
+            # a compacted history being prefilled; the turn never waits for compaction
+            self._oneshot.cancel()
         task = self._task
         if task is None or task.done():
             return
