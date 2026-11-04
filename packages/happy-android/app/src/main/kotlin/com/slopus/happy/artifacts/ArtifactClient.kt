@@ -3,6 +3,7 @@ package com.slopus.happy.artifacts
 import com.slopus.happy.agent.AgentApiException
 import com.slopus.happy.agent.AgentClient
 import com.slopus.happy.agent.decode
+import com.slopus.happy.chat.arr
 import com.slopus.happy.chat.num
 import com.slopus.happy.chat.obj
 import com.slopus.happy.chat.str
@@ -35,9 +36,38 @@ open class ArtifactClient(private val client: AgentClient) {
         return ArtifactVersion.parse(answer["version"].obj) ?: throw AgentConnectionException(AgentConnectionException.Reason.InvalidResponse)
     }
 
-    /** One page of the catalog, newest first, from [pageCursor]; also the raw answer, which the list keeps offline. */
-    open suspend fun catalog(pageCursor: String? = null): JsonObject =
-        client.decode("GET", "/v0/artifacts" + (pageCursor?.let { "?pageCursor=${AgentClient.escape(it)}" } ?: ""))
+    /** One page of the catalog, at most [limit] artifacts, from [pageCursor]. */
+    open suspend fun catalog(pageCursor: String? = null, limit: Int = ArtifactCatalogFeed.PAGE_SIZE): JsonObject =
+        client.decode("GET", "/v0/artifacts?limit=$limit" + (pageCursor?.let { "&pageCursor=${AgentClient.escape(it)}" } ?: ""))
+
+    /** One page of an artifact's versions, newest first, and the next page's cursor (`GET /v0/artifacts/:id/versions`). */
+    open suspend fun versions(artifactId: String, pageCursor: String? = null, limit: Int = 50): Pair<List<ArtifactVersion>, String?> {
+        val answer = try {
+            client.decode<JsonObject>("GET", "/v0/artifacts/${AgentClient.escape(artifactId)}/versions?limit=$limit" + (pageCursor?.let { "&pageCursor=${AgentClient.escape(it)}" } ?: ""))
+        } catch (e: AgentApiException) {
+            if (e.status == 404) throw ArtifactGoneException()
+            throw e
+        }
+        return answer["versions"].arr.orEmpty().mapNotNull { ArtifactVersion.parse(it.obj) } to answer["nextPageCursor"].str
+    }
+
+    /**
+     * Deletes the artifact, leaving its tombstone (`POST /v0/artifacts/:id/delete`):
+     * it names the version it deletes (`If-Match`), and one that lost a race
+     * reads the newer version and deletes that. Already deleted is done.
+     */
+    open suspend fun delete(artifactId: String) {
+        val path = "/v0/artifacts/${AgentClient.escape(artifactId)}"
+        repeat(2) { attempt ->
+            val version = artifact(artifactId)["version"].str ?: throw AgentConnectionException(AgentConnectionException.Reason.InvalidResponse)
+            try {
+                client.send("POST", "$path/delete", JsonObject(emptyMap()), headers = mapOf("If-Match" to version))
+                return
+            } catch (e: AgentApiException) {
+                if (e.status != 409 || attempt == 1) throw e
+            }
+        }
+    }
 
     /** One artifact's catalog entry (`GET /v0/artifacts/:id`). */
     open suspend fun artifact(artifactId: String): JsonObject =
@@ -55,12 +85,20 @@ open class ArtifactClient(private val client: AgentClient) {
         )
     }
 
-    /** The whole file, read a range at a time. */
-    suspend fun bytes(artifactId: String, version: Int, path: String, limit: Long = Long.MAX_VALUE): ByteArray {
+    /** The whole file, read a range of [chunk] at a time; [progress] hears how much of how much is here after each. */
+    suspend fun bytes(
+        artifactId: String,
+        version: Int,
+        path: String,
+        limit: Long = Long.MAX_VALUE,
+        chunk: Int = RANGE_CHUNK,
+        progress: ((done: Long, total: Long) -> Unit)? = null,
+    ): ByteArray {
         val out = java.io.ByteArrayOutputStream()
-        read({ range -> file(artifactId, version, path, range?.let { "bytes=${it.first}-${it.last}" }) }) { piece, total ->
+        read({ range -> file(artifactId, version, path, range?.let { "bytes=${it.first}-${it.last}" }) }, chunk) { piece, total ->
             if (total > limit) throw AgentConnectionException(AgentConnectionException.Reason.InvalidResponse)
             out.write(piece)
+            progress?.invoke(out.size().toLong(), total)
         }
         return out.toByteArray()
     }
@@ -73,19 +111,22 @@ open class ArtifactClient(private val client: AgentClient) {
         /** One answer holds at most 8 MiB (`HttpResponseParser`), so a whole file is read in ranges of this size. */
         const val RANGE_CHUNK = 4 * 1024 * 1024
 
+        /** The ranges a file read for another app is read in, so its ring moves on a file of a few megabytes. */
+        const val PROGRESS_CHUNK = 512 * 1024
+
         /**
          * Reads a file a range at a time through [fetch] (null: the whole
          * file, for one that is empty). [each] takes the pieces in order,
          * with the file's whole length. A server that ignores ranges answers
          * the first with the whole file.
          */
-        suspend fun read(fetch: suspend (LongRange?) -> TransportResponse, each: suspend (piece: ByteArray, total: Long) -> Unit) {
+        suspend fun read(fetch: suspend (LongRange?) -> TransportResponse, chunk: Int = RANGE_CHUNK, each: suspend (piece: ByteArray, total: Long) -> Unit) {
             var offset = 0L
             var total = Long.MAX_VALUE
             while (offset < total) {
                 currentCoroutineContext().ensureActive()
                 val response = try {
-                    fetch(offset until offset + RANGE_CHUNK)
+                    fetch(offset until offset + chunk)
                 } catch (e: AgentApiException) {
                     if (e.status == 416 && offset == 0L) {
                         val whole = fetch(null)

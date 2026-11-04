@@ -35,9 +35,46 @@ private actor DemoComputer: AgentTransport {
     }
 
     /// With `rounds`, that many more questions and answers after the
-    /// four, enough to scroll.
+    /// four, enough to scroll. `live`, for a live call (`CallLiveCheck`):
+    /// 60 more tasks, three turns in every conversation, the last with
+    /// commentary ahead of its answer, and a reply streamed to each message
+    /// sent, or for Release notes a failure.
     private let rounds: Int
-    init(rounds: Int = 0) { self.rounds = rounds }
+    private let live: Bool
+    init(rounds: Int = 0, live: Bool = false) {
+        self.rounds = rounds
+        self.live = live
+    }
+
+    private var streams: [AsyncThrowingStream<Data, Error>.Continuation] = []
+    private var eventId = 0
+    /// The turns each message sent has made, by agent.
+    private var sent: [String: [JSONValue]] = [:]
+    /// Work the live call's computer made while it ran (`answer`).
+    private var made: [JSONValue] = []
+
+    private static func run(_ id: String, _ startedAt: Double, _ endedAt: Double?, reason: String = "completed", _ messages: [JSONValue]) -> JSONValue {
+        var run: [String: JSONValue] = ["id": .string(id), "status": .string(endedAt == nil ? "running" : "completed"), "startedAt": .number(startedAt),
+                                        "messages": .array(messages)]
+        if let endedAt {
+            run["endedAt"] = .number(endedAt)
+            run["reason"] = .string(reason)
+        }
+        return .object(run)
+    }
+
+    private static let liveRuns: [JSONValue] = [
+        run("r0", 500, 900, [message("u0", "user", 0.5, "Is the build green?"), message("m0", "agent", 0.6, "Yes, main is green.")]),
+        run("r1", 1_000, 1_500, [message("u1", "user", 1, "How should the iPad lay out the app?"),
+                                 message("m1", "agent", 2, "A sidebar and a main panel, with UIKit's own split view controller.")]),
+        run("r2", 1_600, 2_000, [message("u2", "user", 3, "And when the sidebar is hidden?"),
+                                 message("c2", "agent", 3.5, "Let me check how the sidebar hides."),
+                                 message("m2", "agent", 4, "The main panel takes the whole window, and the transcript stays centred at its readable width.")]),
+    ]
+
+    private func history(_ agentId: String) -> [JSONValue] {
+        (live ? Self.liveRuns : [run]) + (sent[agentId] ?? [])
+    }
 
     private var run: JSONValue {
         guard case .object(var run) = Self.base, case .array(var messages)? = run["messages"] else { return Self.base }
@@ -69,20 +106,50 @@ private actor DemoComputer: AgentTransport {
     ])
 
     func request(method: String, path: String, credential: String, body: Data?, headers: [String: String]) throws -> HTTP1Response {
-        let value: JSONValue
+        var value: JSONValue
         if path == "/v0/bootstrap/desktop" {
             value = try JSONDecoder().decode(JSONValue.self, from: Data(Self.home.utf8))
+            if live, case .object(var home) = value, case .array(var tasks)? = home["tasks"], case .array(var memberships)? = home["taskMemberships"] {
+                for n in 1...60 {
+                    tasks.append(.object(["id": .string("fixture\(n)"), "name": .string("Fixture task \(n)"),
+                                          "agent": .object(["id": .string("fixture\(n)-agent"), "workspaceId": .string("w"), "status": .string("idle")])]))
+                    memberships.append(.object(["taskId": .string("fixture\(n)")]))
+                }
+                // A subtask under Ship the cache, as the sidebar nests it.
+                if let index = tasks.firstIndex(where: { $0["id"] == .string("cache") }), case .object(var task) = tasks[index], case .object(var agent)? = task["agent"] {
+                    agent["subtasks"] = .array([.object(["id": .string("hitrate-agent"), "workspaceId": .string("w"), "parentAgentId": .string("cache-agent"),
+                                                         "title": .string("Measure the hit rate"), "status": .string("idle")])])
+                    task["agent"] = .object(agent)
+                    tasks[index] = .object(task)
+                }
+                for task in made {
+                    tasks.insert(task, at: 3)
+                    if let id = task["id"] { memberships.append(.object(["taskId": id])) }
+                }
+                home["tasks"] = .array(tasks)
+                home["taskMemberships"] = .array(memberships)
+                value = .object(home)
+            }
         } else if path.contains("/messages?") {
-            value = .object(["hasMore": .bool(false), "runs": .array([run])])
+            value = .object(["hasMore": .bool(false), "runs": .array(history(String(path.split(separator: "/")[2])))])
         } else if path.hasSuffix("/bootstrap"), path.hasPrefix("/v0/agents/") {
             let id = String(path.split(separator: "/")[2])
-            value = .object(["agent": .object(["id": .string(id), "workspaceId": .string("w"), "status": .string("idle")]), "pending": .array([])])
+            value = .object(["agent": .object(["id": .string(id), "workspaceId": .string("w"), "status": .string("idle")]), "pending": .array([]),
+                             "mode": .object(["providerId": .string("claude"), "modelId": .string("anthropic/sonnet-5"), "effort": .string("medium"),
+                                              "permissionMode": .string("auto")])])
         } else if method == "PUT", path.hasSuffix("/file"), let body,
                   let content = try JSONDecoder().decode(JSONValue.self, from: body)["content"]?.stringValue,
                   let bytes = Data(base64Encoded: content) {
             // A picked video is kept in the workspace, as the computer would.
             value = .object(["hash": .string(SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined())])
         } else if method == "POST" {
+            // What a call's tools would have changed on a real computer (`CallLiveCheck`).
+            print("[computer] POST \(path) \(body.map { String(decoding: $0.prefix(400), as: UTF8.self) } ?? "")")
+            if live, path.hasSuffix("/send"), let body, let sent = try? JSONDecoder().decode(JSONValue.self, from: body),
+               let id = sent["id"]?.stringValue, let text = sent["text"]?.stringValue {
+                let agentId = String(path.split(separator: "/")[2])
+                Task { await answer(agentId, id: id, text: text) }
+            }
             value = .object([:])
         } else {
             return .init(status: 404, body: Data("{}".utf8))
@@ -93,7 +160,66 @@ private actor DemoComputer: AgentTransport {
     func stream(path: String, credential: String, headers: [String: String]) throws -> HTTP1Stream {
         let (body, continuation) = AsyncThrowingStream<Data, Error>.makeStream()
         continuation.yield(Data("event: hello\ndata: {\"cursor\":\"c1\",\"resumed\":true}\n\n".utf8))
+        streams.append(continuation)
         return .init(status: 200, body: body)
+    }
+
+    private func emit(_ type: String, _ payload: [String: JSONValue]) {
+        eventId += 1
+        let envelope: JSONValue = .object(["type": .string(type), "payload": .object(payload)])
+        guard let data = try? JSONEncoder().encode(envelope) else { return }
+        let frame = Data("id: e\(eventId)\ndata: ".utf8) + data + Data("\n\n".utf8)
+        for stream in streams { stream.yield(frame) }
+    }
+
+    /// The turn a message sent starts, as the daemon's events tell it: the
+    /// reply in pieces, or for Release notes a failure that stops it.
+    private func answer(_ agentId: String, id: String, text: String) async {
+        let runId = "s\(eventId)"
+        let started = Date().timeIntervalSince1970 * 1000
+        let agent = JSONValue.string(agentId)
+        let user = Self.message(id, "user", started, text)
+        func pause() async { try? await Task.sleep(for: .milliseconds(700)) }
+        emit("message.created", ["agentId": agent, "runId": .string(runId), "message": user])
+        emit("run.started", ["agentId": agent, "run": Self.run(runId, started, nil, []), "acceptedMessageIds": .array([.string(id)])])
+        await pause()
+        let ended: JSONValue
+        if agentId == "notes-agent" {
+            let reason = "The model provider is unavailable."
+            guard case .object(var failure) = Self.message("\(runId)f", "service", started + 1, reason) else { return }
+            failure["failure"] = .object(["kind": .string("provider_unavailable"), "message": .string(reason)])
+            ended = .object(failure)
+            emit("message.created", ["agentId": agent, "runId": .string(runId), "message": ended])
+        } else {
+            let pieces = ["I ran the tests. ", "All 214 passed, ", "and the cache ", "is ready to ship."]
+            emit("message.created", ["agentId": agent, "runId": .string(runId), "message": Self.message("\(runId)a", "agent", started + 1, "")])
+            var offset = 0
+            for piece in pieces {
+                await pause()
+                emit("message.delta", ["agentId": agent, "runId": .string(runId), "messageId": .string("\(runId)a"), "blockIndex": .number(0),
+                                       "offset": .number(Double(offset)), "append": .string(piece)])
+                offset += piece.utf16.count
+            }
+            ended = Self.message("\(runId)a", "agent", started + 1, pieces.joined())
+            emit("message.updated", ["agentId": agent, "runId": .string(runId), "message": ended])
+        }
+        await pause()
+        let finished = Self.run(runId, started, Date().timeIntervalSince1970 * 1000, reason: agentId == "notes-agent" ? "error" : "completed", [user, ended])
+        sent[agentId, default: []].append(finished)
+        emit("run.finished", ["agentId": agent, "run": finished])
+        // Its first answer makes new work, which the computer calls "New
+        // Task" until a moment later it has a name, as the daemon does.
+        if agentId == "cache-agent", made.isEmpty {
+            await pause()
+            func task(_ name: String) -> JSONValue {
+                .object(["id": .string("bench"), "name": .string(name), "agent": .object(["id": .string("bench-agent"), "workspaceId": .string("w"), "status": .string("idle")])])
+            }
+            made = [task("New Task")]
+            emit("task.created", ["taskId": .string("bench")])
+            try? await Task.sleep(for: .milliseconds(400))
+            made = [task("Benchmark the cache")]
+            emit("task.updated", ["taskId": .string("bench")])
+        }
     }
 
     func reset() {}
@@ -167,20 +293,31 @@ private struct SplitComposeMachine: HomeOps, HomeSessionOps {
 /// (`ChatScrollProbe`), `-pageProbe` the open page's scroll view
 /// (`PageScrollProbe`), `-long` gives the agent's conversation 60 more
 /// rounds, `-composeMachine` lets compose's first send make a session on
-/// the seeded computer (`SplitComposeMachine`).
+/// the seeded computer (`SplitComposeMachine`), `-callLive <directory>`
+/// talks to the build's hosted voice agent from files (`CallLiveCheck`).
 @MainActor
 final class SplitAppHarness {
     private var coordinator: AppCoordinator?
+    private var recorder: FrameRecorder?
     private var probe: ChatScrollProbe?
     private var pageProbe: PageScrollProbe?
+    #if DEBUG
+    private var liveCall: CallLiveCheck?
+    #endif
 
     init(window: UIWindow, arguments: [String]) {
         func option(_ name: String) -> String? {
             arguments.firstIndex(of: name).flatMap { arguments.indices.contains($0 + 1) ? arguments[$0 + 1] : nil }
         }
         let agent = arguments.contains("-agent")
+        #if DEBUG
+        if let directory = option("-callLive") {
+            do { liveCall = try CallLiveCheck(directory: URL(fileURLWithPath: directory)) }
+            catch { print("[call-live] \(error)") }
+        }
+        #endif
         if arguments.contains("-composeMachine") { SplitComposeMachine.install() }
-        let computer = DemoComputer(rounds: arguments.contains("-long") ? 60 : 0)
+        let computer = DemoComputer(rounds: arguments.contains("-long") ? 60 : 0, live: option("-callLive") != nil)
         let controller = AccountController(
             serverConfig: ServerConfig(storage: InMemoryKeyValueStore()), clientID: "ios/split-harness",
             credentialStore: InMemoryCredentialStore(), storeDirectory: nil,
@@ -204,6 +341,9 @@ final class SplitAppHarness {
             let coordinator = AppCoordinator(window: window, context: context)
             self.coordinator = coordinator
             coordinator.start()
+            if let seconds = option("-recordFrames").flatMap(Double.init) {
+                self.recorder = FrameRecorder(window: window, seconds: seconds, top: option("-recordTop").flatMap(Double.init).map { CGFloat($0) })
+            }
             try? await Task.sleep(for: .seconds(2))
             guard let shell = window.rootViewController as? ShellViewController, let home = shell.stack.first else { return }
             // After the account's own theme has been applied.
@@ -247,6 +387,27 @@ final class SplitAppHarness {
                 shell.setSidebarHidden(true)
             }
             if arguments.contains("-resizeLoop") { await Self.resizeLoop(window) }
+            #if DEBUG
+            if arguments.contains("-callTour") { await Self.callTour(shell: shell, home: home, context: context, agent: agent) }
+            // The call's opens one after another, then from Settings: each logs the stack it left (`[call] stack`).
+            if arguments.contains("-callOpens"), let id = context.account.agentConnections.activeID, let session = Session.session(for: id, context: context) {
+                try? await Task.sleep(for: .seconds(2))
+                let targets = SessionCallTargets(session: session, shell: shell)
+                for agentId in ["ipad-agent", "cache-agent", "notes-agent", "ipad-agent"] { _ = await targets.open(agentId) }
+                if let chat = shell.topViewController { SettingsViewController.open(context: context, computer: id, from: chat) }
+                try? await Task.sleep(for: .seconds(1.5))
+                _ = await targets.open("inbox-agent")
+                _ = await targets.open("cache-agent")
+                targets.close()
+            }
+            // A sheet of the app's over home, left up, for the UI test that reads the bar through it.
+            if arguments.contains("-callSheet") {
+                try? await Task.sleep(for: .seconds(1.5))
+                let navigation = UINavigationController(rootViewController: SettingsViewController(context: context, computer: context.account.agentConnections.activeID))
+                AppCoordinator.applyAppearance(to: navigation.navigationBar)
+                shell.present(navigation, animated: true)
+            }
+            #endif
             if arguments.contains("-linkLoop"), let bar = home.navigationController?.navigationBar {
                 func find(_ view: UIView) -> AccountSwitcherButton? {
                     if let button = view as? AccountSwitcherButton { return button }
@@ -271,6 +432,68 @@ final class SplitAppHarness {
             window.frame = CGRect(x: 0, y: 0, width: width, height: whole.height)
         }
     }
+
+    #if DEBUG
+    /// With `HAPPY_CALL_FIXTURE` drawing a call: the bar over a chat,
+    /// Settings, a sheet, the scanner and a full-screen sheet of the app's,
+    /// then hung up under a sheet, logging what each presentation was given
+    /// (`CallPresentations`) for the screenshots taken meanwhile.
+    private static func callTour(shell: ShellViewController, home: UIViewController, context: AppContext, agent: Bool) async {
+        func log(_ step: String) {
+            var line = "[call-tour] \(step) bar=\(shell.callBarShown ? shell.callBar.barHeight : 0)"
+            var next = shell.presentedViewController
+            while let presented = next {
+                let top = presented.view.window.map { presented.view.convert(presented.view.bounds, to: $0).minY } ?? -1
+                let detents = presented.sheetPresentationController?.detents.map(\.identifier.rawValue).joined(separator: ",") ?? "-"
+                let echoes = presented.presentationController?.containerView?.subviews.filter { $0.accessibilityIdentifier == "call-bar-echo" }.count ?? 0
+                line += " | \(type(of: presented)) top=\(top) extraTop=\(presented.additionalSafeAreaInsets.top) safeTop=\(presented.view.safeAreaInsets.top) detents=\(detents) echo=\(echoes)"
+                next = presented.presentedViewController
+            }
+            print(line)
+        }
+        func top() -> UIViewController {
+            var top: UIViewController = shell
+            while let next = top.presentedViewController { top = next }
+            return top
+        }
+        func wait(_ seconds: Double) async { try? await Task.sleep(for: .seconds(seconds)) }
+        func sheet() -> UINavigationController {
+            let navigation = UINavigationController(rootViewController: SettingsViewController(context: context, computer: context.account.agentConnections.activeID))
+            AppCoordinator.applyAppearance(to: navigation.navigationBar)
+            return navigation
+        }
+        await wait(2)
+        log("home")
+        open("ipad-agent", from: home, context: context, agent: agent, animated: true)
+        await wait(3); log("chat")
+        if let chat = shell.topViewController { SettingsViewController.open(context: context, computer: context.account.agentConnections.activeID, from: chat) }
+        await wait(3); log("settings")
+        top().present(sheet(), animated: true)
+        await wait(3); log("sheet")
+        top().dismiss(animated: true)
+        await wait(1.5)
+        top().present(QRScannerViewController(), animated: true)
+        await wait(3); log("scanner")
+        top().dismiss(animated: true)
+        await wait(1.5)
+        top().present(QRSheetViewController(name: "Studio Mac", image: nil, isAgentConnection: true), animated: true)
+        await wait(3); log("full-screen sheet")
+        // Turned and back, its inset follows the bar and comes back to the same.
+        let scene = shell.view.window?.windowScene
+        scene?.requestGeometryUpdate(.iOS(interfaceOrientations: .landscapeRight))
+        await wait(2.5); log("full-screen sheet, landscape")
+        scene?.requestGeometryUpdate(.iOS(interfaceOrientations: .portrait))
+        await wait(2.5); log("full-screen sheet, portrait again")
+        top().dismiss(animated: true)
+        await wait(1.5)
+        top().present(sheet(), animated: true)
+        await wait(3); log("sheet again")
+        CallController.shared.close()
+        await wait(2); log("hung up under the sheet")
+        top().dismiss(animated: true)
+        await wait(2); log("done")
+    }
+    #endif
 
     /// What tapping the row does: a chat from the sidebar.
     private static func open(_ id: String, from home: UIViewController, context: AppContext, agent: Bool, animated: Bool = false) {

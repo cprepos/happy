@@ -32,6 +32,8 @@ public final class VoiceCoordinator: NSObject {
     }
 
     public func start(account: AccountSession, sessionId: String, presenting: UIViewController) {
+        // Off (`LegacyVoice`): said so, before any microphone, grant, context or provider.
+        guard LegacyVoice.isEnabled else { return Alerts.show(Strings.Voice.legacyOff, on: presenting) }
         if self.account === account, isRunning {
             focus(account: account, sessionId: sessionId)
             show(from: presenting)

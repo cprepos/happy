@@ -1,5 +1,7 @@
 package com.slopus.happy.ui.voice
 
+import android.graphics.Bitmap
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.runtime.CompositionLocalProvider
@@ -28,8 +30,16 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import java.io.File
 
-internal class FakeVoice : VoiceController {
+private fun voiceControlEvidence(node: SemanticsNodeInteraction, name: String) {
+    val directory = File("build/outputs/voice-controls").apply { mkdirs() }
+    File(directory, "$name.png").outputStream().use {
+        node.captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG, 100, it)
+    }
+}
+
+internal class FakeVoice(override val available: Boolean = true) : VoiceController {
     override val state = MutableStateFlow(VoiceState())
     var starts = 0
     var stops = 0
@@ -41,6 +51,7 @@ internal class FakeVoice : VoiceController {
         return outcome
     }
     override suspend fun stop() { stops++; state.value = VoiceState() }
+    override fun setMuted(muted: Boolean) { state.value = state.value.copy(muted = muted) }
     override fun focus(sessionId: String) { if (state.value.status != VoiceStatus.Connecting) focused = sessionId }
 }
 
@@ -72,6 +83,31 @@ class VoiceUiTest {
         rule.node("voice.full").assertDoesNotExist()
     }
 
+    @Test fun microphoneTogglesMuteAndUnmuteWithoutEndingTheCall() {
+        val voice = FakeVoice().apply { state.value = VoiceState(VoiceStatus.Connected) }
+        rule.setHappyContent(dark = true) {
+            CompositionLocalProvider(LocalVoiceController provides voice) { VoiceStatusBar() }
+        }
+        val microphone = rule.node("voice.mute")
+        val pill = rule.node("voice.pill").bounds
+        assertBox("microphone slot", microphone.bounds, pill.left, pill.top, 44.dp, 44.dp)
+        voiceControlEvidence(rule.node("voice.full"), "v3-phone-dark")
+        microphone.assert(hasContentDescription("Mute microphone")).performClick()
+        rule.waitForIdle()
+        assertTrue(voice.state.value.muted)
+        assertEquals(0, voice.stops)
+        rule.node("voice.duration").assertTextEquals("Muted")
+        voiceControlEvidence(rule.node("voice.full"), "v3-phone-muted-dark")
+        microphone.assert(hasContentDescription("Unmute microphone")).performClick()
+        rule.waitForIdle()
+        assertFalse(voice.state.value.muted)
+        assertEquals(0, voice.stops)
+        rule.node("voice.duration").assertTextEquals("0:00")
+        rule.node("voice.pill").performClick()
+        rule.waitForIdle()
+        assertEquals(1, voice.stops)
+    }
+
     private fun chat(online: Boolean = true, thinking: Boolean = false) = ChatState(
         ChatSnapshot(loaded = true),
         ChatSessionInfo.from(SessionRecord("s", 0, 0, 1, online, 0, """{"path":"/p","host":"h"}""", 1, null, 1, "", null)),
@@ -94,6 +130,20 @@ class VoiceUiTest {
         rule.waitForIdle()
         assertEquals(1, voice.stops)
         rule.node(ComposerTags.PRIMARY).assert(hasContentDescription("Voice")).assertIsEnabled()
+    }
+
+    @Test fun aSessionHasNoMicWhileTheRelaysVoiceIsOff() {
+        val voice = FakeVoice(available = false)
+        rule.setHappyContent {
+            CompositionLocalProvider(LocalVoiceController provides voice) {
+                ChatScreen(chat(), "", "gray", ChatScreenActions())
+            }
+        }
+        rule.node(ComposerTags.PRIMARY).assert(hasContentDescription("Send")).assertIsNotEnabled()
+        rule.onNodeWithContentDescription("Voice").assertDoesNotExist()
+        rule.waitForIdle()
+        assertEquals(0, voice.starts)
+        assertNull(voice.focused)
     }
 
     @Test fun offlineSessionHasNoMic() {
@@ -166,7 +216,7 @@ class VoiceUiTest {
     @Test fun customAgentPromptTrimsAndTogglesDirectConnection() {
         val settings = mutableStateOf(Settings())
         rule.setHappyContent {
-            VoiceSettingsScreen(settings.value, { settings.value = it(settings.value) }, null, false, true, {}, {}, {})
+            VoiceSettingsScreen(settings.value, { settings.value = it(settings.value) }, VoiceUsageReading.Unavailable, true, {}, {}, {})
         }
         rule.node("voice.language").assertExists()
         rule.node("voice.agent").performScrollTo().performClick()
@@ -182,11 +232,41 @@ class VoiceUiTest {
     }
 
     @Test fun usageAndSupportUseStandardSettingsInsets() {
-        rule.setHappyContent { VoiceSettingsScreen(Settings(), {}, VoiceUsage(60, 600, 1, 10), false, false, {}, {}, {}) }
+        rule.setHappyContent { VoiceSettingsScreen(Settings(), {}, VoiceUsageReading.Loaded(VoiceUsage(60, 600, 1, 10)), false, {}, {}, {}) }
         rule.node("voice.usage").assertExists()
         rule.node("voice.support").assertExists()
         rule.onNodeWithText("1m 0s / 10m 0s").assertExists()
         assertDp("usage inset from group", 16, rule.node("voice.usage").bounds.left)
+    }
+
+    @Test fun switchedOffVoiceShowsNoUsageAndNoRetry() {
+        rule.setHappyContent { VoiceSettingsScreen(Settings(), {}, VoiceUsageReading.Off, false, {}, {}, {}) }
+        rule.node("voice.usage").assertDoesNotExist()
+        rule.node(VoiceTags.USAGE_RETRY).assertDoesNotExist()
+        rule.onNodeWithText("Voice service is temporarily unavailable").assertDoesNotExist()
+    }
+
+    @Test fun unavailableUsageCanRetryAndThenShowTheLoadedMeter() {
+        val reading = mutableStateOf<VoiceUsageReading>(VoiceUsageReading.Unavailable)
+        var retries = 0
+        rule.setHappyContent {
+            VoiceSettingsScreen(Settings(), {}, reading.value, true, {}, {}, {}, onUsageRetry = {
+                retries++
+                reading.value = VoiceUsageReading.Loading
+            })
+        }
+        rule.onNodeWithText("Voice service is temporarily unavailable").assertIsDisplayed()
+        rule.onNodeWithText("Retry").assertIsDisplayed()
+        val retry = rule.node(VoiceTags.USAGE_RETRY).bounds
+        assertDp("retry respects the card's left edge", 16, retry.left)
+        assertTrue("the long error remains a tappable row", retry.height >= 56.dp)
+        rule.node(VoiceTags.USAGE_RETRY).performClick()
+        assertEquals(1, retries)
+        rule.node(VoiceTags.USAGE_RETRY).assertDoesNotExist()
+        rule.node("voice.usage").assertDoesNotExist()
+        reading.value = VoiceUsageReading.Loaded(VoiceUsage(60, 600, 1, 10))
+        rule.node("voice.usage").assertIsDisplayed()
+        rule.onNodeWithText("1m 0s / 10m 0s").assertIsDisplayed()
     }
 }
 
@@ -201,13 +281,20 @@ class VoiceTabletTest {
         var stopped = false
         rule.setHappyContent {
             ProvideWindowLayout {
-                Column(Modifier.fillMaxWidth()) { VoiceStatusBarContent(state.value, "2:01", true, { stopped = true }) }
+                Column(Modifier.fillMaxWidth()) {
+                    VoiceStatusBarContent(state.value, "2:01", true, { stopped = true }, onMuted = { state.value = state.value.copy(muted = it) })
+                }
             }
         }
         assertDp("sidebar height", 32, rule.node("voice.sidebar").bounds.height)
         assertDp("sidebar fills width", 1280, rule.node("voice.sidebar").bounds.width)
         assertDp("bars height", 12, rule.node("voice.bars").bounds.height)
         assertDp("bars width", 9, rule.node("voice.bars").bounds.width)
+        assertDp("mute slot width", 32, rule.node("voice.mute").bounds.width)
+        rule.node("voice.mute").performClick()
+        rule.node("voice.mute").assert(hasContentDescription("Unmute microphone"))
+        assertFalse(stopped)
+        voiceControlEvidence(rule.node("voice.sidebar"), "v3-sidebar-muted-tablet-light")
         rule.node("voice.sidebar").performClick()
         assertTrue(stopped)
         state.value = state.value.copy(status = VoiceStatus.Connecting, mode = VoiceMode.Idle)
@@ -220,7 +307,7 @@ class VoiceTabletTest {
 
     @Test fun voiceSettingsAndLanguageRespectTabletContentWidth() {
         rule.setHappyContent {
-            ProvideWindowLayout { VoiceSettingsScreen(Settings(), {}, null, false, true, {}, {}, {}) }
+            ProvideWindowLayout { VoiceSettingsScreen(Settings(), {}, VoiceUsageReading.Unavailable, true, {}, {}, {}) }
         }
         rule.node("voice.support").assertDoesNotExist()
         val row = rule.node("voice.language").bounds

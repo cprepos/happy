@@ -63,6 +63,11 @@ final class SessionListViewController: UIViewController {
     private lazy var actions = HomeSessionActions(context: context, session: session, host: self)
     private let changelogMarker = ChangelogReadMarker(storage: UserDefaultsStore(suiteName: ChangelogReadMarker.suiteName))
     private var nativeUpdateObservation: AccountsObservation?
+    private var migrationFlagObservation: AccountsObservation?
+    /// A model from the store has arrived, so the settings are known.
+    private var hasModel = false
+    /// A paired Happy Agent takes the migration card away.
+    private var accountsObservation: AccountsObservation?
 
     /// Where rows start and stop under home's header and dock.
     var contentInsets: HomeContentInsets? {
@@ -128,9 +133,23 @@ final class SessionListViewController: UIViewController {
         banners.onTroubleshoot = { [weak self] in self?.openTroubleshoot() }
         banners.onNativeUpdate = { [weak self] in self?.openStore() }
         banners.onWhatsNew = { [weak self] in self?.openWhatsNew() }
+        banners.onMigration = { [weak self] path in
+            guard let self else { return }
+            push(.desktopMigration(path), context: context)
+        }
+        banners.onCloseMigration = { [weak self] path in
+            DesktopMigrationCard.close(path)
+            self?.updateBanners()
+        }
+        accountsObservation = context.account.observeAccounts { [weak self] _ in self?.updateBanners() }
         nativeUpdateObservation = NativeUpdateCheck.shared.observe { [weak self] in
             self?.updateBanners()
         }
+        migrationFlagObservation = MigrationNoteFlag.shared.observe { [weak self] in
+            self?.updateBanners()
+        }
+        // The card's flag, asked again each time the app comes back.
+        NotificationCenter.default.addObserver(self, selector: #selector(refreshMigrationFlag), name: UIApplication.didBecomeActiveNotification, object: nil)
         registerForTraitChanges([UITraitDisplayScale.self, UITraitPreferredContentSizeCategory.self]) { (self: Self, _) in
             self.requestTextEnvironment()
         }
@@ -170,7 +189,12 @@ final class SessionListViewController: UIViewController {
         let previous = model
         model = next
         updateUltraList()
-        if next.offline != previous.offline { updateBanners() }
+        // Asked once the settings say whether the person opted out.
+        if !hasModel || next.analyticsOptOut != previous.analyticsOptOut {
+            hasModel = true
+            refreshMigrationFlag()
+        }
+        if next.offline != previous.offline || next.hasServerAgent != previous.hasServerAgent || next.analyticsOptOut != previous.analyticsOptOut { updateBanners() }
         return changeset.touchedRows
     }
 
@@ -225,7 +249,15 @@ final class SessionListViewController: UIViewController {
         var environment: HomeTextEnvironment
     }
 
-    /// HomeListHeader.tsx: the offline plaque, then the update banner.
+    /// The migration card's PostHog flag for this account; never asked for
+    /// someone who opted out of analytics.
+    @objc private func refreshMigrationFlag() {
+        guard hasModel, context.account.session === session else { return }
+        MigrationNoteFlag.shared.refresh(session, settings: context.account.localSettings, optedOut: model.analyticsOptOut)
+    }
+
+    /// HomeListHeader.tsx: the offline plaque, then the update banner,
+    /// under the migration card.
     private func updateBanners() {
         guard isViewLoaded else { return }
         var offlineTitle: String?
@@ -237,7 +269,12 @@ final class SessionListViewController: UIViewController {
         let state = HomeBanners(
             offlineTitle: offlineTitle,
             nativeUpdate: NativeUpdateCheck.shared.updateURL != nil,
-            whatsNew: changelogMarker.hasUnread(latestTitle: ChangelogViewController.bundled.latestTitle)
+            whatsNew: changelogMarker.hasUnread(latestTitle: ChangelogViewController.bundled.latestTitle),
+            migration: DesktopMigrationCard.path(
+                context.account,
+                serverAgent: model.hasServerAgent,
+                flag: MigrationNoteFlag.shared.isOn(context.account.localSettings, optedOut: model.analyticsOptOut)
+            )
         )
         guard state != bannerState else { return }
         bannerState = state

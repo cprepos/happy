@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="camera_timer">Temporizador</string>
+    <string name="camera_timer_seconds">%1$d s</string>
+    <string name="camera_shape">Formato da foto</string>
+    <string name="camera_grid">Grade</string>
+    <string name="camera_flash">Flash</string>
+    <string name="camera_flash_auto">Automático</string>
+    <string name="camera_on">Ativado</string>
+    <string name="camera_off">Desativado</string>
+    <string name="camera_flip">Alternar câmera</string>
+    <string name="camera_exposure">Exposição</string>
+    <string name="camera_ae_af_lock">BLOQUEIO AE/AF</string>
+    <string name="camera_af_lock">BLOQUEIO AF</string>
+    <string name="camera_ae_lock">BLOQUEIO AE</string>
+    <string name="camera_zoom">Zoom %1$s</string>
+    <string name="camera_take_photo">Tirar foto</string>
+    <string name="camera_retake">Tirar novamente</string>
+    <string name="camera_use_photo">Usar foto</string>
+    <string name="camera_permission">Permita que o Happy use a câmera nos Ajustes para tirar fotos.</string>
+    <string name="camera_no_camera">Este dispositivo não tem câmera.</string>
+    <string name="camera_unavailable">Não foi possível iniciar a câmera. Tente novamente.</string>
+    <string name="camera_in_use">A câmera está sendo usada por outro aplicativo.</string>
+    <string name="camera_capture_failed">Não foi possível tirar a foto. Tente novamente.</string>
+    <string name="camera_viewfinder">Visor</string>
+</resources>

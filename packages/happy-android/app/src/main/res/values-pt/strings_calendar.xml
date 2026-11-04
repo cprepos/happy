@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="calendar_month">Mês</string>
+    <string name="calendar_view">Visualização do calendário</string>
+    <string name="calendar_all_day">Dia inteiro</string>
+    <string name="calendar_no_title">(Sem título)</string>
+    <string name="calendar_no_events">Nenhum evento neste dia</string>
+    <string name="calendar_previous">Período anterior</string>
+    <string name="calendar_next">Próximo período</string>
+    <string name="calendar_loading">Carregando calendário…</string>
+    <string name="calendar_missing">Este calendário não está mais disponível.</string>
+    <string name="calendar_unsupported">Este Happy Agent ainda não oferece suporte a calendários.</string>
+    <string name="calendar_retrying">Não foi possível acessar o calendário. Uma nova tentativa será feita automaticamente.</string>
+    <string name="calendar_truncated">Apenas as primeiras 5.000 ocorrências são exibidas. Escolha um período mais curto.</string>
+    <plurals name="calendar_more"><item quantity="one">+%1$d mais</item><item quantity="many">+%1$d mais</item><item quantity="other">+%1$d mais</item></plurals>
+    <plurals name="calendar_event_count"><item quantity="one">%1$d evento</item><item quantity="many">%1$d eventos</item><item quantity="other">%1$d eventos</item></plurals>
+    <string name="calendar_event">Evento</string>
+    <string name="calendar_new_event">Novo evento</string>
+    <string name="calendar_delete_event">Excluir evento?</string>
+    <string name="calendar_delete_message">Este evento será excluído.</string>
+    <string name="calendar_series_delete">Todos os eventos desta série serão excluídos.</string>
+    <string name="calendar_series_edit">Altera todos os eventos desta série</string>
+    <string name="calendar_starts">Início</string>
+    <string name="calendar_ends">Fim</string>
+    <string name="calendar_time_zone">Fuso horário</string>
+    <string name="calendar_location">Local</string>
+    <string name="calendar_notes">Notas</string>
+    <string name="calendar_invalid">Verifique as datas, o fuso horário e a repetição.</string>
+    <string name="calendar_save_failed">Não foi possível salvar a alteração. Tente novamente.</string>
+    <string name="calendar_conflict">Este evento foi alterado em outro lugar</string>
+    <string name="calendar_use_updated">Usar evento atualizado</string>
+    <string name="calendar_deleted_elsewhere">Este evento foi excluído em outro lugar.</string>
+    <string name="calendar_repeat">Repetir</string>
+    <string name="calendar_repeat_none">Nunca</string>
+    <string name="calendar_repeat_interval">A cada</string>
+    <string name="calendar_repeat_end">Fim da repetição</string>
+    <string name="calendar_repeat_forever">Nunca</string>
+    <string name="calendar_repeat_until">Em uma data</string>
+    <string name="calendar_repeat_count">Número de eventos</string>
+    <string name="calendar_repeat_daily">Diariamente</string>
+    <string name="calendar_repeat_weekly">Semanalmente</string>
+    <string name="calendar_repeat_monthly">Mensalmente</string>
+    <string name="calendar_repeat_yearly">Anualmente</string>
+    <string name="calendar_move_earlier">Mover 15 minutos antes</string>
+    <string name="calendar_move_later">Mover 15 minutos depois</string>
+    <string name="calendar_move_previous_day">Mover para o dia anterior</string>
+    <string name="calendar_move_next_day">Mover para o dia seguinte</string>
+    <string name="calendar_shorten">Encurtar em 15 minutos</string>
+    <string name="calendar_extend">Estender em 15 minutos</string>
+</resources>

@@ -104,6 +104,10 @@ public struct HomeListModel: Equatable, Sendable {
     public var grouped: Bool
     /// Every computer, when all are offline, for the plaque above the rows.
     public var offline: [MachineChoice]?
+    /// `SessionList.hasServerAgent`, for the migration card.
+    public var hasServerAgent = false
+    /// `SessionList.analyticsOptOut`, for the migration card's flag.
+    public var analyticsOptOut = false
 
     public static let empty = HomeListModel(ids: [], rows: [], avatarStyle: .gradient, avatarMonochrome: false, grouped: false, offline: nil)
 
@@ -160,6 +164,8 @@ public struct HomeListModel: Equatable, Sendable {
             grouped: list.projects != nil,
             offline: offline
         )
+        hasServerAgent = list.hasServerAgent
+        analyticsOptOut = list.analyticsOptOut
     }
 
     /// A bot's or a task's row (ProjectHomeList.tsx `ChatRow`) draws no line

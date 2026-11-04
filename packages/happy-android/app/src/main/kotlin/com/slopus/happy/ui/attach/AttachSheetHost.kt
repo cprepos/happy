@@ -1,6 +1,7 @@
 package com.slopus.happy.ui.attach
 
 import androidx.compose.runtime.DisposableEffect
+import com.slopus.happy.ui.components.WindowDialog
 import android.content.res.Configuration
 import androidx.compose.ui.platform.LocalConfiguration
 import android.app.Activity
@@ -47,9 +48,11 @@ import com.slopus.happy.attachments.GalleryAccess
 import com.slopus.happy.attachments.GalleryItem
 import com.slopus.happy.attachments.MediaGallery
 import com.slopus.happy.attachments.PickedKind
+import com.slopus.happy.attachments.PendingPicture
 import com.slopus.happy.attachments.PickedMedia
 import com.slopus.happy.attachments.RecentFile
 import com.slopus.happy.attachments.RecentFiles
+import com.slopus.happy.attachments.Staged
 import com.slopus.happy.attachments.StagingProblem
 import com.slopus.happy.conversation.ViewerItem
 import com.slopus.happy.ui.attachments.attachmentCacheDir
@@ -57,10 +60,16 @@ import com.slopus.happy.ui.components.Alert
 import com.slopus.happy.ui.components.AlertButton
 import com.slopus.happy.ui.components.HappyAlert
 import com.slopus.happy.ui.components.rememberReduceMotion
+import com.slopus.happy.ui.components.TrackOverlay
 import com.slopus.happy.ui.conversation.PictureViewer
 import com.slopus.happy.ui.conversation.ViewerSource
+import com.slopus.happy.ui.files.WorkspaceFilePicker
+import com.slopus.happy.ui.files.WorkspaceSource
+import com.slopus.happy.ui.files.withWorkspacePath
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -76,7 +85,11 @@ import java.nio.ByteBuffer
  * each pick is copied into the app's cache first ([AttachmentStaging]),
  * then [onSend] has them. Room is [room] picks. [onClosed] runs once the
  * sheet has gone, after its own close. On a phone held upright it grows
- * out of [button] and goes back into it ([AttachMorph]).
+ * out of [button] and goes back into it ([AttachMorph]). With a [workspace]
+ * the File tab can name one of its files instead: the picked path goes
+ * into the caption as `./path` and nothing is uploaded. With
+ * [onSendPending], gallery photos don't wait to be read: the sheet goes at
+ * once and each goes as its thumbnail, read after ([PendingPicture]).
  */
 @Composable
 fun AttachSheet(
@@ -88,6 +101,9 @@ fun AttachSheet(
     onClosed: () -> Unit,
     room: Int = accepts.maxItems,
     button: AttachButton? = null,
+    workspace: WorkspaceSource? = null,
+    onSendPending: ((List<AttachmentPreview>, List<PendingPicture>) -> Unit)? = null,
+    onPhoto: ((AttachmentPreview) -> Unit)? = null,
 ) {
     if (!open) return
     val tabs = accepts.tabs
@@ -101,13 +117,16 @@ fun AttachSheet(
     val reduceMotion = rememberReduceMotion()
     val haptics = LocalHapticFeedback.current
     val motion = remember { AttachSheetMotion() }
+    val camera = remember { AttachCameraState() }.takeIf { accepts.photos && onPhoto != null }
     val selection = remember { AttachSelection(room.coerceAtLeast(0)) }
     val closed by rememberUpdatedState(onClosed)
     val send by rememberUpdatedState(onSend)
+    val sendPending by rememberUpdatedState(onSendPending)
     var tab by remember { mutableStateOf(tabs.first()) }
     var alert by remember { mutableStateOf<Alert?>(null) }
     var sending by remember { mutableStateOf(false) }
     var viewing by remember { mutableStateOf<Int?>(null) }
+    var naming by remember { mutableStateOf(false) }
     val closeExtra = with(LocalDensity.current) { AttachSpec.closeExtra.toPx() }
     val configuration = LocalConfiguration.current
     val grows = configuration.screenWidthDp < AttachMorph.MAX_WIDTH_DP && configuration.orientation == Configuration.ORIENTATION_PORTRAIT
@@ -121,6 +140,8 @@ fun AttachSheet(
             closed()
         }
     }
+    // A link must close the whole attachment flow, even while its camera is on top.
+    TrackOverlay(open) { close() }
 
     fun say(title: Int, message: String) {
         alert = Alert(resources.getString(title), message, listOf(AlertButton(resources.getString(R.string.common_ok))))
@@ -221,23 +242,35 @@ fun AttachSheet(
         if (sending || selection.count == 0) return
         sending = true
         val picks = selection.items.toList()
+        val later = sendPending
+        val app = context.applicationContext
+        val staging = AttachmentStaging(attachmentCacheDir(app)) { pick ->
+            app.contentResolver.openInputStream(Uri.parse(pick.uri)) ?: throw IOException("Cannot open ${pick.name}")
+        }
         scope.launch {
             try {
-                val staged = withContext(Dispatchers.IO) {
-                    AttachmentStaging(attachmentCacheDir(context)) { pick ->
-                        context.contentResolver.openInputStream(Uri.parse(pick.uri)) ?: throw IOException("Cannot open ${pick.name}")
-                    }.stage(picks, accepts)
+                // A gallery photo goes as its thumbnail, read once the sheet has gone (iOS b03dd48cc).
+                val photos = if (later == null) emptyList() else picks.filter { it.kind == PickedKind.Photo }
+                val thumbnails = withContext(Dispatchers.IO) { photos.map { async { galleryThumbnail(app.contentResolver, it.uri) } }.awaitAll() }
+                val pending = photos.zip(thumbnails).mapNotNull { (pick, thumbnail) ->
+                    thumbnail?.let {
+                        pick to PendingPicture(it) {
+                            withContext(Dispatchers.IO) { staging.stage(listOf(pick), accepts) }.attachments.singleOrNull() ?: throw IOException("Cannot read ${pick.name}")
+                        }
+                    }
                 }
+                val now = picks.filter { pick -> pending.none { it.first == pick } }
+                val staged = if (now.isEmpty()) Staged(emptyList(), emptyList()) else withContext(Dispatchers.IO) { staging.stage(now, accepts) }
                 staged.problems.firstOrNull()?.let { problem ->
                     when (problem) {
                         is StagingProblem.TooLarge -> say(R.string.image_upload_file_too_large_title, resources.getString(R.string.image_upload_file_too_large_message, problem.name, problem.maxMb))
                         is StagingProblem.Unreadable -> say(R.string.image_upload_upload_failed_title, resources.getString(R.string.attach_unreadable_message, problem.name))
                     }
                 }
-                if (staged.attachments.isEmpty()) return@launch
+                if (staged.attachments.isEmpty() && pending.isEmpty()) return@launch
                 val files = picks.filter { it.kind == PickedKind.File && it.uri.startsWith("content:") }
                 if (files.isNotEmpty() && accepts.files) withContext(Dispatchers.IO) { RecentFiles(context).remember(files) }
-                send(staged.attachments)
+                if (later != null && pending.isNotEmpty()) later(staged.attachments, pending.map { it.second }) else send(staged.attachments)
                 if (staged.problems.isEmpty()) close()
                 else selection.clear()
             } finally {
@@ -246,8 +279,8 @@ fun AttachSheet(
         }
     }
 
-    Dialog(
-        onDismissRequest = ::close,
+    WindowDialog(
+        onDismissRequest = { if (camera?.full == true) camera.back() else close() },
         properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
     ) {
         // Our own 0.2 scrim fades with the sheet; the window's dim would sit still behind it.
@@ -260,7 +293,7 @@ fun AttachSheet(
         }
         LaunchedEffect(Unit) { motion.open(reduceMotion, button.takeIf { grows }) }
         val dismissAt = context.resources.displayMetrics.xdpi / 2.54f * AttachSpec.DISMISS_CM
-        PredictiveBackHandler(enabled = !motion.closing) { progress ->
+        PredictiveBackHandler(enabled = !motion.closing && camera?.full != true) { progress ->
             try {
                 progress.collect { motion.drag = it.progress * dismissAt * 2 }
                 close()
@@ -274,7 +307,7 @@ fun AttachSheet(
             tab = tab,
             onTab = { tab = it },
             gallery = GalleryContent(access, items, loaded, blocked),
-            sources = FileSources(browse = accepts.files, gallery = accepts.files || accepts.photos, paste = accepts.photos || accepts.files),
+            sources = FileSources(browse = accepts.files, gallery = accepts.files || accepts.photos, paste = accepts.photos || accepts.files, workspace = workspace != null),
             recent = (picked + sent.filter { old -> picked.none { it.uri == old.uri } }),
             selection = selection,
             caption = caption,
@@ -293,11 +326,37 @@ fun AttachSheet(
                 galleryFiles.launch(PickVisualMediaRequest.Builder().setMediaType(type).build())
             },
             onPaste = ::paste,
+            onWorkspace = { naming = true },
             sending = sending,
+            camera = camera,
+        )
+        if (camera != null && onPhoto != null) AttachCamera(
+            state = camera, visible = tab == AttachTabKind.Gallery && viewing == null && !naming && !motion.closing,
+            maxBytes = accepts.maxFileBytes,
+            hasRoom = {
+                if (room > 0) true else {
+                    say(R.string.image_upload_limit_title, resources.getString(R.string.attach_limit_message, accepts.maxItems))
+                    false
+                }
+            },
+            onPhoto = onPhoto,
+            onFinished = { motion.giveBack(); closed() },
         )
         viewing?.let { index ->
             val shown = remember(items) { items.map { ViewerItem(it.uri, it.name, it.isVideo, it.width.toFloat().takeIf { w -> w > 0 }, it.height.toFloat().takeIf { h -> h > 0 }) } }
             PictureViewer(shown, index, remember(context) { GallerySource(context) }, onClose = { viewing = null })
+        }
+        if (naming && workspace != null) {
+            WorkspaceFilePicker(
+                workspace,
+                onPick = { path ->
+                    naming = false
+                    onCaptionChange(withWorkspacePath(caption, path))
+                    // Picks waiting keep the sheet, the path in their caption; alone, it goes with the words.
+                    if (selection.count == 0) close()
+                },
+                onClose = { naming = false },
+            )
         }
         alert?.let { HappyAlert(it, onDismiss = { alert = null }) }
     }

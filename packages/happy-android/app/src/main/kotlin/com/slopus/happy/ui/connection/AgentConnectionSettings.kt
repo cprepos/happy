@@ -2,6 +2,7 @@ package com.slopus.happy.ui.connection
 
 import com.slopus.happy.ui.tablet.BackOrSidebarToggle
 import com.slopus.happy.ui.settings.SettingsTags
+import com.slopus.happy.call.CallAllowance
 import com.slopus.happy.ui.components.ProvideRowReveal
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
@@ -67,7 +68,8 @@ import com.slopus.happy.ui.settings.addAgentEntry
 import com.slopus.happy.ui.settings.rememberSettingsSearch
 import com.slopus.happy.ui.settings.settingsProfileEntries
 import com.slopus.happy.ui.settings.settingsSearchResults
-import com.slopus.happy.ui.settings.supportEntry
+import com.slopus.happy.ui.settings.supportSection
+import com.slopus.happy.ui.settings.kindSubtitle
 import com.slopus.happy.ui.settings.SettingsTiles
 import com.slopus.happy.ui.settings.rememberAboutActions
 import com.slopus.happy.ui.settings.rememberAboutInfo
@@ -111,11 +113,16 @@ fun agentSettingsIndex(): List<AgentSettingsRow> {
         AgentSettingsRow(id, title, icon, place, ask)
     return listOf(
         row(AgentSettingsTags.PROFILE, stringResource(R.string.settings_account_profile), Ionicon.PersonCircleOutline),
-        row(AgentSettingsTags.ASK_NAME, stringResource(R.string.settings_edit_name), Ionicon.CreateOutline, AgentSettingsPlace.Ask, stringResource(R.string.agent_settings_edit_name_prefix)),
-        row(AgentSettingsTags.ASK_AVATAR, stringResource(R.string.settings_change_avatar), Ionicon.ImageOutline, AgentSettingsPlace.Ask, stringResource(R.string.agent_settings_edit_avatar_prefix)),
+        row(AgentSettingsTags.ASK_NAME, stringResource(R.string.agent_settings_edit_name), Ionicon.CreateOutline, AgentSettingsPlace.Ask, stringResource(R.string.agent_settings_edit_name_prefix)),
+        row(AgentSettingsTags.ASK_AVATAR, stringResource(R.string.agent_settings_edit_avatar), Ionicon.ImageOutline, AgentSettingsPlace.Ask, stringResource(R.string.agent_settings_edit_avatar_prefix)),
+        row(AgentVoiceTags.SUPPORT, stringResource(R.string.agent_voice_support_title), Ionicon.Heart),
         row(AgentSettingsTags.APPEARANCE, stringResource(R.string.settings_appearance), Ionicon.ColorPaletteOutline),
         row(AgentPagesTags.HIDE_PROJECTS_ROW, stringResource(R.string.settings_hide_projects), Ionicon.FolderOutline, AgentSettingsPlace.Appearance),
+        row(AgentVoiceTags.ROW, stringResource(R.string.agent_voice_title), Ionicon.MicOutline),
+        row(DataStorageTags.ROW, stringResource(R.string.data_storage_title), Ionicon.ServerOutline),
+        row(AgentSharingTags.ROW, stringResource(R.string.sharing_title), Ionicon.PeopleOutline),
         row(SettingsTags.SUPPORT, stringResource(R.string.settings_support_us), Ionicon.HeartOutline),
+        row(SettingsTags.MANAGE_SUBSCRIPTIONS, stringResource(R.string.settings_manage_subscriptions), Ionicon.CardOutline),
         row(SettingsPageTags.ADD_AGENT, stringResource(R.string.settings_add_agent), Ionicon.Add),
         row(SettingsTags.WHATS_NEW, stringResource(R.string.settings_whats_new), Ionicon.SparklesOutline),
         row(SettingsTags.GITHUB, stringResource(R.string.settings_github), Ionicon.LogoGithub),
@@ -144,6 +151,7 @@ fun NavHostController.openAgentSettingsRow(connectionId: String, row: AgentSetti
 }
 
 object AgentSettingsTags {
+    const val DAEMON_VERSION = "agentSettings.daemonVersion"
     const val BAR = "agentSettings.bar"
     const val PROFILE = "agentSettings.profile"
     const val APPEARANCE = "agentSettings.appearance"
@@ -159,8 +167,11 @@ class AgentSettingsActions(
     /** The person's own name and picture on this agent. */
     val onProfile: () -> Unit = {},
     val onAppearance: () -> Unit = {},
+    /** Voice: what it is and the free time left. */
+    val onVoice: () -> Unit = {},
     /** Data and Storage: the media kept on this phone; null where nothing is kept. */
     val onDataStorage: (() -> Unit)? = null,
+    val onSharing: (() -> Unit)? = null,
     /** Disconnects this connection; asked for only after the person confirmed. */
     val onRemove: () -> Unit = {},
     /** Opens this connection's Chief of Staff with [prefix] typed, unsent. */
@@ -169,7 +180,7 @@ class AgentSettingsActions(
 
 /** The Profile row: the person's own name and picture on the agent. */
 @Immutable
-data class AgentPerson(val name: String = "", val photo: ImageBitmap? = null)
+data class AgentPerson(val name: String = "", val photo: ImageBitmap? = null, val seed: String? = null)
 
 /**
  * An agent connection's settings, as iOS's SettingsViewController lays out
@@ -199,6 +210,9 @@ fun AgentConnectionSettingsScreen(
     appearance: List<SettingsEntry> = emptyList(),
     /** Where the page is scrolled; shared with the other kind's page, so a switch keeps it (AccountSettings). */
     scroll: ScrollState = rememberScrollState(),
+    daemonVersion: String? = null,
+    /** This phone's free voice time, for the Voice row ([rememberAgentVoiceSummary]). */
+    voice: AgentVoiceSummary = AgentVoiceSummary(CallAllowance.FREE_MILLIS),
 ) {
     val namePrefix = stringResource(R.string.agent_settings_edit_name_prefix)
     val avatarPrefix = stringResource(R.string.agent_settings_edit_avatar_prefix)
@@ -215,7 +229,7 @@ fun AgentConnectionSettingsScreen(
                 SettingsEntry(
                     id = AgentSettingsTags.PROFILE,
                     title = stringResource(R.string.settings_account_profile),
-                    icon = { PersonPicture(person.photo, profile.id, SettingsPageSpec.tile) },
+                    icon = { PersonPicture(person.photo, person.seed ?: profile.id, SettingsPageSpec.tile) },
                     detail = person.name.takeIf { it.isNotEmpty() },
                     onClick = actions.onProfile,
                 ),
@@ -229,20 +243,40 @@ fun AgentConnectionSettingsScreen(
                     icon = { SettingsTile(Ionicon.ColorPaletteOutline, SettingsTiles.purple) },
                     onClick = actions.onAppearance,
                 ),
+                agentVoiceEntry(voice, actions.onVoice),
             ) + listOfNotNull(
                 actions.onDataStorage?.let { open ->
                     SettingsEntry(
                         id = DataStorageTags.ROW,
                         title = stringResource(R.string.data_storage_title),
-                        icon = { SettingsTile(Ionicon.FolderOutline, SettingsTiles.blue) },
+                        icon = { SettingsTile(Ionicon.ServerOutline, SettingsTiles.green) },
+                        onClick = open,
+                    )
+                },
+                actions.onSharing?.let { open ->
+                    SettingsEntry(
+                        id = AgentSharingTags.ROW,
+                        title = stringResource(R.string.sharing_title),
+                        icon = { SettingsTile(Ionicon.PeopleOutline, SettingsTiles.blue) },
                         onClick = open,
                     )
                 },
             ),
         ),
-        SettingsSection(listOf(supportEntry(about, aboutActions))),
+        SettingsSection(
+            listOfNotNull(daemonVersion?.takeIf(String::isNotBlank)?.let { version ->
+                SettingsEntry(
+                    id = AgentSettingsTags.DAEMON_VERSION,
+                    title = "${stringResource(R.string.account_kind_agent)} · ${stringResource(R.string.common_version)}",
+                    detail = version,
+                    icon = { SettingsTile(Ionicon.InformationCircleOutline, SettingsTiles.gray) },
+                    chevron = false,
+                )
+            }),
+        ),
+        supportSection(about, aboutActions),
         aboutSection(about, aboutActions),
-    )
+    ).filter { it.rows.isNotEmpty() }
     // The bar on the page's own grey (black in dark), the groups on it: one surface, as the chat's details.
     Screen(
         header = {
@@ -263,18 +297,22 @@ fun AgentConnectionSettingsScreen(
         if (search.searching) {
             // The picture's two asks, found here, run: the Chief of Staff's chat opens with the words typed in.
             val asks = listOf(
-                SettingsEntry(AgentSettingsTags.ASK_NAME, editName, icon = { SettingsTile(Ionicon.CreateOutline, SettingsTiles.blue) }, chevron = false, onClick = { actions.onAskChief(namePrefix) }, closesSearch = true),
-                SettingsEntry(AgentSettingsTags.ASK_AVATAR, changeAvatar, icon = { SettingsTile(Ionicon.ImageOutline, SettingsTiles.orange) }, chevron = false, onClick = { actions.onAskChief(avatarPrefix) }, closesSearch = true),
+                SettingsEntry(AgentSettingsTags.ASK_NAME, stringResource(R.string.agent_settings_edit_name), icon = { SettingsTile(Ionicon.CreateOutline, SettingsTiles.blue) }, chevron = false, onClick = { actions.onAskChief(namePrefix) }, closesSearch = true),
+                SettingsEntry(AgentSettingsTags.ASK_AVATAR, stringResource(R.string.agent_settings_edit_avatar), icon = { SettingsTile(Ionicon.ImageOutline, SettingsTiles.orange) }, chevron = false, onClick = { actions.onAskChief(avatarPrefix) }, closesSearch = true),
             )
             val profiles = settingsProfileEntries(accounts, accountActions.onSwitch)
-            val rows = listOf(addAgentEntry(accountActions)) + sections.flatMap { it.rows } + appearance
+            val rows = listOf(addAgentEntry(accountActions), supportBobaEntry(aboutActions.onSupport)) + sections.flatMap { it.rows } + appearance
             SettingsSearchResults(search, settingsSearchResults(search.query, profiles, asks, rows))
         } else {
             SettingsDissolveBox {
                 ItemList(scrollState = scroll) {
                     SettingsHeader(profile, edit)
                     AccountsCard(accounts, accountActions)
-                    for (section in sections) SettingsCard(section)
+                    // Support Happy right under Profile, the first card.
+                    for ((index, section) in sections.withIndex()) {
+                        SettingsCard(section)
+                        if (index == 0) SupportBobaCard(aboutActions.onSupport)
+                    }
                     RemoveCard(agent = true, name = profile.name, onRemove = actions.onRemove)
                 }
             }
@@ -332,9 +370,8 @@ internal suspend fun removeAgentConnection(graph: AppGraph, id: String) = graph.
 /**
  * The accounts card's actions, the same on both kinds of page: a tap opens
  * another account without leaving Settings ([AccountSwitcher.fromSettings]),
- * Add scans, holding an agent connection disconnects it and holding the open
- * Happy account signs it out (another Happy account isn't signed out from
- * here: its push token and data belong to its own session). Taking away the
+ * Add scans, holding an agent connection disconnects it and holding a Happy
+ * account signs that account out, even when another is open. Taking away the
  * open one keeps Settings, over the next account's home.
  */
 @Composable
@@ -350,12 +387,12 @@ internal fun rememberAccountsCardActions(graph: AppGraph): AccountsCardActions {
                 val remove: suspend () -> Unit = if (entry.agent) {
                     { removeAgentConnection(graph, entry.id) }
                 } else {
-                    { graph.logout().join() }
+                    { graph.logout(entry.id).join() }
                 }
                 val open = graph.openAccount.value.id == entry.id
                 if (switcher != null && open) switcher.removingFromSettings(remove) else scope.launch { remove() }
             },
-            canRemove = { it.agent || (it.active && graph.openAgentId.value == null) },
+            canRemove = { true },
         )
     }
 }
@@ -383,7 +420,9 @@ internal fun AgentConnectionSettings(graph: AppGraph, nav: NavHostController, co
             onBack = { nav.popBackStack() },
             onProfile = { nav.navigate(AgentProfileRoute(connectionId)) },
             onAppearance = { nav.navigate(AgentAppearanceRoute(connectionId)) },
+            onVoice = { nav.navigate(AgentVoiceRoute(connectionId)) },
             onDataStorage = { nav.navigate(AgentDataStorageRoute(connectionId)) },
+            onSharing = { nav.navigate(AgentSharingRoute(connectionId)) },
             onAskChief = { prefix -> nav.openChiefOfStaff(connectionId, prefix) },
             onRemove = {
                 if (switcher != null) switcher.removingFromSettings { removeAgentConnection(graph, connectionId) }
@@ -395,8 +434,8 @@ internal fun AgentConnectionSettings(graph: AppGraph, nav: NavHostController, co
         profile = SettingsProfile(
             id = connectionId,
             seed = accounts.entries.firstOrNull { it.id == connectionId }?.seed ?: connectionId,
-            name = agent.name,
-            subtitle = statusText(status),
+            name = agent.name.ifEmpty { stringResource(R.string.account_kind_agent) },
+            subtitle = kindSubtitle(stringResource(R.string.account_kind_agent), statusText(status)),
             imageUri = agent.avatarFile?.let { "file://$it" },
             thumbhash = agent.thumbhash,
         ),
@@ -405,8 +444,10 @@ internal fun AgentConnectionSettings(graph: AppGraph, nav: NavHostController, co
         about = rememberAboutInfo(graph),
         accountActions = rememberAccountsCardActions(graph),
         aboutActions = rememberAboutActions(graph, nav),
-        person = AgentPerson(personState.name, personPhoto),
+        person = AgentPerson(personState.name, personPhoto, rememberPersonSeed(graph, connectionId)),
         appearance = agentAppearanceSections(theme, graph.localSettings::setThemePreference, projectsHidden, { session?.setProjectsHidden(it) }, sound, { session?.setCompletionSound(it) }).flatMap { it.rows },
         scroll = scroll,
+        voice = rememberAgentVoiceSummary(graph.offers, graph.subscription),
+        daemonVersion = agent.daemonVersion,
     )
 }

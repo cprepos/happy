@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="camera_timer">タイマー</string>
+    <string name="camera_timer_seconds">%1$d秒</string>
+    <string name="camera_shape">写真の縦横比</string>
+    <string name="camera_grid">グリッド</string>
+    <string name="camera_flash">フラッシュ</string>
+    <string name="camera_flash_auto">自動</string>
+    <string name="camera_on">オン</string>
+    <string name="camera_off">オフ</string>
+    <string name="camera_flip">カメラを切り替え</string>
+    <string name="camera_exposure">露出</string>
+    <string name="camera_ae_af_lock">AE/AFロック</string>
+    <string name="camera_af_lock">AFロック</string>
+    <string name="camera_ae_lock">AEロック</string>
+    <string name="camera_zoom">ズーム %1$s</string>
+    <string name="camera_take_photo">写真を撮る</string>
+    <string name="camera_retake">撮り直す</string>
+    <string name="camera_use_photo">写真を使用</string>
+    <string name="camera_permission">写真を撮るには、設定でHappyによるカメラの使用を許可してください。</string>
+    <string name="camera_no_camera">このデバイスにはカメラがありません。</string>
+    <string name="camera_unavailable">カメラを起動できませんでした。もう一度お試しください。</string>
+    <string name="camera_in_use">カメラは別のアプリで使用されています。</string>
+    <string name="camera_capture_failed">写真を撮影できませんでした。もう一度お試しください。</string>
+    <string name="camera_viewfinder">ファインダー</string>
+</resources>

@@ -626,7 +626,7 @@ final class SessionComposerView: UIView, ChatComposerView, AgentInputCardDelegat
         let record = state?.session.record
         let chips = state?.newSessionChoices.map { ComposerChipSet(choices: $0, titles: Self.titles) }
             ?? ComposerChipSet(modes: modes, record: record, titles: Self.titles)
-        let canVoice = record != nil && !environment.sessionId.hasPrefix("pending-chat:")
+        let canVoice = LegacyVoice.isEnabled && record != nil && !environment.sessionId.hasPrefix("pending-chat:")
         let primary = AgentInputPrimaryAction.resolve(
             hasComposerContent: hasComposerContent,
             isSendBlocked: SessionComposerRules.isSendBlocked(record),

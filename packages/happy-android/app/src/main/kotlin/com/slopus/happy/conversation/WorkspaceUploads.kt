@@ -2,7 +2,11 @@ package com.slopus.happy.conversation
 
 import com.slopus.happy.attachments.AttachmentPreview
 import com.slopus.happy.attachments.safeAttachmentName
+import kotlinx.serialization.json.JsonPrimitive
 import java.io.File
+import java.io.IOException
+import java.security.MessageDigest
+import java.util.Base64
 
 /**
  * A file a message takes to the agent through its workspace (iOS's
@@ -27,8 +31,12 @@ object WorkspaceUploads {
     const val DIRECTORY = ".happy-uploads"
     private val inlineTypes = setOf("image/jpeg", "image/png", "image/gif", "image/webp")
 
-    /** [attachments] split into inline pictures and workspace files, in their order, for message [messageId]. */
-    fun split(messageId: String, attachments: List<AttachmentPreview>): Pair<List<AttachmentPreview>, List<OutgoingFile>> {
+    /**
+     * [attachments] split into inline pictures and workspace files, in their
+     * order, for message [messageId]; [first] numbers them after those the
+     * message already has.
+     */
+    fun split(messageId: String, attachments: List<AttachmentPreview>, first: Int = 0): Pair<List<AttachmentPreview>, List<OutgoingFile>> {
         val inline = ArrayList<AttachmentPreview>()
         val files = ArrayList<OutgoingFile>()
         var inlineBytes = 0L
@@ -39,7 +47,7 @@ object WorkspaceUploads {
                 inlineBytes += size
             } else {
                 val local = localFile(attachment.uri)
-                val name = "$index-${safeAttachmentName(attachment.name)}"
+                val name = "${first + index}-${safeAttachmentName(attachment.name)}"
                 files += OutgoingFile(local, attachment.name, attachment.mimeType, size, "$DIRECTORY/$messageId/$name")
             }
         }
@@ -48,6 +56,54 @@ object WorkspaceUploads {
 
     /** The staged copy a `file:` URI names. */
     fun localFile(uri: String): File = File(runCatching { java.net.URI(uri).path }.getOrNull() ?: uri.removePrefix("file://"))
+
+    /** Bytes read from the disk at a time for [body]: a multiple of 3, so each piece is whole base64. */
+    private const val CHUNK = 3 * 64 * 1024
+
+    /**
+     * `PUT …/file`'s JSON for [file] at [path] (`expectedHash: null`, new
+     * only), in one array made straight from the disk: the base64 goes into
+     * it a piece at a time and the file is never held whole. With the
+     * file's SHA-256, which the answer repeats. A file that changes while
+     * read fails as unreadable.
+     */
+    fun body(path: String, file: File): Pair<ByteArray, String> {
+        val size = file.length()
+        val head = "{\"path\":${JsonPrimitive(path)},\"expectedHash\":null,\"content\":\"".toByteArray(Charsets.UTF_8)
+        val tail = "\"}".toByteArray(Charsets.UTF_8)
+        val total = head.size + (size + 2) / 3 * 4 + tail.size
+        if (total > Int.MAX_VALUE - 8) throw IOException("${file.name} is too large to send")
+        val body = ByteArray(total.toInt())
+        head.copyInto(body)
+        val digest = MessageDigest.getInstance("SHA-256")
+        val encoder = Base64.getEncoder()
+        val chunk = ByteArray(CHUNK)
+        var at = head.size
+        var read = 0L
+        file.inputStream().use { input ->
+            while (true) {
+                var filled = 0
+                while (filled < chunk.size) {
+                    val n = input.read(chunk, filled, chunk.size - filled)
+                    if (n < 0) break
+                    filled += n
+                }
+                read += filled
+                if (read > size) throw IOException("${file.name} changed while it was read")
+                if (filled == 0) break
+                digest.update(chunk, 0, filled)
+                val encoded = encoder.encode(if (filled == chunk.size) chunk else chunk.copyOf(filled))
+                encoded.copyInto(body, at)
+                at += encoded.size
+                if (filled < chunk.size) break
+            }
+        }
+        if (read != size) throw IOException("${file.name} changed while it was read")
+        tail.copyInto(body, at)
+        return body to hex(digest.digest())
+    }
+
+    fun hex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it) }
 
     /** iOS AttachmentRules.text: the message's words, then the files it carries, by path. */
     fun text(text: String, files: List<OutgoingFile>): String {

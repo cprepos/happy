@@ -31,8 +31,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import com.slopus.happy.payments.OfferSheet
+import com.slopus.happy.payments.RestoreResult
+import com.slopus.happy.ui.call.RestoreAlert
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -56,6 +60,7 @@ import com.slopus.happy.AppGraph
 import com.slopus.happy.R
 import com.slopus.happy.agent.AgentProfileState
 import com.slopus.happy.agent.CompletionSound
+import com.slopus.happy.agent.PersonSeed
 import com.slopus.happy.attachments.ProfilePhoto
 import com.slopus.happy.ui.components.Alert
 import com.slopus.happy.ui.components.AlertButton
@@ -78,6 +83,9 @@ import com.slopus.happy.ui.theme.ThemePreference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 
@@ -107,12 +115,44 @@ internal fun NavGraphBuilder.agentSettingsPages(graph: AppGraph, nav: NavHostCon
             )
         }
     }
+    page<AgentVoiceRoute> { entry ->
+        val scope = rememberCoroutineScope()
+        var restored by remember { mutableStateOf<RestoreResult?>(null) }
+        ProvideRowReveal(entry.toRoute<AgentVoiceRoute>().reveal) {
+            AgentVoiceScreen(
+                rememberAgentVoiceSummary(graph.offers, graph.subscription),
+                onSubscribe = { graph.offers.show(OfferSheet.Support(graph.offers.offer)) },
+                onRestore = { scope.launch { restored = graph.offers.restore() } },
+                onBack = { nav.popBackStack() },
+            )
+        }
+        restored?.let { RestoreAlert(it) { restored = null } }
+    }
     page<AgentDataStorageRoute> { entry -> AgentDataStorage(graph, nav, entry.toRoute<AgentDataStorageRoute>().connectionId) }
+    page<AgentSharingRoute> { entry ->
+        val id = entry.toRoute<AgentSharingRoute>().connectionId
+        val session = remember(id) { graph.agentSessions.session(id) }
+        val state = session?.sharing?.collectAsStateWithLifecycle()?.value ?: com.slopus.happy.agent.AgentSharingState.Loading
+        AgentSharingScreen(state, { kind, enabled -> session?.setAutoJoin(kind, enabled) }, { nav.popBackStack() })
+    }
     page<AgentProfileRoute> { entry ->
         val id = entry.toRoute<AgentProfileRoute>().connectionId
         val source = remember(id) { graph.agentSessions.session(id)?.profile } ?: return@page
-        AgentProfile(source, id, onBack = { nav.popBackStack() })
+        AgentProfile(source, rememberPersonSeed(graph, id), onBack = { nav.popBackStack() })
     }
+}
+
+/** A person's seed follows the catalog's team user, independently of the computer's own avatar. */
+@Composable
+internal fun rememberPersonSeed(graph: AppGraph, connectionId: String): String {
+    val session = remember(graph, connectionId) { graph.agentSessions.session(connectionId) }
+    val user by remember(session) {
+        session?.catalog?.map { it.userId }?.distinctUntilChanged() ?: flowOf(null)
+    }.collectAsStateWithLifecycle(initialValue = remember(session) { session?.catalog?.value?.userId })
+    val computer by produceState<String?>(null, graph, connectionId) {
+        value = graph.agentConnections.placeholderSeed(connectionId)
+    }
+    return PersonSeed.seed(user, "person:${computer ?: connectionId}")
 }
 
 object AgentPagesTags {

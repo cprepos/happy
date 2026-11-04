@@ -1,13 +1,19 @@
 package com.slopus.happy.ui.session
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -17,9 +23,19 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.slopus.happy.R
 import com.slopus.happy.chat.prettyJson
+import com.slopus.happy.chat.resolveChatHeaderGit
 import com.slopus.happy.diagnostics.ClientLogs
 import com.slopus.happy.model.Machine
 import com.slopus.happy.model.Session
+import com.slopus.happy.model.SessionMetadata
+import com.slopus.happy.chat.ComposerModes
+import com.slopus.happy.model.settings.ModeOption
+import com.slopus.happy.model.settings.ModeOptions
+import com.slopus.happy.sync.AgentModeField
+import com.slopus.happy.ui.chat.ComposerPermissionOptions
+import com.slopus.happy.ui.chat.composerPermissionTitle
+import com.slopus.happy.ui.components.PickerSheetSection
+import com.slopus.happy.ui.conversation.ConversationPopup
 import com.slopus.happy.model.aiProviderName
 import com.slopus.happy.model.dangerouslySkipPermissions
 import com.slopus.happy.model.forkSource
@@ -44,10 +60,11 @@ import com.slopus.happy.ui.components.AlertButton
 import com.slopus.happy.ui.components.HappyAlert
 import com.slopus.happy.ui.components.Icon
 import com.slopus.happy.ui.components.Ionicon
+import com.slopus.happy.ui.settings.SettingsTile
+import com.slopus.happy.ui.settings.SettingsTiles
 import com.slopus.happy.ui.components.Item
 import com.slopus.happy.ui.components.ItemGroup
 import com.slopus.happy.ui.components.ItemList
-import com.slopus.happy.ui.components.Octicon
 import com.slopus.happy.ui.components.confirm
 import com.slopus.happy.ui.home.ArchiveResult
 import com.slopus.happy.ui.home.taskFailureMessage
@@ -58,6 +75,7 @@ import com.slopus.happy.ui.home.formatLocaleDateTime
 import com.slopus.happy.ui.home.resumeAvailability
 import com.slopus.happy.ui.theme.HappyTheme
 import com.slopus.happy.ui.theme.happyTextStyle
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
 import java.time.ZoneId
@@ -74,6 +92,7 @@ internal fun SessionInfoContent(
     actions: SessionInfoActions,
     zone: ZoneId,
     live: SessionInfoLive,
+    permission: SessionInfoPermission?,
 ) {
     val colors = HappyTheme.colors
     val resources = LocalResources.current
@@ -129,11 +148,25 @@ internal fun SessionInfoContent(
     }
 
     ItemList {
+        SessionInfoHeader(session, live.avatar ?: session.avatar)
+        permission?.takeIf { metadata != null && it.modes.canChangePermission && it.modes.availableModes.isNotEmpty() }?.let {
+            PermissionGroup(it, metadata) { field, option ->
+                scope.launch {
+                    try {
+                        it.select(field, option)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        show(errorTitle, e.message)
+                    }
+                }
+            }
+        }
         ItemGroup(title = stringResource(R.string.session_info_quick_actions)) {
             val git = metadata.gitPresentation(live.gitStatus, live.gitStatusFiles)
             Item(
                 title = stringResource(R.string.files_changes),
-                icon = { Icon(Octicon.FileDiff, size = SessionInfoSpec.changesIcon, color = SessionInfoSpec.blue) },
+                icon = { SettingsTile(Ionicon.GitCompareOutline, SettingsTiles.blue) },
                 rightElement = if (git.changedFileCount != null || git.changes != null) {
                     {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -154,7 +187,7 @@ internal fun SessionInfoContent(
                 Item(
                     title = stringResource(R.string.session_info_view_machine),
                     subtitle = stringResource(R.string.session_info_view_machine_subtitle),
-                    icon = { Icon(Ionicon.ServerOutline, size = SessionInfoSpec.icon, color = SessionInfoSpec.blue) },
+                    icon = { SettingsTile(Ionicon.ServerOutline, SettingsTiles.blue) },
                     onClick = { actions.onOpenMachine(machineId) },
                     modifier = Modifier.testTag(SessionInfoTags.MACHINE),
                 )
@@ -163,7 +196,7 @@ internal fun SessionInfoContent(
                 Item(
                     title = stringResource(R.string.session_info_resume_session),
                     subtitle = resumeSubtitle,
-                    icon = { Icon(Ionicon.PlayCircleOutline, size = SessionInfoSpec.icon, color = SessionInfoSpec.blue) },
+                    icon = { SettingsTile(Ionicon.PlayCircleOutline, SettingsTiles.blue) },
                     onClick = {
                         val machineId = metadata?.machineId
                         if (!resume.canResume || machineId == null) {
@@ -185,7 +218,7 @@ internal fun SessionInfoContent(
                 Item(
                     title = stringResource(R.string.session_fork_action),
                     subtitle = stringResource(R.string.session_fork_subtitle),
-                    icon = { Icon(Ionicon.GitBranchOutline, size = SessionInfoSpec.icon, color = SessionInfoSpec.blue) },
+                    icon = { SettingsTile(Ionicon.GitBranchOutline, SettingsTiles.blue) },
                     loading = forking,
                     onClick = {
                         val source = forkSource ?: return@Item show(errorTitle, missingMetadata)
@@ -203,7 +236,7 @@ internal fun SessionInfoContent(
                 Item(
                     title = stringResource(R.string.session_duplicate_action),
                     subtitle = stringResource(R.string.session_duplicate_subtitle),
-                    icon = { Icon(Ionicon.TimeOutline, size = SessionInfoSpec.icon, color = SessionInfoSpec.blue) },
+                    icon = { SettingsTile(Ionicon.TimeOutline, SettingsTiles.blue) },
                     onClick = { duplicating = true },
                     modifier = Modifier.testTag(SessionInfoTags.DUPLICATE),
                 )
@@ -212,7 +245,7 @@ internal fun SessionInfoContent(
                 Item(
                     title = stringResource(R.string.session_forked_from_label),
                     subtitle = stringResource(R.string.session_forked_from_subtitle),
-                    icon = { Icon(Ionicon.ReturnUpBackOutline, size = SessionInfoSpec.icon, color = SessionInfoSpec.purple) },
+                    icon = { SettingsTile(Ionicon.ReturnUpBackOutline, SettingsTiles.purple) },
                     onClick = { actions.onOpenSession(parent) },
                     modifier = Modifier.testTag(SessionInfoTags.PARENT),
                 )
@@ -227,7 +260,8 @@ internal fun SessionInfoContent(
             if (task && session.canLeaveTask) {
                 Item(
                     title = stringResource(R.string.task_leave),
-                    icon = { Icon(Ionicon.ExitOutline, size = SessionInfoSpec.icon, color = SessionInfoSpec.red) },
+                    icon = { SettingsTile(Ionicon.ExitOutline, SettingsTiles.red) },
+                    destructive = true,
                     loading = archiving,
                     onClick = {
                         archiving = true
@@ -247,7 +281,8 @@ internal fun SessionInfoContent(
                 Item(
                     title = stringResource(if (task) R.string.task_archive else R.string.session_info_archive_session),
                     subtitle = if (task) null else stringResource(R.string.session_info_archive_session_subtitle),
-                    icon = { Icon(Ionicon.ArchiveOutline, size = SessionInfoSpec.icon, color = SessionInfoSpec.red) },
+                    icon = { SettingsTile(Ionicon.ArchiveOutline, SettingsTiles.red) },
+                    destructive = true,
                     loading = archiving,
                     onClick = {
                         archiving = true
@@ -269,7 +304,8 @@ internal fun SessionInfoContent(
                 Item(
                     title = deleteTitle,
                     subtitle = stringResource(R.string.session_info_delete_session_subtitle),
-                    icon = { Icon(Ionicon.TrashOutline, size = SessionInfoSpec.icon, color = SessionInfoSpec.red) },
+                    icon = { SettingsTile(Ionicon.TrashOutline, SettingsTiles.red) },
+                    destructive = true,
                     loading = deleting,
                     onClick = {
                         alert = Alert(
@@ -302,7 +338,7 @@ internal fun SessionInfoContent(
                 Item(
                     title = stringResource(R.string.session_info_cli_version_outdated),
                     subtitle = stringResource(R.string.session_info_update_cli_instructions),
-                    icon = { Icon(Ionicon.WarningOutline, size = SessionInfoSpec.icon, color = SessionInfoSpec.orange) },
+                    icon = { SettingsTile(Ionicon.WarningOutline, SettingsTiles.orange) },
                     showChevron = false,
                     // handleCopyUpdateCommand: a refused copy says Error / Error.
                     onClick = { copy(SessionInfoSpec.UPDATE_COMMAND, SessionInfoSpec.UPDATE_COMMAND, errorTitle) },
@@ -317,7 +353,7 @@ internal fun SessionInfoContent(
             Item(
                 title = stringResource(R.string.session_info_happy_session_id),
                 subtitle = shortId(session.id),
-                icon = { Icon(Ionicon.FingerPrintOutline, size = SessionInfoSpec.icon, color = SessionInfoSpec.blue) },
+                icon = { SettingsTile(Ionicon.FingerPrintOutline, SettingsTiles.blue) },
                 onClick = { copy(session.id, sessionIdCopied, sessionIdFailed) },
                 modifier = Modifier.testTag(SessionInfoTags.SESSION_ID),
             )
@@ -327,7 +363,7 @@ internal fun SessionInfoContent(
                 Item(
                     title = stringResource(R.string.session_info_claude_code_session_id),
                     subtitle = shortId(id),
-                    icon = { Icon(Ionicon.CodeOutline, size = SessionInfoSpec.icon, color = SessionInfoSpec.magenta) },
+                    icon = { SettingsTile(Ionicon.CodeOutline, SettingsTiles.orange) },
                     onClick = { copy(id, copied, failed) },
                 )
             }
@@ -337,7 +373,7 @@ internal fun SessionInfoContent(
                 Item(
                     title = stringResource(R.string.session_info_codex_thread_id),
                     subtitle = shortId(id),
-                    icon = { Icon(Ionicon.TerminalOutline, size = SessionInfoSpec.icon, color = SessionInfoSpec.codex) },
+                    icon = { SettingsTile(Ionicon.TerminalOutline, SettingsTiles.gray) },
                     onClick = { copy(id, copied, failed) },
                 )
             }
@@ -347,25 +383,25 @@ internal fun SessionInfoContent(
             Item(
                 title = stringResource(R.string.session_info_connection_status),
                 detail = stringResource(if (session.isOnline) R.string.status_online else R.string.status_offline),
-                icon = { Icon(Ionicon.PulseOutline, size = SessionInfoSpec.icon, color = if (session.isOnline) SessionInfoSpec.online else SessionInfoSpec.gray) },
+                icon = { SettingsTile(Ionicon.PulseOutline, if (session.isOnline) SettingsTiles.green else SettingsTiles.gray) },
                 showChevron = false,
             )
             Item(
                 title = stringResource(R.string.session_info_created),
                 subtitle = formatLocaleDateTime(session.createdAt, zone),
-                icon = { Icon(Ionicon.CalendarOutline, size = SessionInfoSpec.icon, color = SessionInfoSpec.blue) },
+                icon = { SettingsTile(Ionicon.CalendarOutline, SettingsTiles.blue) },
                 showChevron = false,
             )
             Item(
                 title = stringResource(R.string.session_info_last_updated),
                 subtitle = formatLocaleDateTime(session.updatedAt, zone),
-                icon = { Icon(Ionicon.TimeOutline, size = SessionInfoSpec.icon, color = SessionInfoSpec.blue) },
+                icon = { SettingsTile(Ionicon.TimeOutline, SettingsTiles.blue) },
                 showChevron = false,
             )
             Item(
                 title = stringResource(R.string.session_info_sequence),
                 detail = session.seq.toString(),
-                icon = { Icon(Ionicon.GitCommitOutline, size = SessionInfoSpec.icon, color = SessionInfoSpec.blue) },
+                icon = { SettingsTile(Ionicon.GitCommitOutline, SettingsTiles.blue) },
                 showChevron = false,
             )
         }
@@ -374,12 +410,16 @@ internal fun SessionInfoContent(
             ItemGroup(title = stringResource(R.string.session_info_metadata)) {
                 InfoRow(stringResource(R.string.session_info_host), metadata.host, Ionicon.DesktopOutline)
                 InfoRow(stringResource(R.string.session_info_path), formatPathRelativeToHome(metadata.path, metadata.homeDir), Ionicon.FolderOutline)
+                // Once under the chat's name in its header (iOS 60158d2ac): the workspace, else the live branch, else the start's.
+                resolveChatHeaderGit(metadata, live.gitStatus).subtitle?.let {
+                    InfoRow(stringResource(R.string.session_info_branch), it, Ionicon.GitBranchOutline, Modifier.testTag(SessionInfoTags.BRANCH))
+                }
                 metadata.version?.ifEmpty { null }?.let { version ->
                     Item(
                         title = stringResource(R.string.session_info_cli_version),
                         subtitle = version,
                         detail = if (outdated) "⚠️" else null,
-                        icon = { Icon(Ionicon.GitBranchOutline, size = SessionInfoSpec.icon, color = if (outdated) SessionInfoSpec.orange else SessionInfoSpec.purple) },
+                        icon = { SettingsTile(Ionicon.GitBranchOutline, if (outdated) SettingsTiles.orange else SettingsTiles.purple) },
                         showChevron = false,
                     )
                 }
@@ -413,13 +453,13 @@ internal fun SessionInfoContent(
                 val metadataFailed = stringResource(R.string.session_info_failed_to_copy_metadata)
                 Item(
                     title = stringResource(R.string.session_info_copy_metadata),
-                    icon = { Icon(Ionicon.CopyOutline, size = SessionInfoSpec.icon, color = SessionInfoSpec.blue) },
+                    icon = { SettingsTile(Ionicon.CopyOutline, SettingsTiles.blue) },
                     onClick = { copy(prettyJson(metadata.raw), metadataCopied, metadataFailed) },
                     modifier = Modifier.testTag(SessionInfoTags.COPY_METADATA),
                 )
                 Item(
                     title = stringResource(R.string.session_info_copy_metadata) + "\n& Client Logs",
-                    icon = { Icon(Ionicon.DocumentTextOutline, size = SessionInfoSpec.icon, color = SessionInfoSpec.blue) },
+                    icon = { SettingsTile(Ionicon.DocumentTextOutline, SettingsTiles.blue) },
                     onClick = {
                         scope.launch {
                             val logs = actions.clientLogs()
@@ -446,4 +486,44 @@ internal fun SessionInfoContent(
         )
     }
     alert?.let { HappyAlert(it, onDismiss = { alert = null }) }
+}
+
+/**
+ * The chat's permission mode as the first card (iOS's `permissionRow`):
+ * the current mode as its value; a tap opens the modes from the row, the
+ * current one ticked, as the chat's header menu lists them.
+ */
+@Composable
+private fun PermissionGroup(permission: SessionInfoPermission, metadata: SessionMetadata?, onSelect: (AgentModeField, ModeOption) -> Unit) {
+    var open by rememberSaveable { mutableStateOf(false) }
+    val modes = permission.modes
+    val current = (modes.permissionMode ?: modes.availableModes.firstOrNull { it.key == "default" })?.let(ModeOptions::hackMode)
+    val title = composerPermissionTitle(metadata)
+    ItemGroup {
+        Box {
+            Item(
+                title = stringResource(R.string.conversation_details_permission_mode),
+                icon = { SettingsTile(Ionicon.ShieldCheckmarkOutline, SettingsTiles.blue) },
+                detail = current?.name,
+                onClick = { open = true },
+                showChevron = false,
+                modifier = Modifier.testTag(SessionInfoTags.PERMISSION_MODE),
+            )
+            ConversationPopup(expanded = open, title = title, onDismiss = { open = false }, alignEnd = true, width = 280.dp, belowAnchor = true) {
+                PermissionModeMenu(modes, metadata) { field, option ->
+                    open = false
+                    onSelect(field, option)
+                }
+            }
+        }
+    }
+}
+
+/** The permission modes as the chat's header menu listed them: under their heading, the current one ticked, a locked or retired one disabled. */
+@Composable
+internal fun PermissionModeMenu(modes: ComposerModes, metadata: SessionMetadata?, onSelect: (AgentModeField, ModeOption) -> Unit) {
+    Column(Modifier.testTag(SessionInfoTags.PERMISSION_MENU).verticalScroll(rememberScrollState()).padding(vertical = 8.dp)) {
+        PickerSheetSection("permissions", composerPermissionTitle(metadata), separated = false)
+        ComposerPermissionOptions(modes, metadata, onSelect)
+    }
 }

@@ -18,6 +18,7 @@ import com.slopus.happy.browser.BrowserPolicy
 import com.slopus.happy.browser.BrowserProxy
 import com.slopus.happy.browser.browserWorkspace
 import com.slopus.happy.chat.markdown.MarkdownBlock
+import com.slopus.happy.chat.num
 import com.slopus.happy.chat.markdown.parseMarkdownBlocks
 import com.slopus.happy.media.MediaLibrary
 import com.slopus.happy.ui.browser.BrowserPage
@@ -42,8 +43,21 @@ sealed interface ArtifactUi {
     /** Deleted, or not to be had; said in place, as iOS does. */
     data class Message(val deleted: Boolean) : ArtifactUi
 
-    /** A Markdown file, its pictures by the address it wrote, in the order they show. */
-    data class Document(val path: String, val blocks: List<MarkdownBlock>, val pictures: Map<String, ArtifactMediaItem>, val order: List<ArtifactMediaItem>) : ArtifactUi
+    /**
+     * A Markdown file, its pictures by the address it wrote, in the order
+     * they show. A version made in the last [ArtifactLoader.FRESH_DIFF_MILLIS]
+     * also carries its [text] and the version before's ([previous], labelled
+     * [previousLabel]), so it opens on what changed (desktop e10d6444).
+     */
+    data class Document(
+        val path: String,
+        val blocks: List<MarkdownBlock>,
+        val pictures: Map<String, ArtifactMediaItem>,
+        val order: List<ArtifactMediaItem>,
+        val text: String = "",
+        val previous: String? = null,
+        val previousLabel: String? = null,
+    ) : ArtifactUi
 
     /** Pictures and recordings, one large or several in a grid. */
     data class Gallery(val items: List<ArtifactMediaItem>) : ArtifactUi
@@ -89,6 +103,7 @@ class ArtifactLoader(
     private val sizeWait: Long = SIZE_WAIT,
     /** The connection's kept media, where the version's files are read once. */
     private val library: MediaLibrary? = null,
+    private val now: () -> Long = System::currentTimeMillis,
 ) {
     private val stateFlow = MutableStateFlow<ArtifactUi>(ArtifactUi.Loading)
     val state: StateFlow<ArtifactUi> = stateFlow.asStateFlow()
@@ -99,6 +114,15 @@ class ArtifactLoader(
 
     var version: ArtifactVersion? = null
         private set
+
+    private val shownFlow = MutableStateFlow<ArtifactVersion?>(null)
+    private val latestFlow = MutableStateFlow<Int?>(null)
+
+    /** The version shown, once read: the History sheet marks it and the banner names it. Null for a linked file. */
+    val shown: StateFlow<ArtifactVersion?> = shownFlow.asStateFlow()
+
+    /** The artifact's latest version number, once known: the version read when it follows the latest, else asked of its catalog entry. */
+    val latest: StateFlow<Int?> = latestFlow.asStateFlow()
     var media: ArtifactMedia? = null
         private set
     private var loading: Job? = null
@@ -112,6 +136,17 @@ class ArtifactLoader(
         val version = files.version(ref.id, opened?.first ?: if (ref.opensLatest) null else ref.version)
         if (opened == null && version.title.isNotEmpty()) titleFlow.value = version.title
         this.version = version
+        if (opened == null) {
+            shownFlow.value = version
+            if (ref.opensLatest) {
+                latestFlow.value = version.number
+            } else {
+                // A pinned version: is there a newer one? A failure here only leaves the banner off.
+                scope.launch {
+                    latestFlow.value = runCatching { files.artifact(ref.id)["latestVersion"].num?.toInt() }.getOrNull()
+                }
+            }
+        }
         show(version, ArtifactShow.of(version, opened?.second))
     } catch (e: CancellationException) {
         throw e
@@ -177,8 +212,30 @@ class ArtifactLoader(
             pictures[raw] = item
         }
         val order = raws.mapNotNull { pictures[it] }.distinctBy { it.key }
+        val before = previous(version)
         awaitSizes(media, order)
-        return ArtifactUi.Document(file.path, blocks, pictures, order)
+        return if (before == null) ArtifactUi.Document(file.path, blocks, pictures, order)
+        else ArtifactUi.Document(file.path, blocks, pictures, order, ArtifactMarkdown.prepare(String(body, Charsets.UTF_8)), before.second, before.first)
+    }
+
+    /**
+     * The version before [version]'s Markdown entry, and its label, when
+     * [version] is a fresh one (made under [FRESH_DIFF_MILLIS] ago) of the
+     * artifact itself, not a linked file: what its screen diffs it against.
+     * Null otherwise, or when the version before can't be read or isn't Markdown.
+     */
+    private suspend fun previous(version: ArtifactVersion): Pair<String, String>? {
+        if (opened != null || version.number <= 1 || version.createdAt <= 0 || now() - version.createdAt > FRESH_DIFF_MILLIS) return null
+        return try {
+            val before = files.version(ref.id, version.number - 1)
+            val entry = before.entry?.takeIf { it.isMarkdown } ?: return null
+            val bytes = files.bytes(ref.id, before.number, entry.path, limit = MAX_DIFF_BYTES)
+            before.label to ArtifactMarkdown.prepare(String(bytes, Charsets.UTF_8))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private suspend fun gallery(version: ArtifactVersion, shown: List<ArtifactFile>): ArtifactUi {
@@ -226,5 +283,11 @@ class ArtifactLoader(
     companion object {
         /** How long the first drawing waits for the pictures' sizes. */
         const val SIZE_WAIT = 1_000L
+
+        /** A Markdown version this new opens on its diff against the one before (desktop's 20 minutes). */
+        const val FRESH_DIFF_MILLIS = 20 * 60 * 1_000L
+
+        /** The most of the version before that is read to diff against. */
+        const val MAX_DIFF_BYTES = 2L * 1024 * 1024
     }
 }

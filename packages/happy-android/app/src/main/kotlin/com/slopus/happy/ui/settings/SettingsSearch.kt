@@ -19,6 +19,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.slopus.happy.R
@@ -90,7 +92,7 @@ fun SettingsRow(entry: SettingsEntry) {
     val colors = HappyTheme.colors
     Item(
         title = entry.title,
-        modifier = Modifier.revealRow(entry.id),
+        modifier = Modifier.revealRow(entry.id).then(if (entry.checked) Modifier.semantics { selected = true } else Modifier),
         subtitle = entry.subtitle,
         subtitleLines = entry.subtitleLines,
         detail = entry.detail,
@@ -227,16 +229,14 @@ fun settingsSearchResults(query: String, profiles: List<SettingsEntry>, asks: Li
  */
 @Composable
 fun settingsProfileEntries(accounts: AccountMenu, onSwitch: (String) -> Unit): List<SettingsEntry> {
-    val agentKind = stringResource(R.string.account_menu_agent)
-    val accountKind = stringResource(R.string.settings_happy_account)
-    val unnamedAgent = stringResource(R.string.account_menu_unnamed_agent)
-    val unnamedAccount = stringResource(R.string.account_menu_unnamed_account)
+    val agentKind = stringResource(R.string.account_kind_agent)
+    val cliKind = stringResource(R.string.account_kind_cli)
     return accounts.entries.map { entry ->
         SettingsEntry(
             id = SettingsSearchTags.profile(entry.id),
-            title = entry.name ?: if (entry.agent) unnamedAgent else unnamedAccount,
+            title = entry.name ?: if (entry.agent) agentKind else cliKind,
             icon = { Avatar(entry.seed, SettingsPageSpec.accountAvatar, imageUri = entry.imageUrl, thumbhash = entry.thumbhash, animated = entry.liveSeed != null) },
-            detail = if (entry.agent) agentKind else accountKind,
+            detail = if (entry.agent) agentKind else cliKind,
             onClick = { if (!entry.active) onSwitch(entry.id) },
             closesSearch = true,
         )

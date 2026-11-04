@@ -5,9 +5,7 @@ import android.content.res.Resources
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
@@ -20,21 +18,26 @@ import androidx.navigation.NavHostController
 import androidx.navigation.toRoute
 import com.slopus.happy.AppGraph
 import com.slopus.happy.R
-import com.slopus.happy.agent.AgentEvent
 import com.slopus.happy.agent.AgentSession
 import com.slopus.happy.agent.HappyLink
 import com.slopus.happy.agent.HappyReferenceKind
 import com.slopus.happy.agent.HappyUrls
+import com.slopus.happy.artifacts.ArtifactCatalogFeed
 import com.slopus.happy.artifacts.ArtifactClient
 import com.slopus.happy.artifacts.ArtifactRef
 import com.slopus.happy.browser.BrowserPolicy
+import com.slopus.happy.connection.LinkState
+import com.slopus.happy.conversation.Problem
+import com.slopus.happy.ui.chat.rememberShownLinkState
+import com.slopus.happy.ui.connection.rememberNetworkPath
+import com.slopus.happy.ui.conversation.linkState
+import com.slopus.happy.feed.FeedSubject
 import com.slopus.happy.browser.BrowserProxy
 import com.slopus.happy.browser.browserWorkspace
 import com.slopus.happy.ui.browser.BrowserPage
 import com.slopus.happy.ui.browser.BrowserScreen
 import com.slopus.happy.ui.browser.openOutside
 import com.slopus.happy.ui.connection.LocalHappyLinks
-import kotlinx.coroutines.flow.filter
 import kotlinx.serialization.Serializable
 
 /** The agent's artifacts, home's Artifacts row. */
@@ -82,29 +85,35 @@ internal fun computerName(graph: AppGraph, connectionId: String): String {
 }
 
 private class ArtifactsHolder(session: AgentSession?) : ViewModel() {
-    val reader: ArtifactCatalogReader? = session?.let {
-        ArtifactCatalogReader(ArtifactClient(it.client), viewModelScope, cached = { it.cachedResource("artifacts") }, keep = { value -> it.keepResource("artifacts", value) })
+    val feed: ArtifactCatalogFeed? = session?.let {
+        val files = ArtifactClient(it.client)
+        ArtifactCatalogFeed(
+            scope = viewModelScope,
+            fetch = { cursor -> files.catalog(cursor) },
+            fetchOne = { id -> files.artifact(id) },
+            kept = { it.cachedResource(ArtifactCatalogFeed.RESOURCE) },
+            keep = { value -> it.keepResource(ArtifactCatalogFeed.RESOURCE, value) },
+        ).also { feed -> feed.start(it.events) }
     }
+    val thumbnails: ArtifactThumbnails? = session?.let { ArtifactThumbnails(ArtifactClient(it.client), viewModelScope) }
 }
 
 @Composable
 private fun AgentArtifacts(graph: AppGraph, nav: NavHostController, route: AgentArtifactsRoute) {
     val session = remember(route.connectionId) { graph.agentSessions.session(route.connectionId) }
-    val reader = viewModel { ArtifactsHolder(session) }.reader
-    com.slopus.happy.ui.components.StartedEffect(reader) {
-        if (session == null || reader == null) return@StartedEffect
-        reader.resume()
-        try {
-            session.events.filter { it.type.startsWith("artifact.") || it.type == AgentEvent.HELLO }.collect { reader.read() }
-        } finally { reader.pause() }
-    }
-    val read = reader?.state?.collectAsStateWithLifecycle()?.value ?: ArtifactListState(emptyList(), null, failed = true, loaded = true)
+    val holder = viewModel { ArtifactsHolder(session) }
+    val feed = holder.feed
+    val state = feed?.state?.collectAsStateWithLifecycle()?.value ?: ArtifactCatalogFeed.State(loaded = true, error = Problem.Unknown)
+    val status = session?.status?.collectAsStateWithLifecycle()?.value
+    val syncing = session?.isSyncing?.collectAsStateWithLifecycle()?.value ?: false
+    val link = rememberShownLinkState(if (session == null) LinkState.Online else status.linkState(syncing, rememberNetworkPath()))
     ArtifactsScreen(
-        read = read,
+        state = state,
         onBack = { nav.popBackStack() },
-        onOpen = { nav.openArtifact(route.connectionId, it) },
-        onMore = { reader?.read(append = true) },
-        onRetry = { reader?.retry() },
+        onOpen = { nav.openArtifact(route.connectionId, it.ref) },
+        onRefresh = { feed?.refresh() },
+        thumbnails = holder.thumbnails,
+        link = link,
     )
 }
 
@@ -137,6 +146,8 @@ private fun ArtifactEntry(graph: AppGraph, nav: NavHostController, route: Artifa
     val computer = computerName(graph, route.connectionId)
     val happyLinks = LocalHappyLinks.current
     val loader = holder.loader
+    // Opened: its Feed entry is seen (iOS `ArtifactViewController`).
+    LaunchedEffect(session, route.artifactId) { session?.feedLibrary?.seen(FeedSubject.artifact(route.artifactId)) }
     if (loader == null) {
         ArtifactScreen(route.title, ArtifactUi.Message(deleted = false), null, computer, ArtifactActions(onBack = { nav.popBackStack() }))
         return
@@ -153,41 +164,62 @@ private fun ArtifactEntry(graph: AppGraph, nav: NavHostController, route: Artifa
                 onBack = { nav.popBackStack() },
                 link = loader::link,
                 onOpenFile = { version, path -> nav.navigate(route.copy(openedVersion = version, path = path)) },
-                onOpenWeb = { url -> nav.navigate(BrowserRoute(route.connectionId, url)) },
+                // A Happy URL the page followed opens in the app; any other its own browser.
+                onOpenWeb = { url -> if (happyLinks?.open(url, route.connectionId) != true) nav.navigate(BrowserRoute(route.connectionId, url)) },
                 // A Happy URL stays in the app: an internal one means this connection, an external one its own.
                 onOpenExternal = { url -> if (happyLinks?.open(url, route.connectionId) != true) openOutside(context, url) },
                 artifactLink = { id ->
                     graph.agentConnections.accounts.value.firstOrNull { it.id == route.connectionId }?.instanceId
                         ?.let { HappyUrls.format(HappyLink.Reference(HappyReferenceKind.Artifact, id), it) }
                 },
-                fileReader = { file ->
+                shareLink = if (route.path != null) null else ({
+                    graph.agentConnections.accounts.value.firstOrNull { it.id == route.connectionId }?.instanceId
+                        ?.let { HappyUrls.format(HappyLink.Reference(HappyReferenceKind.Artifact, route.artifactId, version = route.version.takeIf { route.pinned }), it) }
+                }),
+                fileReader = { file, progress ->
                     val version = loader.version ?: throw IllegalStateException("not read")
-                    ArtifactClient(session!!.client).bytes(route.artifactId, version.number, file.path)
+                    ArtifactClient(session!!.client).bytes(route.artifactId, version.number, file.path, chunk = ArtifactClient.PROGRESS_CHUNK, progress = progress)
                 },
                 artifactKey = "artifact-${route.artifactId}",
+                // The artifact itself, not one file of it a link opened.
+                onDelete = if (route.path == null) ({ ArtifactClient(session!!.client).delete(route.artifactId) }) else null,
             )
         },
+        history = rememberArtifactHistory(loader, session, nav, route, title),
     )
+}
+
+/** The artifact's versions for its screen; another version takes this screen's place, so Back still leaves the artifact. */
+@Composable
+private fun rememberArtifactHistory(loader: ArtifactLoader, session: AgentSession?, nav: NavHostController, route: ArtifactRoute, title: String): ArtifactHistory? {
+    val shown by loader.shown.collectAsStateWithLifecycle()
+    val latest by loader.latest.collectAsStateWithLifecycle()
+    val version = shown ?: return null
+    val client = session?.client ?: return null
+    return remember(version, latest, title) {
+        fun show(next: ArtifactRoute) = nav.navigate(next) { popUpTo<ArtifactRoute> { inclusive = true } }
+        ArtifactHistory(
+            shown = version,
+            latest = latest,
+            read = { cursor -> ArtifactClient(client).versions(route.artifactId, cursor) },
+            onPick = { number -> show(route.copy(version = number, title = title, followsLatest = false, pinned = true)) },
+            onLatest = { show(route.copy(version = latest ?: route.version, title = title, followsLatest = true, pinned = false)) },
+        )
+    }
 }
 
 @Composable
 private fun BrowserEntry(graph: AppGraph, nav: NavHostController, route: BrowserRoute) {
     val session = remember(route.connectionId) { graph.agentSessions.session(route.connectionId) }
-    val computer = computerName(graph, route.connectionId)
-    val host = remember(route.url) { runCatching { java.net.URI(route.url).host }.getOrNull().orEmpty() }
-    var title by remember { mutableStateOf(host) }
-    var url by remember { mutableStateOf(route.url) }
     BrowserScreen(
-        title = title,
-        url = url,
-        onUrl = { url = it },
-        computer = computer,
+        url = route.url,
+        computer = computerName(graph, route.connectionId),
+        agentStatus = session?.status?.collectAsStateWithLifecycle()?.value,
         prepare = {
             val client = session?.client ?: throw IllegalStateException("no connection")
             BrowserPage(route.url, BrowserProxy.Scope.Workspace(client) { client.browserWorkspace(agentId = route.agentId) })
         },
         onBack = { nav.popBackStack() },
-        onTitle = { title = it },
         onOpenElsewhere = { url ->
             if (BrowserPolicy.route(url) == BrowserPolicy.Route.Web) nav.navigate(BrowserRoute(route.connectionId, url, route.agentId))
         },

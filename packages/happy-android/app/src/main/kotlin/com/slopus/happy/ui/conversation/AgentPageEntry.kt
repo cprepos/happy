@@ -16,6 +16,9 @@ import com.slopus.happy.AppGraph
 import com.slopus.happy.R
 import com.slopus.happy.agent.AgentFamily
 import com.slopus.happy.agent.AgentSession
+import com.slopus.happy.agent.HappyLink
+import com.slopus.happy.agent.HappyReferenceKind
+import com.slopus.happy.agent.HappyUrls
 import com.slopus.happy.agent.string
 import com.slopus.happy.connection.RequestCategory
 import com.slopus.happy.conversation.AgentDetail
@@ -186,14 +189,19 @@ internal fun AgentPageEntry(graph: AppGraph, nav: NavHostController, route: Conv
         parent = agent?.parentAgentId?.let { id -> AgentPageParent(id, feed.title(id) ?: catalog.agent(id)?.title?.takeIf { it.isNotBlank() }) },
         workspaceId = agent?.workspaceId ?: row?.workspaceId,
         lineChanges = row?.lineChanges,
+        // The chat beneath picks it, once it knows its mode or the catalog's default, as its header did.
+        chatMode = held?.let { warm?.mode ?: warm?.catalog?.defaults },
     )
     val kept = rememberKeptMedia(graph, session, route.agentId)
-    val actions = remember(nav, model, session, route, kept) {
+    val connections by graph.agentConnections.accounts.collectAsStateWithLifecycle()
+    val instanceId = connections.firstOrNull { it.id == route.connectionId }?.instanceId?.takeIf(HappyUrls::isInstanceId)
+    val actions = remember(nav, model, session, route, kept, held, instanceId) {
         AgentPageActions(
             onBack = { nav.popBackStack() },
             onOpenConversation = { id -> if (id == route.agentId) nav.popBackStack() else nav.openConversation(route.connectionId, id) },
             onWant = model::want,
             onOpenChanges = { workspaceId -> nav.navigate(WorkspaceChangesRoute(route.connectionId, workspaceId)) },
+            onOpenFiles = { workspaceId -> nav.navigate(com.slopus.happy.ui.files.WorkspaceFilesRoute(route.connectionId, workspaceId)) },
             loadMedia = { ref -> ConversationApi(session.conversationRequest()).media(route.agentId, ref.toolCallId, ref.index) },
             loadMediaRange = { ref, range ->
                 session.client.send(
@@ -204,6 +212,8 @@ internal fun AgentPageEntry(graph: AppGraph, nav: NavHostController, route: Conv
                 )
             },
             kept = kept,
+            onModeChange = { mode -> held?.setMode(mode) },
+            link = instanceId?.let { HappyUrls.format(HappyLink.Reference(HappyReferenceKind.Agent, route.agentId), it) },
         )
     }
     // A link opens as one in the chat does: through this agent's workspace.

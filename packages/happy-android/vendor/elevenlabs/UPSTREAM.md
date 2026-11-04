@@ -28,6 +28,17 @@ Local changes:
   notify the controller as well as explicit stops.
 - `setMicMuted` toggles the room's microphone track rather than the system-wide
   microphone setting.
+- `ConversationEventParser` no longer reads `agent_tool_request` as a client
+  tool call. That event only announces a call and has no parameters (the Swift
+  SDK keeps it separate as `.agentToolRequest`). Answering it first beat the
+  real `client_tool_call` for the same ID with empty arguments
+  (`ElevenLabsEventsTest` in the app).
+- `ConversationAudioHandler` observes LiveKit's own focus/device listeners when
+  `onAudioInterruption` is supplied: any focus loss or disappearance of the
+  selected wired/Bluetooth headset reports one interruption. It preserves the
+  configured audio type, disarms before focus is abandoned, and adds no focus
+  owner. Happy uses its normal disconnect path to cancel startup or end the call
+  (iOS `VoiceCoordinator` interruption/route/background behavior).
 
 The published AAR has no resources (`R.txt` is empty). The original manifest
 permissions and consumer ProGuard rules are preserved by this module. LiveKit

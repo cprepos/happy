@@ -30,8 +30,6 @@
 
     <string name="browser_via">via %1$s</string>
     <string name="browser_default_computer">agent connection</string>
-    <string name="browser_unreachable">Can’t reach %1$s.\nCheck the agent connection, then tap Reload.</string>
-    <string name="browser_unreachable_page">Can’t reach %1$s.\nCheck the connection or page address, then tap Reload.</string>
     <string name="browser_unsupported">This phone’s WebView can’t send pages through your computer. Update Android System WebView, then tap Reload.</string>
     <string name="browser_forward">Forward</string>
     <string name="browser_close">Close</string>
@@ -45,4 +43,109 @@
     <string name="link_menu_open_external_proxied">Outside the agent’s network</string>
     <string name="link_menu_copy">Copy link</string>
     <string name="link_menu_share">Share</string>
+
+    <!-- The artifacts list (ui/artifacts/ArtifactsList.kt), in iOS's words (Strings.Artifacts). Today and Yesterday are session_history_*, Loading is artifacts_loading. -->
+    <string name="artifact_list_search">Search artifacts</string>
+    <string name="artifact_list_empty">No artifacts yet. Ask an agent to make one.</string>
+    <string name="artifact_list_no_matches">No artifacts match.</string>
+    <string name="artifact_list_unsupported">This Happy Agent doesn’t keep artifacts.</string>
+    <string name="artifact_list_unavailable">Artifacts couldn’t be loaded. Check that your computer is on.</string>
+    <string name="artifact_list_open">Open</string>
+    <string name="artifact_list_copy_title">Copy Title</string>
+    <string name="artifact_list_previous_7_days">Previous 7 Days</string>
+    <string name="artifact_list_previous_30_days">Previous 30 Days</string>
+    <string name="artifact_kind_live">Live page</string>
+    <string name="artifact_kind_markdown">Document</string>
+    <string name="artifact_kind_html">Web page</string>
+    <string name="artifact_kind_image">Image</string>
+    <string name="artifact_kind_image_series">Images</string>
+    <string name="artifact_kind_video">Video</string>
+    <string name="artifact_kind_document">File</string>
+    <string name="artifact_kind_unknown">Artifact</string>
+
+    <!-- An artifact's card in a conversation (ui/artifacts/ArtifactCards.kt), in iOS's words (Strings.artifactKind, artifactDetail). -->
+    <string name="artifact_card_kind_markdown" translatable="false">Markdown</string>
+    <string name="artifact_card_kind_image_series">Image series</string>
+    <string name="artifact_card_kind_document">Document</string>
+    <string name="artifact_card_version">%1$s · Version %2$d</string>
+
+    <!-- Happy references in agent messages (references/References.kt): what a tag reads as when nothing names it -->
+    <string name="reference_artifact">artifact</string>
+    <string name="reference_untitled_agent">Untitled agent</string>
+    <string name="reference_untitled_workspace">Untitled workspace</string>
+    <string name="reference_unavailable_artifact">an unavailable artifact</string>
+    <string name="reference_unavailable_agent">an unavailable agent</string>
+    <string name="reference_unavailable_workspace">an unavailable workspace</string>
+    <string name="reference_unavailable_project">an unavailable project</string>
+    <string name="reference_unavailable_service">an unavailable service</string>
+    <string name="reference_unavailable_user">an unavailable user</string>
+    <string name="reference_unavailable">an unavailable reference</string>
+
+    <!-- An artifact's version history (ui/artifacts/ArtifactHistory.kt) -->
+    <string name="artifact_history">History</string>
+    <string name="artifact_history_version">Version %1$s</string>
+    <string name="artifact_history_latest">Latest</string>
+    <string name="artifact_history_showing">Showing version %1$s</string>
+    <string name="artifact_history_show_latest">Show latest</string>
+    <string name="artifact_history_failed">Versions couldn’t be loaded.</string>
+
+    <!-- A fresh Markdown artifact version opened on its diff (ui/artifacts/ArtifactScreen.kt) -->
+    <string name="artifact_diff_since">Changes since version %1$s</string>
+
+    <!-- Deleting an artifact from its screen (ui/artifacts/ArtifactScreen.kt) -->
+    <string name="artifact_delete_title">Delete “%1$s”?</string>
+    <string name="artifact_delete_message">It’s deleted for everyone on this computer. Chats that showed it will say it was deleted.</string>
+    <string name="artifact_delete_failed">This artifact couldn’t be deleted.</string>
+
+    <!-- The Feed (ui/feed), its words as iOS's FeedWords (NativeTranslations+Feed.swift) -->
+    <string name="feed_title" translatable="false">Feed</string>
+    <string name="feed_activity">Activity</string>
+    <string name="feed_following">Following</string>
+    <string name="feed_mark_all_read">Mark All Read</string>
+    <string name="feed_empty">Nothing has happened yet. New tasks, bots, documents, todo lists and artifacts show up here, with every change to them.</string>
+    <string name="feed_loading">Loading the feed…</string>
+    <string name="feed_unavailable">The feed couldn’t be loaded. Check that your computer is on.</string>
+    <string name="feed_unsupported">This Happy Agent doesn’t keep a feed. Updating it adds one.</string>
+    <string name="feed_everywhere">Everywhere</string>
+    <string name="feed_places">Places</string>
+    <string name="feed_no_clusters">Nothing to follow yet. Tasks, bots, documents and todo lists show up here once something happens in them.</string>
+    <string name="feed_loading_clusters">Loading…</string>
+    <string name="feed_clusters_unavailable">These couldn’t be loaded. Check that your computer is on.</string>
+    <string name="feed_unread_mark">Unread</string>
+    <string name="feed_everything">Everything</string>
+    <string name="feed_team">Team</string>
+    <string name="feed_follow">Follow %1$s</string>
+    <string name="feed_mute">Mute %1$s</string>
+    <string name="feed_muted">Muted</string>
+    <string name="feed_follow_failed">Couldn’t change what you follow. %1$s</string>
+    <string name="feed_created_with">Created · %1$s</string>
+    <string name="feed_created">Created</string>
+    <string name="feed_changed">Changed</string>
+    <string name="feed_peek_empty">Nothing has happened here in the last 30 days.</string>
+    <string name="feed_you">You</string>
+    <string name="feed_two">%1$s and %2$s</string>
+    <plurals name="feed_others">
+        <item quantity="one">%1$s and %2$d other</item>
+        <item quantity="other">%1$s and %2$d others</item>
+    </plurals>
+    <plurals name="feed_unread">
+        <item quantity="one">%1$d unread</item>
+        <item quantity="other">%1$d unread</item>
+    </plurals>
+    <plurals name="feed_new_todos">
+        <item quantity="one">%1$d new todo</item>
+        <item quantity="other">%1$d new todos</item>
+    </plurals>
+    <plurals name="feed_edits">
+        <item quantity="one">%1$d edit</item>
+        <item quantity="other">%1$d edits</item>
+    </plurals>
+    <plurals name="feed_versions">
+        <item quantity="one">%1$d new version</item>
+        <item quantity="other">%1$d new versions</item>
+    </plurals>
+    <plurals name="feed_updates">
+        <item quantity="one">%1$d update</item>
+        <item quantity="other">%1$d updates</item>
+    </plurals>
 </resources>

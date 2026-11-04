@@ -1,6 +1,13 @@
 package com.slopus.happy.ui.connect
 
+import androidx.compose.foundation.layout.Box
 import androidx.compose.material3.Text
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.navigation.NavHostController
 import androidx.navigation.NavDestination.Companion.hasRoute
@@ -15,7 +22,10 @@ import com.slopus.happy.agent.HappyReferenceKind
 import com.slopus.happy.connection.AgentConnection
 import com.slopus.happy.ui.HomeRoute
 import com.slopus.happy.ui.artifacts.ArtifactRoute
-import com.slopus.happy.ui.connection.AgentSurfaceRoute
+import com.slopus.happy.ui.components.HappyDropdownMenu
+import com.slopus.happy.ui.components.LocalOverlays
+import com.slopus.happy.ui.components.Overlays
+import com.slopus.happy.ui.surfaces.SurfaceRoute
 import com.slopus.happy.ui.connection.HappyLinks
 import com.slopus.happy.ui.connection.openHappyLink
 import com.slopus.happy.ui.conversation.ConversationRoute
@@ -57,7 +67,8 @@ class DeepLinkRoutingTest {
                 composable<SessionChangesRoute> { Text("changes") }
                 composable<ArtifactRoute> { Text("artifact") }
                 composable<ConversationRoute> { Text("conversation") }
-                composable<AgentSurfaceRoute> { Text("surface") }
+                composable<SurfaceRoute> { Text("surface") }
+                composable<com.slopus.happy.ui.files.WorkspaceFileRoute> { Text("file") }
             }
             DeepLinkEffect(nav, signedIn, onOpenSession = { opened += it }, openConnection = openConnection, onHappyLink = { happy += it })
         }
@@ -122,9 +133,8 @@ class DeepLinkRoutingTest {
     @Test
     fun aHappyLinkOpensItsScreenOnItsConnection() {
         setHost(signedIn = true)
-        val joined = AgentFeedRow.Surface("s1", "Groceries", "todo")
         fun open(link: HappyLink) {
-            rule.runOnUiThread { nav.openHappyLink("c1", link) { id -> joined.takeIf { it.id == id } } }
+            rule.runOnUiThread { nav.openHappyLink("c1", link) }
             rule.waitForIdle()
         }
         open(HappyLink.Reference(HappyReferenceKind.Artifact, "abc", version = 2))
@@ -136,13 +146,16 @@ class DeepLinkRoutingTest {
         assertEquals(ArtifactRoute("c1", "abc"), nav.currentBackStackEntry!!.toRoute<ArtifactRoute>())
         open(HappyLink.Reference(HappyReferenceKind.Agent, "a1"))
         assertEquals(ConversationRoute("c1", "a1"), nav.currentBackStackEntry!!.toRoute<ConversationRoute>())
-        open(HappyLink.File(HappyLink.Target.Agent("a2"), "src/a.ts", 3..3))
-        assertEquals(ConversationRoute("c1", "a2"), nav.currentBackStackEntry!!.toRoute<ConversationRoute>())
+        // A file opens in the viewer at its first line, by its agent or its workspace.
+        open(HappyLink.File(HappyLink.Target.Agent("a2"), "src/a.ts", 3..9))
+        assertEquals(com.slopus.happy.ui.files.WorkspaceFileRoute("c1", "src/a.ts", agentId = "a2", line = 3), nav.currentBackStackEntry!!.toRoute<com.slopus.happy.ui.files.WorkspaceFileRoute>())
+        open(HappyLink.File(HappyLink.Target.Workspace("w1"), "README.md"))
+        assertEquals(com.slopus.happy.ui.files.WorkspaceFileRoute("c1", "README.md", workspaceId = "w1"), nav.currentBackStackEntry!!.toRoute<com.slopus.happy.ui.files.WorkspaceFileRoute>())
         open(HappyLink.Reference(HappyReferenceKind.Surface, "s1"))
-        assertEquals(AgentSurfaceRoute("c1", "s1", "todo", "Groceries"), nav.currentBackStackEntry!!.toRoute<AgentSurfaceRoute>())
-        // Nothing to show on the phone: the connection's home.
+        assertEquals(SurfaceRoute("c1", "s1"), nav.currentBackStackEntry!!.toRoute<SurfaceRoute>())
+        // An unjoined or unknown Surface opens too; its screen joins or explains that it is unavailable.
         open(HappyLink.Reference(HappyReferenceKind.Surface, "s9"))
-        assertAt<HomeRoute>()
+        assertEquals(SurfaceRoute("c1", "s9"), nav.currentBackStackEntry!!.toRoute<SurfaceRoute>())
         open(HappyLink.Reference(HappyReferenceKind.Agent, "a1"))
         open(HappyLink.Reference(HappyReferenceKind.Service, "web", workspaceId = "w1"))
         assertAt<HomeRoute>()
@@ -157,6 +170,65 @@ class DeepLinkRoutingTest {
         assertEquals("c3", HappyLinks.connectionFor(connections, INSTANCE, open = "c3"))
         assertNull(HappyLinks.connectionFor(connections, "zzzzzzzzzzzzzzzzzzzzzzzz", open = "c1"))
         assertNull(HappyLinks.connectionFor(emptyList(), INSTANCE, open = null))
+    }
+
+    /** iOS 78fa78cf9: a link from outside waits for an open menu to go, and the menu doesn't come back with its page. */
+    @Test
+    fun aLinkPutsAwayAnOpenMenuFirstAndBackDoesNotReopenIt() {
+        val overlays = Overlays()
+        rule.mainClock.autoAdvance = false
+        rule.setContent {
+            nav = rememberNavController()
+            CompositionLocalProvider(LocalOverlays provides overlays) {
+                NavHost(nav, startDestination = HomeRoute) {
+                    composable<HomeRoute> {
+                        var open by rememberSaveable { mutableStateOf(true) }
+                        Box {
+                            Text("home")
+                            HappyDropdownMenu(open, { open = false }) { Text("menu item") }
+                        }
+                    }
+                    composable<SessionInfoRoute> { Text("info") }
+                }
+                DeepLinkEffect(nav, signedIn = true, onOpenSession = { opened += it })
+            }
+        }
+        rule.mainClock.advanceTimeBy(1_000)
+        rule.onNodeWithText("menu item").assertExists()
+        assertTrue(!overlays.isEmpty)
+
+        DeepLinks.offer(parseDeepLink("happy://session/s1/info")!!)
+        rule.mainClock.advanceTimeBy(80)
+        // The menu is going, and the link waits for it.
+        assertTrue(overlays.isEmpty)
+        assertTrue("still home while the menu goes", nav.currentBackStackEntry?.destination?.hasRoute<HomeRoute>() == true)
+        rule.mainClock.advanceTimeBy(1_000)
+        rule.onNodeWithText("menu item").assertDoesNotExist()
+        assertTrue(nav.currentBackStackEntry?.destination?.hasRoute<SessionInfoRoute>() == true)
+
+        rule.runOnIdle { nav.popBackStack() }
+        rule.mainClock.advanceTimeBy(1_000)
+        rule.onNodeWithText("home").assertExists()
+        rule.onNodeWithText("menu item").assertDoesNotExist()
+    }
+
+    /** Nothing up: the link opens at once. */
+    @Test
+    fun withNothingUpALinkOpensAtOnce() {
+        val overlays = Overlays()
+        rule.setContent {
+            nav = rememberNavController()
+            CompositionLocalProvider(LocalOverlays provides overlays) {
+                NavHost(nav, startDestination = HomeRoute) {
+                    composable<HomeRoute> { Text("home") }
+                    composable<SessionInfoRoute> { Text("info") }
+                }
+                DeepLinkEffect(nav, signedIn = true)
+            }
+        }
+        rule.waitForIdle()
+        DeepLinks.offer(parseDeepLink("happy://session/s1/info")!!)
+        assertAt<SessionInfoRoute>()
     }
 
     private companion object {

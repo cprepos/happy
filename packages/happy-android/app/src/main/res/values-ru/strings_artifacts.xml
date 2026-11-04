@@ -29,8 +29,6 @@
     <string name="artifact_open_with_body">Android не может показать этот файл здесь. Он откроется в приложении на телефоне, которое умеет его читать.</string>
     <string name="browser_via">через %1$s</string>
     <string name="browser_default_computer">подключение агента</string>
-    <string name="browser_unreachable">Не удаётся связаться с %1$s.\nПроверьте подключение агента, затем нажмите «Обновить».</string>
-    <string name="browser_unreachable_page">Не удаётся связаться с %1$s.\nПроверьте подключение или адрес страницы, затем нажмите «Обновить».</string>
     <string name="browser_unsupported">WebView этого телефона не может передавать страницы через ваш компьютер. Обновите Android System WebView, затем нажмите «Обновить».</string>
     <string name="browser_forward">Вперёд</string>
     <string name="browser_close">Закрыть</string>
@@ -42,4 +40,112 @@
     <string name="link_menu_open_external_proxied">Вне сети агента</string>
     <string name="link_menu_copy">Скопировать ссылку</string>
     <string name="link_menu_share">Поделиться</string>
+
+    <string name="artifact_list_search">Поиск артефактов</string>
+    <string name="artifact_list_empty">Артефактов пока нет. Попросите агента создать артефакт.</string>
+    <string name="artifact_list_no_matches">Подходящих артефактов нет.</string>
+    <string name="artifact_list_unsupported">Этот Happy Agent не хранит артефакты.</string>
+    <string name="artifact_list_unavailable">Не удалось загрузить артефакты. Проверьте, что компьютер включён.</string>
+    <string name="artifact_list_open">Открыть</string>
+    <string name="artifact_list_copy_title">Скопировать название</string>
+    <string name="artifact_list_previous_7_days">Предыдущие 7 дней</string>
+    <string name="artifact_list_previous_30_days">Предыдущие 30 дней</string>
+    <string name="artifact_kind_live">Живая страница</string>
+    <string name="artifact_kind_markdown">Документ</string>
+    <string name="artifact_kind_html">Веб-страница</string>
+    <string name="artifact_kind_image">Изображение</string>
+    <string name="artifact_kind_image_series">Изображения</string>
+    <string name="artifact_kind_video">Видео</string>
+    <string name="artifact_kind_document">Файл</string>
+    <string name="artifact_kind_unknown">Артефакт</string>
+
+    <string name="artifact_card_kind_image_series">Серия изображений</string>
+    <string name="artifact_card_kind_document">Документ</string>
+    <string name="artifact_card_version">%1$s · Версия %2$d</string>
+
+    <string name="reference_artifact">артефакт</string>
+    <string name="reference_untitled_agent">Агент без названия</string>
+    <string name="reference_untitled_workspace">Рабочая область без названия</string>
+    <string name="reference_unavailable_artifact">недоступный артефакт</string>
+    <string name="reference_unavailable_agent">недоступный агент</string>
+    <string name="reference_unavailable_workspace">недоступная рабочая область</string>
+    <string name="reference_unavailable_project">недоступный проект</string>
+    <string name="reference_unavailable_service">недоступный сервис</string>
+    <string name="reference_unavailable_user">недоступный пользователь</string>
+    <string name="reference_unavailable">недоступная ссылка</string>
+
+    <string name="artifact_history">История</string>
+    <string name="artifact_history_version">Версия %1$s</string>
+    <string name="artifact_history_latest">Последняя</string>
+    <string name="artifact_history_showing">Показана версия %1$s</string>
+    <string name="artifact_history_show_latest">Показать последнюю</string>
+    <string name="artifact_history_failed">Не удалось загрузить версии.</string>
+
+    <string name="artifact_diff_since">Изменения с версии %1$s</string>
+
+    <string name="artifact_delete_title">Удалить «%1$s»?</string>
+    <string name="artifact_delete_message">Он будет удалён для всех на этом компьютере. В чатах, где он был показан, будет сказано, что он удалён.</string>
+    <string name="artifact_delete_failed">Не удалось удалить этот артефакт.</string>
+
+    <string name="feed_activity">Активность</string>
+    <string name="feed_following">Подписки</string>
+    <string name="feed_mark_all_read">Прочитать всё</string>
+    <string name="feed_empty">Пока ничего не произошло. Здесь появятся новые задачи, боты, документы, списки дел и артефакты — со всеми их изменениями.</string>
+    <string name="feed_loading">Загрузка ленты…</string>
+    <string name="feed_unavailable">Не удалось загрузить ленту. Проверьте, что компьютер включён.</string>
+    <string name="feed_unsupported">Этот Happy Agent не ведёт ленту. Обновите его, чтобы она появилась.</string>
+    <string name="feed_everywhere">Везде</string>
+    <string name="feed_places">Места</string>
+    <string name="feed_no_clusters">Пока не на что подписаться. Задачи, боты, документы и списки дел появятся здесь, когда в них что-нибудь произойдёт.</string>
+    <string name="feed_loading_clusters">Загрузка…</string>
+    <string name="feed_clusters_unavailable">Не удалось загрузить. Проверьте, что компьютер включён.</string>
+    <string name="feed_unread_mark">Не прочитано</string>
+    <string name="feed_everything">Всё</string>
+    <string name="feed_team">Команда</string>
+    <string name="feed_follow">Подписаться на %1$s</string>
+    <string name="feed_mute">Заглушить %1$s</string>
+    <string name="feed_muted">Заглушено</string>
+    <string name="feed_follow_failed">Не удалось изменить подписку. %1$s</string>
+    <string name="feed_created_with">Создано · %1$s</string>
+    <string name="feed_created">Создано</string>
+    <string name="feed_changed">Изменено</string>
+    <string name="feed_peek_empty">За последние 30 дней здесь ничего не произошло.</string>
+    <string name="feed_you">Вы</string>
+    <string name="feed_two">%1$s и %2$s</string>
+    <plurals name="feed_others">
+        <item quantity="one">%1$s и ещё %2$d</item>
+        <item quantity="few">%1$s и ещё %2$d</item>
+        <item quantity="many">%1$s и ещё %2$d</item>
+        <item quantity="other">%1$s и ещё %2$d</item>
+    </plurals>
+    <plurals name="feed_unread">
+        <item quantity="one">%1$d непрочитанная</item>
+        <item quantity="few">%1$d непрочитанные</item>
+        <item quantity="many">%1$d непрочитанных</item>
+        <item quantity="other">%1$d непрочитанных</item>
+    </plurals>
+    <plurals name="feed_new_todos">
+        <item quantity="one">%1$d новое дело</item>
+        <item quantity="few">%1$d новых дела</item>
+        <item quantity="many">%1$d новых дел</item>
+        <item quantity="other">%1$d новых дел</item>
+    </plurals>
+    <plurals name="feed_edits">
+        <item quantity="one">%1$d правка</item>
+        <item quantity="few">%1$d правки</item>
+        <item quantity="many">%1$d правок</item>
+        <item quantity="other">%1$d правок</item>
+    </plurals>
+    <plurals name="feed_versions">
+        <item quantity="one">%1$d новая версия</item>
+        <item quantity="few">%1$d новые версии</item>
+        <item quantity="many">%1$d новых версий</item>
+        <item quantity="other">%1$d новых версий</item>
+    </plurals>
+    <plurals name="feed_updates">
+        <item quantity="one">%1$d обновление</item>
+        <item quantity="few">%1$d обновления</item>
+        <item quantity="many">%1$d обновлений</item>
+        <item quantity="other">%1$d обновлений</item>
+    </plurals>
 </resources>

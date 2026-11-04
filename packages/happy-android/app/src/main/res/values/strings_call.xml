@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The agent connection's voice call (ui/call): new with the native apps, so no
+  happy-app catalog key has these. Not generated; translated in values-*/ (AndroidStringsTranslatedTest).
+-->
+<resources>
+    <string name="call_title" translatable="false">Happy</string>
+    <string name="call_start">Start voice call</string>
+    <string name="call_voice_call">Voice call</string>
+    <string name="call_muted">Muted</string>
+    <string name="call_mute">Mute microphone</string>
+    <string name="call_unmute">Unmute microphone</string>
+    <string name="call_end">End call</string>
+    <string name="call_close">Close</string>
+    <string name="call_listening">Listening</string>
+    <string name="call_user_speaking">You’re speaking</string>
+    <string name="call_agent_speaking">Happy is speaking</string>
+    <string name="call_not_set_up">Voice isn’t set up for this connection yet</string>
+    <string name="call_microphone">Microphone access is off</string>
+    <string name="call_subscription">Voice needs a subscription</string>
+    <string name="call_limit">Free voice time used: 20 min per 30 days</string>
+    <string name="call_authentication">Sign in again to use voice</string>
+    <string name="call_connection">Call ended: connection lost</string>
+    <string name="call_open_settings">Open Settings</string>
+    <string name="call_paywall_title">Voice time</string>
+    <string name="call_welcome_title">Talk to your agents</string>
+    <string name="call_welcome_ask">Ask how your work is going</string>
+    <string name="call_welcome_act">Open and send by voice</string>
+    <string name="call_welcome_free">20 free minutes</string>
+    <string name="call_start_session">Start Voice Session</string>
+    <string name="call_used_today">Your free voice time is used. More comes back at %1$s.</string>
+    <string name="call_used_week">Your free voice time is used. More comes back on %1$s at %2$s.</string>
+    <string name="call_used_date">Your free voice time is used. More comes back on %1$s.</string>
+    <string name="call_used_later">Your free voice time is used. It comes back as older calls pass 30 days.</string>
+    <string name="call_support_for">Support Happy for %1$s/month</string>
+    <string name="call_subscribe_allowance">5 hours of real-time voice included</string>
+    <string name="call_subscribe_support">Happy is open source. Subscribing to voice pays for its development.</string>
+    <string name="call_subscribe">Subscribe</string>
+    <string name="call_preview_note">Test preview. Nothing is charged.</string>
+    <string name="call_preview_title">Preview only</string>
+    <string name="call_preview_message">Voice subscriptions aren’t on sale yet. Nothing was bought or charged, and your voice time hasn’t changed.</string>
+    <string name="call_paid_used">This month’s 5 hours of voice are used. More comes back on %1$s.</string>
+    <string name="call_paid_used_later">This month’s 5 hours of voice are used.</string>
+    <string name="call_restore">Restore Purchases</string>
+    <string name="call_restore_done">Your subscription is restored.</string>
+    <string name="call_restore_none">No voice subscription was found for this store account.</string>
+    <string name="call_restore_failed">Couldn’t reach the store. Try again later.</string>
+    <string name="call_purchase_unconfirmed">Your purchase isn’t confirmed yet. Happy checks again when you come back.</string>
+</resources>

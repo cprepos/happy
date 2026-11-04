@@ -24,6 +24,7 @@ import com.slopus.happy.ui.components.HappyAlert
 import com.slopus.happy.ui.connect.DeepLink
 import com.slopus.happy.ui.connect.DeepLinks
 import com.slopus.happy.ui.conversation.openConversation
+import com.slopus.happy.ui.files.openWorkspaceFile
 
 /**
  * Opens Happy URLs (edge SSO contract §7) in one account's back stack.
@@ -78,10 +79,7 @@ class HappyLinks internal constructor(
         }
     }
 
-    private fun go(connectionId: String, link: HappyLink) = nav.openHappyLink(connectionId, link) { surfaceId ->
-        graph.agentSessions.session(connectionId)?.feed?.value?.rows
-            ?.firstNotNullOfOrNull { row -> (row as? AgentFeedRow.Surface)?.takeIf { it.id == surfaceId } }
-    }
+    private fun go(connectionId: String, link: HappyLink) = nav.openHappyLink(connectionId, link)
 
     companion object {
         /** The connection an external link for [instanceId] opens on: the open one if it is that installation, else the first that is; null if none. */
@@ -112,26 +110,24 @@ fun rememberHappyLinks(graph: AppGraph, nav: NavHostController, openConnection: 
 }
 
 /**
- * [link] on [connectionId]: an artifact, a conversation, a joined Surface;
- * a file opens its agent's conversation. What the phone has no screen for
- * (a workspace, project, service or person, or a Surface not joined:
- * [surface] is the connection's joined one) opens the connection's home.
+ * [link] on [connectionId]: an artifact, a conversation, a Surface,
+ * a workspace's file at its line. What the phone has no screen for
+ * (a workspace, project, service or person) opens the connection's home.
  */
-fun NavHostController.openHappyLink(connectionId: String, link: HappyLink, surface: (id: String) -> AgentFeedRow.Surface?) {
+fun NavHostController.openHappyLink(connectionId: String, link: HappyLink) {
     when (link) {
         is HappyLink.Reference -> when (link.kind) {
             HappyReferenceKind.Artifact -> navigate(
                 ArtifactRoute(connectionId, link.id, version = link.version ?: 1, followsLatest = link.version == null, pinned = link.version != null),
             )
             HappyReferenceKind.Agent -> openConversation(connectionId, link.id)
-            HappyReferenceKind.Surface -> surface(link.id)
-                ?.let { navigate(AgentSurfaceRoute(connectionId, it.id, it.type, it.name)) }
-                ?: popBackStack(HomeRoute, inclusive = false)
+            HappyReferenceKind.Surface -> navigate(com.slopus.happy.ui.surfaces.SurfaceRoute(connectionId, link.id))
             else -> popBackStack(HomeRoute, inclusive = false)
         }
+        // The file itself, in the viewer at its first line (unit files' entry).
         is HappyLink.File -> when (val target = link.target) {
-            is HappyLink.Target.Agent -> openConversation(connectionId, target.agentId)
-            is HappyLink.Target.Workspace -> popBackStack(HomeRoute, inclusive = false)
+            is HappyLink.Target.Agent -> openWorkspaceFile(connectionId, link.path, agentId = target.agentId, line = link.lines?.first)
+            is HappyLink.Target.Workspace -> openWorkspaceFile(connectionId, link.path, workspaceId = target.workspaceId, line = link.lines?.first)
         }
     }
 }

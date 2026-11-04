@@ -27,8 +27,6 @@
     <string name="artifact_open_with_body">Android no puede mostrar este archivo aquí. Se abre en una app de este teléfono que pueda leerlo.</string>
     <string name="browser_via">a través de %1$s</string>
     <string name="browser_default_computer">conexión de agente</string>
-    <string name="browser_unreachable">No se puede contactar con %1$s.\nComprueba la conexión del agente y toca Recargar.</string>
-    <string name="browser_unreachable_page">No se puede contactar con %1$s.\nComprueba la conexión o la dirección de la página y toca Recargar.</string>
     <string name="browser_unsupported">El WebView de este teléfono no puede enviar páginas a través de tu ordenador. Actualiza Android System WebView y toca Recargar.</string>
     <string name="browser_forward">Adelante</string>
     <string name="browser_close">Cerrar</string>
@@ -40,4 +38,106 @@
     <string name="link_menu_open_external_proxied">Fuera de la red del agente</string>
     <string name="link_menu_copy">Copiar enlace</string>
     <string name="link_menu_share">Compartir</string>
+
+    <string name="artifact_list_search">Buscar artefactos</string>
+    <string name="artifact_list_empty">Aún no hay artefactos. Pide a un agente que cree uno.</string>
+    <string name="artifact_list_no_matches">Ningún artefacto coincide.</string>
+    <string name="artifact_list_unsupported">Este Happy Agent no guarda artefactos.</string>
+    <string name="artifact_list_unavailable">No se pudieron cargar los artefactos. Comprueba que tu ordenador esté encendido.</string>
+    <string name="artifact_list_open">Abrir</string>
+    <string name="artifact_list_copy_title">Copiar título</string>
+    <string name="artifact_list_previous_7_days">7 días anteriores</string>
+    <string name="artifact_list_previous_30_days">30 días anteriores</string>
+    <string name="artifact_kind_live">Página en vivo</string>
+    <string name="artifact_kind_markdown">Documento</string>
+    <string name="artifact_kind_html">Página web</string>
+    <string name="artifact_kind_image">Imagen</string>
+    <string name="artifact_kind_image_series">Imágenes</string>
+    <string name="artifact_kind_video">Vídeo</string>
+    <string name="artifact_kind_document">Archivo</string>
+    <string name="artifact_kind_unknown">Artefacto</string>
+
+    <string name="artifact_card_kind_image_series">Serie de imágenes</string>
+    <string name="artifact_card_kind_document">Documento</string>
+    <string name="artifact_card_version">%1$s · Versión %2$d</string>
+
+    <string name="reference_artifact">artefacto</string>
+    <string name="reference_untitled_agent">Agente sin título</string>
+    <string name="reference_untitled_workspace">Espacio de trabajo sin título</string>
+    <string name="reference_unavailable_artifact">un artefacto no disponible</string>
+    <string name="reference_unavailable_agent">un agente no disponible</string>
+    <string name="reference_unavailable_workspace">un espacio de trabajo no disponible</string>
+    <string name="reference_unavailable_project">un proyecto no disponible</string>
+    <string name="reference_unavailable_service">un servicio no disponible</string>
+    <string name="reference_unavailable_user">un usuario no disponible</string>
+    <string name="reference_unavailable">una referencia no disponible</string>
+
+    <string name="artifact_history">Historial</string>
+    <string name="artifact_history_version">Versión %1$s</string>
+    <string name="artifact_history_latest">Más reciente</string>
+    <string name="artifact_history_showing">Mostrando la versión %1$s</string>
+    <string name="artifact_history_show_latest">Ver la más reciente</string>
+    <string name="artifact_history_failed">No se pudieron cargar las versiones.</string>
+
+    <string name="artifact_diff_since">Cambios desde la versión %1$s</string>
+
+    <string name="artifact_delete_title">¿Eliminar «%1$s»?</string>
+    <string name="artifact_delete_message">Se elimina para todos en este ordenador. Los chats que lo mostraban dirán que se eliminó.</string>
+    <string name="artifact_delete_failed">No se pudo eliminar este artefacto.</string>
+
+    <string name="feed_activity">Actividad</string>
+    <string name="feed_following">Siguiendo</string>
+    <string name="feed_mark_all_read">Marcar todo como leído</string>
+    <string name="feed_empty">Todavía no ha pasado nada. Aquí aparecen las nuevas tareas, bots, documentos, listas de tareas y artefactos, con cada cambio que tengan.</string>
+    <string name="feed_loading">Cargando las novedades…</string>
+    <string name="feed_unavailable">No se pudieron cargar las novedades. Comprueba que tu ordenador esté encendido.</string>
+    <string name="feed_unsupported">Este Happy Agent no tiene novedades. Actualízalo para tenerlas.</string>
+    <string name="feed_everywhere">En todas partes</string>
+    <string name="feed_places">Lugares</string>
+    <string name="feed_no_clusters">Todavía no hay nada que seguir. Las tareas, bots, documentos y listas de tareas aparecen aquí cuando pasa algo en ellos.</string>
+    <string name="feed_loading_clusters">Cargando…</string>
+    <string name="feed_clusters_unavailable">No se pudieron cargar. Comprueba que tu ordenador esté encendido.</string>
+    <string name="feed_unread_mark">No leído</string>
+    <string name="feed_everything">Todo</string>
+    <string name="feed_team">Equipo</string>
+    <string name="feed_follow">Seguir %1$s</string>
+    <string name="feed_mute">Silenciar %1$s</string>
+    <string name="feed_muted">Silenciado</string>
+    <string name="feed_follow_failed">No se pudo cambiar lo que sigues. %1$s</string>
+    <string name="feed_created_with">Creado · %1$s</string>
+    <string name="feed_created">Creado</string>
+    <string name="feed_changed">Cambiado</string>
+    <string name="feed_peek_empty">Aquí no ha pasado nada en los últimos 30 días.</string>
+    <string name="feed_you">Tú</string>
+    <string name="feed_two">%1$s y %2$s</string>
+    <plurals name="feed_others">
+        <item quantity="one">%1$s y %2$d más</item>
+        <item quantity="many">%1$s y %2$d más</item>
+        <item quantity="other">%1$s y %2$d más</item>
+    </plurals>
+    <plurals name="feed_unread">
+        <item quantity="one">%1$d sin leer</item>
+        <item quantity="many">%1$d sin leer</item>
+        <item quantity="other">%1$d sin leer</item>
+    </plurals>
+    <plurals name="feed_new_todos">
+        <item quantity="one">%1$d tarea nueva</item>
+        <item quantity="many">%1$d tareas nuevas</item>
+        <item quantity="other">%1$d tareas nuevas</item>
+    </plurals>
+    <plurals name="feed_edits">
+        <item quantity="one">%1$d edición</item>
+        <item quantity="many">%1$d ediciones</item>
+        <item quantity="other">%1$d ediciones</item>
+    </plurals>
+    <plurals name="feed_versions">
+        <item quantity="one">%1$d versión nueva</item>
+        <item quantity="many">%1$d versiones nuevas</item>
+        <item quantity="other">%1$d versiones nuevas</item>
+    </plurals>
+    <plurals name="feed_updates">
+        <item quantity="one">%1$d actualización</item>
+        <item quantity="many">%1$d actualizaciones</item>
+        <item quantity="other">%1$d actualizaciones</item>
+    </plurals>
 </resources>

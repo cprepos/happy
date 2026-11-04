@@ -42,6 +42,16 @@ val revenueCatGoogleKey = providers.environmentVariable("EXPO_PUBLIC_REVENUE_CAT
     ?.takeIf { it.isNotBlank() }
     ?: providers.gradleProperty("happy.revenueCatGoogleKey").orNull.orEmpty()
 
+// The agent connection voice call's public ElevenLabs agent
+// (docs/agent-voice-call.md): never in the repository, so from the
+// environment, -Phappy.callAgentId or the ignored local.properties. Without
+// it the voice button says voice isn't set up.
+val callAgentId = providers.environmentVariable("HAPPY_CALL_AGENT_ID").orNull?.takeIf { it.isNotBlank() }
+    ?: providers.gradleProperty("happy.callAgentId").orNull?.takeIf { it.isNotBlank() }
+    ?: Properties().apply {
+        providers.fileContents(rootProject.layout.projectDirectory.file("local.properties")).asText.orNull?.let { load(it.reader()) }
+    }.getProperty("happy.callAgentId")?.takeIf { it.isNotBlank() }
+
 // Versions follow happy-app (app.config.js, eas.json): versionName is the
 // app's `version`, read from app.config.js so the two never drift; versionCode
 // is EAS's remote, auto-incremented build number, which a store build must
@@ -98,6 +108,7 @@ android {
 
         buildConfigField("String", "DEFAULT_SERVER_URL", "\"https://api.cluster-fluster.com\"")
         buildConfigField("String", "REVENUE_CAT_GOOGLE_KEY", groovy.json.JsonOutput.toJson(revenueCatGoogleKey))
+        buildConfigField("String", "CALL_AGENT_ID", callAgentId?.let { groovy.json.JsonOutput.toJson(it.trim()) } ?: "null")
         buildConfigField("String", "BUILD_COMMIT_SHA", buildCommitSha?.let { "\"$it\"" } ?: "null")
         buildConfigField("String", "BUILD_COMMIT_TIMESTAMP", buildCommitTimestamp?.let { "\"$it\"" } ?: "null")
     }
@@ -376,6 +387,7 @@ dependencies {
     implementation(libs.androidx.navigation.compose)
     implementation(libs.androidx.webkit)
     implementation(libs.androidx.browser)
+    implementation(libs.androidx.swiperefreshlayout)
 
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)
@@ -408,8 +420,7 @@ dependencies {
     implementation(libs.coil.compose)
     implementation(libs.lottie.compose)
     implementation(libs.coil.network.okhttp)
-    implementation(libs.revenuecat.purchases)
-    implementation(libs.revenuecat.ui)
+    implementation(libs.play.billing)
 
     testImplementation(libs.junit)
     testImplementation(libs.robolectric)

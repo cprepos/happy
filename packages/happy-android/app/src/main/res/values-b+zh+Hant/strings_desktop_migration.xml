@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="desktop_migration_close">關閉</string>
+    <string name="desktop_migration_desktop_title">Happy 現已登陸桌面</string>
+    <string name="desktop_migration_desktop_body">支援遠端伺服器多人協作、更低延遲、更好的附件支援等等。請盡快遷移！大約需要 5 分鐘，如果你有多台機器會稍久一些。</string>
+    <string name="desktop_migration_agent_connection_title">遷移到直接連線</string>
+    <string name="desktop_migration_agent_connection_body">你正在透過 Happy 伺服器使用 Happy Agent。直接連線可獲得最低延遲和最新功能。</string>
+    <string name="desktop_migration_settings_step">前往 Settings\u00A0›\u00A0Mobile\u00A0Access。</string>
+    <string name="desktop_migration_server_step">在伺服器上使用 Happy？</string>
+    <string name="desktop_migration_server_step_detail">在 Happy Desktop 中選擇它並掃描它的代碼。\n要設定新的遠端伺服器，只需在 Happy Desktop 中詢問 Chief of Staff 機器人。</string>
+    <string name="desktop_migration_learn_more">了解更多</string>
+</resources>

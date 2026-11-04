@@ -23,8 +23,6 @@
     <string name="artifact_open_with_body">Android 无法在此显示此文件。它会在此手机上能读取它的应用中打开。</string>
     <string name="browser_via">经由 %1$s</string>
     <string name="browser_default_computer">智能体连接</string>
-    <string name="browser_unreachable">无法连接 %1$s。\n请检查智能体连接，然后点按“重新加载”。</string>
-    <string name="browser_unreachable_page">无法连接 %1$s。\n请检查连接或页面地址，然后点按“重新加载”。</string>
     <string name="browser_unsupported">此手机的 WebView 无法通过你的电脑发送页面。请更新 Android System WebView，然后点按“重新加载”。</string>
     <string name="browser_forward">前进</string>
     <string name="browser_close">关闭</string>
@@ -36,4 +34,94 @@
     <string name="link_menu_open_external_proxied">不经过智能体的网络</string>
     <string name="link_menu_copy">复制链接</string>
     <string name="link_menu_share">分享</string>
+
+    <string name="artifact_list_search">搜索工件</string>
+    <string name="artifact_list_empty">还没有工件。让智能体创建一个吧。</string>
+    <string name="artifact_list_no_matches">没有匹配的工件。</string>
+    <string name="artifact_list_unsupported">此 Happy Agent 不保存工件。</string>
+    <string name="artifact_list_unavailable">无法加载工件。请确认你的电脑已开机。</string>
+    <string name="artifact_list_open">打开</string>
+    <string name="artifact_list_copy_title">复制标题</string>
+    <string name="artifact_list_previous_7_days">前 7 天</string>
+    <string name="artifact_list_previous_30_days">前 30 天</string>
+    <string name="artifact_kind_live">实时页面</string>
+    <string name="artifact_kind_markdown">文档</string>
+    <string name="artifact_kind_html">网页</string>
+    <string name="artifact_kind_image">图片</string>
+    <string name="artifact_kind_image_series">图片组</string>
+    <string name="artifact_kind_video">视频</string>
+    <string name="artifact_kind_document">文件</string>
+    <string name="artifact_kind_unknown">工件</string>
+
+    <string name="artifact_card_kind_image_series">图片系列</string>
+    <string name="artifact_card_kind_document">文档</string>
+    <string name="artifact_card_version">%1$s · 版本 %2$d</string>
+
+    <string name="reference_artifact">工件</string>
+    <string name="reference_untitled_agent">无标题代理</string>
+    <string name="reference_untitled_workspace">无标题工作区</string>
+    <string name="reference_unavailable_artifact">不可用的工件</string>
+    <string name="reference_unavailable_agent">不可用的代理</string>
+    <string name="reference_unavailable_workspace">不可用的工作区</string>
+    <string name="reference_unavailable_project">不可用的项目</string>
+    <string name="reference_unavailable_service">不可用的服务</string>
+    <string name="reference_unavailable_user">不可用的用户</string>
+    <string name="reference_unavailable">不可用的引用</string>
+
+    <string name="artifact_history">历史记录</string>
+    <string name="artifact_history_version">版本 %1$s</string>
+    <string name="artifact_history_latest">最新</string>
+    <string name="artifact_history_showing">正在显示版本 %1$s</string>
+    <string name="artifact_history_show_latest">显示最新版本</string>
+    <string name="artifact_history_failed">无法加载版本。</string>
+
+    <string name="artifact_diff_since">自版本 %1$s 以来的更改</string>
+
+    <string name="artifact_delete_title">删除“%1$s”？</string>
+    <string name="artifact_delete_message">它将对这台电脑上的所有人删除。显示过它的聊天会注明它已被删除。</string>
+    <string name="artifact_delete_failed">无法删除此工件。</string>
+
+    <string name="feed_activity">动态</string>
+    <string name="feed_following">关注</string>
+    <string name="feed_mark_all_read">全部标为已读</string>
+    <string name="feed_empty">还没有任何动态。新的任务、机器人、文档、待办清单和制品会显示在这里，连同它们的每一次更改。</string>
+    <string name="feed_loading">正在加载动态…</string>
+    <string name="feed_unavailable">无法加载动态。请检查你的电脑是否开机。</string>
+    <string name="feed_unsupported">这个 Happy Agent 没有动态。更新后即可使用。</string>
+    <string name="feed_everywhere">全局</string>
+    <string name="feed_places">各个地方</string>
+    <string name="feed_no_clusters">还没有可关注的内容。任务、机器人、文档和待办清单有动静后会显示在这里。</string>
+    <string name="feed_loading_clusters">正在加载…</string>
+    <string name="feed_clusters_unavailable">无法加载。请检查你的电脑是否开机。</string>
+    <string name="feed_unread_mark">未读</string>
+    <string name="feed_everything">全部</string>
+    <string name="feed_team">团队</string>
+    <string name="feed_follow">关注%1$s</string>
+    <string name="feed_mute">静音%1$s</string>
+    <string name="feed_muted">已静音</string>
+    <string name="feed_follow_failed">无法更改关注设置。%1$s</string>
+    <string name="feed_created_with">已创建 · %1$s</string>
+    <string name="feed_created">已创建</string>
+    <string name="feed_changed">已更改</string>
+    <string name="feed_peek_empty">过去 30 天这里没有任何动态。</string>
+    <string name="feed_you">你</string>
+    <string name="feed_two">%1$s和%2$s</string>
+    <plurals name="feed_others">
+        <item quantity="other">%1$s和另外 %2$d 位</item>
+    </plurals>
+    <plurals name="feed_unread">
+        <item quantity="other">%1$d 条未读</item>
+    </plurals>
+    <plurals name="feed_new_todos">
+        <item quantity="other">%1$d 个新待办</item>
+    </plurals>
+    <plurals name="feed_edits">
+        <item quantity="other">%1$d 次编辑</item>
+    </plurals>
+    <plurals name="feed_versions">
+        <item quantity="other">%1$d 个新版本</item>
+    </plurals>
+    <plurals name="feed_updates">
+        <item quantity="other">%1$d 次更新</item>
+    </plurals>
 </resources>

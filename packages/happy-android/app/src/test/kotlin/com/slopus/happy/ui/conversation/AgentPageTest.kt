@@ -2,10 +2,12 @@ package com.slopus.happy.ui.conversation
 
 import android.graphics.Bitmap
 import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
@@ -16,6 +18,7 @@ import androidx.compose.ui.unit.DpRect
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.height
 import androidx.compose.ui.unit.width
+import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.slopus.happy.connection.TransportResponse
 import com.slopus.happy.conversation.KeptMedia
@@ -99,6 +102,22 @@ class AgentPageTest {
         assertDp("the kind line is 2 under the name", name.bottom + 2.dp, subtitle.top)
         rule.onNodeWithText("Task · Working").assertIsDisplayed()
         shot("light")
+    }
+
+    /** iOS SessionDetailViewController's bar: Copy Link puts the agent's instance link on the clipboard (desktop e712a6e4). */
+    @Test fun `copy link puts the agents happy link on the clipboard, and without an instance there is none`() {
+        show(actions = AgentPageActions(link = "happy://inst/agents/a1"))
+        val bar = rule.node(GlassBarTags.BAR).bounds
+        val copy = rule.node(AgentPageTags.COPY_LINK).bounds
+        assertTrue("in the bar's end", copy.right <= bar.right && copy.left > (PHONE_WIDTH / 2).dp)
+        rule.node(AgentPageTags.COPY_LINK).performClick()
+        val clipboard = ApplicationProvider.getApplicationContext<android.content.Context>().getSystemService(android.content.ClipboardManager::class.java)
+        assertEquals("happy://inst/agents/a1", clipboard.primaryClip?.getItemAt(0)?.text?.toString())
+    }
+
+    @Test fun `a daemon with no instance id offers no copy link`() {
+        show()
+        rule.node(AgentPageTags.COPY_LINK).assertDoesNotExist()
     }
 
     @Test fun `the tiles are two to a row on the cards inset`() {
@@ -244,6 +263,32 @@ class AgentPageTest {
         all(AgentPageTags.DETAILS_ROW).forEach { assertDp("a detail is 52", 52, it.height) }
     }
 
+    @Test fun `over its chat the permission mode is a card under the tiles that picks through the chat`() {
+        val picked = ArrayList<com.slopus.happy.conversation.Mode>()
+        show(AgentPageFixtures.page.copy(chatMode = AgentPageFixtures.mode), AgentPageActions(onModeChange = { picked += it }))
+        val tiles = rule.node(AgentPageTags.TILES).bounds
+        val row = rule.node(AgentPageTags.PERMISSION).bounds
+        assertDp("the card is a card gap under the tiles", 24, row.top - tiles.bottom)
+        assertDp("the row is a Settings row", 52, row.height)
+        assertDp("on the card's width", card, row.width)
+        rule.onNodeWithText("Auto", useUnmergedTree = true).assertIsDisplayed()
+        // The details leave it to the card.
+        rule.onAllNodesWithText("Permission mode", useUnmergedTree = true).assertCountEquals(1)
+
+        rule.node(AgentPageTags.PERMISSION).performClick()
+        rule.waitForIdle()
+        rule.onNodeWithText("Full access").performClick()
+        rule.waitForIdle()
+        assertEquals(listOf(AgentPageFixtures.mode.copy(permissionMode = "full_access")), picked)
+    }
+
+    @Test fun `opened from anywhere else there is no card and the details name the mode`() {
+        show()
+        rule.onAllNodesWithTag(AgentPageTags.PERMISSION, useUnmergedTree = true).assertCountEquals(0)
+        rule.node(AgentPageTags.DETAILS).performScrollTo()
+        rule.onNodeWithText("Permission mode", useUnmergedTree = true).assertIsDisplayed()
+    }
+
     @Test fun `a workspace's changes are a detail of their own, counted as home counts them, opening the changes`() {
         val opened = ArrayList<String>()
         val changes = com.slopus.happy.agent.WorkspaceLineChanges("ready", 12, 3, true, 1.0)
@@ -287,5 +332,28 @@ class AgentPageTest {
         rule.node(AgentPageTags.SCROLL).performTouchInput { swipeUp(startY = bottom - 100f, endY = top + 100f) }
         rule.waitForIdle()
         shot("scrolled-dark")
+    }
+
+    /** desktop's task panel's Files, under Changes: the workspace's folder, opened on tap. */
+    @Test fun `a workspace's files follow its changes and open its folder`() {
+        val opened = ArrayList<String>()
+        show(
+            AgentPageFixtures.page.copy(workspaceId = "w1"),
+            AgentPageActions(onOpenChanges = { opened += "changes:$it" }, onOpenFiles = { opened += "files:$it" }),
+        )
+        rule.node(AgentPageTags.FILES).performScrollTo()
+        val changes = rule.node(AgentPageTags.CHANGES).bounds
+        val files = rule.node(AgentPageTags.FILES).bounds
+        assertDp("a detail is 52", 52, files.height)
+        assertDp("Files is under Changes", changes.bottom, files.top)
+        rule.onNodeWithText("Files", useUnmergedTree = true).assertIsDisplayed()
+        rule.node(AgentPageTags.FILES).performClick()
+        assertEquals(listOf("files:w1"), opened)
+    }
+
+    @Test fun `without a workspace there are no changes or files`() {
+        show(AgentPageFixtures.page.copy(workspaceId = null))
+        rule.onAllNodesWithTag(AgentPageTags.CHANGES, useUnmergedTree = true).assertCountEquals(0)
+        rule.onAllNodesWithTag(AgentPageTags.FILES, useUnmergedTree = true).assertCountEquals(0)
     }
 }

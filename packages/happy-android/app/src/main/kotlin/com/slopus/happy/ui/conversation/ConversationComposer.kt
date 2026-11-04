@@ -76,6 +76,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.slopus.happy.R
 import com.slopus.happy.attachments.AttachmentPreview
+import com.slopus.happy.attachments.PendingPicture
 import com.slopus.happy.conversation.AccountUsage
 import com.slopus.happy.conversation.ContextGauge
 import com.slopus.happy.conversation.ConversationState
@@ -191,6 +192,8 @@ internal fun ConversationComposer(
     onStop: () -> Unit,
     onModeChange: (Mode) -> Unit,
     modifier: Modifier = Modifier,
+    /** [onSend] with gallery photos still being read; null reads them before they go. */
+    onSendPending: ((String, List<AttachmentPreview>, List<PendingPicture>) -> Boolean)? = null,
     backdrop: GlassSource? = null,
     pictures: ImagePicker? = rememberComposerImages(enabled = true),
     /** "+"'s sheet is up as the composer first shows. */
@@ -215,6 +218,8 @@ internal fun ConversationComposer(
      * [ConversationComposerSpec.transcriptMin] (iOS `ChatScreenLayout.compactBelow`).
      */
     barFoot: Dp? = null,
+    /** The agent's workspace: the attach sheet's File tab can name one of its files. */
+    workspace: com.slopus.happy.ui.files.WorkspaceSource? = null,
 ) {
     RecomposeProbe.mark(ConversationScreenTags.PROBE_COMPOSER)
     val colors = HappyTheme.colors
@@ -289,27 +294,17 @@ internal fun ConversationComposer(
     }
 
     // The draft and what waits go together; new work keeps them until it is made.
-    fun submit(extra: List<AttachmentPreview> = emptyList()) {
+    fun submit(extra: List<AttachmentPreview> = emptyList(), pending: List<PendingPicture> = emptyList()) {
         val sent = text
-        val alone = attached.isEmpty() && extra.isEmpty()
-        if (onSend(text, attached + extra)) {
+        val alone = attached.isEmpty() && extra.isEmpty() && pending.isEmpty()
+        val went = if (pending.isEmpty() || onSendPending == null) onSend(text, attached + extra) else onSendPending(text, attached + extra, pending)
+        if (went) {
             if (alone && !reduceMotion) fly(sent)
             pictures?.clear()
             onSent()
         } else if (extra.isNotEmpty()) {
             pictures?.state?.images?.addAll(extra)
         }
-    }
-
-    // New work's first message goes once the task or bot is made: only then does it take the
-    // words and pictures, the words unless edited since. Seen once, so a return never clears again.
-    var takenSeen by rememberSaveable { mutableIntStateOf(state.taken?.serial ?: 0) }
-    LaunchedEffect(state.taken?.serial) {
-        val taken = state.taken ?: return@LaunchedEffect
-        if (taken.serial <= takenSeen) return@LaunchedEffect
-        takenSeen = taken.serial
-        pictures?.clear()
-        if (text.trim() == taken.text) onSent()
     }
 
     val open = focused || text.isNotEmpty() || attached.isNotEmpty()
@@ -431,7 +426,7 @@ internal fun ConversationComposer(
                     ) {
                         // Send and Stop are one button changing its glyph (iOS AgentInputPrimaryGlyphMotion).
                         val glyph = when {
-                            state.stopping || state.newWork?.making == true -> PrimaryGlyphKind.Busy
+                            state.stopping -> PrimaryGlyphKind.Busy
                             primary == PrimaryAction.Stop -> PrimaryGlyphKind.Stop
                             else -> PrimaryGlyphKind.Send
                         }
@@ -473,9 +468,12 @@ internal fun ConversationComposer(
             caption = text,
             onCaptionChange = onTextChange,
             onSend = { staged -> submit(staged) },
+            onSendPending = onSendPending?.let { { staged, pending -> submit(staged, pending) } },
             onClosed = { attaching = false },
             room = AttachAccepts.Agent.maxItems - attached.size,
             button = plus,
+            workspace = workspace,
+            onPhoto = pictures?.let { picker -> { photo -> if (picker.state.checkRoom()) picker.state.images.add(photo) } },
         )
         ModelPicker(
             open = picker,

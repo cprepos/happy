@@ -11,6 +11,8 @@ import androidx.compose.ui.platform.LocalResources
 import com.slopus.happy.model.settings.PushText
 import com.slopus.happy.model.settings.PushTokensApi
 import com.slopus.happy.push.rememberPushRegistration
+import com.slopus.happy.push.RefreshPushPermissionOnResume
+import com.slopus.happy.ui.browser.LocalLinkOpener
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.Composable
@@ -36,7 +38,8 @@ import com.slopus.happy.auth.AuthState
 import com.slopus.happy.model.Machine
 import com.slopus.happy.model.MachineChoice
 import com.slopus.happy.model.Profile
-import com.slopus.happy.payments.Paywall
+import com.slopus.happy.payments.OfferSheet
+import com.slopus.happy.payments.Offers
 import com.slopus.happy.model.collectMachineChoices
 import kotlinx.coroutines.flow.MutableStateFlow
 import com.slopus.happy.model.settings.ConnectApi
@@ -49,6 +52,8 @@ import com.slopus.happy.ui.LocalAccountSwitcher
 import com.slopus.happy.ui.AccountSwitcher
 import com.slopus.happy.ui.ProvideSettingsDissolve
 import com.slopus.happy.ui.connection.AgentConnectionSettings
+import com.slopus.happy.ui.connection.LegacyDataStorageRoute
+import com.slopus.happy.ui.connection.dataStorageRoutes
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.rememberScrollState
 import com.slopus.happy.accounts.accountId
@@ -81,6 +86,7 @@ import com.slopus.happy.ui.voice.VoiceSettingsRoute
 /** Settings' screens; [SettingsRoute] itself is HappyApp's ([AccountSettings]). */
 fun NavGraphBuilder.settingsRoutes(graph: AppGraph, nav: NavHostController) {
     voiceRoutes(graph, nav)
+    dataStorageRoutes(graph, nav)
     page<AccountRoute> { entry -> ProvideRowReveal(entry.toRoute<AccountRoute>().reveal) { Account(graph, nav) } }
     page<BackupRoute> { entry -> ProvideRowReveal(entry.toRoute<BackupRoute>().reveal) { Backup(graph, nav) } }
     page<AppearanceRoute> { Appearance(graph, nav) }
@@ -214,48 +220,41 @@ internal fun errorAlert(alerts: Alerts): (String?) -> Unit {
     return { message -> alerts.show(Alert(title, message ?: unknown, listOf(AlertButton(ok)))) }
 }
 
-/** Support us reports unavailable billing through the same localized alert as other settings actions. */
-@Composable
-internal fun rememberSupportAction(paywall: Paywall, onError: (String?) -> Unit): HappyAction {
-    val unavailable = stringResource(R.string.settings_support_unavailable)
-    return rememberHappyAction(onError) {
-        val result = paywall.present("voluntary_support")
-        if (!result.success) onError(unavailable)
-    }
-}
+/** Support us: the app's offer sheet for it, which says so itself when nothing is on sale. */
+internal fun supportAction(offers: Offers): () -> Unit = { offers.show(OfferSheet.Support(offers.offer)) }
 
 /** What About shows for this build, and Support us for this account's purchases. */
 @Composable
 internal fun rememberAboutInfo(graph: AppGraph): AboutInfo {
     val resources = LocalResources.current
-    val purchases by graph.purchases.purchases.collectAsStateWithLifecycle()
+    val pro by graph.subscription.pro.collectAsStateWithLifecycle()
     return AboutInfo(
         versionName = versionDetail(BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE),
         versionSubtitle = buildSubtitle(BuildConfig.BUILD_COMMIT_SHA, BuildConfig.BUILD_COMMIT_TIMESTAMP, resources.getString(R.string.settings_commit)) {
             resources.getString(R.string.settings_commit_at, it)
         },
-        isPro = BuildConfig.DEBUG || purchases.entitlements["pro"] == true,
+        isPro = BuildConfig.DEBUG || pro,
     )
 }
 
 /**
  * About's and Support us' actions, the same on both kinds of page: links
  * open outside, What's New, ten taps on Version toggle developer mode (with
- * its alert), Support us presents the paywall. Shows its own alerts.
+ * its alert), Support us opens its offer sheet. Shows its own alerts.
  */
 @Composable
 internal fun rememberAboutActions(graph: AppGraph, nav: NavHostController): AboutActions {
     val uriHandler = LocalUriHandler.current
+    val linkOpener = LocalLinkOpener.current
     val alerts = remember { Alerts() }
-    val onError = errorAlert(alerts)
-    val support = rememberSupportAction(graph.purchases, onError)
+    val support = remember(graph) { supportAction(graph.offers) }
     val versionClicks = remember { MultiClick(required = 10) }
     val developerMode = stringResource(R.string.modals_developer_mode)
     val developerModeEnabled = stringResource(R.string.modals_developer_mode_enabled)
     val developerModeDisabled = stringResource(R.string.modals_developer_mode_disabled)
     val ok = stringResource(R.string.common_ok)
     alerts.Host()
-    return remember(graph, nav, uriHandler, support, developerMode, developerModeEnabled, developerModeDisabled, ok) {
+    return remember(graph, nav, uriHandler, linkOpener, support, developerMode, developerModeEnabled, developerModeDisabled, ok) {
         AboutActions(
             onOpenUrl = { url -> openExternalUrl(uriHandler, url) },
             onWhatsNew = { nav.navigate(ChangelogRoute) },
@@ -266,7 +265,11 @@ internal fun rememberAboutActions(graph: AppGraph, nav: NavHostController): Abou
                     alerts.show(Alert(developerMode, if (enabled) developerModeEnabled else developerModeDisabled, listOf(AlertButton(ok))))
                 }
             },
-            onSupport = support::run,
+            onSupport = support,
+            onManageSubscriptions = {
+                if (linkOpener != null) linkOpener.openExternal(SettingsSpec.SUBSCRIPTIONS_URL)
+                else openExternalUrl(uriHandler, SettingsSpec.SUBSCRIPTIONS_URL)
+            },
         )
     }
 }
@@ -312,19 +315,21 @@ private fun SettingsIndex(graph: AppGraph, nav: NavHostController, scroll: Scrol
     val registry by graph.accountStore.registry.collectAsStateWithLifecycle()
     val connect = rememberTerminalConnect(graph)
     var enteringUrl by remember { mutableStateOf(false) }
-    val kind = stringResource(R.string.settings_happy_account)
+    val kind = stringResource(R.string.account_kind_cli)
     val id = accountId(signedIn.credentials) ?: stored.id
     // The store follows a switch a moment after the account: until it is this one's, the switcher's copy.
     val profile = stored.takeIf { it.id.isNotEmpty() && it.id == signedIn.publicId }
     val display = registry.entry(id)?.display
     val login = profile?.github?.login ?: display?.username
     val switcher = LocalAccountSwitcher.current
+    val name = profile?.displayName ?: display?.name ?: login ?: kind
 
     SettingsScreen(
         profile = SettingsProfile(
             id = id,
-            name = profile?.displayName ?: display?.name ?: login ?: kind,
-            subtitle = login?.let { "@$it" } ?: kind,
+            name = name,
+            // One with no name of its own is already called by its kind (iOS's SettingsViewController).
+            subtitle = if (name == kind) "" else kindSubtitle(kind, login?.let { "@$it" }),
             imageUri = profile?.avatarUrl ?: display?.avatarUrl,
             thumbhash = profile?.avatar?.thumbhash ?: display?.avatarThumbhash,
         ),
@@ -340,6 +345,7 @@ private fun SettingsIndex(graph: AppGraph, nav: NavHostController, scroll: Scrol
                 onLanguage = { nav.navigate(LanguageRoute()) },
                 onVoice = { nav.navigate(VoiceSettingsRoute()) },
                 onAgents = { nav.navigate(AgentsRoute) },
+                onDataStorage = { nav.navigate(LegacyDataStorageRoute) },
                 onScanTerminal = connect::scan,
                 onEnterTerminal = { enteringUrl = true },
                 onSignOut = { if (switcher != null) switcher.removingFromSettings { graph.logout().join() } else graph.logout() },
@@ -362,7 +368,7 @@ private fun SettingsIndex(graph: AppGraph, nav: NavHostController, scroll: Scrol
 @Composable
 private fun rememberPageEntries(graph: AppGraph, nav: NavHostController, account: AuthState.SignedIn, profile: Profile): List<SettingsEntry> {
     val settings by graph.settings.settings.collectAsStateWithLifecycle()
-    val purchases by graph.purchases.purchases.collectAsStateWithLifecycle()
+    val pro by graph.subscription.pro.collectAsStateWithLifecycle()
     return accountPageEntries(
         anonId = account.encryption.anonId,
         publicId = account.publicId,
@@ -371,7 +377,7 @@ private fun rememberPageEntries(graph: AppGraph, nav: NavHostController, account
         server = serverHost(graph),
     ) { nav.navigate(AccountRoute(reveal = it)) } +
         backupPageEntries { nav.navigate(BackupRoute(reveal = it)) } +
-        voicePageEntries(settings, purchases.entitlements["pro"] == true) { nav.navigate(VoiceSettingsRoute(reveal = it)) } +
+        voicePageEntries(settings, pro) { nav.navigate(VoiceSettingsRoute(reveal = it)) } +
         languagePageEntries(settings.preferredLanguage, Languages.detectedName(graph.language.deviceLocales())) { nav.navigate(LanguageRoute(reveal = it)) }
 }
 
@@ -420,6 +426,7 @@ private fun Account(graph: AppGraph, nav: NavHostController) {
         )
     }
     var push by remember { mutableStateOf(PushState(deviceLabel = deviceLabel, appLabel = appLabel)) }
+    RefreshPushPermissionOnResume(pushRegistration) { push = push.copy(permission = it) }
 
     suspend fun loadPush(showErrors: Boolean = false) {
         push = push.copy(loading = true)

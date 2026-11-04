@@ -44,6 +44,9 @@ data class AgentConnection(
      * gets one of their own, never this one's sessions, caches or cursor.
      */
     val userId: String? = null,
+    /** Last health response's daemon version, shown separately from this phone's build. */
+    val daemonVersion: String? = null,
+    val protocol: Int? = null,
 )
 
 /**
@@ -72,13 +75,22 @@ class AgentConnections(
     private val state = MutableStateFlow(readRegistry())
     private val endpointLock = Any()
     private val endpoints = mutableMapOf<String, AgentEndpoint>()
+    private val diagnosticTransports = TransportDiagnosticsRegistry()
+
+    init {
+        // Credentials whose entry went in a disconnect the process didn't live to finish.
+        val listed = state.value.mapTo(HashSet()) { it.id }
+        secrets.keys().filterNot { it in listed }.forEach(secrets::deleteItem)
+    }
 
     internal fun transport(id: String, credentials: AgentConnectionCredentials, make: (AgentConnectionCredentials) -> Transport): Transport {
         val endpoint = synchronized(endpointLock) {
             endpoints.getOrPut(id) { AgentEndpoint(credentials) { next -> saveEndpoint(id, next) } }
         }
-        return AgentEndpointTransport(endpoint, make)
+        return diagnosticTransports.track(id, AgentEndpointTransport(endpoint, make))
     }
+
+    suspend fun diagnostics(id: String): List<TransportDiagnostics> = diagnosticTransports.snapshot(id)
 
     private suspend fun saveEndpoint(id: String, next: AgentConnectionCredentials) = lock.withLock {
         withContext(Dispatchers.IO) {
@@ -162,6 +174,8 @@ class AgentConnections(
                     avatarETag = previous?.avatarETag,
                     addedAt = previous?.addedAt ?: now(),
                     instanceId = agent?.instanceId ?: previous?.instanceId,
+                    daemonVersion = agent?.daemonVersion ?: previous?.daemonVersion,
+                    protocol = agent?.protocol ?: previous?.protocol,
                 ),
                 agent?.avatar ?: NodeAvatar.Unchanged,
             )
@@ -240,6 +254,8 @@ class AgentConnections(
                             server = origin.value,
                             instanceId = agent?.instanceId ?: existing?.instanceId,
                             userId = userId,
+                            daemonVersion = agent?.daemonVersion ?: existing?.daemonVersion,
+                            protocol = agent?.protocol ?: existing?.protocol,
                         ),
                         agent?.avatar ?: NodeAvatar.Unchanged,
                     )
@@ -380,9 +396,15 @@ class AgentConnections(
         }
     }
 
-    /** [account] gone from this phone: its endpoint, tokens, credentials, picture and entry (its session and caches go with the entry, `AgentSessions`). Holding [lock], on IO. */
+    /**
+     * [account] gone from this phone: its entry first (its session and caches
+     * go with it, `AgentSessions`), so a kill midway never lists it again
+     * (iOS c7d74a4e8); then its endpoint, tokens, credentials and picture.
+     * Holding [lock], on IO.
+     */
     private suspend fun forget(account: AgentConnection, keepEntry: Boolean = false) {
         val id = account.id
+        if (!keepEntry) write(state.value.filterNot { it.id == id })
         synchronized(endpointLock) { endpoints.remove(id) }?.retire()
         synchronized(tokens) {
             tokens.remove(id)
@@ -390,7 +412,6 @@ class AgentConnections(
         }
         secrets.deleteItem(id)
         account.avatarFile?.let { File(it).delete() }
-        if (!keepEntry) write(state.value.filterNot { it.id == id })
     }
 
     private fun read(id: String): AgentConnectionCredentials? = try {

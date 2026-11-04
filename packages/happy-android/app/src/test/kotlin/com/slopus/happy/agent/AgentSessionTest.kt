@@ -10,6 +10,7 @@ import com.slopus.happy.connection.AgentConnections
 import com.slopus.happy.connection.RequestCategory
 import com.slopus.happy.connection.Transport
 import com.slopus.happy.connection.TransportResponse
+import com.slopus.happy.documents.DocumentStreamEvent
 import com.slopus.happy.testing.SoftwareKeys
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CompletableDeferred
@@ -21,6 +22,9 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.take
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.buildJsonObject
@@ -93,6 +97,36 @@ class AgentSessionTest {
         seen.clear()
         ArtifactClient(sessions.session(id)!!.client).file("r1", 2, "report.md")
         assertEquals(listOf(Triple("addr", "token", "/v0/artifacts/r1/versions/2/files/report.md")), seen)
+    }
+
+    @Test
+    fun liveDocumentFramesGoToTheirDocumentNeverTheJournal() = runBlocking {
+        val session = sessions().session(id)!!
+        val subscribed = CompletableDeferred<Unit>()
+        val heard = async {
+            withTimeout(10_000) {
+                session.documents.streams.events("d1")
+                    .onEach { if (it is DocumentStreamEvent.Connected) subscribed.complete(Unit) }
+                    .take(2).toList()
+            }
+        }
+        val journal = mutableListOf<String>()
+        val listening = launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+            session.events.collect { journal += it.type }
+        }
+        agent.frames.send("event: hello\ndata: {\"cursor\":\"c0\",\"gap\":false,\"resumed\":true,\"daemonId\":\"d1\",\"streamId\":\"st1\"}\n\n")
+        eventually({ session.documents.streams.current }) { it == "st1" }
+        // Seeing the stream's id does not mean callbackFlow's collector has registered yet.
+        withTimeout(10_000) { subscribed.await() }
+        agent.frames.send("event: document.update\ndata: {\"surfaceId\":\"d1\",\"seq\":3,\"update\":\"AAA=\"}\n\n")
+        agent.frames.send(Wire.frame("c1", "agent.updated", Wire.updated("agentId", "at1", "01", "02", buildJsonObject { put("status", "thinking") })))
+        val events = heard.await()
+        assertEquals(DocumentStreamEvent.Connected("st1"), events[0])
+        assertEquals(3, (events[1] as DocumentStreamEvent.Update).frame.seq)
+        eventually({ journal.toList() }) { "agent.updated" in it }
+        listening.cancel()
+        assertFalse("A document frame never reaches the journal", "document.update" in journal)
+        assertEquals("c1", session.catalog.value.cursor)
     }
 
     @Test
@@ -250,7 +284,7 @@ class AgentSessionTest {
     @Test
     fun aClosedConnectionOrBackgroundAppHoldsNoLink() = runBlocking {
         foreground.value = false
-        val session = sessions().session(id)!!
+        val session = AgentSession(id, connections, null, foreground, scope, { agent })
         kotlinx.coroutines.delay(300)
         assertTrue(agent.calls.isEmpty())
         foreground.value = true
@@ -424,6 +458,42 @@ class AgentSessionTest {
     }
 
     @Test
+    fun theNetworkBackALinkNotLiveStartsOverAtOnce() = runBlocking {
+        // The first try went out with no network and hangs; the backoff after it would be seconds more.
+        val health = java.util.concurrent.atomic.AtomicInteger()
+        val session = AgentSession(id, connections, null, foreground, scope, { object : Transport by agent {
+            override suspend fun request(method: String, path: String, credential: String, body: ByteArray?, headers: Map<String, String>, category: RequestCategory): TransportResponse {
+                if (path == "/v0/health" && health.incrementAndGet() == 1) kotlinx.coroutines.awaitCancellation()
+                return agent.request(method, path, credential, body, headers)
+            }
+        } })
+        try {
+            eventually({ health.get() }) { it == 1 }
+            agent.frames.send(Wire.hello("c0"))
+            session.networkReturned()
+            eventually({ session.status.value }) { it == AgentLinkStatus.Connected }
+            // Live, a return changes nothing: the link isn't asked for again.
+            val asked = health.get()
+            session.networkReturned()
+            kotlinx.coroutines.delay(200)
+            assertEquals(AgentLinkStatus.Connected, session.status.value)
+            assertEquals(asked, health.get())
+        } finally { session.close() }
+    }
+
+    @Test
+    fun aLinkNotRunningIsLeftAloneByANetworkReturn() = runBlocking {
+        foreground.value = false
+        val session = AgentSession(id, connections, null, foreground, scope, { agent })
+        try {
+            kotlinx.coroutines.delay(200)
+            session.networkReturned()
+            kotlinx.coroutines.delay(200)
+            assertTrue(agent.calls.none { it.endsWith("/v0/health") })
+        } finally { session.close() }
+    }
+
+    @Test
     fun v2EndpointRemovalUsesNormalOfflineStateWithoutTailcat() = runBlocking {
         val credentials = AgentConnectionCredentials("https://agent.example", 443, "v2device", "token", "https://agent.example", false)
         val account = connections.add(credentials, "V2")
@@ -491,6 +561,83 @@ class AgentSessionTest {
     private fun surfaces(session: AgentSession) = session.feed.value.rows.filterIsInstance<AgentFeedRow.Surface>().map { it.id }
 
     @Test
+    fun refreshingSurfacesMergesVersionsAndRetainsAccessibleUnjoinedInstances() = runBlocking {
+        agent.bootstrap = Wire.bootstrap(surfaces = listOf(Wire.surface("s1", "Groceries", "todo").with("version", "02"),
+            Wire.surface("s2", "Team notes", "document", mapOf("u2" to "1")).with("version", "01")))
+        agent.resources["/v0/surfaces"] = buildJsonObject { put("surfaces", kotlinx.serialization.json.JsonArray(listOf(
+            Wire.surface("s1", "Old title", "todo").with("version", "01"), Wire.surface("s3", "Launch", "todo").with("version", "01")))) }
+        val session = sessions().session(id)!!
+        eventually({ session.surfaces.value.surfaces.size }) { it == 2 }
+        assertTrue(session.refreshSurfaces())
+        eventually({ session.surfaces.value.surfaces.size }) { it == 3 }
+        assertEquals("Groceries", session.surfaces.value["s1"]?.name)
+        assertEquals("Team notes", session.surfaces.value["s2"]?.name)
+    }
+
+    @Test
+    fun aSurfaceWrittenDuringRefreshCannotBeRolledBackByThatRead() = runBlocking {
+        agent.bootstrap = Wire.bootstrap(surfaces = listOf(Wire.surface("s1", "Groceries", "todo").with("version", "01")))
+        val started = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val session = sessions(transport = { object : Transport by agent {
+            override suspend fun request(method: String, path: String, credential: String, body: ByteArray?, headers: Map<String, String>, category: RequestCategory): TransportResponse {
+                if (path != "/v0/surfaces") return agent.request(method, path, credential, body, headers, category)
+                val response = if (method == "GET") {
+                    started.complete(Unit); release.await()
+                    buildJsonObject { put("surfaces", kotlinx.serialization.json.JsonArray(listOf(Wire.surface("s1", "Older read", "todo").with("version", "02")))) }
+                } else buildJsonObject { put("surface", Wire.surface("s1", "Latest answer", "todo").with("version", "03")) }
+                return TransportResponse(200, body = response.toString().toByteArray())
+            }
+        } }).session(id)!!
+        eventually({ session.surfaces.value.loaded }) { it }
+        val reading = async { session.refreshSurfaces() }
+        started.await()
+        session.createSurface("todo", "Latest answer", "s1")
+        release.complete(Unit)
+        assertTrue(reading.await())
+        eventually({ session.surfaces.value["s1"]?.name }) { it == "Latest answer" }
+        assertEquals("03", session.surfaces.value["s1"]?.version)
+    }
+
+    @Test
+    fun aSurfacesChatIsMadeOnceAskedAgainWhileUnreachableAndThenKnown() = runBlocking {
+        agent.bootstrap = Wire.bootstrap(surfaces = listOf(Wire.surface("s1", "Plan", "document").with("version", "01")))
+        val asked = mutableListOf<String>()
+        val session = sessions(transport = { object : Transport by agent {
+            override suspend fun request(method: String, path: String, credential: String, body: ByteArray?, headers: Map<String, String>, category: RequestCategory): TransportResponse {
+                if (path != "/v0/surfaces/s1/chat") return agent.request(method, path, credential, body, headers, category)
+                asked += body?.decodeToString().orEmpty()
+                // The first try never arrives; the second makes the chat.
+                if (asked.size == 1) return TransportResponse(503, body = "{}".toByteArray())
+                val answer = buildJsonObject {
+                    put("agent", buildJsonObject { put("id", "chat-agent"); put("workspaceId", "w-chat") })
+                    put("surface", Wire.surface("s1", "Plan", "document").with("chatAgentId", "chat-agent").with("version", "02"))
+                }
+                return TransportResponse(200, mapOf("content-type" to "application/json"), answer.toString().toByteArray())
+            }
+        } }).session(id)!!
+        eventually({ session.surfaces.value.loaded }) { it }
+        assertEquals("chat-agent", session.ensureSurfaceChat("s1"))
+        assertEquals("Asked twice", 2, asked.size)
+        assertEquals("under one mutationId", 1, asked.map { Regex("\"mutationId\":\"([^\"]+)\"").find(it)?.groupValues?.get(1) }.distinct().size)
+        // The HTTP answer commits the catalog before the derived SurfaceCatalog publishes it.
+        val known = withTimeout(10_000) { session.surfaces.first { it["s1"]?.chatAgentId == "chat-agent" } }
+        assertEquals("chat-agent", known["s1"]?.chatAgentId)
+        // Known now: opened without asking.
+        assertEquals("chat-agent", session.ensureSurfaceChat("s1"))
+        assertEquals(2, asked.size)
+    }
+
+    @Test
+    fun unsupportedSurfaceRefreshLeavesTheKeptCatalogAvailable() = runBlocking {
+        agent.bootstrap = Wire.bootstrap(surfaces = listOf(Wire.surface("s1", "Groceries", "todo")))
+        val session = sessions().session(id)!!
+        eventually({ session.surfaces.value.loaded }) { it }
+        assertFalse(session.refreshSurfaces())
+        assertEquals("Groceries", session.surfaces.value["s1"]?.name)
+    }
+
+    @Test
     fun leavingASurfaceTakesItsRowAtOnceAndAsksTheAgent(): Unit = runBlocking {
         val gate = CompletableDeferred<Unit>()
         val bodies = mutableListOf<String>()
@@ -509,9 +656,95 @@ class AgentSessionTest {
         assertNull(again.await())
         assertEquals(1, agent.calls.count { it == "POST /v0/surfaces/s1/leave" })
         assertTrue("It names its mutation", bodies.single().contains("\"mutationId\":\""))
-        // Out of the catalog too, so it stays gone once the leave is answered.
+        // Out of the person's list too, so it stays gone once the leave is answered; still in the catalog.
         assertEquals(listOf("s2"), surfaces(session))
-        assertFalse("s1" in session.catalog.value.surfaces)
+        // leaveSurface commits the catalog; its derived SurfaceCatalog publishes independently.
+        val left = withTimeout(10_000) { session.surfaces.first { !it.joined(it["s1"]!!) } }
+        assertFalse(left.joined(left["s1"]!!))
+    }
+
+    @Test
+    fun openingASurfaceNotJoinedJoinsItAtOnceAndTheAnswerPlacesIt(): Unit = runBlocking {
+        agent.bootstrap = Wire.bootstrap(surfaces = listOf(Wire.surface("s1", "Groceries", "todo"), Wire.surface("s2", "Plan", "document", mapOf("u2" to "1"))))
+        agent.resources["/v0/surfaces/s2/join"] = buildJsonObject {
+            put("surface", Wire.surface("s2", "Plan", "document", mapOf("u2" to "1", Wire.USER to "5")).with("version", "02"))
+        }
+        val session = sessions().session(id)!!
+        eventually({ session.surfaces.value.surfaces.size }) { it == 2 }
+        eventually({ surfaces(session) }) { it == listOf("s1") }
+        assertEquals(listOf("Groceries"), session.surfaces.value.of("todo").map { it.name })
+
+        val answer = session.joinSurface("s2")
+        assertNull(withTimeout(5_000) { answer.await() })
+        assertEquals(1, agent.calls.count { it == "POST /v0/surfaces/s2/join" })
+        // The computer's answer put it after Groceries ("5" > "1").
+        eventually({ surfaces(session) }) { it == listOf("s1", "s2") }
+        eventually({ session.surfaces.value["s2"]?.version }) { it == "02" }
+        // A joined Surface is only opened.
+        assertNull(session.joinSurface("s1").await())
+        assertEquals(0, agent.calls.count { it == "POST /v0/surfaces/s1/join" })
+    }
+
+    @Test
+    fun aJoinThatCannotGoYetSurvivesRelaunchAndRetriesTheSameMutation(): Unit = runBlocking {
+        agent.bootstrap = Wire.bootstrap(surfaces = listOf(Wire.surface("s2", "Plan", "document", mapOf("u2" to "1"))))
+        var accepting = false
+        val mutations = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val transport = object : Transport by agent {
+            override suspend fun request(method: String, path: String, credential: String, body: ByteArray?, headers: Map<String, String>, category: RequestCategory): TransportResponse {
+                if (!path.endsWith("/join")) return agent.request(method, path, credential, body, headers, category)
+                mutations += body!!.decodeToString()
+                return if (!accepting) TransportResponse(503, body = "{}".toByteArray())
+                else TransportResponse(200, body = buildJsonObject {
+                    put("surface", Wire.surface("s2", "Plan", "document", mapOf("u2" to "1", Wire.USER to "5")).with("version", "02"))
+                }.toString().toByteArray())
+            }
+        }
+        val first = sessions(transport = { transport }).session(id)!!
+        eventually({ first.surfaces.value.loaded }) { it }
+        eventually({ File(cacheDir, "$id.json").exists() }) { it }
+        assertNull(first.joinSurface("s2").await())
+        eventually({ surfaces(first) }) { it == listOf("s2") }
+        assertEquals(1, first.intents.pending.value.size)
+        assertTrue(first.joinRefusals.value.isEmpty())
+        first.close()
+        foreground.value = false
+        accepting = true
+        val restored = sessions(transport = { transport }).session(id)!!
+        eventually({ surfaces(restored) }) { it == listOf("s2") }
+        assertEquals(1, mutations.size)
+        agent.frames = Channel(Channel.UNLIMITED)
+        agent.frames.send(Wire.hello("c0"))
+        foreground.value = true
+        eventually({ restored.intents.pending.value }) { it.isEmpty() }
+        assertEquals(2, mutations.size)
+        assertEquals(mutations[0], mutations[1])
+        eventually({ restored.surfaces.value["s2"]?.version }) { it == "02" }
+    }
+
+    @Test
+    fun aRefusedJoinTakesTheRowOutAgainAndKeepsTheReason(): Unit = runBlocking {
+        agent.bootstrap = Wire.bootstrap(surfaces = listOf(Wire.surface("s1", "Groceries", "todo"), Wire.surface("s2", "Plan", "document", mapOf("u2" to "1"))))
+        val gate = CompletableDeferred<Unit>()
+        val session = sessions {
+            object : Transport by agent {
+                override suspend fun request(method: String, path: String, credential: String, body: ByteArray?, headers: Map<String, String>, category: RequestCategory): TransportResponse {
+                    if (!path.endsWith("/join")) return agent.request(method, path, credential, body, headers)
+                    gate.await()
+                    return TransportResponse(403, body = "{\"error\":\"Only members of the team may join.\",\"code\":\"forbidden\"}".toByteArray())
+                }
+            }
+        }.session(id)!!
+        eventually({ session.surfaces.value.surfaces.size }) { it == 2 }
+        val answer = session.joinSurface("s2")
+        // Shown in the list while the computer is asked.
+        eventually({ surfaces(session) }) { it == listOf("s1", "s2") }
+        gate.complete(Unit)
+        assertEquals("Only members of the team may join.", withTimeout(5_000) { answer.await() })
+        eventually({ surfaces(session) }) { it == listOf("s1") }
+        assertEquals(mapOf("s2" to "Only members of the team may join."), session.joinRefusals.value)
+        session.dismissJoinRefusal("s2")
+        assertEquals(emptyMap<String, String>(), session.joinRefusals.value)
     }
 
     @Test
@@ -669,5 +902,54 @@ class AgentSessionTest {
         eventually({ session.catalog.value.pendingSettings }) { it.isEmpty() }
         assertFalse(session.projectsHidden.value)
         assertEquals("v2", session.catalog.value.settings.getValue(DesktopSettings.PROJECTS_VISIBILITY)["version"].toString().trim('"'))
+    }
+
+    @Test
+    fun bothSharingPreferencesQueueOfflineThenClearTheirOverrideWhenEnabled(): Unit = runBlocking {
+        agent.bootstrap = Wire.bootstrap(userSettings = emptyList())
+        val writes = java.util.concurrent.CopyOnWriteArrayList<Pair<String, kotlinx.serialization.json.JsonObject>>()
+        val transport: (AgentConnectionCredentials) -> Transport = {
+            object : Transport by agent {
+                override suspend fun request(method: String, path: String, credential: String, body: ByteArray?, headers: Map<String, String>, category: RequestCategory): TransportResponse {
+                    if (path == "/v0/health") return TransportResponse(200, body = "{\"ready\":true,\"version\":{\"protocol\":31}}".toByteArray())
+                    if (method == "PUT" && path.startsWith("/v0/user-settings/")) {
+                        val key = path.substringAfterLast('/')
+                        val sent = AgentClient.json.decodeFromString<kotlinx.serialization.json.JsonObject>(body!!.decodeToString())
+                        writes += key to sent
+                        val setting = Wire.setting(key, sent.getValue("value"), if (sent["value"] == kotlinx.serialization.json.JsonNull) "02" else "01")
+                        return TransportResponse(200, body = buildJsonObject { put("setting", setting) }.toString().toByteArray())
+                    }
+                    return agent.request(method, path, credential, body, headers, category)
+                }
+            }
+        }
+        var session = sessions(transport = transport).session(id)!!
+        agent.frames.send(Wire.hello("c0"))
+        eventually({ session.sharing.value }) { it == AgentSharingState.Ready(true, true) }
+        eventually({ File(cacheDir, "$id.json").exists() }) { it }
+        foreground.value = false
+        session.close()
+        agent.frames = Channel(Channel.UNLIMITED)
+        session = sessions(transport = transport).session(id)!!
+        eventually({ session.sharing.value }) { it == AgentSharingState.Ready(true, true) }
+        AutoJoinKind.entries.forEach { session.setAutoJoin(it, false) }
+        eventually({ session.sharing.value }) { it == AgentSharingState.Ready(false, false) }
+        assertTrue(writes.isEmpty())
+        assertEquals(AutoJoinKind.entries.map { it.key }.toSet(), session.catalog.value.pendingSettings.keys)
+        foreground.value = true
+        agent.frames.send(Wire.hello("c0"))
+        eventually({ session.catalog.value.pendingSettings }) { it.isEmpty() }
+        assertEquals(2, writes.size)
+        assertTrue(writes.all { it.second["value"] == kotlinx.serialization.json.JsonPrimitive(false) })
+        AutoJoinKind.entries.forEach { session.setAutoJoin(it, true) }
+        eventually({ session.sharing.value }) { it == AgentSharingState.Ready(true, true) }
+        eventually({ writes.size }) { it == 4 }
+        eventually({ session.catalog.value.pendingSettings }) { it.isEmpty() }
+        assertTrue(writes.takeLast(2).all { it.second["value"] == kotlinx.serialization.json.JsonNull })
+        assertTrue(writes.all { it.second["mutationId"] != null && it.second["updatedAt"] != null })
+        agent.frames.send(Wire.frame("c1", "user_settings.updated", buildJsonObject {
+            put("setting", Wire.setting(AutoJoinKind.Surfaces.key, kotlinx.serialization.json.JsonPrimitive(false), "03"))
+        }))
+        eventually({ session.sharing.value }) { it == AgentSharingState.Ready(true, false) }
     }
 }

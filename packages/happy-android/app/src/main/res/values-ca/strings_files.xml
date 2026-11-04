@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  values/strings_files.xml in ca: Android-only strings, not in happy-app's
+  catalogs. AndroidStringsTranslatedTest fails while one is missing here.
+-->
+<resources>
+    <string name="workspace_initializing">Aquest espai de treball encara s\'està preparant. Torna-ho a provar d\'aquí a un moment.</string>
+    <string name="workspace_unreachable">Ara mateix no es pot contactar amb l\'ordinador.</string>
+    <string name="workspace_not_found">Aquesta carpeta o fitxer ja no existeix.</string>
+    <string name="workspace_file_too_large">Aquest fitxer és massa gran per obrir-lo al telèfon.</string>
+    <string name="workspace_folder">Carpeta</string>
+    <string name="workspace_folder_empty">Aquesta carpeta és buida</string>
+    <string name="workspace_rendered">Renderitzat</string>
+    <string name="workspace_source">Font</string>
+    <string name="file_save">Baixa</string>
+    <string name="file_saving">S\'està baixant…</string>
+    <string name="file_saved">Desat</string>
+    <string name="file_save_failed">No s\'ha pogut baixar. Toca per tornar-ho a provar.</string>
+    <string name="attach_files_workspace">Espai de treball</string>
+    <string name="attach_files_workspace_detail">Indica un fitxer que ja és a l\'ordinador</string>
+    <plurals name="markdown_diff_unchanged">
+        <item quantity="one">Mostra %1$d bloc sense canvis</item>
+        <item quantity="many">Mostra %1$d blocs sense canvis</item>
+        <item quantity="other">Mostra %1$d blocs sense canvis</item>
+    </plurals>
+</resources>

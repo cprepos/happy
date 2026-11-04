@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="desktop_migration_close">Tanca</string>
+    <string name="desktop_migration_desktop_title">Happy ara a l’ordinador</string>
+    <string name="desktop_migration_desktop_body">Multijugador per a servidors remots, menys latència, millor suport per als fitxers adjunts i molt més. Si us plau, migra! Triga uns 5 minuts, una mica més si tens diverses màquines.</string>
+    <string name="desktop_migration_agent_connection_title">Migra a una connexió directa</string>
+    <string name="desktop_migration_agent_connection_body">Fas servir Happy Agent a través del servidor de Happy. Connecta’t directament per tenir la latència més baixa i les funcions més noves.</string>
+    <string name="desktop_migration_settings_step">Ves a Settings\u00A0›\u00A0Mobile\u00A0Access.</string>
+    <string name="desktop_migration_server_step">Fas servir Happy en un servidor?</string>
+    <string name="desktop_migration_server_step_detail">Selecciona’l a Happy Desktop i escaneja’n el codi.\nPer configurar un servidor remot nou, només cal que ho demanis al bot Chief of Staff a Happy Desktop.</string>
+    <string name="desktop_migration_learn_more">Més informació</string>
+</resources>

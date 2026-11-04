@@ -14,6 +14,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -28,7 +29,12 @@ interface VoiceSessionContext {
     fun stop()
 }
 
-/** RealtimeSession.ts's gating and call lifecycle. All mutations run on [dispatcher]. */
+/**
+ * RealtimeSession.ts's gating and call lifecycle. All mutations run on
+ * [dispatcher]. Switched off ([enabled] false), [start] answers
+ * [VoiceStart.NotAvailable] before the microphone, the server's grant, the
+ * transport or a sheet.
+ */
 class VoiceEngine(
     private val scope: CoroutineScope,
     private val service: VoiceService,
@@ -41,7 +47,10 @@ class VoiceEngine(
     private val toolsFactory: (isCurrent: () -> Boolean, onSent: () -> Unit) -> VoiceTools,
     private val dispatcher: CoroutineDispatcher = Dispatchers.Main.immediate,
     private val clock: () -> Long = SystemClock::elapsedRealtime,
+    private val foreground: StateFlow<Boolean>? = null,
+    private val enabled: Boolean = true,
 ) : VoiceController {
+    override val available: Boolean get() = enabled
     private val mutableState = MutableStateFlow(VoiceState())
     override val state = mutableState.asStateFlow()
     @Volatile private var generation = 0L
@@ -52,7 +61,15 @@ class VoiceEngine(
     private var silence: Job? = null
     private var agentSpeaking = false
 
+    init {
+        foreground?.let { visibility ->
+            scope.launch(dispatcher) { visibility.collect { if (!it) stop() } }
+        }
+    }
+
     override suspend fun start(sessionId: String, microphone: MicrophonePermission): VoiceStart = withContext(dispatcher) {
+        if (!enabled) return@withContext VoiceStart.NotAvailable
+        if (foreground?.value == false) return@withContext VoiceStart.Declined
         if (closing != null || state.value.status in listOf(VoiceStatus.Connecting, VoiceStatus.Connected)) return@withContext VoiceStart.Declined
         val epoch = ++generation
         starting = currentCoroutineContext()[Job]
@@ -76,6 +93,10 @@ class VoiceEngine(
                         is VoiceCredentials.Granted -> { grant = response; break }
                         is VoiceCredentials.Denied -> {
                             if (response.reason == "voice_conversation_limit_reached") return@withContext fail(VoiceStart.LimitReached)
+                            // The hard cap: buying lifts nothing, so it is said, never sold.
+                            if (response.reason == "voice_hard_limit_reached") {
+                                return@withContext fail(VoiceStart.HardLimitReached((response.limitSeconds ?: HARD_LIMIT_SECONDS) / 3600))
+                            }
                             // Guard a server that still denies after a completed purchase, avoiding an endless paywall loop.
                             if (bought || !paywall.present("voice_must_pay")) return@withContext fail(VoiceStart.Declined)
                             bought = true
@@ -85,7 +106,8 @@ class VoiceEngine(
                 hasPro = paywall.hasPro()
                 if (!hasPro && selected.upsell == VoiceUpsell.SoftPaywall && preferences.softPaywalls < 1) {
                     preferences.incrementSoftPaywalls()
-                    paywall.present("voice_trial_eligible")
+                    // The welcome: its close ends the start, its "Start Voice Session" goes on.
+                    if (!paywall.present("voice_trial_eligible")) return@withContext fail(VoiceStart.Declined)
                 }
                 config = VoiceSessionConfig(sessionId, "", token = grant.conversationToken, agentId = grant.agentId,
                     userId = grant.userId, language = selected.language)
@@ -217,5 +239,10 @@ class VoiceEngine(
         if (state.value.status !in listOf(VoiceStatus.Connecting, VoiceStatus.Connected)) return
         mutableState.value = state.value.copy(mode = value)
         context?.mode(value)
+    }
+
+    private companion object {
+        /** happy-server's `VOICE_HARD_LIMIT_SECONDS`, should a denial not say. */
+        const val HARD_LIMIT_SECONDS = 5 * 60 * 60L
     }
 }

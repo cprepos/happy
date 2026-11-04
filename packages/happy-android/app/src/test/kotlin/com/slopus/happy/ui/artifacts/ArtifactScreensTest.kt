@@ -1,12 +1,12 @@
 package com.slopus.happy.ui.artifacts
 
 import com.slopus.happy.connection.RequestCategory
-import com.slopus.happy.conversation.Problem
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.assertCountEquals
@@ -17,6 +17,10 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasClickAction
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isDialog
 import androidx.compose.ui.test.performFirstLinkClick
 import androidx.compose.ui.test.performImeAction
 import androidx.compose.ui.test.performTextInput
@@ -116,56 +120,10 @@ class ArtifactScreensTest {
         // A plain loader: the app's shared one (its disk cache and crossfade) never lands a picture under Robolectric.
         val pictures = ImageLoader.Builder(ApplicationProvider.getApplicationContext()).build()
         rule.setHappyContent(dark) {
-            CompositionLocalProvider(LocalImageLoader provides pictures) { ArtifactScreen(loader.title.value, loader.state.value, loader.media, "Studio", actions) }
+            val title by loader.title.collectAsState()
+            val state by loader.state.collectAsState()
+            CompositionLocalProvider(LocalImageLoader provides pictures) { ArtifactScreen(title, state, loader.media, "Studio", actions) }
         }
-    }
-
-    private val sample = listOf(
-        ArtifactRef("a1", 3, "markdown", "Release notes", true),
-        ArtifactRef("a2", 1, "html", "Dashboard", true),
-        ArtifactRef("a3", 2, "image", "Screenshots of the new onboarding flow on every size of phone", true),
-        ArtifactRef("a4", 1, "video", "", true),
-    )
-
-    @Test fun theListOpensAnArtifactAndNamesTheUntitled() {
-        val opened = mutableListOf<ArtifactRef>()
-        rule.setHappyContent { ArtifactsScreen(ArtifactListState(sample, null, loaded = true), {}, { opened += it }, {}, {}) }
-        rule.onNodeWithText("Artifacts").assertExists()
-        rule.onNodeWithText("Untitled").assertExists()
-        rule.onAllNodesWithTag(ArtifactsTags.ROW, useUnmergedTree = true).assertCountEquals(4)
-        shot("artifacts-list")
-        rule.onNodeWithText("Dashboard").performClick()
-        assertEquals(listOf("a2"), opened.map { it.id })
-    }
-
-    @Test fun theListDark() {
-        rule.setHappyContent(dark = true) { ArtifactsScreen(ArtifactListState(sample, null, loaded = true), {}, {}, {}, {}) }
-        shot("artifacts-list-dark")
-    }
-
-    @Test fun theListAsksForMoreAtItsEnd() {
-        var more = 0
-        rule.setHappyContent { ArtifactsScreen(ArtifactListState(sample, "p2", loaded = true), {}, {}, { more++ }, {}) }
-        rule.waitForIdle()
-        assertEquals(1, more)
-    }
-
-    @Test fun anEmptyListAWaitingOneAndAFailedOne() {
-        var state by androidx.compose.runtime.mutableStateOf(ArtifactListState(emptyList(), null))
-        var retries = 0
-        rule.setHappyContent { ArtifactsScreen(state, {}, {}, {}, { retries++ }) }
-        // A plain spinner, not the snail; it fades in after a moment.
-        rule.node(PlaceTags.LOADER).assertExists()
-        rule.mainClock.advanceTimeBy(1_000)
-        shot("artifacts-loading")
-        state = ArtifactListState(emptyList(), null, loaded = true)
-        rule.onNodeWithText("No artifacts yet").assertExists()
-        shot("artifacts-empty")
-        state = ArtifactListState(emptyList(), null, failed = true, loaded = true, reason = Problem.Said("Could not reach the agent."))
-        rule.onNodeWithText("Could not reach the agent.").assertExists()
-        shot("artifacts-failed")
-        rule.onNodeWithText("Retry").performClick()
-        assertEquals(1, retries)
     }
 
     @Test fun aDocumentWithItsPicture() {
@@ -230,6 +188,163 @@ class ArtifactScreensTest {
         rule.setHappyContent { ArtifactScreen("Paper", ArtifactUi.Openable(ArtifactFile("paper.pdf", "application/pdf", 1)), null, "Studio", ArtifactActions(onBack = {})) }
         rule.node(ArtifactTags.OPEN).assertExists()
         shot("artifact-openable")
+    }
+
+    @Test fun aFileReadForAnotherAppShowsHowFarItIsAndTriesAgainWhenItFails() {
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var reads = 0
+        val actions = ArtifactActions(onBack = {}, fileReader = { _, progress ->
+            reads++
+            progress(1_258_291, 3_250_586)
+            gate.await()
+            throw IllegalStateException("offline")
+        })
+        rule.setHappyContent { ArtifactScreen("Paper", ArtifactUi.Openable(ArtifactFile("paper.pdf", "application/pdf", 3_250_586)), null, "Studio", actions) }
+        rule.node(ArtifactTags.OPEN_RING).assertDoesNotExist()
+        rule.node(ArtifactTags.OPEN).performClick()
+        rule.waitForIdle()
+        rule.node(ArtifactTags.OPEN_RING).assertExists()
+        rule.onNodeWithText("1.2 / 3.1 MB").assertExists()
+        rule.onNodeWithText("Cancel").assertExists()
+        rule.mainClock.advanceTimeBy(600)
+        shot("artifact-openable-reading")
+        gate.complete(Unit)
+        rule.waitUntil(3_000) { rule.onAllNodesWithText("Retry").fetchSemanticsNodes().isNotEmpty() }
+        rule.onNodeWithText("Couldn't open this. Tap to try again.").assertExists()
+        rule.mainClock.advanceTimeBy(600)
+        shot("artifact-openable-failed")
+        rule.node(ArtifactTags.OPEN).performClick()
+        rule.waitUntil(3_000) { reads == 2 }
+    }
+
+    @Test fun tappedWhileReadingTheReadStops() {
+        val actions = ArtifactActions(onBack = {}, fileReader = { _, _ -> kotlinx.coroutines.awaitCancellation() })
+        rule.setHappyContent(dark = true) { ArtifactScreen("Paper", ArtifactUi.Openable(ArtifactFile("paper.pdf", "application/pdf", 1)), null, "Studio", actions) }
+        rule.node(ArtifactTags.OPEN).performClick()
+        rule.waitForIdle()
+        rule.onNodeWithText("Opening…").assertExists()
+        rule.mainClock.advanceTimeBy(600)
+        shot("artifact-openable-waiting-dark")
+        rule.node(ArtifactTags.OPEN).performClick()
+        rule.waitForIdle()
+        rule.node(ArtifactTags.OPEN_RING).assertDoesNotExist()
+        rule.onNodeWithText("Open in another app").assertExists()
+    }
+
+    private fun history(shown: Int, latest: Int?, picked: MutableList<Int> = ArrayList(), latestTaps: IntArray = IntArray(1)): com.slopus.happy.ui.artifacts.ArtifactHistory {
+        fun v(n: Int, label: String = n.toString()) = com.slopus.happy.artifacts.ArtifactVersion("a1", n, "Plan", null, emptyList(), label = label, createdAt = 1_793_700_000_000L + n * 3_600_000L)
+        return com.slopus.happy.ui.artifacts.ArtifactHistory(
+            shown = v(shown),
+            latest = latest,
+            read = { cursor -> if (cursor == null) listOf(v(3, "2.0"), v(2)) to "p2" else listOf(v(1)) to null },
+            onPick = { picked += it },
+            onLatest = { latestTaps[0]++ },
+        )
+    }
+
+    @Test fun anOlderVersionSaysSoAndHistoryPicksAnother() {
+        val picked = ArrayList<Int>()
+        val latest = IntArray(1)
+        val doc = ArtifactUi.Document("index.md", com.slopus.happy.chat.markdown.parseMarkdown("# Plan\n\nThe first draft."), emptyMap(), emptyList())
+        rule.setHappyContent { ArtifactScreen("Plan", doc, null, "Studio", ArtifactActions(onBack = {}), history = history(2, 3, picked, latest)) }
+        rule.node(ArtifactHistoryTags.BANNER).assertExists()
+        rule.onNodeWithText("Showing version 2").assertExists()
+        shot("artifact-history-banner")
+        rule.node(ArtifactHistoryTags.LATEST).performClick()
+        assertEquals(1, latest[0])
+        rule.node(ArtifactHistoryTags.ACTION).performClick()
+        rule.waitUntil(3_000) { rule.onAllNodesWithTag(ArtifactHistoryTags.ROW, useUnmergedTree = true).fetchSemanticsNodes().size == 2 }
+        rule.node(ArtifactHistoryTags.MORE).performClick()
+        rule.waitUntil(3_000) { rule.onAllNodesWithTag(ArtifactHistoryTags.ROW, useUnmergedTree = true).fetchSemanticsNodes().size == 3 }
+        rule.node(ArtifactHistoryTags.MORE).assertDoesNotExist()
+        rule.onNodeWithText("Version 2.0").assertExists()
+        rule.onNodeWithText("Latest").assertExists()
+        shot("artifact-history-sheet")
+        rule.onNodeWithText("Version 1").performClick()
+        rule.waitUntil(3_000) { picked.isNotEmpty() }
+        assertEquals(listOf(1), picked)
+    }
+
+    /** Desktop's Delete: asked by name first; done, the screen goes; refused, it says so and stays. */
+    @Test fun deletingAsksByNameThenLeavesOrSaysWhyNot() {
+        var deletes = 0
+        var fail = false
+        var backs = 0
+        val doc = ArtifactUi.Document("index.md", com.slopus.happy.chat.markdown.parseMarkdown("# Plan"), emptyMap(), emptyList())
+        val actions = ArtifactActions(onBack = { backs++ }, onDelete = {
+            deletes++
+            if (fail) throw IllegalStateException("refused")
+        })
+        rule.setHappyContent { ArtifactScreen("Launch plan", doc, null, "Studio", actions) }
+        rule.node(ArtifactTags.DELETE).performClick()
+        rule.onNodeWithText("Delete “Launch plan”?").assertExists()
+        rule.onNodeWithText("Cancel").performClick()
+        rule.waitForIdle()
+        assertEquals(0, deletes)
+        fail = true
+        rule.node(ArtifactTags.DELETE).performClick()
+        rule.onNode(hasText("Delete") and hasClickAction() and hasAnyAncestor(isDialog())).performClick()
+        rule.waitUntil(3_000) { rule.onAllNodesWithText("This artifact couldn’t be deleted.").fetchSemanticsNodes().isNotEmpty() }
+        assertEquals(1, deletes)
+        assertEquals(0, backs)
+        rule.onNodeWithText("OK").performClick()
+        fail = false
+        rule.node(ArtifactTags.DELETE).performClick()
+        rule.onNode(hasText("Delete") and hasClickAction() and hasAnyAncestor(isDialog())).performClick()
+        rule.waitUntil(3_000) { backs == 1 }
+        assertEquals(2, deletes)
+    }
+
+    @Test fun aDeletedArtifactOrOneFileOfItHasNoDelete() {
+        rule.setHappyContent { ArtifactScreen("Plan", ArtifactUi.Message(deleted = true), null, "Studio", ArtifactActions(onBack = {}, onDelete = {})) }
+        rule.node(ArtifactTags.DELETE).assertDoesNotExist()
+    }
+
+    @Test fun copyLinkPutsTheArtifactsHappyLinkOnTheClipboard() {
+        val doc = ArtifactUi.Document("index.md", com.slopus.happy.chat.markdown.parseMarkdown("# Plan"), emptyMap(), emptyList(), "# Plan")
+        rule.setHappyContent { ArtifactScreen("Plan", doc, null, "Studio", ArtifactActions(onBack = {}, shareLink = { "happy://inst/artifact/a1?version=2" })) }
+        rule.node(ArtifactTags.COPY_LINK).performClick()
+        val clipboard = ApplicationProvider.getApplicationContext<android.content.Context>().getSystemService(android.content.ClipboardManager::class.java)
+        assertEquals("happy://inst/artifact/a1?version=2", clipboard.primaryClip?.getItemAt(0)?.text?.toString())
+    }
+
+    @Test fun aServerWithoutAnInstanceOrAGoneArtifactHasNoCopyLink() {
+        rule.setHappyContent { ArtifactScreen("Plan", ArtifactUi.Message(deleted = true), null, "Studio", ArtifactActions(onBack = {}, shareLink = { "happy://inst/artifact/a1" })) }
+        rule.node(ArtifactTags.COPY_LINK).assertDoesNotExist()
+    }
+
+    @Test fun theLatestVersionHasNoBannerAndOneVersionNoHistory() {
+        rule.setHappyContent(dark = true) { ArtifactScreen("Plan", ArtifactUi.Loading, null, "Studio", ArtifactActions(onBack = {}), history = history(3, 3)) }
+        rule.node(ArtifactHistoryTags.BANNER).assertDoesNotExist()
+        rule.node(ArtifactHistoryTags.ACTION).performClick()
+        rule.waitUntil(3_000) { rule.onAllNodesWithTag(ArtifactHistoryTags.ROW, useUnmergedTree = true).fetchSemanticsNodes().size == 2 }
+        rule.mainClock.advanceTimeBy(600)
+        shot("artifact-history-sheet-dark")
+    }
+
+    @Test fun oneVersionHasNoHistory() {
+        rule.setHappyContent { ArtifactScreen("Plan", ArtifactUi.Loading, null, "Studio", ArtifactActions(onBack = {}), history = history(1, 1)) }
+        rule.node(ArtifactHistoryTags.ACTION).assertDoesNotExist()
+    }
+
+    @Test fun aFreshVersionOpensOnItsDiffAndLatestShowsTheDocument() {
+        val old = "# Launch plan\n\nShip on Friday.\n\n- Write the notes\n- Tell the team"
+        val new = "# Launch plan\n\nShip on Monday after the review.\n\n- Write the notes\n- Tell the team\n- Post the update"
+        val doc = ArtifactUi.Document("index.md", com.slopus.happy.chat.markdown.parseMarkdown(new), emptyMap(), emptyList(), new, old, "1.0")
+        rule.setHappyContent { ArtifactScreen("Launch plan", doc, null, "Studio", ArtifactActions(onBack = {})) }
+        rule.waitUntil(3_000) { rule.onAllNodesWithTag(com.slopus.happy.ui.diff.MarkdownDiffTags.VIEW, useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
+        rule.onNodeWithText("Changes since version 1.0").assertExists()
+        shot("artifact-diff")
+        rule.node(ArtifactTags.LATEST_TAB).performClick()
+        rule.waitForIdle()
+        rule.node(com.slopus.happy.ui.diff.MarkdownDiffTags.VIEW).assertDoesNotExist()
+        rule.onNodeWithText("Post the update").assertExists()
+    }
+
+    @Test fun aVersionWithNothingBeforeHasNoDiff() {
+        val doc = ArtifactUi.Document("index.md", com.slopus.happy.chat.markdown.parseMarkdown("# Plan"), emptyMap(), emptyList())
+        rule.setHappyContent(dark = true) { ArtifactScreen("Plan", doc, null, "Studio", ArtifactActions(onBack = {})) }
+        rule.node(ArtifactTags.DIFF_BAR).assertDoesNotExist()
     }
 
     @Test fun deletedAndUnavailableSaySoInPlace() {

@@ -120,6 +120,7 @@ object AttachTags {
     const val BROWSE = "attach.files.browse"
     const val FILES_GALLERY = "attach.files.gallery"
     const val PASTE = "attach.files.paste"
+    const val WORKSPACE = "attach.files.workspace"
     const val RECENT = "attach.files.recent"
     const val FILE_ROW = "attach.files.row"
     const val TAB_BAR = "attach.tabs"
@@ -299,9 +300,11 @@ internal fun AttachSheetLayout(
     onFilesGallery: () -> Unit,
     onPaste: () -> Unit,
     modifier: Modifier = Modifier,
+    onWorkspace: () -> Unit = {},
     sending: Boolean = false,
     galleryState: LazyGridState = rememberLazyGridState(),
     filesState: LazyListState = rememberLazyListState(),
+    camera: AttachCameraState? = null,
 ) {
     val theme = HappyTheme.colors
     val colors = remember(theme.dark) { AttachColors.of(theme.dark) }
@@ -395,6 +398,7 @@ internal fun AttachSheetLayout(
         SideEffect {
             motion.height = height
             motion.top = ::sheetTop
+            camera?.viewportTop = { (statusBar + with(density) { AttachSpec.topBar.toPx() }) * topBar }
         }
 
         val connection = remember(dismissAt) {
@@ -514,12 +518,14 @@ internal fun AttachSheetLayout(
                         AttachTabKind.Gallery -> AttachGalleryPage(
                             gallery, selection, columns, listPadding, galleryState, sheetColor, colors,
                             onToggle = onToggleGallery, onOpen = onOpenGallery, onAllow = onAllow, onManage = onManage, modifier = pageModifier,
+                            camera = camera,
                         )
                         AttachTabKind.Files -> AttachFilesPage(
                             sources, recent, selection,
                             PaddingValues(top = restDp, bottom = AttachSpec.tabBar + bottom),
                             filesState, sheetColor, colors,
                             onBrowse = onBrowse, onGallery = onFilesGallery, onPaste = onPaste, onToggle = onToggleFile, modifier = pageModifier,
+                            onWorkspace = onWorkspace,
                         )
                     }
                 }

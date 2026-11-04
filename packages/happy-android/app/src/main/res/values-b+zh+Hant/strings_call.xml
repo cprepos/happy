@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="call_start">開始語音通話</string>
+    <string name="call_voice_call">語音通話</string>
+    <string name="call_muted">已靜音</string>
+    <string name="call_mute">將麥克風靜音</string>
+    <string name="call_unmute">取消麥克風靜音</string>
+    <string name="call_end">結束通話</string>
+    <string name="call_close">關閉</string>
+    <string name="call_listening">正在聆聽</string>
+    <string name="call_user_speaking">你正在說話</string>
+    <string name="call_agent_speaking">Happy 正在說話</string>
+    <string name="call_not_set_up">此連線尚未設定語音</string>
+    <string name="call_microphone">麥克風存取已關閉</string>
+    <string name="call_subscription">語音需要訂閱</string>
+    <string name="call_limit">免費語音時間已用完：每 30 天 20 分鐘</string>
+    <string name="call_authentication">請重新登入以使用語音</string>
+    <string name="call_connection">通話已結束：連線中斷</string>
+    <string name="call_open_settings">打開設定</string>
+    <string name="call_paywall_title">語音時長</string>
+    <string name="call_welcome_title">和你的代理對話</string>
+    <string name="call_welcome_ask">詢問工作進度</string>
+    <string name="call_welcome_act">用語音開啟和傳送</string>
+    <string name="call_welcome_free">20 分鐘免費</string>
+    <string name="call_start_session">開始語音工作階段</string>
+    <string name="call_used_today">免費語音時數已用完。%1$s 恢復更多時數。</string>
+    <string name="call_used_week">免費語音時數已用完。%1$s %2$s 恢復更多時數。</string>
+    <string name="call_used_date">免費語音時數已用完。%1$s 恢復更多時數。</string>
+    <string name="call_used_later">免費語音時數已用完。較早的通話滿 30 天後，時數會恢復。</string>
+    <string name="call_support_for">以每月 %1$s 支持 Happy</string>
+    <string name="call_subscribe_allowance">包含 5 小時即時語音</string>
+    <string name="call_subscribe_support">Happy 是開源專案。訂閱語音可資助它的開發。</string>
+    <string name="call_subscribe">訂閱</string>
+    <string name="call_preview_note">測試預覽，不會收費。</string>
+    <string name="call_preview_title">僅預覽</string>
+    <string name="call_preview_message">語音訂閱尚未開賣。沒有購買或收取任何費用，你的語音時數也沒有變化。</string>
+    <string name="call_paid_used">本月的 5 小時語音已用完。%1$s 起可再次使用。</string>
+    <string name="call_paid_used_later">本月的 5 小時語音已用完。</string>
+    <string name="call_restore">回復購買項目</string>
+    <string name="call_restore_done">你的訂閱已回復。</string>
+    <string name="call_restore_none">此商店帳號中找不到語音訂閱。</string>
+    <string name="call_restore_failed">無法連線至商店，請稍後再試。</string>
+    <string name="call_purchase_unconfirmed">你的購買尚未確認。下次回到 Happy 時會再次檢查。</string>
+</resources>

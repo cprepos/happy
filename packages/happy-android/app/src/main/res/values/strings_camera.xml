@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="camera_timer">Timer</string>
+    <string name="camera_timer_seconds">%1$d s</string>
+    <string name="camera_shape">Photo Shape</string>
+    <string name="camera_grid">Grid</string>
+    <string name="camera_flash">Flash</string>
+    <string name="camera_flash_auto">Auto</string>
+    <string name="camera_on">On</string>
+    <string name="camera_off">Off</string>
+    <string name="camera_flip">Switch Camera</string>
+    <string name="camera_exposure">Exposure</string>
+    <string name="camera_ae_af_lock">AE/AF LOCK</string>
+    <string name="camera_af_lock">AF LOCK</string>
+    <string name="camera_ae_lock">AE LOCK</string>
+    <string name="camera_zoom">Zoom %1$s</string>
+    <string name="camera_take_photo">Take Photo</string>
+    <string name="camera_retake">Retake</string>
+    <string name="camera_use_photo">Use Photo</string>
+    <string name="camera_permission">Allow Happy to use the camera in Settings to take photos.</string>
+    <string name="camera_no_camera">This device has no camera.</string>
+    <string name="camera_unavailable">The camera could not start. Try again.</string>
+    <string name="camera_in_use">The camera is in use by another app.</string>
+    <string name="camera_capture_failed">Could not take the photo. Try again.</string>
+    <string name="camera_viewfinder">Viewfinder</string>
+</resources>

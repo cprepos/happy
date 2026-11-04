@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="desktop_migration_close">Fechar</string>
+    <string name="desktop_migration_desktop_title">Happy agora no computador</string>
+    <string name="desktop_migration_desktop_body">Multijogador para servidores remotos, menor latência, melhor suporte a anexos e muito mais. Migre, por favor! Leva cerca de 5 minutos, um pouco mais se você tiver várias máquinas.</string>
+    <string name="desktop_migration_agent_connection_title">Migre para a conexão direta</string>
+    <string name="desktop_migration_agent_connection_body">Você está usando o Happy Agent pelo servidor do Happy. Conecte-se diretamente para ter a menor latência e os recursos mais novos.</string>
+    <string name="desktop_migration_settings_step">Vá para Settings\u00A0›\u00A0Mobile\u00A0Access.</string>
+    <string name="desktop_migration_server_step">Usa o Happy em um servidor?</string>
+    <string name="desktop_migration_server_step_detail">Selecione-o no Happy Desktop e escaneie o código dele.\nPara configurar um novo servidor remoto, é só pedir ao bot Chief of Staff no Happy Desktop.</string>
+    <string name="desktop_migration_learn_more">Saiba mais</string>
+</resources>

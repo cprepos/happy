@@ -6,6 +6,7 @@ import com.slopus.happy.connection.agentTransport
 import com.slopus.happy.connection.Transport
 import com.slopus.happy.connection.AgentIdentity
 import com.slopus.happy.connection.AgentConnectionException
+import com.slopus.happy.connection.returns
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -13,10 +14,12 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -35,6 +38,8 @@ class AgentSessions(
     /** The open agent connection's id ([com.slopus.happy.AppGraph.openAgentId]). */
     private val openId: StateFlow<String?>,
     private val foreground: StateFlow<Boolean>,
+    /** Whether the phone has a way out at all ([com.slopus.happy.connection.networkPath]). */
+    private val network: Flow<Boolean> = flowOf(true),
     private val identityRefreshMillis: Long = 60_000,
     /** Desktop's completion chime, for a conversation that finished while its connection is open ([CompletionWatch]). */
     private val chime: () -> Unit = {},
@@ -54,6 +59,10 @@ class AgentSessions(
                     ids.forEach { id -> launch { refreshIdentity(id) } }
                 }
             }
+        }
+        scope.launch {
+            // Back from airplane mode: a link waiting out its backoff tries now (iOS's Session `networkWatch`).
+            network.returns().collect { synchronized(sessions) { sessions.values.toList() }.forEach { it.networkReturned() } }
         }
         scope.launch {
             var known: Set<String>? = null
@@ -90,7 +99,7 @@ class AgentSessions(
                 if (!known.signInRequired) try {
                     val etag = known.avatarFile?.takeIf { File(it).isFile }?.let { known.avatarETag }
                     val info = AgentIdentity.refresh(client.requester, known.name, etag, oauth = credentials.oauth != null)
-                    connections.update(id, info.avatar) { it.copy(name = info.name, thumbhash = info.thumbhash ?: it.thumbhash, instanceId = info.instanceId) }
+                    connections.update(id, info.avatar) { it.copy(name = info.name, thumbhash = info.thumbhash ?: it.thumbhash, instanceId = info.instanceId, daemonVersion = info.daemonVersion, protocol = info.protocol) }
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: AgentConnectionException) {

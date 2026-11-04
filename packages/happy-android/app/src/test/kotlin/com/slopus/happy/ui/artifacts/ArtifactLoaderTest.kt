@@ -63,6 +63,7 @@ class ArtifactLoaderTest {
                     asked += path
                     status?.let { return json("""{"error":"no"}""", it) }
                     val route = path.removePrefix("/v0/artifacts/a1")
+                    if (route.isEmpty()) return json("""{"artifact":{"id":"a1","title":"Card","latestVersion":${versions.keys.max()}}}""")
                     if (route.startsWith("/versions/") && "/files/" !in route) {
                         val number = route.removePrefix("/versions/").let { if (it == "latest") versions.keys.max() else it.toInt() }
                         return versions[number]?.let { json("""{"version":$it}""") } ?: json("""{"error":"gone"}""", 404)
@@ -157,12 +158,34 @@ class ArtifactLoaderTest {
         val versions = mapOf(1 to version(1, "a.pdf", "a.pdf" to "application/pdf"), 3 to version(3, "b.pdf", "b.pdf" to "application/pdf"))
         val pinned = load(files(versions), ArtifactRef("a1", 1, "", "Card", followsLatest = false, pinned = true))
         assertEquals(ArtifactUi.Openable(ArtifactFile("a.pdf", "application/pdf", 10)), settled(pinned))
-        assertTrue(asked.single().endsWith("/versions/1"))
+        assertTrue(asked.first().endsWith("/versions/1"))
+        // An older version on screen: the History banner learns the latest from its catalog entry.
+        assertEquals(1, pinned.shown.value?.number)
+        assertEquals(3, runBlocking { withTimeout(5_000) { pinned.latest.first { it != null } } })
         asked.clear()
         // A card from the call that made version 1 follows it to the latest.
         val created = load(files(versions), ArtifactRef("a1", 1, "", "Card", followsLatest = false))
         assertEquals(ArtifactUi.Openable(ArtifactFile("b.pdf", "application/pdf", 10)), settled(created))
         assertTrue(asked.single().endsWith("/versions/latest"))
+        assertEquals("following the latest, the version read is it", 3, created.latest.value)
+    }
+
+    @Test fun aFreshMarkdownVersionCarriesTheOneBeforeToDiff() {
+        val now = 1_793_700_000_000L
+        fun md(number: Int, entry: String, createdAt: Long) =
+            """{"artifactId":"a1","number":$number,"major":1,"minor":${number - 1},"title":"Plan","createdAt":$createdAt,"entry":{"path":"$entry"},"files":[{"path":"$entry","mimeType":"text/markdown","size":10}]}"""
+        val bodies = mapOf("draft.md" to "# Plan\n\nOld words.".toByteArray(), "index.md" to "# Plan\n\nNew words.".toByteArray())
+        fun loader(createdAt: Long) = ArtifactLoader(
+            files(mapOf(1 to md(1, "draft.md", now - 3_600_000), 2 to md(2, "index.md", createdAt)), bodies), null, scope,
+            ArtifactRef("a1", 2, "", "Plan", followsLatest = true), sizeWait = 2_000, now = { now },
+        ).also(ArtifactLoader::load)
+        val fresh = settled(loader(now - 60_000)) as ArtifactUi.Document
+        assertEquals("# Plan\n\nOld words.", fresh.previous)
+        assertEquals("1.0", fresh.previousLabel)
+        assertEquals("# Plan\n\nNew words.", fresh.text)
+        // Older than 20 minutes: just the document.
+        val stale = settled(loader(now - ArtifactLoader.FRESH_DIFF_MILLIS - 1)) as ArtifactUi.Document
+        assertEquals(null, stale.previous)
     }
 
     @Test fun aLinkedFileOpensInItsVersionUnderItsName() {
@@ -185,65 +208,5 @@ class ArtifactLoaderTest {
     @Test fun aDeletedArtifactSaysSo() {
         assertEquals(ArtifactUi.Message(deleted = true), settled(load(files(emptyMap(), status = 404))))
         assertEquals(ArtifactUi.Message(deleted = false), settled(load(files(emptyMap(), status = 500))))
-    }
-
-    @Test fun theCatalogShowsWhatWasKeptThenPagesAndDedupes() {
-        var kept: JsonObject? = buildJsonObject { put("artifacts", kotlinx.serialization.json.JsonArray(listOf(buildJsonObject { put("id", "old"); put("title", "Kept") }))) }
-        val pages = mapOf(
-            null to """{"artifacts":[{"id":"a1","title":"One"},{"id":"a2","title":"Two"}],"nextPageCursor":"p2"}""",
-            "p2" to """{"artifacts":[{"id":"a2","title":"Two"},{"id":"a3"}],"nextPageCursor":null}""",
-        )
-        val catalog = object : ArtifactClient(AgentClient(object : Transport {
-            override suspend fun request(method: String, path: String, credential: String, body: ByteArray?, headers: Map<String, String>, category: RequestCategory) = error("unused")
-            override suspend fun close() {}
-        }, "t")) {
-            override suspend fun catalog(pageCursor: String?): JsonObject {
-                asked += "catalog ${pageCursor ?: "first"}"
-                if (pageCursor == null) kotlinx.coroutines.delay(300)
-                return kotlinx.serialization.json.Json.parseToJsonElement(pages.getValue(pageCursor)) as JsonObject
-            }
-        }
-        val reader = ArtifactCatalogReader(catalog, scope, cached = { kept }, keep = { kept = it })
-        reader.start()
-        runBlocking {
-            // The kept page shows first, while the fresh read is under way.
-            assertEquals(listOf("old"), withTimeout(5_000) { reader.state.first { it.items.isNotEmpty() } }.items.map { it.id })
-            assertEquals(listOf("a1", "a2"), withTimeout(5_000) { reader.state.first { it.next == "p2" } }.items.map { it.id })
-            reader.read(append = true)
-            val all = withTimeout(5_000) { reader.state.first { it.next == null && it.items.size == 3 } }
-            assertEquals(listOf("a1", "a2", "a3"), all.items.map { it.id })
-            assertEquals("", all.items[2].title)
-        }
-        // Only the first page is kept offline.
-        assertEquals("a1", kept!!["artifacts"].toString().substringAfter("\"id\":\"").substringBefore('"'))
-        // At the end, asking for more asks nothing.
-        reader.read(append = true)
-        Thread.sleep(100)
-        assertEquals(listOf("catalog first", "catalog p2"), asked.toList())
-    }
-
-    @Test fun aCatalogThatCantBeReadSaysSoOnlyWithNothingShown() {
-        var fail = true
-        val catalog = object : ArtifactClient(AgentClient(object : Transport {
-            override suspend fun request(method: String, path: String, credential: String, body: ByteArray?, headers: Map<String, String>, category: RequestCategory) = error("unused")
-            override suspend fun close() {}
-        }, "t")) {
-            override suspend fun catalog(pageCursor: String?): JsonObject {
-                if (fail) throw java.io.IOException("offline")
-                return kotlinx.serialization.json.Json.parseToJsonElement("""{"artifacts":[{"id":"a1"}]}""") as JsonObject
-            }
-        }
-        val reader = ArtifactCatalogReader(catalog, scope)
-        reader.start()
-        runBlocking { withTimeout(5_000) { reader.state.first { it.failed } } }
-        fail = false
-        reader.retry()
-        val shown = runBlocking { withTimeout(5_000) { reader.state.first { it.items.isNotEmpty() } } }
-        assertFalse(shown.failed)
-        fail = true
-        reader.read()
-        Thread.sleep(100)
-        assertEquals(listOf("a1"), reader.state.value.items.map { it.id })
-        assertFalse(reader.state.value.failed)
     }
 }

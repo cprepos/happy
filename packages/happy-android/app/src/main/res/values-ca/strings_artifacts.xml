@@ -27,8 +27,6 @@
     <string name="artifact_open_with_body">Android no pot mostrar aquest fitxer aquí. S\'obre en una app d\'aquest telèfon que el pugui llegir.</string>
     <string name="browser_via">a través de %1$s</string>
     <string name="browser_default_computer">connexió d\'agent</string>
-    <string name="browser_unreachable">No es pot contactar amb %1$s.\nComprova la connexió de l\'agent i toca Torna a carregar.</string>
-    <string name="browser_unreachable_page">No es pot contactar amb %1$s.\nComprova la connexió o l\'adreça de la pàgina i toca Torna a carregar.</string>
     <string name="browser_unsupported">El WebView d\'aquest telèfon no pot enviar pàgines a través de l\'ordinador. Actualitza Android System WebView i toca Torna a carregar.</string>
     <string name="browser_forward">Endavant</string>
     <string name="browser_close">Tanca</string>
@@ -40,4 +38,106 @@
     <string name="link_menu_open_external_proxied">Fora de la xarxa de l\'agent</string>
     <string name="link_menu_copy">Copia l\'enllaç</string>
     <string name="link_menu_share">Comparteix</string>
+
+    <string name="artifact_list_search">Cerca artefactes</string>
+    <string name="artifact_list_empty">Encara no hi ha artefactes. Demana a un agent que en creï un.</string>
+    <string name="artifact_list_no_matches">Cap artefacte no coincideix.</string>
+    <string name="artifact_list_unsupported">Aquest Happy Agent no desa artefactes.</string>
+    <string name="artifact_list_unavailable">No s\'han pogut carregar els artefactes. Comprova que l\'ordinador estigui engegat.</string>
+    <string name="artifact_list_open">Obre</string>
+    <string name="artifact_list_copy_title">Copia el títol</string>
+    <string name="artifact_list_previous_7_days">7 dies anteriors</string>
+    <string name="artifact_list_previous_30_days">30 dies anteriors</string>
+    <string name="artifact_kind_live">Pàgina en directe</string>
+    <string name="artifact_kind_markdown">Document</string>
+    <string name="artifact_kind_html">Pàgina web</string>
+    <string name="artifact_kind_image">Imatge</string>
+    <string name="artifact_kind_image_series">Imatges</string>
+    <string name="artifact_kind_video">Vídeo</string>
+    <string name="artifact_kind_document">Fitxer</string>
+    <string name="artifact_kind_unknown">Artefacte</string>
+
+    <string name="artifact_card_kind_image_series">Sèrie d\'imatges</string>
+    <string name="artifact_card_kind_document">Document</string>
+    <string name="artifact_card_version">%1$s · Versió %2$d</string>
+
+    <string name="reference_artifact">artefacte</string>
+    <string name="reference_untitled_agent">Agent sense títol</string>
+    <string name="reference_untitled_workspace">Espai de treball sense títol</string>
+    <string name="reference_unavailable_artifact">un artefacte no disponible</string>
+    <string name="reference_unavailable_agent">un agent no disponible</string>
+    <string name="reference_unavailable_workspace">un espai de treball no disponible</string>
+    <string name="reference_unavailable_project">un projecte no disponible</string>
+    <string name="reference_unavailable_service">un servei no disponible</string>
+    <string name="reference_unavailable_user">un usuari no disponible</string>
+    <string name="reference_unavailable">una referència no disponible</string>
+
+    <string name="artifact_history">Historial</string>
+    <string name="artifact_history_version">Versió %1$s</string>
+    <string name="artifact_history_latest">Més recent</string>
+    <string name="artifact_history_showing">Es mostra la versió %1$s</string>
+    <string name="artifact_history_show_latest">Mostra la més recent</string>
+    <string name="artifact_history_failed">No s’han pogut carregar les versions.</string>
+
+    <string name="artifact_diff_since">Canvis des de la versió %1$s</string>
+
+    <string name="artifact_delete_title">Vols suprimir «%1$s»?</string>
+    <string name="artifact_delete_message">Se suprimeix per a tothom en aquest ordinador. Els xats que el mostraven diran que s’ha suprimit.</string>
+    <string name="artifact_delete_failed">No s’ha pogut suprimir aquest artefacte.</string>
+
+    <string name="feed_activity">Activitat</string>
+    <string name="feed_following">Seguint</string>
+    <string name="feed_mark_all_read">Marca-ho tot com a llegit</string>
+    <string name="feed_empty">Encara no ha passat res. Aquí apareixen les noves tasques, bots, documents, llistes de tasques i artefactes, amb cada canvi que tinguin.</string>
+    <string name="feed_loading">S’estan carregant les novetats…</string>
+    <string name="feed_unavailable">No s’han pogut carregar les novetats. Comprova que l’ordinador estigui encès.</string>
+    <string name="feed_unsupported">Aquest Happy Agent no té novetats. Actualitza’l per tenir-ne.</string>
+    <string name="feed_everywhere">Arreu</string>
+    <string name="feed_places">Llocs</string>
+    <string name="feed_no_clusters">Encara no hi ha res per seguir. Les tasques, bots, documents i llistes de tasques apareixen aquí quan hi passa alguna cosa.</string>
+    <string name="feed_loading_clusters">S’està carregant…</string>
+    <string name="feed_clusters_unavailable">No s’han pogut carregar. Comprova que l’ordinador estigui encès.</string>
+    <string name="feed_unread_mark">No llegit</string>
+    <string name="feed_everything">Tot</string>
+    <string name="feed_team">Equip</string>
+    <string name="feed_follow">Segueix %1$s</string>
+    <string name="feed_mute">Silencia %1$s</string>
+    <string name="feed_muted">Silenciat</string>
+    <string name="feed_follow_failed">No s’ha pogut canviar el que segueixes. %1$s</string>
+    <string name="feed_created_with">Creat · %1$s</string>
+    <string name="feed_created">Creat</string>
+    <string name="feed_changed">Canviat</string>
+    <string name="feed_peek_empty">Aquí no ha passat res en els darrers 30 dies.</string>
+    <string name="feed_you">Tu</string>
+    <string name="feed_two">%1$s i %2$s</string>
+    <plurals name="feed_others">
+        <item quantity="one">%1$s i %2$d més</item>
+        <item quantity="many">%1$s i %2$d més</item>
+        <item quantity="other">%1$s i %2$d més</item>
+    </plurals>
+    <plurals name="feed_unread">
+        <item quantity="one">%1$d sense llegir</item>
+        <item quantity="many">%1$d sense llegir</item>
+        <item quantity="other">%1$d sense llegir</item>
+    </plurals>
+    <plurals name="feed_new_todos">
+        <item quantity="one">%1$d tasca nova</item>
+        <item quantity="many">%1$d tasques noves</item>
+        <item quantity="other">%1$d tasques noves</item>
+    </plurals>
+    <plurals name="feed_edits">
+        <item quantity="one">%1$d edició</item>
+        <item quantity="many">%1$d edicions</item>
+        <item quantity="other">%1$d edicions</item>
+    </plurals>
+    <plurals name="feed_versions">
+        <item quantity="one">%1$d versió nova</item>
+        <item quantity="many">%1$d versions noves</item>
+        <item quantity="other">%1$d versions noves</item>
+    </plurals>
+    <plurals name="feed_updates">
+        <item quantity="one">%1$d actualització</item>
+        <item quantity="many">%1$d actualitzacions</item>
+        <item quantity="other">%1$d actualitzacions</item>
+    </plurals>
 </resources>

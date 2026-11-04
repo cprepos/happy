@@ -63,7 +63,11 @@ data class Intent(
         const val RENAME = "rename"
 
         /** Kinds that set one thing share a slot: an unarchive replaces an archive still waiting. */
-        fun slotOf(kind: String): String = if (kind == UNARCHIVE) ARCHIVE else kind
+        fun slotOf(kind: String): String = when (kind) {
+            UNARCHIVE -> ARCHIVE
+            SURFACE_JOIN -> LEAVE
+            else -> kind
+        }
     }
 }
 
@@ -133,6 +137,9 @@ class IntentOutbox(
         data object Waiting : Verdict
     }
 
+    /** The kept intent and the answer owned by the screen that asked for its first try. */
+    data class AttemptResult(val intent: Intent, val verdict: Verdict)
+
     private val lock = Mutex()
     private val kept = MutableStateFlow<List<Intent>?>(null)
     private val online = MutableStateFlow(false)
@@ -140,6 +147,9 @@ class IntentOutbox(
     private val rejected = MutableSharedFlow<Rejection>(extraBufferCapacity = 16)
     private val deliverers = MutableStateFlow<Map<String, suspend (Intent) -> Unit>>(emptyMap())
     private val waiters = HashMap<String, MutableList<CompletableDeferred<Verdict>>>()
+    // A fast background delivery can finish before the caller starts waiting.
+    // Keep its answer under lock with removal so that a refusal cannot become Taken.
+    private val completed = LinkedHashMap<String, Verdict>()
     private val inFlight = HashSet<String>()
     private val pendingState = MutableStateFlow<List<Intent>>(emptyList())
 
@@ -163,6 +173,9 @@ class IntentOutbox(
     /** Whether the connection is up. Off stops at once; what was on its way goes again under the same ID. */
     fun setOnline(online: Boolean) {
         this.online.value = online
+        // A rapid off/on can be conflated by the state collector. Wake a
+        // drainer already waiting as well as starting one through the collector.
+        kicks.trySend(Unit)
     }
 
     /** Sends what is due now rather than at its time: a reconnect. */
@@ -172,15 +185,34 @@ class IntentOutbox(
 
     /** Keeps an action and publishes it, replacing what its slot held; then sends it when it can. */
     suspend fun enqueue(kind: String, target: String, value: JsonObject = JsonObject(emptyMap())): Intent {
-        val (intent, replaced) = lock.withLock {
-            val before = loaded()
-            val intent = Intent(AgentClient.newId(), kind, target, value, maxOf(now(), (before.lastOrNull()?.createdAt ?: 0) + 1))
-            val replaced = before.firstOrNull { it.slot == intent.slot }
-            write(before.filter { it.slot != intent.slot } + intent)
-            intent to replaced
-        }
-        replaced?.let { finish(it.id, Verdict.Taken) }
+        val intent = lock.withLock { enqueueLocked(kind, target, value) }
         kicks.trySend(Unit)
+        return intent
+    }
+
+    /**
+     * Keeps an action and claims its first try before the background drainer
+     * can see it. A refusal belongs to this caller, even if delivery is fast:
+     * enqueue followed by attempt leaves a gap where home can also be told.
+     */
+    suspend fun enqueueAndAttempt(kind: String, target: String, value: JsonObject = JsonObject(emptyMap())): AttemptResult {
+        val (intent, deliver) = lock.withLock {
+            val intent = enqueueLocked(kind, target, value)
+            val deliver = deliverers.value[kind]
+            if (deliver != null) check(claim(intent.id))
+            intent to deliver
+        }
+        kicks.trySend(Unit)
+        return AttemptResult(intent, if (deliver == null) Verdict.Waiting else send(intent, deliver, told = true))
+    }
+
+    /** Under [lock], including publication and replacement's completion. */
+    private suspend fun enqueueLocked(kind: String, target: String, value: JsonObject): Intent {
+        val before = loaded()
+        val intent = Intent(AgentClient.newId(), kind, target, value, maxOf(now(), (before.lastOrNull()?.createdAt ?: 0) + 1))
+        val replaced = before.firstOrNull { it.slot == intent.slot }
+        write(before.filter { it.slot != intent.slot } + intent)
+        replaced?.let { finish(it.id, Verdict.Taken) }
         return intent
     }
 
@@ -188,6 +220,7 @@ class IntentOutbox(
     suspend fun verdict(id: String, withinMillis: Long? = null): Verdict {
         val waiter = CompletableDeferred<Verdict>()
         lock.withLock {
+            completed[id]?.let { return it }
             if (loaded().none { it.id == id }) return Verdict.Taken
             synchronized(waiters) { waiters.getOrPut(id) { mutableListOf() } += waiter }
         }
@@ -198,9 +231,13 @@ class IntentOutbox(
 
     /** Tries [id] once now, connected or not: a person waits on it. Kept as it was if it doesn't go. */
     suspend fun attempt(id: String): Verdict {
-        val intent = lock.withLock { loaded().firstOrNull { it.id == id } } ?: return Verdict.Taken
-        val deliver = deliverers.value[intent.kind] ?: return Verdict.Waiting
-        if (!claim(id)) return verdict(id, ATTEMPT_WAIT_MILLIS)
+        val (intent, deliver, claimed) = lock.withLock {
+            completed[id]?.let { return it }
+            val intent = loaded().firstOrNull { it.id == id } ?: return Verdict.Taken
+            val deliver = deliverers.value[intent.kind] ?: return Verdict.Waiting
+            Triple(intent, deliver, claim(id))
+        }
+        if (!claimed) return verdict(id, ATTEMPT_WAIT_MILLIS)
         return send(intent, deliver, told = true)
     }
 
@@ -220,26 +257,43 @@ class IntentOutbox(
         synchronized(inFlight) { inFlight.remove(id) }
     }
 
-    /** Tells whoever waits on [id]; whether anyone did. */
+    /** Under [lock], remembers the answer and tells whoever waits; whether anyone did. */
     private fun finish(id: String, verdict: Verdict): Boolean {
+        completed[id] = verdict
+        if (completed.size > COMPLETED_LIMIT) completed.remove(completed.keys.first())
         val waiting = synchronized(waiters) { waiters.remove(id) }.orEmpty()
         waiting.forEach { it.complete(verdict) }
         return waiting.isNotEmpty()
     }
 
+    private data class Delivery(val intent: Intent, val deliver: suspend (Intent) -> Unit)
+
     private suspend fun run() {
         while (true) {
-            val list = lock.withLock { loaded() }
-            val time = now()
-            val handled = deliverers.value
-            val due = list.filter { it.kind in handled && synchronized(inFlight) { it.id !in inFlight } }
-            val next = due.firstOrNull { it.nextAttemptAt <= time }
+            var at: Long? = null
+            val next = lock.withLock {
+                // collectLatest's cancellation may be queued behind this drainer.
+                // Going offline must stop new claims before that callback runs.
+                if (!online.value) return@withLock null
+                val handled = deliverers.value
+                val due = loaded().filter { it.kind in handled && synchronized(inFlight) { it.id !in inFlight } }
+                val intent = due.firstOrNull { it.nextAttemptAt <= now() }
+                if (intent == null) {
+                    at = due.minOfOrNull { it.nextAttemptAt }
+                    null
+                } else {
+                    // Selection and claim share removal's lock: a foreground
+                    // completion cannot leave this runner sending a stale row.
+                    check(claim(intent.id))
+                    Delivery(intent, handled.getValue(intent.kind))
+                }
+            }
             if (next == null) {
-                val at = due.minOfOrNull { it.nextAttemptAt }
-                if (at == null) kicks.receive() else withTimeoutOrNull(maxOf(1, at - time)) { kicks.receive() }
+                val deadline = at
+                if (deadline == null) kicks.receive() else withTimeoutOrNull(maxOf(1, deadline - now())) { kicks.receive() }
                 continue
             }
-            if (claim(next.id)) send(next, handled.getValue(next.kind))
+            send(next.intent, next.deliver)
         }
     }
 
@@ -247,14 +301,18 @@ class IntentOutbox(
     private suspend fun send(intent: Intent, deliver: suspend (Intent) -> Unit, told: Boolean = false): Verdict {
         try {
             deliver(intent)
-            lock.withLock { write(loaded().filter { it.id != intent.id }) }
-            finish(intent.id, Verdict.Taken)
+            lock.withLock {
+                write(loaded().filter { it.id != intent.id })
+                finish(intent.id, Verdict.Taken)
+            }
             return Verdict.Taken
         } catch (e: CancellationException) {
             throw e
         } catch (refusal: IntentRefusal) {
-            lock.withLock { write(loaded().filter { it.id != intent.id }) }
-            val heard = finish(intent.id, Verdict.Refused(refusal.reason)) || told
+            val heard = lock.withLock {
+                write(loaded().filter { it.id != intent.id })
+                finish(intent.id, Verdict.Refused(refusal.reason))
+            } || told
             rejected.emit(Rejection(intent, refusal.reason, heard))
             return Verdict.Refused(refusal.reason)
         } catch (_: Exception) {
@@ -269,6 +327,9 @@ class IntentOutbox(
     }
 
     companion object {
+        /** Recent completions only; no payloads or connection-lifetime growth. */
+        internal const val COMPLETED_LIMIT = 256
+
         /** How long [attempt] waits on a send already on its way. */
         const val ATTEMPT_WAIT_MILLIS = 60_000L
 

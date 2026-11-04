@@ -88,13 +88,6 @@ class ArtifactsTest {
         assertTrue(ArtifactFile("clip.webm", "video/webm", 1).isVisual)
     }
 
-    @Test fun theCatalogReadsRowsAndItsCursor() {
-        val page = ArtifactListing.parse(obj("""{"artifacts":[{"id":"a1","title":"One","type":"html","latestVersion":4},{"id":"a2"},{"title":"no id"}],"nextPageCursor":"p2"}"""))
-        assertEquals(listOf(ArtifactRef("a1", 4, "html", "One", true), ArtifactRef("a2", 1, "", "", true)), page.items)
-        assertEquals("p2", page.next)
-        assertNull(ArtifactListing.parse(obj("""{"artifacts":[]}""")).next)
-    }
-
     @Test fun aWholeFileIsReadInRanges() = runBlocking {
         val bytes = ByteArray(ArtifactClient.RANGE_CHUNK * 2 + 10) { it.toByte() }
         val routes = Routes { _, range ->
@@ -108,6 +101,67 @@ class ArtifactsTest {
         // Each segment is escaped on its own; the separators stay.
         assertEquals("/v0/artifacts/a1/versions/2/files/images/plot%20%231.png", routes.asked[0].first)
         assertEquals("bytes=0-${ArtifactClient.RANGE_CHUNK - 1}", routes.asked[0].second)
+    }
+
+    @Test fun aFileReadForAnotherAppTellsHowFarItIs() = runBlocking {
+        val bytes = ByteArray(1_200_000) { it.toByte() }
+        val routes = Routes { _, range ->
+            val (from, to) = range!!.removePrefix("bytes=").split('-').map(String::toInt)
+            val end = minOf(to, bytes.size - 1)
+            TransportResponse(206, mapOf("content-range" to "bytes $from-$end/${bytes.size}"), bytes.copyOfRange(from, end + 1))
+        }
+        val heard = ArrayList<Pair<Long, Long>>()
+        val read = ArtifactClient(AgentClient(routes, "t")).bytes("a1", 1, "paper.pdf", chunk = ArtifactClient.PROGRESS_CHUNK) { done, total -> heard += done to total }
+        assertArrayEquals(bytes, read)
+        val total = bytes.size.toLong()
+        assertEquals(listOf(524_288L to total, 1_048_576L to total, total to total), heard)
+        assertEquals("bytes=0-${ArtifactClient.PROGRESS_CHUNK - 1}", routes.asked[0].second)
+    }
+
+    @Test fun anArtifactsVersionsArePagedNewestFirst() = runBlocking {
+        val routes = Routes { path, _ ->
+            if ("pageCursor=p2" in path) json(200, """{"versions":[{"artifactId":"a1","number":1,"title":"Plan","files":[],"createdAt":1000,"createdBy":{"kind":"user"}}],"nextPageCursor":null}""")
+            else json(200, """{"versions":[{"artifactId":"a1","number":3,"major":2,"minor":0,"title":"Plan","files":[],"createdAt":3000,"createdBy":{"kind":"agent","agentId":"x"}},{"artifactId":"a1","number":2,"title":"Plan","files":[]}],"nextPageCursor":"p2"}""")
+        }
+        val client = ArtifactClient(AgentClient(routes, "t"))
+        val (first, next) = client.versions("a1")
+        assertEquals(listOf("2.0", "2"), first.map { it.label })
+        assertEquals(listOf(3000L, 0L), first.map { it.createdAt })
+        assertTrue(first[0].byAgent)
+        assertEquals("p2", next)
+        val (second, end) = client.versions("a1", next)
+        assertEquals(listOf(1), second.map { it.number })
+        assertNull(end)
+        assertEquals("/v0/artifacts/a1/versions?limit=50", routes.asked[0].first)
+        val gone = ArtifactClient(AgentClient(Routes { _, _ -> json(404, """{"error":"gone"}""") }, "t"))
+        assertTrue(runCatching { gone.versions("a1") }.exceptionOrNull() is ArtifactGoneException)
+    }
+
+    /** API.md `POST /v0/artifacts/:id/delete`: If-Match names the artifact's version; one that lost a race deletes the newer one. */
+    @Test fun aDeletionNamesTheVersionItDeletesAndRetriesARace() = runBlocking {
+        val matches = ArrayList<String?>()
+        var current = "v1"
+        val transport = object : Transport {
+            val asked = ArrayList<String>()
+            override suspend fun request(method: String, path: String, credential: String, body: ByteArray?, headers: Map<String, String>, category: RequestCategory): TransportResponse {
+                asked += "$method $path"
+                if (method == "GET") return json(200, """{"artifact":{"id":"a1","version":"$current","status":"active"}}""")
+                matches += headers["If-Match"]
+                // Someone else changed it first, once.
+                if (matches.size == 1) {
+                    current = "v2"
+                    return json(409, """{"error":"conflict","code":"conflict"}""")
+                }
+                return json(200, """{"artifact":{"id":"a1","version":"$current","status":"deleted"}}""")
+            }
+
+            override suspend fun close() {}
+        }
+        ArtifactClient(AgentClient(transport, "t")).delete("a1")
+        assertEquals(listOf("v1", "v2"), matches)
+        assertEquals(listOf("GET /v0/artifacts/a1", "POST /v0/artifacts/a1/delete", "GET /v0/artifacts/a1", "POST /v0/artifacts/a1/delete"), transport.asked)
+        val refused = ArtifactClient(AgentClient(Routes { path, _ -> if (path.endsWith("/delete")) json(403, """{"error":"forbidden"}""") else json(200, """{"artifact":{"version":"v1"}}""") }, "t"))
+        assertTrue(runCatching { refused.delete("a1") }.isFailure)
     }
 
     @Test fun aServerThatIgnoresRangesAndAnEmptyFile() = runBlocking {

@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="camera_timer">計時器</string>
+    <string name="camera_timer_seconds">%1$d秒</string>
+    <string name="camera_shape">照片比例</string>
+    <string name="camera_grid">格線</string>
+    <string name="camera_flash">閃光燈</string>
+    <string name="camera_flash_auto">自動</string>
+    <string name="camera_on">開啟</string>
+    <string name="camera_off">關閉</string>
+    <string name="camera_flip">切換相機</string>
+    <string name="camera_exposure">曝光</string>
+    <string name="camera_ae_af_lock">自動曝光/對焦鎖定</string>
+    <string name="camera_af_lock">自動對焦鎖定</string>
+    <string name="camera_ae_lock">自動曝光鎖定</string>
+    <string name="camera_zoom">縮放 %1$s</string>
+    <string name="camera_take_photo">拍照</string>
+    <string name="camera_retake">重拍</string>
+    <string name="camera_use_photo">使用照片</string>
+    <string name="camera_permission">若要拍照，請在設定中允許 Happy 使用相機。</string>
+    <string name="camera_no_camera">此裝置沒有相機。</string>
+    <string name="camera_unavailable">無法啟動相機。請重試。</string>
+    <string name="camera_in_use">其他 App 正在使用相機。</string>
+    <string name="camera_capture_failed">無法拍照。請重試。</string>
+    <string name="camera_viewfinder">觀景窗</string>
+</resources>

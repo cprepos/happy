@@ -22,8 +22,10 @@ import com.slopus.happy.ui.theme.RnLineHeightStyle
  * (@expo/vector-icons 15.0.x, glyphmaps/Ionicons.json; MIT). Add entries as screens need them.
  */
 enum class Ionicon(val codepoint: Int) {
+    CardOutline(0xf1e8), // card-outline
     Add(0xf103), // add
     AddOutline(0xf107), // add-outline
+    AlbumsOutline(0xf110), // albums-outline
     AlertCircleOutline(0xf114), // alert-circle-outline
     AnalyticsOutline(0xf11c), // analytics-outline
     AppsOutline(0xf122), // apps-outline
@@ -42,6 +44,7 @@ enum class Ionicon(val codepoint: Int) {
     Checkmark(0xf21d), // checkmark
     CheckmarkCircle(0xf21e), // checkmark-circle
     CheckmarkCircleOutline(0xf21f), // checkmark-circle-outline
+    CheckmarkDoneOutline(0xf225), // checkmark-done-outline
     CheckmarkOutline(0xf227), // checkmark-outline
     ChevronBack(0xf229), // chevron-back
     ChevronDown(0xf232), // chevron-down
@@ -52,6 +55,7 @@ enum class Ionicon(val codepoint: Int) {
     CloudOfflineOutline(0xf25b), // cloud-offline-outline
     CodeOutline(0xf26c), // code-outline
     CodeSlash(0xf26e), // code-slash
+    CodeSlashOutline(0xf26f), // code-slash-outline
     CodeWorkingOutline(0xf272), // code-working-outline
     ColorPaletteOutline(0xf27e), // color-palette-outline
     ConstructOutline(0xf287), // construct-outline
@@ -81,8 +85,10 @@ enum class Ionicon(val codepoint: Int) {
     Folder(0xf325), // folder
     FolderOpenOutline(0xf327), // folder-open-outline
     FolderOutline(0xf329), // folder-outline
+    GiftOutline(0xf338), // gift-outline
     GitBranchOutline(0xf33b), // git-branch-outline
     GitCommitOutline(0xf33e), // git-commit-outline
+    GitCompareOutline(0xf341), // git-compare-outline
     GitNetworkOutline(0xf347), // git-network-outline
     GlobeOutline(0xf350), // globe-outline
     HardwareChipOutline(0xf365), // hardware-chip-outline
@@ -91,6 +97,7 @@ enum class Ionicon(val codepoint: Int) {
     HomeOutline(0xf383), // home-outline
     HourglassOutline(0xf386), // hourglass-outline
     ImageOutline(0xf38f), // image-outline
+    Images(0xf391), // images
     InformationCircle(0xf398), // information-circle
     InformationCircleOutline(0xf399), // information-circle-outline
     KeyOutline(0xf3a4), // key-outline
@@ -108,11 +115,14 @@ enum class Ionicon(val codepoint: Int) {
     LogoGithub(0xf3f3), // logo-github
     Mic(0xf454), // mic
     MicOutline(0xf45e), // mic-outline
+    MicOff(0xf458), // mic-off
     HeartOutline(0xf377), // heart-outline
     SearchOutline(0xf563), // search-outline
     MoonOutline(0xf461), // moon-outline
+    NewspaperOutline(0xf473), // newspaper-outline
     NotificationsOutline(0xf47f), // notifications-outline
     OptionsOutline(0xf48b), // options-outline
+    PaperPlaneOutline(0xf48e), // paper-plane-outline
     PauseOutline(0xf497), // pause-outline
     Pencil(0xf49c), // pencil
     PeopleOutline(0xf4a3), // people-outline
@@ -144,6 +154,7 @@ enum class Ionicon(val codepoint: Int) {
     TimeOutline(0xf5de), // time-outline
     TimerOutline(0xf5e1), // timer-outline
     TrashOutline(0xf5f6), // trash-outline
+    Videocam(0xf60d), // videocam
     Warning(0xf628), // warning
     WarningOutline(0xf629), // warning-outline
 }

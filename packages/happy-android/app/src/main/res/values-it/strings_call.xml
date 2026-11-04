@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="call_start">Avvia chiamata vocale</string>
+    <string name="call_voice_call">Chiamata vocale</string>
+    <string name="call_muted">Silenziato</string>
+    <string name="call_mute">Silenzia microfono</string>
+    <string name="call_unmute">Riattiva microfono</string>
+    <string name="call_end">Termina chiamata</string>
+    <string name="call_close">Chiudi</string>
+    <string name="call_listening">In ascolto</string>
+    <string name="call_user_speaking">Stai parlando</string>
+    <string name="call_agent_speaking">Happy sta parlando</string>
+    <string name="call_not_set_up">La voce non è ancora configurata per questa connessione</string>
+    <string name="call_microphone">L’accesso al microfono è disattivato</string>
+    <string name="call_subscription">La voce richiede un abbonamento</string>
+    <string name="call_limit">Tempo vocale gratuito esaurito: 20 min ogni 30 giorni</string>
+    <string name="call_authentication">Accedi di nuovo per usare la voce</string>
+    <string name="call_connection">Chiamata terminata: connessione persa</string>
+    <string name="call_open_settings">Apri Impostazioni</string>
+    <string name="call_paywall_title">Tempo vocale</string>
+    <string name="call_welcome_title">Parla con i tuoi agenti</string>
+    <string name="call_welcome_ask">Chiedi come procede il lavoro</string>
+    <string name="call_welcome_act">Apri e invia con la voce</string>
+    <string name="call_welcome_free">20 minuti gratuiti</string>
+    <string name="call_start_session">Avvia sessione vocale</string>
+    <string name="call_used_today">Hai usato il tempo vocale gratuito. Torna alle %1$s.</string>
+    <string name="call_used_week">Hai usato il tempo vocale gratuito. Torna %1$s alle %2$s.</string>
+    <string name="call_used_date">Hai usato il tempo vocale gratuito. Torna il %1$s.</string>
+    <string name="call_used_later">Hai usato il tempo vocale gratuito. Torna man mano che le chiamate più vecchie superano i 30 giorni.</string>
+    <string name="call_support_for">Sostieni Happy con %1$s al mese</string>
+    <string name="call_subscribe_allowance">5 ore di voce in tempo reale incluse</string>
+    <string name="call_subscribe_support">Happy è open source. L’abbonamento vocale ne finanzia lo sviluppo.</string>
+    <string name="call_subscribe">Abbonati</string>
+    <string name="call_preview_note">Anteprima di prova. Non viene addebitato nulla.</string>
+    <string name="call_preview_title">Solo anteprima</string>
+    <string name="call_preview_message">Gli abbonamenti vocali non sono ancora in vendita. Non è stato acquistato né addebitato nulla e il tuo tempo vocale non è cambiato.</string>
+    <string name="call_paid_used">Le 5 ore di voce di questo mese sono esaurite. Altre dal %1$s.</string>
+    <string name="call_paid_used_later">Le 5 ore di voce di questo mese sono esaurite.</string>
+    <string name="call_restore">Ripristina acquisti</string>
+    <string name="call_restore_done">Il tuo abbonamento è stato ripristinato.</string>
+    <string name="call_restore_none">Nessun abbonamento voce trovato per questo account dello store.</string>
+    <string name="call_restore_failed">Impossibile raggiungere lo store. Riprova più tardi.</string>
+    <string name="call_purchase_unconfirmed">Il tuo acquisto non è ancora confermato. Happy ricontrolla quando torni.</string>
+</resources>

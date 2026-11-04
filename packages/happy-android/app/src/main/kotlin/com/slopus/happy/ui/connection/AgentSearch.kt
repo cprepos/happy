@@ -1,5 +1,11 @@
 package com.slopus.happy.ui.connection
 
+import com.slopus.happy.chat.arr
+import com.slopus.happy.agent.Intent
+import com.slopus.happy.todos.TodoItem
+import com.slopus.happy.todos.TodoLibrary
+import com.slopus.happy.todos.TodoOp
+import com.slopus.happy.todos.TodoReducer
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
@@ -54,7 +60,8 @@ import com.slopus.happy.agent.AgentFeedRow
 import com.slopus.happy.agent.ConversationKind
 import com.slopus.happy.agent.isNullish
 import com.slopus.happy.agent.string
-import com.slopus.happy.artifacts.ArtifactListing
+import com.slopus.happy.artifacts.ArtifactCatalog
+import com.slopus.happy.artifacts.ArtifactCatalogFeed
 import com.slopus.happy.artifacts.ArtifactRef
 import com.slopus.happy.ui.components.HomeCardPlace
 import com.slopus.happy.ui.components.Ionicon
@@ -263,8 +270,8 @@ sealed interface AgentSearchResult {
  * What search finds beyond home's rows (desktop's ⌘K sources, 28342477),
  * only from what the phone already holds: every Surface in the catalog
  * with a page of its own, joined or not, newest first; the open todos of
- * the joined lists whose last read is kept; the artifact catalog's kept
- * first page, newest first.
+ * the joined lists whose last read is kept; the artifact catalog as
+ * [ArtifactCatalogFeed] keeps it, newest change first.
  */
 @Immutable
 data class AgentSearchSources(
@@ -287,7 +294,7 @@ data class AgentSearchSources(
          * session's `cachedResource`, so off the main thread). A Surface
          * being left ([feed] no longer lists it) is out already.
          */
-        fun read(catalog: AgentCatalog, feed: AgentFeed, kept: (String) -> JsonObject?): AgentSearchSources {
+        fun read(catalog: AgentCatalog, feed: AgentFeed, kept: (String) -> JsonObject?, pending: List<Intent> = emptyList()): AgentSearchSources {
             val listed = feed.rows.mapNotNullTo(HashSet()) { (it as? AgentFeedRow.Surface)?.id }
             val surfaces = catalog.surfaces.values
                 .filter { it.string("status") != "archived" && it["archivedAt"].isNullish() && it.string("type") in KINDS }
@@ -301,11 +308,14 @@ data class AgentSearchSources(
                 }
                 .sortedByDescending { it.first }
                 .map { it.second }
+            val ops = pending.mapNotNull(TodoOp::of).groupBy { it.surfaceId }
             val todos = surfaces.filter { it.joined && it.row.type == SurfaceReader.TODO }.flatMap { list ->
-                val read = kept("surface" + list.row.id)?.let(SurfaceBody::parse) as? SurfaceBody.Todos
-                read?.todos.orEmpty().filter { !it.done }.map { Todo(it.id, it.text, list.row) }
+                val confirmed = kept(TodoLibrary.resource(list.row.id))?.get("todos").arr.orEmpty().mapNotNull(TodoItem::parse).associateBy { it.id }
+                TodoReducer.overlay(confirmed, ops[list.row.id].orEmpty()).values
+                    .filter { it.status == TodoItem.Status.Active && it.heading == null }
+                    .map { Todo(it.id, it.text, list.row) }
             }
-            val artifacts = kept("artifacts")?.let(ArtifactListing::parse)?.items.orEmpty()
+            val artifacts = kept(ArtifactCatalogFeed.RESOURCE)?.let(ArtifactCatalog::fromKept).orEmpty().map { it.ref }
             return AgentSearchSources(surfaces, todos, artifacts)
         }
     }
@@ -453,6 +463,8 @@ fun AgentSearchResults(
     selected: String? = null,
     /** Room under the last result to scroll clear of what stands at the foot (the sidebar's settings and compose). */
     bottomClearance: Dp = 0.dp,
+    onOpenFeed: () -> Unit = {},
+    onOpenTodos: () -> Unit = {},
 ) {
     val colors = HappyTheme.colors
     val density = LocalDensity.current
@@ -494,7 +506,9 @@ fun AgentSearchResults(
                         tag = AgentSearchTags.result(result.key),
                         onOpen = onOpenConversation,
                         onOpenArtifacts = onOpenArtifacts,
+                        onOpenTodos = onOpenTodos,
                         onOpenSurface = onOpenSurface,
+                        onOpenFeed = onOpenFeed,
                     )
                     is AgentSearchResult.Entry -> AgentSearchEntryRow(
                         result.entry.title,

@@ -128,7 +128,7 @@ data class SettingsProfile(
     /** The account's or agent connection's id. */
     val id: String,
     val name: String,
-    /** "@username" or the kind of account; an agent connection's link status. */
+    /** The kind, then what else tells it apart: "Happy CLI · @login", "Happy Agent · Connected" ([kindSubtitle]). */
     val subtitle: String,
     val imageUri: String? = null,
     val thumbhash: String? = null,
@@ -138,6 +138,9 @@ data class SettingsProfile(
     /** Its placeholder's seed when it has no picture: it moves with Animated Avatars on ([AvatarPlaceholder.liveSeed]). */
     val liveSeed: String? get() = AvatarPlaceholder.liveSeed(seed, imageUri, thumbhash)
 }
+
+/** The kind, then what else says which one it is (iOS's `AccountKind.subtitle`): "Happy CLI · @steve", "Happy Agent · Connected". */
+fun kindSubtitle(kind: String, detail: String?): String = if (detail.isNullOrEmpty()) kind else "$kind · $detail"
 
 /** One item of the picture's menu. */
 @Immutable
@@ -273,7 +276,7 @@ fun AccountsCard(accounts: AccountMenu, actions: AccountsCardActions) {
         for (entry in accounts.entries) {
             var menu by remember(entry.id) { mutableStateOf(false) }
             val removable = actions.onRemove != null && actions.canRemove(entry)
-            val name = entry.name ?: stringResource(if (entry.agent) R.string.account_menu_unnamed_agent else R.string.account_menu_unnamed_account)
+            val name = entry.name ?: stringResource(if (entry.agent) R.string.account_kind_agent else R.string.account_kind_cli)
             Box {
                 Item(
                     title = name,
@@ -322,15 +325,16 @@ fun addAgentEntry(actions: AccountsCardActions): SettingsEntry {
 }
 
 /**
- * Asks before an account goes (iOS's `remove`): "Disconnect agent?" with
- * what that does here, or "Sign out?" with happy-app's backup warning.
+ * Asks before an account goes (iOS's `remove`): "Disconnect Happy Agent?"
+ * with what that does here, or "Sign out of Happy CLI?" with happy-app's
+ * backup warning.
  */
 @Composable
 fun RemoveConfirm(agent: Boolean, name: String?, onConfirm: () -> Unit, onDismiss: () -> Unit) {
     val action = stringResource(if (agent) R.string.modals_disconnect else R.string.settings_account_logout)
     HappyAlert(
         Alert(
-            title = stringResource(if (agent) R.string.settings_disconnect_title else R.string.settings_sign_out_title),
+            title = stringResource(if (agent) R.string.account_kind_disconnect_agent_title else R.string.account_kind_sign_out_cli_title),
             message = if (agent) stringResource(R.string.agent_settings_remove_message) else stringResource(R.string.settings_account_logout_confirm),
             buttons = listOf(
                 AlertButton(stringResource(R.string.common_cancel)),
@@ -370,6 +374,8 @@ class AboutActions(
     /** A tap on Version; ten in a row toggle developer mode (useMultiClick). */
     val onVersion: () -> Unit = {},
     val onSupport: () -> Unit = {},
+    /** Billing belongs to the phone's store/account, even with an agent's proxied browser open. */
+    val onManageSubscriptions: () -> Unit = { onOpenUrl(SettingsSpec.SUBSCRIPTIONS_URL) },
 )
 
 /** Support us (29 heart in a red tile; Pro gets the thanks and no action). */
@@ -385,8 +391,22 @@ fun supportEntry(about: AboutInfo, actions: AboutActions) = SettingsEntry(
 
 @Composable
 fun SupportCard(about: AboutInfo, actions: AboutActions) {
-    SettingsCard(SettingsSection(listOf(supportEntry(about, actions))))
+    SettingsCard(supportSection(about, actions))
 }
+
+/** Store subscription management is available regardless of this account's entitlement. */
+@Composable
+fun supportSection(about: AboutInfo, actions: AboutActions) = SettingsSection(
+    listOf(
+        supportEntry(about, actions),
+        SettingsEntry(
+            id = SettingsTags.MANAGE_SUBSCRIPTIONS,
+            title = stringResource(R.string.settings_manage_subscriptions),
+            icon = { SettingsTile(Ionicon.CardOutline, SettingsTiles.blue) },
+            onClick = actions.onManageSubscriptions,
+        ),
+    ),
+)
 
 /**
  * About (iOS's `aboutRows`, SettingsView.tsx's About without its title):

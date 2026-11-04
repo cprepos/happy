@@ -144,9 +144,6 @@ object ConversationScreenTags {
     const val OLDER_RETRY = "conversation.older.retry"
     const val COMPOSE = "conversation.header.compose"
     const val COMPOSE_ICON = "conversation.header.compose.icon"
-    const val MORE = "conversation.header.more"
-    const val MENU = "conversation.header.menu"
-    const val DETAILS = "conversation.header.details"
     /** The fade behind the dock. */
     const val FADE = "conversation.fade"
 
@@ -170,6 +167,9 @@ class ConversationScreenActions(
     val onDraftChange: (String) -> Unit = {},
     /** The words and the attached pictures' files; true when the message was taken (the composer then clears). */
     val onSend: (String, List<com.slopus.happy.attachments.AttachmentPreview>) -> Boolean = { _, _ -> false },
+    /** [onSend] with gallery photos still being read: drawn from their thumbnails, they go once read. */
+    val onSendPending: (String, List<com.slopus.happy.attachments.AttachmentPreview>, List<com.slopus.happy.attachments.PendingPicture>) -> Boolean =
+        { words, attachments, _ -> onSend(words, attachments) },
     /** The composer picked another model, effort or permission mode. */
     val onModeChange: (Mode) -> Unit = {},
     val onStop: () -> Unit = {},
@@ -191,6 +191,8 @@ class ConversationScreenActions(
     /** The connection's media kept on this phone, with Telegram's download ring on each tile; null where nothing is kept. */
     val kept: com.slopus.happy.conversation.KeptMedia? = null,
     val onOpenArtifact: ((com.slopus.happy.conversation.ConversationRow.Artifact) -> Unit)? = null,
+    /** HTML artifacts shown inline under their cards; null where none are. */
+    val pages: com.slopus.happy.ui.artifacts.InlinePages? = null,
     /** The newest message is on screen while the app is up: unread clears. */
     val onVisible: (Boolean) -> Unit = {},
     /** How a secret request is made and answered; null where this build cannot. */
@@ -205,6 +207,8 @@ class ConversationScreenActions(
     val onToggleMessage: (String) -> Unit = {},
     /** Opens a tool call on its own screen, by its id. */
     val onOpenTool: ((String) -> Unit)? = null,
+    /** How a workspace's folders read, for naming one of its files from the attach sheet; null where they can't. */
+    val workspace: ((workspaceId: String) -> com.slopus.happy.ui.files.WorkspaceSource)? = null,
 )
 
 /**
@@ -253,6 +257,8 @@ fun ConversationScreen(
         text = state.draft
     }
     val bubble = userMessageBubblePalette(bubbleColor, colors.dark)
+    val workspaceId = state.agent?.workspaceId
+    val workspace = remember(actions, workspaceId) { workspaceId?.let { id -> actions.workspace?.invoke(id) } }
     // "/" opens the agent's commands over the composer, as desktop's palette does.
     val commands by rememberUpdatedState(state.commands)
     val onCommand by rememberUpdatedState(actions.onCommand)
@@ -293,7 +299,7 @@ fun ConversationScreen(
             onOpenArtifact = actions.onOpenArtifact,
             onOpenPicture = { key -> pictures.show(ConversationViewing.entries(rows, pictureLabel, videoLabel), key) },
             loadVideo = store::poster,
-            onOpenMedia = { ref -> media.open(ref.key, ref.item) { store.file(ref) } },
+            onOpenMedia = { ref -> media.open(ref.key, ref.item, inApp = true) { store.file(ref) } },
             mediaOpening = { ref -> media.state(ref.key) },
             asks = asks,
             onToggleTurn = { turn ->
@@ -309,6 +315,7 @@ fun ConversationScreen(
             onOpenTool = actions.onOpenTool,
             kept = store.kept,
             videos = videos,
+            pages = actions.pages,
         )
     }
     val atNewest by remember { derivedStateOf { listState.firstVisibleItemIndex == 0 } }
@@ -495,8 +502,8 @@ fun ConversationScreen(
                                 tag = ConversationScreenTags.ERROR,
                                 modifier = Modifier.padding(top = barFoot).keyboardPadding(keyboard, dockHeight),
                             )
-                            // New work is asked in the middle instead, and the chat it becomes is about to have its first message.
-                            TranscriptPhase.Empty -> if (state.created && state.taken == null) {
+                            // New work is asked in the middle instead. Read live: fading out under the first message, it says nothing.
+                            TranscriptPhase.Empty -> if (state.created && state.rows.isEmpty()) {
                                 StatePage(
                                     title = null,
                                     body = stringResource(R.string.conversation_empty),
@@ -596,6 +603,10 @@ fun ConversationScreen(
                                     if (answered) actions.onDraftChange("")
                                     answered || actions.onSend(words, attachments)
                                 },
+                                onSendPending = { words, attachments, pending ->
+                                    flight.grounded = false
+                                    actions.onSendPending(words, attachments, pending)
+                                },
                                 onSent = { text = "" },
                                 onStop = actions.onStop,
                                 onModeChange = actions.onModeChange,
@@ -612,11 +623,13 @@ fun ConversationScreen(
                                 returned = returned,
                                 // Sideways with the keyboard up, one row once the full card would leave the transcript too little.
                                 barFoot = barFoot,
+                                workspace = workspace,
                             )
                         }
                     }
                     SendFlightOverlay(flight, bubble, remember(colors) { ProsePalette.of(colors) })
                     PictureViewerHost(pictures, store)
+                    MediaPreview(media)
                 }
             }
         }
@@ -752,11 +765,17 @@ internal class FoldHold(private val list: androidx.compose.foundation.lazy.LazyL
 
     /** The person's message [key] is tapped open or shut while the list shows [rows]. */
     fun toggleMessage(key: String, rows: List<ConversationRow>) {
-        val visible = list.layoutInfo.visibleItemsInfo
-        val at = visible.indexOfFirst { it.key == key }
-        val over = visible.getOrNull(at + 1)?.takeIf { at >= 0 && it.index == visible[at].index + 1 }
+        val info = list.layoutInfo
+        val message = info.visibleItemsInfo.firstOrNull { it.key == key }
         val opened = (rows.firstOrNull { it.key == key } as? ConversationRow.User)?.opened
-        held = if (over != null && opened != null) Held(over.key, over.offset) { (it.firstOrNull { row -> row.key == key } as? ConversationRow.User)?.opened != opened } else null
+        // The row over it, where it is or, past the screen's edge (a folded message is seventy lines), where it would be.
+        val index = rows.indexOfFirst { it.key == key } + 1
+        val overKey = rows.getOrNull(index)?.key ?: OLDER_KEY.takeIf { index == rows.size }
+        held = if (message != null && opened != null && overKey != null) {
+            Held(overKey, message.offset + message.size + info.mainAxisItemSpacing) { (it.firstOrNull { row -> row.key == key } as? ConversationRow.User)?.opened != opened }
+        } else {
+            null
+        }
     }
 
     /** The rows composed now: once the row has turned, the held one is put back where it was, before they are laid out. */
@@ -804,4 +823,4 @@ internal fun activityLabel(activity: Activity?): String? = activity?.let {
 
 /** The send/stop button the composer shows; kept beside the screen for its tests. */
 internal fun primaryActionOf(hasContent: Boolean, state: ConversationState): PrimaryAction =
-    resolvePrimaryAction(hasContent = hasContent, showAbort = state.working, canAbort = state.created, blocked = false, disabled = state.newWork?.making == true)
+    resolvePrimaryAction(hasContent = hasContent, showAbort = state.working, canAbort = state.created, blocked = false, disabled = false)

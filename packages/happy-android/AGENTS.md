@@ -12,9 +12,42 @@ architectures comparable (local store, delta sync, crypto layer).
   `sources/auth`) are the source of truth. Do not port legacy protocol paths:
   sessions and machines without a `dataEncryptionKey` are skipped, not
   decrypted with the account secret.
-- **Voice** uses Happy's server-controlled allowance and RevenueCat paywalls,
-  with ElevenLabs over WebRTC. The pinned SDK source patch in
+- **Voice** in Happy (relay) sessions is switched off: `AppGraph.voice` is
+  built with `enabled = false`, so a session's chat shows no voice button and
+  `start` answers `NotAvailable` before the microphone, the server's grant,
+  a sheet or ElevenLabs. The engine stays in the tree (removal not decided).
+  When on, it uses Happy's server-controlled allowance and the app's own
+  offer sheets (`payments/`, see "Purchases"), with ElevenLabs over WebRTC. The pinned SDK source patch in
   `vendor/elevenlabs` fixes audio focus, teardown and call-local mute.
+- **An agent connection's voice call** (`call/`, `ui/call/`), iOS's
+  `HappyCore/Call` ported: apart from the relay's voice above, its own new
+  hosted ElevenLabs agent and four client tools (`CallTool`), no permission
+  or question tool, hearing only new words and stopping errors from the last
+  four conversations visited. Home's three-bar button sits immediately left of compose
+  (`ComposeFab(onVoice)`); the call's bar (`CallFrame`, after Telegram-iOS's
+  in-call status bar) slides down over the status bar and pushes the whole
+  window, the top app bar first, down by its height, taking the top inset.
+  A full-screen dialog goes through `PageDialog` or `WindowDialog` so that it
+  carries the bar.
+  It ends when the app leaves the foreground, another account opens or the
+  relay's voice starts. For launch it connects to a public agent by its ID
+  (`PublicAgentCallGrants`), a connection mechanism and not authentication;
+  the ID comes from `HAPPY_CALL_AGENT_ID`, `-Phappy.callAgentId` or the
+  ignored `local.properties` into `BuildConfig.CALL_AGENT_ID`, and is never
+  committed. Without it the tap says "Voice isn't set up for this
+  connection yet". Each device gets 20 free connected minutes in any
+  rolling 30 days, 5 hours a month with the subscription (`CallAllowance`,
+  local). The app's own sheet (`CallSheet`, no vendor UI) is the welcome,
+  once, on the first tap while the subscription is on sale, and, once the
+  time is used, says when it is back with Start greyed out. It sells only
+  what the store and RevenueCat say is on sale (`Offer.OnSale`), never a
+  made-up price (`Preview` is a debug-only test screen). A `ModalBottomSheet` calls
+  `SheetStatusIcons()` so the bar under its scrim keeps light icons.
+  `openSession` replaces a conversation on top and goes over anything else
+  (`openConversationInPlace`). See
+  `docs/agent-voice-call.md` at the repository root. The `happy.call.*`
+  intent extras (`CallFixtures`), `CallProbe` and `CallLiveDeviceCheck`
+  are for debug builds only.
 - **Offline first.** Everything the account has lives on the phone; the
   server is only asked for what changed since the last sync.
 - **Tool outputs are hidden by default** once the chat UI exists.
@@ -22,7 +55,7 @@ architectures comparable (local store, delta sync, crypto layer).
   chat/composer/tools, attachments, diffs/files, onboarding/connect, settings,
   push, tablet layouts, purchases and voice. Experimental and social surfaces
   remain excluded. Store validation needs the existing signing identity,
-  EAS build number and RevenueCat Google SDK key.
+  EAS build number and public RevenueCat Google key.
 - **Happy Protocol V2**: a Happy Agent connected straight to the phone
   over Tailcat, with no relay account. Each pairing is an **agent
   connection**, an account of its own beside relay Happy accounts, shown by
@@ -715,8 +748,9 @@ dark app on a light phone):
   HappyApp's first frame and on every change.
 - Every WebView is a `themedWebView`: the app's night mode for
   `prefers-color-scheme`, and the theme's colour until the page draws. The
-  browser then puts white under a page that paints no background and asks
-  for no dark one (`BARE_PAGE`).
+  browser's WebView is see-through instead (WebView keeps the first
+  background it is given) over the theme's colour, which turns white under
+  a page that paints no background and asks for no dark one (`BARE_PAGE`).
 
 A new WebView or window goes through these too. `AppNightModeTest` covers
 dark on a light phone and light on a dark one. `tools/flashscan` records a
@@ -750,7 +784,7 @@ initializer runs before the first frame and fails `ColdStartTest` until it
 is listed there; prefer starting it where it is first needed (Firebase's
 provider and ProfileInstaller's initializer are removed for that). Work
 nothing on the first screen shows waits for `LocalAfterStart` (push
-registration, notification channels, the paywall host), and glass blurs
+registration, notification channels), and glass blurs
 from the window's second frame (`FirstFrame`). Keep
 `HappyApplication.onCreate` to the debug StrictMode it has. The Baseline and
 startup profiles (`app/src/main/generated/baselineProfiles`) come from
@@ -1055,30 +1089,47 @@ thread from registration (after the first frame) and in
 
 ## Purchases
 
-`AppGraph.purchases` owns RevenueCat's optional account lifecycle. The public
-Google SDK key is supplied by `EXPO_PUBLIC_REVENUE_CAT_GOOGLE` or
-`-Phappy.revenueCatGoogleKey`; an empty key leaves purchases unavailable.
-`purchases.purchases` is the flat `StateFlow<Purchases>` from purchases.ts,
-cached per server/account and wiped on logout. Configure with the token's
-server-issued subject as appUserID. Startup/foreground and successful paywalls
-sync purchases and fetch customer info. SDK operations serialize with paywalls;
-account generations reject stale results after logout, account or server changes.
+No RevenueCat SDK: Play Billing plus RevenueCat's REST API with the public
+Google key (`EXPO_PUBLIC_REVENUE_CAT_GOOGLE` or `-Phappy.revenueCatGoogleKey`;
+empty means nothing is sold and nothing calls RevenueCat). The legacy SDK and
+its paywall dialog are gone; their old caches (`purchases` preferences, the
+SDK's own) stay on disk, unread.
 
-`suspend purchases.presentPaywall(flow)` (also `Paywall.present`) uses the
-current offering and the `flow` custom variable, never an offering named after
-the flow. `PaywallHost` at app scope renders RevenueCat's native Compose dialog
-and dismisses on account changes. Purchased and Restored return
-`PaywallOutcome(success = true, purchased = true)` after refresh; closing returns
-success with purchased false. `hasPro()` reads the real entitlement for voice;
-Settings' Support us row additionally treats debug builds as Pro, as RN does.
-The row is inert for Pro and otherwise presents `voluntary_support`.
+- `AppGraph.subscription` (`Subscription`) is the one purchase-state owner:
+  the customer (the relay account's JWT subject, else a persistent anonymous
+  install id; login is never needed), `pro`, what is on sale (`offer`:
+  the current offering's monthly package only), buy, the launch/foreground
+  sweep of unfinished purchases and Restore. `pro` comes from the last
+  RevenueCat answer (`ProPass`, cached 24 h), never from the offering, and
+  honours any product granting `pro` (older annual or lifetime too).
+- A purchase belongs to whoever it was bought for: Play's
+  `obfuscatedAccountId` is SHA-256 of the customer id, kept for good in
+  `accounts`. Only a user's Restore moves one to another customer
+  (`restored`); nothing is posted for whoever happens to be signed in.
+  Signing in identifies an anonymous buyer with the account; RevenueCat does
+  not guarantee that merges.
+- `AppGraph.offers` (`Offers`) is the one offer presenter, drawn by the one
+  `OfferHost` in `HappyApp`: voice's welcome and used-up sheets, the relay
+  voice's Required sheet (`voice_must_pay`, unreachable while that voice is
+  off), and Support (Settings' Support us
+  row and the agent's boba row: "Pledge <price>/month", no Start). One sheet
+  at a time; `ask` answers Start (the welcome's only), Pro or Dismissed.
+- Grants are client-side. Only the relay's voice has a server gate; its
+  5-hour hard cap is never sold, only said.
+- Debug builds treat About's Support row as Pro, as RN does; that grants no
+  voice.
+
+See `docs/agent-voice-call.md` at the repository root for the month rule,
+grace and identity.
 
 ## Voice
 
-`AppGraph.voice` owns one `VoiceEngine`. It requests microphone permission
+`AppGraph.voice` owns one `VoiceEngine`, switched off for now (see the top).
+When on, it requests microphone permission
 before allocating a server conversation, applies server denial/paywall rules,
-and connects the ElevenLabs transport. `AppGraph.purchases` provides real Pro
-state and paywalls; debug-only Support us behavior does not grant voice Pro.
+and connects the ElevenLabs transport. `AppGraph.subscription` provides real Pro
+state and `AppGraph.offers` the sheets (`VoicePaywall`); debug-only Support us
+behavior does not grant voice Pro.
 Usage and credentials re-authenticate with the account secret when voice uses
 a different server. Voice language codes come from `VoiceLanguages`.
 
@@ -1211,12 +1262,13 @@ workspace's own Git changes (`WorkspaceChangesRoute`, `WorkspaceGit` over
 `/v0/workspaces/:id/git`, `file-revision` and `file`); five files or fewer
 open whole.
 
-A person's message past ten lines folds the same way (`UserFold` in
-ProseViews; iOS c52fd2842). `Prose.cut` counts the laid-out lines, so the
-cut is decided while composing and not after measuring. Code and tables
-count their own lines. The bubble shows the lines up to the tenth line's
-foot, then "Show full". If that line is inside code, the cut falls at ten
-lines of text height. A tap on the bubble calls `Conversation.toggleMessage`
+A person's message shows whole; only a ludicrous paste, past seventy
+lines of its own text whatever the screen, folds the same way (`UserFold`
+in ProseViews; iOS c52fd2842, 3928f0f21). `Prose.cut` counts the laid-out
+lines, so the cut is decided while composing and not after measuring. Code
+and tables count their own lines. The bubble shows the lines up to the
+seventieth line's foot, then "Show full". If that line is inside code, the
+cut falls at seventy lines of text height. A tap on the bubble calls `Conversation.toggleMessage`
 and flips `ConversationRow.User.opened`. `FoldHold` keeps the row above the
 message in place, so the bubble opens downward.
 

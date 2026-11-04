@@ -50,7 +50,7 @@ final class AccountKindNamingTests: XCTestCase {
         // the chat's, DesktopHistoryTests; the Feed's, FeedPresentationTests;
         // slash commands' are checked here only for every language having them.
         XCTAssertEqual(Set(english.keys.filter { $0.hasPrefix("native.accountKind.") }), Set(Self.kindKeys))
-        let otherPrefixes = ["native.accountKind.", "native.voice.", "native.sessionResume.", "native.chat.", "native.slashCommands.", "native.feed."]
+        let otherPrefixes = ["native.accountKind.", "native.voice.", "native.sessionResume.", "native.chat.", "native.slashCommands.", "native.feed.", "native.desktopMigration."]
         XCTAssertEqual(english.keys.filter { key in !otherPrefixes.contains { key.hasPrefix($0) } }, [])
         for language in languages {
             let words = TranslationCatalog.nativeSources[language] ?? [:]

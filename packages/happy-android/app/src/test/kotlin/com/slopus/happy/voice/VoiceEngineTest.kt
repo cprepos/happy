@@ -9,6 +9,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
@@ -23,7 +24,7 @@ import org.junit.runner.RunWith
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(AndroidJUnit4::class)
 class VoiceEngineTest {
-    private class Fixture(val test: TestScope) {
+    private class Fixture(val test: TestScope, enabled: Boolean = true) {
         val log = mutableListOf<String>()
         val prefs = VoicePreferences(ApplicationProvider.getApplicationContext<Context>()
             .getSharedPreferences("voice-test", Context.MODE_PRIVATE).also { it.edit().clear().commit() })
@@ -32,8 +33,11 @@ class VoiceEngineTest {
         var response: VoiceCredentials = grant
         var pro = false
         var purchased = false
+        /** The welcome's answer: its "Start Voice Session" (true) or its close. */
+        var welcomeGoesOn = true
         var connect: suspend () -> Unit = {}
         var credentials: suspend () -> Unit = {}
+        val foreground = MutableStateFlow(true)
         lateinit var events: VoiceEvents
         lateinit var config: VoiceSessionConfig
         val connection = object : VoiceConnection {
@@ -59,6 +63,7 @@ class VoiceEngineTest {
                 override fun hasPro() = pro
                 override suspend fun present(flow: String): Boolean {
                     log += flow
+                    if (flow == "voice_trial_eligible") return welcomeGoesOn
                     if (purchased) { response = grant; pro = true }
                     return purchased
                 }
@@ -73,6 +78,8 @@ class VoiceEngineTest {
             } },
             toolsFactory = { current, sent -> VoiceTools({ _, _ -> }, { null }, { _, _, _ -> }, sent, current) },
             dispatcher = StandardTestDispatcher(test.testScheduler), clock = { 123L },
+            foreground = foreground,
+            enabled = enabled,
         )
         fun microphone(granted: Boolean = true, canAsk: Boolean = false) = object : MicrophonePermission {
             override suspend fun request(): MicrophoneAccess { log += "mic"; return MicrophoneAccess(granted, canAsk) }
@@ -80,10 +87,53 @@ class VoiceEngineTest {
         }
     }
 
+    @Test fun switchedOffItAsksAndOpensNothing() = runTest {
+        val f = Fixture(this, enabled = false)
+        assertFalse(f.engine.available)
+        assertEquals(VoiceStart.NotAvailable, f.engine.start("s", f.microphone()))
+        runCurrent()
+        assertEquals("no microphone, grant, sheet, context or transport", emptyList<String>(), f.log)
+        assertEquals(VoiceState(), f.engine.state.value)
+    }
+
     @Test fun deniedMicrophoneAllocatesNoConversation() = runTest {
         val f = Fixture(this)
         assertEquals(VoiceStart.MicrophoneDenied(false), f.engine.start("s", f.microphone(false)))
         assertEquals(listOf("mic"), f.log)
+        assertEquals(VoiceState(), f.engine.state.value)
+    }
+
+    @Test fun backgroundingEndsAnActiveCallAndRejectsStartsUntilForeground() = runTest {
+        val f = Fixture(this)
+        f.engine.start("s", f.microphone())
+        f.foreground.value = false
+        runCurrent()
+        assertEquals(VoiceState(), f.engine.state.value)
+        assertEquals(1, f.log.count { it == "end" })
+        val before = f.log.toList()
+        assertEquals(VoiceStart.Declined, f.engine.start("s", f.microphone()))
+        assertEquals("no permission prompt or allocation in the background", before, f.log)
+        f.foreground.value = true
+        runCurrent()
+        assertTrue(f.engine.start("s", f.microphone()) is VoiceStart.Started)
+        f.engine.stop()
+    }
+
+    @Test fun backgroundingDuringConnectClosesALateConnectionBeforeAnotherCanStart() = runTest {
+        val f = Fixture(this)
+        val connected = CompletableDeferred<Unit>()
+        f.connect = { withContext(NonCancellable) { connected.await() } }
+        val start = async { f.engine.start("s", f.microphone()) }
+        runCurrent()
+        f.foreground.value = false
+        runCurrent()
+        assertEquals(VoiceState(), f.engine.state.value)
+        f.foreground.value = true
+        assertEquals(VoiceStart.Declined, f.engine.start("next", f.microphone()))
+        connected.complete(Unit)
+        runCurrent()
+        assertTrue(start.isCancelled)
+        assertEquals(1, f.log.count { it == "end" })
         assertEquals(VoiceState(), f.engine.state.value)
     }
 
@@ -126,12 +176,25 @@ class VoiceEngineTest {
     }
 
     @Test fun cancelledHardPaywallDoesNotStartTransport() = runTest {
-        val f = Fixture(this); f.response = VoiceCredentials.Denied("voice_hard_limit_reached")
+        val f = Fixture(this); f.response = VoiceCredentials.Denied("subscription_required")
         assertEquals(VoiceStart.Declined, f.engine.start("s", f.microphone()))
         assertEquals(listOf("mic", "credentials", "voice_must_pay"), f.log)
     }
 
-    @Test fun softPaywallIsOnceAndDismissalContinues() = runTest {
+    /** The server's 5-hour cap: no purchase lifts it, so it is said and nothing is sold. */
+    @Test fun theHardCapIsSaidNeverSold() = runTest {
+        val f = Fixture(this); f.response = VoiceCredentials.Denied("voice_hard_limit_reached", 18_000)
+        assertEquals(VoiceStart.HardLimitReached(5), f.engine.start("s", f.microphone()))
+        assertEquals(listOf("mic", "credentials"), f.log)
+    }
+
+    @Test fun closingTheWelcomeStartsNothing() = runTest {
+        val f = Fixture(this); f.options = VoiceOptions(upsell = VoiceUpsell.SoftPaywall); f.welcomeGoesOn = false
+        assertEquals(VoiceStart.Declined, f.engine.start("s", f.microphone()))
+        assertEquals(listOf("mic", "credentials", "voice_trial_eligible"), f.log)
+    }
+
+    @Test fun softPaywallIsOnceAndItsStartGoesOn() = runTest {
         val f = Fixture(this); f.options = VoiceOptions(upsell = VoiceUpsell.SoftPaywall)
         assertTrue(f.engine.start("s", f.microphone()) is VoiceStart.Started)
         f.engine.stop()

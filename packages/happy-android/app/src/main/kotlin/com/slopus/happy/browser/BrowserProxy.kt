@@ -80,6 +80,8 @@ class BrowserProxy(parent: CoroutineScope) {
         val username = token()
         val password = token()
         internal val authorization = basic(username, password)
+        /** Why tunnels to each host were refused, for the screen to say. */
+        val refusals = BrowserRefusals()
         private var resolved: Deferred<String>? = null
 
         /** Keep-alive connections for this page's artifact API, closed with the page. */
@@ -219,6 +221,7 @@ class BrowserProxy(parent: CoroutineScope) {
 
     private suspend fun serve(local: TransportSocket) {
         var started = false
+        var refused: Pair<Page, BrowserPolicy.Authority>? = null
         try {
             val (head, rest) = BrowserRelay.head(local)
             val page = authenticate(head)
@@ -231,6 +234,7 @@ class BrowserProxy(parent: CoroutineScope) {
             if (parts[0] == "CONNECT") {
                 val authority = BrowserPolicy.Authority.parse(parts[1]) ?: throw BrowserException(BrowserException.Kind.Forbidden)
                 val owner = owner(authority, page)
+                refused = owner to authority
                 when (val scope = owner.scope) {
                     is Scope.Artifact if scope.authority == authority -> {
                         local.write(ESTABLISHED)
@@ -291,7 +295,10 @@ class BrowserProxy(parent: CoroutineScope) {
             val failure = BrowserFailure.of(e)
             Log.w(TAG, "Browser proxy failure: ${failure.code}, status ${failure.status}")
             // Never append another HTTP response to a started one or an opaque tunnel.
-            if (!started) runCatching { local.write(failure.bytes) }
+            if (!started) {
+                refused?.let { (owner, authority) -> owner.refusals.record(BrowserProxyRefusal(failure.status, failure.code), authority) }
+                runCatching { local.write(failure.bytes) }
+            }
         }
     }
 
@@ -324,6 +331,13 @@ class BrowserProxy(parent: CoroutineScope) {
         request.artifactRequest(id, version, "-", keepAlive = api)
         val lease = upstream { pool.take(reusing = api) }
         var reusable = false
+        // Once: a lease back in the pool may already be the next request's.
+        var released = false
+        fun release(keep: Boolean) {
+            if (released) return
+            released = true
+            pool.release(lease, keep)
+        }
         try {
             val translated = request.artifactRequest(id, version, lease.token, keepAlive = api, authority = lease.socket.authority)
             val remote = lease.socket
@@ -351,10 +365,11 @@ class BrowserProxy(parent: CoroutineScope) {
             val framing = upstream { BrowserResponseBody(response, method) }
             onStarted()
             local.write(response.artifactResponse().bytes)
-            val complete = relay(remote, local, framing, bytes)
+            // Back in the pool before the page has the answer's last byte: its next request may come at once.
+            val complete = relay(remote, local, framing, bytes) { done -> release(api && done) }
             reusable = api && complete
         } finally {
-            pool.release(lease, reusable)
+            release(reusable)
         }
     }
 
@@ -364,12 +379,21 @@ class BrowserProxy(parent: CoroutineScope) {
      * upstream (an EventSource with nothing to send), and nothing it sends
      * after its request reaches the daemon. True when the answer ended
      * exactly where its framing said, so the upstream may carry another.
+     * [answered] hears that, once the upstream has given its whole answer
+     * and before the page has the last of it.
      */
-    private suspend fun relay(remote: TransportSocket, local: TransportSocket, framing: BrowserResponseBody, initial: ByteArray): Boolean = coroutineScope {
+    private suspend fun relay(
+        remote: TransportSocket,
+        local: TransportSocket,
+        framing: BrowserResponseBody,
+        initial: ByteArray,
+        answered: (reusable: Boolean) -> Unit,
+    ): Boolean = coroutineScope {
         val done = CompletableDeferred<Boolean>()
         val relay = launch {
             try {
                 upstream { framing.append(initial) }
+                if (framing.finished) answered(framing.reusable)
                 if (initial.isNotEmpty()) local.write(initial)
                 while (!framing.finished) {
                     val data = upstream { remote.read(65536) }
@@ -379,6 +403,7 @@ class BrowserProxy(parent: CoroutineScope) {
                         return@launch
                     }
                     upstream { framing.append(data) }
+                    if (framing.finished) answered(framing.reusable)
                     local.write(data)
                 }
                 done.complete(framing.reusable)

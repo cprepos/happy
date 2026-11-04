@@ -1,5 +1,7 @@
 package com.slopus.happy.ui
 
+import com.slopus.happy.ui.todos.todoRoutes
+
 import com.slopus.happy.ui.connection.openAgentSettingsRow
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -8,7 +10,6 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -21,6 +22,8 @@ import androidx.navigation.compose.rememberNavController
 import com.slopus.happy.AppGraph
 import com.slopus.happy.R
 import com.slopus.happy.OpenAccount
+import com.slopus.happy.ui.components.LocalOverlays
+import com.slopus.happy.ui.components.Overlays
 import com.slopus.happy.ui.components.ProvideRowReveal
 import com.slopus.happy.ui.home.LegacyHome
 import com.slopus.happy.ui.settings.AccountSettings
@@ -29,8 +32,9 @@ import androidx.navigation.NavDestination.Companion.hasRoute
 import androidx.navigation.NavGraph
 import androidx.navigation.toRoute
 import com.slopus.happy.push.PushRegistrationEffect
-import com.slopus.happy.payments.PaywallHost
+import com.slopus.happy.ui.call.OfferHost
 import com.slopus.happy.ui.artifacts.AgentArtifactsRoute
+import com.slopus.happy.ui.feed.AgentFeedRoute
 import com.slopus.happy.ui.artifacts.BrowserRoute
 import com.slopus.happy.ui.artifacts.computerName
 import com.slopus.happy.ui.artifacts.openArtifact
@@ -45,7 +49,7 @@ import com.slopus.happy.ui.components.AlertButton
 import com.slopus.happy.ui.components.HappyAlert
 import com.slopus.happy.ui.connect.DeepLinkEffect
 import com.slopus.happy.ui.connection.AgentHome
-import com.slopus.happy.ui.connection.AgentSurfaceRoute
+import com.slopus.happy.ui.surfaces.openSurface
 import com.slopus.happy.ui.connect.LocalAddFlow
 import com.slopus.happy.ui.connect.LocalAgentPairing
 import com.slopus.happy.ui.connection.LocalServerSignIn
@@ -61,6 +65,8 @@ import com.slopus.happy.ui.tablet.MainPanelKey
 import com.slopus.happy.ui.tablet.MainPanelOpener
 import com.slopus.happy.ui.tablet.MainPanelPlaceholder
 import com.slopus.happy.ui.home.LocalHomeInSidebar
+import com.slopus.happy.ui.call.CallFrame
+import com.slopus.happy.ui.call.CallScreenEffect
 import com.slopus.happy.ui.connect.connectRoutes
 import com.slopus.happy.ui.files.filesRoutes
 import com.slopus.happy.ui.home.homeRoutes
@@ -122,13 +128,15 @@ fun HappyApp(graph: AppGraph, onNavigationReady: (NavHostController) -> Unit = {
         val dissolve = remember { Dissolve() }
         val scope = rememberCoroutineScope()
         val switcher = remember(graph) { AccountSwitcher(graph, scope, dissolve) }
+        // Every menu, sheet and dialog up, so a link from outside can put them away first.
+        val overlays = remember { Overlays() }
         val shown = remember { arrayOfNulls<NavHostController>(1) }
         val stack = rememberStackGeneration(open) { switcher.keepsSettings && open != OpenAccount.None && shown[0]?.isSettingsOverHome() == true }
-        // RevenueCat's paywall host, once the start is over: no paywall opens before a tap.
-        val afterStart = LocalAfterStart.current
-        val started by produceState(false) { afterStart.await(); value = true }
-        if (started) PaywallHost(graph.purchases)
-        DissolveBox(dissolve) { CompositionLocalProvider(LocalAccountSwitcher provides switcher) {
+        // The app's offer sheets: voice's, Support us.
+        OfferHost(graph.offers)
+        // The voice call's bar, when one shows, pushes everything down (ui/call/CallFrame).
+        CallFrame(graph.calls) {
+        DissolveBox(dissolve) { CompositionLocalProvider(LocalAccountSwitcher provides switcher, LocalOverlays provides overlays) {
         // Each account has its own back stack, replaced when another opens (but not from Settings).
         key(stack) {
             val nav = rememberNavController()
@@ -166,8 +174,10 @@ fun HappyApp(graph: AppGraph, onNavigationReady: (NavHostController) -> Unit = {
                                 onSettings = { go.open(MainPanelKey.SETTINGS) { nav.navigate(SettingsRoute()) } },
                                 onSettingsRow = { row -> go.open(null) { nav.openAgentSettingsRow(account.id, row) } },
                                 onOpenArtifacts = { go.open(MainPanelKey.ARTIFACTS) { nav.navigate(AgentArtifactsRoute(account.id)) } },
-                                onOpenSurface = { go.open(MainPanelKey.surface(it.id)) { nav.navigate(AgentSurfaceRoute(account.id, it.id, it.type, it.name)) } },
+                                onOpenSurface = { go.open(MainPanelKey.surface(it.id)) { nav.openSurface(graph, account.id, it.id) } },
+                                onOpenTodos = { go.open(MainPanelKey.TODOS) { nav.navigate(com.slopus.happy.ui.todos.TodoListsRoute(account.id)) } },
                                 onOpenArtifact = { go.open(null) { nav.openArtifact(account.id, it) } },
+                                onOpenFeed = { go.open(MainPanelKey.FEED) { nav.navigate(AgentFeedRoute(account.id)) } },
                                 onSignIn = { server -> go.open(null) { nav.signInToServerAgain(graph, server, replacing = account.id) } },
                             )
                             is OpenAccount.Happy -> LegacyHome(graph, nav, onOpenSession = openSession, onTroubleshoot = troubleshoot, go = go)
@@ -177,6 +187,8 @@ fun HappyApp(graph: AppGraph, onNavigationReady: (NavHostController) -> Unit = {
                 }
                 // The tablet shell (home in a sidebar beside the stack) or, on a phone, just the stack.
                 TabletShell(graph, nav, hasHome = open != OpenAccount.None, sidebar = home) {
+                    // Inside the shell: on the split, what the call opens is the main panel's new root.
+                    CallScreenEffect(graph.calls, nav, agent)
                     val start: Any = if (open == OpenAccount.None) StartRoute else HomeRoute
                     val motion = rememberNavMotion()
                     RetainedNavHost(nav, start, motion, modifier = Modifier.backdrop(nav)) {
@@ -196,6 +208,7 @@ fun HappyApp(graph: AppGraph, onNavigationReady: (NavHostController) -> Unit = {
                         connectRoutes(graph, nav)
                         chatRoutes(graph, nav, onInfo = { id -> nav.navigate(SessionInfoRoute(id)) })
                         filesRoutes(graph, nav)
+                        todoRoutes(graph, nav)
                         agentConnectionRoutes(graph, nav)
                         agentHomeRoutes(graph, nav)
                         conversationRoutes(graph, nav)
@@ -208,12 +221,13 @@ fun HappyApp(graph: AppGraph, onNavigationReady: (NavHostController) -> Unit = {
             PushRegistrationEffect(graph)
         }
         } }
+        }
     } } } }
 }
 
 /** Settings on top of home and nothing else in the stack: a switch made there keeps both. */
 internal fun NavHostController.isSettingsOverHome(): Boolean {
-    val screens = currentBackStack.value.filter { it.destination !is NavGraph }
+    val screens = backStackEntries.value.filter { it.destination !is NavGraph }
     return screens.size == 2 && screens[0].destination.hasRoute<HomeRoute>() && screens[1].destination.hasRoute<SettingsRoute>()
 }
 
@@ -253,7 +267,11 @@ private fun rememberLinks(graph: AppGraph, nav: NavHostController, agent: String
         return remember(system, dark) { LinkOpener.legacy(context, system, dark) }
     }
     val computer = computerName(graph, agent)
-    return remember(nav, agent, computer) { LinkOpener.agent(context, computer) { url -> nav.navigate(BrowserRoute(agent, url)) } }
+    // A Happy URL in the connection's screens opens in the app (LocalHappyLinks, provided just above).
+    val happy = LocalHappyLinks.current
+    return remember(nav, agent, computer, happy) {
+        LinkOpener.agent(context, computer, app = { url -> happy?.open(url, agent) == true }) { url -> nav.navigate(BrowserRoute(agent, url)) }
+    }
 }
 
 @Composable

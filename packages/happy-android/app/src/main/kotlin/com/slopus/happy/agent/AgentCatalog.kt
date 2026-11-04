@@ -29,6 +29,8 @@ data class AgentCatalog(
     val surfaces: Map<String, JsonObject> = emptyMap(),
     /** The person this phone is paired for (`profile.userId`). */
     val userId: String? = null,
+    /** Their profile photo's ThumbHash, the bytes at `/v0/profile/photo`; null without one. */
+    val profilePhoto: String? = null,
     /**
      * The person's user settings by key, each the whole setting object as
      * the agent confirmed it (`key`, `value`, `updatedAt`, `version`); the
@@ -41,6 +43,8 @@ data class AgentCatalog(
     val cursor: String? = null,
     /** A snapshot has been read (or the cached one restored). */
     val loaded: Boolean = false,
+    /** Whether this daemon's bootstrap provides the person's user settings. */
+    val userSettingsSupported: Boolean = false,
 ) {
     /** A change to one setting made here: what it sets, its `mutationId`, and when the person made it. */
     @Serializable
@@ -87,6 +91,11 @@ data class AgentCatalog(
 
     fun agent(id: String): WireAgent? = agents[id]?.let(::decodeAgent)
 
+    /** The person's profile as read again: its photo. */
+    fun withProfile(profile: JsonObject): AgentCatalog = photoOf(profile).let { if (it == profilePhoto) this else copy(profilePhoto = it) }
+
+    private fun photoOf(profile: JsonObject?): String? = (profile?.get("photo") as? JsonObject)?.string("thumbhash")
+
     /** The whole snapshot from `GET /v0/bootstrap/desktop`, replacing what was here. */
     fun withBootstrap(bootstrap: WireDesktopBootstrap): AgentCatalog {
         val index = HashMap<String, JsonObject>()
@@ -102,6 +111,7 @@ data class AgentCatalog(
             agents = index,
             surfaces = bootstrap.surfaces.orEmpty().mapNotNull { s -> s.string("id")?.let { it to s } }.toMap(),
             userId = bootstrap.profile?.string("userId"),
+            profilePhoto = photoOf(bootstrap.profile),
             // Merged by version rather than replaced: a snapshot read while a
             // write was answered never undoes the newer copy. Nothing is lost
             // that way, as a cleared setting stays a setting with a null value.
@@ -109,6 +119,7 @@ data class AgentCatalog(
             pendingSettings = pendingSettings,
             cursor = bootstrap.cursor ?: cursor,
             loaded = true,
+            userSettingsSupported = bootstrap.userSettings != null,
         )
     }
 
@@ -130,9 +141,38 @@ data class AgentCatalog(
         return if (index == agents) this else copy(agents = index)
     }
 
-    /** The person left [surfaceId]: out of their list until a snapshot says otherwise. */
-    fun withoutSurface(surfaceId: String): AgentCatalog =
-        if (surfaceId in surfaces) copy(surfaces = surfaces - surfaceId) else this
+    /** The person left [surfaceId]: out of their list until a snapshot says otherwise; still in the catalog. */
+    fun withoutSurface(surfaceId: String): AgentCatalog {
+        val surface = surfaces[surfaceId] ?: return this
+        val members = (surface["members"] as? JsonArray).orEmpty()
+        val left = members.filterNot { it is JsonObject && it.string("userId") == userId }
+        if (left.size == members.size) return this
+        return copy(surfaces = surfaces + (surfaceId to JsonObject(surface + ("members" to JsonArray(left)))))
+    }
+
+    /**
+     * The person joined [surfaceId] (desktop's optimistic `surfaceJoin`): it
+     * goes last in their list until the computer's answer or a snapshot
+     * places it.
+     */
+    fun withJoinedSurface(surfaceId: String): AgentCatalog {
+        val surface = surfaces[surfaceId] ?: return this
+        val user = userId
+        val members = (surface["members"] as? JsonArray).orEmpty()
+        if (members.any { (it as? JsonObject)?.string("userId") == user }) return this
+        // Decimal fractional keys sort as text, so the last key with a 1 after it sorts after every other.
+        val last = surfaces.values.flatMap { s -> (s["members"] as? JsonArray).orEmpty().filterIsInstance<JsonObject>() }
+            .filter { it.string("userId") == user }.mapNotNull { it.string("orderKey") }.maxOrNull()
+        val member = JsonObject(mapOf("userId" to JsonPrimitive(user), "orderKey" to JsonPrimitive((last ?: "") + "1")))
+        return copy(surfaces = surfaces + (surfaceId to JsonObject(surface + ("members" to JsonArray(members + member)))))
+    }
+
+    /** A Surface as the computer answered a write (`{surface}`); the higher `version` wins. */
+    fun withSurface(surface: JsonObject): AgentCatalog {
+        val id = surface.string("id") ?: return this
+        if (!newer(surface, surfaces[id])) return this
+        return copy(surfaces = surfaces + (id to surface))
+    }
 
     /**
      * A task left or archived, a bot archived or a subtask ([kind] `agent`)
@@ -186,6 +226,8 @@ data class AgentCatalog(
                 val taskId = (data["membership"] as? JsonObject)?.string("taskId")
                 Applied(if (taskId == null) moved else moved.copy(memberships = memberships - taskId))
             }
+            // Standalone, the whole profile comes; a team's is only who changed ([withProfile] when read).
+            "profile.updated" -> Applied((data["profile"] as? JsonObject)?.let(moved::withProfile) ?: moved)
             // A whole setting, not a version-chained diff: the greater version wins.
             "user_settings.updated" -> Applied((data["setting"] as? JsonObject)?.let(moved::withSetting) ?: moved)
             // Who is in a Surface and where it sits in their list come only whole, with the snapshot (as iOS reads them).

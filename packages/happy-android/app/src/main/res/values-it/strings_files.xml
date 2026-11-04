@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  values/strings_files.xml in it: Android-only strings, not in happy-app's
+  catalogs. AndroidStringsTranslatedTest fails while one is missing here.
+-->
+<resources>
+    <string name="workspace_initializing">Questo spazio di lavoro è ancora in preparazione. Riprova tra poco.</string>
+    <string name="workspace_unreachable">Impossibile raggiungere il computer in questo momento.</string>
+    <string name="workspace_not_found">Questa cartella o questo file non esiste più.</string>
+    <string name="workspace_file_too_large">Questo file è troppo grande per essere aperto sul telefono.</string>
+    <string name="workspace_folder">Cartella</string>
+    <string name="workspace_folder_empty">Questa cartella è vuota</string>
+    <string name="workspace_rendered">Renderizzato</string>
+    <string name="workspace_source">Sorgente</string>
+    <string name="file_save">Scarica</string>
+    <string name="file_saving">Download in corso…</string>
+    <string name="file_saved">Salvato</string>
+    <string name="file_save_failed">Download non riuscito. Tocca per riprovare.</string>
+    <string name="attach_files_workspace">Spazio di lavoro</string>
+    <string name="attach_files_workspace_detail">Indica un file già presente sul computer</string>
+    <plurals name="markdown_diff_unchanged">
+        <item quantity="one">Mostra %1$d blocco invariato</item>
+        <item quantity="many">Mostra %1$d blocchi invariati</item>
+        <item quantity="other">Mostra %1$d blocchi invariati</item>
+    </plurals>
+</resources>

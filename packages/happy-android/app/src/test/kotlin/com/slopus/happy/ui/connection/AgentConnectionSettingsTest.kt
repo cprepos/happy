@@ -4,6 +4,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertHasNoClickAction
 import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.captureToImage
@@ -18,6 +19,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.height
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.slopus.happy.agent.AgentProfileState
 import com.slopus.happy.agent.CompletionSound
@@ -30,10 +32,12 @@ import com.slopus.happy.ui.assertDp
 import com.slopus.happy.ui.bounds
 import com.slopus.happy.ui.components.GlassSpec
 import com.slopus.happy.ui.components.ItemGroupTags
+import com.slopus.happy.ui.components.ItemTags
 import com.slopus.happy.ui.home.AccountMenu
 import com.slopus.happy.ui.home.AccountMenuEntry
 import com.slopus.happy.ui.node
 import com.slopus.happy.ui.setHappyContent
+import com.slopus.happy.ui.settings.AboutActions
 import com.slopus.happy.ui.settings.AboutInfo
 import com.slopus.happy.ui.settings.AccountsCardActions
 import com.slopus.happy.ui.settings.SettingsPageTags
@@ -43,6 +47,8 @@ import com.slopus.happy.ui.theme.HappyTheme
 import com.slopus.happy.ui.theme.ThemePreference
 import org.junit.Assert.assertEquals
 import org.junit.Rule
+import org.junit.Assert.assertTrue
+import androidx.compose.ui.test.onNodeWithTag
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
@@ -77,7 +83,7 @@ class AgentConnectionSettingsTest {
         onAskChief = { done += it },
     )
 
-    private fun show(dark: Boolean = false) = rule.setHappyContent(dark) {
+    private fun show(dark: Boolean = false, daemonVersion: String? = null) = rule.setHappyContent(dark) {
         page = HappyTheme.colors.grouped.background.toArgb()
         AgentConnectionSettingsScreen(
             profile = SettingsProfile("agent-connection-1", "Studio", "Connected"),
@@ -86,7 +92,20 @@ class AgentConnectionSettingsTest {
             about = AboutInfo("1.8.0 (412)"),
             accountActions = AccountsCardActions({ done += "switch:$it" }, { done += "add" }),
             person = AgentPerson("Steve"),
+            daemonVersion = daemonVersion,
+            aboutActions = AboutActions(onSupport = { done += "support" }),
         )
+    }
+
+    @Test
+    fun theComputersVersionIsReadOnlyAndDistinctFromThePhones() {
+        show(daemonVersion = "0.4.109")
+        val row = rule.node(AgentSettingsTags.DAEMON_VERSION)
+        row.performScrollTo().assertHasNoClickAction()
+        rule.onNodeWithText("Happy Agent · Version").assertIsDisplayed()
+        rule.onNodeWithText("0.4.109").assertIsDisplayed()
+        assertDp("version row height", 64, row.bounds.height)
+        rule.onNode(hasTestTag(ItemTags.CHEVRON) and hasAnyAncestor(hasTestTag(AgentSettingsTags.DAEMON_VERSION)), useUnmergedTree = true).assertDoesNotExist()
     }
 
     @Test
@@ -114,7 +133,8 @@ class AgentConnectionSettingsTest {
     @Test
     fun cardsAndRows() {
         show()
-        rule.onAllNodesWithTag(ItemGroupTags.CARD, useUnmergedTree = true).assertCountEquals(6)
+        // Support Happy is a card of its own, right under Profile.
+        rule.onAllNodesWithTag(ItemGroupTags.CARD, useUnmergedTree = true).assertCountEquals(7)
         rule.onNode(hasText("Steve") and hasAnyAncestor(hasTestTag(SettingsPageTags.account("account-1"))), useUnmergedTree = true).assertExists()
         rule.node(SettingsPageTags.account("agent-connection-2")).performClick()
         rule.node(SettingsPageTags.ADD_AGENT).performScrollTo().performClick()
@@ -123,16 +143,38 @@ class AgentConnectionSettingsTest {
         assertEquals(listOf("switch:agent-connection-2", "add", "profile", "appearance"), done)
         rule.node(SettingsTags.SUPPORT).performScrollTo().assertIsDisplayed()
         rule.node(SettingsTags.VERSION).performScrollTo().assertIsDisplayed()
+        assertTrue(rule.node(AgentVoiceTags.SUPPORT).bounds.top > rule.node(AgentSettingsTags.PROFILE).bounds.bottom)
+        assertTrue(rule.node(AgentVoiceTags.SUPPORT).bounds.bottom < rule.node(AgentSettingsTags.APPEARANCE).bounds.top)
+        rule.node(AgentVoiceTags.ROW).performScrollTo().assertIsDisplayed()
+    }
+
+    /** The boba row opens Support us, the app's offer sheet ([com.slopus.happy.payments.OfferSheet.Support]; its content in CallSheetTest). */
+    @Test
+    fun theBobaRowOpensSupport() {
+        show()
+        rule.node(AgentVoiceTags.SUPPORT).performScrollTo().performClick()
+        rule.waitForIdle()
+        assertEquals(listOf("support"), done)
+    }
+
+    /** A subscriber's Voice page: the plan's hours, a thank-you instead of the pledge, no free row. */
+    @Test
+    fun aSubscribersVoicePageThanksAndOffersNothing() {
+        rule.setHappyContent { AgentVoiceScreen(AgentVoiceSummary(4 * 3_600_000L, offer = com.slopus.happy.payments.Offer.Subscribed)) {} }
+        rule.onNodeWithText("Thank you for your support!").assertIsDisplayed()
+        rule.onNodeWithText("Get 5 hrs of voice").assertDoesNotExist()
+        rule.node(AgentVoiceTags.FREE).assertDoesNotExist()
+        rule.node(AgentVoiceTags.SUBSCRIBE).assertHasNoClickAction()
     }
 
     @Test
     fun disconnectingAsksAndCancelKeepsTheConnection() {
         show()
         rule.node(SettingsPageTags.REMOVE).performScrollTo().performClick()
-        rule.onNodeWithText("Disconnect agent?").assertIsDisplayed()
+        rule.onNodeWithText("Disconnect Happy Agent?").assertIsDisplayed()
         rule.onNodeWithText("Cancel").performClick()
         rule.waitForIdle()
-        rule.onNodeWithText("Disconnect agent?").assertDoesNotExist()
+        rule.onNodeWithText("Disconnect Happy Agent?").assertDoesNotExist()
         assertEquals(emptyList<String>(), done)
 
         rule.node(SettingsPageTags.REMOVE).performClick()

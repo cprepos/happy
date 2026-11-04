@@ -1,5 +1,13 @@
 package com.slopus.happy.ui.connection
 
+import com.slopus.happy.BuildConfig
+import androidx.compose.ui.platform.LocalContext
+import com.slopus.happy.ui.voice.rememberMicrophonePermission
+import com.slopus.happy.ui.call.CallFixtures
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import com.slopus.happy.ui.call.VoiceGlyph
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.layout.height
 import androidx.compose.ui.graphics.graphicsLayer
@@ -51,6 +59,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.RememberObserver
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -71,16 +80,13 @@ import java.util.WeakHashMap
 import java.util.concurrent.ConcurrentHashMap
 import com.slopus.happy.R
 import com.slopus.happy.artifacts.ArtifactRef
-import com.slopus.happy.ui.conversation.signalsFor
-import com.slopus.happy.ui.conversation.conversationRequest
-import com.slopus.happy.ui.conversation.conversationKeeper
+import com.slopus.happy.conversation.HeldConversations
+import com.slopus.happy.ui.conversation.makeConversation
 import com.slopus.happy.ui.conversation.Typesetter
 import com.slopus.happy.ui.conversation.ProsePalette
 import com.slopus.happy.ui.conversation.ConversationRowActions
 import com.slopus.happy.ui.chat.userMessageBubblePalette
 import com.slopus.happy.ui.chat.MessageCallbacks
-import com.slopus.happy.conversation.ConversationApi
-import com.slopus.happy.conversation.Conversation
 import com.slopus.happy.agent.AgentSession
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -134,6 +140,8 @@ class AgentHomeActions(
     val onOpenArtifacts: () -> Unit = {},
     val onOpenSurface: (AgentFeedRow.Surface) -> Unit = {},
     val onOpenArtifact: (ArtifactRef) -> Unit = {},
+    /** Opens the person's Feed on this computer. */
+    val onOpenFeed: () -> Unit = {},
     /**
      * Leaves a Surface ([com.slopus.happy.agent.AgentSession.leaveSurface]):
      * null once left, else the agent's words for its refusal, empty where
@@ -144,6 +152,9 @@ class AgentHomeActions(
     val onSignIn: () -> Unit = {},
     /** Opens new work with "+"'s sheet up, for its first message's picture. */
     val onComposeWithPicture: () -> Unit = onCompose,
+    val onOpenTodos: () -> Unit = {},
+    /** Starts a voice call on this connection ([com.slopus.happy.call.CallController]); null shows no voice button. */
+    val onVoice: (() -> Unit)? = null,
 )
 
 /** The colours of every bar on an agent connection's screens: the page's own [container], scrolled or not. */
@@ -252,6 +263,15 @@ fun AgentHomeScreen(
     }
     BackHandler(enabled = searching, onBack = closeSearch)
 
+    val bannerText = noticeMessage(status, profileRequired, notice)
+    val atStart = listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0
+    LaunchedEffect(bannerText) {
+        // Inserting the notice above a full list otherwise preserves its first
+        // keyed row and puts the notice offscreen. Readers at the top see it;
+        // readers further down keep their current anchor.
+        if (atStart) listState.scrollToItem(0)
+    }
+
     val items = remember(feed) { agentHomeItems(feed) }
     // New work takes the screen, so the search gives it back first (iOS); everything else leaves it for coming back.
     val compose = {
@@ -261,6 +281,8 @@ fun AgentHomeScreen(
     val searchEntries = rememberSearchEntries(actions, closeSearch)
     val untitled = stringResource(R.string.session_new_chat)
     val artifacts = stringResource(R.string.artifacts_title)
+    val feedTitle = stringResource(R.string.feed_title)
+    val todos = stringResource(R.string.agent_search_todos)
     val words = rememberAgentSearchWords()
     // Read as search opens, and again as home changes under it.
     val sources by produceState(AgentSearchSources.None, searching, feed) {
@@ -273,6 +295,8 @@ fun AgentHomeScreen(
                 is AgentFeedRow.Folder -> row.name
                 is AgentFeedRow.Surface -> row.name
                 AgentFeedRow.Artifacts -> artifacts
+                is AgentFeedRow.Feed -> feedTitle
+                AgentFeedRow.Todos -> todos
                 is AgentFeedRow.Section -> null
             }
         }
@@ -285,8 +309,8 @@ fun AgentHomeScreen(
     val phase = when {
         !feed.loaded && status == AgentLinkStatus.Connecting -> HomePhase.Loading
         !feed.loaded -> HomePhase.Offline
-        // Artifacts alone is no home yet: the first chat is.
-        feed.rows.all { it is AgentFeedRow.Section || it == AgentFeedRow.Artifacts } -> HomePhase.Empty
+        // Fixed places alone are no home yet: the first chat is.
+        feed.rows.all { it is AgentFeedRow.Section || it == AgentFeedRow.Artifacts || it is AgentFeedRow.Feed || it == AgentFeedRow.Todos } -> HomePhase.Empty
         else -> HomePhase.List
     }
     val chatPreview = remember { ChatPreview() }
@@ -367,6 +391,8 @@ fun AgentHomeScreen(
                             selected = sidebar?.selected,
                             onOpen = actions.onOpenConversation,
                             onOpenArtifacts = actions.onOpenArtifacts,
+                            onOpenFeed = actions.onOpenFeed,
+                            onOpenTodos = actions.onOpenTodos,
                             onOpenSurface = actions.onOpenSurface,
                             onLeaveSurface = actions.onLeaveSurface?.let { { surface: AgentFeedRow.Surface -> confirmingLeave = surface } },
                             onHold = preview?.let { { row, source -> chatPreview.open(row, source) } },
@@ -375,7 +401,7 @@ fun AgentHomeScreen(
                             // The notice is the list's first row (iOS ba0d7da0e): it comes and goes as a row does, the rows it
                             // pushes sliding with it, and a reader further down keeps their place.
                             header = run {
-                                val banner = noticeMessage(status, profileRequired, notice)
+                                val banner = bannerText
                                 val action = signInAction(status, actions, profileRequired)
                                 val header: LazyListScope.() -> Unit = {
                                     // The sidebar's search at rest: the list's first row, scrolling with it under the bar.
@@ -406,7 +432,7 @@ fun AgentHomeScreen(
                     }
                 }
                 if (sidebar == null && feed.loaded && !searching) {
-                    ComposeFab(actions.onCompose, AgentHomeTags.COMPOSE, stringResource(R.string.agent_search_new_task))
+                    ComposeFab(actions.onCompose, AgentHomeTags.COMPOSE, stringResource(R.string.agent_search_new_task), onVoice = actions.onVoice)
                 }
                 // While search is open the sidebar's field holds still at its rest, Cancel beside it, whatever the list did.
                 if (sidebar != null && searching) {
@@ -438,6 +464,14 @@ fun AgentHomeScreen(
                             focus.clearFocus()
                             actions.onOpenArtifacts()
                         },
+                        onOpenFeed = {
+                            focus.clearFocus()
+                            actions.onOpenFeed()
+                        },
+                        onOpenTodos = {
+                            focus.clearFocus()
+                            actions.onOpenTodos()
+                        },
                         onOpenSurface = { surface ->
                             focus.clearFocus()
                             actions.onOpenSurface(surface)
@@ -454,7 +488,7 @@ fun AgentHomeScreen(
                 }
                 // The sidebar's foot stands over home and search's results alike.
                 if (sidebar != null) {
-                    SidebarFootBar(if (feed.loaded) stringResource(R.string.agent_search_new_task) else null, actions.onSettings, compose)
+                    SidebarFootBar(if (feed.loaded) stringResource(R.string.agent_search_new_task) else null, actions.onSettings, compose, onVoice = actions.onVoice)
                 }
             }
         }
@@ -589,20 +623,30 @@ private fun rememberSearchEntries(actions: AgentHomeActions, endSearch: () -> Un
 /**
  * A home's compose: a floating button at the bottom end of the content
  * column (so on a tablet it stays with the rows), clear of the navigation
- * bar. Put it last in a box over the page.
+ * bar. Put it last in a box over the page. With [onVoice], an agent
+ * connection's home has the voice call's button immediately left of it,
+ * the same size, [AgentHomeSpec.fabGap] apart (iOS's toolbar item beside
+ * compose), wearing the three bars ([VoiceGlyph]).
  */
 @Composable
-internal fun BoxScope.ComposeFab(onClick: () -> Unit, tag: String, label: String = stringResource(R.string.session_new_chat)) {
+internal fun BoxScope.ComposeFab(onClick: () -> Unit, tag: String, label: String = stringResource(R.string.session_new_chat), onVoice: (() -> Unit)? = null) {
     Box(Modifier.align(Alignment.BottomCenter).contentMaxWidth(LocalWindowLayout.current)) {
-        FloatingActionButton(
-            onClick = onClick,
+        Row(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .windowInsetsPadding(WindowInsets.navigationBars)
-                .padding(AgentHomeSpec.fabMargin)
-                .testTag(tag),
+                .padding(AgentHomeSpec.fabMargin),
+            horizontalArrangement = Arrangement.spacedBy(AgentHomeSpec.fabGap),
         ) {
-            Icon(Ionicon.CreateOutline, 24.dp, LocalContentColor.current, contentDescription = label)
+            if (onVoice != null) {
+                val voiceLabel = stringResource(R.string.call_start)
+                FloatingActionButton(onClick = onVoice, modifier = Modifier.testTag(AgentHomeTags.VOICE).semantics { contentDescription = voiceLabel }) {
+                    VoiceGlyph(24.dp, LocalContentColor.current)
+                }
+            }
+            FloatingActionButton(onClick = onClick, modifier = Modifier.testTag(tag)) {
+                Icon(Ionicon.CreateOutline, 24.dp, LocalContentColor.current, contentDescription = label)
+            }
         }
     }
 }
@@ -677,8 +721,10 @@ fun AgentHome(
     onOpenArtifacts: () -> Unit = {},
     onOpenSurface: (AgentFeedRow.Surface) -> Unit = {},
     onOpenArtifact: (ArtifactRef) -> Unit = {},
+    onOpenFeed: () -> Unit = {},
     /** Signs the team server at [server] in again ([AgentConnection.server]). */
     onSignIn: (server: String) -> Unit = {},
+    onOpenTodos: () -> Unit = {},
 ) {
     val session = remember(id) { graph.agentSessions.session(id) } ?: return
     val agents by graph.agentConnections.accounts.collectAsStateWithLifecycle()
@@ -692,7 +738,10 @@ fun AgentHome(
     ReportDrawnWhen { feed.loaded || status != AgentLinkStatus.Connecting }
     val add = LocalAddFlow.current
     val switchAccount = rememberHomeAccountSwitch(graph)
-    val actions = remember(graph, session, onOpenConversation, onCompose, onComposeWithPicture, onSettings, onSettingsRow, onOpenArtifacts, onOpenSurface, onOpenArtifact, add, switchAccount, onSignIn) {
+    val microphone = rememberMicrophonePermission()
+    val voice = remember(graph, id, microphone) { { graph.calls.start(id) { microphone.request().granted } } }
+    if (BuildConfig.DEBUG) CallLaunchHooks(graph, voice)
+    val actions = remember(graph, session, onOpenConversation, onCompose, onComposeWithPicture, onSettings, onSettingsRow, onOpenArtifacts, onOpenSurface, onOpenArtifact, onOpenFeed, add, switchAccount, onSignIn, onOpenTodos, voice) {
         AgentHomeActions(
             onOpenConversation = onOpenConversation,
             onCompose = onCompose,
@@ -702,10 +751,13 @@ fun AgentHome(
             onSwitchAccount = switchAccount,
             onAdd = { add?.scan() },
             onOpenArtifacts = onOpenArtifacts,
+            onOpenTodos = onOpenTodos,
             onOpenSurface = onOpenSurface,
             onOpenArtifact = onOpenArtifact,
+            onOpenFeed = onOpenFeed,
             onLeaveSurface = { session.leaveSurface(it.id) },
             onSignIn = { graph.agentConnections.accounts.value.firstOrNull { it.id == id }?.server?.let(onSignIn) },
+            onVoice = voice,
         )
     }
     CompositionLocalProvider(LocalAgentPictures provides session.pictures) {
@@ -721,7 +773,7 @@ fun AgentHome(
             preview = { row -> ConversationPreview(session, row, settings.userMessageBubbleColor) },
             listState = rememberAgentHomeListState(graph, id),
             searchSources = remember(session) {
-                { withContext(Dispatchers.IO) { AgentSearchSources.read(session.catalog.value, session.feed.value, session::cachedResource) } }
+                { withContext(Dispatchers.IO) { AgentSearchSources.read(session.catalog.value, session.feed.value, session::cachedResource, session.intents.pending.value) } }
             },
         )
     }
@@ -737,25 +789,24 @@ private fun ConversationPreview(session: AgentSession, row: AgentFeedRow.Convers
     val colors = HappyTheme.colors
     val typesetter = Typesetter.of(LocalContext.current)
     typesetter.reportPalette(ProsePalette.of(colors))
-    val scope = rememberCoroutineScope()
+    // The agent's one conversation, the one its screen or a call may hold too: never shown, so never marked read from here.
     val conversation = remember(session, row.agentId) {
-        Conversation(
-            api = ConversationApi(session.conversationRequest()),
-            signals = session.events.signalsFor(row.agentId),
-            scope = scope,
-            agentId = row.agentId,
-            knownTitle = row.title,
-            keeper = session.conversationKeeper(row.agentId),
-            typesetter = typesetter,
-        )
-    }
-    DisposableEffect(conversation) {
-        conversation.start()
-        onDispose { conversation.close() }
-    }
+        PreviewHold(session.conversations.hold(row.agentId) { session.makeConversation(row.agentId, typesetter) })
+    }.hold.conversation
     val state by conversation.state.collectAsStateWithLifecycle()
     val actions = remember(conversation) { ConversationRowActions(legacy = MessageCallbacks(), onRetryFailure = {}, loadMedia = conversation::media) }
     ChatPreviewTranscript(row.title ?: stringResource(R.string.session_new_chat), state, userMessageBubblePalette(bubbleColor, colors.dark), actions)
+}
+
+/**
+ * The preview's hold, taken as it composes and let go however that ends:
+ * forgotten when the preview goes, or abandoned by a composition that never
+ * applied, so it never outlives the preview.
+ */
+internal class PreviewHold(val hold: HeldConversations.Hold) : RememberObserver {
+    override fun onRemembered() {}
+    override fun onForgotten() = hold.release()
+    override fun onAbandoned() = hold.release()
 }
 
 /**
@@ -785,4 +836,43 @@ internal fun rememberAgentHomeListState(graph: AppGraph, id: String): LazyListSt
             .collect { places[id] = it }
     }
     return state
+}
+
+/**
+ * Debug builds only, for screenshots and test runs: an intent's
+ * `happy.call.fixture` draws the call's bar in one state from a script (no
+ * microphone, provider or grant), `happy.call.tap` presses the voice button
+ * once, for real. `happy.call.intro` (`due`, `seen`), `happy.call.used`
+ * and `happy.call.offer` (a price) set voice's sheets up
+ * ([CallController.applyTestEnvironment]); `happy.call.steps` then presses
+ * what a person would, one step every 3 s: `tap` the voice button,
+ * `session` or `close` on voice's sheet. Each step logs what is up
+ * (`call-steps`).
+ */
+@Composable
+private fun CallLaunchHooks(graph: AppGraph, voice: () -> Unit) {
+    val intent = (LocalContext.current as? android.app.Activity)?.intent ?: return
+    LaunchedEffect(intent) {
+        val delayMillis = intent.getLongExtra("happy.call.delay", 0L)
+        val fixture = intent.getStringExtra("happy.call.fixture")
+        val tap = intent.getBooleanExtra("happy.call.tap", false)
+        val steps = intent.getStringExtra("happy.call.steps")?.split(",")
+        graph.calls.applyTestEnvironment(intent.getStringExtra("happy.call.intro"), intent.getBooleanExtra("happy.call.used", false), intent.getStringExtra("happy.call.offer"))
+        for (extra in listOf("happy.call.fixture", "happy.call.tap", "happy.call.steps", "happy.call.intro", "happy.call.used", "happy.call.offer")) intent.removeExtra(extra)
+        if (fixture == null && !tap && steps == null) return@LaunchedEffect
+        kotlinx.coroutines.delay(delayMillis)
+        if (fixture != null) CallFixtures.show(graph.calls, fixture)
+        if (tap) voice()
+        for (step in steps.orEmpty()) {
+            kotlinx.coroutines.delay(3_000)
+            when (step) {
+                "tap" -> voice()
+                "session" -> graph.offers.start()
+                "close" -> graph.offers.dismiss()
+            }
+            kotlinx.coroutines.delay(1_000)
+            android.util.Log.i("call-steps", "$step -> ${graph.calls.testSummary}")
+        }
+        if (steps != null) android.util.Log.i("call-steps", "done")
+    }
 }
