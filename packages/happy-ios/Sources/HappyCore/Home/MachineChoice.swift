@@ -60,19 +60,19 @@ public struct MachineChoice: Equatable, Sendable {
             || metadata?["cliAvailability"]?["rig"]?.boolValue == true
     }
 
-    /// `displayName || host || 'Unknown machine'`; empty strings fall through.
+    /// `displayName || host || 'Unknown machine'`, with the Happy Agent's
+    /// node name before the host (`MachineName`); empty strings fall through.
     public static func machineName(_ machine: MachineRecord) -> String {
-        nonEmpty(machine.metadata?["displayName"]?.stringValue)
-            ?? nonEmpty(machine.metadata?["host"]?.stringValue)
-            ?? "Unknown machine"
+        MachineName.named(machine.metadata) ?? "Unknown machine"
     }
 
     /// Happy Agent's display name carries a suffix that only tells it apart
-    /// from its sibling, so a computer with only Happy Agent goes by host.
+    /// from its sibling, so a computer with only Happy Agent goes by its
+    /// node name, else its host.
     static func computerName(happy: MachineRecord?, rig: MachineRecord?) -> String {
         guard let named = happy ?? rig else { return "Unknown machine" }
-        if happy == nil, let host = nonEmpty(named.metadata?["host"]?.stringValue) {
-            return host
+        if happy == nil, let unnamed = MachineName.unnamed(named.metadata) {
+            return unnamed
         }
         return machineName(named)
     }

@@ -182,8 +182,7 @@ public struct ProjectHomeData: Equatable, Sendable {
         func section(_ machineId: String?) -> MachineSection {
             if let existing = byMachine[machineId] { return existing }
             let machine = machineId.flatMap { machines[$0] }
-            let name = nonEmpty(machine?.metadata?["displayName"]?.stringValue)
-                ?? nonEmpty(machine?.metadata?["host"]?.stringValue)
+            let name = MachineName.named(machine?.metadata)
                 ?? machineId
                 ?? "<\(unknownMachine)>"
             order.append(machineId)

@@ -206,10 +206,12 @@ public struct SessionInfoModel: Equatable, Sendable {
 /// app/(app)/machine/[id].tsx's rows.
 public struct MachineDetailsModel: Equatable, Sendable {
     public var machineId: String
-    /// `displayName || host || 'unknown machine'`.
+    /// `displayName || host || 'unknown machine'`, with the Happy Agent's
+    /// node name before the host (`MachineName`).
     public var name: String
     public var online: Bool
-    /// The rename prompt's default and placeholder.
+    /// The rename prompt's default and placeholder: the name the machine
+    /// has without the person's (`MachineName.unnamed`).
     public var displayName: String
     public var hostPlaceholder: String?
 
@@ -265,10 +267,10 @@ public struct MachineDetailsModel: Equatable, Sendable {
         let metadata = machine.metadata
         let string = { (key: String) in SessionDetails.truthy(metadata?[key]) }
         machineId = machine.id
-        name = string("displayName") ?? string("host") ?? "unknown machine"
+        name = MachineName.named(metadata) ?? "unknown machine"
         online = machine.active
         displayName = string("displayName") ?? ""
-        hostPlaceholder = string("host")
+        hostPlaceholder = MachineName.unnamed(metadata)
 
         if let state = machine.daemonState, state != .null {
             func positive(_ key: String) -> Double? {

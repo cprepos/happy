@@ -262,14 +262,14 @@ public struct SessionList: Equatable, Sendable {
         return false
     }
 
-    /// utils/flatSessionList.ts `toFlatSessionRow`: the computer's own name,
-    /// then its host, then the host the chat itself recorded. Nil, and no
-    /// host on the row, when none of them says.
+    /// utils/flatSessionList.ts `toFlatSessionRow`: the computer's name
+    /// (`MachineName`: the person's, then its Happy Agent's, then its host),
+    /// then the host the chat itself recorded. Nil, and no host on the row,
+    /// when none of them says.
     static func hostName(_ session: SessionRecord, machines: [String: MachineRecord]) -> String? {
         func nonEmpty(_ value: String?) -> String? { value?.isEmpty == false ? value : nil }
         let machine = session.metadata?["machineId"]?.stringValue.flatMap { machines[$0] }
-        return nonEmpty(machine?.metadata?["displayName"]?.stringValue)
-            ?? nonEmpty(machine?.metadata?["host"]?.stringValue)
+        return MachineName.named(machine?.metadata)
             ?? nonEmpty(session.metadata?["host"]?.stringValue)
     }
 

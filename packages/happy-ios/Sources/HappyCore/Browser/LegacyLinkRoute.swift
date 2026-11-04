@@ -39,7 +39,7 @@ public enum LegacyLinkRoute: Equatable, Sendable {
     /// (`happyAgent.nodeName`, the agent's `config.node.name`). Older daemons
     /// publish none.
     public static func agentNodeName(_ machine: MachineRecord?) -> String? {
-        machine?.metadata?["happyAgent"]?["nodeName"]?.stringValue
+        MachineName.agentNodeName(machine?.metadata)
     }
 
     /// The route for a link from a session on `machineId`, called

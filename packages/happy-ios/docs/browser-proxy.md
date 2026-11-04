@@ -47,7 +47,8 @@ append a second HTTP error response to its bytes.
   links go through a paired computer's host fallback workspace, chosen by
   `LegacyLinkRoute` when the link opens. The chat's machine is its
   `metadata.machineId` in the account's machines, named as home names it
-  (`SessionList.hostName`: `displayName`, else `host`, else the session's own
+  (`SessionList.hostName` over `MachineName`: `displayName`, else
+  `happyAgent.nodeName`, else `host`, else the session's own
   `metadata.host`). In order:
   1. The paired computer whose node name equals the machine's
      `metadata.happyAgent.nodeName` (compared as in 3). happy-cli's daemon
