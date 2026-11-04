@@ -462,7 +462,12 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
 extension UIViewController {
     func openBrowser(_ url: URL, session: Session? = nil, agentID: String? = nil) {
         guard BrowserPolicy.route(url) != .system else { UIApplication.shared.open(url); return }
-        let browser = BrowserViewController(url: url, session: session ?? browserConnection(), agentID: agentID)
+        presentBrowser(BrowserViewController(url: url, session: session ?? browserConnection(), agentID: agentID))
+    }
+
+    /// Pushes `browser` on this screen's stack, or presents it in a stack
+    /// of its own with a close button.
+    func presentBrowser(_ browser: BrowserViewController) {
         if let navigationController { navigationController.pushViewController(browser, animated: true) }
         else {
             let navigation = UINavigationController(rootViewController: browser)

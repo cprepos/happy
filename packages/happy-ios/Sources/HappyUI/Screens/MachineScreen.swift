@@ -114,6 +114,7 @@ final class MachineViewController: UIViewController {
         if let cli = model.cliAvailability { sections.append(cliGroup(cli)) }
         if !model.recentSessions.isEmpty { sections.append(sessionsGroup(model.recentSessions)) }
         sections.append(machineGroup(model))
+        if let links = linksGroup() { sections.append(links) }
         let danger = dangerZone()
         sections.append(danger.group)
         list.sections = sections
@@ -229,6 +230,23 @@ final class MachineViewController: UIViewController {
         rows.append(info(S.lastSeen, subtitle: model.lastSeen.map { SessionDetails.localeDateTime($0) } ?? S.never))
         rows.append(info(S.metadataVersion, subtitle: String(model.metadataVersion)))
         return ItemGroupView(title: S.machineGroup, rows: rows)
+    }
+
+    /// The paired computer this machine's chats open links through, when
+    /// one was picked (`LegacyLinkRoute`). Tapping it (Ask Next Time)
+    /// forgets the pick, so the next link asks again.
+    private func linksGroup() -> ItemGroupView? {
+        let computers = Self.legacyLinkComputers(context.account)
+        guard let computer = LegacyLinkRoute.remembered(for: machineId, computers: computers, settings: session.localSettings) else { return nil }
+        let row = ItemRowView(title: Strings.Browser.linksOpenThrough(computer.name)) { [weak self] in self?.forgetLinks() }
+        row.showsChevron = false
+        row.trailingView = DetailTrailingText(Strings.Browser.askNextTime, color: Palette.textSecondary)
+        return ItemGroupView(rows: [row])
+    }
+
+    private func forgetLinks() {
+        session.localSettings.legacyLinkComputers[machineId] = nil
+        rebuild()
     }
 
     private func dangerZone() -> (group: ItemGroupView, tint: () -> Void) {

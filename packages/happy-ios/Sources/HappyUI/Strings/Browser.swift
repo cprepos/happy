@@ -19,6 +19,21 @@ extension Strings {
         static let tryAgain = "Try Again"
         static let cantOpenLink = "Can’t Open This Link"
 
+        /// The question which paired computer a Happy CLI chat's links open
+        /// through (`LegacyLinkRoute`), naming the chat's machine when it has
+        /// a name.
+        static func relayPickerTitle(_ machine: String?) -> String {
+            guard let machine else { return localized("native.browser.relayPickerTitleUnnamed", "Open links from this computer through") }
+            return localized("native.browser.relayPickerTitle", ["machine": .text(machine)], "Open links from \(machine) through")
+        }
+        static var relayPickerMessage: String { localized("native.browser.relayPickerMessage", "Your choice is kept for this computer’s chats.") }
+        /// The Machine screen's row for the computer picked.
+        static func linksOpenThrough(_ name: String) -> String {
+            localized("native.browser.linksOpenThrough", ["name": .text(name)], "Links open through \(name)")
+        }
+        /// Forgets the pick, so the next link asks again.
+        static var askNextTime: String { localized("native.browser.askNextTime", "Ask Next Time") }
+
         /// The error page's title and the sentence under it. `computer` is
         /// the agent connection's name; `host` the page's host.
         static func failure(_ problem: BrowserProblem, computer: String, host: String?) -> (title: String, message: String) {

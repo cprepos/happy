@@ -43,6 +43,31 @@ append a second HTTP error response to its bytes.
   workspace explicitly marked local `compute.type: host`, never an arbitrary
   runner. Without a usable connection or route, loading fails with retry and
   **never creates a direct WebKit view**.
+- A Happy CLI (relay) chat has no workspace on any agent connection, so its
+  links go through a paired computer's host fallback workspace, chosen by
+  `LegacyLinkRoute` when the link opens. The chat's machine is its
+  `metadata.machineId` in the account's machines, named as home names it
+  (`SessionList.hostName`: `displayName`, else `host`, else the session's own
+  `metadata.host`). In order:
+  1. The paired computer whose node name equals the machine's
+     `metadata.happyAgent.nodeName` (compared as in 3). happy-cli's daemon
+     publishes it from the Happy Agent sharing its `~/.happy`, so it is the
+     same computer whatever either is called. Older daemons omit it.
+  2. A computer the person picked for that machine before, while it is still
+     paired. One no longer paired is dropped from local settings
+     (`relayLinkComputers`, relay machine id to agent connection id) and the
+     rest decides again.
+  3. The one paired computer whose name matches the machine's, trimmed and in
+     any case, both read through `AgentName.friendly` as computers are shown
+     (a relay `prep-pro`, `Prep Pro` or `prep-pro.local` matches the node
+     `prep-pro`).
+  4. Otherwise, with at least one paired computer (no match, or several), the
+     person is asked before anything loads: "Open links from <machine>
+     through", one button per paired computer by name, and Cancel. The pick is
+     kept for the machine; the Machine screen shows "Links open through
+     <computer>", and tapping that row (Ask Next Time) forgets it.
+  5. No paired computer (revoked ones and hidden ones don't count): the
+     unavailable state, as above. There is no default computer.
 - Each target opens authenticated `CONNECT /v0/workspaces/:id/proxy`, then
   nested `CONNECT host:port`. The daemon chooses the workspace's runner. Its
   CONNECT contract permits arbitrary valid host:port targets, including public
@@ -181,9 +206,9 @@ intercepting their `/api` path would require TLS interception. Ordinary HTTPS
 browser links still use an end-to-end encrypted tunnel.
 
 The daemon exposes no unscoped host CONNECT endpoint, so host fallback needs a
-local host workspace. Legacy relay chats have no workspace-to-agent-connection
-mapping: the active agent connection can supply a host fallback, or the browser
-shows the unavailable state. No device-local localhost or public fallback occurs.
+local host workspace. A Happy CLI chat's links reach a computer only through
+that fallback, on the computer `LegacyLinkRoute` picks (Routing above), never
+through the relay. No device-local localhost or public fallback occurs.
 
 Hosted tests use real WebKit and the loopback listener against a byte-level fake
 daemon: artifact PUT and live SSE, relative JavaScript and WebSocket, live URL

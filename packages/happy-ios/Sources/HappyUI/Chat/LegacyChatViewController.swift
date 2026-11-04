@@ -2099,7 +2099,19 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
 
     func chatList(_ list: ChatListView, openLink url: String) {
         guard let url = URL(string: url) else { return }
-        openBrowser(url)
+        // Through the paired computer this session's machine is, by name or
+        // by the person's pick (`LegacyLinkRoute`). The machine is read off
+        // the main thread; one the store doesn't have leaves the session's
+        // own recorded host to name it.
+        let record = session.record
+        let machineId = record?.metadata?["machineId"]?.stringValue
+        let store = account.store
+        Task { @MainActor [weak self] in
+            let machine = await Task.detached(priority: .userInitiated) { machineId.flatMap { try? store.machine(id: $0) } }.value
+            guard let self else { return }
+            let name = record.flatMap { LegacyLinkRoute.machineName(session: $0, machine: machine) }
+            openLegacyLink(url, machineId: machineId, machineName: name, agentNodeName: LegacyLinkRoute.agentNodeName(machine), settings: account.localSettings, context: context)
+        }
     }
 
     /// Sends a permission answer; the button pulses until it has gone.
