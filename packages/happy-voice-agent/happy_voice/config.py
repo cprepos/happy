@@ -31,7 +31,7 @@ COMPACT_KEEP = 8000
 # compaction off rather than shrinking it.
 COMPACT_KEEP_FLOOR = 8000
 CONTEXT_HARD_CAP = 235929  # 90% of the model's 262144-token window
-COMPACT_SUMMARY_TOKENS = 1200
+COMPACT_SUMMARY_TOKENS = 4000
 
 
 def _env(name: str, default: str) -> str:

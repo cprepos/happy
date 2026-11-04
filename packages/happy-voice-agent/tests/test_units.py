@@ -1172,7 +1172,7 @@ def test_compaction_settings_defaults_overrides_and_bad_order() -> None:
     s = _compaction_settings()
     assert s.compaction is True
     assert (s.compact_keep, s.compact_trigger, s.context_hard_cap) == (8000, 32000, 235929)
-    assert s.compact_summary_tokens == 1200
+    assert s.compact_summary_tokens == 4000
     s = _compaction_settings(
         VOICE_COMPACTION="0",
         VOICE_COMPACT_TRIGGER="30000",
@@ -1201,7 +1201,8 @@ def test_compaction_never_keeps_less_than_the_floor() -> None:
 
 def test_compaction_settings_fit_under_a_valid_hard_cap() -> None:
     # KEEP < TRIGGER < HARD_CAP must hold; a valid cap is kept and the others lowered to fit
-    s = _compaction_settings(VOICE_CONTEXT_HARD_CAP="20000")
+    # (summary pinned small: the default's 2 x summary would not fit the 7000 left above KEEP)
+    s = _compaction_settings(VOICE_CONTEXT_HARD_CAP="20000", VOICE_COMPACT_SUMMARY_TOKENS="1200")
     assert (s.compact_keep, s.compact_trigger, s.context_hard_cap) == (8000, 15000, 20000)
     assert s.compaction is True
     s = _compaction_settings(VOICE_COMPACT_TRIGGER="300000")
@@ -1215,7 +1216,7 @@ def test_compaction_settings_fit_under_a_valid_hard_cap() -> None:
     assert s.compact_keep == 8000
     # the summary must be well under what it replaces, or compaction is turned off
     s = _compaction_settings(VOICE_COMPACT_TRIGGER="10000", VOICE_COMPACT_KEEP="8000")
-    assert s.compact_summary_tokens == 1200 and s.compaction is False
+    assert s.compact_summary_tokens == 4000 and s.compaction is False
     s = _compaction_settings(
         VOICE_COMPACT_TRIGGER="10000", VOICE_COMPACT_KEEP="8000", VOICE_COMPACT_SUMMARY_TOKENS="999"
     )
