@@ -819,9 +819,21 @@ public final class AgentInputCardView: UIView {
     private var menuChips: [(AgentInputChip, AgentInputChipConfiguration)] {
         let chips: [(AgentInputChip, AgentInputChipConfiguration)] = [configuration.model.map { (.model, $0) }, configuration.effort.map { (.effort, $0) }].compactMap { $0 }
         guard let settings = configuration.desktop?.settings else { return chips }
-        return settings.sections.filter { $0.chip != .permission }.map { section in
-            if let existing = chips.first(where: { $0.0 == section.chip }) { return existing }
-            return (section.chip, AgentInputChipConfiguration(content: .label(section.title), accessibilityLabel: section.title, menu: AgentInputMenu(sections: [.init(options: section.options)], selectedKey: section.selectedKey)))
+        // One chip per kind, in the settings' order: the gear lists a model
+        // section for each provider, and those are still the one Model chip.
+        var kinds: [AgentInputChip] = []
+        for section in settings.sections where section.chip != .permission && !kinds.contains(section.chip) {
+            kinds.append(section.chip)
+        }
+        return kinds.map { kind in
+            if let existing = chips.first(where: { $0.0 == kind }) { return existing }
+            let sections = settings.sections.filter { $0.chip == kind }
+            let first = sections[0]
+            let menu = AgentInputMenu(
+                sections: sections.map { .init(title: sections.count > 1 ? $0.title : nil, options: $0.options) },
+                selectedKey: first.selectedKey
+            )
+            return (kind, AgentInputChipConfiguration(content: .label(first.title), accessibilityLabel: first.title, menu: menu))
         }
     }
 
