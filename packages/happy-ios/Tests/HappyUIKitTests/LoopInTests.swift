@@ -136,6 +136,34 @@ final class InlinePagePlanTests: XCTestCase {
     }
 }
 
+/// A live browser link an agent writes: a card across the column at its
+/// fixed height, between the words around it.
+@MainActor
+final class LiveBrowserPlanTests: XCTestCase {
+    func testTheCardSitsInTheColumnAtItsHeight() throws {
+        let id = "3f9a1c0e5b7d42e8a6c1f09b2d4e7a35"
+        let link = try XCTUnwrap(LiveBrowserLink(id: id))
+        let key = ChatPlanner.Key(width: 393, maxContentWidth: 10_000, environment: nil)
+        func cards(_ plan: ChatRowPlan) -> [(LiveBrowserLink, CGRect)] {
+            plan.items.compactMap { if case .embed(.liveBrowser(let link), let frame) = $0 { (link, frame) } else { nil } }
+        }
+        let alone = ChatItem(id: "m1", role: .agent, pieces: [.liveBrowser(id: id, url: link.url)], delivery: .sent)
+        let (shown, frame) = try XCTUnwrap(cards(ChatPlanner.plan(alone, key: key, copied: false, syntax: CodeSyntaxService())).first)
+        XCTAssertEqual(shown, link)
+        XCTAssertEqual(frame, CGRect(x: 16, y: 8, width: 361, height: LiveBrowserCardLayout.Metrics.height))
+        XCTAssertEqual(LiveBrowserCardLayout.Metrics.height, 236)
+
+        let between = ChatItem(id: "m2", role: .agent, pieces: [.text("Watch:"), .liveBrowser(id: id, url: link.url), .text("Done soon.")], delivery: .sent)
+        let plan = ChatPlanner.plan(between, key: key, copied: false, syntax: CodeSyntaxService())
+        let card = try XCTUnwrap(cards(plan).first?.1)
+        XCTAssertEqual(card.minX, 16)
+        XCTAssertEqual(card.width, 361)
+        XCTAssertEqual(card.height, 236)
+        XCTAssertGreaterThan(card.minY, 8)
+        XCTAssertGreaterThan(plan.size.height, card.maxY)
+    }
+}
+
 /// One message's text on the chat's ground, as the conversation draws it.
 private final class MessagePreview: UIView {
     let layout: ChatTextLayout

@@ -68,4 +68,32 @@ extension Strings {
             }
         }
     }
+
+    /// A live browser's card in a chat and its full screen
+    /// (`LiveBrowserCardView`).
+    enum LiveBrowser {
+        static let title = "Live Browser"
+        static let watching = "Watching"
+        static let needsYou = "Needs you"
+        static let done = "Done"
+        static let connecting = "Connecting…"
+        /// The workspace runs in a container, whose proxy refuses tunnels (501).
+        static let unavailable = "Unavailable — the browser runs on the host, and this chat’s workspace can’t reach it."
+        /// The bridge doesn't know the link (404).
+        static let ended = "This live browser has ended."
+        /// The link expired (410).
+        static let expired = "This live browser has expired."
+        static let unreachable = "Can’t reach the live browser right now."
+        /// The full screen's button that hands control back to the agent.
+        static let handBack = "Done"
+        static let handBackFailed = "Couldn’t Hand Back Control"
+
+        static func status(_ status: LiveBrowserState.Status) -> String {
+            switch status {
+            case .watching: watching
+            case .takeover: needsYou
+            case .done: done
+            }
+        }
+    }
 }

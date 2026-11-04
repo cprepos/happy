@@ -75,6 +75,8 @@ actor ChatPlanner {
 
     /// An inline page's height until it has measured itself.
     static let pageHeight: CGFloat = 120
+    /// A live browser's card, which never measures itself.
+    static let liveBrowserHeight = LiveBrowserCardLayout.Metrics.height
 
     private let syntax: CodeSyntaxService
     /// Each row as last planned, by item ID. Behind a lock rather than the
@@ -286,7 +288,8 @@ actor ChatPlanner {
     /// An agent message's pieces in the parts `layout` places: desktop's
     /// agent text (Figtree 16/24 markdown, soft breaks as spaces, blocks 8
     /// apart, no copy button: a long press selects instead) and the
-    /// pictures, recordings, files and artifacts where they were presented.
+    /// pictures, recordings, files and artifacts where they were presented,
+    /// and the live browsers it linked.
     static func body(_ item: ChatItem, key: Key, syntax: CodeSyntaxService, proposals: [String: ProposalShown], revealable: Bool = false, layout: ([MessageLayout.Part]) -> MessageLayout) -> ChatRowPlan {
         let environment = key.environment
         let text = HappyReferences.plain(item.text, view: key.references.view)
@@ -297,6 +300,7 @@ actor ChatPlanner {
             case tree(ChatMediaPlan.Tree)
             case card(ChatMediaPlan.Card)
             case page(InlinePage)
+            case liveBrowser(LiveBrowserLink)
             case proposal(String)
             /// Words the planner writes, read but not selectable.
             case line(MarkdownPiece)
@@ -340,6 +344,11 @@ actor ChatPlanner {
                     parts.append(.markdown(markdown.blocks))
                     spoken.append(line)
                 }
+            case .liveBrowser(let id, _):
+                // Across the column, as an inline page is, at its own height.
+                guard let link = LiveBrowserLink(id: id) else { break }
+                drafts.append(.liveBrowser(link))
+                parts.append(.page(height: Self.liveBrowserHeight))
             case .picture, .sentFile:
                 break
             }
@@ -390,6 +399,8 @@ actor ChatPlanner {
                 card(drafted, frame)
             case (.page(let frame), .page(let page)):
                 items.append(.embed(.page(page), frame: frame))
+            case (.page(let frame), .liveBrowser(let link)):
+                items.append(.embed(.liveBrowser(link), frame: frame))
             case (.markdown(let placed, let origin), .line(let markdown)):
                 items += markdown.draw(placed, origin: origin).items
             case (.proposal(let layout, let frame), .proposal(let artifactId)):

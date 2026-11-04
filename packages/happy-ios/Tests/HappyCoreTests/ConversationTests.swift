@@ -175,6 +175,60 @@ final class ConversationTests: XCTestCase {
         let decoded = try JSONDecoder().decode(AgentWire.Message.self, from: Data(json.utf8))
         XCTAssertEqual(decoded.content, [.text("hi"), .unknown("image")])
     }
+
+    // MARK: Live browsers
+
+    private static let liveID = "3f9a1c0e5b7d42e8a6c1f09b2d4e7a35"
+    private static let live = URL(string: "http://localhost:6090/live/\(liveID)")!
+
+    func testALiveBrowserLinkBecomesItsOwnPiece() {
+        let bare = Conversation.pieces("Watch it here:\n\nhttp://localhost:6090/live/\(Self.liveID)\n\nI'll wait.", shown: [:], streaming: false)
+        XCTAssertEqual(bare, [.text("Watch it here:"), .liveBrowser(id: Self.liveID, url: Self.live), .text("I'll wait.")])
+        // A Markdown link's words go; the card names the page.
+        let markdown = Conversation.pieces("Open [the browser](http://localhost:6090/live/\(Self.liveID)/) to sign in.", shown: [:], streaming: false)
+        XCTAssertEqual(markdown, [.text("Open"), .liveBrowser(id: Self.liveID, url: Self.live), .text("to sign in.")])
+        let auto = Conversation.pieces("<http://localhost:6090/live/\(Self.liveID)>", shown: [:], streaming: false)
+        XCTAssertEqual(auto, [.liveBrowser(id: Self.liveID, url: Self.live)])
+        // The same browser again stays a link.
+        let twice = Conversation.pieces("http://localhost:6090/live/\(Self.liveID) and again http://localhost:6090/live/\(Self.liveID)", shown: [:], streaming: false)
+        XCTAssertEqual(twice, [.liveBrowser(id: Self.liveID, url: Self.live), .text("and again http://localhost:6090/live/\(Self.liveID)")])
+    }
+
+    func testOtherLinksStayLinks() {
+        for text in [
+            "See http://localhost:5173/live/\(Self.liveID) for it.",
+            "See http://localhost:6090/live/\(Self.liveID)/frame.jpg for it.",
+            "See http://localhost:6090/live/short for it.",
+            "See http://localhost:6090/live/3F9A1C0E5B7D42E8A6C1F09B2D4E7A35 for it.",
+            "See http://localhost:6090/live/Q2hhbmdlTWVQbGVhc2UxMjM0 for it.",
+            "See http://localhost:6090/live/\(Self.liveID)0123456789 for it.",
+            "See https://localhost:6090/live/\(Self.liveID) for it.",
+            "See `http://localhost:6090/live/\(Self.liveID)` for it.",
+            "```\nhttp://localhost:6090/live/\(Self.liveID)\n```",
+        ] {
+            XCTAssertEqual(Conversation.pieces(text, shown: [:], streaming: false), [.text(text)], text)
+        }
+    }
+
+    func testALiveBrowserLinkStillArrivingWaits() {
+        let cut = "Watch: http://localhost:6090/live/\(Self.liveID.prefix(23))"
+        XCTAssertEqual(Conversation.pieces(cut, shown: [:], streaming: true), [.text(cut)])
+        let whole = "Watch: http://localhost:6090/live/\(Self.liveID) now"
+        XCTAssertEqual(Conversation.pieces(whole, shown: [:], streaming: true), [.text("Watch:"), .liveBrowser(id: Self.liveID, url: Self.live), .text("now")])
+    }
+
+    func testALiveBrowsersStateKeepsToWhatItKnows() throws {
+        let state = try JSONDecoder().decode(LiveBrowserState.self, from: Data(#"{"status":"takeover","reason":"Sign in","url":"https://example.com/login","title":"Log in","viewers":2}"#.utf8))
+        XCTAssertEqual(state, LiveBrowserState(status: .takeover, reason: "Sign in", url: "https://example.com/login", title: "Log in"))
+        XCTAssertEqual(try JSONDecoder().decode(LiveBrowserState.self, from: Data(#"{"status":"paused"}"#.utf8)).status, .watching)
+        let link = try XCTUnwrap(LiveBrowserLink(id: Self.liveID))
+        XCTAssertEqual(link.frameURL.absoluteString, "http://localhost:6090/live/\(Self.liveID)/frame.jpg")
+        XCTAssertEqual(link.stateURL.absoluteString, "http://localhost:6090/live/\(Self.liveID)/state")
+        XCTAssertEqual(link.doneURL.absoluteString, "http://localhost:6090/live/\(Self.liveID)/done")
+        XCTAssertNil(LiveBrowserLink(id: "has/slash/in/it/0123456789abcdef0"))
+        XCTAssertNil(LiveBrowserLink(id: String(Self.liveID.dropLast())))
+        XCTAssertEqual(try JSONDecoder().decode(LiveBrowserState.self, from: Data(#"{"status":"done","reason":"session_closed"}"#.utf8)), LiveBrowserState(status: .done, reason: "session_closed"))
+    }
 }
 
 /// Soft breaks as remark reads them on desktop.

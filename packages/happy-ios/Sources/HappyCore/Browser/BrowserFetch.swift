@@ -1,17 +1,19 @@
-#if canImport(Network)
 import Foundation
+#if canImport(Network)
 import Network
 
 /// Single resources (a document's pictures) fetched as the in-app browser
 /// reaches the web: through the agent connection's workspace proxy, never
 /// the phone's network, with no fallback. `https` goes through a loopback
 /// `BrowserProxy` that URLSession uses as its CONNECT proxy, so TLS stays
-/// end to end; plain `http` is one GET over a CONNECT tunnel, which keeps
+/// end to end; plain `http` is one request over a CONNECT tunnel, which keeps
 /// App Transport Security (that refuses plain HTTP before any proxy) out
-/// of it. Nothing is sent with a request but the request.
+/// of it. Nothing is sent with a request but the request. A live browser's
+/// card (`LiveBrowserLink`) reads its frame and state, and ends a
+/// takeover, the same way.
 public actor BrowserFetcher {
     /// The largest body read; past it the fetch fails.
-    public static let limit = 32 * 1024 * 1024
+    public static let limit = BrowserExchange.limit
     static let redirects = 5
 
     private let client: AgentClient
@@ -27,15 +29,24 @@ public actor BrowserFetcher {
         resolveWorkspace = workspace
     }
 
+    /// A picture, or anything else read whole: `send` as a GET.
     public func data(_ url: URL) async throws -> Data {
-        try await data(url, redirects: Self.redirects)
+        try await send(method: "GET", url: url, accept: "image/*,*/*;q=0.8")
     }
 
-    private func data(_ url: URL, redirects: Int) async throws -> Data {
+    /// One request and its answer's body, which must be a success. Only a
+    /// GET follows redirects; any other method sends its `body` (with its
+    /// length, none for nothing) once and is never replayed.
+    public func send(method: String, url: URL, body: Data? = nil, accept: String = "*/*") async throws -> Data {
+        try await send(method: method, url: url, body: body, accept: accept, redirects: Self.redirects)
+    }
+
+    private func send(method: String, url: URL, body: Data?, accept: String, redirects: Int) async throws -> Data {
         guard !stopped else { throw CancellationError() }
+        guard BrowserExchange.validMethod(method) else { throw BrowserError.malformed }
         switch url.scheme?.lowercased() {
-        case "https": return try await secure(url)
-        case "http": return try await plain(url, redirects: redirects)
+        case "https": return try await secure(method: method, url: url, body: body, accept: accept)
+        case "http": return try await plain(method: method, url: url, body: body, accept: accept, redirects: redirects)
         default: throw BrowserError.forbidden
         }
     }
@@ -64,9 +75,13 @@ public actor BrowserFetcher {
 
     // MARK: https
 
-    private func secure(_ url: URL) async throws -> Data {
+    private func secure(method: String, url: URL, body: Data?, accept: String) async throws -> Data {
         let (session, _) = try await proxied()
-        let (data, response) = try await session.data(from: url)
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.httpBody = body
+        request.setValue(accept, forHTTPHeaderField: "Accept")
+        let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw BrowserError.upstream((response as? HTTPURLResponse)?.statusCode ?? 502) }
         guard data.count <= Self.limit else { throw BrowserError.tooLarge }
         return data
@@ -113,29 +128,50 @@ public actor BrowserFetcher {
 
     // MARK: http
 
-    private func plain(_ url: URL, redirects: Int) async throws -> Data {
-        guard let authority = BrowserPolicy.Authority(url: url), let host = url.host,
+    private func plain(method: String, url: URL, body: Data?, accept: String, redirects: Int) async throws -> Data {
+        let response = try await BrowserExchange.send(client, workspaceID: try await workspaceID(), method: method, url: url, body: body, accept: accept)
+        if [301, 302, 303, 307, 308].contains(response.status) {
+            guard method == "GET", redirects > 0, let location = response.location, let next = URL(string: location, relativeTo: url)?.absoluteURL else { throw BrowserError.upstream(response.status) }
+            return try await send(method: method, url: next, body: nil, accept: accept, redirects: redirects - 1)
+        }
+        guard (200..<300).contains(response.status) else { throw BrowserError.upstream(response.status) }
+        return response.body
+    }
+}
+#endif
+
+/// One plain-HTTP request over a CONNECT tunnel through a workspace, and
+/// the whole answer: `BrowserFetcher`'s `http`, apart so it runs (and is
+/// tested) where Network isn't.
+enum BrowserExchange {
+    /// The largest body read; past it the request fails.
+    static let limit = 32 * 1024 * 1024
+
+    static func validMethod(_ method: String) -> Bool {
+        !method.isEmpty && method.utf8.allSatisfy { (65...90).contains($0) }
+    }
+
+    static func send(_ client: AgentClient, workspaceID: String, method: String, url: URL, body: Data?, accept: String) async throws -> (status: Int, location: String?, body: Data) {
+        guard validMethod(method), let authority = BrowserPolicy.Authority(url: url), let host = url.host,
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { throw BrowserError.malformed }
         var target = components.percentEncodedPath.isEmpty ? "/" : components.percentEncodedPath
         if let query = components.percentEncodedQuery { target += "?" + query }
-        guard !target.utf8.contains(where: { $0 < 33 || $0 == 127 }) else { throw BrowserError.malformed }
+        guard !target.utf8.contains(where: { $0 < 33 || $0 == 127 }), !accept.utf8.contains(where: { $0 < 32 || $0 == 127 }) else { throw BrowserError.malformed }
         let hostField = (host.contains(":") ? "[\(host)]" : host) + (url.port.map { ":\($0)" } ?? "")
-        let stream = try await client.browserTunnel(workspaceID: try await workspaceID(), target: authority)
-        let response: (status: Int, location: String?, body: Data)
+        // A GET says nothing of a body; anything else says how long it is.
+        let length = body != nil || method != "GET" ? "Content-Length: \(body?.count ?? 0)\r\n" : ""
+        var request = Data("\(method) \(target) HTTP/1.1\r\nHost: \(hostField)\r\nAccept: \(accept)\r\nAccept-Encoding: identity\r\n\(length)Connection: close\r\n\r\n".utf8)
+        if let body { request.append(body) }
+        let stream = try await client.browserTunnel(workspaceID: workspaceID, target: authority)
         do {
-            try await stream.write(Data("GET \(target) HTTP/1.1\r\nHost: \(hostField)\r\nAccept: image/*,*/*;q=0.8\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n".utf8))
-            response = try await Self.read(stream)
+            try await stream.write(request)
+            let response = try await read(stream)
             await stream.close()
+            return response
         } catch {
             await stream.close()
             throw error
         }
-        if [301, 302, 303, 307, 308].contains(response.status) {
-            guard redirects > 0, let location = response.location, let next = URL(string: location, relativeTo: url)?.absoluteURL else { throw BrowserError.upstream(response.status) }
-            return try await data(next, redirects: redirects - 1)
-        }
-        guard (200..<300).contains(response.status) else { throw BrowserError.upstream(response.status) }
-        return response.body
     }
 
     /// One response, its body by its length, its chunks, or to the close.
@@ -163,4 +199,3 @@ public actor BrowserFetcher {
         return (status, head.value("location"), body)
     }
 }
-#endif

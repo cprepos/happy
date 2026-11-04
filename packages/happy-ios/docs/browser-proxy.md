@@ -173,6 +173,21 @@ replaced loads (`NSURLErrorCancelled`, WebKit's 102 and 204) never show an
 error. Hosted tests (`HostedBrowserStatesTests`) drive each case through real
 WebKit and the proxy, and assert the bar's whole run and the buttons.
 
+## Live browser card
+
+An agent's text that links `http://localhost:6090/live/<id>` (the id 32
+lowercase hex digits; `LiveBrowserLink`) gets a card in the transcript
+(`LiveBrowserCardView`) in place of the link: bare, `<link>` or `[words](link)`,
+never in code, once per id. The card polls `GET /live/<id>/state` and
+`GET /live/<id>/frame.jpg` (read by its bytes; the bridge serves PNG) every
+1.5 s through `BrowserFetcher`, in the chat's workspace, only while it is on
+screen. It stops when the bridge says `done` (`session_closed` among them),
+`404` (ended) or `410` (expired), or the workspace refuses CONNECT with `501` (a
+container workspace: the browser runs on the host). While the state is
+`takeover` the card says why; a tap opens the live page in the browser screen,
+whose header then has a Done that POSTs `/live/<id>/done` the same way and
+closes the screen.
+
 ## Native artifact viewer
 
 Markdown, image, image series and video artifacts are drawn natively

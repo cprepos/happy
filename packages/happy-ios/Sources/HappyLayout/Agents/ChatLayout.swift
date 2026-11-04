@@ -283,7 +283,8 @@ public struct MessageLayout: Equatable, Sendable {
         /// A document, file or artifact: one card across the column.
         case card
 
-        /// An HTML artifact shown inline, across the column at the height its page measured.
+        /// A view of its own across the column: an HTML artifact shown inline,
+        /// at the height its page measured, or a live browser's card.
         case page(height: CGFloat)
         /// A sidebar Prioritizing proposed, at the column's left.
         case proposal(SidebarProposalLayout.Input)

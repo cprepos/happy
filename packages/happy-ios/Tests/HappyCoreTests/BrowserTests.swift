@@ -143,6 +143,54 @@ final class BrowserTests: XCTestCase {
         XCTAssertEqual(head.artifactResponse().value("Content-Security-Policy"), "sandbox allow-scripts allow-same-origin; default-src 'self'")
     }
 
+    func testAPostSendsItsLengthOnceThroughTheWorkspace() async throws {
+        let answer = Data("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}".utf8)
+        let bytes = Bytes([Data("HTTP/1.1 200 OK\r\n\r\n".utf8), Data("HTTP/1.1 200 OK\r\n\r\n".utf8), answer])
+        let client = AgentClient(transport: Transport(bytes), token: "native-token")
+        let url = URL(string: "http://localhost:6090/live/3f9a1c0e5b7d42e8a6c1f09b2d4e7a35/done")!
+        let response = try await BrowserExchange.send(client, workspaceID: "work1", method: "POST", url: url, body: nil, accept: "*/*")
+        XCTAssertEqual(response.status, 200)
+        XCTAssertEqual(response.body, Data("{}".utf8))
+        let written = await bytes.writes.map { String(decoding: $0, as: UTF8.self) }
+        XCTAssertEqual(written.count, 3)
+        XCTAssertTrue(written[0].hasPrefix("CONNECT /v0/workspaces/work1/proxy"))
+        XCTAssertTrue(written[1].hasPrefix("CONNECT localhost:6090"))
+        XCTAssertEqual(written[2], "POST /live/3f9a1c0e5b7d42e8a6c1f09b2d4e7a35/done HTTP/1.1\r\nHost: localhost:6090\r\nAccept: */*\r\nAccept-Encoding: identity\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        do { _ = try await BrowserExchange.send(client, workspaceID: "work1", method: "post", url: url, body: nil, accept: "*/*"); XCTFail() }
+        catch { XCTAssertEqual(error as? BrowserError, .malformed) }
+    }
+
+    func testAGetSaysNothingOfABody() async throws {
+        let bytes = Bytes([Data("HTTP/1.1 200 OK\r\n\r\n".utf8), Data("HTTP/1.1 200 OK\r\n\r\n".utf8), Data("HTTP/1.1 410 Gone\r\nContent-Length: 0\r\n\r\n".utf8)])
+        let client = AgentClient(transport: Transport(bytes), token: "native-token")
+        let response = try await BrowserExchange.send(client, workspaceID: "work1", method: "GET", url: URL(string: "http://localhost:6090/live/3f9a1c0e5b7d42e8a6c1f09b2d4e7a35/state")!, body: nil, accept: "application/json")
+        XCTAssertEqual(response.status, 410)
+        let written = await bytes.writes.map { String(decoding: $0, as: UTF8.self) }
+        XCTAssertEqual(written[2], "GET /live/3f9a1c0e5b7d42e8a6c1f09b2d4e7a35/state HTTP/1.1\r\nHost: localhost:6090\r\nAccept: application/json\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n")
+    }
+
+    #if canImport(Network)
+    func testTheFetcherPostsAndRefusesAFailure() async throws {
+        let bytes = Bytes([Data("HTTP/1.1 200 OK\r\n\r\n".utf8), Data("HTTP/1.1 200 OK\r\n\r\n".utf8), Data("HTTP/1.1 204 No Content\r\n\r\n".utf8)])
+        let client = AgentClient(transport: Transport(bytes), token: "native-token")
+        let fetcher = BrowserFetcher(client: client) { "work1" }
+        let url = URL(string: "http://localhost:6090/live/3f9a1c0e5b7d42e8a6c1f09b2d4e7a35/done")!
+        let body = try await fetcher.send(method: "POST", url: url, body: Data("{}".utf8), accept: "application/json")
+        XCTAssertEqual(body, Data())
+        let written = await bytes.writes.map { String(decoding: $0, as: UTF8.self) }
+        XCTAssertTrue(written[2].hasPrefix("POST /live/3f9a1c0e5b7d42e8a6c1f09b2d4e7a35/done HTTP/1.1\r\n"))
+        XCTAssertTrue(written[2].contains("\r\nContent-Length: 2\r\n"))
+        XCTAssertTrue(written[2].hasSuffix("\r\n\r\n{}"))
+        await fetcher.stop()
+
+        let gone = Bytes([Data("HTTP/1.1 200 OK\r\n\r\n".utf8), Data("HTTP/1.1 200 OK\r\n\r\n".utf8), Data("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".utf8)])
+        let refused = BrowserFetcher(client: AgentClient(transport: Transport(gone), token: "native-token")) { "work1" }
+        do { _ = try await refused.send(method: "POST", url: url); XCTFail() }
+        catch { XCTAssertEqual(error as? BrowserError, .upstream(404)) }
+        await refused.stop()
+    }
+    #endif
+
     private actor Bytes: BrowserStream {
         nonisolated let authority: String
         var pending: [Data]

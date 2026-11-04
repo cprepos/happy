@@ -20,6 +20,9 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
     private let agentID: String?
     private let artifactID: String?
     private var page: BrowserPage?
+    /// Buttons a caller adds at the header's right, before the browser's own
+    /// (a live browser's Done).
+    let extraItems: [UIBarButtonItem]
     private(set) var web: WKWebView?
     private var loading: Task<Void, Never>?
     private var observations: [NSKeyValueObservation] = []
@@ -50,8 +53,8 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
     lazy var reloadItem = UIBarButtonItem(primaryAction: UIAction(image: .icon(.ionicons("refresh"), size: 22)) { [weak self] _ in self?.reloadOrStop() })
     lazy var shareItem = UIBarButtonItem(image: .icon(.ionicons("share-outline"), size: 22), menu: UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] done in done(self?.shareActions() ?? []) }]))
 
-    init(url: URL, session: Session? = nil, agentID: String? = nil, artifactID: String? = nil, page: BrowserPage? = nil) {
-        originalURL = url; self.session = session; self.agentID = agentID; self.artifactID = artifactID; self.page = page
+    init(url: URL, session: Session? = nil, agentID: String? = nil, artifactID: String? = nil, page: BrowserPage? = nil, extraItems: [UIBarButtonItem] = []) {
+        originalURL = url; self.session = session; self.agentID = agentID; self.artifactID = artifactID; self.page = page; self.extraItems = extraItems
         super.init(nibName: nil, bundle: nil)
         title = Self.isSynthetic(url) ? nil : url.host
         navigationItem.largeTitleDisplayMode = .never
@@ -100,10 +103,12 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
     }
 
     /// Back and forward, then reload and share, at the header's right in
-    /// two glass groups; the system back button keeps the left.
+    /// two glass groups, any `extraItems` outermost; the system back button
+    /// keeps the left.
     private func installHeader() {
         let item = header.navigationItem
-        item.rightBarButtonItems = [shareItem, reloadItem, .fixedSpace(0), forwardItem, backItem]
+        let extra: [UIBarButtonItem] = extraItems.isEmpty ? [] : extraItems + [.fixedSpace(0)]
+        item.rightBarButtonItems = extra + [shareItem, reloadItem, .fixedSpace(0), forwardItem, backItem]
         updateHeader()
     }
 

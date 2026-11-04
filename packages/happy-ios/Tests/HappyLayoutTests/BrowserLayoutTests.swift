@@ -66,4 +66,27 @@ final class BrowserLayoutTests: XCTestCase {
         XCTAssertEqual(result.message, CGRect(x: 32, y: 302.5, width: 256, height: 0))
         XCTAssertEqual(result.button, CGRect(x: 32, y: 326.5, width: 256, height: 48))
     }
+
+    /// A live browser's card across a phone's column: the frame over the
+    /// strip, the pill hugging its words in the frame's corner.
+    func testALiveBrowserCard() {
+        let size = CGSize(width: 361, height: LiveBrowserCardLayout.Metrics.height)
+        let card = LiveBrowserCardLayout(size: size, pillLabel: CGSize(width: 61.3, height: 15.5))
+        XCTAssertEqual(card.frame, CGRect(x: 0, y: 0, width: 361, height: 180))
+        XCTAssertEqual(card.pill, CGRect(x: 8, y: 8, width: 96, height: 24))
+        XCTAssertEqual(card.dot, CGRect(x: 18, y: 16, width: 8, height: 8))
+        XCTAssertEqual(card.pillLabel, CGRect(x: 32, y: 12, width: 62, height: 16))
+        XCTAssertEqual(card.title, CGRect(x: 12, y: 190, width: 337, height: 20))
+        XCTAssertEqual(card.address, CGRect(x: 12, y: 210, width: 337, height: 16))
+        XCTAssertEqual(card.message, CGRect(x: 24, y: 90, width: 313, height: 0))
+    }
+
+    func testALiveBrowserCardsSentenceAndLongPill() {
+        let size = CGSize(width: 200, height: LiveBrowserCardLayout.Metrics.height)
+        let card = LiveBrowserCardLayout(size: size, pillLabel: CGSize(width: 400, height: 40), message: message)
+        // The pill keeps inside the frame; its words are cut to fit.
+        XCTAssertEqual(card.pill, CGRect(x: 8, y: 8, width: 184, height: 24))
+        XCTAssertEqual(card.pillLabel, CGRect(x: 32, y: 8, width: 150, height: 24))
+        XCTAssertEqual(card.message, CGRect(x: 24, y: 60, width: 152, height: 60))
+    }
 }

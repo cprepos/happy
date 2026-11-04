@@ -11,10 +11,16 @@ protocol PageHosting: AnyObject {
     var pageClient: AgentClient { get }
     func page(_ artifactId: String, measured height: CGFloat)
     func page(open url: URL)
+    /// The agent whose workspace reaches the conversation's `localhost`.
+    var pageAgentID: String? { get }
+    /// A live browser full screen, as its card last saw it.
+    func page(openLive link: LiveBrowserLink, status: LiveBrowserState.Status?)
 }
 
 extension PageHosting {
     func page(open url: URL) { (self as? UIViewController)?.openBrowser(url) }
+    var pageAgentID: String? { nil }
+    func page(openLive link: LiveBrowserLink, status: LiveBrowserState.Status?) { page(open: link.url) }
 }
 
 /// An HTML artifact shown inline in a conversation, as desktop shows one

@@ -1961,6 +1961,49 @@ extension ChatViewController: ChatMediaProviding {
 extension ChatViewController: PageHosting {
     var pageClient: AgentClient { session.client }
     func page(open url: URL) { openBrowser(url, session: session, agentID: media.agentId) }
+    var pageAgentID: String? { media.agentId }
+
+    /// A live browser full screen; while the agent waits on the person, with
+    /// a Done that hands control back and closes it.
+    func page(openLive link: LiveBrowserLink, status: LiveBrowserState.Status?) {
+        guard status == .takeover else { page(open: link.url); return }
+        let done = UIBarButtonItem()
+        done.style = .prominent
+        done.accessibilityIdentifier = "live-browser-done"
+        let browser = BrowserViewController(url: link.url, session: session, agentID: media.agentId, extraItems: [done])
+        done.primaryAction = UIAction(title: Strings.LiveBrowser.handBack) { [weak self, weak browser, weak done] _ in
+            self?.handBack(link, from: browser, item: done)
+        }
+        presentBrowser(browser)
+    }
+
+    /// POSTs the live browser's `/done` through the workspace, as the card
+    /// reads it, then closes the full screen; a failure leaves it open.
+    func handBack(_ link: LiveBrowserLink, from browser: BrowserViewController?, item: UIBarButtonItem?) {
+        item?.isEnabled = false
+        let client = session.client
+        let agentID = media.agentId
+        Task { [weak self] in
+            let fetcher = BrowserFetcher(client: client) { try await client.browserWorkspace(agentID: agentID) }
+            do {
+                _ = try await fetcher.send(method: "POST", url: link.doneURL)
+                await fetcher.stop()
+                guard let browser else { return }
+                if let navigation = browser.navigationController, let index = navigation.viewControllers.firstIndex(of: browser), index > 0 {
+                    navigation.popToViewController(navigation.viewControllers[index - 1], animated: true)
+                } else {
+                    browser.dismiss(animated: true)
+                }
+            } catch {
+                await fetcher.stop()
+                item?.isEnabled = true
+                guard let presenter: UIViewController = browser ?? self else { return }
+                let alert = UIAlertController(title: Strings.LiveBrowser.handBackFailed, message: Strings.LiveBrowser.unreachable, preferredStyle: .alert)
+                alert.addAction(UIAlertAction(title: Strings.Common.ok, style: .default))
+                presenter.present(alert, animated: true)
+            }
+        }
+    }
 
     func page(_ artifactId: String, measured height: CGFloat) {
         let height = min(max(1, height.rounded(.up)), 4000)
