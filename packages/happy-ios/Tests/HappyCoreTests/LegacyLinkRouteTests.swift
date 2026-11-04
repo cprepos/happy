@@ -59,6 +59,32 @@ final class LegacyLinkRouteTests: XCTestCase {
         XCTAssertEqual(LegacyLinkRoute.resolve(machineId: "m2", machineName: name, agentNodeName: "prep-pro", computers: [], settings: settings), .unavailable)
     }
 
+    /// A Happy Agent's own relay machine (its bots' Happy CLI page copies)
+    /// names no node; the happy-cli machine on the same host does.
+    func testAMachineWithoutANodeTakesItsHostsNode() {
+        var agent = Fixture.machine("agent", active: true, name: "Christopher’s MacBook Pro")
+        agent.metadata = .object(["displayName": .string("Christopher’s MacBook Pro"), "host": .string("Mac")])
+        var cli = Fixture.machine("cli", active: true, name: "Mac")
+        cli.metadata = .object(["host": .string(" mac "), "happyAgent": .object(["nodeName": .string("prep-pro")])])
+        var air = Fixture.machine("air", active: true, name: "MacBookAir")
+        air.metadata = .object(["host": .string("MacBookAir"), "happyAgent": .object(["nodeName": .string("prep-air")])])
+        let machines = [agent, cli, air]
+
+        XCTAssertEqual(LegacyLinkRoute.agentNodeName(agent, among: machines), "prep-pro")
+        // Its own node, when it names one, is never looked past.
+        XCTAssertEqual(LegacyLinkRoute.agentNodeName(air, among: machines), "prep-air")
+        XCTAssertEqual(LegacyLinkRoute.resolve(machineId: "agent", machineName: "Christopher’s MacBook Pro", agentNodeName: LegacyLinkRoute.agentNodeName(agent, among: machines), computers: [self.air, pro, ml], settings: settings()), .computer("direct-pro"))
+
+        // Two nodes on one host name neither; no host names none.
+        var other = Fixture.machine("other", active: true, name: "Mac")
+        other.metadata = .object(["host": .string("Mac"), "happyAgent": .object(["nodeName": .string("studio")])])
+        XCTAssertNil(LegacyLinkRoute.agentNodeName(agent, among: machines + [other]))
+        var hostless = agent
+        hostless.metadata = .object(["displayName": .string("Bot box")])
+        XCTAssertNil(LegacyLinkRoute.agentNodeName(hostless, among: machines))
+        XCTAssertNil(LegacyLinkRoute.agentNodeName(nil, among: machines))
+    }
+
     func testNoMatchAsksAmongEveryComputer() {
         let settings = settings()
         XCTAssertEqual(LegacyLinkRoute.resolve(machineId: "m1", machineName: "studio", computers: [pro, air], settings: settings), .ask([pro, air]))

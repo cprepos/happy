@@ -2107,10 +2107,12 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         let machineId = record?.metadata?["machineId"]?.stringValue
         let store = account.store
         Task { @MainActor [weak self] in
-            let machine = await Task.detached(priority: .userInitiated) { machineId.flatMap { try? store.machine(id: $0) } }.value
+            let (machine, machines) = await Task.detached(priority: .userInitiated) {
+                (machineId.flatMap { try? store.machine(id: $0) }, (try? store.machines()) ?? [])
+            }.value
             guard let self else { return }
             let name = record.flatMap { LegacyLinkRoute.machineName(session: $0, machine: machine) }
-            openLegacyLink(url, machineId: machineId, machineName: name, agentNodeName: LegacyLinkRoute.agentNodeName(machine), settings: account.localSettings, context: context)
+            openLegacyLink(url, machineId: machineId, machineName: name, agentNodeName: LegacyLinkRoute.agentNodeName(machine, among: machines), settings: account.localSettings, context: context)
         }
     }
 
