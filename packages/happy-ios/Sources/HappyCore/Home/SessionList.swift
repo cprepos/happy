@@ -269,7 +269,7 @@ public struct SessionList: Equatable, Sendable {
     static func hostName(_ session: SessionRecord, machines: [String: MachineRecord]) -> String? {
         func nonEmpty(_ value: String?) -> String? { value?.isEmpty == false ? value : nil }
         let machine = session.metadata?["machineId"]?.stringValue.flatMap { machines[$0] }
-        return MachineName.named(machine?.metadata)
+        return MachineName.named(machine, among: Array(machines.values))
             ?? nonEmpty(session.metadata?["host"]?.stringValue)
     }
 

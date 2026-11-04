@@ -42,23 +42,10 @@ public enum LegacyLinkRoute: Equatable, Sendable {
         MachineName.agentNodeName(machine?.metadata)
     }
 
-    /// The Happy Agent node for `machine`, looking past it when it publishes
-    /// none: a Happy Agent's own relay machine (its bots' and sessions'
-    /// copies on the Happy CLI page) shares its computer's host with the
-    /// happy-cli machine there, which does name the node. Several nodes on
-    /// one host name none, and the rest of `resolve` decides.
+    /// The Happy Agent node for `machine`, looking past it to its host's
+    /// happy-cli machine when it publishes none (`MachineName.agentNodeName`).
     public static func agentNodeName(_ machine: MachineRecord?, among machines: [MachineRecord]) -> String? {
-        if let own = agentNodeName(machine) { return own }
-        guard let host = machine.flatMap(hostKey) else { return nil }
-        let nodes = Set(machines.filter { $0.id != machine?.id && hostKey($0) == host }.compactMap { agentNodeName($0).flatMap(matchKey) })
-        guard nodes.count == 1 else { return nil }
-        return machines.lazy.compactMap { agentNodeName($0) }.first { matchKey($0) == nodes.first }
-    }
-
-    /// A machine's host as the same-computer lookup compares it.
-    private static func hostKey(_ machine: MachineRecord) -> String? {
-        let host = machine.metadata?["host"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return host?.isEmpty == false ? host : nil
+        MachineName.agentNodeName(machine, among: machines)
     }
 
     /// The route for a link from a session on `machineId`, called

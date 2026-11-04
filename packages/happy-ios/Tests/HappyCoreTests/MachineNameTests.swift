@@ -62,4 +62,29 @@ final class MachineNameTests: XCTestCase {
         let session = Fixture.session("s1", machine: "m1", path: "/work")
         XCTAssertEqual(LegacyLinkRoute.machineName(session: session, machine: machine(["happyAgent": node, "host": .string("mac.local")])), "prep-pro")
     }
+
+    /// A Happy Agent's own relay machine publishes "<host> — Happy Agent" and
+    /// no node; the happy-cli machine on its host names the node.
+    func testAHappyAgentMachineTakesItsHostsNode() {
+        let cli = machine(["host": .string("Mac"), "happyAgent": node], id: "cli")
+        let agent = machine(["host": .string("Mac"), "displayName": .string("Mac — Happy Agent")], id: "agent")
+        let air = machine(["host": .string("MacBookAir"), "happyAgent": .object(["nodeName": .string("prep-air")])], id: "air")
+        let airAgent = machine(["host": .string("MacBookAir"), "displayName": .string("MacBookAir — Happy Agent")], id: "air-agent")
+        let all = [cli, agent, air, airAgent]
+        XCTAssertEqual(MachineName.named(agent, among: all), "prep-pro — Happy Agent")
+        XCTAssertEqual(MachineName.named(airAgent, among: all), "prep-air — Happy Agent")
+        // The happy-cli machine itself is named as before.
+        XCTAssertEqual(MachineName.named(cli, among: all), "prep-pro")
+        // No display name: the node alone.
+        XCTAssertEqual(MachineName.named(machine(["host": .string("mac")], id: "bare"), among: all), "prep-pro")
+        // A name the person gave it doesn't start with the host, and stays.
+        XCTAssertEqual(MachineName.named(machine(["host": .string("Mac"), "displayName": .string("Studio bots")], id: "mine"), among: all), "Studio bots")
+        // Two nodes on one host name neither; alone on its host, the host stays.
+        let other = machine(["host": .string("Mac"), "happyAgent": .object(["nodeName": .string("studio")])], id: "other")
+        XCTAssertEqual(MachineName.named(agent, among: all + [other]), "Mac — Happy Agent")
+        XCTAssertEqual(MachineName.named(agent, among: [agent]), "Mac — Happy Agent")
+        // Home's section header reads it the same way.
+        let session = Fixture.session("s1", machine: "agent", path: "/work")
+        XCTAssertEqual(SessionList.hostName(session, machines: Dictionary(uniqueKeysWithValues: all.map { ($0.id, $0) })), "prep-pro — Happy Agent")
+    }
 }
