@@ -1,0 +1,44 @@
+#!/usr/bin/env node
+// happy-browser-bridge HTTP service, bound to 127.0.0.1:6090.
+import { createServer } from 'node:http';
+import { createAutoBrowserClient } from './lib/autobrowser.mjs';
+import { createBridge } from './lib/app.mjs';
+import { loadConfig, readSecret } from './lib/config.mjs';
+import { LinkStore } from './lib/store.mjs';
+
+const cfg = loadConfig();
+const log = (msg) => console.log(`${new Date().toISOString()} ${msg}`);
+
+const store = new LinkStore({ path: cfg.storePath, idleMs: cfg.idleMs });
+const client = createAutoBrowserClient({ baseUrl: cfg.autoBrowserUrl, token: readSecret(cfg.files.apiToken) });
+const bridge = createBridge({
+    client,
+    store,
+    log,
+    config: {
+        publicBase: cfg.publicBase,
+        novncUrl: cfg.novncUrl,
+        vncPassword: readSecret(cfg.files.vncPassword),
+        bridgeToken: readSecret(cfg.files.bridgeToken),
+        // The phone opens http://localhost:<port>; the MCP server and probes use 127.0.0.1.
+        allowedHosts: [`localhost:${cfg.port}`, `127.0.0.1:${cfg.port}`, `[::1]:${cfg.port}`],
+    },
+});
+
+const server = createServer(bridge.handler);
+// /api/wait long-polls for up to two minutes.
+server.requestTimeout = 0;
+server.headersTimeout = 15_000;
+server.keepAliveTimeout = 5_000;
+server.listen(cfg.port, cfg.host, () => log(`bridge listening on http://${cfg.host}:${cfg.port} -> ${cfg.autoBrowserUrl}`));
+
+const sweep = setInterval(() => store.sweep(), 60_000);
+sweep.unref();
+for (const sig of ['SIGTERM', 'SIGINT']) {
+    process.on(sig, () => {
+        log(`${sig}: shutting down`);
+        store.flush();
+        server.close(() => process.exit(0));
+        setTimeout(() => process.exit(0), 3000).unref();
+    });
+}

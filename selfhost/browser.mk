@@ -3,11 +3,13 @@
 # See selfhost/browser/README.md.
 #
 #   make browser-init     generate secrets under ~/.local/share/happy-browser/secrets (600, idempotent)
-#   make browser-up       start browser-node + controller (detached), loopback-only
+#   make browser-up       start browser-node + controller + bridge (detached), loopback-only
 #   make browser-down     stop and remove the containers (data and secrets kept)
 #   make browser-status   container health, loopback binds, controller /healthz
 #   make browser-logs     follow logs (BROWSER_SVC=controller to pick one service)
 #   make browser-verify   MCP answers with the token (tools/list), refuses without it; noVNC demands a password
+#   make browser-bridge-test   bridge unit tests (node:test, auto-browser mocked)
+#   make browser-bridge-smoke  end-to-end against the running stack: session, link, page, frame, takeover, done
 
 BROWSER_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))/browser
 export HAPPY_BROWSER_HOME ?= $(HOME)/.local/share/happy-browser
@@ -17,8 +19,9 @@ BROWSER_COMPOSE := docker compose -p happy-browser -f $(BROWSER_DIR)/compose.bro
 	--env-file $(BROWSER_SECRETS)/browser.env $(if $(wildcard $(BROWSER_LOCAL_ENV)),--env-file $(BROWSER_LOCAL_ENV))
 BROWSER_SVC ?=
 BROWSER_API ?= http://127.0.0.1:8010
+BROWSER_BRIDGE ?= http://127.0.0.1:6090
 
-.PHONY: browser-init browser-up browser-down browser-status browser-logs browser-verify
+.PHONY: browser-init browser-up browser-down browser-status browser-logs browser-verify browser-bridge-test browser-bridge-smoke
 
 browser-init:
 	@HAPPY_BROWSER_HOME="$(HAPPY_BROWSER_HOME)" bash $(BROWSER_DIR)/scripts/browser-init.sh
@@ -37,9 +40,17 @@ browser-status:
 	@if ss -ltnH | awk '{print $$4}' | grep -E ':(6080|8010|6090)$$' | grep -qvE '^127\.0\.0\.1:'; then \
 		echo "WARNING: a live-browser port is bound beyond 127.0.0.1"; exit 1; fi
 	@printf "controller /healthz: "; curl -fsS --max-time 5 $(BROWSER_API)/healthz || echo "unreachable"; echo
+	@printf "bridge /healthz:     "; curl -fsS --max-time 5 $(BROWSER_BRIDGE)/healthz || echo "unreachable"; echo
 
 browser-logs:
 	$(BROWSER_COMPOSE) logs -f --tail=200 $(BROWSER_SVC)
 
 browser-verify:
 	@BROWSER_API="$(BROWSER_API)" HAPPY_BROWSER_HOME="$(HAPPY_BROWSER_HOME)" bash $(BROWSER_DIR)/scripts/browser-verify.sh
+
+browser-bridge-test:
+	cd $(BROWSER_DIR)/bridge && node --test test/*.test.mjs
+
+browser-bridge-smoke:
+	@BROWSER_API="$(BROWSER_API)" BROWSER_BRIDGE="$(BROWSER_BRIDGE)" HAPPY_BROWSER_HOME="$(HAPPY_BROWSER_HOME)" \
+		node $(BROWSER_DIR)/scripts/bridge-smoke.mjs

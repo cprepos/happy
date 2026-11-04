@@ -9,6 +9,7 @@ binds to `127.0.0.1` only. There is no public port, no Caddy route and no tunnel
 |---|---|---|
 | auto-browser `browser-node` | 6080 | Xvfb + Chromium + noVNC (password required) |
 | auto-browser `controller` | 8010 | REST API + MCP at `/mcp` (Streamable HTTP, bearer token) |
+| live `bridge` (`bridge/`) | 6090 | phone page `/live/<id>`, frames, state, takeover hand-back; plus a stdio MCP server |
 
 auto-browser is [LvcidPsyche/auto-browser](https://github.com/LvcidPsyche/auto-browser)
 (MIT). We run its published GHCR images for v1.14.0, pinned by digest. Their OCI
@@ -24,6 +25,8 @@ make browser-status   # containers + health, listening binds (fails if not 127.0
 make browser-verify   # MCP 401 without token, tools/list with it; noVNC refuses "no auth"
 make browser-logs     # BROWSER_SVC=controller for one service
 make browser-down     # stop; data and secrets are kept
+make browser-bridge-test    # bridge unit tests (node:test, auto-browser mocked)
+make browser-bridge-smoke   # end to end on the running stack; makes and deletes one session
 ```
 
 ## Files on disk
@@ -38,6 +41,7 @@ make browser-down     # stop; data and secrets are kept
   - `share-token-secret`;
   - `browser.env`: the compose env-file, rebuilt from the files above;
   - `happy-agent.env`: `AUTO_BROWSER_TOKEN=…` for the Happy Agent container.
+- `bridge/links.json` (600): live links (id, session, status, url, title, timestamps). No tokens.
 - `data/`: the controller's `/data`, holding artifacts, audit, sessions and auth.
   - `data/browser-profile` and `data/downloads` belong to browser-node's uid 10001 and must stay mode 755.
 
@@ -59,13 +63,77 @@ Tunables, such as screen size, ports and `MAX_SESSIONS`, go in
   bridge polls frames.
 - **No model provider keys:** the calling agent drives the browser over MCP.
 
+## Live bridge
+
+`bridge/` is a small Node service (no dependencies, node 20+) plus a stdio MCP
+server. It runs as the `bridge` compose service: `node:22-alpine` pinned by
+digest, host networking so it binds `127.0.0.1:6090` itself, uid 1000 so it can
+read the 600 secrets, read-only root and source, all capabilities dropped.
+Compose rather than a systemd user unit, so `browser-up`, `browser-status`,
+`browser-logs` and `browser-down` cover all three pieces.
+
+Phone routes, opened in the iOS app's in-app browser through the workspace proxy:
+
+| Route | |
+|---|---|
+| `GET /live/<id>` | phone page: frame refreshed every 1.5 s, title and url, a pill (Watching / Needs you / Done), Take control, Done |
+| `GET /live/<id>/frame.jpg` | latest frame, fetched server-side and cached 1 s; served with the upstream type, which is `image/png` |
+| `GET /live/<id>/state` | `{"status":"watching"\|"takeover"\|"done","reason":string\|null,"url":string\|null,"title":string\|null}` |
+| `POST /live/<id>/done` | ends a takeover (status `done`) and wakes the waiting agent |
+
+- `<id>` is 128 random bits as 32 lowercase hex characters (`[0-9a-f]{32}`).
+  One link per auto-browser session, reused. A link expires after 12 h without
+  being viewed (`BRIDGE_LINK_IDLE_HOURS`). Unknown id → 404, expired → 410 (for 7
+  days, then 404).
+- When the session is deleted, state becomes `done` with reason `session_closed`.
+- Private routes for the MCP server, `POST /api/{links,takeover,wait,release}`,
+  need `Authorization: Bearer <bridge-token>`. The bridge refuses any Host header
+  other than `localhost`/`127.0.0.1`/`[::1]` on its port (421).
+- Neither the controller token, nor the VNC password, nor share tokens appear
+  in `/state`, the logs, or `links.json`. Logs show the first 6 characters of a
+  link id only.
+
+**Frames.** The bridge mints a share (observer) token for the session and reads
+`/share/<token>/observe`, then fetches the PNG it points to. This differs from
+`POST /sessions/{id}/screenshot` on purpose: the share route prunes old frames,
+whereas the screenshot route keeps every capture as an artifact, and a frame a
+second would fill the disk. The path stays `frame.jpg`, as specified. Clients
+must go by `Content-Type`, not the extension.
+
+**Take control and the VNC password.** The button opens
+`http://localhost:6080/vnc.html?autoconnect=true&resize=remote#password=<vnc-password>`.
+This avoids a password prompt on the phone. The tradeoff is that the password is
+in the page's HTML and in the noVNC URL. It sits in the fragment, so it is never
+sent to a server or a proxy log, but it does live in the in-app browser's
+history. That is acceptable because the password only guards a port that is
+loopback-only and reachable from the phone only through the authenticated
+workspace proxy. Anyone who can open the link could reach noVNC anyway. It is
+also why `/live/<id>` is effectively a capability URL. To rotate the password,
+move `secrets/vnc-password` to `~/trash/…`, then run `make browser-down browser-up`. That
+regenerates it and restarts all three services; the bridge reads it at startup.
+
+**DNS.** The LAN resolver (192.168.2.1) answers NXDOMAIN for `example.com`, so
+the smoke test opens `news.ycombinator.com` (`SMOKE_URL=` to change).
+
+MCP tools (`bridge/mcp.mjs`, stdio; it holds only the bridge token):
+
+- `browser_live_link(session_id)` → `{link: "http://localhost:6090/live/<id>", ...}`.
+  The description tells the agent to post the link in chat when it starts browsing.
+- `browser_wait_for_human(session_id, reason, timeout_s=900)` asks auto-browser for a
+  takeover, sets the link to `takeover` ("Needs you"), and sends
+  `notifications/progress` with the link (when the client passes a progress
+  token). It then blocks until the user taps Done → `{status:"done"}`, or until
+  the timeout → `{status:"timeout"}`, after which the link goes back to `watching`.
+  Set the client's tool timeout above `timeout_s`.
+
 ## Claude Code
 
-Registered in user scope. Done once; the token lands in `~/.claude.json`:
+Both are registered in user scope. Done once; the auto-browser token lands in `~/.claude.json`:
 
 ```
 claude mcp add --transport http --scope user auto-browser http://127.0.0.1:8010/mcp \
   --header "Authorization: Bearer $(cat ~/.local/share/happy-browser/secrets/api-token)"
+claude mcp add --scope user happy-browser-bridge -- node /home/prep/happy/selfhost/browser/bridge/mcp.mjs
 ```
 
 ## Happy Agent (prepared, needs your go-ahead)
@@ -93,7 +161,21 @@ Steps, after approval:
    enabled = true
    startup_timeout_sec = 20
    tool_timeout_sec = 120
+
+   [mcp_servers.browser_bridge]
+   command = "node"
+   args = ["/home/prep/happy/selfhost/browser/bridge/mcp.mjs"]
+   env = { HAPPY_BROWSER_HOME = "/home/prep/.local/share/happy-browser" }
+   enabled = true
+   startup_timeout_sec = 10
+   # browser_wait_for_human blocks for up to timeout_s (default 900)
+   tool_timeout_sec = 960
    ```
+
+   `browser_bridge` needs no secret in the environment. It reads
+   `secrets/bridge-token` itself; the container runs as uid 1000 and has
+   `/home/prep` mounted. So it would work with the running container as soon as
+   it is added. It is held back only so that both entries land together.
 
 2. Recreate the container with the token in its environment. This is the current
    `docker inspect` config plus one `--env-file`; add whatever the seccomp decision
