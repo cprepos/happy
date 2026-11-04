@@ -1,0 +1,132 @@
+# Live browser for agents: auto-browser (github.com/LvcidPsyche/auto-browser, MIT)
+# running headful Chromium on Xvfb with a noVNC viewer, plus its controller,
+# which serves the REST API and the MCP endpoint (/mcp, Streamable HTTP).
+#
+# Run through the Makefile (selfhost/browser.mk): make browser-init, browser-up,
+# browser-status, browser-logs, browser-down. See selfhost/browser/README.md.
+#
+# Every port binds to 127.0.0.1. Nothing here is published to the LAN or the
+# internet; the phone reaches these ports through the Happy Agent workspace
+# proxy, which dials localhost on this machine.
+#
+# Images are the project's published GHCR images for v1.14.0 (git commit
+# 38377f1f04660446feb3e000b8134635f384dac5, as their OCI revision label says),
+# pinned by digest so a re-tag upstream cannot change what runs here.
+name: happy-browser
+
+x-browser-node-image: &browser_node_image ghcr.io/lvcidpsyche/auto-browser-browser-node:1.14.0@sha256:d5c1672e5816edd5beb38085016d4431adf0c4d39a6b41338c6fc60acb63ead1
+x-controller-image: &controller_image ghcr.io/lvcidpsyche/auto-browser-controller:1.14.0@sha256:db3964398befa498fcc4749d4c490080e0b38c7bebcef0dc05a6dd6e562932e0
+
+services:
+  browser-node:
+    image: *browser_node_image
+    shm_size: 2gb
+    restart: unless-stopped
+    # As upstream: root only until setpriv drops to the browser user.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, KILL, SETGID, SETUID]
+    # Chromium's own sandbox needs moby's default seccomp plus chroot, clone and
+    # unshare. Vendored unchanged from auto-browser 38377f1f
+    # (controller/app/browser/seccomp/chromium-sandbox.json).
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=./seccomp/chromium-sandbox.json
+    pids_limit: 2048
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          test -s /data/profile/browser-ws-endpoint.txt
+          && curl -s --max-time 3 -o /dev/null http://127.0.0.1:9223/
+          && curl -fsS --max-time 3 http://127.0.0.1:6080/ >/dev/null
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    environment:
+      # Xvfb screen and Chromium window. Phone-shaped so noVNC is legible on an
+      # iPhone and sites serve their narrow layouts.
+      BROWSER_WIDTH: ${BROWSER_WIDTH:-480}
+      BROWSER_HEIGHT: ${BROWSER_HEIGHT:-1040}
+      BROWSER_URL: about:blank
+      BROWSER_WS_ENDPOINT_FILE: /data/profile/browser-ws-endpoint.txt
+      PLAYWRIGHT_SERVER_HOST: 0.0.0.0
+      PLAYWRIGHT_SERVER_PORT: 9223
+      PLAYWRIGHT_SERVER_ADVERTISED_HOST: browser-node
+      BROWSER_SANDBOX: auto
+      BROWSER_SECCOMP_PROFILE: auto-browser
+      # Required here (make browser-init generates it). Only 8 characters count.
+      VNC_PASSWORD: ${VNC_PASSWORD:?run make browser-init}
+      # The takeover URL uses localhost, a loopback name noVNC already admits.
+      NOVNC_ALLOWED_HOSTS: ""
+      NOVNC_ALLOWED_ORIGINS: ""
+    volumes:
+      - ${HAPPY_BROWSER_HOME:?}/data/browser-profile:/data/profile
+      - ${HAPPY_BROWSER_HOME:?}/data/downloads:/data/downloads
+    ports:
+      - "127.0.0.1:${NOVNC_PORT:-6080}:6080"
+
+  controller:
+    image: *controller_image
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    stop_grace_period: 60s
+    depends_on:
+      browser-node:
+        condition: service_healthy
+    healthcheck:
+      # The image has no curl; python is there.
+      test: ["CMD", "python3", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    environment:
+      # development: production refuses ALLOWED_HOSTS=* and demands operator ids.
+      APP_ENV: development
+      API_BEARER_TOKEN: ${API_BEARER_TOKEN:?run make browser-init}
+      API_BIND_SCOPE: loopback
+      API_TOKEN_FILE: /data/api-token
+      API_ALLOW_TOKENLESS_LOOPBACK: "false"
+      CONTROLLER_ALLOWED_HOSTS: localhost,127.0.0.1,::1
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      BROWSER_WS_ENDPOINT_FILE: /data/browser-profile/browser-ws-endpoint.txt
+      BROWSER_SANDBOX: auto
+      CONTROLLER_RUN_AS: auto
+      TAKEOVER_URL: http://localhost:${NOVNC_PORT:-6080}/vnc.html?autoconnect=true&resize=remote
+      ARTIFACT_ROOT: /data/artifacts
+      UPLOAD_ROOT: /data/uploads
+      AUTH_ROOT: /data/auth
+      APPROVAL_ROOT: /data/approvals
+      AUDIT_ROOT: /data/audit
+      JOB_STORE_ROOT: /data/jobs
+      SESSION_STORE_ROOT: /data/sessions
+      MEMORY_ROOT: /data/memory
+      CLI_HOME: /data/cli-home
+      # Saved logins (storage state) are written Fernet-encrypted, and an
+      # unencrypted one is refused.
+      AUTH_STATE_ENCRYPTION_KEY: ${AUTH_STATE_ENCRYPTION_KEY:?run make browser-init}
+      REQUIRE_AUTH_STATE_ENCRYPTION: "true"
+      # Signs the observer tokens the bridge uses for live frames; fixed so
+      # they survive a controller restart.
+      SHARE_TOKEN_SECRET: ${SHARE_TOKEN_SECRET:?run make browser-init}
+      # Agents browse anywhere ("*" turns the host allowlist off). Chromium runs
+      # in browser-node's own network namespace, so its 127.0.0.1 is not this
+      # machine's; anything here bound to 0.0.0.0 or the LAN is still reachable.
+      ALLOWED_HOSTS: "*"
+      MAX_SESSIONS: ${MAX_SESSIONS:-3}
+      MCP_TOOL_PROFILE: ${MCP_TOOL_PROFILE:-curated}
+      DEFAULT_VIEWPORT_WIDTH: ${BROWSER_WIDTH:-480}
+      # The window's tab strip and toolbar take ~90px of the screen height.
+      DEFAULT_VIEWPORT_HEIGHT: ${BROWSER_VIEWPORT_HEIGHT:-950}
+      # Rate limits are per bearer token, which the agents and the bridge's
+      # one-frame-a-second polling share; 120/min (upstream) is too tight.
+      REQUEST_RATE_LIMIT_REQUESTS: ${REQUEST_RATE_LIMIT_REQUESTS:-1200}
+      REQUEST_RATE_LIMIT_WINDOW_SECONDS: "60"
+      PII_SCRUB_SCREENSHOT: ${PII_SCRUB_SCREENSHOT:-true}
+      # No model provider keys: the controller's own agent loop is unused; the
+      # calling agent (Claude Code, Happy Agent) drives the browser over MCP.
+    volumes:
+      - ${HAPPY_BROWSER_HOME:?}/data:/data
+    ports:
+      - "127.0.0.1:${API_PORT:-8010}:8000"

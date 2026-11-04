@@ -1,0 +1,3 @@
+# Local overrides; may be edited by hand. Secrets live in ~/.local/share/happy-browser/secrets.
+.env.browser
+bridge/node_modules/
