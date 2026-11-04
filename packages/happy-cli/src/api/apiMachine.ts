@@ -14,6 +14,7 @@ import { backoff } from '@/utils/time';
 import { RpcHandlerManager } from './rpc/RpcHandlerManager';
 import { detectCLIAvailability, CLIAvailability } from '@/utils/detectCLI';
 import { detectResumeSupport, type ResumeSupport } from '@/resume/localHappyAgentAuth';
+import { readHappyAgentNodeName } from '@/daemon/happyAgentNode';
 import {
     releaseReconnectCapabilityMonitor,
     retainReconnectCapabilityMonitor,
@@ -151,6 +152,8 @@ export class ApiMachineClient {
     private keepAliveInterval: NodeJS.Timeout | null = null;
     private lastKnownCLIAvailability: CLIAvailability | null = null;
     private lastKnownResumeSupport: ResumeSupport | null = null;
+    // Undefined until the first keep-alive, so the name is published once even when unchanged.
+    private lastKnownHappyAgentNodeName: string | null | undefined = undefined;
     private rpcHandlerManager: RpcHandlerManager;
     private resumeSessionHandler: ((sessionId: string, options?: ResumeSessionOptions) => Promise<SpawnSessionResult>) | null = null;
     private reconnectInterval: NodeJS.Timeout | null = null;
@@ -622,16 +625,25 @@ export class ApiMachineClient {
         // metadata update so fields owned by the app (for example displayName)
         // are preserved.
         const cliVersionChanged = this.machine.metadata?.happyCliVersion !== configuration.currentCliVersion;
+        // The Happy Agent beside this daemon can be installed, removed or renamed while it runs.
+        const happyAgentNodeName = readHappyAgentNodeName();
+        const happyAgentChanged = happyAgentNodeName !== this.lastKnownHappyAgentNodeName
+            || (this.machine.metadata?.happyAgent?.nodeName ?? null) !== happyAgentNodeName;
 
-        if (cliAvailabilityChanged || resumeSupportChanged || cliVersionChanged) {
+        if (cliAvailabilityChanged || resumeSupportChanged || cliVersionChanged || happyAgentChanged) {
             this.lastKnownCLIAvailability = newAvailability;
             this.lastKnownResumeSupport = newResumeSupport;
-            this.updateMachineMetadata((metadata) => ({
-                ...(metadata || {} as any),
-                happyCliVersion: configuration.currentCliVersion,
-                cliAvailability: newAvailability,
-                resumeSupport: { ...newResumeSupport, rpcAvailable: !!this.resumeSessionHandler },
-            })).catch((err) => {
+            this.lastKnownHappyAgentNodeName = happyAgentNodeName;
+            this.updateMachineMetadata((metadata) => {
+                const { happyAgent: _previous, ...rest } = metadata || {} as any;
+                return {
+                    ...rest,
+                    happyCliVersion: configuration.currentCliVersion,
+                    cliAvailability: newAvailability,
+                    resumeSupport: { ...newResumeSupport, rpcAvailable: !!this.resumeSessionHandler },
+                    ...(happyAgentNodeName ? { happyAgent: { nodeName: happyAgentNodeName } } : {}),
+                };
+            }).catch((err) => {
                 logger.debug('[API MACHINE] Failed to update machine capabilities:', err);
             });
         }

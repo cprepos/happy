@@ -162,6 +162,11 @@ export const MachineMetadataSchema = z.object({
     happyAgentAuthenticated: z.boolean(),
     detectedAt: z.number(),
   }).optional(),
+  // The Happy Agent sharing this Happy home, by the name the app pairs with
+  // it under. Lets the app route a relay chat's links through that computer.
+  happyAgent: z.object({
+    nodeName: z.string(),
+  }).optional(),
 })
 
 export type MachineMetadata = z.infer<typeof MachineMetadataSchema>

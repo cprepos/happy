@@ -27,6 +27,7 @@ import { expandEnvironmentVariables } from '@/utils/expandEnvVars';
 import { detectCLIAvailability } from '@/utils/detectCLI';
 import { buildResumeLaunch } from '@/resume/handleResumeCommand';
 import { detectResumeSupport } from '@/resume/localHappyAgentAuth';
+import { readHappyAgentNodeName } from './happyAgentNode';
 import { encodeBase64, decodeBase64, decrypt } from '@/api/encryption';
 import type { ResumeSessionOptions } from '@/api/apiMachine';
 import {
@@ -51,6 +52,7 @@ function shellescape(s: string): string {
 // is visually distinct from the stable one in the machine list (they otherwise
 // share the same hostname and look identical).
 const hostSuffix = process.env.HAPPY_VARIANT === 'dev' ? '-dev' : '';
+const happyAgentNodeName = readHappyAgentNodeName();
 export const initialMachineMetadata: MachineMetadata = {
   host: os.hostname() + hostSuffix,
   platform: os.platform(),
@@ -60,6 +62,7 @@ export const initialMachineMetadata: MachineMetadata = {
   happyLibDir: projectPath(),
   cliAvailability: detectCLIAvailability(),
   resumeSupport: { ...detectResumeSupport(), rpcAvailable: true },
+  ...(happyAgentNodeName ? { happyAgent: { nodeName: happyAgentNodeName } } : {}),
 };
 
 export async function startDaemon(): Promise<void> {
