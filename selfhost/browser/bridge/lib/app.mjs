@@ -81,6 +81,8 @@ const isEnded = (s) => ENDED_STATUSES.has(s?.status);
 export const HELD_STATUSES = new Set(['takeover', 'user']);
 // The reason a link carries after the bridge released it on its way down.
 export const SHUTDOWN_REASON = 'bridge_restarting';
+// Control was released because the user's noVNC went away (app killed, network gone).
+export const VIEWER_LEFT_REASON = 'viewer_left';
 const ACTION_KINDS = new Set(['navigate', 'click', 'hover', 'select_option', 'type', 'press', 'scroll', 'wait', 'reload', 'go_back', 'go_forward', 'upload', 'eval_js', 'activate_tab', 'close_tab']);
 
 export function stateOf(rec) {
@@ -114,6 +116,10 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         listTools = null,
         // How often open noVNC sockets are checked against their link and pod.
         tunnelCheckMs = 1000,
+        // A held link whose last noVNC socket closed is released after this, unless one reconnects.
+        viewerGraceMs = 10_000,
+        // After /take, how long noVNC has to open its first socket before control is released.
+        takeLoadMs = 60_000,
     } = config;
     if (!bridgeToken) throw new Error('bridgeToken is required');
 
@@ -177,6 +183,7 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
     function setStatus(rec, status, reason) {
         store.update(rec, { status, reason: reason ?? null });
         if (!HELD_STATUSES.has(status)) {
+            disarmLeave(rec.id);
             closeTunnels(rec.id, status === 'done' ? 'ended' : 'released');
             const r = rt(rec.id);
             for (const wake of r.waiters) wake();
@@ -507,13 +514,10 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
                 }
                 // From takeover the agent is already waiting for the user: nothing changes.
                 if (rec.status !== 'takeover' && rec.status !== 'user') setStatus(rec, 'user', 'user_took_control');
+                if (!hasTunnel(rec.id)) armLeave(rec.id, takeLoadMs);
                 return send(res, 200, { ...stateOf(rec), ...podField(rec), novnc_url: takeoverUrlOf(rec) });
             }
-            if (HELD_STATUSES.has(rec.status)) {
-                setStatus(rec, 'watching', 'user_released');
-                // The user often just logged in: keep that login now, not only when the pod stops.
-                if (podLink(rec)) pods.checkpointAuth(rec.chatKey, { force: true }).catch(() => {});
-            }
+            if (HELD_STATUSES.has(rec.status)) releaseHeld(rec, 'user_released');
             return send(res, 200, { ...stateOf(rec), ...podField(rec) });
         }
         if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: 'method_not_allowed' }, { Allow: 'GET' });
@@ -577,14 +581,41 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         });
     }
 
+    function releaseHeld(rec, reason) {
+        setStatus(rec, 'watching', reason);
+        // The user often just logged in: keep that login now, not only when the pod stops.
+        if (podLink(rec)) pods.checkpointAuth(rec.chatKey, { force: true }).catch(() => {});
+    }
+
     const tunnels = new Set(); // {id, key, socket, up}
     let tunnelTimer = null;
+    const hasTunnel = (id) => [...tunnels].some((t) => t.id === id);
+    // Held links with no noVNC socket, waiting to be released: id -> timeout.
+    const leaveTimers = new Map();
+    function disarmLeave(id) {
+        clearTimeout(leaveTimers.get(id));
+        leaveTimers.delete(id);
+    }
+    function armLeave(id, ms) {
+        disarmLeave(id);
+        const timer = setTimeout(() => {
+            leaveTimers.delete(id);
+            const found = store.lookup(id);
+            if (!found || found.expired || !HELD_STATUSES.has(found.rec.status) || hasTunnel(id)) return;
+            log(`vnc /live/${id.slice(0, 6)}…: no viewer for ${Math.round(ms / 1000)} s; releasing control`);
+            releaseHeld(found.rec, VIEWER_LEFT_REASON);
+        }, ms);
+        timer.unref?.();
+        leaveTimers.set(id, timer);
+    }
     function closeTunnel(t, why) {
         if (!tunnels.delete(t)) return;
         t.socket.destroy();
         t.up.destroy();
         log(`vnc socket /live/${t.id.slice(0, 6)}… closed (${why})`);
         if (!tunnels.size && tunnelTimer) { clearInterval(tunnelTimer); tunnelTimer = null; }
+        // The viewer went away while still holding control: release it unless noVNC comes back.
+        if (t.open && (why === 'viewer_closed' || why === 'upstream_closed') && !hasTunnel(t.id)) armLeave(t.id, viewerGraceMs);
     }
     function closeTunnels(id, why) {
         for (const t of [...tunnels]) if (t.id === id) closeTunnel(t, why);
@@ -667,6 +698,8 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
             const rest = buf.subarray(end + 4);
             if (rest.length) socket.write(rest);
             open = true;
+            t.open = true;
+            disarmLeave(id);
             log(`UPGRADE ${route} 101`);
             up.pipe(socket);
             socket.pipe(up);
@@ -674,10 +707,15 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         up.on('data', onData);
         up.on('error', fail);
         up.on('close', fail);
+        // Upgrade sockets are half-open (http.Server's allowHalfOpen): a FIN alone never fires
+        // 'close', so either side ending ends the tunnel.
+        up.on('end', fail);
+        socket.on('end', () => closeTunnel(t, 'viewer_closed'));
         socket.on('close', () => closeTunnel(t, 'viewer_closed'));
     }
 
     function close() {
+        for (const id of [...leaveTimers.keys()]) disarmLeave(id);
         for (const t of [...tunnels]) closeTunnel(t, 'shutdown');
     }
 

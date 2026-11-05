@@ -230,6 +230,38 @@ test('vnc files and socket of a shared link: the shared noVNC port; unknown 404,
     } finally { await up.close(); }
 });
 
+test('viewer left: control is released after the grace without a noVNC socket, and a reconnect cancels it', async () => {
+    const up = await restartWithNovnc({ viewerGraceMs: 150, takeLoadMs: 300 });
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const status = async (id) => (await (await fetch(`${base}/live/${id}/state`)).json());
+    try {
+        const bport = Number(new URL(base).port);
+        const { id } = await link();
+        await post(id, 'take');
+        const ws = await wsHandshake(bport, `/live/${id}/vnc/websockify`);
+        assert.equal(ws.status, 101);
+        await sleep(400);
+        assert.equal((await status(id)).status, 'user', 'an open socket holds control past the load timeout');
+        ws.socket.destroy();
+        await sleep(50);
+        const again = await wsHandshake(bport, `/live/${id}/vnc/websockify`);
+        assert.equal(again.status, 101);
+        await sleep(250);
+        assert.equal((await status(id)).status, 'user', 'reopening noVNC within the grace keeps control');
+        again.socket.destroy();
+        await sleep(300);
+        const s = await status(id);
+        assert.deepEqual([s.status, s.reason], ['watching', 'viewer_left']);
+
+        // /take with no socket ever: released only after the longer load timeout.
+        await post(id, 'take');
+        await sleep(200);
+        assert.equal((await status(id)).status, 'user', 'still loading noVNC: not released at the grace');
+        await sleep(250);
+        assert.equal((await status(id)).reason, 'viewer_left');
+    } finally { await up.close(); }
+});
+
 test('shutdown: held links are released, waiters answered, sockets closed, links.json saved', async () => {
     const up = await restartWithNovnc();
     try {
