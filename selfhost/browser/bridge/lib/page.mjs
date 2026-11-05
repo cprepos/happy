@@ -4,7 +4,10 @@
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const jsonForScript = (v) => JSON.stringify(v).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
 
-const STYLE = `
+// Phone widths run 320–430 CSS px: nothing here has a fixed width, every box is
+// border-box and at most 100% wide, and grid/flex children may shrink (min-width: 0)
+// so a long title or URL wraps or ellipsizes instead of widening the page.
+const style = ({ frameWidth, frameHeight }) => `
 :root {
   color-scheme: light dark;
   --bg: #f6f6f4; --surface: #ffffff; --text: #1b1c1e; --muted: #6b6f76; --line: #e2e2de;
@@ -12,6 +15,10 @@ const STYLE = `
   --watch-bg: #e7f0ff; --watch-fg: #1d4fa8;
   --need-bg: #fff1d6; --need-fg: #8a5300;
   --done-bg: #e3f4e8; --done-fg: #1d6b38;
+  --err-bg: #fde7e7; --err-fg: #9b1c1c;
+  --frame-ar: ${frameWidth} / ${frameHeight};
+  --gutter-l: max(16px, env(safe-area-inset-left));
+  --gutter-r: max(16px, env(safe-area-inset-right));
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -20,47 +27,73 @@ const STYLE = `
     --watch-bg: #172640; --watch-fg: #9cc1ff;
     --need-bg: #3a2a0c; --need-fg: #ffcf73;
     --done-bg: #12301d; --done-fg: #8fe0a8;
+    --err-bg: #3a1414; --err-fg: #ffb4b4;
   }
 }
-* { box-sizing: border-box; }
-html, body { margin: 0; background: var(--bg); color: var(--text);
-  font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
-body { min-height: 100vh; display: flex; flex-direction: column; }
-header { position: sticky; top: 0; z-index: 1; background: var(--surface); border-bottom: 1px solid var(--line);
-  padding: 10px 16px; padding-top: max(10px, env(safe-area-inset-top)); display: grid; gap: 2px;
-  grid-template-columns: 1fr auto; align-items: center; }
-#title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#url { grid-column: 1 / -1; color: var(--muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; width: 100%; max-width: 100%; overflow-x: clip; background: var(--bg); color: var(--text);
+  font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+body { min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; }
+header { position: sticky; top: 0; z-index: 1; width: 100%; background: var(--surface); border-bottom: 1px solid var(--line);
+  padding: max(10px, env(safe-area-inset-top)) var(--gutter-r) 10px var(--gutter-l);
+  display: grid; gap: 2px 10px; grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+#title { min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#url { grid-column: 1 / -1; min-width: 0; color: var(--muted); font-size: 12.5px;
+  overflow-wrap: anywhere; word-break: break-all;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .pill { font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 999px; white-space: nowrap; }
 .pill.watching { background: var(--watch-bg); color: var(--watch-fg); }
 .pill.takeover { background: var(--need-bg); color: var(--need-fg); }
-.pill.done { background: var(--done-bg); color: var(--done-fg); }
-#reason { margin: 12px 16px 0; padding: 10px 12px; border-radius: 10px; background: var(--need-bg); color: var(--need-fg); }
-#reason[hidden], #done[hidden] { display: none; }
-main { flex: 1; padding: 12px 16px; display: flex; justify-content: center; align-items: flex-start; }
-#frame { display: block; max-width: 100%; height: auto; border-radius: 10px; border: 1px solid var(--line);
-  background: var(--surface); min-height: 200px; }
-#note { color: var(--muted); text-align: center; padding: 40px 16px; }
-footer { position: sticky; bottom: 0; background: var(--surface); border-top: 1px solid var(--line);
-  padding: 10px 16px; padding-bottom: max(10px, env(safe-area-inset-bottom)); display: flex; gap: 10px; }
-.btn { flex: 1; display: inline-flex; justify-content: center; align-items: center; min-height: 44px;
-  border-radius: 10px; font: inherit; font-weight: 600; text-decoration: none; cursor: pointer;
-  border: 1px solid var(--line); background: var(--surface); color: var(--text); }
+.pill.done, .pill.ended { background: var(--done-bg); color: var(--done-fg); }
+#reason { margin: 12px var(--gutter-r) 0 var(--gutter-l); padding: 10px 12px; border-radius: 10px;
+  background: var(--need-bg); color: var(--need-fg); overflow-wrap: anywhere; }
+main { flex: 1; width: 100%; min-width: 0; padding: 12px var(--gutter-r) 12px var(--gutter-l); }
+#box { position: relative; width: 100%; max-width: ${frameWidth}px; margin: 0 auto; aspect-ratio: var(--frame-ar);
+  max-height: calc(100vh - 170px); max-height: calc(100dvh - 170px); min-height: 200px;
+  border-radius: 10px; border: 1px solid var(--line); background: var(--surface); overflow: hidden; }
+#frame { position: absolute; inset: 0; display: block; width: 100%; height: 100%; max-width: 100%;
+  object-fit: contain; object-position: center top; }
+#note { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  padding: 16px; text-align: center; color: var(--muted); overflow-wrap: anywhere; }
+#note.over { inset: auto 0 0 0; background: var(--surface); border-top: 1px solid var(--line); }
+#note.error { color: var(--err-fg); background: var(--err-bg); }
+footer { position: sticky; bottom: 0; width: 100%; background: var(--surface); border-top: 1px solid var(--line);
+  padding: 10px var(--gutter-r) max(10px, env(safe-area-inset-bottom)) var(--gutter-l); display: flex; gap: 10px; }
+.btn { flex: 1 1 0; min-width: 0; display: inline-flex; justify-content: center; align-items: center; min-height: 44px;
+  padding: 0 12px; border-radius: 10px; font: inherit; font-weight: 600; text-decoration: none; cursor: pointer;
+  border: 1px solid var(--line); background: var(--surface); color: var(--text); text-align: center; }
 .btn.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
 .btn:disabled { opacity: .5; }
 `;
 
+// Frame failures in a row before the page says so instead of spinning quietly.
+export const FRAME_FAILURES_BEFORE_ERROR = 4;
+
 const SCRIPT = `
 (() => {
   const base = location.pathname.replace(/\\/+$/, '');
-  const LABEL = { watching: 'Watching', takeover: 'Needs you', done: 'Done' };
+  const LABEL = { watching: 'Watching', takeover: 'Needs you', done: 'Done', ended: 'Ended' };
+  const MAX_FAILS = ${FRAME_FAILURES_BEFORE_ERROR};
   const $ = (id) => document.getElementById(id);
   let state = JSON.parse($('initial').textContent);
-  let stopped = false, timer = null, lastObjectUrl = null;
+  let stopped = false, timer = null, lastObjectUrl = null, fails = 0, haveFrame = false;
+
+  const ended = () => state.status === 'done' && state.reason === 'session_closed';
+
+  function note(text, { error = false } = {}) {
+    const n = $('note');
+    n.textContent = text;
+    n.hidden = false;
+    n.classList.toggle('error', error);
+    n.classList.toggle('over', haveFrame && !$('frame').hidden);
+  }
 
   function render() {
-    $('pill').textContent = LABEL[state.status] || state.status;
-    $('pill').className = 'pill ' + state.status;
+    const status = ended() ? 'ended' : state.status;
+    $('pill').textContent = LABEL[status] || status;
+    $('pill').className = 'pill ' + status;
     $('title').textContent = state.title || 'Browser';
     $('url').textContent = state.url || '';
     const needs = state.status === 'takeover';
@@ -71,14 +104,29 @@ const SCRIPT = `
     document.title = (needs ? '⚠ ' : '') + (state.title || 'Live browser');
   }
 
-  function gone(code) {
-    stopped = true;
-    clearTimeout(timer);
-    $('note').textContent = code === 410 ? 'This live view has expired.' : 'This live view is no longer available.';
-    $('note').hidden = false;
+  function stop() { stopped = true; clearTimeout(timer); $('take').hidden = true; $('done').hidden = true; }
+
+  function finish() {
+    if (!ended()) state = Object.assign({}, state, { status: 'done', reason: 'session_closed' });
+    render();
+    stop();
     $('frame').hidden = true;
-    $('take').hidden = true;
-    $('done').hidden = true;
+    haveFrame = false;
+    note('This live browser has ended.');
+  }
+
+  function gone(code) {
+    stop();
+    $('frame').hidden = true;
+    haveFrame = false;
+    note(code === 410 ? 'This live view has expired.' : 'This live view is no longer available.');
+  }
+
+  function failed(code) {
+    fails++;
+    if (fails >= MAX_FAILS) {
+      note("The live view isn't loading" + (code ? ' (error ' + code + ')' : ' (no connection)') + '. Still trying…', { error: true });
+    }
   }
 
   async function tick() {
@@ -87,21 +135,31 @@ const SCRIPT = `
       const s = await fetch(base + '/state', { cache: 'no-store' });
       if (s.status === 404 || s.status === 410) return gone(s.status);
       if (s.ok) { state = await s.json(); render(); }
-      if (state.status === 'done' && state.reason === 'session_closed') {
-        $('note').textContent = 'The browser session has closed.'; $('note').hidden = false;
+      if (ended()) return finish();
+      const f = await fetch(base + '/frame.jpg', { cache: 'no-store' });
+      if (f.status === 410) return gone(410);
+      if (f.status === 404) return finish();
+      if (f.ok) {
+        const url = URL.createObjectURL(await f.blob());
+        const img = $('frame');
+        img.onload = () => {
+          if (lastObjectUrl && lastObjectUrl !== url) URL.revokeObjectURL(lastObjectUrl);
+          lastObjectUrl = url;
+          if (img.naturalWidth && img.naturalHeight) {
+            $('box').style.setProperty('--frame-ar', img.naturalWidth + ' / ' + img.naturalHeight);
+          }
+        };
+        img.src = url;
+        img.hidden = false;
+        haveFrame = true;
+        fails = 0;
+        $('note').hidden = true;
       } else {
-        const f = await fetch(base + '/frame.jpg', { cache: 'no-store' });
-        if (f.status === 410) return gone(410);
-        if (f.ok) {
-          const url = URL.createObjectURL(await f.blob());
-          const img = $('frame');
-          img.onload = () => { if (lastObjectUrl && lastObjectUrl !== url) URL.revokeObjectURL(lastObjectUrl); lastObjectUrl = url; };
-          img.src = url;
-          img.hidden = false;
-          $('note').hidden = true;
-        }
+        failed(f.status);
       }
-    } catch (e) { /* offline for a moment: keep the last frame */ }
+    } catch (e) {
+      failed(0); // offline for a moment: keep the last frame
+    }
     schedule();
   }
   function schedule() { clearTimeout(timer); if (!stopped && !document.hidden) timer = setTimeout(tick, 1500); }
@@ -116,11 +174,13 @@ const SCRIPT = `
   });
 
   render();
-  tick();
+  if (ended()) finish(); else tick();
 })();
 `;
 
-export function renderPage({ id, state, takeoverUrl, nonce }) {
+export function renderPage({ id, state, takeoverUrl, nonce, frameWidth = 480, frameHeight = 950 }) {
+    const fw = Math.max(1, Math.round(Number(frameWidth) || 480));
+    const fh = Math.max(1, Math.round(Number(frameHeight) || 950));
     return `<!doctype html>
 <html lang="en">
 <head>
@@ -129,7 +189,7 @@ export function renderPage({ id, state, takeoverUrl, nonce }) {
 <meta name="color-scheme" content="light dark">
 <meta name="referrer" content="no-referrer">
 <title>${esc(state.title || 'Live browser')}</title>
-<style nonce="${nonce}">${STYLE}</style>
+<style nonce="${nonce}">${style({ frameWidth: fw, frameHeight: fh })}</style>
 </head>
 <body>
 <header>
@@ -139,8 +199,10 @@ export function renderPage({ id, state, takeoverUrl, nonce }) {
 </header>
 <div id="reason" hidden></div>
 <main>
-  <img id="frame" alt="Live view of the agent's browser" hidden>
-  <div id="note">Loading the live view…</div>
+  <div id="box">
+    <img id="frame" alt="Live view of the agent's browser" hidden>
+    <div id="note" role="status">Loading the live view…</div>
+  </div>
 </main>
 <footer>
   <a id="take" class="btn" href="${esc(takeoverUrl)}" rel="noreferrer">Take control</a>
@@ -154,7 +216,7 @@ export function renderPage({ id, state, takeoverUrl, nonce }) {
 
 export function renderGone(message) {
     return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark"><title>Live browser</title></head>
-<body style="font:16px -apple-system,system-ui,sans-serif;padding:40px 16px;text-align:center">${esc(message)}</body></html>`;
+<body style="margin:0;font:16px -apple-system,system-ui,sans-serif;padding:40px 16px;text-align:center;overflow-wrap:anywhere">${esc(message)}</body></html>`;
 }

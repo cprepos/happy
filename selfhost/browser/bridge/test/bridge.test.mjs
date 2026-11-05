@@ -197,6 +197,63 @@ test('a deleted session (status closed) is refused and reported closed', async (
     assert.deepEqual([s.status, s.reason], ['done', 'session_closed']);
 });
 
+for (const status of ['interrupted', 'failed', 'closed', 'ended']) {
+    test(`a session auto-browser reports ${status} turns the link done/session_closed in /state`, async () => {
+        const { id } = await link();
+        assert.equal((await (await fetch(`${base}/live/${id}/state`)).json()).status, 'watching');
+        client.sessions.get('sess1').status = status;
+        clock.t += 6000; // past the 5 s status re-check
+        const s = await (await fetch(`${base}/live/${id}/state`)).json();
+        assert.deepEqual([s.status, s.reason], ['done', 'session_closed']);
+        assert.equal((await api('/api/links', { session_id: 'sess1' })).status, 404, 'no new link for an ended session');
+    });
+}
+
+test('a 404 from shared observe marks the link done without waiting on getSession', async () => {
+    const { id } = await link();
+    // As after a controller restart: the record still reads as interrupted, observe 404s.
+    client.observeShared = async () => { throw Object.assign(new Error('Unknown session'), { status: 404 }); };
+    client.getSession = async () => new Promise(() => {}); // never answers
+    const f = await fetch(`${base}/live/${id}/frame.jpg`);
+    assert.equal(f.status, 404);
+    assert.deepEqual(await f.json(), { error: 'session_closed' });
+    const rec = store.lookup(id).rec;
+    assert.deepEqual([rec.status, rec.reason], ['done', 'session_closed']);
+});
+
+test('a pruned frame file on a live session is a 502, and the link stays watching', async () => {
+    const { id } = await link();
+    client.fetchFrame = async () => { throw Object.assign(new Error('Not found'), { status: 404 }); };
+    const f = await fetch(`${base}/live/${id}/frame.jpg`);
+    assert.equal(f.status, 502);
+    assert.equal(store.lookup(id).rec.status, 'watching');
+});
+
+test('page fits a 320-430 px phone: viewport meta, no fixed widths, frame box sized to the screen', async () => {
+    const { id } = await link();
+    const html = await (await fetch(`${base}/live/${id}`)).text();
+    const viewport = html.match(/<meta name="viewport" content="([^"]+)">/)?.[1] ?? '';
+    for (const part of ['width=device-width', 'initial-scale=1', 'viewport-fit=cover']) assert.ok(viewport.includes(part), part);
+    const css = html.match(/<style[^>]*>([\s\S]*?)<\/style>/)[1];
+    assert.match(css, /box-sizing: border-box/);
+    assert.match(css, /safe-area-inset-left/);
+    assert.match(css, /safe-area-inset-right/);
+    assert.match(css, /object-fit: contain/);
+    assert.match(css, /aspect-ratio: var\(--frame-ar\)/);
+    assert.match(css, /--frame-ar: 480 \/ 950/);
+    assert.match(css, /overflow-wrap: anywhere/);
+    // width / min-width / flex-basis in px above the narrowest phone would push the page wider.
+    for (const [, prop, px] of css.matchAll(/(?<![-\w])((?:min-)?width|flex-basis)\s*:\s*(\d+)px/g)) {
+        assert.ok(Number(px) <= 320, `${prop}: ${px}px is wider than a 320 px phone`);
+    }
+    // The placeholder sits inside the frame box, not beside it.
+    assert.match(html, /<div id="box">\s*<img id="frame"[^>]*>\s*<div id="note"[^>]*>Loading the live view…<\/div>\s*<\/div>/);
+    // The page script handles an ended session and repeated frame failures.
+    assert.match(html, /This live browser has ended/);
+    assert.match(html, /f\.status === 404\) return finish\(\)/);
+    assert.match(html, /MAX_FAILS = \d+/);
+});
+
 test('links survive a restart through the store file', async () => {
     const { id } = await link();
     store.flush();

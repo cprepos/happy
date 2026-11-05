@@ -20,6 +20,8 @@ const bridge = createBridge({
         novncUrl: cfg.novncUrl,
         vncPassword: readSecret(cfg.files.vncPassword),
         bridgeToken: readSecret(cfg.files.bridgeToken),
+        frameWidth: cfg.frameWidth,
+        frameHeight: cfg.frameHeight,
         // The phone opens http://localhost:<port>; the MCP server and probes use 127.0.0.1.
         allowedHosts: [`localhost:${cfg.port}`, `127.0.0.1:${cfg.port}`, `[::1]:${cfg.port}`],
     },

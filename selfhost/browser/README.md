@@ -97,7 +97,18 @@ Phone routes, opened in the iOS app's in-app browser through the workspace proxy
   One link per auto-browser session, reused. A link expires after 12 h without
   being viewed (`BRIDGE_LINK_IDLE_HOURS`). Unknown id → 404, expired → 410 (for 7
   days, then 404).
-- When the session is deleted, state becomes `done` with reason `session_closed`.
+- When the session has ended, state becomes `done` with reason `session_closed`.
+  Ended means auto-browser reports it `closed` (deleted), `interrupted` (the
+  controller restarted under it), `failed` or `ended`, or its shared observe
+  answers 404; `/state` re-checks the session at most every 5 s, and a frame 404
+  marks the link done at once. The page then says "This live browser has ended"
+  and stops polling. A 404 for the frame *file* of a live session (pruned between
+  observe and fetch) is a 502, not an end. After 4 failed frames in a row the page
+  shows the error in the frame box and keeps retrying.
+- The page fits 320-430 px phones: no fixed widths, safe-area insets, long
+  titles ellipsized and URLs wrapped, and the frame box sized to the browser
+  viewport (`BRIDGE_FRAME_WIDTH`/`BRIDGE_FRAME_HEIGHT`, from `BROWSER_WIDTH` and
+  `BROWSER_VIEWPORT_HEIGHT`) with the image `object-fit: contain`.
 - Private routes for the MCP server, `POST /api/{links,takeover,wait,release}`,
   need `Authorization: Bearer <bridge-token>`. The bridge refuses any Host header
   other than `localhost`/`127.0.0.1`/`[::1]` on its port (421).

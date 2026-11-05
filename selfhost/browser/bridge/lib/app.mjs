@@ -25,8 +25,12 @@ function sameSecret(a, b) {
     return timingSafeEqual(ha, hb);
 }
 
-// A deleted session stays readable with status "closed".
-const isClosed = (s) => s?.status === 'closed';
+// auto-browser's SessionStatus is active | closed | interrupted | failed. A deleted
+// session stays readable as "closed"; a controller restart leaves every session that
+// was active as "interrupted", which no longer has a browser behind it. Only
+// "active" is live; "ended" is accepted too in case a later controller names it so.
+export const ENDED_STATUSES = new Set(['closed', 'interrupted', 'failed', 'ended']);
+const isEnded = (s) => ENDED_STATUSES.has(s?.status);
 
 export function stateOf(rec) {
     return { status: rec.status, reason: rec.reason ?? null, url: rec.url ?? null, title: rec.title ?? null };
@@ -41,6 +45,8 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         frameCacheMs = 1000,
         shareTtlMinutes = 1440,
         allowedHosts = null, // e.g. ['localhost:6090', '127.0.0.1:6090']; null admits any
+        frameWidth = 480,
+        frameHeight = 950,
     } = config;
     if (!bridgeToken) throw new Error('bridgeToken is required');
 
@@ -86,7 +92,14 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
             observed = await client.observeShared(await shareToken(rec, { fresh: true }));
         }
         if (!observed?.screenshot_url) throw Object.assign(new Error('no frame'), { status: 502 });
-        const image = await client.fetchFrame(observed.screenshot_url);
+        let image;
+        try {
+            image = await client.fetchFrame(observed.screenshot_url);
+        } catch (err) {
+            // The session answered observe, so it is live: a 404 here is a frame file the
+            // controller already pruned, not a closed session. Try again next poll.
+            throw Object.assign(new Error('frame file gone'), { status: 502 });
+        }
         store.update(rec, { url: observed.url ?? rec.url, title: observed.title ?? rec.title });
         return { at: now(), ...image };
     }
@@ -98,13 +111,10 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
             r.inflight = captureFrame(rec)
                 .then((f) => (r.frame = f))
                 .catch((err) => {
-                    // The share route says 404 for a closed session; confirm before marking it done.
-                    if (err.status === 404) {
-                        client.getSession(rec.sessionId).then(
-                            (s) => { if (isClosed(s)) sessionGone(rec); },
-                            (e) => { if (e.status === 404) sessionGone(rec); },
-                        );
-                    }
+                    // Shared observe (or share minting) says 404 only when the controller has
+                    // no live browser for the session: closed, interrupted by a restart, or
+                    // unknown. Mark the link done now so /state stops saying watching.
+                    if (err.status === 404) sessionGone(rec);
                     throw err;
                 })
                 .finally(() => { r.inflight = null; });
@@ -112,14 +122,17 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         return r.inflight;
     }
 
+    // /state polls this: at most every 5 s it asks auto-browser whether the session is
+    // still live (and fills url/title the first time), so an interrupted or closed
+    // session turns into done even when nobody is fetching frames.
     async function refreshMeta(rec) {
         const r = rt(rec.id);
-        if (rec.url || now() - r.metaAt < 5000) return;
+        if ((rec.status === 'done' && rec.reason === 'session_closed') || now() - r.metaAt < 5000) return;
         r.metaAt = now();
         try {
             const s = await client.getSession(rec.sessionId);
-            if (isClosed(s)) return sessionGone(rec);
-            store.update(rec, { url: s.current_url ?? null, title: s.title ?? null });
+            if (isEnded(s)) return sessionGone(rec);
+            if (!rec.url) store.update(rec, { url: s.current_url ?? null, title: s.title ?? null });
         } catch (err) {
             if (err.status === 404) sessionGone(rec);
         }
@@ -183,7 +196,7 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
             if (err.status === 404) throw Object.assign(new Error('unknown auto-browser session'), { status: 404 });
             throw Object.assign(new Error('auto-browser unavailable'), { status: 502 });
         }
-        if (isClosed(s)) throw Object.assign(new Error('auto-browser session is closed'), { status: 404 });
+        if (isEnded(s)) throw Object.assign(new Error(`auto-browser session is ${s.status}`), { status: 404 });
         return s;
     }
 
@@ -263,7 +276,7 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
             }
         }
         const nonce = randomBytes(12).toString('base64');
-        return send(res, 200, renderPage({ id: rec.id, state: stateOf(rec), takeoverUrl, nonce }), {
+        return send(res, 200, renderPage({ id: rec.id, state: stateOf(rec), takeoverUrl, nonce, frameWidth, frameHeight }), {
             'Content-Type': 'text/html; charset=utf-8',
             'Content-Security-Policy': `default-src 'none'; img-src 'self' blob:; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'`,
         });

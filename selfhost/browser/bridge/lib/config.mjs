@@ -24,6 +24,10 @@ export function loadConfig(env = process.env) {
         novncUrl: env.NOVNC_URL || 'http://localhost:6080/vnc.html?autoconnect=true&resize=remote',
         storePath: env.BRIDGE_STORE || join(home, 'bridge/links.json'),
         idleMs: Number(env.BRIDGE_LINK_IDLE_HOURS || 12) * 3600_000,
+        // The frame's shape (the browser viewport auto-browser screenshots), so the
+        // phone page can size the frame box before the first frame arrives.
+        frameWidth: Number(env.BRIDGE_FRAME_WIDTH) || 480,
+        frameHeight: Number(env.BRIDGE_FRAME_HEIGHT) || 950,
         files: {
             apiToken: join(secrets, 'api-token'),
             vncPassword: join(secrets, 'vnc-password'),

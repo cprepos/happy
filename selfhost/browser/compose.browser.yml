@@ -167,6 +167,9 @@ services:
       AUTO_BROWSER_URL: http://127.0.0.1:${API_PORT:-8010}
       NOVNC_URL: http://localhost:${NOVNC_PORT:-6080}/vnc.html?autoconnect=true&resize=remote
       BRIDGE_LINK_IDLE_HOURS: ${BRIDGE_LINK_IDLE_HOURS:-12}
+      # The shape of a frame: the controller's default viewport, as set above.
+      BRIDGE_FRAME_WIDTH: ${BROWSER_WIDTH:-480}
+      BRIDGE_FRAME_HEIGHT: ${BROWSER_VIEWPORT_HEIGHT:-950}
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:'+(process.env.BRIDGE_PORT||6090)+'/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
       interval: 10s
