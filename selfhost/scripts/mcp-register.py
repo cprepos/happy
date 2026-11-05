@@ -13,6 +13,7 @@ Servers:
 
 Files (each one that exists, or that its harness reads, is edited in place):
   ~/.codex/config.toml                              [mcp_servers.<name>], env_vars forwards HAPPY_SESSION_ID
+                                                    and HAPPY_FORKED_FROM_SESSION_ID
   ~/.config/opencode/opencode.json                  "mcp": {type local, command [...]}
   ~/.gemini/settings.json                           "mcpServers" (Gemini CLI)
   ~/.gemini/config/mcp_config.json                  "mcpServers" (Antigravity / agy)
@@ -25,7 +26,8 @@ Before a file is changed its original is copied to
 /home/prep/happy/trash/<ts>_mcp-configs/. Everything else in each file is kept.
 An entry already pointing at the same server script, under any name, is left
 alone. What was added is recorded in ~/.local/share/happy-mcp-register/state.json
-so that unregister removes only that.
+so that unregister removes only that. In an entry recorded there (and only
+there), names missing from its env_vars list are added on the next register.
 """
 
 import argparse
@@ -287,6 +289,18 @@ def toml_parse(text):
     return toml.loads(text)
 
 
+ENV_VARS_RE = re.compile(r"^env_vars\s*=\s*(\[.*\])\s*$")
+
+
+def env_vars_of(lines):
+    """The names in an `env_vars = [...]` line among `lines`, or None."""
+    for line in lines:
+        m = ENV_VARS_RE.match(line.strip())
+        if m:
+            return json.loads(m.group(1))
+    return None
+
+
 class TomlTarget:
     def __init__(self, path, node, extra):
         self.path = os.path.expanduser(path)
@@ -302,11 +316,40 @@ class TomlTarget:
         lines.append(MARK_END.format(name=name))
         return "\n".join(lines) + "\n"
 
+    def own_block_re(self, name):
+        return re.compile("^" + re.escape(MARK_BEGIN.format(name=name)) + r"\n.*?^" + re.escape(MARK_END.format(name=name)) + "$", re.S | re.M)
+
+    def update_env_vars(self, text, names, report):
+        """Adds the env_vars names this script now wants to the blocks it wrote
+        itself (between its markers, for names in its state file). Every other
+        line, and every entry it did not write, is left as it is."""
+        for name, script, env in servers():
+            want = env_vars_of(self.extra(name, env))
+            if not want or name not in names:
+                continue
+            m = self.own_block_re(name).search(text)
+            if not m:
+                continue
+            lines = m.group(0).split("\n")
+            have = env_vars_of(lines)
+            missing = [v for v in want if v not in (have or [])]
+            if not missing:
+                continue
+            line = "env_vars = [%s]" % ", ".join(toml_str(v) for v in (have or []) + missing)
+            if have is None:
+                lines.insert(len(lines) - 1, line)
+            else:
+                lines = [line if ENV_VARS_RE.match(x.strip()) else x for x in lines]
+            text = text[:m.start()] + "\n".join(lines) + text[m.end():]
+            report.append("%s: %s env_vars added %s" % (self.path, name, ", ".join(missing)))
+        return text
+
     def register(self, state, backup, dry, report):
         existed = os.path.exists(self.path)
         text = read_text(self.path)
         if text is None:
             text = ""
+        updated = self.update_env_vars(text, JsonTarget.entry(state, self.path)["names"], report)
         blocks = toml_blocks(text)
         add = []
         for name, script, env in servers():
@@ -318,12 +361,13 @@ class TomlTarget:
                 report.append("%s: an unrelated [mcp_servers.%s] exists, left alone (not added)" % (self.path, name))
                 continue
             add.append((name, self.block(name, script, env)))
-        if not add:
+        if not add and updated == text:
             return
-        new = text
-        if new and not new.endswith("\n"):
-            new += "\n"
-        new += "\n" + "\n".join(b for _, b in add)
+        new = updated
+        if add:
+            if new and not new.endswith("\n"):
+                new += "\n"
+            new += "\n" + "\n".join(b for _, b in add)
         if toml_parse("") is None:
             report.append("%s: no TOML parser here (tomllib/tomli); written unchecked" % self.path)
         else:
@@ -331,9 +375,10 @@ class TomlTarget:
         if existed:
             report.append("%s: backed up to %s" % (self.path, backup.save(self.path)))
         write_text(self.path, new, dry)
-        prev = JsonTarget.entry(state, self.path)["names"]
-        state[self.path] = {"names": sorted(set(prev) | {n for n, _ in add}), "created_key": False, "was_empty": False}
-        report.append("%s: added %s" % (self.path, ", ".join(n for n, _ in add)))
+        if add:
+            prev = JsonTarget.entry(state, self.path)["names"]
+            state[self.path] = {"names": sorted(set(prev) | {n for n, _ in add}), "created_key": False, "was_empty": False}
+            report.append("%s: added %s" % (self.path, ", ".join(n for n, _ in add)))
 
     def unregister(self, state, backup, dry, report):
         text = read_text(self.path)
@@ -475,8 +520,10 @@ class RemoteTarget(JsonTarget):
 
 def codex_extra(name, env):
     # Codex hands MCP servers only a short list of variables; forward the Happy
-    # session so the bridge (and the vault) know which chat they serve.
-    return ['env_vars = ["HAPPY_SESSION_ID"]', "startup_timeout_sec = 20", "tool_timeout_sec = 600"]
+    # session so the bridge (and the vault) know which chat they serve, and the
+    # parent session of a fork or side chat so its browser starts with the
+    # parent's login.
+    return ['env_vars = ["HAPPY_SESSION_ID", "HAPPY_FORKED_FROM_SESSION_ID"]', "startup_timeout_sec = 20", "tool_timeout_sec = 600"]
 
 
 def agent_extra(name, env):

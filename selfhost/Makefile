@@ -46,7 +46,11 @@ logs:
 # DRY=1 says what would change. See scripts/mcp-register.py.
 MCP_REGISTER = python3 $(CURDIR)/scripts/mcp-register.py $(if $(DRY),--dry-run) $(if $(NO_REMOTE),--no-remote)
 
-.PHONY: mcp-register mcp-unregister mcp-check
+.PHONY: mcp-register mcp-unregister mcp-check mcp-register-test
+# Its tests run it against a scratch home folder, never the real one.
+mcp-register-test:
+	cd $(CURDIR)/scripts && python3 -m unittest -v test_mcp_register
+
 mcp-register:
 	$(MCP_REGISTER) register
 
