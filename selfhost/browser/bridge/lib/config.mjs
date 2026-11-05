@@ -16,6 +16,10 @@ export function loadConfig(env = process.env) {
         bridgeUrl: env.BRIDGE_URL || `http://127.0.0.1:${port}`,
         autoBrowserUrl: env.AUTO_BROWSER_URL || 'http://127.0.0.1:8010',
         autoBrowserMcpUrl: env.AUTO_BROWSER_MCP_URL || `${(env.AUTO_BROWSER_URL || 'http://127.0.0.1:8010').replace(/\/+$/, '')}/mcp`,
+        // The controller's port, which the secret filler is told so it types into the same browser.
+        autoBrowserPort: Number(new URL(env.AUTO_BROWSER_URL || 'http://127.0.0.1:8010').port || 80),
+        // The secret filler (selfhost/browser/filler); off unless files.fillerToken exists.
+        fillerUrl: env.FILLER_URL || 'http://127.0.0.1:6091',
         // Per-call limit for a forwarded auto-browser tool call.
         passthroughTimeoutS: Number(env.BRIDGE_PASSTHROUGH_TIMEOUT_S || 120),
         // Upper bound for browser_wait_for_human's timeout_s. Keep it below the
@@ -32,6 +36,7 @@ export function loadConfig(env = process.env) {
             apiToken: join(secrets, 'api-token'),
             vncPassword: join(secrets, 'vnc-password'),
             bridgeToken: join(secrets, 'bridge-token'),
+            fillerToken: join(secrets, 'filler-client-token'),
         },
     };
 }

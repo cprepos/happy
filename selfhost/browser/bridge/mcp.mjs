@@ -10,6 +10,7 @@ import { appendFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { loadConfig, readSecret } from './lib/config.mjs';
 import { createUpstreamMcp, localToolName } from './lib/upstream.mjs';
+import { createSecretGate, SECRET_TOOL_NAMES } from './lib/secrets.mjs';
 
 const PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const SERVER_INFO = { name: 'happy-browser-bridge', version: '1.2.0' };
@@ -57,7 +58,7 @@ export function ownTools(waitMaxS = 3600) {
     ];
 }
 export const TOOLS = ownTools();
-const OWN_NAMES = new Set(TOOLS.map((t) => t.name));
+const OWN_NAMES = new Set([...TOOLS.map((t) => t.name), ...SECRET_TOOL_NAMES]);
 
 const HELD = new Set(['user', 'takeover']);
 const isUserEnded = (s) => s?.status === 'done' && s?.reason === 'user_ended';
@@ -83,7 +84,6 @@ export function sessionOf(args, r) {
     }
     return null;
 }
-
 
 // auto-browser tools that change the page. While the user holds the browser (they took control,
 // or the agent asked for them) these are refused; reading tools still go through.
@@ -172,7 +172,7 @@ export function createMetaProbe(env = process.env, sink = null) {
     };
 }
 
-export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fetch, pollS = 60, upstream = null, waitMaxS = 3600, log = () => {}, retryMs = 30_000, metaProbe = null }) {
+export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fetch, pollS = 60, upstream = null, waitMaxS = 3600, log = () => {}, retryMs = 30_000, metaProbe = null, secrets = null }) {
     const inflight = new Map(); // request id -> AbortController
     const tools = ownTools(waitMaxS);
     let mapped = { tools: [], byLocal: new Map(), rename: (t) => t };
@@ -212,6 +212,8 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
             if (!upstreamOk) return result(id, toolResult(`Error: ${name} is an auto-browser tool, but auto-browser is not reachable right now. Is the browser stack up?`, true));
             return error(id, -32602, `unknown tool ${name}`);
         }
+        const gate = await secretsBefore(id, name, args, signal);
+        if (!gate) return;
         // One state check per call: a page-changing tool asks whether the user holds the browser
         // (recording the action), any other tool on a session only whether the user ended it.
         const state = MUTATING_TOOLS.has(name) ? await guard(name, args, signal) : await sessionState(args, signal);
@@ -223,13 +225,34 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
             r = await upstream.callTool(remote, args, meta, { signal });
         } catch (err) {
             if (signal.aborted) return;
-            return result(id, toolResult(`Error: ${err.message}`, true));
+            r = { thrown: toolResult(`Error: ${err.message}`, true) };
         }
         if (signal.aborted) return;
-        // Verbatim, under our request id.
-        if (r.error) return write({ jsonrpc: '2.0', id, error: r.error });
-        return result(id, await withLiveLink(name, args, r.result, signal));
+        try {
+            if (r.thrown) return result(id, await scrubOut(gate, r.thrown, signal));
+            // Verbatim, under our request id.
+            if (r.error) return write({ jsonrpc: '2.0', id, error: await scrubOut(gate, r.error, signal) });
+            return result(id, await scrubOut(gate, await withLiveLink(name, args, r.result, signal), signal));
+        } catch (err) {
+            if (!signal.aborted) return result(id, toolResult(`Error: ${err.message}`, true));
+        }
     }
+
+    // The secret filler's gate (lib/secrets.mjs) around a passed-through call. Writes the refusal
+    // and returns null when the call may not go ahead; the filler being down refuses too.
+    async function secretsBefore(id, name, args, signal) {
+        if (!secrets) return { scrub: false };
+        let g;
+        try { g = await secrets.before(name, args, signal); } catch (err) {
+            if (!signal.aborted) result(id, toolResult(`Error: ${err.message}`, true));
+            return null;
+        }
+        if (signal.aborted) return null;
+        if (g.refuse) { result(id, toolResult(g.refuse, true)); return null; }
+        return g;
+    }
+    // A result (or error) with every filled secret replaced by [secret:<name>]. Throws if the filler can't scrub.
+    const scrubOut = async (gate, value, signal) => (gate.scrub ? secrets.scrub(value, signal) : value);
 
     // Every result about a browser session carries its live link, so the link reaches the chat even
     // when the agent never calls browser_live_link. Asking for it creates the link the first time.
@@ -262,7 +285,6 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
         try { return await bridge('/api/state', { session_id: sid }, signal); } catch { return null; }
     }
     const endedByUser = async (args, signal) => isUserEnded(await sessionState(args, signal));
-
 
     // Asks the bridge whether the user holds this session's browser, recording the action as the
     // live view's "last action" when they don't. A bridge that can't answer doesn't block browsing:
@@ -374,7 +396,7 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
                 return isRequest && result(id, {});
             case 'tools/list':
                 await refreshUpstream();
-                return result(id, { tools: [...tools, ...mapped.tools] });
+                return result(id, { tools: [...tools, ...(secrets ? secrets.tools() : []), ...mapped.tools] });
             case 'tools/call': {
                 const name = params?.name;
                 const args = params?.arguments || {};
@@ -388,6 +410,7 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
                     let out;
                     if (name === 'browser_live_link') out = await liveLink(args, ac.signal);
                     else if (name === 'browser_wait_for_human') out = await waitForHuman(args, ac.signal, progress);
+                    else if (secrets && secrets.isOwn(name)) out = await secrets.callOwn(name, args, ac.signal);
                     else if (upstream) return await passThrough(id, name, args, params?._meta, ac.signal);
                     else return error(id, -32602, `unknown tool ${name}`);
                     if (!ac.signal.aborted) result(id, toolResult(out));
@@ -440,6 +463,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         waitMaxS: cfg.waitMaxS,
         log,
         metaProbe: createMetaProbe(),
+        secrets: createSecretGate({
+            fillerUrl: cfg.fillerUrl,
+            tokenPath: cfg.files.fillerToken,
+            chat: process.env.HAPPY_SESSION_ID || null,
+            controllerPort: () => cfg.autoBrowserPort,
+        }),
     });
     const rl = createInterface({ input: process.stdin });
     rl.on('line', (l) => server.onLine(l));

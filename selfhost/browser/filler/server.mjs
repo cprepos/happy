@@ -26,7 +26,7 @@ import { controllerSet, parsePorts } from './lib/controller.mjs';
 import { createVault } from './lib/vault.mjs';
 import { createFiller, FillError } from './lib/fill.mjs';
 
-const MAX_BODY = 4 * 1024 * 1024;
+const MAX_BODY = 32 * 1024 * 1024;
 const log = (msg) => process.stderr.write(`secret-filler: ${msg}\n`);
 
 /** Reload the policy when its mtime changes; while the file is bad, every call fails closed. */
