@@ -15,6 +15,12 @@ export function loadConfig(env = process.env) {
         publicBase: env.BRIDGE_PUBLIC_BASE || `http://localhost:${port}`,
         bridgeUrl: env.BRIDGE_URL || `http://127.0.0.1:${port}`,
         autoBrowserUrl: env.AUTO_BROWSER_URL || 'http://127.0.0.1:8010',
+        autoBrowserMcpUrl: env.AUTO_BROWSER_MCP_URL || `${(env.AUTO_BROWSER_URL || 'http://127.0.0.1:8010').replace(/\/+$/, '')}/mcp`,
+        // Per-call limit for a forwarded auto-browser tool call.
+        passthroughTimeoutS: Number(env.BRIDGE_PASSTHROUGH_TIMEOUT_S || 120),
+        // Upper bound for browser_wait_for_human's timeout_s. Keep it below the
+        // client's tool timeout (Happy Agent allows at most 600 s).
+        waitMaxS: Math.max(5, Math.min(3600, Number(env.BRIDGE_WAIT_MAX_S || 3600))),
         novncUrl: env.NOVNC_URL || 'http://localhost:6080/vnc.html?autoconnect=true&resize=remote',
         storePath: env.BRIDGE_STORE || join(home, 'bridge/links.json'),
         idleMs: Number(env.BRIDGE_LINK_IDLE_HOURS || 12) * 3600_000,

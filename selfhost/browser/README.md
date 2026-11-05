@@ -40,7 +40,7 @@ make browser-bridge-smoke   # end to end on the running stack; makes and deletes
   - `auth-state-key`: a Fernet key. Saved logins are always encrypted (`REQUIRE_AUTH_STATE_ENCRYPTION=true`);
   - `share-token-secret`;
   - `browser.env`: the compose env-file, rebuilt from the files above;
-  - `happy-agent.env`: `AUTO_BROWSER_TOKEN=…` for the Happy Agent container.
+  - `happy-agent.env`: `AUTO_BROWSER_TOKEN=…`, for an MCP client that connects to `/mcp` directly. Happy Agent does not use it: it goes through the bridge's pass-through.
 - `bridge/links.json` (600): live links (id, session, status, url, title, timestamps). No tokens.
 - `data/`: the controller's `/data`, holding artifacts, audit, sessions and auth.
   - `data/browser-profile` and `data/downloads` belong to browser-node's uid 10001 and must stay mode 755.
@@ -115,16 +115,45 @@ regenerates it and restarts all three services; the bridge reads it at startup.
 **DNS.** The LAN resolver (192.168.2.1) answers NXDOMAIN for `example.com`, so
 the smoke test opens `news.ycombinator.com` (`SMOKE_URL=` to change).
 
-MCP tools (`bridge/mcp.mjs`, stdio; it holds only the bridge token):
+MCP tools (`bridge/mcp.mjs`, stdio). Its own two tools use the bridge token; the
+auto-browser tools it passes through use the controller token, which it reads
+from `secrets/api-token` itself, so the client's environment and config hold no
+secret.
 
 - `browser_live_link(session_id)` → `{link: "http://localhost:6090/live/<id>", ...}`.
-  The description tells the agent to post the link in chat when it starts browsing.
-- `browser_wait_for_human(session_id, reason, timeout_s=900)` asks auto-browser for a
+  The description tells the agent to call it right after creating a session and
+  post the link in chat.
+- `browser_wait_for_human(session_id, reason, timeout_s)` asks auto-browser for a
   takeover, sets the link to `takeover` ("Needs you"), and sends
   `notifications/progress` with the link (when the client passes a progress
   token). It then blocks until the user taps Done → `{status:"done"}`, or until
   the timeout → `{status:"timeout"}`, after which the link goes back to `watching`.
-  Set the client's tool timeout above `timeout_s`.
+  `timeout_s` defaults to 900 and is capped at `BRIDGE_WAIT_MAX_S` (default 3600);
+  keep the cap below the client's tool timeout.
+- **Pass-through.** Every auto-browser MCP tool, listed from
+  `http://127.0.0.1:8010/mcp` (Streamable HTTP; `AUTO_BROWSER_MCP_URL` to change)
+  on each `tools/list` and appended after the two above. auto-browser names its
+  tools with dots (`browser.observe`), which model APIs refuse in tool names
+  (`^[a-zA-Z0-9_-]{1,64}$`), so every other character is mapped to `_`
+  (`browser_observe`) in the name and in the descriptions, and mapped back when
+  the call is forwarded. A name that would collide with one of the bridge's own
+  tools is skipped. `browser_create_session`, `browser_observe` and
+  `browser_request_human_takeover` get one sentence appended that points at
+  `browser_live_link` / `browser_wait_for_human`.
+  - A call is forwarded with its arguments and `_meta` (so a progress token
+    reaches auto-browser, and its progress comes back), and auto-browser's result
+    or JSON-RPC error is returned verbatim. Limit per call:
+    `BRIDGE_PASSTHROUGH_TIMEOUT_S` (default 120).
+  - The upstream MCP session (`Mcp-Session-Id`) is opened on first use; JSON and
+    SSE responses are both read. If the controller restarted and no longer knows
+    the session (404, or 400 about the session), a new one is opened and the
+    call retried once.
+  - auto-browser down: `tools/list` returns the bridge's own two tools, a call to
+    an auto-browser tool returns a tool error ("not reachable ... Is the browser
+    stack up?"), and the server retries in the background every 30 s and sends
+    `notifications/tools/list_changed` once the tools are back. It never exits
+    over it.
+  - `BRIDGE_PASSTHROUGH=0` turns pass-through off.
 
 ## Claude Code
 
@@ -136,63 +165,37 @@ claude mcp add --transport http --scope user auto-browser http://127.0.0.1:8010/
 claude mcp add --scope user happy-browser-bridge -- node /home/prep/happy/selfhost/browser/bridge/mcp.mjs
 ```
 
-## Happy Agent (prepared, needs your go-ahead)
+With `auto-browser` registered directly, the bridge's pass-through lists the
+same tools a second time. To keep only its own two, register the bridge with
+`-e BRIDGE_PASSTHROUGH=0`.
 
-The Happy Agent daemon runs in the `happy-agent` container with host networking,
-so `127.0.0.1:8010` is the same port there. Its `mcp.toml`
-(`~/.local/share/happy-agent/happy/config/mcp.toml`) hot-reloads, so adding an
-entry takes effect at once. The entry below names an environment variable that
-the running container does not have yet. It therefore waits for a container
-recreate, which goes together with the pending seccomp decision.
+## Happy Agent
 
-Steps, after approval:
+The Happy Agent daemon runs in the `happy-agent` container: host networking (so
+`127.0.0.1:8010` and `:6090` are the same ports there), uid 1000, `/home/prep`
+mounted read-write, and the host's node mounted read-only at
+`/usr/local/bin/node` (node 20). It gets one stdio entry and no auto-browser
+token: the bridge's MCP server reads both tokens from their 600 files, which uid
+1000 can read in the container, and passes auto-browser's tools through. So the
+container is not recreated and there is no `url = .../mcp` entry for
+auto-browser.
 
-1. Back up and append to `mcp.toml`:
+`~/.local/share/happy-agent/happy/config/mcp.toml` (back it up to `~/trash/<ts>_mcp-toml/` first):
 
-   ```
-   TS=$(date +%Y%m%d_%H%M%S); mkdir -p ~/trash/${TS}_happy-agent-mcp-toml
-   cp -p ~/.local/share/happy-agent/happy/config/mcp.toml ~/trash/${TS}_happy-agent-mcp-toml/
-   ```
+```toml
+[mcp_servers.browser]
+command = "/usr/local/bin/node"
+args = ["/home/prep/happy/selfhost/browser/bridge/mcp.mjs"]
+env = { HAPPY_BROWSER_HOME = "/home/prep/.local/share/happy-browser", BRIDGE_WAIT_MAX_S = "570" }
+enabled = true
+startup_timeout_sec = 20
+# Happy Agent allows at most 600; browser_wait_for_human is capped at 570 s.
+tool_timeout_sec = 600
+```
 
-   ```toml
-   [mcp_servers.auto_browser]
-   url = "http://127.0.0.1:8010/mcp"
-   bearer_token_env_var = "AUTO_BROWSER_TOKEN"
-   enabled = true
-   startup_timeout_sec = 20
-   tool_timeout_sec = 120
-
-   [mcp_servers.browser_bridge]
-   command = "node"
-   args = ["/home/prep/happy/selfhost/browser/bridge/mcp.mjs"]
-   env = { HAPPY_BROWSER_HOME = "/home/prep/.local/share/happy-browser" }
-   enabled = true
-   startup_timeout_sec = 10
-   # browser_wait_for_human blocks for up to timeout_s (default 900)
-   tool_timeout_sec = 960
-   ```
-
-   `browser_bridge` needs no secret in the environment. It reads
-   `secrets/bridge-token` itself; the container runs as uid 1000 and has
-   `/home/prep` mounted. So it would work with the running container as soon as
-   it is added. It is held back only so that both entries land together.
-
-2. Recreate the container with the token in its environment. This is the current
-   `docker inspect` config plus one `--env-file`; add whatever the seccomp decision
-   requires:
-
-   ```
-   docker stop happy-agent && docker rename happy-agent happy-agent-old
-   docker run -d --name happy-agent --network host --restart unless-stopped \
-     --user 1000:1000 -w /home/prep/.local/share/happy-agent \
-     -e HOME=/home/prep -e USER=prep \
-     -e PATH=/home/prep/.local/bin:/home/prep/.bun/bin:/home/prep/.opencode/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-     -e HAPPY_HOME_DIR=/home/prep/.local/share/happy-agent/.happy \
-     -e HAPPY_SERVER_URL=https://happy.girthbass.duckdns.org \
-     --env-file /home/prep/.local/share/happy-browser/secrets/happy-agent.env \
-     -v /etc/ssl/certs:/etc/ssl/certs:ro -v /usr/bin/node:/usr/local/bin/node:ro \
-     -v /usr/lib/node_modules:/usr/lib/node_modules:ro -v /home/prep:/home/prep \
-     -v /etc/passwd:/etc/passwd:ro -v /etc/group:/etc/group:ro \
-     happy-agent-runtime:0.4.113 /home/prep/opt/happy-agent/happy-agent-linux-x64 run
-   # keep the stopped happy-agent-old as the rollback until the new one has proved itself
-   ```
+Happy Agent caps `tool_timeout_sec` at 600, so a 15-minute wait in one call is
+not possible there. `BRIDGE_WAIT_MAX_S = "570"` keeps `browser_wait_for_human`
+inside the limit (the tool schema then reads "default 570, max 570"); on
+`{status:"timeout"}` the agent can call it again. The tools show up as
+`mcp__browser__browser_live_link`, `mcp__browser__browser_observe`, and so on.
+They run only in Auto or Full access, and in Auto every call is reviewed.

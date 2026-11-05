@@ -1,25 +1,30 @@
 #!/usr/bin/env node
 // happy-browser-bridge MCP server (stdio, newline-delimited JSON-RPC 2.0).
-// A thin client of the bridge HTTP service on 127.0.0.1:6090: it holds only
-// the bridge token (read from a 600 file), never auto-browser's token or the
-// VNC password.
+// Its own tools are a thin client of the bridge HTTP service on
+// 127.0.0.1:6090 (bridge token). It also passes auto-browser's own tools
+// through from its Streamable HTTP MCP endpoint, so a client needs only this
+// one server and no auto-browser token of its own: the token is read from its
+// 600 file here and sent only to 127.0.0.1:8010. It never holds the VNC password.
 import { createInterface } from 'node:readline';
 import { loadConfig, readSecret } from './lib/config.mjs';
+import { createUpstreamMcp, localToolName } from './lib/upstream.mjs';
 
 const PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05'];
-const SERVER_INFO = { name: 'happy-browser-bridge', version: '1.0.0' };
+const SERVER_INFO = { name: 'happy-browser-bridge', version: '1.1.0' };
 
-export const TOOLS = [
+export function ownTools(waitMaxS = 3600) {
+    const waitDefault = Math.min(900, waitMaxS);
+    return [
     {
         name: 'browser_live_link',
         description:
-            'Get the live-view link for an auto-browser session so the user can watch the browser from their phone. ' +
-            'Call this as soon as you create or start using a browser session (browser.create_session), and post the ' +
-            'returned link in chat as a bare URL on its own line, before you start browsing. The same session always ' +
-            'gets the same link. The link opens only inside the Happy app.',
+            'Get the live-view link for a browser session so the user can watch the browser from their phone. ' +
+            'ALWAYS call this right after you create a browser session (browser_create_session), or the first time you ' +
+            'use one, and post the returned link in chat as a bare URL on its own line before you start browsing. ' +
+            'The same session always gets the same link. The link opens only inside the Happy app.',
         inputSchema: {
             type: 'object',
-            properties: { session_id: { type: 'string', description: 'The auto-browser session id (from browser.create_session).' } },
+            properties: { session_id: { type: 'string', description: 'The browser session id (from browser_create_session or browser_list_sessions).' } },
             required: ['session_id'],
             additionalProperties: false,
         },
@@ -27,26 +32,106 @@ export const TOOLS = [
     {
         name: 'browser_wait_for_human',
         description:
-            'Hand the browser to the user and wait. Use this when a person must act in the page: logging in, a CAPTCHA, ' +
-            'two-factor codes, payment, or any consent you must not give yourself. It flags the live view as "Needs you", ' +
-            'and BLOCKS until the user taps Done or timeout_s passes. Do not send any browser actions for this session ' +
-            'while it waits. Tell the user what you need in `reason`. Returns {status: "done"} when the user handed control ' +
-            'back (observe the page again before continuing, since it may have changed) or {status: "timeout"}.',
+            'Hand the browser to the user and wait. Call this whenever you need the user in the page: logging in, a CAPTCHA, ' +
+            'two-factor codes, payment, a confirmation, or any consent you must not give yourself. Use it instead of ' +
+            'browser_request_human_takeover. It flags the live view as "Needs you", and BLOCKS until the user taps Done or ' +
+            'timeout_s passes. Before calling it, tell the user in chat what you need and repeat the live link. Do not send any ' +
+            'browser actions for this session while it waits. Returns {status: "done"} when the user handed control back ' +
+            '(observe the page again before continuing, since it may have changed) or {status: "timeout"} (you may ask ' +
+            'again by calling it once more).',
         inputSchema: {
             type: 'object',
             properties: {
                 session_id: { type: 'string', description: 'The auto-browser session id.' },
                 reason: { type: 'string', description: 'What you need the user to do, shown on the live view.' },
-                timeout_s: { type: 'number', description: 'How long to wait, in seconds (default 900, max 3600).', default: 900 },
+                timeout_s: { type: 'number', description: `How long to wait, in seconds (default ${waitDefault}, max ${waitMaxS}).`, default: waitDefault },
             },
             required: ['session_id', 'reason'],
             additionalProperties: false,
         },
     },
-];
+    ];
+}
+export const TOOLS = ownTools();
+const OWN_NAMES = new Set(TOOLS.map((t) => t.name));
 
-export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fetch, pollS = 60 }) {
+// What the bridge appends to a few auto-browser tool descriptions, so an agent
+// that only reads those still finds the live view.
+const HINTS = {
+    browser_create_session: ' Then call browser_live_link with the new session id and post the link in chat.',
+    browser_observe: ' If this created a new session, call browser_live_link for it and post the link in chat.',
+    browser_request_human_takeover: ' Prefer browser_wait_for_human, which also shows "Needs you" on the live view and waits for the user.',
+};
+
+/** Expose upstream tools under API-safe names, with references in descriptions renamed too. */
+export function mapUpstreamTools(tools, log = () => {}) {
+    const byLocal = new Map();
+    const renames = tools.filter((t) => typeof t?.name === 'string').map((t) => [t.name, localToolName(t.name)]).filter(([a, b]) => a !== b);
+    const rename = (text) => renames.reduce((acc, [from, to]) => acc.split(from).join(to), text);
+    const listed = [];
+    for (const t of tools) {
+        if (typeof t?.name !== 'string') continue;
+        const name = localToolName(t.name);
+        if (OWN_NAMES.has(name) || byLocal.has(name)) { log(`skipping auto-browser tool ${t.name}: name ${name} already taken`); continue; }
+        byLocal.set(name, t.name);
+        const description = rename(t.description || '') + (HINTS[name] || '');
+        listed.push({ ...t, name, description });
+    }
+    return { tools: listed, byLocal, rename };
+}
+
+export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fetch, pollS = 60, upstream = null, waitMaxS = 3600, log = () => {}, retryMs = 30_000 }) {
     const inflight = new Map(); // request id -> AbortController
+    const tools = ownTools(waitMaxS);
+    let mapped = { tools: [], byLocal: new Map(), rename: (t) => t };
+    let upstreamOk = false;
+    let retryTimer = null;
+    let initialized = false;
+
+    // Fetch auto-browser's tools. When it is down, list our own tools only and
+    // try again in the background, telling the client once the list grows.
+    async function refreshUpstream() {
+        if (!upstream) return false;
+        try {
+            mapped = mapUpstreamTools(await upstream.listTools(), log);
+            if (!upstreamOk) log(`auto-browser tools: ${mapped.tools.length}`);
+            upstreamOk = true;
+            return true;
+        } catch (err) {
+            if (upstreamOk || !retryTimer) log(`auto-browser tools unavailable: ${err.message}`);
+            upstreamOk = false;
+            scheduleRetry();
+            return false;
+        }
+    }
+    function scheduleRetry() {
+        if (retryTimer || !retryMs) return;
+        retryTimer = setTimeout(async () => {
+            retryTimer = null;
+            if (await refreshUpstream() && initialized) write({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' });
+        }, retryMs);
+        retryTimer.unref?.();
+    }
+
+    async function passThrough(id, name, args, meta, signal) {
+        if (!mapped.byLocal.has(name)) await refreshUpstream();
+        const remote = mapped.byLocal.get(name);
+        if (!remote) {
+            if (!upstreamOk) return result(id, toolResult(`Error: ${name} is an auto-browser tool, but auto-browser is not reachable right now. Is the browser stack up?`, true));
+            return error(id, -32602, `unknown tool ${name}`);
+        }
+        let r;
+        try {
+            r = await upstream.callTool(remote, args, meta, { signal });
+        } catch (err) {
+            if (signal.aborted) return;
+            return result(id, toolResult(`Error: ${err.message}`, true));
+        }
+        if (signal.aborted) return;
+        // Verbatim, under our request id.
+        if (r.error) return write({ jsonrpc: '2.0', id, error: r.error });
+        return result(id, r.result);
+    }
 
     async function bridge(path, body, signal) {
         const res = await fetchImpl(bridgeUrl + path, {
@@ -78,7 +163,7 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
     }
 
     async function waitForHuman(args, signal, progress) {
-        const timeoutS = Math.max(5, Math.min(3600, Number(args.timeout_s) || 900));
+        const timeoutS = Math.max(5, Math.min(waitMaxS, Number(args.timeout_s) || Math.min(900, waitMaxS)));
         const reason = String(args.reason ?? '').trim() || 'The agent needs you to take over.';
         const t = await bridge('/api/takeover', { session_id: String(args.session_id ?? ''), reason }, signal);
         const deadline = Date.now() + timeoutS * 1000;
@@ -111,17 +196,21 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
                 const asked = params?.protocolVersion;
                 return result(id, {
                     protocolVersion: PROTOCOLS.includes(asked) ? asked : PROTOCOLS[0],
-                    capabilities: { tools: { listChanged: false } },
+                    capabilities: { tools: { listChanged: !!upstream } },
                     serverInfo: SERVER_INFO,
                     instructions:
-                        'Live view for auto-browser sessions. When you start browsing, call browser_live_link and post the link. ' +
-                        'When a person must act in the page, call browser_wait_for_human and do nothing in that session until it returns.',
+                        'A real Chromium browser the user can watch live from their phone. ' +
+                        (upstream ? 'Drive it with the browser_* tools: browser_observe (creates a session when none is live) to get element ids, then browser_execute_action. ' : '') +
+                        'After you create a browser session, call browser_live_link and post the link in chat on its own line. ' +
+                        'When you need the user (login, CAPTCHA, two-factor, payment, a confirmation), call browser_wait_for_human ' +
+                        'and do nothing in that session until it returns.',
                 });
             }
             case 'ping':
                 return isRequest && result(id, {});
             case 'tools/list':
-                return result(id, { tools: TOOLS });
+                await refreshUpstream();
+                return result(id, { tools: [...tools, ...mapped.tools] });
             case 'tools/call': {
                 const name = params?.name;
                 const args = params?.arguments || {};
@@ -135,6 +224,7 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
                     let out;
                     if (name === 'browser_live_link') out = await liveLink(args, ac.signal);
                     else if (name === 'browser_wait_for_human') out = await waitForHuman(args, ac.signal, progress);
+                    else if (upstream) return await passThrough(id, name, args, params?._meta, ac.signal);
                     else return error(id, -32602, `unknown tool ${name}`);
                     if (!ac.signal.aborted) result(id, toolResult(out));
                 } catch (err) {
@@ -144,6 +234,9 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
                 }
                 return;
             }
+            case 'notifications/initialized':
+                initialized = true;
+                return;
             case 'notifications/cancelled':
                 inflight.get(params?.requestId)?.abort();
                 return;
@@ -166,10 +259,22 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
 
 if (import.meta.url === `file://${process.argv[1]}`) {
     const cfg = loadConfig();
+    const write = (obj) => process.stdout.write(JSON.stringify(obj) + '\n');
+    const log = (line) => process.stderr.write(`happy-browser-bridge: ${line}\n`);
+    const upstream = process.env.BRIDGE_PASSTHROUGH === '0' ? null : createUpstreamMcp({
+        url: cfg.autoBrowserMcpUrl,
+        getToken: () => readSecret(cfg.files.apiToken),
+        timeoutMs: cfg.passthroughTimeoutS * 1000,
+        // auto-browser's progress for a call we forwarded, relayed as is.
+        onNotification: (m) => { if (m.method === 'notifications/progress') write(m); },
+    });
     const server = createMcpServer({
         bridgeUrl: cfg.bridgeUrl,
         bridgeToken: readSecret(cfg.files.bridgeToken),
-        write: (obj) => process.stdout.write(JSON.stringify(obj) + '\n'),
+        write,
+        upstream,
+        waitMaxS: cfg.waitMaxS,
+        log,
     });
     const rl = createInterface({ input: process.stdin });
     rl.on('line', (l) => server.onLine(l));

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // End-to-end smoke test of the live bridge against the running stack
 // (make browser-up). Creates a throwaway auto-browser session, walks the
-// bridge's routes and the MCP server, then deletes the session.
+// bridge's routes and the MCP server (its own tools and the auto-browser
+// tools it passes through), then deletes the session.
 // Secrets are read from their files and never printed.
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -89,7 +90,17 @@ try {
     const init = await m.request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'smoke', version: '0' } });
     check(init.result?.serverInfo?.name === 'happy-browser-bridge', 'mcp initialize');
     const tools = await m.request('tools/list', {});
-    check(tools.result?.tools?.length === 2, `mcp tools: ${tools.result?.tools?.map((x) => x.name).join(', ')}`);
+    const names = tools.result?.tools?.map((x) => x.name) || [];
+    check(names[0] === 'browser_live_link' && names[1] === 'browser_wait_for_human', `mcp own tools: ${names.slice(0, 2).join(', ')}`);
+    check(names.includes('browser_list_sessions') && names.includes('browser_observe') && names.every((x) => /^[a-zA-Z0-9_-]{1,64}$/.test(x)),
+        `mcp passes auto-browser tools through (${names.length - 2}): ${names.slice(2).join(', ')}`);
+    const ls = await m.request('tools/call', { name: 'browser_list_sessions', arguments: {} });
+    const lsText = JSON.stringify(ls.result ?? ls.error);
+    check(!ls.error && !ls.result?.isError && lsText.includes(sessionId), 'mcp browser_list_sessions (pass-through) lists the smoke session');
+    const gs = await m.request('tools/call', { name: 'browser_get_session', arguments: { session_id: sessionId } });
+    check(!gs.error && !gs.result?.isError && JSON.stringify(gs.result).includes(sessionId), 'mcp browser_get_session (pass-through)');
+    const leakedMcp = [apiToken, bridgeToken, vncPassword].some((s) => [JSON.stringify(tools), lsText, JSON.stringify(gs)].some((t) => t.includes(s)));
+    check(!leakedMcp, 'no secret in pass-through responses');
     const ll = await m.request('tools/call', { name: 'browser_live_link', arguments: { session_id: sessionId } });
     check(ll.result?.structuredContent?.link === link.url, 'mcp browser_live_link returns the same link');
     const wait = m.request('tools/call', { name: 'browser_wait_for_human', arguments: { session_id: sessionId, reason: 'MCP smoke', timeout_s: 30 }, _meta: { progressToken: 'smoke' } });
