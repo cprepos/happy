@@ -221,6 +221,8 @@ export class CodexAppServerClient {
     private processEpoch = 0;
     private connected = false;
     private sandboxConfig?: SandboxConfig;
+    /** Added to the app server's environment (`HAPPY_SESSION_ID` for the MCP servers it starts). */
+    private readonly extraEnv: Record<string, string>;
     private sandboxCleanup: (() => Promise<void>) | null = null;
     public sandboxEnabled = false;
 
@@ -260,8 +262,9 @@ export class CodexAppServerClient {
     private eventHandler: ((msg: EventMsg) => void) | null = null;
     private approvalHandler: ApprovalHandler | null = null;
 
-    constructor(sandboxConfig?: SandboxConfig) {
+    constructor(sandboxConfig?: SandboxConfig, extraEnv: Record<string, string> = {}) {
         this.sandboxConfig = sandboxConfig;
+        this.extraEnv = extraEnv;
     }
 
     get threadId(): string | null {
@@ -631,6 +634,7 @@ export class CodexAppServerClient {
         for (const [key, value] of Object.entries(process.env)) {
             if (typeof value === 'string') env[key] = value;
         }
+        Object.assign(env, this.extraEnv);
         // Mute noisy rollout list logging
         const filter = 'codex_core::rollout::list=off';
         if (!env.RUST_LOG) {

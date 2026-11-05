@@ -33,6 +33,7 @@ import { AgyDisplay } from '@/ui/ink/AgyDisplay';
 import type { AgentMessage } from '@/agent/core';
 import { normalizeRemotePermissionMode } from '@/claude/utils/permissionMode';
 import { AgyBackend } from './AgyBackend';
+import { happySessionEnv } from '@/utils/happySessionEnv';
 import {
   DEFAULT_AGY_EFFORT,
   DEFAULT_AGY_MODEL,
@@ -161,6 +162,8 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
     effort: selectedEffort,
     log,
     conversationId: opts.resumeConversationId ?? null,
+    // The Happy session, so MCP servers agy starts (the browser bridge) know which chat they serve.
+    env: happySessionEnv(response?.id),
     // Recorded so the session can be resumed later (app Resume, `happy resume`).
     onConversationId: (conversationId) => {
       session.updateMetadata((currentMetadata) => ({

@@ -48,6 +48,7 @@ import {
 } from './codexPrompt';
 import { discoverCodexSkillCommands } from './codexSkills';
 import { createCodexRemoteModeState } from './remoteModeState';
+import { happySessionEnv } from '@/utils/happySessionEnv';
 import {
     codexGoalActionCapabilities,
     mapCodexGoalEventToAgentGoalStatus,
@@ -551,7 +552,8 @@ export async function runCodex(opts: {
     // Start Context 
     //
 
-    client = new CodexAppServerClient(sandboxConfig);
+    // The Happy session id, so MCP servers Codex starts (the browser bridge) know which chat they serve.
+    client = new CodexAppServerClient(sandboxConfig, happySessionEnv(response?.id));
 
     permissionHandler = new CodexPermissionHandler(session);
     // Drop any permission requests left in agent state from a previous CLI

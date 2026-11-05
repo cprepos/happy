@@ -32,6 +32,7 @@ import {
   mergeAcpSessionConfigIntoMetadata,
 } from './sessionConfigMetadata';
 import type { SessionConfigOption, SessionModeState, SessionModelState } from '@agentclientprotocol/sdk';
+import { happySessionEnv } from '@/utils/happySessionEnv';
 
 const TURN_TIMEOUT_MS = 5 * 60 * 1000;
 const ACP_EVENT_PREVIEW_CHARS = 240;
@@ -631,6 +632,8 @@ export async function runAcp(opts: {
     transportHandler: new DefaultTransport(opts.agentName),
     verbose,
     resumeSessionId: opts.resumeSessionId,
+    // The Happy session id, so MCP servers the agent starts (the browser bridge) know which chat they serve.
+    env: happySessionEnv(response?.id),
   });
 
   let thinking = false;

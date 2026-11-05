@@ -44,6 +44,26 @@ describe('AgyBackend', () => {
     expect(args[modelIndex + 1]).toBe('Gemini 3.8 Flash (High)');
   });
 
+  it('runs agy with the Happy session id on top of the process environment', async () => {
+    const { child } = makeFakeChild();
+    const spawnFn = vi.fn(() => child) as unknown as SpawnFn;
+    const backend = new AgyBackend({
+      cwd: '/work',
+      permissionMode: 'default',
+      spawnFn,
+      resolveConversationId: () => null,
+      env: { HAPPY_SESSION_ID: 'session-123' },
+    });
+
+    const turn = backend.sendPrompt('/work', 'hi');
+    child.emit('close', 0);
+    await turn;
+
+    const spawnOpts = (spawnFn as unknown as ReturnType<typeof vi.fn>).mock.calls[0][2];
+    expect(spawnOpts.env.HAPPY_SESSION_ID).toBe('session-123');
+    expect(spawnOpts.env.PATH).toBe(process.env.PATH);
+  });
+
   it('maps a successful turn: running → model-output(s) → idle', async () => {
     const { child, stdout } = makeFakeChild();
     const spawnFn = vi.fn(() => child) as unknown as SpawnFn;

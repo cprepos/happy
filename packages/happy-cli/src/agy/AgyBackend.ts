@@ -71,6 +71,8 @@ export interface AgyBackendOptions {
   conversationId?: string | null;
   /** Called once the backend knows which agy conversation this session uses. */
   onConversationId?: (conversationId: string) => void;
+  /** Added to each turn's agy environment (`HAPPY_SESSION_ID`, for the MCP servers agy starts). */
+  env?: Record<string, string>;
 }
 
 /** Parse an agy duration string ("10m", "30s", "1h") to milliseconds; defaults to 10m. */
@@ -89,6 +91,7 @@ export class AgyBackend implements AgentBackend {
   private readonly spawnFn: SpawnFn;
   private readonly resolveConversationId: (cwd: string) => string | null;
   private readonly onConversationId: (conversationId: string) => void;
+  private readonly env: Record<string, string>;
 
   private permissionMode: PermissionMode;
   private model?: string;
@@ -107,6 +110,7 @@ export class AgyBackend implements AgentBackend {
     this.resolveConversationId = opts.resolveConversationId ?? readAgyConversationId;
     this.onConversationId = opts.onConversationId ?? (() => {});
     this.conversationId = opts.conversationId ?? null;
+    this.env = opts.env ?? {};
   }
 
   /** The agy conversation this session continues, once known. */
@@ -159,7 +163,7 @@ export class AgyBackend implements AgentBackend {
     await new Promise<void>((resolve, reject) => {
       const child = this.spawnFn(resolveAgyBin(), args, {
         cwd: this.cwd,
-        env: process.env,
+        env: { ...process.env, ...this.env },
         windowsHide: true,
         // agy --print blocks until stdin reaches EOF. We never write stdin, so
         // give the child an empty stdin (immediate EOF) instead of an open pipe;

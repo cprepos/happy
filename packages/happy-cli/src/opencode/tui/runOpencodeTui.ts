@@ -64,6 +64,7 @@ import {
     type OpencodeTuiState,
     type ProcessExit,
 } from './opencodeProcesses';
+import { happySessionEnv } from '@/utils/happySessionEnv';
 import {
     fetchServerSessions,
     findReconnectableHappySession,
@@ -348,6 +349,8 @@ export async function runOpencodeTui(opts: {
         server = await startOpencodeServer({
             bin: opts.bin,
             cwd,
+            // The Happy session id, so MCP servers OpenCode starts (the browser bridge) know which chat they serve.
+            env: { ...process.env, ...happySessionEnv(response?.id) },
             configContent: JSON.stringify({ mcp: { happy: { type: 'remote', url: happyServer.url, enabled: true } } }),
         });
     } catch (error) {

@@ -231,6 +231,26 @@ describe('CodexAppServerClient sandbox integration', () => {
         await client.disconnect();
     });
 
+    it('gives the app server the Happy session id for the MCP servers it starts', async () => {
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient(undefined, { HAPPY_SESSION_ID: 'session-123' });
+
+        await client.connect();
+
+        expect(mockSpawn).toHaveBeenCalledWith(
+            'codex',
+            ['app-server', '--listen', 'stdio://'],
+            expect.objectContaining({
+                env: expect.objectContaining({
+                    HAPPY_SESSION_ID: 'session-123',
+                    RUST_LOG: expect.stringContaining('codex_core::rollout::list=off'),
+                }),
+            }),
+        );
+
+        await client.disconnect();
+    });
+
     it('ignores stale process exit during reconnect initialize', async () => {
         const proc1 = createMockProcess({ pid: 1001, initializeDelayMs: 5 });
         const proc2 = createMockProcess({ pid: 1002, initializeDelayMs: 50 });

@@ -51,6 +51,7 @@ import {
   formatOptionsXml,
 } from '@/gemini/utils/optionsParser';
 import { ConversationHistory } from '@/gemini/utils/conversationHistory';
+import { happySessionEnv } from '@/utils/happySessionEnv';
 
 
 /**
@@ -958,6 +959,7 @@ export async function runGemini(opts: {
           permissionHandler,
           cloudToken,
           currentUserEmail,
+          env: happySessionEnv(response?.id),
           // Pass model from message - if undefined, will use local config/env/default
           // If explicitly null, will skip local config and use env/default
           model: modelToUse,
@@ -1011,6 +1013,8 @@ export async function runGemini(opts: {
               permissionHandler,
               cloudToken,
               currentUserEmail,
+              // The Happy session id, so MCP servers Gemini starts (the browser bridge) know which chat they serve.
+              env: happySessionEnv(response?.id),
               // Pass model from message - if undefined, will use local config/env/default
               // If explicitly null, will skip local config and use env/default
               model: modelToUse,
