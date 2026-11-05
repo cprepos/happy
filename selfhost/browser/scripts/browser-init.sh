@@ -16,8 +16,10 @@ ROOT="${HAPPY_BROWSER_HOME:-$HOME/.local/share/happy-browser}"
 SECRETS="$ROOT/secrets"
 umask 077
 
-mkdir -p "$ROOT" "$SECRETS" "$ROOT/bridge" "$ROOT/data"
-chmod 700 "$ROOT" "$SECRETS"
+mkdir -p "$ROOT" "$SECRETS" "$ROOT/bridge" "$ROOT/data" "$ROOT/data/pods" "$ROOT/data/chats" "$ROOT/run"
+chmod 700 "$ROOT" "$SECRETS" "$ROOT/run"
+# data/pods/slot-N (one per running pod) and data/chats/<hash>/auth (a chat's saved logins)
+# are made by the pod launcher; run/ holds its socket, which only the bridge mounts.
 # browser-node chowns these to its own uid (10001) on start and keeps their
 # mode; the controller (uid of data/) must still read the endpoint file in
 # browser-profile, so they are made 755, never 700. ROOT stays 700.

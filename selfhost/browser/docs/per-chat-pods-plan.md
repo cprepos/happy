@@ -286,3 +286,32 @@ The key is `chatHash = sha256(source+':'+id).slice(0,32)`.
 - **Phone proxy**: `BrowserLoopback` (iOS) aliases any loopback port and rewrites
   `Host`/`Origin`/`Referer` back to `localhost:<port>`, so noVNC on `localhost:61NN`
   sees a loopback same-origin request, as on 6080. Not checked from a phone.
+
+### Phase 1 findings (window lock)
+
+- `--kiosk` (and `--start-fullscreen`) do **not** reach windows Playwright opens: its
+  contexts start with `--no-startup-window` and every window is made over CDP. Measured:
+  inner 472x949 in a 480x1040 screen with the flag. `kiosk/happy-kiosk.mjs` therefore
+  runs a warden (a browser-level CDP session on its own server) that sets every page
+  target's window to `windowState: fullscreen` on `Target.targetCreated` and re-checks
+  every 2 s. After it: page and `window.open` popup are both 480x1040 at 0,0; a window
+  forced back to `normal` is fullscreen again within one sweep.
+- The managed policy loads (chrome://policy lists every key). `DeveloperToolsAvailability`
+  and `URLBlocklist chrome://*` were left out: not needed for the lock, and untested
+  against the sandbox check.
+- `ss -xlH` on the host shows only the path socket `/tmp/.X11-unix/X99` (container `/tmp`),
+  never `@/tmp/.X11-unix/...`; the smoke asserts it.
+
+### Phase 2 findings (launcher)
+
+- Cold pod start, manual (warm image cache): launcher create+start 0.43 s, noVNC up
+  1.0 s, controller `/readyz` 3.0 s, `POST /sessions` 0.43 s; about 3.5 s in all.
+- Idle pod memory: node 278 MiB, controller 164 MiB.
+- The controller (CONTROLLER_RUN_AS=auto) writes `/data/auth` as the owner of `/data`
+  (uid 1000, which the launcher chowns the slot to); profiles are
+  `auth/profiles/<name>/{profile.json,state.json.enc}`.
+- `adopt_auth` copies rather than moves (the chat keeps its saved login until a newer
+  one replaces it); `stash_auth` keeps the previous one as `profiles.prev`, and
+  `keep: true` copies without removing (the checkpoint after a release).
+- Unix socket paths are limited to 108 bytes; a test HAPPY_BROWSER_HOME under a long
+  scratch path needs a relative connect.
