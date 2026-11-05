@@ -1,0 +1,63 @@
+# Vaultwarden (github.com/dani-garcia/vaultwarden, AGPL-3.0): a self-hosted
+# Bitwarden-compatible server, for the secrets the browser agent may type
+# through the secret filler (selfhost/browser/filler). Run it through make
+# (selfhost/vault.mk): vault-init, vault-up, vault-status. See ./README.md.
+#
+# It listens on 127.0.0.1:8222 only. The phone and desktop Bitwarden apps
+# reach it through the existing Caddy :443 site vault.girthbass.duckdns.org,
+# which answers /admin with 404. The admin panel is only ever at
+# http://127.0.0.1:8222/admin, and only while ADMIN_TOKEN is set.
+#
+# Everything lives under /srv/happy-vault (root-made, outside /home/prep):
+#   data/              uid 1991, 0700: db.sqlite3, rsa_key.pem, attachments
+#   backups/           uid 1991, 0700: make vault-backup tarballs
+#   vaultwarden.env    root:1991 0640: ORG_CREATION_USERS and, during setup
+#                      only, ADMIN_TOKEN (an Argon2id PHC string). Mounted and
+#                      read by Vaultwarden itself (ENV_FILE), never by compose,
+#                      so the invoking user never needs to read it.
+#
+# 1.37.5-alpine, pinned by its index digest (checked with
+# docker buildx imagetools inspect on 2026-11-04).
+name: happy-vault
+
+services:
+  vaultwarden:
+    image: vaultwarden/server:1.37.5-alpine@sha256:bbe684a02d6b0db54256ff88eac9754f4519284a7b26314afc241fd7d0918191
+    user: "1991:1991"
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    ulimits: { core: 0 }
+    ports: ["127.0.0.1:8222:8222"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8222/alive"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 10s
+    environment:
+      ENV_FILE: /etc/vaultwarden.env
+      DOMAIN: https://vault.girthbass.duckdns.org
+      ROCKET_PORT: "8222"
+      DATA_FOLDER: /data
+      SIGNUPS_ALLOWED: "false"
+      # No SMTP: an email invited from the admin panel or an organization can
+      # register directly.
+      INVITATIONS_ALLOWED: "true"
+      PASSWORD_HINTS_ALLOWED: "false"
+      SHOW_PASSWORD_HINT: "false"
+      SENDS_ALLOWED: "false"
+      EMERGENCY_ACCESS_ALLOWED: "false"
+      PUSH_ENABLED: "false"
+      # Caddy sets X-Real-IP to the client; the rate limits key on it.
+      IP_HEADER: X-Real-IP
+      LOGIN_RATELIMIT_SECONDS: "60"
+      LOGIN_RATELIMIT_MAX_BURST: "5"
+      ADMIN_RATELIMIT_SECONDS: "300"
+      ADMIN_RATELIMIT_MAX_BURST: "3"
+      LOG_LEVEL: warn
+    volumes:
+      - /srv/happy-vault/data:/data
+      - /srv/happy-vault/vaultwarden.env:/etc/vaultwarden.env:ro

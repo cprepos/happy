@@ -1,0 +1,11 @@
+# Runs happy-vault-backup.service nightly; Persistent catches up after downtime.
+[Unit]
+Description=Nightly Vaultwarden backup
+
+[Timer]
+OnCalendar=*-*-* 04:15:00
+RandomizedDelaySec=10m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

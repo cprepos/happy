@@ -34,6 +34,8 @@ status:
 	@echo
 	@printf "local  /      : HTTP "; curl -sS -o /dev/null -w "%{http_code}" --max-time 5 http://127.0.0.1:3005/ || echo "unreachable"; echo
 	@printf "local  /health: "; curl -fsS --max-time 5 http://127.0.0.1:3005/health || echo "unreachable"; echo
+	@echo
+	@$(MAKE) --no-print-directory vault-status || echo "vault-status: FAILED"
 
 logs:
 	$(COMPOSE) logs -f --tail=200
@@ -46,3 +48,4 @@ migrate: env
 -include cli.mk
 -include webapp.mk
 -include browser.mk
+-include vault.mk

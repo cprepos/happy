@@ -1,0 +1,9 @@
+# Nightly Vaultwarden backup (selfhost/vault). Installed by make vault-backup-timer.
+[Unit]
+Description=Vaultwarden backup (make vault-backup)
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/make --no-print-directory -C /home/prep/happy/selfhost vault-backup
