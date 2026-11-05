@@ -5,7 +5,7 @@
 // through from its Streamable HTTP MCP endpoint, so a client needs only this
 // one server and no auto-browser token of its own: the token is read from its
 // 600 file here and sent only to 127.0.0.1:8010. It never holds the VNC password.
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { appendFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { loadConfig, readSecret } from './lib/config.mjs';
@@ -27,8 +27,8 @@ export function ownTools(waitMaxS = 3600) {
             'The same session always gets the same link. The link opens only inside the Happy app.',
         inputSchema: {
             type: 'object',
-            properties: { session_id: { type: 'string', description: 'The browser session id (from browser_create_session or browser_list_sessions).' } },
-            required: ['session_id'],
+            properties: { session_id: { type: 'string', description: 'The browser session id (from browser_create_session or browser_list_sessions). Optional when this chat has its own browser.' } },
+            required: [],
             additionalProperties: false,
         },
     },
@@ -47,11 +47,11 @@ export function ownTools(waitMaxS = 3600) {
         inputSchema: {
             type: 'object',
             properties: {
-                session_id: { type: 'string', description: 'The auto-browser session id.' },
+                session_id: { type: 'string', description: 'The auto-browser session id. Optional when this chat has its own browser.' },
                 reason: { type: 'string', description: 'What you need the user to do, shown on the live view.' },
                 timeout_s: { type: 'number', description: `How long to wait, in seconds (default ${waitDefault}, max ${waitMaxS}).`, default: waitDefault },
             },
-            required: ['session_id', 'reason'],
+            required: ['reason'],
             additionalProperties: false,
         },
     },
@@ -172,8 +172,97 @@ export function createMetaProbe(env = process.env, sink = null) {
     };
 }
 
-export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fetch, pollS = 60, upstream = null, waitMaxS = 3600, log = () => {}, retryMs = 30_000, metaProbe = null, secrets = null }) {
+// ── Per-chat pods: which chat this server serves, and its browser pod ──────
+// The Happy CLI gives each agent's MCP servers HAPPY_SESSION_ID (the Happy session, i.e. the
+// chat); Claude Code itself sets CLAUDE_CODE_SESSION_ID. Without either (a daemon serving many
+// chats from one process), every browser session gets a pod of its own instead.
+export function chatIdentity(env = process.env) {
+    if (env.HAPPY_SESSION_ID) return { source: 'happy', id: String(env.HAPPY_SESSION_ID) };
+    if (env.CLAUDE_CODE_SESSION_ID) return { source: 'claude', id: String(env.CLAUDE_CODE_SESSION_ID) };
+    return null;
+}
+// The bridge's chat key: sha256("<source>:<id>"), first 32 hex chars. The app computes the same
+// from the Happy session id to find a chat's live link (GET /live/chat/<key>).
+export const chatKeyOf = (ident) => createHash('sha256').update(`${ident.source}:${ident.id}`).digest('hex').slice(0, 32);
+
+// Routes each call to its chat's pod through the bridge (/api/pod), one upstream MCP client per
+// pod. route() returns null when the bridge has pods off (the shared controller then serves).
+export function createChatRouter({ bridge, makeUpstream, chat = null, newKey = () => randomBytes(16).toString('hex'), now = Date.now, recheckMs = 60_000 }) {
+    let legacyAt = null; // when the bridge last said pods are off
+    let known = false; // the bridge has answered a pod request
+    const upstreams = new Map(); // mcp_url -> upstream client
+    const pods = new Map(); // chat key -> last /api/pod answer
+    const bySession = new Map(); // browser session id -> chat key
+    let current = null; // without a chat identity: the key for calls that name no session
+
+    const upstreamFor = (url) => {
+        if (!upstreams.has(url)) upstreams.set(url, makeUpstream(url));
+        return upstreams.get(url);
+    };
+    function keyFor(name, args) {
+        if (chat) return chat.key;
+        const sid = typeof args?.session_id === 'string' && args.session_id ? args.session_id : null;
+        if (name === 'browser_create_session') return (current = newKey());
+        if (sid) return bySession.get(sid) ?? null;
+        return current ?? (current = newKey());
+    }
+    function remember(key, d) {
+        pods.set(key, d);
+        if (d.session_id) bySession.set(d.session_id, key);
+        if (!chat) current = key;
+    }
+
+    return {
+        get pods() { return known && legacyAt === null; },
+        get legacy() { return legacyAt !== null && now() - legacyAt < recheckMs; },
+        // This call's pod: {key, session_id, mcp_url, api_url, link_id, upstream}, or null with pods off.
+        async route(name, args, signal, { verify = false } = {}) {
+            if (legacyAt !== null && now() - legacyAt < recheckMs) return null;
+            let key = keyFor(name, args);
+            let d;
+            try {
+                if (key) d = await bridge('/api/pod', { chat_key: key, source: chat?.source ?? 'session', ...(verify ? { verify: true } : {}) }, signal);
+                else {
+                    // A session this process has not seen (another process made it, or before a restart).
+                    d = await bridge('/api/pod', { session_id: args.session_id, ...(verify ? { verify: true } : {}) }, signal);
+                    key = d.chat_key;
+                }
+            } catch (err) {
+                if (err.status === 409 && err.code === 'pods_disabled') { legacyAt = now(); known = true; return null; }
+                throw err;
+            }
+            legacyAt = null;
+            known = true;
+            remember(key, d);
+            return { key, ...d, upstream: upstreamFor(d.mcp_url) };
+        },
+        markLegacy() { legacyAt = now(); known = true; },
+        keyOfSession: (sid) => (sid ? bySession.get(sid) ?? null : null),
+        // The pod's API port for a call's session (the secret filler types into that pod).
+        apiPortFor(args) {
+            const key = (chat && this.pods) ? chat.key : bySession.get(args?.session_id);
+            const url = key ? pods.get(key)?.api_url : null;
+            return url ? Number(new URL(url).port) : null;
+        },
+        forget(key) {
+            const d = pods.get(key);
+            pods.delete(key);
+            for (const [sid, k] of bySession) if (k === key) bySession.delete(sid);
+            if (current === key) current = null;
+            return d;
+        },
+        get chatKey() { return chat?.key ?? null; },
+    };
+}
+
+const ONE_BROWSER = 'Each chat has one browser. Use the session it already has; a fork or a second session is not available.';
+
+export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fetch, pollS = 60, upstream = null, waitMaxS = 3600, log = () => {}, retryMs = 30_000, metaProbe = null, secrets = null, chatPods = null }) {
     const inflight = new Map(); // request id -> AbortController
+    // chatPods: {chat: {key, source} | null, makeUpstream(url)}. Each call then goes to its chat's
+    // pod when the bridge runs pods, and to `upstream` (the shared controller) when it doesn't.
+    const router = chatPods ? createChatRouter({ bridge: (p, b, s) => bridge(p, b, s), makeUpstream: chatPods.makeUpstream, chat: chatPods.chat, ...(chatPods.newKey ? { newKey: chatPods.newKey } : {}) }) : null;
+    let withSession = new Set(); // local names of auto-browser tools that take a session_id
     const tools = ownTools(waitMaxS);
     let mapped = { tools: [], byLocal: new Map(), rename: (t) => t };
     let upstreamOk = false;
@@ -185,7 +274,9 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
     async function refreshUpstream() {
         if (!upstream) return false;
         try {
-            mapped = mapUpstreamTools(await upstream.listTools(), log);
+            const raw = await podTools() ?? await upstream.listTools();
+            mapped = mapUpstreamTools(raw, log);
+            withSession = new Set(raw.filter((t) => t?.inputSchema?.properties?.session_id).map((t) => localToolName(t.name)));
             if (!upstreamOk) log(`auto-browser tools: ${mapped.tools.length}`);
             upstreamOk = true;
             return true;
@@ -205,6 +296,61 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
         retryTimer.unref?.();
     }
 
+    // With pods, auto-browser's tool list comes from the bridge's cache, so listing tools never
+    // starts a pod. null: no pods (or no list yet), ask `upstream`.
+    async function podTools() {
+        if (!router || router.legacy) return null;
+        try {
+            return (await bridge('/api/tools', {})).tools;
+        } catch (err) {
+            if (err.status === 409 && err.code === 'pods_disabled') router.markLegacy();
+            return null;
+        }
+    }
+
+    // The chat's pod for this call, its session put into the arguments. Some tools are answered
+    // here: a chat has exactly one browser session. Returns {via, args} or {done: true}.
+    async function routeCall(id, name, args, signal) {
+        if (!router) return { via: null, args };
+        let via;
+        try {
+            via = await router.route(name, args, signal);
+        } catch (err) {
+            if (!signal.aborted) result(id, toolResult(`Error: the browser for this chat is not available: ${err.message}`, true));
+            return { done: true };
+        }
+        if (!via) return { via: null, args };
+        if (name === 'browser_fork_session') { result(id, toolResult(ONE_BROWSER, true)); return { done: true }; }
+        if (name === 'browser_close_session') {
+            try {
+                await bridge('/api/pod/close', { chat_key: via.key }, signal);
+                router.forget(via.key);
+                result(id, toolResult({ closed: true, session_id: via.session_id, note: 'The browser is closed and its login kept. It starts again (signed in) when you next use a browser tool.' }));
+            } catch (err) {
+                if (!signal.aborted) result(id, toolResult(`Error: ${err.message}`, true));
+            }
+            return { done: true };
+        }
+        const routed = withSession.has(name) ? { ...args, session_id: via.session_id } : args;
+        return { via, args: routed };
+    }
+
+    // browser_create_session with pods: the chat's session already exists (the pod made it,
+    // signed in with the chat's saved login). Answer with it, opening start_url if given.
+    async function createInPod(via, args, meta, signal) {
+        if (typeof args.start_url === 'string' && args.start_url) {
+            const nav = await via.upstream.callTool(mapped.byLocal.get('browser_execute_action') || 'browser.execute_action',
+                { session_id: via.session_id, action: 'navigate', url: args.start_url, reason: 'open start_url' }, meta, { signal });
+            if (nav.error || nav.result?.isError) return nav;
+        }
+        const r = await via.upstream.callTool(mapped.byLocal.get('browser_get_session') || 'browser.get_session', { session_id: via.session_id }, meta, { signal });
+        if (r.result && !r.result.isError) {
+            r.result = { ...r.result, content: [{ type: 'text', text: `This chat's browser session is ${via.session_id} (one per chat, kept signed in across restarts).` }, ...(r.result.content || [])] };
+        }
+        return r;
+    }
+    const refused = (err) => /ECONNREFUSED/.test(err?.message || '');
+
     async function passThrough(id, name, args, meta, signal) {
         if (!mapped.byLocal.has(name)) await refreshUpstream();
         const remote = mapped.byLocal.get(name);
@@ -212,17 +358,31 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
             if (!upstreamOk) return result(id, toolResult(`Error: ${name} is an auto-browser tool, but auto-browser is not reachable right now. Is the browser stack up?`, true));
             return error(id, -32602, `unknown tool ${name}`);
         }
+        // Routing first: the secret gate and the control check both need the chat's session.
+        const routedCall = await routeCall(id, name, args, signal);
+        if (routedCall.done) return;
+        let via = routedCall.via;
+        args = routedCall.args;
         const gate = await secretsBefore(id, name, args, signal);
         if (!gate) return;
         // One state check per call: a page-changing tool asks whether the user holds the browser
         // (recording the action), any other tool on a session only whether the user ended it.
-        const state = MUTATING_TOOLS.has(name) ? await guard(name, args, signal) : await sessionState(args, signal);
+        const state = MUTATING_TOOLS.has(name) ? await guard(name, args, signal, via) : await sessionState(args, signal, via);
         if (signal.aborted) return;
         if (isUserEnded(state)) return result(id, toolResult(USER_ENDED, true));
         if (MUTATING_TOOLS.has(name) && HELD.has(state?.status)) return result(id, toolResult(USER_HAS_CONTROL, true));
+        const call = (v, a) => (v && name === 'browser_create_session' ? createInPod(v, a, meta, signal) : (v?.upstream || upstream).callTool(remote, a, meta, { signal }));
         let r;
         try {
-            r = await upstream.callTool(remote, args, meta, { signal });
+            try {
+                r = await call(via, args);
+            } catch (err) {
+                // The pod went away under us (crashed, stopped): have the bridge check it, and retry once.
+                if (!via || signal.aborted || !refused(err)) throw err;
+                via = await router.route(name, args, signal, { verify: true });
+                if (via && withSession.has(name)) args = { ...args, session_id: via.session_id };
+                r = await call(via, args);
+            }
         } catch (err) {
             if (signal.aborted) return;
             r = { thrown: toolResult(`Error: ${err.message}`, true) };
@@ -232,7 +392,7 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
             if (r.thrown) return result(id, await scrubOut(gate, r.thrown, signal));
             // Verbatim, under our request id.
             if (r.error) return write({ jsonrpc: '2.0', id, error: await scrubOut(gate, r.error, signal) });
-            return result(id, await scrubOut(gate, await withLiveLink(name, args, r.result, signal), signal));
+            return result(id, await scrubOut(gate, await withLiveLink(name, args, r.result, signal, via), signal));
         } catch (err) {
             if (!signal.aborted) return result(id, toolResult(`Error: ${err.message}`, true));
         }
@@ -258,13 +418,13 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
     // when the agent never calls browser_live_link. Asking for it creates the link the first time.
     // auto-browser's own result is kept as is after one text item with the link (and a
     // structured field). Without a bridge, or for an ended session, the result goes back unchanged.
-    async function withLiveLink(name, args, value, signal) {
+    async function withLiveLink(name, args, value, signal, via = null) {
         if (!value || value.isError || NO_LINK_TOOLS.has(name)) return value;
-        const sid = sessionOf(args, value);
+        const sid = via?.session_id || sessionOf(args, value);
         if (!sid) return value;
         let l;
         try {
-            l = await bridge('/api/links', { session_id: sid }, signal);
+            l = await bridge('/api/links', linkRef(sid, via), signal);
         } catch {
             return value;
         }
@@ -280,21 +440,23 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
 
     // The link state of this call's session, or null without a session_id or a bridge. A session
     // the user ended from the app gets USER_ENDED instead of auto-browser's "session closed".
-    async function sessionState(args, signal) {
+    async function sessionState(args, signal, via = null) {
         const sid = typeof args?.session_id === 'string' && args.session_id ? args.session_id : null;
-        if (!sid) return null;
-        try { return await bridge('/api/state', { session_id: sid }, signal); } catch { return null; }
+        if (!sid && !via) return null;
+        try { return await bridge('/api/state', linkRef(sid, via), signal); } catch { return null; }
     }
-    const endedByUser = async (args, signal) => isUserEnded(await sessionState(args, signal));
+    const endedByUser = async (args, signal, via = null) => isUserEnded(await sessionState(args, signal, via));
+    // How the bridge names this call's link: by chat with pods, by session without.
+    const linkRef = (sid, via) => (via ? { chat_key: via.key } : { session_id: sid });
 
     // Asks the bridge whether the user holds this session's browser, recording the action as the
     // live view's "last action" when they don't. A bridge that can't answer doesn't block browsing:
     // without it nobody can have taken control.
-    async function guard(name, args, signal) {
+    async function guard(name, args, signal, via = null) {
         const sid = typeof args?.session_id === 'string' && args.session_id ? args.session_id : null;
         const action = actionOf(name, args);
         try {
-            return await bridge('/api/state', { ...(sid ? { session_id: sid } : {}), ...(action ? { action } : {}) }, signal);
+            return await bridge('/api/state', { ...(via ? { chat_key: via.key } : sid ? { session_id: sid } : {}), ...(action ? { action } : {}) }, signal);
         } catch (err) {
             if (!signal.aborted) log(`control check failed, letting ${name} through: ${err.message}`);
             return null;
@@ -312,7 +474,8 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
         try { data = await res.json(); } catch {}
         if (!res.ok) {
             const why = data?.error || `HTTP ${res.status}`;
-            throw new Error(res.status === 404 && body.session_id ? `${why}: ${body.session_id}` : `bridge ${path}: ${why}`);
+            const err = new Error(res.status === 404 && body.session_id ? `${why}: ${body.session_id}` : `bridge ${path}: ${why}`);
+            throw Object.assign(err, { status: res.status, code: data?.code || data?.error });
         }
         return data;
     }
@@ -325,9 +488,17 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
         isError,
     });
 
+    // Our own tools with pods: the chat's pod (started if need be), or null without pods.
+    async function ownVia(args, signal) {
+        if (!router) return null;
+        if (!router.chatKey && !(typeof args?.session_id === 'string' && args.session_id)) return null;
+        return router.route('browser_live_link', args || {}, signal);
+    }
+
     async function liveLink(args, signal) {
-        if (await endedByUser(args, signal)) throw new Error(USER_ENDED);
-        const r = await bridge('/api/links', { session_id: String(args.session_id ?? '') }, signal);
+        const via = await ownVia(args, signal);
+        if (await endedByUser(args, signal, via)) throw new Error(USER_ENDED);
+        const r = await bridge('/api/links', linkRef(String(args.session_id ?? ''), via), signal);
         return { link: r.url, status: r.status, instructions: 'Post this link in chat on its own line so the user can watch live.' };
     }
 
@@ -335,15 +506,17 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
         const timeoutS = Math.max(5, Math.min(waitMaxS, Number(args.timeout_s) || Math.min(900, waitMaxS)));
         const reason = String(args.reason ?? '').trim() || 'The agent needs you to take over.';
         const sessionId = String(args.session_id ?? '');
-        if (await endedByUser(args, signal)) return { status: 'ended', note: USER_ENDED };
+        const via = await ownVia(args, signal);
+        const ref = linkRef(sessionId, via);
+        if (await endedByUser(args, signal, via)) return { status: 'ended', note: USER_ENDED };
         // The user already took control on their own: keep it theirs (no "Needs you") and wait for Release.
-        const current = await bridge('/api/state', { session_id: sessionId }, signal).catch(() => null);
+        const current = await bridge('/api/state', ref, signal).catch(() => null);
         let t;
         if (current?.status === 'user') {
-            const l = await bridge('/api/links', { session_id: sessionId }, signal);
+            const l = await bridge('/api/links', ref, signal);
             t = { id: l.id, url: l.url, status: 'user' };
         } else {
-            t = await bridge('/api/takeover', { session_id: sessionId, reason }, signal);
+            t = await bridge('/api/takeover', { ...ref, reason }, signal);
         }
         const deadline = Date.now() + timeoutS * 1000;
         const held = (s) => s === 'takeover' || s === 'user';
@@ -436,6 +609,7 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
 
     return {
         handle,
+        router,
         onLine(line) {
             if (!line.trim()) return;
             let msg;
@@ -456,11 +630,21 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         // auto-browser's progress for a call we forwarded, relayed as is.
         onNotification: (m) => { if (m.method === 'notifications/progress') write(m); },
     });
+    // Per-chat pods: each pod's MCP endpoint gets a client like `upstream`.
+    const ident = chatIdentity();
+    const makeUpstream = (url) => createUpstreamMcp({
+        url,
+        getToken: () => readSecret(cfg.files.apiToken),
+        timeoutMs: cfg.passthroughTimeoutS * 1000,
+        onNotification: (m) => { if (m.method === 'notifications/progress') write(m); },
+    });
+    let podPort = () => null;
     const server = createMcpServer({
         bridgeUrl: cfg.bridgeUrl,
         bridgeToken: readSecret(cfg.files.bridgeToken),
         write,
         upstream,
+        chatPods: upstream ? { chat: ident ? { key: chatKeyOf(ident), source: ident.source } : null, makeUpstream } : null,
         waitMaxS: cfg.waitMaxS,
         log,
         metaProbe: createMetaProbe(),
@@ -468,9 +652,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
             fillerUrl: cfg.fillerUrl,
             tokenPath: cfg.files.fillerToken,
             chat: process.env.HAPPY_SESSION_ID || null,
-            controllerPort: () => cfg.autoBrowserPort,
+            // The chat's pod when pods are on, else the shared controller.
+            controllerPort: (args) => podPort(args) ?? cfg.autoBrowserPort,
         }),
     });
+    podPort = (args) => server.router?.apiPortFor(args) ?? null;
     const rl = createInterface({ input: process.stdin });
     rl.on('line', (l) => server.onLine(l));
     rl.on('close', () => process.exit(0));

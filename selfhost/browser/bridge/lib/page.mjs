@@ -138,6 +138,11 @@ const SCRIPT = `
       if (s.status === 404 || s.status === 410) return gone(s.status);
       if (s.ok) { state = await s.json(); render(); }
       if (ended()) return finish();
+      // A sleeping browser has no frames; it wakes when the agent uses it or on Take control.
+      if (state.pod === 'asleep' || state.pod === 'crashed') {
+        note(state.pod === 'asleep' ? 'The browser is asleep. Take control to wake it.' : 'The browser stopped. It restarts when it is used.');
+        return schedule();
+      }
       const f = await fetch(base + '/frame.jpg', { cache: 'no-store' });
       if (f.status === 410) return gone(410);
       if (f.status === 404) return finish();
@@ -173,8 +178,14 @@ const SCRIPT = `
     e.preventDefault();
     const fallback = $('take').href;
     try {
-      const r = await fetch(base + '/take', { method: 'POST' });
-      if (r.ok) {
+      let r = await fetch(base + '/take', { method: 'POST' });
+      // 202: the browser was asleep and is starting; ask again until it runs (about 4 s).
+      for (let i = 0; r.status === 202 && i < 30; i++) {
+        note('Starting the browser…');
+        await new Promise((ok) => setTimeout(ok, 1000));
+        r = await fetch(base + '/take', { method: 'POST' });
+      }
+      if (r.ok && r.status !== 202) {
         const t = await r.json();
         state = t; render();
         location.href = t.novnc_url || fallback;
