@@ -16,9 +16,7 @@ final class OfflineTests: XCTestCase {
 
     func testChangesMergeAndAFreshReaderSeesThem() async {
         let file = OfflineFile(directory: directory)
-        let mode = AgentWire.Mode(providerId: "claude", modelId: "anthropic/sonnet-5", effort: "low", serviceTier: nil, permissionMode: "auto")
         await file.update { $0.config = #"{"config":{}}"# }
-        await file.update { $0.dockMode = mode }
         await file.update {
             $0.sidebar = OfflineSnapshot.Sidebar(
                 artifactId: "a", version: 3, html: "<nav/>", spaces: [], agentIcons: [:], bots: [], tasks: [],
@@ -29,11 +27,38 @@ final class OfflineTests: XCTestCase {
         await file.flush()
         let kept = await OfflineFile(directory: directory).read()
         XCTAssertEqual(kept?.config, #"{"config":{}}"#)
-        XCTAssertEqual(kept?.dockMode, mode)
         XCTAssertEqual(kept?.sidebar?.version, 3)
         XCTAssertEqual(kept?.sidebar?.surfaces?.first?.name, "Groceries")
         XCTAssertEqual(kept?.sidebar?.prioritizing, true)
     }
+
+    /// A copy written while the home dock kept a pick for new work still
+    /// loads, and the pick is never written again: new work starts on the
+    /// computer's default (`ModelState.newWorkMode`), read from the config.
+    func testAStoredDockPickLoadsButIsIgnored() async throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = OfflineFile(directory: directory)
+        let config = #"{"config":{"defaults":{"providerId":"claude","modelId":"anthropic/opus-5-5"},"models":{"openai/sol":{"name":"Sol","efforts":["medium"],"defaultEffort":"medium"},"anthropic/opus-5-5":{"name":"Opus 5.5","efforts":["high"],"defaultEffort":"high"}},"providers":{"codex":{"type":"codex","enabled":true,"models":[{"id":"openai/sol","enabled":true}]},"claude":{"type":"claude","enabled":true,"models":[{"id":"anthropic/opus-5-5","enabled":true}]}}}}"#
+        let old: JSONValue = .object([
+            "format": .number(Double(OfflineSnapshot.format)),
+            "config": .string(config),
+            "dockMode": .object(["providerId": .string("codex"), "modelId": .string("openai/sol"), "effort": .string("medium"), "permissionMode": .string("auto")]),
+        ])
+        try JSONEncoder().encode(old).write(to: file.snapshotURL)
+        let read = await file.read()
+        let kept = try XCTUnwrap(read, "a copy with the dock's pick no longer loads")
+        let catalog = try XCTUnwrap(kept.config.flatMap { ModelCatalog(response: Data($0.utf8)) })
+        XCTAssertEqual(catalog.defaultMode().modelId, "anthropic/opus-5-5")
+        XCTAssertEqual(catalog.defaultMode().providerId, "claude")
+
+        await file.update { $0.config = config }
+        await file.flush()
+        let source = try String(contentsOf: Self.sources.appendingPathComponent("HappyUI/Agents/ModelPickers.swift"), encoding: .utf8)
+        XCTAssertFalse(source.contains("dockMode"), "the dock's old pick is still read or written for new work")
+    }
+
+    private static let sources = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources")
 
     func testACopyOfAnotherFormatIsNotRead() async throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

@@ -221,7 +221,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
             planner = previewing ? ChatPlanner(syntax: session.syntax) : held.chat.planner
         } else {
             warm = nil
-            conversation = Conversation(client: session.client, store: session.store, agentId: agentId, newTask: newTask, mode: session.models.newWorkMode, persistence: session.engine)
+            conversation = Conversation(client: session.client, store: session.store, agentId: agentId, newTask: newTask, startingMode: session.models.newWorkMode, persistence: session.engine)
             planner = ChatPlanner(syntax: session.syntax)
         }
         tappedAt = previewing ? nil : session.warm.takeTap(agentId)

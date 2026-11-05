@@ -32,6 +32,13 @@ public final class NewSessionComposer {
     private var needsRefresh = false
     private var worktreeTarget: WorktreeTarget?
     private var worktreeTask: Task<Void, Never>?
+    /// The person picked a model in this compose. Until they do, a bot or a
+    /// task starts on its computer's default model, never on one the draft
+    /// remembers from an earlier compose.
+    private var modelPickedHere = false
+    /// A bot or task the draft kept from an earlier compose has been put on
+    /// its computer's default model, once, as this compose opened.
+    private var startedOnDefaults = false
 
     /// Where git worktrees are listed: a Happy CLI machine and a directory.
     struct WorktreeTarget: Equatable {
@@ -176,6 +183,7 @@ public final class NewSessionComposer {
     }
 
     public func selectModel(_ key: String) {
+        modelPickedHere = true
         drafts.setModelMode(key)
     }
 
@@ -212,13 +220,27 @@ public final class NewSessionComposer {
         let moves = target.id != choices.currentTarget?.id
         if moves { drafts.setMachineId(target.id) }
         if kind == .bot { drafts.setCreatesBot(true) } else { drafts.setCreatesTask(true) }
-        // Already Happy Agent's, the picks stay; the pickers read them
-        // against the Happy Agent it goes to.
-        guard drafts.draft.agentType != .rig else { return }
+        // Already Happy Agent's, the picks stay, read against the Happy
+        // Agent it goes to; the model is the computer's default unless one
+        // was picked in this compose.
+        guard drafts.draft.agentType != .rig else {
+            if let defaults = target.happyAgentDefaults { startOnDefaultModel(defaults) }
+            return
+        }
         // Read on the computer it goes to: these choices are another's.
         if let defaults = moves ? target.happyAgentDefaults : choices.defaults(for: .rig) {
             drafts.selectAgent(.rig, picked: true, defaults: defaults)
         }
+    }
+
+    /// A bot or task's model and effort, its computer's defaults, unless the
+    /// person picked a model in this compose.
+    private func startOnDefaultModel(_ defaults: AgentDefaults.Config) {
+        startedOnDefaults = true
+        guard !modelPickedHere, !defaults.modelMode.isEmpty else { return }
+        let effort = defaults.effortLevel.flatMap { $0.isEmpty ? nil : $0 }
+        guard drafts.draft.modelMode != defaults.modelMode || drafts.draft.effortLevel != effort else { return }
+        drafts.setModel(defaults.modelMode, effort: effort)
     }
 
     /// HomeDock.tsx `selectAgent`: the harness and the modes it starts on.
@@ -384,6 +406,12 @@ public final class NewSessionComposer {
         }
         if choices.resolvedAgent != draft.agentType {
             selectAgent(choices.resolvedAgent, picked: false)
+        }
+        // A bot or a task kept from an earlier compose starts on its
+        // computer's default model, as picking Bot or Task does.
+        if !startedOnDefaults, kind != .session, drafts.draft.agentType == .rig, let current = choices.currentTarget, current.makes(kind),
+           let defaults = current.happyAgentDefaults {
+            startOnDefaultModel(defaults)
         }
     }
 

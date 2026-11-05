@@ -4,21 +4,12 @@ import HappyLayout
 import UIKit
 
 /// One paired computer's models and its accounts' usage, read for the
-/// composer's pickers, and the pick the home dock holds for new work.
+/// composer's pickers, and what new work starts on.
 @MainActor
 final class ModelState {
     private let client: AgentClient
     private(set) var catalog: ModelCatalog?
     private(set) var usage: [String: AccountUsage] = [:]
-    /// What new work is sent with: picked on the dock before the work exists.
-    var dockMode: AgentWire.Mode? {
-        didSet {
-            guard dockMode != oldValue else { return }
-            changed()
-            let mode = dockMode
-            if let offline { Task { await offline.update { $0.dockMode = mode } } }
-        }
-    }
     private let offline: OfflineFile?
     private let store: Store?
     private var watchers: [UUID: () -> Void] = [:]
@@ -106,8 +97,9 @@ final class ModelState {
         }
     }
 
-    /// The dock's pick, or the computer's default until one is made.
-    var newWorkMode: AgentWire.Mode? { dockMode ?? catalog?.defaultMode() }
+    /// What a new bot or task starts on: the computer's default, never a
+    /// pick remembered from earlier work (a pick belongs to its own draft).
+    var newWorkMode: AgentWire.Mode? { catalog?.defaultMode() }
 
     func watch(_ watch: @escaping () -> Void) -> Watch {
         let id = UUID()
@@ -130,7 +122,6 @@ final class ModelState {
                 let catalog = kept.config.flatMap { ModelCatalog(response: Data($0.utf8)) }
                 guard let self else { return }
                 if self.catalog == nil, let catalog { self.catalog = catalog; changed() }
-                if dockMode == nil, let mode = kept.dockMode { dockMode = mode }
             }
             let read = try? await client.modelCatalogResponse()
             guard let self else { return }

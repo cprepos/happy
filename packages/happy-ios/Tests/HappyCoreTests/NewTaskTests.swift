@@ -247,6 +247,155 @@ final class NewTaskTests: XCTestCase {
     }
 }
 
+// MARK: The model new work starts on
+
+extension NewTaskTests {
+    /// The computer's configuration, declaring an Anthropic model its
+    /// default while listing Codex first.
+    static let config = #"{"config":{"defaults":{"providerId":"claude","modelId":"anthropic/opus-5-5","permissionMode":"auto"},"models":{"openai/sol":{"name":"Sol","efforts":["low","medium"],"defaultEffort":"medium"},"anthropic/opus-5-5":{"name":"Opus 5.5","efforts":["medium","high"],"defaultEffort":"high"},"anthropic/sonnet-5":{"name":"Sonnet 5","efforts":["low","medium"],"defaultEffort":"medium"}},"providers":{"codex":{"type":"codex","enabled":true,"models":[{"id":"openai/sol","enabled":true}]},"claude":{"type":"claude","enabled":true,"models":[{"id":"anthropic/opus-5-5","enabled":true},{"id":"anthropic/sonnet-5","enabled":true}]}}}}"#
+    static let live = AgentWire.Mode(providerId: "claude", modelId: "anthropic/opus-5-5", effort: "high", serviceTier: nil, permissionMode: "auto")
+    static let stale = AgentWire.Mode(providerId: "codex", modelId: "openai/sol", effort: "medium", serviceTier: nil, permissionMode: "auto")
+    static let sonnet = AgentWire.Mode(providerId: "claude", modelId: "anthropic/sonnet-5", effort: "medium", serviceTier: nil, permissionMode: "auto")
+
+    private func starting(_ computer: TaskComputer, _ task: NewTask, on mode: AgentWire.Mode?, engine: SyncEngine? = nil, store: Store? = nil) -> Conversation {
+        let client = AgentClient(transport: computer, token: "t")
+        return Conversation(client: client, store: store ?? Store(client: client), agentId: task.agentId, newTask: task, startingMode: mode, persistence: engine)
+    }
+
+    private func sentMode(_ computer: TaskComputer) async throws -> JSONValue? {
+        var writes = await computer.writes
+        for _ in 0..<150 where !writes.contains(where: { $0.path.hasSuffix("/send") }) {
+            try await Task.sleep(for: .milliseconds(20))
+            writes = await computer.writes
+        }
+        return try XCTUnwrap(writes.first { $0.path.hasSuffix("/send") }, "nothing was sent").body?["mode"]
+    }
+
+    private func expect(_ mode: JSONValue?, _ expected: AgentWire.Mode, _ message: String, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(mode?["providerId"]?.stringValue, expected.providerId, message, file: file, line: line)
+        XCTAssertEqual(mode?["modelId"]?.stringValue, expected.modelId, message, file: file, line: line)
+        XCTAssertEqual(mode?["effort"]?.stringValue, expected.effort, message, file: file, line: line)
+    }
+
+    /// A new bot or task, nothing picked, goes on the computer's default.
+    func testANewBotOrTaskSendsTheComputersDefault() async throws {
+        for kind in [NewTask.Kind.bot, .task] {
+            let computer = TaskComputer()
+            await computer.serve(config: Self.config)
+            let store = Store(client: AgentClient(transport: computer, token: "t"))
+            let task = await store.newTask()
+            task.choice = NewTask.Choice(kind: kind, name: kind == .bot ? "Helper" : "")
+            let chat = starting(computer, task, on: nil, store: store)
+            await chat.start()
+            let sent = await chat.send(id: "m1", text: "Hello")
+            XCTAssertTrue(sent)
+            expect(try await sentMode(computer), Self.live, "a new \(kind) didn't go on the computer's default")
+            await chat.stop()
+        }
+    }
+
+    /// A default kept offline from an earlier configuration is replaced by
+    /// the computer's own, read as the new work opens: shown and sent.
+    func testAStaleOfflineDefaultIsReplacedByTheLiveOne() async throws {
+        let computer = TaskComputer()
+        await computer.serve(config: Self.config)
+        let store = Store(client: AgentClient(transport: computer, token: "t"))
+        let task = await store.newTask()
+        task.choice = NewTask.Choice(kind: .bot, name: "Helper")
+        let chat = starting(computer, task, on: Self.stale, store: store)
+        var updates = chat.updates.makeAsyncIterator()
+        await chat.start()
+        var shown: AgentWire.Mode?
+        for _ in 0..<20 {
+            guard let snapshot = await updates.next() else { break }
+            shown = snapshot.mode
+            if shown == Self.live { break }
+        }
+        XCTAssertEqual(shown, Self.live, "the screen stayed on the offline default")
+        let sent = await chat.send(id: "m1", text: "Hello")
+        XCTAssertTrue(sent)
+        expect(try await sentMode(computer), Self.live, "the offline default was sent")
+        await chat.stop()
+    }
+
+    /// Out of reach, the default it started on is what goes.
+    func testUnreadTheStartingDefaultGoes() async throws {
+        let computer = TaskComputer()
+        let store = Store(client: AgentClient(transport: computer, token: "t"))
+        let task = await store.newTask()
+        let chat = starting(computer, task, on: Self.stale, store: store)
+        await chat.start()
+        let sent = await chat.send(id: "m1", text: "Hello")
+        XCTAssertTrue(sent)
+        expect(try await sentMode(computer), Self.stale, "with no configuration, the starting default didn't go")
+        await chat.stop()
+    }
+
+    /// A model picked on new work is the one sent, over the default.
+    func testAPickOnNewWorkIsSent() async throws {
+        for kind in [NewTask.Kind.bot, .task] {
+            let computer = TaskComputer()
+            await computer.serve(config: Self.config)
+            let store = Store(client: AgentClient(transport: computer, token: "t"))
+            let task = await store.newTask()
+            task.choice = NewTask.Choice(kind: kind, name: kind == .bot ? "Helper" : "")
+            let chat = starting(computer, task, on: Self.live, store: store)
+            await chat.start()
+            await chat.setMode(Self.sonnet)
+            let sent = await chat.send(id: "m1", text: "Hello")
+            XCTAssertTrue(sent)
+            expect(try await sentMode(computer), Self.sonnet, "the \(kind)'s pick wasn't sent")
+            await chat.stop()
+        }
+    }
+
+    /// A pick on an unsent task stays with that draft when it is opened
+    /// again, and the next new task starts on the default again.
+    func testAPickStaysWithItsDraftAndNeverCarriesToTheNext() async throws {
+        let computer = TaskComputer()
+        await computer.serve(config: Self.config)
+        let client = AgentClient(transport: computer, token: "t")
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("newtask-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let engine = SyncEngine(client: client, directory: root.appendingPathComponent("account"))
+        let store = engine.spaces
+        let task = await store.newTask()
+        let chat = starting(computer, task, on: Self.live, engine: engine, store: store)
+        await chat.start()
+        await chat.setMode(Self.sonnet)
+        await chat.setDraft("Half a thought", at: Date().timeIntervalSince1970 * 1000)
+        await chat.flushDraft()
+        try await Task.sleep(for: .milliseconds(700))
+        await chat.stop()
+
+        let again = await store.newTask()
+        XCTAssertTrue(again === task)
+        let reopened = starting(computer, again, on: Self.live, engine: engine, store: store)
+        var updates = reopened.updates.makeAsyncIterator()
+        await reopened.start()
+        var shown: AgentWire.Mode?
+        for _ in 0..<20 {
+            guard let snapshot = await updates.next() else { break }
+            shown = snapshot.mode
+            if snapshot.loaded, shown == Self.sonnet { break }
+        }
+        XCTAssertEqual(shown, Self.sonnet, "the pick on the unsent task didn't come back with it")
+        await reopened.stop()
+
+        // Another unsent task, never picked on, starts on the default.
+        let other = NewTask(client: client)
+        let fresh = starting(computer, other, on: Self.live, engine: engine, store: store)
+        var freshUpdates = fresh.updates.makeAsyncIterator()
+        await fresh.start()
+        var first: AgentWire.Mode?
+        while let snapshot = await freshUpdates.next() {
+            if snapshot.loaded { first = snapshot.mode; break }
+        }
+        XCTAssertEqual(first, Self.live, "another new task didn't start on the default")
+        await fresh.stop()
+    }
+}
+
 /// A computer that makes tasks under the names it is given and takes
 /// messages; `holdCreates` keeps a make waiting, `refuseCreates` refuses it.
 private actor TaskComputer: AgentTransport {
@@ -255,6 +404,10 @@ private actor TaskComputer: AgentTransport {
     private var holding = false
     private var held: [CheckedContinuation<Void, Never>] = []
     private var refusal: (status: Int, error: String?)?
+    /// `GET /v0/config`'s answer; none, and it is not found.
+    private var config: String?
+
+    func serve(config: String) { self.config = config }
 
     func holdCreates() { holding = true }
 
@@ -289,6 +442,9 @@ private actor TaskComputer: AgentTransport {
         case ("POST", "/v0/bots"):
             let agentId = body?["agentId"] ?? .string("given")
             return try json(.object(["bot": .object(["name": body?["name"] ?? .string("New Bot"), "agent": .object(["id": agentId, "workspaceId": body?["workspaceId"] ?? .null])])]), status: 201)
+        case ("GET", "/v0/config"):
+            guard let config else { return try json(.object(["error": .string("Not here.")]), status: 404) }
+            return HTTP1Response(status: 200, body: Data(config.utf8))
         case (_, let route) where route.hasSuffix("/messages"):
             return try json(.object(["runs": .array([]), "hasMore": .bool(false)]))
         case (_, let route) where route.hasSuffix("/bootstrap"):

@@ -57,6 +57,29 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(off.defaultMode(), mode("codex", "openai/sol", "medium"))
     }
 
+    /// A computer listing Codex first but declaring an Anthropic model its
+    /// default starts new work on that model, never on the first account.
+    func testTheDeclaredAnthropicDefaultWinsOverTheFirstAccount() {
+        let response = """
+        {"config": {
+            "defaults": {"providerId": "claude", "modelId": "anthropic/opus-5-5", "permissionMode": "auto"},
+            "models": {
+                "openai/sol": {"name": "GPT Sol", "efforts": ["low", "medium", "high"], "defaultEffort": "medium", "serviceTiers": []},
+                "anthropic/opus-5-5": {"name": "Opus 5.5", "efforts": ["low", "medium", "high", "max"], "defaultEffort": "high", "serviceTiers": []},
+                "anthropic/sonnet-5": {"name": "Sonnet 5", "efforts": ["low", "medium", "high"], "defaultEffort": "medium", "serviceTiers": []}
+            },
+            "providers": {
+                "codex": {"type": "codex", "enabled": true, "models": [{"id": "openai/sol", "enabled": true}]},
+                "claude": {"type": "claude", "enabled": true,
+                    "models": [{"id": "anthropic/sonnet-5", "enabled": true}, {"id": "anthropic/opus-5-5", "enabled": true}]}
+            }
+        }}
+        """
+        let catalog = ModelCatalog(response: Data(response.utf8))!
+        XCTAssertEqual(catalog.providers.first?.id, "codex")
+        XCTAssertEqual(catalog.defaultMode(), mode("claude", "anthropic/opus-5-5", "high"))
+    }
+
     func testPickingAModelTakesItsDefaultEffortAndDropsASpeedItLacks() {
         let catalog = catalog
         var current = mode("codex", "openai/sol", "xhigh")

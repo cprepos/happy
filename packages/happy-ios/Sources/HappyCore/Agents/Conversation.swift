@@ -345,6 +345,9 @@ public actor Conversation {
         var mode: AgentWire.Mode?
         var hasMore: Bool
         var slashCommands: [AgentWire.SlashCommand]?
+        /// `mode` was the person's pick, not the computer's default it
+        /// started on; absent in what was kept before it was told apart.
+        var modePicked: Bool?
     }
     private var agentId: String
     private let continuation: AsyncStream<ChatSnapshot>.Continuation
@@ -406,6 +409,10 @@ public actor Conversation {
     /// A mode the person chose here; what the daemon last ran with never
     /// replaces it.
     private var picked: AgentWire.Mode?
+    /// New work's mode is the computer's default it started on, not a pick:
+    /// the computer's own default, once read, replaces it (one kept offline
+    /// may be out of date), until the person picks one.
+    private var followsDefault = false
     private var defaultMode: Task<AgentWire.Mode, Error>?
     /// The agent's own state, for the working line.
     private var status = "idle"
@@ -442,8 +449,11 @@ public actor Conversation {
     static let draftDebounce: Duration = .milliseconds(300)
 
     /// `newTask` opens the conversation of a task its first message makes,
-    /// under the ID named for it here.
-    public init(client: AgentClient, store: Store, agentId: String, newTask: NewTask? = nil, mode: AgentWire.Mode? = nil, persistence: SyncEngine? = nil) {
+    /// under the ID named for it here. `mode` is a pick the next message
+    /// goes with; `startingMode` is the default new work starts on, shown
+    /// and sent until the computer's own default is read or a pick is made.
+    public init(client: AgentClient, store: Store, agentId: String, newTask: NewTask? = nil, mode: AgentWire.Mode? = nil, startingMode: AgentWire.Mode? = nil,
+                persistence: SyncEngine? = nil) {
         self.client = client
         self.store = store
         self.persistence = persistence
@@ -451,8 +461,9 @@ public actor Conversation {
         self.creation = newTask
         (updates, continuation) = AsyncStream.makeStream(of: ChatSnapshot.self, bufferingPolicy: .bufferingNewest(1))
         picked = mode
-        self.mode = mode
-        snapshot.mode = mode
+        followsDefault = mode == nil && newTask != nil
+        self.mode = mode ?? startingMode
+        snapshot.mode = self.mode
     }
 
     // MARK: Life
@@ -472,6 +483,7 @@ public actor Conversation {
             snapshot.loaded = true
             publish()
             defaultMode = Task { [client] in try await client.defaultMode() }
+            if followsDefault { Task { _ = try? await self.sendingMode() } }
             following = Task {
                 guard let id = try? await creation.made(), !Task.isCancelled else { return }
                 await self.created(id)
@@ -1158,7 +1170,17 @@ public actor Conversation {
         outgoingTimes = Dictionary(kept.outgoing.compactMap { send in send.at.map { (send.id, $0) } }, uniquingKeysWith: { first, _ in first })
         outgoingTools = Dictionary(kept.outgoing.compactMap { send in send.toolRequest.map { (send.id, $0) } }, uniquingKeysWith: { first, _ in first })
         if let commands = kept.slashCommands { snapshot.slashCommands = commands }
-        mode = picked ?? kept.mode
+        if followsDefault {
+            // An unsent bot or task keeps the person's own pick; the default
+            // it started on is the computer's, read again.
+            if kept.modePicked == true, let pick = kept.mode {
+                picked = pick
+                mode = pick
+                followsDefault = false
+            }
+        } else {
+            mode = picked ?? kept.mode
+        }
         snapshot.mode = mode
         snapshot.hasMore = kept.hasMore
         snapshot.loaded = true
@@ -1209,7 +1231,8 @@ public actor Conversation {
         let window = Self.kept(runs: runs, messages: messages, pending: pending)
         let kept = KeptConversation(runs: window.runs.map { .init(id: $0.id, messageIds: $0.messageIds, time: times[$0.id]) }, messages: window.messages, pending: pending,
             outgoing: outgoing.filter({ held[$0.id] == nil }).map { .init(id: $0.id, text: $0.text, pictures: $0.pictures.map { .init(mimeType: $0.mimeType, data: $0.data) }, accepted: $0.accepted, failure: $0.failure, mode: outgoingModes[$0.id], files: outgoingFiles[$0.id], at: outgoingTimes[$0.id],
-                toolRequest: outgoingTools[$0.id]) }, mode: mode, hasMore: snapshot.hasMore || window.trimmed, slashCommands: snapshot.slashCommands)
+                toolRequest: outgoingTools[$0.id]) }, mode: mode, hasMore: snapshot.hasMore || window.trimmed, slashCommands: snapshot.slashCommands,
+            modePicked: picked != nil ? true : nil)
         guard kept != lastKept || conversationWrite != nil else { return true }
         let key = "conversation:\(agentId)"
         let claim = checkpointClaim(for: key)
@@ -1298,6 +1321,7 @@ public actor Conversation {
     /// The next message goes with this model, account and effort.
     public func setMode(_ mode: AgentWire.Mode) {
         picked = mode
+        followsDefault = false
         self.mode = mode
         snapshot.mode = mode
         publish()
@@ -1310,6 +1334,7 @@ public actor Conversation {
     }
 
     private func sendingMode() async throws -> AgentWire.Mode {
+        if followsDefault { return try await liveDefault() }
         if let mode { return mode }
         let task = defaultMode ?? Task { [client] in try await client.defaultMode() }
         defaultMode = task
@@ -1325,6 +1350,29 @@ public actor Conversation {
             return mode
         } catch {
             defaultMode = nil
+            throw error
+        }
+    }
+
+    /// New work's default, read from the computer: it replaces the one it
+    /// started on, and a pick made meanwhile wins. Unread (the computer out
+    /// of reach), the one it started on goes.
+    private func liveDefault() async throws -> AgentWire.Mode {
+        let task = defaultMode ?? Task { [client] in try await client.defaultMode() }
+        defaultMode = task
+        do {
+            let live = try await task.value
+            guard followsDefault else { return mode ?? live }
+            followsDefault = false
+            if mode != live {
+                mode = live
+                snapshot.mode = live
+                publish()
+            }
+            return live
+        } catch {
+            if defaultMode == task { defaultMode = nil }
+            if let mode { return mode }
             throw error
         }
     }

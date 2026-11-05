@@ -285,6 +285,13 @@ public final class NewSessionDraftStore {
 
     public func setPermissionMode(_ mode: String) { update { $0.permissionMode = mode } }
     public func setModelMode(_ mode: String) { update { $0.modelMode = mode } }
+    /// A model with the effort it starts on, none being its own default.
+    public func setModel(_ mode: String, effort: String?) {
+        update {
+            $0.modelMode = mode
+            $0.effortLevel = effort.flatMap { $0.isEmpty ? nil : $0 }
+        }
+    }
     public func setEffortLevel(_ level: String) { update { $0.effortLevel = level } }
     public func setSessionType(_ type: NewSessionDraft.SessionType) { update { $0.sessionType = type } }
     public func setWorktreeKey(_ key: String?) { update { $0.worktreeKey = key } }

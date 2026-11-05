@@ -2089,6 +2089,116 @@ extension NewSessionChoicesTests {
         XCTAssertEqual(dock.prompt, "", "home's dock still makes a bot from its name alone")
     }
 
+    // MARK: A bot or a task starts on its computer's default model
+
+    /// A Happy Agent computer declaring the Anthropic model its default.
+    private func anthropicDefaultRig(_ id: String, sibling: String?) -> MachineRecord {
+        var record = rigMachine(id, sibling: sibling, bots: true, tasks: true)
+        var metadata = record.metadata?.objectValue ?? [:]
+        metadata["defaults"] = .object([
+            "providerId": .string("claude"), "modelId": .string("shared-model"), "permissionMode": .string("auto"),
+        ])
+        record.metadata = .object(metadata)
+        return record
+    }
+
+    /// The draft remembers Codex from an earlier compose; picking Bot or
+    /// Task starts on the computer's default instead, and the spawn asks
+    /// for it.
+    @MainActor
+    func testBotOrTaskStartsOnTheComputersDefaultOverARememberedPick() async throws {
+        for kind in [HomeDockKind.bot, .task] {
+            let machines = [machine("m1"), anthropicDefaultRig("rig1", sibling: "m1")]
+            let composer = await composer(NewSessionDraft(selectedMachineId: "rig1", agentType: .rig, pickedAgentType: .rig, permissionMode: "read_only",
+                                                          modelMode: "codex:shared-model", effortLevel: "low"), machines: machines)
+            XCTAssertEqual(composer.drafts.draft.modelMode, "codex:shared-model", "a session compose keeps its harness's picks")
+            composer.selectKind(kind)
+            await composer.waitForIdle()
+            XCTAssertEqual(composer.drafts.draft.modelMode, "claude:shared-model", "the remembered pick won over the computer's default")
+            XCTAssertEqual(composer.drafts.draft.effortLevel, "max", "the default model's own effort")
+            XCTAssertEqual(composer.drafts.draft.permissionMode, "read_only", "the permission picked stays")
+            let chips = ComposerChipSet(choices: composer.choices, titles: Self.chipTitles)
+            XCTAssertEqual(chips.model.selectedKey, "claude:shared-model")
+
+            let ops = FakeOps()
+            let starter = Self.starter(ops: ops, sender: FakeSender())
+            await ops.script([.success(sessionId: "s1")])
+            if kind == .bot { composer.drafts.setBotName("Captain"); await composer.waitForIdle() }
+            let launch = kind == .bot
+                ? try await composer.launchBotPrepared(prompt: "Hi", attachments: []).get()
+                : try await composer.launchTaskPrepared(prompt: "Hi", attachments: []).get()
+            _ = await starter.start(launch, isCurrentTarget: { true })
+            let spawned = await ops.spawned
+            XCTAssertEqual(spawned.map(\.providerId), ["claude"], "\(kind)")
+            XCTAssertEqual(spawned.map(\.modelId), ["shared-model"], "\(kind)")
+        }
+    }
+
+    /// A model picked in this compose is the one the bot or task goes with,
+    /// across Bot and Task, and reaches the spawn.
+    @MainActor
+    func testAModelPickedInThisComposeStaysForBotAndTask() async throws {
+        let machines = [machine("m1"), anthropicDefaultRig("rig1", sibling: "m1")]
+        let composer = await composer(NewSessionDraft(selectedMachineId: "m1", agentType: .claude, pickedAgentType: .claude), machines: machines)
+        composer.selectKind(.task)
+        await composer.waitForIdle()
+        XCTAssertEqual(composer.drafts.draft.modelMode, "claude:shared-model")
+        composer.selectModel("codex:shared-model")
+        composer.selectKind(.bot)
+        await composer.waitForIdle()
+        XCTAssertEqual(composer.drafts.draft.modelMode, "codex:shared-model", "the pick made here was replaced")
+        composer.selectKind(.task)
+        await composer.waitForIdle()
+        XCTAssertEqual(composer.drafts.draft.modelMode, "codex:shared-model")
+
+        let ops = FakeOps()
+        let starter = Self.starter(ops: ops, sender: FakeSender())
+        await ops.script([.success(sessionId: "t1")])
+        let task = try await composer.launchTaskPrepared(prompt: "Hi", attachments: []).get()
+        _ = await starter.start(task, isCurrentTarget: { true })
+        let spawned = await ops.spawned
+        XCTAssertEqual(spawned.map(\.providerId), ["codex"])
+        XCTAssertEqual(spawned.map(\.modelId), ["shared-model"])
+    }
+
+    /// A bot or task kept from an earlier compose opens on its computer's
+    /// default, not the model that compose picked; a new compose's pick
+    /// then stands.
+    @MainActor
+    func testAKeptBotOrTaskOpensOnTheDefault() async throws {
+        let machines = [machine("m1"), anthropicDefaultRig("rig1", sibling: "m1")]
+        let drafts = NewSessionDraftStore(settings: LocalSettings(storage: InMemoryKeyValueStore()))
+        drafts.selectAgent(.rig, picked: true, defaults: AgentDefaults.Config(permissionMode: "auto", modelMode: "codex:shared-model", effortLevel: "low"))
+        drafts.renameMachineId("rig1")
+        drafts.setCreatesTask(true)
+        let snapshot = LegacyHomeSnapshot(machines: MachinesSnapshot(synced: true, machines: machines), sessions: [])
+        let composer = NewSessionComposer(drafts: drafts, snapshot: snapshot, ops: FakeOps())
+        await composer.waitForIdle()
+        XCTAssertTrue(drafts.createsTask)
+        XCTAssertEqual(drafts.draft.modelMode, "claude:shared-model", "the kept task opened on the earlier compose's model")
+
+        composer.selectModel("codex:shared-model")
+        composer.update(snapshot: snapshot)
+        await composer.waitForIdle()
+        XCTAssertEqual(drafts.draft.modelMode, "codex:shared-model", "a pick in this compose was put back to the default")
+    }
+
+    /// A plain Happy CLI session keeps its remembered picks.
+    @MainActor
+    func testASessionKeepsItsRememberedModel() async throws {
+        let machines = [machine("m1"), anthropicDefaultRig("rig1", sibling: "m1")]
+        let drafts = NewSessionDraftStore(settings: LocalSettings(storage: InMemoryKeyValueStore()))
+        drafts.selectAgent(.rig, picked: true, defaults: AgentDefaults.Config(permissionMode: "auto", modelMode: "codex:shared-model", effortLevel: "low"))
+        drafts.renameMachineId("rig1")
+        let composer = NewSessionComposer(drafts: drafts, snapshot: LegacyHomeSnapshot(machines: MachinesSnapshot(synced: true, machines: machines), sessions: []), ops: FakeOps())
+        await composer.waitForIdle()
+        XCTAssertEqual(composer.kind, .session)
+        XCTAssertEqual(drafts.draft.modelMode, "codex:shared-model")
+        composer.selectKind(.session)
+        await composer.waitForIdle()
+        XCTAssertEqual(drafts.draft.modelMode, "codex:shared-model")
+    }
+
     /// A computer picked for a session whose Happy Agent can't make a task
     /// drops the task and moves the harness to one it runs. Picking Task
     /// again goes back to a computer that makes tasks: the kind is never

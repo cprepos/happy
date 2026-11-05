@@ -6,7 +6,7 @@ import HappyWire
 /// opens on it with the computer asleep or out of reach: the sidebar as
 /// last read (its document, spaces, bots, tasks, Surfaces and
 /// Prioritizing), the computer's model configuration for the
-/// pickers, the dock's pick, and the pictures the rows wear.
+/// pickers, and the pictures the rows wear.
 ///
 /// One folder per computer, `V2/<account>/` under Application
 /// Support: `snapshot.json` and `pictures/`. Removing the computer removes
@@ -33,7 +33,9 @@ public struct OfflineSnapshot: Codable, Equatable, Sendable {
     public var sidebar: Sidebar?
     /// `GET /v0/config` as the computer sent it: its order is the pickers'.
     public var config: String?
-    /// What new work goes with, picked on the dock.
+    /// The pick the removed home dock kept for new work. Still read, so a
+    /// copy that has it loads, but ignored: new work starts on the
+    /// computer's default (`ModelState.newWorkMode`).
     public var dockMode: AgentWire.Mode?
 
     public init() {}
