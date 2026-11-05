@@ -269,6 +269,7 @@ final class LiveBrowserDock: NSObject {
         VoiceCoordinator.shared.minimizeSheet()
         if let player {
             player.pulse()
+            feed.kick()
             return
         }
         let player = LiveBrowserPlayerView()
@@ -282,6 +283,8 @@ final class LiveBrowserDock: NSObject {
         player.onTap = { [weak self] in self?.presentFullScreen(taking: false) }
         player.onDrop = { [weak self] center in self?.drop(at: center) }
         feed.attach(player, visible: isOnScreen, frames: true, fast: large) { [weak player] feed in player?.show(feed) }
+        // Shown again after X: a poll that stalled starts over.
+        feed.kick()
         player.show(feed)
         if let view = host?.viewIfLoaded { view.addSubview(player) }
         if let placed { layoutPlayer(card: placed.card, anchor: placed.anchor) }
@@ -393,8 +396,19 @@ final class LiveBrowserDock: NSObject {
 
     private func dismissFullScreen(animated: Bool) {
         guard let fullScreen else { return }
+        self.fullScreen = nil
         feed?.detach(fullScreen)
-        fullScreen.dismiss(animated: animated)
+        // The chat shows again: said here too, not only by its
+        // appearance, which a zoom back to the player can leave unsaid,
+        // and the player's reading with it.
+        fullScreen.dismiss(animated: animated) { [weak self] in self?.hostShows() }
+    }
+
+    /// The chat is on screen when its view is in a window again.
+    private func hostShows() {
+        guard let view = host?.viewIfLoaded, view.window != nil else { return }
+        setOnScreen(true)
+        feed?.kick()
     }
 
     /// The noVNC page on top of the full screen, while there is one.
@@ -774,6 +788,8 @@ final class LiveBrowserPlayerView: UIView {
     private let spinner = UIActivityIndicatorView(style: .medium)
     private var layout: LiveBrowserDockLayout?
     private var frameBytes: Data?
+    /// The picture shown now (tests).
+    var shownImage: UIImage? { picture.image }
     private var dragStart = CGPoint.zero
 
     override init(frame: CGRect) {
