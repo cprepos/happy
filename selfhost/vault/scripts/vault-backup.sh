@@ -18,6 +18,8 @@ CONTAINER="$(docker compose -p happy-vault -f "$HERE/compose.vault.yml" ps -q va
 
 case "${1:-}" in
   backup)
+    # Before make vault-init there is nothing to back up; the timer stays quiet.
+    [[ -d "$ROOT/data" ]] || { echo "vault-backup: $ROOT not set up yet (make vault-init); skipped"; exit 0; }
     [[ -n "$CONTAINER" ]] || { echo "vault-backup: vaultwarden is not running (make vault-up)" >&2; exit 1; }
     ts="$(date -u +%Y%m%dT%H%M%SZ)"
     docker exec "$CONTAINER" /vaultwarden backup >/dev/null
