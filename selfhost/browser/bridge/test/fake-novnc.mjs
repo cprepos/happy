@@ -19,6 +19,8 @@ export async function fakeNovnc(name) {
         seen.sockets.add(socket);
         socket.on('close', () => seen.sockets.delete(socket));
         socket.on('error', () => {});
+        // Like websockify: a missing or foreign Origin gets 403 Invalid Origin.
+        if (req.headers.origin !== `http://${req.headers.host}`) { socket.end('HTTP/1.1 403 Invalid Origin\r\n\r\n'); return; }
         const accept = createHash('sha1').update(req.headers['sec-websocket-key'] + WS_GUID).digest('base64');
         socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n`
             + `${req.headers['sec-websocket-protocol'] ? 'Sec-WebSocket-Protocol: binary\r\n' : ''}Set-Cookie: up=1\r\n\r\nhello:${name}`);

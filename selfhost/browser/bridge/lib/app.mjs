@@ -635,8 +635,10 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         store.touch(rec);
         if (podLink(rec)) pods.touchViewer(rec.chatKey);
 
-        const lines = ['GET /websockify HTTP/1.1', `Host: 127.0.0.1:${target.port}`, 'Upgrade: websocket', 'Connection: Upgrade',
-            `Sec-WebSocket-Key: ${key}`, 'Sec-WebSocket-Version: 13'];
+        // websockify answers 403 Invalid Origin unless Origin matches its own host, so the bridge
+        // speaks as that origin. The viewer's own Host was checked above and its link id is the capability.
+        const lines = ['GET /websockify HTTP/1.1', `Host: 127.0.0.1:${target.port}`, `Origin: http://127.0.0.1:${target.port}`,
+            'Upgrade: websocket', 'Connection: Upgrade', `Sec-WebSocket-Key: ${key}`, 'Sec-WebSocket-Version: 13'];
         const proto = req.headers['sec-websocket-protocol'];
         if (typeof proto === 'string' && WS_PROTOCOL.test(proto)) lines.push(`Sec-WebSocket-Protocol: ${proto}`);
         up.write(`${lines.join('\r\n')}\r\n\r\n`);
