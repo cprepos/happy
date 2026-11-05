@@ -78,3 +78,6 @@ filler-audit:
 
 filler-test:
 	cd $(FILLER_DIR) && node --test --test-timeout=30000 test/*.test.mjs
+
+filler-smoke:
+	cd $(FILLER_DIR) && timeout 120 node test/smoke.mjs
