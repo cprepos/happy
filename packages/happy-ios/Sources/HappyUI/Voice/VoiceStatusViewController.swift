@@ -7,9 +7,14 @@ import UIKit
 /// size and in landscape. Dismissing the sheet leaves the call running;
 /// the composer's microphone opens these controls again.
 @MainActor
-final class VoiceStatusViewController: UIViewController {
+final class VoiceStatusViewController: UIViewController, UISheetPresentationControllerDelegate {
+    /// The strip detent: the bar, which says the call's status and holds
+    /// the mute button.
+    static let stripHeight: CGFloat = 120
+
     private let coordinator: VoiceCoordinator
     private let list = GroupedListView()
+    private let mute = UIBarButtonItem()
     init(coordinator: VoiceCoordinator) {
         self.coordinator = coordinator
         super.init(nibName: nil, bundle: nil)
@@ -21,7 +26,40 @@ final class VoiceStatusViewController: UIViewController {
         super.viewDidLoad()
         title = Strings.Voice.title
         navigationItem.rightBarButtonItem = UIBarButtonItem(title: Strings.Voice.done, primaryAction: UIAction { [weak self] _ in self?.dismiss(animated: true) })
+        mute.primaryAction = UIAction { [weak self] _ in self?.coordinator.toggleMute() }
+        mute.accessibilityIdentifier = "voice-strip-mute"
+        // A tap on the strip opens the sheet to half height; elsewhere it
+        // changes nothing.
+        let tap = UITapGestureRecognizer(target: self, action: #selector(stripTapped))
+        tap.cancelsTouchesInView = false
+        view.addGestureRecognizer(tap)
         update(coordinator.state)
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        if let bar = navigationController?.navigationBar, bar.gestureRecognizers?.contains(where: { $0.name == "voice-strip" }) != true {
+            let tap = UITapGestureRecognizer(target: self, action: #selector(stripTapped))
+            tap.name = "voice-strip"
+            tap.cancelsTouchesInView = false
+            bar.addGestureRecognizer(tap)
+        }
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        NotificationCenter.default.post(name: .voiceSheetChanged, object: coordinator)
+    }
+
+    var isStrip: Bool { navigationController?.sheetPresentationController?.selectedDetentIdentifier == .voiceStrip }
+
+    @objc private func stripTapped() {
+        guard isStrip else { return }
+        coordinator.expandSheet()
+    }
+
+    func sheetPresentationControllerDidChangeSelectedDetentIdentifier(_ sheet: UISheetPresentationController) {
+        NotificationCenter.default.post(name: .voiceSheetChanged, object: coordinator)
     }
 
     /// Only a call through ElevenLabs shares context with it.
@@ -65,6 +103,16 @@ final class VoiceStatusViewController: UIViewController {
                     if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
                 })
             }
+        }
+        // The strip shows the bar alone: the status under the title, and
+        // the mute button while the call is live.
+        navigationItem.subtitle = title
+        if case .active(_, let muted) = state {
+            mute.image = UIImage(systemName: muted ? "mic.slash.fill" : "mic.fill")
+            mute.accessibilityLabel = muted ? Strings.Voice.unmute : Strings.Voice.mute
+            navigationItem.leftBarButtonItem = mute
+        } else {
+            navigationItem.leftBarButtonItem = nil
         }
         let status = ItemRowView(title: title, icon: ItemIcon(.ionicons("mic-outline"), tint: Palette.iconBlue))
         status.showsChevron = false
