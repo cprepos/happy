@@ -5,13 +5,14 @@ Use through make (selfhost/Makefile):
   make mcp-register          add the servers where they are missing
   make mcp-unregister        remove what mcp-register added (and only that)
   make mcp-register DRY=1    say what would change, write nothing
+  make mcp-register NO_REMOTE=1   leave the Macs alone
 
 Servers:
   happy-browser-bridge  node selfhost/browser/bridge/mcp.mjs (reads its tokens
                         from their own files; no token is written anywhere)
   vault                 node selfhost/vault-mcp/mcp.mjs, only if that file exists
 
-Files (each one that exists, or that its harness reads, is edited in place):
+Files here (each one that exists, or that its harness reads, is edited in place):
   ~/.codex/config.toml                              [mcp_servers.<name>], env_vars forwards HAPPY_SESSION_ID
                                                     and HAPPY_FORKED_FROM_SESSION_ID
   ~/.config/opencode/opencode.json                  "mcp": {type local, command [...]}
@@ -19,21 +20,33 @@ Files (each one that exists, or that its harness reads, is edited in place):
   ~/.gemini/config/mcp_config.json                  "mcpServers" (Antigravity / agy)
   ~/.claude.json                                    top-level "mcpServers", stdio
   ~/.local/share/happy-agent/happy/config/mcp.toml  [mcp_servers.<name>] (container paths)
-  prep-pro:~/.gemini/antigravity/mcp_config.json    over `ssh prep-ml`, only if prep-pro
-                                                    reaches prep-ml without a password
+
+Files on the Macs (REMOTES below), over ssh, for the harnesses installed there.
+Each Mac is used only if `ssh <mac> 'ssh -o BatchMode=yes prep-ml true'` works.
+A missing file is created only when its folder exists. Their entries run the
+servers on prep-ml through a `/bin/sh -c` wrapper (remote_wrapper): ssh forwards
+no environment, so the wrapper puts HAPPY_SESSION_ID, CLAUDE_CODE_SESSION_ID and
+HAPPY_FORKED_FROM_SESSION_ID on the remote command line, each one blanked
+unless it matches ^[A-Za-z0-9_-]{1,128}$ (prep-ml's shell parses it again).
 
 Before a file is changed its original is copied to
-/home/prep/happy/trash/<ts>_mcp-configs/. Everything else in each file is kept.
-An entry already pointing at the same server script, under any name, is left
-alone. What was added is recorded in ~/.local/share/happy-mcp-register/state.json
-so that unregister removes only that. In an entry recorded there (and only
-there), names missing from its env_vars list are added on the next register.
+/home/prep/happy/trash/<ts>_mcp-configs/ (a Mac's to ~/happy-trash/<ts>_mcp-configs/
+on that Mac). Everything else in each file is kept. An entry already pointing at
+the same server script, under any name, is left alone, except that on the Macs
+an entry recorded as ours is brought up to date (the older plain `ssh prep-ml
+node ...` ones). What was added is recorded in
+~/.local/share/happy-mcp-register/state.json so that unregister removes only
+that (and moves a file it created on a Mac to that Mac's trash). In an entry
+recorded there (and only there), names missing from its env_vars list are added
+on the next register.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -50,9 +63,20 @@ HOST_NODE = shutil.which("node") or "/usr/bin/node"
 AGENT_NODE = "/usr/local/bin/node"
 # Harnesses with a tool time limit: browser_wait_for_human returns inside it.
 WAIT = {"BRIDGE_WAIT_MAX_S": "570"}
-REMOTE_HOST = "prep-pro"
+RUN_TS = time.strftime("%Y%m%d_%H%M%S")
+
+# The Macs: which harness configs to edit on each (the ones installed there).
 REMOTE_HOP = "prep-ml"
-REMOTE_FILE = "~/.gemini/antigravity/mcp_config.json"
+REMOTE_NODE = "/usr/bin/node"   # on prep-ml
+WRAP_SSH = "/usr/bin/ssh"       # on the Mac
+REMOTE_TRASH = "~/happy-trash"  # on the Mac
+REMOTES = [
+    ("prep-air", ["claude", "gemini", "happy-agent"]),
+    ("prep-pro", ["claude", "codex", "opencode", "gemini", "antigravity", "happy-agent"]),
+]
+# The chat ids a Mac harness hands its MCP servers, passed on to prep-ml.
+SESSION_VARS = ["HAPPY_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "HAPPY_FORKED_FROM_SESSION_ID"]
+ID_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
 
 MARK_BEGIN = "# >>> happy mcp-register: {name}"
 MARK_END = "# <<< happy mcp-register: {name}"
@@ -64,6 +88,40 @@ def servers():
     if os.path.isfile(VAULT):
         out.append(("vault", VAULT, {}))
     return out
+
+
+# ---------------------------------------------------------------- the Mac wrapper
+
+SAFE_WORD = re.compile(r"^[A-Za-z0-9_./:-]+$")
+SAFE_KEY = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+
+
+def remote_wrapper(script, env, ssh=WRAP_SSH, hop=REMOTE_HOP, node=REMOTE_NODE):
+    """The `/bin/sh -c` text that runs `script` on prep-ml over ssh with the chat's ids.
+
+    Each id is checked against ^[A-Za-z0-9_-]{1,128}$ and blanked if it fails: the
+    remote command is a string that prep-ml's shell parses again. The character
+    list is spelled out (no ranges), so the check does not depend on the locale.
+    Everything else in it is fixed here and checked to need no quoting.
+    """
+    for w in (ssh, hop, node, script):
+        if not SAFE_WORD.match(w):
+            raise ValueError("unsafe word for the remote command: %r" % w)
+    for k, v in env.items():
+        if not SAFE_KEY.match(k) or not SAFE_WORD.match(v):
+            raise ValueError("unsafe env for the remote command: %r" % k)
+    parts = ['ok() { case "$1" in ""|*[!%s]*) return 1;; esac; [ ${#1} -le 128 ]; }' % ID_CHARS]
+    for i, var in enumerate(SESSION_VARS):
+        parts.append('v%d=; ok "${%s-}" && v%d="$%s"' % (i, var, i, var))
+    remote = ['%s="$v%d"' % (var, i) for i, var in enumerate(SESSION_VARS)]
+    remote += ["%s=%s" % (k, v) for k, v in sorted(env.items())]
+    remote += [node, script]
+    parts.append("exec %s -o BatchMode=yes -o LogLevel=ERROR %s %s" % (ssh, hop, " ".join(remote)))
+    return "; ".join(parts)
+
+
+def remote_argv(script, env):
+    return ["-c", remote_wrapper(script, env)]
 
 
 # ---------------------------------------------------------------- state
@@ -96,7 +154,7 @@ class Backup:
 
     def folder(self):
         if self.dir is None:
-            self.dir = os.path.join(TRASH, time.strftime("%Y%m%d_%H%M%S") + "_mcp-configs")
+            self.dir = os.path.join(TRASH, RUN_TS + "_mcp-configs")
             if not self.dry:
                 os.makedirs(self.dir, exist_ok=True)
         return self.dir
@@ -110,15 +168,6 @@ class Backup:
             shutil.copy2(real, dest)
             with open(os.path.join(self.dir, "MOVED.txt"), "a") as f:
                 f.write("%s -> %s (copy of the original, before mcp-register edited it)\n" % (real, name))
-        return dest
-
-    def save_text(self, label, text):
-        dest = os.path.join(self.folder(), label)
-        if not self.dry:
-            with open(dest, "w") as f:
-                f.write(text)
-            with open(os.path.join(self.dir, "MOVED.txt"), "a") as f:
-                f.write("%s -> %s (copy of the original, before mcp-register edited it)\n" % (label.replace("__", "/"), label))
         return dest
 
 
@@ -144,6 +193,201 @@ def read_text(path):
         return None
 
 
+class LocalIO:
+    """Files on this machine."""
+    remote = False
+
+    def label(self, path):
+        return os.path.expanduser(path)
+
+    def available(self, report):
+        return True
+
+    def read(self, path):
+        return read_text(os.path.expanduser(path))
+
+    def may_create(self, path):
+        return True
+
+    def write(self, path, text, dry):
+        write_text(os.path.expanduser(path), text, dry)
+
+    def backup(self, path, backup, dry):
+        return backup.save(os.path.expanduser(path))
+
+    def trash(self, path, dry):
+        raise RuntimeError("local files are never moved out")
+
+
+LOCAL = LocalIO()
+
+SSH = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "LogLevel=ERROR"]
+
+# Runs on the Mac with its own python3. Paths go through realpath, so a symlinked
+# config stays a symlink. Prints JSON for read, the destination for backup/trash.
+REMOTE_HELPER = r'''
+import json, os, shutil, sys
+op, p = sys.argv[1], os.path.expanduser(sys.argv[2])
+r = os.path.realpath(p)
+if op == "read":
+    out = {"exists": os.path.exists(r), "parent": os.path.isdir(os.path.dirname(r))}
+    if out["exists"]:
+        with open(r) as f:
+            out["text"] = f.read()
+    sys.stdout.write(json.dumps(out))
+elif op == "write":
+    data = sys.stdin.read()
+    mode = os.stat(r).st_mode & 0o777 if os.path.exists(r) else 0o600
+    tmp = r + ".mcp-register.tmp"
+    with open(tmp, "w") as f:
+        f.write(data)
+    os.chmod(tmp, mode)
+    os.replace(tmp, r)
+elif op in ("backup", "trash"):
+    d = os.path.expanduser(sys.argv[3])
+    os.makedirs(d, exist_ok=True)
+    name = r.strip("/").replace("/", "__")
+    dest = os.path.join(d, name)
+    if op == "backup":
+        shutil.copy2(r, dest)
+        why = "copy of the original, before mcp-register edited it"
+    else:
+        shutil.move(r, dest)
+        why = "created by mcp-register, moved here by mcp-unregister"
+    with open(os.path.join(d, "MOVED.txt"), "a") as f:
+        f.write("%s -> %s (%s)\n" % (r, name, why))
+    sys.stdout.write(dest)
+elif op == "restore":
+    src, d = sys.argv[3], os.path.expanduser(sys.argv[4])
+    if not os.path.isfile(src):
+        sys.exit("no backup at " + src)
+    os.makedirs(d, exist_ok=True)
+    name = r.strip("/").replace("/", "__") + ".before-unregister"
+    shutil.copy2(r, os.path.join(d, name))
+    with open(os.path.join(d, "MOVED.txt"), "a") as f:
+        f.write("%s -> %s (copy before mcp-unregister put back %s)\n" % (r, name, src))
+    mode = os.stat(r).st_mode & 0o777
+    tmp = r + ".mcp-register.tmp"
+    shutil.copyfile(src, tmp)
+    os.chmod(tmp, mode)
+    os.replace(tmp, r)
+    sys.stdout.write(os.path.join(d, name))
+else:
+    sys.exit("unknown op " + op)
+'''
+
+PROBED = {}
+
+
+class RemoteIO:
+    """Files on a Mac, read and written over ssh by REMOTE_HELPER."""
+    remote = True
+
+    def __init__(self, host):
+        self.host = host
+        self.parents = {}
+
+    def label(self, path):
+        return "%s:%s" % (self.host, path)
+
+    def trash_dir(self):
+        return "%s/%s_mcp-configs" % (REMOTE_TRASH, RUN_TS)
+
+    def available(self, report):
+        """`ssh <mac> 'ssh -o BatchMode=yes prep-ml true'`, once per Mac per run."""
+        if self.host not in PROBED:
+            probe = SSH + [self.host, "ssh -o BatchMode=yes -o ConnectTimeout=10 %s true" % REMOTE_HOP]
+            try:
+                r = subprocess.run(probe, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=40)
+                ok, why = r.returncode == 0, "exit %d" % r.returncode
+            except (OSError, subprocess.TimeoutExpired) as e:
+                ok, why = False, type(e).__name__
+            PROBED[self.host] = ok
+            if ok:
+                report.append("%s: `ssh -o BatchMode=yes %s true` works" % (self.host, REMOTE_HOP))
+            else:
+                report.append("%s: `ssh %s true` does not work without a password (%s); its configs left alone"
+                              % (self.host, REMOTE_HOP, why))
+        return PROBED[self.host]
+
+    def run(self, args, stdin=None):
+        cmd = " ".join(shlex.quote(a) for a in ["/usr/bin/python3", "-c", REMOTE_HELPER] + args)
+        r = subprocess.run(SSH + [self.host, cmd], input=stdin, capture_output=True, text=True, timeout=60)
+        if r.returncode != 0:
+            raise RuntimeError("%s: %s %s failed (exit %d): %s"
+                               % (self.host, args[0], args[1], r.returncode, r.stderr.strip()[-300:]))
+        return r.stdout
+
+    def read(self, path):
+        got = json.loads(self.run(["read", path]))
+        self.parents[path] = got["parent"]
+        return got.get("text") if got["exists"] else None
+
+    def may_create(self, path):
+        return self.parents.get(path, False)
+
+    def write(self, path, text, dry):
+        if not dry:
+            self.run(["write", path], stdin=text)
+
+    def backup(self, path, backup, dry):
+        if dry:
+            return "%s:%s/" % (self.host, self.trash_dir())
+        return "%s:%s" % (self.host, self.run(["backup", path, self.trash_dir()]))
+
+    def trash(self, path, dry):
+        if dry:
+            return "%s:%s/" % (self.host, self.trash_dir())
+        return "%s:%s" % (self.host, self.run(["trash", path, self.trash_dir()]))
+
+    def restore(self, path, saved, dry):
+        """Put the copy `saved` ("<host>:<path>", from backup) back over `path`;
+        the current file is copied to the trash first."""
+        src = saved.split(":", 1)[1]
+        if dry:
+            return "%s:%s/" % (self.host, self.trash_dir())
+        return "%s:%s" % (self.host, self.run(["restore", path, src, self.trash_dir()]))
+
+
+def sha(text):
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def mac_record(io, prev, rec, text, saved, written):
+    """The extra a Mac file's state record carries: whether register created the
+    file, every backup it took, the backup of the original (taken when register
+    first added to it) and a hash of what it last wrote. unregister puts the
+    original back when the file still is what register wrote."""
+    if not io.remote:
+        return rec
+    if prev["created_file"] or text is None:
+        rec["created_file"] = True
+    backups = prev["backups"] + ([saved] if saved else [])
+    if backups:
+        rec["backups"] = backups
+    original = prev.get("original_backup") or (saved if not prev["names"] else None)
+    if original:
+        rec["original_backup"] = original
+    if written is not None:
+        rec["written_sha"] = sha(written)
+    return rec
+
+
+def restore_original(target, rec, text, dry, report):
+    """On a Mac: when the file is exactly what register last wrote, put back the
+    original it backed up. False (and nothing done) otherwise."""
+    if not (target.io.remote and rec.get("original_backup") and rec.get("written_sha") == sha(text)):
+        return False
+    try:
+        moved = target.io.restore(target.file, rec["original_backup"], dry)
+    except RuntimeError as e:
+        report.append("%s: could not put the original back (%s); removing the entries instead" % (target.path, e))
+        return False
+    report.append("%s: unchanged since register; put back the original %s (the current file copied to %s)"
+                  % (target.path, rec["original_backup"], moved))
+    return True
+
+
 # ---------------------------------------------------------------- JSON files
 
 def json_indent(text):
@@ -155,11 +399,29 @@ def mentions(entry, script):
     return script in json.dumps(entry)
 
 
+def ours(entry):
+    return mentions(entry, BRIDGE) or mentions(entry, VAULT)
+
+
+def record_of(state, label):
+    """What register recorded for `label`: the names it added, whether it
+    created the servers key, whether the file was empty, whether it created
+    the file (Macs only) and where the original was backed up."""
+    got = state.get(label)
+    if isinstance(got, list):  # older state files
+        got = {"names": got}
+    rec = {"names": [], "created_key": False, "was_empty": False, "created_file": False, "backups": []}
+    rec.update(got or {})
+    return rec
+
+
 class JsonTarget:
     """A JSON file with a map of servers under `key`."""
 
-    def __init__(self, path, key, make):
-        self.path = os.path.expanduser(path)
+    def __init__(self, path, key, make, io=LOCAL):
+        self.io = io
+        self.file = path
+        self.path = io.label(path)
         self.key = key
         self.make = make  # (script, env) -> entry
 
@@ -173,75 +435,102 @@ class JsonTarget:
         out = json.dumps(data, indent=indent, ensure_ascii=False)
         return out + ("\n" if (original or "\n").endswith("\n") else "")
 
-    @staticmethod
-    def entry(state, label):
-        """What register recorded for `label`: the names it added, whether
-        it created the servers key, and whether the file was empty."""
-        got = state.get(label)
-        if isinstance(got, list):  # older state files
-            return {"names": got, "created_key": False, "was_empty": False}
-        return got or {"names": [], "created_key": False, "was_empty": False}
+    entry = staticmethod(record_of)
 
-    def record(self, state, label, text, data_before_key, added):
-        prev = self.entry(state, label)
-        state[label] = {
+    def record(self, state, label, text, data_before_key, added, saved=None, written=None):
+        prev = record_of(state, label)
+        state[label] = mac_record(self.io, prev, {
             "names": sorted(set(prev["names"]) | set(added)),
             "created_key": prev["created_key"] or not data_before_key,
             "was_empty": prev["was_empty"] or (text is not None and not text.strip()),
-        }
+        }, text, saved, written)
 
     def restored(self, data, rec, text):
         """The file's text once our names are gone: the servers key goes if
-        register made it and it is now empty, an empty file stays empty."""
+        register made it and it is now empty, an empty file stays empty, and a
+        file register created on a Mac goes (None)."""
         if rec["created_key"] and not data.get(self.key):
             data.pop(self.key, None)
+        if rec["created_file"] and not data:
+            return None
         if rec["was_empty"] and not data:
             return ""
         return self.dump(data, text)
 
     def register(self, state, backup, dry, report):
-        text = read_text(self.path)
+        if not self.io.available(report):
+            return
+        text = self.io.read(self.file)
+        if text is None and not self.io.may_create(self.file):
+            report.append("%s: missing, and so is its folder; left alone" % self.path)
+            return
         data = self.parse(text)
         had_key = self.key in data
         table = data.setdefault(self.key, {})
-        added = []
+        mine = record_of(state, self.path)["names"]
+        added, upgraded = [], []
         for name, script, env in servers():
+            want = self.make(script, env)
             have = [n for n, e in table.items() if mentions(e, script)]
             if have:
+                # On a Mac, an entry recorded as ours is brought up to date.
+                if self.io.remote and name in have and name in mine and table[name] != want:
+                    table[name] = want
+                    upgraded.append(name)
+                    continue
                 report.append("%s: %s already registered as %s" % (self.path, name, ", ".join(have)))
                 continue
             if name in table:
                 report.append("%s: an unrelated %r entry exists, left alone (not added)" % (self.path, name))
                 continue
-            table[name] = self.make(script, env)
+            table[name] = want
             added.append(name)
-        if not added:
+        if not added and not upgraded:
             return
+        saved = None
         if text is not None:
-            report.append("%s: backed up to %s" % (self.path, backup.save(self.path)))
-        write_text(self.path, self.dump(data, text), dry)
-        self.record(state, self.path, text, had_key, added)
-        report.append("%s: added %s" % (self.path, ", ".join(added)))
+            saved = self.io.backup(self.file, backup, dry)
+            report.append("%s: backed up to %s" % (self.path, saved))
+        written = self.dump(data, text)
+        self.io.write(self.file, written, dry)
+        self.record(state, self.path, text, had_key, added, saved, written)
+        if added:
+            report.append("%s: added %s%s" % (self.path, ", ".join(added), " (new file)" if text is None else ""))
+        if upgraded:
+            report.append("%s: updated %s to the session-keyed wrapper" % (self.path, ", ".join(upgraded)))
 
     def unregister(self, state, backup, dry, report):
-        rec = self.entry(state, self.path)
+        rec = record_of(state, self.path)
         names = rec["names"]
-        text = read_text(self.path)
-        if not names or text is None:
+        if not names or not self.io.available(report):
+            return
+        text = self.io.read(self.file)
+        if text is None:
+            state.pop(self.path, None)
+            return
+        if restore_original(self, rec, text, dry, report):
+            state.pop(self.path, None)
             return
         data = self.parse(text)
         table = data.get(self.key, {})
-        removed = [n for n in names if n in table and any(mentions(table[n], s) for _, s, _ in servers() + [("", BRIDGE, {}), ("", VAULT, {})])]
+        removed = [n for n in names if n in table and ours(table[n])]
         if removed:
-            report.append("%s: backed up to %s" % (self.path, backup.save(self.path)))
             for n in removed:
                 del table[n]
-            write_text(self.path, self.restored(data, rec, text), dry)
-            report.append("%s: removed %s" % (self.path, ", ".join(removed)))
+            out = self.restored(data, rec, text)
+            if out is None:
+                report.append("%s: removed %s; the file it created moved to %s"
+                              % (self.path, ", ".join(removed), self.io.trash(self.file, dry)))
+            else:
+                report.append("%s: backed up to %s" % (self.path, self.io.backup(self.file, backup, dry)))
+                self.io.write(self.file, out, dry)
+                report.append("%s: removed %s" % (self.path, ", ".join(removed)))
         state.pop(self.path, None)
 
     def verify(self):
-        text = read_text(self.path)
+        if self.io.remote and not PROBED.get(self.io.host):
+            return "skipped (no ssh)"
+        text = self.io.read(self.file)
         if text is None:
             return "missing"
         if not text.strip():
@@ -302,16 +591,19 @@ def env_vars_of(lines):
 
 
 class TomlTarget:
-    def __init__(self, path, node, extra):
-        self.path = os.path.expanduser(path)
-        self.node = node
+    def __init__(self, path, make, extra, io=LOCAL):
+        self.io = io
+        self.file = path
+        self.path = io.label(path)
+        self.make = make    # (script, env) -> (command, args, env for an `env =` line)
         self.extra = extra  # (name, env) -> list of extra lines
 
     def block(self, name, script, env):
+        command, args, benv = self.make(script, env)
         lines = [MARK_BEGIN.format(name=name), "[mcp_servers.%s]" % name,
-                 "command = %s" % toml_str(self.node), "args = [%s]" % toml_str(script)]
-        if env:
-            lines.append("env = %s" % toml_inline(env))
+                 "command = %s" % toml_str(command), "args = [%s]" % ", ".join(toml_str(a) for a in args)]
+        if benv:
+            lines.append("env = %s" % toml_inline(benv))
         lines += self.extra(name, env)
         lines.append(MARK_END.format(name=name))
         return "\n".join(lines) + "\n"
@@ -345,11 +637,17 @@ class TomlTarget:
         return text
 
     def register(self, state, backup, dry, report):
-        existed = os.path.exists(self.path)
-        text = read_text(self.path)
+        if not self.io.available(report):
+            return
+        text = self.io.read(self.file)
+        existed = text is not None
+        if not existed and not self.io.may_create(self.file):
+            report.append("%s: missing, and so is its folder; left alone" % self.path)
+            return
         if text is None:
             text = ""
-        updated = self.update_env_vars(text, JsonTarget.entry(state, self.path)["names"], report)
+        prev = record_of(state, self.path)
+        updated = self.update_env_vars(text, prev["names"], report)
         blocks = toml_blocks(text)
         add = []
         for name, script, env in servers():
@@ -372,18 +670,28 @@ class TomlTarget:
             report.append("%s: no TOML parser here (tomllib/tomli); written unchecked" % self.path)
         else:
             toml_parse(new)  # raises before anything is written if the result would not parse
+        saved = None
         if existed:
-            report.append("%s: backed up to %s" % (self.path, backup.save(self.path)))
-        write_text(self.path, new, dry)
+            saved = self.io.backup(self.file, backup, dry)
+            report.append("%s: backed up to %s" % (self.path, saved))
+        self.io.write(self.file, new, dry)
+        if add or (self.io.remote and prev["names"]):
+            rec = {"names": sorted(set(prev["names"]) | {n for n, _ in add}), "created_key": False, "was_empty": False}
+            state[self.path] = mac_record(self.io, prev, rec, text if existed else None, saved, new)
         if add:
-            prev = JsonTarget.entry(state, self.path)["names"]
-            state[self.path] = {"names": sorted(set(prev) | {n for n, _ in add}), "created_key": False, "was_empty": False}
-            report.append("%s: added %s" % (self.path, ", ".join(n for n, _ in add)))
+            report.append("%s: added %s%s" % (self.path, ", ".join(n for n, _ in add), "" if existed else " (new file)"))
 
     def unregister(self, state, backup, dry, report):
-        text = read_text(self.path)
-        names = JsonTarget.entry(state, self.path)["names"]
-        if text is None or not names:
+        rec = record_of(state, self.path)
+        names = rec["names"]
+        if not names or not self.io.available(report):
+            return
+        text = self.io.read(self.file)
+        if text is None:
+            state.pop(self.path, None)
+            return
+        if restore_original(self, rec, text, dry, report):
+            state.pop(self.path, None)
             return
         new = text
         removed = []
@@ -395,125 +703,25 @@ class TomlTarget:
                 removed.append(name)
                 new = new2
         if removed:
-            report.append("%s: backed up to %s" % (self.path, backup.save(self.path)))
-            write_text(self.path, new, dry)
-            report.append("%s: removed %s" % (self.path, ", ".join(removed)))
+            if rec["created_file"] and not new.strip():
+                report.append("%s: removed %s; the file it created moved to %s"
+                              % (self.path, ", ".join(removed), self.io.trash(self.file, dry)))
+            else:
+                report.append("%s: backed up to %s" % (self.path, self.io.backup(self.file, backup, dry)))
+                self.io.write(self.file, new, dry)
+                report.append("%s: removed %s" % (self.path, ", ".join(removed)))
         state.pop(self.path, None)
 
     def verify(self):
-        text = read_text(self.path)
+        if self.io.remote and not PROBED.get(self.io.host):
+            return "skipped (no ssh)"
+        text = self.io.read(self.file)
         if text is None:
             return "missing"
         data = toml_parse(text)
         if data is None:
             return "unchecked (no TOML parser)"
         return "ok (mcp_servers: %s)" % (", ".join(sorted(data.get("mcp_servers", {}))) or "none")
-
-
-# ---------------------------------------------------------------- prep-pro Antigravity over ssh
-
-SSH = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
-
-
-def remote_ok(report):
-    probe = SSH + [REMOTE_HOST, "ssh -o BatchMode=yes -o ConnectTimeout=10 %s true" % REMOTE_HOP]
-    try:
-        r = subprocess.run(probe, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=40)
-    except (OSError, subprocess.TimeoutExpired):
-        report.append("%s: ssh check failed to run; Antigravity there left alone" % REMOTE_HOST)
-        return False
-    if r.returncode != 0:
-        report.append("%s: `ssh %s true` does not work without a password (exit %d); Antigravity there left alone"
-                      % (REMOTE_HOST, REMOTE_HOP, r.returncode))
-        return False
-    report.append("%s: `ssh -o BatchMode=yes %s true` works" % (REMOTE_HOST, REMOTE_HOP))
-    return True
-
-
-def remote_read():
-    r = subprocess.run(SSH + [REMOTE_HOST, "f=%s; test -e \"$f\" && cat \"$f\" || printf '__MISSING__'" % REMOTE_FILE],
-                       capture_output=True, text=True, timeout=40)
-    if r.returncode != 0:
-        raise RuntimeError("could not read %s:%s" % (REMOTE_HOST, REMOTE_FILE))
-    return None if r.stdout == "__MISSING__" else r.stdout
-
-
-def remote_write(text):
-    # Through the real path, so a symlinked config stays a symlink.
-    cmd = ("f=%s; r=$(python3 -c 'import os,sys;print(os.path.realpath(os.path.expanduser(sys.argv[1])))' \"$f\"); "
-           "mkdir -p \"$(dirname \"$r\")\" && cat > \"$r.mcp-register.tmp\" && mv \"$r.mcp-register.tmp\" \"$r\"") % REMOTE_FILE
-    subprocess.run(SSH + [REMOTE_HOST, cmd], input=text, text=True, check=True, timeout=40)
-
-
-def remote_entry(script, env):
-    return {"command": "ssh", "args": ["-o", "BatchMode=yes", REMOTE_HOP, HOST_NODE, script], "env": {}}
-
-
-class RemoteTarget(JsonTarget):
-    label = "%s:%s" % (REMOTE_HOST, REMOTE_FILE)
-
-    def __init__(self):
-        super().__init__(REMOTE_FILE, "mcpServers", remote_entry)
-        self.path = self.label
-
-    def register(self, state, backup, dry, report):
-        if not remote_ok(report):
-            return
-        text = remote_read()
-        data = self.parse(text)
-        had_key = self.key in data
-        table = data.setdefault(self.key, {})
-        added = []
-        for name, script, env in servers():
-            have = [n for n, e in table.items() if mentions(e, script)]
-            if have:
-                report.append("%s: %s already registered as %s" % (self.label, name, ", ".join(have)))
-                continue
-            if name in table:
-                report.append("%s: an unrelated %r entry exists, left alone (not added)" % (self.label, name))
-                continue
-            table[name] = remote_entry(script, env)
-            added.append(name)
-        if not added:
-            return
-        if text is not None:
-            report.append("%s: backed up to %s" % (self.label, backup.save_text("prep-pro__.gemini__antigravity__mcp_config.json", text)))
-        if not dry:
-            remote_write(self.dump(data, text))
-        self.record(state, self.label, text, had_key, added)
-        report.append("%s: added %s" % (self.label, ", ".join(added)))
-
-    def unregister(self, state, backup, dry, report):
-        rec = self.entry(state, self.label)
-        names = rec["names"]
-        if not names:
-            return
-        text = remote_read()
-        if text is None:
-            state.pop(self.label, None)
-            return
-        data = self.parse(text)
-        table = data.get(self.key, {})
-        removed = [n for n in names if n in table and (mentions(table[n], BRIDGE) or mentions(table[n], VAULT))]
-        if removed:
-            report.append("%s: backed up to %s" % (self.label, backup.save_text("prep-pro__.gemini__antigravity__mcp_config.json", text)))
-            for n in removed:
-                del table[n]
-            if not dry:
-                remote_write(self.restored(data, rec, text))
-            report.append("%s: removed %s" % (self.label, ", ".join(removed)))
-        state.pop(self.label, None)
-
-    def verify(self):
-        try:
-            text = remote_read()
-        except Exception as e:  # noqa: BLE001
-            return "unreachable (%s)" % e
-        if text is None:
-            return "missing"
-        if not text.strip():
-            return "empty"
-        return "ok (mcpServers: %s)" % (", ".join(sorted(json.loads(text).get("mcpServers", {}))) or "none")
 
 
 # ---------------------------------------------------------------- targets
@@ -526,14 +734,43 @@ def codex_extra(name, env):
     return ['env_vars = ["HAPPY_SESSION_ID", "HAPPY_FORKED_FROM_SESSION_ID"]', "startup_timeout_sec = 20", "tool_timeout_sec = 600"]
 
 
+def remote_codex_extra(name, env):
+    # The wrapper reads all three, so Codex has to hand all three over.
+    return ["env_vars = [%s]" % ", ".join(toml_str(v) for v in SESSION_VARS), "startup_timeout_sec = 20", "tool_timeout_sec = 600"]
+
+
 def agent_extra(name, env):
     # Happy Agent caps tool_timeout_sec at 600.
     return ["enabled = true", "startup_timeout_sec = 20", "tool_timeout_sec = 600"]
 
 
+def remote_target(io, harness):
+    """One Mac harness config, its entries running the servers on prep-ml."""
+    sh = "/bin/sh"
+    if harness == "claude":
+        return JsonTarget("~/.claude.json", "mcpServers", lambda s, env: {
+            "type": "stdio", "command": sh, "args": remote_argv(s, {}), "env": {}}, io)
+    if harness == "gemini":
+        return JsonTarget("~/.gemini/settings.json", "mcpServers", lambda s, env: {
+            "command": sh, "args": remote_argv(s, env), "env": {}, "timeout": 600000}, io)
+    if harness == "antigravity":
+        # prep-pro links this to ~/.gemini/config/mcp_config.json; writes go through the link.
+        return JsonTarget("~/.gemini/antigravity/mcp_config.json", "mcpServers", lambda s, env: {
+            "command": sh, "args": remote_argv(s, env), "env": {}}, io)
+    if harness == "opencode":
+        return JsonTarget("~/.config/opencode/opencode.json", "mcp", lambda s, env: {
+            "type": "local", "command": [sh] + remote_argv(s, env), "enabled": True}, io)
+    if harness == "codex":
+        return TomlTarget("~/.codex/config.toml", lambda s, env: (sh, remote_argv(s, env), {}), remote_codex_extra, io)
+    if harness == "happy-agent":
+        return TomlTarget("~/.local/share/happy-agent/happy/config/mcp.toml",
+                          lambda s, env: (sh, remote_argv(s, env), {}), agent_extra, io)
+    raise ValueError("unknown harness %s" % harness)
+
+
 def targets(remote=True):
     out = [
-        TomlTarget("~/.codex/config.toml", HOST_NODE, codex_extra),
+        TomlTarget("~/.codex/config.toml", lambda s, env: (HOST_NODE, [s], env), codex_extra),
         JsonTarget("~/.config/opencode/opencode.json", "mcp", lambda s, env: {
             "type": "local", "command": [HOST_NODE, s], "enabled": True, **({"environment": dict(env)} if env else {})}),
         JsonTarget("~/.gemini/settings.json", "mcpServers", lambda s, env: {
@@ -542,10 +779,12 @@ def targets(remote=True):
             "command": HOST_NODE, "args": [s], "env": dict(env)}),
         JsonTarget("~/.claude.json", "mcpServers", lambda s, env: {
             "type": "stdio", "command": "node", "args": [s], "env": {}}),
-        TomlTarget("~/.local/share/happy-agent/happy/config/mcp.toml", AGENT_NODE, agent_extra),
+        TomlTarget("~/.local/share/happy-agent/happy/config/mcp.toml", lambda s, env: (AGENT_NODE, [s], env), agent_extra),
     ]
     if remote:
-        out.append(RemoteTarget())
+        for host, harnesses in REMOTES:
+            io = RemoteIO(host)
+            out += [remote_target(io, h) for h in harnesses]
     return out
 
 
@@ -553,7 +792,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("action", choices=["register", "unregister", "check"])
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--no-remote", action="store_true", help="leave prep-pro alone")
+    ap.add_argument("--no-remote", action="store_true", help="leave the Macs alone")
     a = ap.parse_args()
 
     if not os.path.isfile(BRIDGE):
@@ -562,12 +801,15 @@ def main():
     backup = Backup(a.dry_run)
     report = []
     failed = False
-    for t in targets(remote=not a.no_remote):
+    all_targets = targets(remote=not a.no_remote)
+    for t in all_targets:
         try:
             if a.action == "register":
                 t.register(state, backup, a.dry_run, report)
             elif a.action == "unregister":
                 t.unregister(state, backup, a.dry_run, report)
+            elif t.io.remote:
+                t.io.available(report)
         except Exception as e:  # noqa: BLE001
             failed = True
             report.append("%s: FAILED: %s" % (t.path, e))
@@ -576,7 +818,7 @@ def main():
         report.insert(0, "dry run: nothing written")
     print("\n".join(report))
     print("\nparse check:")
-    for t in targets(remote=not a.no_remote):
+    for t in all_targets:
         try:
             print("  %-60s %s" % (t.path, t.verify()))
         except Exception as e:  # noqa: BLE001
@@ -584,7 +826,7 @@ def main():
             print("  %-60s DOES NOT PARSE: %s" % (t.path, e))
     if a.action != "check":
         print("\nRestart to pick these up: new Codex, Gemini, opencode, agy and Claude sessions read them at start;"
-              "\nHappy Agent reloads mcp.toml without a daemon restart (or restart happy-agent); Antigravity on prep-pro: reload its MCP servers.")
+              "\nHappy Agent reloads mcp.toml without a daemon restart (or restart happy-agent); Antigravity: reload its MCP servers.")
     sys.exit(1 if failed else 0)
 
 

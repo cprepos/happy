@@ -41,9 +41,11 @@ logs:
 	$(COMPOSE) logs -f --tail=200
 
 # Register the live browser bridge (and the vault MCP server, when present)
-# with Codex, opencode, Gemini, Antigravity, Claude and Happy Agent, and with
-# Antigravity on prep-pro over ssh. Originals go to ../trash/<ts>_mcp-configs/.
-# DRY=1 says what would change. See scripts/mcp-register.py.
+# with Codex, opencode, Gemini, Antigravity, Claude and Happy Agent, and over ssh
+# with the harnesses on prep-air and prep-pro (run on prep-ml, keyed by the chat's
+# session id). Originals go to ../trash/<ts>_mcp-configs/, a Mac's to its own
+# ~/happy-trash/<ts>_mcp-configs/. DRY=1 says what would change; NO_REMOTE=1 leaves
+# the Macs alone. See scripts/mcp-register.py.
 MCP_REGISTER = python3 $(CURDIR)/scripts/mcp-register.py $(if $(DRY),--dry-run) $(if $(NO_REMOTE),--no-remote)
 
 .PHONY: mcp-register mcp-unregister mcp-check mcp-register-test
