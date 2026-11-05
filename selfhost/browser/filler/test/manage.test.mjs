@@ -67,6 +67,10 @@ test('create: the filler generates the password; it is stored encrypted, never r
         assert.equal(password.length, 32);
         assert.equal(dec(c.name), 'Test Vault MCP');
         assert.equal(c.organizationId, null);
+        // Vaultwarden 1.37 refuses a cipher body without encryptedFor (the user id).
+        const cw = t.vw.calls.writes.find((w) => w.op === 'create' && w.id === r.id);
+        assert.equal(cw.body.encryptedFor, t.v.userId);
+        assert.deepEqual(t.vw.calls.noClientVersion, [], 'every API call carries Bitwarden-Client-Version');
         t.noValues(r, [password]);
         const r2 = await t.m.create({ chat: D, name: 'Short one', uris: ['https://short.example'], username: 'u', password: { length: 20, classes: ['lower', 'digits'] } });
         assert.ok(/^[a-z0-9]{20}$/.test(t.stored(r2.id).password));
@@ -101,6 +105,8 @@ test('update: renames, changes uris, rotates the password into history; refuses 
         const w = t.vw.calls.writes.at(-1);
         assert.equal(w.op, 'update');
         assert.equal(w.body.lastKnownRevisionDate, '2026-01-01T00:00:00.000Z'); // the revision it was read at
+        assert.equal(w.body.encryptedFor, t.v.userId);
+        assert.equal(w.body.organizationId, null);
         t.noValues(r, [after.password]);
         await assert.rejects(t.m.update({ chat: D, id }), /at least one/);
         await assert.rejects(t.m.update({ chat: D, id, name: 'gmail' }), (e) => e.status === 409);
@@ -129,6 +135,7 @@ test('remove is a soft delete to the trash, restore brings it back; nothing is e
         await assert.rejects(t.m.restore({ chat: D, id }), (e) => e.status === 409);
         assert.deepEqual(t.vw.calls.writes.map((w) => w.op), ['trash', 'restore']);
         assert.deepEqual(t.vw.calls.refusedWrites, []);
+        assert.deepEqual(t.vw.calls.noClientVersion, []);
         assert.ok(t.v.sync.ciphers.some((c) => c.id === id));
         // acme has no remove permission.
         await assert.rejects(t.m.remove({ chat: 'chat-acme', id: t.v.items['acme-github'].id }), (e) => e.outcome === 'refused_manage');

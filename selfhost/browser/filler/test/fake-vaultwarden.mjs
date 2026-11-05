@@ -106,7 +106,7 @@ export function buildVault({ email = 'agent@vault.test', password = 'correct hor
 }
 
 export async function startFakeVaultwarden(vault = buildVault(), { twoFactor = false, apiKeyStatus = 200 } = {}) {
-    const calls = { token: 0, sync: 0, prelogin: 0, passwordGrant: 0, apiKey: 0, bodies: [], writes: [], refusedWrites: [] };
+    const calls = { token: 0, sync: 0, prelogin: 0, passwordGrant: 0, apiKey: 0, bodies: [], writes: [], refusedWrites: [], noClientVersion: [] };
     let rev = 0;
     const stamp = () => new Date(Date.UTC(2026, 1, 1) + (++rev) * 1000).toISOString();
     const tokens = new Set();
@@ -156,6 +156,8 @@ export async function startFakeVaultwarden(vault = buildVault(), { twoFactor = f
             if (b.masterPasswordHash !== vault.passwordHash) return send(400, { message: 'Invalid password' });
             return send(200, { apiKey: vault.clientSecret, revisionDate: new Date().toISOString(), object: 'apiKey' });
         }
+        // Vaultwarden 1.37 logs "No Bitwarden-Client-Version header provided" for these.
+        if (url.pathname.startsWith('/api/') && !/^\d+\.\d+\.\d+$/.test(req.headers['bitwarden-client-version'] || '')) calls.noClientVersion.push(`${req.method} ${url.pathname}`);
         if (req.method === 'GET' && url.pathname === '/api/sync') {
             calls.sync++;
             const t = (req.headers.authorization || '').replace(/^Bearer /, '');
@@ -171,9 +173,12 @@ export async function startFakeVaultwarden(vault = buildVault(), { twoFactor = f
             const find = () => vault.sync.ciphers.find((c) => c.id === id);
             if (req.method === 'POST' && !id) {
                 let b; try { b = JSON.parse(body); } catch { return send(400, { message: 'bad json' }); }
+                // CipherData.encryptedFor is required (a missing field is a 422 data guard error) and must be the user.
+                if (typeof b.encryptedFor !== 'string') return send(422, { message: 'missing field encryptedFor' });
+                if (b.encryptedFor !== vault.userId) return send(400, { message: 'This cipher is not encrypted for the current user' });
                 if (b.type !== 1 || !b.name || !b.login) return send(400, { message: 'bad cipher' });
                 const c = { ...b, id: randomUUID(), collectionIds: [], deletedDate: null, revisionDate: stamp(), creationDate: stamp() };
-                delete c.lastKnownRevisionDate;
+                delete c.lastKnownRevisionDate; delete c.encryptedFor;
                 vault.sync.ciphers.push(c);
                 calls.writes.push({ op: 'create', id: c.id, body: b });
                 res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ...c, object: 'cipherDetails' }));
@@ -181,8 +186,10 @@ export async function startFakeVaultwarden(vault = buildVault(), { twoFactor = f
             if (req.method === 'PUT' && id && !op) {
                 const c = find(); if (!c) return send(404, { message: 'not found' });
                 let b; try { b = JSON.parse(body); } catch { return send(400, { message: 'bad json' }); }
+                if (typeof b.encryptedFor !== 'string') return send(422, { message: 'missing field encryptedFor' });
+                if ((b.organizationId ?? null) !== (c.organizationId ?? null)) return send(400, { message: 'Organization mismatch' });
                 if (b.lastKnownRevisionDate && b.lastKnownRevisionDate !== c.revisionDate) return send(400, { message: 'The client copy of this cipher is out of date.' });
-                const { lastKnownRevisionDate, ...rest } = b;
+                const { lastKnownRevisionDate, encryptedFor, ...rest } = b;
                 Object.assign(c, rest, { id, revisionDate: stamp() });
                 calls.writes.push({ op: 'update', id, body: b });
                 return send(200, { ...c, object: 'cipherDetails' });

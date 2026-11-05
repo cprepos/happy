@@ -29,6 +29,14 @@ export class VaultError extends Error {
 
 const DEVICE_TYPE = '14'; // SDK / CLI-like device
 const DEVICE_NAME = 'happy-secret-filler';
+// Sent on every request, as Bitwarden clients do. Vaultwarden 1.37 logs an
+// auth error on /api/sync without Bitwarden-Client-Version, and its cipher
+// writes take the encryptedFor field that web clients send from 2025.6.0.
+export const CLIENT_HEADERS = Object.freeze({
+    'Bitwarden-Client-Name': 'web',
+    'Bitwarden-Client-Version': '2025.10.0',
+    'Device-Type': DEVICE_TYPE,
+});
 
 export function checkVaultUrl(url, { allowLoopbackHttp = true } = {}) {
     const u = new URL(url);
@@ -48,7 +56,7 @@ export function createVault({ url, clientId, clientSecret, userKey, deviceId, fe
     async function req(path, init) {
         let res;
         try {
-            res = await fetchImpl(base + path, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+            res = await fetchImpl(base + path, { ...init, headers: { ...CLIENT_HEADERS, ...(init?.headers || {}) }, signal: AbortSignal.timeout(timeoutMs) });
         } catch (err) {
             throw new VaultError(`vault unreachable: ${err.name}`);
         }
@@ -109,7 +117,9 @@ export function createVault({ url, clientId, clientSecret, userKey, deviceId, fe
             try { orgKeys.set(String(o.id).toLowerCase(), decryptKey(o.key, { privateKey, symKey: userKey })); } catch { /* unusable org: its items stay locked */ }
         }
         const equivalence = buildEquivalence(data.domains || data.Domains);
-        synced = { at: now(), ciphers: data.ciphers || data.Ciphers || [], orgKeys, equivalence, fingerprint: createHash('sha256').update(userKey).digest('hex').slice(0, 8) };
+        // encryptedFor on writes: the account's user id (the API key's client id is user.<that id>).
+        const userId = String(profile.id || profile.Id || clientId.slice('user.'.length)).toLowerCase();
+        synced = { at: now(), userId, ciphers: data.ciphers || data.Ciphers || [], orgKeys, equivalence, fingerprint: createHash('sha256').update(userKey).digest('hex').slice(0, 8) };
         return synced;
     }
 
@@ -275,11 +285,13 @@ export function createVault({ url, clientId, clientSecret, userKey, deviceId, fe
      * Returns the new item id.
      */
     async function createLogin({ name, uris, username, password }) {
+        const s = synced || await sync();
         const itemKey = randomBytes(64);
         try {
             const enc = (v) => (v == null || v === '' ? null : encryptSym(v, itemKey));
             const body = {
                 type: 1, organizationId: null, folderId: null, favorite: false, reprompt: 0,
+                encryptedFor: s.userId,
                 key: encryptSym(itemKey, userKey),
                 name: encryptSym(name, itemKey), notes: null, fields: [], passwordHistory: [],
                 login: { username: enc(username), password: enc(password), totp: null, uris: encUris(uris, itemKey), passwordRevisionDate: null },
@@ -307,7 +319,7 @@ export function createVault({ url, clientId, clientSecret, userKey, deviceId, fe
         // Only the fields Vaultwarden's cipher update takes, copied as they are.
         const body = {
             type: 1, organizationId: null, folderId: c.folderId ?? null, favorite: !!c.favorite, reprompt: c.reprompt ?? 0,
-            key: c.key ?? null, name: c.name, notes: c.notes ?? null, fields: c.fields ?? [], passwordHistory: c.passwordHistory ?? [], login,
+            encryptedFor: s.userId, key: c.key ?? null, name: c.name, notes: c.notes ?? null, fields: c.fields ?? [], passwordHistory: c.passwordHistory ?? [], login,
         };
         for (const k of Object.keys(login)) if (!['username', 'password', 'totp', 'uris', 'passwordRevisionDate', 'autofillOnPageLoad', 'fido2Credentials'].includes(k)) delete login[k];
         if (changes.name !== undefined) { body.name = encryptSym(changes.name, key); changed.push('name'); }
