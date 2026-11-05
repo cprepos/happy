@@ -182,7 +182,11 @@ final class AgentChatUltraList: UIView {
         }
         self.insets = insets
         viewportSize = size
-        if list.frame.origin != frame.origin { list.frame.origin = frame.origin }
+        // The whole frame: a change of height alone (an iPad's docked
+        // list, which ends at the composer's top) has to reach the view,
+        // or its next layout takes the old height back and the newest
+        // rows stand under the composer.
+        if list.frame != frame { list.frame = frame }
         guard changed else {
             if keyboard?.finishes == true { list.finishViewportTransition() }
             return

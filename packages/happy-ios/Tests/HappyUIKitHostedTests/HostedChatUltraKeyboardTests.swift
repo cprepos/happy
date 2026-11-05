@@ -341,5 +341,60 @@ final class HostedChatUltraKeyboardTests: XCTestCase {
         XCTAssertTrue(down, "the dock is back on the safe area, at \(test.dock.frame.maxY)")
         XCTAssertEqual(test.list.contentInsets.top, height - test.dock.frame.minY + LegacyChatScreenLayout.Metrics.newerEdgeExtra, accuracy: 0.5)
     }
+
+    // MARK: The live browser's line
+
+    /// The newest row's foot on screen, in the chat's coordinates: the
+    /// lowest of the rows the list has loaded.
+    private func newestFoot(_ test: Chat) -> CGFloat? {
+        let ultra = test.list.ultra.list
+        var foot: CGFloat?
+        for index in ultra.loadedIndexRange {
+            guard let view = ultra.loadedItemView(at: index), view.bounds.height > 1, !view.isHidden else { continue }
+            let frame = view.convert(view.bounds, to: test.chat.view)
+            foot = max(foot ?? frame.maxY, frame.maxY)
+        }
+        return foot
+    }
+
+    private func assertNewestClearsTheLine(_ test: Chat, _ when: String, file: StaticString = #filePath, line: UInt = #line) async throws {
+        let indicator = try XCTUnwrap(test.chat.liveBrowserDock?.indicator, file: file, line: line)
+        _ = try await until { test.chat.view.layoutIfNeeded(); return !indicator.isHidden && indicator.window != nil }
+        try await Task.sleep(for: .milliseconds(450))
+        test.chat.view.layoutIfNeeded()
+        XCTAssertFalse(indicator.isHidden, "the line shows (\(when))", file: file, line: line)
+        XCTAssertEqual(test.list.ultra.list.frame.height, test.list.sidesBand.height, accuracy: 0.5, "the list view takes its frame's height (\(when))", file: file, line: line)
+        let top = indicator.convert(indicator.bounds, to: test.chat.view).minY
+        let foot = try XCTUnwrap(newestFoot(test), file: file, line: line)
+        XCTAssertLessThanOrEqual(foot, top + 0.5, "the newest row runs under the live browser line (\(when)): foot \(foot), line \(top)", file: file, line: line)
+    }
+
+    /// The red line over the composer takes its own room: the newest row
+    /// stands whole above it, the keyboard up or down, the line coming in
+    /// before the keyboard or after it, floating or docked.
+    func testTheNewestRowStandsAboveTheLiveBrowserLine() async throws {
+        let shells = UIDevice.current.userInterfaceIdiom == .pad ? [false, true] : [false]
+        for inShell in shells {
+            for lineFirst in [true, false] {
+                let test = try await chat(inShell: inShell)
+                let window = try XCTUnwrap(test.chat.view.window)
+                let where_ = "\(inShell ? "docked" : "floating"), line \(lineFirst ? "before" : "after") the keyboard"
+                let link = try XCTUnwrap(LiveBrowserLink(id: "3f9a1c0e5b7d42e8a6c1f09b2d4e7a35"))
+                if lineFirst {
+                    test.chat.liveBrowserDock?.update(link: link)
+                    try await assertNewestClearsTheLine(test, "\(where_), keyboard down")
+                }
+                post(UIResponder.keyboardWillChangeFrameNotification, up: true, in: window)
+                try await Task.sleep(for: .milliseconds(450))
+                if !lineFirst { test.chat.liveBrowserDock?.update(link: link) }
+                try await assertNewestClearsTheLine(test, "\(where_), keyboard up")
+                post(UIResponder.keyboardWillChangeFrameNotification, up: false, in: window)
+                post(UIResponder.keyboardDidHideNotification, up: false, in: window)
+                try await assertNewestClearsTheLine(test, "\(where_), keyboard down again")
+                test.chat.liveBrowserDock?.update(link: nil)
+                test.chat.view.window?.isHidden = true
+            }
+        }
+    }
 }
 #endif
