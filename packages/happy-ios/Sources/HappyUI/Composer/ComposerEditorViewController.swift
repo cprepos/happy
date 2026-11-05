@@ -158,6 +158,12 @@ final class ComposerEditorViewController: UIViewController, UITextViewDelegate {
         let curve = (note.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? NSNumber)?.uintValue ?? 7
         heard &+= 1
         let heard = heard
+        // Collapsing into the minimized bar, the bar comes after the docked
+        // keyboard's going: read again once that has played.
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0, duration) + 0.1) { [weak self] in
+            guard let self, self.view.window != nil else { return }
+            self.view.setNeedsLayout()
+        }
         if let top = keyboardTop, view.bounds.maxY - top <= KeyboardCover.Metrics.barMaxCover,
            KeyboardCover.covered(view.keyboardFrame(fromScreen: end), bounds: view.bounds, safeBottom: view.safeAreaInsets.bottom) == nil {
             // The minimized bar says it goes, which it also says as it
