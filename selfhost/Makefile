@@ -40,6 +40,22 @@ status:
 logs:
 	$(COMPOSE) logs -f --tail=200
 
+# Register the live browser bridge (and the vault MCP server, when present)
+# with Codex, opencode, Gemini, Antigravity, Claude and Happy Agent, and with
+# Antigravity on prep-pro over ssh. Originals go to ../trash/<ts>_mcp-configs/.
+# DRY=1 says what would change. See scripts/mcp-register.py.
+MCP_REGISTER = python3 $(CURDIR)/scripts/mcp-register.py $(if $(DRY),--dry-run) $(if $(NO_REMOTE),--no-remote)
+
+.PHONY: mcp-register mcp-unregister mcp-check
+mcp-register:
+	$(MCP_REGISTER) register
+
+mcp-unregister:
+	$(MCP_REGISTER) unregister
+
+mcp-check:
+	$(MCP_REGISTER) check
+
 # Apply pending Prisma migrations (also done automatically on server start).
 migrate: env
 	$(COMPOSE) run --rm happy-server pnpm exec prisma migrate deploy --schema=prisma/schema.prisma
