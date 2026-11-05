@@ -126,7 +126,8 @@ public enum BrowserRelay {
         return (request, body)
     }
 
-    public static func head(_ stream: any BrowserStream, initial: Data = Data()) async throws -> (BrowserHTTPHead, Data) {
+    /// A head; with a `timeout`, a stream that sends none in time is closed.
+    public static func head(_ stream: any BrowserStream, initial: Data = Data(), timeout: Duration? = .seconds(35)) async throws -> (BrowserHTTPHead, Data) {
         try await withThrowingTaskGroup(of: (BrowserHTTPHead, Data).self) { group in
             group.addTask {
                 var buffer = initial
@@ -138,7 +139,7 @@ public enum BrowserRelay {
                     buffer.append(bytes)
                 }
             }
-            group.addTask { try await Task.sleep(for: .seconds(35)); await stream.close(); throw BrowserError.timeout }
+            if let timeout { group.addTask { try await Task.sleep(for: timeout); await stream.close(); throw BrowserError.timeout } }
             defer { group.cancelAll() }
             return try await group.next()!
         }
@@ -153,6 +154,55 @@ public enum BrowserRelay {
         }
     }
 
+    /// The one exchange of a connection whose request head already went to
+    /// `remote`: the rest of its body follows, and its response comes back
+    /// saying `Connection: close`, after which both ends close. A server may
+    /// close as asked and not say so (websockify answers HTTP/1.1 with only a
+    /// length), and WebKit would then send its next request down the same
+    /// tunnel, past the rewrite, to a server that is gone. An upgrade stays
+    /// open both ways.
+    public static func exchange(_ local: any BrowserStream, _ remote: any BrowserStream, method: String) async throws {
+        try await withTaskCancellationHandler {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                group.addTask { try await pipe(local, to: remote) }
+                group.addTask {
+                    // No head deadline: a long poll answers when it answers.
+                    var (response, bytes) = try await head(remote, timeout: nil)
+                    var interim = 0
+                    while let status = response.statusCode, (100..<200).contains(status), status != 101 {
+                        interim += 1
+                        guard interim <= 8 else { throw BrowserError.malformed }
+                        try await local.write(response.data)
+                        (response, bytes) = try await head(remote, initial: bytes, timeout: nil)
+                    }
+                    if response.statusCode == 101 {
+                        try await local.write(response.data)
+                        if !bytes.isEmpty { try await local.write(bytes) }
+                        try await pipe(remote, to: local)
+                        return
+                    }
+                    var body = try BrowserResponseBody(head: response, method: method)
+                    var closing = response
+                    closing.fields.removeAll { ["connection", "keep-alive", "proxy-connection"].contains($0.0.lowercased()) }
+                    closing.fields.append(("Connection", "close"))
+                    try await local.write(closing.data)
+                    try body.append(bytes)
+                    if !bytes.isEmpty { try await local.write(bytes) }
+                    while !body.finished {
+                        let data = try await remote.read(maximumBytes: 65536)
+                        if data.isEmpty { try body.end(); break }
+                        try body.append(data)
+                        try await local.write(data)
+                    }
+                }
+                defer { group.cancelAll() }
+                do { _ = try await group.next() }
+                catch { await local.close(); await remote.close(); throw error }
+                await local.close(); await remote.close()
+            }
+        } onCancel: { Task { await local.close(); await remote.close() } }
+    }
+
     public static func duplex(_ first: any BrowserStream, _ second: any BrowserStream) async throws {
         try await withTaskCancellationHandler {
             try await withThrowingTaskGroup(of: Void.self) { group in
@@ -165,4 +215,10 @@ public enum BrowserRelay {
             }
         } onCancel: { Task { await first.close(); await second.close() } }
     }
+}
+
+extension BrowserHTTPHead {
+    /// A request's method.
+    var method: String { line.split(separator: " ").first.map(String.init) ?? "" }
+    fileprivate var statusCode: Int? { Int(line.split(separator: " ").dropFirst().first ?? "") }
 }

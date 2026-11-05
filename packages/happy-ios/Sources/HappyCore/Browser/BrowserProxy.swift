@@ -107,8 +107,9 @@ public actor BrowserProxy {
                 try await artifact(local, client: client, upstream: upstream, id: id, version: version, initial: request)
             case .workspace(let id) where BrowserLoopback.real(authority) != nil:
                 // The computer's own loopback, under the alias WebKit proxies.
-                // Every request is rewritten to the real authority and closes
-                // after its response, so none slips through with the alias.
+                // Every request is rewritten to the real authority, and its
+                // response tells WebKit the connection closes, so none slips
+                // through with the alias.
                 guard let real = BrowserLoopback.real(authority) else { throw BrowserError.forbidden }
                 let remote = try await client.browserTunnel(workspaceID: id, target: real)
                 do {
@@ -118,7 +119,7 @@ public actor BrowserProxy {
                     try await remote.write(BrowserLoopback.request(request, alias: authority, real: real).data)
                     if !body.isEmpty { try await remote.write(body) }
                     opaqueTunnel = true
-                    try await BrowserRelay.duplex(local, remote)
+                    try await BrowserRelay.exchange(local, remote, method: request.method)
                 } catch { await remote.close(); throw error }
             case .workspace(let id):
                 let remote = try await client.browserTunnel(workspaceID: id, target: authority)
@@ -140,14 +141,15 @@ public actor BrowserProxy {
                     var head = request.0
                     head.fields.removeAll { ["connection", "proxy-authorization", "proxy-connection", "x-happy-proxy-route"].contains($0.0.lowercased()) }
                     // Each HTTP connection is classified once. Closing ordinary
-                    // responses prevents a later /api request bypassing the gate.
+                    // responses, and saying so to WebKit, prevents a later /api
+                    // request bypassing the gate.
                     head.fields.append(("Connection", head.value("upgrade") == nil ? "close" : "Upgrade"))
                     let remote = try await client.browserTunnel(workspaceID: workspaceID, target: authority)
                     do {
                         try await remote.write(head.data)
                         if !request.1.isEmpty { try await remote.write(request.1) }
                         opaqueTunnel = true
-                        try await BrowserRelay.duplex(local, remote)
+                        try await BrowserRelay.exchange(local, remote, method: head.method)
                     } catch { await remote.close(); throw error }
                 }
             default:

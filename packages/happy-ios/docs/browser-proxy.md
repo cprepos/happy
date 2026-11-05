@@ -85,7 +85,8 @@ append a second HTTP error response to its bytes.
   but external requests then fail closed.
 - Older HTTP `live.url` artifacts preserve the target origin: `/api/*` gets the
   artifact capability; everything else goes through the workspace. Ordinary
-  HTTP requests close after one response to classify every request separately;
+  HTTP requests close after one response to classify every request separately,
+  and the response says `Connection: close` to WebKit whatever the server sent;
   WebSocket upgrades remain duplex.
 
 ## Security rules
@@ -186,8 +187,13 @@ proxy tunnels an alias CONNECT to the real authority in the same workspace and
 rewrites each request's `Host`, and an alias `Origin` and `Referer`, back to the
 real address, closing after the response (or upgrading), so the server sees
 what a browser on the computer would send: Vite's host check and noVNC's
-same-origin check pass. Main-frame navigations and redirects to a loopback host
-are reloaded under the alias, and the header, history, Copy Link and Open in
+same-origin check pass. The response WebKit gets always says
+`Connection: close` (`BrowserRelay.exchange`): websockify closes as asked but
+answers HTTP/1.1 with only a length, and WebKit then reused the tunnel for its
+next request, which went out unrewritten to a closed server. noVNC's first
+load, ~50 ES modules, lost some that way and its page stayed dead until a
+refresh served them from the cache. Main-frame navigations and redirects to a
+loopback host are reloaded under the alias, and the header, history, Copy Link and Open in
 Safari show the real address. `https` loopback stays as it was: its
 certificate would not match the alias.
 

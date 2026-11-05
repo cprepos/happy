@@ -21,6 +21,9 @@ actor BrowserDaemon: AgentTransport {
     var connections = 0
     /// What the live browser (`/live/<id>/state`) says it is; `/done` makes it watching.
     var liveStatus = "takeover"
+    /// Requests WebKit sent on a connection after its server had closed it:
+    /// none ever reached a server, so none was answered.
+    var afterClose: [String] = []
     init(artifactHTML: String? = nil, keepAlive: Bool = false) { self.artifactHTML = artifactHTML; self.keepAlive = keepAlive }
 
     func browserConnection() async throws -> any BrowserStream { connections += 1; return Socket(self) }
@@ -48,6 +51,7 @@ actor BrowserDaemon: AgentTransport {
             return (bytes, true)
         }
         if let live = liveAnswer(head) { return (live, false) }
+        if let novnc = novncAnswer(head) { return (novnc, false) }
         if head.line.contains("/api/v1/kv/events") {
             let event = "data: shared-update\n\n"
             return (Data("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nTransfer-Encoding: chunked\r\n\r\n\(String(event.utf8.count, radix: 16))\r\n\(event)\r\n".utf8), true)
@@ -89,6 +93,42 @@ actor BrowserDaemon: AgentTransport {
         return nil
     }
 
+    /// The live page's Take control link, and noVNC behind it as websockify
+    /// serves it: HTTP/1.1 with a length and no `Connection` field, then the
+    /// socket closes because the request asked it to. Its page is an ES
+    /// module graph of `novncModules` files.
+    private func novncAnswer(_ head: BrowserHTTPHead) -> Data? {
+        func reply(_ type: String, _ body: String, close: Bool) -> Data {
+            Data("HTTP/1.1 200 OK\r\nContent-Type: \(type)\r\nContent-Length: \(body.utf8.count)\r\n\(close ? "Connection: close\r\n" : "")\r\n\(body)".utf8)
+        }
+        let path = head.line.split(separator: " ").dropFirst().first.map(String.init) ?? ""
+        if path == "/takeover" {
+            return reply("text/html", "<!doctype html><meta name='viewport' content='width=device-width'><p id='result'>ready</p><a id='take' href='\(Self.takeover)'>Take control</a>", close: true)
+        }
+        if path.hasPrefix("/vnc.html") {
+            return reply("text/html", "<!doctype html><meta name='viewport' content='width=device-width'><title>noVNC</title><p id='result'>Loading modules</p><script type='module' src='/app/ui.js'></script>", close: false)
+        }
+        if path == "/app/ui.js" {
+            let imports = (0..<Self.novncModules).map { "import { v\($0) } from './m\($0).js';" }.joined(separator: "\n")
+            let sum = (0..<Self.novncModules).map { "v\($0)" }.joined(separator: "+")
+            let script = imports + """
+
+            const count = \(sum);
+            const ws = new WebSocket('ws://' + location.host + '/websockify');
+            ws.onmessage = e => { document.querySelector('#result').textContent = 'modules ' + count + ' ' + location.hash + ' ' + e.data; };
+            ws.onerror = () => { document.querySelector('#result').textContent = 'socket failed'; };
+            """
+            return reply("text/javascript", script, close: false)
+        }
+        if path.hasPrefix("/app/m"), let n = Int(path.dropFirst(6).dropLast(3)) {
+            return reply("text/javascript", "export const v\(n) = 1;", close: false)
+        }
+        return nil
+    }
+
+    nonisolated static let novncModules = 48
+    nonisolated static let takeover = "http://localhost:6080/vnc.html?autoconnect=true&resize=remote#password=s3cr%2Bt"
+
     /// The bridge serves `frame.jpg` as a PNG; the card reads it by its bytes.
     nonisolated static let frame: Data = UIGraphicsImageRenderer(size: CGSize(width: 64, height: 40)).image { context in
         UIColor.systemTeal.setFill(); context.fill(CGRect(x: 0, y: 0, width: 64, height: 40))
@@ -100,12 +140,17 @@ actor BrowserDaemon: AgentTransport {
     <script>fetch('/api/v1/kv/entry?key=count',{method:'PUT',headers:{'Content-Type':'application/json','If-Match':'version1'},body:JSON.stringify({value:42})}).then(r=>r.json()).then(()=>{let events=new EventSource('/api/v1/kv/events');events.onmessage=e=>document.querySelector('#result').textContent=e.data;}).catch(e=>document.querySelector('#result').textContent='error:'+e);</script></body></html>
     """
 
+    func closed(_ head: BrowserHTTPHead) { afterClose.append("\(head.line) Host: \(head.value("Host") ?? "-")") }
+
     private actor Socket: BrowserStream {
         let daemon: BrowserDaemon
         var buffer = Data()
         var pending = Data()
         var reader: CheckedContinuation<Data, Error>?
         var ended = false
+        /// The server closed its end; the close reaches the phone a moment
+        /// later, as it does across the network.
+        var serverClosed = false
         var websocket = false
         init(_ daemon: BrowserDaemon) { self.daemon = daemon }
         func read(maximumBytes: Int) async throws -> Data {
@@ -120,10 +165,19 @@ actor BrowserDaemon: AgentTransport {
             buffer.append(data)
             guard let (head, body) = try BrowserHTTPHead.parse(buffer), body.count >= (Int(head.value("Content-Length") ?? "0") ?? 0) else { return }
             buffer = Data()
+            if serverClosed { await daemon.closed(head); return }
             let (response, staysOpen) = await daemon.answer(head, body: body)
             websocket = head.value("upgrade") != nil
-            pending.append(response); ended = !staysOpen
+            pending.append(response)
+            if !staysOpen {
+                serverClosed = true
+                Task { try? await Task.sleep(for: .milliseconds(150)); self.end() }
+            }
             if let reader { self.reader = nil; let bytes = pending; pending = Data(); reader.resume(returning: bytes) }
+        }
+        private func end() {
+            ended = true
+            if let reader, pending.isEmpty { self.reader = nil; reader.resume(returning: Data()) }
         }
         func close() async { ended = true; reader?.resume(returning: Data()); reader = nil }
     }
@@ -275,6 +329,47 @@ final class HostedBrowserTests: XCTestCase {
         window.overrideUserInterfaceStyle = .dark
         try await Task.sleep(for: .milliseconds(150))
         try screenshot(window, name: "browser-chat-dark")
+    }
+
+    /// Take control on the live page, first time, no refresh: the link to
+    /// another loopback port keeps its query and fragment under the alias,
+    /// every module of noVNC's graph loads although websockify never says
+    /// it closes, and the socket opens with noVNC's real Origin and Host.
+    func testTakeControlLoadsNoVNCOnTheFirstNavigation() async throws {
+        let daemon = BrowserDaemon()
+        let page = try await BrowserPage.workspace(client: AgentClient(transport: daemon, token: "native-secret"), url: URL(string: "http://localhost:6090/takeover")!, workspaceID: "work1")
+        let browser = BrowserViewController(url: page.url, page: page)
+        let window = hostedKeyWindow(in: try await hostedActiveScene(), root: UINavigationController(rootViewController: browser))
+        defer { window.isHidden = true }
+        let web = try await waitForWeb(browser)
+        try await waitForText("ready", web: web)
+        _ = try await web.evaluateJavaScript("document.querySelector('#take').click(); void 0")
+        do { try await waitForText("modules \(BrowserDaemon.novncModules) #password=s3cr%2Bt ws-live", web: web) } catch {
+            let dropped = await daemon.afterClose
+            let seen = await daemon.requests.filter { !$0.hasPrefix("CONNECT /v0/") }
+            XCTFail("\(dropped.count) requests went to a closed server: \(dropped.prefix(5)); the servers saw \(seen)")
+            throw error
+        }
+
+        XCTAssertEqual(web.url?.host, "localhost.happy-loopback.invalid")
+        XCTAssertEqual(web.url?.port, 6080)
+        XCTAssertEqual(web.url?.query, "autoconnect=true&resize=remote")
+        XCTAssertEqual(web.url?.fragment, "password=s3cr%2Bt")
+        let afterClose = await daemon.afterClose
+        XCTAssertEqual(afterClose, [], "a request went down a connection its server had closed")
+        let heads = await daemon.pageHeads
+        XCTAssertEqual(Set(heads.compactMap(\.host)), ["localhost:6090", "localhost:6080"])
+        for n in 0..<BrowserDaemon.novncModules {
+            XCTAssertEqual(heads.filter { $0.line.hasPrefix("GET /app/m\(n).js ") }.count, 1, "module \(n)")
+        }
+        let socket = heads.filter { $0.line.hasPrefix("GET /websockify ") }
+        XCTAssertEqual(socket.count, 1)
+        XCTAssertEqual(socket.first?.origin, "http://localhost:6080")
+        XCTAssertEqual(socket.first?.host, "localhost:6080")
+        // One request per tunnel (WebKit may open one more it never uses).
+        let requests = await daemon.requests
+        XCTAssertGreaterThanOrEqual(requests.filter { $0.hasPrefix("CONNECT localhost:6080 ") }.count,
+                                    heads.filter { $0.host == "localhost:6080" }.count)
     }
 
     func testALiveBrowserCardPollsThroughItsChatsWorkspaceAndHandsBack() async throws {
