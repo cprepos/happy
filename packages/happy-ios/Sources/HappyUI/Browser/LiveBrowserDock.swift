@@ -72,6 +72,14 @@ final class LiveBrowserDock: NSObject {
     /// Release stays offered while the bridge says user or takeover.
     private(set) var controlTaken = false
     private var takenAt: ContinuousClock.Instant?
+    /// Release control is on its way (the button): leaving noVNC then
+    /// sends no second one.
+    private var releasing = false
+    /// Control was handed back as noVNC went, once for each take.
+    private var releasedOnLeave = false
+    /// In the background a few seconds, noVNC goes and control with it.
+    private var backgroundRelease: Task<Void, Never>?
+    static let backgroundGrace: Duration = .seconds(5)
 
     init(host: UIViewController, chatKey: String, connect: @escaping @MainActor () -> LiveBrowserConnection?) {
         self.host = host
@@ -84,6 +92,8 @@ final class LiveBrowserDock: NSObject {
         indicator.isHidden = true
         indicator.addAction(UIAction { [weak self] _ in self?.openPlayer() }, for: .touchUpInside)
         NotificationCenter.default.addObserver(self, selector: #selector(voiceSheetChanged), name: .voiceSheetChanged, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(appBackgrounded), name: UIApplication.didEnterBackgroundNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(appForegrounded), name: UIApplication.willEnterForegroundNotification, object: nil)
     }
 
     // MARK: The host's part
@@ -137,6 +147,7 @@ final class LiveBrowserDock: NSObject {
     /// A new link replaces the old one's feed, player and full screen.
     private func show(link: LiveBrowserLink?) {
         guard link != self.link else { return }
+        if let feed { releaseHeld(feed) }
         feed?.close()
         closePlayer(animated: false)
         dismissFullScreen(animated: false)
@@ -437,6 +448,52 @@ final class LiveBrowserDock: NSObject {
         (frame as? LiveBrowserFullScreenItems)?.update(feed?.phase.state, held: holdsControl)
     }
 
+    // MARK: Control only while noVNC shows
+
+    /// The noVNC screen went, whatever took it (Minimize, the full screen
+    /// dismissed, popped, dropped): control works only there, so it is
+    /// handed back.
+    func noVNCLeft() {
+        releaseHeld()
+    }
+
+    /// The chat closed: control held through it goes back, and its full
+    /// screen with it.
+    func hostClosed() {
+        releaseHeld()
+        dismissFullScreen(animated: false)
+    }
+
+    /// `POST /release` for `feed`'s link, through its own transport, once
+    /// for each take, and not while Release control is already on its way.
+    private func releaseHeld(_ feed: LiveBrowserFeed? = nil) {
+        guard let feed = feed ?? self.feed, feed === self.feed, controlTaken, !releasedOnLeave, !releasing else { return }
+        releasedOnLeave = true
+        controlTaken = false
+        Task { [weak self] in
+            try? await feed.release()
+            guard let self, self.feed === feed else { return }
+            self.refresh()
+        }
+        refresh()
+    }
+
+    @objc private func appBackgrounded() {
+        backgroundRelease?.cancel()
+        guard noVNCPage != nil, controlTaken else { return }
+        backgroundRelease = Task { [weak self] in
+            try? await Task.sleep(for: Self.backgroundGrace)
+            guard !Task.isCancelled, let self, UIApplication.shared.applicationState == .background else { return }
+            self.releaseHeld()
+            self.dropNoVNC()
+        }
+    }
+
+    @objc private func appForegrounded() {
+        backgroundRelease?.cancel()
+        backgroundRelease = nil
+    }
+
     /// Take control (`POST /take`), then drive the browser in noVNC, at
     /// the address the bridge answered with.
     func take(connection: LiveBrowserConnection? = nil, workspace: String? = nil) {
@@ -455,6 +512,10 @@ final class LiveBrowserDock: NSObject {
                 guard self.feed === feed else { return }
                 self.controlTaken = true
                 self.takenAt = .now
+                self.releasedOnLeave = false
+                // Left before `/take` answered: control is no good without
+                // noVNC, so it goes straight back.
+                guard self.fullScreen != nil else { self.releaseHeld(feed); return self.refresh() }
                 if let url = take.novncURL, self.fullScreen != nil, self.noVNCPage == nil {
                     let id: String
                     if let workspace { id = workspace } else { id = try await connection.workspace() }
@@ -484,12 +545,14 @@ final class LiveBrowserDock: NSObject {
     func release() {
         guard let feed, !busy else { return }
         busy = true
+        releasing = true
         player?.isBusy = true
         Task { [weak self] in
             do {
                 try await feed.release()
                 guard let self else { return }
                 self.busy = false
+                self.releasing = false
                 self.player?.isBusy = false
                 guard self.feed === feed else { return }
                 self.controlTaken = false
@@ -498,6 +561,7 @@ final class LiveBrowserDock: NSObject {
             } catch {
                 guard let self else { return }
                 self.busy = false
+                self.releasing = false
                 self.player?.isBusy = false
                 self.alert(Strings.LiveBrowser.releaseFailed, Strings.LiveBrowser.unreachable)
             }
@@ -651,6 +715,17 @@ final class LiveBrowserFullScreenItems: UIViewController {
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         if isNoVNC { restoreGestures() }
+    }
+
+    /// Gone for good (popped, or its full screen dismissed), not covered
+    /// for a moment or laid out again: control goes back.
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        guard isNoVNC else { return }
+        let navigation = navigationController
+        let gone = isMovingFromParent || isBeingDismissed || navigation == nil
+            || navigation?.isBeingDismissed == true || navigation?.presentingViewController == nil
+        if gone { dock?.noVNCLeft() }
     }
 
     /// noVNC has every touch: no swipe back, no pull to dismiss, no split

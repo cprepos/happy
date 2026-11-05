@@ -577,6 +577,8 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         historyPager?.isActive = false
         appeared = false
         liveDock.setOnScreen(false)
+        // Closed, not covered: control taken here goes back.
+        if isMovingFromParent || isBeingDismissed || navigationController?.isBeingDismissed == true { liveDock.hostClosed() }
         if let keyboard = ultraKeyboard, keyboard.isActive {
             keyboard.deactivate()
             landDockRiders(on: keyboard.list)

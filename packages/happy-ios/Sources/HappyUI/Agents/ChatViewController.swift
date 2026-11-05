@@ -461,6 +461,8 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         let conversation = conversation
         Task { await conversation.setVisible(false) }
         if !previewing { liveDock.setOnScreen(false) }
+        // Closed, not covered: control taken here goes back.
+        if !previewing, isMovingFromParent || isBeingDismissed || navigationController?.isBeingDismissed == true { liveDock.hostClosed() }
         usageWatch?.invalidate()
         usageWatch = nil
         // Covered or gone: the keyboard isn't this screen's to follow, and
