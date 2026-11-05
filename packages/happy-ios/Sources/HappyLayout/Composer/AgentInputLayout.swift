@@ -84,6 +84,9 @@ public struct AgentInputLayout: Equatable, Sendable {
         public var screenWidth: CGFloat?
         /// The status row's text, measured; nil hides the row.
         public var statusText: CGSize?
+        /// The live-browser text on the status row's right, measured; nil
+        /// hides it. Either text shows the row.
+        public var browserText: CGSize?
         public var panel: Panel
         /// The usage row's week and context texts; both nil hides the row.
         public var usageWeek: CGSize?
@@ -97,8 +100,10 @@ public struct AgentInputLayout: Equatable, Sendable {
             statusText: CGSize? = nil,
             panel: Panel,
             usageWeek: CGSize? = nil,
-            usageContext: CGSize? = nil
+            usageContext: CGSize? = nil,
+            browserText: CGSize? = nil
         ) {
+            self.browserText = browserText
             self.width = width
             self.paddingH = paddingH
             self.maxContentWidth = maxContentWidth
@@ -118,11 +123,13 @@ public struct AgentInputLayout: Equatable, Sendable {
             statusText: CGSize? = nil,
             card: AgentInputCardLayout.Input,
             usageWeek: CGSize? = nil,
-            usageContext: CGSize? = nil
+            usageContext: CGSize? = nil,
+            browserText: CGSize? = nil
         ) {
             self.init(
                 width: width, paddingH: paddingH, maxContentWidth: maxContentWidth, screenWidth: screenWidth,
-                statusText: statusText, panel: .card(card), usageWeek: usageWeek, usageContext: usageContext
+                statusText: statusText, panel: .card(card), usageWeek: usageWeek, usageContext: usageContext,
+                browserText: browserText
             )
         }
     }
@@ -148,6 +155,9 @@ public struct AgentInputLayout: Equatable, Sendable {
     /// The inner container: the composer less its side padding.
     public var inner: CGRect
     public var status: StatusRow?
+    /// The live-browser line, right-aligned on the status row
+    /// (`ChatStatusLineLayout`).
+    public var browser: StatusRow?
     /// The card or the panel.
     public var card: CGRect
     /// The compact card's content; nil for the panel.
@@ -187,27 +197,14 @@ public struct AgentInputLayout: Equatable, Sendable {
         var y = M.containerPaddingTop
 
         // [dot 6, 1 down] 4 [text], centred in a row at least 20 tall with 4
-        // under it.
-        if let text = input.statusText {
-            let dotBox = M.statusDotSize + M.statusDotMarginTop
-            let group = max(dotBox, text.height)
-            let height = max(M.statusMinHeight, group + M.statusPaddingBottom)
-            let groupY = y + (height - M.statusPaddingBottom - group) / 2
-            let x = innerX + M.statusPaddingH
-            let textX = x + M.statusDotSize + M.statusDotGap
-            status = StatusRow(
-                frame: CGRect(x: innerX, y: y, width: innerWidth, height: height),
-                dot: CGRect(x: x, y: groupY + (group - dotBox) / 2 + M.statusDotMarginTop, width: M.statusDotSize, height: M.statusDotSize),
-                text: CGRect(
-                    x: textX,
-                    y: groupY + (group - text.height) / 2,
-                    width: min(text.width, max(0, innerX + innerWidth - M.statusPaddingH - textX)),
-                    height: text.height
-                )
-            )
-            y += height
+        // under it; the browser's [text] 4 [dot] on its right.
+        if let line = ChatStatusLineLayout(x: innerX, y: y, width: innerWidth, voice: input.statusText, browser: input.browserText) {
+            status = line.voice
+            browser = line.browser
+            y += line.frame.height
         } else {
             status = nil
+            browser = nil
         }
 
         isWide = Self.isWide(screenWidth: input.screenWidth ?? width)
