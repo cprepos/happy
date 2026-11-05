@@ -3,9 +3,12 @@
 // keeps, and name the chat in X-Happy-Chat. No route returns a secret value.
 //
 //   POST /v1/list     {}                                 -> {client, secrets:[{name, hosts, kind}]}
-//   POST /v1/fill     {session_id, element_id, name}     -> {ok, kind, host}
-//   POST /v1/login    {session_id, site}                 -> {status, host}
-//   POST /v1/session  {session_id?}                      -> {tainted, any_tainted, drop_images}
+//   POST /v1/fill     {session_id, element_id, name, controller_port?} -> {ok, kind, host}
+//   POST /v1/login    {session_id, site, controller_port?}             -> {status, host}
+//   POST /v1/session  {session_id?, controller_port?}                  -> {tainted, any_tainted, drop_images}
+//
+// controller_port picks the browser: omitted, the shared stack's controller
+// (8010); otherwise a per-chat pod's, from FILLER_CONTROLLER_PORTS.
 //   POST /v1/scrub    {payload}                          -> {payload}
 //   GET  /healthz                                        -> {ok, unlocked, sync_age_s}
 //
@@ -19,7 +22,7 @@ import { loadPolicy, PolicyError } from './lib/policy.mjs';
 import { createScrubber } from './lib/scrub.mjs';
 import { createTaint } from './lib/taint.mjs';
 import { createAudit } from './lib/audit.mjs';
-import { createController } from './lib/controller.mjs';
+import { controllerSet, parsePorts } from './lib/controller.mjs';
 import { createVault } from './lib/vault.mjs';
 import { createFiller, FillError } from './lib/fill.mjs';
 
@@ -60,8 +63,8 @@ export function tokenChecker(sha256Hex) {
  * The request handler, with every dependency injected (tests build it
  * directly). vault may be null: not enrolled, list/fill/login answer 503.
  */
-export function createApp({ checkToken, getPolicy, vault, controller, scrubber, taint, audit, allowLoopbackHttp = false, sleep, totpOpts }) {
-    const filler = vault ? createFiller({ getPolicy, vault, controller, taint, audit, allowLoopbackHttp, sleep, totpOpts }) : null;
+export function createApp({ checkToken, getPolicy, vault, controllers, scrubber, taint, audit, allowLoopbackHttp = false, sleep, totpOpts }) {
+    const filler = vault ? createFiller({ getPolicy, vault, controllers, taint, audit, allowLoopbackHttp, sleep, totpOpts }) : null;
 
     const send = (res, status, obj) => {
         const body = JSON.stringify(obj);
@@ -94,13 +97,15 @@ export function createApp({ checkToken, getPolicy, vault, controller, scrubber, 
             const body = await readJson(req);
             switch (url.pathname) {
                 case '/v1/scrub': {
-                    const sid = typeof body.session_id === 'string' ? body.session_id : null;
-                    const dropImages = sid ? !!taint.get(sid)?.drop_images || taint.anyDropImages() : taint.anyDropImages();
+                    // Every tainted session's values are scrubbed, whichever session the payload came from.
+                    const dropImages = taint.anyDropImages();
                     return send(res, 200, { payload: scrubber.size ? scrubber.scrub(body.payload, { dropImages }) : body.payload });
                 }
                 case '/v1/session': {
-                    const sid = typeof body.session_id === 'string' ? body.session_id : null;
-                    const s = sid ? taint.get(sid) : null;
+                    const sid = typeof body.session_id === 'string' && body.session_id ? body.session_id : null;
+                    const c = controllers(body.controller_port ?? null);
+                    if (!c) return send(res, 403, { error: 'that browser controller is not one the filler may use' });
+                    const s = sid ? taint.get(`${c.port}/${sid}`) : null;
                     return send(res, 200, { tainted: !!s, any_tainted: taint.anyTainted(), drop_images: s ? !!s.drop_images : taint.anyDropImages() });
                 }
                 case '/v1/list': case '/v1/fill': case '/v1/login': {
@@ -146,16 +151,16 @@ async function main(argv) {
         }
     }
     const checkToken = tokenChecker(readSecretOrNull(cfg.files.clientTokenSha256));
-    const controller = createController({ baseUrl: cfg.autoBrowserUrl, token: readSecret(cfg.files.controllerToken) });
+    const controllers = controllerSet({ defaultPort: cfg.controllerPort, ports: parsePorts(cfg.controllerPorts), token: readSecret(cfg.files.controllerToken) });
     const scrubber = createScrubber();
-    const taint = createTaint({ statePath: cfg.statePath, scrubber, controller, log });
+    const taint = createTaint({ statePath: cfg.statePath, scrubber, controllers, log });
     const audit = createAudit(cfg.auditDir);
     const getPolicy = policyLoader(cfg.policyPath, { requireRoot: !cfg.testLoopback });
     try { getPolicy(); } catch (err) { log(err.message); }
     let vault = null;
     try { vault = buildVaultFromFiles(cfg); } catch (err) { log(`vault not usable: ${err.message}`); }
     if (!vault) log('not enrolled: list, fill and login answer 503 until make filler-enroll');
-    const handle = createApp({ checkToken, getPolicy, vault, controller, scrubber, taint, audit, allowLoopbackHttp: cfg.testLoopback });
+    const handle = createApp({ checkToken, getPolicy, vault, controllers, scrubber, taint, audit, allowLoopbackHttp: cfg.testLoopback });
     const server = createHttpServer(handle);
     server.requestTimeout = 120_000;
     await new Promise((r, j) => { server.once('error', j); server.listen(cfg.port, cfg.host, r); });

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parsePolicy } from '../lib/policy.mjs';
 import { createVault } from '../lib/vault.mjs';
-import { createController } from '../lib/controller.mjs';
+import { controllerSet } from '../lib/controller.mjs';
 import { createScrubber } from '../lib/scrub.mjs';
 import { createTaint } from '../lib/taint.mjs';
 import { createAudit } from '../lib/audit.mjs';
@@ -44,13 +44,16 @@ export async function setup() {
     let policy;
     try { policy = parsePolicy(JSON.stringify(policyFor(v))); } catch (err) { await vw.close(); await ctl.close(); throw err; }
     const vault = createVault({ url: vw.url, clientId: v.clientId, clientSecret: v.clientSecret, userKey: v.userKey, deviceId: 'dev-test' });
-    const controller = createController({ baseUrl: ctl.url, token: ctl.token });
+    const port = Number(new URL(ctl.url).port);
+    const controllers = controllerSet({ defaultPort: port, ports: [], token: ctl.token });
+    const controller = controllers(null).controller;
     const scrubber = createScrubber();
-    const taint = createTaint({ statePath: join(dir, 'state', 'taint.json'), scrubber, controller });
+    const taint = createTaint({ statePath: join(dir, 'state', 'taint.json'), scrubber, controllers });
     const audit = createAudit(join(dir, 'audit'));
     return {
-        vw, ctl, v, dir, policy, vault, controller, scrubber, taint, audit,
-        deps: { getPolicy: () => policy, vault, controller, taint, audit, sleep: async () => {}, totpOpts: { minLeftS: 0 } },
+        vw, ctl, v, dir, port, policy, vault, controller, controllers, scrubber, taint, audit,
+        deps: { getPolicy: () => policy, vault, controllers, taint, audit, sleep: async () => {}, totpOpts: { minLeftS: 0 } },
+        key: (session) => `${port}/${session}`,
         async close() { await vw.close(); await ctl.close(); },
     };
 }

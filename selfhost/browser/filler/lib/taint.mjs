@@ -10,8 +10,8 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { isLive } from './controller.mjs';
 
-export function createTaint({ statePath = null, scrubber, controller = null, now = () => Date.now(), graceMs = 10 * 60_000, log = () => {} }) {
-    /** session -> {chat, client, drop_images, since, closed_at} */
+export function createTaint({ statePath = null, scrubber, controllers = null, now = () => Date.now(), graceMs = 10 * 60_000, log = () => {} }) {
+    /** "<port>/<session id>" -> {chat, client, port, session, drop_images, since, closed_at} */
     const sessions = new Map();
     if (statePath) {
         try {
@@ -25,7 +25,7 @@ export function createTaint({ statePath = null, scrubber, controller = null, now
             mkdirSync(dirname(statePath), { recursive: true });
             const tmp = `${statePath}.tmp`;
             const out = {};
-            for (const [id, s] of sessions) out[id] = { chat: s.chat, client: s.client, drop_images: !!s.drop_images, since: s.since, closed_at: s.closed_at ?? null };
+            for (const [id, s] of sessions) out[id] = { chat: s.chat, client: s.client, port: s.port ?? null, session: s.session ?? null, drop_images: !!s.drop_images, since: s.since, closed_at: s.closed_at ?? null };
             writeFileSync(tmp, JSON.stringify({ version: 1, sessions: out }), { mode: 0o600 });
             renameSync(tmp, statePath);
         } catch (err) { log(`taint state not saved: ${err.code || err.message}`); }
@@ -39,8 +39,8 @@ export function createTaint({ statePath = null, scrubber, controller = null, now
             return null;
         },
         /** Taint before typing, so the value is scrubbed even if the type call half-succeeds. */
-        mark(session, { chat, client, name, value, kind }) {
-            const s = sessions.get(session) || { chat, client, drop_images: false, since: now(), closed_at: null };
+        mark(session, { chat, client, name, value, kind, port = null, session: sid = null }) {
+            const s = sessions.get(session) || { chat, client, port, session: sid, drop_images: false, since: now(), closed_at: null };
             if (kind !== 'password') s.drop_images = true;
             sessions.set(session, s);
             scrubber.add(session, name, value);
@@ -52,11 +52,13 @@ export function createTaint({ statePath = null, scrubber, controller = null, now
         list: () => [...sessions.keys()],
         /** Check every tainted session; forget closed ones after the grace period. */
         async sweep() {
-            if (!controller) return;
+            if (!controllers) return;
             let changed = false;
             for (const [id, s] of sessions) {
                 let live = true;
-                try { live = isLive(await controller.getSession(id)); } catch (err) { if (err.status === 404) live = false; else continue; }
+                const c = controllers(s.port ?? null)?.controller;
+                if (!c) continue;
+                try { live = isLive(await c.getSession(s.session ?? id)); } catch (err) { if (err.status === 404) live = false; else continue; }
                 if (live) { if (s.closed_at) { s.closed_at = null; changed = true; } continue; }
                 if (!s.closed_at) { s.closed_at = now(); changed = true; continue; }
                 if (now() - s.closed_at >= graceMs) {

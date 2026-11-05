@@ -13,7 +13,10 @@ export function loadConfig(env = process.env) {
         host: env.FILLER_HOST || '127.0.0.1',
         port: Number(env.FILLER_PORT || 6091),
         vaultUrl: env.VAULT_URL || 'http://127.0.0.1:8222',
-        autoBrowserUrl: env.AUTO_BROWSER_URL || 'http://127.0.0.1:8010',
+        // The shared stack's controller, and the ports a request may name for a
+        // per-chat pod's controller (127.0.0.1 only).
+        controllerPort: Number(env.FILLER_CONTROLLER_PORT || 8010),
+        controllerPorts: env.FILLER_CONTROLLER_PORTS || '8010,8100-8131',
         policyPath: env.FILLER_POLICY || join(home, 'policy.json'),
         statePath: join(home, 'state', 'taint.json'),
         auditDir: join(home, 'audit'),

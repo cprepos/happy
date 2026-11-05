@@ -37,7 +37,7 @@ export function kindsOf(el) {
     return out;
 }
 
-export function createFiller({ getPolicy, vault, controller, taint, audit, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), allowLoopbackHttp = false, totpOpts = {} }) {
+export function createFiller({ getPolicy, vault, controllers, taint, audit, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), allowLoopbackHttp = false, totpOpts = {} }) {
     const hostOf = (url, allowed) => {
         const h = matchHost(url, allowed);
         if (h) return h;
@@ -55,6 +55,17 @@ export function createFiller({ getPolicy, vault, controller, taint, audit, sleep
         return hs;
     };
 
+    // A request names its browser by controller port (the shared stack's 8010,
+    // or a per-chat pod's 81NN); only ports in the configured list are reached.
+    // Taint and bindings are kept per (port, session).
+    function browser(body) {
+        const port = body.controller_port ?? null;
+        const r = controllers(port);
+        if (!r) throw new FillError('that browser controller is not one the filler may use', 403, 'refused_controller');
+        if (typeof body.session_id !== 'string' || !body.session_id || body.session_id.length > 200) throw new FillError('session_id is required', 400, 'bad_request');
+        return { controller: r.controller, port: r.port, session: body.session_id, key: `${r.port}/${body.session_id}` };
+    }
+
     function scope(chat) {
         const policy = getPolicy();
         const client = policy.clientForChat(chat);
@@ -62,9 +73,9 @@ export function createFiller({ getPolicy, vault, controller, taint, audit, sleep
         return { policy, client, cfg: policy.client(client) };
     }
 
-    async function liveHost(session, allowed) {
+    async function liveHost(b, allowed) {
         let rec;
-        try { rec = await controller.getSession(session); } catch (err) {
+        try { rec = await b.controller.getSession(b.session); } catch (err) {
             throw new FillError(err.status === 404 ? 'no such browser session' : 'browser controller unavailable', err.status === 404 ? 404 : 502, 'controller');
         }
         if (!isLive(rec)) throw new FillError('the browser session is not active', 409, 'session_closed');
@@ -81,11 +92,11 @@ export function createFiller({ getPolicy, vault, controller, taint, audit, sleep
     }
 
     /** Type one field. Shared by fill() and login(). Returns {kind, host}. */
-    async function typeField(ctx, { chat, session, element, name, field, item, allowed, observed }) {
-        const base = { chat, client: ctx.client, session, name, field_kind: field };
-        const { host } = await liveHost(session, allowed);
+    async function typeField(ctx, { chat, b, element, name, field, item, allowed, observed }) {
+        const base = { chat, client: ctx.client, session: b.key, name, field_kind: field };
+        const { host } = await liveHost(b, allowed);
         if (!host) { audit.record({ ...base, outcome: 'refused_host' }); throw new FillError('the page is not on a host this secret is allowed on', 403, 'refused_host'); }
-        const obs = observed || await controller.observe(session);
+        const obs = observed || await b.controller.observe(b.session);
         if (hostOf(pageUrl(obs), allowed) !== host) { audit.record({ ...base, host, outcome: 'refused_host' }); throw new FillError('the page changed host', 409, 'refused_host'); }
         const el = (obs.interactables || []).find((e) => e.element_id === element);
         if (!el) { audit.record({ ...base, host, outcome: 'refused_element' }); throw new FillError('element not found in the page (observe again for current element ids)', 404, 'refused_element'); }
@@ -98,14 +109,14 @@ export function createFiller({ getPolicy, vault, controller, taint, audit, sleep
             value = item[field];
             if (!value) throw new FillError(`this item has no ${field}`, 422, 'no_value');
         }
-        taint.mark(session, { chat, client: ctx.client, name, value, kind: field });
+        taint.mark(b.key, { chat, client: ctx.client, name, value, kind: field, port: b.port, session: b.session });
         try {
-            await controller.type(session, element, value);
+            await b.controller.type(b.session, element, value);
         } catch (err) {
             audit.record({ ...base, host, outcome: 'type_failed' });
             throw new FillError('typing failed in the browser', 502, 'type_failed');
         } finally { value = null; }
-        const after = await liveHost(session, allowed).catch(() => ({ host: null }));
+        const after = await liveHost(b, allowed).catch(() => ({ host: null }));
         if (after.host !== host) {
             audit.record({ ...base, host, outcome: 'host_changed' });
             throw new FillError('the page left the allowed host while the secret was typed; the session stays tainted', 409, 'host_changed');
@@ -122,8 +133,11 @@ export function createFiller({ getPolicy, vault, controller, taint, audit, sleep
         };
     }
 
-    async function fill({ chat, session_id: session, element_id: element, name }) {
-        if (typeof session !== 'string' || !session || typeof element !== 'string' || !element) throw new FillError('session_id and element_id are required', 400, 'bad_request');
+    async function fill(body) {
+        const { chat, element_id: element, name } = body;
+        if (typeof element !== 'string' || !element) throw new FillError('session_id and element_id are required', 400, 'bad_request');
+        const b = browser(body);
+        const session = b.key;
         const ctx = scope(chat);
         const bind = taint.checkBinding(session, chat, ctx.client);
         if (bind) { audit.record({ chat, client: ctx.client, session, name, outcome: 'refused_binding' }); throw new FillError(bind, 403, 'refused_binding'); }
@@ -132,7 +146,7 @@ export function createFiller({ getPolicy, vault, controller, taint, audit, sleep
         const item = await readValue(ctx, entry);
         const allowed = hostsFor(item.uris, entry.hosts);
         if (!allowed.length) { audit.record({ chat, client: ctx.client, session, name: entry.name, outcome: 'refused_no_hosts' }); throw new FillError('this secret has no host that both the vault item and the policy allow', 403, 'refused_no_hosts'); }
-        const r = await typeField(ctx, { chat, session, element, name: entry.name, field: entry.field, item, allowed });
+        const r = await typeField(ctx, { chat, b, element, name: entry.name, field: entry.field, item, allowed });
         return { ok: true, ...r };
     }
 
@@ -146,10 +160,11 @@ export function createFiller({ getPolicy, vault, controller, taint, audit, sleep
         return { password, totp, username };
     }
 
-    async function login({ chat, session_id: session, site }) {
-        if (typeof session !== 'string' || !session) throw new FillError('session_id is required', 400, 'bad_request');
+    async function login(body) {
+        const { chat, site } = body;
+        const b = browser(body);
         const ctx = scope(chat);
-        const bind = taint.checkBinding(session, chat, ctx.client);
+        const bind = taint.checkBinding(b.key, chat, ctx.client);
         if (bind) throw new FillError(bind, 403, 'refused_binding');
         const sec = ctx.policy.secret(ctx.client, site);
         if (!sec) throw new FillError('no such site for this chat (see browser_list_secrets)', 404, 'refused_name');
@@ -160,31 +175,31 @@ export function createFiller({ getPolicy, vault, controller, taint, audit, sleep
         const done = new Set();
         let host = null;
         for (let step = 1; step <= 3; step++) {
-            const { host: h } = await liveHost(session, allowed);
+            const { host: h } = await liveHost(b, allowed);
             if (!h) return { status: 'needs_human', host, reason: 'the page is not on an allowed host' };
             host = h;
-            const obs = await controller.observe(session);
+            const obs = await b.controller.observe(b.session);
             const f = pickFields(obs);
-            const type = (el, field) => typeField(ctx, { chat, session, element: el.element_id, name: `${site}.${field}`, field, item, allowed, observed: obs });
+            const type = (el, field) => typeField(ctx, { chat, b, element: el.element_id, name: `${site}.${field}`, field, item, allowed, observed: obs });
             if (f.totp && can('totp') && !f.password) {
                 await type(f.totp, 'totp');
-                await controller.press(session, 'Enter');
+                await b.controller.press(b.session, 'Enter');
                 return { status: 'totp_submitted', host };
             }
             let acted = false;
             if (f.username && can('username') && !done.has('username')) { await type(f.username, 'username'); done.add('username'); acted = true; }
             if (f.password && can('password')) { await type(f.password, 'password'); done.add('password'); acted = true; }
             if (!acted) return { status: done.has('password') ? 'submitted' : 'needs_human', host, ...(done.has('password') ? {} : { reason: 'no fillable login field on the page' }) };
-            await controller.press(session, 'Enter');
+            await b.controller.press(b.session, 'Enter');
             await sleep(2000);
             if (done.has('password')) {
                 // A one-time-code page may follow on the same host.
-                const next = await liveHost(session, allowed);
+                const next = await liveHost(b, allowed);
                 if (!next.host) return { status: 'submitted', host };
-                const f2 = pickFields(await controller.observe(session));
+                const f2 = pickFields(await b.controller.observe(b.session));
                 if (f2.totp && !f2.password && can('totp')) {
-                    await typeField(ctx, { chat, session, element: f2.totp.element_id, name: `${site}.totp`, field: 'totp', item, allowed });
-                    await controller.press(session, 'Enter');
+                    await typeField(ctx, { chat, b, element: f2.totp.element_id, name: `${site}.totp`, field: 'totp', item, allowed });
+                    await b.controller.press(b.session, 'Enter');
                     return { status: 'totp_submitted', host };
                 }
                 return { status: 'submitted', host };
@@ -193,5 +208,5 @@ export function createFiller({ getPolicy, vault, controller, taint, audit, sleep
         return { status: done.size ? 'submitted' : 'needs_human', host };
     }
 
-    return { list, fill, login };
+    return { list, fill, login, browserKey: (body) => browser(body).key };
 }

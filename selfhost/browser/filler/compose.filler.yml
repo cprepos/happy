@@ -2,7 +2,8 @@
 # Its own compose project (happy-filler). Runs from a reviewed release under
 # /srv/happy-filler/current (make filler-install COMMIT=<sha>), never from the
 # writable source tree. Listens on 127.0.0.1:6091 only (host network, so it can
-# reach the vault on 127.0.0.1:8222 and the controller on 127.0.0.1:8010).
+# reach the vault on 127.0.0.1:8222 and the controllers: the shared one on
+# 127.0.0.1:8010 and the per-chat pods' on 127.0.0.1:8100-8131).
 name: happy-filler
 services:
   filler:
@@ -21,7 +22,8 @@ services:
       FILLER_HOST: 127.0.0.1
       FILLER_PORT: "6091"
       VAULT_URL: http://127.0.0.1:8222
-      AUTO_BROWSER_URL: http://127.0.0.1:8010
+      FILLER_CONTROLLER_PORT: "8010"
+      FILLER_CONTROLLER_PORTS: "8010,8100-8131"
       FILLER_HOME: /filler
       NODE_OPTIONS: ""
     volumes:

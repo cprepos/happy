@@ -40,3 +40,32 @@ export function createController({ baseUrl, token, fetchImpl = fetch, timeoutMs 
 /** The page URL of a session record or an observe result. */
 export const pageUrl = (rec) => (rec && (rec.current_url || rec.url)) || null;
 export const isLive = (rec) => !!rec && !['closed', 'interrupted', 'failed', 'deleted'].includes(String(rec.status || 'active'));
+
+/** Parse "8010,8100-8131" into a Set of ports. */
+export function parsePorts(spec) {
+    const out = new Set();
+    for (const part of String(spec || '').split(',').map((x) => x.trim()).filter(Boolean)) {
+        const m = /^(\d{2,5})(?:-(\d{2,5}))?$/.exec(part);
+        if (!m) throw new ControllerError(`bad controller port list entry ${part}`, 500);
+        const a = Number(m[1]); const b = Number(m[2] ?? m[1]);
+        if (a < 1 || b > 65535 || b < a || b - a > 256) throw new ControllerError(`bad controller port range ${part}`, 500);
+        for (let p = a; p <= b; p++) out.add(p);
+    }
+    return out;
+}
+
+/**
+ * Controllers by port, all on 127.0.0.1 with one token: the shared stack's
+ * (defaultPort, used when a request names none) and the per-chat pods'.
+ * Returns port -> {port, controller} or null for a port not in the list.
+ */
+export function controllerSet({ defaultPort, ports, token, fetchImpl }) {
+    const allowed = new Set(ports); allowed.add(defaultPort);
+    const cache = new Map();
+    return (port) => {
+        const p = port === null || port === undefined ? defaultPort : port;
+        if (!Number.isInteger(p) || !allowed.has(p)) return null;
+        if (!cache.has(p)) cache.set(p, { port: p, controller: createController({ baseUrl: `http://127.0.0.1:${p}`, token, fetchImpl }) });
+        return cache.get(p);
+    };
+}
