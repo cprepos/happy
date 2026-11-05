@@ -45,6 +45,7 @@ export function buildVault({ email = 'agent@vault.test', password = 'correct hor
     addLogin('acme-portal', 'acme', { itemKey: true, username: 'acme-ops', password: 'P0rtal "quoted" <tag> \'apos\'', uris: ['https://portal.acme.test'] });
     addLogin('acme-private', 'acme', { collection: 'other', username: 'boss', password: 'not-for-agents-123', uris: ['https://github.com'] });
     addLogin('acme-trashed', 'acme', { username: 'old', password: 'old-pass-zzz', uris: ['https://github.com'], deleted: true });
+    addLogin('acme-gitlab', 'acme', { username: 'gl', password: 'Gitlab-Pass-4321', uris: ['https://github.com'] });
     addLogin('acme-badtype', 'acme', { username: 'weird', password: 'x', uris: ['https://github.com'], encType: '0' });
     addLogin('globex-github', 'globex', { username: 'globex-bot', password: 'Globex-Secret-9876', totp: `otpauth://totp/Globex:bot?secret=${TOTP_SECRET}&algorithm=SHA256&digits=8&period=30`, uris: ['https://github.com'] });
 

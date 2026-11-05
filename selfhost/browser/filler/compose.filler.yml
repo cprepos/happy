@@ -1,0 +1,41 @@
+# The secret filler: types vault secrets into the agent's browser by name.
+# Its own compose project (happy-filler). Runs from a reviewed release under
+# /srv/happy-filler/current (make filler-install COMMIT=<sha>), never from the
+# writable source tree. Listens on 127.0.0.1:6091 only (host network, so it can
+# reach the vault on 127.0.0.1:8222 and the controller on 127.0.0.1:8010).
+name: happy-filler
+services:
+  filler:
+    image: node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
+    user: "1990:1990"
+    network_mode: host
+    read_only: true
+    tmpfs: ["/tmp:size=8m,mode=1777"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    ulimits: { core: 0 }
+    restart: unless-stopped
+    working_dir: /app
+    command: ["node", "--disallow-code-generation-from-strings", "/app/server.mjs"]
+    environment:
+      FILLER_HOST: 127.0.0.1
+      FILLER_PORT: "6091"
+      VAULT_URL: http://127.0.0.1:8222
+      AUTO_BROWSER_URL: http://127.0.0.1:8010
+      FILLER_HOME: /filler
+      NODE_OPTIONS: ""
+    volumes:
+      - /srv/happy-filler/current/app:/app:ro
+      - /srv/happy-filler/secrets:/filler/secrets:ro
+      - /srv/happy-filler/policy.json:/filler/policy.json:ro
+      - /srv/happy-filler/state:/filler/state
+      - /srv/happy-filler/audit:/filler/audit
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:6091/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options: { max-size: "5m", max-file: "3" }
