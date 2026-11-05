@@ -50,6 +50,9 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
     /// A new task on its way to the screen from this one's compose.
     private var composing = false
     private let previewing: Bool
+    /// The Happy session the agent is mirrored to, when the app knows it:
+    /// the bridge keys the agent's browser by it (`LiveBrowserLink.chatKey`).
+    let happySession: String?
     /// The chat's live browser: its red line over the card, its player.
     private lazy var liveDock: LiveBrowserDock = {
         let client = session.client
@@ -196,8 +199,9 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
     private let header = ChatHeaderView()
     private var titleView: ChatTitleView { header.titleView }
 
-    init(session: Session, agentId: String, title: String, spaceId: String?, intro: Intro?, newTask: NewTask? = nil, prefill: ChatPrefill? = nil, previewing: Bool = false) {
+    init(session: Session, agentId: String, title: String, spaceId: String?, intro: Intro?, newTask: NewTask? = nil, prefill: ChatPrefill? = nil, previewing: Bool = false, happySession: String? = nil) {
         self.session = session
+        self.happySession = happySession
         self.spaceId = spaceId
         self.intro = intro
         self.previewing = previewing
@@ -390,9 +394,9 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         updateBar(animated: animated)
         let conversation = conversation
         Task { await conversation.setVisible(true) }
-        // The app knows the agent, not the Happy session it is mirrored
-        // to, so the bridge is asked by its agent key.
-        if !previewing { liveDock.lookUp(key: LiveBrowserLink.chatKey(agent: media.agentId)) }
+        // The bridge keys the browser by the agent's Happy session when it
+        // has one, else by the agent.
+        if !previewing { liveDock.lookUp(key: liveBrowserKey) }
         liveDock.setOnScreen(true)
         // The model chip warns as its account runs low, so the readings are
         // followed while the composer shows.
@@ -493,6 +497,8 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
 
     /// The conversation shown: empty for new work until the daemon made it.
     var shownAgentId: String { media.agentId }
+    /// The key the bridge knows this chat's browser by.
+    var liveBrowserKey: String { LiveBrowserLink.chatKey(agent: media.agentId, happySession: happySession) }
 
     /// The conversation's detail, over it: its numbers, its family and its
     /// activity, and its rename. New work has none until the daemon made it.

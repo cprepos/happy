@@ -110,9 +110,9 @@ final class HostedChatLiveLineTests: XCTestCase {
         return try XCTUnwrap(Session.session(for: pairing.id, context: context))
     }
 
-    private func open(_ session: Session) async throws -> (ChatViewController, UIWindow) {
+    private func open(_ session: Session, happySession: String? = nil) async throws -> (ChatViewController, UIWindow) {
         UserDefaults.standard.removeObject(forKey: "liveBrowserDock.agent.a")
-        let chat = ChatViewController(session: session, agentId: "a", title: "Chief of Staff", spaceId: nil, intro: nil)
+        let chat = ChatViewController(session: session, agentId: "a", title: "Chief of Staff", spaceId: nil, intro: nil, happySession: happySession)
         let scene = try await hostedActiveScene()
         let window = hostedKeyWindow(in: scene, root: UINavigationController(rootViewController: chat))
         window.layoutIfNeeded()
@@ -170,6 +170,26 @@ final class HostedChatLiveLineTests: XCTestCase {
         let row = try XCTUnwrap(newest(in: chat), file: file, line: line)
         XCTAssertLessThanOrEqual(row.maxY, indicator.frame.minY + 0.5,
                                  "the newest row ends under the red line (\(when)): row \(row), line \(indicator.frame)", file: file, line: line)
+    }
+
+    /// An agent with a Happy session asks the bridge for its browser by
+    /// that session's key, the one the bridge files it under; without one,
+    /// by the agent's own.
+    func testTheAgentPageAsksByItsHappySessionsKey() async throws {
+        for happySession in ["happy-session-1", nil] {
+            let daemon = BrowserDaemon()
+            await daemon.setLiveStatus("watching"); await daemon.setChatLink(link)
+            let session = try await session(LineComputer(daemon: daemon, turns: 1))
+            let (chat, window) = try await open(session, happySession: happySession)
+            let key = happySession.map { LiveBrowserLink.chatKey(happySession: $0) } ?? LiveBrowserLink.chatKey(agent: "a")
+            XCTAssertEqual(chat.liveBrowserKey, key)
+            XCTAssertEqual(chat.liveBrowserKey, LiveBrowserLink.chatKey(agent: "a", happySession: happySession))
+            try await until("the bridge asked by \(happySession ?? "the agent")", 15) {
+                await daemon.requests.contains { $0.hasPrefix("GET /live/chat/\(key)") }
+            }
+            try await until("the line", 15) { indicator(in: chat)?.isHidden == false }
+            window.isHidden = true
+        }
     }
 
     /// The bridge has the chat's link from the start.
