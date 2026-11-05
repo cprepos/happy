@@ -283,6 +283,20 @@ schemes:
       config: Debug
       targets:
         - HappyUIKitHostedTests
+  HappySimTests:
+    # Both simulator test bundles from one build-for-testing, so the fast
+    # path (scripts/prep-pro, make ios-test-fast) can shard their classes
+    # across simulators with -only-testing.
+    build:
+      targets:
+        HappyUIKitTestHost: [test]
+        HappyUIKitHostedTests: [test]
+        HappyUIKitTests: [test]
+    test:
+      config: Debug
+      targets:
+        - HappyUIKitHostedTests
+        - HappyUIKitTests
   Happy:
     build:
       targets:

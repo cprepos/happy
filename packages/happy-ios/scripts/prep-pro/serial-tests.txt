@@ -1,0 +1,32 @@
+# Test classes that run in the serial shard, alone, after the parallel shards
+# have finished: anything that asserts wall time, frame time or main-thread
+# budgets, which other simulators competing for the CPU would make flaky.
+# One regular expression per line, matched against "Target/Class" with
+# re.search. A test that turns flaky under parallelism goes here too: never
+# delete or skip it.
+
+# Name patterns
+Perf
+Timing
+HowLong
+MainThread
+Budget
+SystemMonitor
+KeyboardMotion
+ScrollTrace
+
+# Hosted classes that assert wall or frame time without saying so in the name
+/HostedAttachGestureTests$
+/HostedInstantSignOutTests$
+/HostedThumbHashPlaceholderTests$
+/HostedStreamingRevealTests$
+/HostedHomeStaleRowsTests$
+/HostedOfflineAgentTests$
+/HostedLinkTitleTests$
+/HostedVoiceStreamTests$
+
+# UIKit classes with wall-time asserts
+/LudicrousMessageTests$
+/SessionInfoCodeBlockTests$
+/ComposerRestoreTests$
+/ChatOpeningTests$
