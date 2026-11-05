@@ -26,7 +26,7 @@ final class BrowserTests: XCTestCase {
         let client = AgentClient(transport: RoutingTransport(responses: [
             "/v0/artifacts/art1": #"{"artifact":{"updatedSource":{"workspaceId":"artifactworkspace"}}}"#,
             "/v0/agents/chat1": #"{"agent":{"id":"chat1","workspaceId":"chatworkspace","status":"idle"}}"#,
-            "/v0/workspaces": #"{"workspaces":[{"id":"runnerworkspace","status":"active","compute":{"type":"host","runnerId":"runner1"}},{"id":"hostworkspace","status":"active","compute":{"type":"host"}}]}"#,
+            "/v0/workspaces": #"{"workspaces":[{"id":"runnerworkspace","status":"active","compute":{"type":"host","runnerId":"runner1"}},{"id":"hostworkspace","status":"active","compute":{"type":"host","path":"/Users/me"}}]}"#,
         ]), token: "test")
         let artifact = try await client.browserWorkspace(agentID: "chat1", artifactID: "art1")
         let chat = try await client.browserWorkspace(agentID: "chat1")

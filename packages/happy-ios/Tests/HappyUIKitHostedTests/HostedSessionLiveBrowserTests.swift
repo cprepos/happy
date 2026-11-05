@@ -239,7 +239,7 @@ final class HostedSessionLiveBrowserTests: XCTestCase {
         try await waitFor("back on the chat", file: file, line: line) { navigation.topViewController === chat }
     }
 
-    private func waitFor(_ what: String, seconds: Double = 15, _ condition: () async -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
+    private func waitFor(_ what: String, seconds: Double = 15, file: StaticString = #filePath, line: UInt = #line, _ condition: () async -> Bool) async throws {
         let deadline = ContinuousClock.now + .milliseconds(Int(seconds * 1000))
         while ContinuousClock.now < deadline {
             if await condition() { return }
