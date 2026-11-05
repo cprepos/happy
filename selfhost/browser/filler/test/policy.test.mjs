@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, lstatSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allowedHosts, httpsHost, matchHost, normalizeHost } from '../lib/hosts.mjs';
@@ -128,21 +128,41 @@ test('malformed policies fail the whole load', () => {
     assert.throws(() => parsePolicy(cases[3]), /org_id and collection_id are no longer used/);
 });
 
-test('policy file permissions: not writable by group/world, not a symlink, root-owned', () => {
+test('policy file permissions: not writable by group/world, not a symlink', () => {
     const d = mkdtempSync(join(tmpdir(), 'filler-policy-'));
     const f = join(d, 'policy.json');
     writeFileSync(f, JSON.stringify(samplePolicy()));
     chmodSync(f, 0o640);
-    // Tests run as a normal user: the root-owner check is on in production only.
-    assert.equal(loadPolicy(f, { requireRoot: false }).clientForChat('chat-acme'), 'acme');
-    if (process.getuid() !== 0) assert.throws(() => checkPolicyFile(f), /owned by root/);
+    assert.equal(loadPolicy(f, { requireOwner: false }).clientForChat('chat-acme'), 'acme');
     chmodSync(f, 0o660);
-    assert.throws(() => checkPolicyFile(f, { requireRoot: false }), /writable/);
+    assert.throws(() => checkPolicyFile(f, { requireOwner: false }), /writable/);
+    assert.throws(() => checkPolicyFile(f), /writable/);
     chmodSync(f, 0o646);
-    assert.throws(() => checkPolicyFile(f, { requireRoot: false }), /writable/);
+    assert.throws(() => checkPolicyFile(f, { requireOwner: false }), /writable/);
     chmodSync(f, 0o640);
     symlinkSync(f, join(d, 'link.json'));
-    assert.throws(() => checkPolicyFile(join(d, 'link.json'), { requireRoot: false }), /symlink/);
+    assert.throws(() => checkPolicyFile(join(d, 'link.json'), { requireOwner: false }), /symlink/);
+    assert.throws(() => checkPolicyFile(join(d, 'link.json')), /symlink/);
+});
+
+test('policy file owner: the filler\'s own uid or root, nobody else', () => {
+    const d = mkdtempSync(join(tmpdir(), 'filler-policy-'));
+    const f = join(d, 'policy.json');
+    writeFileSync(f, JSON.stringify(samplePolicy()));
+    chmodSync(f, 0o640);
+    const me = process.getuid();
+    // Owned by the process's own uid (the happy-filler account in production): accepted, by default and explicitly.
+    assert.doesNotThrow(() => checkPolicyFile(f));
+    assert.doesNotThrow(() => checkPolicyFile(f, { uid: me }));
+    assert.equal(loadPolicy(f).clientForChat('chat-acme'), 'acme');
+    // Owned by some other account (prep, say, when the filler runs as happy-filler): refused.
+    if (me !== 0) {
+        assert.throws(() => checkPolicyFile(f, { uid: me + 1 }), /owned by the filler's own account \(uid \d+\) or root/);
+        assert.throws(() => loadPolicy(f, { uid: me + 1 }), PolicyError);
+    }
+    // Owned by root (the docker filler's root:1990 policy, during the cutover): still accepted.
+    const rootOwned = ['/etc/hostname', '/etc/passwd'].find((p) => { try { const st = lstatSync(p); return st.isFile() && st.uid === 0 && !(st.mode & 0o022); } catch { return false; } });
+    if (rootOwned) assert.doesNotThrow(() => checkPolicyFile(rootOwned, { uid: me + 1 }));
 });
 
 test('equivalent_domains: a boolean on a client, true unless set to false', () => {

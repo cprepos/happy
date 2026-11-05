@@ -43,7 +43,7 @@ const MAX_BODY = 32 * 1024 * 1024;
 const log = (msg) => process.stderr.write(`secret-filler: ${msg}\n`);
 
 /** Reload the policy when its mtime changes; while the file is bad, every call fails closed. */
-export function policyLoader(path, { requireRoot = true, logFn = log } = {}) {
+export function policyLoader(path, { requireOwner = true, logFn = log } = {}) {
     let cur = null; let stamp = null; let error = null;
     return function getPolicy() {
         let st;
@@ -51,7 +51,7 @@ export function policyLoader(path, { requireRoot = true, logFn = log } = {}) {
         const s = `${st.mtimeMs}:${st.size}:${st.ino}`;
         if (s !== stamp) {
             stamp = s;
-            try { cur = loadPolicy(path, { requireRoot }); error = null; logFn('policy loaded'); } catch (err) {
+            try { cur = loadPolicy(path, { requireOwner }); error = null; logFn('policy loaded'); } catch (err) {
                 cur = null; error = err instanceof PolicyError ? err.message : (err.code || 'unreadable');
                 logFn(`policy rejected: ${error}`);
             }
@@ -164,7 +164,7 @@ async function main(argv) {
     if (argv[0] === '--check-policy') {
         const path = argv[1] || cfg.policyPath;
         try {
-            const p = loadPolicy(path, { requireRoot: !cfg.testLoopback });
+            const p = loadPolicy(path, { requireOwner: !cfg.testLoopback });
             const n = p.clients().reduce((a, c) => a + p.entries(c).length, 0);
             const d = p.defaultClient();
             process.stdout.write(`policy ok: ${p.clients().length} client(s), ${n} fillable name(s), ${d ? `default_client ${d} (every chat without its own entry uses it)` : 'no default_client'}${p.clients().filter((c) => p.allItems(c)).map((c) => `, ${c} uses all_items (every vault login, on its own URIs' hosts${p.equivalentDomains(c) ? ' and their equivalent domains' : ' only: equivalent_domains is off'})`).join('')}\n`);
@@ -185,14 +185,14 @@ async function main(argv) {
     const vaultTokenSha = readSecretOrNull(cfg.files.vaultClientTokenSha256);
     // The same token for both would let the bridge reach the vault routes: refuse.
     const checkVaultToken = vaultTokenSha && vaultTokenSha.trim().toLowerCase() === String(readSecretOrNull(cfg.files.clientTokenSha256) || '').trim().toLowerCase()
-        ? (log('vault-client-token equals the bridge token: the vault tools stay off (make filler-init FILLER_ROTATE=1)'), () => false)
+        ? (log('vault-client-token equals the bridge token: the vault tools stay off (make filler-token-issue NAME=vault-client FILLER_ROTATE=1)'), () => false)
         : tokenChecker(vaultTokenSha);
-    if (!vaultTokenSha) log('no vault-client-token.sha256: the vault tools (/v1/vault/*) are off until make filler-init');
+    if (!vaultTokenSha) log('no vault-client-token.sha256: the vault tools (/v1/vault/*) are off until make filler-token-issue NAME=vault-client');
     const controllers = controllerSet({ defaultPort: cfg.controllerPort, ports: parsePorts(cfg.controllerPorts), token: readSecret(cfg.files.controllerToken) });
     const scrubber = createScrubber();
     const taint = createTaint({ statePath: cfg.statePath, scrubber, controllers, log });
     const audit = createAudit(cfg.auditDir);
-    const getPolicy = policyLoader(cfg.policyPath, { requireRoot: !cfg.testLoopback });
+    const getPolicy = policyLoader(cfg.policyPath, { requireOwner: !cfg.testLoopback });
     try { getPolicy(); } catch (err) { log(err.message); }
     let vault = null;
     try { vault = buildVaultFromFiles(cfg); } catch (err) { log(`vault not usable: ${err.message}`); }

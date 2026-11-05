@@ -124,11 +124,18 @@ function parseManage(slug, m, allItems, targets) {
     return Object.freeze({ ...Object.fromEntries(MANAGE_FLAGS.map((f) => [f, m[f] === true])), pipe: Object.freeze([...new Set(pipe)]) });
 }
 
-export function checkPolicyFile(path, { requireRoot = true } = {}) {
+/**
+ * The policy file must be a regular file that is not group- or world-writable,
+ * owned by the filler's own account (uid, by default process.getuid(): the
+ * happy-filler account) or by root (back-compat: the docker filler's policy
+ * was root:1990). requireOwner: false (tests and the smoke run only) skips the
+ * owner check, never the mode check.
+ */
+export function checkPolicyFile(path, { requireOwner = true, uid = process.getuid() } = {}) {
     let st;
     try { st = lstatSync(path); } catch { throw new PolicyError(`policy file ${path} missing`); }
     if (!st.isFile()) throw new PolicyError('policy file must be a regular file (not a symlink)');
-    if (requireRoot && st.uid !== 0) throw new PolicyError('policy file must be owned by root');
+    if (requireOwner && st.uid !== uid && st.uid !== 0) throw new PolicyError(`policy file must be owned by the filler's own account (uid ${uid}) or root`);
     if (st.mode & 0o022) throw new PolicyError('policy file must not be group- or world-writable');
 }
 

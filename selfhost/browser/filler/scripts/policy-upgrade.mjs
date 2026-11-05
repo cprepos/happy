@@ -1,5 +1,5 @@
-// One-time policy upgrade for the vault tools, run by filler-install.sh (in
-// the filler's image, no network, the policy mounted read-only):
+// One-time policy upgrade for the vault tools, run by filler-admin install
+// as happy-filler (it reads the policy and prints the upgraded one):
 //
 //   node scripts/policy-upgrade.mjs <policy.json>
 //

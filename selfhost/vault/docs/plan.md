@@ -20,7 +20,7 @@ I've designed a self-hosted Vaultwarden plus a separate "secret-filler" service 
 ```
 phone / desktop Bitwarden app ──https──> Caddy :443  vault.girthbass.duckdns.org ──> 127.0.0.1:8222 vaultwarden (uid 1991, /srv/happy-vault)
 agent ─stdio─> mcp.mjs (uid 1000, never holds values)
-   ├─ names only, bearer + X-Happy-Chat ──> 127.0.0.1:6091 secret-filler (uid 1990, /srv/happy-filler)
+   ├─ names only, bearer + X-Happy-Chat ──> 127.0.0.1:6091 secret-filler (account happy-filler, uid 1990, systemd user unit, /srv/happy-filler)
    │                                          ├─ http://127.0.0.1:8222  API-key login, /api/sync, decrypts in memory
    │                                          └─ http://127.0.0.1:8010  REST type with sensitive:true (its own copy of the controller token)
    └─ pass-through ──> controller /mcp  (taint check and scrub go through the filler first)
@@ -44,18 +44,18 @@ agent ─stdio─> mcp.mjs (uid 1000, never holds values)
     7. Decrypt `login.username`, `password`, `totp` and `uris[].uri` with that key.
   - Any other EncString type fails closed.
 - **Unlock key storage: store the decrypted 64-byte user key, not the master password.**
-  - `make filler-enroll` runs once, interactively, in a one-shot container as uid 1990. It reads the email (default `agent@vault.girthbass.duckdns.org`) and master password from the TTY, does prelogin and PBKDF2-SHA256, stretches with HKDF (`enc`/`mac`), decrypts the user key, writes `vault-user-key`, and throws the password away.
+  - `make filler-enroll` runs once, interactively, as happy-filler (`su - happy-filler`, no sudo). It reads the email (default `agent@vault.girthbass.duckdns.org`) and master password from the TTY, does prelogin and PBKDF2-SHA256, stretches with HKDF (`enc`/`mac`), decrypts the user key, writes `vault-user-key`, and throws the password away.
   - It reads the API key itself (decided 2026-11-05: the user only chooses the master password): a password-grant login with the master password hash (PBKDF2-SHA256 of the master key, 1 iteration), then `POST /api/accounts/api-key` with `masterPasswordHash`, as the web vault's "View API key" does. If that fails for any reason but a wrong password (two-step login on the account, the call refused), it asks for `client_id` and `client_secret` instead. The hash is never written either.
-  - `make filler-setup COMMIT=<sha>` chains `sudo -v`, `filler-init` (skipped when done), `filler-install`, the policy seed, `filler-enroll`, `filler-up`, `filler-items` and `filler-status`.
+  - `make filler-setup COMMIT=<sha>`, as happy-filler, chains `init`, `install`, `controller-token-take` and `token-issue` (each only when missing), the policy seed, `enroll`, `up` and `items`.
   - Day to day the filler holds only the API key and the user key. Neither can change the master password or log into the web vault.
   - The agent account must use PBKDF2: Node 22 has no Argon2.
 - **Cache and sync:** the filler syncs on each fill or list if the last sync is more than 15 s old, and keeps everything in memory only. No websocket or push.
 - **Restart:** the filler unlocks itself from the 0400 key files at start. `make filler-lock` stops it.
-  - Reasoning: anyone who can read uid 1990's files (root or docker) can read its memory too. Unlocking by hand on every restart would not reduce exposure.
+  - Reasoning: anyone who can read happy-filler's files (root, or the docker group) can read its memory too. Unlocking by hand on every restart would not reduce exposure.
 - **Where the agent's logins live: the personal vault of a dedicated account, `agent@vault.girthbass.duckdns.org`. No organization** (decided 2026-11-05).
   - The account holds only logins agents may use. Your own vault is a different account, so the filler cannot read any of your items.
   - You add and edit the agent's logins by logging in as the agent account (Bitwarden app or web vault).
-  - The filler may read any cipher the account can decrypt. Isolation between clients is the root-owned `policy.json` alone: a chat reaches only the item ids its client lists, and an item id may be listed by one client only. The vault itself does not separate clients.
+  - The filler may read any cipher the account can decrypt. Isolation between clients is `policy.json` alone (happy-filler's, prep cannot write it): a chat reaches only the item ids its client lists, and an item id may be listed by one client only. The vault itself does not separate clients.
   - Superseded: one organization per client with an "Agents" collection, and a filler check on `organizationId` and `collectionIds`. A policy that still has `org_id` or `collection_id` is refused.
 - **Chat to client:**
   - `mcp.mjs` sends `X-Happy-Chat` from its process environment (`HAPPY_SESSION_ID`, which happy-cli must pass to MCP children; see empirical check 6), never from tool arguments.
@@ -156,7 +156,7 @@ vault.girthbass.duckdns.org {
   - `lib/audit.mjs`
   - `lib/controller.mjs`: REST client with the controller token
   - `enroll.mjs`
-  - `compose.filler.yml`
+  - `systemd/happy-filler.service`, `scripts/filler-admin.sh`, `scripts/filler-account-setup.sh`, `scripts/handoff-copy.mjs`
   - `test/*`
 - **HTTP API** on 127.0.0.1:6091.
   - Requires `Authorization: Bearer <filler-client-token>`. The filler stores only its SHA-256, in `secrets/client-token.sha256`.
@@ -169,8 +169,8 @@ vault.girthbass.duckdns.org {
   - `POST /v1/session {session_id?}` → `{tainted, any_tainted, drop_images}`
   - `POST /v1/scrub {payload}` → `{payload}`: scrubs with the values of every tainted session
   - `GET /healthz` → `{ok, unlocked, sync_age_s}`: no names
-- **`policy.json`** lives at `/srv/happy-filler/policy.json` (root:1990, 0640).
-  - The filler refuses to start if the file is group- or world-writable or not owned by root.
+- **`policy.json`** lives at `/srv/happy-filler/policy.json` (happy-filler, 0640).
+  - The filler refuses it if the file is group- or world-writable, a symlink, or owned by anyone but the filler's own uid or root. Under the unit (`PrivateUsers=yes`) root-owned files show as nobody, so in practice it is happy-filler's.
   - Shape: `{version:1, clients:{acme:{secrets:{github:{item_id, hosts:["github.com"], fields:["username","password","totp"]}}}}, chats:{"<happy session id>":"acme"}}`
 - **Fill guards, in order:**
   1. Name to item through the policy only (each item id belongs to one client); the item is read from the agent account's vault.
@@ -198,37 +198,22 @@ vault.girthbass.duckdns.org {
   - JSON-escaped and double JSON-escaped
   - HTML-entity escaped
   - For sessions with `drop_images`, image blocks are replaced by a text note.
-- **Audit:** `/srv/happy-filler/audit/YYYY-MM.jsonl`, one line per fill: `{ts, chat, client, session, name, host, field_kind, outcome}`. Never values. Owned 1990, mode 0640, group prep.
+- **Audit:** `/srv/happy-filler/audit/YYYY-MM.jsonl`, one line per fill: `{ts, chat, client, session, name, host, field_kind, outcome}`. Never values. Owned happy-filler, mode 0640, group prep (directory 2750), so prep can read it.
 
-### Directory layout under `/srv/happy-filler` (outside `/home/prep`, so uid 1000 cannot write it)
-- `releases/<git-sha>/{app,compose.filler.yml}`: owned by root, read-only; `current` points to the active release.
-  - `make filler-install COMMIT=<sha>` fills it from `git archive`. The source in `/home/prep` is writable by agents, so only a commit you have reviewed is deployed.
-- `secrets/`: owned 1990, mode 0500; files 0400. Contains `vault-client-id`, `vault-client-secret`, `vault-user-key`, `vault-device-id`, `vault-email`, `controller-token`, `client-token.sha256`.
-- `state/taint.json`
-- `audit/`
-
-### `compose.filler.yml`
-```yaml
-name: happy-filler
-services:
-  filler:
-    image: node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
-    user: "1990:1990"
-    network_mode: host
-    read_only: true
-    cap_drop: [ALL]
-    security_opt: ["no-new-privileges:true"]
-    ulimits: { core: 0 }
-    restart: unless-stopped
-    command: ["node", "/app/server.mjs"]
-    environment: { FILLER_HOST: 127.0.0.1, FILLER_PORT: "6091", VAULT_URL: "http://127.0.0.1:8222", AUTO_BROWSER_URL: "http://127.0.0.1:8010", FILLER_HOME: /filler }
-    volumes:
-      - /srv/happy-filler/current/app:/app:ro
-      - /srv/happy-filler/secrets:/filler/secrets:ro
-      - /srv/happy-filler/policy.json:/filler/policy.json:ro
-      - /srv/happy-filler/state:/filler/state
-      - /srv/happy-filler/audit:/filler/audit
-```
+### Accounts and directory layout under `/srv/happy-filler`
+Decided 2026-11-05: the filler has its own account, so prep cannot change the vault side, and no routine filler operation needs sudo.
+- **Account `happy-filler`:** uid/gid 1990, home `/var/lib/happy-filler`, shell bash, linger on, in no `sudo`, `docker`, `lxd` or `adm` group. The user sets its password (`su - happy-filler`); there is no key.
+- **Root once:** `make filler-account-setup COMMIT=<sha>` (as prep) runs `scripts/filler-account-setup.sh` of that commit with sudo. It only creates the account and its password, enables linger, stops the old docker filler, chowns `/srv/happy-filler` to the account and makes `outbox/` and `inbox/`. It copies no token and installs or starts nothing; secrets already belong to uid 1990 and are kept.
+- **Everything else as happy-filler**, through make targets (or `filler-admin <command>`, the installed release's `scripts/filler-admin.sh`). As any other account they print the `su` command and fail, so an agent cannot run them.
+- **The service:** `systemd/happy-filler.service`, a user unit of happy-filler: host node (20 or newer) with `--disallow-code-generation-from-strings`, the same environment the container had, `127.0.0.1:6091` only, `Restart=always`, `UMask=0077`, `NoNewPrivileges`, `PrivateUsers` (needed on systemd 245 for the mount options below to apply in a user unit), `PrivateTmp`, `ProtectSystem=strict`, `ProtectHome`, writable only `state/` and `audit/`, a syscall deny-list and `AF_INET/AF_INET6/AF_UNIX` only.
+- **Layout:**
+  - `releases/<git-sha>/{app,COMMIT}`: read-only; `current` points to the active release. `make filler-install COMMIT=<sha>` fetches prep's repo into happy-filler's own mirror (`~/src.git`; a fetch re-hashes every object, so a changed `.git` on prep's side cannot slip code in) and unpacks `selfhost/browser/filler` of that commit. The source in `/home/prep` is writable by agents, so only a commit you have reviewed is deployed.
+  - `secrets/`: happy-filler 0500; files 0400. Contains `vault-client-id`, `vault-client-secret`, `vault-user-key`, `vault-device-id`, `vault-email`, `controller-token`, `client-token.sha256`, `vault-client-token.sha256`.
+  - `state/taint.json`, `policy-backups/`, `trash/`: happy-filler 0700.
+  - `audit/`: happy-filler:prep 2750.
+  - `outbox/`: happy-filler:prep 2770. `make filler-token-issue NAME=bridge-client|vault-client` (happy-filler) stores a new token's SHA-256 in `secrets/` and writes the plaintext once here (0640); `make filler-token-take` (prep) copies it into prep's secrets dir (0600) and moves the outbox file to prep's trash.
+  - `inbox/`: happy-filler:prep 3730 (prep may add, not list). `make filler-controller-token-give` (prep) drops the browser controller token here; `make filler-controller-token-take` (happy-filler) moves it into `secrets/controller-token` (0400).
+  - A handed-over token is read without following symlinks, only from a regular, singly linked file of the other account's that holds only a token (`scripts/handoff-copy.mjs`).
 
 ## Changes to `mcp.mjs` and the bridge config
 - **Config** (`lib/config.mjs`): `fillerUrl` (default `http://127.0.0.1:6091`) and `files.fillerToken` = `secrets/filler-client-token`, created by `browser-init`.
@@ -257,16 +242,17 @@ services:
   - `vault-caddy-apply`: back up, insert block, validate, reload
   - `vault-backup` (versioned tarball), `vault-restore-check` (restores the latest backup into a temporary container and counts ciphers)
 - **Filler:**
-  - `filler-install COMMIT=`
-  - `filler-init`: client token, controller-token copy, policy skeleton
-  - `filler-enroll`: email and master password; reads the API key itself, typed API key as fallback
-  - `filler-setup COMMIT=`: all of the above in order, seeds an empty policy, then `filler-up`, `filler-items`, `filler-status`
-  - `filler-items`: the account's logins (name, item id, https hosts), no values
-  - `filler-up`, `filler-down`, `filler-lock`, `filler-status`, `filler-logs`
-  - `filler-policy-edit`: `sudoedit`, then `node … --check-policy`
-  - `filler-audit`
-  - `filler-test`: `node --test`
-  - `filler-smoke`
+  - `filler-account-setup COMMIT=` (prep, sudo, once): the account; see "Accounts" above. The only filler target that uses root.
+  - As happy-filler (`su - happy-filler`; any other account gets the `su` command and a failure):
+    - `filler-install COMMIT=`: the release and the user unit
+    - `filler-up`, `filler-down`, `filler-restart`, `filler-lock`, `filler-logs`
+    - `filler-init`: directories, policy skeleton
+    - `filler-token-issue NAME=bridge-client|vault-client [FILLER_ROTATE=1]`, `filler-controller-token-take`, `filler-outbox-clear`
+    - `filler-enroll`: email and master password; reads the API key itself, typed API key as fallback
+    - `filler-setup COMMIT=`: all of the above in order, seeds an empty policy, then `up`, `items`
+    - `filler-items`: the account's logins (name, item id, https hosts), no values
+    - `filler-policy-edit`: back up, edit a copy, `node … --check-policy`, swap in
+  - As prep: `filler-status`, `filler-audit`, `filler-token-take`, `filler-controller-token-give`, `filler-test` (`node --test`), `filler-smoke`
 - Add 6091 and 8222 to `BROWSER_PORTS`.
 
 ## Tests (node:test)
@@ -293,7 +279,7 @@ services:
    3. Invite and register the agent account (PBKDF2-SHA256), and add the logins agents may use to its own vault.
    4. Create its API key.
 3. **Filler core.** `vaultcrypto`, `vault`, `totp`, `policy`, `hosts`, `scrub`, the fake Vaultwarden, and their tests.
-4. **Filler service.** `server.mjs`, the fill and login flows, taint, audit, the fake controller, `compose.filler.yml`, and the filler targets.
+4. **Filler service.** `server.mjs`, the fill and login flows, taint, audit, the fake controller, the service (a container at first, the happy-filler user unit since 2026-11-05), and the filler targets.
 5. **`mcp.mjs` integration.** The 3 tools, the guards, scrubbing, the chat header, and tests.
 6. **happy-cli.** Pass `HAPPY_SESSION_ID` into the environment of spawned MCP servers (`packages/happy-cli/src/claude/claudeLocal.ts` env, and the codex/gemini/acp equivalents).
 7. **`filler-smoke`** canary and leak sweep.
@@ -322,7 +308,7 @@ The filler used to be read-only. Agents now manage the agent account's logins th
 
 ## Risks that remain
 - **The vault tools widen what a uid-1000 process can do.** Anything that can read `~/.local/share/happy-vault-mcp/secrets/vault-client-token` can create, rename, rotate and trash the reachable logins, and can pipe a value into an allowlisted command. It still cannot purge a login or read a value back directly. Keep `pipe_targets` to commands that read a secret from stdin and do not echo it.
-- **The docker group and sudo are root.** prep is in both, so any host agent session with docker can read `/srv`, `docker exec` into the filler and read its memory, and remount anything. The guarantees hold only for agents without docker, such as happy-agent (no socket), and fully only after step 8.
+- **The docker group and sudo are root.** prep is in both, so any host agent session with docker can start a container that mounts `/srv/happy-filler`, read the filler's memory, and remount anything. The happy-filler account stops prep's ordinary processes from changing the filler's code, policy, secrets or unit, not this. The guarantees hold only for agents without docker, such as happy-agent (no socket), and fully only after step 8.
 - **Dotfiles.** happy-agent has `/home/prep` mounted read-write. It can edit `~/.bashrc`, user systemd units or the Caddyfile, and get code run later by your docker-capable shell. That is a path to escalate.
 - **Caddy runs as uid 1000.** A modified Caddyfile could serve a malicious web vault and capture your master password. Use the native apps; open the web vault only when you must.
 - **Race during typing.** The page can navigate during the controller's per-character typing. The check after the fill detects it, but the characters may already have gone to the new page.
@@ -330,12 +316,12 @@ The filler used to be read-only. Agents now manage the agent account's logins th
   - After-action screenshot artifacts in `data/artifacts` show non-password secrets and are readable by uid 1000.
   - Bridge frames (`/live/<id>/frame.jpg`) can be fetched by anyone who can read `links.json`.
 - **Chat identity** is asserted by uid-1000 code (stated above).
-- **Stored key.** The user key on disk is as strong as uid 1990's privacy, and anyone with root or docker has it. Rotation:
+- **Stored key.** The user key on disk is as strong as happy-filler's privacy, and anyone with root or docker has it. Rotation:
   - Rotate the agent API key in the web vault, then run `filler-enroll`.
   - Rotating the agent's encryption key also needs `filler-enroll`.
   - To revoke one login, delete it from the agent account's vault or remove it from the policy. To revoke everything, `make filler-lock` and rotate the agent's API key.
-- **One vault for every client.** All client logins sit in the same personal vault, so a wrong `item_id` in the policy would hand one client's login to another client's chats. The policy is root-owned and an item id may appear under one client only, but a typo is not caught.
-  - Rotate `filler-client-token` with `filler-init` and a restart.
+- **One vault for every client.** All client logins sit in the same personal vault, so a wrong `item_id` in the policy would hand one client's login to another client's chats. The policy is happy-filler's (prep cannot write it) and an item id may appear under one client only, but a typo is not caught.
+  - Rotate `filler-client-token` with `filler-token-issue NAME=bridge-client FILLER_ROTATE=1` and `filler-restart` (happy-filler), then `filler-token-take` and a bridge restart (prep).
 
 ## Empirical checks still open
 1. Does the REST observe interactable carry `type`, `autocomplete` and `name` for each element id? If not, the filler builds its own selectors (one visible `input[type=password]`, and so on), and the agent's element id only picks between matches.

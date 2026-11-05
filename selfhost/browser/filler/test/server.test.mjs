@@ -30,7 +30,7 @@ function call(port, method, path, body, headers = {}) {
 
 async function startApp(t, { enrolled = true, policyPath = null } = {}) {
     const logs = [];
-    const getPolicy = policyPath ? policyLoader(policyPath, { requireRoot: false, logFn: (m) => logs.push(m) }) : t.deps.getPolicy;
+    const getPolicy = policyPath ? policyLoader(policyPath, { requireOwner: false, logFn: (m) => logs.push(m) }) : t.deps.getPolicy;
     const handle = createApp({ checkToken: tokenChecker(sha(TOKEN)), ...t.deps, getPolicy, vault: enrolled ? t.vault : null, scrubber: t.scrubber });
     const server = createServer(handle);
     await new Promise((r) => server.listen(0, '127.0.0.1', r));

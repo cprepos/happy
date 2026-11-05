@@ -1,6 +1,6 @@
 // One-time enrollment of the filler with the agent's vault account. Run by
-// `make filler-enroll` in a one-shot container (uid 1990, no other network
-// than loopback). Reads, from the terminal only:
+// `filler-admin enroll` (make filler-enroll) as the happy-filler account
+// (uid 1990), on the terminal. Reads, from the terminal only:
 //   the agent account's email (default agent@vault.girthbass.duckdns.org) and
 //   its master password (hidden, never echoed).
 // Derives the master key (PBKDF2-SHA256; other KDFs are refused), logs in with
@@ -232,7 +232,7 @@ async function main() {
     } finally { password = null; }
     writeEnrollment(dir, { email: r.email, clientId: key.clientId, clientSecret: key.clientSecret, userKey: r.userKey, deviceId: r.deviceId });
     r.userKey.fill(0);
-    log(`Enrolled. The account's own vault holds ${r.logins} login(s)${r.orgs ? ` (it is also in ${r.orgs} organization(s))` : ''}. List them with make filler-items, put their item ids in the policy (make filler-policy-edit), then restart the filler: make filler-up`);
+    log(`Enrolled. The account's own vault holds ${r.logins} login(s)${r.orgs ? ` (it is also in ${r.orgs} organization(s))` : ''}. List them with make filler-items, put their item ids in the policy (make filler-policy-edit), then restart the filler: filler-admin restart`);
 }
 
 /** The account's logins as text lines: name, item id, https hosts. No usernames, passwords or codes. */

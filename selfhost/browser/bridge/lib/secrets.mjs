@@ -143,7 +143,7 @@ export function createSecretGate({ fillerUrl, tokenPath, chat = null, fetchImpl 
 
         /** Run one of the three tools. Returns the filler's JSON answer; throws with a message for the agent. */
         async callOwn(name, args, signal) {
-            if (!configured()) throw new Error('vault secrets are not set up on this machine (make filler-init)');
+            if (!configured()) throw new Error('vault secrets are not set up on this machine (make filler-token-issue NAME=bridge-client as happy-filler, then make filler-token-take)');
             const a = args || {};
             if (name === 'browser_list_secrets') return call('/v1/list', {}, signal);
             if (name === 'browser_fill_secret') return call('/v1/fill', { session_id: String(a.session_id ?? ''), element_id: String(a.element_id ?? ''), name: String(a.name ?? ''), ...port(a) }, signal);

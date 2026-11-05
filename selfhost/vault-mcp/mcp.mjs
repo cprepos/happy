@@ -4,7 +4,7 @@
 // strict function per action, each a thin client of the secret filler's
 // POST /v1/vault/<action> on 127.0.0.1:6091 with the vault-client token
 // (~/.local/share/happy-vault-mcp/secrets/vault-client-token, written by
-// make filler-init; a different token from the browser bridge's).
+// make filler-token-issue NAME=vault-client and make filler-token-take; a different token from the browser bridge's).
 //
 // No tool returns a password or TOTP value. New passwords are generated in
 // the filler. vault_compare answers match or no match. vault_pipe is the one
@@ -147,7 +147,7 @@ export function createVaultMcp({ fillerUrl = 'http://127.0.0.1:6091', tokenPath,
     const token = readToken || (() => {
         let t;
         try { t = readFileSync(tokenPath, 'utf8').trim(); } catch { t = ''; }
-        if (!t) throw new Error('the vault tools are not set up on this machine (no vault-client token; the user runs make filler-init)');
+        if (!t) throw new Error('the vault tools are not set up on this machine (no vault-client token; the user runs make filler-token-issue NAME=vault-client as happy-filler, then make filler-token-take)');
         return t;
     });
     const inflight = new Map();

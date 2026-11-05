@@ -1,6 +1,6 @@
 // Filler settings. Secrets are read from files under $FILLER_HOME/secrets
-// (/srv/happy-filler/secrets on the host, 1990 0500, files 0400), never from
-// argv or environment values.
+// (FILLER_HOME=/srv/happy-filler in systemd/happy-filler.service; secrets/ is
+// happy-filler 0500, files 0400), never from argv or environment values.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -21,7 +21,7 @@ export function loadConfig(env = process.env) {
         statePath: join(home, 'state', 'taint.json'),
         auditDir: join(home, 'audit'),
         // Smoke tests only: fill into http://127.0.0.1 pages and accept a
-        // policy not owned by root. Never set in compose.filler.yml.
+        // policy owned by anyone. Never set in systemd/happy-filler.service.
         testLoopback,
         files: {
             clientTokenSha256: join(secrets, 'client-token.sha256'),
