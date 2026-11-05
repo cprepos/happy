@@ -18,6 +18,7 @@ function harness({ maxPods = 2, warm = 0, ensureMs = 0, readyAfter = 0, createFa
     const clients = new Map(); // slot -> fake client
     let sessions = 0;
     let t = 1_000_000;
+    const state = { copyFail: 0 }; // copy_auth calls still to fail
     const launcher = {
         async call(op, args = {}) {
             calls.push(`launcher.${op}${args.slot !== undefined ? ':' + args.slot : ''}`);
@@ -33,6 +34,14 @@ function harness({ maxPods = 2, warm = 0, ensureMs = 0, readyAfter = 0, createFa
             }
             if (op === 'adopt_auth') { const had = !!authDirs.get(args.chat_hash); if (had) slotAuth.set(args.slot, true); return { adopted: had }; }
             if (op === 'stash_auth') { if (!slotAuth.get(args.slot)) return { stashed: false }; authDirs.set(args.chat_hash, true); return { stashed: true }; }
+            if (op === 'copy_auth') {
+                calls[calls.length - 1] = `launcher.copy_auth:${args.from_chat_hash.slice(0, 4)}>${args.chat_hash.slice(0, 4)}`;
+                if (state.copyFail > 0) { state.copyFail--; throw new Error('launcher down'); }
+                if (authDirs.get(args.chat_hash)) return { copied: false, reason: 'exists' };
+                if (!authDirs.get(args.from_chat_hash)) return { copied: false, reason: 'no_source' };
+                authDirs.set(args.chat_hash, true);
+                return { copied: true };
+            }
             throw new Error('unknown op');
         },
     };
@@ -60,7 +69,7 @@ function harness({ maxPods = 2, warm = 0, ensureMs = 0, readyAfter = 0, createFa
         now: () => t,
         ...opts,
     });
-    return { mgr, calls, up, authDirs, clients, store, advance: (ms) => { t += ms; }, now: () => t };
+    return { mgr, calls, up, authDirs, clients, store, state, advance: (ms) => { t += ms; }, now: () => t };
 }
 
 test('a cold start makes one pod, one session and the chat link', async () => {
@@ -350,4 +359,114 @@ test('a refill with nothing to do does not block the next one', async () => {
     await delay(50);
     const spares = h.mgr.status().pods.filter((p) => !p.chat);
     assert.equal(spares.length, 1, 'the spare taken by the chat was replaced');
+});
+
+// ── Forked chats inherit the parent's login ─────────────────────────────────
+const noReady = (calls) => calls.filter((c) => !c.startsWith('ctl.readyz'));
+const copies = (calls) => calls.filter((c) => c.startsWith('launcher.copy_auth')).length;
+
+test('fork: a forked chat copies its parent login once, then adopts it', async () => {
+    const logs = [];
+    const h = harness({ maxPods: 3, log: (m) => logs.push(m) });
+    h.authDirs.set(A, true); // the parent has a saved login and no running pod
+    const d = await h.mgr.ensure(B, { source: 'happy', forkedFrom: A });
+    assert.equal(d.state, 'running');
+    assert.deepEqual(noReady(h.calls), ['launcher.copy_auth:aaaa>bbbb', 'launcher.ensure:0', 'launcher.adopt_auth:0', 'ctl.createSession:0:happy-chat']);
+    assert.equal(h.mgr.status().chats.find((c) => c.chat === B.slice(0, 8)).has_auth, true);
+    assert.ok(logs.includes(`fork login: chat ${B.slice(0, 8)} from ${A.slice(0, 8)}: copied`), logs.join('\n'));
+    assert.ok(logs.every((m) => !m.includes(A) && !m.includes(B)), 'only short keys are logged');
+
+    // Asleep and back: its own login is used, never a second copy.
+    await h.mgr.stopChat(B, 'idle');
+    h.calls.length = 0;
+    await h.mgr.ensure(B, { source: 'happy', forkedFrom: A });
+    assert.equal(copies(h.calls), 0, 'copied only once');
+    assert.ok(h.calls.some((c) => c.startsWith('ctl.createSession:') && c.endsWith(':happy-chat')));
+});
+
+test('fork: a non-forked chat starts fresh, with no copy', async () => {
+    const h = harness();
+    h.authDirs.set(A, true);
+    await h.mgr.ensure(B, { source: 'happy' });
+    assert.deepEqual(noReady(h.calls), ['launcher.ensure:0', 'ctl.createSession:0']);
+});
+
+test('fork: a running parent is saved first, so the fork gets its current login', async () => {
+    const h = harness({ maxPods: 3 });
+    await h.mgr.ensure(A, { source: 'happy' }); // parent running, nothing saved yet
+    assert.equal(h.authDirs.get(A), undefined);
+    h.calls.length = 0;
+    await h.mgr.ensure(B, { source: 'happy', forkedFrom: A });
+    const seq = noReady(h.calls);
+    assert.deepEqual(seq.slice(0, 3), ['ctl.saveAuthProfile:0:happy-chat', 'launcher.stash_auth:0', 'launcher.copy_auth:aaaa>bbbb']);
+    assert.ok(seq.includes('ctl.createSession:1:happy-chat'), 'the fork starts with the copied login');
+    assert.equal(h.mgr.podState(A), 'running', 'the parent keeps running');
+});
+
+test('fork: an existing child login is never overwritten', async () => {
+    const logs = [];
+    const h = harness({ log: (m) => logs.push(m) });
+    h.authDirs.set(A, true);
+    h.authDirs.set(B, true); // on disk, but this manager has no record of it
+    await h.mgr.ensure(B, { source: 'happy', forkedFrom: A });
+    assert.equal(copies(h.calls), 1);
+    assert.ok(logs.some((m) => m.endsWith('not copied (exists)')), logs.join('\n'));
+
+    // A chat that knows it has its own login never even asks.
+    const h2 = harness({ maxPods: 3 });
+    h2.authDirs.set(A, true);
+    await h2.mgr.ensure(C, { source: 'happy' });
+    await h2.mgr.stopChat(C, 'idle'); // saves C's own login
+    h2.calls.length = 0;
+    await h2.mgr.ensure(C, { source: 'happy', forkedFrom: A });
+    assert.equal(copies(h2.calls), 0);
+});
+
+test('fork: a parent with no saved login is tried once', async () => {
+    const logs = [];
+    const h = harness({ maxPods: 3, log: (m) => logs.push(m) });
+    await h.mgr.ensure(B, { source: 'happy', forkedFrom: A });
+    assert.ok(logs.some((m) => m.endsWith('not copied (no_source)')));
+    assert.deepEqual(noReady(h.calls), ['launcher.copy_auth:aaaa>bbbb', 'launcher.ensure:0', 'ctl.createSession:0']);
+    await h.mgr.stopChat(B, 'crashed');
+    h.calls.length = 0;
+    h.authDirs.set(A, true);
+    await h.mgr.ensure(B, { source: 'happy', forkedFrom: A });
+    assert.equal(copies(h.calls), 0, 'the fork already had its one try');
+});
+
+test('fork: a launcher error is not a try; the next start asks again', async () => {
+    const logs = [];
+    const h = harness({ maxPods: 3, log: (m) => logs.push(m) });
+    h.authDirs.set(A, true);
+    h.state.copyFail = 1;
+    const d = await h.mgr.ensure(B, { source: 'happy', forkedFrom: A });
+    assert.equal(d.state, 'running', 'the chat still starts, without a login');
+    assert.ok(logs.some((m) => m.endsWith('copy failed: launcher down')), logs.join('\n'));
+    await h.mgr.stopChat(B, 'crashed');
+    await h.mgr.ensure(B, { source: 'happy', forkedFrom: A });
+    assert.equal(copies(h.calls), 2);
+    assert.equal(h.authDirs.get(B), true);
+    assert.ok(h.calls.some((c) => c.startsWith('ctl.createSession:') && c.endsWith(':happy-chat')));
+});
+
+test('fork: a bad or self forkedFrom is refused before anything starts', async () => {
+    const h = harness();
+    for (const bad of ['nothex', A.toUpperCase(), B, 7]) {
+        await assert.rejects(h.mgr.ensure(B, { forkedFrom: bad }), (e) => e instanceof PodError && e.status === 400);
+    }
+    assert.deepEqual(h.calls, []);
+});
+
+test('fork: the one try survives a bridge restart', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pods-fork-'));
+    const paths = { chatsPath: join(dir, 'chats.json'), podsPath: join(dir, 'pods.json') };
+    const h = harness(paths);
+    await h.mgr.ensure(B, { source: 'happy', forkedFrom: A });
+    const saved = JSON.parse(readFileSync(paths.chatsPath, 'utf8')).chats.find((c) => c.chatKey === B);
+    assert.equal(saved.forkChecked, true);
+    const h2 = harness(paths);
+    h2.authDirs.set(A, true);
+    await h2.mgr.ensure(B, { source: 'happy', forkedFrom: A });
+    assert.equal(copies(h2.calls), 0);
 });

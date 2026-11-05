@@ -7,8 +7,9 @@
 //   pods   slot -> {slot, podId, vncPassword, ports, state, chatKey}
 //          state: starting | ready (a warm spare, no chat) | assigned | stopping
 //   chats  chatKey -> {chatKey, source, linkId, slot, podId, sessionId, state, lastAgentAt,
-//          lastViewerAt, hasAuth}
+//          lastViewerAt, hasAuth, forkChecked}
 //          state: none | starting | running | asleep | crashed
+//          forkChecked: a forked chat's one try at its parent's login has been made
 //
 // chatKey is the 32-hex chat hash (sha256(source + ':' + id), first 32 chars), which is also the
 // launcher's chat_hash: the chat's saved login lives under data/chats/<chatKey>/auth.
@@ -26,6 +27,10 @@
 //   health    every healthMs: launcher list plus /readyz per pod. Two failures in a row and the
 //             pod is stopped; an assigned pod's chat turns crashed, and its next call gets a new
 //             pod and session under the same link.
+//   fork      a forked or side chat (ensure's forkedFrom: the parent's chat key) with no saved
+//             login of its own gets a copy of the parent's on its first browser use: the parent's
+//             running pod is saved first, then the launcher copies (copy_auth), never over a login
+//             the chat already has. Tried once per chat; after that its own saves take over.
 //   reconcile at boot, pods recorded as assigned whose containers are still up and ready are
 //             adopted; everything else the launcher lists is stopped.
 import { randomBytes } from 'node:crypto';
@@ -216,8 +221,8 @@ export function createPodManager({
     const savedPods = loadJson(podsPath)?.pods || [];
 
     function persist() {
-        saveJson(chatsPath, { chats: [...chats.values()].map(({ chatKey, source, linkId, slot, podId, sessionId, state, lastAgentAt, lastViewerAt, hasAuth }) =>
-            ({ chatKey, source: source ?? null, linkId: linkId ?? null, slot: slot ?? null, podId: podId ?? null, sessionId: sessionId ?? null, state, lastAgentAt: lastAgentAt ?? 0, lastViewerAt: lastViewerAt ?? 0, hasAuth: !!hasAuth })) });
+        saveJson(chatsPath, { chats: [...chats.values()].map(({ chatKey, source, linkId, slot, podId, sessionId, state, lastAgentAt, lastViewerAt, hasAuth, forkChecked }) =>
+            ({ chatKey, source: source ?? null, linkId: linkId ?? null, slot: slot ?? null, podId: podId ?? null, sessionId: sessionId ?? null, state, lastAgentAt: lastAgentAt ?? 0, lastViewerAt: lastViewerAt ?? 0, hasAuth: !!hasAuth, forkChecked: !!forkChecked })) });
         saveJson(podsPath, { pods: [...pods.values()].map(({ slot, podId, vncPassword, ports, state, chatKey }) =>
             ({ slot, podId, vncPassword, ports, state, chatKey: chatKey ?? null, sessionId: chatKey ? chats.get(chatKey)?.sessionId ?? null : null })) });
     }
@@ -376,10 +381,14 @@ export function createPodManager({
     /**
      * Ensures the chat has a running pod and session and counts as agent activity.
      * {verify: true} first checks the pod still answers (the MCP server's retry after a refused
-     * connection) and replaces it when it does not.
+     * connection) and replaces it when it does not. {forkedFrom}: the parent chat's key, for a
+     * forked or side chat (see inheritLogin).
      */
-    async function ensure(chatKey, { source = null, verify = false } = {}) {
+    async function ensure(chatKey, { source = null, verify = false, forkedFrom = null } = {}) {
         if (!CHAT_KEY.test(chatKey || '')) throw new PodError('bad chat_key', 400, 'bad_request');
+        if (forkedFrom !== null && (typeof forkedFrom !== 'string' || !CHAT_KEY.test(forkedFrom) || forkedFrom === chatKey)) {
+            throw new PodError('bad forked_from', 400, 'bad_request');
+        }
         if (closed) throw new PodError('bridge is shutting down');
         const chat = chatOf(chatKey, source);
         chat.lastAgentAt = now();
@@ -394,6 +403,7 @@ export function createPodManager({
         const p = (async () => {
             const t0 = now();
             chat.state = 'starting';
+            if (forkedFrom && !chat.hasAuth && !chat.forkChecked) await inheritLogin(chat, forkedFrom);
             let got;
             try {
                 got = await acquire(chatKey);
@@ -440,6 +450,24 @@ export function createPodManager({
         })();
         pending.set(chatKey, p);
         try { return await p; } finally { pending.delete(chatKey); }
+    }
+
+    // A forked chat's first login is its parent's, as of now: the parent's pod (if it runs) is
+    // saved first, then the launcher copies the parent's saved login to this chat, never over
+    // one it already has. Logged with the short keys and the outcome only.
+    async function inheritLogin(chat, parentKey) {
+        const tag = `fork login: chat ${chat.chatKey.slice(0, 8)} from ${parentKey.slice(0, 8)}`;
+        try {
+            const saved = await checkpointAuth(parentKey, { force: true });
+            const r = await launcher.call('copy_auth', { from_chat_hash: parentKey, chat_hash: chat.chatKey });
+            if (r?.copied) chat.hasAuth = true;
+            chat.forkChecked = true;
+            persist();
+            log(`${tag}: ${r?.copied ? 'copied' : `not copied (${r?.reason || 'unknown'})`}${saved ? ', parent saved first' : ''}`);
+        } catch (err) {
+            // Not marked as tried: the next start tries again. The chat starts without a login.
+            log(`${tag}: copy failed: ${short(err)}`);
+        }
     }
 
     // ── Stopping ──────────────────────────────────────────────────────────

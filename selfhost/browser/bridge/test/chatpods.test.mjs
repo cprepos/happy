@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createBridge } from '../lib/app.mjs';
 import { LinkStore } from '../lib/store.mjs';
-import { chatIdentity, chatKeyOf, createMcpServer } from '../mcp.mjs';
+import { chatIdentity, chatKeyOf, createMcpServer, forkParentKey } from '../mcp.mjs';
 
 const TOKEN = 'bridge-secret-token-0123456789abcdef';
 const PNG = Buffer.from('89504e470d0a1a0a', 'hex');
@@ -34,8 +34,8 @@ function fakePods(store) {
     let n = 0;
     const pods = {
         calls, chats,
-        async ensure(key, { source } = {}) {
-            calls.ensure.push({ key, source });
+        async ensure(key, { source, forkedFrom } = {}) {
+            calls.ensure.push({ key, source, ...(forkedFrom ? { forkedFrom } : {}) });
             let c = chats.get(key);
             if (!c || c.state !== 'running') {
                 c = { sessionId: `s${++n}`, state: 'running', slot: chats.size, source };
@@ -298,4 +298,46 @@ test('live link without a session_id names the chat\'s link', async () => {
     const r = await h.call('browser_live_link', {});
     assert.equal(r.result.isError, false);
     assert.ok(h.seen.bridge.some((b) => b.path === '/api/links' && b.body.chat_key === KEY_A));
+});
+
+test('fork parent: only from HAPPY_FORKED_FROM_SESSION_ID, for a Happy chat, checked first', () => {
+    const parent = chatKeyOf({ source: 'happy', id: 'parent-1' });
+    assert.equal(forkParentKey({ HAPPY_SESSION_ID: 'child-1', HAPPY_FORKED_FROM_SESSION_ID: 'parent-1' }), parent);
+    assert.equal(forkParentKey({ HAPPY_SESSION_ID: 'child-1' }), null, 'not a fork');
+    assert.equal(forkParentKey({ HAPPY_SESSION_ID: 'child-1', HAPPY_FORKED_FROM_SESSION_ID: '' }), null);
+    assert.equal(forkParentKey({ HAPPY_SESSION_ID: 'child-1', HAPPY_FORKED_FROM_SESSION_ID: 'child-1' }), null, 'never itself');
+    assert.equal(forkParentKey({ HAPPY_SESSION_ID: 'child-1', HAPPY_FORKED_FROM_SESSION_ID: '../x' }), null, 'bad id refused');
+    assert.equal(forkParentKey({ HAPPY_SESSION_ID: 'child-1', HAPPY_FORKED_FROM_SESSION_ID: 'p'.repeat(129) }), null);
+    assert.equal(forkParentKey({ CLAUDE_CODE_SESSION_ID: 'c1', HAPPY_FORKED_FROM_SESSION_ID: 'parent-1' }), null, 'only a Happy chat');
+    assert.equal(forkParentKey({ HAPPY_FORKED_FROM_SESSION_ID: 'parent-1' }), null);
+});
+
+test('/api/pod passes a valid forked_from to the pod manager and refuses a bad one', async () => {
+    await start();
+    const r = await api('/api/pod', { chat_key: KEY_A, source: 'happy', forked_from: KEY_B });
+    assert.equal(r.status, 200);
+    assert.deepEqual(pods.calls.ensure.at(-1), { key: KEY_A, source: 'happy', forkedFrom: KEY_B });
+    await api('/api/pod', { chat_key: KEY_B, source: 'happy' });
+    assert.deepEqual(pods.calls.ensure.at(-1), { key: KEY_B, source: 'happy' }, 'no fork, no forkedFrom');
+    const n = pods.calls.ensure.length;
+    for (const bad of ['nothex', 'A'.repeat(32), KEY_A, 42, { k: 1 }]) {
+        const b = await api('/api/pod', { chat_key: KEY_A, forked_from: bad });
+        assert.equal(b.status, 400, JSON.stringify(bad));
+    }
+    assert.equal(pods.calls.ensure.length, n, 'a refused forked_from starts nothing');
+});
+
+test('router: a forked chat names its parent on every pod request; no tool argument can', async () => {
+    const PARENT = 'e'.repeat(32);
+    const h = mcpHarness({ chat: { key: KEY_A, source: 'happy', forkedFrom: PARENT } });
+    await h.call('browser_observe', { forked_from: 'f'.repeat(32) });
+    await h.call('browser_create_session', {});
+    const reqs = h.seen.bridge.filter((b) => b.path === '/api/pod');
+    assert.ok(reqs.length >= 1);
+    assert.ok(reqs.every((b) => b.body.chat_key === KEY_A && b.body.forked_from === PARENT), JSON.stringify(reqs));
+
+    const plain = mcpHarness();
+    await plain.call('browser_observe', { forked_from: 'f'.repeat(32) });
+    const preqs = plain.seen.bridge.filter((b) => b.path === '/api/pod');
+    assert.ok(preqs.length >= 1 && preqs.every((b) => !('forked_from' in b.body)), 'a non-fork never sends one');
 });

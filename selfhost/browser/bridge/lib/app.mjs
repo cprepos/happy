@@ -394,7 +394,16 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
                     key = chat.chatKey;
                 }
                 const source = typeof body.source === 'string' ? body.source.slice(0, 32) : null;
-                const d = await pods.ensure(key, { source, verify: body.verify === true });
+                // forked_from: the parent chat's key, sent by the MCP server of a forked or side
+                // chat (from the daemon's HAPPY_FORKED_FROM_SESSION_ID, never a tool argument).
+                let forkedFrom = null;
+                if (body.forked_from !== undefined && body.forked_from !== null) {
+                    if (typeof body.forked_from !== 'string' || !CHAT_KEY.test(body.forked_from) || body.forked_from === key) {
+                        return send(res, 400, { error: 'forked_from must be 32 hex chars and not the chat itself' });
+                    }
+                    forkedFrom = body.forked_from;
+                }
+                const d = await pods.ensure(key, { source, verify: body.verify === true, ...(forkedFrom ? { forkedFrom } : {}) });
                 const rec = store.findChat(key);
                 return send(res, 200, { ...d, url: rec ? linkUrl(rec) : null, status: rec?.status ?? null });
             }

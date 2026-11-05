@@ -198,6 +198,16 @@ export function chatIdentity(env = process.env) {
 // from the Happy session id to find a chat's live link (GET /live/chat/<key>).
 export const chatKeyOf = (ident) => createHash('sha256').update(`${ident.source}:${ident.id}`).digest('hex').slice(0, 32);
 
+// A forked or side chat: the Happy daemon sets HAPPY_FORKED_FROM_SESSION_ID to the parent's Happy
+// session id, and the chat's browser starts with a copy of the parent's saved login. Read from
+// the environment only (never a tool argument), and only for a Happy-identified chat. Returns the
+// parent's chat key, or null.
+export function forkParentKey(env = process.env, ident = chatIdentity(env)) {
+    const parent = env.HAPPY_FORKED_FROM_SESSION_ID;
+    if (!ident || ident.source !== 'happy' || typeof parent !== 'string' || !SESSION_ID.test(parent) || parent === ident.id) return null;
+    return chatKeyOf({ source: 'happy', id: parent });
+}
+
 // A daemon that serves many chats from one process (Happy Agent) names the chat per call instead:
 // its MCP client puts its own id for the tool call in _meta["claudecode/toolUseId"], and
 // lookup(id) answers which chat made that call ({source, id}, see lib/agentchat.mjs). Only _meta
@@ -264,7 +274,9 @@ export function createChatRouter({ bridge, makeUpstream, chat = null, newKey = (
             let key = keyFor(name, args, c);
             let d;
             try {
-                if (key) d = await bridge('/api/pod', { chat_key: key, source: c?.source ?? 'session', ...(verify ? { verify: true } : {}) }, signal);
+                // forked_from only for this process's own chat, never one a call names.
+                const fork = c && c === chat && chat.forkedFrom ? { forked_from: chat.forkedFrom } : {};
+                if (key) d = await bridge('/api/pod', { chat_key: key, source: c?.source ?? 'session', ...fork, ...(verify ? { verify: true } : {}) }, signal);
                 else {
                     // A session this process has not seen (another process made it, or before a restart).
                     d = await bridge('/api/pod', { session_id: args.session_id, ...(verify ? { verify: true } : {}) }, signal);
@@ -302,7 +314,7 @@ const ONE_BROWSER = 'Each chat has one browser. Use the session it already has; 
 
 export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fetch, pollS = 60, upstream = null, waitMaxS = 3600, log = () => {}, retryMs = 30_000, metaProbe = null, secrets = null, chatPods = null, callChat = null }) {
     const inflight = new Map(); // request id -> AbortController
-    // chatPods: {chat: {key, source} | null, makeUpstream(url)}. Each call then goes to its chat's
+    // chatPods: {chat: {key, source, forkedFrom?} | null, makeUpstream(url)}. Each call then goes to its chat's
     // pod when the bridge runs pods, and to `upstream` (the shared controller) when it doesn't.
     const router = chatPods ? createChatRouter({ bridge: (p, b, s) => bridge(p, b, s), makeUpstream: chatPods.makeUpstream, chat: chatPods.chat, ...(chatPods.newKey ? { newKey: chatPods.newKey } : {}) }) : null;
     let withSession = new Set(); // local names of auto-browser tools that take a session_id
@@ -686,6 +698,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     });
     // Per-chat pods: each pod's MCP endpoint gets a client like `upstream`.
     const ident = chatIdentity();
+    const forkedFrom = forkParentKey(process.env, ident);
     const makeUpstream = (url) => createUpstreamMcp({
         url,
         getToken: () => readSecret(cfg.files.apiToken),
@@ -698,7 +711,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         bridgeToken: readSecret(cfg.files.bridgeToken),
         write,
         upstream,
-        chatPods: upstream ? { chat: ident ? { key: chatKeyOf(ident), source: ident.source } : null, makeUpstream } : null,
+        chatPods: upstream ? { chat: ident ? { key: chatKeyOf(ident), source: ident.source, ...(forkedFrom ? { forkedFrom } : {}) } : null, makeUpstream } : null,
         // Happy Agent (one process for all its chats): BRIDGE_AGENT_DB is the daemon's agent.sqlite,
         // and each call's chat is looked up there from the call id the daemon put in _meta.
         callChat: !ident && process.env.BRIDGE_AGENT_DB
