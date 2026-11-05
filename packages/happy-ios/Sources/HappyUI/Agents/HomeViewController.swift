@@ -358,7 +358,7 @@ final class HomeViewController: UIViewController {
 
     @objc private func keyboardWillChange(_ notification: Notification) {
         guard let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
-        keyboardTop = min(view.bounds.height, view.convert(frame, from: nil).minY)
+        keyboardTop = min(view.bounds.height, view.keyboardFrame(fromScreen: frame).minY)
         resultsView.keyboardTop = keyboardTop
         guard search != nil, view.window != nil else { return }
         // A keyboard of a screen over home's moves it only once it's back.

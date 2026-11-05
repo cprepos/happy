@@ -495,7 +495,7 @@ final class TodoListViewController: UIViewController, UITextFieldDelegate, UIGes
 
     @objc private func keyboardWillChange(_ notification: Notification) {
         guard let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
-        keyboardTop = view.convert(frame, from: nil).minY
+        keyboardTop = view.keyboardFrame(fromScreen: frame).minY
         applyInsets()
         if let editingID, let row = list.frame(of: editingID == TodoListItems.addID ? editingID : TodoListItems.rowID(editingID)),
            let keyboardTop, list.convert(row, to: view).maxY > keyboardTop {
