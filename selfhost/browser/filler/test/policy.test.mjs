@@ -4,7 +4,7 @@ import { chmodSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allowedHosts, httpsHost, matchHost, normalizeHost } from '../lib/hosts.mjs';
-import { checkPolicyFile, loadPolicy, NO_CHAT, parsePolicy, PolicyError } from '../lib/policy.mjs';
+import { checkPolicyFile, itemSlug, loadPolicy, NO_CHAT, parsePolicy, PolicyError } from '../lib/policy.mjs';
 
 const A = '11111111-1111-4111-8111-111111111111';
 const B = '22222222-2222-4222-8222-222222222222';
@@ -86,6 +86,25 @@ test('default_client must name an existing client; "none" is never a chat key', 
     // A misspelt option is refused rather than silently meaning "no default".
     assert.throws(() => parsePolicy(samplePolicy({ default: 'acme' })), /unknown top-level key/);
     assert.throws(() => parsePolicy(samplePolicy({ defaultClient: 'acme' })), /unknown top-level key/);
+});
+
+test('all_items: one client at most, a boolean, and listed item ids are known', () => {
+    const seed = parsePolicy({ version: 1, default_client: 'agent', clients: { agent: { all_items: true, secrets: {} } }, chats: {} });
+    assert.equal(seed.allItems('agent'), true);
+    assert.deepEqual(seed.entries('agent'), []);
+    const p = parsePolicy(samplePolicy({ clients: { ...samplePolicy().clients, agent: { all_items: true } } }));
+    assert.equal(p.allItems('agent'), true);
+    assert.equal(p.allItems('acme'), false);
+    assert.equal(p.isListed(A.replace(/1/g, '5').toUpperCase()), true);
+    assert.equal(p.isListed(B), false);
+    assert.throws(() => parsePolicy(samplePolicy({ clients: { a: { all_items: true }, b: { all_items: true } } })), /only one client/);
+    for (const bad of ['yes', 1, null, {}]) assert.throws(() => parsePolicy(samplePolicy({ clients: { a: { all_items: bad } } })), /all_items must be true or false/, JSON.stringify(bad));
+    assert.equal(itemSlug('GitHub (work)'), 'github-work');
+    assert.equal(itemSlug('github.com'), 'github-com');
+    assert.equal(itemSlug('Bücher.de'), 'bucher-de');
+    assert.equal(itemSlug('  --x__ '), 'x');
+    for (const bad of ['', '---', '日本', null, 42]) assert.equal(itemSlug(bad), null, String(bad));
+    assert.equal(itemSlug('a'.repeat(100)).length, 63);
 });
 
 test('malformed policies fail the whole load', () => {

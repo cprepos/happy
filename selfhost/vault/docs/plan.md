@@ -44,7 +44,9 @@ agent ─stdio─> mcp.mjs (uid 1000, never holds values)
     7. Decrypt `login.username`, `password`, `totp` and `uris[].uri` with that key.
   - Any other EncString type fails closed.
 - **Unlock key storage: store the decrypted 64-byte user key, not the master password.**
-  - `make filler-enroll` runs once, interactively, in a one-shot container as uid 1990. It reads the email and master password from the TTY, does prelogin and PBKDF2-SHA256, stretches with HKDF (`enc`/`mac`), decrypts the user key, writes `vault-user-key`, and throws the password away.
+  - `make filler-enroll` runs once, interactively, in a one-shot container as uid 1990. It reads the email (default `agent@vault.girthbass.duckdns.org`) and master password from the TTY, does prelogin and PBKDF2-SHA256, stretches with HKDF (`enc`/`mac`), decrypts the user key, writes `vault-user-key`, and throws the password away.
+  - It reads the API key itself (decided 2026-11-05: the user only chooses the master password): a password-grant login with the master password hash (PBKDF2-SHA256 of the master key, 1 iteration), then `POST /api/accounts/api-key` with `masterPasswordHash`, as the web vault's "View API key" does. If that fails for any reason but a wrong password (two-step login on the account, the call refused), it asks for `client_id` and `client_secret` instead. The hash is never written either.
+  - `make filler-setup COMMIT=<sha>` chains `sudo -v`, `filler-init` (skipped when done), `filler-install`, the policy seed, `filler-enroll`, `filler-up`, `filler-items` and `filler-status`.
   - Day to day the filler holds only the API key and the user key. Neither can change the master password or log into the web vault.
   - The agent account must use PBKDF2: Node 22 has no Argon2.
 - **Cache and sync:** the filler syncs on each fill or list if the last sync is more than 15 s old, and keeps everything in memory only. No websocket or push.
@@ -62,6 +64,12 @@ agent ─stdio─> mcp.mjs (uid 1000, never holds values)
   - A bridge process with no chat id (Happy Agent's one daemon for all its chats has no `HAPPY_SESSION_ID`) sends `X-Happy-Chat: none`, never an empty header. Only `default_client` serves `none`, and `none` may not be a key in `chats`. The bridge lists the three secret tools whenever the filler token exists; the filler decides, and without a default it refuses with "no chat id".
   - The audit records which path reached the client: `mapped` or `default`. Taint, host checks, scrubbing and session binding are unchanged on both paths.
   - Trade-off of the default: any chat may ask for a fill of the default client's logins. Values still never reach the model, and fills go only to the listed hosts.
+- **`all_items`** (decided 2026-11-05, so a new login needs no policy edit): a client with `"all_items": true` (one client at most) may use every live personal login in the agent account's vault that no client lists by `item_id`.
+  - Name: the item's name as a slug (`GitHub (work)` -> `github-work`); fields username, password and totp, as far as the item has them. Two items with one name are both refused.
+  - Hosts: the https hosts of the item's own URIs, matched exactly as `hosts` is. An item with no https URI is refused and not listed.
+  - Names come from the cached sync (15 s), so a login added to the vault appears without a restart.
+  - Explicit `secrets` names take precedence, and an item listed by id keeps that entry's hosts and fields.
+  - The seed `make filler-setup` writes: `{"version":1,"default_client":"agent","clients":{"agent":{"all_items":true,"secrets":{}}},"chats":{}}`. With it, the vault's contents are the policy: anything added to the agent account can be filled by any chat, on its own URIs' hosts.
   - An auto-browser session is bound to one (chat, client) at its first fill; a fill for another client in that session is refused.
   - Limit: uid-1000 code asserts the chat id. This stops confusion and prompt injection, not a hostile local process.
 
@@ -251,7 +259,9 @@ services:
 - **Filler:**
   - `filler-install COMMIT=`
   - `filler-init`: client token, controller-token copy, policy skeleton
-  - `filler-enroll`
+  - `filler-enroll`: email and master password; reads the API key itself, typed API key as fallback
+  - `filler-setup COMMIT=`: all of the above in order, seeds an empty policy, then `filler-up`, `filler-items`, `filler-status`
+  - `filler-items`: the account's logins (name, item id, https hosts), no values
   - `filler-up`, `filler-down`, `filler-lock`, `filler-status`, `filler-logs`
   - `filler-policy-edit`: `sudoedit`, then `node … --check-policy`
   - `filler-audit`

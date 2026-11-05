@@ -3,6 +3,10 @@
 # project (happy-filler). Included from selfhost/Makefile via `-include filler.mk`.
 # See selfhost/browser/filler/README.md.
 #
+#   make filler-setup COMMIT=    (sudo, interactive) all of it in one go: init (if not done), install,
+#                                seed an empty policy with default_client "agent", enroll (asks only
+#                                the agent's email and master password), filler-up, filler-items, filler-status
+#   make filler-items            the agent account's logins: name, item id, https hosts (no values)
 #   make filler-init             (sudo) /srv/happy-filler, client token, controller-token copy, empty policy
 #   make filler-install COMMIT=  (sudo) deploy a reviewed commit to /srv/happy-filler/releases/<sha>
 #   make filler-enroll           (sudo, interactive) enroll with the agent's vault account
@@ -25,7 +29,38 @@ FILLER_IMAGE = $(shell awk '/^ *image: node:/{print $$2; exit}' $(FILLER_DIR)/co
 COMMIT ?=
 
 .PHONY: filler-init filler-install filler-enroll filler-up filler-down filler-lock filler-logs filler-status \
-	filler-policy-edit filler-audit filler-test filler-smoke
+	filler-policy-edit filler-audit filler-test filler-smoke filler-setup filler-items filler-seed-policy
+
+filler-setup:
+	@test -n "$(COMMIT)" || { echo "usage: make filler-setup COMMIT=<sha> (the commit you reviewed)"; exit 1; }
+	@echo "== filler-setup: the sudo password is asked once, here"
+	@sudo -v
+	@if sudo test -e $(FILLER_ROOT)/secrets/client-token.sha256 -a -e $(FILLER_ROOT)/secrets/controller-token -a -e $(FILLER_ROOT)/policy.json \
+		&& test -s $(FILLER_HOME_DIR)/secrets/filler-client-token; then echo "== filler-init: already done, skipped"; \
+		else echo "== filler-init"; $(MAKE) --no-print-directory filler-init; fi
+	@echo "== filler-install $(COMMIT)"
+	@sudo -v
+	@$(MAKE) --no-print-directory filler-install COMMIT="$(COMMIT)"
+	@echo "== policy"
+	@$(MAKE) --no-print-directory filler-seed-policy
+	@echo "== filler-enroll"
+	@sudo -v
+	@$(MAKE) --no-print-directory filler-enroll
+	@echo "== filler-up"
+	@$(MAKE) --no-print-directory filler-up
+	@echo "== the agent account's logins (put the ones agents may use in the policy: make filler-policy-edit)"
+	@$(MAKE) --no-print-directory filler-items
+	@$(MAKE) --no-print-directory filler-status
+
+filler-seed-policy:
+	sudo FILLER_DEFAULT_CLIENT="$(or $(FILLER_DEFAULT_CLIENT),agent)" bash $(FILLER_DIR)/scripts/filler-seed-policy.sh
+
+filler-items:
+	@test -e $(FILLER_ROOT)/current/app/enroll.mjs || { echo "run make filler-install COMMIT=<sha> first"; exit 1; }
+	@docker run --rm --network host --user 1990:1990 --read-only --cap-drop ALL \
+		--security-opt no-new-privileges:true --ulimit core=0 -e FILLER_HOME=/filler -e VAULT_URL=http://127.0.0.1:8222 \
+		-v $(FILLER_ROOT)/current/app:/app:ro -v $(FILLER_ROOT)/secrets:/filler/secrets:ro \
+		$$(awk '/^ *image: node:/{print $$2; exit}' $(FILLER_ROOT)/current/compose.filler.yml) node /app/enroll.mjs --items
 
 filler-init:
 	sudo HAPPY_BROWSER_HOME="$(FILLER_HOME_DIR)" FILLER_ROTATE="$(FILLER_ROTATE)" bash $(FILLER_DIR)/scripts/filler-init.sh

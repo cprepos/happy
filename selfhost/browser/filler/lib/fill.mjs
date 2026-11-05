@@ -9,8 +9,12 @@
 //      bound to another (chat, client). The audit says which: path mapped or
 //      default;
 //   2. the name resolves through that client's policy to one item id (each id
-//      belongs to one client only), read from the agent account's vault;
-//   3. allowed hosts = item https URIs ∩ policy hosts, matched exactly;
+//      belongs to one client only), read from the agent account's vault; or,
+//      for an all_items client and a name its secrets do not list, to the
+//      vault login of that name that no client lists by id;
+//   3. allowed hosts = item https URIs ∩ policy hosts, matched exactly (for an
+//      all_items login, the policy hosts are the item's own https URI hosts;
+//      an item without one is refused);
 //   4. the session's page is https on an allowed host;
 //   5. the element is in the main document's current interactables and its
 //      kind fits the field (password into type=password only, and so on);
@@ -19,7 +23,7 @@
 import { allowedHosts, httpsHost, matchHost } from './hosts.mjs';
 import { currentTotp } from './totp.mjs';
 import { pageUrl, isLive } from './controller.mjs';
-import { NO_CHAT } from './policy.mjs';
+import { FIELDS, itemSlug, NO_CHAT } from './policy.mjs';
 
 export class FillError extends Error {
     constructor(message, status = 403, outcome = 'refused') { super(message); this.status = status; this.outcome = outcome; }
@@ -80,6 +84,42 @@ export function createFiller({ getPolicy, vault, controllers, taint, audit, slee
         return { policy, client: sc.client, path: sc.path, cfg: policy.client(sc.client) };
     }
 
+    // all_items: the client's vault logins by name ("github-work" -> login),
+    // from the vault's cached sync, so a login added to the vault appears on
+    // the next sync. Skipped: organization items, items some client lists by
+    // id, names the client's secrets already use. Two items with one name map
+    // to null (ambiguous, refused).
+    async function vaultLogins(ctx) {
+        if (!ctx.policy.allItems(ctx.client)) return new Map();
+        const logins = await vault.listLogins({ force: false }).catch((err) => {
+            throw new FillError(`vault: ${err.message}`, err.status === 404 ? 404 : 502, 'vault');
+        });
+        const by = new Map();
+        for (const l of logins) {
+            if (l.organization || ctx.policy.isListed(l.id)) continue;
+            const slug = itemSlug(l.name);
+            if (!slug || ctx.cfg.secrets.has(slug)) continue;
+            by.set(slug, by.has(slug) ? null : l);
+        }
+        return by;
+    }
+
+    /** An all_items login as a policy secret {secret, item_id, hosts, fields, all_items}, or null. */
+    async function vaultSecret(ctx, secret) {
+        const by = await vaultLogins(ctx);
+        if (!by.has(secret)) return null;
+        const l = by.get(secret);
+        if (!l) throw new FillError(`two vault logins are named "${secret}"; rename one in the vault`, 409, 'refused_ambiguous');
+        return { secret, item_id: l.id, hosts: l.hosts, fields: FIELDS, all_items: true };
+    }
+
+    async function vaultEntry(ctx, name) {
+        const m = /^([a-z0-9][a-z0-9_-]{0,62})\.(username|password|totp)$/.exec(String(name ?? ''));
+        if (!m) return null;
+        const s = await vaultSecret(ctx, m[1]);
+        return s ? { name: `${m[1]}.${m[2]}`, secret: m[1], field: m[2], item_id: s.item_id, hosts: s.hosts } : null;
+    }
+
     async function liveHost(b, allowed) {
         let rec;
         try { rec = await b.controller.getSession(b.session); } catch (err) {
@@ -134,10 +174,14 @@ export function createFiller({ getPolicy, vault, controllers, taint, audit, slee
 
     async function list({ chat }) {
         const ctx = scope(chat);
-        return {
-            client: ctx.client,
-            secrets: ctx.policy.entries(ctx.client).map((e) => ({ name: e.name, hosts: [...e.hosts], kind: e.field })),
-        };
+        const secrets = ctx.policy.entries(ctx.client).map((e) => ({ name: e.name, hosts: [...e.hosts], kind: e.field }));
+        // all_items: each usable vault login by name, with the fields it has. Logins
+        // with no https URI, or sharing a name, cannot be filled and are not listed.
+        for (const [slug, l] of [...(await vaultLogins(ctx))].sort((a, b) => a[0].localeCompare(b[0]))) {
+            if (!l || !l.hosts.length) continue;
+            for (const f of FIELDS) if (l.fields.includes(f)) secrets.push({ name: `${slug}.${f}`, hosts: [...l.hosts], kind: f });
+        }
+        return { client: ctx.client, secrets };
     }
 
     async function fill(body) {
@@ -148,7 +192,11 @@ export function createFiller({ getPolicy, vault, controllers, taint, audit, slee
         const ctx = scope(chat);
         const bind = taint.checkBinding(session, chat, ctx.client);
         if (bind) { audit.record({ chat, client: ctx.client, path: ctx.path, session, name, outcome: 'refused_binding' }); throw new FillError(bind, 403, 'refused_binding'); }
-        const entry = ctx.policy.resolve(ctx.client, name);
+        let entry;
+        try { entry = ctx.policy.resolve(ctx.client, name) || await vaultEntry(ctx, name); } catch (err) {
+            if (err instanceof FillError && err.outcome === 'refused_ambiguous') audit.record({ chat, client: ctx.client, path: ctx.path, session, name: String(name ?? '').slice(0, 80), outcome: 'refused_ambiguous' });
+            throw err;
+        }
         if (!entry) { audit.record({ chat, client: ctx.client, path: ctx.path, session, name: String(name ?? '').slice(0, 80), outcome: 'refused_name' }); throw new FillError('no such secret for this chat (see browser_list_secrets)', 404, 'refused_name'); }
         const item = await readValue(ctx, entry);
         const allowed = hostsFor(item.uris, entry.hosts);
@@ -173,7 +221,7 @@ export function createFiller({ getPolicy, vault, controllers, taint, audit, slee
         const ctx = scope(chat);
         const bind = taint.checkBinding(b.key, chat, ctx.client);
         if (bind) throw new FillError(bind, 403, 'refused_binding');
-        const sec = ctx.policy.secret(ctx.client, site);
+        const sec = ctx.policy.secret(ctx.client, site) || (typeof site === 'string' && /^[a-z0-9][a-z0-9_-]{0,62}$/.test(site) ? await vaultSecret(ctx, site) : null);
         if (!sec) throw new FillError('no such site for this chat (see browser_list_secrets)', 404, 'refused_name');
         const item = await readValue(ctx, sec);
         const allowed = hostsFor(item.uris, sec.hosts);

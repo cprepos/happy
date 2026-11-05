@@ -146,7 +146,7 @@ async function main(argv) {
             const p = loadPolicy(path, { requireRoot: !cfg.testLoopback });
             const n = p.clients().reduce((a, c) => a + p.entries(c).length, 0);
             const d = p.defaultClient();
-            process.stdout.write(`policy ok: ${p.clients().length} client(s), ${n} fillable name(s), ${d ? `default_client ${d} (every chat without its own entry uses it)` : 'no default_client'}\n`);
+            process.stdout.write(`policy ok: ${p.clients().length} client(s), ${n} fillable name(s), ${d ? `default_client ${d} (every chat without its own entry uses it)` : 'no default_client'}${p.clients().filter((c) => p.allItems(c)).map((c) => `, ${c} uses all_items (every vault login, on its own URIs' hosts)`).join('')}\n`);
             return 0;
         } catch (err) {
             process.stderr.write(`policy invalid: ${err.message}\n`);

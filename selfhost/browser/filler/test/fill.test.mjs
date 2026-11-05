@@ -8,6 +8,7 @@ import { TOTP_SECRET } from './fake-vaultwarden.mjs';
 import { loginPages } from './fake-controller.mjs';
 import { parsePolicy, NO_CHAT } from '../lib/policy.mjs';
 import { policyFor, setup } from './helpers.mjs';
+import { createVault } from '../lib/vault.mjs';
 
 const auditText = (dir) => readdirSync(join(dir, 'audit')).map((f) => readFileSync(join(dir, 'audit', f), 'utf8')).join('');
 
@@ -227,5 +228,111 @@ test('default_client: host, field and element restrictions still hold', async ()
         }
         assert.equal(t.ctl.typed.length, 0, 'nothing was typed');
         assert.ok(auditLines(t.dir).filter((l) => l.outcome === 'refused_host').every((l) => l.path === 'default'));
+    } finally { await t.close(); }
+});
+
+const ALL = { version: 1, default_client: 'agent', clients: { agent: { all_items: true, secrets: {} } }, chats: {} };
+
+test('all_items: a vault login is filled by its name, on the hosts of its own URIs', async () => {
+    const t = await setup();
+    try {
+        const policy = parsePolicy(ALL);
+        const f = createFiller({ ...t.deps, getPolicy: () => policy });
+        const names = (await f.list({ chat: NO_CHAT })).secrets.map((x) => x.name);
+        for (const n of ['acme-github.username', 'acme-github.password', 'acme-github.totp', 'acme-portal.password', 'globex-github.totp', 'unlisted.password']) assert.ok(names.includes(n), n);
+        assert.ok(!names.includes('acme-portal.totp'), 'only the fields the item has are listed');
+        for (const gone of ['acme-trashed', 'acme-note', 'org-shared', 'org-foreign']) assert.ok(!names.some((n) => n.startsWith(`${gone}.`)), gone);
+        assert.deepEqual((await f.list({ chat: NO_CHAT })).secrets.find((x) => x.name === 'acme-github.password').hosts, ['github.com', 'www.github.com']);
+        t.ctl.addSession('s1', loginPages());
+        t.ctl.addSession('www', loginPages('https://www.github.com'));
+        assert.deepEqual(await f.fill({ chat: NO_CHAT, session_id: 's1', element_id: 'p1', name: 'acme-github.password' }), { ok: true, kind: 'password', host: 'github.com' });
+        assert.deepEqual(await f.fill({ chat: 'chat-anything', session_id: 'www', element_id: 'p1', name: 'acme-github.password' }), { ok: true, kind: 'password', host: 'www.github.com' });
+        assert.deepEqual(t.ctl.typed.map((x) => x.text), [t.v.items['acme-github'].password, t.v.items['acme-github'].password]);
+        t.ctl.addSession('login', loginPages());
+        assert.equal((await f.login({ chat: NO_CHAT, session_id: 'login', site: 'acme-github' })).status, 'totp_submitted');
+        assert.ok(t.taint.get(t.key('s1')));
+        assert.ok(!auditText(t.dir).includes(t.v.items['acme-github'].password));
+    } finally { await t.close(); }
+});
+
+test('all_items: a wrong host and a login without URIs are refused', async () => {
+    const t = await setup();
+    try {
+        t.v.addLogin('no-uris', { username: 'nobody', password: 'NoUris-Pass-0001', uris: [] });
+        t.v.addLogin('http-only', { username: 'nobody', password: 'HttpOnly-Pass-0002', uris: ['http://plain.example.test/login'] });
+        const policy = parsePolicy(ALL);
+        const f = createFiller({ ...t.deps, getPolicy: () => policy });
+        const names = (await f.list({ chat: NO_CHAT })).secrets.map((x) => x.name);
+        assert.ok(!names.some((n) => n.startsWith('no-uris.') || n.startsWith('http-only.')), 'unusable logins are not listed');
+        t.ctl.addSession('s1', loginPages());
+        t.ctl.addSession('gist', loginPages('https://gist.github.com'));
+        t.ctl.addSession('evil', loginPages('https://github.com.evil.test'));
+        t.ctl.addSession('plain', loginPages('http://plain.example.test'));
+        const base = { chat: NO_CHAT, session_id: 's1', element_id: 'p1' };
+        for (const [args, re] of [
+            [{ ...base, name: 'no-uris.password' }, /no host that both/],
+            [{ ...base, session_id: 'plain', name: 'http-only.password' }, /no host that both/],
+            [{ ...base, name: 'acme-portal.password' }, /not on a host/],
+            [{ ...base, session_id: 'gist', name: 'acme-github.password' }, /not on a host/],
+            [{ ...base, session_id: 'evil', name: 'acme-github.password' }, /not on a host/],
+            [{ ...base, name: 'acme-github.notes' }, /no such secret/],
+            [{ ...base, name: 'nothing-like-it.password' }, /no such secret/],
+        ]) await assert.rejects(f.fill(args), re, JSON.stringify(args));
+        await assert.rejects(f.login({ chat: NO_CHAT, session_id: 's1', site: 'no-uris' }), /no host that both/);
+        assert.equal(t.ctl.typed.length, 0, 'nothing was typed');
+        assert.match(auditText(t.dir), /refused_no_hosts/);
+    } finally { await t.close(); }
+});
+
+test('all_items: a login added to the vault after start-up appears after the next sync', async () => {
+    const t = await setup();
+    try {
+        let now = 1_700_000_000_000;
+        const vault = createVault({ url: t.vw.url, clientId: t.v.clientId, clientSecret: t.v.clientSecret, userKey: t.v.userKey, deviceId: 'dev-late', now: () => now });
+        const policy = parsePolicy(ALL);
+        const f = createFiller({ ...t.deps, vault, getPolicy: () => policy });
+        const has = async (n) => (await f.list({ chat: NO_CHAT })).secrets.some((x) => x.name === n);
+        assert.equal(await has('late-login.password'), false);
+        t.v.addLogin('Late Login', { username: 'late', password: 'Late-Login-Pass-77', uris: ['https://late.example.test/'] });
+        now += 5_000;
+        assert.equal(await has('late-login.password'), false, 'the cached sync is reused within its 15 s');
+        now += 11_000;
+        assert.equal(await has('late-login.password'), true, 'the next sync sees it; no restart');
+        t.ctl.addSession('late', loginPages('https://late.example.test'));
+        assert.deepEqual(await f.fill({ chat: NO_CHAT, session_id: 'late', element_id: 'p1', name: 'late-login.password' }), { ok: true, kind: 'password', host: 'late.example.test' });
+        assert.equal(t.ctl.typed[0].text, 'Late-Login-Pass-77');
+    } finally { await t.close(); }
+});
+
+test('all_items: explicit secrets take precedence, listed items keep their own limits, and duplicate names are refused', async () => {
+    const t = await setup();
+    try {
+        const policy = parsePolicy({
+            version: 1, default_client: 'agent', chats: { 'chat-acme': 'acme' },
+            clients: {
+                // "acme-github" is this client's own name for the portal item: it wins over the vault login of that name.
+                agent: { all_items: true, secrets: { 'acme-github': { item_id: t.v.items['acme-portal'].id, hosts: ['portal.acme.test'], fields: ['password'] } } },
+                acme: { secrets: { gh: { item_id: t.v.items['globex-github'].id, hosts: ['github.com'], fields: ['password'] } } },
+            },
+        });
+        const f = createFiller({ ...t.deps, getPolicy: () => policy });
+        const list = (await f.list({ chat: NO_CHAT })).secrets;
+        const names = list.map((x) => x.name);
+        assert.deepEqual(list.filter((x) => x.name.startsWith('acme-github.')), [{ name: 'acme-github.password', hosts: ['portal.acme.test'], kind: 'password' }]);
+        assert.ok(!names.some((n) => n.startsWith('acme-portal.')), 'an item the client lists explicitly is not also listed by its vault name');
+        assert.ok(!names.some((n) => n.startsWith('globex-github.')), 'an item another client lists is never reached through all_items');
+        t.ctl.addSession('s1', loginPages());
+        await assert.rejects(f.fill({ chat: NO_CHAT, session_id: 's1', element_id: 'u1', name: 'acme-github.username' }), /no such secret/);
+        await assert.rejects(f.fill({ chat: NO_CHAT, session_id: 's1', element_id: 'p1', name: 'acme-github.password' }), /not on a host/);
+        await assert.rejects(f.fill({ chat: NO_CHAT, session_id: 's1', element_id: 'p1', name: 'globex-github.password' }), /no such secret/);
+        // A mapped chat of a client without all_items sees only its own list.
+        assert.deepEqual((await f.list({ chat: 'chat-acme' })).secrets.map((x) => x.name), ['gh.password']);
+        // Two vault logins with one name: neither is usable.
+        t.v.addLogin('Unlisted', { username: 'twin', password: 'Twin-Pass-0003', uris: ['https://github.com'] });
+        await t.vault.sync({ force: true });
+        assert.ok(!(await f.list({ chat: NO_CHAT })).secrets.some((x) => x.name.startsWith('unlisted.')));
+        await assert.rejects(f.fill({ chat: NO_CHAT, session_id: 's1', element_id: 'p1', name: 'unlisted.password' }), /two vault logins are named "unlisted"/);
+        assert.match(auditText(t.dir), /refused_ambiguous/);
+        assert.equal(t.ctl.typed.length, 0);
     } finally { await t.close(); }
 });

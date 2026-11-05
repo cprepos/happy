@@ -10,6 +10,7 @@
 // lists, and every item id belongs to at most one client.
 import { createHash } from 'node:crypto';
 import { decryptKey, decryptSym, decryptSymText, VaultCryptoError } from './vaultcrypto.mjs';
+import { httpsHost } from './hosts.mjs';
 
 export class VaultError extends Error {
     constructor(message, status = 502) { super(message); this.status = status; }
@@ -128,9 +129,45 @@ export function createVault({ url, clientId, clientSecret, userKey, deviceId, fe
         }
     }
 
+    /**
+     * Every live login the account can decrypt, as {id, name, hosts, fields}:
+     * the item's name, the https hosts of its URIs, and which of username,
+     * password and totp it has (from whether the field is set; nothing is
+     * decrypted but the name and URIs). Never a value. make filler-items lists
+     * these (force: a fresh sync); all_items clients resolve names through them
+     * on the normal sync cadence, so a login added to the vault shows up within
+     * ttlMs.
+     */
+    async function listLogins({ force = true } = {}) {
+        const s = await sync({ force });
+        const out = [];
+        for (const c of s.ciphers) {
+            if (!c || c.type !== 1 || c.deletedDate || !c.login) continue;
+            const orgId = c.organizationId ? String(c.organizationId).toLowerCase() : null;
+            const baseKey = orgId ? s.orgKeys.get(orgId) : userKey;
+            if (!baseKey) continue;
+            let name = null; let hosts = [];
+            try {
+                const key = c.key ? decryptKey(c.key, { symKey: baseKey }) : baseKey;
+                name = c.name ? decryptSymText(c.name, key) : '';
+                const seen = new Set();
+                for (const u of c.login.uris || []) {
+                    let h = null;
+                    try { h = u?.uri ? httpsHost(decryptSymText(u.uri, key)) : null; } catch {}
+                    if (h) seen.add(h);
+                }
+                hosts = [...seen];
+            } catch { name = null; }
+            const fields = ['username', 'password', 'totp'].filter((f) => !!c.login[f]);
+            out.push({ id: String(c.id || c.Id).toLowerCase(), name, hosts, fields, ...(orgId ? { organization: true } : {}) });
+        }
+        return out.sort((a, b) => String(a.name ?? '').localeCompare(String(b.name ?? '')) || a.id.localeCompare(b.id));
+    }
+
     return {
         sync,
         readItem,
+        listLogins,
         status: () => ({ unlocked: true, sync_age_s: synced ? Math.round((now() - synced.at) / 1000) : null }),
         lock() { token = null; synced = null; },
     };

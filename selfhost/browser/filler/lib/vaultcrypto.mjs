@@ -100,6 +100,16 @@ export function masterKey(password, email, iterations) {
     return pbkdf2Sync(Buffer.from(password, 'utf8'), Buffer.from(String(email).trim().toLowerCase(), 'utf8'), iterations, 32, 'sha256');
 }
 
+/**
+ * The master password hash a Bitwarden client sends to the server (the
+ * password grant, and calls such as /api/accounts/api-key): base64 of
+ * PBKDF2-SHA256(master key, password, 1 iteration). Proves the password
+ * without revealing it; it never decrypts anything.
+ */
+export function masterPasswordHash(mk, password) {
+    return pbkdf2Sync(mk, Buffer.from(password, 'utf8'), 1, 32, 'sha256').toString('base64');
+}
+
 /** The stretched master key (64 bytes) that decrypts profile.key. */
 export function stretchMasterKey(mk) {
     return Buffer.concat([hkdfExpand(mk, 'enc', 32), hkdfExpand(mk, 'mac', 32)]);

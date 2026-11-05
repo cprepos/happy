@@ -8,6 +8,16 @@
 //     "chats": { "<happy session id>": "acme" },
 //     "default_client": "acme" }          // optional
 //
+// A client may also say "all_items": true: every login in the agent account's
+// personal vault that no client lists by item_id may then be used by that
+// client, under a name made from the item's name ("GitHub (work)" ->
+// "github-work"), with the fields username, password and totp, and only on
+// the https hosts of the item's own saved URIs (exact match, as for hosts). An
+// item with no https URI cannot be used. Names the client lists in secrets
+// take precedence, and an item some client lists by item_id never appears
+// under all_items, so its own hosts and fields keep applying. At most one
+// client may set all_items.
+//
 // default_client is an explicit opt-in: a chat with no entry in chats uses that
 // client, and so does a caller that has no chat id at all (it names the chat
 // NO_CHAT, "none", which may never be a key in chats). Without default_client
@@ -50,11 +60,12 @@ export function parsePolicy(json) {
     if (extraTop.length) throw new PolicyError(`unknown top-level key ${JSON.stringify(extraTop[0]).slice(0, 40)}`);
     const clients = new Map();
     const seenItems = new Map();
+    let allItemsClient = null;
     for (const [slug, c] of Object.entries(raw.clients)) {
         if (!SLUG.test(slug)) throw new PolicyError(`bad client slug ${JSON.stringify(slug).slice(0, 70)}`);
         if (!c || typeof c !== 'object' || Array.isArray(c)) throw new PolicyError(`client ${slug}: must be an object`);
         if ('org_id' in c || 'collection_id' in c) throw new PolicyError(`client ${slug}: org_id and collection_id are no longer used (the items are in the agent account's own vault); remove them`);
-        const extra = Object.keys(c).filter((k) => k !== 'secrets');
+        const extra = Object.keys(c).filter((k) => k !== 'secrets' && k !== 'all_items');
         if (extra.length) throw new PolicyError(`client ${slug}: unknown key ${JSON.stringify(extra[0]).slice(0, 40)}`);
         if (c.secrets !== undefined && (typeof c.secrets !== 'object' || c.secrets === null || Array.isArray(c.secrets))) throw new PolicyError(`client ${slug}: secrets must be an object`);
         const secrets = new Map();
@@ -74,7 +85,13 @@ export function parsePolicy(json) {
             if (!fields.length || fields.some((f) => !FIELDS.includes(f))) throw new PolicyError(`${slug}.${name}: fields must be some of ${FIELDS.join(', ')}`);
             secrets.set(name, Object.freeze({ item_id: item, hosts: Object.freeze(hosts), fields: Object.freeze([...new Set(fields)]) }));
         }
-        clients.set(slug, Object.freeze({ secrets }));
+        if (c.all_items !== undefined && typeof c.all_items !== 'boolean') throw new PolicyError(`client ${slug}: all_items must be true or false`);
+        const allItems = c.all_items === true;
+        if (allItems) {
+            if (allItemsClient) throw new PolicyError(`client ${slug}: all_items is already set by ${allItemsClient}; only one client may use every vault item`);
+            allItemsClient = slug;
+        }
+        clients.set(slug, Object.freeze({ secrets, allItems }));
     }
     const chats = new Map();
     for (const [chat, slug] of Object.entries(raw.chats || {})) {
@@ -88,10 +105,18 @@ export function parsePolicy(json) {
         if (typeof raw.default_client !== 'string' || !clients.has(raw.default_client)) throw new PolicyError(`default_client ${JSON.stringify(raw.default_client)?.slice(0, 64)} is not a client in clients`);
         defaultClient = raw.default_client;
     }
-    return createPolicy(clients, chats, defaultClient);
+    return createPolicy(clients, chats, defaultClient, new Set(seenItems.keys()));
 }
 
-function createPolicy(clients, chats, defaultClient) {
+/** The name an all_items client uses for a vault item: its name as a slug ("GitHub (work)" -> "github-work"), or null. */
+export function itemSlug(name) {
+    if (typeof name !== 'string') return null;
+    const s = name.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, '-').replace(/-{2,}/g, '-').replace(/^[-_]+/, '').slice(0, 63).replace(/[-_]+$/, '');
+    return SLUG.test(s) ? s : null;
+}
+
+function createPolicy(clients, chats, defaultClient, listedItems) {
     const scopeOf = (chat) => {
         if (typeof chat !== 'string' || !chat) return null;
         if (chat !== NO_CHAT && chats.has(chat)) return { client: chats.get(chat), path: 'mapped' };
@@ -106,6 +131,10 @@ function createPolicy(clients, chats, defaultClient) {
         clientForChat: (chat) => scopeOf(chat)?.client ?? null,
         /** {client, path: 'mapped' | 'default'} for a chat, or null. */
         scopeOf,
+        /** Whether a client may use every vault item no client lists (all_items). */
+        allItems: (slug) => !!clients.get(slug)?.allItems,
+        /** Whether some client lists this item id in its secrets (such an item is never reached through all_items). */
+        isListed: (itemId) => listedItems.has(String(itemId ?? '').toLowerCase()),
         /** Every fillable name for a client: [{name: "github.password", secret, field, item_id, hosts}]. */
         entries(slug) {
             const c = clients.get(slug);

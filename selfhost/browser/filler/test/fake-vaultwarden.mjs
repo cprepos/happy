@@ -1,5 +1,7 @@
 // A fake Vaultwarden on 127.0.0.1 for tests: prelogin, connect/token
-// (client_credentials), /api/sync. Its vault is built here with node:crypto,
+// (client_credentials, and the password grant with the master password hash),
+// /api/accounts/profile, /api/accounts/api-key, /api/sync. twoFactor: true
+// makes the password grant answer as for an account with two-step login. Its vault is built here with node:crypto,
 // the way a Bitwarden client would encrypt it: a user key under the stretched
 // master key, an RSA key pair, and login items in the account's personal vault
 // (under the user key), with and without their own item key. There is no
@@ -8,13 +10,15 @@
 // ciphers are read with their org key and nothing else.
 import { createServer } from 'node:http';
 import { generateKeyPairSync, randomBytes, randomUUID } from 'node:crypto';
-import { encryptRsa, encryptSym, masterKey, stretchMasterKey } from '../lib/vaultcrypto.mjs';
+import { encryptRsa, encryptSym, masterKey, masterPasswordHash, stretchMasterKey } from '../lib/vaultcrypto.mjs';
 
 export const TOTP_SECRET = 'JBSWY3DPEHPK3PXP';
 
 export function buildVault({ email = 'agent@vault.test', password = 'correct horse battery staple', iterations = 100_000 } = {}) {
     const userKey = randomBytes(64);
-    const stretched = stretchMasterKey(masterKey(password, email, iterations));
+    const mk = masterKey(password, email, iterations);
+    const stretched = stretchMasterKey(mk);
+    const passwordHash = masterPasswordHash(mk, password);
     const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
     const pkcs8 = privateKey.export({ format: 'der', type: 'pkcs8' });
     const orgs = {
@@ -69,12 +73,14 @@ export function buildVault({ email = 'agent@vault.test', password = 'correct hor
         collections: [],
         folders: [],
     };
-    return { email, password, iterations, userKey, clientId, clientSecret, orgs, items, sync };
+    // addLogin stays usable after start: a login added later shows in the next /api/sync.
+    return { addLogin, email, password, passwordHash, userId, iterations, userKey, clientId, clientSecret, orgs, items, sync };
 }
 
-export async function startFakeVaultwarden(vault = buildVault()) {
-    const calls = { token: 0, sync: 0, prelogin: 0 };
+export async function startFakeVaultwarden(vault = buildVault(), { twoFactor = false, apiKeyStatus = 200 } = {}) {
+    const calls = { token: 0, sync: 0, prelogin: 0, passwordGrant: 0, apiKey: 0, bodies: [] };
     const tokens = new Set();
+    const webTokens = new Set();
     const server = createServer(async (req, res) => {
         const chunks = [];
         for await (const c of req) chunks.push(c);
@@ -88,12 +94,37 @@ export async function startFakeVaultwarden(vault = buildVault()) {
         if (req.method === 'POST' && url.pathname === '/identity/connect/token') {
             calls.token++;
             const p = new URLSearchParams(body);
+            calls.bodies.push(body);
+            if (p.get('grant_type') === 'password') {
+                calls.passwordGrant++;
+                if (!p.get('client_id') || !p.get('deviceIdentifier') || !p.get('deviceName') || !p.get('deviceType')) return send(400, { error: 'invalid_request' });
+                if (p.get('username') !== vault.email || p.get('password') !== vault.passwordHash) return send(400, { error: 'invalid_grant', error_description: 'Username or password is incorrect. Try again', echo: p.get('password') });
+                if (twoFactor) return send(400, { error: 'invalid_grant', error_description: 'Two factor required.', TwoFactorProviders: ['0'], TwoFactorProviders2: { 0: null } });
+                const t = randomBytes(16).toString('hex');
+                webTokens.add(t);
+                return send(200, { access_token: t, expires_in: 3600, token_type: 'Bearer', refresh_token: 'r', Key: vault.sync.profile.key });
+            }
             if (p.get('grant_type') !== 'client_credentials' || p.get('client_id') !== vault.clientId || p.get('client_secret') !== vault.clientSecret || !p.get('deviceIdentifier')) {
                 return send(400, { error: 'invalid_client', echo: p.get('client_secret') });
             }
             const t = randomBytes(16).toString('hex');
             tokens.add(t);
             return send(200, { access_token: t, expires_in: 7200, token_type: 'Bearer', Key: vault.sync.profile.key, PrivateKey: vault.sync.profile.privateKey, Kdf: 0, KdfIterations: vault.iterations });
+        }
+        const web = () => webTokens.has((req.headers.authorization || '').replace(/^Bearer /, ''));
+        if (req.method === 'GET' && url.pathname === '/api/accounts/profile') {
+            if (!web()) return send(401, { error: 'unauthorized' });
+            return send(200, { id: vault.userId, email: vault.email, object: 'profile' });
+        }
+        if (req.method === 'POST' && url.pathname === '/api/accounts/api-key') {
+            calls.apiKey++;
+            calls.bodies.push(body);
+            if (!web()) return send(401, { error: 'unauthorized' });
+            if (apiKeyStatus !== 200) return send(apiKeyStatus, { message: 'nope' });
+            let b = {};
+            try { b = JSON.parse(body); } catch {}
+            if (b.masterPasswordHash !== vault.passwordHash) return send(400, { message: 'Invalid password' });
+            return send(200, { apiKey: vault.clientSecret, revisionDate: new Date().toISOString(), object: 'apiKey' });
         }
         if (req.method === 'GET' && url.pathname === '/api/sync') {
             calls.sync++;
