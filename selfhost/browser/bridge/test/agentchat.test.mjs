@@ -69,8 +69,8 @@ test('call chat: the call id in _meta names the chat; key is sha256("happy:" + H
     const r = callChatResolver(async (id) => (id === 'c1' ? { source: 'happy', id: 'S1' } : null));
     assert.deepEqual(await r(meta('c1')), { key: KEY_S1, source: 'happy' });
     assert.equal(await r(meta('nope')), NO_CALL_CHAT);
-    assert.equal(await r(undefined), NO_CALL_CHAT);
-    assert.equal(await r({ progressToken: 1 }), NO_CALL_CHAT);
+    assert.equal(await r(undefined), null, 'no call id: routed by session');
+    assert.equal(await r({ progressToken: 1 }), null, 'no call id: routed by session');
     assert.equal(await r(meta('bad id; drop')), NO_CALL_CHAT, 'an ill-formed id is not looked up');
     const failing = callChatResolver(async () => { throw new Error('db gone'); });
     assert.equal(await failing(meta('c1')), NO_CALL_CHAT);
@@ -117,11 +117,8 @@ test('call chat: a call whose chat cannot be told is refused, not sent to a pod 
     h.seen.bridge.length = 0;
     h.seen.calls.length = 0;
     const r1 = await h.call('browser_observe', { session_id: 'pod0' }, meta('unknown'));
-    const r2 = await h.call('browser_execute_action', { session_id: 'pod0', action: { action: 'click' } });
-    for (const r of [r1, r2]) {
-        assert.equal(r.result.isError, true);
-        assert.match(r.result.content[0].text, /could not be matched to its chat/);
-    }
+    assert.equal(r1.result.isError, true);
+    assert.match(r1.result.content[0].text, /could not be matched to its chat/);
     const r3 = await h.call('browser_live_link', { session_id: 'pod0' }, meta('unknown'));
     assert.equal(r3.result.isError, true);
     assert.equal(h.seen.calls.length, 0);

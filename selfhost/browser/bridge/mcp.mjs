@@ -190,12 +190,16 @@ export const chatKeyOf = (ident) => createHash('sha256').update(`${ident.source}
 // its MCP client puts its own id for the tool call in _meta["claudecode/toolUseId"], and
 // lookup(id) answers which chat made that call ({source, id}, see lib/agentchat.mjs). Only _meta
 // is read, never the tool arguments, so the model cannot pick another chat's browser. Returns
-// {key, source}, or NO_CALL_CHAT when the call's chat can't be told (the call is then refused).
+// {key, source}; null when the call carries no id (routed by session); NO_CALL_CHAT when an id
+// was given but its chat can't be told (the call is then refused).
 export const NO_CALL_CHAT = Object.freeze({ unknown: true });
 const TOOL_USE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 export function callChatResolver(lookup, log = () => {}) {
     return async function callChatOf(meta, signal) {
         const id = meta && typeof meta === 'object' ? meta['claudecode/toolUseId'] : undefined;
+        // No call id at all: this client does not name its calls (Happy Agent sends no _meta), so
+        // the call is routed by its browser session as before, never guessed onto a chat.
+        if (id === undefined) return null;
         if (typeof id !== 'string' || !TOOL_USE_ID.test(id)) return NO_CALL_CHAT;
         try {
             const ident = await lookup(id, signal);
@@ -339,7 +343,7 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
     // a chat of its own (HAPPY_SESSION_ID / CLAUDE_CODE_SESSION_ID) keeps that one. null: none.
     async function chatOfCall(meta, signal) {
         if (!router || !callChat || chatPods?.chat) return null;
-        return (await callChat(meta, signal)) ?? NO_CALL_CHAT;
+        return await callChat(meta, signal);
     }
 
     // The chat's pod for this call, its session put into the arguments. Some tools are answered
