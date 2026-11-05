@@ -36,6 +36,9 @@ final class ComposerEditorViewController: UIViewController, UITextViewDelegate {
     /// Moves with every frame heard, so a held hide of the minimized bar
     /// goes only if nothing came after it.
     private var heard = 0
+    /// The guide that sees an iPad's minimized bar, which iPadOS counts as
+    /// undocked (`UndockedKeyboardGuide`).
+    private var undocked: UndockedKeyboardGuide?
 
     /// `keyboardTop` is where the keyboard already is, in the window: no
     /// notification says so while it stays up.
@@ -86,6 +89,17 @@ final class ComposerEditorViewController: UIViewController, UITextViewDelegate {
         view.keyboardLayoutGuide.followsUndockedKeyboard = false
         NotificationCenter.default.addObserver(self, selector: #selector(keyboardWillChange(_:)), name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(keyboardDidChange(_:)), name: UIResponder.keyboardDidChangeFrameNotification, object: nil)
+        let undocked = UndockedKeyboardGuide.over(view)
+        self.undocked = undocked
+        NotificationCenter.default.addObserver(self, selector: #selector(undockedMoved), name: UndockedKeyboardGuide.changed, object: undocked)
+    }
+
+    /// The minimized bar moved: the text rises at once, and drops only
+    /// once nothing has replaced the bar (its swap for its suggestions).
+    @objc private func undockedMoved() {
+        guard view.window != nil else { return }
+        guard keyboardTop == nil else { return view.setNeedsLayout() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in self?.view.setNeedsLayout() }
     }
 
     /// The keyboard's top in the view, on every layout: what the chats read
@@ -93,7 +107,7 @@ final class ComposerEditorViewController: UIViewController, UITextViewDelegate {
     /// frame and the layout guide, an iPad's minimized bar included.
     private var keyboardTop: CGFloat? {
         let guideTop = view.keyboardLayoutGuide.layoutFrame.minY
-        if let cover = view.keyboardCover(heard: heardFrame, guideTop: guideTop) { return cover.top }
+        if let cover = view.keyboardCover(heard: heardFrame, guideTop: guideTop, undocked: undocked) { return cover.top }
         guard heardFrame == nil, let openingKeyboardTop, let window = view.window else { return nil }
         let top = view.convert(CGPoint(x: 0, y: openingKeyboardTop), from: window).y
         return top < view.bounds.maxY ? top : nil

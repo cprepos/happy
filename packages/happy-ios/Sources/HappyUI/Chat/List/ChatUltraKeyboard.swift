@@ -32,6 +32,11 @@ import UltraView
 /// screen (a Stage Manager window dragged or resized), and as the screen
 /// appears, from the app's last frame (`KeyboardFrames`), as no
 /// notification says it is still up.
+///
+/// iPadOS counts the bar as an undocked keyboard, which the screen's guide
+/// doesn't follow and its notifications can leave out: a second guide that
+/// follows it (`UndockedKeyboardGuide`) says where the bar is, read again
+/// whenever it moves. The docked keyboard is left to its notifications.
 @MainActor
 final class ChatUltraKeyboard: NSObject {
     /// The keyboard moved: the screen lays itself out again at once, the
@@ -53,6 +58,8 @@ final class ChatUltraKeyboard: NSObject {
     private let accessoryHeight: () -> CGFloat
     private let hasInput: () -> Bool
     private let changed: (Change) -> Void
+    /// The guide that sees the minimized bar.
+    private let undocked: UndockedKeyboardGuide
     /// How far the keyboard covers the bottom of `view`. Under the
     /// controller it drops below the resting edge as it leaves.
     private(set) var height: CGFloat = 0
@@ -93,11 +100,13 @@ final class ChatUltraKeyboard: NSObject {
         self.accessoryHeight = accessoryHeight
         self.hasInput = hasInput
         self.changed = changed
+        undocked = UndockedKeyboardGuide.over(view)
         super.init()
         let center = NotificationCenter.default
         center.addObserver(self, selector: #selector(keyboardWillChangeFrame(_:)), name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
         center.addObserver(self, selector: #selector(keyboardDidChangeFrame(_:)), name: UIResponder.keyboardDidChangeFrameNotification, object: nil)
         center.addObserver(self, selector: #selector(keyboardDidHide(_:)), name: UIResponder.keyboardDidHideNotification, object: nil)
+        center.addObserver(self, selector: #selector(undockedMoved), name: UndockedKeyboardGuide.changed, object: undocked)
         KeyboardFrames.start()
     }
 
@@ -176,14 +185,50 @@ final class ChatUltraKeyboard: NSObject {
         measuredIn = place
         let barOnly = barOnly
         self.barOnly = false
-        let cover = KeyboardCover(
+        let cover = measure(in: view, guideTop: guideTop, barOnly: barOnly)
+        height = cover.map { view.bounds.maxY - $0.top } ?? 0
+        keyboardLog.notice("chat resync barOnly=\(barOnly, privacy: .public) guideTop=\(guideTop, privacy: .public) height=\(self.height, privacy: .public)")
+        if cover == nil { holdsOnGuide = false }
+    }
+
+    /// What the keyboard covers of `view` now: the frame heard, else the
+    /// app's last, the guide, and the guide that sees the minimized bar.
+    /// `barOnly` leaves out the guide and all but a bar remembered.
+    private func measure(in view: UIView, guideTop: CGFloat, barOnly: Bool = false) -> KeyboardCover? {
+        KeyboardCover(
             bounds: view.bounds, safeBottom: view.safeAreaInsets.bottom,
             frame: barOnly ? nil : heardFrame.map(local),
             remembered: barOnly || heardFrame == nil ? KeyboardFrames.shared.screenFrame.map(local) : nil,
-            guideTop: barOnly ? nil : guideTop
+            guideTop: barOnly ? nil : guideTop,
+            undocked: undocked.frame(in: view),
+            undockedSeesBar: KeyboardFrames.shared.undockedSeesBar
         )
-        height = cover.map { view.bounds.maxY - $0.top } ?? 0
-        if cover == nil { holdsOnGuide = false }
+    }
+
+    /// The guide that sees the minimized bar moved. The bar coming,
+    /// changing or going moves the screen at once, a going only once
+    /// nothing has replaced it (its swap for its suggestions while the
+    /// person types). A docked keyboard is left to its notifications.
+    @objc private func undockedMoved() {
+        guard isActive, !isDriving, let view, view.window != nil else { return }
+        let cover = measure(in: view, guideTop: view.keyboardLayoutGuide.layoutFrame.minY)
+        let height = cover.map { view.bounds.maxY - $0.top } ?? 0
+        keyboardLog.notice("chat undocked moved height=\(height, privacy: .public) was=\(self.height, privacy: .public)")
+        let bar = KeyboardCover.Metrics.barMaxCover
+        guard abs(height - self.height) > 0.5, height <= bar, self.height <= bar else { return }
+        if height > 0.5 {
+            holdsOnGuide = false
+            notified(height: height, Change(transition: .immediate))
+            return
+        }
+        generation &+= 1
+        let generation = generation
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.barSwapWait) { [weak self] in
+            guard let self, self.isActive, self.generation == generation, !self.isDriving,
+                  let view = self.view, view.window != nil,
+                  self.measure(in: view, guideTop: view.keyboardLayoutGuide.layoutFrame.minY) == nil else { return }
+            self.notified(height: 0, Change(transition: .immediate, finishes: true))
+        }
     }
 
     /// A frame in the screen's coordinates, in `view`: as UltraView's
@@ -260,7 +305,9 @@ final class ChatUltraKeyboard: NSObject {
         // floating over the edge too; one dragged up the screen covers
         // nothing, as the layout guide reads it with
         // `followsUndockedKeyboard` off.
-        let cover = KeyboardCover(bounds: view.bounds, safeBottom: view.safeAreaInsets.bottom, frame: local(frame))
+        keyboardLog.notice("chat will end=\(String(describing: frame), privacy: .public) local=\(String(describing: self.local(frame)), privacy: .public) undocked=\(String(describing: self.undocked.frame(in: view)), privacy: .public)")
+        let cover = KeyboardCover(bounds: view.bounds, safeBottom: view.safeAreaInsets.bottom, frame: local(frame),
+                                  undocked: undocked.frame(in: view), undockedSeesBar: KeyboardFrames.shared.undockedSeesBar)
         let change = Change(transition: duration > 0 ? .keyboard(duration) : .immediate)
         notifiedMotionEnd = CACurrentMediaTime() + max(0, duration)
         guard cover != nil || !barUp else {
@@ -326,7 +373,8 @@ final class ChatUltraKeyboard: NSObject {
     @objc private func keyboardDidChangeFrame(_ notification: Notification) {
         guard isActive, !isDriving, let view, view.window != nil,
               let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
-        let cover = KeyboardCover(bounds: view.bounds, safeBottom: view.safeAreaInsets.bottom, frame: local(frame))
+        let cover = KeyboardCover(bounds: view.bounds, safeBottom: view.safeAreaInsets.bottom, frame: local(frame),
+                                  undocked: undocked.frame(in: view), undockedSeesBar: KeyboardFrames.shared.undockedSeesBar)
         let isBar = cover.map { view.bounds.maxY - $0.top <= KeyboardCover.Metrics.barMaxCover } ?? false
         // A docked keyboard is where its will said; the bar's going is
         // settled on its own (`settleBar`).

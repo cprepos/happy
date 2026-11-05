@@ -30,6 +30,15 @@ import CoreGraphics
 /// the last notification the app heard) counts only where it can't be
 /// stale: while the guide covers something too, or as the minimized bar,
 /// no taller than `barMaxHeight`.
+///
+/// iPadOS counts the minimized bar as an undocked keyboard: the screen's
+/// layout guide, `followsUndockedKeyboard` off, rests on the safe area
+/// under it, and its notifications can say nothing of it. A second guide
+/// that follows the undocked keyboard (`undocked`, its layout frame in the
+/// screen's coordinates) sees it: it counts as the bar only along the
+/// bottom and no taller than the bar. Once that guide has seen the bar on
+/// this device (`undockedSeesBar`), it alone says where the bar is, and a
+/// bar-sized frame heard or remembered is set aside.
 public struct KeyboardCover: Equatable, Sendable {
     public enum Metrics {
         /// A frame whose bottom is further than this above the screen's
@@ -56,7 +65,9 @@ public struct KeyboardCover: Equatable, Sendable {
     /// `frame` is what the screen's own notifications last said (nil when
     /// it has heard none), `remembered` the app's last, and `guideTop` the
     /// keyboard layout guide's top. Nil when the keyboard covers nothing.
-    public init?(bounds: CGRect, safeBottom: CGFloat, frame: CGRect?, remembered: CGRect? = nil, guideTop: CGFloat? = nil) {
+    public init?(bounds: CGRect, safeBottom: CGFloat, frame: CGRect?, remembered: CGRect? = nil, guideTop: CGFloat? = nil,
+                 undocked: CGRect? = nil, undockedSeesBar: Bool = false) {
+        let isBar = { (rect: CGRect) in bounds.maxY - rect.minY <= Metrics.barMaxCover }
         let guide = guideTop.flatMap { top -> CGRect? in
             guard top.isFinite, bounds.maxY - top > max(0, safeBottom) + 0.5 else { return nil }
             let top = max(bounds.minY, top)
@@ -71,10 +82,13 @@ public struct KeyboardCover: Equatable, Sendable {
         } else {
             heard = nil
         }
-        let rect: CGRect
-        switch (heard, guide) {
+        let bar = undocked.flatMap { Self.covered($0, bounds: bounds, safeBottom: safeBottom) }.flatMap { isBar($0) ? $0 : nil }
+        let trusted = undockedSeesBar ? heard.flatMap { isBar($0) ? nil : $0 } : heard
+        var rect: CGRect
+        switch (trusted, guide) {
         case (nil, nil):
-            return nil
+            guard let bar else { return nil }
+            rect = bar
         case let (heard?, nil):
             rect = heard
         case let (nil, guide?):
@@ -87,6 +101,7 @@ public struct KeyboardCover: Equatable, Sendable {
                 rect = CGRect(x: heard.minX, y: top, width: heard.width, height: heard.maxY - top)
             }
         }
+        if let bar, bar.minY < rect.minY - 1 { rect = bar }
         self.rect = rect
     }
 

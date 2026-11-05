@@ -101,4 +101,44 @@ final class KeyboardCoverTests: XCTestCase {
         XCTAssertEqual(pill.minY - overPill.card.maxY, docked.minY - overDocked.card.maxY)
         XCTAssertLessThan(overPill.card.maxY, pill.minY)
     }
+
+    // MARK: The guide that follows the undocked keyboard
+
+    /// That guide with nothing up: on the safe area's bottom.
+    private var undockedRest: CGRect { CGRect(x: 0, y: bounds.maxY - safe, width: bounds.width, height: safe) }
+
+    func testTheUndockedGuidesPillLiftsTheBoxWithNothingHeard() throws {
+        let pill = pill(gap: 50)
+        let cover = try XCTUnwrap(KeyboardCover(bounds: bounds, safeBottom: safe, frame: nil, guideTop: bounds.maxY - safe, undocked: pill))
+        XCTAssertEqual(cover.top, pill.minY)
+    }
+
+    func testTheUndockedGuideAtRestCoversNothing() {
+        XCTAssertNil(KeyboardCover(bounds: bounds, safeBottom: safe, frame: nil, guideTop: bounds.maxY - safe, undocked: undockedRest))
+    }
+
+    func testTheUndockedGuidesKeyboardDraggedUpTheScreenCoversNothing() {
+        let floating = CGRect(x: 400, y: 300, width: 320, height: 260)
+        XCTAssertNil(KeyboardCover(bounds: bounds, safeBottom: safe, frame: nil, guideTop: bounds.maxY - safe, undocked: floating, undockedSeesBar: true))
+    }
+
+    func testOnceItHasSeenTheBarAStaleBarHeardCoversNothing() {
+        let stale = pill(gap: 50)
+        XCTAssertNotNil(KeyboardCover(bounds: bounds, safeBottom: safe, frame: stale, undocked: undockedRest))
+        XCTAssertNil(KeyboardCover(bounds: bounds, safeBottom: safe, frame: stale, undocked: undockedRest, undockedSeesBar: true))
+        XCTAssertNil(KeyboardCover(bounds: bounds, safeBottom: safe, frame: nil, remembered: stale, undocked: undockedRest, undockedSeesBar: true))
+    }
+
+    func testTheDockedKeyboardIsAsItWasWhateverTheUndockedGuideSays() {
+        let docked = CGRect(x: 0, y: bounds.maxY - 320, width: bounds.width, height: 320)
+        let before = KeyboardCover(bounds: bounds, safeBottom: safe, frame: docked, guideTop: docked.minY)
+        XCTAssertEqual(KeyboardCover(bounds: bounds, safeBottom: safe, frame: docked, guideTop: docked.minY, undocked: docked, undockedSeesBar: true), before)
+        XCTAssertEqual(KeyboardCover(bounds: bounds, safeBottom: safe, frame: docked, guideTop: docked.minY, undocked: undockedRest, undockedSeesBar: true), before)
+    }
+
+    func testTheUndockedGuidesPillWinsOverAStripUnderIt() throws {
+        let strip = CGRect(x: 0, y: bounds.maxY - 40, width: bounds.width, height: 40)
+        let pill = pill(gap: 50)
+        XCTAssertEqual(KeyboardCover(bounds: bounds, safeBottom: safe, frame: strip, undocked: pill)?.top, pill.minY)
+    }
 }
