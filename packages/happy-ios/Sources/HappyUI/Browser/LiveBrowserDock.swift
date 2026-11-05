@@ -382,7 +382,11 @@ final class LiveBrowserDock: NSObject {
         HeaderBar.apply(to: navigation.navigationBar)
         navigation.modalPresentationStyle = .fullScreen
         if let player {
-            navigation.preferredTransition = .zoom { [weak player] _ in player }
+            // Never pulled down or pinched closed while noVNC has the
+            // touches: a two-finger drag there is the page's.
+            let options = UIViewController.Transition.ZoomOptions()
+            options.interactiveDismissShouldBegin = { [weak self] _ in self?.allowsInteractiveDismiss ?? true }
+            navigation.preferredTransition = .zoom(options: options) { [weak player] _ in player }
         }
         fullScreen = navigation
         // The chat under it disappears, and with it the dock's reading: the
@@ -410,6 +414,10 @@ final class LiveBrowserDock: NSObject {
         setOnScreen(true)
         feed?.kick()
     }
+
+    /// The full screen may be pulled down or pinched closed: not while
+    /// noVNC is on it.
+    var allowsInteractiveDismiss: Bool { noVNCPage == nil }
 
     /// The noVNC page on top of the full screen, while there is one.
     var noVNCPage: LiveBrowserFullScreenItems? {
@@ -452,6 +460,7 @@ final class LiveBrowserDock: NSObject {
                     if let workspace { id = workspace } else { id = try await connection.workspace() }
                     let page = try await BrowserPage.workspace(client: connection.client, url: url, workspaceID: id)
                     let browser = BrowserViewController(url: url, page: page, extraItems: [])
+                    browser.isRemoteScreen = true
                     let watch = LiveBrowserNoVNCWatch()
                     watch.disconnected = { [weak self] in self?.dropNoVNC() }
                     browser.configure = { watch.install(in: $0) }
@@ -628,6 +637,58 @@ final class LiveBrowserFullScreenItems: UIViewController {
         update(state, held: held)
     }
 
+    /// The gestures around noVNC that would take its touches, off while
+    /// it shows and back as they were when it goes.
+    private var heldGestures: [(UIGestureRecognizer, Bool)] = []
+    private var heldSplit: (UISplitViewController, Bool)?
+    private var heldModal: Bool?
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        if isNoVNC { holdGestures() }
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        if isNoVNC { restoreGestures() }
+    }
+
+    /// noVNC has every touch: no swipe back, no pull to dismiss, no split
+    /// view's sidebar swipe under it.
+    func holdGestures() {
+        guard heldGestures.isEmpty, heldSplit == nil, heldModal == nil, let navigation = navigationController else { return }
+        var gestures = [navigation.interactivePopGestureRecognizer].compactMap { $0 }
+        if #available(iOS 26.0, *), let content = navigation.interactiveContentPopGestureRecognizer { gestures.append(content) }
+        heldGestures = gestures.map { ($0, $0.isEnabled) }
+        for gesture in gestures { gesture.isEnabled = false }
+        heldModal = navigation.isModalInPresentation
+        navigation.isModalInPresentation = true
+        if let split = navigation.presentingViewController.flatMap(Self.split) {
+            heldSplit = (split, split.presentsWithGesture)
+            split.presentsWithGesture = false
+        }
+    }
+
+    func restoreGestures() {
+        for (gesture, enabled) in heldGestures { gesture.isEnabled = enabled }
+        heldGestures = []
+        if let heldModal { navigationController?.isModalInPresentation = heldModal }
+        heldModal = nil
+        if let (split, gestured) = heldSplit { split.presentsWithGesture = gestured }
+        heldSplit = nil
+    }
+
+    /// The split view the full screen was presented over, if any.
+    private static func split(_ controller: UIViewController) -> UISplitViewController? {
+        if let split = controller as? UISplitViewController { return split }
+        if let split = controller.splitViewController { return split }
+        for child in controller.children { if let split = split(child) { return split } }
+        return nil
+    }
+
+    /// The gestures noVNC holds off now (tests).
+    var holdsGestures: Bool { !heldGestures.isEmpty || heldModal != nil }
+
     /// Before it loads too: it shows the state once it does. `held`,
     /// Release control; else Take control.
     func update(_ state: LiveBrowserState?, held: Bool) {
@@ -677,6 +738,39 @@ final class LiveBrowserNoVNCWatch: NSObject {
     })();
     """
 
+    /// The page as a remote screen: it never zooms or scrolls itself
+    /// (a fixed viewport, `touch-action: none`), so every touch, two
+    /// fingers too, goes to noVNC's own gesture handling; and its canvas
+    /// has the focus from the start and again once connected, so the first
+    /// drag needs no tap first.
+    static let touch = """
+    (function () {
+      var head = document.head || document.documentElement;
+      var meta = document.querySelector('meta[name=viewport]');
+      if (!meta) { meta = document.createElement('meta'); meta.name = 'viewport'; head.appendChild(meta); }
+      meta.content = 'width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no';
+      var style = document.createElement('style');
+      style.textContent = 'html, body, canvas, #noVNC_container { touch-action: none !important; overscroll-behavior: none !important; -webkit-user-select: none; }';
+      head.appendChild(style);
+      var focus = function () {
+        var canvas = document.querySelector('#noVNC_container canvas') || document.querySelector('canvas');
+        if (!canvas) { return false; }
+        if (!canvas.hasAttribute('tabindex')) { canvas.setAttribute('tabindex', '-1'); }
+        try { canvas.focus({ preventScroll: true }); } catch (e) { canvas.focus(); }
+        return document.activeElement === canvas;
+      };
+      window.liveBrowserFocusCanvas = focus;
+      focus();
+      new MutationObserver(function () {
+        if (document.documentElement.classList.contains('noVNC_connected')) { focus(); }
+      }).observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+      // noVNC adds its canvas once it connects; until then, look again
+      // a few times.
+      var tries = 0;
+      var look = setInterval(function () { if (focus() || ++tries > 40) { clearInterval(look); } }, 250);
+    })();
+    """
+
     var disconnected: (() -> Void)?
 
     func install(in configuration: WKWebViewConfiguration) {
@@ -684,6 +778,7 @@ final class LiveBrowserNoVNCWatch: NSObject {
         content.removeScriptMessageHandler(forName: Self.name)
         content.add(Relay(self), name: Self.name)
         content.addUserScript(WKUserScript(source: Self.source, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        content.addUserScript(WKUserScript(source: Self.touch, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
     }
 
     func received(_ body: Any) {
@@ -773,6 +868,7 @@ final class LiveBrowserPlayerView: UIView {
     var isBusy = false { didSet { spinner.isHidden = !isBusy; isBusy ? spinner.startAnimating() : spinner.stopAnimating() } }
     private(set) var isDragging = false
 
+    private let bar = UIView()
     private let picture = UIImageView()
     private let message = UILabel()
     private let close = LiveBrowserPlayerView.overlayButton("xmark")
@@ -787,6 +883,8 @@ final class LiveBrowserPlayerView: UIView {
     private let action = UIButton(type: .system)
     private let spinner = UIActivityIndicatorView(style: .medium)
     private var layout: LiveBrowserDockLayout?
+    /// The browser ended: nothing left to end.
+    private var isOver = false
     private var frameBytes: Data?
     /// The picture shown now (tests).
     var shownImage: UIImage? { picture.image }
@@ -810,8 +908,12 @@ final class LiveBrowserPlayerView: UIView {
         picture.backgroundColor = UIColor(Palette.surfaceHigh)
         picture.isUserInteractionEnabled = true
         picture.accessibilityIdentifier = "live-browser-picture"
-        picture.layer.cornerRadius = M.radius
-        picture.layer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
+        // The bar takes the top corners: the picture is square under it.
+        bar.layer.cornerRadius = M.radius
+        bar.layer.cornerCurve = .continuous
+        bar.layer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
+        bar.backgroundColor = UIColor(Palette.cardFill)
+        bar.accessibilityIdentifier = "live-browser-player-bar"
         message.font = Fonts.ui(.medium, size: 11)
         message.textColor = UIColor(Palette.cardDetail)
         message.textAlignment = .center
@@ -838,7 +940,7 @@ final class LiveBrowserPlayerView: UIView {
         ])
         spinner.color = .white
         spinner.isHidden = true
-        for view in [picture, message, footer, close, full, resize, menuButton, spinner] as [UIView] { addSubview(view) }
+        for view in [bar, picture, message, footer, close, full, resize, menuButton, spinner] as [UIView] { addSubview(view) }
         for view in [pillDot, pill, action] as [UIView] { footer.addSubview(view) }
         picture.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tapped)))
         addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(panned(_:))))
@@ -849,15 +951,19 @@ final class LiveBrowserPlayerView: UIView {
     }
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
 
+    /// A button on the bar over the picture: the glyph alone, in the
+    /// card's colours, on a 44-point target.
     private static func overlayButton(_ symbol: String) -> UIButton {
         var configuration = UIButton.Configuration.plain()
-        configuration.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 11, weight: .bold))
-        configuration.baseForegroundColor = .white
-        configuration.background.backgroundColor = UIColor.black.withAlphaComponent(0.55)
-        configuration.background.cornerRadius = LiveBrowserDockLayout.Metrics.button / 2
+        configuration.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
+        configuration.baseForegroundColor = UIColor(Palette.cardTitle)
         configuration.contentInsets = .zero
         return UIButton(configuration: configuration)
     }
+
+    /// Whether the menu (End browser) is on the bar: not on a narrow
+    /// player, where full screen has it.
+    var showsMenu: Bool { !menuButton.isHidden }
 
     func apply(_ layout: LiveBrowserDockLayout) {
         self.layout = layout
@@ -871,12 +977,16 @@ final class LiveBrowserPlayerView: UIView {
         super.layoutSubviews()
         guard let layout else { return }
         typealias M = LiveBrowserDockLayout.Metrics
+        bar.frame = layout.bar
         picture.frame = layout.picture
         message.frame = layout.picture.insetBy(dx: 8, dy: 8)
         close.frame = layout.close
-        full.frame = layout.fullScreen
-        resize.frame = layout.resize
-        menuButton.frame = layout.menu
+        full.frame = layout.fullScreen ?? .zero
+        full.isHidden = layout.fullScreen == nil
+        resize.frame = layout.resize ?? .zero
+        resize.isHidden = layout.resize == nil
+        menuButton.frame = layout.menu ?? .zero
+        menuButton.isHidden = layout.menu == nil || isOver
         spinner.center = CGPoint(x: layout.picture.midX, y: layout.picture.midY)
         footer.frame = layout.footer
         let pad = M.footerPadding
@@ -919,7 +1029,8 @@ final class LiveBrowserPlayerView: UIView {
         let held = state?.status == .user
         action.setTitle(held ? Strings.LiveBrowser.release : Strings.LiveBrowser.takeOver, for: .normal)
         action.isEnabled = !feed.phase.isOver
-        menuButton.isHidden = feed.phase.isOver
+        isOver = feed.phase.isOver
+        menuButton.isHidden = layout?.menu == nil || isOver
         accessibilityLabel = [Strings.LiveBrowser.title, status].joined(separator: ", ")
         accessibilityValue = state?.status.rawValue ?? "\(feed.phase)"
         setNeedsLayout()

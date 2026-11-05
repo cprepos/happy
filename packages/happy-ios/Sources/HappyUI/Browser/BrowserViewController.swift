@@ -52,6 +52,11 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
     var configure: ((WKWebViewConfiguration) -> Void)?
     /// Each failure the error page shows for.
     var onFailure: ((BrowserProblem) -> Void)?
+    /// A remote screen (noVNC): the page takes every touch itself. The web
+    /// view doesn't scroll, bounce, zoom, pull to refresh or swipe through
+    /// its history, and the screen takes the back swipe, so a two-finger
+    /// drag reaches the page's own gestures. Set before the view loads.
+    var isRemoteScreen = false
 
     lazy var backItem = UIBarButtonItem(primaryAction: UIAction(image: .icon(.ionicons("chevron-back"), size: 22)) { [weak self] _ in self?.goBack() }, menu: historyMenu(forward: false))
     lazy var forwardItem = UIBarButtonItem(primaryAction: UIAction(image: .icon(.ionicons("chevron-forward"), size: 22)) { [weak self] _ in self?.goForward() }, menu: historyMenu(forward: true))
@@ -151,13 +156,26 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
         let web = WKWebView(frame: view.bounds, configuration: page.configuration)
         web.accessibilityIdentifier = "browser-web"
         web.navigationDelegate = self; web.uiDelegate = self
-        web.allowsBackForwardNavigationGestures = true
+        web.allowsBackForwardNavigationGestures = !isRemoteScreen
         // Until the page paints, the screen's own surface shows through:
         // no white flash in dark mode.
         web.isOpaque = false
         web.backgroundColor = UIColor(Palette.surface)
         web.scrollView.backgroundColor = UIColor(Palette.surface)
-        web.scrollView.refreshControl = refresh
+        if isRemoteScreen {
+            let scroll = web.scrollView
+            scroll.isScrollEnabled = false
+            scroll.bounces = false
+            scroll.alwaysBounceVertical = false
+            scroll.alwaysBounceHorizontal = false
+            scroll.bouncesZoom = false
+            scroll.minimumZoomScale = 1
+            scroll.maximumZoomScale = 1
+            scroll.pinchGestureRecognizer?.isEnabled = false
+            scroll.panGestureRecognizer.isEnabled = false
+        } else {
+            web.scrollView.refreshControl = refresh
+        }
         HeaderBar.edge(web.scrollView, in: header)
         self.web = web
         view.insertSubview(web, at: 0)
@@ -264,7 +282,7 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
         return web?.canGoBack == true
     }
 
-    var takesBackSwipe: Bool { problem == nil && web?.canGoBack == true }
+    var takesBackSwipe: Bool { isRemoteScreen || (problem == nil && web?.canGoBack == true) }
 
     private func updateHeader() {
         backItem.isEnabled = canGoBack
@@ -376,6 +394,8 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
         if navigation !== crashReload { reloadedAfterCrash = false }
         crashReload = nil
         updateHeader()
+        // A remote screen's canvas has the focus without a tap first.
+        if isRemoteScreen { webView.evaluateJavaScript("window.liveBrowserFocusCanvas && window.liveBrowserFocusCanvas()") }
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {

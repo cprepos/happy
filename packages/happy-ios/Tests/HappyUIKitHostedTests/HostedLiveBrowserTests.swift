@@ -89,7 +89,15 @@ final class HostedLiveBrowserTests: XCTestCase {
         XCTAssertEqual(player.frame.maxY, line.frame.minY - 8)
         if host.view.bounds.size == CGSize(width: 402, height: 874) {
             XCTAssertEqual(host.cardFrame, CGRect(x: 8, y: 784, width: 386, height: 56))
-            XCTAssertEqual(player.frame, CGRect(x: 282, y: 656, width: 112, height: 100))
+            XCTAssertEqual(player.frame, CGRect(x: 282, y: 612, width: 112, height: 144))
+        }
+        // Its buttons stand on the bar, none on the picture, each a 44-point target.
+        let picture = try XCTUnwrap(player.subviews.first { $0.accessibilityIdentifier == "live-browser-picture" })
+        let buttons = player.subviews.compactMap { $0 as? UIButton }.filter { !$0.isHidden && $0.accessibilityIdentifier != "live-browser-player-action" }
+        XCTAssertGreaterThanOrEqual(buttons.count, 2)
+        for button in buttons {
+            XCTAssertFalse(button.frame.intersects(picture.frame), "\(button.accessibilityIdentifier ?? "") covers the picture")
+            XCTAssertGreaterThanOrEqual(min(button.frame.width, button.frame.height), 44)
         }
         try await until { await daemon.requests.contains { $0.hasPrefix("GET /live/\(self.id)/frame.jpg") } }
         let requests = await daemon.requests
@@ -117,6 +125,20 @@ final class HostedLiveBrowserTests: XCTestCase {
         XCTAssertEqual(control.accessibilityIdentifier, "live-browser-control")
         XCTAssertEqual(control.title, Strings.LiveBrowser.releaseControl)
         XCTAssertEqual(noVNC.navigationItem.leftBarButtonItem?.accessibilityIdentifier, "live-browser-minimize")
+        // noVNC has every touch: the page neither scrolls, bounces nor
+        // zooms, and no swipe back or pull to dismiss is under it.
+        let scroll = try XCTUnwrap(noVNC.browser.web?.scrollView)
+        XCTAssertTrue(noVNC.browser.isRemoteScreen)
+        XCTAssertFalse(scroll.isScrollEnabled)
+        XCTAssertFalse(scroll.bounces)
+        XCTAssertFalse(scroll.bouncesZoom)
+        XCTAssertEqual(scroll.maximumZoomScale, 1)
+        XCTAssertNotEqual(scroll.pinchGestureRecognizer?.isEnabled, true)
+        XCTAssertFalse(noVNC.browser.web?.allowsBackForwardNavigationGestures ?? true)
+        XCTAssertTrue(noVNC.holdsGestures)
+        XCTAssertNotEqual(navigation.interactivePopGestureRecognizer?.isEnabled, true)
+        XCTAssertTrue(navigation.isModalInPresentation)
+        XCTAssertFalse(dock.allowsInteractiveDismiss)
         try screenshot(window, name: "live-browser-dock-novnc")
 
         // Release control: the agent drives again, back to the frame view.
@@ -124,6 +146,11 @@ final class HostedLiveBrowserTests: XCTestCase {
         try await until { await daemon.requests.contains { $0.hasPrefix("POST /live/\(self.id)/release HTTP/1.1") } }
         try await until { navigation.viewControllers.count == 1 }
         try await until { dock.indicator.text == Strings.LiveBrowser.indicator(Strings.LiveBrowser.watching) }
+        // With noVNC gone, the gestures are back as they were.
+        try await until { navigation.transitionCoordinator == nil }
+        XCTAssertFalse(noVNC.holdsGestures)
+        XCTAssertFalse(navigation.isModalInPresentation)
+        XCTAssertTrue(dock.allowsInteractiveDismiss)
         XCTAssertNotNil(dock.player)
         XCTAssertEqual(dock.player?.accessibilityValue, "watching")
         dock.minimize()
@@ -249,13 +276,21 @@ final class HostedLiveBrowserTests: XCTestCase {
         dock.update(link: LiveBrowserLink(id: id))
         try await until { dock.player != nil && dock.feed?.phase.state != nil }
         host.view.layoutIfNeeded()
-        let player = try XCTUnwrap(dock.player)
-        // Behind the menu at the picture's bottom left, away from Take over.
+        var player = try XCTUnwrap(dock.player)
+        // Behind the menu on the bar's left, beside close, away from Take
+        // over; a phone's narrow player has it once it is made larger.
+        if player.menuButton.isHidden {
+            try XCTUnwrap(player.subviews.first { $0.accessibilityIdentifier == "live-browser-player-resize" } as? UIButton)
+                .sendActions(for: .touchUpInside)
+            host.view.layoutIfNeeded()
+            player = try XCTUnwrap(dock.player)
+        }
         XCTAssertFalse(player.menuButton.isHidden)
         XCTAssertTrue(player.menuButton.showsMenuAsPrimaryAction)
         let menu = player.menuButton.frame
         XCTAssertLessThan(menu.midX, player.bounds.midX)
-        XCTAssertGreaterThan(menu.midY, player.bounds.midY)
+        XCTAssertEqual(menu.minY, 0)
+        XCTAssertGreaterThanOrEqual(menu.height, 44)
         let item = try XCTUnwrap(player.menuButton.menu?.children.first as? UIAction)
         XCTAssertEqual(item.title, Strings.LiveBrowser.endBrowser)
         XCTAssertTrue(item.attributes.contains(.destructive))

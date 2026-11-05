@@ -79,36 +79,83 @@ final class LiveBrowserLayoutTests: XCTestCase {
     func testThePlayerSitsOverTheRedLineOnTheRight() throws {
         for voice in [voice, nil] as [CGSize?] {
             let down = try dock(agentScreen(keyboardTop: 874), voice: voice)
-            assertFrame(down.frame, rect(282, 648, 112, 100))
-            assertFrame(down.picture, rect(0, 0, 112, 70))
-            assertFrame(down.footer, rect(0, 70, 112, 30))
-            assertFrame(down.close, rect(4, 4, 28, 28))
-            assertFrame(down.fullScreen, rect(80, 4, 28, 28))
-            assertFrame(down.resize, rect(80, 38, 28, 28))
+            assertFrame(down.frame, rect(282, 604, 112, 144))
+            assertFrame(down.bar, rect(0, 0, 112, 44))
+            assertFrame(down.picture, rect(0, 44, 112, 70))
+            assertFrame(down.footer, rect(0, 114, 112, 30))
+            // Narrow: close and the size on the bar; the picture opens
+            // full screen, which has End browser.
+            assertFrame(down.close, rect(0, 0, 44, 44))
+            assertFrame(down.resize, rect(68, 0, 44, 44))
+            XCTAssertNil(down.fullScreen)
+            XCTAssertNil(down.menu)
             XCTAssertFalse(down.showsPill)
+            assertControlsClearThePicture(down)
 
             // The keyboard up: 336 tall.
             let up = try dock(agentScreen(keyboardTop: 538), voice: voice)
-            assertFrame(up.frame, rect(282, 346, 112, 100))
+            assertFrame(up.frame, rect(282, 302, 112, 144))
         }
     }
 
     func testTheVoiceStripPushesThePlayerUp() throws {
         let over = try dock(agentScreen(keyboardTop: 874), voice: voice, strip: 874 - 120)
-        assertFrame(over.frame, rect(282, 646, 112, 100))
+        assertFrame(over.frame, rect(282, 602, 112, 144))
     }
 
     func testCornersAndTheLargeSize() throws {
         let screen = agentScreen(keyboardTop: 874)
         let large = try dock(screen, voice: nil, large: true)
-        assertFrame(large.frame, rect(162, 573, 232, 175))
+        assertFrame(large.frame, rect(162, 529, 232, 219))
+        assertFrame(large.picture, rect(0, 44, 232, 145))
+        assertFrame(large.close, rect(0, 0, 44, 44))
+        assertFrame(large.menu, rect(44, 0, 44, 44))
+        assertFrame(large.fullScreen, rect(144, 0, 44, 44))
+        assertFrame(large.resize, rect(188, 0, 44, 44))
         XCTAssertTrue(large.showsPill)
-        assertFrame(try dock(screen, voice: nil, corner: .topLeft).frame, rect(8, 70, 112, 100))
-        assertFrame(try dock(screen, voice: nil, corner: .topRight).frame, rect(282, 70, 112, 100))
-        assertFrame(try dock(screen, voice: nil, corner: .bottomLeft).frame, rect(8, 648, 112, 100))
-        // With little room the large player shrinks to fit between the bars.
+        assertControlsClearThePicture(large)
+        assertFrame(try dock(screen, voice: nil, corner: .topLeft).frame, rect(8, 70, 112, 144))
+        assertFrame(try dock(screen, voice: nil, corner: .topRight).frame, rect(282, 70, 112, 144))
+        assertFrame(try dock(screen, voice: nil, corner: .bottomLeft).frame, rect(8, 604, 112, 144))
+        // With little room the large player shrinks to fit between the
+        // bars, and keeps only the buttons that fit.
         let tight = LiveBrowserDockLayout(.init(size: size, safeArea: safe, card: screen.card, anchor: 200, large: true))
-        assertFrame(tight.frame, rect(247, 70, 147, 122))
+        assertFrame(tight.frame, rect(318, 70, 76, 122))
+        assertFrame(tight.close, rect(0, 0, 44, 44))
+        XCTAssertNil(tight.resize)
+        XCTAssertNil(tight.menu)
+        XCTAssertNil(tight.fullScreen)
+        assertControlsClearThePicture(tight)
+    }
+
+    func testAWidePlayerHasEveryButtonOnTheBar() throws {
+        // An iPad's small player: 176, four 44-point buttons.
+        let wide = LiveBrowserDockLayout(.init(
+            size: CGSize(width: 834, height: 1194), safeArea: LayoutInsets(top: 24, left: 0, bottom: 20, right: 0),
+            card: CGRect(x: 12, y: 1100, width: 810, height: 56), anchor: 1080
+        ))
+        assertFrame(wide.frame, rect(646, 888, 176, 184))
+        assertFrame(wide.close, rect(0, 0, 44, 44))
+        assertFrame(wide.menu, rect(44, 0, 44, 44))
+        assertFrame(wide.fullScreen, rect(88, 0, 44, 44))
+        assertFrame(wide.resize, rect(132, 0, 44, 44))
+        assertControlsClearThePicture(wide)
+    }
+
+    /// Every button is a 44-point target on the bar, none on the picture
+    /// (the page and its title) and none on another.
+    private func assertControlsClearThePicture(_ layout: LiveBrowserDockLayout, file: StaticString = #filePath, line: UInt = #line) {
+        let buttons = [layout.close, layout.menu, layout.fullScreen, layout.resize].compactMap { $0 }
+        for (index, button) in buttons.enumerated() {
+            XCTAssertGreaterThanOrEqual(button.width, 44, file: file, line: line)
+            XCTAssertGreaterThanOrEqual(button.height, 44, file: file, line: line)
+            XCTAssertTrue(layout.bar.contains(button), "\(button) on the bar \(layout.bar)", file: file, line: line)
+            XCTAssertFalse(button.intersects(layout.picture), "\(button) covers the picture", file: file, line: line)
+            XCTAssertFalse(button.intersects(layout.footer), file: file, line: line)
+            for other in buttons[(index + 1)...] {
+                XCTAssertFalse(button.intersects(other), "\(button) overlaps \(other)", file: file, line: line)
+            }
+        }
     }
 
     func testADragLandsInTheNearestCorner() {

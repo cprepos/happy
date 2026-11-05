@@ -76,13 +76,16 @@ public struct ChatStatusLineLayout: Equatable, Sendable {
 }
 
 /// The chat's floating live browser: the picture at the corner it was left
-/// in, small or large, its buttons over it and a footer under it.
+/// in, small or large, its buttons on a bar over it and a footer under it.
+/// Nothing stands on the picture, so the page and its title read whole.
 ///
-///     ┌ picture ────────────── ┐   ✕ top left, ⤢ full screen top right,
-///     │ ✕                  ⤢   │   ⇲ bigger or smaller bottom right
-///     │                    ⇲   │
-///     ├ footer ────────────────┤   pill (large only) · Take over / Release
-///     └────────────────────────┘
+///     ┌ bar ───────────────────┐   ✕ close and ••• (End browser) on the
+///     │ ✕  •••          ⤢  ⇲   │   left, ⤢ full screen and ⇲ bigger or
+///     ├ picture ───────────────┤   smaller on the right, each a 44-point
+///     │                        │   target; a narrow player keeps ✕ and
+///     │                        │   ⇲ (the picture opens full screen, and
+///     ├ footer ────────────────┤   full screen has End browser)
+///     └────────────────────────┘   pill (large only) · Take over / Release
 ///
 /// A bottom corner keeps its right or left edge on the composer card's and
 /// its bottom 8 over `anchor`: the status line's top, the voice strip's or
@@ -104,8 +107,10 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
         /// The picture's width over its height.
         public static let aspect: CGFloat = 1.6
         public static let footerHeight: CGFloat = 30
-        public static let button: CGFloat = 28
-        public static let buttonInset: CGFloat = 4
+        /// The bar over the picture, as tall as its buttons.
+        public static let barHeight: CGFloat = 44
+        /// A button's target, square.
+        public static let button: CGFloat = 44
         public static let gap: CGFloat = 8
         public static let radius: CGFloat = 12
         /// The pill's text and the footer's button's, measured, sit inside
@@ -130,12 +135,16 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
 
     public var frame: CGRect
     /// In `frame`'s bounds from here on.
+    /// The bar the buttons stand on, over the picture.
+    public var bar: CGRect
     public var picture: CGRect
     public var close: CGRect
-    public var fullScreen: CGRect
-    public var resize: CGRect
-    /// The menu (End browser), at the picture's bottom left.
-    public var menu: CGRect
+    /// Nil on a player too narrow for four buttons: the picture opens it.
+    public var fullScreen: CGRect?
+    /// Nil on a player too narrow for two buttons.
+    public var resize: CGRect?
+    /// The menu (End browser), beside close; nil where full screen is.
+    public var menu: CGRect?
     public var footer: CGRect
     /// The status pill shows in the footer when there is room: large only.
     public var showsPill: Bool
@@ -154,20 +163,23 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
         let bottom = input.anchor - M.gap
         // Never taller than the room between the bars.
         let room = max(0, bottom - top)
+        let chrome = M.barHeight + M.footerHeight
         var width = Self.width(card: input.card, size: input.size, large: input.large)
-        if width / M.aspect + M.footerHeight > room { width = max(0, (room - M.footerHeight) * M.aspect).rounded(.down) }
+        if width / M.aspect + chrome > room { width = max(0, (room - chrome) * M.aspect).rounded(.down) }
         let pictureHeight = (width / M.aspect).rounded()
-        let height = pictureHeight + M.footerHeight
+        let height = M.barHeight + pictureHeight + M.footerHeight
         let x = input.corner.isLeft ? input.card.minX : input.card.maxX - width
         let y = input.corner.isTop ? top : bottom - height
         frame = CGRect(x: x, y: y, width: width, height: height)
-        picture = CGRect(x: 0, y: 0, width: width, height: pictureHeight)
-        let b = M.button, i = M.buttonInset
-        close = CGRect(x: i, y: i, width: b, height: b)
-        fullScreen = CGRect(x: width - i - b, y: i, width: b, height: b)
-        resize = CGRect(x: width - i - b, y: pictureHeight - i - b, width: b, height: b)
-        menu = CGRect(x: i, y: pictureHeight - i - b, width: b, height: b)
-        footer = CGRect(x: 0, y: pictureHeight, width: width, height: M.footerHeight)
+        bar = CGRect(x: 0, y: 0, width: width, height: M.barHeight)
+        picture = CGRect(x: 0, y: M.barHeight, width: width, height: pictureHeight)
+        let b = M.button
+        close = CGRect(x: 0, y: 0, width: b, height: b)
+        resize = width >= 2 * b ? CGRect(x: width - b, y: 0, width: b, height: b) : nil
+        let four = width >= 4 * b
+        menu = four ? CGRect(x: b, y: 0, width: b, height: b) : nil
+        fullScreen = four ? CGRect(x: width - 2 * b, y: 0, width: b, height: b) : nil
+        footer = CGRect(x: 0, y: M.barHeight + pictureHeight, width: width, height: M.footerHeight)
         showsPill = width >= 200
     }
 
