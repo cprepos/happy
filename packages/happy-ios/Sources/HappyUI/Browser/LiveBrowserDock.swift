@@ -163,7 +163,6 @@ final class LiveBrowserDock: NSObject {
         indicator.isHidden = status == nil
         if let feed { player?.show(feed) }
         if status == nil, feed?.phase.isOver == true, player != nil, feed?.phase != .unavailable { closePlayer(animated: true) }
-        (fullScreen?.viewControllers.first as? LiveBrowserFullScreenItems)?.update(feed?.phase.state)
         for controller in fullScreen?.viewControllers ?? [] { (controller as? LiveBrowserFullScreenItems)?.update(feed?.phase.state) }
         NotificationCenter.default.post(name: Self.didChange, object: self)
         if changed { onLayoutChange?() }
@@ -379,6 +378,7 @@ final class LiveBrowserFullScreenItems: UIViewController {
     private weak var dock: LiveBrowserDock?
     private let noVNC: Bool
     private let control = UIBarButtonItem()
+    private var state: LiveBrowserState?
 
     init(dock: LiveBrowserDock, browser: BrowserViewController, noVNC: Bool) {
         self.dock = dock
@@ -407,9 +407,12 @@ final class LiveBrowserFullScreenItems: UIViewController {
         var items = navigationItem.rightBarButtonItems ?? []
         items.insert(control, at: 0)
         navigationItem.rightBarButtonItems = items
+        update(state)
     }
 
+    /// Before it loads too: it shows the state once it does.
     func update(_ state: LiveBrowserState?) {
+        self.state = state
         guard isViewLoaded else { return }
         let held = state?.status == .user
         control.primaryAction = UIAction(title: held ? Strings.LiveBrowser.releaseControl : Strings.LiveBrowser.takeControl) { [weak self] _ in

@@ -15,7 +15,7 @@ import WebKit
 /// Embedded in another screen (an artifact), the buttons go in that
 /// screen's header and its title stays.
 final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, TakesBackSwipe {
-    private let originalURL: URL
+    let originalURL: URL
     private let session: Session?
     private let agentID: String?
     private let artifactID: String?
