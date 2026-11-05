@@ -9,6 +9,8 @@ import { join } from 'node:path';
 import { createBridge } from '../lib/app.mjs';
 import { LinkStore } from '../lib/store.mjs';
 import { chatIdentity, chatKeyOf, createMcpServer, forkParentKey } from '../mcp.mjs';
+import { request } from 'node:http';
+import { fakeNovnc, wsHandshake } from './fake-novnc.mjs';
 
 const TOKEN = 'bridge-secret-token-0123456789abcdef';
 const PNG = Buffer.from('89504e470d0a1a0a', 'hex');
@@ -34,6 +36,7 @@ function fakePods(store) {
     let n = 0;
     const pods = {
         calls, chats,
+        novncPortOf: (slot) => 6100 + slot,
         async ensure(key, { source, forkedFrom } = {}) {
             calls.ensure.push({ key, source, ...(forkedFrom ? { forkedFrom } : {}) });
             let c = chats.get(key);
@@ -51,7 +54,7 @@ function fakePods(store) {
         podOf(key) {
             const c = chats.get(key);
             if (!c || c.state !== 'running') return null;
-            return { slot: c.slot, client: podClient(c.sessionId, calls), novncPort: 6100 + c.slot, vncPassword: `pw${c.slot}`, sessionId: c.sessionId };
+            return { slot: c.slot, client: podClient(c.sessionId, calls), novncPort: pods.novncPortOf(c.slot), vncPassword: `pw${c.slot}`, sessionId: c.sessionId };
         },
         podState: (key) => chats.get(key)?.state ?? 'none',
         touchViewer: (key) => calls.touch.push(key),
@@ -61,25 +64,26 @@ function fakePods(store) {
     return pods;
 }
 
-let server, base, store, pods;
-async function start({ withPods = true } = {}) {
+let server, base, store, pods, bridgeApp;
+async function start({ withPods = true, novncUrl = 'http://localhost:6080/vnc.html' } = {}) {
     const dir = mkdtempSync(join(tmpdir(), 'chatpods-'));
     store = new LinkStore({ path: join(dir, 'links.json'), idleMs: 3600_000 });
     pods = withPods ? fakePods(store) : null;
     const shared = podClient('shared1', { observe: [], takeover: [], close: [] });
-    const bridge = createBridge({
+    const bridge = bridgeApp = createBridge({
         client: shared, store, log: () => {},
         config: {
-            bridgeToken: TOKEN, vncPassword: 'sharedpw', novncUrl: 'http://localhost:6080/vnc.html', pods,
+            bridgeToken: TOKEN, vncPassword: 'sharedpw', novncUrl, pods, tunnelCheckMs: 50,
             listTools: async () => [{ name: 'browser.observe', inputSchema: { properties: { session_id: {} } } }],
             onEnd: pods ? async ({ id }) => { const c = pods.chatForLink(id); if (c) await pods.stopChat(c.chatKey, 'user_ended'); } : null,
         },
     });
     server = createServer(bridge.handler);
+    server.on('upgrade', bridge.upgrade);
     await new Promise((r) => server.listen(0, '127.0.0.1', r));
     base = `http://127.0.0.1:${server.address().port}`;
 }
-afterEach(() => server && new Promise((r) => { server.closeAllConnections?.(); server.close(r); }));
+afterEach(() => server && new Promise((r) => { bridgeApp?.close(); server.closeAllConnections?.(); server.close(r); }));
 
 const api = (path, body) => fetch(base + path, { method: 'POST', headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 
@@ -135,11 +139,13 @@ test('the live page and frames use the chat\'s own pod and noVNC port and passwo
     assert.equal((await fetch(`${base}/live/${b.link_id}/frame.jpg`)).status, 200);
     assert.deepEqual(pods.calls.observe, [b.session_id]);
     const page = await (await fetch(`${base}/live/${a.link_id}`)).text();
-    assert.match(page, /localhost:6100\/vnc\.html#password=pw0/);
+    assert.ok(page.includes(`http://localhost:6090/live/${a.link_id}/vnc/vnc.html?path=live/${a.link_id}/vnc/websockify#password=pw0`));
     assert.doesNotMatch(page, /sharedpw/);
     const t = await (await fetch(`${base}/live/${b.link_id}/take`, { method: 'POST' })).json();
     assert.equal(t.status, 'user');
-    assert.match(t.novnc_url, /:6101\/vnc\.html#password=pw1$/);
+    // Through the bridge's own port: the link's path, noVNC's socket path, the pod's password.
+    assert.equal(t.novnc_url, `http://localhost:6090/live/${b.link_id}/vnc/vnc.html?path=live/${b.link_id}/vnc/websockify#password=pw1`);
+    assert.doesNotMatch(t.novnc_url, /:610\d/);
     assert.ok(pods.calls.touch.includes(KEY_B));
     // Release keeps the login at once.
     await fetch(`${base}/live/${b.link_id}/release`, { method: 'POST' });
@@ -181,6 +187,148 @@ test('end and close go through the pod stop; the link is done', async () => {
     assert.equal(st.status, 'done');
     const tools = await (await api('/api/tools', {})).json();
     assert.equal(tools.tools[0].name, 'browser.observe');
+});
+
+// ── noVNC through the bridge ───────────────────────────────────────────────
+// A raw GET: fetch() would normalise `..` before it is sent.
+const rawGet = (path, headers = {}) => new Promise((resolve, reject) => {
+    const u = new URL(base);
+    const req = request({ host: u.hostname, port: u.port, path, headers }, (res) => {
+        let body = '';
+        res.on('data', (d) => { body += d; });
+        res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body }));
+    });
+    req.on('error', reject);
+    req.end();
+});
+const bridgePort = () => Number(new URL(base).port);
+
+async function twoPods() {
+    const upA = await fakeNovnc('A');
+    const upB = await fakeNovnc('B');
+    await start();
+    pods.novncPortOf = (slot) => [upA.port, upB.port][slot];
+    const a = await (await api('/api/pod', { chat_key: KEY_A })).json();
+    const b = await (await api('/api/pod', { chat_key: KEY_B })).json();
+    return { upA, upB, a, b };
+}
+
+test('vnc files: served from the link\'s own pod port, cookies and auth stripped both ways', async () => {
+    const { upA, upB, a, b } = await twoPods();
+    try {
+        const ra = await rawGet(`/live/${a.link_id}/vnc/vnc.html`, { Cookie: 'c=1', Authorization: 'Bearer x', Accept: 'text/html' });
+        assert.equal(ra.status, 200);
+        assert.equal(ra.body, 'vnc:A:/vnc.html');
+        for (const h of ['set-cookie', 'www-authenticate', 'location']) assert.equal(ra.headers[h], undefined, h);
+        assert.equal(ra.headers['content-type'], 'text/html');
+        const rb = await rawGet(`/live/${b.link_id}/vnc/app/ui.js?x=1`);
+        assert.equal(rb.body, 'vnc:B:/app/ui.js', 'chat B reads its own pod, without the query');
+        assert.deepEqual(upA.seen.http.map((r) => r.url), ['/vnc.html']);
+        assert.deepEqual(upB.seen.http.map((r) => r.url), ['/app/ui.js']);
+        const sent = upA.seen.http[0].headers;
+        assert.equal(sent.cookie, undefined);
+        assert.equal(sent.authorization, undefined);
+        assert.equal(sent.host, `127.0.0.1:${upA.port}`);
+        assert.equal(sent.accept, 'text/html');
+        assert.ok(pods.calls.touch.includes(KEY_A));
+        // Asleep: 503, not woken, nothing forwarded.
+        await pods.stopChat(KEY_A, 'idle');
+        assert.equal((await rawGet(`/live/${a.link_id}/vnc/vnc.html`)).status, 503);
+        assert.deepEqual(pods.calls.wake, []);
+        assert.equal(upA.seen.http.length, 1);
+    } finally { await upA.close(); await upB.close(); }
+});
+
+test('vnc files: traversal, encoded dots and odd paths are refused before any upstream', async () => {
+    const { upA, upB, a } = await twoPods();
+    try {
+        const id = a.link_id;
+        for (const p of [`/live/${id}/vnc/../../api/pods`, `/live/${id}/vnc/app/../../x`, `/live/${id}/vnc/%2e%2e/x`, `/live/${id}/vnc/%2E%2E%2Fx`,
+            `/live/${id}/vnc/.hidden`, `/live/${id}/vnc//etc/passwd`, `/live/${id}/vnc/a\\b`, `/live/${id}/vnc/`, `/live/${id}/vnc`,
+            `/live/${id}/x/../vnc/vnc.html`, `/live/${id}/vnc/app/`, `/live/${id}/vnc/a%00b`]) {
+            const r = await rawGet(p);
+            assert.ok([400, 404].includes(r.status), `${p} -> ${r.status}`);
+        }
+        assert.equal(upA.seen.http.length + upB.seen.http.length, 0);
+        // No open proxy: a port in the request goes nowhere.
+        assert.equal((await rawGet(`/live/${id}/vnc/vnc.html`, { Host: `127.0.0.1:${upB.port}` })).body, 'vnc:A:/vnc.html');
+        assert.equal(upB.seen.http.length, 0);
+        // websockify without an upgrade is not proxied as a file.
+        assert.equal((await rawGet(`/live/${id}/vnc/websockify`)).status, 426);
+        assert.equal((await rawGet(`/live/${'0'.repeat(32)}/vnc/vnc.html`)).status, 404);
+    } finally { await upA.close(); await upB.close(); }
+});
+
+test('vnc socket: only while the user holds the link, piped to that chat\'s pod, closed on release and on pod stop', async () => {
+    const { upA, upB, a, b } = await twoPods();
+    try {
+        const path = (id) => `/live/${id}/vnc/websockify`;
+        const watching = await wsHandshake(bridgePort(), path(a.link_id));
+        assert.equal(watching.status, 403, 'watching: refused');
+        assert.equal(upA.seen.ws.length, 0);
+
+        await fetch(`${base}/live/${a.link_id}/take`, { method: 'POST' });
+        const ws = await wsHandshake(bridgePort(), path(a.link_id));
+        assert.equal(ws.status, 101);
+        assert.equal(ws.headers['set-cookie'], undefined);
+        assert.ok(ws.headers['sec-websocket-accept']);
+        assert.ok((await ws.read('hello:A')).includes('hello:A'));
+        ws.socket.write('ping-1');
+        assert.ok((await ws.read('ping-1')).includes('ping-1'), 'bytes go both ways');
+        assert.equal(upA.seen.ws.length, 1);
+        assert.equal(upB.seen.ws.length, 0, 'never another chat\'s pod');
+        assert.equal(upA.seen.ws[0].url, '/websockify');
+        assert.equal(upA.seen.ws[0].headers.cookie, undefined);
+        assert.equal(upA.seen.ws[0].headers.authorization, undefined);
+
+        // B is not held: refused, though A is.
+        assert.equal((await wsHandshake(bridgePort(), path(b.link_id))).status, 403);
+
+        await fetch(`${base}/live/${a.link_id}/release`, { method: 'POST' });
+        assert.ok(await ws.waitClosed(), 'release closes the socket');
+
+        // A takeover is held too; its pod stopping closes the socket.
+        await api('/api/takeover', { chat_key: KEY_B, reason: 'sign in' });
+        const wb = await wsHandshake(bridgePort(), path(b.link_id));
+        assert.equal(wb.status, 101);
+        assert.ok((await wb.read('hello:B')).includes('hello:B'));
+        await pods.stopChat(KEY_B, 'idle');
+        assert.ok(await wb.waitClosed(), 'the pod stopping closes the socket');
+        assert.equal((await wsHandshake(bridgePort(), path(b.link_id))).status, 503, 'asleep: refused');
+    } finally { await upA.close(); await upB.close(); }
+});
+
+test('vnc socket: end closes it; unknown links and other upgrades are refused', async () => {
+    const { upA, upB, a } = await twoPods();
+    try {
+        await fetch(`${base}/live/${a.link_id}/take`, { method: 'POST' });
+        const ws = await wsHandshake(bridgePort(), `/live/${a.link_id}/vnc/websockify`);
+        assert.equal(ws.status, 101);
+        await fetch(`${base}/live/${a.link_id}/end`, { method: 'POST' });
+        assert.ok(await ws.waitClosed(), 'end closes the socket');
+        assert.equal((await wsHandshake(bridgePort(), `/live/${'0'.repeat(32)}/vnc/websockify`)).status, 404);
+        for (const p of ['/api/pods', `/live/${a.link_id}`, `/live/${a.link_id}/vnc/vnc.html`, '/websockify', `/live/${a.link_id}/vnc/../vnc/websockify`]) {
+            assert.equal((await wsHandshake(bridgePort(), p)).status, 404, p);
+        }
+        assert.equal(upA.seen.ws.length + upB.seen.ws.length, 1);
+    } finally { await upA.close(); await upB.close(); }
+});
+
+test('vnc: a link with no pod uses the shared noVNC port', async () => {
+    const shared = await fakeNovnc('shared');
+    const upA = await fakeNovnc('A');
+    try {
+        await start({ novncUrl: `http://localhost:${shared.port}/vnc.html?autoconnect=true&resize=scale` });
+        pods.novncPortOf = () => upA.port;
+        const l = await (await api('/api/links', { session_id: 'shared1' })).json();
+        assert.equal((await rawGet(`/live/${l.id}/vnc/vnc.html`)).body, 'vnc:shared:/vnc.html');
+        const t = await (await fetch(`${base}/live/${l.id}/take`, { method: 'POST' })).json();
+        assert.equal(t.novnc_url, `http://localhost:6090/live/${l.id}/vnc/vnc.html?autoconnect=true&resize=scale&path=live/${l.id}/vnc/websockify#password=sharedpw`);
+        const ws = await wsHandshake(bridgePort(), `/live/${l.id}/vnc/websockify`);
+        assert.equal(ws.status, 101);
+        assert.ok((await ws.read('hello:shared')).includes('hello:shared'));
+        assert.equal(upA.seen.ws.length + upA.seen.http.length, 0);
+    } finally { await shared.close(); await upA.close(); }
 });
 
 // ── The MCP server's router ────────────────────────────────────────────────

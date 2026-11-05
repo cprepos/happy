@@ -2,13 +2,15 @@
 // End-to-end smoke test of the live bridge against the running stack
 // (make browser-up). Creates a throwaway auto-browser session, walks the
 // bridge's routes and the MCP server (its own tools and the auto-browser
-// tools it passes through), then deletes the session.
+// tools it passes through, and noVNC through the bridge on its own link), then deletes the session.
 // Secrets are read from their files and never printed.
 import { spawn, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
+import { connect } from 'node:net';
+import { randomBytes } from 'node:crypto';
 
 const home = process.env.HAPPY_BROWSER_HOME || join(process.env.HOME, '.local/share/happy-browser');
 const API = process.env.BROWSER_API || 'http://127.0.0.1:8010';
@@ -60,6 +62,21 @@ function kiosk() {
     check(ss.status === 0 && !/@\/tmp\/\.X11-unix\//.test(ss.stdout), 'no abstract X11 socket in the host network namespace');
 }
 
+// A websocket handshake only: the status code, then the socket is closed before any VNC
+// exchange, so it never reaches VNC auth or bumps another viewer.
+function wsProbe(u, path) {
+    return new Promise((resolve) => {
+        const s = connect(Number(u.port), u.hostname);
+        const done = (v) => { s.destroy(); resolve(v); };
+        s.setTimeout(10_000, () => done('timeout'));
+        s.on('error', (e) => done(e.code || 'error'));
+        s.on('connect', () => s.write(`GET ${path} HTTP/1.1\r\nHost: ${u.host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n`
+            + `Sec-WebSocket-Key: ${randomBytes(16).toString('base64')}\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: binary\r\n\r\n`));
+        let buf = '';
+        s.on('data', (d) => { buf += d.toString('latin1'); if (buf.includes('\r\n')) done(Number(buf.split(' ')[1]) || buf.split('\r\n')[0]); });
+    });
+}
+
 let sessionId, liveBase;
 if (process.env.SMOKE_KIOSK !== '0') kiosk();
 try {
@@ -106,6 +123,17 @@ try {
 
     const took = await (await fetch(`${live}/take`, { method: 'POST' })).json();
     check(took.status === 'user' && typeof took.novnc_url === 'string', `POST /take -> ${took.status}`);
+    // noVNC through the bridge's own port, on this smoke's own link only. The URL holds the
+    // password, so it is checked, never printed.
+    const nv = new URL(took.novnc_url);
+    check(nv.port === new URL(BRIDGE).port && nv.pathname === `/live/${link.id}/vnc/vnc.html`
+        && nv.searchParams.get('path') === `live/${link.id}/vnc/websockify` && nv.hash === `#password=${encodeURIComponent(vncPassword)}`,
+        'novnc_url: the bridge port, the link\'s vnc path, path= and the password in the fragment');
+    const vh = await fetch(`${live}/vnc/vnc.html`);
+    const vhtml = await vh.text();
+    check(vh.ok && /noVNC/i.test(vhtml) && !vh.headers.get('set-cookie'), `GET /live/<id>/vnc/vnc.html -> ${vh.status} ${vhtml.length} bytes`);
+    const ws = await wsProbe(new URL(BRIDGE), `/live/${link.id}/vnc/websockify`);
+    check(ws === 101, `websocket handshake through ${new URL(BRIDGE).port} -> ${ws}`);
     const rel = await (await fetch(`${live}/release`, { method: 'POST' })).json();
     check(rel.status === 'watching', `POST /release -> ${rel.status}`);
 

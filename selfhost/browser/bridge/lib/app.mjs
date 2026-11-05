@@ -14,6 +14,8 @@
 //                              404 when the chat has none. chat_key is sha256("happy:" + the Happy
 //                              session id), first 32 hex chars. The source of truth for whether
 //                              a chat shows a live browser.
+//   GET  /live/<id>/vnc/<file> noVNC's files, from the link's own pod (or the shared noVNC)
+//   GET  /live/<id>/vnc/websockify  (Upgrade: websocket) the VNC socket, while the link is held
 // Unknown id -> 404, expired id -> 410.
 //
 // Private, for the MCP server (Authorization: Bearer <bridge-token>):
@@ -41,11 +43,25 @@
 // actions are refused), takeover (the agent asked for the user and waits), done (session closed,
 // or reason user_ended: the user ended it from the app).
 import { timingSafeEqual, randomBytes, createHash } from 'node:crypto';
+import { request as httpRequest } from 'node:http';
+import { connect as netConnect } from 'node:net';
 import { renderPage, renderGone } from './page.mjs';
 
 const LIVE_ROUTE = /^\/live\/([^/]+)(\/frame\.jpg|\/state|\/done|\/take|\/release|\/end)?\/?$/;
 const CHAT_ROUTE = /^\/live\/chat\/([0-9a-f]{32})\/?$/;
 const CHAT_KEY = /^[0-9a-f]{32}$/;
+// noVNC through the bridge. Matched on the raw request path, before any URL normalising, so
+// `..`, `%2e` and the like never reach a pattern that would accept them: every segment starts
+// with a letter, digit, `_` or `-`, and `%`, `\` and empty segments are not in the charset.
+const VNC_PREFIX = /^\/live\/[^/]*\/vnc(?:\/|$)/;
+const VNC_FILE = /^\/live\/([0-9a-f]{32})\/vnc\/((?:[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}\/){0,7}[A-Za-z0-9_-][A-Za-z0-9._-]{0,127})$/;
+const VNC_SOCKET = /^\/live\/([0-9a-f]{32})\/vnc\/websockify$/;
+const WS_KEY = /^[A-Za-z0-9+/]{22}==$/;
+const WS_PROTOCOL = /^[A-Za-z0-9 ,._-]{1,200}$/;
+// Only these headers cross the static proxy, either way: no cookies, no auth, no Location.
+const VNC_REQ_HEADERS = ['accept', 'accept-encoding', 'accept-language', 'if-none-match', 'if-modified-since', 'user-agent'];
+const VNC_RES_HEADERS = ['content-type', 'content-length', 'content-encoding', 'etag', 'last-modified'];
+const WS_RES_HEADERS = new Set(['upgrade', 'connection', 'sec-websocket-accept', 'sec-websocket-protocol']);
 const MAX_BODY = 16 * 1024;
 const MAX_WAIT_S = 120;
 
@@ -94,6 +110,8 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         pods = null,
         // async () => tools: auto-browser's tool list from any ready pod (for /api/tools).
         listTools = null,
+        // How often open noVNC sockets are checked against their link and pod.
+        tunnelCheckMs = 1000,
     } = config;
     if (!bridgeToken) throw new Error('bridgeToken is required');
 
@@ -104,7 +122,19 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         return r;
     };
     const linkUrl = (rec) => `${publicBase}/live/${rec.id}`;
-    const takeoverUrl = vncPassword ? `${novncUrl}#password=${encodeURIComponent(vncPassword)}` : novncUrl;
+    // noVNC's own query (autoconnect, resize) from NOVNC_URL; its port is the shared browser's
+    // noVNC, which a link without a pod uses. Upstreams are always 127.0.0.1, and the port always
+    // comes from the bridge's own records, never from the request.
+    const novncBase = new URL(novncUrl);
+    const sharedNovncPort = Number(novncBase.port) || 80;
+    const novncQuery = (() => { const q = new URLSearchParams(novncBase.search); q.delete('path'); return q.toString(); })();
+    const publicRoot = publicBase.replace(/\/+$/, '');
+    // Absolute, so current apps can decode it with URL(string:). The password stays in the fragment.
+    function vncPageUrl(rec, password) {
+        const prefix = `live/${rec.id}/vnc`;
+        const query = [novncQuery, `path=${prefix}/websockify`].filter(Boolean).join('&');
+        return `${publicRoot}/${prefix}/vnc.html?${query}${password ? `#password=${encodeURIComponent(password)}` : ''}`;
+    }
 
     // ── Per-chat pods ─────────────────────────────────────────────────────
     // A link with a chatKey (pods on) talks to its chat's pod, or to nothing while that pod is
@@ -118,13 +148,19 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         return pods.podOf(chat.chatKey)?.client ?? null;
     }
     function takeoverUrlOf(rec) {
-        if (!podLink(rec)) return takeoverUrl;
+        if (!podLink(rec)) return vncPageUrl(rec, vncPassword);
         const p = podOf(rec);
         if (!p) return null;
-        const u = new URL(novncUrl);
-        u.port = String(p.novncPort);
-        u.hash = `password=${encodeURIComponent(p.vncPassword)}`;
-        return u.toString();
+        return vncPageUrl(rec, p.vncPassword);
+    }
+    // Where this link's noVNC is: its pod's port (null while the pod is asleep), else the shared
+    // one. `key` names the pod instance, so a socket notices when its pod stops or is replaced.
+    function vncTarget(rec) {
+        if (!podLink(rec)) return { port: sharedNovncPort, key: 'shared' };
+        const p = podOf(rec);
+        const port = Number(p?.novncPort);
+        if (!p || !Number.isInteger(port) || port < 1 || port > 65535) return null;
+        return { port, key: `pod:${p.slot}:${port}:${p.sessionId}` };
     }
     const podField = (rec) => (podLink(rec) ? { pod: pods.podState(rec.chatKey) } : {});
     // The runtime cache (share token, frame) belongs to one session: a pod restart starts afresh.
@@ -138,6 +174,7 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
     function setStatus(rec, status, reason) {
         store.update(rec, { status, reason: reason ?? null });
         if (!HELD_STATUSES.has(status)) {
+            closeTunnels(rec.id, status === 'done' ? 'ended' : 'released');
             const r = rt(rec.id);
             for (const wake of r.waiters) wake();
             r.waiters.clear();
@@ -501,6 +538,144 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         });
     }
 
+    // ── noVNC through the bridge ──────────────────────────────────────────
+    const rawPathOf = (req) => (String(req.url || '').startsWith('/') ? String(req.url).split('?')[0] : '');
+
+    async function vncStatic(req, res, raw, setRoute) {
+        const m = VNC_FILE.exec(raw);
+        if (!m) { setRoute('/live/…/vnc (refused)'); return send(res, 400, { error: 'bad_path' }); }
+        const [, id, file] = m;
+        setRoute(`/live/${id.slice(0, 6)}…/vnc/${file}`);
+        if (file === 'websockify') return send(res, 426, { error: 'upgrade_required' });
+        if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: 'method_not_allowed' }, { Allow: 'GET' });
+        const found = store.lookup(id);
+        if (!found) return send(res, 404, { error: 'unknown_link' });
+        if (found.expired) return send(res, 410, { error: 'expired_link' });
+        const { rec } = found;
+        const target = vncTarget(rec);
+        if (!target) return send(res, 503, { error: 'asleep' });
+        store.touch(rec);
+        if (podLink(rec)) pods.touchViewer(rec.chatKey);
+        await new Promise((resolve) => {
+            const headers = { host: `127.0.0.1:${target.port}` };
+            for (const h of VNC_REQ_HEADERS) if (typeof req.headers[h] === 'string') headers[h] = req.headers[h];
+            const up = httpRequest({ host: '127.0.0.1', port: target.port, method: req.method, path: `/${file}`, headers, timeout: 15_000 }, (ur) => {
+                const out = { 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' };
+                for (const h of VNC_RES_HEADERS) if (ur.headers[h] !== undefined) out[h] = ur.headers[h];
+                res.writeHead(ur.statusCode || 502, out);
+                ur.pipe(res);
+                ur.on('end', resolve);
+                ur.on('error', () => { res.destroy(); resolve(); });
+            });
+            up.on('timeout', () => up.destroy(new Error('timeout')));
+            up.on('error', () => { if (!res.headersSent) send(res, 502, { error: 'novnc_unavailable' }); else res.destroy(); resolve(); });
+            res.on('close', () => { up.destroy(); resolve(); });
+            up.end();
+        });
+    }
+
+    const tunnels = new Set(); // {id, key, socket, up}
+    let tunnelTimer = null;
+    function closeTunnel(t, why) {
+        if (!tunnels.delete(t)) return;
+        t.socket.destroy();
+        t.up.destroy();
+        log(`vnc socket /live/${t.id.slice(0, 6)}… closed (${why})`);
+        if (!tunnels.size && tunnelTimer) { clearInterval(tunnelTimer); tunnelTimer = null; }
+    }
+    function closeTunnels(id, why) {
+        for (const t of [...tunnels]) if (t.id === id) closeTunnel(t, why);
+    }
+    // A socket lives only while its link is held and its pod is the one it was opened to.
+    function checkTunnels() {
+        for (const t of [...tunnels]) {
+            const found = store.lookup(t.id);
+            if (!found || found.expired) { closeTunnel(t, 'expired'); continue; }
+            const { rec } = found;
+            if (!HELD_STATUSES.has(rec.status)) { closeTunnel(t, 'released'); continue; }
+            if (vncTarget(rec)?.key !== t.key) { closeTunnel(t, 'pod_stopped'); continue; }
+            // The phone is in noVNC, not polling the page: that still counts as viewing.
+            store.touch(rec);
+            if (podLink(rec)) pods.touchViewer(rec.chatKey);
+        }
+    }
+
+    // server.on('upgrade'): the noVNC socket of a held link, piped to that link's own noVNC.
+    // Every other upgrade is refused.
+    function upgrade(req, socket, head) {
+        let route = 'upgrade';
+        socket.on('error', () => {});
+        const refuse = (code, text) => {
+            log(`UPGRADE ${route} ${code}`);
+            socket.end(`HTTP/1.1 ${code} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+            socket.once('finish', () => socket.destroy());
+        };
+        if (allowedHosts && !allowedHosts.includes(String(req.headers.host || '').toLowerCase())) { route = 'bad-host'; return refuse(421, 'Misdirected Request'); }
+        const m = VNC_SOCKET.exec(rawPathOf(req));
+        if (!m) return refuse(404, 'Not Found');
+        const id = m[1];
+        route = `/live/${id.slice(0, 6)}…/vnc/websockify`;
+        const key = req.headers['sec-websocket-key'];
+        if (req.method !== 'GET' || String(req.headers.upgrade || '').toLowerCase() !== 'websocket'
+            || req.headers['sec-websocket-version'] !== '13' || typeof key !== 'string' || !WS_KEY.test(key)) return refuse(400, 'Bad Request');
+        const found = store.lookup(id);
+        if (!found) return refuse(404, 'Not Found');
+        if (found.expired) return refuse(410, 'Gone');
+        const { rec } = found;
+        if (!HELD_STATUSES.has(rec.status)) return refuse(403, 'Forbidden');
+        const target = vncTarget(rec);
+        if (!target) return refuse(503, 'Service Unavailable');
+
+        const up = netConnect({ host: '127.0.0.1', port: target.port });
+        const t = { id, key: target.key, socket, up };
+        tunnels.add(t);
+        if (!tunnelTimer) { tunnelTimer = setInterval(checkTunnels, tunnelCheckMs); tunnelTimer.unref?.(); }
+        store.touch(rec);
+        if (podLink(rec)) pods.touchViewer(rec.chatKey);
+
+        const lines = ['GET /websockify HTTP/1.1', `Host: 127.0.0.1:${target.port}`, 'Upgrade: websocket', 'Connection: Upgrade',
+            `Sec-WebSocket-Key: ${key}`, 'Sec-WebSocket-Version: 13'];
+        const proto = req.headers['sec-websocket-protocol'];
+        if (typeof proto === 'string' && WS_PROTOCOL.test(proto)) lines.push(`Sec-WebSocket-Protocol: ${proto}`);
+        up.write(`${lines.join('\r\n')}\r\n\r\n`);
+        if (head?.length) up.write(head);
+
+        let buf = Buffer.alloc(0);
+        let open = false;
+        const fail = () => {
+            if (!tunnels.has(t)) return;
+            if (open) return closeTunnel(t, 'upstream_closed');
+            tunnels.delete(t);
+            if (!tunnels.size && tunnelTimer) { clearInterval(tunnelTimer); tunnelTimer = null; }
+            up.destroy();
+            refuse(502, 'Bad Gateway');
+        };
+        const onData = (chunk) => {
+            buf = Buffer.concat([buf, chunk]);
+            const end = buf.indexOf('\r\n\r\n');
+            if (end < 0) { if (buf.length > 16 * 1024) fail(); return; }
+            up.removeListener('data', onData);
+            const [status, ...headers] = buf.subarray(0, end).toString('latin1').split('\r\n');
+            if (!/^HTTP\/1\.1 101\b/.test(status)) return fail();
+            const kept = headers.filter((l) => WS_RES_HEADERS.has(l.slice(0, l.indexOf(':')).trim().toLowerCase()));
+            socket.write(`HTTP/1.1 101 Switching Protocols\r\n${kept.map((l) => `${l}\r\n`).join('')}\r\n`);
+            const rest = buf.subarray(end + 4);
+            if (rest.length) socket.write(rest);
+            open = true;
+            log(`UPGRADE ${route} 101`);
+            up.pipe(socket);
+            socket.pipe(up);
+        };
+        up.on('data', onData);
+        up.on('error', fail);
+        up.on('close', fail);
+        socket.on('close', () => closeTunnel(t, 'viewer_closed'));
+    }
+
+    function close() {
+        for (const t of [...tunnels]) closeTunnel(t, 'shutdown');
+    }
+
     async function handler(req, res) {
         const started = now();
         const url = new URL(req.url, 'http://bridge.invalid');
@@ -514,6 +689,8 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
             }
             if (path === '/healthz') return send(res, 200, { ok: true });
             if (path.startsWith('/api/')) return await api(req, res, path);
+            const raw = rawPathOf(req);
+            if (VNC_PREFIX.test(raw) || VNC_PREFIX.test(path)) return await vncStatic(req, res, raw, (r) => { route = r; });
             const c = CHAT_ROUTE.exec(path);
             if (c) {
                 route = `/live/chat/${c[1].slice(0, 6)}…`;
@@ -532,5 +709,5 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         }
     }
 
-    return { handler, store, linkUrl, stateOf };
+    return { handler, upgrade, close, store, linkUrl, stateOf };
 }

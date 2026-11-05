@@ -123,6 +123,20 @@ Phone routes, opened in the iOS app's in-app browser through the workspace proxy
 | `GET /live/<id>/frame.jpg` | latest frame, fetched server-side and cached 1 s; served with the upstream type, which is `image/png` |
 | `GET /live/<id>/state` | `{"status":"watching"\|"takeover"\|"done","reason":string\|null,"url":string\|null,"title":string\|null}` |
 | `POST /live/<id>/done` | ends a takeover (status `done`) and wakes the waiting agent |
+| `GET /live/<id>/vnc/<file>` | noVNC's own files (`vnc.html`, `app/…`, `core/…`), from the link's pod's websockify (`127.0.0.1:6100+slot`), or the shared `127.0.0.1:6080` for a link with no pod. Asleep pod → 503 |
+| `GET /live/<id>/vnc/websockify` (Upgrade: websocket) | the VNC socket, piped to that same noVNC's `/websockify`; only while the link is `user` or `takeover` (else 403) |
+
+- **noVNC through the bridge.** Take control needs no port but 6090. The upstream port
+  always comes from the bridge's own record of the link (its pod, or the shared noVNC),
+  never from the request, so this is not an open proxy. `<file>` is matched on the raw
+  path: each segment is `[A-Za-z0-9_-][A-Za-z0-9._-]*`, so `..`, encoded characters, a
+  leading `/` and empty segments are refused (400) before anything is forwarded. Cookies,
+  `Authorization`, `Set-Cookie`, `WWW-Authenticate` and `Location` are dropped both ways;
+  only a short list of content headers crosses. The socket is closed when the link is
+  released, ended or expires, or when its pod stops or is replaced (checked every second).
+  Every other upgrade request is refused. `make browser-bridge-restart` restarts only the
+  bridge container and refuses while any link is `user` or `takeover`, listing them by id
+  prefix and title.
 
 - `<id>` is 128 random bits as 32 lowercase hex characters (`[0-9a-f]{32}`).
   One link per auto-browser session, reused. A link expires after 12 h without
@@ -156,7 +170,9 @@ second would fill the disk. The path stays `frame.jpg`, as specified. Clients
 must go by `Content-Type`, not the extension.
 
 **Take control and the VNC password.** The button opens
-`http://localhost:6080/vnc.html?autoconnect=true&resize=scale#password=<vnc-password>`.
+`http://localhost:6090/live/<id>/vnc/vnc.html?autoconnect=true&resize=scale&path=live/<id>/vnc/websockify#password=<vnc-password>`
+(the pod's own password for a pod link). `/take` returns the same absolute URL as
+`novnc_url`; the phone page reopens it at its own origin and path prefix.
 This avoids a password prompt on the phone. The tradeoff is that the password is
 in the page's HTML and in the noVNC URL. It sits in the fragment, so it is never
 sent to a server or a proxy log, but it does live in the in-app browser's

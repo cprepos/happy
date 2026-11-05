@@ -172,6 +172,22 @@ const SCRIPT = `
   function schedule() { clearTimeout(timer); if (!stopped && !document.hidden) timer = setTimeout(tick, 1500); }
   document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); else clearTimeout(timer); });
 
+  // noVNC is served by the bridge under this link (<base>/vnc/). Open it at this page's own
+  // origin and path prefix, so it works however the page was reached, and point noVNC's
+  // websocket (path=, relative to the origin) at the same prefix. The fragment (the password)
+  // is kept as it is. Any other URL is opened unchanged.
+  function viaPage(u) {
+    try {
+      const v = new URL(u, location.href);
+      if (!/\\/live\\/[0-9a-f]{32}\\/vnc\\/vnc\\.html$/.test(v.pathname)) return u;
+      const q = new URLSearchParams(v.search);
+      q.delete('path');
+      const rest = q.toString();
+      return location.origin + base + '/vnc/vnc.html?' + (rest ? rest + '&' : '') +
+        'path=' + base.replace(/^\\/+/, '') + '/vnc/websockify' + v.hash;
+    } catch (err) { return u; }
+  }
+
   // Take control records that the user has the browser (the agent's actions are refused until
   // Release control), then opens noVNC. Without script the link still opens noVNC.
   $('take').addEventListener('click', async (e) => {
@@ -188,12 +204,12 @@ const SCRIPT = `
       if (r.ok && r.status !== 202) {
         const t = await r.json();
         state = t; render();
-        location.href = t.novnc_url || fallback;
+        location.href = viaPage(t.novnc_url || fallback);
         return;
       }
       if (r.status === 409) return finish();
     } catch (err) {}
-    location.href = fallback;
+    location.href = viaPage(fallback);
   });
 
   $('done').addEventListener('click', async () => {

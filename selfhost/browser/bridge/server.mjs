@@ -93,6 +93,8 @@ const bridge = createBridge({
 });
 
 const server = createServer(bridge.handler);
+// noVNC's websocket for /live/<id>/vnc/websockify; every other upgrade is refused.
+server.on('upgrade', bridge.upgrade);
 // /api/wait long-polls for up to two minutes.
 server.requestTimeout = 0;
 server.headersTimeout = 15_000;
@@ -107,6 +109,7 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
         log(`${sig}: shutting down`);
         store.flush();
         pods?.close();
+        bridge.close();
         server.close(() => process.exit(0));
         setTimeout(() => process.exit(0), 3000).unref();
     });

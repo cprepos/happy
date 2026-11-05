@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { createBridge } from '../lib/app.mjs';
 import { LinkStore, ID_PATTERN } from '../lib/store.mjs';
 import { createMcpServer } from '../mcp.mjs';
+import { fakeNovnc, wsHandshake } from './fake-novnc.mjs';
 import { loadConfig } from '../lib/config.mjs';
 
 const BRIDGE_TOKEN = 'bridge-secret-token-0123456789abcdef';
@@ -46,26 +47,26 @@ function mockClient() {
     };
 }
 
-let server, base, client, store, clock, logs, dir;
-
-async function start({ idleMs = 12 * 3600_000 } = {}) {
+let server, base, client, store, clock, logs, dir, bridgeApp;
+async function start({ idleMs = 12 * 3600_000, config = {} } = {}) {
     clock = { t: 1_800_000_000_000 };
     const now = () => clock.t;
     dir = mkdtempSync(join(tmpdir(), 'bridge-test-'));
     client = mockClient();
     store = new LinkStore({ path: join(dir, 'links.json'), idleMs, now });
     logs = [];
-    const bridge = createBridge({
+    const bridge = bridgeApp = createBridge({
         client, store, now, log: (l) => logs.push(l),
-        config: { bridgeToken: BRIDGE_TOKEN, vncPassword: VNC_PASSWORD, frameCacheMs: 1000 },
+        config: { bridgeToken: BRIDGE_TOKEN, vncPassword: VNC_PASSWORD, frameCacheMs: 1000, tunnelCheckMs: 50, ...config },
     });
     server = createServer(bridge.handler);
+    server.on('upgrade', bridge.upgrade);
     await new Promise((r) => server.listen(0, '127.0.0.1', r));
     base = `http://127.0.0.1:${server.address().port}`;
 }
 
 beforeEach(() => start());
-afterEach(() => new Promise((r) => { server.closeAllConnections?.(); server.close(r); }));
+afterEach(() => new Promise((r) => { bridgeApp?.close(); server.closeAllConnections?.(); server.close(r); }));
 
 const api = (path, body, token = BRIDGE_TOKEN) => fetch(base + path, {
     method: 'POST',
@@ -177,6 +178,62 @@ test('take: watching -> user with the noVNC url; release -> watching', async () 
     store.flush();
     const saved = JSON.parse(readFileSync(join(dir, 'links.json'), 'utf8')).links[0];
     assert.equal(saved.status, 'watching');
+});
+
+test('take: the noVNC url goes through the bridge port, with path= and the password in the fragment', async () => {
+    const { id } = await link();
+    const t = await (await post(id, 'take')).json();
+    assert.equal(t.novnc_url, `http://localhost:6090/live/${id}/vnc/vnc.html?autoconnect=true&resize=scale&path=live/${id}/vnc/websockify#password=${VNC_PASSWORD}`);
+    const u = new URL(t.novnc_url);
+    assert.equal(u.port, '6090');
+    assert.equal(u.searchParams.get('path'), `live/${id}/vnc/websockify`);
+    assert.equal(u.hash, `#password=${VNC_PASSWORD}`);
+    assert.ok(!u.search.includes(VNC_PASSWORD), 'the password is never in the query');
+    // The page's Take control link is the same URL.
+    assert.ok((await (await fetch(`${base}/live/${id}`)).text()).includes(`/live/${id}/vnc/vnc.html?autoconnect=true&amp;resize=scale&amp;path=live/${id}/vnc/websockify#password=${VNC_PASSWORD}`));
+});
+
+async function restartWithNovnc(extra = {}) {
+    const up = await fakeNovnc('shared');
+    bridgeApp.close();
+    server.closeAllConnections?.();
+    await new Promise((r) => server.close(r));
+    await start({ config: { novncUrl: `http://localhost:${up.port}/vnc.html?autoconnect=true&resize=scale`, ...extra } });
+    return up;
+}
+
+test('vnc files and socket of a shared link: the shared noVNC port; unknown 404, expired 410', async () => {
+    const up = await restartWithNovnc();
+    try {
+        const { id } = await link();
+        const f = await fetch(`${base}/live/${id}/vnc/vnc.html`);
+        assert.equal(f.status, 200);
+        assert.equal(await f.text(), 'vnc:shared:/vnc.html');
+        assert.equal((await fetch(`${base}/live/${'0'.repeat(32)}/vnc/vnc.html`)).status, 404);
+        const bport = Number(new URL(base).port);
+        assert.equal((await wsHandshake(bport, `/live/${id}/vnc/websockify`)).status, 403, 'watching: refused');
+        await post(id, 'take');
+        const ws = await wsHandshake(bport, `/live/${id}/vnc/websockify`);
+        assert.equal(ws.status, 101);
+        assert.ok((await ws.read('hello:shared')).includes('hello:shared'));
+        assert.ok(!logs.join('\n').includes(VNC_PASSWORD), 'the password is never logged');
+        assert.ok(!logs.join('\n').includes(id), 'logs carry only a link-id prefix');
+        // Expiry closes the socket and the routes answer 410.
+        clock.t += 12 * 3600_000 + 1000;
+        assert.ok(await ws.waitClosed(), 'an expired link closes its socket');
+        assert.equal((await fetch(`${base}/live/${id}/vnc/vnc.html`)).status, 410);
+        assert.equal((await wsHandshake(bport, `/live/${id}/vnc/websockify`)).status, 410);
+        assert.equal(up.seen.ws.length, 1);
+    } finally { await up.close(); }
+});
+
+test('vnc socket: a Host the bridge does not answer to is refused', async () => {
+    const up = await restartWithNovnc({ allowedHosts: ['localhost:6090'] });
+    try {
+        const bport = Number(new URL(base).port);
+        assert.equal((await wsHandshake(bport, `/live/${'0'.repeat(32)}/vnc/websockify`)).status, 421);
+        assert.equal(up.seen.ws.length, 0);
+    } finally { await up.close(); }
 });
 
 test('user status survives a restart through the store file', async () => {
