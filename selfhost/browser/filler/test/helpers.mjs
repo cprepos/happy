@@ -35,6 +35,26 @@ export function policyFor(v, over = {}) {
     };
 }
 
+// The vault tools' test policy: acme may update, compare and pipe into docker-login;
+// agent (default_client, all_items) may do everything and pipe into sha.
+export const PIPE_TARGETS = {
+    'docker-login': { argv: ['docker', 'login', '--username', '{username}', '--password-stdin', '{arg:registry}'], args: { registry: '^[a-z0-9.-]+(:[0-9]+)?$' } },
+    sha: { argv: ['sha256sum'] },
+};
+export function managePolicy(v) {
+    const base = policyFor(v);
+    return {
+        ...base,
+        default_client: 'agent',
+        clients: {
+            ...base.clients,
+            acme: { ...base.clients.acme, manage: { update: true, compare: true, pipe: ['docker-login'] } },
+            agent: { all_items: true, manage: { create: true, update: true, remove: true, compare: true, pipe: ['sha'] } },
+        },
+        pipe_targets: PIPE_TARGETS,
+    };
+}
+
 export async function setup() {
     const vw = await startFakeVaultwarden();
     const ctl = await startFakeController();

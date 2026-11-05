@@ -7,8 +7,9 @@
 #                                seed an empty policy with default_client "agent", enroll (asks only
 #                                the agent's email and master password), filler-up, filler-items, filler-status
 #   make filler-items            the agent account's logins: name, item id, https hosts (no values)
-#   make filler-init             (sudo) /srv/happy-filler, client token, controller-token copy, empty policy
-#   make filler-install COMMIT=  (sudo) deploy a reviewed commit to /srv/happy-filler/releases/<sha>
+#   make filler-init             (sudo) /srv/happy-filler, client token, vault-mcp token, controller-token copy, empty policy
+#   make filler-install COMMIT=  (sudo) deploy a reviewed commit to /srv/happy-filler/releases/<sha>, then add
+#                                manage and pipe_targets to the policy once (scripts/policy-upgrade.mjs)
 #   make filler-enroll           (sudo, interactive) enroll with the agent's vault account
 #   make filler-up / filler-down / filler-logs
 #   make filler-lock             stop the filler (its keys leave memory); filler-up unlocks from the key files
@@ -25,6 +26,8 @@ FILLER_COMPOSE := docker compose -p happy-filler -f $(FILLER_ROOT)/current/compo
 FILLER_URL ?= http://127.0.0.1:6091
 FILLER_AUDIT_LINES ?= 50
 FILLER_HOME_DIR := $(or $(HAPPY_BROWSER_HOME),$(HOME)/.local/share/happy-browser)
+# Where vault-mcp (selfhost/vault-mcp) finds its token for the filler's /v1/vault/* routes.
+VAULT_MCP_HOME_DIR := $(or $(HAPPY_VAULT_MCP_HOME),$(HOME)/.local/share/happy-vault-mcp)
 FILLER_IMAGE = $(shell awk '/^ *image: node:/{print $$2; exit}' $(FILLER_DIR)/compose.filler.yml)
 COMMIT ?=
 
@@ -36,7 +39,8 @@ filler-setup:
 	@echo "== filler-setup: the sudo password is asked once, here"
 	@sudo -v
 	@if sudo test -e $(FILLER_ROOT)/secrets/client-token.sha256 -a -e $(FILLER_ROOT)/secrets/controller-token -a -e $(FILLER_ROOT)/policy.json \
-		&& test -s $(FILLER_HOME_DIR)/secrets/filler-client-token; then echo "== filler-init: already done, skipped"; \
+		-a -e $(FILLER_ROOT)/secrets/vault-client-token.sha256 \
+		&& test -s $(FILLER_HOME_DIR)/secrets/filler-client-token && test -s $(VAULT_MCP_HOME_DIR)/secrets/vault-client-token; then echo "== filler-init: already done, skipped"; \
 		else echo "== filler-init"; $(MAKE) --no-print-directory filler-init; fi
 	@echo "== filler-install $(COMMIT)"
 	@sudo -v
@@ -63,7 +67,7 @@ filler-items:
 		$$(awk '/^ *image: node:/{print $$2; exit}' $(FILLER_ROOT)/current/compose.filler.yml) node /app/enroll.mjs --items
 
 filler-init:
-	sudo HAPPY_BROWSER_HOME="$(FILLER_HOME_DIR)" FILLER_ROTATE="$(FILLER_ROTATE)" bash $(FILLER_DIR)/scripts/filler-init.sh
+	sudo HAPPY_BROWSER_HOME="$(FILLER_HOME_DIR)" VAULT_MCP_HOME="$(VAULT_MCP_HOME_DIR)" FILLER_ROTATE="$(FILLER_ROTATE)" bash $(FILLER_DIR)/scripts/filler-init.sh
 
 filler-install:
 	sudo FILLER_REPO="$(FILLER_REPO)" COMMIT="$(COMMIT)" bash $(FILLER_DIR)/scripts/filler-install.sh
@@ -95,6 +99,7 @@ filler-status:
 		echo "WARNING: 6091 is bound beyond 127.0.0.1"; exit 1; fi
 	@printf "healthz: "; curl -fs --max-time 5 $(FILLER_URL)/healthz || printf "unreachable"; echo
 	@printf "bridge client token: "; test -s $(FILLER_HOME_DIR)/secrets/filler-client-token && echo present || echo "absent (bridge secret tools off)"
+	@printf "vault-mcp token: "; test -s $(VAULT_MCP_HOME_DIR)/secrets/vault-client-token && echo present || echo "absent (vault tools off; make filler-init)"
 
 filler-policy-edit:
 	@test -e $(FILLER_ROOT)/policy.json || { echo "run make filler-init first"; exit 1; }

@@ -14,6 +14,13 @@
 // or null when the client asks with excludeDomains=true: Google's group,
 // Apple's group excluded by the account, a group listing the public suffix
 // net.cn, and a custom group [foo.co.uk, foo-shop.com].
+//
+// Writes, as Vaultwarden answers them: POST /api/ciphers (create), PUT
+// /api/ciphers/<id> (update, refused with 400 on a stale
+// lastKnownRevisionDate), PUT /api/ciphers/<id>/delete (soft delete: sets
+// deletedDate, answers an empty 200) and PUT /api/ciphers/<id>/restore. Each is
+// recorded in calls.writes; any other cipher write (DELETE, a purge) answers
+// 404 and is recorded in calls.refusedWrites.
 import { createServer } from 'node:http';
 import { generateKeyPairSync, randomBytes, randomUUID } from 'node:crypto';
 import { encryptRsa, encryptSym, masterKey, masterPasswordHash, stretchMasterKey } from '../lib/vaultcrypto.mjs';
@@ -49,6 +56,7 @@ export function buildVault({ email = 'agent@vault.test', password = 'correct hor
             name: enc(label),
             login: type !== 1 ? null : { username: enc(username), password: enc(pw), totp: enc(totp), uris: uris.map((u) => ({ uri: enc(u), match })) },
             deletedDate: deleted ? new Date().toISOString() : null,
+            revisionDate: new Date(Date.UTC(2026, 0, 1)).toISOString(),
         };
         if (encType && c.login) c.login.password = `${encType}.${randomBytes(32).toString('base64')}`;
         ciphers.push(c);
@@ -98,7 +106,9 @@ export function buildVault({ email = 'agent@vault.test', password = 'correct hor
 }
 
 export async function startFakeVaultwarden(vault = buildVault(), { twoFactor = false, apiKeyStatus = 200 } = {}) {
-    const calls = { token: 0, sync: 0, prelogin: 0, passwordGrant: 0, apiKey: 0, bodies: [] };
+    const calls = { token: 0, sync: 0, prelogin: 0, passwordGrant: 0, apiKey: 0, bodies: [], writes: [], refusedWrites: [] };
+    let rev = 0;
+    const stamp = () => new Date(Date.UTC(2026, 1, 1) + (++rev) * 1000).toISOString();
     const tokens = new Set();
     const webTokens = new Set();
     const server = createServer(async (req, res) => {
@@ -152,6 +162,40 @@ export async function startFakeVaultwarden(vault = buildVault(), { twoFactor = f
             if (!tokens.has(t)) return send(401, { error: 'unauthorized' });
             calls.syncUrls = [...(calls.syncUrls || []), req.url];
             return send(200, url.searchParams.get('excludeDomains') === 'true' ? { ...vault.sync, domains: null } : vault.sync);
+        }
+        const cm = /^\/api\/ciphers(?:\/([0-9a-f-]{36}))?(?:\/(delete|restore))?$/.exec(url.pathname);
+        if (cm && req.method !== 'GET') {
+            const t = (req.headers.authorization || '').replace(/^Bearer /, '');
+            if (!tokens.has(t)) return send(401, { error: 'unauthorized' });
+            const [, id, op] = cm;
+            const find = () => vault.sync.ciphers.find((c) => c.id === id);
+            if (req.method === 'POST' && !id) {
+                let b; try { b = JSON.parse(body); } catch { return send(400, { message: 'bad json' }); }
+                if (b.type !== 1 || !b.name || !b.login) return send(400, { message: 'bad cipher' });
+                const c = { ...b, id: randomUUID(), collectionIds: [], deletedDate: null, revisionDate: stamp(), creationDate: stamp() };
+                delete c.lastKnownRevisionDate;
+                vault.sync.ciphers.push(c);
+                calls.writes.push({ op: 'create', id: c.id, body: b });
+                res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ...c, object: 'cipherDetails' }));
+            }
+            if (req.method === 'PUT' && id && !op) {
+                const c = find(); if (!c) return send(404, { message: 'not found' });
+                let b; try { b = JSON.parse(body); } catch { return send(400, { message: 'bad json' }); }
+                if (b.lastKnownRevisionDate && b.lastKnownRevisionDate !== c.revisionDate) return send(400, { message: 'The client copy of this cipher is out of date.' });
+                const { lastKnownRevisionDate, ...rest } = b;
+                Object.assign(c, rest, { id, revisionDate: stamp() });
+                calls.writes.push({ op: 'update', id, body: b });
+                return send(200, { ...c, object: 'cipherDetails' });
+            }
+            if (req.method === 'PUT' && id && op) {
+                const c = find(); if (!c) return send(404, { message: 'not found' });
+                c.deletedDate = op === 'delete' ? stamp() : null;
+                c.revisionDate = stamp();
+                calls.writes.push({ op: op === 'delete' ? 'trash' : 'restore', id });
+                res.writeHead(200); return res.end();
+            }
+            calls.refusedWrites.push({ method: req.method, path: url.pathname });
+            return send(404, { error: 'not found' });
         }
         send(404, { error: 'not found' });
     });

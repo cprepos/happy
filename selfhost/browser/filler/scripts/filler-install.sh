@@ -29,3 +29,24 @@ fi
 prev="$(readlink "$ROOT/current" 2>/dev/null || true)"
 ln -sfn "releases/$SHA" "$ROOT/current.new"; mv -T "$ROOT/current.new" "$ROOT/current"
 echo "filler-install: current -> releases/$SHA${prev:+ (was $prev)}; run make filler-up to restart"
+
+# Once: give a policy from before the vault tools its manage and pipe_targets
+# (scripts/policy-upgrade.mjs; a policy that has pipe_targets is left alone).
+POL="$ROOT/policy.json"
+if [[ -s "$POL" && -f "$ROOT/current/app/scripts/policy-upgrade.mjs" ]]; then
+  IMAGE="$(awk '/^ *image: node:/{print $2; exit}' "$ROOT/current/compose.filler.yml")"
+  up="$(mktemp "$ROOT/.policy-up.XXXXXX")"
+  rc=0
+  docker run --rm --network none --user 1990:1990 --read-only --cap-drop ALL \
+    -v "$ROOT/current/app:/app:ro" -v "$POL:/filler/policy.json:ro" \
+    "$IMAGE" node /app/scripts/policy-upgrade.mjs /filler/policy.json >"$up" || rc=$?
+  if [[ $rc -eq 0 && -s "$up" ]]; then
+    cp -p "$POL" "$ROOT/policy-backups/policy.$(date -u +%Y%m%dT%H%M%SZ).json"
+    chown "root:1990" "$up"; chmod 0640 "$up"; mv -f "$up" "$POL"
+    echo "filler-install: policy upgraded for the vault tools (manage on the all_items client, empty pipe_targets); the old one is in policy-backups/"
+  else
+    rm -f "$up"
+    if [[ $rc -eq 3 ]]; then echo "filler-install: policy already has pipe_targets; left as is"
+    else echo "filler-install: WARNING: policy upgrade failed (exit $rc); policy left as is, edit it with make filler-policy-edit" >&2; fi
+  fi
+fi

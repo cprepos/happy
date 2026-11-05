@@ -12,8 +12,14 @@
 // The sync asks for the account's equivalent domains (excludeDomains=false):
 // its own groups and the global groups it has not excluded (domains.mjs).
 // listLogins attaches them to each login; only all_items clients use them.
-import { createHash } from 'node:crypto';
-import { decryptKey, decryptSym, decryptSymText, VaultCryptoError } from './vaultcrypto.mjs';
+//
+// Writes (manage.mjs, /v1/vault/*): createLogin, updateLogin, trashLogin and
+// restoreLogin, on the account's personal vault only (an organization item is
+// refused). trashLogin is Bitwarden's soft delete: the item goes to the vault's
+// trash, from which restoreLogin brings it back. There is no purge or hard
+// delete here, by design. Every write drops the cached sync.
+import { createHash, randomBytes } from 'node:crypto';
+import { decryptKey, decryptSym, decryptSymText, encryptSym, VaultCryptoError } from './vaultcrypto.mjs';
 import { httpsHost } from './hosts.mjs';
 import { buildEquivalence, equivalentsFor } from './domains.mjs';
 
@@ -50,7 +56,21 @@ export function createVault({ url, clientId, clientSecret, userKey, deviceId, fe
             // Never echo the body: an identity error can repeat request fields.
             throw new VaultError(`vault ${path.split('?')[0]} -> HTTP ${res.status}`, res.status === 401 || res.status === 400 ? 502 : 502);
         }
-        return res.json();
+        const text = await res.text();
+        if (!text.trim()) return null; // a soft delete answers 200 with no body
+        try { return JSON.parse(text); } catch { throw new VaultError(`vault ${path.split('?')[0]} -> a body that is not JSON`); }
+    }
+
+    async function authed(path, method, body) {
+        const t = await login();
+        try {
+            return await req(path, { method, headers: { Authorization: `Bearer ${t}`, Accept: 'application/json', ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+        } catch (err) {
+            if (/HTTP 401/.test(err.message)) token = null;
+            throw err;
+        } finally {
+            synced = null; // a write (or a failed one) makes the cached sync stale
+        }
     }
 
     async function login() {
@@ -177,10 +197,157 @@ export function createVault({ url, clientId, clientSecret, userKey, deviceId, fe
         return out.sort((a, b) => String(a.name ?? '').localeCompare(String(b.name ?? '')) || a.id.localeCompare(b.id));
     }
 
+    function keysOf(s, c) {
+        const orgId = c.organizationId ? String(c.organizationId).toLowerCase() : null;
+        const baseKey = orgId ? s.orgKeys.get(orgId) : userKey;
+        if (!baseKey) return null;
+        return { orgId, key: c.key ? decryptKey(c.key, { symKey: baseKey }) : baseKey };
+    }
+
+    /** A URI shown as metadata: scheme, host and path; never userinfo, a query or a fragment. */
+    function shownUri(u) {
+        try {
+            const x = new URL(u);
+            if (!/^https?:$/.test(x.protocol) || !x.host) return null;
+            return `${x.protocol}//${x.host}${x.pathname === '/' ? '' : x.pathname}`.slice(0, 300);
+        } catch { return null; }
+    }
+
+    /**
+     * Login metadata for the vault tools: {id, name, username, uris, hosts,
+     * fields, revision_date, trashed, organization}. The username is shown
+     * (agents pick and create accounts by it); the password and TOTP never are,
+     * only whether they are set. trash: true also lists trashed logins.
+     */
+    async function listItems({ force = true, trash = false } = {}) {
+        const s = await sync({ force });
+        const out = [];
+        for (const c of s.ciphers) {
+            if (!c || c.type !== 1 || !c.login) continue;
+            if (c.deletedDate && !trash) continue;
+            let k;
+            try { k = keysOf(s, c); } catch { k = null; }
+            if (!k) continue;
+            const dec = (v) => { try { return v ? decryptSymText(v, k.key) : null; } catch { return null; } };
+            const raw = (c.login.uris || []).map((u) => dec(u?.uri)).filter(Boolean);
+            const hosts = [...new Set(raw.map((u) => { try { return httpsHost(u); } catch { return null; } }).filter(Boolean))];
+            out.push({
+                id: String(c.id || c.Id).toLowerCase(),
+                name: dec(c.name),
+                username: dec(c.login.username),
+                uris: raw.map(shownUri).filter(Boolean),
+                hosts,
+                fields: ['username', 'password', 'totp'].filter((f) => !!c.login[f]),
+                revision_date: c.revisionDate || null,
+                trashed: !!c.deletedDate,
+                ...(k.orgId ? { organization: true } : {}),
+            });
+        }
+        return out.sort((a, b) => String(a.name ?? '').localeCompare(String(b.name ?? '')) || a.id.localeCompare(b.id));
+    }
+
+    const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+    function checkId(id) {
+        const v = String(id ?? '').toLowerCase();
+        if (!ID.test(v)) throw new VaultError('item id must be a uuid', 400);
+        return v;
+    }
+
+    /** The cipher for a write, from a fresh sync: a personal login, or throws. */
+    async function personal(itemId, { trashed = false } = {}) {
+        const s = await sync({ force: true });
+        const c = findCipher(s, checkId(itemId));
+        if (!c) throw new VaultError('item not found in the agent account\'s vault', 404);
+        if (c.type !== 1 || !c.login) throw new VaultError('item is not a login', 422);
+        if (c.organizationId) throw new VaultError('item belongs to an organization; the vault tools only change the agent account\'s own logins', 403);
+        if (trashed && !c.deletedDate) throw new VaultError('item is not in the trash', 409);
+        if (!trashed && c.deletedDate) throw new VaultError('item is in the trash', 409);
+        return c;
+    }
+
+    const encUris = (uris, key, old = []) => uris.map((u) => {
+        const prev = old.find((o) => { try { return o?.uri && decryptSymText(o.uri, key) === u; } catch { return false; } });
+        return { uri: encryptSym(u, key), match: prev ? (prev.match ?? null) : null };
+    });
+
+    /**
+     * A new login in the personal vault, under its own fresh item key.
+     * Returns the new item id.
+     */
+    async function createLogin({ name, uris, username, password }) {
+        const itemKey = randomBytes(64);
+        try {
+            const enc = (v) => (v == null || v === '' ? null : encryptSym(v, itemKey));
+            const body = {
+                type: 1, organizationId: null, folderId: null, favorite: false, reprompt: 0,
+                key: encryptSym(itemKey, userKey),
+                name: encryptSym(name, itemKey), notes: null, fields: [], passwordHistory: [],
+                login: { username: enc(username), password: enc(password), totp: null, uris: encUris(uris, itemKey), passwordRevisionDate: null },
+            };
+            const r = await authed('/api/ciphers', 'POST', body);
+            const id = r && (r.id || r.Id);
+            if (!id) throw new VaultError('vault create returned no item id');
+            return String(id).toLowerCase();
+        } finally { itemKey.fill(0); }
+    }
+
+    /**
+     * Change a personal login: name, uris, username and/or password (the
+     * caller generated it). Fields not named are copied as they are; a
+     * replaced password goes to the front of the item's password history.
+     * Returns the names of the fields changed.
+     */
+    async function updateLogin(itemId, changes) {
+        const c = await personal(itemId);
+        const s = synced || await sync();
+        const { key } = keysOf(s, c);
+        const enc = (v) => (v == null || v === '' ? null : encryptSym(v, key));
+        const login = { ...c.login };
+        const changed = [];
+        // Only the fields Vaultwarden's cipher update takes, copied as they are.
+        const body = {
+            type: 1, organizationId: null, folderId: c.folderId ?? null, favorite: !!c.favorite, reprompt: c.reprompt ?? 0,
+            key: c.key ?? null, name: c.name, notes: c.notes ?? null, fields: c.fields ?? [], passwordHistory: c.passwordHistory ?? [], login,
+        };
+        for (const k of Object.keys(login)) if (!['username', 'password', 'totp', 'uris', 'passwordRevisionDate', 'autofillOnPageLoad', 'fido2Credentials'].includes(k)) delete login[k];
+        if (changes.name !== undefined) { body.name = encryptSym(changes.name, key); changed.push('name'); }
+        if (changes.uris !== undefined) { login.uris = encUris(changes.uris, key, c.login.uris || []); changed.push('uris'); }
+        if (changes.username !== undefined) { login.username = enc(changes.username); changed.push('username'); }
+        if (changes.password !== undefined) {
+            const at = new Date(now()).toISOString();
+            const history = Array.isArray(c.passwordHistory) ? c.passwordHistory : [];
+            body.passwordHistory = c.login.password ? [{ password: c.login.password, lastUsedDate: at }, ...history].slice(0, 100) : history;
+            login.password = enc(changes.password);
+            login.passwordRevisionDate = at;
+            changed.push('password');
+        }
+        if (!changed.length) throw new VaultError('nothing to change', 400);
+        body.lastKnownRevisionDate = c.revisionDate || null;
+        await authed(`/api/ciphers/${checkId(itemId)}`, 'PUT', body);
+        return changed;
+    }
+
+    /** Soft delete: the login goes to the vault's trash (restorable). */
+    async function trashLogin(itemId) {
+        await personal(itemId);
+        await authed(`/api/ciphers/${checkId(itemId)}/delete`, 'PUT');
+    }
+
+    /** Bring a trashed login back. */
+    async function restoreLogin(itemId) {
+        await personal(itemId, { trashed: true });
+        await authed(`/api/ciphers/${checkId(itemId)}/restore`, 'PUT');
+    }
+
     return {
         sync,
         readItem,
         listLogins,
+        listItems,
+        createLogin,
+        updateLogin,
+        trashLogin,
+        restoreLogin,
         status: () => ({ unlocked: true, sync_age_s: synced ? Math.round((now() - synced.at) / 1000) : null }),
         lock() { token = null; synced = null; },
     };

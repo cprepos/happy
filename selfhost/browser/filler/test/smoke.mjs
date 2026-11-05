@@ -10,6 +10,12 @@
 // Then a leak sweep: no canary value (or its URL, base64 or JSON escaped form)
 // may appear in any MCP message, the audit log, the taint state, or anything
 // the processes wrote to stdout/stderr. Exits 0 on a clean run.
+//
+// The vault routes (/v1/vault/*, the vault-client-token) are driven too:
+// create and rotate (passwords the filler generates), compare, a pipe, remove
+// and restore. Their generated passwords join the canaries; the pipe answer,
+// the one route meant to hand a value to vault-mcp's runner, is checked to
+// carry exactly that value and is the only place it may appear.
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, readdirSync, readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
@@ -24,7 +30,8 @@ import { createTaint } from '../lib/taint.mjs';
 import { createAudit } from '../lib/audit.mjs';
 import { startFakeVaultwarden } from './fake-vaultwarden.mjs';
 import { startFakeController, loginPages } from './fake-controller.mjs';
-import { policyFor } from './helpers.mjs';
+import { managePolicy } from './helpers.mjs';
+import { decryptKey, decryptSymText } from '../lib/vaultcrypto.mjs';
 import { createMcpServer } from '../../bridge/mcp.mjs';
 import { createSecretGate } from '../../bridge/lib/secrets.mjs';
 
@@ -52,10 +59,12 @@ const controllers = controllerSet({ defaultPort: ctlPort, ports: [], token: ctl.
 const scrubber = createScrubber();
 const taint = createTaint({ statePath: join(dir, 'state', 'taint.json'), scrubber, controllers });
 const audit = createAudit(join(dir, 'audit'));
-const policy = parsePolicy(JSON.stringify(policyFor(v)));
+const policy = parsePolicy(JSON.stringify(managePolicy(v)));
+const VTOKEN = createHash('sha256').update(`v-${TOKEN}`).digest('hex');
 const vault = createVault({ url: vw.url, clientId: v.clientId, clientSecret: v.clientSecret, userKey: v.userKey, deviceId: 'dev-smoke' });
 const handle = createApp({
     checkToken: tokenChecker(createHash('sha256').update(TOKEN).digest('hex')),
+    checkVaultToken: tokenChecker(createHash('sha256').update(VTOKEN).digest('hex')),
     getPolicy: () => policy, vault, controllers, scrubber, taint, audit,
     sleep: async () => {}, totpOpts: { minLeftS: 0 },
 });
@@ -117,9 +126,47 @@ try {
     const wrongHost = await call('browser_fill_secret', { session_id: 's1', element_id: 'u1', name: 'portal.password' });
     check(wrongHost.result?.isError, 'a secret for another host is refused');
 
+    // The vault routes.
+    const vcall = async (fn, body, token = VTOKEN) => {
+        const r = await fetch(`${fillerUrl}/v1/vault/${fn}`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'X-Happy-Chat': 'none', 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        return { status: r.status, json: await r.json() };
+    };
+    const vaultOut = [];
+    const stored = (id) => {
+        const c = v.sync.ciphers.find((x) => x.id === id);
+        const k = c.key ? decryptKey(c.key, { symKey: v.userKey }) : v.userKey;
+        return decryptSymText(c.login.password, k);
+    };
+    check((await vcall('list', {}, TOKEN)).status === 401, 'the bridge token cannot reach the vault routes');
+    const created = await vcall('create', { name: 'Smoke Created', uris: ['https://smoke.example/login'], username: 'smoke-bot' });
+    vaultOut.push(created);
+    check(created.status === 200 && created.json.secret === 'smoke-created', 'create made a login');
+    const gen1 = created.status === 200 ? stored(created.json.id) : null;
+    check(gen1?.length === 32, 'create generated a 32-character password');
+    const rotated = await vcall('update', { id: created.json.id, rotate_password: { length: 40 } });
+    vaultOut.push(rotated);
+    const gen2 = rotated.status === 200 ? stored(created.json.id) : null;
+    check(rotated.status === 200 && gen2?.length === 40 && gen2 !== gen1, 'update rotated the password');
+    const sha = (x) => createHash('sha256').update(x).digest('hex');
+    const yes = await vcall('compare', { id: created.json.id, field: 'password', algo: 'sha256', digest: sha(gen2 || '') });
+    const no = await vcall('compare', { id: created.json.id, field: 'password', algo: 'sha256', digest: sha(gen1 || '') });
+    vaultOut.push(yes, no);
+    check(yes.json.match === true && no.json.match === false, 'compare answers match / no match');
+    const piped = await vcall('pipe', { id: created.json.id, field: 'password', target: 'sha' });
+    check(piped.status === 200 && piped.json.value === gen2 && !piped.json.argv.includes(gen2), 'pipe hands the value to the runner, outside argv');
+    const evil = await vcall('pipe', { id: created.json.id, field: 'password', target: 'docker-login', args: { registry: 'x' } });
+    vaultOut.push(evil);
+    check(evil.status === 403, 'a pipe target outside the client\'s list is refused');
+    const rm = await vcall('remove', { id: created.json.id });
+    const back = await vcall('restore', { id: created.json.id });
+    vaultOut.push(rm, back);
+    check(rm.json.trashed === true && back.json.trashed === false && vw.calls.refusedWrites.length === 0, 'remove is a soft delete and restore brings it back');
+    vaultOut.push(await vcall('list', { include_trash: true }));
+    out.push(...vaultOut.map((x) => ({ vault: x })));
+
     // The leak sweep.
     // The username and password in every encoded form; the TOTP code as typed, as a whole digit run.
-    const forms = [...new Set([item.password, item.username].flatMap((c) => [c, ...variantsOf(c)]))];
+    const forms = [...new Set([item.password, item.username, gen1, gen2].filter(Boolean).flatMap((c) => [c, ...variantsOf(c)]))];
     const code = ctl.typed.find((t) => t.element_id === 't1')?.text;
     check(/^\d{6,10}$/.test(code || ''), 'a TOTP code was typed');
     const codeRe = code ? new RegExp(`(?<!\\d)${code}(?!\\d)`) : null;

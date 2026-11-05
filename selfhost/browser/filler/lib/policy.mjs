@@ -28,6 +28,25 @@
 // use equivalence: their hosts list is the operator's precise choice, and
 // widening it from vault data the agent account can edit would undo it.
 //
+// "manage" lets a client's agents change the vault through /v1/vault/* (the
+// vault-mcp tools, with the vault-client-token): {"create": true, "update":
+// true, "remove": true, "compare": true, "pipe": ["docker-login"]}. Every key
+// is optional and off when absent; a client without manage can only list and
+// fill, as before. create needs all_items (a new login is reachable only
+// through all_items, so an explicit-secrets client could otherwise hand its
+// logins to the all_items client). update, remove (soft delete to the vault's
+// trash; there is no purge), compare and pipe act only on logins the client
+// already reaches: its secrets' item ids, and for all_items every personal
+// login no client lists.
+//
+// "pipe_targets" (top level) is the only list of commands a password may be
+// piped into, chosen here and never by the agent: {"docker-login": {"argv":
+// ["docker", "login", "--username", "{username}", "--password-stdin",
+// "{arg:registry}"], "args": {"registry": "^[a-z0-9.-]+(:[0-9]+)?$"}}}. An
+// argv element is a literal, or exactly "{username}" or "{arg:<slot>}"; each
+// slot's value must match its regex in full. The value only ever goes to the
+// command's stdin. A client names the targets it may use in manage.pipe.
+//
 // default_client is an explicit opt-in: a chat with no entry in chats uses that
 // client, and so does a caller that has no chat id at all (it names the chat
 // NO_CHAT, "none", which may never be a key in chats). Without default_client
@@ -52,7 +71,58 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CHAT = /^[A-Za-z0-9_.:-]{1,200}$/;
 /** The chat a caller with no chat id names. Only default_client can serve it. */
 export const NO_CHAT = 'none';
-const TOP_KEYS = new Set(['version', 'clients', 'chats', 'default_client']);
+const TOP_KEYS = new Set(['version', 'clients', 'chats', 'default_client', 'pipe_targets']);
+const MANAGE_FLAGS = ['create', 'update', 'remove', 'compare'];
+const SLOT = /^[a-z][a-z0-9_]{0,31}$/;
+
+function parsePipeTargets(raw) {
+    const out = new Map();
+    if (raw === undefined) return out;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new PolicyError('pipe_targets must be an object');
+    for (const [name, t] of Object.entries(raw)) {
+        if (!SLUG.test(name)) throw new PolicyError(`bad pipe target name ${JSON.stringify(name).slice(0, 70)}`);
+        if (!t || typeof t !== 'object' || Array.isArray(t)) throw new PolicyError(`pipe target ${name}: must be an object`);
+        const extra = Object.keys(t).filter((k) => !['argv', 'args'].includes(k));
+        if (extra.length) throw new PolicyError(`pipe target ${name}: unknown key ${JSON.stringify(extra[0]).slice(0, 40)}`);
+        const argv = t.argv;
+        if (!Array.isArray(argv) || !argv.length || argv.length > 32 || argv.some((a) => typeof a !== 'string' || !a.length || a.length > 256 || a.includes('\0'))) {
+            throw new PolicyError(`pipe target ${name}: argv must be 1..32 non-empty strings`);
+        }
+        const args = new Map();
+        if (t.args !== undefined) {
+            if (!t.args || typeof t.args !== 'object' || Array.isArray(t.args)) throw new PolicyError(`pipe target ${name}: args must be an object`);
+            for (const [slot, re] of Object.entries(t.args)) {
+                if (!SLOT.test(slot)) throw new PolicyError(`pipe target ${name}: bad arg slot ${JSON.stringify(slot).slice(0, 40)}`);
+                if (typeof re !== 'string' || !re.length || re.length > 200) throw new PolicyError(`pipe target ${name}.${slot}: the regex must be a string`);
+                try { args.set(slot, new RegExp(`^(?:${re})$`)); } catch { throw new PolicyError(`pipe target ${name}.${slot}: the regex does not compile`); }
+            }
+        }
+        const used = new Set();
+        argv.forEach((a, i) => {
+            if (!/[{}]/.test(a)) return;
+            const m = /^\{(username|arg:([a-z][a-z0-9_]{0,31}))\}$/.exec(a);
+            if (!m) throw new PolicyError(`pipe target ${name}: argv element ${i} must be a literal, "{username}" or "{arg:<slot>}"`);
+            if (i === 0) throw new PolicyError(`pipe target ${name}: argv[0] must be a literal command`);
+            if (m[2]) { if (!args.has(m[2])) throw new PolicyError(`pipe target ${name}: {arg:${m[2]}} has no regex in args`); used.add(m[2]); }
+        });
+        for (const slot of args.keys()) if (!used.has(slot)) throw new PolicyError(`pipe target ${name}: arg slot ${slot} is not used in argv`);
+        out.set(name, Object.freeze({ name, argv: Object.freeze([...argv]), args }));
+    }
+    return out;
+}
+
+function parseManage(slug, m, allItems, targets) {
+    if (m === undefined) return null;
+    if (!m || typeof m !== 'object' || Array.isArray(m)) throw new PolicyError(`client ${slug}: manage must be an object`);
+    const extra = Object.keys(m).filter((k) => ![...MANAGE_FLAGS, 'pipe'].includes(k));
+    if (extra.length) throw new PolicyError(`client ${slug}: manage: unknown key ${JSON.stringify(extra[0]).slice(0, 40)}`);
+    for (const f of MANAGE_FLAGS) if (m[f] !== undefined && typeof m[f] !== 'boolean') throw new PolicyError(`client ${slug}: manage.${f} must be true or false`);
+    if (m.create === true && !allItems) throw new PolicyError(`client ${slug}: manage.create needs all_items (a new login is reachable only through all_items)`);
+    const pipe = m.pipe ?? [];
+    if (!Array.isArray(pipe) || pipe.some((p) => typeof p !== 'string')) throw new PolicyError(`client ${slug}: manage.pipe must be a list of pipe target names`);
+    for (const p of pipe) if (!targets.has(p)) throw new PolicyError(`client ${slug}: manage.pipe names ${JSON.stringify(p).slice(0, 64)}, which is not in pipe_targets`);
+    return Object.freeze({ ...Object.fromEntries(MANAGE_FLAGS.map((f) => [f, m[f] === true])), pipe: Object.freeze([...new Set(pipe)]) });
+}
 
 export function checkPolicyFile(path, { requireRoot = true } = {}) {
     let st;
@@ -68,6 +138,7 @@ export function parsePolicy(json) {
     if (!raw || raw.version !== 1 || typeof raw.clients !== 'object' || raw.clients === null) throw new PolicyError('policy needs version 1 and clients');
     const extraTop = Object.keys(raw).filter((k) => !TOP_KEYS.has(k));
     if (extraTop.length) throw new PolicyError(`unknown top-level key ${JSON.stringify(extraTop[0]).slice(0, 40)}`);
+    const targets = parsePipeTargets(raw.pipe_targets);
     const clients = new Map();
     const seenItems = new Map();
     let allItemsClient = null;
@@ -75,7 +146,7 @@ export function parsePolicy(json) {
         if (!SLUG.test(slug)) throw new PolicyError(`bad client slug ${JSON.stringify(slug).slice(0, 70)}`);
         if (!c || typeof c !== 'object' || Array.isArray(c)) throw new PolicyError(`client ${slug}: must be an object`);
         if ('org_id' in c || 'collection_id' in c) throw new PolicyError(`client ${slug}: org_id and collection_id are no longer used (the items are in the agent account's own vault); remove them`);
-        const extra = Object.keys(c).filter((k) => !['secrets', 'all_items', 'equivalent_domains'].includes(k));
+        const extra = Object.keys(c).filter((k) => !['secrets', 'all_items', 'equivalent_domains', 'manage'].includes(k));
         if (extra.length) throw new PolicyError(`client ${slug}: unknown key ${JSON.stringify(extra[0]).slice(0, 40)}`);
         if (c.secrets !== undefined && (typeof c.secrets !== 'object' || c.secrets === null || Array.isArray(c.secrets))) throw new PolicyError(`client ${slug}: secrets must be an object`);
         const secrets = new Map();
@@ -102,7 +173,7 @@ export function parsePolicy(json) {
             allItemsClient = slug;
         }
         if (c.equivalent_domains !== undefined && typeof c.equivalent_domains !== 'boolean') throw new PolicyError(`client ${slug}: equivalent_domains must be true or false`);
-        clients.set(slug, Object.freeze({ secrets, allItems, equivalentDomains: c.equivalent_domains !== false }));
+        clients.set(slug, Object.freeze({ secrets, allItems, equivalentDomains: c.equivalent_domains !== false, manage: parseManage(slug, c.manage, allItems, targets) }));
     }
     const chats = new Map();
     for (const [chat, slug] of Object.entries(raw.chats || {})) {
@@ -116,7 +187,7 @@ export function parsePolicy(json) {
         if (typeof raw.default_client !== 'string' || !clients.has(raw.default_client)) throw new PolicyError(`default_client ${JSON.stringify(raw.default_client)?.slice(0, 64)} is not a client in clients`);
         defaultClient = raw.default_client;
     }
-    return createPolicy(clients, chats, defaultClient, new Set(seenItems.keys()));
+    return createPolicy(clients, chats, defaultClient, new Set(seenItems.keys()), targets);
 }
 
 /** The name an all_items client uses for a vault item: its name as a slug ("GitHub (work)" -> "github-work"), or null. */
@@ -127,7 +198,7 @@ export function itemSlug(name) {
     return SLUG.test(s) ? s : null;
 }
 
-function createPolicy(clients, chats, defaultClient, listedItems) {
+function createPolicy(clients, chats, defaultClient, listedItems, targets = new Map()) {
     const scopeOf = (chat) => {
         if (typeof chat !== 'string' || !chat) return null;
         if (chat !== NO_CHAT && chats.has(chat)) return { client: chats.get(chat), path: 'mapped' };
@@ -146,6 +217,17 @@ function createPolicy(clients, chats, defaultClient, listedItems) {
         allItems: (slug) => !!clients.get(slug)?.allItems,
         /** Whether a client's all_items logins also fill on equivalent domains (default true; never for explicit secrets). */
         equivalentDomains: (slug) => clients.get(slug)?.equivalentDomains !== false && clients.has(slug),
+        /** A client's manage permissions {create, update, remove, compare, pipe:[names]}, or null (list and fill only). */
+        manage: (slug) => clients.get(slug)?.manage ?? null,
+        /** A pipe target {name, argv, args: Map slot -> RegExp}, or null. */
+        pipeTarget: (name) => targets.get(String(name ?? '')) ?? null,
+        pipeTargets: () => [...targets.keys()],
+        /** The client that lists this item id in its secrets, or null. */
+        listedBy(itemId) {
+            const id = String(itemId ?? '').toLowerCase();
+            for (const [slug, c] of clients) for (const s of c.secrets.values()) if (s.item_id === id) return slug;
+            return null;
+        },
         /** Whether some client lists this item id in its secrets (such an item is never reached through all_items). */
         isListed: (itemId) => listedItems.has(String(itemId ?? '').toLowerCase()),
         /** Every fillable name for a client: [{name: "github.password", secret, field, item_id, hosts}]. */

@@ -153,3 +153,28 @@ test('equivalent_domains: a boolean on a client, true unless set to false', () =
     assert.equal(off.equivalentDomains('nobody'), false);
     for (const bad of ['no', 0, null, {}]) assert.throws(() => parsePolicy({ version: 1, clients: { a: { all_items: true, equivalent_domains: bad } } }), /equivalent_domains must be true or false/, JSON.stringify(bad));
 });
+
+test('manage and pipe_targets: strict keys, create needs all_items, pipe names must exist', () => {
+    const T = { 'docker-login': { argv: ['docker', 'login', '--username', '{username}', '--password-stdin', '{arg:registry}'], args: { registry: '^[a-z0-9.-]+(:[0-9]+)?$' } }, 'gh-token': { argv: ['gh', 'auth', 'login', '--with-token'] } };
+    const p = parsePolicy({ version: 1, default_client: 'agent', clients: { agent: { all_items: true, manage: { create: true, update: true, remove: true, compare: true, pipe: ['docker-login'] } }, acme: { manage: { update: true } } }, chats: {}, pipe_targets: T });
+    assert.deepEqual({ ...p.manage('agent') }, { create: true, update: true, remove: true, compare: true, pipe: ['docker-login'] });
+    assert.deepEqual({ ...p.manage('acme') }, { create: false, update: true, remove: false, compare: false, pipe: [] });
+    assert.equal(p.manage('nobody'), null);
+    assert.equal(parsePolicy({ version: 1, clients: { a: {} } }).manage('a'), null);
+    const t = p.pipeTarget('docker-login');
+    assert.ok(t.args.get('registry').test('ghcr.io') && !t.args.get('registry').test('ghcr.io; rm -rf /'));
+    assert.deepEqual(p.pipeTargets(), ['docker-login', 'gh-token']);
+    const bad = (over, re) => assert.throws(() => parsePolicy({ version: 1, clients: { agent: { all_items: true, ...over.client } }, pipe_targets: over.targets ?? T }), re, JSON.stringify(over));
+    bad({ client: { manage: { purge: true } } }, /manage: unknown key/);
+    bad({ client: { manage: { create: 'yes' } } }, /manage.create must be true or false/);
+    bad({ client: { manage: { pipe: ['nope'] } } }, /not in pipe_targets/);
+    assert.throws(() => parsePolicy({ version: 1, clients: { acme: { manage: { create: true } } } }), /create needs all_items/);
+    bad({ targets: { x: { argv: ['{username}'] } } }, /argv\[0\] must be a literal/);
+    bad({ targets: { x: { argv: ['sh', '-c', 'echo {username}'] } } }, /must be a literal, "\{username\}"/);
+    bad({ targets: { x: { argv: ['cmd', '{password}'] } } }, /must be a literal/);
+    bad({ targets: { x: { argv: ['cmd', '{arg:host}'] } } }, /has no regex/);
+    bad({ targets: { x: { argv: ['cmd'], args: { host: '.*' } } } }, /not used in argv/);
+    bad({ targets: { x: { argv: ['cmd', '{arg:host}'], args: { host: '(' } } } }, /does not compile/);
+    bad({ targets: { x: { argv: ['cmd'], env: {} } } }, /unknown key/);
+    bad({ targets: { x: { argv: [] } } }, /argv must be/);
+});

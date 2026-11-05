@@ -14,6 +14,16 @@
 //   POST /v1/scrub    {payload}                          -> {payload}
 //   GET  /healthz                                        -> {ok, unlocked, sync_age_s}
 //
+// The vault tools (selfhost/vault-mcp) use their own token, the
+// vault-client-token, whose SHA-256 is secrets/vault-client-token.sha256. It
+// reaches only these routes, and the bridge's token never does
+// (lib/manage.mjs has the bodies):
+//
+//   POST /v1/vault/{list,search,create,update,remove,restore,compare,pipe}
+//
+// Every route answers metadata only, except /v1/vault/pipe, which hands one
+// value to vault-mcp's pipe runner for an allowlisted command's stdin.
+//
 //   node server.mjs --check-policy [path]   validate a policy file and exit
 import { createServer as createHttpServer } from 'node:http';
 import { createHash, timingSafeEqual } from 'node:crypto';
@@ -27,6 +37,7 @@ import { createAudit } from './lib/audit.mjs';
 import { controllerSet, parsePorts } from './lib/controller.mjs';
 import { createVault } from './lib/vault.mjs';
 import { createFiller, FillError } from './lib/fill.mjs';
+import { createManager, ACTIONS } from './lib/manage.mjs';
 
 const MAX_BODY = 32 * 1024 * 1024;
 const log = (msg) => process.stderr.write(`secret-filler: ${msg}\n`);
@@ -65,8 +76,9 @@ export function tokenChecker(sha256Hex) {
  * The request handler, with every dependency injected (tests build it
  * directly). vault may be null: not enrolled, list/fill/login answer 503.
  */
-export function createApp({ checkToken, getPolicy, vault, controllers, scrubber, taint, audit, allowLoopbackHttp = false, sleep, totpOpts }) {
+export function createApp({ checkToken, checkVaultToken = () => false, getPolicy, vault, controllers, scrubber, taint, audit, allowLoopbackHttp = false, sleep, totpOpts, now }) {
     const filler = vault ? createFiller({ getPolicy, vault, controllers, taint, audit, allowLoopbackHttp, sleep, totpOpts }) : null;
+    const manager = vault ? createManager({ getPolicy, vault, audit, ...(now ? { now } : {}) }) : null;
 
     const send = (res, status, obj) => {
         const body = JSON.stringify(obj);
@@ -93,10 +105,19 @@ export function createApp({ checkToken, getPolicy, vault, controllers, scrubber,
             if (req.method === 'GET' && url.pathname === '/healthz') {
                 return send(res, 200, { ok: true, unlocked: !!vault, sync_age_s: vault ? vault.status().sync_age_s : null });
             }
-            if (!checkToken(req.headers.authorization)) return send(res, 401, { error: 'unauthorized' });
+            // Two tokens, two route sets: the vault token only for /v1/vault/*, the bridge's for the rest.
+            const vaultRoute = url.pathname.startsWith('/v1/vault/');
+            if (!(vaultRoute ? checkVaultToken : checkToken)(req.headers.authorization)) return send(res, 401, { error: 'unauthorized' });
             if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
             const chat = typeof req.headers['x-happy-chat'] === 'string' ? req.headers['x-happy-chat'].trim() : '';
             const body = await readJson(req);
+            if (vaultRoute) {
+                const fn = url.pathname.slice('/v1/vault/'.length);
+                if (!ACTIONS.includes(fn)) return send(res, 404, { error: 'not found' });
+                if (!chat) return send(res, 400, { error: 'X-Happy-Chat is required' });
+                if (!manager) return send(res, 503, { error: 'the filler is not enrolled with the vault (make filler-enroll)' });
+                return send(res, 200, await manager[fn]({ ...body, chat }));
+            }
             switch (url.pathname) {
                 case '/v1/scrub': {
                     // Every tainted session's values are scrubbed, whichever session the payload came from.
@@ -147,6 +168,13 @@ async function main(argv) {
             const n = p.clients().reduce((a, c) => a + p.entries(c).length, 0);
             const d = p.defaultClient();
             process.stdout.write(`policy ok: ${p.clients().length} client(s), ${n} fillable name(s), ${d ? `default_client ${d} (every chat without its own entry uses it)` : 'no default_client'}${p.clients().filter((c) => p.allItems(c)).map((c) => `, ${c} uses all_items (every vault login, on its own URIs' hosts${p.equivalentDomains(c) ? ' and their equivalent domains' : ' only: equivalent_domains is off'})`).join('')}\n`);
+            for (const c of p.clients()) {
+                const m = p.manage(c);
+                if (!m) continue;
+                const on = ['create', 'update', 'remove', 'compare'].filter((f) => m[f]);
+                process.stdout.write(`  ${c} may ${on.length ? on.join(', ') : 'not change'} vault logins${m.pipe.length ? `, and pipe into ${m.pipe.join(', ')}` : ''}\n`);
+            }
+            if (p.pipeTargets().length) process.stdout.write(`  pipe targets: ${p.pipeTargets().map((t) => `${t} (${p.pipeTarget(t).argv[0]})`).join(', ')}\n`);
             return 0;
         } catch (err) {
             process.stderr.write(`policy invalid: ${err.message}\n`);
@@ -154,6 +182,12 @@ async function main(argv) {
         }
     }
     const checkToken = tokenChecker(readSecretOrNull(cfg.files.clientTokenSha256));
+    const vaultTokenSha = readSecretOrNull(cfg.files.vaultClientTokenSha256);
+    // The same token for both would let the bridge reach the vault routes: refuse.
+    const checkVaultToken = vaultTokenSha && vaultTokenSha.trim().toLowerCase() === String(readSecretOrNull(cfg.files.clientTokenSha256) || '').trim().toLowerCase()
+        ? (log('vault-client-token equals the bridge token: the vault tools stay off (make filler-init FILLER_ROTATE=1)'), () => false)
+        : tokenChecker(vaultTokenSha);
+    if (!vaultTokenSha) log('no vault-client-token.sha256: the vault tools (/v1/vault/*) are off until make filler-init');
     const controllers = controllerSet({ defaultPort: cfg.controllerPort, ports: parsePorts(cfg.controllerPorts), token: readSecret(cfg.files.controllerToken) });
     const scrubber = createScrubber();
     const taint = createTaint({ statePath: cfg.statePath, scrubber, controllers, log });
@@ -163,7 +197,7 @@ async function main(argv) {
     let vault = null;
     try { vault = buildVaultFromFiles(cfg); } catch (err) { log(`vault not usable: ${err.message}`); }
     if (!vault) log('not enrolled: list, fill and login answer 503 until make filler-enroll');
-    const handle = createApp({ checkToken, getPolicy, vault, controllers, scrubber, taint, audit, allowLoopbackHttp: cfg.testLoopback });
+    const handle = createApp({ checkToken, checkVaultToken, getPolicy, vault, controllers, scrubber, taint, audit, allowLoopbackHttp: cfg.testLoopback });
     const server = createHttpServer(handle);
     server.requestTimeout = 120_000;
     await new Promise((r, j) => { server.once('error', j); server.listen(cfg.port, cfg.host, r); });

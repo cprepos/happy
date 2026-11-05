@@ -144,3 +144,38 @@ test('enroll derives the user key from the master password and API key, and stor
         assert.equal(Buffer.from(readFileSync(join(dir, 'vault-user-key'), 'utf8').trim(), 'base64').length, 64);
     } finally { await fake.close(); }
 });
+
+test('two tokens, two route sets: the vault token reaches only /v1/vault/*, the bridge token never does', async () => {
+    const t = await setup();
+    const VTOKEN = 'vault-client-token-qrstuvwxyz012345';
+    const { parsePolicy } = await import('../lib/policy.mjs');
+    const { managePolicy } = await import('./helpers.mjs');
+    const policy = parsePolicy(JSON.stringify(managePolicy(t.v)));
+    const handle = createApp({ checkToken: tokenChecker(sha(TOKEN)), checkVaultToken: tokenChecker(sha(VTOKEN)), ...t.deps, getPolicy: () => policy, scrubber: t.scrubber });
+    const server = createServer(handle);
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    const port = server.address().port;
+    const V = { Authorization: `Bearer ${VTOKEN}` };
+    try {
+        assert.equal((await call(port, 'POST', '/v1/vault/list', {})).status, 401);
+        assert.equal((await call(port, 'POST', '/v1/list', {}, V)).status, 401);
+        assert.equal((await call(port, 'POST', '/v1/scrub', { payload: 'x' }, V)).status, 401);
+        const ok = await call(port, 'POST', '/v1/vault/list', {}, V);
+        assert.equal(ok.status, 200);
+        assert.equal(ok.json.client, 'acme');
+        assert.equal((await call(port, 'POST', '/v1/vault/purge', { id: t.v.items['acme-github'].id }, V)).status, 404);
+        assert.equal((await call(port, 'POST', '/v1/vault/list', {}, { ...V, 'X-Happy-Chat': '' })).status, 400);
+        const bad = await call(port, 'POST', '/v1/vault/list', { client_id: 'globex' }, V);
+        assert.equal(bad.status, 400);
+        assert.match(bad.json.error, /unknown key "client_id"/);
+        assert.equal((await call(port, 'POST', '/v1/vault/list', {}, { ...V, 'X-Happy-Chat': 'none' })).json.client, 'agent');
+        // Without a vault token configured, the routes are closed.
+        const closed = createServer(createApp({ checkToken: tokenChecker(sha(TOKEN)), ...t.deps, getPolicy: () => policy, scrubber: t.scrubber }));
+        await new Promise((r) => closed.listen(0, '127.0.0.1', r));
+        assert.equal((await call(closed.address().port, 'POST', '/v1/vault/list', {}, V)).status, 401);
+        await new Promise((r) => { closed.closeAllConnections?.(); closed.close(r); });
+    } finally {
+        await new Promise((r) => { server.closeAllConnections?.(); server.close(r); });
+        await t.close();
+    }
+});

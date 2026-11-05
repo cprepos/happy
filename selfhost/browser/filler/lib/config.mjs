@@ -25,6 +25,8 @@ export function loadConfig(env = process.env) {
         testLoopback,
         files: {
             clientTokenSha256: join(secrets, 'client-token.sha256'),
+            // vault-mcp's token, for /v1/vault/* only (the bridge's token never reaches those routes).
+            vaultClientTokenSha256: join(secrets, 'vault-client-token.sha256'),
             controllerToken: join(secrets, 'controller-token'),
             vaultClientId: join(secrets, 'vault-client-id'),
             vaultClientSecret: join(secrets, 'vault-client-secret'),
