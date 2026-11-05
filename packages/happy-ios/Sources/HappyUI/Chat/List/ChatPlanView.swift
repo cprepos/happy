@@ -320,6 +320,7 @@ final class ChatPlanView: UIView {
                 view.onChange = { [weak self] text in
                     self?.onAction?(.questionCustom(toolId: field.toolId, questionId: field.questionId, text: text))
                 }
+                view.onSubmit = { [weak self] in self?.onAction?(.questionSubmit(toolId: field.toolId)) }
                 view.setLayoutFrame(frame)
                 view.apply(field)
                 order.append(view)

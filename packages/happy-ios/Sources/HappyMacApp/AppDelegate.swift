@@ -100,6 +100,10 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
         edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        let conversation = menu("Conversation")
+        let send = conversation.addItem(withTitle: "Send", action: #selector(MacWindowController.sendFromMenu(_:)), keyEquivalent: "\r")
+        send.keyEquivalentModifierMask = [.command]
+        send.target = controller
         let window = menu("Window")
         window.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         window.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")

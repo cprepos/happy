@@ -1495,6 +1495,26 @@ public final class AgentInputCardView: UIView {
         delegate?.agentInputCardDidPressPrimary(self)
     }
 
+    /// ⌘↩ while the text has the keyboard (`SendShortcut`).
+    public override var keyCommands: [UIKeyCommand]? {
+        guard textView.isFirstResponder else { return super.keyCommands }
+        return [SendShortcut.command(action: #selector(sendShortcut(_:)))] + (super.keyCommands ?? [])
+    }
+
+    /// What the send button does, only when it would send: the flat
+    /// panel's send, or the round button showing send.
+    @objc func sendShortcut(_ sender: Any?) {
+        if let desktop = configuration.desktop {
+            SendShortcut.fire(allowed: SendShortcut.allows(desktop: desktop.send)) {
+                delegate?.agentInputCardDidPressSend(self)
+            }
+        } else {
+            SendShortcut.fire(allowed: SendShortcut.allows(primary: configuration.primaryAction, busy: configuration.isPrimaryBusy)) {
+                primaryTapped()
+            }
+        }
+    }
+
     @objc private func expandTapped() {
         delegate?.agentInputCardDidPressExpand(self)
     }

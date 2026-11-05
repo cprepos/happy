@@ -321,6 +321,21 @@ import HappyLayout
         connect()
     }
 
+    /// ⌘↩ in the message field sends, as Send does. HappyUI's
+    /// `SendShortcut` is out of reach of the Clip, so the command is made here.
+    public override var keyCommands: [UIKeyCommand]? {
+        guard input.isFirstResponder else { return super.keyCommands }
+        let command = UIKeyCommand(title: "Send", action: #selector(sendShortcut(_:)), input: "\r", modifierFlags: .command)
+        command.discoverabilityTitle = "Send"
+        command.wantsPriorityOverSystemBehavior = true
+        return [command] + (super.keyCommands ?? [])
+    }
+
+    @objc func sendShortcut(_ sender: Any?) {
+        guard sendButton.isEnabled, !sendButton.isHidden else { return }
+        send()
+    }
+
     @objc private func send() {
         guard sending == nil, active, !terminal, !isReadOnly, let client, var stored = record else { return }
         let text = input.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

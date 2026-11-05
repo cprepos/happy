@@ -8,6 +8,9 @@ import UIKit
 /// shows what the plan says. The plan's box draws the border and the fill.
 final class ChatQuestionFieldView: UITextView, UITextViewDelegate {
     var onChange: ((String) -> Void)?
+    /// ⌘↩: the form's Submit Answer, which its owner sends only once every
+    /// required question has an answer, as the button (`SendShortcut`).
+    var onSubmit: (() -> Void)?
     private let placeholderLabel = UILabel()
     private var shown: ChatQuestionField?
 
@@ -52,6 +55,15 @@ final class ChatQuestionFieldView: UITextView, UITextViewDelegate {
     func textViewDidChange(_ textView: UITextView) {
         placeholderLabel.isHidden = !text.isEmpty
         onChange?(text)
+    }
+
+    override var keyCommands: [UIKeyCommand]? {
+        guard isFirstResponder, onSubmit != nil else { return super.keyCommands }
+        return [SendShortcut.command(action: #selector(sendShortcut(_:)))] + (super.keyCommands ?? [])
+    }
+
+    @objc func sendShortcut(_ sender: Any?) {
+        SendShortcut.fire(allowed: onSubmit != nil) { onSubmit?() }
     }
 }
 #endif

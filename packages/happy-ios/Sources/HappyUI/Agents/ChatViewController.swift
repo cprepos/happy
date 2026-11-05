@@ -1512,8 +1512,13 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
     // MARK: Acts
 
     private func updatePrimary() {
-        let hasContent = !card.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pictures.images.isEmpty
-        card.configuration.primaryAction = AgentInputPrimaryAction.resolve(
+        card.configuration.primaryAction = primaryAction(text: card.text)
+    }
+
+    /// The round button for this text with the pictures picked now.
+    private func primaryAction(text: String) -> AgentInputPrimaryAction {
+        let hasContent = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pictures.images.isEmpty
+        return AgentInputPrimaryAction.resolve(
             hasComposerContent: hasContent, isSendBlocked: false, isSendDisabled: false, showAbortButton: chat.working, canAbort: true
         )
     }
@@ -1907,6 +1912,11 @@ extension ChatViewController: AgentInputCardDelegate {
             keyboardTop: keyboardTop < view.bounds.maxY ? view.convert(CGPoint(x: 0, y: keyboardTop), to: nil).y : nil
         )
         editor.onChange = { [weak self] text in self?.draftEdited(text) }
+        editor.canSend = { [weak self] text in
+            guard let self else { return false }
+            return SendShortcut.allows(primary: self.primaryAction(text: text), busy: self.card.configuration.isPrimaryBusy)
+        }
+        editor.onSend = { [weak self] in self?.card.sendShortcut(nil) }
         editor.onClose = { [weak self] text, selection, focused in
             guard let self else { return }
             self.showingDraft = true

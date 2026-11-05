@@ -700,6 +700,19 @@ final class NewSessionComposerView: UIView, UITextViewDelegate {
         textChanged(report: true)
     }
 
+    /// ⌘↩ while the prompt has the keyboard (`SendShortcut`).
+    override var keyCommands: [UIKeyCommand]? {
+        guard textView.isFirstResponder else { return super.keyCommands }
+        return [SendShortcut.command(action: #selector(sendShortcut(_:)))] + (super.keyCommands ?? [])
+    }
+
+    /// Send's own press, only while it can be pressed and nothing is starting.
+    @objc func sendShortcut(_ sender: Any?) {
+        SendShortcut.fire(allowed: sendButton.isEnabled && !sendButton.isBusy) {
+            sendButton.sendActions(for: .touchUpInside)
+        }
+    }
+
     private func textChanged(report: Bool) {
         textRevision += 1
         // Against what the screen laid out before: the new text's height

@@ -513,6 +513,16 @@ final class AgentQuestionSheetController: UIViewController, UITextViewDelegate {
         update()
     }
 
+    /// ⌘↩ in a written answer submits, as the button does (`SendShortcut`).
+    override var keyCommands: [UIKeyCommand]? {
+        guard blocks.contains(where: { $0.input?.isFirstResponder == true }) else { return super.keyCommands }
+        return [SendShortcut.command(action: #selector(sendShortcut(_:)))] + (super.keyCommands ?? [])
+    }
+
+    @objc func sendShortcut(_ sender: Any?) {
+        SendShortcut.fire(allowed: submitButton.isEnabled) { submitTapped() }
+    }
+
     @objc private func submitTapped() {
         guard AgentCommunications.canSubmit(questions, drafts: drafts), !submitting else { return }
         submitting = true

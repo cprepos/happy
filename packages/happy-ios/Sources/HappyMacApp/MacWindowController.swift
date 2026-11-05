@@ -223,6 +223,15 @@ final class MacWindowController: NSWindowController, NSMenuItemValidation {
         }
     }
 
+    /// Conversation > Send (⌘↩), the same send as the button.
+    @objc func sendFromMenu(_ sender: Any?) { sendMessage() }
+
+    private var canSend: Bool {
+        let conversation = root.conversation
+        return selectedID != nil && !busy && conversation.composer.isEditable && conversation.send.isEnabled
+            && !conversation.composer.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     private func sendMessage() {
         let text = root.conversation.composer.string
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, let id = selectedID, !busy else { return }
@@ -257,6 +266,9 @@ final class MacWindowController: NSWindowController, NSMenuItemValidation {
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(sendFromMenu(_:)) {
+            return canSend && window?.attachedSheet == nil
+        }
         if menuItem.action == #selector(newSession(_:)) || menuItem.action == #selector(pairComputer(_:)) {
             return account.session != nil && !busy && window?.attachedSheet == nil
         }

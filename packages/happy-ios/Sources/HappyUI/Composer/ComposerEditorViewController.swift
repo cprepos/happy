@@ -14,6 +14,12 @@ final class ComposerEditorViewController: UIViewController, UITextViewDelegate {
     /// Collapsed, or gone any other way: the text and the caret go back to
     /// the card, and whether the keyboard was up.
     var onClose: ((String, NSRange, Bool) -> Void)?
+    /// Whether the card's send button would send this text; ⌘↩ does nothing
+    /// without it (`SendShortcut`).
+    var canSend: ((String) -> Bool)?
+    /// ⌘↩ allowed: after the text has gone back to the card and this has
+    /// collapsed, the card sends it as its button would.
+    var onSend: (() -> Void)?
 
     let textView = UITextView(usingTextLayoutManager: true)
     private let collapseButton = ComposerIconButton(
@@ -141,6 +147,19 @@ final class ComposerEditorViewController: UIViewController, UITextViewDelegate {
     @objc private func collapse() {
         finish()
         dismiss(animated: true)
+    }
+
+    override var keyCommands: [UIKeyCommand]? {
+        guard textView.isFirstResponder else { return super.keyCommands }
+        return [SendShortcut.command(action: #selector(sendShortcut(_:)))] + (super.keyCommands ?? [])
+    }
+
+    @objc func sendShortcut(_ sender: Any?) {
+        guard let onSend else { return }
+        SendShortcut.fire(allowed: canSend?(textView.text ?? "") ?? false) {
+            collapse()
+            onSend()
+        }
     }
 }
 #endif

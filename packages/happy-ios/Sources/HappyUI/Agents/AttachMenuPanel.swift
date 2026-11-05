@@ -231,6 +231,19 @@ final class AttachMenuPanel: UIView, UITextViewDelegate, UIGestureRecognizerDele
         if layout?.glass.height != before { onResize?() }
     }
 
+    /// ⌘↩ in the caption sends the picked pictures, as send does
+    /// (`SendShortcut`).
+    override var keyCommands: [UIKeyCommand]? {
+        guard field.isFirstResponder else { return super.keyCommands }
+        return [SendShortcut.command(action: #selector(sendShortcut(_:)))] + (super.keyCommands ?? [])
+    }
+
+    @objc func sendShortcut(_ sender: Any?) {
+        SendShortcut.fire(allowed: picking && !send.isHidden && send.isEnabled) {
+            send.sendActions(for: .touchUpInside)
+        }
+    }
+
     /// Picked or not: the bar becomes the caption, or back.
     func setPicking(_ value: Bool, animated: Bool) {
         guard value != picking else { return }
