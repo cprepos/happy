@@ -329,7 +329,7 @@ test('page fits a 320-430 px phone: viewport meta, no fixed widths, frame box si
     assert.match(css, /safe-area-inset-right/);
     assert.match(css, /object-fit: contain/);
     assert.match(css, /aspect-ratio: var\(--frame-ar\)/);
-    assert.match(css, /--frame-ar: 480 \/ 950/);
+    assert.match(css, /--frame-ar: 480 \/ 1040/);
     assert.match(css, /overflow-wrap: anywhere/);
     // width / min-width / flex-basis in px above the narrowest phone would push the page wider.
     for (const [, prop, px] of css.matchAll(/(?<![-\w])((?:min-)?width|flex-basis)\s*:\s*(\d+)px/g)) {

@@ -198,9 +198,9 @@ const SCRIPT = `
 })();
 `;
 
-export function renderPage({ id, state, takeoverUrl, nonce, frameWidth = 480, frameHeight = 950 }) {
+export function renderPage({ id, state, takeoverUrl, nonce, frameWidth = 480, frameHeight = 1040 }) {
     const fw = Math.max(1, Math.round(Number(frameWidth) || 480));
-    const fh = Math.max(1, Math.round(Number(frameHeight) || 950));
+    const fh = Math.max(1, Math.round(Number(frameHeight) || 1040));
     return `<!doctype html>
 <html lang="en">
 <head>

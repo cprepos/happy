@@ -51,9 +51,19 @@ Tunables, such as screen size, ports and `MAX_SESSIONS`, go in
 
 ## Settings worth knowing
 
-- **Screen:** Xvfb is 480x1040 and the page viewport is 480x950. This is phone-shaped, so sites
-  serve narrow layouts and noVNC is legible on an iPhone. The takeover URL is
-  `http://localhost:6080/vnc.html?autoconnect=true&resize=remote`.
+- **Screen:** Xvfb is 480x1040 and so is the page: the window is locked (below), so the page
+  fills the whole screen. This is phone-shaped, so sites serve narrow layouts and noVNC is
+  legible on an iPhone.
+- **One window, nothing else on screen:** `kiosk/` is mounted into browser-node.
+  `happy-kiosk.mjs` runs in place of the image's `server.mjs` and holds every Chromium window
+  in browser fullscreen (no tab strip, address bar or frame; a `window.open` popup too),
+  re-checking every 2 s. Chromium's own `--kiosk` does not reach windows Playwright opens, so
+  the lock is done over CDP. `kiosk/fluxbox` gives fluxbox no toolbar, menu or key bindings,
+  `kiosk/policy.json` turns off guest mode, profiles, the password manager, printing and
+  permission prompts, and x11vnc runs with `-noremote -norc -nowf -nonap`. `make
+  browser-bridge-smoke` measures the window from inside the container
+  (`scripts/kiosk-probe.mjs`) and checks no abstract X11 socket is visible on the host. The takeover URL is
+  `http://localhost:6080/vnc.html?autoconnect=true&resize=scale`.
 - **Host networking:** all three services run with `network_mode: host`, so `localhost` in
   Chromium is this machine and agents can open loopback-only services here (for example
   `http://localhost:8903/v1/models`). There are no port publishes; each listener binds
@@ -124,7 +134,7 @@ second would fill the disk. The path stays `frame.jpg`, as specified. Clients
 must go by `Content-Type`, not the extension.
 
 **Take control and the VNC password.** The button opens
-`http://localhost:6080/vnc.html?autoconnect=true&resize=remote#password=<vnc-password>`.
+`http://localhost:6080/vnc.html?autoconnect=true&resize=scale#password=<vnc-password>`.
 This avoids a password prompt on the phone. The tradeoff is that the password is
 in the page's HTML and in the noVNC URL. It sits in the fragment, so it is never
 sent to a server or a proxy log, but it does live in the in-app browser's

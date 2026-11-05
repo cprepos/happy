@@ -21,13 +21,13 @@ export function loadConfig(env = process.env) {
         // Upper bound for browser_wait_for_human's timeout_s. Keep it below the
         // client's tool timeout (Happy Agent allows at most 600 s).
         waitMaxS: Math.max(5, Math.min(3600, Number(env.BRIDGE_WAIT_MAX_S || 3600))),
-        novncUrl: env.NOVNC_URL || 'http://localhost:6080/vnc.html?autoconnect=true&resize=remote',
+        novncUrl: env.NOVNC_URL || 'http://localhost:6080/vnc.html?autoconnect=true&resize=scale',
         storePath: env.BRIDGE_STORE || join(home, 'bridge/links.json'),
         idleMs: Number(env.BRIDGE_LINK_IDLE_HOURS || 12) * 3600_000,
         // The frame's shape (the browser viewport auto-browser screenshots), so the
         // phone page can size the frame box before the first frame arrives.
         frameWidth: Number(env.BRIDGE_FRAME_WIDTH) || 480,
-        frameHeight: Number(env.BRIDGE_FRAME_HEIGHT) || 950,
+        frameHeight: Number(env.BRIDGE_FRAME_HEIGHT) || 1040,
         files: {
             apiToken: join(secrets, 'api-token'),
             vncPassword: join(secrets, 'vnc-password'),

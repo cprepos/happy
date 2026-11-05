@@ -1,0 +1,5 @@
+[app] (name=.*)
+  [Deco]	{NONE}
+  [Maximized]	{yes}
+  [Fullscreen]	{yes}
+[end]

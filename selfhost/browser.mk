@@ -15,8 +15,10 @@ BROWSER_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))/b
 export HAPPY_BROWSER_HOME ?= $(HOME)/.local/share/happy-browser
 BROWSER_SECRETS := $(HAPPY_BROWSER_HOME)/secrets
 BROWSER_LOCAL_ENV := $(BROWSER_DIR)/.env.browser
-BROWSER_COMPOSE := docker compose -p happy-browser -f $(BROWSER_DIR)/compose.browser.yml \
+BROWSER_COMPOSE := docker compose -p $(BROWSER_PROJECT) -f $(BROWSER_DIR)/compose.browser.yml \
 	--env-file $(BROWSER_SECRETS)/browser.env $(if $(wildcard $(BROWSER_LOCAL_ENV)),--env-file $(BROWSER_LOCAL_ENV))
+# A second project (with its own HAPPY_BROWSER_HOME and ports) can run beside the live one for tests.
+BROWSER_PROJECT ?= happy-browser
 BROWSER_SVC ?=
 BROWSER_API ?= http://127.0.0.1:8010
 BROWSER_BRIDGE ?= http://127.0.0.1:6090
@@ -56,4 +58,4 @@ browser-bridge-test:
 
 browser-bridge-smoke:
 	@BROWSER_API="$(BROWSER_API)" BROWSER_BRIDGE="$(BROWSER_BRIDGE)" HAPPY_BROWSER_HOME="$(HAPPY_BROWSER_HOME)" \
-		node $(BROWSER_DIR)/scripts/bridge-smoke.mjs
+		BROWSER_NODE_CONTAINER="$(BROWSER_PROJECT)-browser-node-1" node $(BROWSER_DIR)/scripts/bridge-smoke.mjs

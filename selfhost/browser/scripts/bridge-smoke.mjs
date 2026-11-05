@@ -4,7 +4,7 @@
 // bridge's routes and the MCP server (its own tools and the auto-browser
 // tools it passes through), then deletes the session.
 // Secrets are read from their files and never printed.
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,6 +13,7 @@ import { createInterface } from 'node:readline';
 const home = process.env.HAPPY_BROWSER_HOME || join(process.env.HOME, '.local/share/happy-browser');
 const API = process.env.BROWSER_API || 'http://127.0.0.1:8010';
 const BRIDGE = process.env.BROWSER_BRIDGE || 'http://127.0.0.1:6090';
+const NODE_CONTAINER = process.env.BROWSER_NODE_CONTAINER || 'happy-browser-browser-node-1';
 const START_URL = process.env.SMOKE_URL || 'https://news.ycombinator.com/';
 const secret = (n) => readFileSync(join(home, 'secrets', n), 'utf8').trim();
 const apiToken = secret('api-token');
@@ -26,7 +27,7 @@ const bapi = (path, body) => fetch(BRIDGE + path, { method: 'POST', headers: { A
 
 function mcp() {
     const child = spawn(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), '../bridge/mcp.mjs')], {
-        env: { ...process.env, HAPPY_BROWSER_HOME: home, BRIDGE_URL: BRIDGE }, stdio: ['pipe', 'pipe', 'inherit'],
+        env: { ...process.env, HAPPY_BROWSER_HOME: home, BRIDGE_URL: BRIDGE, AUTO_BROWSER_URL: API }, stdio: ['pipe', 'pipe', 'inherit'],
     });
     const waiting = new Map();
     const notes = [];
@@ -39,7 +40,28 @@ function mcp() {
     return { request, notes, close: () => child.stdin.end() };
 }
 
+// The browser shows one page and nothing else: Chromium in kiosk mode (no tab strip, no address
+// bar, no window frame), and a window.open popup is fullscreen too. Measured from inside the
+// browser-node by scripts/kiosk-probe.mjs. And Xvfb must not listen on the abstract socket
+// @/tmp/.X11-unix/X99: with host networking it would be in the host's namespace, a display
+// anything on this machine could open.
+function kiosk() {
+    const probe = spawnSync('docker', ['exec', '-i', '-w', '/opt/browser-node', '-u', 'browser', NODE_CONTAINER, 'node', '--input-type=module', '-'], {
+        input: readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'kiosk-probe.mjs')), encoding: 'utf8', timeout: 60000,
+    });
+    let g = {};
+    try { g = JSON.parse(probe.stdout.trim().split('\n').pop()); } catch { g = { error: `probe exited ${probe.status}` }; }
+    check(!g.error, `kiosk probe ran in ${NODE_CONTAINER}${g.error ? `: ${g.error}` : ''}`);
+    const full = (w) => !!w && w.screenX === 0 && w.screenY === 0 && w.outerHeight === w.innerHeight
+        && w.innerHeight === w.screenHeight && w.innerWidth === w.screenWidth;
+    check(full(g.page), `page fills the screen with no browser UI: ${JSON.stringify(g.page)}`);
+    check(full(g.popup), `window.open popup fills the screen too: ${JSON.stringify(g.popup)}`);
+    const ss = spawnSync('ss', ['-xlH'], { encoding: 'utf8' });
+    check(ss.status === 0 && !/@\/tmp\/\.X11-unix\//.test(ss.stdout), 'no abstract X11 socket in the host network namespace');
+}
+
 let sessionId, liveBase;
+if (process.env.SMOKE_KIOSK !== '0') kiosk();
 try {
     const created = await (await ab('/sessions', { method: 'POST', body: JSON.stringify({ name: 'bridge-smoke', start_url: START_URL }) })).json();
     sessionId = created.id;
@@ -47,7 +69,7 @@ try {
 
     const linkRes = await bapi('/api/links', { session_id: sessionId });
     const link = await linkRes.json();
-    check(linkRes.ok && /^http:\/\/localhost:6090\/live\/[0-9a-f]{32}$/.test(link.url), `link ${link.url}`);
+    check(linkRes.ok && new RegExp(`^http://localhost:${new URL(BRIDGE).port}/live/[0-9a-f]{32}$`).test(link.url), `link ${link.url}`);
     const live = (liveBase = `${BRIDGE}/live/${link.id}`);
 
     const page = await fetch(live);
