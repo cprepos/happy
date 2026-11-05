@@ -20,6 +20,11 @@ any copy of it that turns up in a later tool result is replaced with
 - Types a value only into a field of the right kind, only on a page that is
   https on a host that appears both in the vault item's URIs and in the policy,
   and only into a session bound to the same chat and client.
+- Also serves the agents' vault tools (`selfhost/vault-mcp`, see "Vault
+  tools" below): list, create, change, trash and restore logins with
+  passwords it generates itself, compare a value against a hash, and pipe a
+  value into an allowlisted command's stdin. No route returns a value to the
+  model.
 - Audit log: `/srv/happy-filler/audit/YYYY-MM.jsonl` records names, hosts and
   outcomes. It never records values. Read it with `make filler-audit`.
 
@@ -42,10 +47,10 @@ These steps come after the vault is up (`selfhost/vault/README.md`).
 3. **One command:** `make filler-setup COMMIT=<sha>` (the commit you
    reviewed). It asks for your sudo password once, then:
    - `filler-init` (skipped if already done): directories, the bridge's client
-     token, an empty policy;
+     token, the vault tools' token, an empty policy;
    - `filler-install COMMIT=<sha>`: deploys that commit;
    - seeds an empty policy with
-     `{"version":1,"default_client":"agent","clients":{"agent":{"all_items":true,"secrets":{}}},"chats":{}}`
+     `{"version":1,"default_client":"agent","clients":{"agent":{"all_items":true,"secrets":{},"manage":{"create":true,"update":true,"remove":true,"compare":true,"pipe":[]}}},"chats":{},"pipe_targets":{}}`
      (a policy with content is left alone);
    - `filler-enroll`: asks only for the agent's email (Enter accepts the
      default) and master password, and reads the account's API key from the
@@ -153,7 +158,7 @@ gmail.com, google.com and youtube.com in one group.
 What `make filler-setup` seeds, and the recommended setting:
 
 ```json
-{"version":1,"default_client":"agent","clients":{"agent":{"all_items":true,"secrets":{}}},"chats":{}}
+{"version":1,"default_client":"agent","clients":{"agent":{"all_items":true,"secrets":{},"manage":{"create":true,"update":true,"remove":true,"compare":true,"pipe":[]}}},"chats":{},"pipe_targets":{}}
 ```
 
 Or, listing each login by hand instead of `all_items`:
@@ -172,6 +177,86 @@ the policy list (for `all_items`, or one of its equivalent domains), only into a
 that holds one chat's secret refuses fills for another chat. To give one
 client's chats their own logins later, add that client and its chats; mapped
 chats never fall back to the default.
+
+## Vault tools (`selfhost/vault-mcp`)
+
+Every agent vault interaction goes through one stdio MCP server,
+`selfhost/vault-mcp/mcp.mjs`, with one strict tool per action. Its server
+instructions tell agents not to use the bw CLI, the Vaultwarden API, the
+filler's files or docker. Each tool is a thin client of the filler's
+`POST /v1/vault/<action>`:
+
+| tool | what it does | needs (`manage.*`) |
+|---|---|---|
+| `vault_list` / `vault_search` | the logins the chat reaches: id, name, fill name, username, URIs, which fields are set, trashed. Never a password or TOTP value | (any client) |
+| `vault_create` | a new login; the filler generates the password (default 32 characters from all classes, 16..128) | `create` (only with `all_items`) |
+| `vault_update` | rename, new URIs or username, `rotate_password` (a new random one; the old one goes to the item's password history) | `update` |
+| `vault_remove` | **soft delete** to the vault trash | `remove` |
+| `vault_restore` | back from the trash | `remove` |
+| `vault_compare` | `{match: true\|false}` against a sha256/sha512 (hex, optional salt prefix), bcrypt or argon2 (PHC) digest; 20 per client and login per 10 minutes | `compare` |
+| `vault_pipe` | the value on the stdin of an allowlisted command; returns its exit code and scrubbed output | `pipe: [target names]` |
+
+- New passwords are always random and generated inside the filler. An agent
+  never supplies or sees one: it sets a new password on a site with
+  `browser_fill_secret` (field `password`) on the change-password form, after
+  `vault_update` with `rotate_password`.
+- There is no purge or hard delete anywhere. Vaultwarden empties its trash
+  only if `TRASH_AUTO_DELETE_DAYS` is set in `/srv/happy-vault/vaultwarden.env`.
+- Writes go only to the agent account's personal logins that the chat's
+  client reaches (its listed item ids, or for an `all_items` client the
+  personal logins no client lists). `create` requires `all_items`: a login
+  created by another client would land under the `all_items` client.
+- A new name must not collide with a fill name already in use (409).
+
+**Two tokens.** The bridge's client token (`secrets/client-token.sha256`)
+reaches only the fill routes, and the vault tools' token
+(`secrets/vault-client-token.sha256`) only `/v1/vault/*`. `make filler-init`
+writes the vault tools' token to
+`~/.local/share/happy-vault-mcp/secrets/vault-client-token` (yours, 0600;
+`HAPPY_VAULT_MCP_HOME` moves it). If the two hashes are the same, the filler
+turns the vault routes off. `make filler-init FILLER_ROTATE=1` rotates both.
+
+**Registering the server** with the agent harnesses is done by `make
+mcp-register` in `selfhost/Makefile`; the command is
+`node selfhost/vault-mcp/mcp.mjs`, with `HAPPY_SESSION_ID` set by Happy for
+the chat id (a process without one sends `none`, served by `default_client`).
+
+### `manage` and `pipe_targets` in the policy
+
+```json
+{
+  "version": 1,
+  "default_client": "agent",
+  "clients": {
+    "agent": {
+      "all_items": true, "secrets": {},
+      "manage": { "create": true, "update": true, "remove": true, "compare": true, "pipe": ["docker-login", "gh-token"] }
+    }
+  },
+  "chats": {},
+  "pipe_targets": {
+    "docker-login": { "argv": ["docker", "login", "--username", "{username}", "--password-stdin", "{arg:registry}"], "args": { "registry": "[a-z0-9.-]+(:[0-9]+)?" } },
+    "gh-token": { "argv": ["gh", "auth", "login", "--hostname", "github.com", "--with-token"] }
+  }
+}
+```
+
+- `manage` keys are `create`, `update`, `remove`, `compare` (true or false)
+  and `pipe` (names from `pipe_targets`). A missing `manage` means list and
+  search only.
+- A `pipe_targets` entry is a command run without a shell. Each argv element
+  is a literal, or exactly `{username}` (the login's username) or
+  `{arg:<slot>}`; `argv[0]` is literal. Every slot needs a pattern in `args`,
+  which must match the agent's whole value. The login's value goes to stdin
+  only, never into argv. With the example, `vault_pipe(id, "password",
+  "docker-login", {"registry": "ghcr.io"})` runs `docker login --username
+  <user> --password-stdin ghcr.io`, and `vault_pipe(id, "password",
+  "gh-token")` logs `gh` in with a token stored as the login's password.
+- `make filler-install` upgrades an older policy once (one with no
+  `pipe_targets`): it backs it up to `policy-backups/`, gives the
+  `all_items` client `manage` with every action on and `"pipe": []`, and
+  adds `"pipe_targets": {}`. After that the file is yours: a `manage` you
+  remove is not added back.
 
 ## Day to day
 
@@ -194,13 +279,23 @@ filler-policy-edit`. No re-enroll needed either way.
 **Rotation.** If you rotate the agent's API key or encryption key in the web
 vault, run `make filler-enroll` again. To rotate the bridge's client token, run
 `make filler-init FILLER_ROTATE=1`, then `make filler-up` and restart the
-bridge.
+bridge. The same rotates the vault tools' token; their MCP server reads it
+on every call, so no restart is needed there.
 
 ## Limits
 
 - Any account in the `docker` or `sudo` group can read `/srv`, run
   `docker exec` in the filler, and read its memory. The filler protects
   secrets only from agents that have no docker or sudo access.
+- **Known limit: `vault_pipe`.** To feed a command's stdin, the value has to
+  reach the agent-side MCP process (`vault-mcp`) for that one call: the filler
+  returns it only on the vault token's pipe route, and `lib/pipe.mjs` writes
+  it to the child's stdin, scrubs every encoded form of it out of the output
+  and drops it. A process running as your user can read the vault token and
+  ask for a value through that route, and an allowlisted command could be
+  made to print what it read (scrubbed, but only the forms the scrubber
+  knows). Allowlist only commands that read a secret from stdin and keep it
+  to themselves, and give `pipe` only to the clients that need it.
 - With OCR enabled, the controller's text from after an action, its
   `actions.jsonl` and its screenshots can contain a value that is visible on
   the page. That is usually the username, because password fields are masked.

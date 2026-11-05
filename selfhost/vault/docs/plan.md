@@ -303,7 +303,25 @@ services:
    - `mcp.mjs` pass-through goes through a filler `/v1/mcp` gate that applies taint and scrub itself.
    - After this, uid-1000 processes cannot bypass the guards.
 
+## Vault tools (added after the phases): `selfhost/vault-mcp` and `/v1/vault/*`
+The filler used to be read-only. Agents now manage the agent account's logins through one MCP server, and only through it.
+- **One strict function per action.** The actions are list, search, create, update, remove, restore, compare and pipe, each a tool in `selfhost/vault-mcp/mcp.mjs` and a route `POST /v1/vault/<action>` checked by `filler/lib/manage.mjs`. Every body is checked key by key. No tool takes a client or an email; the client comes from the chat, through the policy.
+- **Generated passwords only.** `create` and `update` with `rotate_password` use `filler/lib/generate.mjs` (`crypto.randomInt`, one of each class, Fisher-Yates shuffle). An agent never supplies a password. A rotation keeps the old EncString in `passwordHistory`, without decrypting it.
+- **No value back.**
+  - list and search return metadata only.
+  - compare answers `{match}` against sha256/sha512, bcrypt or argon2. The verifiers are pure JS in `filler/lib/hashes.mjs`, with caps on cost, and the action is rate limited.
+  - pipe is the one exception: the value goes to vault-mcp for one call and is written to an allowlisted command's stdin (see the filler README, "Known limit").
+- **Soft delete only.** remove uses `PUT /api/ciphers/<id>/delete`, which moves the login to the trash. restore uses `/restore`. Nothing calls `DELETE` or purges. `TRASH_AUTO_DELETE_DAYS` was not readable when this was written (the env file is root:1991 0640); the running container's environment has no such key, so the trash is likely kept forever.
+- **Scope of writes.** Writes reach only the personal logins the chat's client can reach. `manage.create` needs `all_items`.
+- **Separate token.** The vault-client token reaches only `/v1/vault/*`, and the bridge's token reaches only the fill routes. If the two hashes are equal, the vault routes are off.
+- **Policy.**
+  - Each client has `manage: {create, update, remove, compare, pipe: [targets]}`.
+  - Top-level `pipe_targets` holds argv templates, with `{username}` and `{arg:slot}` (full-match regex).
+  - `filler-install` upgrades an older policy once, after taking a backup.
+- **Registration** with the harnesses is `make mcp-register` in `selfhost/Makefile`.
+
 ## Risks that remain
+- **The vault tools widen what a uid-1000 process can do.** Anything that can read `~/.local/share/happy-vault-mcp/secrets/vault-client-token` can create, rename, rotate and trash the reachable logins, and can pipe a value into an allowlisted command. It still cannot purge a login or read a value back directly. Keep `pipe_targets` to commands that read a secret from stdin and do not echo it.
 - **The docker group and sudo are root.** prep is in both, so any host agent session with docker can read `/srv`, `docker exec` into the filler and read its memory, and remount anything. The guarantees hold only for agents without docker, such as happy-agent (no socket), and fully only after step 8.
 - **Dotfiles.** happy-agent has `/home/prep` mounted read-write. It can edit `~/.bashrc`, user systemd units or the Caddyfile, and get code run later by your docker-capable shell. That is a path to escalate.
 - **Caddy runs as uid 1000.** A modified Caddyfile could serve a malicious web vault and capture your master password. Use the native apps; open the web vault only when you must.
