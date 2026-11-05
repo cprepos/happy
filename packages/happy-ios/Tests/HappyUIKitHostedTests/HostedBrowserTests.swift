@@ -21,6 +21,15 @@ actor BrowserDaemon: AgentTransport {
     var connections = 0
     /// What the live browser (`/live/<id>/state`) says it is; `/done` makes it watching.
     var liveStatus = "takeover"
+    /// The browser's pod, as a bridge with one per chat says it (nil: no pods).
+    /// Asleep, its frame is 503.
+    var livePod: String?
+    /// The link `/live/chat/<key>` answers with; nil is 404 `no_link`.
+    var chatLink: String?
+    /// `/take`s answered 202 (waking) before the 200.
+    var wakingTakes = 0
+    /// `frame.jpg` reads that are never answered, as a stalled tunnel's.
+    var stalledFrames = 0
     /// Requests WebKit sent on a connection after its server had closed it:
     /// none ever reached a server, so none was answered.
     var afterClose: [String] = []
@@ -49,6 +58,10 @@ actor BrowserDaemon: AgentTransport {
             var bytes = Data("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: \(accept)\r\n\r\n".utf8)
             bytes.append(contentsOf: [0x81, 7]); bytes.append(Data("ws-live".utf8))
             return (bytes, true)
+        }
+        if head.line.contains("/frame.jpg "), stalledFrames > 0 {
+            stalledFrames -= 1
+            return (Data(), true)
         }
         if let live = liveAnswer(head) { return (live, false) }
         if let novnc = novncAnswer(head) { return (novnc, false) }
@@ -81,9 +94,21 @@ actor BrowserDaemon: AgentTransport {
         func reply(_ status: String, _ type: String, _ body: Data) -> Data {
             Data("HTTP/1.1 \(status)\r\nContent-Type: \(type)\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8) + body
         }
+        let pod = livePod.map { #","pod":"\#($0)""# } ?? ""
+        if head.line.contains(" /live/chat/") {
+            guard let chatLink else { return reply("404 Not Found", "application/json", Data(#"{"error":"no_link"}"#.utf8)) }
+            let live = liveStatus != "done" && (livePod == nil || livePod == "running" || livePod == "starting")
+            return reply("200 OK", "application/json", Data(#"{"id":"\#(chatLink)","live":\#(live),"status":"\#(liveStatus)","url":"https://example.com/login","title":"Log in to Example"\#(pod)}"#.utf8))
+        }
         if head.line.contains("/live/0e0e0e0e") { return reply("410 Gone", "application/json", Data(#"{"error":"expired"}"#.utf8)) }
+        if head.line.hasPrefix("POST ") && head.line.contains("/take ") && wakingTakes > 0 {
+            wakingTakes -= 1
+            livePod = "starting"
+            return reply("202 Accepted", "application/json", Data(#"{"status":"\#(liveStatus)","url":"https://example.com/login","title":"Log in to Example","pod":"starting"}"#.utf8))
+        }
         if head.line.hasPrefix("POST ") && head.line.contains("/take ") {
             liveStatus = "user"
+            if livePod != nil { livePod = "running" }
             // A container per chat: its noVNC is wherever the bridge says.
             return reply("200 OK", "application/json", Data(#"{"status":"user","reason":"Sign in","url":"https://example.com/login","title":"Log in to Example","novnc_url":"\#(Self.chatNoVNC)"}"#.utf8))
         }
@@ -100,8 +125,9 @@ actor BrowserDaemon: AgentTransport {
             return reply("200 OK", "application/json", Data(#"{"ok":true}"#.utf8))
         }
         if head.line.contains("/state ") {
-            return reply("200 OK", "application/json", Data(#"{"status":"\#(liveStatus)","reason":"Sign in","url":"https://example.com/login","title":"Log in to Example","viewers":1}"#.utf8))
+            return reply("200 OK", "application/json", Data(#"{"status":"\#(liveStatus)","reason":"Sign in","url":"https://example.com/login","title":"Log in to Example","viewers":1\#(pod)}"#.utf8))
         }
+        if head.line.contains("/frame.jpg ") && livePod == "asleep" { return reply("503 Service Unavailable", "application/json", Data(#"{"error":"asleep"}"#.utf8)) }
         if head.line.contains("/frame.jpg ") { return reply("200 OK", "image/png", Self.frame) }
         return nil
     }
@@ -144,6 +170,11 @@ actor BrowserDaemon: AgentTransport {
     /// One chat's container's noVNC, as `POST /take` answers it.
     nonisolated static let chatNoVNC = "http://localhost:6123/vnc.html?autoconnect=true&resize=remote"
     func setLiveStatus(_ status: String) { liveStatus = status }
+    func setLivePod(_ pod: String?) { livePod = pod }
+    func setChatLink(_ id: String?) { chatLink = id }
+    func setWakingTakes(_ count: Int) { wakingTakes = count }
+    func setStalledFrames(_ count: Int) { stalledFrames = count }
+    var frameReads: Int { requests.filter { $0.contains("/frame.jpg ") }.count }
 
     /// The bridge serves `frame.jpg` as a PNG; the card reads it by its bytes.
     nonisolated static let frame: Data = UIGraphicsImageRenderer(size: CGSize(width: 64, height: 40)).image { context in

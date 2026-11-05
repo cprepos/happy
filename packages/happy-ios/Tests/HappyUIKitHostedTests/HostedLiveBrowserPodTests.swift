@@ -1,0 +1,244 @@
+#if canImport(UIKit)
+@testable import HappyCore
+@testable import HappyUI
+import HappyLayout
+import UIKit
+import XCTest
+
+/// A bridge with a browser per chat, as the dock shows it: the chat finds
+/// its browser by its session with no link in the transcript, an asleep
+/// browser is calm rather than unreachable, and Take control waits for it
+/// to wake.
+@MainActor
+final class HostedLiveBrowserPodTests: XCTestCase {
+    private let id = "3f9a1c0e5b7d42e8a6c1f09b2d4e7a35"
+    private let key = LiveBrowserLink.chatKey(happySession: "cmhk2v9q40001ab12cd34ef56")
+
+    private final class Host: UIViewController, LiveBrowserDockHosting {
+        var dock: LiveBrowserDock!
+        var liveBrowserDock: LiveBrowserDock? { dock }
+        let card = UIView()
+
+        override func viewDidLoad() {
+            super.viewDidLoad()
+            view.backgroundColor = .systemBackground
+            view.addSubview(card)
+        }
+
+        // As the chats do: the dock reads while the chat shows.
+        override func viewWillAppear(_ animated: Bool) {
+            super.viewWillAppear(animated)
+            dock?.setOnScreen(true)
+        }
+
+        override func viewDidDisappear(_ animated: Bool) {
+            super.viewDidDisappear(animated)
+            dock?.setOnScreen(false)
+        }
+
+        override func viewDidLayoutSubviews() {
+            super.viewDidLayoutSubviews()
+            let size = view.bounds.size
+            let cardFrame = CGRect(x: 8, y: size.height - view.safeAreaInsets.bottom - 56, width: size.width - 16, height: 56)
+            card.frame = cardFrame
+            let line = ChatStatusLineLayout(above: cardFrame, voice: nil, browser: dock.indicator.textSize)
+            dock.indicator.place(line?.browser)
+            dock.layoutPlayer(card: cardFrame, anchor: line?.frame.minY ?? cardFrame.minY)
+        }
+    }
+
+    private func makeHost(_ daemon: BrowserDaemon) async throws -> (Host, UIWindow) {
+        let chat = UUID().uuidString
+        UserDefaults.standard.removeObject(forKey: "liveBrowserDock.\(chat)")
+        let host = Host()
+        let client = AgentClient(transport: daemon, token: "native-secret")
+        host.dock = LiveBrowserDock(host: host, chatKey: chat) {
+            LiveBrowserConnection(client: client) { "work1" }
+        }
+        host.dock.onLayoutChange = { [weak host] in host?.view.setNeedsLayout() }
+        let window = hostedKeyWindow(in: try await hostedActiveScene(), root: host)
+        host.view.addSubview(host.dock.indicator)
+        host.dock.setOnScreen(true)
+        host.view.layoutIfNeeded()
+        return (host, window)
+    }
+
+    func testTheChatFindsItsBrowserWithNoLinkInTheTranscript() async throws {
+        let daemon = BrowserDaemon()
+        await daemon.setLiveStatus("watching")
+        await daemon.setLivePod("running")
+        let (host, window) = try await makeHost(daemon)
+        defer { window.isHidden = true; host.dock.lookUp(key: nil) }
+        let dock = host.dock!
+        dock.lookUp(key: key)
+        try await until { await daemon.requests.contains { $0.hasPrefix("GET /live/chat/\(self.key) ") } }
+        XCTAssertTrue(dock.indicator.isHidden, "the chat never had a browser: no line")
+
+        // The agent starts one: the line comes, though no link was posted.
+        await daemon.setChatLink(id)
+        try await until { dock.indicator.text == Strings.LiveBrowser.indicator(Strings.LiveBrowser.watching) }
+        XCTAssertFalse(dock.indicator.isHidden)
+        XCTAssertEqual(dock.feed?.link.id, id)
+        try await until { await daemon.requests.contains { $0.hasPrefix("GET /live/\(self.id)/state") } }
+
+        // Off screen, nothing is asked.
+        dock.setOnScreen(false)
+        try await Task.sleep(for: .milliseconds(300))
+        let asked = await daemon.requests.count
+        try await Task.sleep(for: .seconds(5))
+        let after = await daemon.requests.count
+        XCTAssertEqual(after, asked, "nothing asked while the chat doesn't show")
+    }
+
+    func testAnAsleepBrowserIsCalmAndHasNoLine() async throws {
+        let daemon = BrowserDaemon()
+        await daemon.setLiveStatus("watching")
+        await daemon.setLivePod("asleep")
+        let (host, window) = try await makeHost(daemon)
+        defer { window.isHidden = true; host.dock.update(link: nil) }
+        let dock = host.dock!
+        dock.update(link: LiveBrowserLink(id: id))
+        try await until { dock.feed?.phase.state?.asleep == true }
+        XCTAssertNotEqual(dock.feed?.phase, .unreachable)
+        XCTAssertTrue(dock.indicator.isHidden, "asleep: no red line")
+        dock.openPlayer()
+        let player = try XCTUnwrap(dock.player)
+        XCTAssertEqual(player.accessibilityLabel, [Strings.LiveBrowser.title, Strings.LiveBrowser.asleepStatus].joined(separator: ", "))
+        let requests = await daemon.requests
+        XCTAssertFalse(requests.contains { $0.hasPrefix("GET /live/\(self.id)/frame.jpg") }, "an asleep browser isn't asked for frames")
+        try screenshot(window, name: "live-browser-dock-asleep")
+    }
+
+    func testTakeControlWaitsForTheBrowserToWake() async throws {
+        let daemon = BrowserDaemon()
+        await daemon.setLiveStatus("watching")
+        await daemon.setLivePod("asleep")
+        await daemon.setWakingTakes(2)
+        let (host, window) = try await makeHost(daemon)
+        defer { window.isHidden = true; host.dock.update(link: nil) }
+        let dock = host.dock!
+        dock.update(link: LiveBrowserLink(id: id))
+        try await until { dock.feed?.phase.state?.asleep == true }
+        dock.presentFullScreen(taking: true)
+        try await until { (host.presentedViewController as? UINavigationController)?.viewControllers.count == 2 }
+        let takes = await daemon.requests.filter { $0.hasPrefix("POST /live/\(self.id)/take ") }
+        XCTAssertEqual(takes.count, 3, "two 202s while it woke, then the 200")
+        let navigation = try XCTUnwrap(host.presentedViewController as? UINavigationController)
+        let noVNC = try XCTUnwrap(navigation.viewControllers.last as? LiveBrowserFullScreenItems)
+        XCTAssertEqual(noVNC.browser.originalURL.absoluteString, BrowserDaemon.chatNoVNC)
+        try await until { dock.indicator.text == Strings.LiveBrowser.indicator(Strings.LiveBrowser.youHaveControl) }
+        dock.minimize()
+        try await until { host.presentedViewController == nil }
+    }
+
+    // MARK: The player keeps reading
+
+    /// The picture keeps coming: more frames read, the player polling
+    /// and showing one.
+    private func assertPictureComing(_ daemon: BrowserDaemon, _ dock: LiveBrowserDock, _ what: String, file: StaticString = #filePath, line: UInt = #line) async throws {
+        let before = await daemon.frameReads
+        try await until({ await daemon.frameReads >= before + 2 }, file: file, line: line)
+        XCTAssertTrue(dock.feed?.isPolling == true, what, file: file, line: line)
+        XCTAssertNotNil(dock.player?.shownImage, what, file: file, line: line)
+        XCTAssertNotEqual(dock.feed?.phase, .unreachable, what, file: file, line: line)
+    }
+
+    private func openWatching(_ daemon: BrowserDaemon) async throws -> (Host, UIWindow) {
+        await daemon.setLiveStatus("watching")
+        let (host, window) = try await makeHost(daemon)
+        host.dock.update(link: LiveBrowserLink(id: id))
+        host.dock.openPlayer()
+        try await until { host.dock.player?.shownImage != nil }
+        return (host, window)
+    }
+
+    /// Take control, Release, then back to the player: the feed went on
+    /// reading after Release, where two polls and silence had left it
+    /// saying Connecting…, a frame read stalling as it went.
+    func testReleaseBackToThePlayerKeepsThePictureComing() async throws {
+        let daemon = BrowserDaemon()
+        let (host, window) = try await openWatching(daemon)
+        defer { window.isHidden = true; host.dock.update(link: nil) }
+        let dock = host.dock!
+        let feed = try XCTUnwrap(dock.feed)
+        feed.requestTimeout = .seconds(1)
+        dock.presentFullScreen(taking: true)
+        try await until { (host.presentedViewController as? UINavigationController)?.viewControllers.count == 2 }
+        try await until { dock.holdsControl }
+        await daemon.setStalledFrames(1)
+        dock.release()
+        try await until { (host.presentedViewController as? UINavigationController)?.viewControllers.count == 1 }
+        dock.minimize()
+        try await until { host.presentedViewController == nil }
+        XCTAssertTrue(dock.isOnScreen, "the chat shows again")
+        try await assertPictureComing(daemon, dock, "after Release and minimize")
+        try await Task.sleep(for: .seconds(3))
+        try await assertPictureComing(daemon, dock, "a while after")
+    }
+
+    /// A frame read that never answers, past every deadline: X and the
+    /// player again starts the feed over.
+    func testReopeningAfterXRestartsAStalledFeed() async throws {
+        let daemon = BrowserDaemon()
+        let (host, window) = try await openWatching(daemon)
+        defer { window.isHidden = true; host.dock.update(link: nil) }
+        let dock = host.dock!
+        let feed = try XCTUnwrap(dock.feed)
+        // This read's deadline is a minute; the stall is told by a shorter one.
+        feed.requestTimeout = .seconds(60)
+        let reads = await daemon.frameReads
+        await daemon.setStalledFrames(1)
+        try await until { await daemon.frameReads > reads }
+        feed.requestTimeout = .milliseconds(300)
+        try await until { feed.isStalled }
+        let stalled = await daemon.frameReads
+        try await Task.sleep(for: .milliseconds(500))
+        let still = await daemon.frameReads
+        XCTAssertEqual(still, stalled, "stalled: nothing more read")
+        dock.closePlayer(animated: false)
+        dock.openPlayer()
+        try await assertPictureComing(daemon, dock, "reopened after X")
+    }
+
+    /// Bigger and smaller, again and again, during the animation too.
+    func testTogglingSizeKeepsThePictureComing() async throws {
+        let daemon = BrowserDaemon()
+        let (host, window) = try await openWatching(daemon)
+        defer { window.isHidden = true; host.dock.update(link: nil) }
+        let dock = host.dock!
+        let player = try XCTUnwrap(dock.player)
+        for round in 0..<3 {
+            player.onResize?()
+            try await Task.sleep(for: .milliseconds(80))
+            player.onResize?()
+            try await Task.sleep(for: .milliseconds(80))
+            player.onResize?()
+            host.view.layoutIfNeeded()
+            try await assertPictureComing(daemon, dock, "round \(round)")
+            XCTAssertGreaterThan(player.bounds.width, 0)
+            XCTAssertNotNil(player.window)
+        }
+        player.onResize?()
+        try await assertPictureComing(daemon, dock, "back to where it was")
+    }
+
+    // MARK: Helpers
+
+    private func until(_ condition: () async -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
+        for _ in 0..<100 {
+            if await condition() { return }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTFail("timed out", file: file, line: line)
+        throw BrowserError.timeout
+    }
+
+    private func screenshot(_ window: UIWindow, name: String) throws {
+        let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+        let attachment = XCTAttachment(image: image); attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
+        if let directory = ProcessInfo.processInfo.environment["HAPPY_PREVIEW_DIR"] {
+            try image.pngData()?.write(to: URL(fileURLWithPath: directory).appendingPathComponent("\(name).png"))
+        }
+    }
+}
+#endif
