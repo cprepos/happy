@@ -33,14 +33,19 @@ actor BrowserDaemon: AgentTransport {
     /// Requests WebKit sent on a connection after its server had closed it:
     /// none ever reached a server, so none was answered.
     var afterClose: [String] = []
+    /// `GET /v0/workspaces`, `/v0/config`'s node name, and the noVNC
+    /// address `POST /take` answers with.
+    var workspaces = #"{"workspaces":[{"id":"host1","status":"active","compute":{"type":"host","path":"/Users/me"}}]}"#
+    var nodeName = "Studio Mac"
+    var takeNoVNC = BrowserDaemon.chatNoVNC
     init(artifactHTML: String? = nil, keepAlive: Bool = false) { self.artifactHTML = artifactHTML; self.keepAlive = keepAlive }
 
     func browserConnection() async throws -> any BrowserStream { connections += 1; return Socket(self) }
     func close() async {}
     func request(method: String, path: String, credential: String, body: Data?, headers: [String: String]) async throws -> HTTP1Response {
         let text: String
-        if path == "/v0/config" { text = #"{"config":{"node":{"name":"Studio Mac"}}}"# }
-        else if path == "/v0/workspaces" { text = #"{"workspaces":[{"id":"host1","status":"active","compute":{"type":"host"}}]}"# }
+        if path == "/v0/config" { text = #"{"config":{"node":{"name":"\#(nodeName)"}}}"# }
+        else if path == "/v0/workspaces" { text = workspaces }
         else if path.hasPrefix("/v0/agents/") { text = #"{"agent":{"id":"agent1","workspaceId":"work1","status":"idle"}}"# }
         else if path.hasPrefix("/v0/artifacts/") { text = #"{"artifact":{"updatedSource":{"kind":"workspace","workspaceId":"work1"}}}"# }
         else { text = "{}" }
@@ -110,7 +115,7 @@ actor BrowserDaemon: AgentTransport {
             liveStatus = "user"
             if livePod != nil { livePod = "running" }
             // A container per chat: its noVNC is wherever the bridge says.
-            return reply("200 OK", "application/json", Data(#"{"status":"user","reason":"Sign in","url":"https://example.com/login","title":"Log in to Example","novnc_url":"\#(Self.chatNoVNC)"}"#.utf8))
+            return reply("200 OK", "application/json", Data(#"{"status":"user","reason":"Sign in","url":"https://example.com/login","title":"Log in to Example","novnc_url":"\#(takeNoVNC)"}"#.utf8))
         }
         if head.line.hasPrefix("POST ") && head.line.contains("/release ") {
             liveStatus = "watching"
@@ -170,6 +175,16 @@ actor BrowserDaemon: AgentTransport {
     /// One chat's container's noVNC, as `POST /take` answers it.
     nonisolated static let chatNoVNC = "http://localhost:6123/vnc.html?autoconnect=true&resize=remote"
     func setLiveStatus(_ status: String) { liveStatus = status }
+    func setWorkspaces(_ json: String) { workspaces = json }
+    func setNodeName(_ name: String) { nodeName = name }
+    func setTakeNoVNC(_ url: String) { takeNoVNC = url }
+    /// Every workspace the computer was asked to tunnel through.
+    var tunnelledWorkspaces: Set<String> {
+        Set(requests.compactMap { line in
+            guard line.hasPrefix("CONNECT /v0/workspaces/") else { return nil }
+            return line.dropFirst("CONNECT /v0/workspaces/".count).split(separator: "/").first.map(String.init)
+        })
+    }
     func setLivePod(_ pod: String?) { livePod = pod }
     func setChatLink(_ id: String?) { chatLink = id }
     func setWakingTakes(_ count: Int) { wakingTakes = count }
