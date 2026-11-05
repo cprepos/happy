@@ -340,7 +340,7 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
     async function createInPod(via, args, meta, signal) {
         if (typeof args.start_url === 'string' && args.start_url) {
             const nav = await via.upstream.callTool(mapped.byLocal.get('browser_execute_action') || 'browser.execute_action',
-                { session_id: via.session_id, action: 'navigate', url: args.start_url, reason: 'open start_url' }, meta, { signal });
+                { session_id: via.session_id, action: { action: 'navigate', url: args.start_url, reason: 'open start_url' } }, meta, { signal });
             if (nav.error || nav.result?.isError) return nav;
         }
         const r = await via.upstream.callTool(mapped.byLocal.get('browser_get_session') || 'browser.get_session', { session_id: via.session_id }, meta, { signal });

@@ -254,7 +254,7 @@ test('router: create_session returns the chat\'s session; fork is refused; close
     const h = mcpHarness();
     const c = await h.call('browser_create_session', { start_url: 'https://example.com/' });
     assert.match(c.result.content[0].text, /pod0/);
-    assert.deepEqual(h.seen.calls.map((x) => [x.name, x.args.session_id, x.args.url ?? null]), [['browser.execute_action', 'pod0', 'https://example.com/'], ['browser.get_session', 'pod0', null]]);
+    assert.deepEqual(h.seen.calls.map((x) => [x.name, x.args.session_id, x.args.action?.url ?? null]), [['browser.execute_action', 'pod0', 'https://example.com/'], ['browser.get_session', 'pod0', null]]);
     const f = await h.call('browser_fork_session', {});
     assert.equal(f.result.isError, true);
     assert.match(f.result.content[0].text, /one browser/);

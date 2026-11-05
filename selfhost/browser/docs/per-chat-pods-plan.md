@@ -315,3 +315,45 @@ The key is `chatHash = sha256(source+':'+id).slice(0,32)`.
   `keep: true` copies without removing (the checkpoint after a release).
 - Unix socket paths are limited to 108 bytes; a test HAPPY_BROWSER_HOME under a long
   scratch path needs a relative connect.
+
+### Phase 3 findings (pod manager)
+
+- `lib/pods.mjs` drives the launcher; one link per chat (`store.forChat`) survives pod restarts.
+- Stop sequence: save the `happy-chat` auth profile, `stash_auth` to `chats/<key>/auth`,
+  close the session, launcher `stop`. 330-450 ms. Wake restores the profile with `adopt_auth`;
+  a session that fails with the profile is retried without it.
+- Bug found by the smoke: a `refill()` with nothing to do finished synchronously and left a
+  settled promise in `refilling`, which blocked every later refill (no spare after the first
+  one was taken). Fixed by yielding before the loop; regression test in `pods.test.mjs`.
+
+### Phase 4 findings (routing)
+
+- Chat identity in the MCP process: `HAPPY_SESSION_ID` (set by the Happy CLI for the agent's
+  MCP servers), then `CLAUDE_CODE_SESSION_ID`. Key: `sha256("<source>:<id>")[:32]`.
+  The Happy Agent runs one shared MCP process per daemon with no per-chat env; `_meta` on its
+  calls carries only `claudecode/toolUseId` and `progressToken`. It falls back to one pod per
+  browser session (no chat key the app could compute).
+- App discovery: `GET /live/chat/<key>` (public, like `/live/<id>`), with
+  `key = sha256("happy:" + happySessionId)[:32]`. Answers `{id, url, live, pod, status, ...}`,
+  404 `no_link` when the chat never had a browser. `live` is false once the pod sleeps or the
+  link is done.
+- `execute_action` takes `{session_id, action: {action, url, reason, ...}}`; `eval_js` needs
+  operator approval (approval_required), so the smoke sets its cookie with a navigation.
+
+### Phase 6 measurements (hbk test project, 2026-11-05, `make browser-pod-bench`, 5 runs each)
+
+| phase | cold p50/p95 | warm p50/p95 |
+|---|---|---|
+| ensure (what the agent waits) | 3478/3522 ms | 473/476 ms |
+| containers created | 356/369 ms | - |
+| node ready (noVNC) | 970/1009 ms | - |
+| controller ready | 3010/3021 ms | - |
+| session created | 460/504 ms | 472/474 ms |
+| stop (save, stash, close, stop) | 347/451 ms | 415/448 ms |
+
+- Waking an idle-stopped chat from a spare: 419 ms, signed in (cookie kept), same link.
+- One warm spare (default `BRIDGE_POD_WARM=1`) covers a single new chat at a time; a second
+  concurrent new chat takes the spare that is still starting (about 3.4 s). Idle memory per pod
+  is about 440 MiB, so a second spare is not worth it on this host.
+- `make browser-pod-smoke` passes: two chats, two pods, own ports and noVNC passwords, every
+  listener on 127.0.0.1, no abstract X11 socket, kiosk lock in both, idle stop, login survives.

@@ -10,6 +10,8 @@
 #   make browser-verify   MCP answers with the token (tools/list), refuses without it; noVNC demands a password
 #   make browser-bridge-test   bridge unit tests (node:test, auto-browser mocked)
 #   make browser-bridge-smoke  end-to-end against the running stack: session, link, page, frame, takeover, done
+#   make browser-pod-bench     pod start times, cold and warm (test project only)
+#   make browser-pod-smoke     per-chat pods end to end (bridge with BRIDGE_PODS=1)
 
 BROWSER_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))/browser
 export HAPPY_BROWSER_HOME ?= $(HOME)/.local/share/happy-browser
@@ -32,7 +34,8 @@ BROWSER_IMAGES = $(shell sed -nE 's/^x-(browser-node|controller)-image: &[a-z_]+
 POD_FILTER = --filter label=happy-browser.pod=1 --filter label=happy-browser.project=$(BROWSER_PROJECT)
 
 .PHONY: browser-init browser-up browser-down browser-status browser-logs browser-verify browser-bridge-test browser-bridge-smoke \
-	browser-pull browser-pods-status browser-pods-reap browser-entrypoint-check
+	browser-pull browser-pods-status browser-pods-reap browser-entrypoint-check \
+	browser-pod-bench browser-pod-smoke
 
 browser-init:
 	@HAPPY_BROWSER_HOME="$(HAPPY_BROWSER_HOME)" bash $(BROWSER_DIR)/scripts/browser-init.sh
@@ -86,6 +89,19 @@ browser-entrypoint-check:
 	BROWSER_NODE_ENTRYPOINT_SRC="$$t/entrypoint.sh" BROWSER_NODE_ENTRYPOINT_OUT="$$t/out.sh" BROWSER_NODE_ENTRYPOINT_DRY_RUN=1 \
 		PLAYWRIGHT_SERVER_HOST=127.0.0.1 NOVNC_PORT=6100 bash $(BROWSER_DIR)/scripts/browser-node-entrypoint.sh; \
 	echo "entrypoint patch: all five patterns match once; $$(diff "$$t/entrypoint.sh" "$$t/out.sh" | grep -c '^>') lines changed"
+
+# Pod start times through the real launcher, cold and warm, p50/p95 per phase (RUNS=5, VERSION).
+# Refuses while any pod of the project is up: run it against a test project.
+browser-pod-bench:
+	@cd $(HAPPY_BROWSER_HOME)/run && HAPPY_BROWSER_HOME="$(HAPPY_BROWSER_HOME)" RUNS="$(or $(RUNS),5)" VERSION="$(or $(VERSION),0.0.1)" \
+		POD_NOVNC_BASE="$(or $(POD_NOVNC_BASE),6100)" POD_API_BASE="$(or $(POD_API_BASE),8100)" POD_PLAYWRIGHT_BASE="$(or $(POD_PLAYWRIGHT_BASE),9300)" \
+		node $(BROWSER_DIR)/scripts/pod-bench.mjs
+
+# Per-chat pods end to end through a bridge running with BRIDGE_PODS=1 (and a short
+# BRIDGE_POD_IDLE_MIN, so the idle stop happens within SMOKE_IDLE_WAIT_S).
+browser-pod-smoke:
+	@BROWSER_BRIDGE="$(BROWSER_BRIDGE)" HAPPY_BROWSER_HOME="$(HAPPY_BROWSER_HOME)" BROWSER_PROJECT="$(BROWSER_PROJECT)" \
+		node $(BROWSER_DIR)/scripts/pod-smoke.mjs
 
 browser-bridge-smoke:
 	@BROWSER_API="$(BROWSER_API)" BROWSER_BRIDGE="$(BROWSER_BRIDGE)" HAPPY_BROWSER_HOME="$(HAPPY_BROWSER_HOME)" \

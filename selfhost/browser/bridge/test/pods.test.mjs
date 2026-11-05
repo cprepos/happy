@@ -326,3 +326,28 @@ test('a bad chat key is refused', async () => {
     const h = harness();
     await assert.rejects(h.mgr.ensure('nope'), (e) => e.status === 400);
 });
+
+test('the pool refills after chats take the spare and the one started behind it', async () => {
+    const B2 = 'c'.repeat(32);
+    const h = harness({ maxPods: 8, warm: 1, ensureMs: 20 });
+    await h.mgr.refill();
+    await Promise.all([h.mgr.ensure(A), h.mgr.ensure(B2)]);
+    await delay(150);
+    assert.equal(h.mgr.status().pods.filter((p) => !p.chat && (p.state === 'ready' || p.state === 'starting')).length, 1, 'a spare is up again');
+    await h.mgr.stopChat(A, 'idle');
+    await h.mgr.stopChat(B2, 'idle');
+    await delay(150);
+    const spares = h.mgr.status().pods.filter((p) => !p.chat);
+    assert.equal(spares.length, 1);
+    assert.equal(spares[0].state, 'ready');
+});
+
+test('a refill with nothing to do does not block the next one', async () => {
+    const h = harness({ maxPods: 4, warm: 1 });
+    await h.mgr.refill();
+    await h.mgr.refill(); // pool already full: nothing to do
+    await h.mgr.ensure(A);
+    await delay(50);
+    const spares = h.mgr.status().pods.filter((p) => !p.chat);
+    assert.equal(spares.length, 1, 'the spare taken by the chat was replaced');
+});

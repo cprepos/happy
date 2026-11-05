@@ -308,6 +308,9 @@ export function createPodManager({
     function refill() {
         if (refilling || closed) return refilling;
         refilling = (async () => {
+            // Yield first: with nothing to do the body would otherwise finish (and clear
+            // `refilling`) before the assignment, leaving a settled promise that blocks every refill.
+            await null;
             try {
                 while (!closed && warmPods().length < warm && pods.size < maxPods) {
                     const pod = claimSlot();
