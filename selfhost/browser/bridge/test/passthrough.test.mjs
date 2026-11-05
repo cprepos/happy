@@ -295,9 +295,9 @@ test('results about a session carry its live link: from the argument, or the ses
         const mcp = createMcpServer({ bridgeUrl: b.url, bridgeToken: 'bt', write: (m) => out.push(m), upstream, retryMs: 0 });
         const call = async (id, name, args) => { await mcp.handle({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } }); return out.find((m) => m.id === id); };
         const seen = await call(1, 'browser_observe', { session_id: 's1' });
-        assert.equal(seen.result.content[0].text, 'observed s1', 'auto-browser\'s own result comes first, unchanged');
-        assert.match(seen.result.content[1].text, /http:\/\/localhost:6090\/live\/s1-link/);
-        assert.match(seen.result.content[1].text, /post it on its own line/);
+        assert.match(seen.result.content[0].text, /http:\/\/localhost:6090\/live\/s1-link/, 'the link comes first');
+        assert.match(seen.result.content[0].text, /post it on its own line/);
+        assert.equal(seen.result.content[1].text, 'observed s1', 'then auto-browser\'s own result, unchanged');
         const listed = await call(2, 'browser_list_sessions', {});
         assert.equal(listed.result.content.length, 1, 'a list names no one session');
         assert.equal(b.seen.filter((x) => x.path === '/api/links').length, 1);

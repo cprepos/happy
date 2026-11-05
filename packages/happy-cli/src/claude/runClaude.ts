@@ -980,7 +980,8 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             }
         },
         session,
-        claudeEnvVars: options.claudeEnvVars,
+        // The Happy session id, so MCP servers Claude starts (the browser bridge) know which chat they serve.
+        claudeEnvVars: { ...options.claudeEnvVars, HAPPY_SESSION_ID: response.id },
         claudeArgs: options.claudeArgs,
         sandboxConfig,
         hookSettingsPath,

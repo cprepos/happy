@@ -256,8 +256,8 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
 
     // Every result about a browser session carries its live link, so the link reaches the chat even
     // when the agent never calls browser_live_link. Asking for it creates the link the first time.
-    // auto-browser's own result is kept as is; the link is one more text item (and a structured
-    // field). Without a bridge, or for an ended session, the result goes back unchanged.
+    // auto-browser's own result is kept as is after one text item with the link (and a
+    // structured field). Without a bridge, or for an ended session, the result goes back unchanged.
     async function withLiveLink(name, args, value, signal) {
         if (!value || value.isError || NO_LINK_TOOLS.has(name)) return value;
         const sid = sessionOf(args, value);
@@ -270,7 +270,8 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
         }
         if (!l?.url) return value;
         const text = `Live view of browser session ${sid}: ${l.url}\nIf you have not posted this link in chat yet, post it on its own line so the user can watch live.`;
-        const out = { ...value, content: [...(Array.isArray(value.content) ? value.content : []), { type: 'text', text }] };
+        // First, so it survives a client that cuts a long result (an observe, a page's HTML) short.
+        const out = { ...value, content: [{ type: 'text', text }, ...(Array.isArray(value.content) ? value.content : [])] };
         if (value.structuredContent && typeof value.structuredContent === 'object' && !Array.isArray(value.structuredContent)) {
             out.structuredContent = { ...value.structuredContent, live_link: l.url };
         }
