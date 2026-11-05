@@ -13,6 +13,7 @@
 #   make browser-bridge-restart  restart only the bridge container; lists the held links it releases on the way down
 #   make browser-pod-bench     pod start times, cold and warm (test project only)
 #   make browser-pod-smoke     per-chat pods end to end (bridge with BRIDGE_PODS=1)
+#   make browser-pods-reap     remove pods no chat is using (asks first; DRY_RUN=1 lists only, FORCE=1 removes all)
 #   make browser-forward-install HOST=prep-air   Mac localhost:6090/:6080 tunnel to here (also -status, -uninstall)
 
 BROWSER_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))/browser
@@ -78,10 +79,16 @@ browser-pods-status:
 	@if curl -fsS --max-time 5 -H "Authorization: Bearer $$(cat $(BROWSER_SECRETS)/bridge-token)" $(BROWSER_BRIDGE)/api/pods >/dev/null 2>&1; then \
 		echo; curl -fsS --max-time 5 -H "Authorization: Bearer $$(cat $(BROWSER_SECRETS)/bridge-token)" $(BROWSER_BRIDGE)/api/pods; echo; fi
 
-# Stop and remove every pod container of this project. Slot directories are wiped by the
-# launcher when the slot is next used; chats' saved logins (data/chats) are never touched.
+# Remove the pod containers no chat is using (scripts/pods-reap.mjs): pods with an active
+# session, a held link or use in the last REAP_RECENT_MIN (10) minutes are kept, and nothing is
+# removed when the bridge does not answer. Lists what it would remove and asks on a terminal;
+# without one (or DRY_RUN=1) it only lists. FORCE=1 removes every pod container, no questions.
+# Slot directories are wiped by the launcher when the slot is next used; chats' saved logins
+# (data/chats) are never touched.
 browser-pods-reap:
-	@ids=$$(docker ps -aq $(POD_FILTER)); if [ -n "$$ids" ]; then docker rm -f $$ids; else echo "no pods"; fi
+	@if [ "$(FORCE)" = 1 ]; then \
+		ids=$$(docker ps -aq $(POD_FILTER)); if [ -n "$$ids" ]; then docker rm -f $$ids; else echo "no pods"; fi; \
+	else BROWSER_BRIDGE="$(BROWSER_BRIDGE)" DRY_RUN="$(DRY_RUN)" REAP_RECENT_MIN="$(REAP_RECENT_MIN)" node $(BROWSER_DIR)/scripts/pods-reap.mjs; fi
 
 # The entrypoint patch against the pinned browser-node image's own /entrypoint.sh: each
 # pattern must match exactly once (scripts/browser-node-entrypoint.sh refuses to start otherwise).

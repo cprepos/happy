@@ -27,9 +27,20 @@ make browser-verify   # MCP 401 without token, tools/list with it; noVNC refuses
 make browser-logs     # BROWSER_SVC=controller for one service
 make browser-down     # stop; data and secrets are kept
 make browser-bridge-test    # bridge unit tests (node:test, auto-browser mocked)
-make browser-bridge-smoke   # end to end on the running stack; makes and deletes one session
+make browser-bridge-smoke   # end to end on the running stack; makes and deletes one session (and,
+                            # with pods, one throwaway chat's pod)
+make browser-pods-status    # each chat's pod: slot, containers, the bridge's view (chat, held, idle)
+make browser-pods-reap      # remove pods no chat is using; asks first (see below)
 make browser-forward-install HOST=prep-air   # Mac tunnel for the live view (also -status, -uninstall)
 ```
+
+`make browser-pods-reap` keeps every pod the bridge says is in use: one with a chat's
+active session, one whose link the user holds (take control or a takeover), one starting,
+or one used in the last `REAP_RECENT_MIN` minutes (10). The rest (warm spares, slots the
+bridge does not know) are listed and removed only after a yes on a terminal. Without a
+terminal, or with `DRY_RUN=1`, it only lists them. When the bridge does not answer nothing
+is removed. `FORCE=1` removes every pod container of the project without asking, as the
+target used to. Saved logins (`data/chats`) are never touched.
 
 ## Chats on the Macs (prep-air, prep-pro)
 
