@@ -72,6 +72,26 @@ ssh prep-pro "cd ~/happy-phone-build/$TS && nohup /bin/zsh ./prep.sh > logs/prep
 # poll: grep "COMPILE EXIT" ~/happy-phone-build/$TS/logs/compile.log  → want "COMPILE EXIT 0"
 ```
 
+### 3–5 on prep-pro instead (no copy; proven 2026-11-04, commit `a58df7dab`)
+prep-pro can sign and install by itself. It has the same team's wildcard
+profile ("iOS Team Provisioning Profile: *", file `67236374-…`, lists both
+devices) and its own "Apple Development: cprepos@gmail.com" identity;
+`sign.sh.template` picks those by host name and, with no `unsigned/`, signs
+`dd/Build/Products/Preview-iphoneos/Happy.app` from the build folder. Over ssh,
+codesign fails with `errSecInternalComponent` here too, so go through Terminal,
+guarded in case the screen is locked and osascript hangs:
+```bash
+sed "s/__TS__/$TS/g" /home/prep/happy/.agents/skills/happy-ios-ota/sign.sh.template | ssh prep-pro "cat > ~/happy-phone-build/$TS/sign.sh && chmod +x ~/happy-phone-build/$TS/sign.sh"
+ssh prep-pro "osascript -e 'tell application \"Terminal\" to do script \"/bin/bash ~/happy-phone-build/$TS/sign.sh\"' & p=\$!; sleep 20; kill \$p 2>/dev/null && echo HUNG"
+# poll: grep "SIGN EXIT" ~/happy-phone-build/$TS/logs/sign.log  → want "SIGN EXIT 0"
+ssh prep-pro "xcrun devicectl list devices"   # iPhone 74A057F2-B9CA-574E-9265-879000B51118, iPad 8C11BFE2-07F3-5309-83F0-B370466C6696
+ssh prep-pro "xcrun devicectl device install app --device <id> ~/happy-phone-build/$TS/signed/Happy.app && xcrun devicectl device process launch --device <id> org.girthbass.native"
+```
+devicectl on prep-pro names devices by CoreDevice identifier, not UDID. An
+install can fail once with `Failed to allocate RSD device (0xE8000003)`: run it
+again. A launch on a locked device fails with `Locked` after the app is installed.
+Never change keychain ACLs or partition lists to make ssh signing work.
+
 ### 3. Copy unsigned app to prep-air
 ```bash
 ssh prep-air "mkdir -p ~/happy-phone-build/$TS/{unsigned,logs} && echo $C > ~/happy-phone-build/$TS/SOURCE_COMMIT"

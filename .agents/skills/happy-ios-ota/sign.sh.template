@@ -1,11 +1,21 @@
 #!/bin/bash
 B=~/happy-phone-build/__TS__
 exec > >(tee "$B/logs/sign.log") 2>&1
-ID=F1C9288B3C0B4B64B321C964CB4E60880A157DFE
-PROFILE=~/Library/Developer/Xcode/UserData/Provisioning\ Profiles/291cee66-3b90-4ddc-9b32-27115cb23304.mobileprovision
+# Team 74YS5XP5GW's wildcard development profile ("iOS Team Provisioning
+# Profile: *"), which lists the iPhone and iPad. The identity and the profile's
+# file name differ per Mac: prep-air is the default, prep-pro is chosen by host.
+case "$(scutil --get LocalHostName 2>/dev/null)" in
+  *[Pp]ro*) ID=BD0370D03A2F77540C6A7962ED62B72A1BB8D98E; PROFILE_FILE=67236374-04e1-45fd-be65-5b948b1ae1d1 ;;
+  *) ID=F1C9288B3C0B4B64B321C964CB4E60880A157DFE; PROFILE_FILE=291cee66-3b90-4ddc-9b32-27115cb23304 ;;
+esac
+ID=${SIGN_ID:-$ID}
+PROFILE=~/Library/Developer/Xcode/UserData/Provisioning\ Profiles/${SIGN_PROFILE:-$PROFILE_FILE}.mobileprovision
 cd $B || { echo "SIGN EXIT 90"; exit 90; }
 if [ -e signed ]; then echo "signed already exists"; echo "SIGN EXIT 91"; exit 91; fi
-mkdir signed && ditto unsigned/Happy.app signed/Happy.app
+# prep-air gets a copy in unsigned/; on prep-pro, the build's own product.
+UNSIGNED=unsigned/Happy.app
+[ -d "$UNSIGNED" ] || UNSIGNED=dd/Build/Products/Preview-iphoneos/Happy.app
+mkdir signed && ditto "$UNSIGNED" signed/Happy.app
 APP=signed/Happy.app
 cp "$PROFILE" "$APP/embedded.mobileprovision"
 cat > app.entitlements <<"P"
