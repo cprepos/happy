@@ -41,7 +41,8 @@ export function ownTools(waitMaxS = 3600) {
             'not send any browser actions for this session while it waits. Also call it when a browser action is refused ' +
             'because the user has taken control: it then waits, without flagging "Needs you", until the user releases ' +
             'control. Returns {status: "done"} when the user handed control back (observe the page again before continuing, ' +
-            'since it may have changed) or {status: "timeout"} (you may ask again by calling it once more).',
+            'since it may have changed), {status: "timeout"} (you may ask again by calling it once more), or {status: "ended"} ' +
+            '(the user ended this browser: start a new one only if the task still needs it).',
         inputSchema: {
             type: 'object',
             properties: {
@@ -57,6 +58,32 @@ export function ownTools(waitMaxS = 3600) {
 }
 export const TOOLS = ownTools();
 const OWN_NAMES = new Set(TOOLS.map((t) => t.name));
+
+const HELD = new Set(['user', 'takeover']);
+const isUserEnded = (s) => s?.status === 'done' && s?.reason === 'user_ended';
+export const USER_ENDED = 'The user ended this browser. Start a new one only if the task still needs it.';
+const SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
+// Tools whose result names no session the agent goes on using.
+const NO_LINK_TOOLS = new Set(['browser_list_sessions', 'browser_close_session', 'browser_list_auth_profiles']);
+
+// The browser session a passed-through call is about: its session_id argument, else the session its
+// result names (browser_create_session returns the session, browser_observe without a session_id
+// creates one, browser_execute_action returns {session: {...}}).
+export function sessionOf(args, r) {
+    const ok = (v) => (typeof v === 'string' && SESSION_ID.test(v) ? v : null);
+    const fromArgs = ok(args?.session_id);
+    if (fromArgs) return fromArgs;
+    const pick = (o) => (o && typeof o === 'object' && !Array.isArray(o) ? ok(o.session_id) || ok(o.session?.id) || ok(o.id) : null);
+    const sc = r?.structuredContent;
+    const found = pick(sc) || pick(sc?.result);
+    if (found) return found;
+    for (const c of Array.isArray(r?.content) ? r.content : []) {
+        if (c?.type !== 'text' || typeof c.text !== 'string' || !c.text.trimStart().startsWith('{')) continue;
+        try { const v = pick(JSON.parse(c.text)); if (v) return v; } catch {}
+    }
+    return null;
+}
+
 
 // auto-browser tools that change the page. While the user holds the browser (they took control,
 // or the agent asked for them) these are refused; reading tools still go through.
@@ -185,11 +212,12 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
             if (!upstreamOk) return result(id, toolResult(`Error: ${name} is an auto-browser tool, but auto-browser is not reachable right now. Is the browser stack up?`, true));
             return error(id, -32602, `unknown tool ${name}`);
         }
-        if (MUTATING_TOOLS.has(name)) {
-            const held = await guard(name, args, signal);
-            if (signal.aborted) return;
-            if (held) return result(id, toolResult(USER_HAS_CONTROL, true));
-        }
+        // One state check per call: a page-changing tool asks whether the user holds the browser
+        // (recording the action), any other tool on a session only whether the user ended it.
+        const state = MUTATING_TOOLS.has(name) ? await guard(name, args, signal) : await sessionState(args, signal);
+        if (signal.aborted) return;
+        if (isUserEnded(state)) return result(id, toolResult(USER_ENDED, true));
+        if (MUTATING_TOOLS.has(name) && HELD.has(state?.status)) return result(id, toolResult(USER_HAS_CONTROL, true));
         let r;
         try {
             r = await upstream.callTool(remote, args, meta, { signal });
@@ -200,8 +228,41 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
         if (signal.aborted) return;
         // Verbatim, under our request id.
         if (r.error) return write({ jsonrpc: '2.0', id, error: r.error });
-        return result(id, r.result);
+        return result(id, await withLiveLink(name, args, r.result, signal));
     }
+
+    // Every result about a browser session carries its live link, so the link reaches the chat even
+    // when the agent never calls browser_live_link. Asking for it creates the link the first time.
+    // auto-browser's own result is kept as is; the link is one more text item (and a structured
+    // field). Without a bridge, or for an ended session, the result goes back unchanged.
+    async function withLiveLink(name, args, value, signal) {
+        if (!value || value.isError || NO_LINK_TOOLS.has(name)) return value;
+        const sid = sessionOf(args, value);
+        if (!sid) return value;
+        let l;
+        try {
+            l = await bridge('/api/links', { session_id: sid }, signal);
+        } catch {
+            return value;
+        }
+        if (!l?.url) return value;
+        const text = `Live view of browser session ${sid}: ${l.url}\nIf you have not posted this link in chat yet, post it on its own line so the user can watch live.`;
+        const out = { ...value, content: [...(Array.isArray(value.content) ? value.content : []), { type: 'text', text }] };
+        if (value.structuredContent && typeof value.structuredContent === 'object' && !Array.isArray(value.structuredContent)) {
+            out.structuredContent = { ...value.structuredContent, live_link: l.url };
+        }
+        return out;
+    }
+
+    // The link state of this call's session, or null without a session_id or a bridge. A session
+    // the user ended from the app gets USER_ENDED instead of auto-browser's "session closed".
+    async function sessionState(args, signal) {
+        const sid = typeof args?.session_id === 'string' && args.session_id ? args.session_id : null;
+        if (!sid) return null;
+        try { return await bridge('/api/state', { session_id: sid }, signal); } catch { return null; }
+    }
+    const endedByUser = async (args, signal) => isUserEnded(await sessionState(args, signal));
+
 
     // Asks the bridge whether the user holds this session's browser, recording the action as the
     // live view's "last action" when they don't. A bridge that can't answer doesn't block browsing:
@@ -210,11 +271,10 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
         const sid = typeof args?.session_id === 'string' && args.session_id ? args.session_id : null;
         const action = actionOf(name, args);
         try {
-            const s = await bridge('/api/state', { ...(sid ? { session_id: sid } : {}), ...(action ? { action } : {}) }, signal);
-            return s?.status === 'user' || s?.status === 'takeover';
+            return await bridge('/api/state', { ...(sid ? { session_id: sid } : {}), ...(action ? { action } : {}) }, signal);
         } catch (err) {
             if (!signal.aborted) log(`control check failed, letting ${name} through: ${err.message}`);
-            return false;
+            return null;
         }
     }
 
@@ -243,6 +303,7 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
     });
 
     async function liveLink(args, signal) {
+        if (await endedByUser(args, signal)) throw new Error(USER_ENDED);
         const r = await bridge('/api/links', { session_id: String(args.session_id ?? '') }, signal);
         return { link: r.url, status: r.status, instructions: 'Post this link in chat on its own line so the user can watch live.' };
     }
@@ -251,6 +312,7 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
         const timeoutS = Math.max(5, Math.min(waitMaxS, Number(args.timeout_s) || Math.min(900, waitMaxS)));
         const reason = String(args.reason ?? '').trim() || 'The agent needs you to take over.';
         const sessionId = String(args.session_id ?? '');
+        if (await endedByUser(args, signal)) return { status: 'ended', note: USER_ENDED };
         // The user already took control on their own: keep it theirs (no "Needs you") and wait for Release.
         const current = await bridge('/api/state', { session_id: sessionId }, signal).catch(() => null);
         let t;
@@ -283,6 +345,7 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
             return { status: 'timeout', link: t.url, waited_s: timeoutS, ...(state.status === 'user' ? { note: 'the user still has control' } : {}) };
         }
         // Done by the user, or the session closed under them.
+        if (state.reason === 'user_ended') return { status: 'ended', link: t.url, note: USER_ENDED };
         return { status: 'done', link: t.url, ...(state.reason === 'session_closed' ? { note: 'the browser session closed' } : {}) };
     }
 

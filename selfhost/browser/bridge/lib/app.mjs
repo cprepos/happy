@@ -8,6 +8,8 @@
 //                              -> state plus novnc_url
 //   POST /live/<id>/release    the user hands control back: user|takeover -> watching, waking waiters
 //   POST /live/<id>/done       alias of /release, for app builds that predate it
+//   POST /live/<id>/end        the user ends the browser: the session closes, the link is done
+//                              (reason user_ended) and waiters wake
 // Unknown id -> 404, expired id -> 410.
 //
 // Private, for the MCP server (Authorization: Bearer <bridge-token>):
@@ -20,11 +22,12 @@
 //                       nobody holds, records it as last_action.
 //
 // Statuses: watching (the agent drives), user (the user took control on their own; the agent's
-// actions are refused), takeover (the agent asked for the user and waits), done (session closed).
+// actions are refused), takeover (the agent asked for the user and waits), done (session closed,
+// or reason user_ended: the user ended it from the app).
 import { timingSafeEqual, randomBytes, createHash } from 'node:crypto';
 import { renderPage, renderGone } from './page.mjs';
 
-const LIVE_ROUTE = /^\/live\/([^/]+)(\/frame\.jpg|\/state|\/done|\/take|\/release)?\/?$/;
+const LIVE_ROUTE = /^\/live\/([^/]+)(\/frame\.jpg|\/state|\/done|\/take|\/release|\/end)?\/?$/;
 const MAX_BODY = 16 * 1024;
 const MAX_WAIT_S = 120;
 
@@ -66,6 +69,9 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         allowedHosts = null, // e.g. ['localhost:6090', '127.0.0.1:6090']; null admits any
         frameWidth = 480,
         frameHeight = 1040,
+        // async (rec) => {}: runs when the user ends a browser, before its session closes. A pod
+        // manager hooks in here to save the login and stop the pod. Failures are logged only.
+        onEnd = null,
     } = config;
     if (!bridgeToken) throw new Error('bridgeToken is required');
 
@@ -96,8 +102,30 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         return r.share.token;
     }
 
+    // A link that is already done keeps its reason: user_ended stays user_ended once the closed
+    // session is noticed.
     function sessionGone(rec) {
-        if (rec.status !== 'done' || rec.reason !== 'session_closed') setStatus(rec, 'done', 'session_closed');
+        if (rec.status !== 'done') setStatus(rec, 'done', 'session_closed');
+    }
+
+    // The user ended this browser from the app. The hook runs first, then the auto-browser session
+    // closes and the link turns done (user_ended), which wakes an agent in wait_for_human. Ending an
+    // ended browser changes nothing.
+    async function endBrowser(rec) {
+        if (rec.status === 'done' && rec.reason === 'user_ended') return stateOf(rec);
+        if (onEnd) {
+            try { await onEnd({ id: rec.id, sessionId: rec.sessionId }); } catch (err) { log(`end hook failed: ${err.message}`); }
+        }
+        try {
+            await client.closeSession(rec.sessionId);
+        } catch (err) {
+            if (err.status !== 404) log(`closing an ended browser failed: ${err.message}`);
+        }
+        const r = rt(rec.id);
+        r.frame = null;
+        r.share = null;
+        setStatus(rec, 'done', 'user_ended');
+        return stateOf(rec);
     }
 
     async function captureFrame(rec) {
@@ -146,7 +174,7 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
     // session turns into done even when nobody is fetching frames.
     async function refreshMeta(rec) {
         const r = rt(rec.id);
-        if ((rec.status === 'done' && rec.reason === 'session_closed') || now() - r.metaAt < 5000) return;
+        if (rec.status === 'done' || now() - r.metaAt < 5000) return;
         r.metaAt = now();
         try {
             const s = await client.getSession(rec.sessionId);
@@ -287,10 +315,11 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         const { rec } = found;
         store.touch(rec);
 
-        if (sub === '/take' || sub === '/release' || sub === '/done') {
+        if (sub === '/take' || sub === '/release' || sub === '/done' || sub === '/end') {
             if (req.method !== 'POST') return send(res, 405, { error: 'method_not_allowed' }, { Allow: 'POST' });
+            if (sub === '/end') return send(res, 200, await endBrowser(rec));
             if (sub === '/take') {
-                if (rec.status === 'done' && rec.reason === 'session_closed') return send(res, 409, { error: 'session_closed', ...stateOf(rec) });
+                if (rec.status === 'done') return send(res, 409, { error: rec.reason || 'session_closed', ...stateOf(rec) });
                 // From takeover the agent is already waiting for the user: nothing changes.
                 if (rec.status !== 'takeover' && rec.status !== 'user') setStatus(rec, 'user', 'user_took_control');
                 return send(res, 200, { ...stateOf(rec), novnc_url: takeoverUrl });

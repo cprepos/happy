@@ -55,5 +55,7 @@ export function createAutoBrowserClient({ baseUrl, token, fetchImpl = fetch, tim
         },
         requestTakeover: (sessionId, reason) =>
             call('POST', `/sessions/${encodeURIComponent(sessionId)}/takeover`, { body: { reason } }),
+        /** Closes the session and its browser. The record stays readable as "closed". */
+        closeSession: (sessionId) => call('DELETE', `/sessions/${encodeURIComponent(sessionId)}`),
     };
 }

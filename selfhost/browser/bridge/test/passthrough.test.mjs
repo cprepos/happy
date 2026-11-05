@@ -3,7 +3,7 @@
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { createMcpServer, mapUpstreamTools, actionOf, USER_HAS_CONTROL } from '../mcp.mjs';
+import { createMcpServer, mapUpstreamTools, actionOf, sessionOf, USER_HAS_CONTROL, USER_ENDED } from '../mcp.mjs';
 import { createUpstreamMcp, parseSse, localToolName } from '../lib/upstream.mjs';
 
 const TOKEN = 'ab-secret-token-fedcba9876543210';
@@ -225,7 +225,10 @@ async function mockBridge(status) {
         for await (const c of req) body += c;
         seen.push({ path: req.url, auth: req.headers.authorization, body: JSON.parse(body || '{}') });
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify(req.url === '/api/state' ? { id: 'x', status: status.value } : { error: 'nope' }));
+        const sid = JSON.parse(body || '{}').session_id;
+        if (req.url === '/api/state') return res.end(JSON.stringify({ id: 'x', status: status.value, reason: status.reason ?? null }));
+        if (req.url === '/api/links' && status.links && sid) return res.end(JSON.stringify({ id: 'x', url: `http://localhost:6090/live/${sid}-link`, status: 'watching' }));
+        res.end(JSON.stringify({ error: 'nope' }));
     });
     await new Promise((r) => srv.listen(0, '127.0.0.1', r));
     return { srv, seen, url: `http://127.0.0.1:${srv.address().port}` };
@@ -248,7 +251,8 @@ test('while the user has control, execute_action is refused and observe still pa
 
         const seen = await call(2, 'browser_observe', { session_id: 's1' });
         assert.equal(seen.result.content[0].text, 'observed s1');
-        assert.equal(b.seen.length, 1, 'observe is not checked');
+        assert.deepEqual(b.seen.slice(1).map((x) => [x.path, x.body]), [['/api/state', { session_id: 's1' }], ['/api/links', { session_id: 's1' }]],
+            'observe is only asked about an ended session, with no action recorded, then linked');
 
         status.value = 'takeover';
         assert.equal((await call(3, 'browser_execute_action', act)).result.isError, true, 'refused while the agent waits for the user too');
@@ -280,4 +284,57 @@ test('actionOf: kinds and short targets, never typed text', () => {
     assert.deepEqual(actionOf('browser_eval_js', { script: 'secret()' }), { kind: 'eval_js' });
     assert.equal(actionOf('browser_wait_for_selector', {}), null);
     assert.equal(actionOf('browser_execute_action', {}), null);
+});
+
+test('results about a session carry its live link: from the argument, or the session a result names', async () => {
+    const status = { value: 'watching', links: true };
+    const b = await mockBridge(status);
+    try {
+        const out = [];
+        const upstream = createUpstreamMcp({ url, getToken: () => TOKEN, timeoutMs: 2000 });
+        const mcp = createMcpServer({ bridgeUrl: b.url, bridgeToken: 'bt', write: (m) => out.push(m), upstream, retryMs: 0 });
+        const call = async (id, name, args) => { await mcp.handle({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } }); return out.find((m) => m.id === id); };
+        const seen = await call(1, 'browser_observe', { session_id: 's1' });
+        assert.equal(seen.result.content[0].text, 'observed s1', 'auto-browser\'s own result comes first, unchanged');
+        assert.match(seen.result.content[1].text, /http:\/\/localhost:6090\/live\/s1-link/);
+        assert.match(seen.result.content[1].text, /post it on its own line/);
+        const listed = await call(2, 'browser_list_sessions', {});
+        assert.equal(listed.result.content.length, 1, 'a list names no one session');
+        assert.equal(b.seen.filter((x) => x.path === '/api/links').length, 1);
+    } finally {
+        b.srv.close();
+    }
+});
+
+test('sessionOf: argument, created session, observe or action result', () => {
+    assert.equal(sessionOf({ session_id: 'a1' }, null), 'a1');
+    assert.equal(sessionOf({}, { content: [{ type: 'text', text: '{"id": "6a80ac99d644", "status": "active"}' }] }), '6a80ac99d644');
+    assert.equal(sessionOf({}, { content: [{ type: 'text', text: '{"action": "navigate", "session": {"id": "b2"}}' }] }), 'b2');
+    assert.equal(sessionOf({}, { structuredContent: { session_id: 'c3' } }), 'c3');
+    assert.equal(sessionOf({}, { structuredContent: { result: { id: 'd4' } } }), 'd4');
+    assert.equal(sessionOf({}, { content: [{ type: 'text', text: 'observed' }] }), null);
+    assert.equal(sessionOf({}, { content: [{ type: 'text', text: '[{"id":"s1"}]' }] }), null, 'a list is not one session');
+    assert.equal(sessionOf({ session_id: '../x' }, null), null);
+});
+
+test('a session the user ended gets USER_ENDED for any tool, and auto-browser is never asked', async () => {
+    const status = { value: 'done', reason: 'user_ended' };
+    const b = await mockBridge(status);
+    try {
+        const out = [];
+        const upstream = createUpstreamMcp({ url, getToken: () => TOKEN, timeoutMs: 2000 });
+        const mcp = createMcpServer({ bridgeUrl: b.url, bridgeToken: 'bt', write: (m) => out.push(m), upstream, retryMs: 0 });
+        const call = async (id, name, args) => { await mcp.handle({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } }); return out.find((m) => m.id === id); };
+        for (const [i, name, args] of [[1, 'browser_observe', { session_id: 's1' }], [2, 'browser_execute_action', { session_id: 's1', action: { action: 'reload', reason: 'r' } }]]) {
+            const r = await call(i, name, args);
+            assert.equal(r.result.isError, true);
+            assert.equal(r.result.content[0].text, USER_ENDED);
+        }
+        assert.equal(USER_ENDED, 'The user ended this browser. Start a new one only if the task still needs it.');
+        assert.equal(mock.requests.filter((x) => x.method === 'tools/call').length, 0);
+        status.value = 'done'; status.reason = 'session_closed';
+        assert.equal((await call(3, 'browser_observe', { session_id: 's1' })).result.content[0].text, 'observed s1', 'only the user ending it is refused');
+    } finally {
+        b.srv.close();
+    }
 });

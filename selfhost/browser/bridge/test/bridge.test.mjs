@@ -36,6 +36,12 @@ function mockClient() {
         },
         async fetchFrame(path) { calls.frame++; assert.ok(path.startsWith('/share/')); return { contentType: 'image/png', body: PNG }; },
         async requestTakeover(id, reason) { if (!sessions.has(id)) throw notFound(); calls.takeover.push({ id, reason }); return {}; },
+        async closeSession(id) {
+            (calls.close ??= []).push(id);
+            if (!sessions.has(id)) throw notFound();
+            sessions.set(id, { ...sessions.get(id), status: 'closed' });
+            return { id, status: 'closed' };
+        },
     };
 }
 
@@ -350,6 +356,52 @@ test('links survive a restart through the store file', async () => {
     assert.equal(again.lookup(id).rec.sessionId, 'sess1');
 });
 
+test('end: closes the session, marks the link user_ended, wakes a waiter, and refuses take', async () => {
+    const t = await (await api('/api/takeover', { session_id: 'sess1', reason: 'Log in' })).json();
+    const waiting = api('/api/wait', { id: t.id, wait_s: 30 }).then((r) => r.json());
+    await new Promise((r) => setTimeout(r, 50));
+    const r = await post(t.id, 'end');
+    assert.equal(r.status, 200);
+    const ended = await r.json();
+    assert.equal(ended.status, 'done');
+    assert.equal(ended.reason, 'user_ended');
+    assert.deepEqual(client.calls.close, ['sess1']);
+    const woke = await waiting;
+    assert.equal(woke.status, 'done');
+    assert.equal(woke.reason, 'user_ended');
+
+    assert.equal((await post(t.id, 'take')).status, 409);
+    clock.t += 10_000; // past the state route's session re-check
+    const state = await (await fetch(`${base}/live/${t.id}/state`)).json();
+    assert.equal(state.reason, 'user_ended', 'the closed session does not turn it into session_closed');
+    assert.equal((await post(t.id, 'end')).status, 200, 'ending twice is fine');
+    assert.deepEqual(client.calls.close, ['sess1'], 'and closes nothing more');
+    assert.equal((await api('/api/links', { session_id: 'sess1' })).status, 404, 'a closed session gets no new link');
+    assert.equal((await fetch(`${base}/live/${t.id}/end`)).status, 405);
+});
+
+test('end: the hook runs first, and a failing hook or close still ends the link', async () => {
+    const seen = [];
+    const store2 = new LinkStore({ path: join(dir, 'links2.json'), idleMs: 3600_000, now: () => clock.t });
+    const failing = { ...client, async closeSession(id) { seen.push(['close', id]); throw Object.assign(new Error('boom'), { status: 502 }); } };
+    const b = createBridge({
+        client: failing, store: store2, now: () => clock.t, log: (l) => seen.push(['log', l]),
+        config: { bridgeToken: BRIDGE_TOKEN, onEnd: async (rec) => { seen.push(['hook', rec.sessionId]); throw new Error('no pod'); } },
+    });
+    const srv = createServer(b.handler);
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    try {
+        const b2 = `http://127.0.0.1:${srv.address().port}`;
+        const l = await (await fetch(b2 + '/api/links', { method: 'POST', headers: { Authorization: `Bearer ${BRIDGE_TOKEN}` }, body: '{"session_id":"sess1"}' })).json();
+        const r = await (await fetch(`${b2}/live/${l.id}/end`, { method: 'POST' })).json();
+        assert.equal(r.reason, 'user_ended');
+        assert.deepEqual(seen.filter((x) => x[0] !== 'log' || /hook|closing/.test(x[1])).map((x) => x[0]), ['hook', 'log', 'close', 'log']);
+    } finally {
+        srv.closeAllConnections?.();
+        await new Promise((r) => srv.close(r));
+    }
+});
+
 // ── MCP server over the bridge ───────────────────────────────────────────
 function mcpHarness(pollS = 1) {
     const out = [];
@@ -424,4 +476,18 @@ test('mcp: browser_wait_for_human times out and releases the takeover', async ()
     const id = r.result.structuredContent.link.split('/').pop();
     const s = await (await fetch(`${base}/live/${id}/state`)).json();
     assert.equal(s.status, 'watching');
+});
+
+test('mcp: a wait the user ends returns ended, and later calls on that session say so', async () => {
+    const { call, out } = mcpHarness();
+    const pending = call(20, 'browser_wait_for_human', { session_id: 'sess1', reason: 'Sign in', timeout_s: 30 }, { progressToken: 'p9' });
+    await new Promise((r) => setTimeout(r, 100));
+    const id = out.find((m) => m.method === 'notifications/progress').params.message.match(/live\/([0-9a-f]{32})/)[1];
+    await post(id, 'end');
+    const r = await pending;
+    assert.equal(r.result.structuredContent.status, 'ended');
+    assert.match(r.result.structuredContent.note, /The user ended this browser/);
+    const again = await call(21, 'browser_live_link', { session_id: 'sess1' });
+    assert.equal(again.result.isError, true);
+    assert.match(again.result.content[0].text, /The user ended this browser\. Start a new one only if the task still needs it\./);
 });
