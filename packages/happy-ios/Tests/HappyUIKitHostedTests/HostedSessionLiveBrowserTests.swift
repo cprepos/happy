@@ -89,7 +89,7 @@ final class HostedSessionLiveBrowserTests: XCTestCase {
         let store = account.store
         let id = sessionId
         let live = "\(LiveBrowserLink.origin)/live/\(linkId)"
-        try await Task.detached { [store] in try Self.seed(store, id: id, live: live) }.value
+        try Self.seed(store, id: id, live: live)
         let context = AppContext(account: controller, variant: .production, version: "test")
         let chat = LegacyChatViewController(context: context, session: account, sessionId: id)
         let navigation = UINavigationController(rootViewController: chat)
