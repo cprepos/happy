@@ -333,6 +333,12 @@ The key is `chatHash = sha256(source+':'+id).slice(0,32)`.
   The Happy Agent runs one shared MCP process per daemon with no per-chat env; `_meta` on its
   calls carries only `claudecode/toolUseId` and `progressToken`. It falls back to one pod per
   browser session (no chat key the app could compute).
+- Happy Agent, per call (`BRIDGE_AGENT_DB`, 2026-11-05): Happy Agent is an upstream binary, so it
+  can neither spawn a bridge per chat nor add a chat id to `_meta`. But the `claudecode/toolUseId`
+  it sends is its own tool call id, and it journals `tool.started` (agent id, `toolCall.id`) in
+  `agent.sqlite` before running the tool. `lib/agentchat.mjs` looks the id up read-only and takes
+  the agent's Happy session (`happy_agent_happy_sessions.remote_session_id`), so the key matches a
+  Happy CLI chat's. Unmatched calls are refused; tool arguments never pick the chat.
 - App discovery: `GET /live/chat/<key>` (public, like `/live/<id>`), with
   `key = sha256("happy:" + happySessionId)[:32]`. Answers `{id, url, live, pod, status, ...}`,
   404 `no_link` when the chat never had a browser. `live` is false once the pod sleeps or the

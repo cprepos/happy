@@ -219,12 +219,26 @@ auto-browser.
 [mcp_servers.browser]
 command = "/usr/local/bin/node"
 args = ["/home/prep/happy/selfhost/browser/bridge/mcp.mjs"]
-env = { HAPPY_BROWSER_HOME = "/home/prep/.local/share/happy-browser", BRIDGE_WAIT_MAX_S = "570" }
+env = { HAPPY_BROWSER_HOME = "/home/prep/.local/share/happy-browser", BRIDGE_WAIT_MAX_S = "570", BRIDGE_AGENT_DB = "/home/prep/.local/share/happy-agent/.happy/agent/agent.sqlite" }
 enabled = true
 startup_timeout_sec = 20
 # Happy Agent allows at most 600; browser_wait_for_human is capped at 570 s.
 tool_timeout_sec = 600
 ```
+
+Happy Agent runs this one process for all of its chats, with no chat id in its
+environment. `BRIDGE_AGENT_DB` gives each call its chat anyway: the daemon puts
+its own id for the tool call in `_meta["claudecode/toolUseId"]` and journals
+which agent made that call before running it, so `mcp.mjs` looks the id up in
+the daemon's database (read-only, through `bridge/lib/agentchat.py` and the
+container's `python3`; Node 20 has no SQLite) and takes the agent's Happy
+session. The chat key is then `sha256("happy:" + Happy session id)[:32]`, the
+same as a Happy CLI chat's, and with pods on each chat gets its own pod and is
+found with `GET /live/chat/<key>`. An agent with no Happy session gets
+`sha256("agent:" + agent id)[:32]`. Only `_meta` is read, never the tool
+arguments, and a call whose chat can't be found is refused rather than routed
+by the session it names. Without `BRIDGE_AGENT_DB` every browser session gets a
+pod of its own, as before.
 
 Happy Agent caps `tool_timeout_sec` at 600, so a 15-minute wait in one call is
 not possible there. `BRIDGE_WAIT_MAX_S = "570"` keeps `browser_wait_for_human`
