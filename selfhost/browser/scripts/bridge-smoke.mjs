@@ -3,6 +3,7 @@
 // (make browser-up). Creates a throwaway auto-browser session, walks the
 // bridge's routes and the MCP server (its own tools and the auto-browser
 // tools it passes through, and noVNC through the bridge on its own link), then deletes the session.
+// With per-chat pods the MCP part runs as a throwaway chat and closes that chat's pod at the end.
 // Secrets are read from their files and never printed.
 import { spawn, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -10,7 +11,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 import { connect } from 'node:net';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 
 const home = process.env.HAPPY_BROWSER_HOME || join(process.env.HOME, '.local/share/happy-browser');
 const API = process.env.BROWSER_API || 'http://127.0.0.1:8010';
@@ -27,9 +28,14 @@ const check = (ok, what) => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${what}`); if
 const ab = (path, init = {}) => fetch(API + path, { ...init, headers: { Authorization: `Bearer ${apiToken}`, 'Content-Type': 'application/json', ...init.headers } });
 const bapi = (path, body) => fetch(BRIDGE + path, { method: 'POST', headers: { Authorization: `Bearer ${bridgeToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 
-function mcp() {
+// ident: the chat the MCP server runs as. With per-chat pods it is a throwaway chat of the
+// smoke's own (HAPPY_SESSION_ID=smoke-<random>), never the caller's: whatever chat identity the
+// caller's environment carries is dropped, so the smoke never drives a real chat's browser.
+const IDENT_ENV = /^(CLAUDE_CODE_SESSION_ID|CLAUDE_SESSION_ID|CODEX_.*SESSION.*|HAPPY_[A-Z_]*(SESSION|CHAT|THREAD)[A-Z_]*)$/;
+function mcp(ident = null) {
+    const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !ident || !IDENT_ENV.test(k)));
     const child = spawn(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), '../bridge/mcp.mjs')], {
-        env: { ...process.env, HAPPY_BROWSER_HOME: home, BRIDGE_URL: BRIDGE, AUTO_BROWSER_URL: API }, stdio: ['pipe', 'pipe', 'inherit'],
+        env: { ...env, ...(ident ? { HAPPY_SESSION_ID: ident } : {}), HAPPY_BROWSER_HOME: home, BRIDGE_URL: BRIDGE, AUTO_BROWSER_URL: API }, stdio: ['pipe', 'pipe', 'inherit'],
     });
     const waiting = new Map();
     const notes = [];
@@ -77,7 +83,7 @@ function wsProbe(u, path) {
     });
 }
 
-let sessionId, liveBase;
+let sessionId, liveBase, podChat = null;
 if (process.env.SMOKE_KIOSK !== '0') kiosk();
 try {
     const created = await (await ab('/sessions', { method: 'POST', body: JSON.stringify({ name: 'bridge-smoke', start_url: START_URL }) })).json();
@@ -140,8 +146,14 @@ try {
     const unknown = await fetch(`${BRIDGE}/live/${'0'.repeat(32)}/state`);
     check(unknown.status === 404, `unknown id -> ${unknown.status}`);
 
-    // MCP over stdio, against the live bridge.
-    const m = mcp();
+    // MCP over stdio, against the live bridge. With per-chat pods the MCP server drives its
+    // chat's own pod, not the session above, so it runs as a throwaway chat and the checks use
+    // that chat's session and link; the pod is closed at the end.
+    const podsOn = await fetch(`${BRIDGE}/api/pods`, { headers: { Authorization: `Bearer ${bridgeToken}` } })
+        .then((r) => r.json()).then((j) => !!j.pods && j.pods !== false).catch(() => false);
+    const ident = podsOn ? `smoke-${randomBytes(8).toString('hex')}` : null;
+    if (ident) podChat = createHash('sha256').update(`happy:${ident}`).digest('hex').slice(0, 32);
+    const m = mcp(ident);
     const init = await m.request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'smoke', version: '0' } });
     check(init.result?.serverInfo?.name === 'happy-browser-bridge', 'mcp initialize');
     const tools = await m.request('tools/list', {});
@@ -149,33 +161,46 @@ try {
     check(names[0] === 'browser_live_link' && names[1] === 'browser_wait_for_human', `mcp own tools: ${names.slice(0, 2).join(', ')}`);
     check(names.includes('browser_list_sessions') && names.includes('browser_observe') && names.every((x) => /^[a-zA-Z0-9_-]{1,64}$/.test(x)),
         `mcp passes auto-browser tools through (${names.length - 2}): ${names.slice(2).join(', ')}`);
+    let mSid = sessionId, mLink = link, mLive = live;
+    if (podsOn) {
+        const cs = await m.request('tools/call', { name: 'browser_create_session', arguments: { start_url: START_URL } });
+        const pod = await (await bapi('/api/pod', { chat_key: podChat })).json();
+        check(!cs.error && !cs.result?.isError && !!pod.session_id && JSON.stringify(cs.result).includes(pod.session_id), `mcp browser_create_session starts the smoke chat's own pod (slot ${pod.slot})`);
+        mSid = pod.session_id;
+        mLink = { id: new URL(pod.url).pathname.split('/').pop(), url: pod.url };
+        mLive = `${BRIDGE}/live/${mLink.id}`;
+    }
     const ls = await m.request('tools/call', { name: 'browser_list_sessions', arguments: {} });
     const lsText = JSON.stringify(ls.result ?? ls.error);
-    check(!ls.error && !ls.result?.isError && lsText.includes(sessionId), 'mcp browser_list_sessions (pass-through) lists the smoke session');
-    const gs = await m.request('tools/call', { name: 'browser_get_session', arguments: { session_id: sessionId } });
-    check(!gs.error && !gs.result?.isError && JSON.stringify(gs.result).includes(sessionId), 'mcp browser_get_session (pass-through)');
+    check(!ls.error && !ls.result?.isError && lsText.includes(mSid), 'mcp browser_list_sessions (pass-through) lists the smoke session');
+    const gs = await m.request('tools/call', { name: 'browser_get_session', arguments: { session_id: mSid } });
+    check(!gs.error && !gs.result?.isError && JSON.stringify(gs.result).includes(mSid), 'mcp browser_get_session (pass-through)');
     const leakedMcp = [apiToken, bridgeToken, vncPassword].some((s) => [JSON.stringify(tools), lsText, JSON.stringify(gs)].some((t) => t.includes(s)));
     check(!leakedMcp, 'no secret in pass-through responses');
-    const ll = await m.request('tools/call', { name: 'browser_live_link', arguments: { session_id: sessionId } });
-    check(ll.result?.structuredContent?.link === link.url, 'mcp browser_live_link returns the same link');
-    await fetch(`${live}/take`, { method: 'POST' });
-    const refused = await m.request('tools/call', { name: 'browser_execute_action', arguments: { session_id: sessionId, action: { action: 'scroll', reason: 'smoke' } } });
+    const ll = await m.request('tools/call', { name: 'browser_live_link', arguments: { session_id: mSid } });
+    check(ll.result?.structuredContent?.link === mLink.url, 'mcp browser_live_link returns the same link');
+    await fetch(`${mLive}/take`, { method: 'POST' });
+    const refused = await m.request('tools/call', { name: 'browser_execute_action', arguments: { session_id: mSid, action: { action: 'scroll', reason: 'smoke' } } });
     check(refused.result?.isError && /taken control/.test(refused.result.content?.[0]?.text || ''), 'mcp execute_action refused while the user has control');
-    const obs = await m.request('tools/call', { name: 'browser_get_session', arguments: { session_id: sessionId } });
+    const obs = await m.request('tools/call', { name: 'browser_get_session', arguments: { session_id: mSid } });
     check(!obs.error && !obs.result?.isError, 'mcp get_session still works while the user has control');
-    await fetch(`${live}/release`, { method: 'POST' });
-    const wait = m.request('tools/call', { name: 'browser_wait_for_human', arguments: { session_id: sessionId, reason: 'MCP smoke', timeout_s: 30 }, _meta: { progressToken: 'smoke' } });
+    await fetch(`${mLive}/release`, { method: 'POST' });
+    const wait = m.request('tools/call', { name: 'browser_wait_for_human', arguments: { session_id: mSid, reason: 'MCP smoke', timeout_s: 30 }, _meta: { progressToken: 'smoke' } });
     await new Promise((r) => setTimeout(r, 1500));
-    check(m.notes.some((x) => x.method === 'notifications/progress' && x.params.message.includes(link.url)), 'mcp progress notification carries the link');
-    await fetch(`${live}/done`, { method: 'POST' });
+    check(m.notes.some((x) => x.method === 'notifications/progress' && x.params.message.includes(mLink.url)), 'mcp progress notification carries the link');
+    await fetch(`${mLive}/done`, { method: 'POST' });
     const wres = await wait;
     check(wres.result?.structuredContent?.status === 'done', `mcp browser_wait_for_human -> ${wres.result?.structuredContent?.status}`);
-    const tmo = await m.request('tools/call', { name: 'browser_wait_for_human', arguments: { session_id: sessionId, reason: 'MCP smoke timeout', timeout_s: 5 } });
+    const tmo = await m.request('tools/call', { name: 'browser_wait_for_human', arguments: { session_id: mSid, reason: 'MCP smoke timeout', timeout_s: 5 } });
     check(tmo.result?.structuredContent?.status === 'timeout', `mcp browser_wait_for_human (5 s, nobody) -> ${tmo.result?.structuredContent?.status}`);
     m.close();
 } catch (err) {
     check(false, `error: ${err.message}`);
 } finally {
+    if (podChat) {
+        const pc = await bapi('/api/pod/close', { chat_key: podChat }).catch(() => null);
+        check(!!pc?.ok, `closed the smoke chat's pod (${pc?.status})`);
+    }
     if (sessionId) {
         const del = await ab(`/sessions/${sessionId}`, { method: 'DELETE' }).catch(() => null);
         check(!!del?.ok, `deleted session ${sessionId}`);

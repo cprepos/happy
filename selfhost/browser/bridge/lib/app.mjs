@@ -480,7 +480,7 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
                     }
                     forkedFrom = body.forked_from;
                 }
-                const d = await pods.ensure(key, { source, verify: body.verify === true, ...(forkedFrom ? { forkedFrom } : {}) });
+                const d = await pods.ensure(key, { source, verify: body.verify === true, check: body.check === true, ...(forkedFrom ? { forkedFrom } : {}) });
                 const rec = store.findChat(key);
                 return send(res, 200, { ...d, url: rec ? linkUrl(rec) : null, status: rec?.status ?? null });
             }

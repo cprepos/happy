@@ -51,12 +51,18 @@ function harness({ maxPods = 2, warm = 0, ensureMs = 0, readyAfter = 0, createFa
             started: Date.now(),
             async readyz() { calls.push(`ctl.readyz:${slot}`); return c.healthy && up.has(slot) && Date.now() - (up.get(slot)?.at ?? 0) >= readyAfter; },
             async createSession(o = {}) {
-                calls.push(`ctl.createSession:${slot}${o.authProfile ? ':' + o.authProfile : ''}`);
+                calls.push(`ctl.createSession:${slot}${o.authProfile ? ':' + o.authProfile : ''}${o.startUrl ? ' ' + o.startUrl : ''}`);
                 if (createFail) createFail(o);
                 return { id: `s${++sessions}`, status: 'active' };
             },
             async saveAuthProfile(sid, name) { calls.push(`ctl.saveAuthProfile:${slot}:${name}`); slotAuth.set(slot, true); return true; },
             async closeSession(sid) { calls.push(`ctl.closeSession:${slot}`); return true; },
+            dead: new Set(),
+            async getSession(sid) {
+                calls.push(`ctl.getSession:${slot}`);
+                if (c.dead.has(sid)) { const e = new Error('not found'); e.status = 404; throw e; }
+                return { id: sid, status: 'active' };
+            },
         };
         clients.set(slot, c);
         return c;
@@ -469,4 +475,37 @@ test('fork: the one try survives a bridge restart', async () => {
     h2.authDirs.set(A, true);
     await h2.mgr.ensure(B, { source: 'happy', forkedFrom: A });
     assert.equal(copies(h2.calls), 0);
+});
+
+test('preflight: check asks a live session once per window; a dead one is replaced at the last page, at most twice per 5 minutes', async () => {
+    const h = harness();
+    const KEY = 'a'.repeat(32);
+    const d0 = await h.mgr.ensure(KEY, {});
+    const alive = await h.mgr.ensure(KEY, { check: true });
+    assert.equal(alive.session_id, d0.session_id);
+    assert.equal(alive.recovered, undefined);
+    assert.ok(!h.calls.includes(`ctl.getSession:${d0.slot}`), 'just started: no need to ask');
+    h.advance(3000);
+    await h.mgr.ensure(KEY, { check: true });
+    assert.ok(h.calls.includes(`ctl.getSession:${d0.slot}`));
+
+    const link = h.store.findChat(KEY);
+    assert.ok(link, 'the chat has a link');
+    link.url = 'https://news.ycombinator.com/item?id=1';
+    let cur = d0;
+    for (let i = 1; i <= 2; i++) {
+        h.advance(3000);
+        h.clients.get(cur.slot).dead.add(cur.session_id);
+        const r = await h.mgr.ensure(KEY, { check: true });
+        assert.deepEqual(r.recovered, { reason: 'session_ended', previous_session_id: cur.session_id });
+        assert.notEqual(r.session_id, cur.session_id);
+        assert.ok(h.calls.some((c) => c.endsWith(' https://news.ycombinator.com/item?id=1')), 'reopened at the last page');
+        cur = r;
+    }
+    h.advance(3000);
+    h.clients.get(cur.slot).dead.add(cur.session_id);
+    await assert.rejects(h.mgr.ensure(KEY, { check: true }), (e) => e.code === 'recovery_limit' && e.status === 503);
+    h.advance(5 * 60_000);
+    const again = await h.mgr.ensure(KEY, { check: true });
+    assert.equal(again.recovered.reason, 'session_ended');
 });

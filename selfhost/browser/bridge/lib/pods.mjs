@@ -200,6 +200,9 @@ export function createPodManager({
     log = () => {},
     newId = () => randomBytes(16).toString('hex'),
     newPassword = newVncPassword,
+    sessionCheckMs = 2000,          // ensure({check}): a session seen alive this recently is not asked again
+    recoverLimit = 2,               // at most this many recoveries of a dead browser per chat ...
+    recoverWindowMs = 5 * 60_000,   // ... in this window
 } = {}) {
     warm = Math.max(0, Math.min(2, warm, maxPods));
     const pods = new Map();         // slot -> pod
@@ -384,7 +387,33 @@ export function createPodManager({
      * connection) and replaces it when it does not. {forkedFrom}: the parent chat's key, for a
      * forked or side chat (see inheritLogin).
      */
-    async function ensure(chatKey, { source = null, verify = false, forkedFrom = null } = {}) {
+    const DEAD_SESSION = new Set(['closed', 'interrupted', 'failed', 'ended']);
+    // ensure({check}): is the running chat's session alive? null when it is, else why not.
+    async function sessionDead(chat, pod) {
+        if (chat.checkedAt && now() - chat.checkedAt < sessionCheckMs) return null;
+        try {
+            const s = await pod.client.getSession(chat.sessionId);
+            if (s && DEAD_SESSION.has(String(s.status))) return 'session_ended';
+            chat.checkedAt = now();
+            return null;
+        } catch (err) {
+            if (err.status === 404) return 'session_ended';
+            return (await pod.client.readyz()) ? null : 'pod_crashed';
+        }
+    }
+    // The URL a recovered or woken browser opens again: the link's last page, http(s) only.
+    const resumeUrlOf = (chatKey) => {
+        const u = linkOf(chatKey)?.url;
+        return typeof u === 'string' && /^https?:\/\//i.test(u) ? u : null;
+    };
+
+    /**
+     * {check: true} (the MCP server's preflight before a browser call): the running chat's
+     * session must still answer, else the browser is recovered. A woken or recovered browser
+     * reopens the link's last page, and the answer carries recovered: {reason, previous_session_id}.
+     * A dead browser is recovered at most recoverLimit times per recoverWindowMs.
+     */
+    async function ensure(chatKey, { source = null, verify = false, forkedFrom = null, check = false } = {}) {
         if (!CHAT_KEY.test(chatKey || '')) throw new PodError('bad chat_key', 400, 'bad_request');
         if (forkedFrom !== null && (typeof forkedFrom !== 'string' || !CHAT_KEY.test(forkedFrom) || forkedFrom === chatKey)) {
             throw new PodError('bad forked_from', 400, 'bad_request');
@@ -395,11 +424,28 @@ export function createPodManager({
         if (stopping.has(chatKey)) await stopping.get(chatKey).catch(() => {});
         if (pending.has(chatKey)) return pending.get(chatKey);
         const pod = chat.slot !== null ? pods.get(chat.slot) : null;
+        let recovery = null;
         if (chat.state === 'running' && pod && pod.podId === chat.podId && pod.state === 'assigned') {
-            if (!verify || await pod.client.readyz()) return describe(chat);
-            log(`pod slot ${pod.slot}: not answering; replacing it`);
+            if (check) {
+                const dead = await sessionDead(chat, pod);
+                if (!dead) return describe(chat);
+                recovery = dead;
+            } else if (!verify || await pod.client.readyz()) return describe(chat);
+            else recovery = 'pod_crashed';
+            if (check) {
+                const recent = (chat.recoveries || []).filter((t) => now() - t < recoverWindowMs);
+                if (recent.length >= recoverLimit) {
+                    throw new PodError(`this chat's browser died ${recent.length} times in ${Math.round(recoverWindowMs / 60_000)} minutes; not restarting it again yet`, 503, 'recovery_limit');
+                }
+                chat.recoveries = [...recent, now()];
+            }
+            log(`pod slot ${pod.slot}: chat ${chatKey.slice(0, 8)} ${recovery === 'session_ended' ? 'session ended' : 'not answering'}; replacing it`);
             await stopChat(chatKey, 'crashed');
+        } else if (check && chat.sessionId && chat.state !== 'starting') {
+            recovery = chat.state === 'crashed' || chat.state === 'running' ? 'pod_crashed' : 'pod_asleep';
         }
+        const previous = chat.sessionId;
+        const resumeUrl = previous ? resumeUrlOf(chatKey) : null;
         const p = (async () => {
             const t0 = now();
             chat.state = 'starting';
@@ -421,14 +467,14 @@ export function createPodManager({
                 const s0 = now();
                 let session;
                 try {
-                    session = await mine.client.createSession(adopted ? { authProfile: AUTH_PROFILE } : {});
+                    session = await mine.client.createSession({ ...(adopted ? { authProfile: AUTH_PROFILE } : {}), ...(resumeUrl ? { startUrl: resumeUrl } : {}) });
                 } catch (err) {
-                    if (!adopted) throw err;
-                    log(`pod slot ${mine.slot}: session with the saved login failed (${short(err)}); starting without it`);
+                    if (!adopted && !resumeUrl) throw err;
+                    log(`pod slot ${mine.slot}: session with the saved login or last page failed (${short(err)}); starting without them`);
                     session = await mine.client.createSession({});
                 }
                 const sessionMs = now() - s0;
-                Object.assign(chat, { slot: mine.slot, podId: mine.podId, sessionId: session.id, state: 'running', lastAgentAt: now() });
+                Object.assign(chat, { slot: mine.slot, podId: mine.podId, sessionId: session.id, state: 'running', lastAgentAt: now(), checkedAt: now() });
                 const link = store?.forChat?.(chatKey, session.id);
                 if (link) chat.linkId = link.id;
                 const timing = { warm: wasWarm, spare: fromSpare, total_ms: now() - t0, session_ms: sessionMs, ...(wasWarm ? {} : mine.timings), at: now() };
@@ -449,7 +495,9 @@ export function createPodManager({
             }
         })();
         pending.set(chatKey, p);
-        try { return await p; } finally { pending.delete(chatKey); }
+        let d;
+        try { d = await p; } finally { pending.delete(chatKey); }
+        return recovery && check ? { ...d, recovered: { reason: recovery, previous_session_id: previous } } : d;
     }
 
     // A forked chat's first login is its parent's, as of now: the parent's pod (if it runs) is

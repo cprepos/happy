@@ -107,6 +107,23 @@ export const MUTATING_TOOLS = new Set([
     'browser_execute_action', 'browser_eval_js', 'browser_close_tab', 'browser_activate_tab',
     'browser_wait_for_selector', 'browser_fork_session', 'browser_save_auth_profile',
 ]);
+// Preflight (before a browser call, the chat's session is checked and a dead one recovered): the
+// calls that may go on against a recovered browser. Anything else could act on a page the agent
+// has not seen, so it is refused with RECOVERED_REFUSED.
+export const READ_ONLY_TOOLS = new Set([
+    'browser_observe', 'browser_screenshot', 'browser_get_html', 'browser_find_elements', 'browser_list_tabs',
+    'browser_get_session', 'browser_list_sessions', 'browser_wait_for_selector', 'browser_list_downloads',
+    'browser_read_download', 'browser_live_link', 'browser_create_session', 'browser_list_auth_profiles', 'browser_list_secrets',
+]);
+const RECOVERY_WHY = { session_ended: 'its session ended', pod_crashed: 'it stopped answering', pod_asleep: 'it was asleep' };
+export function recoveredNote(via) {
+    const r = via.recovered;
+    return `The browser was restarted (${RECOVERY_WHY[r.reason] || r.reason}). Session ${r.previous_session_id || '(none)'} is gone; `
+        + `this chat's browser is now session ${via.session_id}, signed in with its saved login and reopened at its last page if it had one.`
+        + (via.url ? ` Live view: ${via.url}` : '');
+}
+export const RECOVERED_REFUSED = 'Nothing was done: observe the page again (browser_observe) before acting, since element ids from before no longer apply.';
+export const SHARED_DOWN = 'The shared browser is down (auto-browser is not answering). It is not restarted automatically; try again shortly or ask the user to check the browser stack.';
 export const USER_HAS_CONTROL =
     'The user has taken control of this browser. Call browser_wait_for_human(session_id, reason) and do nothing until it returns.';
 
@@ -270,7 +287,7 @@ export function createChatRouter({ bridge, makeUpstream, chat = null, newKey = (
         get legacy() { return legacyAt !== null && now() - legacyAt < recheckMs; },
         // This call's pod: {key, session_id, mcp_url, api_url, link_id, upstream}, or null with pods off.
         // callChat: {key, source} the MCP client named for this one call (a daemon serving many chats).
-        async route(name, args, signal, { verify = false, chat: callChat = null } = {}) {
+        async route(name, args, signal, { verify = false, check = false, chat: callChat = null } = {}) {
             if (legacyAt !== null && now() - legacyAt < recheckMs) return null;
             if (callChat?.unknown) throw new Error(NO_CHAT);
             const c = callChat ?? chat;
@@ -279,10 +296,11 @@ export function createChatRouter({ bridge, makeUpstream, chat = null, newKey = (
             try {
                 // forked_from only for this process's own chat, never one a call names.
                 const fork = c && c === chat && chat.forkedFrom ? { forked_from: chat.forkedFrom } : {};
-                if (key) d = await bridge('/api/pod', { chat_key: key, source: c?.source ?? 'session', ...fork, ...(verify ? { verify: true } : {}) }, signal);
+                const flags = { ...(verify ? { verify: true } : {}), ...(check ? { check: true } : {}) };
+                if (key) d = await bridge('/api/pod', { chat_key: key, source: c?.source ?? 'session', ...fork, ...flags }, signal);
                 else {
                     // A session this process has not seen (another process made it, or before a restart).
-                    d = await bridge('/api/pod', { session_id: args.session_id, ...(verify ? { verify: true } : {}) }, signal);
+                    d = await bridge('/api/pod', { session_id: args.session_id, ...flags }, signal);
                     key = d.chat_key;
                 }
             } catch (err) {
@@ -315,7 +333,7 @@ export function createChatRouter({ bridge, makeUpstream, chat = null, newKey = (
 
 const ONE_BROWSER = 'Each chat has one browser. Use the session it already has; a fork or a second session is not available.';
 
-export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fetch, pollS = 60, upstream = null, waitMaxS = 3600, log = () => {}, retryMs = 30_000, metaProbe = null, secrets = null, chatPods = null, callChat = null }) {
+export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fetch, pollS = 60, upstream = null, waitMaxS = 3600, log = () => {}, retryMs = 30_000, metaProbe = null, secrets = null, chatPods = null, callChat = null, now = Date.now }) {
     const inflight = new Map(); // request id -> AbortController
     // chatPods: {chat: {key, source, forkedFrom?} | null, makeUpstream(url)}. Each call then goes to its chat's
     // pod when the bridge runs pods, and to `upstream` (the shared controller) when it doesn't.
@@ -379,7 +397,7 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
         if (!router) return { via: null, args };
         let via;
         try {
-            via = await router.route(name, args, signal, { chat: cc });
+            via = await router.route(name, args, signal, { chat: cc, check: name !== 'browser_close_session' });
         } catch (err) {
             if (!signal.aborted) result(id, toolResult(`Error: the browser for this chat is not available: ${err.message}`, true));
             return { done: true };
@@ -396,6 +414,7 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
             }
             return { done: true };
         }
+        if (via.recovered && !READ_ONLY_TOOLS.has(name)) { result(id, toolResult(`${recoveredNote(via)} ${RECOVERED_REFUSED}`, true)); return { done: true }; }
         const routed = withSession.has(name) ? { ...args, session_id: via.session_id } : args;
         return { via, args: routed };
     }
@@ -416,6 +435,30 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
     }
     const refused = (err) => /ECONNREFUSED/.test(err?.message || '');
 
+    // Shared browser (no pods): a call naming a session first asks auto-browser for it (cached a
+    // couple of seconds). Nothing is recovered here. False when the refusal was written.
+    const sharedSeen = new Map(); // session id -> when it last answered
+    async function sharedPreflight(id, name, args, meta, signal) {
+        const sid = typeof args?.session_id === 'string' && args.session_id ? args.session_id : null;
+        if (!sid || !withSession.has(name) || name === 'browser_get_session' || name === 'browser_close_session') return true;
+        if (now() - (sharedSeen.get(sid) ?? -Infinity) < 2000) return true;
+        let r;
+        try {
+            r = await upstream.callTool(mapped.byLocal.get('browser_get_session') || 'browser.get_session', { session_id: sid }, meta, { signal });
+        } catch (err) {
+            if (signal.aborted) return false;
+            if (refused(err) || /unreachable|ECONN|fetch failed/i.test(err?.message || '')) { result(id, toolResult(SHARED_DOWN, true)); return false; }
+            return true;
+        }
+        const text = JSON.stringify(r?.result?.content ?? r?.error ?? '');
+        if (r?.error || r?.result?.isError || /"status\\?":\s*\\?"(closed|interrupted)/.test(text)) {
+            result(id, toolResult(`Session ${sid} is gone (${/unknown_session|No session/i.test(text) ? 'unknown session' : 'closed'}). Call browser_list_sessions to see the live ones, or browser_create_session for a new one.`, true));
+            return false;
+        }
+        sharedSeen.set(sid, now());
+        return true;
+    }
+
     async function passThrough(id, name, args, meta, signal, cc = null) {
         if (!mapped.byLocal.has(name)) await refreshUpstream();
         const remote = mapped.byLocal.get(name);
@@ -428,6 +471,7 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
         if (routedCall.done) return;
         let via = routedCall.via;
         args = routedCall.args;
+        if (!via && !(await sharedPreflight(id, name, args, meta, signal))) return;
         const gate = await secretsBefore(id, name, args, signal);
         if (!gate) return;
         // One state check per call: a page-changing tool asks whether the user holds the browser
@@ -457,7 +501,9 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
             if (r.thrown) return result(id, await scrubOut(gate, r.thrown, signal));
             // Verbatim, under our request id.
             if (r.error) return write({ jsonrpc: '2.0', id, error: await scrubOut(gate, r.error, signal) });
-            return result(id, await scrubOut(gate, await withLiveLink(name, args, r.result, signal, via), signal));
+            let out = r.result;
+            if (via?.recovered && out && Array.isArray(out.content)) out = { ...out, content: [{ type: 'text', text: recoveredNote(via) }, ...out.content] };
+            return result(id, await scrubOut(gate, await withLiveLink(name, args, out, signal, via), signal));
         } catch (err) {
             if (!signal.aborted) return result(id, toolResult(`Error: ${err.message}`, true));
         }
@@ -554,17 +600,17 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
     });
 
     // Our own tools with pods: the chat's pod (started if need be), or null without pods.
-    async function ownVia(args, signal, cc = null) {
+    async function ownVia(args, signal, cc = null, check = false) {
         if (!router) return null;
         if (!cc && !router.chatKey && !(typeof args?.session_id === 'string' && args.session_id)) return null;
-        return router.route('browser_live_link', args || {}, signal, { chat: cc });
+        return router.route('browser_live_link', args || {}, signal, { chat: cc, check });
     }
 
     async function liveLink(args, signal, cc = null) {
-        const via = await ownVia(args, signal, cc);
+        const via = await ownVia(args, signal, cc, true);
         if (await endedByUser(args, signal, via)) throw new Error(USER_ENDED);
         const r = await bridge('/api/links', linkRef(String(args.session_id ?? ''), via), signal);
-        return { link: r.url, status: r.status, instructions: 'Post this link in chat on its own line so the user can watch live.' };
+        return { link: r.url, status: r.status, ...(via?.recovered ? { note: recoveredNote(via) } : {}), instructions: 'Post this link in chat on its own line so the user can watch live.' };
     }
 
     async function waitForHuman(args, signal, progress, cc = null) {
@@ -656,7 +702,14 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
                     let out;
                     if (name === 'browser_live_link') out = await liveLink(args, ac.signal, cc);
                     else if (name === 'browser_wait_for_human') out = await waitForHuman(args, ac.signal, progress, cc);
-                    else if (secrets && secrets.isOwn(name)) out = await secrets.callOwn(name, args, ac.signal);
+                    else if (secrets && secrets.isOwn(name)) {
+                        // A fill or login types into the page: not into a browser that was just restarted.
+                        if (router && (name === 'browser_fill_secret' || name === 'browser_login')) {
+                            const via = await ownVia(args, ac.signal, cc, true);
+                            if (via?.recovered) return result(id, toolResult(`${recoveredNote(via)} ${RECOVERED_REFUSED}`, true));
+                        }
+                        out = await secrets.callOwn(name, args, ac.signal);
+                    }
                     else if (upstream) return await passThrough(id, name, args, params?._meta, ac.signal, cc);
                     else return error(id, -32602, `unknown tool ${name}`);
                     if (!ac.signal.aborted) result(id, toolResult(out));

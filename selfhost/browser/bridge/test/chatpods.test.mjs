@@ -359,7 +359,7 @@ const UP_TOOLS = [
     { name: 'browser.fork_session', inputSchema: { type: 'object', properties: { session_id: { type: 'string' } } } },
 ];
 
-function mcpHarness({ chat = { key: KEY_A, source: 'happy' }, podsOn = true, refuseOnce = false } = {}) {
+function mcpHarness({ chat = { key: KEY_A, source: 'happy' }, podsOn = true, refuseOnce = false, recoverOnce = null, capped = false, shared: sharedMode = 'ok' } = {}) {
     const seen = { bridge: [], calls: [] };
     let n = 0;
     const podFor = new Map();
@@ -372,7 +372,15 @@ function mcpHarness({ chat = { key: KEY_A, source: 'happy' }, podsOn = true, ref
             return { result: { content: [{ type: 'text', text: `${name} ok` }] } };
         },
     });
-    const shared = { listTools: async () => UP_TOOLS, async callTool(name, args) { seen.calls.push({ url: 'shared', name, args }); return { result: { content: [] } }; } };
+    const shared = {
+        listTools: async () => UP_TOOLS,
+        async callTool(name, args) {
+            if (sharedMode === 'down') throw new Error('auto-browser MCP unreachable (ECONNREFUSED). Is the browser stack up?');
+            seen.calls.push({ url: 'shared', name, args });
+            if (sharedMode === 'gone' && name === 'browser.get_session') return { result: { isError: true, content: [{ type: 'text', text: 'No session with id x1 (unknown_session)' }] } };
+            return { result: { content: [] } };
+        },
+    };
     const json = (status, body) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
     const fetchImpl = async (url, init) => {
         const path = new URL(url).pathname;
@@ -382,8 +390,12 @@ function mcpHarness({ chat = { key: KEY_A, source: 'happy' }, podsOn = true, ref
         if (path === '/api/tools') return json(200, { tools: UP_TOOLS });
         if (path === '/api/pod') {
             const key = body.chat_key;
+            if (capped && body.check) return json(503, { error: "this chat's browser died 2 times in 5 minutes; not restarting it again yet", code: 'recovery_limit' });
             if (!podFor.has(key) || body.verify) podFor.set(key, { slot: n, sid: `pod${n++}` });
             const p = podFor.get(key);
+            let recovered;
+            if (recoverOnce && body.check) { recovered = recoverOnce; recoverOnce = null; p.sid = `pod${n++}`; }
+            if (recovered) return json(200, { chat_key: key, session_id: p.sid, recovered, mcp_url: `http://127.0.0.1:${8100 + p.slot}/mcp`, api_url: `http://127.0.0.1:${8100 + p.slot}`, link_id: `L${p.slot}`, url: `http://localhost/live/L${p.slot}` });
             return json(200, { chat_key: key, session_id: p.sid, mcp_url: `http://127.0.0.1:${8100 + p.slot}/mcp`, api_url: `http://127.0.0.1:${8100 + p.slot}`, link_id: `L${p.slot}`, url: `http://localhost/live/L${p.slot}` });
         }
         if (path === '/api/pod/close') return json(200, { closed: true });
@@ -443,7 +455,8 @@ test('router: pods off on the bridge -> the shared controller, as before', async
     const h = mcpHarness({ podsOn: false });
     await h.list();
     await h.call('browser_observe', { session_id: 'x1' });
-    assert.deepEqual(h.seen.calls.map((c) => [c.url, c.args.session_id]), [['shared', 'x1']]);
+    // The preflight asks for the session first.
+    assert.deepEqual(h.seen.calls.map((c) => [c.url, c.name, c.args.session_id]), [['shared', 'browser.get_session', 'x1'], ['shared', 'browser.observe', 'x1']]);
     assert.ok(!h.seen.bridge.some((b) => b.body.chat_key && b.path === '/api/state'));
 });
 
@@ -506,4 +519,49 @@ test('router: a forked chat names its parent on every pod request; no tool argum
     await plain.call('browser_observe', { forked_from: 'f'.repeat(32) });
     const preqs = plain.seen.bridge.filter((b) => b.path === '/api/pod');
     assert.ok(preqs.length >= 1 && preqs.every((b) => !('forked_from' in b.body)), 'a non-fork never sends one');
+});
+
+test('preflight: every pod call asks the bridge to check the session; an alive one goes on as before', async () => {
+    const h = mcpHarness();
+    const r = await h.call('browser_execute_action', { action: 'click' });
+    assert.equal(r.result.isError, undefined);
+    assert.ok(h.seen.bridge.filter((b) => b.path === '/api/pod').every((b) => b.body.check === true && b.body.chat_key === KEY_A));
+});
+
+test('preflight: a recovered browser answers a read-only call with a note, and refuses one that changes the page', async () => {
+    const recovered = { reason: 'session_ended', previous_session_id: 'pod0' };
+    const ro = mcpHarness({ recoverOnce: recovered });
+    const o = await ro.call('browser_observe', {});
+    assert.equal(o.result.isError, undefined);
+    assert.match(o.result.content.map((c) => c.text).join('\n'), /restarted \(its session ended\).*pod0 is gone.*now session pod1/);
+    assert.equal(ro.seen.calls[0].args.session_id, 'pod1');
+
+    const mu = mcpHarness({ recoverOnce: recovered });
+    const x = await mu.call('browser_execute_action', { action: 'click' });
+    assert.equal(x.result.isError, true);
+    assert.match(x.result.content[0].text, /observe the page again/);
+    assert.equal(mu.seen.calls.length, 0, 'nothing reached the pod');
+    // The next call is against the recovered browser as usual.
+    assert.equal((await mu.call('browser_execute_action', { action: 'click' })).result.isError, undefined);
+});
+
+test('preflight: the loop cap comes back as a clear error', async () => {
+    const h = mcpHarness({ capped: true });
+    const r = await h.call('browser_observe', {});
+    assert.equal(r.result.isError, true);
+    assert.match(r.result.content[0].text, /died 2 times in 5 minutes/);
+    assert.equal(h.seen.calls.length, 0);
+});
+
+test('preflight: shared browser (no pods) is never recovered: a gone session or a down browser is a clear error', async () => {
+    const gone = mcpHarness({ podsOn: false, shared: 'gone' });
+    await gone.list();
+    const g = await gone.call('browser_execute_action', { session_id: 'x1', action: 'click' });
+    assert.equal(g.result.isError, true);
+    assert.match(g.result.content[0].text, /Session x1 is gone \(unknown session\).*browser_create_session/);
+    assert.ok(!gone.seen.calls.some((c) => c.name === 'browser.execute_action'));
+    assert.ok(!gone.seen.bridge.some((b) => b.path === '/api/pod' && b.body.check), 'nothing asks for a pod');
+    const down = mcpHarness({ podsOn: false, shared: 'down' });
+    const d = await down.call('browser_observe', { session_id: 'x1' });
+    assert.equal(d.result.isError, true);
 });
