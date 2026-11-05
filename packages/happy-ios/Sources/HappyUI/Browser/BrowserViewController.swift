@@ -19,6 +19,10 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
     private let session: Session?
     private let agentID: String?
     private let artifactID: String?
+    /// Finds the workspace the page opens in, when the screen that opened
+    /// it knows (a Happy CLI chat's, by its folder); else `agentID`'s or
+    /// `artifactID`'s, or the computer's first host workspace.
+    private let workspace: (@Sendable () async throws -> String)?
     private var page: BrowserPage?
     /// Buttons a caller adds at the header's right, before the browser's own
     /// (a live browser's Done).
@@ -63,8 +67,8 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
     lazy var reloadItem = UIBarButtonItem(primaryAction: UIAction(image: .icon(.ionicons("refresh"), size: 22)) { [weak self] _ in self?.reloadOrStop() })
     lazy var shareItem = UIBarButtonItem(image: .icon(.ionicons("share-outline"), size: 22), menu: UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] done in done(self?.shareActions() ?? []) }]))
 
-    init(url: URL, session: Session? = nil, agentID: String? = nil, artifactID: String? = nil, page: BrowserPage? = nil, extraItems: [UIBarButtonItem] = []) {
-        originalURL = url; self.session = session; self.agentID = agentID; self.artifactID = artifactID; self.page = page; self.extraItems = extraItems
+    init(url: URL, session: Session? = nil, agentID: String? = nil, artifactID: String? = nil, workspace: (@Sendable () async throws -> String)? = nil, page: BrowserPage? = nil, extraItems: [UIBarButtonItem] = []) {
+        originalURL = url; self.session = session; self.agentID = agentID; self.artifactID = artifactID; self.workspace = workspace; self.page = page; self.extraItems = extraItems
         super.init(nibName: nil, bundle: nil)
         title = Self.isSynthetic(url) ? nil : url.host
         navigationItem.largeTitleDisplayMode = .never
@@ -137,7 +141,9 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
         do {
             if page == nil {
                 guard let session else { throw BrowserError.unavailable }
-                let workspace = try await session.client.browserWorkspace(agentID: agentID, artifactID: artifactID)
+                let workspace: String
+                if let find = self.workspace { workspace = try await find() }
+                else { workspace = try await session.client.browserWorkspace(agentID: agentID, artifactID: artifactID) }
                 try Task.checkCancellation()
                 page = try await BrowserPage.workspace(client: session.client, url: originalURL, workspaceID: workspace, artifactID: artifactID)
             }
@@ -499,15 +505,16 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
     }
 
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        if action.targetFrame == nil, let url = action.request.url { openBrowser(url, session: session, agentID: agentID) }
+        if action.targetFrame == nil, let url = action.request.url { openBrowser(url, session: session, agentID: agentID, workspace: workspace) }
         return nil
     }
 }
 
 extension UIViewController {
-    func openBrowser(_ url: URL, session: Session? = nil, agentID: String? = nil) {
+    func openBrowser(_ url: URL, session: Session? = nil, agentID: String? = nil, workspace: (@Sendable () async throws -> String)? = nil) {
         guard BrowserPolicy.route(url) != .system else { UIApplication.shared.open(url); return }
-        presentBrowser(BrowserViewController(url: url, session: session ?? browserConnection(), agentID: agentID))
+        // A workspace finder belongs to the session it was made for.
+        presentBrowser(BrowserViewController(url: url, session: session ?? browserConnection(), agentID: agentID, workspace: session == nil ? nil : workspace))
     }
 
     /// Pushes `browser` on this screen's stack, or presents it in a stack

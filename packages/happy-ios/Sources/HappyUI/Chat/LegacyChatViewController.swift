@@ -2162,23 +2162,21 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         if routeKey == liveRoutedFor { return liveRouting == nil }
         liveRoutedFor = routeKey
         liveRouting?.cancel()
-        let host = record.metadata?["host"]?.stringValue
         let store = account.store
         liveRouting = Task { @MainActor [weak self] in
             let (machine, machines) = await Task.detached(priority: .userInitiated) {
                 (machineId.flatMap { try? store.machine(id: $0) }, (try? store.machines()) ?? [])
             }.value
             guard let self, !Task.isCancelled, self.liveRoutedFor == routeKey else { return }
-            let name = LegacyLinkRoute.machineName(session: record, machine: machine)
-            let route = LegacyLinkRoute.resolve(
-                machineId: machineId, machineName: name, agentNodeName: LegacyLinkRoute.agentNodeName(machine, among: machines),
+            let route = LegacyBrowserRoute.resolve(
+                session: record, machine: machine, machines: machines,
                 computers: Self.legacyLinkComputers(self.context.account), settings: self.account.localSettings
             )
             // A chat whose computer isn't certain reads nothing: it says
-            // unavailable rather than look through another computer.
-            if case .computer(let id) = route, let client = Session.session(for: id, context: self.context)?.client {
-                let hint = BrowserMachineHint(machineID: machineId, hosts: [host, name].compactMap { $0 })
-                self.liveConnection = LiveBrowserConnection(client: client) { try await client.browserWorkspace(machine: hint) }
+            // unavailable rather than look through another computer. On
+            // that computer, the workspace the chat's folder is in.
+            if case .computer(let id, let workspace) = route, let client = Session.session(for: id, context: self.context)?.client {
+                self.liveConnection = LiveBrowserConnection(client: client) { try await workspace.find(client) }
             } else {
                 self.liveConnection = nil
             }
@@ -2196,15 +2194,14 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         // the main thread; one the store doesn't have leaves the session's
         // own recorded host to name it.
         let record = session.record
-        let machineId = record?.metadata?["machineId"]?.stringValue
+        let machineId = record.flatMap(LegacyBrowserRoute.machineId)
         let store = account.store
         Task { @MainActor [weak self] in
             let (machine, machines) = await Task.detached(priority: .userInitiated) {
                 (machineId.flatMap { try? store.machine(id: $0) }, (try? store.machines()) ?? [])
             }.value
             guard let self else { return }
-            let name = record.flatMap { LegacyLinkRoute.machineName(session: $0, machine: machine) }
-            openLegacyLink(url, machineId: machineId, machineName: name, agentNodeName: LegacyLinkRoute.agentNodeName(machine, among: machines), settings: account.localSettings, context: context)
+            openLegacyLink(url, session: record, machine: machine, machines: machines, settings: account.localSettings, context: context)
         }
     }
 
