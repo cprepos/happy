@@ -82,7 +82,19 @@ public struct LiveBrowserLink: Equatable, Sendable {
     /// 32 hex digits of sha256("happy:" + session id), as the bridge's
     /// `chatKeyOf` makes it from the agent's `HAPPY_SESSION_ID`.
     public static func chatKey(happySession id: String) -> String {
-        let digest = Hashing.sha256(Data("happy:\(id)".utf8))
+        key("happy:\(id)")
+    }
+
+    /// A Happy Agent chat's key: its agent's Happy session's when it has
+    /// one (the bridge finds that session in the agent's journal), else
+    /// sha256("agent:" + agent id), as the bridge falls back to.
+    public static func chatKey(agent id: String, happySession: String? = nil) -> String {
+        if let happySession, !happySession.isEmpty { return chatKey(happySession: happySession) }
+        return key("agent:\(id)")
+    }
+
+    private static func key(_ source: String) -> String {
+        let digest = Hashing.sha256(Data(source.utf8))
         return String(digest.map { String(format: "%02x", $0) }.joined().prefix(32))
     }
 

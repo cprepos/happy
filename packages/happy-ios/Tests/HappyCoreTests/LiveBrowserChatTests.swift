@@ -17,6 +17,10 @@ final class LiveBrowserChatTests: XCTestCase {
         XCTAssertEqual(LiveBrowserLink.chatKey(happySession: Self.session), Self.key)
         XCTAssertEqual(LiveBrowserLink.chatKey(happySession: ""), "ca263fe7cd896f177c9b066da3d1ecee")
         XCTAssertEqual(LiveBrowserLink.chatURL(key: Self.key)?.absoluteString, "http://localhost:6090/live/chat/\(Self.key)")
+        // A Happy Agent chat: its Happy session's key, else the agent's.
+        XCTAssertEqual(LiveBrowserLink.chatKey(agent: "agent1", happySession: Self.session), Self.key)
+        XCTAssertEqual(LiveBrowserLink.chatKey(agent: "agent1"), "11c7e36d970d5afb85c8032af162939b")
+        XCTAssertEqual(LiveBrowserLink.chatKey(agent: "agent1", happySession: ""), "11c7e36d970d5afb85c8032af162939b")
         XCTAssertNil(LiveBrowserLink.chatURL(key: "../state"))
         XCTAssertNil(LiveBrowserLink.chatURL(key: String(Self.key.dropLast())))
     }

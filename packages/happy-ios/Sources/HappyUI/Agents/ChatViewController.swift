@@ -390,6 +390,9 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         updateBar(animated: animated)
         let conversation = conversation
         Task { await conversation.setVisible(true) }
+        // The app knows the agent, not the Happy session it is mirrored
+        // to, so the bridge is asked by its agent key.
+        if !previewing { liveDock.lookUp(key: LiveBrowserLink.chatKey(agent: media.agentId)) }
         liveDock.setOnScreen(true)
         // The model chip warns as its account runs low, so the readings are
         // followed while the composer shows.
