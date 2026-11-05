@@ -137,6 +137,12 @@ services:
       REQUEST_RATE_LIMIT_REQUESTS: ${REQUEST_RATE_LIMIT_REQUESTS:-1200}
       REQUEST_RATE_LIMIT_WINDOW_SECONDS: "60"
       PII_SCRUB_SCREENSHOT: ${PII_SCRUB_SCREENSHOT:-true}
+      # Secrets typed by the secret filler (selfhost/browser/filler) must not
+      # be written anywhere. A trace records each keystroke's params and DOM
+      # snapshots; the network inspector keeps request bodies, and a login
+      # POST body holds the password. Both stay off, whatever the defaults.
+      ENABLE_TRACING: "false"
+      NETWORK_INSPECTOR_CAPTURE_BODIES: "false"
       # No model provider keys: the controller's own agent loop is unused; the
       # calling agent (Claude Code, Happy Agent) drives the browser over MCP.
     volumes:
