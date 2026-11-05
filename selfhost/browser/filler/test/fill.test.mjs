@@ -62,8 +62,8 @@ test('refusals: unbound chat, wrong name, wrong host, wrong field kind, wrong el
             [{ ...base, name: 'github.secret' }, /no such secret/],
             [{ ...base, name: 'gitlab.password' }, /no such secret/],
             [{ ...base, name: 'portal.username' }, /no such secret/], // field not in the policy
-            [{ ...base, session_id: 'evil' }, /not on a host/],
-            [{ ...base, session_id: 'http' }, /not on a host/],
+            [{ ...base, session_id: 'evil' }, /on https:\/\/github\.com\.evil\.test, which is not a host this secret is allowed on \(allowed: https:\/\/github\.com\)/],
+            [{ ...base, session_id: 'http' }, /on http:\/\/github\.com, which is not a host.*only https pages can be filled/],
             [{ ...base, session_id: 'closed' }, /not active/],
             [{ ...base, session_id: 'nope' }, /no such browser session/],
             [{ ...base, element_id: 'u1' }, /cannot take a password/],
@@ -73,7 +73,7 @@ test('refusals: unbound chat, wrong name, wrong host, wrong field kind, wrong el
             // Items in the same vault that the client does not list cannot be named.
             [{ ...base, name: 'unlisted.password' }, /no such secret/],
             [{ ...base, name: 'mismatch.password' }, /no host that both/],
-            [{ ...base, name: 'portal.password' }, /not on a host/],
+            [{ ...base, name: 'portal.password' }, /which is not a host this secret is allowed on/],
         ];
         for (const [args, re] of cases) await assert.rejects(f.fill(args), re, JSON.stringify(args));
         assert.equal(t.ctl.typed.length, 0, 'nothing was typed');
@@ -128,7 +128,15 @@ test('login: username-first pages, sites without TOTP, and pages with nothing to
         t.ctl.addSession('empty', [{ url: 'https://github.com/', interactables: [{ element_id: 'q', tag: 'input', type: 'search', label: 'Search' }] }]);
         assert.equal((await f.login({ chat: 'chat-acme', session_id: 'empty', site: 'github' })).status, 'needs_human');
         t.ctl.addSession('off', loginPages('https://example.test'));
-        assert.equal((await f.login({ chat: 'chat-acme', session_id: 'off', site: 'github' })).status, 'needs_human');
+        await assert.rejects(f.login({ chat: 'chat-acme', session_id: 'off', site: 'github' }), (err) => {
+            // Names the page's host and the login's hosts, so the user can be told which URI to add; no value.
+            assert.equal(err.outcome, 'refused_host');
+            assert.match(err.message, /the page is on https:\/\/example\.test, which is not a host this login is allowed on \(allowed: https:\/\/github\.com\)/);
+            assert.match(err.message, /add https:\/\/example\.test as a URI on the vault item/);
+            for (const v of [t.v.items['acme-github'].password, 'acme-bot@example.com', TOTP_SECRET]) assert.ok(!err.message.includes(v));
+            return true;
+        });
+        assert.ok(auditLines(t.dir).some((l) => l.outcome === 'refused_host' && l.name === 'github' && l.host === 'example.test'));
         await assert.rejects(f.login({ chat: 'chat-acme', session_id: 'off', site: 'nope' }), /no such site/);
         // globex: password and totp only (no username field allowed).
         t.ctl.addSession('g', loginPages());
@@ -217,14 +225,14 @@ test('default_client: host, field and element restrictions still hold', async ()
         for (const chat of [NO_CHAT, 'chat-unknown']) {
             const base = { chat, session_id: 's1', element_id: 'p1', name: 'github.password' };
             for (const [args, re] of [
-                [{ ...base, session_id: 'evil' }, /not on a host/],
-                [{ ...base, session_id: 'http' }, /not on a host/],
-                [{ ...base, name: 'portal.password' }, /not on a host/],
+                [{ ...base, session_id: 'evil' }, /which is not a host this secret is allowed on/],
+                [{ ...base, session_id: 'http' }, /which is not a host this secret is allowed on/],
+                [{ ...base, name: 'portal.password' }, /which is not a host this secret is allowed on/],
                 [{ ...base, name: 'mismatch.password' }, /no host that both/],
                 [{ ...base, element_id: 'u1' }, /cannot take a password/],
                 [{ ...base, name: 'github.secret' }, /no such secret/],
             ]) await assert.rejects(f.fill(args), re, JSON.stringify(args));
-            assert.equal((await f.login({ chat, session_id: 'off', site: 'github' })).status, 'needs_human');
+            await assert.rejects(f.login({ chat, session_id: 'off', site: 'github' }), /on https:\/\/example\.test.*allowed: https:\/\/github\.com/);
         }
         assert.equal(t.ctl.typed.length, 0, 'nothing was typed');
         assert.ok(auditLines(t.dir).filter((l) => l.outcome === 'refused_host').every((l) => l.path === 'default'));
@@ -272,9 +280,9 @@ test('all_items: a wrong host and a login without URIs are refused', async () =>
         for (const [args, re] of [
             [{ ...base, name: 'no-uris.password' }, /no host that both/],
             [{ ...base, session_id: 'plain', name: 'http-only.password' }, /no host that both/],
-            [{ ...base, name: 'acme-portal.password' }, /not on a host/],
-            [{ ...base, session_id: 'gist', name: 'acme-github.password' }, /not on a host/],
-            [{ ...base, session_id: 'evil', name: 'acme-github.password' }, /not on a host/],
+            [{ ...base, name: 'acme-portal.password' }, /which is not a host this secret is allowed on/],
+            [{ ...base, session_id: 'gist', name: 'acme-github.password' }, /which is not a host this secret is allowed on/],
+            [{ ...base, session_id: 'evil', name: 'acme-github.password' }, /which is not a host this secret is allowed on/],
             [{ ...base, name: 'acme-github.notes' }, /no such secret/],
             [{ ...base, name: 'nothing-like-it.password' }, /no such secret/],
         ]) await assert.rejects(f.fill(args), re, JSON.stringify(args));
@@ -323,7 +331,7 @@ test('all_items: explicit secrets take precedence, listed items keep their own l
         assert.ok(!names.some((n) => n.startsWith('globex-github.')), 'an item another client lists is never reached through all_items');
         t.ctl.addSession('s1', loginPages());
         await assert.rejects(f.fill({ chat: NO_CHAT, session_id: 's1', element_id: 'u1', name: 'acme-github.username' }), /no such secret/);
-        await assert.rejects(f.fill({ chat: NO_CHAT, session_id: 's1', element_id: 'p1', name: 'acme-github.password' }), /not on a host/);
+        await assert.rejects(f.fill({ chat: NO_CHAT, session_id: 's1', element_id: 'p1', name: 'acme-github.password' }), /which is not a host this secret is allowed on/);
         await assert.rejects(f.fill({ chat: NO_CHAT, session_id: 's1', element_id: 'p1', name: 'globex-github.password' }), /no such secret/);
         // A mapped chat of a client without all_items sees only its own list.
         assert.deepEqual((await f.list({ chat: 'chat-acme' })).secrets.map((x) => x.name), ['gh.password']);

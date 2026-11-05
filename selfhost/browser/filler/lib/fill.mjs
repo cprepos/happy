@@ -25,6 +25,14 @@ import { currentTotp } from './totp.mjs';
 import { pageUrl, isLive } from './controller.mjs';
 import { FIELDS, itemSlug, NO_CHAT } from './policy.mjs';
 
+/** "https://github.com" for a page URL: scheme and host only, never a path, query or userinfo. */
+function shownOrigin(url) {
+    try {
+        const u = new URL(String(url));
+        return u.host && /^[a-z0-9.:\[\]-]+$/i.test(u.host) ? `${u.protocol}//${u.host}` : null;
+    } catch { return null; }
+}
+
 export class FillError extends Error {
     constructor(message, status = 403, outcome = 'refused') { super(message); this.status = status; this.outcome = outcome; }
 }
@@ -128,7 +136,7 @@ export function createFiller({ getPolicy, vault, controllers, taint, audit, slee
         if (!isLive(rec)) throw new FillError('the browser session is not active', 409, 'session_closed');
         const url = pageUrl(rec);
         const host = hostOf(url, allowed);
-        return { host, pageHost: httpsHost(url) };
+        return { host, pageHost: httpsHost(url), shown: shownOrigin(url) };
     }
 
     async function readValue(ctx, entry) {
@@ -138,11 +146,19 @@ export function createFiller({ getPolicy, vault, controllers, taint, audit, slee
         return item;
     }
 
+    // A host refusal names the page's host and the hosts allowed (never a value or a full URL), so the
+    // agent can tell the user which URI to add to the vault item.
+    const hostRefusal = (what, page, allowed) =>
+        `the page is on ${page.shown || 'a page with no host'}, which is not a host this ${what} is allowed on ` +
+        `(allowed: ${allowed.map((h) => `https://${h}`).join(', ')}). Navigate to one of those` +
+        (page.pageHost ? `, or ask the user to add https://${page.pageHost} as a URI on the vault item (and to the filler policy hosts, if the login is listed there)` : ' (only https pages can be filled)');
+
     /** Type one field. Shared by fill() and login(). Returns {kind, host}. */
     async function typeField(ctx, { chat, b, element, name, field, item, allowed, observed }) {
         const base = { chat, client: ctx.client, path: ctx.path, session: b.key, name, field_kind: field };
-        const { host } = await liveHost(b, allowed);
-        if (!host) { audit.record({ ...base, outcome: 'refused_host' }); throw new FillError('the page is not on a host this secret is allowed on', 403, 'refused_host'); }
+        const page = await liveHost(b, allowed);
+        const { host } = page;
+        if (!host) { audit.record({ ...base, ...(page.pageHost ? { host: page.pageHost } : {}), outcome: 'refused_host' }); throw new FillError(hostRefusal('secret', page, allowed), 403, 'refused_host'); }
         const obs = observed || await b.controller.observe(b.session);
         if (hostOf(pageUrl(obs), allowed) !== host) { audit.record({ ...base, host, outcome: 'refused_host' }); throw new FillError('the page changed host', 409, 'refused_host'); }
         const el = (obs.interactables || []).find((e) => e.element_id === element);
@@ -230,8 +246,13 @@ export function createFiller({ getPolicy, vault, controllers, taint, audit, slee
         const done = new Set();
         let host = null;
         for (let step = 1; step <= 3; step++) {
-            const { host: h } = await liveHost(b, allowed);
-            if (!h) return { status: 'needs_human', host, reason: 'the page is not on an allowed host' };
+            const page = await liveHost(b, allowed);
+            const h = page.host;
+            if (!h && step === 1) {
+                audit.record({ chat, client: ctx.client, path: ctx.path, session: b.key, name: site, ...(page.pageHost ? { host: page.pageHost } : {}), outcome: 'refused_host' });
+                throw new FillError(hostRefusal('login', page, allowed), 403, 'refused_host');
+            }
+            if (!h) return { status: 'needs_human', host, reason: `the page moved to ${page.shown || 'a page with no host'}, not a host this login is allowed on (allowed: ${allowed.join(', ')})` };
             host = h;
             const obs = await b.controller.observe(b.session);
             const f = pickFields(obs);

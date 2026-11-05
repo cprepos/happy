@@ -28,8 +28,10 @@ export const SECRET_TOOLS = [
         name: 'browser_list_secrets',
         description:
             'List the vault secrets this chat may have typed into the browser: names like "github.password", the hosts each one ' +
-            'is allowed on, and its kind (username, password or totp). Values are never shown to you. Use browser_login or ' +
-            'browser_fill_secret to put one into a page.',
+            'is allowed on, and its kind (username, password or totp). Values are never shown to you. Use it proactively: call ' +
+            'it as soon as a page asks you to sign in, before asking the user anything or calling browser_wait_for_human. ' +
+            'If a login\'s hosts include the page\'s host, use browser_login (or browser_fill_secret) and carry on; if ' +
+            'several match, ask the user which login to use. Never ask the user to type a password in chat.',
         inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     },
     {
@@ -56,8 +58,12 @@ export const SECRET_TOOLS = [
         description:
             'Log in to a site with its vault login (the part before the dot in browser_list_secrets, e.g. "github"). The secret ' +
             'filler finds the username, password and one-time-code fields on the current page itself, types them and submits. ' +
-            'Navigate to the login page first. Returns {status: "submitted" | "totp_submitted" | "needs_human", host}. On ' +
-            'needs_human (a CAPTCHA, an unusual page), call browser_wait_for_human. Observe the page afterwards to check.',
+            'Use it proactively: when a sign-in page matches a login from browser_list_secrets, call this yourself and carry on ' +
+            'with the task, without asking the user first. Navigate to the login page first. Returns {status: "submitted" | ' +
+            '"totp_submitted" | "needs_human", host}. On needs_human (a CAPTCHA, an unusual page, a phone or SMS second ' +
+            'factor), call browser_wait_for_human. A refusal because the page is on another host names the page\'s host and ' +
+            'the hosts the login allows: tell the user which URI to add to the vault item, or navigate to an allowed host. ' +
+            'Observe the page afterwards to check.',
         inputSchema: {
             type: 'object',
             properties: {

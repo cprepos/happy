@@ -27,7 +27,8 @@ async function startFakeFiller() {
             case '/v1/list': if (msg && req.headers['x-happy-chat'] === 'none' && !f.hasDefault) return json(403, { error: 'this agent process has no chat id, and the filler policy has no default_client, so it may not use vault secrets', outcome: 'unbound_chat' });
                 return json(200, { client: 'acme', secrets: [{ name: 'github.password', hosts: ['github.com'], kind: 'password' }] });
             case '/v1/fill': f.tainted.add(msg.session_id); return json(200, { ok: true, kind: 'password', host: 'github.com' });
-            case '/v1/login': return json(422, { error: 'no login form on this page', outcome: 'no_form' });
+            case '/v1/login': if (msg.session_id === 'off') return json(403, { error: 'the page is on https://example.test, which is not a host this login is allowed on (allowed: https://github.com). Navigate to one of those, or ask the user to add https://example.test as a URI on the vault item', outcome: 'refused_host' });
+                return json(422, { error: 'no login form on this page', outcome: 'no_form' });
             default: return json(404, { error: 'not found' });
         }
     });
@@ -106,6 +107,31 @@ test('no token file: no secret tools, no filler calls, results untouched', async
         const t = await h.call(4, 'browser_create_session', { totp_secret: 'JBSWY3DP' });
         assert.match(t.result.content[0].text, /totp_secret/);
         assert.equal(h.calls.length, 1);
+    } finally { await filler.close(); }
+});
+
+test('vault login guidance: in the instructions only when the filler is set up, and in the tool descriptions', async () => {
+    const filler = await startFakeFiller(); const tf = tokenFile();
+    try {
+        const off = harness({ filler, tokenPath: tf.missing });
+        const offInit = (await off.req(1, 'initialize', { protocolVersion: '2025-06-18' })).result.instructions;
+        assert.doesNotMatch(offInit, /browser_list_secrets|browser_login/);
+        assert.match(offInit, /\(login, CAPTCHA/);
+        const on = harness({ filler, tokenPath: tf.path });
+        const init = (await on.req(1, 'initialize', { protocolVersion: '2025-06-18' })).result.instructions;
+        assert.match(init, /asks you to sign in, call browser_list_secrets first/);
+        assert.match(init, /call browser_login \(or browser_fill_secret for a split or unusual form\), then carry on/);
+        assert.match(init, /several logins match the host, ask the user in chat which one to use/);
+        assert.match(init, /only when no login matches the host, the fill is refused.*a CAPTCHA appears.*not a stored TOTP/);
+        assert.match(init, /Never ask the user to type a password in chat/);
+        const tools = Object.fromEntries((await on.req(2, 'tools/list', {})).result.tools.map((t) => [t.name, t.description]));
+        assert.match(tools.browser_wait_for_human, /For logins, try browser_list_secrets\/browser_login first/);
+        assert.match(tools.browser_list_secrets, /proactively/);
+        assert.match(tools.browser_login, /proactively/);
+        // A host refusal reaches the agent with the page's host and the allowed hosts.
+        const r = await on.call(3, 'browser_login', { session_id: 'off', site: 'github' });
+        assert.equal(r.result.isError, true);
+        assert.match(r.result.content[0].text, /on https:\/\/example\.test.*allowed: https:\/\/github\.com/);
     } finally { await filler.close(); }
 });
 

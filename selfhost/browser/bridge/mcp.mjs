@@ -37,8 +37,11 @@ export function ownTools(waitMaxS = 3600) {
         name: 'browser_wait_for_human',
         description:
             'Hand the browser to the user and wait. Call this whenever you need the user in the page: logging in, a CAPTCHA, ' +
-            'two-factor codes, payment, a confirmation, or any consent you must not give yourself. Use it instead of ' +
-            'browser_request_human_takeover. It flags the live view as "Needs you", and BLOCKS until the user taps Release ' +
+            'two-factor codes, payment, a confirmation, or any consent you must not give yourself. For logins, try ' +
+            'browser_list_secrets/browser_login first, if those tools are available, and call this only when no vault login ' +
+            'matches the page\'s host, the fill is refused, or a CAPTCHA or a non-TOTP second factor (phone prompt, SMS) ' +
+            'comes up. Never ask the user to type a password in chat. ' +
+            'Use it instead of browser_request_human_takeover. It flags the live view as "Needs you", and BLOCKS until the user taps Release ' +
             'control or timeout_s passes. Before calling it, tell the user in chat what you need and repeat the live link. Do ' +
             'not send any browser actions for this session while it waits. Also call it when a browser action is refused ' +
             'because the user has taken control: it then waits, without flagging "Needs you", until the user releases ' +
@@ -59,6 +62,15 @@ export function ownTools(waitMaxS = 3600) {
     ];
 }
 export const TOOLS = ownTools();
+
+// Added to the server instructions only when the secret filler is set up (its client token exists).
+export const SECRET_INSTRUCTIONS =
+    'Vault logins: when a page asks you to sign in, call browser_list_secrets first, without asking the user. If one ' +
+    'login matches the page\'s host, call browser_login (or browser_fill_secret for a split or unusual form), then carry ' +
+    'on with the task. If several logins match the host, ask the user in chat which one to use (by login name only) ' +
+    'before filling. Call browser_wait_for_human for a sign-in only when no login matches the host, the fill is refused ' +
+    '(tell the user what the refusal said, e.g. which URI to add to the vault item), a CAPTCHA appears, or a second ' +
+    'factor comes up that is not a stored TOTP (a phone prompt, an SMS code). Never ask the user to type a password in chat. ';
 const OWN_NAMES = new Set([...TOOLS.map((t) => t.name), ...SECRET_TOOL_NAMES]);
 
 const HELD = new Set(['user', 'takeover']);
@@ -598,7 +610,9 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
                         'A real Chromium browser the user can watch live from their phone. ' +
                         (upstream ? 'Drive it with the browser_* tools: browser_observe (creates a session when none is live) to get element ids, then browser_execute_action. ' : '') +
                         'After you create a browser session, call browser_live_link and post the link in chat on its own line. ' +
-                        'When you need the user (login, CAPTCHA, two-factor, payment, a confirmation), call browser_wait_for_human ' +
+                        (secrets && secrets.configured() ? SECRET_INSTRUCTIONS : '') +
+                        'When you need the user (' + (secrets && secrets.configured() ? 'a login no vault secret covers' : 'login') +
+                        ', CAPTCHA, two-factor, payment, a confirmation), call browser_wait_for_human ' +
                         'and do nothing in that session until it returns. The user can also take control from the live view at ' +
                         'any time: while they have it, actions that change the page are refused, and you should call ' +
                         'browser_wait_for_human and wait until they release control. Observing and screenshots still work.',
