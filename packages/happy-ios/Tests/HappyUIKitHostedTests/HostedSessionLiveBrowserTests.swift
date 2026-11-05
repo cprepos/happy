@@ -48,13 +48,20 @@ final class HostedSessionLiveBrowserTests: XCTestCase {
 
     /// The seeded account's first session as `id`, a codex one whose agent
     /// called the bridge's browser_live_link and got the live view back.
-    nonisolated private static func seed(_ store: LocalStore, id: String, live: String) throws {
+    /// `path`, when given, is the folder it runs in, on prep-pro (a machine
+    /// the store doesn't have, so its recorded host names it).
+    nonisolated private static func seed(_ store: LocalStore, id: String, live: String, flavor: String = "codex", path: String? = nil) throws {
         try SeededAccount.seed(store)
         guard var row = try store.sessions().first else { return }
         row.id = id
         row.seq = 1
         var fields = row.metadata?.objectValue ?? [:]
-        fields["flavor"] = .string("codex")
+        fields["flavor"] = .string(flavor)
+        if let path {
+            fields["path"] = .string(path)
+            fields["host"] = .string("prep-pro")
+            fields["machineId"] = .string("machine-prep-pro")
+        }
         row.metadata = .object(fields)
         try store.upsertSessions([row])
         let at = SeededAccount.base + 1000
@@ -77,19 +84,31 @@ final class HostedSessionLiveBrowserTests: XCTestCase {
     }
 
     /// A session whose agent opened the browser and shared its live view.
-    private func chat() async throws -> (LegacyChatViewController, UIWindow) {
+    /// With `computer`, prep-pro is paired, answering as `computer` does,
+    /// and the session runs in `path` on it.
+    private func chat(computer: BrowserDaemon? = nil, flavor: String = "codex", path: String? = nil) async throws -> (LegacyChatViewController, UIWindow) {
         let controller = AccountController(
             serverConfig: ServerConfig(storage: InMemoryKeyValueStore()), clientID: "ios/test",
             credentialStore: InMemoryCredentialStore(), storeDirectory: nil,
+            agentConnectionCredentialStore: InMemoryAgentConnectionCredentialStore(),
+            agentTransport: { [computer] _ in computer ?? BrowserDaemon() },
             rnServerImport: { .confirmed(ServerConfig.defaultServerURL) },
             transport: SessionBrowserOffline(), connector: SessionBrowserNoSocket()
         )
         try await controller.signIn(Credentials(token: "t", secret: Data(repeating: 13, count: 32)))
+        if computer != nil {
+            await controller.agentConnections.setForeground(false)
+            let pairing = try await controller.agentConnections.add(
+                JSONDecoder().decode(AgentConnectionCredentials.self, from: Data(#"{"address":"prep-pro-test","port":1,"deviceID":"\#(UUID().uuidString)","deviceToken":"token"}"#.utf8)),
+                name: "prep-pro"
+            )
+            addTeardownBlock { @MainActor in Session.forget(pairing.id) }
+        }
         let account = try XCTUnwrap(controller.session)
         let store = account.store
         let id = sessionId
         let live = "\(LiveBrowserLink.origin)/live/\(linkId)"
-        try Self.seed(store, id: id, live: live)
+        try Self.seed(store, id: id, live: live, flavor: flavor, path: path)
         let context = AppContext(account: controller, variant: .production, version: "test")
         let chat = LegacyChatViewController(context: context, session: account, sessionId: id)
         let navigation = UINavigationController(rootViewController: chat)
@@ -166,6 +185,116 @@ final class HostedSessionLiveBrowserTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(line.minX, card.minX - 0.5, when)
             try screenshot(window, name: "session-live-browser-line-\(up ? "keyboard" : "down")")
         }
+    }
+
+    // MARK: The workspace the chat runs in
+
+    /// prep-pro as its Happy Agent lists it: two host workspaces, `happy`
+    /// and `Home`, neither naming its computer, beside a runner's and a
+    /// container's that cover the same folders and are never used.
+    nonisolated static let prepProWorkspaces = #"""
+    {"workspaces":[
+      {"id":"runnerws","status":"active","orderKey":"0","compute":{"type":"host","runnerId":"r1","path":"/Users/cprepos/happy"}},
+      {"id":"dockerws","status":"active","orderKey":"0","compute":{"type":"docker","path":"/Users/cprepos/happy"}},
+      {"id":"happyws","status":"active","orderKey":"a1","compute":{"type":"host","path":"/Users/cprepos/happy"}},
+      {"id":"homews","status":"active","orderKey":"a2","compute":{"type":"host","path":"/Users/cprepos"}}
+    ]}
+    """#
+
+    /// The bridge's per-chat noVNC, served under the live origin.
+    private var bridgeNoVNC: String {
+        "http://localhost:6090/live/\(linkId)/vnc/vnc.html?autoconnect=true&resize=remote&path=live/\(linkId)/vnc/websockify#password=s3cr%2Bt"
+    }
+
+    private func prepPro() async -> BrowserDaemon {
+        let daemon = BrowserDaemon()
+        await daemon.setNodeName("prep-pro")
+        await daemon.setWorkspaces(Self.prepProWorkspaces)
+        await daemon.setChatLink(linkId)
+        await daemon.setTakeNoVNC(bridgeNoVNC)
+        return daemon
+    }
+
+    /// The mini view: the bridge is asked for the chat's browser by its
+    /// key, and the feed's frames come, both through `workspace`.
+    private func miniView(_ chat: LegacyChatViewController, _ daemon: BrowserDaemon, through workspace: String, file: StaticString = #filePath, line: UInt = #line) async throws {
+        let key = LiveBrowserLink.chatKey(happySession: sessionId)
+        try await waitFor("the lookup", file: file, line: line) { await daemon.requests.contains { $0.hasPrefix("GET /live/chat/\(key)") } }
+        try await waitFor("a frame", file: file, line: line) { await daemon.requests.contains { $0.hasPrefix("GET /live/\(self.linkId)/frame.jpg") } }
+        let tunnelled = await daemon.tunnelledWorkspaces
+        XCTAssertEqual(tunnelled, [workspace], file: file, line: line)
+        XCTAssertNotNil(chat.liveBrowserDock?.feed, file: file, line: line)
+    }
+
+    /// A tapped link opens through `workspace`, and the browser goes back.
+    private func tapLink(_ chat: LegacyChatViewController, _ daemon: BrowserDaemon, through workspace: String, file: StaticString = #filePath, line: UInt = #line) async throws {
+        let list = try XCTUnwrap(descendants(chat.view).compactMap { $0 as? ChatListView }.first, file: file, line: line)
+        chat.chatList(list, openLink: "http://localhost:5173/")
+        let navigation = try XCTUnwrap(chat.navigationController, file: file, line: line)
+        try await waitFor("the browser", file: file, line: line) { navigation.topViewController is BrowserViewController }
+        try await waitFor("the page", file: file, line: line) { await daemon.pageHeads.contains { $0.host == "localhost:5173" } }
+        let tunnelled = await daemon.tunnelledWorkspaces
+        XCTAssertEqual(tunnelled, [workspace], "the link goes the live view's way", file: file, line: line)
+        navigation.popViewController(animated: false)
+        try await waitFor("back on the chat", file: file, line: line) { navigation.topViewController === chat }
+    }
+
+    private func waitFor(_ what: String, seconds: Double = 15, _ condition: () async -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
+        let deadline = ContinuousClock.now + .milliseconds(Int(seconds * 1000))
+        while ContinuousClock.now < deadline {
+            if await condition() { return }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTFail("never: \(what)", file: file, line: line)
+        throw BrowserError.timeout
+    }
+
+    /// A session under ~/happy on prep-pro: the mini view, a link, Take
+    /// control and Release all go through `happy`, for every flavor.
+    func testASessionInHappyGoesThroughHappysWorkspace() async throws {
+        for flavor in ["claude", "codex", "gemini", "opencode"] {
+            let daemon = await prepPro()
+            let (chat, window) = try await chat(computer: daemon, flavor: flavor, path: "/Users/cprepos/happy/.dev/worktree/bright-bridge")
+            defer { window.isHidden = true }
+            try await miniView(chat, daemon, through: "happyws")
+            try await tapLink(chat, daemon, through: "happyws")
+
+            // Take control: `/take`, then noVNC at the bridge's address,
+            // through the same workspace.
+            let dock = try XCTUnwrap(chat.liveBrowserDock)
+            dock.presentFullScreen(taking: true)
+            try await waitFor("take (\(flavor))") { await daemon.requests.contains { $0.hasPrefix("POST /live/\(self.linkId)/take HTTP/1.1") } }
+            let presenter: UIViewController = chat.navigationController ?? chat
+            try await waitFor("noVNC (\(flavor))") { (presenter.presentedViewController as? UINavigationController)?.viewControllers.count == 2 }
+            let navigation = try XCTUnwrap(presenter.presentedViewController as? UINavigationController)
+            let noVNC = try XCTUnwrap(navigation.viewControllers.last as? LiveBrowserFullScreenItems)
+            XCTAssertTrue(noVNC.isNoVNC)
+            XCTAssertEqual(noVNC.browser.originalURL.absoluteString, bridgeNoVNC, "the address the bridge answered, port and all")
+            try await waitFor("the noVNC page (\(flavor))") { await daemon.pageHeads.contains { $0.line.contains("/live/\(self.linkId)/vnc/vnc.html") } }
+            let tunnelled = await daemon.tunnelledWorkspaces
+            XCTAssertEqual(tunnelled, ["happyws"], flavor)
+            if flavor == "claude" { try screenshot(window, name: "session-live-browser-novnc") }
+
+            // Release: the agent drives again.
+            dock.release()
+            try await waitFor("release (\(flavor))") { await daemon.requests.contains { $0.hasPrefix("POST /live/\(self.linkId)/release HTTP/1.1") } }
+            try await waitFor("back to the frames (\(flavor))") { navigation.viewControllers.count == 1 }
+            dock.minimize()
+            try await waitFor("minimized (\(flavor))") { presenter.presentedViewController == nil }
+            let after = await daemon.tunnelledWorkspaces
+            XCTAssertEqual(after, ["happyws"], flavor)
+            dock.update(link: nil)
+        }
+    }
+
+    /// A session in ~/Downloads is under no project but Home's folder: its
+    /// mini view and its links go through `Home`.
+    func testASessionInDownloadsGoesThroughHome() async throws {
+        let daemon = await prepPro()
+        let (chat, window) = try await chat(computer: daemon, path: "/Users/cprepos/Downloads")
+        defer { window.isHidden = true }
+        try await miniView(chat, daemon, through: "homews")
+        try await tapLink(chat, daemon, through: "homews")
     }
 }
 #endif
