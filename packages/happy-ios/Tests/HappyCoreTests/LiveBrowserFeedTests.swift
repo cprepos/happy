@@ -129,6 +129,15 @@ final class LiveBrowserFeedTests: XCTestCase {
     }
 
     @MainActor
+    func testAChatWithNoComputerIsUnavailable() async throws {
+        let owner = NSObject()
+        let feed = LiveBrowserFeed(link: try XCTUnwrap(LiveBrowserLink(id: Self.a))) { RefusedLiveBrowserTransport() }
+        feed.attach(owner) { _ in }
+        try await until { feed.phase == .unavailable && !feed.isPolling }
+        do { try await feed.take(); XCTFail("refused") } catch {}
+    }
+
+    @MainActor
     func testAnUnreachableBridgeIsTriedAgain() async throws {
         let transport = FakeTransport()
         transport.failure = .timeout

@@ -174,7 +174,9 @@ public final class LiveBrowserFeed {
             switch error {
             case BrowserError.upstream(404): phase = .ended; return false
             case BrowserError.upstream(410): phase = .expired; return false
-            case BrowserError.upstream(501): phase = .unavailable; return false
+            // 501: the workspace's proxy refuses tunnels; `.unavailable`:
+            // no workspace for the chat could be decided on.
+            case BrowserError.upstream(501), BrowserError.unavailable: phase = .unavailable; return false
             default: phase = .unreachable; return true
             }
         }
@@ -211,6 +213,14 @@ public final class LiveBrowserFeed {
         defer { Task { await transport.stop() } }
         return try await transport.send(method: "POST", url: url, body: nil, accept: "application/json")
     }
+}
+
+/// For a chat with no computer to reach its browser through: every
+/// request is refused, and the feed says unavailable.
+public struct RefusedLiveBrowserTransport: LiveBrowserTransport {
+    public init() {}
+    public func send(method: String, url: URL, body: Data?, accept: String) async throws -> Data { throw BrowserError.unavailable }
+    public func stop() async {}
 }
 
 #if canImport(Network)
