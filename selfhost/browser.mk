@@ -10,7 +10,7 @@
 #   make browser-verify   MCP answers with the token (tools/list), refuses without it; noVNC demands a password
 #   make browser-bridge-test   bridge unit tests (node:test, auto-browser mocked)
 #   make browser-bridge-smoke  end-to-end against the running stack: session, link, page, frame, takeover, done
-#   make browser-bridge-restart  restart only the bridge container; refuses while a link is held (user/takeover)
+#   make browser-bridge-restart  restart only the bridge container; lists the held links it releases on the way down
 #   make browser-pod-bench     pod start times, cold and warm (test project only)
 #   make browser-pod-smoke     per-chat pods end to end (bridge with BRIDGE_PODS=1)
 #   make browser-forward-install HOST=prep-air   Mac localhost:6090/:6080 tunnel to here (also -status, -uninstall)
@@ -136,11 +136,12 @@ browser-forward-status: browser-forward-host
 browser-forward-uninstall: browser-forward-host
 	@$(FORWARD_SSH) $(HOST) '/bin/bash "$$HOME/$(FORWARD_REMOTE_DIR)/uninstall.sh"'
 
-# Restart only the bridge (to load new bridge code), never while the user holds a browser:
-# that would cut their noVNC socket. Pods are left running and the new bridge adopts them.
+# Restart only the bridge (to load new bridge code). On SIGTERM the bridge releases every held
+# link (noVNC sockets close, waiting agents get status released), saves links.json and exits,
+# well inside the 20 s given here. Pods are left running and the new bridge adopts them.
 browser-bridge-restart:
 	@HAPPY_BROWSER_HOME="$(HAPPY_BROWSER_HOME)" node $(BROWSER_DIR)/scripts/bridge-restart-check.mjs
-	docker restart $(BROWSER_PROJECT)-bridge-1
+	docker restart -t 20 $(BROWSER_PROJECT)-bridge-1
 	@for i in $$(seq 1 30); do curl -fsS --max-time 2 $(BROWSER_BRIDGE)/healthz >/dev/null 2>&1 && break; sleep 1; done
 	@printf "bridge /healthz: "; curl -fsS --max-time 5 $(BROWSER_BRIDGE)/healthz || { echo unreachable; exit 1; }; echo
 

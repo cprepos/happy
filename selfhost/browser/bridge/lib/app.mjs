@@ -79,6 +79,8 @@ export const ENDED_STATUSES = new Set(['closed', 'interrupted', 'failed', 'ended
 const isEnded = (s) => ENDED_STATUSES.has(s?.status);
 // The user is in the page: the agent waits (takeover) or is locked out (user).
 export const HELD_STATUSES = new Set(['takeover', 'user']);
+// The reason a link carries after the bridge released it on its way down.
+export const SHUTDOWN_REASON = 'bridge_restarting';
 const ACTION_KINDS = new Set(['navigate', 'click', 'hover', 'select_option', 'type', 'press', 'scroll', 'wait', 'reload', 'go_back', 'go_forward', 'upload', 'eval_js', 'activate_tab', 'close_tab']);
 
 export function stateOf(rec) {
@@ -676,6 +678,29 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         for (const t of [...tunnels]) closeTunnel(t, 'shutdown');
     }
 
+    // The bridge is stopping (SIGTERM/SIGINT): every held link is released the same way the
+    // user's Release control does it, so noVNC sockets close and waiting agents get an answer
+    // (reason bridge_restarting) instead of a dropped connection. The pods and links stay; the
+    // agent asks again once the bridge is back. Each pod's login is saved first, as a release
+    // does, for at most `checkpointMs`. Returns the released links (id prefix and title).
+    async function shutdown({ checkpointMs = 2000 } = {}) {
+        const held = store.all().filter((r) => HELD_STATUSES.has(r.status));
+        const saves = [];
+        for (const rec of held) {
+            setStatus(rec, 'watching', SHUTDOWN_REASON);
+            if (podLink(rec)) saves.push(pods.checkpointAuth(rec.chatKey, { force: true }).catch(() => {}));
+            log(`shutdown: released /live/${rec.id.slice(0, 6)}…`);
+        }
+        close();
+        if (saves.length) {
+            let timer;
+            await Promise.race([Promise.all(saves), new Promise((r) => { timer = setTimeout(r, checkpointMs); })]);
+            clearTimeout(timer);
+        }
+        store.flush();
+        return held.map((r) => ({ id: r.id.slice(0, 8), title: r.title ?? null }));
+    }
+
     async function handler(req, res) {
         const started = now();
         const url = new URL(req.url, 'http://bridge.invalid');
@@ -709,5 +734,5 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         }
     }
 
-    return { handler, upgrade, close, store, linkUrl, stateOf };
+    return { handler, upgrade, close, shutdown, store, linkUrl, stateOf };
 }

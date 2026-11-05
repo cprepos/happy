@@ -227,6 +227,82 @@ test('vnc files and socket of a shared link: the shared noVNC port; unknown 404,
     } finally { await up.close(); }
 });
 
+test('shutdown: held links are released, waiters answered, sockets closed, links.json saved', async () => {
+    const up = await restartWithNovnc();
+    try {
+        client.sessions.set('sess2', { id: 'sess2', current_url: 'https://b.example/', title: 'B' });
+        client.sessions.set('sess3', { id: 'sess3', current_url: 'https://c.example/', title: 'C' });
+        const t = await (await api('/api/takeover', { session_id: 'sess1', reason: 'Sign in' })).json();
+        const u = await link('sess2');
+        await post(u.id, 'take');
+        const w = await link('sess3');
+        const waiting = api('/api/wait', { id: t.id, wait_s: 30 }).then((r) => r.json());
+        const bport = Number(new URL(base).port);
+        const ws = await wsHandshake(bport, `/live/${u.id}/vnc/websockify`);
+        assert.equal(ws.status, 101);
+        await new Promise((r) => setTimeout(r, 50));
+
+        const released = await bridgeApp.shutdown();
+        assert.deepEqual(released.map((r) => r.id).sort(), [t.id.slice(0, 8), u.id.slice(0, 8)].sort());
+        const got = await waiting;
+        assert.deepEqual([got.status, got.reason], ['watching', 'bridge_restarting'], 'the waiter gets a clean answer');
+        assert.ok(await ws.waitClosed(), 'noVNC socket closed');
+        const saved = Object.fromEntries(JSON.parse(readFileSync(join(dir, 'links.json'), 'utf8')).links.map((l) => [l.id, l]));
+        assert.deepEqual([saved[t.id].status, saved[t.id].reason], ['watching', 'bridge_restarting']);
+        assert.deepEqual([saved[u.id].status, saved[u.id].reason], ['watching', 'bridge_restarting']);
+        assert.deepEqual([saved[w.id].status, saved[w.id].reason], ['watching', null], 'an unheld link is untouched');
+        // The links survive: a new bridge on the same file can take control again.
+        const again = new LinkStore({ path: join(dir, 'links.json'), now: () => clock.t });
+        assert.equal(again.lookup(t.id).rec.status, 'watching');
+        assert.equal((await (await post(u.id, 'take')).json()).status, 'user');
+        assert.ok(!logs.join('\n').includes(t.id), 'logs carry only a link-id prefix');
+    } finally { await up.close(); }
+});
+
+test('shutdown: SIGTERM to a real bridge process releases held links and exits cleanly', async () => {
+    const { spawn } = await import('node:child_process');
+    const { writeFileSync, mkdirSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const home = mkdtempSync(join(tmpdir(), 'bridge-sig-'));
+    mkdirSync(join(home, 'secrets'));
+    for (const [f, v] of [['api-token', 'api-tok'], ['vnc-password', VNC_PASSWORD], ['bridge-token', BRIDGE_TOKEN]]) writeFileSync(join(home, 'secrets', f), v, { mode: 0o600 });
+    mkdirSync(join(home, 'bridge'));
+    const id = 'c'.repeat(32);
+    const t0 = Date.now();
+    writeFileSync(join(home, 'bridge/links.json'), JSON.stringify({ links: [{ id, sessionId: 's', createdAt: t0, lastSeenAt: t0, status: 'takeover', reason: 'Sign in', url: null, title: 'T' }], expired: [] }));
+    const port = 20000 + Math.floor(Math.random() * 20000);
+    const child = spawn(process.execPath, [fileURLToPath(new URL('../server.mjs', import.meta.url))], {
+        env: { ...process.env, HAPPY_BROWSER_HOME: home, BRIDGE_PORT: String(port), BRIDGE_PODS: '0', AUTO_BROWSER_URL: 'http://127.0.0.1:1' }, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let out = '';
+    child.stdout.on('data', (d) => { out += d; });
+    child.stderr.on('data', (d) => { out += d; });
+    try {
+        for (let i = 0; i < 50 && !out.includes('listening'); i++) await new Promise((r) => setTimeout(r, 100));
+        const waiting = fetch(`http://127.0.0.1:${port}/api/wait`, { method: 'POST', headers: { Authorization: `Bearer ${BRIDGE_TOKEN}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ id, wait_s: 30 }) }).then((r) => r.json());
+        await new Promise((r) => setTimeout(r, 200));
+        const exited = new Promise((r) => child.on('exit', (code) => r(code)));
+        child.kill('SIGTERM');
+        const got = await waiting;
+        assert.deepEqual([got.status, got.reason], ['watching', 'bridge_restarting']);
+        assert.equal(await exited, 0);
+        assert.ok(Date.now() - t0 < 8000, 'well inside docker\'s stop timeout');
+        const saved = JSON.parse(readFileSync(join(home, 'bridge/links.json'), 'utf8')).links[0];
+        assert.deepEqual([saved.status, saved.reason], ['watching', 'bridge_restarting']);
+        assert.ok(!out.includes(VNC_PASSWORD) && !out.includes(BRIDGE_TOKEN) && !out.includes(id));
+    } finally { child.kill('SIGKILL'); }
+});
+
+test('mcp: browser_wait_for_human returns released when the bridge shuts down mid-wait', async () => {
+    const { call } = mcpHarness();
+    const wait = call(9, 'browser_wait_for_human', { session_id: 'sess1', reason: 'Sign in', timeout_s: 30 });
+    await new Promise((r) => setTimeout(r, 100));
+    await bridgeApp.shutdown();
+    const r = await wait;
+    assert.equal(r.result.structuredContent.status, 'released');
+    assert.match(r.result.structuredContent.note, /bridge restarting/);
+});
+
 test('vnc socket: a Host the bridge does not answer to is refused', async () => {
     const up = await restartWithNovnc({ allowedHosts: ['localhost:6090'] });
     try {

@@ -46,8 +46,9 @@ export function ownTools(waitMaxS = 3600) {
             'not send any browser actions for this session while it waits. Also call it when a browser action is refused ' +
             'because the user has taken control: it then waits, without flagging "Needs you", until the user releases ' +
             'control. Returns {status: "done"} when the user handed control back (observe the page again before continuing, ' +
-            'since it may have changed), {status: "timeout"} (you may ask again by calling it once more), or {status: "ended"} ' +
-            '(the user ended this browser: start a new one only if the task still needs it).',
+            'since it may have changed), {status: "timeout"} (you may ask again by calling it once more), {status: "released"} ' +
+            '(the bridge restarted and handed control back: observe the page and call it again if you still need the user), ' +
+            'or {status: "ended"} (the user ended this browser: start a new one only if the task still needs it).',
         inputSchema: {
             type: 'object',
             properties: {
@@ -75,6 +76,7 @@ const OWN_NAMES = new Set([...TOOLS.map((t) => t.name), ...SECRET_TOOL_NAMES]);
 
 const HELD = new Set(['user', 'takeover']);
 const isUserEnded = (s) => s?.status === 'done' && s?.reason === 'user_ended';
+export const BRIDGE_RESTARTING = 'released: bridge restarting. The user may not be finished. Observe the page, and if you still need them, call browser_wait_for_human again once the bridge is back (a few seconds).';
 export const USER_ENDED = 'The user ended this browser. Start a new one only if the task still needs it.';
 const SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
 // Tools whose result names no session the agent goes on using.
@@ -604,6 +606,8 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
         }
         // Done by the user, or the session closed under them.
         if (state.reason === 'user_ended') return { status: 'ended', link: t.url, note: USER_ENDED };
+        // The bridge released it on its way down: the user may not be finished.
+        if (state.reason === 'bridge_restarting') return { status: 'released', link: t.url, note: BRIDGE_RESTARTING };
         return { status: 'done', link: t.url, ...(state.reason === 'session_closed' ? { note: 'the browser session closed' } : {}) };
     }
 

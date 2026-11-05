@@ -314,6 +314,24 @@ test('vnc socket: end closes it; unknown links and other upgrades are refused', 
     } finally { await upA.close(); await upB.close(); }
 });
 
+test('shutdown: a held pod link is released, its socket closed and its login saved; the pod keeps running', async () => {
+    const { upA, upB, a, b } = await twoPods();
+    try {
+        await fetch(`${base}/live/${a.link_id}/take`, { method: 'POST' });
+        const ws = await wsHandshake(bridgePort(), `/live/${a.link_id}/vnc/websockify`);
+        assert.equal(ws.status, 101);
+        const released = await bridgeApp.shutdown();
+        assert.deepEqual(released.map((r) => r.id), [a.link_id.slice(0, 8)]);
+        assert.ok(await ws.waitClosed());
+        assert.deepEqual(pods.calls.checkpoint, [{ key: KEY_A, force: true }]);
+        assert.deepEqual(pods.calls.stop, [], 'no pod is stopped');
+        const st = await (await api('/api/state', { chat_key: KEY_A })).json();
+        assert.deepEqual([st.status, st.reason, st.pod], ['watching', 'bridge_restarting', 'running']);
+        assert.equal((await (await api('/api/state', { chat_key: KEY_B })).json()).reason, null);
+        void b;
+    } finally { await upA.close(); await upB.close(); }
+});
+
 test('vnc: a link with no pod uses the shared noVNC port', async () => {
     const shared = await fakeNovnc('shared');
     const upA = await fakeNovnc('A');

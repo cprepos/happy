@@ -134,9 +134,13 @@ Phone routes, opened in the iOS app's in-app browser through the workspace proxy
   `Authorization`, `Set-Cookie`, `WWW-Authenticate` and `Location` are dropped both ways;
   only a short list of content headers crosses. The socket is closed when the link is
   released, ended or expires, or when its pod stops or is replaced (checked every second).
-  Every other upgrade request is refused. `make browser-bridge-restart` restarts only the
-  bridge container and refuses while any link is `user` or `takeover`, listing them by id
-  prefix and title.
+  Every other upgrade request is refused.
+- **Restarts.** On SIGTERM/SIGINT the bridge releases every `user`/`takeover` link like a
+  Release control (reason `bridge_restarting`): noVNC sockets close, a waiting
+  `browser_wait_for_human` returns `{status: "released"}` so the agent can ask again, and
+  `links.json` is saved before it exits. Pods and links stay. `make browser-bridge-restart`
+  lists the links it will release (id prefix and title), restarts only the bridge
+  container, and waits for `/healthz`.
 
 - `<id>` is 128 random bits as 32 lowercase hex characters (`[0-9a-f]{32}`).
   One link per auto-browser session, reused. A link expires after 12 h without

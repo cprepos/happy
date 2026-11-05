@@ -105,12 +105,22 @@ pods?.start().catch((err) => log(`pods: start failed: ${err.message}`));
 const sweep = setInterval(() => store.sweep(), 60_000);
 sweep.unref();
 for (const sig of ['SIGTERM', 'SIGINT']) {
-    process.on(sig, () => {
+    // Graceful: held links are released (sockets closed, waiters answered), links.json is
+    // saved, then the bridge exits. Pods keep running and are adopted by the next bridge. All of
+    // it fits well inside docker's 10 s stop timeout.
+    let stopping = false;
+    process.on(sig, async () => {
+        if (stopping) return;
+        stopping = true;
         log(`${sig}: shutting down`);
+        setTimeout(() => { store.flush(); process.exit(0); }, 6000).unref();
+        try {
+            const released = await bridge.shutdown();
+            if (released.length) log(`${sig}: released ${released.length} held link(s)`);
+        } catch (err) { log(`${sig}: releasing held links failed: ${err.message}`); }
         store.flush();
         pods?.close();
-        bridge.close();
         server.close(() => process.exit(0));
-        setTimeout(() => process.exit(0), 3000).unref();
+        server.closeIdleConnections?.();
     });
 }
