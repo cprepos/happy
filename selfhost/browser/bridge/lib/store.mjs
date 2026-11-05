@@ -50,8 +50,8 @@ export class LinkStore {
         mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
         const tmp = `${this.path}.tmp`;
         // Only persistable fields: no share tokens, no frames.
-        const links = [...this.links.values()].map(({ id, sessionId, createdAt, lastSeenAt, status, reason, url, title, lastAction }) =>
-            ({ id, sessionId, createdAt, lastSeenAt, status, reason, url, title, lastAction: lastAction ?? null }));
+        const links = [...this.links.values()].map(({ id, sessionId, chatKey, createdAt, lastSeenAt, status, reason, url, title, lastAction }) =>
+            ({ id, sessionId, ...(chatKey ? { chatKey } : {}), createdAt, lastSeenAt, status, reason, url, title, lastAction: lastAction ?? null }));
         writeFileSync(tmp, JSON.stringify({ links, expired: [...this.expired] }), { mode: 0o600 });
         renameSync(tmp, this.path);
     }
@@ -89,6 +89,35 @@ export class LinkStore {
         this.links.set(rec.id, rec);
         this.save();
         return rec;
+    }
+
+    /**
+     * The live link for a chat (one per chat, kept across pod restarts), creating it when the
+     * chat has none. With a sessionId that differs from the link's, the link moves to that new
+     * session and, if it had ended, is live again.
+     */
+    forChat(chatKey, sessionId = null) {
+        let rec = this.findChat(chatKey);
+        if (!rec) {
+            const t = this.now();
+            rec = { id: newLinkId(), sessionId, chatKey, createdAt: t, lastSeenAt: t, status: 'watching', reason: null, url: null, title: null };
+            this.links.set(rec.id, rec);
+            this.save();
+            return rec;
+        }
+        this.touch(rec);
+        if (sessionId && rec.sessionId !== sessionId) {
+            this.update(rec, { sessionId, ...(rec.status === 'done' ? { status: 'watching', reason: null } : {}) });
+        }
+        return rec;
+    }
+
+    /** The live link for a chat, or null; never creates one. */
+    findChat(chatKey) {
+        if (!chatKey) return null;
+        this.sweep();
+        for (const rec of this.links.values()) if (rec.chatKey === chatKey) return rec;
+        return null;
     }
 
     /** The live link for a session, or null; never creates one. */

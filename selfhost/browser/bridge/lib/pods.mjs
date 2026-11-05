@@ -1,0 +1,656 @@
+// The pod manager: one browser pod (a browser-node plus its own controller) per chat.
+//
+// The bridge never touches Docker. It asks the launcher (launcher/launcher.mjs) over a unix socket
+// to start, stop and list pods and to move a chat's saved login in and out of a pod, and it talks
+// to each pod's controller on that pod's 127.0.0.1 port. What it keeps here:
+//
+//   pods   slot -> {slot, podId, vncPassword, ports, state, chatKey}
+//          state: starting | ready (a warm spare, no chat) | assigned | stopping
+//   chats  chatKey -> {chatKey, source, linkId, slot, podId, sessionId, state, lastAgentAt,
+//          lastViewerAt, hasAuth}
+//          state: none | starting | running | asleep | crashed
+//
+// chatKey is the 32-hex chat hash (sha256(source + ':' + id), first 32 chars), which is also the
+// launcher's chat_hash: the chat's saved login lives under data/chats/<chatKey>/auth.
+//
+// Lifecycle (docs/per-chat-pods-plan.md, section B):
+//   ensure    a warm spare if one is ready (or about to be), else a cold start in a free slot,
+//             else the least recently active pod that nobody holds is put to sleep and its slot
+//             reused; if every pod is held or busy: "all N browsers are busy". Concurrent calls
+//             for one chat share one start. The spare pool refills in the background.
+//   stop      save the login (auth profile "happy-chat") -> stash it in the chat's directory ->
+//             close the session -> stop the pod -> the chat is asleep. Used by the idle timer, by
+//             eviction, by /api/pod/close and by the user ending the browser (/live/<id>/end).
+//   idle      a pod whose chat has had neither an agent call nor a viewer poll for idleMs, and
+//             whose link nobody holds (user, takeover), is stopped.
+//   health    every healthMs: launcher list plus /readyz per pod. Two failures in a row and the
+//             pod is stopped; an assigned pod's chat turns crashed, and its next call gets a new
+//             pod and session under the same link.
+//   reconcile at boot, pods recorded as assigned whose containers are still up and ready are
+//             adopted; everything else the launcher lists is stopped.
+import { randomBytes } from 'node:crypto';
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { connect } from 'node:net';
+import { dirname } from 'node:path';
+import { createAutoBrowserClient } from './autobrowser.mjs';
+
+export const CHAT_KEY = /^[0-9a-f]{32}$/;
+export const AUTH_PROFILE = 'happy-chat';
+const HELD = new Set(['user', 'takeover']);
+
+export class PodError extends Error {
+    constructor(message, status = 503, code = 'pod_error') {
+        super(message);
+        this.status = status;
+        this.code = code;
+    }
+}
+
+const short = (err) => String(err?.message || err).split('\n')[0].slice(0, 200);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ── Launcher client ───────────────────────────────────────────────────────
+// One connection per request: write a JSON line, read the JSON line that answers it.
+export function createLauncherClient(socketPath, { timeoutMs = 120_000 } = {}) {
+    let seq = 0;
+    return {
+        call(op, args = {}) {
+            const id = ++seq;
+            return new Promise((resolve, reject) => {
+                const conn = connect(socketPath);
+                let buf = '';
+                let done = false;
+                const finish = (err, value) => {
+                    if (done) return;
+                    done = true;
+                    clearTimeout(timer);
+                    conn.destroy();
+                    if (err) reject(err); else resolve(value);
+                };
+                const timer = setTimeout(() => finish(new PodError(`launcher ${op} timed out`)), timeoutMs);
+                conn.setEncoding('utf8');
+                conn.on('data', (d) => {
+                    buf += d;
+                    const nl = buf.indexOf('\n');
+                    if (nl < 0) return;
+                    let res;
+                    try { res = JSON.parse(buf.slice(0, nl)); } catch { return finish(new PodError(`launcher ${op}: bad reply`)); }
+                    if (!res.ok) return finish(new PodError(`launcher ${op}: ${res.error}`));
+                    finish(null, res.result);
+                });
+                conn.on('error', (err) => finish(new PodError(`launcher unreachable: ${err.code || err.message}`)));
+                conn.on('close', () => finish(new PodError(`launcher ${op}: connection closed`)));
+                conn.write(JSON.stringify({ id, op, ...args }) + '\n');
+            });
+        },
+    };
+}
+
+// ── Per-pod controller client ─────────────────────────────────────────────
+// The bridge's auto-browser client (share, frames, getSession, ...) pointed at one pod, plus the
+// calls the pod lifecycle needs. Nothing returned carries the token or the noVNC password.
+export function createPodClient({ baseUrl, token, fetchImpl = fetch, timeoutMs = 20_000 }) {
+    const base = baseUrl.replace(/\/+$/, '');
+    const headers = { Authorization: `Bearer ${token}` };
+    async function call(method, path, body, t = timeoutMs) {
+        let res;
+        try {
+            res = await fetchImpl(base + path, {
+                method,
+                headers: body === undefined ? headers : { ...headers, 'Content-Type': 'application/json' },
+                body: body === undefined ? undefined : JSON.stringify(body),
+                signal: AbortSignal.timeout(t),
+            });
+        } catch (err) {
+            throw new PodError(`pod controller unreachable: ${err.cause?.code || err.name}`, 502, 'unreachable');
+        }
+        if (!res.ok) {
+            let detail = '';
+            try { detail = (await res.text()).slice(0, 200); } catch {}
+            throw new PodError(`pod ${method} ${path.split('/').slice(0, 2).join('/')} -> ${res.status} ${detail}`, res.status);
+        }
+        return res.json();
+    }
+    return {
+        ...createAutoBrowserClient({ baseUrl, token, fetchImpl, timeoutMs }),
+        async readyz({ timeoutMs: t = 2000 } = {}) {
+            try {
+                const res = await fetchImpl(base + '/readyz', { headers, signal: AbortSignal.timeout(t) });
+                await res.arrayBuffer().catch(() => {});
+                return res.ok;
+            } catch { return false; }
+        },
+        // The reply's takeover URL carries the noVNC password, so only id and status come back.
+        async createSession({ authProfile, startUrl } = {}) {
+            const body = {};
+            if (authProfile) body.auth_profile = authProfile;
+            if (startUrl) body.start_url = startUrl;
+            const s = await call('POST', '/sessions', body, 60_000);
+            return { id: s.id, status: s.status ?? null };
+        },
+        closeSession: (sid) => call('DELETE', `/sessions/${encodeURIComponent(sid)}`).then(() => true),
+        saveAuthProfile: (sid, name) =>
+            call('POST', `/sessions/${encodeURIComponent(sid)}/auth-profiles`, { profile_name: name }).then(() => true),
+        listTabs: (sid) => call('GET', `/sessions/${encodeURIComponent(sid)}/tabs`),
+    };
+}
+
+/** True when something answers on 127.0.0.1:port (so a pod must not be started on it). */
+export function portInUse(port, { timeoutMs = 300 } = {}) {
+    return new Promise((resolve) => {
+        const s = connect({ host: '127.0.0.1', port });
+        const end = (v) => { s.destroy(); resolve(v); };
+        s.setTimeout(timeoutMs, () => end(false));
+        s.on('connect', () => end(true));
+        s.on('error', () => end(false));
+    });
+}
+
+async function httpOk(url, timeoutMs = 1500) {
+    try {
+        const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+        await res.arrayBuffer().catch(() => {});
+        return res.ok;
+    } catch { return false; }
+}
+
+const VNC_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+export function newVncPassword() {
+    // 8 chars is the VNC protocol's limit; rejection sampling keeps them uniform.
+    let out = '';
+    while (out.length < 8) for (const b of randomBytes(16)) if (b < 248 && out.length < 8) out += VNC_ALPHABET[b % 62];
+    return out;
+}
+
+function loadJson(path) {
+    if (!path) return null;
+    try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; }
+}
+function saveJson(path, value) {
+    if (!path) return;
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    const tmp = `${path}.tmp`;
+    writeFileSync(tmp, JSON.stringify(value), { mode: 0o600 });
+    renameSync(tmp, path);
+}
+
+export function createPodManager({
+    launcher,                       // {call(op, args)}
+    clientFor,                      // ({apiPort}) => pod client (createPodClient)
+    store = null,                   // LinkStore: a chat's link (forChat) and whether it is held
+    maxPods = 8,
+    warm = 1,
+    idleMs = 10 * 60_000,
+    healthMs = 10_000,
+    authEveryMs = 60_000,
+    readyTimeoutMs = 30_000,
+    readyPollMs = 150,
+    evictMinIdleMs = 60_000,        // a pod used this recently counts as busy, not evictable
+    podsPath = null,                // pods.json
+    chatsPath = null,               // chats.json
+    nodeReady = (ports) => httpOk(`http://127.0.0.1:${ports.novnc}/vnc.html`),
+    portBusy = portInUse,
+    portBases = null,               // {novnc, api, playwright}: slot n uses base + n
+    now = Date.now,
+    log = () => {},
+    newId = () => randomBytes(16).toString('hex'),
+    newPassword = newVncPassword,
+} = {}) {
+    warm = Math.max(0, Math.min(2, warm, maxPods));
+    const pods = new Map();         // slot -> pod
+    const chats = new Map();        // chatKey -> chat
+    const pending = new Map();      // chatKey -> Promise (one ensure at a time per chat)
+    const stopping = new Map();     // chatKey -> Promise
+    const failures = new Map();     // slot -> consecutive health failures
+    const blocked = new Set();      // slots whose ports something else holds
+    const timings = [];             // the last starts, for /api/pods and the bench
+    let refilling = null;
+    let timers = [];
+    let closed = false;
+
+    for (const c of loadJson(chatsPath)?.chats || []) {
+        if (!CHAT_KEY.test(c.chatKey)) continue;
+        // A pod is only "running" once reconcile has seen it; until then the chat is asleep.
+        chats.set(c.chatKey, { ...c, state: c.state === 'none' || c.state === 'crashed' ? c.state : 'asleep' });
+    }
+    const savedPods = loadJson(podsPath)?.pods || [];
+
+    function persist() {
+        saveJson(chatsPath, { chats: [...chats.values()].map(({ chatKey, source, linkId, slot, podId, sessionId, state, lastAgentAt, lastViewerAt, hasAuth }) =>
+            ({ chatKey, source: source ?? null, linkId: linkId ?? null, slot: slot ?? null, podId: podId ?? null, sessionId: sessionId ?? null, state, lastAgentAt: lastAgentAt ?? 0, lastViewerAt: lastViewerAt ?? 0, hasAuth: !!hasAuth })) });
+        saveJson(podsPath, { pods: [...pods.values()].map(({ slot, podId, vncPassword, ports, state, chatKey }) =>
+            ({ slot, podId, vncPassword, ports, state, chatKey: chatKey ?? null, sessionId: chatKey ? chats.get(chatKey)?.sessionId ?? null : null })) });
+    }
+
+    const linkOf = (chatKey) => store?.findChat?.(chatKey) ?? null;
+    const held = (chatKey) => HELD.has(linkOf(chatKey)?.status);
+    const lastActive = (chat) => Math.max(chat?.lastAgentAt || 0, chat?.lastViewerAt || 0);
+    const warmPods = () => [...pods.values()].filter((p) => !p.chatKey && (p.state === 'ready' || p.state === 'starting'));
+    const freeSlot = () => {
+        for (let s = 0; s < maxPods; s++) if (!pods.has(s) && !blocked.has(s)) return s;
+        return null;
+    };
+
+    function chatOf(chatKey, source) {
+        let chat = chats.get(chatKey);
+        if (!chat) {
+            chat = { chatKey, source: source ?? null, linkId: null, slot: null, podId: null, sessionId: null, state: 'none', lastAgentAt: 0, lastViewerAt: 0, hasAuth: false };
+            chats.set(chatKey, chat);
+        }
+        return chat;
+    }
+
+    // ── Starting a pod ────────────────────────────────────────────────────
+    async function waitReady(pod) {
+        const t0 = now();
+        const deadline = t0 + readyTimeoutMs;
+        let node = null, ctl = null;
+        while (now() < deadline && !closed) {
+            if (node === null && await nodeReady(pod.ports)) node = now() - t0;
+            if (ctl === null && await pod.client.readyz()) ctl = now() - t0;
+            if (node !== null && ctl !== null) return { node_ready_ms: node, ctl_ready_ms: ctl };
+            await sleep(readyPollMs);
+        }
+        throw new PodError(`browser pod in slot ${pod.slot} was not ready after ${Math.round(readyTimeoutMs / 1000)} s`);
+    }
+
+    // Starts a pod in `slot` and resolves once it is ready. On failure the slot is freed again.
+    function startPod(slot) {
+        const pod = { slot, podId: newId(), vncPassword: newPassword(), ports: null, state: 'starting', chatKey: null, client: null, startedAt: now(), timings: {} };
+        // Registered at once, so a chat arriving meanwhile sees this pod as a spare on its way.
+        pods.set(slot, pod);
+        pod.ready = (async () => {
+            const t0 = now();
+            // Something else answering on one of the slot's ports: leave the slot alone.
+            const ps = portsOf(slot);
+            if (ps && (await Promise.all([ps.novnc, ps.api, ps.playwright].map((p) => portBusy(p)))).some(Boolean)) {
+                blocked.add(slot);
+                if (pods.get(slot) === pod) pods.delete(slot);
+                log(`pod slot ${slot}: a port is already in use on 127.0.0.1; skipping the slot`);
+                throw new PodError(`slot ${slot} ports are in use`, 503, 'port_busy');
+            }
+            try {
+                const r = await launcher.call('ensure', { slot, pod_id: pod.podId, vnc_password: pod.vncPassword });
+                pod.ports = r.ports;
+                learnBases(slot, r.ports);
+                pod.client = clientFor({ apiPort: r.ports.api, slot });
+                pod.timings.created_ms = now() - t0;
+                const ready = await waitReady(pod);
+                pod.timings.node_ready_ms = pod.timings.created_ms + ready.node_ready_ms;
+                pod.timings.ctl_ready_ms = pod.timings.created_ms + ready.ctl_ready_ms;
+                if (pod.state === 'starting') pod.state = pod.chatKey ? 'assigned' : 'ready';
+                persist();
+                return pod;
+            } catch (err) {
+                log(`pod slot ${slot}: start failed: ${short(err)}`);
+                if (pods.get(slot) === pod) pods.delete(slot);
+                await launcher.call('stop', { slot }).catch(() => {});
+                persist();
+                throw err;
+            }
+        })();
+        pod.ready.catch(() => {});
+        return pod;
+    }
+
+    // Starts a pod in the first free slot, or returns null when none is free.
+    function claimSlot() {
+        const slot = freeSlot();
+        return slot === null ? null : startPod(slot);
+    }
+    // A slot's ports are base + slot; the bases come from config or the launcher's first reply.
+    let bases = portBases;
+    function learnBases(slot, ports) {
+        if (ports && !bases) bases = { novnc: ports.novnc - slot, api: ports.api - slot, playwright: ports.playwright - slot };
+    }
+    const portsOf = (slot) => (bases ? { novnc: bases.novnc + slot, api: bases.api + slot, playwright: bases.playwright + slot } : null);
+
+    function refill() {
+        if (refilling || closed) return refilling;
+        refilling = (async () => {
+            try {
+                while (!closed && warmPods().length < warm && pods.size < maxPods) {
+                    const pod = claimSlot();
+                    if (!pod) break;
+                    try { await pod.ready; } catch (err) { if (err.code !== 'port_busy') break; }
+                }
+            } finally { refilling = null; }
+        })();
+        return refilling;
+    }
+
+    // A pod for a chat: a ready spare, a spare about to be ready, a cold start, or an evicted slot.
+    async function acquire(forKey) {
+        for (let tries = 0; tries <= maxPods; tries++) {
+            const spares = warmPods();
+            const spare = spares.find((p) => p.state === 'ready') || spares[0];
+            const pod = spare || claimSlot() || (await evict(forKey));
+            const warmAtClaim = !!spare && spare.state === 'ready';
+            pod.chatKey = forKey;
+            try {
+                await pod.ready;
+            } catch (err) {
+                // That pod died while starting, or its ports were taken: try the next one.
+                if (err.code === 'port_busy' || spare) continue;
+                throw err;
+            }
+            pod.state = 'assigned';
+            return { pod, warm: warmAtClaim, spare: !!spare };
+        }
+        throw new PodError('no browser pod could be started', 503);
+    }
+
+    async function evict(forKey) {
+        const t = now();
+        const victims = [...pods.values()]
+            .filter((p) => p.state === 'assigned' && p.chatKey && p.chatKey !== forKey && !held(p.chatKey) && !pending.has(p.chatKey))
+            .map((p) => ({ p, at: lastActive(chats.get(p.chatKey)) }))
+            .filter(({ at }) => t - at >= evictMinIdleMs)
+            .sort((a, b) => a.at - b.at);
+        if (!victims.length) throw new PodError(`all ${maxPods} browsers are busy; try again when one is free`, 503, 'busy');
+        const { p } = victims[0];
+        log(`pod slot ${p.slot}: evicting the least recently used chat to make room`);
+        await stopChat(p.chatKey, 'evicted');
+        return claimSlot() || warmPods()[0] || (() => { throw new PodError(`all ${maxPods} browsers are busy; try again when one is free`, 503, 'busy'); })();
+    }
+
+    // ── Public: a chat's pod ──────────────────────────────────────────────
+    function describe(chat) {
+        const pod = chat.slot !== null ? pods.get(chat.slot) : null;
+        const link = linkOf(chat.chatKey);
+        return {
+            chat_key: chat.chatKey,
+            state: chat.state,
+            session_id: chat.sessionId,
+            link_id: link?.id ?? chat.linkId ?? null,
+            slot: pod?.slot ?? null,
+            api_url: pod?.ports ? `http://127.0.0.1:${pod.ports.api}` : null,
+            mcp_url: pod?.ports ? `http://127.0.0.1:${pod.ports.api}/mcp` : null,
+            novnc_port: pod?.ports?.novnc ?? null,
+        };
+    }
+
+    /**
+     * Ensures the chat has a running pod and session and counts as agent activity.
+     * {verify: true} first checks the pod still answers (the MCP server's retry after a refused
+     * connection) and replaces it when it does not.
+     */
+    async function ensure(chatKey, { source = null, verify = false } = {}) {
+        if (!CHAT_KEY.test(chatKey || '')) throw new PodError('bad chat_key', 400, 'bad_request');
+        if (closed) throw new PodError('bridge is shutting down');
+        const chat = chatOf(chatKey, source);
+        chat.lastAgentAt = now();
+        if (stopping.has(chatKey)) await stopping.get(chatKey).catch(() => {});
+        if (pending.has(chatKey)) return pending.get(chatKey);
+        const pod = chat.slot !== null ? pods.get(chat.slot) : null;
+        if (chat.state === 'running' && pod && pod.podId === chat.podId && pod.state === 'assigned') {
+            if (!verify || await pod.client.readyz()) return describe(chat);
+            log(`pod slot ${pod.slot}: not answering; replacing it`);
+            await stopChat(chatKey, 'crashed');
+        }
+        const p = (async () => {
+            const t0 = now();
+            chat.state = 'starting';
+            let got;
+            try {
+                got = await acquire(chatKey);
+            } catch (err) {
+                chat.state = chat.sessionId ? 'asleep' : 'none';
+                throw err;
+            }
+            const { pod: mine, warm: wasWarm, spare: fromSpare } = got;
+            try {
+                let adopted = false;
+                if (chat.hasAuth) {
+                    try { adopted = !!(await launcher.call('adopt_auth', { slot: mine.slot, chat_hash: chatKey })).adopted; }
+                    catch (err) { log(`pod slot ${mine.slot}: restoring the login failed: ${short(err)}`); }
+                }
+                const s0 = now();
+                let session;
+                try {
+                    session = await mine.client.createSession(adopted ? { authProfile: AUTH_PROFILE } : {});
+                } catch (err) {
+                    if (!adopted) throw err;
+                    log(`pod slot ${mine.slot}: session with the saved login failed (${short(err)}); starting without it`);
+                    session = await mine.client.createSession({});
+                }
+                const sessionMs = now() - s0;
+                Object.assign(chat, { slot: mine.slot, podId: mine.podId, sessionId: session.id, state: 'running', lastAgentAt: now() });
+                const link = store?.forChat?.(chatKey, session.id);
+                if (link) chat.linkId = link.id;
+                const timing = { warm: wasWarm, spare: fromSpare, total_ms: now() - t0, session_ms: sessionMs, ...(wasWarm ? {} : mine.timings), at: now() };
+                timings.push(timing);
+                if (timings.length > 50) timings.shift();
+                log(`pod slot ${mine.slot}: chat ${chatKey.slice(0, 8)} ${wasWarm ? 'warm' : fromSpare ? 'spare (still starting)' : 'cold'} start ${timing.total_ms} ms`);
+                persist();
+                return describe(chat);
+            } catch (err) {
+                log(`pod slot ${mine.slot}: starting the session failed: ${short(err)}`);
+                chat.state = chat.sessionId ? 'asleep' : 'none';
+                pods.delete(mine.slot);
+                await launcher.call('stop', { slot: mine.slot }).catch(() => {});
+                persist();
+                throw err instanceof PodError ? err : new PodError(short(err));
+            } finally {
+                refill();
+            }
+        })();
+        pending.set(chatKey, p);
+        try { return await p; } finally { pending.delete(chatKey); }
+    }
+
+    // ── Stopping ──────────────────────────────────────────────────────────
+    // Save -> stash -> close -> stop. Each step's failure is logged and the next still runs, so a
+    // pod always goes away. `crashed` skips the save (the controller is not answering).
+    function stopChat(chatKey, why = 'idle') {
+        if (stopping.has(chatKey)) return stopping.get(chatKey);
+        const chat = chats.get(chatKey);
+        const pod = chat && chat.slot !== null ? pods.get(chat.slot) : null;
+        if (!chat || !pod || pod.podId !== chat.podId) {
+            if (chat && chat.state === 'running') { chat.state = why === 'crashed' ? 'crashed' : 'asleep'; persist(); }
+            return Promise.resolve(false);
+        }
+        const p = (async () => {
+            pod.state = 'stopping';
+            const sid = chat.sessionId;
+            if (why !== 'crashed' && sid && pod.client) {
+                try { await pod.client.saveAuthProfile(sid, AUTH_PROFILE); }
+                catch (err) { log(`pod slot ${pod.slot}: saving the login failed: ${short(err)}`); }
+            }
+            try {
+                const r = await launcher.call('stash_auth', { slot: pod.slot, chat_hash: chatKey });
+                if (r?.stashed) chat.hasAuth = true;
+            } catch (err) { log(`pod slot ${pod.slot}: keeping the login failed: ${short(err)}`); }
+            if (why !== 'crashed' && sid && pod.client) {
+                try { await pod.client.closeSession(sid); }
+                catch (err) { if (err.status !== 404) log(`pod slot ${pod.slot}: closing the session failed: ${short(err)}`); }
+            }
+            try { await launcher.call('stop', { slot: pod.slot }); }
+            catch (err) { log(`pod slot ${pod.slot}: stopping failed: ${short(err)}`); }
+            if (pods.get(pod.slot) === pod) pods.delete(pod.slot);
+            failures.delete(pod.slot);
+            chat.state = why === 'crashed' ? 'crashed' : 'asleep';
+            chat.slot = null;
+            chat.podId = null;
+            log(`pod slot ${pod.slot}: chat ${chatKey.slice(0, 8)} stopped (${why})`);
+            persist();
+            return true;
+        })();
+        stopping.set(chatKey, p);
+        p.finally(() => { stopping.delete(chatKey); refill(); }).catch(() => {});
+        return p;
+    }
+
+    // The login is also saved while the pod runs: after the user hands control back, and at most
+    // once a minute after page-changing calls, so a crash loses little.
+    const lastCheckpoint = new Map();
+    async function checkpointAuth(chatKey, { force = false } = {}) {
+        const chat = chats.get(chatKey);
+        const pod = chat && chat.slot !== null ? pods.get(chat.slot) : null;
+        if (!chat || chat.state !== 'running' || !pod || pod.state !== 'assigned' || !chat.sessionId) return false;
+        if (!force && now() - (lastCheckpoint.get(chatKey) || 0) < authEveryMs) return false;
+        lastCheckpoint.set(chatKey, now());
+        try {
+            await pod.client.saveAuthProfile(chat.sessionId, AUTH_PROFILE);
+            const r = await launcher.call('stash_auth', { slot: pod.slot, chat_hash: chatKey, keep: true });
+            if (r?.stashed && !chat.hasAuth) { chat.hasAuth = true; persist(); }
+            return true;
+        } catch (err) {
+            log(`pod slot ${pod.slot}: saving the login failed: ${short(err)}`);
+            return false;
+        }
+    }
+
+    // ── Timers ────────────────────────────────────────────────────────────
+    async function idleSweep() {
+        const t = now();
+        for (const chat of chats.values()) {
+            if (chat.state !== 'running' || pending.has(chat.chatKey) || stopping.has(chat.chatKey)) continue;
+            if (held(chat.chatKey)) continue;
+            if (t - lastActive(chat) < idleMs) continue;
+            await stopChat(chat.chatKey, 'idle');
+        }
+    }
+
+    async function healthCheck() {
+        // A slot skipped for a busy port is tried again once whatever held it may have gone.
+        blocked.clear();
+        let listed;
+        try { listed = await launcher.call('list'); }
+        catch (err) { log(`pod health: launcher list failed: ${short(err)}`); return; }
+        const up = new Map((listed.pods || []).map((p) => [p.slot, p]));
+        for (const pod of [...pods.values()]) {
+            if (pod.state !== 'assigned' && pod.state !== 'ready') continue;
+            const l = up.get(pod.slot);
+            const running = l && l.pod_id === pod.podId && l.containers?.node?.state === 'running' && l.containers?.controller?.state === 'running';
+            const ok = running && await pod.client.readyz();
+            if (ok) { failures.delete(pod.slot); continue; }
+            const n = (failures.get(pod.slot) || 0) + 1;
+            failures.set(pod.slot, n);
+            if (n < 2) continue;
+            log(`pod slot ${pod.slot}: failed two health checks; stopping it`);
+            if (pod.chatKey && pod.state === 'assigned') await stopChat(pod.chatKey, 'crashed');
+            else {
+                pods.delete(pod.slot);
+                failures.delete(pod.slot);
+                await launcher.call('stop', { slot: pod.slot }).catch(() => {});
+                persist();
+                refill();
+            }
+        }
+    }
+
+    // At boot: adopt what pods.json says was assigned and is still up and ready; stop the rest.
+    async function reconcile() {
+        let listed;
+        try { listed = await launcher.call('list'); }
+        catch (err) { log(`pod reconcile: launcher list failed: ${short(err)}`); return { adopted: 0, removed: 0 }; }
+        const known = new Map(savedPods.filter((p) => p.state === 'assigned' && p.chatKey).map((p) => [p.slot, p]));
+        let adopted = 0, removed = 0;
+        for (const l of listed.pods || []) {
+            const rec = known.get(l.slot);
+            const chat = rec && chats.get(rec.chatKey);
+            const running = l.containers?.node?.state === 'running' && l.containers?.controller?.state === 'running';
+            if (rec && chat && rec.podId === l.pod_id && running && chat.podId === l.pod_id) {
+                const client = clientFor({ apiPort: l.ports.api, slot: l.slot });
+                if (await client.readyz()) {
+                    pods.set(l.slot, { slot: l.slot, podId: l.pod_id, vncPassword: rec.vncPassword, ports: l.ports, state: 'assigned', chatKey: rec.chatKey, client, startedAt: now(), timings: {}, ready: Promise.resolve() });
+                    learnBases(l.slot, l.ports);
+                    chat.state = 'running';
+                    chat.slot = l.slot;
+                    adopted++;
+                    continue;
+                }
+            }
+            await launcher.call('stop', { slot: l.slot }).catch((err) => log(`pod reconcile: stopping slot ${l.slot} failed: ${short(err)}`));
+            removed++;
+        }
+        for (const chat of chats.values()) if (chat.state === 'running' && !pods.has(chat.slot)) { chat.state = 'asleep'; chat.slot = null; chat.podId = null; }
+        persist();
+        if (adopted || removed) log(`pod reconcile: adopted ${adopted}, removed ${removed}`);
+        return { adopted, removed };
+    }
+
+    async function start() {
+        await reconcile();
+        refill();
+        const every = (fn, ms) => { const t = setInterval(() => fn().catch((e) => log(`pod timer: ${short(e)}`)), ms); t.unref?.(); timers.push(t); };
+        every(idleSweep, Math.min(30_000, Math.max(1000, Math.floor(idleMs / 4))));
+        every(healthCheck, healthMs);
+    }
+
+    // Pods stay up across a bridge restart (reconcile adopts them); only the timers stop.
+    function close() {
+        closed = true;
+        for (const t of timers) clearInterval(t);
+        timers = [];
+        persist();
+    }
+
+    // ── Lookups for the HTTP side ─────────────────────────────────────────
+    function chatForLink(linkId) {
+        for (const c of chats.values()) if (c.linkId === linkId) return c;
+        return null;
+    }
+    function chatForSession(sessionId) {
+        for (const c of chats.values()) if (c.sessionId === sessionId) return c;
+        return null;
+    }
+    /** What /take and the frame path need for a chat: its pod's client and noVNC, if running. */
+    function podOf(chatKey) {
+        const chat = chats.get(chatKey);
+        const pod = chat && chat.slot !== null ? pods.get(chat.slot) : null;
+        if (!chat || chat.state !== 'running' || !pod || pod.state !== 'assigned' || pod.podId !== chat.podId) return null;
+        return { slot: pod.slot, client: pod.client, novncPort: pod.ports.novnc, vncPassword: pod.vncPassword, sessionId: chat.sessionId };
+    }
+    /** running | starting | asleep | crashed | none, for /state's `pod` field. */
+    function podState(chatKey) {
+        const chat = chats.get(chatKey);
+        if (!chat) return 'none';
+        if (pending.has(chatKey)) return 'starting';
+        return chat.state;
+    }
+    function touchViewer(chatKey) {
+        const chat = chats.get(chatKey);
+        if (chat) chat.lastViewerAt = now();
+    }
+    /** Starts the chat's pod without waiting (the user tapped Take control on a sleeping one). */
+    function wake(chatKey) {
+        const chat = chats.get(chatKey);
+        if (!chat) return 'none';
+        if (chat.state === 'running' && podOf(chatKey)) return 'running';
+        ensure(chatKey, { source: chat.source }).catch((err) => log(`waking chat ${chatKey.slice(0, 8)} failed: ${short(err)}`));
+        // lastAgentAt is set by ensure; a wake is the viewer's doing, so the idle clock is fair.
+        return 'starting';
+    }
+
+    function status() {
+        const t = now();
+        return {
+            max_pods: maxPods,
+            warm_target: warm,
+            idle_min: idleMs / 60_000,
+            pods: [...pods.values()].sort((a, b) => a.slot - b.slot).map((p) => {
+                const chat = p.chatKey ? chats.get(p.chatKey) : null;
+                return {
+                    slot: p.slot,
+                    state: p.state,
+                    chat: p.chatKey ? p.chatKey.slice(0, 8) : null,
+                    ports: p.ports,
+                    held: p.chatKey ? held(p.chatKey) : false,
+                    idle_s: chat ? Math.round((t - lastActive(chat)) / 1000) : null,
+                };
+            }),
+            chats: [...chats.values()].filter((c) => c.state !== 'none').map((c) => ({ chat: c.chatKey.slice(0, 8), state: podState(c.chatKey), slot: c.slot, has_auth: !!c.hasAuth, idle_s: Math.round((t - lastActive(c)) / 1000) })),
+            blocked_slots: [...blocked].sort((a, b) => a - b),
+            recent_starts: timings.slice(-10),
+        };
+    }
+
+    return {
+        ensure, stopChat, checkpointAuth, idleSweep, healthCheck, reconcile, refill, start, close,
+        chatForLink, chatForSession, podOf, podState, touchViewer, wake, status,
+        get timings() { return timings.slice(); },
+        _pods: pods, _chats: chats,
+    };
+}

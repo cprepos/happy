@@ -183,6 +183,16 @@ services:
       # The shape of a frame: the controller's default viewport, as set above.
       BRIDGE_FRAME_WIDTH: ${BROWSER_WIDTH:-480}
       BRIDGE_FRAME_HEIGHT: ${BROWSER_HEIGHT:-1040}
+      # One browser pod per chat (bridge/lib/pods.mjs), started through the launcher below.
+      # Off by default: the bridge then drives the shared browser above.
+      BRIDGE_PODS: ${BRIDGE_PODS:-0}
+      BRIDGE_LAUNCHER_SOCKET: /happy-browser/run/launcher.sock
+      BRIDGE_MAX_PODS: ${BRIDGE_MAX_PODS:-8}
+      BRIDGE_POD_WARM: ${BRIDGE_POD_WARM:-1}
+      BRIDGE_POD_IDLE_MIN: ${BRIDGE_POD_IDLE_MIN:-10}
+      POD_NOVNC_BASE: ${POD_NOVNC_BASE:-6100}
+      POD_API_BASE: ${POD_API_BASE:-8100}
+      POD_PLAYWRIGHT_BASE: ${POD_PLAYWRIGHT_BASE:-9300}
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:'+(process.env.BRIDGE_PORT||6090)+'/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
       interval: 10s
@@ -193,6 +203,8 @@ services:
       - ./bridge:/app:ro
       - ${HAPPY_BROWSER_HOME:?}/secrets:/happy-browser/secrets:ro
       - ${HAPPY_BROWSER_HOME:?}/bridge:/happy-browser/bridge
+      # The launcher's socket. Only the bridge mounts it; no pod ever does.
+      - ${HAPPY_BROWSER_HOME:?}/run:/happy-browser/run
 
   # The pod launcher (selfhost/browser/launcher): starts and stops each chat's browser pod (a
   # browser-node and its own controller, both host network, all listeners on 127.0.0.1) from

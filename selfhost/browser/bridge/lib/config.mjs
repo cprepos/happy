@@ -32,6 +32,22 @@ export function loadConfig(env = process.env) {
         // phone page can size the frame box before the first frame arrives.
         frameWidth: Number(env.BRIDGE_FRAME_WIDTH) || 480,
         frameHeight: Number(env.BRIDGE_FRAME_HEIGHT) || 1040,
+        // One browser pod per chat (lib/pods.mjs), started through the launcher's socket. Off
+        // (BRIDGE_PODS=0) the bridge drives the one shared browser at autoBrowserUrl.
+        pods: {
+            enabled: env.BRIDGE_PODS === '1',
+            launcherSocket: env.BRIDGE_LAUNCHER_SOCKET || join(home, 'run/launcher.sock'),
+            maxPods: Math.max(1, Math.min(32, Number(env.BRIDGE_MAX_PODS) || 8)),
+            warm: Math.max(0, Math.min(2, Number(env.BRIDGE_POD_WARM ?? 1))),
+            idleMs: Math.max(0.05, Number(env.BRIDGE_POD_IDLE_MIN) || 10) * 60_000,
+            bases: {
+                novnc: Number(env.POD_NOVNC_BASE || 6100),
+                api: Number(env.POD_API_BASE || 8100),
+                playwright: Number(env.POD_PLAYWRIGHT_BASE || 9300),
+            },
+            podsPath: env.BRIDGE_PODS_STORE || join(home, 'bridge/pods.json'),
+            chatsPath: env.BRIDGE_CHATS_STORE || join(home, 'bridge/chats.json'),
+        },
         files: {
             apiToken: join(secrets, 'api-token'),
             vncPassword: join(secrets, 'vnc-password'),
