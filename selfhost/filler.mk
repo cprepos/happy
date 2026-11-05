@@ -18,6 +18,7 @@
 #   make filler-audit            the newest audit lines (FILLER_AUDIT_LINES=50)
 #   make filler-test             unit tests (node:test)
 #   make filler-smoke            canary end-to-end: a separate filler + fake vault + fake page, leak sweep
+#   make vault-mcp-test          unit tests of the vault tools' MCP server (selfhost/vault-mcp)
 
 FILLER_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))/browser/filler
 FILLER_REPO := $(abspath $(FILLER_DIR)/../../..)
@@ -29,10 +30,11 @@ FILLER_HOME_DIR := $(or $(HAPPY_BROWSER_HOME),$(HOME)/.local/share/happy-browser
 # Where vault-mcp (selfhost/vault-mcp) finds its token for the filler's /v1/vault/* routes.
 VAULT_MCP_HOME_DIR := $(or $(HAPPY_VAULT_MCP_HOME),$(HOME)/.local/share/happy-vault-mcp)
 FILLER_IMAGE = $(shell awk '/^ *image: node:/{print $$2; exit}' $(FILLER_DIR)/compose.filler.yml)
+VAULT_MCP_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))/vault-mcp
 COMMIT ?=
 
 .PHONY: filler-init filler-install filler-enroll filler-up filler-down filler-lock filler-logs filler-status \
-	filler-policy-edit filler-audit filler-test filler-smoke filler-setup filler-items filler-seed-policy
+	filler-policy-edit filler-audit filler-test filler-smoke filler-setup filler-items filler-seed-policy vault-mcp-test
 
 filler-setup:
 	@test -n "$(COMMIT)" || { echo "usage: make filler-setup COMMIT=<sha> (the commit you reviewed)"; exit 1; }
@@ -121,3 +123,6 @@ filler-test:
 
 filler-smoke:
 	cd $(FILLER_DIR) && timeout 120 node test/smoke.mjs
+
+vault-mcp-test:
+	cd $(VAULT_MCP_DIR) && node --test --test-timeout=30000 test/*.test.mjs
