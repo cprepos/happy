@@ -427,7 +427,7 @@ final class SubscriptionTests: XCTestCase {
         XCTAssertTrue(relaunched.customer.hasPrefix("$RCAnonymousID:"))
     }
 
-    func testTheTokenIsTheCustomersForGood() {
+    func testTheTokenIsTheCustomersForGood() async {
         XCTAssertEqual(Subscription.token("a"), Subscription.token("a"))
         XCTAssertNotEqual(Subscription.token("a"), Subscription.token("b"))
         let text = Subscription.token("$RCAnonymousID:0123456789abcdef0123456789abcdef").uuidString

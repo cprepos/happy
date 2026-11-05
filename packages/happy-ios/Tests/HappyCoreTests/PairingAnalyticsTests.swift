@@ -13,7 +13,7 @@ final class PairingAnalyticsTests: XCTestCase {
         return (analytics, { sent })
     }
 
-    func testEachEventSaysWhatShowedAndWhatWasChosen() {
+    func testEachEventSaysWhatShowedAndWhatWasChosen() async {
         let (analytics, sent) = recorder()
         analytics.log(.optionsShown(options: [.relay, .agentConnection], selected: .relay, surface: .onboarding))
         analytics.log(.optionSelected(from: .relay, to: .agentConnection, surface: .connectAgent))
@@ -32,7 +32,7 @@ final class PairingAnalyticsTests: XCTestCase {
         XCTAssertEqual(events[4].1["start"], .string("opened_link"))
     }
 
-    func testOptedOutOrWithNoClientNothingIsSent() {
+    func testOptedOutOrWithNoClientNothingIsSent() async {
         let (analytics, sent) = recorder()
         analytics.isOptedOut = { true }
         analytics.log(.completed(method: .relay, start: .scan))
@@ -43,7 +43,7 @@ final class PairingAnalyticsTests: XCTestCase {
 
     /// No property can carry a link, token, address or name: every value
     /// is one of the fixed words.
-    func testNoPropertyCarriesFreeText() {
+    func testNoPropertyCarriesFreeText() async {
         let words: Set<String> = ["relay", "agent_connection", "onboarding", "connect_agent", "settings", "scan", "paste_link", "opened_link"]
         let events: [PairingEvent] = [
             .optionsShown(options: [.relay], selected: .relay, surface: .settings),

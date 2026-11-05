@@ -402,7 +402,7 @@ final class ChatHistoryPagerTests: XCTestCase {
         XCTAssertFalse(history.calls.contains { $0.hasPrefix("retry") })
     }
 
-    func testNothingOlderLeftSaysNoMessages() {
+    func testNothingOlderLeftSaysNoMessages() async {
         let history = HeldHistory()
         let (pager, _) = makePager(history)
         pager.receive(facts(empty: true, more: false, boundary: nil))
@@ -471,7 +471,7 @@ final class ChatHistoryPagerTests: XCTestCase {
 
     /// Where a Claude Desktop chat offers its earlier history: the chat has
     /// loaded, the server has no older page, and the window renders it all.
-    func testTheOldestServerPageIsReachedOnlyWhenNothingOlderIsLeft() {
+    func testTheOldestServerPageIsReachedOnlyWhenNothingOlderIsLeft() async {
         let history = HeldHistory()
         let (pager, _) = makePager(history)
         XCTAssertFalse(pager.reachedOldest(windowReachesOldest: true), "before any facts")

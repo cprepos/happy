@@ -127,15 +127,4 @@ extension CGRect {
     }
 }
 
-#if !canImport(CoreGraphics)
-/// CoreGraphics' vector, which swift-corelibs-foundation lacks.
-public struct CGVector: Equatable, Sendable {
-    public var dx: CGFloat
-    public var dy: CGFloat
-
-    public init(dx: CGFloat, dy: CGFloat) {
-        self.dx = dx
-        self.dy = dy
-    }
-}
-#endif
+// CGVector off CoreGraphics: Tokens.swift.

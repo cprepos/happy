@@ -751,7 +751,11 @@ public actor CallContext {
     }
 
     private static func isBoolean(_ number: NSNumber) -> Bool {
+        #if canImport(Darwin)
         CFGetTypeID(number) == CFBooleanGetTypeID()
+        #else
+        number === NSNumber(value: true) || number === NSNumber(value: false) || String(cString: number.objCType) == "B"
+        #endif
     }
 
     static func timestamp(_ seconds: Double) -> String {

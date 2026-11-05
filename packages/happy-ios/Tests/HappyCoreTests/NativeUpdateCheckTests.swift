@@ -113,7 +113,7 @@ final class NativeUpdateCheckTests: XCTestCase {
         observation.cancel()
     }
 
-    func testAnswers() {
+    func testAnswers() async {
         func outcome(_ body: String, status: Int = 200) -> NativeUpdateCheck.Outcome {
             NativeUpdateCheck.outcome(status: status, body: Data(body.utf8))
         }

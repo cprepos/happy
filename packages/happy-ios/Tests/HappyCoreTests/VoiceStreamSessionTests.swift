@@ -27,7 +27,7 @@ final class VoiceStreamSessionTests: XCTestCase {
         XCTFail("voice state did not settle")
     }
 
-    func testOnlyAHostedElevenLabsCallNeedsAGrant() {
+    func testOnlyAHostedElevenLabsCallNeedsAGrant() async {
         XCTAssertTrue(VoiceStart(sessionId: "s", context: "").needsGrant)
         XCTAssertFalse(VoiceStart(sessionId: "s", context: "", customAgentId: "agent").needsGrant)
         XCTAssertFalse(stream.needsGrant)

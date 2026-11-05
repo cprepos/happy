@@ -173,7 +173,7 @@ final class AgentConnectionsTests: XCTestCase {
         XCTAssertNil(bad.instanceId)
     }
 
-    func testInstanceLinksOpenOnlyOnTheirInstallation() {
+    func testInstanceLinksOpenOnlyOnTheirInstallation() async {
         let instance = "k3x9q2m7p0a4b8c1d5e6f7g2"
         var mine = AgentConnection(id: "mine", name: "Mine"); mine.instanceId = instance
         var again = AgentConnection(id: "again", name: "Same server, signed in again"); again.instanceId = instance

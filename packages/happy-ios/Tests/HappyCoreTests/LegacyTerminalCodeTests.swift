@@ -119,7 +119,7 @@ final class LegacyTerminalCodeTests: XCTestCase {
 
     /// The bug Steve hit: the key went out with a bare "+", the server read
     /// a space, and the scan ended in "Failed to connect terminal".
-    func testTheKeyGoesOutWithItsPlusEscaped() throws {
+    func testTheKeyGoesOutWithItsPlusEscaped() async throws {
         let key = try terminal().publicKey
         let request = try HappyAPI(serverURL: ServerConfig.defaultServerURL, clientID: "ios/test", transport: FakeHTTP())
             .makeRequest("GET", "/v1/auth/request/status", query: [URLQueryItem(name: "publicKey", value: key.base64EncodedString())], authenticated: false)
@@ -230,7 +230,7 @@ final class LegacyTerminalCodeTests: XCTestCase {
     }
 
     /// Entries from before the origin existed are legacy.
-    func testAnOldRegistryEntryIsLegacy() throws {
+    func testAnOldRegistryEntryIsLegacy() async throws {
         let json = #"{"id":"0123456789abcdef","serverURL":"https://api.cluster-fluster.com","location":"shared","addedOrder":0}"#
         let entry = try JSONDecoder().decode(AccountRegistryEntry.self, from: Data(json.utf8))
         XCTAssertEqual(entry.origin, .legacy)

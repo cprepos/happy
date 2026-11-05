@@ -73,7 +73,7 @@ final class MigrationNoteFlagTests: XCTestCase {
 
     /// Opted out of analytics, or a build without the key: nothing is
     /// asked, and the card stays hidden.
-    func testOptedOutOrNoKeyAsksNothing() {
+    func testOptedOutOrNoKeyAsksNothing() async {
         let flag = MigrationNoteFlag()
         let settings = LocalSettings(storage: InMemoryKeyValueStore())
         settings.migrationNoteFlag = true
@@ -91,7 +91,7 @@ final class MigrationNoteFlagTests: XCTestCase {
     }
 
     /// PostHog's v1 answer, a variant name counting as on.
-    func testTheOlderAnswer() {
+    func testTheOlderAnswer() async {
         XCTAssertEqual(MigrationNoteFlag.answer(status: 200, body: Data(#"{"featureFlags":{"direct-connection-migration-note":true}}"#.utf8)), true)
         XCTAssertEqual(MigrationNoteFlag.answer(status: 200, body: Data(#"{"featureFlags":{"direct-connection-migration-note":"test"}}"#.utf8)), true)
         XCTAssertEqual(MigrationNoteFlag.answer(status: 200, body: Data(#"{"featureFlags":{"direct-connection-migration-note":false}}"#.utf8)), false)

@@ -164,7 +164,7 @@ final class AccountPicturesTests: XCTestCase {
         XCTAssertEqual(fetches.made, 1)
     }
 
-    func testAFileIsNamedByTheURLsHashAlone() {
+    func testAFileIsNamedByTheURLsHashAlone() async {
         let name = PictureFiles.name(url.absoluteString)
         XCTAssertEqual(name.count, 64)
         XCTAssertEqual(name, Hashing.sha256(Data(url.absoluteString.utf8)).map { String(format: "%02x", $0) }.joined())

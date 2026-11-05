@@ -14,14 +14,14 @@ final class ProPassTests: XCTestCase {
         cache.save(customer: customer, pass: Self.pass(Self.subscriber(at, pro)), now: s(at))
     }
 
-    func testAMonthlySubscriptionsMonthIsFromItsPurchase() {
+    func testAMonthlySubscriptionsMonthIsFromItsPurchase() async {
         let cache = ProPassCache(store: InMemoryKeyValueStore())
         told(cache, at: "2026-11-04T10:00:00Z", Self.pro("2026-10-20T08:00:00Z", "2026-11-20T08:00:00Z"))
         XCTAssertEqual(cache.month(customer: "a", now: s("2026-11-04T10:00:00Z")), ProMonth(start: s("2026-10-20T08:00:00Z"), end: s("2026-11-20T08:00:00Z")))
         XCTAssertTrue(cache.active(customer: "a", now: s("2026-11-04T10:00:00Z")))
     }
 
-    func testExpiredAtRevenueCatsOwnTimeIsNoAccess() {
+    func testExpiredAtRevenueCatsOwnTimeIsNoAccess() async {
         let cache = ProPassCache(store: InMemoryKeyValueStore())
         told(cache, at: "2026-11-21T00:00:00Z", Self.pro("2026-10-20T08:00:00Z", "2026-11-20T08:00:00Z"))
         XCTAssertNil(cache.month(customer: "a", now: s("2026-11-21T00:00:00Z")))
@@ -31,7 +31,7 @@ final class ProPassTests: XCTestCase {
     /// A renewal that failed: the entitlement's expiry moved to the grace
     /// end, the subscription's paid period over, its grace date ahead. The
     /// month before runs on, with no new hours and no end to promise.
-    func testGraceGivesNoNewMonthAndPromisesNoEnd() {
+    func testGraceGivesNoNewMonthAndPromisesNoEnd() async {
         let cache = ProPassCache(store: InMemoryKeyValueStore())
         told(cache, at: "2026-11-19T00:00:00Z", Self.pro("2026-10-20T08:00:00Z", "2026-11-20T08:00:00Z"))
         let before = cache.month(customer: "a", now: s("2026-11-19T00:00:00Z"))!
@@ -42,7 +42,7 @@ final class ProPassTests: XCTestCase {
     }
 
     /// A grace date on the entitlement, where the SDK never reads one, changes nothing.
-    func testGraceIsTheSubscriptionsNotTheEntitlements() throws {
+    func testGraceIsTheSubscriptionsNotTheEntitlements() async throws {
         let answer = try JSONValue.decode(Data("""
         {"request_date":"2026-11-21T00:00:00Z","subscriber":{"entitlements":{"pro":{"expires_date":"2026-12-20T08:00:00Z",
           "grace_period_expires_date":"2026-12-04T08:00:00Z","product_identifier":"happy","purchase_date":"2026-11-20T08:00:00Z"}},
@@ -53,7 +53,7 @@ final class ProPassTests: XCTestCase {
         XCTAssertEqual(pass.month(at: pass.checkedAt), ProMonth(start: s("2026-11-20T08:00:00Z"), end: s("2026-12-20T08:00:00Z")))
     }
 
-    func testAPastOrIdleGraceDateIsNoGrace() throws {
+    func testAPastOrIdleGraceDateIsNoGrace() async throws {
         let renewed = try XCTUnwrap(Self.pass(Self.subscriber("2026-12-10T00:00:00Z", Self.pro("2026-12-03T08:00:00Z", "2027-01-03T08:00:00Z", grace: "2026-12-04T08:00:00Z"))))
         XCTAssertFalse(renewed.inGrace(at: renewed.checkedAt))
         XCTAssertEqual(renewed.month(at: renewed.checkedAt)?.start, s("2026-12-03T08:00:00Z"))
@@ -63,13 +63,13 @@ final class ProPassTests: XCTestCase {
         XCTAssertTrue(ahead.inGrace(at: s("2026-11-20T09:00:00Z")))
     }
 
-    func testAYearlyProsGraceGivesNoNewMonthEither() {
+    func testAYearlyProsGraceGivesNoNewMonthEither() async {
         let cache = ProPassCache(store: InMemoryKeyValueStore())
         told(cache, at: "2027-02-05T00:00:00Z", Self.pro("2026-01-31T00:00:00Z", "2027-02-20T00:00:00Z", renews: "2027-01-31T00:00:00Z", grace: "2027-02-20T00:00:00Z"))
         XCTAssertEqual(cache.month(customer: "a", now: s("2027-02-05T00:00:00Z")), ProMonth(start: s("2026-12-31T00:00:00Z"), end: nil))
     }
 
-    func testARenewalStartsANewMonthOnItsOwnDate() {
+    func testARenewalStartsANewMonthOnItsOwnDate() async {
         let cache = ProPassCache(store: InMemoryKeyValueStore())
         told(cache, at: "2026-11-21T00:00:00Z", Self.pro("2026-11-20T08:00:00Z", "2026-12-20T08:00:00Z"))
         XCTAssertEqual(cache.month(customer: "a", now: s("2026-11-21T00:00:00Z")), ProMonth(start: s("2026-11-20T08:00:00Z"), end: s("2026-12-20T08:00:00Z")))
@@ -80,7 +80,7 @@ final class ProPassTests: XCTestCase {
         XCTAssertGreaterThan(month.end!, s("2026-12-20T09:00:00Z"))
     }
 
-    func testMonthsEndOnTheSameDayOrTheMonthsLast() throws {
+    func testMonthsEndOnTheSameDayOrTheMonthsLast() async throws {
         let pass = try XCTUnwrap(Self.pass(Self.subscriber("2028-04-15T00:00:00Z", Self.pro("2028-01-31T12:00:00Z", "2029-01-31T12:00:00Z", product: "happy_yearly"))))
         XCTAssertEqual(pass.month(at: pass.checkedAt), ProMonth(start: s("2028-03-31T12:00:00Z"), end: s("2028-04-30T12:00:00Z")))
         XCTAssertEqual(pass.month(at: s("2028-02-10T00:00:00Z")), ProMonth(start: s("2028-01-31T12:00:00Z"), end: s("2028-02-29T12:00:00Z")))
@@ -91,7 +91,7 @@ final class ProPassTests: XCTestCase {
         XCTAssertEqual(july.month(at: s("2026-07-31T23:59:59Z")), ProMonth(start: s("2026-07-01T00:00:00Z"), end: s("2026-08-01T00:00:00Z")))
     }
 
-    func testAYearlyOrLifetimeProIsFiveHoursAMonthNotAYear() {
+    func testAYearlyOrLifetimeProIsFiveHoursAMonthNotAYear() async {
         let cache = ProPassCache(store: InMemoryKeyValueStore())
         told(cache, at: "2026-03-25T00:00:00Z", Self.pro("2026-01-31T00:00:00Z", "2027-01-31T00:00:00Z", product: "happy_yearly"))
         XCTAssertEqual(cache.month(customer: "a", now: s("2026-03-25T00:00:00Z")), ProMonth(start: s("2026-02-28T00:00:00Z"), end: s("2026-03-31T00:00:00Z")))
@@ -99,14 +99,14 @@ final class ProPassTests: XCTestCase {
         XCTAssertEqual(cache.month(customer: "b", now: s("2027-06-10T00:00:00Z"))?.start, s("2027-05-15T00:00:00Z"))
     }
 
-    func testARefundTakesProAwayOnTheNextAnswer() throws {
+    func testARefundTakesProAwayOnTheNextAnswer() async throws {
         let cache = ProPassCache(store: InMemoryKeyValueStore())
         told(cache, at: "2026-11-05T00:00:00Z", Self.pro("2026-10-20T08:00:00Z", "2026-11-04T12:00:00Z"))
         XCTAssertNil(cache.month(customer: "a", now: s("2026-11-05T00:00:00Z")))
         XCTAssertEqual(ProPass.answer(Self.subscriber("2026-11-05T00:00:00Z", nil)), ProPass.Answer.none)
     }
 
-    func testAMalformedGrantIsNone() throws {
+    func testAMalformedGrantIsNone() async throws {
         func with(_ entitlement: String, _ subscriptions: String = "") throws -> ProPass.Answer? {
             ProPass.answer(try JSONValue.decode(Data("""
             {"request_date":"2026-11-04T10:00:00Z","subscriber":{"entitlements":{"pro":\(entitlement)},"subscriptions":{\(subscriptions)}}}
@@ -126,13 +126,13 @@ final class ProPassTests: XCTestCase {
         XCTAssertEqual(ProPass.date(.string("2026-11-04T10:00:00.250Z")), s("2026-11-04T10:00:00Z") + 0.25)
     }
 
-    func testAFullSubscriberAnswerIsReadAsItIs() throws {
+    func testAFullSubscriberAnswerIsReadAsItIs() async throws {
         let pass = try XCTUnwrap(Self.pass(try JSONValue.decode(Data(Self.full.utf8))))
         XCTAssertEqual(pass, ProPass(purchased: s("2026-11-20T08:00:05Z"), expires: s("2026-12-20T08:00:05Z"), renews: s("2026-12-20T08:00:05Z"), graceUntil: nil, checkedAt: s("2026-11-25T13:14:15Z")))
         XCTAssertEqual(pass.month(at: pass.checkedAt), ProMonth(start: s("2026-11-20T08:00:05Z"), end: s("2026-12-20T08:00:05Z")))
     }
 
-    func testTheCacheIsKeptADayAtMostAndOnlyForItsCustomer() {
+    func testTheCacheIsKeptADayAtMostAndOnlyForItsCustomer() async {
         let cache = ProPassCache(store: InMemoryKeyValueStore())
         let asked = s("2026-11-04T10:00:00Z")
         XCTAssertNil(cache.month(customer: "a", now: asked))
@@ -149,7 +149,7 @@ final class ProPassTests: XCTestCase {
         XCTAssertFalse(cache.active(customer: "a", now: asked + 3700))
     }
 
-    func testTheCurrentOfferingsMonthlyPackageIsItsAppStoreProduct() throws {
+    func testTheCurrentOfferingsMonthlyPackageIsItsAppStoreProduct() async throws {
         let offerings = try JSONValue.decode(Data("""
         {"current_offering_id":"default","offerings":[
           {"identifier":"old","packages":[{"identifier":"$rc_monthly","platform_product_identifier":"old"}]},
@@ -164,7 +164,7 @@ final class ProPassTests: XCTestCase {
 
     // MARK: The allowance
 
-    func testASubscriberHasFiveHoursInTheirMonthReplacingTheFreeTime() {
+    func testASubscriberHasFiveHoursInTheirMonthReplacingTheFreeTime() async {
         var month: ProMonth? = ProMonth(start: 1_000, end: 2_000_000_000)
         let allowance = CallAllowance(store: MemoryUsageStore(), period: { month })
         XCTAssertEqual(allowance.remaining(at: 1_000), CallAllowance.paidSeconds)
@@ -182,7 +182,7 @@ final class ProPassTests: XCTestCase {
     /// still runs: no hours come back, and none are promised. The spans are
     /// kept for the paid month however long it runs, even through a moment
     /// nothing was known about pro.
-    func testSpentHoursStayCountedThroughGraceAndUnknown() {
+    func testSpentHoursStayCountedThroughGraceAndUnknown() async {
         let start = s("2026-07-01T00:00:00Z")
         var month: ProMonth? = ProMonth(start: start, end: s("2026-08-01T00:00:00Z"))
         let store = MemoryUsageStore()
@@ -207,7 +207,7 @@ final class ProPassTests: XCTestCase {
 
     /// Calls are kept 62 days, and never from inside the paid month: not
     /// even a month in grace for longer than that.
-    func testNothingFromInsideTheRunningPaidMonthIsForgotten() {
+    func testNothingFromInsideTheRunningPaidMonthIsForgotten() async {
         let store = MemoryUsageStore()
         var month: ProMonth? = nil
         let allowance = CallAllowance(store: store, period: { month })
@@ -223,7 +223,7 @@ final class ProPassTests: XCTestCase {
         XCTAssertEqual(allowance.remaining(at: 200 * 86_400 + 60), CallAllowance.paidSeconds - 3720)
     }
 
-    func testAnAnnualSliceIsFiveHoursPerMonth() throws {
+    func testAnAnnualSliceIsFiveHoursPerMonth() async throws {
         let pass = try XCTUnwrap(Self.pass(Self.subscriber("2026-03-25T00:00:00Z", Self.pro("2026-01-31T00:00:00Z", "2027-01-31T00:00:00Z", product: "happy_yearly"))))
         let at = pass.checkedAt
         let allowance = CallAllowance(store: MemoryUsageStore(), period: { pass.month(at: at) })

@@ -1363,7 +1363,7 @@ final class CallSessionTests: XCTestCase {
         session.stop()
     }
 
-    func testOnlyAnAgentIDFromTheBuildIsTaken() {
+    func testOnlyAnAgentIDFromTheBuildIsTaken() async {
         XCTAssertEqual(CallAgent.id(" agent_01abc \n"), "agent_01abc")
         XCTAssertNil(CallAgent.id("$(HAPPY_CALL_AGENT_ID)"))
         XCTAssertNil(CallAgent.id(""))
