@@ -28,7 +28,25 @@ make browser-logs     # BROWSER_SVC=controller for one service
 make browser-down     # stop; data and secrets are kept
 make browser-bridge-test    # bridge unit tests (node:test, auto-browser mocked)
 make browser-bridge-smoke   # end to end on the running stack; makes and deletes one session
+make browser-forward-install HOST=prep-air   # Mac tunnel for the live view (also -status, -uninstall)
 ```
+
+## Chats on the Macs (prep-air, prep-pro)
+
+The browser stack runs only here. A Mac chat reaches it two ways:
+
+- **MCP:** `make mcp-register` gives each Mac harness a `/bin/sh -c` entry that runs
+  the bridge (and the vault) on prep-ml over `ssh -o BatchMode=yes`, passing the
+  chat's `HAPPY_SESSION_ID`, `CLAUDE_CODE_SESSION_ID` and
+  `HAPPY_FORKED_FROM_SESSION_ID` on the remote command line (ssh forwards no env).
+  Each value must match `^[A-Za-z0-9_-]{1,128}$` or it is sent blank.
+- **Live view and takeover:** the app opens `http://localhost:6090/live/...` and
+  `:6080` through the chat machine's workspace proxy, so each Mac runs the
+  `com.happy.browser-forward` launchd agent (`mac-forward/`): `ssh -N` with
+  `-L 127.0.0.1:6090:127.0.0.1:6090 -L 127.0.0.1:6080:127.0.0.1:6080 prep-ml`,
+  KeepAlive, logs in `~/Library/Logs/happy-browser-forward.log`. It binds the
+  Mac's loopback only. `install.sh` refuses when something else listens on either
+  port; `uninstall.sh` moves the plist to `~/happy-trash/`.
 
 ## Files on disk
 
