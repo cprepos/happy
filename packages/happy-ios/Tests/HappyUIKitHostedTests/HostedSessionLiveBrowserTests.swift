@@ -37,7 +37,7 @@ final class HostedSessionLiveBrowserTests: XCTestCase {
         XCTAssertTrue(condition(), "never: \(what)", file: file, line: line)
     }
 
-    private static func event(_ id: String, at: Int64, _ ev: JSONValue) -> JSONValue {
+    nonisolated private static func event(_ id: String, at: Int64, _ ev: JSONValue) -> JSONValue {
         .object([
             "role": .string("session"),
             "content": .object([
