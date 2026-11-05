@@ -194,6 +194,13 @@ public final class LiveBrowserFeed {
         return take
     }
 
+    /// Ends the browser (`POST /end`): its session closes and the agent
+    /// loses the page. The feed is then over (`done`, `user_ended`).
+    public func end() async throws {
+        let data = try await post(link.endURL)
+        if let state = try? JSONDecoder().decode(LiveBrowserState.self, from: data) { phase = .live(state) }
+    }
+
     /// Hands control back (`POST /release`); a bridge from before it
     /// (404) is asked with `/done`.
     public func release() async throws {

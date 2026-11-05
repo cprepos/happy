@@ -100,6 +100,14 @@ extension Strings {
         static let release = "Release"
         static let takeFailed = "Couldn’t Take Control"
         static let releaseFailed = "Couldn’t Release Control"
+        /// Closes the browser's session for good: the agent loses the page.
+        static let endBrowser = "End browser"
+        static let endConfirm = "End this browser?"
+        static let endConfirmDetail = "The agent will lose this page."
+        static let endFailed = "Couldn’t End the Browser"
+        /// The player's menu.
+        static let more = "More"
+        static let cancel = "Cancel"
         /// An older link's chip, once the chat linked a newer browser.
         static let replaced = "Replaced by a newer browser"
         static let open = "Open"

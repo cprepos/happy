@@ -206,6 +206,7 @@ final class LiveBrowserDock: NSObject {
         player.onFullScreen = { [weak self] in self?.presentFullScreen(taking: false) }
         player.onResize = { [weak self] in self?.resize() }
         player.onAction = { [weak self] in self?.playerAction() }
+        player.onEnd = { [weak self, weak player] in self?.confirmEnd(from: player?.menuButton) }
         player.onTap = { [weak self] in self?.presentFullScreen(taking: false) }
         player.onDrop = { [weak self] center in self?.drop(at: center) }
         feed.attach(player, visible: isOnScreen, frames: true, fast: large) { [weak player] feed in player?.show(feed) }
@@ -403,6 +404,56 @@ final class LiveBrowserDock: NSObject {
         }
     }
 
+    /// End browser, asked about first: an action sheet from `source` (a
+    /// bar button item or a view).
+    func confirmEnd(from source: AnyObject?) {
+        guard let host, feed?.phase.isOver == false else { return }
+        var presenter: UIViewController = host
+        while let next = presenter.presentedViewController, !next.isBeingDismissed { presenter = next }
+        let sheet = UIAlertController(title: Strings.LiveBrowser.endConfirm, message: Strings.LiveBrowser.endConfirmDetail, preferredStyle: .actionSheet)
+        sheet.addAction(UIAlertAction(title: Strings.LiveBrowser.endBrowser, style: .destructive) { [weak self] _ in self?.end() })
+        sheet.addAction(UIAlertAction(title: Strings.LiveBrowser.cancel, style: .cancel))
+        if let popover = sheet.popoverPresentationController {
+            if let item = source as? UIBarButtonItem {
+                popover.sourceItem = item
+            } else if let view = source as? UIView, view.window != nil {
+                popover.sourceView = view
+                popover.sourceRect = view.bounds
+            } else {
+                popover.sourceView = presenter.view
+                popover.sourceRect = CGRect(x: presenter.view.bounds.midX, y: presenter.view.bounds.midY, width: 0, height: 0)
+                popover.permittedArrowDirections = []
+            }
+        }
+        presenter.present(sheet, animated: true)
+    }
+
+    /// Ends the browser (`POST /end`): its session closes and the agent is
+    /// told the person ended it. The full screen goes; the line and the
+    /// player fade as they do for any ended browser.
+    func end() {
+        guard let feed, !busy else { return }
+        busy = true
+        player?.isBusy = true
+        Task { [weak self] in
+            do {
+                try await feed.end()
+                guard let self else { return }
+                self.busy = false
+                self.player?.isBusy = false
+                guard self.feed === feed else { return }
+                self.controlTaken = false
+                self.dismissFullScreen(animated: true)
+                self.refresh()
+            } catch {
+                guard let self else { return }
+                self.busy = false
+                self.player?.isBusy = false
+                self.alert(Strings.LiveBrowser.endFailed, Strings.LiveBrowser.unreachable)
+            }
+        }
+    }
+
     /// Back to the player.
     func minimize() {
         if player == nil { openPlayer() }
@@ -433,14 +484,16 @@ final class LiveBrowserDock: NSObject {
     }
 }
 
-/// The full screen's page: the browser, with Minimize at the left and
-/// Take control or Release control at the right.
+/// The full screen's page: the browser, with Minimize and End browser at
+/// the left and Take control or Release control at the right.
 @MainActor
 final class LiveBrowserFullScreenItems: UIViewController {
     let browser: BrowserViewController
     private weak var dock: LiveBrowserDock?
     let isNoVNC: Bool
     let control = UIBarButtonItem()
+    /// End browser: at the left by Minimize, far from Release control.
+    let endItem = UIBarButtonItem()
     private var state: LiveBrowserState?
     private var held = false
 
@@ -466,7 +519,15 @@ final class LiveBrowserFullScreenItems: UIViewController {
         // Minimize is the way back: noVNC's page has no back to go to,
         // and a back button there would leave control held.
         navigationItem.hidesBackButton = true
-        navigationItem.leftBarButtonItem = minimize
+        endItem.image = UIImage(systemName: "xmark.octagon")
+        endItem.tintColor = .systemRed
+        endItem.accessibilityLabel = Strings.LiveBrowser.endBrowser
+        endItem.accessibilityIdentifier = "live-browser-end"
+        endItem.primaryAction = UIAction(title: Strings.LiveBrowser.endBrowser, image: UIImage(systemName: "xmark.octagon")) { [weak self] _ in
+            guard let self else { return }
+            self.dock?.confirmEnd(from: self.endItem)
+        }
+        navigationItem.leftBarButtonItems = [minimize, endItem]
         control.style = .prominent
         control.accessibilityIdentifier = "live-browser-control"
         // Control alone at the right, or with reload on the frame view: the
@@ -487,6 +548,7 @@ final class LiveBrowserFullScreenItems: UIViewController {
             if held { dock.release() } else { dock.take() }
         }
         control.isEnabled = state.map { !$0.ended } ?? false
+        endItem.isEnabled = state.map { !$0.ended } ?? false
         navigationItem.subtitle = state?.lastAction.map(Strings.LiveBrowser.lastAction)
             ?? state.map { Strings.LiveBrowser.status($0.status) }
     }
@@ -611,6 +673,8 @@ final class LiveBrowserPlayerView: UIView {
     var onFullScreen: (() -> Void)?
     var onResize: (() -> Void)?
     var onAction: (() -> Void)?
+    /// The menu's End browser.
+    var onEnd: (() -> Void)?
     var onTap: (() -> Void)?
     var onDrop: ((CGPoint) -> Void)?
     var large = false { didSet { resize.setImage(UIImage(systemName: large ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right"), for: .normal); resize.accessibilityLabel = large ? Strings.LiveBrowser.smaller : Strings.LiveBrowser.bigger } }
@@ -622,6 +686,9 @@ final class LiveBrowserPlayerView: UIView {
     private let close = LiveBrowserPlayerView.overlayButton("xmark")
     private let full = LiveBrowserPlayerView.overlayButton("arrow.up.left.and.arrow.down.right.rectangle")
     private let resize = LiveBrowserPlayerView.overlayButton("arrow.up.left.and.arrow.down.right")
+    /// End browser, away from Take over and Release: behind a menu, and
+    /// asked about again before anything ends.
+    let menuButton = LiveBrowserPlayerView.overlayButton("ellipsis")
     private let footer = UIView()
     private let pillDot = UIView()
     private let pill = UILabel()
@@ -669,9 +736,15 @@ final class LiveBrowserPlayerView: UIView {
         full.addAction(UIAction { [weak self] _ in self?.onFullScreen?() }, for: .touchUpInside)
         resize.accessibilityIdentifier = "live-browser-player-resize"
         resize.addAction(UIAction { [weak self] _ in self?.onResize?() }, for: .touchUpInside)
+        menuButton.accessibilityLabel = Strings.LiveBrowser.more
+        menuButton.accessibilityIdentifier = "live-browser-player-menu"
+        menuButton.showsMenuAsPrimaryAction = true
+        menuButton.menu = UIMenu(children: [
+            UIAction(title: Strings.LiveBrowser.endBrowser, image: UIImage(systemName: "xmark.octagon"), attributes: .destructive) { [weak self] _ in self?.onEnd?() },
+        ])
         spinner.color = .white
         spinner.isHidden = true
-        for view in [picture, message, footer, close, full, resize, spinner] as [UIView] { addSubview(view) }
+        for view in [picture, message, footer, close, full, resize, menuButton, spinner] as [UIView] { addSubview(view) }
         for view in [pillDot, pill, action] as [UIView] { footer.addSubview(view) }
         picture.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tapped)))
         addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(panned(_:))))
@@ -709,6 +782,7 @@ final class LiveBrowserPlayerView: UIView {
         close.frame = layout.close
         full.frame = layout.fullScreen
         resize.frame = layout.resize
+        menuButton.frame = layout.menu
         spinner.center = CGPoint(x: layout.picture.midX, y: layout.picture.midY)
         footer.frame = layout.footer
         let pad = M.footerPadding
@@ -749,6 +823,7 @@ final class LiveBrowserPlayerView: UIView {
         let held = state?.status == .user
         action.setTitle(held ? Strings.LiveBrowser.release : Strings.LiveBrowser.takeOver, for: .normal)
         action.isEnabled = !feed.phase.isOver
+        menuButton.isHidden = feed.phase.isOver
         accessibilityLabel = [Strings.LiveBrowser.title, status].joined(separator: ", ")
         accessibilityValue = state?.status.rawValue ?? "\(feed.phase)"
         setNeedsLayout()

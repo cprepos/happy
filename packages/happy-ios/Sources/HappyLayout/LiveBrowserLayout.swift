@@ -134,6 +134,8 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
     public var close: CGRect
     public var fullScreen: CGRect
     public var resize: CGRect
+    /// The menu (End browser), at the picture's bottom left.
+    public var menu: CGRect
     public var footer: CGRect
     /// The status pill shows in the footer when there is room: large only.
     public var showsPill: Bool
@@ -164,6 +166,7 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
         close = CGRect(x: i, y: i, width: b, height: b)
         fullScreen = CGRect(x: width - i - b, y: i, width: b, height: b)
         resize = CGRect(x: width - i - b, y: pictureHeight - i - b, width: b, height: b)
+        menu = CGRect(x: i, y: pictureHeight - i - b, width: b, height: b)
         footer = CGRect(x: 0, y: pictureHeight, width: width, height: M.footerHeight)
         showsPill = width >= 200
     }

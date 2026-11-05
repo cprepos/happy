@@ -256,6 +256,12 @@ public struct ChatSnapshotFacts: Equatable, Sendable {
                 if !pendingQuestion, ChatToolDisplay.isInteractiveQuestion(call.tool.name), call.tool.state == .running {
                     pendingQuestion = true
                 }
+                // The bridge puts a session's live link in every browser tool's result.
+                let at = call.tool.completedAt ?? call.tool.createdAt
+                if at >= newestLive, let link = LiveBrowserLink.latest(inResult: call.tool.result) {
+                    newestLive = at
+                    live = link
+                }
             case .userText(let user):
                 if let localId = user.localId { stored.insert(localId) }
             case .agentText(let text) where !text.isThinking:

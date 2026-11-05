@@ -91,6 +91,10 @@ actor BrowserDaemon: AgentTransport {
             liveStatus = "watching"
             return reply("200 OK", "application/json", Data(#"{"status":"watching","url":"https://example.com/login","title":"Log in to Example"}"#.utf8))
         }
+        if head.line.hasPrefix("POST ") && head.line.contains("/end ") {
+            liveStatus = "done"
+            return reply("200 OK", "application/json", Data(#"{"status":"done","reason":"user_ended","url":"https://example.com/login","title":"Log in to Example"}"#.utf8))
+        }
         if head.line.hasPrefix("POST ") && head.line.contains("/done ") {
             liveStatus = "watching"
             return reply("200 OK", "application/json", Data(#"{"ok":true}"#.utf8))

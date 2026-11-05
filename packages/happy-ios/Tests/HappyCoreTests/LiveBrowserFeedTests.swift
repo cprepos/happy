@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 @testable import HappyCore
+import HappyWire
 
 /// A chat's one live view: which link it is, what the bridge says of it, and
 /// the feed every view of it reads.
@@ -35,6 +36,28 @@ final class LiveBrowserFeedTests: XCTestCase {
         // What the person pasted is not the agent's live view.
         snapshot.items.append(ChatItem(id: "4", role: .user, pieces: [.liveBrowser(id: a.id, url: a.url)], delivery: .sent))
         XCTAssertEqual(snapshot.latestLiveBrowser, b)
+    }
+
+    func testABrowserToolsResultCarriesTheLiveViewTheAgentNeverPosted() throws {
+        let a = try XCTUnwrap(LiveBrowserLink(id: Self.a)), b = try XCTUnwrap(LiveBrowserLink(id: Self.b))
+        // As the bridge adds it: first, before auto-browser's own JSON.
+        let output = "Live view of browser session 6a80ac99d644: \(Self.live(Self.b))\nIf you have not posted this link in chat yet, post it on its own line.\n{\"id\": \"6a80ac99d644\", \"takeover_url\": \"http://localhost:6080/vnc.html\"}"
+        XCTAssertEqual(LiveBrowserLink.latest(inResult: .object(["output": .string(output)])), b)
+        XCTAssertEqual(LiveBrowserLink.latest(inResult: .object(["output": .string(#"{"link":"\#(Self.live(Self.a))","status":"watching"}"#)])), a)
+        XCTAssertEqual(LiveBrowserLink.latest(inResult: .array([.string("`\(Self.live(Self.a))`")])), a, "a result is no Markdown")
+        XCTAssertNil(LiveBrowserLink.latest(inResult: .object(["output": .string("\(Self.live(Self.a))/frame.jpg")])))
+        XCTAssertNil(LiveBrowserLink.latest(inResult: nil))
+
+        var snapshot = ChatSnapshot()
+        let tool = ChatItem.Tool(name: "mcp__browser__browser_create_session", status: "completed", callId: "c1", result: .object(["output": .string(output)]))
+        snapshot.items = [
+            ChatItem(id: "1", role: .agent, pieces: [.liveBrowser(id: a.id, url: a.url)], delivery: .sent),
+            ChatItem(id: "c1", role: .tool(tool), pieces: [], delivery: .sent),
+            ChatItem(id: "3", role: .agent, pieces: [.text("Searching.")], delivery: .sent),
+        ]
+        XCTAssertEqual(snapshot.latestLiveBrowser, b, "the newer session, though the agent posted only the old one")
+        snapshot.items.append(ChatItem(id: "4", role: .agent, pieces: [.liveBrowser(id: a.id, url: a.url)], delivery: .sent))
+        XCTAssertEqual(snapshot.latestLiveBrowser, a, "a link posted after it is newer")
     }
 
     // MARK: The bridge's answers
@@ -169,6 +192,19 @@ final class LiveBrowserFeedTests: XCTestCase {
         XCTAssertEqual(transport.posted, ["/take", "/release", "/release", "/done"])
         transport.posts["/take"] = nil
         do { try await feed.take(); XCTFail("took") } catch { XCTAssertEqual(error as? BrowserError, .upstream(404)) }
+    }
+
+    @MainActor
+    func testEndPostsAndTheFeedIsOver() async throws {
+        let transport = FakeTransport()
+        transport.posts["/end"] = #"{"status":"done","reason":"user_ended"}"#
+        let feed = LiveBrowserFeed(link: try XCTUnwrap(LiveBrowserLink(id: Self.a))) { transport }
+        XCTAssertEqual(feed.link.endURL.absoluteString, "\(Self.live(Self.a))/end")
+        try await feed.end()
+        XCTAssertEqual(transport.posted, ["/end"])
+        XCTAssertEqual(feed.phase.state?.status, .done)
+        XCTAssertEqual(feed.phase.state?.reason, "user_ended")
+        XCTAssertTrue(feed.phase.isOver)
     }
 
     @MainActor

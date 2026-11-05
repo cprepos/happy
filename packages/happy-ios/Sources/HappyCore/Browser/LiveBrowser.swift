@@ -1,4 +1,5 @@
 import Foundation
+import HappyWire
 
 /// A browser an agent drives, watched live (`selfhost/browser/bridge`): the
 /// bridge on the agent's computer serves it at
@@ -31,6 +32,9 @@ public struct LiveBrowserLink: Equatable, Sendable {
     /// POSTed to hand control back to the agent, whether the person took it
     /// or the agent asked for them.
     public var releaseURL: URL { url.appendingPathComponent("release") }
+    /// POSTed to end the browser: its session closes and the link is done
+    /// (`user_ended`). Answers the state.
+    public var endURL: URL { url.appendingPathComponent("end") }
 
     /// The newest live browser among `texts`, read from the last: a chat's
     /// one live view. Code and a link still arriving are no links (`split`).
@@ -44,6 +48,31 @@ public struct LiveBrowserLink: Equatable, Sendable {
             }
         }
         return nil
+    }
+
+    /// The newest live browser in a tool call's result: the bridge adds a
+    /// session's link to every result about it, whether or not the agent
+    /// posts it. Every string in the result is read, the last link wins;
+    /// a result is no Markdown, so a link in backticks counts too.
+    public static func latest(inResult result: JSONValue?) -> LiveBrowserLink? {
+        guard let result else { return nil }
+        var found: LiveBrowserLink?
+        func visit(_ value: JSONValue) {
+            switch value {
+            case .string(let text):
+                guard text.contains("\(origin)/live/") else { return }
+                let whole = NSRange(location: 0, length: text.utf16.count)
+                for match in pattern.matches(in: text, range: whole) {
+                    let idRange = (1...3).lazy.map { match.range(at: $0) }.first { $0.location != NSNotFound }
+                    if let idRange, let range = Range(idRange, in: text), let link = LiveBrowserLink(id: String(text[range])) { found = link }
+                }
+            case .array(let items): items.forEach(visit)
+            case .object(let object): object.keys.sorted().forEach { visit(object[$0]!) }
+            default: break
+            }
+        }
+        visit(result)
+        return found
     }
 
     static func validID(_ id: String) -> Bool {
@@ -215,9 +244,11 @@ public struct LiveBrowserTake: Equatable, Sendable, Decodable {
 
 extension ChatSnapshot {
     /// The chat's one live view: the newest live browser an agent linked
-    /// among the loaded items. What the person wrote is no live view.
+    /// among the loaded items, in what it said or in a browser tool's
+    /// result. What the person wrote is no live view.
     public var latestLiveBrowser: LiveBrowserLink? {
         for item in items.reversed() where item.role != .user {
+            if case .tool(let tool) = item.role, let link = LiveBrowserLink.latest(inResult: tool.result) { return link }
             for piece in item.pieces.reversed() {
                 if case .liveBrowser(let id, _) = piece, let link = LiveBrowserLink(id: id) { return link }
             }

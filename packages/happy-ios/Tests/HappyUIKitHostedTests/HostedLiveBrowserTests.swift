@@ -227,6 +227,86 @@ final class HostedLiveBrowserTests: XCTestCase {
         try await until { frame.control.title == Strings.LiveBrowser.takeControl }
     }
 
+    // MARK: End browser
+
+    /// The sheet `confirmEnd` put up, over whatever is topmost.
+    private func endSheet(_ host: Host) async throws -> UIAlertController {
+        var sheet: UIAlertController?
+        try await until {
+            var top: UIViewController = host
+            while let next = top.presentedViewController { top = next }
+            sheet = top as? UIAlertController
+            return sheet != nil && top.transitionCoordinator == nil
+        }
+        return try XCTUnwrap(sheet)
+    }
+
+    func testEndBrowserIsInThePlayersMenuAsksFirstAndTheLineGoes() async throws {
+        let daemon = BrowserDaemon()
+        let (host, window) = try await makeHost(daemon)
+        defer { window.isHidden = true; host.dock.update(link: nil) }
+        let dock = host.dock!
+        dock.update(link: LiveBrowserLink(id: id))
+        try await until { dock.player != nil && dock.feed?.phase.state != nil }
+        host.view.layoutIfNeeded()
+        let player = try XCTUnwrap(dock.player)
+        // Behind the menu at the picture's bottom left, away from Take over.
+        XCTAssertFalse(player.menuButton.isHidden)
+        XCTAssertTrue(player.menuButton.showsMenuAsPrimaryAction)
+        let menu = player.menuButton.frame
+        XCTAssertLessThan(menu.midX, player.bounds.midX)
+        XCTAssertGreaterThan(menu.midY, player.bounds.midY)
+        let item = try XCTUnwrap(player.menuButton.menu?.children.first as? UIAction)
+        XCTAssertEqual(item.title, Strings.LiveBrowser.endBrowser)
+        XCTAssertTrue(item.attributes.contains(.destructive))
+
+        // Asked first: nothing is sent until the person says End browser.
+        item.performWithSender(nil, target: nil)
+        let sheet = try await endSheet(host)
+        XCTAssertEqual(sheet.preferredStyle, .actionSheet)
+        XCTAssertEqual(sheet.title, "End this browser?")
+        XCTAssertEqual(sheet.message, "The agent will lose this page.")
+        XCTAssertEqual(sheet.actions.map(\.title), [Strings.LiveBrowser.endBrowser, Strings.LiveBrowser.cancel])
+        XCTAssertEqual(sheet.actions.map(\.style), [.destructive, .cancel])
+        try screenshot(window, name: "live-browser-end-confirm")
+        let posted = await daemon.requests.contains { $0.contains("/end ") }
+        XCTAssertFalse(posted)
+        sheet.dismiss(animated: false)
+
+        dock.end()
+        try await until { await daemon.requests.contains { $0.hasPrefix("POST /live/\(self.id)/end HTTP/1.1") } }
+        XCTAssertEqual(dock.feed?.phase.state?.reason, "user_ended")
+        try await until { dock.indicator.isHidden && dock.player == nil }
+        let polls = dock.feed?.polls ?? 0
+        try await Task.sleep(for: .seconds(2))
+        XCTAssertEqual(dock.feed?.polls ?? 0, polls, "an ended browser is read no more")
+    }
+
+    func testEndBrowserOnTheFullScreenHeaderIsAtTheLeftAndClosesIt() async throws {
+        let daemon = BrowserDaemon()
+        let (host, window) = try await makeHost(daemon)
+        defer { window.isHidden = true; host.dock.update(link: nil) }
+        let (navigation, noVNC) = try await takeOver(host, daemon)
+        // Minimize and End browser at the left; Release control alone at the right.
+        XCTAssertEqual(noVNC.navigationItem.leftBarButtonItems?.map(\.accessibilityIdentifier), ["live-browser-minimize", "live-browser-end"])
+        XCTAssertEqual(noVNC.navigationItem.rightBarButtonItems, [noVNC.control])
+        XCTAssertTrue(noVNC.endItem.isEnabled)
+        let frame = try XCTUnwrap(navigation.viewControllers.first as? LiveBrowserFullScreenItems)
+        XCTAssertEqual(frame.navigationItem.leftBarButtonItems?.last, frame.endItem)
+        XCTAssertFalse(frame.navigationItem.rightBarButtonItems?.contains(frame.endItem) ?? true)
+
+        noVNC.endItem.primaryAction?.performWithSender(nil, target: nil)
+        let sheet = try await endSheet(host)
+        XCTAssertEqual(sheet.title, Strings.LiveBrowser.endConfirm)
+        sheet.dismiss(animated: false)
+        try await until { navigation.presentedViewController == nil }
+
+        host.dock.end()
+        try await until { await daemon.requests.contains { $0.hasPrefix("POST /live/\(self.id)/end HTTP/1.1") } }
+        try await until { host.presentedViewController == nil }
+        try await until { host.dock.indicator.isHidden }
+    }
+
     func testOnlyNeedsYouOpensThePlayer() async throws {
         let daemon = BrowserDaemon()
         await daemon.setLiveStatus("watching")

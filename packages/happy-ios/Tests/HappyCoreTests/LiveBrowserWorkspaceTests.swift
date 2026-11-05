@@ -1,5 +1,6 @@
 import XCTest
 @testable import HappyCore
+import HappyWire
 
 final class LiveBrowserWorkspaceTests: XCTestCase {
     private func host(_ id: String, _ hostname: String? = nil, machine: String? = nil, status: String = "active", runner: String? = nil) -> BrowserHostWorkspaces.Workspace {
@@ -54,5 +55,15 @@ final class LiveBrowserWorkspaceTests: XCTestCase {
         let facts = ChatSnapshotFacts(LegacyChatSnapshot(sessionId: "s", messages: messages, isLoaded: true))
         XCTAssertEqual(facts.liveBrowser?.id, b)
         XCTAssertNil(ChatSnapshotFacts(LegacyChatSnapshot(sessionId: "s", messages: [text("1", 1, "hi")])).liveBrowser)
+    }
+
+    func testABrowserToolsResultIsTheLiveBrowserTooByWhenItCame() {
+        let a = String(repeating: "a", count: 32), b = String(repeating: "b", count: 32)
+        let result: JSONValue = .array([.object(["type": .string("text"), "text": .string("Live view of browser session s1: http://localhost:6090/live/\(b)")])])
+        let call = ToolCallMessage(id: "t", createdAt: 6, tool: ToolCall(name: "mcp__happy-browser-bridge__browser_observe", state: .completed, input: .object([:]), createdAt: 6, completedAt: 7, result: result))
+        let older = [text("1", 1, "Watch: http://localhost:6090/live/\(a)"), ChatMessage.toolCall(call), text("2", 8, "Looking.")]
+        XCTAssertEqual(ChatSnapshotFacts(LegacyChatSnapshot(sessionId: "s", messages: older, isLoaded: true)).liveBrowser?.id, b)
+        let newer = [ChatMessage.toolCall(call), text("1", 9, "Watch: http://localhost:6090/live/\(a)")]
+        XCTAssertEqual(ChatSnapshotFacts(LegacyChatSnapshot(sessionId: "s", messages: newer, isLoaded: true)).liveBrowser?.id, a)
     }
 }
