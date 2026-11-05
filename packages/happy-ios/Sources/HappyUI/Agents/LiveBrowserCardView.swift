@@ -192,6 +192,7 @@ final class LiveBrowserCardView: UIControl {
             color = switch state.status {
             case .watching: Palette.success
             case .takeover: Palette.warningText
+            case .user: Palette.iconBlue
             case .done: Palette.textSecondary
             }
         case .ended, .expired: label = Strings.LiveBrowser.done; color = Palette.textSecondary

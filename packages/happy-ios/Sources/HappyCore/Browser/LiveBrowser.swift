@@ -22,8 +22,29 @@ public struct LiveBrowserLink: Equatable, Sendable {
     public var frameURL: URL { url.appendingPathComponent("frame.jpg") }
     /// `LiveBrowserState`, as JSON.
     public var stateURL: URL { url.appendingPathComponent("state") }
-    /// POSTed to hand control back to the agent.
+    /// POSTed to hand control back to the agent; what bridges before
+    /// `releaseURL` answer.
     public var doneURL: URL { url.appendingPathComponent("done") }
+    /// POSTed to take control: the agent's actions are refused until
+    /// `releaseURL`. Answers the state and the noVNC page (`LiveBrowserTake`).
+    public var takeURL: URL { url.appendingPathComponent("take") }
+    /// POSTed to hand control back to the agent, whether the person took it
+    /// or the agent asked for them.
+    public var releaseURL: URL { url.appendingPathComponent("release") }
+
+    /// The newest live browser among `texts`, read from the last: a chat's
+    /// one live view. Code and a link still arriving are no links (`split`).
+    public static func latest<Texts: BidirectionalCollection<String>>(in texts: Texts, openLast: Bool = false) -> LiveBrowserLink? {
+        var first = true
+        for text in texts.reversed() {
+            defer { first = false }
+            guard text.contains("\(origin)/live/") else { continue }
+            for segment in split(text, open: openLast && first).reversed() {
+                if case .link(let link) = segment { return link }
+            }
+        }
+        return nil
+    }
 
     static func validID(_ id: String) -> Bool {
         id.utf8.count == 32 && id.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
@@ -120,11 +141,28 @@ public struct LiveBrowserState: Equatable, Sendable, Decodable {
     public enum Status: String, Equatable, Sendable {
         /// The agent drives; the person watches.
         case watching
+        /// The person took control on their own: the agent's actions are
+        /// refused until they release it.
+        case user
         /// The agent waits for the person to take control and hand it back.
         case takeover
         /// Over: the agent let the browser go, or its session closed
         /// (`session_closed`).
         case done
+    }
+
+    /// What the agent last did in the page, as the bridge relayed it:
+    /// a kind (`click`, `type`, `navigate`…) and, for some, what it was on
+    /// (a button's label, a host). Never what was typed.
+    public struct Action: Equatable, Sendable, Decodable {
+        public var kind: String
+        public var target: String?
+        /// When, in ms since 1970.
+        public var at: Double?
+
+        public init(kind: String, target: String? = nil, at: Double? = nil) {
+            self.kind = kind; self.target = target; self.at = at
+        }
     }
 
     public var status: Status
@@ -133,12 +171,18 @@ public struct LiveBrowserState: Equatable, Sendable, Decodable {
     /// The page the browser is on, and its title.
     public var url: String?
     public var title: String?
+    public var lastAction: Action?
 
-    public init(status: Status, reason: String? = nil, url: String? = nil, title: String? = nil) {
-        self.status = status; self.reason = reason; self.url = url; self.title = title
+    public init(status: Status, reason: String? = nil, url: String? = nil, title: String? = nil, lastAction: Action? = nil) {
+        self.status = status; self.reason = reason; self.url = url; self.title = title; self.lastAction = lastAction
     }
 
-    private enum CodingKeys: String, CodingKey { case status, reason, url, title }
+    /// The person has the browser: they took it, or the agent asked them to.
+    public var held: Bool { status == .user || status == .takeover }
+    /// The browser's session closed; nothing more will come.
+    public var ended: Bool { status == .done }
+
+    private enum CodingKeys: String, CodingKey { case status, reason, url, title, lastAction = "last_action" }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -148,5 +192,36 @@ public struct LiveBrowserState: Equatable, Sendable, Decodable {
         reason = try container.decodeIfPresent(String.self, forKey: .reason)
         url = try container.decodeIfPresent(String.self, forKey: .url)
         title = try container.decodeIfPresent(String.self, forKey: .title)
+        lastAction = try? container.decodeIfPresent(Action.self, forKey: .lastAction)
+    }
+}
+
+/// `POST /live/<id>/take`'s answer: the state, and the noVNC page that
+/// drives the browser (its password in the fragment, never sent anywhere).
+public struct LiveBrowserTake: Equatable, Sendable, Decodable {
+    public var state: LiveBrowserState
+    public var novncURL: URL?
+
+    public init(state: LiveBrowserState, novncURL: URL?) { self.state = state; self.novncURL = novncURL }
+
+    private enum CodingKeys: String, CodingKey { case novncURL = "novnc_url" }
+
+    public init(from decoder: Decoder) throws {
+        state = try LiveBrowserState(from: decoder)
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        novncURL = (try? container.decodeIfPresent(String.self, forKey: .novncURL)).flatMap { URL(string: $0) }
+    }
+}
+
+extension ChatSnapshot {
+    /// The chat's one live view: the newest live browser an agent linked
+    /// among the loaded items. What the person wrote is no live view.
+    public var latestLiveBrowser: LiveBrowserLink? {
+        for item in items.reversed() where item.role != .user {
+            for piece in item.pieces.reversed() {
+                if case .liveBrowser(let id, _) = piece, let link = LiveBrowserLink(id: id) { return link }
+            }
+        }
+        return nil
     }
 }

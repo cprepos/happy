@@ -76,6 +76,9 @@ extension Strings {
         static let watching = "Watching"
         static let needsYou = "Needs you"
         static let done = "Done"
+        static let youHaveControl = "You have control"
+        /// The status pill once the browser's session closed.
+        static let endedStatus = "Ended"
         static let connecting = "Connecting…"
         /// The workspace runs in a container, whose proxy refuses tunnels (501).
         static let unavailable = "Unavailable — the browser runs on the host, and this chat’s workspace can’t reach it."
@@ -92,7 +95,8 @@ extension Strings {
             switch status {
             case .watching: watching
             case .takeover: needsYou
-            case .done: done
+            case .user: youHaveControl
+            case .done: endedStatus
             }
         }
     }
