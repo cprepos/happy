@@ -5,7 +5,14 @@
 //     "clients": { "acme": { "secrets": { "github": { "item_id": "<cipher uuid>",
 //                                                     "hosts": ["github.com"],
 //                                                     "fields": ["username", "password", "totp"] } } } },
-//     "chats": { "<happy session id>": "acme" } }
+//     "chats": { "<happy session id>": "acme" },
+//     "default_client": "acme" }          // optional
+//
+// default_client is an explicit opt-in: a chat with no entry in chats uses that
+// client, and so does a caller that has no chat id at all (it names the chat
+// NO_CHAT, "none", which may never be a key in chats). Without default_client
+// an unmapped chat reaches nothing, as before. A mapped chat always uses its
+// own client.
 //
 // The items live in the agent account's personal vault (no organization), so
 // this file is the only thing that separates clients: a chat reaches only the
@@ -23,6 +30,9 @@ export const FIELDS = ['username', 'password', 'totp'];
 const SLUG = /^[a-z0-9][a-z0-9_-]{0,62}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CHAT = /^[A-Za-z0-9_.:-]{1,200}$/;
+/** The chat a caller with no chat id names. Only default_client can serve it. */
+export const NO_CHAT = 'none';
+const TOP_KEYS = new Set(['version', 'clients', 'chats', 'default_client']);
 
 export function checkPolicyFile(path, { requireRoot = true } = {}) {
     let st;
@@ -36,6 +46,8 @@ export function parsePolicy(json) {
     let raw;
     try { raw = typeof json === 'string' ? JSON.parse(json) : json; } catch { throw new PolicyError('policy is not valid JSON'); }
     if (!raw || raw.version !== 1 || typeof raw.clients !== 'object' || raw.clients === null) throw new PolicyError('policy needs version 1 and clients');
+    const extraTop = Object.keys(raw).filter((k) => !TOP_KEYS.has(k));
+    if (extraTop.length) throw new PolicyError(`unknown top-level key ${JSON.stringify(extraTop[0]).slice(0, 40)}`);
     const clients = new Map();
     const seenItems = new Map();
     for (const [slug, c] of Object.entries(raw.clients)) {
@@ -67,18 +79,33 @@ export function parsePolicy(json) {
     const chats = new Map();
     for (const [chat, slug] of Object.entries(raw.chats || {})) {
         if (!CHAT.test(chat)) throw new PolicyError('bad chat id in chats');
+        if (chat === NO_CHAT) throw new PolicyError(`"${NO_CHAT}" is reserved for callers with no chat id; use default_client instead`);
         if (!clients.has(slug)) throw new PolicyError(`chat bound to unknown client ${String(slug).slice(0, 64)}`);
         chats.set(chat, slug);
     }
-    return createPolicy(clients, chats);
+    let defaultClient = null;
+    if (raw.default_client !== undefined) {
+        if (typeof raw.default_client !== 'string' || !clients.has(raw.default_client)) throw new PolicyError(`default_client ${JSON.stringify(raw.default_client)?.slice(0, 64)} is not a client in clients`);
+        defaultClient = raw.default_client;
+    }
+    return createPolicy(clients, chats, defaultClient);
 }
 
-function createPolicy(clients, chats) {
+function createPolicy(clients, chats, defaultClient) {
+    const scopeOf = (chat) => {
+        if (typeof chat !== 'string' || !chat) return null;
+        if (chat !== NO_CHAT && chats.has(chat)) return { client: chats.get(chat), path: 'mapped' };
+        return defaultClient ? { client: defaultClient, path: 'default' } : null;
+    };
     return Object.freeze({
         clients: () => [...clients.keys()],
         client: (slug) => clients.get(slug) || null,
-        /** The client a chat is bound to, or null. Never a default. */
-        clientForChat: (chat) => (typeof chat === 'string' && chats.has(chat) ? chats.get(chat) : null),
+        /** The client default_client names, or null when the policy has none. */
+        defaultClient: () => defaultClient,
+        /** The client a chat is bound to, else default_client, else null. */
+        clientForChat: (chat) => scopeOf(chat)?.client ?? null,
+        /** {client, path: 'mapped' | 'default'} for a chat, or null. */
+        scopeOf,
         /** Every fillable name for a client: [{name: "github.password", secret, field, item_id, hosts}]. */
         entries(slug) {
             const c = clients.get(slug);

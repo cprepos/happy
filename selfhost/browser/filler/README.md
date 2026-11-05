@@ -71,11 +71,35 @@ These steps come after the vault is up (`selfhost/vault/README.md`).
   design. A policy that still has them is refused.
 - `hosts` must also appear as https URIs on the vault item. Matching is exact:
   `github.com` does not allow `www.github.com`.
-- A chat with no entry in `chats` can use no secrets. There is no default.
+- A chat with no entry in `chats` can use no secrets, unless the policy sets
+  `default_client` (below).
+- `"default_client": "<slug>"` (optional) must name a client in `clients`, or
+  the policy is refused. Every chat without its own entry in `chats` then uses
+  that client, and so does a bridge process with no chat id at all (a Happy
+  Agent daemon serving many chats has no `HAPPY_SESSION_ID`; it sends the chat
+  `none`, which only `default_client` serves and which may not be a key in
+  `chats`). A chat listed in `chats` always uses its own client. The audit
+  records `"path":"mapped"` or `"path":"default"` for each fill.
 - An item may belong to only one client. All clients' logins share one
   vault, so this file is what keeps them apart: check each `item_id`.
 - The filler reloads the policy whenever the file changes. While the file is
   invalid, every fill is refused.
+
+### Every chat shares the agent's logins
+
+```json
+{"version":1,"default_client":"agent","clients":{"agent":{"secrets":{"<name>":{"item_id":"<uuid>","hosts":["example.com"],"fields":["username","password","totp"]}}}},"chats":{}}
+```
+
+The trade-off: any chat, including Happy Agent chats and any other process
+holding the bridge's client token, can ask for a fill of any of these logins,
+so there is no separation between chats any more. What still holds: values
+never reach the model (the filler types them and every result is scrubbed),
+a value is typed only on an https page on a host that both the vault item and
+the policy list, only into a field of the right kind, and a browser session
+that holds one chat's secret refuses fills for another chat. To give one
+client's chats their own logins later, add that client and its chats; mapped
+chats never fall back to the default.
 
 ## Day to day
 

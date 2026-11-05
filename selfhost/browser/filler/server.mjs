@@ -1,6 +1,8 @@
 // The secret filler's HTTP API, on 127.0.0.1:6091 only. Callers (the browser
 // bridge) authenticate with a bearer token whose SHA-256 is all the filler
-// keeps, and name the chat in X-Happy-Chat. No route returns a secret value.
+// keeps, and name the chat in X-Happy-Chat (a caller with no chat id sends
+// "none", which only the policy's default_client serves). No route returns a
+// secret value.
 //
 //   POST /v1/list     {}                                 -> {client, secrets:[{name, hosts, kind}]}
 //   POST /v1/fill     {session_id, element_id, name, controller_port?} -> {ok, kind, host}
@@ -143,7 +145,8 @@ async function main(argv) {
         try {
             const p = loadPolicy(path, { requireRoot: !cfg.testLoopback });
             const n = p.clients().reduce((a, c) => a + p.entries(c).length, 0);
-            process.stdout.write(`policy ok: ${p.clients().length} client(s), ${n} fillable name(s)\n`);
+            const d = p.defaultClient();
+            process.stdout.write(`policy ok: ${p.clients().length} client(s), ${n} fillable name(s), ${d ? `default_client ${d} (every chat without its own entry uses it)` : 'no default_client'}\n`);
             return 0;
         } catch (err) {
             process.stderr.write(`policy invalid: ${err.message}\n`);

@@ -1,9 +1,10 @@
 // Append-only audit of fills: /filler/audit/YYYY-MM.jsonl, one line per fill
-// attempt. Names, hosts and outcomes only; never a value.
+// attempt. Names, hosts and outcomes only; never a value. path says how the
+// chat reached its client: mapped (its own entry in chats) or default.
 import { appendFileSync, chmodSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-const KEYS = ['ts', 'chat', 'client', 'session', 'name', 'host', 'field_kind', 'outcome', 'step'];
+const KEYS = ['ts', 'chat', 'client', 'path', 'session', 'name', 'host', 'field_kind', 'outcome', 'step'];
 
 export function createAudit(dir, { now = () => new Date() } = {}) {
     return {

@@ -240,6 +240,11 @@ arguments, and a call whose chat can't be found is refused rather than routed
 by the session it names. Without `BRIDGE_AGENT_DB` every browser session gets a
 pod of its own, as before.
 
+The vault secret tools (`browser_list_secrets`, `browser_fill_secret`,
+`browser_login`) in such a process name the chat `none` to the secret filler,
+which serves it only when its policy sets `default_client`
+(`filler/README.md`); otherwise they answer "no chat id".
+
 Happy Agent caps `tool_timeout_sec` at 600, so a 15-minute wait in one call is
 not possible there. `BRIDGE_WAIT_MAX_S = "570"` keeps `browser_wait_for_human`
 inside the limit (the tool schema then reads "default 570, max 570"); on

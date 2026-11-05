@@ -24,7 +24,8 @@ async function startFakeFiller() {
         switch (req.url) {
             case '/v1/session': return json(200, { tainted: f.tainted.has(msg.session_id), any_tainted: f.tainted.size > 0, drop_images: false });
             case '/v1/scrub': return json(200, { payload: f.tainted.size ? JSON.parse(JSON.stringify(msg.payload).split(SECRET).join('[secret:github.password]')) : msg.payload });
-            case '/v1/list': return json(200, { client: 'acme', secrets: [{ name: 'github.password', hosts: ['github.com'], kind: 'password' }] });
+            case '/v1/list': if (msg && req.headers['x-happy-chat'] === 'none' && !f.hasDefault) return json(403, { error: 'this agent process has no chat id, and the filler policy has no default_client, so it may not use vault secrets', outcome: 'unbound_chat' });
+                return json(200, { client: 'acme', secrets: [{ name: 'github.password', hosts: ['github.com'], kind: 'password' }] });
             case '/v1/fill': f.tainted.add(msg.session_id); return json(200, { ok: true, kind: 'password', host: 'github.com' });
             case '/v1/login': return json(422, { error: 'no login form on this page', outcome: 'no_form' });
             default: return json(404, { error: 'not found' });
@@ -125,10 +126,34 @@ test('the chat comes from the environment, never from tool arguments', async () 
         const l = await h.call(4, 'browser_login', { session_id: 's1', site: 'github' });
         assert.equal(l.result.isError, true);
         assert.match(l.result.content[0].text, /no login form/);
-        // No chat id in the environment: the secret tools refuse.
+        // No chat id in the environment and no default_client: the filler refuses chat "none".
         const n = harness({ filler, tokenPath: tf.path, chat: null });
         const r = await n.call(5, 'browser_list_secrets', {});
-        assert.match(r.result.content[0].text, /no chat id/);
+        assert.equal(r.result.isError, true);
+        assert.match(r.result.content[0].text, /no chat id, and the filler policy has no default_client/);
+    } finally { await filler.close(); }
+});
+
+test('a process with no chat id names chat "none"; the tools are listed and work when the filler has a default_client', async () => {
+    const filler = await startFakeFiller(); const tf = tokenFile();
+    try {
+        const n = harness({ filler, tokenPath: tf.path, chat: null });
+        const names = (await n.req(1, 'tools/list', {})).result.tools.map((t) => t.name);
+        for (const t of ['browser_list_secrets', 'browser_fill_secret', 'browser_login']) assert.ok(names.includes(t), `${t} listed without a chat id`);
+        // Without a default the filler refuses; the bridge relays it.
+        assert.equal((await n.call(2, 'browser_list_secrets', {})).result.isError, true);
+        filler.hasDefault = true;
+        const l = await n.call(3, 'browser_list_secrets', {});
+        assert.equal(l.result.isError, false);
+        assert.match(l.result.content[0].text, /github\.password/);
+        const f = await n.call(4, 'browser_fill_secret', { session_id: 's1', element_id: 'p1', name: 'github.password', chat: 'chat-acme' });
+        assert.equal(f.result.isError, false);
+        const own = filler.requests.filter((x) => x.path === '/v1/list' || x.path === '/v1/fill');
+        assert.deepEqual(own.map((x) => x.chat), ['none', 'none', 'none'], 'never empty, never taken from the arguments');
+        assert.ok(filler.requests.every((x) => x.chat === 'none'));
+        // The taint gate still applies to a no-chat process.
+        const ev = await n.call(5, 'browser_eval_js', { session_id: 's1', script: '1' });
+        assert.match(ev.result.content[0].text, /Refused/);
     } finally { await filler.close(); }
 });
 

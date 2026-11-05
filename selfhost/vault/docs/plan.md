@@ -58,7 +58,10 @@ agent ─stdio─> mcp.mjs (uid 1000, never holds values)
 - **Chat to client:**
   - `mcp.mjs` sends `X-Happy-Chat` from its process environment (`HAPPY_SESSION_ID`, which happy-cli must pass to MCP children; see empirical check 6), never from tool arguments.
   - `policy.json` maps each chat to a client.
-  - An unbound chat is refused.
+  - An unbound chat is refused, unless the policy opts in with `"default_client": "<slug>"` (decided 2026-11-05: "All chats use agents login"). The slug must be a client in `clients`, or the policy is refused. A chat with its own entry in `chats` always uses that client; any other chat uses the default.
+  - A bridge process with no chat id (Happy Agent's one daemon for all its chats has no `HAPPY_SESSION_ID`) sends `X-Happy-Chat: none`, never an empty header. Only `default_client` serves `none`, and `none` may not be a key in `chats`. The bridge lists the three secret tools whenever the filler token exists; the filler decides, and without a default it refuses with "no chat id".
+  - The audit records which path reached the client: `mapped` or `default`. Taint, host checks, scrubbing and session binding are unchanged on both paths.
+  - Trade-off of the default: any chat may ask for a fill of the default client's logins. Values still never reach the model, and fills go only to the listed hosts.
   - An auto-browser session is bound to one (chat, client) at its first fill; a fill for another client in that session is refused.
   - Limit: uid-1000 code asserts the chat id. This stops confusion and prompt injection, not a hostile local process.
 

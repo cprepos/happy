@@ -4,7 +4,7 @@ import { chmodSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allowedHosts, httpsHost, matchHost, normalizeHost } from '../lib/hosts.mjs';
-import { checkPolicyFile, loadPolicy, parsePolicy, PolicyError } from '../lib/policy.mjs';
+import { checkPolicyFile, loadPolicy, NO_CHAT, parsePolicy, PolicyError } from '../lib/policy.mjs';
 
 const A = '11111111-1111-4111-8111-111111111111';
 const B = '22222222-2222-4222-8222-222222222222';
@@ -52,6 +52,40 @@ test('chat to client, names, and cross-client refusal', () => {
     assert.equal(p.resolve('globex', 'github.username'), null);
     assert.notEqual(p.resolve('globex', 'github.password').item_id, p.resolve('acme', 'github.password').item_id);
     for (const bad of ['github', 'github.notes', '../acme.github.password', 'acme/github.password', '']) assert.equal(p.resolve('acme', bad), null);
+});
+
+test('default_client: unmapped chats and callers with no chat id use it; a mapped chat keeps its own client', () => {
+    const none = parsePolicy(samplePolicy());
+    assert.equal(none.defaultClient(), null);
+    assert.equal(none.clientForChat(NO_CHAT), null, 'no default: a caller with no chat id reaches nothing');
+    assert.equal(none.scopeOf('unknown'), null);
+    assert.deepEqual(none.scopeOf('chat-acme'), { client: 'acme', path: 'mapped' });
+
+    const p = parsePolicy(samplePolicy({ default_client: 'acme' }));
+    assert.equal(p.defaultClient(), 'acme');
+    assert.equal(p.clientForChat('unknown'), 'acme');
+    assert.deepEqual(p.scopeOf('unknown'), { client: 'acme', path: 'default' });
+    assert.deepEqual(p.scopeOf(NO_CHAT), { client: 'acme', path: 'default' });
+    // A mapped chat overrides the default, even when the default is another client.
+    assert.equal(p.clientForChat('chat-globex'), 'globex');
+    assert.deepEqual(p.scopeOf('chat-globex'), { client: 'globex', path: 'mapped' });
+    assert.deepEqual(p.scopeOf('chat-acme'), { client: 'acme', path: 'mapped' });
+    for (const bad of [undefined, null, '', 42]) assert.equal(p.clientForChat(bad), null, String(bad));
+
+    // The shape the README gives for "every chat shares the agent's logins".
+    const shared = parsePolicy({ version: 1, default_client: 'agent', clients: { agent: { secrets: { site: { item_id: A, hosts: ['example.com'], fields: ['username', 'password', 'totp'] } } } }, chats: {} });
+    assert.equal(shared.clientForChat('any-chat'), 'agent');
+    assert.equal(shared.resolve(shared.clientForChat(NO_CHAT), 'site.password').hosts[0], 'example.com');
+});
+
+test('default_client must name an existing client; "none" is never a chat key', () => {
+    for (const d of ['nobody', '', 42, null, ['acme'], { acme: true }]) {
+        assert.throws(() => parsePolicy(samplePolicy({ default_client: d })), /default_client .* is not a client/, JSON.stringify(d));
+    }
+    assert.throws(() => parsePolicy(samplePolicy({ chats: { [NO_CHAT]: 'acme' } })), /reserved/);
+    // A misspelt option is refused rather than silently meaning "no default".
+    assert.throws(() => parsePolicy(samplePolicy({ default: 'acme' })), /unknown top-level key/);
+    assert.throws(() => parsePolicy(samplePolicy({ defaultClient: 'acme' })), /unknown top-level key/);
 });
 
 test('malformed policies fail the whole load', () => {

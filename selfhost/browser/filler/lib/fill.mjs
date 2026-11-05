@@ -3,8 +3,11 @@
 // with its own controller token. No value is ever returned.
 //
 // Guards, in order, for every fill:
-//   1. the chat is bound to a client in the policy; the session is not bound
-//      to another (chat, client);
+//   1. the chat is bound to a client in the policy (its own entry in chats, or
+//      default_client when the policy has one; a caller with no chat id names
+//      chat "none", which only default_client serves); the session is not
+//      bound to another (chat, client). The audit says which: path mapped or
+//      default;
 //   2. the name resolves through that client's policy to one item id (each id
 //      belongs to one client only), read from the agent account's vault;
 //   3. allowed hosts = item https URIs ∩ policy hosts, matched exactly;
@@ -16,6 +19,7 @@
 import { allowedHosts, httpsHost, matchHost } from './hosts.mjs';
 import { currentTotp } from './totp.mjs';
 import { pageUrl, isLive } from './controller.mjs';
+import { NO_CHAT } from './policy.mjs';
 
 export class FillError extends Error {
     constructor(message, status = 403, outcome = 'refused') { super(message); this.status = status; this.outcome = outcome; }
@@ -68,9 +72,12 @@ export function createFiller({ getPolicy, vault, controllers, taint, audit, slee
 
     function scope(chat) {
         const policy = getPolicy();
-        const client = policy.clientForChat(chat);
-        if (!client) throw new FillError('this chat is not bound to a client in the filler policy; ask the user to bind it', 403, 'unbound_chat');
-        return { policy, client, cfg: policy.client(client) };
+        const sc = policy.scopeOf(chat);
+        if (!sc) {
+            if (chat === NO_CHAT) throw new FillError('this agent process has no chat id, and the filler policy has no default_client, so it may not use vault secrets', 403, 'unbound_chat');
+            throw new FillError('this chat is not bound to a client in the filler policy; ask the user to bind it', 403, 'unbound_chat');
+        }
+        return { policy, client: sc.client, path: sc.path, cfg: policy.client(sc.client) };
     }
 
     async function liveHost(b, allowed) {
@@ -93,7 +100,7 @@ export function createFiller({ getPolicy, vault, controllers, taint, audit, slee
 
     /** Type one field. Shared by fill() and login(). Returns {kind, host}. */
     async function typeField(ctx, { chat, b, element, name, field, item, allowed, observed }) {
-        const base = { chat, client: ctx.client, session: b.key, name, field_kind: field };
+        const base = { chat, client: ctx.client, path: ctx.path, session: b.key, name, field_kind: field };
         const { host } = await liveHost(b, allowed);
         if (!host) { audit.record({ ...base, outcome: 'refused_host' }); throw new FillError('the page is not on a host this secret is allowed on', 403, 'refused_host'); }
         const obs = observed || await b.controller.observe(b.session);
@@ -140,12 +147,12 @@ export function createFiller({ getPolicy, vault, controllers, taint, audit, slee
         const session = b.key;
         const ctx = scope(chat);
         const bind = taint.checkBinding(session, chat, ctx.client);
-        if (bind) { audit.record({ chat, client: ctx.client, session, name, outcome: 'refused_binding' }); throw new FillError(bind, 403, 'refused_binding'); }
+        if (bind) { audit.record({ chat, client: ctx.client, path: ctx.path, session, name, outcome: 'refused_binding' }); throw new FillError(bind, 403, 'refused_binding'); }
         const entry = ctx.policy.resolve(ctx.client, name);
-        if (!entry) { audit.record({ chat, client: ctx.client, session, name: String(name ?? '').slice(0, 80), outcome: 'refused_name' }); throw new FillError('no such secret for this chat (see browser_list_secrets)', 404, 'refused_name'); }
+        if (!entry) { audit.record({ chat, client: ctx.client, path: ctx.path, session, name: String(name ?? '').slice(0, 80), outcome: 'refused_name' }); throw new FillError('no such secret for this chat (see browser_list_secrets)', 404, 'refused_name'); }
         const item = await readValue(ctx, entry);
         const allowed = hostsFor(item.uris, entry.hosts);
-        if (!allowed.length) { audit.record({ chat, client: ctx.client, session, name: entry.name, outcome: 'refused_no_hosts' }); throw new FillError('this secret has no host that both the vault item and the policy allow', 403, 'refused_no_hosts'); }
+        if (!allowed.length) { audit.record({ chat, client: ctx.client, path: ctx.path, session, name: entry.name, outcome: 'refused_no_hosts' }); throw new FillError('this secret has no host that both the vault item and the policy allow', 403, 'refused_no_hosts'); }
         const r = await typeField(ctx, { chat, b, element, name: entry.name, field: entry.field, item, allowed });
         return { ok: true, ...r };
     }

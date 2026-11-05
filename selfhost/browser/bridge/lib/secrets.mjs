@@ -15,7 +15,10 @@
 //     value that turns up (OCR, page text, an echoed form) reads [secret:<name>].
 //
 // The chat comes from the process environment (HAPPY_SESSION_ID, set by the
-// Happy CLI for its MCP children), never from tool arguments. When the
+// Happy CLI for its MCP children), never from tool arguments. A process without
+// one (a Happy Agent daemon serving many chats) names the chat "none": the
+// filler serves that only when its policy has a default_client, and refuses it
+// otherwise. The tools are listed either way; the filler decides. When the
 // filler's client token exists but the filler cannot be reached, browser calls
 // fail closed.
 import { existsSync, readFileSync } from 'node:fs';
@@ -102,14 +105,16 @@ export function refusal(name, args, tainted) {
     }
 }
 
+/** The X-Happy-Chat of a process with no chat id. Must match NO_CHAT in filler/lib/policy.mjs. */
+export const NO_CHAT = 'none';
+
 export function createSecretGate({ fillerUrl, tokenPath, chat = null, fetchImpl = fetch, controllerPort = () => null, timeoutMs = 120_000 }) {
     const base = String(fillerUrl).replace(/\/+$/, '');
     const configured = () => existsSync(tokenPath);
     const token = () => readFileSync(tokenPath, 'utf8').trim();
 
     async function call(path, body, signal) {
-        const headers = { Authorization: `Bearer ${token()}`, 'Content-Type': 'application/json' };
-        if (chat) headers['X-Happy-Chat'] = chat;
+        const headers = { Authorization: `Bearer ${token()}`, 'Content-Type': 'application/json', 'X-Happy-Chat': chat || NO_CHAT };
         let res;
         try {
             res = await fetchImpl(base + path, { method: 'POST', headers, body: JSON.stringify(body), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs) });
@@ -133,7 +138,6 @@ export function createSecretGate({ fillerUrl, tokenPath, chat = null, fetchImpl 
         /** Run one of the three tools. Returns the filler's JSON answer; throws with a message for the agent. */
         async callOwn(name, args, signal) {
             if (!configured()) throw new Error('vault secrets are not set up on this machine (make filler-init)');
-            if (!chat) throw new Error('this agent process has no chat id (HAPPY_SESSION_ID), so it may not use vault secrets');
             const a = args || {};
             if (name === 'browser_list_secrets') return call('/v1/list', {}, signal);
             if (name === 'browser_fill_secret') return call('/v1/fill', { session_id: String(a.session_id ?? ''), element_id: String(a.element_id ?? ''), name: String(a.name ?? ''), ...port(a) }, signal);

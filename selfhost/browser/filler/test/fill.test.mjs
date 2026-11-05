@@ -6,7 +6,8 @@ import { createFiller, kindsOf } from '../lib/fill.mjs';
 import { parseTotp, totpAt } from '../lib/totp.mjs';
 import { TOTP_SECRET } from './fake-vaultwarden.mjs';
 import { loginPages } from './fake-controller.mjs';
-import { setup } from './helpers.mjs';
+import { parsePolicy, NO_CHAT } from '../lib/policy.mjs';
+import { policyFor, setup } from './helpers.mjs';
 
 const auditText = (dir) => readdirSync(join(dir, 'audit')).map((f) => readFileSync(join(dir, 'audit', f), 'utf8')).join('');
 
@@ -149,5 +150,82 @@ test('list returns names, hosts and kinds for the chat\'s client only', async ()
         // Only listed controller ports are reached.
         await assert.rejects(f.fill({ chat: 'chat-acme', session_id: 's1', element_id: 'p1', name: 'github.password', controller_port: 22 }), /not one the filler may use/);
         await assert.rejects(f.fill({ chat: 'chat-acme', session_id: 's1', element_id: 'p1', name: 'github.password', controller_port: '8010' }), /not one the filler may use/);
+    } finally { await t.close(); }
+});
+
+const auditLines = (dir) => auditText(dir).trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+
+test('default_client: an unmapped chat and a caller with no chat id fill the default client\'s secrets; the audit says default', async () => {
+    const t = await setup();
+    try {
+        const policy = parsePolicy(policyFor(t.v, { default_client: 'acme' }));
+        const f = createFiller({ ...t.deps, getPolicy: () => policy });
+        t.ctl.addSession('s1', loginPages());
+        t.ctl.addSession('s2', loginPages());
+        assert.equal((await f.list({ chat: 'chat-unknown' })).client, 'acme');
+        assert.equal((await f.list({ chat: NO_CHAT })).client, 'acme');
+        assert.deepEqual(await f.fill({ chat: 'chat-unknown', session_id: 's1', element_id: 'p1', name: 'github.password' }), { ok: true, kind: 'password', host: 'github.com' });
+        assert.deepEqual(await f.fill({ chat: NO_CHAT, session_id: 's2', element_id: 'p1', name: 'github.password' }), { ok: true, kind: 'password', host: 'github.com' });
+        assert.equal(t.ctl.typed[0].text, t.v.items['acme-github'].password);
+        const filled = auditLines(t.dir).filter((l) => l.outcome === 'filled');
+        assert.deepEqual(filled.map((l) => [l.chat, l.client, l.path]), [['chat-unknown', 'acme', 'default'], [NO_CHAT, 'acme', 'default']]);
+        assert.ok(!auditText(t.dir).includes(t.v.items['acme-github'].password));
+        // Taint and the session binding work as before: the session holds a default-path secret for chat-unknown.
+        assert.ok(t.taint.get(t.key('s1')));
+        await assert.rejects(f.fill({ chat: 'chat-other', session_id: 's1', element_id: 'p1', name: 'github.password' }), /another chat or client/);
+    } finally { await t.close(); }
+});
+
+test('default_client: a mapped chat keeps its own client, and the audit says mapped', async () => {
+    const t = await setup();
+    try {
+        const policy = parsePolicy(policyFor(t.v, { default_client: 'acme' }));
+        const f = createFiller({ ...t.deps, getPolicy: () => policy });
+        t.ctl.addSession('g', loginPages());
+        assert.equal((await f.list({ chat: 'chat-globex' })).client, 'globex');
+        // globex allows no username, though the default client (acme) would.
+        await assert.rejects(f.fill({ chat: 'chat-globex', session_id: 'g', element_id: 'u1', name: 'github.username' }), /no such secret/);
+        await f.fill({ chat: 'chat-globex', session_id: 'g', element_id: 'p1', name: 'github.password' });
+        assert.equal(t.ctl.typed[0].text, t.v.items['globex-github'].password);
+        const lines = auditLines(t.dir);
+        assert.deepEqual(lines.map((l) => [l.client, l.path, l.outcome]), [['globex', 'mapped', 'refused_name'], ['globex', 'mapped', 'filled']]);
+    } finally { await t.close(); }
+});
+
+test('a caller with no chat id is refused without default_client', async () => {
+    const t = await setup();
+    try {
+        const f = createFiller(t.deps);
+        t.ctl.addSession('s1', loginPages());
+        await assert.rejects(f.list({ chat: NO_CHAT }), /no chat id, and the filler policy has no default_client/);
+        await assert.rejects(f.fill({ chat: NO_CHAT, session_id: 's1', element_id: 'p1', name: 'github.password' }), /no default_client/);
+        await assert.rejects(f.login({ chat: NO_CHAT, session_id: 's1', site: 'github' }), /no default_client/);
+        assert.equal(t.ctl.typed.length, 0);
+    } finally { await t.close(); }
+});
+
+test('default_client: host, field and element restrictions still hold', async () => {
+    const t = await setup();
+    try {
+        const policy = parsePolicy(policyFor(t.v, { default_client: 'acme' }));
+        const f = createFiller({ ...t.deps, getPolicy: () => policy });
+        t.ctl.addSession('s1', loginPages());
+        t.ctl.addSession('evil', loginPages('https://github.com.evil.test'));
+        t.ctl.addSession('http', loginPages('http://github.com'));
+        t.ctl.addSession('off', loginPages('https://example.test'));
+        for (const chat of [NO_CHAT, 'chat-unknown']) {
+            const base = { chat, session_id: 's1', element_id: 'p1', name: 'github.password' };
+            for (const [args, re] of [
+                [{ ...base, session_id: 'evil' }, /not on a host/],
+                [{ ...base, session_id: 'http' }, /not on a host/],
+                [{ ...base, name: 'portal.password' }, /not on a host/],
+                [{ ...base, name: 'mismatch.password' }, /no host that both/],
+                [{ ...base, element_id: 'u1' }, /cannot take a password/],
+                [{ ...base, name: 'github.secret' }, /no such secret/],
+            ]) await assert.rejects(f.fill(args), re, JSON.stringify(args));
+            assert.equal((await f.login({ chat, session_id: 'off', site: 'github' })).status, 'needs_human');
+        }
+        assert.equal(t.ctl.typed.length, 0, 'nothing was typed');
+        assert.ok(auditLines(t.dir).filter((l) => l.outcome === 'refused_host').every((l) => l.path === 'default'));
     } finally { await t.close(); }
 });
