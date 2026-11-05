@@ -2,6 +2,7 @@
 import HappyCore
 import HappyLayout
 import UIKit
+import WebKit
 
 /// A chat screen that floats a live browser: its transcript's chips find
 /// the dock through the responder chain.
@@ -57,6 +58,10 @@ final class LiveBrowserDock: NSObject {
     private var placed: (card: CGRect, anchor: CGFloat)?
     private weak var fullScreen: UINavigationController?
     private var busy = false
+    /// This app took control (`POST /take`) and hasn't handed it back:
+    /// Release stays offered while the bridge says user or takeover.
+    private(set) var controlTaken = false
+    private var takenAt: ContinuousClock.Instant?
 
     init(host: UIViewController, chatKey: String, connect: @escaping @MainActor () -> LiveBrowserConnection?) {
         self.host = host
@@ -79,8 +84,9 @@ final class LiveBrowserDock: NSObject {
         guard link != self.link else { return }
         feed?.close()
         closePlayer(animated: false)
-        fullScreen?.dismiss(animated: false)
+        dismissFullScreen(animated: false)
         lastStatus = nil
+        controlTaken = false
         if let link {
             let feed = LiveBrowserFeed(link: link) { [weak self] in self?.makeTransport() }
             self.feed = feed
@@ -142,6 +148,15 @@ final class LiveBrowserDock: NSObject {
         // Asked for: the player comes up on its own, once each time.
         if status == .takeover, lastStatus != .takeover, isOnScreen { openPlayer() }
         lastStatus = status
+        // The bridge let the person go (the agent took it back, or the link
+        // ended): a noVNC page still up is driving nothing.
+        // A read sent before `/take` can still answer watching: not for a
+        // moment after it.
+        let settled = takenAt.map { ContinuousClock.now - $0 > .seconds(2) } ?? true
+        if (status == .watching && settled) || feed.phase.isOver {
+            controlTaken = false
+            dropNoVNC()
+        }
         refresh()
     }
 
@@ -163,7 +178,7 @@ final class LiveBrowserDock: NSObject {
         indicator.isHidden = status == nil
         if let feed { player?.show(feed) }
         if status == nil, feed?.phase.isOver == true, player != nil, feed?.phase != .unavailable { closePlayer(animated: true) }
-        for controller in fullScreen?.viewControllers ?? [] { (controller as? LiveBrowserFullScreenItems)?.update(feed?.phase.state) }
+        for controller in fullScreen?.viewControllers ?? [] { (controller as? LiveBrowserFullScreenItems)?.update(feed?.phase.state, held: holdsControl) }
         NotificationCenter.default.post(name: Self.didChange, object: self)
         if changed { onLayoutChange?() }
     }
@@ -241,8 +256,18 @@ final class LiveBrowserDock: NSObject {
     /// The footer's button: Release while the person has the browser,
     /// else Take over, which takes it and opens it full screen.
     private func playerAction() {
-        if feed?.phase.state?.status == .user { release(minimizing: false) }
+        if holdsControl { release() }
         else { presentFullScreen(taking: true) }
+    }
+
+    /// Whether Release is what's offered: the person has the browser, or
+    /// the agent asks for them while this app still holds it.
+    var holdsControl: Bool {
+        switch feed?.phase.state?.status {
+        case .user: true
+        case .takeover: controlTaken
+        default: false
+        }
     }
 
     // MARK: Full screen
@@ -284,10 +309,37 @@ final class LiveBrowserDock: NSObject {
             navigation.preferredTransition = .zoom { [weak player] _ in player }
         }
         fullScreen = navigation
+        // The chat under it disappears, and with it the dock's reading: the
+        // full screen reads the state itself, so a change under noVNC shows.
+        feed?.attach(navigation, visible: true) { _ in }
         var presenter: UIViewController = host
         while let next = presenter.presentedViewController, !next.isBeingDismissed { presenter = next }
         presenter.present(navigation, animated: true)
-        items.update(feed?.phase.state)
+        items.update(feed?.phase.state, held: holdsControl)
+    }
+
+    private func dismissFullScreen(animated: Bool) {
+        guard let fullScreen else { return }
+        feed?.detach(fullScreen)
+        fullScreen.dismiss(animated: animated)
+    }
+
+    /// The noVNC page on top of the full screen, while there is one.
+    var noVNCPage: LiveBrowserFullScreenItems? {
+        (fullScreen?.viewControllers.last as? LiveBrowserFullScreenItems).flatMap { $0.isNoVNC ? $0 : nil }
+    }
+
+    /// noVNC went away (released, disconnected, failed, or the bridge
+    /// moved on): its page and tunnel go, and the live frame view shows
+    /// again with the controls for the state now.
+    func dropNoVNC() {
+        guard let fullScreen, let noVNC = noVNCPage else { return }
+        noVNC.browser.close()
+        guard let frame = fullScreen.viewControllers.first(where: { ($0 as? LiveBrowserFullScreenItems)?.isNoVNC == false }) else {
+            return minimize()
+        }
+        fullScreen.popToViewController(frame, animated: true)
+        (frame as? LiveBrowserFullScreenItems)?.update(feed?.phase.state, held: holdsControl)
     }
 
     /// Take control (`POST /take`), then drive the browser in noVNC, at
@@ -302,14 +354,22 @@ final class LiveBrowserDock: NSObject {
                 guard let self else { return }
                 defer { self.busy = false }
                 guard self.feed === feed else { return }
-                if let url = take.novncURL {
+                self.controlTaken = true
+                self.takenAt = .now
+                if let url = take.novncURL, self.fullScreen != nil, self.noVNCPage == nil {
                     let id: String
                     if let workspace { id = workspace } else { id = try await connection.workspace() }
                     let page = try await BrowserPage.workspace(client: connection.client, url: url, workspaceID: id)
-                    let items = LiveBrowserFullScreenItems(dock: self, browser: BrowserViewController(url: url, page: page, extraItems: []), noVNC: true)
+                    let browser = BrowserViewController(url: url, page: page, extraItems: [])
+                    let watch = LiveBrowserNoVNCWatch()
+                    watch.disconnected = { [weak self] in self?.dropNoVNC() }
+                    browser.configure = { watch.install(in: $0) }
+                    browser.onFailure = { [weak self] _ in self?.dropNoVNC() }
+                    let items = LiveBrowserFullScreenItems(dock: self, browser: browser, noVNC: true)
                     self.fullScreen?.pushViewController(items, animated: true)
-                    items.update(feed.phase.state)
+                    items.update(feed.phase.state, held: self.holdsControl)
                 }
+                self.refresh()
             } catch {
                 guard let self else { return }
                 self.busy = false
@@ -318,9 +378,9 @@ final class LiveBrowserDock: NSObject {
         }
     }
 
-    /// Release control (`POST /release`): the agent drives again;
-    /// `minimizing`, the full screen goes back to the player.
-    func release(minimizing: Bool) {
+    /// Release control (`POST /release`): the agent drives again, and a
+    /// noVNC page goes, back to the live frame view.
+    func release() {
         guard let feed, !busy else { return }
         busy = true
         player?.isBusy = true
@@ -330,7 +390,10 @@ final class LiveBrowserDock: NSObject {
                 guard let self else { return }
                 self.busy = false
                 self.player?.isBusy = false
-                if minimizing { self.minimize() }
+                guard self.feed === feed else { return }
+                self.controlTaken = false
+                self.dropNoVNC()
+                self.refresh()
             } catch {
                 guard let self else { return }
                 self.busy = false
@@ -343,7 +406,7 @@ final class LiveBrowserDock: NSObject {
     /// Back to the player.
     func minimize() {
         if player == nil { openPlayer() }
-        fullScreen?.dismiss(animated: true)
+        dismissFullScreen(animated: true)
     }
 
     private func alert(_ title: String, _ message: String) {
@@ -376,21 +439,22 @@ final class LiveBrowserDock: NSObject {
 final class LiveBrowserFullScreenItems: UIViewController {
     let browser: BrowserViewController
     private weak var dock: LiveBrowserDock?
-    private let noVNC: Bool
-    private let control = UIBarButtonItem()
+    let isNoVNC: Bool
+    let control = UIBarButtonItem()
     private var state: LiveBrowserState?
+    private var held = false
 
     init(dock: LiveBrowserDock, browser: BrowserViewController, noVNC: Bool) {
         self.dock = dock
         self.browser = browser
-        self.noVNC = noVNC
+        self.isNoVNC = noVNC
         super.init(nibName: nil, bundle: nil)
     }
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.accessibilityIdentifier = noVNC ? "live-browser-novnc" : "live-browser-full-screen"
+        view.accessibilityIdentifier = isNoVNC ? "live-browser-novnc" : "live-browser-full-screen"
         addChild(browser)
         view.addSubview(browser.view)
         browser.view.frame = view.bounds
@@ -399,29 +463,87 @@ final class LiveBrowserFullScreenItems: UIViewController {
         let minimize = UIBarButtonItem(image: UIImage(systemName: "chevron.down"), primaryAction: UIAction { [weak self] _ in self?.dock?.minimize() })
         minimize.accessibilityLabel = Strings.LiveBrowser.minimize
         minimize.accessibilityIdentifier = "live-browser-minimize"
-        navigationItem.leftItemsSupplementBackButton = true
+        // Minimize is the way back: noVNC's page has no back to go to,
+        // and a back button there would leave control held.
+        navigationItem.hidesBackButton = true
         navigationItem.leftBarButtonItem = minimize
         control.style = .prominent
         control.accessibilityIdentifier = "live-browser-control"
-        // The browser's own buttons sit at the right; control goes first.
-        var items = navigationItem.rightBarButtonItems ?? []
-        items.insert(control, at: 0)
-        navigationItem.rightBarButtonItems = items
-        update(state)
+        // Control alone at the right, or with reload on the frame view: the
+        // browser's back, forward and share pushed it into the header's
+        // overflow menu on a phone, out of sight under noVNC.
+        navigationItem.rightBarButtonItems = isNoVNC ? [control] : [control, browser.reloadItem]
+        update(state, held: held)
     }
 
-    /// Before it loads too: it shows the state once it does.
-    func update(_ state: LiveBrowserState?) {
+    /// Before it loads too: it shows the state once it does. `held`,
+    /// Release control; else Take control.
+    func update(_ state: LiveBrowserState?, held: Bool) {
         self.state = state
+        self.held = held
         guard isViewLoaded else { return }
-        let held = state?.status == .user
         control.primaryAction = UIAction(title: held ? Strings.LiveBrowser.releaseControl : Strings.LiveBrowser.takeControl) { [weak self] _ in
             guard let dock = self?.dock else { return }
-            if held { dock.release(minimizing: true) } else { dock.take() }
+            if held { dock.release() } else { dock.take() }
         }
         control.isEnabled = state.map { !$0.ended } ?? false
         navigationItem.subtitle = state?.lastAction.map(Strings.LiveBrowser.lastAction)
             ?? state.map { Strings.LiveBrowser.status($0.status) }
+    }
+}
+
+/// Watches a noVNC page for its connection ending: the RFB socket
+/// closing, or the page leaving its connected state (noVNC's
+/// `noVNC_connected` class on the document).
+@MainActor
+final class LiveBrowserNoVNCWatch: NSObject {
+    static let name = "liveBrowserNoVNC"
+    static let source = """
+    (function () {
+      var post = function (s) { try { window.webkit.messageHandlers.liveBrowserNoVNC.postMessage(s); } catch (e) {} };
+      var Socket = window.WebSocket;
+      if (Socket) {
+        var Watched = function (url, protocols) {
+          var socket = protocols === undefined ? new Socket(url) : new Socket(url, protocols);
+          socket.addEventListener('open', function () { post('connected'); });
+          socket.addEventListener('close', function () { post('disconnected'); });
+          return socket;
+        };
+        Watched.prototype = Socket.prototype;
+        ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'].forEach(function (k) { Watched[k] = Socket[k]; });
+        window.WebSocket = Watched;
+      }
+      var connected = false;
+      var check = function () {
+        var c = document.documentElement.classList;
+        if (c.contains('noVNC_connected')) { connected = true; }
+        else if (connected && !c.contains('noVNC_connecting')) { connected = false; post('disconnected'); }
+      };
+      new MutationObserver(check).observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+    })();
+    """
+
+    var disconnected: (() -> Void)?
+
+    func install(in configuration: WKWebViewConfiguration) {
+        let content = configuration.userContentController
+        content.removeScriptMessageHandler(forName: Self.name)
+        content.add(Relay(self), name: Self.name)
+        content.addUserScript(WKUserScript(source: Self.source, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+    }
+
+    func received(_ body: Any) {
+        if body as? String == "disconnected" { disconnected?() }
+    }
+
+    /// The content controller keeps its handler: this keeps the watch
+    /// weakly.
+    private final class Relay: NSObject, WKScriptMessageHandler {
+        weak var watch: LiveBrowserNoVNCWatch?
+        init(_ watch: LiveBrowserNoVNCWatch) { self.watch = watch }
+        func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+            MainActor.assumeIsolated { watch?.received(message.body) }
+        }
     }
 }
 

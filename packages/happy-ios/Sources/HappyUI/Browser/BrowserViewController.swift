@@ -47,6 +47,11 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
     private var linkWatch: Watch?
     /// Every value the loading bar takes, in order (tests).
     var progressChanged: ((BrowserProgress) -> Void)?
+    /// Called with the page's configuration before its web view is made:
+    /// a caller's scripts and message handlers (noVNC's watch).
+    var configure: ((WKWebViewConfiguration) -> Void)?
+    /// Each failure the error page shows for.
+    var onFailure: ((BrowserProblem) -> Void)?
 
     lazy var backItem = UIBarButtonItem(primaryAction: UIAction(image: .icon(.ionicons("chevron-back"), size: 22)) { [weak self] _ in self?.goBack() }, menu: historyMenu(forward: false))
     lazy var forwardItem = UIBarButtonItem(primaryAction: UIAction(image: .icon(.ionicons("chevron-forward"), size: 22)) { [weak self] _ in self?.goForward() }, menu: historyMenu(forward: true))
@@ -142,6 +147,7 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
     }
 
     private func makeWeb(_ page: BrowserPage) -> WKWebView {
+        configure?(page.configuration)
         let web = WKWebView(frame: view.bounds, configuration: page.configuration)
         web.accessibilityIdentifier = "browser-web"
         web.navigationDelegate = self; web.uiDelegate = self
@@ -217,6 +223,7 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
         setProgress { $0.hide() }
         refresh.endRefreshing()
         failureView.show(problem, computer: computerName, host: failedURL.flatMap(Self.address))
+        onFailure?(problem)
         if failureView.isHidden {
             failureView.alpha = 0
             failureView.isHidden = false
@@ -353,9 +360,14 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         if isMovingFromParent || isBeingDismissed || navigationController?.isBeingDismissed == true || parent?.isMovingFromParent == true {
-            loading?.cancel(); trickling?.cancel(); linkWatch = nil
-            web?.stopLoading(); web?.removeFromSuperview(); web = nil; page = nil; observations = []
+            close()
         }
+    }
+
+    /// The page goes for good: its web view, and with its page the tunnel.
+    func close() {
+        loading?.cancel(); trickling?.cancel(); linkWatch = nil
+        web?.stopLoading(); web?.removeFromSuperview(); web = nil; page = nil; observations = []
     }
 
     // MARK: WKNavigationDelegate

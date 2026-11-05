@@ -119,13 +119,112 @@ final class HostedLiveBrowserTests: XCTestCase {
         XCTAssertEqual(noVNC.navigationItem.leftBarButtonItem?.accessibilityIdentifier, "live-browser-minimize")
         try screenshot(window, name: "live-browser-dock-novnc")
 
-        // Release control: the agent drives again, back to the player.
-        dock.release(minimizing: true)
+        // Release control: the agent drives again, back to the frame view.
+        dock.release()
         try await until { await daemon.requests.contains { $0.hasPrefix("POST /live/\(self.id)/release HTTP/1.1") } }
-        try await until { host.presentedViewController == nil }
+        try await until { navigation.viewControllers.count == 1 }
         try await until { dock.indicator.text == Strings.LiveBrowser.indicator(Strings.LiveBrowser.watching) }
         XCTAssertNotNil(dock.player)
         XCTAssertEqual(dock.player?.accessibilityValue, "watching")
+        dock.minimize()
+        try await until { host.presentedViewController == nil }
+    }
+
+    // MARK: noVNC
+
+    /// Taken: the noVNC page up, the full screen's navigation and its page.
+    private func takeOver(_ host: Host, _ daemon: BrowserDaemon) async throws -> (UINavigationController, LiveBrowserFullScreenItems) {
+        let dock = host.dock!
+        dock.update(link: LiveBrowserLink(id: id))
+        try await until { dock.feed?.phase.state != nil }
+        dock.presentFullScreen(taking: true)
+        try await until { (host.presentedViewController as? UINavigationController)?.viewControllers.count == 2 }
+        let navigation = try XCTUnwrap(host.presentedViewController as? UINavigationController)
+        let noVNC = try XCTUnwrap(navigation.viewControllers.last as? LiveBrowserFullScreenItems)
+        try await until { navigation.transitionCoordinator == nil && noVNC.isViewLoaded }
+        XCTAssertTrue(noVNC.isNoVNC)
+        return (navigation, noVNC)
+    }
+
+    /// The bar's views showing `title`, on screen in the bar.
+    private func shown(_ title: String, in bar: UINavigationBar) -> Bool {
+        func walk(_ view: UIView) -> Bool {
+            guard !view.isHidden, view.alpha > 0.01 else { return false }
+            let says = (view as? UILabel)?.text == title || (view as? UIButton)?.currentTitle == title
+                || (view.accessibilityLabel == title && !(view is UINavigationBar))
+            if says {
+                let frame = view.convert(view.bounds, to: bar)
+                if frame.width > 0, bar.bounds.intersects(frame) { return true }
+            }
+            return view.subviews.contains(where: walk)
+        }
+        return walk(bar)
+    }
+
+    func testReleaseShowsOnTheNoVNCHeader() async throws {
+        let daemon = BrowserDaemon()
+        let (host, window) = try await makeHost(daemon)
+        defer { window.isHidden = true; host.dock.update(link: nil) }
+        let (navigation, noVNC) = try await takeOver(host, daemon)
+        // Control alone at the right, Minimize at the left, no back button
+        // that would leave control held: nothing pushes Release into the
+        // overflow menu.
+        XCTAssertEqual(noVNC.navigationItem.rightBarButtonItems, [noVNC.control])
+        XCTAssertTrue(noVNC.navigationItem.hidesBackButton)
+        XCTAssertEqual(noVNC.control.title, Strings.LiveBrowser.releaseControl)
+        XCTAssertTrue(noVNC.control.isEnabled)
+        navigation.navigationBar.layoutIfNeeded()
+        try await until { self.shown(Strings.LiveBrowser.releaseControl, in: navigation.navigationBar) }
+        // The full screen keeps the state read while the chat is under it.
+        let before = await daemon.requests.filter { $0.hasPrefix("GET /live/\(self.id)/state") }.count
+        try await until { await daemon.requests.filter { $0.hasPrefix("GET /live/\(self.id)/state") }.count > before }
+        try screenshot(window, name: "live-browser-novnc-release")
+    }
+
+    func testReleaseOnTheNoVNCPageGoesBackToTheFrameView() async throws {
+        let daemon = BrowserDaemon()
+        let (host, window) = try await makeHost(daemon)
+        defer { window.isHidden = true; host.dock.update(link: nil) }
+        let (navigation, noVNC) = try await takeOver(host, daemon)
+        XCTAssertNotNil(noVNC.browser.web)
+        let action = try XCTUnwrap(noVNC.control.primaryAction)
+        action.performWithSender(nil, target: nil)
+        try await until { await daemon.requests.contains { $0.hasPrefix("POST /live/\(self.id)/release HTTP/1.1") } }
+        try await until { navigation.viewControllers.count == 1 && navigation.transitionCoordinator == nil }
+        let frame = try XCTUnwrap(navigation.viewControllers.first as? LiveBrowserFullScreenItems)
+        XCTAssertFalse(frame.isNoVNC)
+        XCTAssertEqual(frame.control.title, Strings.LiveBrowser.takeControl)
+        // Its web view and tunnel went with it.
+        try await until { noVNC.browser.web == nil && noVNC.parent == nil }
+        try await until { host.dock.indicator.text == Strings.LiveBrowser.indicator(Strings.LiveBrowser.watching) }
+        XCTAssertNotNil(host.presentedViewController, "still full screen, no close and reopen")
+    }
+
+    func testANoVNCDisconnectGoesBackToTheFrameViewStillHeld() async throws {
+        let daemon = BrowserDaemon()
+        let (host, window) = try await makeHost(daemon)
+        defer { window.isHidden = true; host.dock.update(link: nil) }
+        let (navigation, noVNC) = try await takeOver(host, daemon)
+        try await until { noVNC.browser.web?.isLoading == false && noVNC.browser.web?.url != nil }
+        let web = try XCTUnwrap(noVNC.browser.web)
+        // As noVNC's UI does: connected, then neither connected nor connecting.
+        _ = try await web.evaluateJavaScript("""
+            document.documentElement.classList.add('noVNC_connected');
+            setTimeout(function () { document.documentElement.classList.remove('noVNC_connected'); }, 100);
+            true
+            """)
+        try await until { navigation.viewControllers.count == 1 && navigation.transitionCoordinator == nil }
+        let frame = try XCTUnwrap(navigation.viewControllers.first as? LiveBrowserFullScreenItems)
+        XCTAssertEqual(host.dock.feed?.phase.state?.status, .user)
+        XCTAssertEqual(frame.control.title, Strings.LiveBrowser.releaseControl, "the person still has it: Release, one tap")
+        XCTAssertTrue(frame.control.isEnabled)
+        let posts = await daemon.requests.filter { $0.hasPrefix("POST ") }
+        XCTAssertFalse(posts.contains { $0.contains("/release ") }, "dropping noVNC doesn't hand control back")
+
+        // And Release from there hands it back.
+        frame.control.primaryAction?.performWithSender(nil, target: nil)
+        try await until { await daemon.requests.contains { $0.hasPrefix("POST /live/\(self.id)/release HTTP/1.1") } }
+        try await until { frame.control.title == Strings.LiveBrowser.takeControl }
     }
 
     func testOnlyNeedsYouOpensThePlayer() async throws {
