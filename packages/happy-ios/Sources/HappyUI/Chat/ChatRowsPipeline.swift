@@ -286,6 +286,7 @@ enum ChatRows {
         let shown = items.filter { ChatRowRenderer.isShown($0, style: style) }
         // Without receipts, the agent answering is the sign it took a message.
         let newestAnswer = shown.firstIndex { if case .message(.userText) = $0 { false } else { true } }
+        let chips = liveBrowserChips(shown)
         return shown.enumerated().map { index, item in
             var delivery: OutboxDelivery?
             var userStatus: UserMessageStatus?
@@ -331,9 +332,29 @@ enum ChatRows {
             }
             return ChatRowInput(
                 item: item, delivery: delivery, expanded: expanded, permissionBusy: busy, question: question, questionLoading: questionLoading, diffExpanded: diffs,
-                userStatus: userStatus, outgoing: outgoing, time: outgoing == nil ? nil : times[item.id], copied: copied, mermaid: view.mermaidHeights[item.id] ?? [:], style: style
+                userStatus: userStatus, outgoing: outgoing, time: outgoing == nil ? nil : times[item.id], copied: copied, mermaid: view.mermaidHeights[item.id] ?? [:],
+                liveBrowser: chips[item.id], style: style
             )
         }
+    }
+
+    /// The tool rows that carry a live browser's chip, by row id: each
+    /// browser once, on the oldest of `shown` (newest first) to name it.
+    /// An agent's words that link it, before or after, already show its
+    /// chip, so no tool row repeats it; a newer row of the same browser
+    /// adds nothing.
+    static func liveBrowserChips(_ shown: [ChatListItem]) -> [String: LiveBrowserLink] {
+        var seen: Set<String> = []
+        for item in shown {
+            guard case .message(.agentText(let agent)) = item, agent.text.contains(LiveBrowserLink.origin) else { continue }
+            for case .link(let link) in LiveBrowserLink.split(agent.text) { seen.insert(link.id) }
+        }
+        var chips: [String: LiveBrowserLink] = [:]
+        for item in shown.reversed() {
+            guard case .message(.toolCall(let call)) = item, let link = LiveBrowserLink.latest(inResult: call.tool.result) else { continue }
+            if seen.insert(link.id).inserted { chips[item.id] = link }
+        }
+        return chips
     }
 
     /// AskUserQuestion answers through its permission; request_user_input

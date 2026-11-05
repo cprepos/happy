@@ -68,6 +68,86 @@ final class LiveBrowserLayoutTests: XCTestCase {
         assertFrame(voiceOnly.status?.text, rect(34, 8, 180, 16))
     }
 
+    // MARK: A session's red line
+
+    /// A session chat's screen: the composer's card 28 down (its status
+    /// row above it), the dock on the safe area or the keyboard.
+    private func sessionScreen(
+        size: CGSize? = nil, safeArea: LayoutInsets? = nil, keyboardTop: CGFloat? = nil, accessories: [LegacyChatScreenLayout.Accessory] = [],
+        composerHeight: CGFloat = 84, card: CGRect = rect(8, 28, 386, 56), browser: CGSize?, docked: Bool = false
+    ) -> LegacyChatScreenLayout {
+        LegacyChatScreenLayout(.init(
+            size: size ?? self.size, safeArea: safeArea ?? safe, keyboardTop: keyboardTop, accessories: accessories,
+            composerHeight: composerHeight, composerCardOffset: card.minY, composerCard: card, browser: browser, docked: docked
+        ))
+    }
+
+    func testInASessionTheRedLineStandsOnTheComposersCard() throws {
+        let screen = sessionScreen(browser: browser)
+        assertFrame(screen.dock, rect(0, 756, 402, 84))
+        assertFrame(screen.composer, rect(0, 0, 402, 84))
+        // In the dock: the agent chat's line over a card 28 down.
+        let line = try XCTUnwrap(screen.browser)
+        assertFrame(line.frame, rect(266, 8, 128, 20))
+        assertFrame(line.text, rect(266, 8, 118, 16))
+        assertFrame(line.dot, rect(388, 13.5, 6, 6))
+        XCTAssertEqual(line.dot.maxX, 394, "on the card's right edge")
+        XCTAssertEqual(line.frame.maxY, screen.composer.minY + 28, "down to the card")
+        // The same row the composer keeps for it.
+        let composer = AgentInputLayout(.init(width: 402, card: .init(width: 0, textContentHeight: 22, hasText: false), browserText: browser))
+        XCTAssertEqual(composer.card.minY, 28)
+        assertFrame(composer.browser?.frame, line.frame)
+    }
+
+    func testTheRedLineRidesTheKeyboardWithTheDock() throws {
+        let down = sessionScreen(browser: browser)
+        let up = sessionScreen(keyboardTop: 538, browser: browser)
+        assertFrame(up.dock, rect(0, 454, 402, 84))
+        XCTAssertEqual(up.browser, down.browser, "in the dock's coordinates")
+        assertFrame(try XCTUnwrap(up.browser).frame.offsetBy(dx: 0, dy: up.dock.minY), rect(266, 462, 128, 20))
+    }
+
+    func testOverAccessoriesTheRedLineStaysOnTheCard() throws {
+        let screen = sessionScreen(accessories: [.inset(block(height: 60))], browser: browser)
+        assertFrame(screen.composer, rect(0, 60, 402, 84))
+        assertFrame(screen.dock, rect(0, 696, 402, 144))
+        assertFrame(screen.browser?.frame, rect(266, 68, 128, 20))
+        assertFrame(screen.browser?.dot, rect(388, 73.5, 6, 6))
+    }
+
+    func testOnAnIPadTheRedLineEndsOnTheWideCard() throws {
+        let screen = sessionScreen(
+            size: CGSize(width: 664, height: 768), safeArea: LayoutInsets(top: 74, left: 0, bottom: 20, right: 0),
+            card: rect(8, 28, 648, 56), browser: browser, docked: true
+        )
+        assertFrame(screen.dock, rect(0, 664, 664, 84))
+        assertFrame(screen.browser?.frame, rect(528, 8, 128, 20))
+        assertFrame(screen.browser?.text, rect(528, 8, 118, 16))
+        assertFrame(screen.browser?.dot, rect(650, 13.5, 6, 6))
+        let up = sessionScreen(
+            size: CGSize(width: 664, height: 768), safeArea: LayoutInsets(top: 74, left: 0, bottom: 20, right: 0), keyboardTop: 420,
+            card: rect(8, 28, 648, 56), browser: browser, docked: true
+        )
+        assertFrame(up.dock, rect(0, 336, 664, 84))
+        XCTAssertEqual(up.browser, screen.browser)
+    }
+
+    func testWithNoRoomAboveTheCardTheDockMakesIt() throws {
+        let screen = sessionScreen(composerHeight: 56, card: rect(8, 0, 386, 56), browser: browser)
+        assertFrame(screen.composer, rect(0, 20, 402, 56))
+        assertFrame(screen.dock, rect(0, 764, 402, 76))
+        assertFrame(screen.browser?.frame, rect(266, 0, 128, 20))
+        assertFrame(screen.browser?.dot, rect(388, 5.5, 6, 6))
+    }
+
+    func testAHiddenLineTakesNoRoom() {
+        let screen = sessionScreen(composerHeight: 56, card: rect(8, 0, 386, 56), browser: nil)
+        XCTAssertNil(screen.browser)
+        assertFrame(screen.composer, rect(0, 0, 402, 56))
+        assertFrame(screen.dock, rect(0, 784, 402, 56))
+        XCTAssertNil(LegacyChatScreenLayout(.init(size: size, safeArea: safe, keyboardTop: nil, composerHeight: 84, browser: browser)).browser, "no card, no line")
+    }
+
     // MARK: The player
 
     private func dock(_ screen: ChatScreenLayout, voice: CGSize?, corner: LiveBrowserDockLayout.Corner = .bottomRight, large: Bool = false, strip: CGFloat? = nil) throws -> LiveBrowserDockLayout {

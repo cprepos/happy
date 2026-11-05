@@ -68,6 +68,10 @@ struct ChatRowInput: Equatable, Sendable {
     var copied = false
     /// The heights the row's diagrams reported, by their place in the row.
     var mermaid: [Int: CGFloat] = [:]
+    /// For a tool: the live browser its result names, when this is the
+    /// oldest row in the window to name it (an agent's words that link it
+    /// count): its chip, which opens the chat's player.
+    var liveBrowser: LiveBrowserLink? = nil
     var style: ChatRowStyle
 
     var id: String { item.id }
@@ -104,7 +108,7 @@ enum ChatRowRenderer {
                 return userText(user, delivery: input.delivery, status: status, outgoing: input.outgoing, time: input.time, diagrams: diagrams, width: width, style: input.style)
             case .agentText(let agent): return agentText(agent, copied: input.copied, diagrams: diagrams, width: width, style: input.style)
             case .toolCall(let call):
-                let views = ChatToolViews(question: input.question, questionLoading: input.questionLoading, diffExpanded: input.diffExpanded, diagrams: diagrams, delivery: input.delivery)
+                let views = ChatToolViews(question: input.question, questionLoading: input.questionLoading, diffExpanded: input.diffExpanded, diagrams: diagrams, delivery: input.delivery, liveBrowser: input.liveBrowser)
                 return toolCall(call, expanded: input.expanded, busy: input.permissionBusy, views: views, width: width, style: input.style)
             case .agentEvent(let event): return agentEvent(event, width: width, style: input.style)
             case .unsupported(let unsupported): return unsupportedRow(unsupported, width: width, style: input.style)

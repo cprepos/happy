@@ -66,12 +66,12 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
     private var gitStatus: GitStatus?
     private lazy var dock = ChatDockView()
     private lazy var composer: any ChatComposerView = makeComposer()
-    /// The chat's live browser: its red line in the composer's status
-    /// row, its player over the dock.
+    /// The chat's live browser: its red line standing on the composer's
+    /// card, as on an agent's chat, its player over the dock.
     private lazy var liveDock: LiveBrowserDock = {
         let dock = LiveBrowserDock(host: self, chatKey: "session.\(chatId)") { [weak self] in self?.liveConnection }
         dock.onLayoutChange = { [weak self] in
-            (self?.composer as? SessionComposerView)?.liveBrowserChanged()
+            self?.measureLiveBrowserLine()
             self?.view.setNeedsLayout()
         }
         return dock
@@ -442,8 +442,17 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
     private func installComposer() {
         composer.composerDelegate = self
         dock.addSubview(composer)
-        (composer as? SessionComposerView)?.liveBrowserIndicator = liveDock.indicator
+        // In the dock, so it rides the keyboard with the card it stands on.
+        dock.addSubview(liveDock.indicator)
         dock.addSubview(composerReveal.catcher)
+    }
+
+    /// The red line's words came, went or changed: measured in the status
+    /// row's style, and the composer keeps room for them.
+    private func measureLiveBrowserLine() {
+        guard let session = composer as? SessionComposerView else { return }
+        liveDock.indicator.style = session.statusStyle
+        session.liveBrowserText = liveDock.indicator.textSize
     }
 
     private func connectContent() {
@@ -874,9 +883,11 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         let safeArea = LayoutInsets(view.safeAreaInsets)
         // What reads keeps inside the safe area's sides (`LegacyChatScreenLayout`).
         let band = safeArea.sides(of: size)
+        measureLiveBrowserLine()
         let composerHeight = composer.composerHeight(fitting: band.width)
         // Restored while answering: it shows in this frame.
         composerReveal.heightRead()
+        let session = composer as? SessionComposerView
         let screen = LegacyChatScreenLayout(.init(
             size: size,
             safeArea: safeArea,
@@ -886,6 +897,8 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
             accessories: dockBars.map { $0.inset ? .inset($0.measurable) : .fullWidth($0.measurable) },
             composerHeight: composerHeight,
             composerCardOffset: composer.cardOffset,
+            composerCard: session?.cardFrame(fitting: band.width),
+            browser: session == nil ? nil : liveDock.indicator.textSize,
             maxContentWidth: maxContentWidth,
             // TabletBranches: chatFloatingDock and chatInputPaddingH.
             docked: docksList,
@@ -921,7 +934,8 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         for (bar, frame) in zip(dockBars, screen.accessories) { bar.view.setLayoutFrame(frame) }
         composer.setLayoutFrame(screen.composer)
         composerReveal.layout(composerFrame: screen.composer)
-        if let session = composer as? SessionComposerView {
+        liveDock.indicator.place(screen.browser)
+        if let session {
             let anchor = session.liveBrowserAnchor
             let card = session.convert(anchor.card, to: view)
             liveDock.layoutPlayer(card: card, anchor: session.convert(CGPoint(x: 0, y: anchor.top), to: view).y)

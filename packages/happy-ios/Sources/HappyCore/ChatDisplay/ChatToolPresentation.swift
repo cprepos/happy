@@ -37,6 +37,8 @@ public enum ToolIcon: Equatable, Sendable {
     case task, terminal, search, read, edit, web, exit, todo, reasoning, question
     /// An MCP tool: extension-puzzle-outline, secondary.
     case mcp
+    /// The live browser's tools (happy-browser-bridge): globe-outline.
+    case browser
     /// No category: construct-outline, secondary.
     case generic
 }
@@ -212,7 +214,11 @@ public enum ChatToolPresentation {
         var minimal = !known && context.flavor == "gemini"
         var title = ToolText.literal(ChatToolDisplay.displayTitle(tool, words: words))
         var icon = categoryIcon(name)
-        if name.hasPrefix("mcp__") {
+        if ChatToolDisplay.isBrowserTool(name) {
+            title = .literal(ChatToolDisplay.browserTitle)
+            icon = .browser
+            minimal = true
+        } else if name.hasPrefix("mcp__") {
             title = .literal(ChatToolDisplay.mcpTitle(name))
             icon = .mcp
             minimal = true

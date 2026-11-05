@@ -117,6 +117,11 @@ public struct LegacyChatScreenLayout: Equatable, Sendable {
         /// Where the composer's card starts below the composer's top (its
         /// status rows sit above the card).
         public var composerCardOffset: CGFloat
+        /// The composer's card, in the composer's coordinates: what the
+        /// live-browser line stands on. Nil: no line.
+        public var composerCard: CGRect?
+        /// The live-browser line's text, measured; nil while it is hidden.
+        public var browser: CGSize?
         public var maxContentWidth: CGFloat
         /// The tablet layout: the list stops at the dock instead of
         /// running under it and the bar.
@@ -134,7 +139,7 @@ public struct LegacyChatScreenLayout: Equatable, Sendable {
 
         public init(
             size: CGSize, safeArea: LayoutInsets, keyboardTop: CGFloat?, accessories: [Accessory] = [], composerHeight: CGFloat,
-            composerCardOffset: CGFloat = 0, maxContentWidth: CGFloat = .greatestFiniteMagnitude,
+            composerCardOffset: CGFloat = 0, composerCard: CGRect? = nil, browser: CGSize? = nil, maxContentWidth: CGFloat = .greatestFiniteMagnitude,
             docked: Bool = false, accessoryPaddingH: CGFloat = Metrics.accessoryPaddingH, hidesHeader: Bool = false,
             headerAccessory: CGFloat = 0, keyboardMovesInset: Bool = false
         ) {
@@ -144,6 +149,8 @@ public struct LegacyChatScreenLayout: Equatable, Sendable {
             self.accessories = accessories
             self.composerHeight = composerHeight
             self.composerCardOffset = composerCardOffset
+            self.composerCard = composerCard
+            self.browser = browser
             self.maxContentWidth = maxContentWidth
             self.docked = docked
             self.accessoryPaddingH = accessoryPaddingH
@@ -164,6 +171,11 @@ public struct LegacyChatScreenLayout: Equatable, Sendable {
     public var accessories: [CGRect]
     /// The composer, in the dock.
     public var composer: CGRect
+    /// The red live-browser line, in the dock: standing on the composer's
+    /// card, its dot on the card's right edge, as on an agent's chat
+    /// (`ChatStatusLineLayout`). Where the composer keeps no room above
+    /// its card for it, the dock grows by what it lacks.
+    public var browser: ChatStatusLineLayout.Row?
     public var scrollButton: CGRect
     /// The fade behind the dock, from 28 above it to the screen's bottom.
     /// Docked, the backdrop from the dock to the screen's bottom while the
@@ -204,8 +216,15 @@ public struct LegacyChatScreenLayout: Equatable, Sendable {
             y += size
         }
         accessories = frames
-        composer = CGRect(x: band.minX, y: y, width: band.width, height: max(0, input.composerHeight))
+        if let card = input.composerCard, let lineHeight = ChatStatusLineLayout.height(voice: nil, browser: input.browser) {
+            y += max(0, lineHeight - card.minY)
+        }
+        let composer = CGRect(x: band.minX, y: y, width: band.width, height: max(0, input.composerHeight))
+        self.composer = composer
         let dockHeight = y + max(0, input.composerHeight)
+        browser = input.composerCard.flatMap { card in
+            ChatStatusLineLayout(above: card.offsetBy(dx: composer.minX, dy: composer.minY), voice: nil, browser: input.browser)?.browser
+        }
 
         let restingBottom = height - input.safeArea.bottom
         let bottom = min(restingBottom, input.keyboardTop ?? restingBottom)

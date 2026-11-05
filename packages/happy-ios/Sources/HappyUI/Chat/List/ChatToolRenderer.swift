@@ -70,6 +70,8 @@ struct ChatToolViews {
     var flush = true
     /// An attachment still in the outbox: where it is on its way.
     var delivery: OutboxDelivery?
+    /// The live browser whose chip this row carries (`ChatRowInput.liveBrowser`).
+    var liveBrowser: LiveBrowserLink?
 }
 
 // MARK: Tool rows (ToolView.tsx)
@@ -103,10 +105,14 @@ extension ChatRowRenderer {
         let glyph = presentation.statusGlyph.map { _ in CGSize(width: ToolCardLayout.Metrics.statusIconSize, height: ToolCardLayout.Metrics.statusIconSize) }
 
         if presentation.form == .compact {
+            // The bridge names the session's live browser in its results:
+            // the row that first names it carries the chip an agent's link does.
+            let link = views.liveBrowser
             let label = MeasuredText(ChatTextStyles.compactActivity.string(presentation.activityLabel, color: Palette.textSecondary, lineBreakMode: .byTruncatingTail, in: environment), maxLines: 1)
             let layout = CompactToolRowLayout(
                 width: width, maxContentWidth: style.maxContentWidth, label: label.measurable,
-                elapsed: elapsed.map { Measurable.fixed($0) }, statusIcon: glyph, body: body?.measurable, footer: footer?.measurable
+                elapsed: elapsed.map { Measurable.fixed($0) }, statusIcon: glyph, chip: link.map { _ in LiveBrowserChipView.height },
+                body: body?.measurable, footer: footer?.measurable
             )
             var items: [ChatDrawItem] = [
                 headerIcon(presentation.icon, frame: layout.icon),
@@ -114,6 +120,7 @@ extension ChatRowRenderer {
             ]
             if let frame = layout.elapsed { items.append(.elapsed(since: tool.createdAt, frame: frame, text: environment)) }
             if let frame = layout.statusIcon, let glyph = presentation.statusGlyph { items.append(statusGlyph(glyph, frame: frame)) }
+            if let link, let frame = layout.chip { items.append(.embed(.liveBrowser(link), frame: frame)) }
             var hits: [ChatHit] = []
             if let body, let box = layout.bodyBox, let frame = layout.body {
                 items.append(.box(ChatBox(frame: box, fill: Palette.surfaceHigh, radius: CompactToolRowLayout.Metrics.bodyRadius)))
@@ -203,7 +210,7 @@ extension ChatRowRenderer {
         case .search: glyph = .octicons("search")
         case .read: glyph = .octicons("eye")
         case .edit: glyph = .octicons("file-diff")
-        case .web: glyph = .ionicons("globe-outline")
+        case .web, .browser: glyph = .ionicons("globe-outline")
         case .exit: glyph = .ionicons("exit-outline")
         case .todo: glyph = .ionicons("bulb-outline")
         case .reasoning: glyph = .octicons("light-bulb")

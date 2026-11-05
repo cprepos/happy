@@ -150,6 +150,9 @@ public enum ChatToolDisplay {
         "grok_x_search": (.search, "Search X"),
     ]
 
+    /// A browser tool's title, whatever the tool.
+    public static let browserTitle = "Browser"
+
     public static func isHidden(_ name: String) -> Bool { hiddenNames.contains(name) }
 
     public static func isInteractiveQuestion(_ name: String) -> Bool { interactiveQuestionNames.contains(name) }
@@ -184,6 +187,7 @@ public enum ChatToolDisplay {
 
     /// The tool's title: the provider's, Happy Agent's, or the action word.
     public static func displayTitle(_ tool: ToolCall, words: ToolActionWords) -> String {
+        if isBrowserTool(tool.name) { return browserTitle }
         if let title = tool.title?.trimmed, !title.isEmpty { return title }
         if let happy = happyTools[tool.name] { return happy.title }
         return action(category(tool.name), name: tool.name, words: words)
@@ -193,6 +197,7 @@ public enum ChatToolDisplay {
     /// provider's description when it says more than the arguments do, and
     /// failing that the action and its detail.
     public static func activityLabel(_ tool: ToolCall, words: ToolActionWords) -> String {
+        if let browser = browserActivity(tool) { return browser }
         if let command = terminalCommand(tool) { return command }
         if let control = shellControl(tool) { return control.label }
         var withoutDescription = tool
@@ -203,6 +208,78 @@ public enum ChatToolDisplay {
         let action = displayTitle(tool, words: words)
         guard let detail, normalize(detail) != normalize(action) else { return action }
         return "\(action): \(detail)"
+    }
+
+    // MARK: The live browser
+
+    /// A happy-browser-bridge tool's bare name (`browser_observe`), under
+    /// whichever MCP server prefix it came (`mcp__happy-browser-bridge__`,
+    /// `happy-browser-bridge.`), or nil for any other tool.
+    public static func browserToolName(_ name: String) -> String? {
+        var bare = Substring(name)
+        if let separator = bare.range(of: "__", options: .backwards) { bare = bare[separator.upperBound...] }
+        if let dot = bare.lastIndex(of: ".") { bare = bare[bare.index(after: dot)...] }
+        guard bare.hasPrefix("browser_"), bare.count > "browser_".count else { return nil }
+        return String(bare)
+    }
+
+    public static func isBrowserTool(_ name: String) -> Bool { browserToolName(name) != nil }
+
+    /// A browser tool's row: a short verb and, where it says something,
+    /// what it was on (the page's host, a button's label). Never what
+    /// was typed or filled.
+    public static func browserActivity(_ tool: ToolCall) -> String? {
+        guard let name = browserToolName(tool.name) else { return nil }
+        let input = tool.input
+        let action = input["action"]?.objectValue != nil ? input["action"] : nil
+        func host(_ value: JSONValue?) -> String? {
+            guard let text = value?.stringValue?.trimmed, !text.isEmpty else { return nil }
+            if let url = URL(string: text), let host = url.host, !host.isEmpty {
+                return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+            }
+            return text
+        }
+        func with(_ verb: String, _ detail: String?) -> String {
+            guard let detail, !detail.isEmpty else { return verb }
+            return "\(verb) \(detail)"
+        }
+        let waiting = tool.state == .running ? "Waiting for you…" : "Waited for you"
+        let label = action?["label"]?.stringValue?.trimmed
+        switch name {
+        case "browser_create_session", "browser_fork_session":
+            return with("Opened", host(input["start_url"]) ?? "the browser")
+        case "browser_execute_action":
+            switch action?["action"]?.stringValue {
+            case "navigate": return with("Opened", host(action?["url"]))
+            case "click": return with("Clicked", label)
+            case "hover": return with("Pointed at", label)
+            case "type", "select_option", "upload": return with("Typed", label.map { "in \($0)" })
+            case "press": return with("Pressed", action?["key"]?.stringValue)
+            case "scroll": return "Scrolled"
+            case "reload": return "Reloaded the page"
+            case "go_back": return "Went back"
+            case "go_forward": return "Went forward"
+            case "wait": return "Waited"
+            case "request_human_takeover": return waiting
+            case "done": return "Finished with the page"
+            default: return "Used the page"
+            }
+        case "browser_observe", "browser_screenshot", "browser_get_html", "browser_find_elements", "browser_eval_js",
+             "browser_wait_for_selector", "browser_get_session":
+            return "Looked at the page"
+        case "browser_login", "browser_fill_secret":
+            return "Signed in"
+        case "browser_wait_for_human", "browser_request_human_takeover":
+            return waiting
+        case "browser_live_link":
+            return "Shared the live view"
+        case "browser_list_secrets":
+            return "Checked saved logins"
+        case "browser_close_session", "browser_close_tab":
+            return "Closed the browser"
+        default:
+            return formatName(String(name.dropFirst("browser_".count)))
+        }
     }
 
     /// The command a terminal tool ran, from whichever field carried it.

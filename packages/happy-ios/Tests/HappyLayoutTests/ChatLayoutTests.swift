@@ -448,6 +448,17 @@ final class ToolRowLayoutTests: XCTestCase {
         XCTAssertEqual(layout.size.height, 78)
     }
 
+    func testALiveBrowserChipSitsUnderTheCompactRow() {
+        let layout = CompactToolRowLayout(width: 393, label: text("Opened example.com", lineHeight: 20), elapsed: nil, statusIcon: nil, chip: 44, footer: nil)
+        assertFrame(layout.header, rect(8, 2, 377, 28))
+        assertFrame(layout.chip, rect(8, 34, 377, 44))
+        XCTAssertEqual(layout.size.height, 80)
+        let opened = CompactToolRowLayout(width: 393, label: text("x", lineHeight: 20), elapsed: nil, statusIcon: nil, chip: 44, body: block(height: 60), footer: nil)
+        assertFrame(opened.chip, rect(8, 34, 377, 44))
+        assertFrame(opened.bodyBox, rect(8, 80, 377, 68))
+        XCTAssertNil(CompactToolRowLayout(width: 393, label: text("x", lineHeight: 20), elapsed: nil, statusIcon: nil, footer: nil).chip)
+    }
+
     func testAnOpenedCompactRowShowsItsBodyInABox() {
         let layout = CompactToolRowLayout(width: 393, label: text("x", lineHeight: 20), elapsed: nil, statusIcon: nil, body: block(height: 60), footer: block(height: 46))
         assertFrame(layout.header, rect(8, 2, 377, 28))

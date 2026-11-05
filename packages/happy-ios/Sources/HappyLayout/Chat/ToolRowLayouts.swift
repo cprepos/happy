@@ -175,6 +175,7 @@ public struct ToolCardLayout: Equatable, Sendable {
 ///
 ///     2
 ///     8 [icon 20] 10 label ………………… 8 [1.2s] 10 [status]   min 28, 3 padding
+///     [live browser chip, 44]                                 4 below the row
 ///     ┌ body, once opened: surfaceHigh, 12 in, 8 down ┐       2 below the row
 ///     [permission footer]
 ///     2
@@ -192,6 +193,8 @@ public struct CompactToolRowLayout: Equatable, Sendable {
         public static let elapsedMarginLeft: CGFloat = 8
         public static let bodyMarginTop: CGFloat = 2
         public static let bodyRadius: CGFloat = 8
+        /// Between the row and a live browser's chip under it.
+        public static let chipMarginTop: CGFloat = 4
     }
 
     public var size: CGSize
@@ -201,6 +204,9 @@ public struct CompactToolRowLayout: Equatable, Sendable {
     public var label: CGRect
     public var elapsed: CGRect?
     public var statusIcon: CGRect?
+    /// The live browser the tool's result names: its chip, as wide as the
+    /// card (the chip keeps its own most width), under the row.
+    public var chip: CGRect?
     /// The opened body's box, and its content inside the card padding.
     public var bodyBox: CGRect?
     public var body: CGRect?
@@ -208,7 +214,7 @@ public struct CompactToolRowLayout: Equatable, Sendable {
 
     public init(
         width: CGFloat, maxContentWidth: CGFloat = .greatestFiniteMagnitude, label: Measurable, elapsed: Measurable?, statusIcon: CGSize?,
-        body: Measurable? = nil, footer: Measurable?
+        chip chipHeight: CGFloat? = nil, body: Measurable? = nil, footer: Measurable?
     ) {
         typealias M = Metrics
         let (x, cardWidth) = ToolRowMetrics.cardFrame(rowWidth: width, maxContentWidth: maxContentWidth)
@@ -238,6 +244,13 @@ public struct CompactToolRowLayout: Equatable, Sendable {
         self.elapsed = elapsedFrame.map { CGRect(x: $0.minX, y: centred($0.height), width: $0.width, height: $0.height) }
         self.statusIcon = statusFrame.map { CGRect(x: $0.minX, y: centred($0.height), width: $0.width, height: $0.height) }
         var y = top + headerHeight
+        if let chipHeight {
+            y += M.chipMarginTop
+            chip = CGRect(x: x, y: y, width: cardWidth, height: chipHeight)
+            y += chipHeight
+        } else {
+            chip = nil
+        }
         if let body {
             typealias Card = ToolCardLayout.Metrics
             let contentWidth = max(0, cardWidth - 2 * Card.contentPaddingH)
