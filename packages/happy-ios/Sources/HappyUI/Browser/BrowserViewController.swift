@@ -63,11 +63,13 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
 
     private var computerName: String { session?.computerName ?? Strings.agentConnection }
     /// A bundled artifact's made-up origin, which means nothing outside.
-    private static func isSynthetic(_ url: URL) -> Bool { url.host?.hasSuffix(".invalid") == true }
+    private static func isSynthetic(_ url: URL) -> Bool { url.host?.hasSuffix(".invalid") == true && BrowserLoopback.real(url) == nil }
+    /// The address a person knows: the computer's `localhost`, not its alias.
+    private static func shown(_ url: URL) -> URL { BrowserLoopback.real(url) ?? url }
     /// The host and any port, as the error page names a server: a dev
     /// server is told apart by its port. Nothing for a made-up origin.
     private static func address(_ url: URL) -> String? {
-        guard !isSynthetic(url), let host = url.host else { return nil }
+        guard !isSynthetic(url), let host = shown(url).host else { return nil }
         return url.port.map { "\(host):\($0)" } ?? host
     }
     /// In another screen rather than a navigation stack of its own.
@@ -265,7 +267,7 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
         reloadItem.accessibilityLabel = stops ? Strings.Browser.stop : Strings.Browser.reload
         guard !isEmbedded else { return }
         let url = problem != nil ? failedURL : web?.url ?? originalURL
-        let host = url.flatMap { Self.isSynthetic($0) ? nil : $0.host }
+        let host = url.flatMap { Self.isSynthetic($0) ? nil : Self.shown($0).host }
         let pageTitle = problem == nil ? web?.title.flatMap { $0.isEmpty ? nil : $0 } : nil
         navigationItem.title = pageTitle ?? host ?? title
         navigationItem.subtitle = pageTitle != nil && host != pageTitle ? host : nil
@@ -306,11 +308,11 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
             guard let list = self?.web?.backForwardList else { done([]); return }
             let items = forward ? list.forwardList : list.backList.reversed()
             done(items.map { item in
-                let action = UIAction(title: item.title.flatMap { $0.isEmpty ? nil : $0 } ?? item.url.host ?? item.url.absoluteString) { [weak self] _ in
+                let action = UIAction(title: item.title.flatMap { $0.isEmpty ? nil : $0 } ?? Self.shown(item.url).host ?? item.url.absoluteString) { [weak self] _ in
                     self?.clearFailure()
                     self?.web?.go(to: item)
                 }
-                action.subtitle = item.url.host
+                action.subtitle = Self.shown(item.url).host
                 return action
             })
         }])
@@ -319,7 +321,7 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
     // MARK: Share
 
     /// The page as it is now: where it went, or the address that failed.
-    private var currentURL: URL { (problem != nil ? failedURL : nil) ?? web?.url ?? originalURL }
+    private var currentURL: URL { Self.shown((problem != nil ? failedURL : nil) ?? web?.url ?? originalURL) }
     private var shareURL: URL { artifactID == nil ? currentURL : originalURL }
 
     func shareActions() -> [UIMenuElement] {
@@ -441,6 +443,12 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
            BrowserPolicy.Authority(url: url) != BrowserPolicy.Authority(url: page.url),
            artifactID != nil, action.navigationType == .linkActivated {
             openBrowser(url, session: session, agentID: agentID)
+            return .cancel
+        }
+        // A redirect or link to the computer's loopback goes by its alias,
+        // which WebKit sends through the proxy.
+        if mainFrame, artifactID == nil, let alias = BrowserLoopback.alias(url) {
+            webView.load(URLRequest(url: alias))
             return .cancel
         }
         if mainFrame { pendingURL = url }

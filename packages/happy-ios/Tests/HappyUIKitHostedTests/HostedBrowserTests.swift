@@ -14,6 +14,8 @@ actor BrowserDaemon: AgentTransport {
     var bodies: [Data] = []
     var credentials: [String] = []
     var targetCredentials: [String] = []
+    /// Each page request's `Host`, `Origin` and request line, as the server saw them.
+    var pageHeads: [(line: String, host: String?, origin: String?)] = []
     let artifactHTML: String?
     let keepAlive: Bool
     var connections = 0
@@ -38,6 +40,7 @@ actor BrowserDaemon: AgentTransport {
         if let credential = head.value("Authorization") { credentials.append(credential) }
         if head.line.hasPrefix("CONNECT ") { return (Data("HTTP/1.1 200 Connection Established\r\n\r\n".utf8), true) }
         targetCredentials.append(head.value("Authorization") ?? "none")
+        pageHeads.append((head.line, head.value("Host"), head.value("Origin")))
         if let key = head.value("Sec-WebSocket-Key") {
             let accept = Data(Insecure.SHA1.hash(data: Data((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").utf8))).base64EncodedString()
             var bytes = Data("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: \(accept)\r\n\r\n".utf8)
@@ -257,6 +260,16 @@ final class HostedBrowserTests: XCTestCase {
         XCTAssertNil(browser.view.subviews.first { $0.accessibilityIdentifier == "browser-route" }, "No “via <computer>” line")
         let requests = await daemon.requests
         XCTAssertTrue(requests.contains { $0.hasPrefix("CONNECT /v0/workspaces/work1/proxy") })
+        // A device's WebKit never proxies loopback: the page loads under the
+        // alias, and the computer's server still sees its own localhost.
+        XCTAssertEqual(web.url?.host, "localhost.happy-loopback.invalid")
+        XCTAssertEqual(browser.navigationItem.title.map { $0 == "localhost" || $0 == "Remote preview" }, true)
+        XCTAssertTrue(requests.contains { $0.hasPrefix("CONNECT localhost:5173 ") })
+        XCTAssertFalse(requests.contains { $0.contains("happy-loopback") })
+        let heads = await daemon.pageHeads.filter { $0.host?.hasPrefix("assets.") != true }
+        XCTAssertTrue(heads.contains { $0.line.hasPrefix("GET / ") })
+        XCTAssertTrue(heads.contains { $0.line.hasPrefix("GET /socket ") && $0.origin == "http://localhost:5173" }, "the WebSocket's Origin is the real one")
+        XCTAssertEqual(Set(heads.compactMap(\.host)), ["localhost:5173"])
         window.overrideUserInterfaceStyle = .light
         try screenshot(window, name: "browser-chat-light")
         window.overrideUserInterfaceStyle = .dark
@@ -322,6 +335,9 @@ final class HostedBrowserTests: XCTestCase {
         try await until { navigation.topViewController === browser && browser.isViewLoaded && browser.transitionCoordinator == nil }
         XCTAssertTrue(browser.navigationItem.rightBarButtonItems?.first === done, "Done is outermost")
         XCTAssertTrue(browser.navigationItem.rightBarButtonItems?.contains { $0 === browser.shareItem } == true, "Share, with Open in Safari, stays")
+        // Full screen reaches the bridge's page the way the card reaches its
+        // frames: through the chat's workspace, to the computer's localhost.
+        try await until { await daemon.pageHeads.contains { $0.line.hasPrefix("GET /live/\(id) ") && $0.host == "localhost:6090" } }
         try screenshot(window, name: "live-browser-takeover")
         chat.handBack(link, from: browser, item: done)
         try await until { await daemon.requests.contains { $0.hasPrefix("POST /live/\(id)/done HTTP/1.1") } }

@@ -42,8 +42,11 @@ final class BrowserPage {
             guard url.scheme == "http" else { throw BrowserError.forbidden }
             scope = .liveArtifact(id: artifactID, workspaceID: workspaceID, authority: authority)
         } else { scope = .workspace(id: workspaceID) }
+        // WebKit on a device never proxies a loopback host: the page loads the
+        // computer's localhost under its alias (`BrowserLoopback`).
+        let loaded = artifactID == nil ? BrowserLoopback.alias(url) ?? url : url
         let proxy = BrowserProxy(client: client, scope: scope)
-        do { return BrowserPage(url: url, proxy: proxy, port: try await proxy.start()) }
+        do { return BrowserPage(url: loaded, proxy: proxy, port: try await proxy.start()) }
         catch { await proxy.stop(); throw error }
     }
 

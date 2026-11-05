@@ -105,6 +105,21 @@ public actor BrowserProxy {
                 let request = try await BrowserRelay.head(local)
                 try BrowserPolicy.checkArtifactOrigin(request.0, authority: authority)
                 try await artifact(local, client: client, upstream: upstream, id: id, version: version, initial: request)
+            case .workspace(let id) where BrowserLoopback.real(authority) != nil:
+                // The computer's own loopback, under the alias WebKit proxies.
+                // Every request is rewritten to the real authority and closes
+                // after its response, so none slips through with the alias.
+                guard let real = BrowserLoopback.real(authority) else { throw BrowserError.forbidden }
+                let remote = try await client.browserTunnel(workspaceID: id, target: real)
+                do {
+                    try await local.write(Data("HTTP/1.1 200 Connection Established\r\n\r\n".utf8))
+                    guard rest.isEmpty else { throw BrowserError.malformed }
+                    let (request, body) = try await BrowserRelay.head(local)
+                    try await remote.write(BrowserLoopback.request(request, alias: authority, real: real).data)
+                    if !body.isEmpty { try await remote.write(body) }
+                    opaqueTunnel = true
+                    try await BrowserRelay.duplex(local, remote)
+                } catch { await remote.close(); throw error }
             case .workspace(let id):
                 let remote = try await client.browserTunnel(workspaceID: id, target: authority)
                 do {

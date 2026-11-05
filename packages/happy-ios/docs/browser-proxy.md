@@ -173,6 +173,24 @@ replaced loads (`NSURLErrorCancelled`, WebKit's 102 and 204) never show an
 error. Hosted tests (`HostedBrowserStatesTests`) drive each case through real
 WebKit and the proxy, and assert the bar's whole run and the buttons.
 
+## The computer's localhost
+
+On a device, WebKit connects a loopback host (`localhost`, `127.x.x.x`, `::1`)
+itself and never asks its configured proxy, so a page on the computer's
+`localhost` (a dev server, the live browser at `localhost:6090`) went to the
+phone's own loopback and failed with nothing sent. The simulator proxies
+loopback, so hosted tests never saw it. A workspace page therefore loads a
+loopback `http`/`ws` address under an alias, `localhost.happy-loopback.invalid`
+(`127-0-0-1.…`, `ip6-1.…`; `BrowserLoopback`), which WebKit does proxy. The
+proxy tunnels an alias CONNECT to the real authority in the same workspace and
+rewrites each request's `Host`, and an alias `Origin` and `Referer`, back to the
+real address, closing after the response (or upgrading), so the server sees
+what a browser on the computer would send: Vite's host check and noVNC's
+same-origin check pass. Main-frame navigations and redirects to a loopback host
+are reloaded under the alias, and the header, history, Copy Link and Open in
+Safari show the real address. `https` loopback stays as it was: its
+certificate would not match the alias.
+
 ## Live browser card
 
 An agent's text that links `http://localhost:6090/live/<id>` (the id 32
