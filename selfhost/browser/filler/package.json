@@ -1,0 +1,12 @@
+{
+  "name": "happy-secret-filler",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Types vault secrets into the agent's browser by name; the agent never sees a value.",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test test/"
+  }
+}

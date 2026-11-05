@@ -1,0 +1,106 @@
+// policy.json: which chat belongs to which client, and which vault items each
+// client's agent may have typed, for which fields and hosts.
+//
+//   { "version": 1,
+//     "clients": { "acme": { "org_id": "<org uuid>", "collection_id": "<Agents collection uuid>",
+//                            "secrets": { "github": { "item_id": "<cipher uuid>",
+//                                                     "hosts": ["github.com"],
+//                                                     "fields": ["username", "password", "totp"] } } } },
+//     "chats": { "<happy session id>": "acme" } }
+//
+// The file must be owned by root and writable by nobody else (it lives at
+// /srv/happy-filler/policy.json, root:1990 0640): uid 1000 code, which the agent
+// runs as, can never rebind a chat or widen a secret. A malformed policy fails
+// the whole load; nothing is guessed.
+import { lstatSync, readFileSync } from 'node:fs';
+import { normalizeHost } from './hosts.mjs';
+
+export class PolicyError extends Error {}
+
+export const FIELDS = ['username', 'password', 'totp'];
+const SLUG = /^[a-z0-9][a-z0-9_-]{0,62}$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CHAT = /^[A-Za-z0-9_.:-]{1,200}$/;
+
+export function checkPolicyFile(path, { requireRoot = true } = {}) {
+    let st;
+    try { st = lstatSync(path); } catch { throw new PolicyError(`policy file ${path} missing`); }
+    if (!st.isFile()) throw new PolicyError('policy file must be a regular file (not a symlink)');
+    if (requireRoot && st.uid !== 0) throw new PolicyError('policy file must be owned by root');
+    if (st.mode & 0o022) throw new PolicyError('policy file must not be group- or world-writable');
+}
+
+export function parsePolicy(json) {
+    let raw;
+    try { raw = typeof json === 'string' ? JSON.parse(json) : json; } catch { throw new PolicyError('policy is not valid JSON'); }
+    if (!raw || raw.version !== 1 || typeof raw.clients !== 'object' || raw.clients === null) throw new PolicyError('policy needs version 1 and clients');
+    const clients = new Map();
+    const seenItems = new Map();
+    const seenOrgs = new Map();
+    for (const [slug, c] of Object.entries(raw.clients)) {
+        if (!SLUG.test(slug)) throw new PolicyError(`bad client slug ${JSON.stringify(slug).slice(0, 70)}`);
+        if (!c || !UUID.test(c.org_id || '') || !UUID.test(c.collection_id || '')) throw new PolicyError(`client ${slug}: org_id and collection_id must be uuids`);
+        const org = c.org_id.toLowerCase();
+        if (seenOrgs.has(org)) throw new PolicyError(`client ${slug}: org_id already belongs to client ${seenOrgs.get(org)}`);
+        seenOrgs.set(org, slug);
+        const secrets = new Map();
+        for (const [name, s] of Object.entries(c.secrets || {})) {
+            if (!SLUG.test(name)) throw new PolicyError(`client ${slug}: bad secret name`);
+            if (!s || !UUID.test(s.item_id || '')) throw new PolicyError(`${slug}.${name}: item_id must be a uuid`);
+            const item = s.item_id.toLowerCase();
+            if (seenItems.has(item)) throw new PolicyError(`${slug}.${name}: item already used by ${seenItems.get(item)}`);
+            seenItems.set(item, `${slug}.${name}`);
+            const hosts = (Array.isArray(s.hosts) ? s.hosts : []).map((h) => {
+                const n = normalizeHost(h);
+                if (!n) throw new PolicyError(`${slug}.${name}: bad host`);
+                return n;
+            });
+            if (!hosts.length) throw new PolicyError(`${slug}.${name}: needs at least one host`);
+            const fields = Array.isArray(s.fields) ? s.fields : [];
+            if (!fields.length || fields.some((f) => !FIELDS.includes(f))) throw new PolicyError(`${slug}.${name}: fields must be some of ${FIELDS.join(', ')}`);
+            secrets.set(name, Object.freeze({ item_id: item, hosts: Object.freeze(hosts), fields: Object.freeze([...new Set(fields)]) }));
+        }
+        clients.set(slug, Object.freeze({ org_id: org, collection_id: c.collection_id.toLowerCase(), secrets }));
+    }
+    const chats = new Map();
+    for (const [chat, slug] of Object.entries(raw.chats || {})) {
+        if (!CHAT.test(chat)) throw new PolicyError('bad chat id in chats');
+        if (!clients.has(slug)) throw new PolicyError(`chat bound to unknown client ${String(slug).slice(0, 64)}`);
+        chats.set(chat, slug);
+    }
+    return createPolicy(clients, chats);
+}
+
+function createPolicy(clients, chats) {
+    return Object.freeze({
+        clients: () => [...clients.keys()],
+        client: (slug) => clients.get(slug) || null,
+        /** The client a chat is bound to, or null. Never a default. */
+        clientForChat: (chat) => (typeof chat === 'string' && chats.has(chat) ? chats.get(chat) : null),
+        /** Every fillable name for a client: [{name: "github.password", secret, field, item_id, hosts}]. */
+        entries(slug) {
+            const c = clients.get(slug);
+            if (!c) return [];
+            const out = [];
+            for (const [secret, s] of c.secrets) for (const field of s.fields) out.push({ name: `${secret}.${field}`, secret, field, item_id: s.item_id, hosts: s.hosts });
+            return out;
+        },
+        /** One name ("github.password") for a client, or null. */
+        resolve(slug, name) {
+            const m = /^([a-z0-9][a-z0-9_-]{0,62})\.(username|password|totp)$/.exec(String(name ?? ''));
+            const s = m && clients.get(slug)?.secrets.get(m[1]);
+            if (!s || !s.fields.includes(m[2])) return null;
+            return { name: `${m[1]}.${m[2]}`, secret: m[1], field: m[2], item_id: s.item_id, hosts: s.hosts };
+        },
+        /** A secret ("github") with every field it allows. */
+        secret(slug, secret) {
+            const s = clients.get(slug)?.secrets.get(String(secret ?? ''));
+            return s ? { secret, ...s } : null;
+        },
+    });
+}
+
+export function loadPolicy(path, opts = {}) {
+    checkPolicyFile(path, opts);
+    return parsePolicy(readFileSync(path, 'utf8'));
+}
