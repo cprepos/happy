@@ -80,6 +80,8 @@ extension Strings {
         /// The status pill once the browser's session closed.
         static let endedStatus = "Ended"
         static let connecting = "Connecting…"
+        /// The red line's status when no computer can reach the browser.
+        static let unavailableStatus = "Unavailable"
         /// The workspace runs in a container, whose proxy refuses tunnels (501).
         static let unavailable = "Unavailable — the browser runs on the host, and this chat’s workspace can’t reach it."
         /// The bridge doesn't know the link (404).
@@ -90,6 +92,39 @@ extension Strings {
         /// The full screen's button that hands control back to the agent.
         static let handBack = "Done"
         static let handBackFailed = "Couldn’t Hand Back Control"
+        /// The red line over the composer, before the status.
+        static let indicator = "Live browser"
+        static func indicator(_ status: String) -> String { "\(indicator) · \(status)" }
+        /// The full screen's button that takes the browser from the agent.
+        static let takeControl = "Take control"
+        /// The player's: the same, short.
+        static let takeOver = "Take over"
+        static let releaseControl = "Release control"
+        static let release = "Release"
+        static let takeFailed = "Couldn’t Take Control"
+        static let releaseFailed = "Couldn’t Release Control"
+        /// An older link's chip, once the chat linked a newer browser.
+        static let replaced = "Replaced by a newer browser"
+        static let open = "Open"
+        static let minimize = "Minimize"
+        static let fullScreen = "Full screen"
+        static let close = "Close"
+        static let bigger = "Bigger"
+        static let smaller = "Smaller"
+        /// What the agent did last, under the full screen's title.
+        static func lastAction(_ action: LiveBrowserState.Action) -> String {
+            let verb = switch action.kind {
+            case "click": "Clicked"
+            case "type", "fill": "Typed in"
+            case "navigate", "goto": "Opened"
+            case "scroll": "Scrolled"
+            case "press", "key": "Pressed"
+            case "select": "Selected"
+            default: action.kind.prefix(1).uppercased() + action.kind.dropFirst()
+            }
+            guard let target = action.target, !target.isEmpty else { return verb }
+            return "\(verb) \(target)"
+        }
 
         static func status(_ status: LiveBrowserState.Status) -> String {
             switch status {
