@@ -411,6 +411,10 @@ final class LiveBrowserDock: NSObject {
 
     private func dismissFullScreen(animated: Bool) {
         guard let fullScreen else { return }
+        // Minimize, End, the chat closing: noVNC goes with the full
+        // screen, and control with it, said here rather than left to the
+        // page's disappearing.
+        if noVNCPage != nil { releaseHeld() }
         self.fullScreen = nil
         feed?.detach(fullScreen)
         // The chat shows again: said here too, not only by its
@@ -467,7 +471,8 @@ final class LiveBrowserDock: NSObject {
     /// `POST /release` for `feed`'s link, through its own transport, once
     /// for each take, and not while Release control is already on its way.
     private func releaseHeld(_ feed: LiveBrowserFeed? = nil) {
-        guard let feed = feed ?? self.feed, feed === self.feed, controlTaken, !releasedOnLeave, !releasing else { return }
+        guard let feed = feed ?? self.feed, feed === self.feed, !releasedOnLeave, !releasing,
+              controlTaken || feed.phase.state?.status == .user else { return }
         releasedOnLeave = true
         controlTaken = false
         Task { [weak self] in
@@ -480,7 +485,7 @@ final class LiveBrowserDock: NSObject {
 
     @objc private func appBackgrounded() {
         backgroundRelease?.cancel()
-        guard noVNCPage != nil, controlTaken else { return }
+        guard noVNCPage != nil, holdsControl else { return }
         backgroundRelease = Task { [weak self] in
             try? await Task.sleep(for: Self.backgroundGrace)
             guard !Task.isCancelled, let self, UIApplication.shared.applicationState == .background else { return }
@@ -712,20 +717,22 @@ final class LiveBrowserFullScreenItems: UIViewController {
         if isNoVNC { holdGestures() }
     }
 
+    /// Going for good (popped, or its full screen dismissed), not covered
+    /// for a moment or laid out again: control goes back. Asked before it
+    /// goes, while the dismissal still says so.
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
-        if isNoVNC { restoreGestures() }
+        guard isNoVNC else { return }
+        restoreGestures()
+        let navigation = navigationController
+        if isMovingFromParent || isBeingDismissed || navigation?.isBeingDismissed == true { dock?.noVNCLeft() }
     }
 
-    /// Gone for good (popped, or its full screen dismissed), not covered
-    /// for a moment or laid out again: control goes back.
+    /// Whatever the will-disappear missed: gone from its full screen.
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         guard isNoVNC else { return }
-        let navigation = navigationController
-        let gone = isMovingFromParent || isBeingDismissed || navigation == nil
-            || navigation?.isBeingDismissed == true || navigation?.presentingViewController == nil
-        if gone { dock?.noVNCLeft() }
+        if parent == nil || navigationController?.presentingViewController == nil { dock?.noVNCLeft() }
     }
 
     /// noVNC has every touch: no swipe back, no pull to dismiss, no split
