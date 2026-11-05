@@ -157,7 +157,7 @@ test('config: slots and port bases are bounded', () => {
     assert.throws(() => launcherConfig({}), /required/);
 });
 
-test('validation: only the five ops, with exact fields', () => {
+test('validation: only the six ops, with exact fields', () => {
     const { cfg } = setup({ MAX_PODS: '4' });
     const ok = (r) => assert.doesNotThrow(() => validate(cfg, r));
     const bad = (r, re) => assert.throws(() => validate(cfg, r), re);
@@ -166,6 +166,14 @@ test('validation: only the five ops, with exact fields', () => {
     ok({ op: 'list' });
     ok({ op: 'adopt_auth', slot: 1, chat_hash: CHAT });
     ok({ op: 'stash_auth', slot: 1, chat_hash: CHAT, keep: true });
+    ok({ op: 'copy_auth', from_chat_hash: 'e'.repeat(32), chat_hash: CHAT });
+    bad({ op: 'copy_auth', from_chat_hash: CHAT, chat_hash: CHAT }, /must differ/);
+    bad({ op: 'copy_auth', from_chat_hash: '../' + 'e'.repeat(29), chat_hash: CHAT }, /bad from_chat_hash/);
+    bad({ op: 'copy_auth', from_chat_hash: 'E'.repeat(32), chat_hash: CHAT }, /bad from_chat_hash/);
+    bad({ op: 'copy_auth', chat_hash: CHAT }, /bad from_chat_hash/);
+    bad({ op: 'copy_auth', from_chat_hash: 'e'.repeat(32), chat_hash: 'x' }, /bad chat_hash/);
+    bad({ op: 'copy_auth', from_chat_hash: 'e'.repeat(32), chat_hash: CHAT, slot: 0 }, /unexpected field slot/);
+    bad({ op: 'stash_auth', slot: 0, chat_hash: CHAT, from_chat_hash: 'e'.repeat(32) }, /unexpected field from_chat_hash/);
     bad({ op: 'exec', slot: 0 }, /unknown op/);
     bad({ op: 'ensure', slot: 4, pod_id: POD, vnc_password: 'Abcd1234' }, /bad slot/);
     bad({ op: 'ensure', slot: -1, pod_id: POD, vnc_password: 'Abcd1234' }, /bad slot/);
@@ -272,5 +280,93 @@ test('list removes a labeled pod whose slot directory is gone', async () => {
         const ls = await launcher.handle({ op: 'list' });
         assert.deepEqual(ls.result.pods, []);
         assert.deepEqual([...eng.containers.keys()], ['other']);
+    } finally { await eng.close(); }
+});
+
+// A parent chat's saved login, as stash_auth leaves it.
+function saveLogin(home, hash, value, mode = 0o700) {
+    const prof = join(home, 'data/chats', hash, 'auth/profiles/happy-chat');
+    mkdirSync(prof, { recursive: true, mode });
+    writeFileSync(join(prof, 'state.enc'), value);
+    return prof;
+}
+const readLogin = (home, hash, which = 'profiles') => readFileSync(join(home, 'data/chats', hash, 'auth', which, 'happy-chat/state.enc'), 'utf8');
+const PARENT = 'e'.repeat(32);
+
+test('copy_auth: a fork gets a copy of its parent login, once, and the parent is untouched', async () => {
+    const { home, cfg } = setup();
+    const launcher = createLauncher(cfg, { engine: {}, images: {}, seccomp: '', secrets: SECRETS, log: { log() {}, warn() {} } });
+    const copy = (from, to) => launcher.handle({ op: 'copy_auth', from_chat_hash: from, chat_hash: to });
+
+    // Nothing saved for the parent: nothing to copy, and no directory made for the child.
+    assert.deepEqual((await copy(PARENT, CHAT)).result, { copied: false, reason: 'no_source' });
+    assert.ok(!existsSync(join(home, 'data/chats', CHAT)));
+    mkdirSync(join(home, 'data/chats', PARENT, 'auth/profiles'), { recursive: true });
+    assert.deepEqual((await copy(PARENT, CHAT)).result, { copied: false, reason: 'no_source' }, 'an empty profiles dir is no login');
+
+    saveLogin(home, PARENT, 'parent-v1');
+    const before = statSync(join(home, 'data/chats', PARENT, 'auth/profiles/happy-chat/state.enc'));
+    assert.deepEqual((await copy(PARENT, CHAT)).result, { copied: true });
+    assert.equal(readLogin(home, CHAT), 'parent-v1');
+    for (const d of [join(home, 'data/chats', CHAT), join(home, 'data/chats', CHAT, 'auth'), join(home, 'data/chats', CHAT, 'auth/profiles')]) {
+        assert.equal(statSync(d).mode & 0o777, 0o700, d);
+        assert.equal(statSync(d).uid, process.getuid());
+    }
+    assert.deepEqual(readdirSync(join(home, 'data/chats', CHAT, 'auth')), ['profiles'], 'no temp dir or prev left behind');
+    const after = statSync(join(home, 'data/chats', PARENT, 'auth/profiles/happy-chat/state.enc'));
+    assert.equal(readLogin(home, PARENT), 'parent-v1');
+    assert.equal(after.mtimeMs, before.mtimeMs, 'parent file untouched');
+    assert.deepEqual(readdirSync(join(home, 'data/chats', PARENT, 'auth')), ['profiles']);
+
+    // The child's own login is never replaced, even by a newer parent login.
+    writeFileSync(join(home, 'data/chats', CHAT, 'auth/profiles/happy-chat/state.enc'), 'child-own');
+    saveLogin(home, PARENT, 'parent-v2');
+    assert.deepEqual((await copy(PARENT, CHAT)).result, { copied: false, reason: 'exists' });
+    assert.equal(readLogin(home, CHAT), 'child-own');
+
+    // Refused before any file is touched.
+    const r = await copy(CHAT, CHAT);
+    assert.equal(r.ok, false);
+    assert.match(r.error, /must differ/);
+    const r2 = await launcher.handle({ op: 'copy_auth', from_chat_hash: '..', chat_hash: CHAT });
+    assert.equal(r2.ok, false);
+    assert.match(r2.error, /bad from_chat_hash/);
+});
+
+test('copy_auth racing stash_auth leaves both chats whole', async () => {
+    const { home, cfg } = setup();
+    const eng = await fakeEngine(home);
+    const launcher = createLauncher(cfg, { engine: createEngine(eng.socketPath), images: composeImages(COMPOSE), seccomp: SECCOMP, secrets: SECRETS, log: { log() {}, warn() {} } });
+    const slotLogin = (slot, value) => {
+        const prof = join(home, `data/pods/slot-${slot}/auth/profiles/happy-chat`);
+        mkdirSync(prof, { recursive: true });
+        writeFileSync(join(prof, 'state.enc'), value);
+    };
+    try {
+        for (let i = 0; i < 20; i++) {
+            const parent = (i.toString(16).padStart(2, '0') + 'e'.repeat(30));
+            const child = (i.toString(16).padStart(2, '0') + 'f'.repeat(30));
+            await launcher.handle({ op: 'ensure', slot: 0, pod_id: POD, vnc_password: 'Abcd1234' });
+            await launcher.handle({ op: 'ensure', slot: 1, pod_id: 'c'.repeat(32), vnc_password: 'Abcd1234' });
+            saveLogin(home, parent, 'parent-old');
+            slotLogin(0, 'parent-new');
+            slotLogin(1, 'child-own');
+            // The parent's pod saves while the fork copies, and the fork's own pod saves too.
+            const [s0, c, s1] = await Promise.all([
+                launcher.handle({ op: 'stash_auth', slot: 0, chat_hash: parent, keep: true }),
+                launcher.handle({ op: 'copy_auth', from_chat_hash: parent, chat_hash: child }),
+                launcher.handle({ op: 'stash_auth', slot: 1, chat_hash: child, keep: true }),
+            ]);
+            assert.equal(s0.ok && c.ok && s1.ok, true, JSON.stringify([s0, c, s1]));
+            assert.equal(readLogin(home, parent), 'parent-new');
+            assert.equal(readLogin(home, parent, 'profiles.prev'), 'parent-old');
+            // Whichever went first, the child ends on its own login, never a half copy.
+            assert.equal(readLogin(home, child), 'child-own');
+            if (c.result.copied) assert.match(readLogin(home, child, 'profiles.prev'), /^parent-(old|new)$/);
+            else assert.equal(c.result.reason, 'exists');
+            for (const h of [parent, child]) {
+                assert.ok(readdirSync(join(home, 'data/chats', h, 'auth')).every((n) => n === 'profiles' || n === 'profiles.prev'), 'no temp dirs');
+            }
+        }
     } finally { await eng.close(); }
 });

@@ -14,6 +14,7 @@
 //   {"id":3,"op":"list"}
 //   {"id":4,"op":"adopt_auth","slot":0,"chat_hash":"<32 hex>"}
 //   {"id":5,"op":"stash_auth","slot":0,"chat_hash":"<32 hex>","keep":false}
+//   {"id":6,"op":"copy_auth","from_chat_hash":"<32 hex>","chat_hash":"<32 hex>"}
 //
 // Every reply is {"id":..,"ok":true,"result":..} or {"id":..,"ok":false,"error":".."}. Nothing
 // else is accepted: no image, mount, port, env or command comes from a caller. Image digests are
@@ -32,7 +33,7 @@ import { fileURLToPath } from 'node:url';
 export const HARD_MAX_PODS = 32;
 export const ID_RE = /^[0-9a-f]{32}$/;
 export const VNC_RE = /^[A-Za-z0-9]{8}$/;
-export const OPS = new Set(['ensure', 'stop', 'list', 'adopt_auth', 'stash_auth']);
+export const OPS = new Set(['ensure', 'stop', 'list', 'adopt_auth', 'stash_auth', 'copy_auth']);
 const GiB = 1024 ** 3;
 
 export function launcherConfig(env = process.env) {
@@ -94,7 +95,7 @@ export const slotDir = (cfg, slot) => join(cfg.podsDir, `slot-${slot}`);
 export function validate(cfg, req) {
     if (!req || typeof req !== 'object' || Array.isArray(req)) throw new Error('bad request');
     if (!OPS.has(req.op)) throw new Error('unknown op');
-    const allowed = { ensure: ['slot', 'pod_id', 'vnc_password'], stop: ['slot'], list: [], adopt_auth: ['slot', 'chat_hash'], stash_auth: ['slot', 'chat_hash', 'keep'] }[req.op];
+    const allowed = { ensure: ['slot', 'pod_id', 'vnc_password'], stop: ['slot'], list: [], adopt_auth: ['slot', 'chat_hash'], stash_auth: ['slot', 'chat_hash', 'keep'], copy_auth: ['from_chat_hash', 'chat_hash'] }[req.op];
     for (const k of Object.keys(req)) if (k !== 'id' && k !== 'op' && !allowed.includes(k)) throw new Error(`unexpected field ${k}`);
     if (allowed.includes('slot') && !(Number.isInteger(req.slot) && req.slot >= 0 && req.slot < cfg.maxPods)) throw new Error('bad slot');
     if (req.op === 'ensure') {
@@ -102,6 +103,10 @@ export function validate(cfg, req) {
         if (typeof req.vnc_password !== 'string' || !VNC_RE.test(req.vnc_password)) throw new Error('bad vnc_password');
     }
     if (allowed.includes('chat_hash') && (typeof req.chat_hash !== 'string' || !ID_RE.test(req.chat_hash))) throw new Error('bad chat_hash');
+    if (allowed.includes('from_chat_hash')) {
+        if (typeof req.from_chat_hash !== 'string' || !ID_RE.test(req.from_chat_hash)) throw new Error('bad from_chat_hash');
+        if (req.from_chat_hash === req.chat_hash) throw new Error('from_chat_hash and chat_hash must differ');
+    }
     if ('keep' in req && typeof req.keep !== 'boolean') throw new Error('bad keep');
     return req;
 }
@@ -266,6 +271,10 @@ export function createLauncher(cfg, { engine, images, seccomp, secrets, log = co
         locks.set(slot, next.finally(() => { if (locks.get(slot) === next) locks.delete(slot); }));
         return next;
     };
+    // Locks on a chat's saved login (data/chats/<hash>/auth), separate from the slot locks: a
+    // stash or adopt takes its slot's lock and then its chat's, and copy_auth takes only chat
+    // locks (both, in sorted order), so no two callers ever wait on each other in a cycle.
+    const chatLock = (hash, fn) => serial(`chat:${hash}`, fn);
     const containersFor = async (slot) => (await engine.list(cfg.project)).filter((c) => c.Labels?.['happy-browser.slot'] === String(slot));
 
     const wipe = (slot) => {
@@ -339,7 +348,7 @@ export function createLauncher(cfg, { engine, images, seccomp, secrets, log = co
             return { max_pods: cfg.maxPods, pods: out.sort((a, b) => a.slot - b.slot) };
         },
         async adopt_auth({ slot, chat_hash: chatHash }) {
-            return serial(slot, async () => {
+            return serial(slot, () => chatLock(chatHash, async () => {
                 const from = join(cfg.chatsDir, chatHash, 'auth', 'profiles');
                 const to = join(slotDir(cfg, slot), 'auth', 'profiles');
                 if (!existsSync(slotDir(cfg, slot))) throw new Error('slot is not running');
@@ -350,10 +359,10 @@ export function createLauncher(cfg, { engine, images, seccomp, secrets, log = co
                 cpSync(from, to, { recursive: true, preserveTimestamps: true });
                 chownTree(to, cfg.dataUid, cfg.dataGid);
                 return { adopted: true };
-            });
+            }));
         },
         async stash_auth({ slot, chat_hash: chatHash, keep = false }) {
-            return serial(slot, async () => {
+            return serial(slot, () => chatLock(chatHash, async () => {
                 const from = join(slotDir(cfg, slot), 'auth', 'profiles');
                 if (!existsSync(from) || readdirSync(from).length === 0) return { stashed: false };
                 const dir = join(cfg.chatsDir, chatHash, 'auth');
@@ -373,7 +382,35 @@ export function createLauncher(cfg, { engine, images, seccomp, secrets, log = co
                 renameSync(tmp, to);
                 if (!keep) rmSync(from, { recursive: true, force: true });
                 return { stashed: true };
-            });
+            }));
+        },
+        // A forked chat's first login: a copy of its parent's saved one. It never replaces a
+        // login the chat already has, and the parent's files are only read.
+        async copy_auth({ from_chat_hash: fromHash, chat_hash: chatHash }) {
+            const [a, b] = [fromHash, chatHash].sort();
+            return chatLock(a, () => chatLock(b, async () => {
+                const from = join(cfg.chatsDir, fromHash, 'auth', 'profiles');
+                const dir = join(cfg.chatsDir, chatHash, 'auth');
+                const to = join(dir, 'profiles');
+                if (existsSync(to)) return { copied: false, reason: 'exists' };
+                if (!existsSync(from) || readdirSync(from).length === 0) return { copied: false, reason: 'no_source' };
+                mkdirSync(dir, { recursive: true, mode: 0o700 });
+                chmodSync(join(cfg.chatsDir, chatHash), 0o700);
+                chmodSync(dir, 0o700);
+                chownSync(join(cfg.chatsDir, chatHash), cfg.dataUid, cfg.dataGid);
+                chownSync(dir, cfg.dataUid, cfg.dataGid);
+                const tmp = join(dir, `profiles.new-${process.pid}-${Date.now()}`);
+                try {
+                    cpSync(from, tmp, { recursive: true, preserveTimestamps: true });
+                    chmodSync(tmp, 0o700);
+                    chownTree(tmp, cfg.dataUid, cfg.dataGid);
+                    renameSync(tmp, to);
+                } catch (err) {
+                    if (existsSync(tmp)) rmSync(tmp, { recursive: true, force: true });
+                    throw err;
+                }
+                return { copied: true };
+            }));
         },
     };
 
