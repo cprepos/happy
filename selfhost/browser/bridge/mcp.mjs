@@ -5,6 +5,8 @@
 // through from its Streamable HTTP MCP endpoint, so a client needs only this
 // one server and no auto-browser token of its own: the token is read from its
 // 600 file here and sent only to 127.0.0.1:8010. It never holds the VNC password.
+import { createHash } from 'node:crypto';
+import { appendFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { loadConfig, readSecret } from './lib/config.mjs';
 import { createUpstreamMcp, localToolName } from './lib/upstream.mjs';
@@ -113,7 +115,37 @@ export function mapUpstreamTools(tools, log = () => {}) {
     return { tools: listed, byLocal, rename };
 }
 
-export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fetch, pollS = 60, upstream = null, waitMaxS = 3600, log = () => {}, retryMs = 30_000 }) {
+// ── Phase-0 probe: what a client tells us about the chat it serves ────────
+// BRIDGE_LOG_META=1 logs to stderr (or BRIDGE_LOG_META=/abs/path appends to that
+// file) the KEYS of each request's _meta, the client's name and the keys of its
+// clientInfo, and a short hash of chat-ish environment values. Never a raw value.
+const META_ENV_KEYS = /^(CLAUDE_CODE_SESSION_ID|CLAUDE_SESSION_ID|CODEX_.*SESSION.*|HAPPY_[A-Z_]*(SESSION|CHAT|THREAD)[A-Z_]*)$/;
+export function createMetaProbe(env = process.env, sink = null) {
+    const target = env.BRIDGE_LOG_META;
+    if (!target || target === '0') return null;
+    const shortHash = (v) => createHash('sha256').update(String(v)).digest('hex').slice(0, 12);
+    const out = sink || ((line) => {
+        if (target.startsWith('/')) { try { appendFileSync(target, line + '\n', { mode: 0o600 }); } catch {} }
+        else process.stderr.write(`happy-browser-bridge meta: ${line}\n`);
+    });
+    const envHashes = Object.fromEntries(Object.keys(env).filter((k) => META_ENV_KEYS.test(k)).sort().map((k) => [k, shortHash(env[k])]));
+    out(JSON.stringify({ ev: 'start', pid: process.pid, ppid: process.ppid, env: envHashes }));
+    const keysOf = (o) => (o && typeof o === 'object' ? Object.keys(o).sort() : []);
+    return {
+        initialize(params) {
+            const ci = params?.clientInfo;
+            out(JSON.stringify({ ev: 'initialize', client: typeof ci?.name === 'string' ? ci.name.slice(0, 60) : null, clientInfoKeys: keysOf(ci), metaKeys: keysOf(params?._meta), capabilityKeys: keysOf(params?.capabilities) }));
+        },
+        call(method, params) {
+            const meta = params?._meta;
+            // Values hashed, so two calls from one chat can be told apart from two chats.
+            const metaHashes = Object.fromEntries(keysOf(meta).filter((k) => k !== 'progressToken').map((k) => [k, shortHash(JSON.stringify(meta[k]))]));
+            out(JSON.stringify({ ev: method, tool: typeof params?.name === 'string' ? params.name : null, metaKeys: keysOf(meta), metaHashes }));
+        },
+    };
+}
+
+export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fetch, pollS = 60, upstream = null, waitMaxS = 3600, log = () => {}, retryMs = 30_000, metaProbe = null }) {
     const inflight = new Map(); // request id -> AbortController
     const tools = ownTools(waitMaxS);
     let mapped = { tools: [], byLocal: new Map(), rename: (t) => t };
@@ -257,6 +289,7 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
     async function handle(msg) {
         const { id, method, params } = msg;
         const isRequest = id !== undefined && id !== null;
+        if (metaProbe) { try { if (method === 'initialize') metaProbe.initialize(params); else if (method === 'tools/call' || method === 'tools/list') metaProbe.call(method, params); } catch {} }
         switch (method) {
             case 'initialize': {
                 const asked = params?.protocolVersion;
@@ -343,6 +376,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         upstream,
         waitMaxS: cfg.waitMaxS,
         log,
+        metaProbe: createMetaProbe(),
     });
     const rl = createInterface({ input: process.stdin });
     rl.on('line', (l) => server.onLine(l));

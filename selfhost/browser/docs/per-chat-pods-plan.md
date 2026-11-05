@@ -257,3 +257,32 @@ The key is `chatHash = sha256(source+':'+id).slice(0,32)`.
 - /home/prep/happy/.dev/worktree/bright-bridge/selfhost/browser/bridge/lib/store.mjs
 - /home/prep/happy/.dev/worktree/bright-bridge/selfhost/browser/scripts/browser-node-entrypoint.sh
 - /home/prep/happy/.dev/worktree/bright-bridge/selfhost/browser/compose.browser.yml (plus new `launcher/launcher.mjs`, `bridge/lib/pods.mjs`, `kiosk/`, and `/home/prep/happy/.dev/worktree/bright-bridge/selfhost/browser.mk`)
+
+---
+
+## Implementation notes
+
+### Phase 0 findings (2026-11-04)
+
+- **Claude Code** (`claude-code` client, run with `BRIDGE_LOG_META`): each Claude Code
+  process spawns its own stdio `mcp.mjs`, so the process is per chat. `initialize`
+  carries no `_meta`. Each `tools/call` `_meta` holds only `claudecode/toolUseId`
+  (new per call) and `progressToken`. The CLI does **not** set
+  `CLAUDE_CODE_SESSION_ID` for MCP children; it is present only when the session was
+  launched by a parent that set it (the Happy CLI / agent SDK), and nested
+  `claude -p` children inherit the parent's value.
+- **Happy Agent**: one `mcp.mjs` per daemon (`happy-agent run`, started with the
+  daemon), shared by every chat; its environment has `HAPPY_BROWSER_HOME`,
+  `HAPPY_HOME_DIR`, `HAPPY_SERVER_URL` and no session id. Its bundled MCP client
+  builds `_meta` from `claudecode/toolUseId`, `progressToken` and
+  `claudecode/agentId`/`agentType` (the last two only for one built-in server).
+  No chat id reaches the bridge. A runtime log needs the daemon to respawn its MCP
+  child (`BRIDGE_LOG_META=/abs/path` in `mcp.toml` env), which was not done here.
+- **Chat key decision**: `_meta` carries no chat id from either client, so the key
+  is `CLAUDE_CODE_SESSION_ID` when the process has it, else the fallback: one pod
+  per auto-browser session (create_session / observe without a session allocate,
+  calls with a session id route by a sessionId -> chat map, others go to the
+  process's most recent pod).
+- **Phone proxy**: `BrowserLoopback` (iOS) aliases any loopback port and rewrites
+  `Host`/`Origin`/`Referer` back to `localhost:<port>`, so noVNC on `localhost:61NN`
+  sees a loopback same-origin request, as on 6080. Not checked from a phone.
