@@ -5,7 +5,7 @@ import { createServer } from 'node:http';
 import { mkdtempSync, readFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createBridge } from '../lib/app.mjs';
+import { createBridge, navUrl } from '../lib/app.mjs';
 import { LinkStore, ID_PATTERN } from '../lib/store.mjs';
 import { createMcpServer } from '../mcp.mjs';
 import { fakeNovnc, wsHandshake } from './fake-novnc.mjs';
@@ -38,6 +38,12 @@ function mockClient() {
         },
         async fetchFrame(path) { calls.frame++; assert.ok(path.startsWith('/share/')); return { contentType: 'image/png', body: PNG }; },
         async requestTakeover(id, reason) { if (!sessions.has(id)) throw notFound(); calls.takeover.push({ id, reason }); return {}; },
+        async navigate(id, action, url) {
+            (calls.nav ??= []).push({ id, action, url });
+            const s = sessions.get(id);
+            if (action === 'goto') Object.assign(s, { current_url: url, title: `T ${url}` });
+            return s;
+        },
         async closeSession(id) {
             (calls.close ??= []).push(id);
             if (!sessions.has(id)) throw notFound();
@@ -670,4 +676,26 @@ test('mcp: a wait the user ends returns ended, and later calls on that session s
     const again = await call(21, 'browser_live_link', { session_id: 'sess1' });
     assert.equal(again.result.isError, true);
     assert.match(again.result.content[0].text, /The user ended this browser\. Start a new one only if the task still needs it\./);
+});
+
+test('nav: goto an allowed url, a refused scheme, and only while the user holds control', async () => {
+    const { id } = await link();
+    const nav = (body) => fetch(`${base}/live/${id}/nav`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const notHeld = await nav({ action: 'goto', url: 'https://example.com/' });
+    assert.equal(notHeld.status, 409);
+    assert.equal((await notHeld.json()).error, 'not_in_control');
+    await post(id, 'take');
+    const ok = await nav({ action: 'goto', url: 'example.com/a?b=1' });
+    assert.equal(ok.status, 200);
+    assert.deepEqual(await ok.json(), { ok: true, url: 'https://example.com/a?b=1', title: 'T https://example.com/a?b=1', can_go_back: null, can_go_forward: null });
+    assert.equal((await (await fetch(`${base}/live/${id}/state`)).json()).url, 'https://example.com/a?b=1');
+    for (const url of ['javascript:alert(1)', 'file:///etc/passwd', 'data:text/html,x', 'chrome://settings', 'view-source:https://a.b/', 'about:config', 'x'.repeat(2049)]) {
+        assert.equal((await nav({ action: 'goto', url })).status, 400, url.slice(0, 20));
+    }
+    assert.equal((await nav({ action: 'back' })).status, 200);
+    assert.equal((await nav({ action: 'open' })).status, 400);
+    assert.deepEqual(client.calls.nav.map((n) => n.action), ['goto', 'back']);
+    assert.equal(navUrl('about:blank'), 'about:blank');
+    assert.equal(navUrl('localhost:3000/x'), 'https://localhost:3000/x');
+    assert.equal((await fetch(`${base}/live/${'0'.repeat(32)}/nav`, { method: 'POST' })).status, 404);
 });

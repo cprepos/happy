@@ -8,6 +8,9 @@
 //                              -> state plus novnc_url
 //   POST /live/<id>/release    the user hands control back: user|takeover -> watching, waking waiters
 //   POST /live/<id>/done       alias of /release, for app builds that predate it
+//   POST /live/<id>/nav        {action: back|forward|reload|goto, url?} on the link's session, only
+//                              while user|takeover (else 409); goto takes http(s) only (else 400).
+//                              -> {ok, url, title, can_go_back, can_go_forward}, timed_out after 10 s
 //   POST /live/<id>/end        the user ends the browser: the session closes, the link is done
 //                              (reason user_ended) and waiters wake
 //   GET  /live/chat/<chat_key> which link belongs to this chat: {id, url, live, pod, ...state};
@@ -47,7 +50,7 @@ import { request as httpRequest } from 'node:http';
 import { connect as netConnect } from 'node:net';
 import { renderPage, renderGone } from './page.mjs';
 
-const LIVE_ROUTE = /^\/live\/([^/]+)(\/frame\.jpg|\/state|\/done|\/take|\/release|\/end)?\/?$/;
+const LIVE_ROUTE = /^\/live\/([^/]+)(\/frame\.jpg|\/state|\/done|\/take|\/release|\/end|\/nav)?\/?$/;
 const CHAT_ROUTE = /^\/live\/chat\/([0-9a-f]{32})\/?$/;
 const CHAT_KEY = /^[0-9a-f]{32}$/;
 // noVNC through the bridge. Matched on the raw request path, before any URL normalising, so
@@ -85,6 +88,31 @@ export const SHUTDOWN_REASON = 'bridge_restarting';
 export const VIEWER_LEFT_REASON = 'viewer_left';
 const ACTION_KINDS = new Set(['navigate', 'click', 'hover', 'select_option', 'type', 'press', 'scroll', 'wait', 'reload', 'go_back', 'go_forward', 'upload', 'eval_js', 'activate_tab', 'close_tab']);
 
+// POST /live/<id>/nav {action, url?}: what the person holding control may do to the page.
+export const NAV_ACTIONS = new Set(['back', 'forward', 'reload', 'goto']);
+const NAV_MAX_URL = 2048;
+// Schemes that are never prepended with https:// (they are refused as they are).
+const NON_WEB_SCHEME = /^(javascript|data|file|chrome|chrome-extension|chrome-untrusted|devtools|about|view-source|blob|filesystem|ftp|ws|wss|mailto|intent|vbscript):/i;
+/**
+ * The URL a goto may open: http(s) only, or about:blank. Bare input ("example.com",
+ * "localhost:3000/x") gets https://. Returns the URL string, or throws a 400.
+ */
+export function navUrl(input) {
+    const bad = (why) => { throw Object.assign(new Error(why), { status: 400, code: 'bad_url' }); };
+    if (typeof input !== 'string') bad('url is required');
+    const raw = input.trim();
+    if (!raw) bad('url is required');
+    if (raw.length > NAV_MAX_URL) bad(`url is longer than ${NAV_MAX_URL} characters`);
+    if (raw.toLowerCase() === 'about:blank') return 'about:blank';
+    const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) || NON_WEB_SCHEME.test(raw);
+    let u;
+    try { u = new URL(hasScheme ? raw : `https://${raw}`); } catch { bad('not a valid URL'); }
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') bad(`${u.protocol} URLs are not allowed`);
+    if (!u.hostname) bad('not a valid URL');
+    if (u.href.length > NAV_MAX_URL) bad(`url is longer than ${NAV_MAX_URL} characters`);
+    return u.href;
+}
+
 export function stateOf(rec) {
     return { status: rec.status, reason: rec.reason ?? null, url: rec.url ?? null, title: rec.title ?? null, last_action: rec.lastAction ?? null };
 }
@@ -120,6 +148,8 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         viewerGraceMs = 10_000,
         // After /take, how long noVNC has to open its first socket before control is released.
         takeLoadMs = 60_000,
+        // POST /live/<id>/nav: how long a navigation may take before answering with what loaded.
+        navTimeoutMs = 10_000,
     } = config;
     if (!bridgeToken) throw new Error('bridgeToken is required');
 
@@ -487,6 +517,35 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         return send(res, 200, { id: rec.id, url: linkUrl(rec), live, ...stateOf(rec), ...(pod ? { pod } : {}) });
     }
 
+    // POST /live/<id>/nav: back, forward, reload or goto on the link's own session, for the
+    // person holding control only. A slow page answers with what has loaded after navTimeoutMs.
+    async function nav(req, res, rec) {
+        if (!HELD_STATUSES.has(rec.status)) return send(res, 409, { ok: false, error: 'not_in_control', ...stateOf(rec) });
+        let body;
+        try { body = await readJson(req); } catch (err) { return send(res, err.status || 400, { ok: false, error: err.message }); }
+        const action = body?.action;
+        if (!NAV_ACTIONS.has(action)) return send(res, 400, { ok: false, error: 'action must be back, forward, reload or goto' });
+        let url = null;
+        if (action === 'goto') {
+            try { url = navUrl(body.url); } catch (err) { return send(res, 400, { ok: false, error: err.message, code: err.code }); }
+        }
+        const c = clientOf(rec);
+        if (!c) return send(res, 503, { ok: false, error: 'asleep' });
+        if (podLink(rec)) pods.touchViewer(rec.chatKey);
+        let s, timedOut = false;
+        try {
+            s = await c.navigate(rec.sessionId, action, url, navTimeoutMs);
+        } catch (err) {
+            if (!err.timedOut) return send(res, err.status === 404 ? 410 : 502, { ok: false, error: err.status === 404 ? 'session_closed' : err.message });
+            timedOut = true;
+            try { s = await c.getSession(rec.sessionId); } catch { s = null; }
+        }
+        if (s?.current_url || s?.title) store.update(rec, { url: s.current_url ?? rec.url, title: s.title ?? rec.title });
+        log(`nav /live/${rec.id.slice(0, 6)}… ${action}${timedOut ? ' (timed out)' : ''}`);
+        // History position is not exposed by auto-browser (raw CDP is refused), so these are unknown.
+        return send(res, 200, { ok: true, url: rec.url ?? null, title: rec.title ?? null, can_go_back: null, can_go_forward: null, ...(timedOut ? { timed_out: true } : {}) });
+    }
+
     async function live(req, res, id, sub) {
         const found = store.lookup(id);
         const wantsHtml = !sub;
@@ -519,6 +578,10 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
             }
             if (HELD_STATUSES.has(rec.status)) releaseHeld(rec, 'user_released');
             return send(res, 200, { ...stateOf(rec), ...podField(rec) });
+        }
+        if (sub === '/nav') {
+            if (req.method !== 'POST') return send(res, 405, { error: 'method_not_allowed' }, { Allow: 'POST' });
+            return nav(req, res, rec);
         }
         if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: 'method_not_allowed' }, { Allow: 'GET' });
 

@@ -12,7 +12,7 @@ export function createAutoBrowserClient({ baseUrl, token, fetchImpl = fetch, tim
     const base = baseUrl.replace(/\/+$/, '');
     const auth = { Authorization: `Bearer ${token}` };
 
-    async function call(method, path, { body, authed = true, raw = false } = {}) {
+    async function call(method, path, { body, authed = true, raw = false, timeout = timeoutMs } = {}) {
         const headers = { ...(authed ? auth : {}) };
         if (body !== undefined) headers['Content-Type'] = 'application/json';
         let res;
@@ -21,10 +21,10 @@ export function createAutoBrowserClient({ baseUrl, token, fetchImpl = fetch, tim
                 method,
                 headers,
                 body: body === undefined ? undefined : JSON.stringify(body),
-                signal: AbortSignal.timeout(timeoutMs),
+                signal: AbortSignal.timeout(timeout),
             });
         } catch (err) {
-            throw new AutoBrowserError(`auto-browser unreachable: ${err.name}`, 502);
+            throw Object.assign(new AutoBrowserError(`auto-browser unreachable: ${err.name}`, 502), { timedOut: err.name === 'TimeoutError' });
         }
         if (!res.ok) {
             // The body is auto-browser's error detail; it never echoes the token.
@@ -55,6 +55,15 @@ export function createAutoBrowserClient({ baseUrl, token, fetchImpl = fetch, tim
         },
         requestTakeover: (sessionId, reason) =>
             call('POST', `/sessions/${encodeURIComponent(sessionId)}/takeover`, { body: { reason } }),
+        /**
+         * Back, forward, reload or goto (`url`, already checked) on the session's current tab.
+         * Resolves to the session record; a timeout throws with timedOut set.
+         */
+        navigate(sessionId, action, url, timeout = 10_000) {
+            const s = `/sessions/${encodeURIComponent(sessionId)}/actions/`;
+            const path = { back: 'go-back', forward: 'go-forward', reload: 'reload', goto: 'navigate' }[action];
+            return call('POST', s + path, { body: action === 'goto' ? { url } : undefined, timeout }).then((r) => r.session ?? r);
+        },
         /** Closes the session and its browser. The record stays readable as "closed". */
         closeSession: (sessionId) => call('DELETE', `/sessions/${encodeURIComponent(sessionId)}`),
     };
