@@ -20,6 +20,9 @@ BROWSER_COMPOSE := docker compose -p happy-browser -f $(BROWSER_DIR)/compose.bro
 BROWSER_SVC ?=
 BROWSER_API ?= http://127.0.0.1:8010
 BROWSER_BRIDGE ?= http://127.0.0.1:6090
+# Every port the stack listens on, all 127.0.0.1 (noVNC, controller, bridge, Playwright server).
+# Match selfhost/browser/.env.browser if it changes a port.
+BROWSER_PORTS ?= 6080|8010|6090|9223
 
 .PHONY: browser-init browser-up browser-down browser-status browser-logs browser-verify browser-bridge-test browser-bridge-smoke
 
@@ -35,9 +38,9 @@ browser-down:
 browser-status:
 	@$(BROWSER_COMPOSE) ps --format 'table {{.Service}}\t{{.Status}}\t{{.Ports}}'
 	@echo
-	@echo "listening on the live-browser ports (expect 127.0.0.1 only):"
-	@ss -ltnH | awk '{print $$4}' | grep -E ':(6080|8010|6090)$$' | sort -u || echo "  (none)"
-	@if ss -ltnH | awk '{print $$4}' | grep -E ':(6080|8010|6090)$$' | grep -qvE '^127\.0\.0\.1:'; then \
+	@echo "listening on the live-browser ports $(BROWSER_PORTS) (expect 127.0.0.1 only):"
+	@ss -ltnH | awk '{print $$4}' | grep -E ':($(BROWSER_PORTS))$$' | sort -u || echo "  (none)"
+	@if ss -ltnH | awk '{print $$4}' | grep -E ':($(BROWSER_PORTS))$$' | grep -qvE '^127\.0\.0\.1:'; then \
 		echo "WARNING: a live-browser port is bound beyond 127.0.0.1"; exit 1; fi
 	@printf "controller /healthz: "; curl -fsS --max-time 5 $(BROWSER_API)/healthz || echo "unreachable"; echo
 	@printf "bridge /healthz:     "; curl -fsS --max-time 5 $(BROWSER_BRIDGE)/healthz || echo "unreachable"; echo

@@ -5,8 +5,11 @@
 # Run through the Makefile (selfhost/browser.mk): make browser-init, browser-up,
 # browser-status, browser-logs, browser-down. See selfhost/browser/README.md.
 #
-# Every port binds to 127.0.0.1. Nothing here is published to the LAN or the
-# internet; the phone reaches these ports through the Happy Agent workspace
+# All three services use host networking, so Chromium's `localhost` is this
+# machine and agents can open services bound to 127.0.0.1 here. Every listener
+# binds 127.0.0.1 itself (there are no port publishes): noVNC, the Playwright
+# server, the controller and the bridge. Nothing is reachable from the LAN or
+# the internet; the phone reaches these ports through the Happy Agent workspace
 # proxy, which dials localhost on this machine.
 #
 # Images are the project's published GHCR images for v1.14.0 (git commit
@@ -20,6 +23,10 @@ x-controller-image: &controller_image ghcr.io/lvcidpsyche/auto-browser-controlle
 services:
   browser-node:
     image: *browser_node_image
+    network_mode: host
+    # The image's /entrypoint.sh, patched so noVNC binds 127.0.0.1 and Xvfb
+    # opens no TCP or abstract socket (scripts/browser-node-entrypoint.sh).
+    entrypoint: ["/happy/browser-node-entrypoint.sh"]
     shm_size: 2gb
     restart: unless-stopped
     # As upstream: root only until setpriv drops to the browser user.
@@ -37,8 +44,8 @@ services:
         - CMD-SHELL
         - >-
           test -s /data/profile/browser-ws-endpoint.txt
-          && curl -s --max-time 3 -o /dev/null http://127.0.0.1:9223/
-          && curl -fsS --max-time 3 http://127.0.0.1:6080/ >/dev/null
+          && curl -s --max-time 3 -o /dev/null http://127.0.0.1:$${PLAYWRIGHT_SERVER_PORT}/
+          && curl -fsS --max-time 3 http://127.0.0.1:$${NOVNC_PORT}/ >/dev/null
       interval: 10s
       timeout: 5s
       retries: 12
@@ -50,9 +57,12 @@ services:
       BROWSER_HEIGHT: ${BROWSER_HEIGHT:-1040}
       BROWSER_URL: about:blank
       BROWSER_WS_ENDPOINT_FILE: /data/profile/browser-ws-endpoint.txt
-      PLAYWRIGHT_SERVER_HOST: 0.0.0.0
-      PLAYWRIGHT_SERVER_PORT: 9223
-      PLAYWRIGHT_SERVER_ADVERTISED_HOST: browser-node
+      # Host network: the Playwright server binds loopback and the controller
+      # reaches it at ws://127.0.0.1:<port>/... (the endpoint file says so).
+      PLAYWRIGHT_SERVER_HOST: 127.0.0.1
+      PLAYWRIGHT_SERVER_PORT: ${PLAYWRIGHT_PORT:-9223}
+      PLAYWRIGHT_SERVER_ADVERTISED_HOST: 127.0.0.1
+      NOVNC_PORT: ${NOVNC_PORT:-6080}
       BROWSER_SANDBOX: auto
       BROWSER_SECCOMP_PROFILE: auto-browser
       # Required here (make browser-init generates it). Only 8 characters count.
@@ -63,11 +73,14 @@ services:
     volumes:
       - ${HAPPY_BROWSER_HOME:?}/data/browser-profile:/data/profile
       - ${HAPPY_BROWSER_HOME:?}/data/downloads:/data/downloads
-    ports:
-      - "127.0.0.1:${NOVNC_PORT:-6080}:6080"
+      - ./scripts/browser-node-entrypoint.sh:/happy/browser-node-entrypoint.sh:ro
 
   controller:
     image: *controller_image
+    network_mode: host
+    # The image runs uvicorn on 0.0.0.0:8000; on the host network it binds
+    # 127.0.0.1:$API_PORT itself.
+    command: ["uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "${API_PORT:-8010}"]
     restart: unless-stopped
     security_opt: ["no-new-privileges:true"]
     stop_grace_period: 60s
@@ -76,7 +89,7 @@ services:
         condition: service_healthy
     healthcheck:
       # The image has no curl; python is there.
-      test: ["CMD", "python3", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
+      test: ["CMD", "python3", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:${API_PORT:-8010}/healthz', timeout=3)"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -110,9 +123,9 @@ services:
       # Signs the observer tokens the bridge uses for live frames; fixed so
       # they survive a controller restart.
       SHARE_TOKEN_SECRET: ${SHARE_TOKEN_SECRET:?run make browser-init}
-      # Agents browse anywhere ("*" turns the host allowlist off). Chromium runs
-      # in browser-node's own network namespace, so its 127.0.0.1 is not this
-      # machine's; anything here bound to 0.0.0.0 or the LAN is still reachable.
+      # Agents browse anywhere ("*" turns the host allowlist off). Chromium is
+      # on the host network, so that includes every service on this machine,
+      # loopback-only ones too: http://localhost:<port> is this machine.
       ALLOWED_HOSTS: "*"
       MAX_SESSIONS: ${MAX_SESSIONS:-3}
       MCP_TOOL_PROFILE: ${MCP_TOOL_PROFILE:-curated}
@@ -128,8 +141,6 @@ services:
       # calling agent (Claude Code, Happy Agent) drives the browser over MCP.
     volumes:
       - ${HAPPY_BROWSER_HOME:?}/data:/data
-    ports:
-      - "127.0.0.1:${API_PORT:-8010}:8000"
 
   # The live bridge (selfhost/browser/bridge): the phone page /live/<id>, its
   # frames and state, and the takeover hand-back the MCP tool waits on. Plain

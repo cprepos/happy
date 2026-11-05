@@ -8,6 +8,7 @@ binds to `127.0.0.1` only. There is no public port, no Caddy route and no tunnel
 | Piece | Port (127.0.0.1) | What |
 |---|---|---|
 | auto-browser `browser-node` | 6080 | Xvfb + Chromium + noVNC (password required) |
+| auto-browser `browser-node` | 9223 | Playwright server the controller drives Chromium through (`PLAYWRIGHT_PORT`) |
 | auto-browser `controller` | 8010 | REST API + MCP at `/mcp` (Streamable HTTP, bearer token) |
 | live `bridge` (`bridge/`) | 6090 | phone page `/live/<id>`, frames, state, takeover hand-back; plus a stdio MCP server |
 
@@ -53,10 +54,21 @@ Tunables, such as screen size, ports and `MAX_SESSIONS`, go in
 - **Screen:** Xvfb is 480x1040 and the page viewport is 480x950. This is phone-shaped, so sites
   serve narrow layouts and noVNC is legible on an iPhone. The takeover URL is
   `http://localhost:6080/vnc.html?autoconnect=true&resize=remote`.
-- **`ALLOWED_HOSTS=*`:** agents can go anywhere. Because of that the controller has to run with
-  `APP_ENV=development`, since production mode refuses `*`. Chromium runs in browser-node's own
-  network namespace, so its `127.0.0.1` is not this machine's. Services on this machine that
-  bind 0.0.0.0 or the LAN are still reachable from it.
+- **Host networking:** all three services run with `network_mode: host`, so `localhost` in
+  Chromium is this machine and agents can open loopback-only services here (for example
+  `http://localhost:8903/v1/models`). There are no port publishes; each listener binds
+  127.0.0.1 itself. The controller runs uvicorn with `--host 127.0.0.1 --port $API_PORT`. The
+  Playwright server gets `PLAYWRIGHT_SERVER_HOST=127.0.0.1`, and the controller reaches it at
+  the `ws://127.0.0.1:9223/...` endpoint it writes. The image's `/entrypoint.sh` starts
+  websockify on a bare `6080`, which would bind every interface, so browser-node's entrypoint is
+  `scripts/browser-node-entrypoint.sh`. That script patches noVNC to `127.0.0.1:$NOVNC_PORT` and
+  starts Xvfb with `-nolisten tcp -nolisten local`, because the abstract X socket would otherwise
+  sit in the host's network namespace. If the upstream lines stop matching, it refuses to start.
+  x11vnc stays on its unix socket. `make browser-status` fails on any bind beyond 127.0.0.1
+  across 6080, 8010, 6090 and 9223 (`BROWSER_PORTS`).
+- **`ALLOWED_HOSTS=*`:** agents can go anywhere, including this machine's loopback services.
+  Because of that the controller has to run with `APP_ENV=development`, since production mode
+  refuses `*`.
 - **`MAX_SESSIONS=3`:** all sessions share one browser desktop, which is auto-browser's "shared"
   mode. A takeover shows the whole desktop.
 - **Rate limit:** 1200 requests/min per token. The upstream 120/min is too tight once the live
