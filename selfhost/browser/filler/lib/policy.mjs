@@ -18,6 +18,16 @@
 // under all_items, so its own hosts and fields keep applying. At most one
 // client may set all_items.
 //
+// An all_items login also honours the vault's equivalent domains, as the
+// Bitwarden extension does: a login saved for www.gmail.com fills on
+// accounts.google.com, since gmail.com and google.com are one group (the
+// account's own groups and the global ones it has not excluded; see
+// domains.mjs). Only on https pages, and only for URIs with the default match
+// detection. "equivalent_domains": false on the client turns that off, so its
+// logins fill only on their exact saved hosts. Explicit secrets entries never
+// use equivalence: their hosts list is the operator's precise choice, and
+// widening it from vault data the agent account can edit would undo it.
+//
 // default_client is an explicit opt-in: a chat with no entry in chats uses that
 // client, and so does a caller that has no chat id at all (it names the chat
 // NO_CHAT, "none", which may never be a key in chats). Without default_client
@@ -65,7 +75,7 @@ export function parsePolicy(json) {
         if (!SLUG.test(slug)) throw new PolicyError(`bad client slug ${JSON.stringify(slug).slice(0, 70)}`);
         if (!c || typeof c !== 'object' || Array.isArray(c)) throw new PolicyError(`client ${slug}: must be an object`);
         if ('org_id' in c || 'collection_id' in c) throw new PolicyError(`client ${slug}: org_id and collection_id are no longer used (the items are in the agent account's own vault); remove them`);
-        const extra = Object.keys(c).filter((k) => k !== 'secrets' && k !== 'all_items');
+        const extra = Object.keys(c).filter((k) => !['secrets', 'all_items', 'equivalent_domains'].includes(k));
         if (extra.length) throw new PolicyError(`client ${slug}: unknown key ${JSON.stringify(extra[0]).slice(0, 40)}`);
         if (c.secrets !== undefined && (typeof c.secrets !== 'object' || c.secrets === null || Array.isArray(c.secrets))) throw new PolicyError(`client ${slug}: secrets must be an object`);
         const secrets = new Map();
@@ -91,7 +101,8 @@ export function parsePolicy(json) {
             if (allItemsClient) throw new PolicyError(`client ${slug}: all_items is already set by ${allItemsClient}; only one client may use every vault item`);
             allItemsClient = slug;
         }
-        clients.set(slug, Object.freeze({ secrets, allItems }));
+        if (c.equivalent_domains !== undefined && typeof c.equivalent_domains !== 'boolean') throw new PolicyError(`client ${slug}: equivalent_domains must be true or false`);
+        clients.set(slug, Object.freeze({ secrets, allItems, equivalentDomains: c.equivalent_domains !== false }));
     }
     const chats = new Map();
     for (const [chat, slug] of Object.entries(raw.chats || {})) {
@@ -133,6 +144,8 @@ function createPolicy(clients, chats, defaultClient, listedItems) {
         scopeOf,
         /** Whether a client may use every vault item no client lists (all_items). */
         allItems: (slug) => !!clients.get(slug)?.allItems,
+        /** Whether a client's all_items logins also fill on equivalent domains (default true; never for explicit secrets). */
+        equivalentDomains: (slug) => clients.get(slug)?.equivalentDomains !== false && clients.has(slug),
         /** Whether some client lists this item id in its secrets (such an item is never reached through all_items). */
         isListed: (itemId) => listedItems.has(String(itemId ?? '').toLowerCase()),
         /** Every fillable name for a client: [{name: "github.password", secret, field, item_id, hosts}]. */

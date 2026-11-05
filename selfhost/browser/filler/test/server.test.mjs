@@ -127,7 +127,7 @@ test('enroll derives the user key from the master password and API key, and stor
         const r = await enrollCore(base);
         assert.ok(r.userKey.equals(v.userKey));
         // Personal, live logins only: not the trashed one, the note, or org items.
-        assert.equal(r.logins, 6);
+        assert.equal(r.logins, 10);
         assert.equal(r.orgs, 1);
         await assert.rejects(enrollCore({ ...base, password: 'wrong' }), /wrong master password/);
         await assert.rejects(enrollCore({ ...base, clientSecret: 'nope-nope' }), (e) => /HTTP 400/.test(e.message) && !e.message.includes('nope-nope'));

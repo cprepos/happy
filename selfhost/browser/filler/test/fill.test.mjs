@@ -344,3 +344,78 @@ test('all_items: explicit secrets take precedence, listed items keep their own l
         assert.equal(t.ctl.typed.length, 0);
     } finally { await t.close(); }
 });
+
+
+test('equivalent domains: an all_items login for www.gmail.com fills on accounts.google.com, and the audit says so', async () => {
+    const t = await setup();
+    try {
+        const policy = parsePolicy(ALL);
+        const f = createFiller({ ...t.deps, getPolicy: () => policy });
+        const list = (await f.list({ chat: NO_CHAT })).secrets;
+        assert.deepEqual(list.find((x) => x.name === 'gmail.password'), { name: 'gmail.password', hosts: ['www.gmail.com'], kind: 'password', equivalents: '+ google.com, youtube.com equivalents' });
+        assert.equal(list.find((x) => x.name === 'acme-github.password').equivalents, undefined, 'no group, no label');
+        t.ctl.addSession('acc', loginPages('https://accounts.google.com'));
+        t.ctl.addSession('yt', loginPages('https://www.youtube.com'));
+        t.ctl.addSession('mail', loginPages('https://mail.gmail.com'));
+        t.ctl.addSession('www', loginPages('https://www.gmail.com'));
+        assert.deepEqual(await f.fill({ chat: NO_CHAT, session_id: 'acc', element_id: 'p1', name: 'gmail.password' }), { ok: true, kind: 'password', host: 'accounts.google.com', equivalent_of: 'www.gmail.com' });
+        assert.deepEqual(await f.fill({ chat: NO_CHAT, session_id: 'yt', element_id: 'p1', name: 'gmail.password' }), { ok: true, kind: 'password', host: 'www.youtube.com', equivalent_of: 'www.gmail.com' });
+        assert.deepEqual(await f.fill({ chat: NO_CHAT, session_id: 'mail', element_id: 'p1', name: 'gmail.password' }), { ok: true, kind: 'password', host: 'mail.gmail.com', equivalent_of: 'www.gmail.com' });
+        assert.deepEqual(await f.fill({ chat: NO_CHAT, session_id: 'www', element_id: 'p1', name: 'gmail.password' }), { ok: true, kind: 'password', host: 'www.gmail.com' }, 'an exact host is not marked as equivalence');
+        assert.deepEqual(t.ctl.typed.map((x) => x.text), Array(4).fill(t.v.items.gmail.password));
+        t.ctl.addSession('login', loginPages('https://accounts.google.com'));
+        assert.equal((await f.login({ chat: NO_CHAT, session_id: 'login', site: 'gmail' })).status, 'submitted');
+        const filled = auditLines(t.dir).filter((l) => l.outcome === 'filled');
+        assert.deepEqual(filled.find((l) => l.host === 'accounts.google.com'), { ...filled.find((l) => l.host === 'accounts.google.com'), via: 'equivalent_domains', equivalent_of: 'www.gmail.com' });
+        assert.ok(!('via' in filled.find((l) => l.host === 'www.gmail.com')));
+        assert.ok(!auditText(t.dir).includes(t.v.items.gmail.password));
+        // A custom group, through a multi-part public suffix.
+        t.ctl.addSession('fooshop', loginPages('https://shop.foo-shop.com'));
+        assert.equal((await f.fill({ chat: NO_CHAT, session_id: 'fooshop', element_id: 'p1', name: 'foo-uk.password' })).equivalent_of, 'www.foo.co.uk');
+    } finally { await t.close(); }
+});
+
+test('equivalent domains: unrelated hosts, excluded groups, http, other co.uk sites and Host-match URIs are refused', async () => {
+    const t = await setup();
+    try {
+        const policy = parsePolicy(ALL);
+        const f = createFiller({ ...t.deps, getPolicy: () => policy });
+        for (const [id, url] of [['other', 'https://accounts.example.com'], ['look', 'https://google.com.evil.test'], ['plain', 'http://accounts.google.com'],
+            ['icloud', 'https://www.icloud.com'], ['bar', 'https://bar.co.uk'], ['couk', 'https://co.uk'], ['acc', 'https://accounts.google.com'], ['cn', 'https://evil.net.cn']]) t.ctl.addSession(id, loginPages(url));
+        const base = { chat: NO_CHAT, element_id: 'p1' };
+        for (const [session_id, name] of [['other', 'gmail.password'], ['look', 'gmail.password'], ['plain', 'gmail.password'],
+            ['icloud', 'apple.password'], ['bar', 'foo-uk.password'], ['couk', 'foo-uk.password'], ['acc', 'gmail-host.password'],
+            ['acc', 'acme-github.password'], ['cn', 'gmail.password']]) {
+            await assert.rejects(f.fill({ ...base, session_id, name }), /which is not a host this secret is allowed on/, `${session_id} ${name}`);
+        }
+        await assert.rejects(f.fill({ ...base, session_id: 'other', name: 'gmail.password' }), /allowed: https:\/\/www\.gmail\.com \(\+ google\.com, youtube\.com equivalents\)/);
+        await assert.rejects(f.login({ chat: NO_CHAT, session_id: 'plain', site: 'gmail' }), /not a host this login is allowed on/);
+        const list = (await f.list({ chat: NO_CHAT })).secrets;
+        assert.equal(list.find((x) => x.name === 'apple.password').equivalents, undefined, 'an excluded group grants nothing');
+        assert.equal(list.find((x) => x.name === 'gmail-host.password').equivalents, undefined, 'a URI with Host match detection stays exact');
+        assert.equal(t.ctl.typed.length, 0, 'nothing was typed');
+    } finally { await t.close(); }
+});
+
+test('equivalent domains: explicit secrets stay exact, and "equivalent_domains": false turns it off', async () => {
+    const t = await setup();
+    try {
+        t.ctl.addSession('acc', loginPages('https://accounts.google.com'));
+        t.ctl.addSession('www', loginPages('https://www.gmail.com'));
+        const explicit = parsePolicy({ version: 1, default_client: 'agent', chats: {},
+            clients: { agent: { all_items: true, secrets: { mail: { item_id: t.v.items.gmail.id, hosts: ['www.gmail.com'], fields: ['password'] } } } } });
+        const f1 = createFiller({ ...t.deps, getPolicy: () => explicit });
+        assert.deepEqual((await f1.list({ chat: NO_CHAT })).secrets.find((x) => x.name === 'mail.password'), { name: 'mail.password', hosts: ['www.gmail.com'], kind: 'password' });
+        await assert.rejects(f1.fill({ chat: NO_CHAT, session_id: 'acc', element_id: 'p1', name: 'mail.password' }), /which is not a host this secret is allowed on \(allowed: https:\/\/www\.gmail\.com\)/);
+        assert.deepEqual(await f1.fill({ chat: NO_CHAT, session_id: 'www', element_id: 'p1', name: 'mail.password' }), { ok: true, kind: 'password', host: 'www.gmail.com' });
+
+        const off = parsePolicy({ ...ALL, clients: { agent: { all_items: true, equivalent_domains: false, secrets: {} } } });
+        assert.equal(off.equivalentDomains('agent'), false);
+        const f2 = createFiller({ ...t.deps, getPolicy: () => off });
+        assert.equal((await f2.list({ chat: NO_CHAT })).secrets.find((x) => x.name === 'gmail.password').equivalents, undefined);
+        await assert.rejects(f2.fill({ chat: NO_CHAT, session_id: 'acc', element_id: 'p1', name: 'gmail.password' }), /which is not a host this secret is allowed on \(allowed: https:\/\/www\.gmail\.com\)/);
+        await assert.rejects(f2.login({ chat: NO_CHAT, session_id: 'acc', site: 'gmail' }), /not a host this login is allowed on/);
+        assert.deepEqual(await f2.fill({ chat: NO_CHAT, session_id: 'www', element_id: 'p1', name: 'gmail.password' }), { ok: true, kind: 'password', host: 'www.gmail.com' });
+        assert.equal(t.ctl.typed.length, 2);
+    } finally { await t.close(); }
+});

@@ -8,6 +8,12 @@
 // organization in the setup the filler is used with; one organization the
 // account is a member of, and an item of one it is not, check that org
 // ciphers are read with their org key and nothing else.
+//
+// The sync carries equivalent domains as Vaultwarden sends them (domains:
+// equivalentDomains, the account's own groups, and globalEquivalentDomains),
+// or null when the client asks with excludeDomains=true: Google's group,
+// Apple's group excluded by the account, a group listing the public suffix
+// net.cn, and a custom group [foo.co.uk, foo-shop.com].
 import { createServer } from 'node:http';
 import { generateKeyPairSync, randomBytes, randomUUID } from 'node:crypto';
 import { encryptRsa, encryptSym, masterKey, masterPasswordHash, stretchMasterKey } from '../lib/vaultcrypto.mjs';
@@ -31,7 +37,7 @@ export function buildVault({ email = 'agent@vault.test', password = 'correct hor
 
     const ciphers = [];
     const items = {};
-    function addLogin(label, { org = null, itemKey = false, type = 1, username, password: pw, totp = null, uris, deleted = false, encType } = {}) {
+    function addLogin(label, { org = null, itemKey = false, type = 1, username, password: pw, totp = null, uris, deleted = false, encType, match = null } = {}) {
         const o = org ? orgs[org] : null;
         const base = o ? o.key : userKey;
         const ik = itemKey ? randomBytes(64) : null;
@@ -41,7 +47,7 @@ export function buildVault({ email = 'agent@vault.test', password = 'correct hor
             id: randomUUID(), organizationId: o ? o.id : null, collectionIds: [], type,
             key: ik ? encryptSym(ik, base) : null,
             name: enc(label),
-            login: type !== 1 ? null : { username: enc(username), password: enc(pw), totp: enc(totp), uris: uris.map((u) => ({ uri: enc(u), match: null })) },
+            login: type !== 1 ? null : { username: enc(username), password: enc(pw), totp: enc(totp), uris: uris.map((u) => ({ uri: enc(u), match })) },
             deletedDate: deleted ? new Date().toISOString() : null,
         };
         if (encType && c.login) c.login.password = `${encType}.${randomBytes(32).toString('base64')}`;
@@ -59,6 +65,11 @@ export function buildVault({ email = 'agent@vault.test', password = 'correct hor
     // Not listed in the test policy at all: the owner's own login, kept in the same vault.
     addLogin('unlisted', { username: 'boss', password: 'not-for-agents-123', uris: ['https://github.com'] });
     addLogin('org-shared', { org: 'shared', itemKey: true, username: 'shared-bot', password: 'Shared-Org-Pass-55', uris: ['https://github.com'] });
+    // Equivalent domains: gmail.com is in Google's group, apple.com in an excluded group, foo.co.uk in a custom one.
+    addLogin('gmail', { username: 'agent@gmail.test', password: 'Gmail-Pass-2468', uris: ['https://www.gmail.com/'] });
+    addLogin('gmail-host', { username: 'agent2@gmail.test', password: 'GmailHost-Pass-1357', uris: ['https://www.gmail.com/'], match: 1 });
+    addLogin('apple', { username: 'agent@apple.test', password: 'Apple-Pass-9753', uris: ['https://www.apple.com/'] });
+    addLogin('foo-uk', { username: 'foo', password: 'FooUk-Pass-8642', uris: ['https://www.foo.co.uk/login'] });
     addLogin('org-foreign', { org: 'foreign', username: 'x', password: 'Foreign-Org-Pass-77', uris: ['https://github.com'] });
 
     const sync = {
@@ -70,6 +81,15 @@ export function buildVault({ email = 'agent@vault.test', password = 'correct hor
             organizations: Object.values(orgs).filter((o) => o.member).map((o) => ({ id: o.id, key: encryptRsa(o.key, publicKey), type: 2, status: 2 })),
         },
         ciphers,
+        domains: {
+            equivalentDomains: [['foo.co.uk', 'foo-shop.com']],
+            globalEquivalentDomains: [
+                { type: 0, domains: ['youtube.com', 'google.com', 'gmail.com'], excluded: false },
+                { type: 1, domains: ['apple.com', 'icloud.com'], excluded: true },
+                { type: 41, domains: ['shop-cn.test', 'net.cn'], excluded: false },
+            ],
+            object: 'domains',
+        },
         collections: [],
         folders: [],
     };
@@ -130,7 +150,8 @@ export async function startFakeVaultwarden(vault = buildVault(), { twoFactor = f
             calls.sync++;
             const t = (req.headers.authorization || '').replace(/^Bearer /, '');
             if (!tokens.has(t)) return send(401, { error: 'unauthorized' });
-            return send(200, vault.sync);
+            calls.syncUrls = [...(calls.syncUrls || []), req.url];
+            return send(200, url.searchParams.get('excludeDomains') === 'true' ? { ...vault.sync, domains: null } : vault.sync);
         }
         send(404, { error: 'not found' });
     });

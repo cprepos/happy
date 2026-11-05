@@ -144,3 +144,12 @@ test('policy file permissions: not writable by group/world, not a symlink, root-
     symlinkSync(f, join(d, 'link.json'));
     assert.throws(() => checkPolicyFile(join(d, 'link.json'), { requireRoot: false }), /symlink/);
 });
+
+test('equivalent_domains: a boolean on a client, true unless set to false', () => {
+    const on = parsePolicy({ version: 1, clients: { agent: { all_items: true } }, chats: {} });
+    assert.equal(on.equivalentDomains('agent'), true);
+    const off = parsePolicy({ version: 1, clients: { agent: { all_items: true, equivalent_domains: false } }, chats: {} });
+    assert.equal(off.equivalentDomains('agent'), false);
+    assert.equal(off.equivalentDomains('nobody'), false);
+    for (const bad of ['no', 0, null, {}]) assert.throws(() => parsePolicy({ version: 1, clients: { a: { all_items: true, equivalent_domains: bad } } }), /equivalent_domains must be true or false/, JSON.stringify(bad));
+});

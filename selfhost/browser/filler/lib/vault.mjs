@@ -8,9 +8,14 @@
 // readable. Which item a chat may use is decided only by the root-owned
 // policy (policy.mjs): a chat reaches a cipher only through a name its client
 // lists, and every item id belongs to at most one client.
+//
+// The sync asks for the account's equivalent domains (excludeDomains=false):
+// its own groups and the global groups it has not excluded (domains.mjs).
+// listLogins attaches them to each login; only all_items clients use them.
 import { createHash } from 'node:crypto';
 import { decryptKey, decryptSym, decryptSymText, VaultCryptoError } from './vaultcrypto.mjs';
 import { httpsHost } from './hosts.mjs';
+import { buildEquivalence, equivalentsFor } from './domains.mjs';
 
 export class VaultError extends Error {
     constructor(message, status = 502) { super(message); this.status = status; }
@@ -64,7 +69,7 @@ export function createVault({ url, clientId, clientSecret, userKey, deviceId, fe
         const t = await login();
         let data;
         try {
-            data = await req('/api/sync?excludeDomains=true', { headers: { Authorization: `Bearer ${t}`, Accept: 'application/json' } });
+            data = await req('/api/sync?excludeDomains=false', { headers: { Authorization: `Bearer ${t}`, Accept: 'application/json' } });
         } catch (err) {
             token = null;
             throw err;
@@ -83,7 +88,8 @@ export function createVault({ url, clientId, clientSecret, userKey, deviceId, fe
             if (!o?.id || !o.key) continue;
             try { orgKeys.set(String(o.id).toLowerCase(), decryptKey(o.key, { privateKey, symKey: userKey })); } catch { /* unusable org: its items stay locked */ }
         }
-        synced = { at: now(), ciphers: data.ciphers || data.Ciphers || [], orgKeys, fingerprint: createHash('sha256').update(userKey).digest('hex').slice(0, 8) };
+        const equivalence = buildEquivalence(data.domains || data.Domains);
+        synced = { at: now(), ciphers: data.ciphers || data.Ciphers || [], orgKeys, equivalence, fingerprint: createHash('sha256').update(userKey).digest('hex').slice(0, 8) };
         return synced;
     }
 
@@ -130,10 +136,14 @@ export function createVault({ url, clientId, clientSecret, userKey, deviceId, fe
     }
 
     /**
-     * Every live login the account can decrypt, as {id, name, hosts, fields}:
-     * the item's name, the https hosts of its URIs, and which of username,
-     * password and totp it has (from whether the field is set; nothing is
-     * decrypted but the name and URIs). Never a value. make filler-items lists
+     * Every live login the account can decrypt, as {id, name, hosts, fields,
+     * equivalents?}: the item's name, the https hosts of its URIs, and which of
+     * username, password and totp it has (from whether the field is set;
+     * nothing is decrypted but the name and URIs). Never a value. equivalents
+     * (only when there are any) maps each registrable domain the vault's
+     * equivalent domains grant to the saved host granting it; only URIs with
+     * the default match detection (match null or 0, "Base domain") count, as
+     * in the extension: Host, Starts with, Exact, Regex and Never do not. make filler-items lists
      * these (force: a fresh sync); all_items clients resolve names through them
      * on the normal sync cadence, so a login added to the vault shows up within
      * ttlMs.
@@ -146,20 +156,23 @@ export function createVault({ url, clientId, clientSecret, userKey, deviceId, fe
             const orgId = c.organizationId ? String(c.organizationId).toLowerCase() : null;
             const baseKey = orgId ? s.orgKeys.get(orgId) : userKey;
             if (!baseKey) continue;
-            let name = null; let hosts = [];
+            let name = null; let hosts = []; let equivalents = new Map();
             try {
                 const key = c.key ? decryptKey(c.key, { symKey: baseKey }) : baseKey;
                 name = c.name ? decryptSymText(c.name, key) : '';
-                const seen = new Set();
+                const seen = new Set(); const byDomain = new Set();
                 for (const u of c.login.uris || []) {
                     let h = null;
                     try { h = u?.uri ? httpsHost(decryptSymText(u.uri, key)) : null; } catch {}
-                    if (h) seen.add(h);
+                    if (!h) continue;
+                    seen.add(h);
+                    if (u.match == null || u.match === 0) byDomain.add(h);
                 }
                 hosts = [...seen];
+                equivalents = equivalentsFor([...byDomain], s.equivalence);
             } catch { name = null; }
             const fields = ['username', 'password', 'totp'].filter((f) => !!c.login[f]);
-            out.push({ id: String(c.id || c.Id).toLowerCase(), name, hosts, fields, ...(orgId ? { organization: true } : {}) });
+            out.push({ id: String(c.id || c.Id).toLowerCase(), name, hosts, fields, ...(equivalents.size ? { equivalents } : {}), ...(orgId ? { organization: true } : {}) });
         }
         return out.sort((a, b) => String(a.name ?? '').localeCompare(String(b.name ?? '')) || a.id.localeCompare(b.id));
     }

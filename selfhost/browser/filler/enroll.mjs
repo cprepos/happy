@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 import { KDF_PBKDF2, decryptSym, decryptUserKey, masterKey, masterPasswordHash, stretchMasterKey } from './lib/vaultcrypto.mjs';
 import { checkVaultUrl, createVault, VaultError } from './lib/vault.mjs';
 import { loadConfig, readSecret } from './lib/config.mjs';
+import { describeEquivalents } from './lib/domains.mjs';
 
 export class EnrollError extends Error {}
 
@@ -238,9 +239,15 @@ async function main() {
 export function formatItems(items) {
     if (!items.length) return 'The agent account has no logins yet. Add them in the web vault (logged in as the agent account).\n';
     const clean = (v) => String(v).replace(/[\u0000-\u001f\u007f]/g, ' ');
-    const lines = items.map((i) => [i.name == null ? '(name not decryptable)' : clean(i.name), i.id, i.hosts.length ? i.hosts.join(',') : '(no https URI: the filler cannot type it anywhere)']);
+    const hostsOf = (i) => {
+        if (!i.hosts.length) return '(no https URI: the filler cannot type it anywhere)';
+        const eq = describeEquivalents(i.hosts, i.equivalents);
+        return i.hosts.join(',') + (eq ? ` (${eq})` : '');
+    };
+    const lines = items.map((i) => [i.name == null ? '(name not decryptable)' : clean(i.name), i.id, hostsOf(i)]);
     const w0 = Math.max(4, ...lines.map((l) => l[0].length));
     const out = [`${'name'.padEnd(w0)}  ${'item_id'.padEnd(36)}  hosts`, ...lines.map((l) => `${l[0].padEnd(w0)}  ${l[1].padEnd(36)}  ${l[2]}`)];
+    if (lines.some((l) => l[2].endsWith(' equivalents)'))) out.push('', '(+ ... equivalents): the vault\'s equivalent domains; an all_items client also fills these logins on https pages of those domains, unless it sets "equivalent_domains": false.');
     return out.join('\n') + '\n';
 }
 

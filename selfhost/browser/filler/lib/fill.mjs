@@ -14,13 +14,17 @@
 //      vault login of that name that no client lists by id;
 //   3. allowed hosts = item https URIs ∩ policy hosts, matched exactly (for an
 //      all_items login, the policy hosts are the item's own https URI hosts;
-//      an item without one is refused);
-//   4. the session's page is https on an allowed host;
+//      an item without one is refused). An all_items login also allows the
+//      hosts the vault's equivalent domains grant (domains.mjs) unless its
+//      client sets "equivalent_domains": false; explicit secrets never do;
+//   4. the session's page is https on an allowed host (a fill allowed through
+//      equivalence is audited with via and equivalent_of);
 //   5. the element is in the main document's current interactables and its
 //      kind fits the field (password into type=password only, and so on);
 //   6. type with sensitive:true, response discarded;
 //   7. the page is checked again: a host change is an error and is audited.
-import { allowedHosts, httpsHost, matchHost } from './hosts.mjs';
+import { allowedHosts, httpsHost, matchAllowed } from './hosts.mjs';
+import { describeEquivalents } from './domains.mjs';
 import { currentTotp } from './totp.mjs';
 import { pageUrl, isLive } from './controller.mjs';
 import { FIELDS, itemSlug, NO_CHAT } from './policy.mjs';
@@ -54,22 +58,27 @@ export function kindsOf(el) {
 }
 
 export function createFiller({ getPolicy, vault, controllers, taint, audit, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), allowLoopbackHttp = false, totpOpts = {} }) {
-    const hostOf = (url, allowed) => {
-        const h = matchHost(url, allowed);
-        if (h) return h;
+    // allow = {hosts: exact hosts, equiv: Map registrable domain -> granting saved host, or null}.
+    const matchOf = (url, allow) => {
+        const m = matchAllowed(url, allow);
+        if (m) return m;
         if (allowLoopbackHttp) {
             try {
                 const u = new URL(url);
-                if (u.protocol === 'http:' && u.hostname === '127.0.0.1' && allowed.includes('127.0.0.1')) return '127.0.0.1';
+                if (u.protocol === 'http:' && u.hostname === '127.0.0.1' && allow.hosts.includes('127.0.0.1')) return { host: '127.0.0.1' };
             } catch {}
         }
         return null;
     };
-    const hostsFor = (uris, policyHosts) => {
-        const hs = allowedHosts(uris, policyHosts);
-        if (allowLoopbackHttp && policyHosts.includes('127.0.0.1') && uris.some((u) => /^http:\/\/127\.0\.0\.1(:\d+)?\//.test(u))) hs.push('127.0.0.1');
-        return hs;
+    const hostOf = (url, allow) => matchOf(url, allow)?.host ?? null;
+    const allowFor = (uris, sec) => {
+        const hosts = allowedHosts(uris, sec.hosts);
+        if (allowLoopbackHttp && sec.hosts.includes('127.0.0.1') && uris.some((u) => /^http:\/\/127\.0\.0\.1(:\d+)?\//.test(u))) hosts.push('127.0.0.1');
+        // Equivalence only for grants whose saved host the item still has.
+        const equiv = sec.equiv?.size ? new Map([...sec.equiv].filter(([, saved]) => hosts.includes(saved))) : null;
+        return { hosts, equiv: equiv?.size ? equiv : null };
     };
+    const allowedText = (allow) => allow.hosts.map((h) => `https://${h}`).join(', ') + (allow.equiv ? ` (${describeEquivalents(allow.hosts, allow.equiv) || 'and their equivalent domains'})` : '');
 
     // A request names its browser by controller port (the shared stack's 8010,
     // or a per-chat pod's 81NN); only ports in the configured list are reached.
@@ -118,14 +127,15 @@ export function createFiller({ getPolicy, vault, controllers, taint, audit, slee
         if (!by.has(secret)) return null;
         const l = by.get(secret);
         if (!l) throw new FillError(`two vault logins are named "${secret}"; rename one in the vault`, 409, 'refused_ambiguous');
-        return { secret, item_id: l.id, hosts: l.hosts, fields: FIELDS, all_items: true };
+        const equiv = ctx.policy.equivalentDomains(ctx.client) && l.equivalents?.size ? l.equivalents : null;
+        return { secret, item_id: l.id, hosts: l.hosts, fields: FIELDS, all_items: true, equiv };
     }
 
     async function vaultEntry(ctx, name) {
         const m = /^([a-z0-9][a-z0-9_-]{0,62})\.(username|password|totp)$/.exec(String(name ?? ''));
         if (!m) return null;
         const s = await vaultSecret(ctx, m[1]);
-        return s ? { name: `${m[1]}.${m[2]}`, secret: m[1], field: m[2], item_id: s.item_id, hosts: s.hosts } : null;
+        return s ? { name: `${m[1]}.${m[2]}`, secret: m[1], field: m[2], item_id: s.item_id, hosts: s.hosts, equiv: s.equiv } : null;
     }
 
     async function liveHost(b, allowed) {
@@ -135,8 +145,8 @@ export function createFiller({ getPolicy, vault, controllers, taint, audit, slee
         }
         if (!isLive(rec)) throw new FillError('the browser session is not active', 409, 'session_closed');
         const url = pageUrl(rec);
-        const host = hostOf(url, allowed);
-        return { host, pageHost: httpsHost(url), shown: shownOrigin(url) };
+        const m = matchOf(url, allowed);
+        return { host: m?.host ?? null, equivalent_of: m?.equivalent_of ?? null, pageHost: httpsHost(url), shown: shownOrigin(url) };
     }
 
     async function readValue(ctx, entry) {
@@ -150,7 +160,7 @@ export function createFiller({ getPolicy, vault, controllers, taint, audit, slee
     // agent can tell the user which URI to add to the vault item.
     const hostRefusal = (what, page, allowed) =>
         `the page is on ${page.shown || 'a page with no host'}, which is not a host this ${what} is allowed on ` +
-        `(allowed: ${allowed.map((h) => `https://${h}`).join(', ')}). Navigate to one of those` +
+        `(allowed: ${allowedText(allowed)}). Navigate to one of those` +
         (page.pageHost ? `, or ask the user to add https://${page.pageHost} as a URI on the vault item (and to the filler policy hosts, if the login is listed there)` : ' (only https pages can be filled)');
 
     /** Type one field. Shared by fill() and login(). Returns {kind, host}. */
@@ -158,12 +168,13 @@ export function createFiller({ getPolicy, vault, controllers, taint, audit, slee
         const base = { chat, client: ctx.client, path: ctx.path, session: b.key, name, field_kind: field };
         const page = await liveHost(b, allowed);
         const { host } = page;
+        const via = page.equivalent_of ? { via: 'equivalent_domains', equivalent_of: page.equivalent_of } : {};
         if (!host) { audit.record({ ...base, ...(page.pageHost ? { host: page.pageHost } : {}), outcome: 'refused_host' }); throw new FillError(hostRefusal('secret', page, allowed), 403, 'refused_host'); }
         const obs = observed || await b.controller.observe(b.session);
-        if (hostOf(pageUrl(obs), allowed) !== host) { audit.record({ ...base, host, outcome: 'refused_host' }); throw new FillError('the page changed host', 409, 'refused_host'); }
+        if (hostOf(pageUrl(obs), allowed) !== host) { audit.record({ ...base, host, ...via, outcome: 'refused_host' }); throw new FillError('the page changed host', 409, 'refused_host'); }
         const el = (obs.interactables || []).find((e) => e.element_id === element);
-        if (!el) { audit.record({ ...base, host, outcome: 'refused_element' }); throw new FillError('element not found in the page (observe again for current element ids)', 404, 'refused_element'); }
-        if (!kindsOf(el).includes(field)) { audit.record({ ...base, host, outcome: 'refused_kind' }); throw new FillError(`that element cannot take a ${field}`, 422, 'refused_kind'); }
+        if (!el) { audit.record({ ...base, host, ...via, outcome: 'refused_element' }); throw new FillError('element not found in the page (observe again for current element ids)', 404, 'refused_element'); }
+        if (!kindsOf(el).includes(field)) { audit.record({ ...base, host, ...via, outcome: 'refused_kind' }); throw new FillError(`that element cannot take a ${field}`, 422, 'refused_kind'); }
         let value;
         if (field === 'totp') {
             if (!item.totp) throw new FillError('this item has no TOTP', 422, 'no_value');
@@ -176,16 +187,16 @@ export function createFiller({ getPolicy, vault, controllers, taint, audit, slee
         try {
             await b.controller.type(b.session, element, value);
         } catch (err) {
-            audit.record({ ...base, host, outcome: 'type_failed' });
+            audit.record({ ...base, host, ...via, outcome: 'type_failed' });
             throw new FillError('typing failed in the browser', 502, 'type_failed');
         } finally { value = null; }
         const after = await liveHost(b, allowed).catch(() => ({ host: null }));
         if (after.host !== host) {
-            audit.record({ ...base, host, outcome: 'host_changed' });
+            audit.record({ ...base, host, ...via, outcome: 'host_changed' });
             throw new FillError('the page left the allowed host while the secret was typed; the session stays tainted', 409, 'host_changed');
         }
-        audit.record({ ...base, host, outcome: 'filled' });
-        return { kind: field, host };
+        audit.record({ ...base, host, ...via, outcome: 'filled' });
+        return { kind: field, host, ...(page.equivalent_of ? { equivalent_of: page.equivalent_of } : {}) };
     }
 
     async function list({ chat }) {
@@ -195,7 +206,8 @@ export function createFiller({ getPolicy, vault, controllers, taint, audit, slee
         // with no https URI, or sharing a name, cannot be filled and are not listed.
         for (const [slug, l] of [...(await vaultLogins(ctx))].sort((a, b) => a[0].localeCompare(b[0]))) {
             if (!l || !l.hosts.length) continue;
-            for (const f of FIELDS) if (l.fields.includes(f)) secrets.push({ name: `${slug}.${f}`, hosts: [...l.hosts], kind: f });
+            const eq = ctx.policy.equivalentDomains(ctx.client) ? describeEquivalents(l.hosts, l.equivalents) : null;
+            for (const f of FIELDS) if (l.fields.includes(f)) secrets.push({ name: `${slug}.${f}`, hosts: [...l.hosts], kind: f, ...(eq ? { equivalents: eq } : {}) });
         }
         return { client: ctx.client, secrets };
     }
@@ -215,8 +227,8 @@ export function createFiller({ getPolicy, vault, controllers, taint, audit, slee
         }
         if (!entry) { audit.record({ chat, client: ctx.client, path: ctx.path, session, name: String(name ?? '').slice(0, 80), outcome: 'refused_name' }); throw new FillError('no such secret for this chat (see browser_list_secrets)', 404, 'refused_name'); }
         const item = await readValue(ctx, entry);
-        const allowed = hostsFor(item.uris, entry.hosts);
-        if (!allowed.length) { audit.record({ chat, client: ctx.client, path: ctx.path, session, name: entry.name, outcome: 'refused_no_hosts' }); throw new FillError('this secret has no host that both the vault item and the policy allow', 403, 'refused_no_hosts'); }
+        const allowed = allowFor(item.uris, entry);
+        if (!allowed.hosts.length) { audit.record({ chat, client: ctx.client, path: ctx.path, session, name: entry.name, outcome: 'refused_no_hosts' }); throw new FillError('this secret has no host that both the vault item and the policy allow', 403, 'refused_no_hosts'); }
         const r = await typeField(ctx, { chat, b, element, name: entry.name, field: entry.field, item, allowed });
         return { ok: true, ...r };
     }
@@ -240,8 +252,8 @@ export function createFiller({ getPolicy, vault, controllers, taint, audit, slee
         const sec = ctx.policy.secret(ctx.client, site) || (typeof site === 'string' && /^[a-z0-9][a-z0-9_-]{0,62}$/.test(site) ? await vaultSecret(ctx, site) : null);
         if (!sec) throw new FillError('no such site for this chat (see browser_list_secrets)', 404, 'refused_name');
         const item = await readValue(ctx, sec);
-        const allowed = hostsFor(item.uris, sec.hosts);
-        if (!allowed.length) throw new FillError('this site has no host that both the vault item and the policy allow', 403, 'refused_no_hosts');
+        const allowed = allowFor(item.uris, sec);
+        if (!allowed.hosts.length) throw new FillError('this site has no host that both the vault item and the policy allow', 403, 'refused_no_hosts');
         const can = (f) => sec.fields.includes(f) && (f === 'totp' ? !!item.totp : !!item[f]);
         const done = new Set();
         let host = null;
@@ -252,7 +264,7 @@ export function createFiller({ getPolicy, vault, controllers, taint, audit, slee
                 audit.record({ chat, client: ctx.client, path: ctx.path, session: b.key, name: site, ...(page.pageHost ? { host: page.pageHost } : {}), outcome: 'refused_host' });
                 throw new FillError(hostRefusal('login', page, allowed), 403, 'refused_host');
             }
-            if (!h) return { status: 'needs_human', host, reason: `the page moved to ${page.shown || 'a page with no host'}, not a host this login is allowed on (allowed: ${allowed.join(', ')})` };
+            if (!h) return { status: 'needs_human', host, reason: `the page moved to ${page.shown || 'a page with no host'}, not a host this login is allowed on (allowed: ${allowedText(allowed)})` };
             host = h;
             const obs = await b.controller.observe(b.session);
             const f = pickFields(obs);

@@ -1,8 +1,10 @@
-// Exact host matching for fills. A host is allowed only if it is both in the
-// vault item's https URIs and in the policy's hosts for that secret. Matching is
-// exact on the punycoded, lowercased hostname: no suffix match, no userinfo, the
-// default https port only.
+// Host matching for fills. A host is allowed if it is both in the vault item's
+// https URIs and in the policy's hosts for that secret. Matching is exact on the
+// punycoded, lowercased hostname: no suffix match, no userinfo, the default
+// https port only. The one widening is equivalent domains (domains.mjs), which
+// only all_items logins get: matchAllowed takes an equiv map from fill.mjs.
 import { domainToASCII } from 'node:url';
+import { registrableDomain } from './domains.mjs';
 
 /** Normalize a policy host entry ("github.com", "Bücher.de") or null. */
 export function normalizeHost(h) {
@@ -38,4 +40,18 @@ export function allowedHosts(itemUris, policyHosts) {
 export function matchHost(pageUrl, allowed) {
     const h = httpsHost(pageUrl);
     return h && allowed.includes(h) ? h : null;
+}
+
+/**
+ * Whether a page URL is https on an allowed host: exactly one of allow.hosts,
+ * or (allow.equiv, registrable domain -> granting saved host) a host whose
+ * registrable domain an equivalence grants. Returns {host} or
+ * {host, equivalent_of} or null.
+ */
+export function matchAllowed(pageUrl, allow) {
+    const h = httpsHost(pageUrl);
+    if (!h || !allow) return null;
+    if (allow.hosts.includes(h)) return { host: h };
+    const saved = allow.equiv?.size ? allow.equiv.get(registrableDomain(h)) : null;
+    return saved ? { host: h, equivalent_of: saved } : null;
 }

@@ -113,6 +113,41 @@ filler-install COMMIT=<sha>`, `make filler-enroll`, `make filler-policy-edit`,
     `fields` keep applying. Two logins with the same name are both refused
     until one is renamed. Organization items are never included.
 
+### Equivalent domains (`all_items` only)
+
+An `all_items` login also fills on the vault's equivalent domains, the way the
+Bitwarden extension does. A login saved for `https://www.gmail.com` fills on
+`accounts.google.com`, because Bitwarden's global equivalent domains put
+gmail.com, google.com and youtube.com in one group.
+
+- The groups come from the vault's sync: the agent account's own groups (web
+  vault, Settings > Domain rules) and the global groups it has not excluded.
+  Excluding a global group there takes effect on the next sync (at most 15 s).
+- A page host is allowed if it is a saved host, as before, or if its
+  registrable domain (`accounts.google.com` -> `google.com`; `www.foo.co.uk`
+  -> `foo.co.uk`) is in a group with the saved host's registrable domain. The
+  registrable domain comes from a small vendored public suffix list
+  (`lib/psl.mjs`, no network at runtime). A group entry that is itself a
+  public suffix (`net.cn`, `myshopify.com`) is ignored, so `foo.co.uk` never
+  grants `bar.co.uk` and no group grants every shop on a hosting platform.
+- Only https pages, and only URIs with the default match detection ("Base
+  domain"). A URI set to Host, Starts with, Exact, Regular expression or Never
+  in the vault keeps its exact host.
+- A saved host whose domain is in no group gets no subdomain matching:
+  `github.com` still does not allow `gist.github.com`. Inside a group, a
+  sibling subdomain such as `mail.gmail.com` from `www.gmail.com` is allowed,
+  as in the extension.
+- `"equivalent_domains": false` on the client turns this off. Its logins then
+  fill only on their exact saved hosts.
+- Explicit `secrets` entries with their own `hosts` never use equivalence.
+  That list is the operator's precise choice, and data from the vault must not
+  widen it.
+- `browser_list_secrets` adds a short `equivalents` label, for example
+  `"+ google.com, youtube.com equivalents"`. `make filler-items` shows
+  `www.gmail.com (+ google.com, youtube.com equivalents)`. A host refusal
+  names the equivalents too. A fill allowed this way is audited with
+  `"via":"equivalent_domains"` and `"equivalent_of":"<saved host>"`.
+
 ### Every chat shares the agent's logins
 
 What `make filler-setup` seeds, and the recommended setting:
@@ -133,7 +168,7 @@ holding the bridge's client token, can ask for a fill of any of these logins
 is no separation between chats any more. What still holds: values
 never reach the model (the filler types them and every result is scrubbed),
 a value is typed only on an https page on a host that both the vault item and
-the policy list, only into a field of the right kind, and a browser session
+the policy list (for `all_items`, or one of its equivalent domains), only into a field of the right kind, and a browser session
 that holds one chat's secret refuses fills for another chat. To give one
 client's chats their own logins later, add that client and its chats; mapped
 chats never fall back to the default.

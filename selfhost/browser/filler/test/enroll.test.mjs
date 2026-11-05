@@ -98,3 +98,21 @@ test('the login listing has names, item ids and https hosts, never usernames, pa
         assert.ok(!formatItems([{ id: 'x', name: 'a\u001b[31m', hosts: [] }]).includes('\u001b'), 'control characters in names are not passed to the terminal');
     } finally { await fake.close(); }
 });
+
+test('the sync asks for equivalent domains, and the listing shows them short', async () => {
+    const fake = await startFakeVaultwarden();
+    const v = fake.vault;
+    try {
+        const vault = createVault({ url: fake.url, clientId: v.clientId, clientSecret: v.clientSecret, userKey: v.userKey, deviceId: 'dev-eq' });
+        const items = await vault.listLogins();
+        assert.ok(fake.calls.syncUrls.every((u) => u.includes('excludeDomains=false')), 'domains are requested');
+        const byName = Object.fromEntries(items.map((i) => [i.name, i]));
+        assert.deepEqual(Object.fromEntries(byName.gmail.equivalents), { 'gmail.com': 'www.gmail.com', 'google.com': 'www.gmail.com', 'youtube.com': 'www.gmail.com' });
+        for (const n of ['gmail-host', 'apple', 'acme-github']) assert.equal(byName[n].equivalents, undefined, n);
+        const text = formatItems(items);
+        assert.match(text, /www\.gmail\.com \(\+ google\.com, youtube\.com equivalents\)/);
+        assert.match(text, /www\.foo\.co\.uk \(\+ foo-shop\.com equivalents\)/);
+        assert.match(text, /"equivalent_domains": false/);
+        assert.doesNotMatch(formatItems([{ id: 'x', name: 'a', hosts: ['github.com'] }]), /equivalents/);
+    } finally { await fake.close(); }
+});
