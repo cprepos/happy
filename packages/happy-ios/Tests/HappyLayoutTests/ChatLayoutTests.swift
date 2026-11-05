@@ -301,6 +301,21 @@ final class MessageRowLayoutTests: XCTestCase {
         XCTAssertEqual(layout.size.height, 83)
     }
 
+    func testAgentTextWithLiveBrowserChips() {
+        // The text, 8, a 44-point chip, 8, the next chip, 8, then the copy button.
+        let layout = AgentTextLayout(width: 393, blocks: [.text(text("Done.", lineHeight: 25))], chips: 2, chipHeight: 44)
+        XCTAssertEqual(layout.chips.count, 2)
+        assertFrame(layout.chips[0], rect(16, 61, 361, 44))
+        assertFrame(layout.chips[1], rect(16, 113, 361, 44))
+        assertFrame(layout.copyButton, rect(16, 165, 16, 20))
+        XCTAssertEqual(layout.size.height, 195)
+        // A message that was only the link: the chip at the top.
+        let alone = AgentTextLayout(width: 393, blocks: [], chips: 1, chipHeight: 44)
+        assertFrame(alone.chips[0], rect(16, 10, 361, 44))
+        assertFrame(alone.copyButton, rect(16, 62, 16, 20))
+        XCTAssertTrue(AgentTextLayout(width: 393, blocks: []).chips.isEmpty)
+    }
+
     func testRowsCentreInAWideWindow() {
         let column = ChatColumn(rowWidth: 1000, maxContentWidth: 800)
         XCTAssertEqual(column, ChatColumn(rowWidth: 1000, maxContentWidth: 800))

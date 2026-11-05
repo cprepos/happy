@@ -134,7 +134,8 @@ public final class VoiceCoordinator: NSObject {
 
     func toggleMute() { Task { await session?.toggleMute() } }
 
-    private func show(from presenting: UIViewController) {
+    /// Internal for the hosted tests, which raise the sheet with no call.
+    func show(from presenting: UIViewController) {
         if let screen, screen.presentingViewController != nil { return }
         let screen = VoiceStatusViewController(coordinator: self)
         self.screen = screen

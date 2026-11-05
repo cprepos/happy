@@ -190,7 +190,7 @@ enum ChatEmbed: Equatable, Sendable {
     case page(InlinePage)
     /// A question's field for a written answer (`ChatQuestionFieldView`).
     case questionField(ChatQuestionField)
-    /// A browser an agent drives, shown live (`LiveBrowserCardView`).
+    /// A browser an agent drives, its chip (`LiveBrowserChipView`), which opens the chat's player.
     case liveBrowser(LiveBrowserLink)
 }
 

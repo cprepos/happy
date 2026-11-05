@@ -59,6 +59,16 @@ final class SessionComposerView: UIView, ChatComposerView, AgentInputCardDelegat
     }
     private let statusDot = StatusDotView()
     private let statusLabel = UILabel()
+    /// The chat's red live-browser line (`LiveBrowserDock.indicator`), at
+    /// the status row's right, in its font.
+    var liveBrowserIndicator: LiveBrowserIndicatorView? {
+        didSet {
+            guard liveBrowserIndicator !== oldValue else { return }
+            oldValue?.removeFromSuperview()
+            if let liveBrowserIndicator { addSubview(liveBrowserIndicator) }
+            liveBrowserChanged()
+        }
+    }
     private let weekButton = UIButton(type: .custom)
     private let weekLabel = UILabel()
     private let contextButton = ContextUsageControl()
@@ -492,8 +502,23 @@ final class SessionComposerView: UIView, ChatComposerView, AgentInputCardDelegat
             statusText: voiceStatus == nil ? nil : statusSize,
             panel: card.panelInput(width: innerWidth),
             usageWeek: usage?.weekPercent == nil ? nil : weekSize,
-            usageContext: usage?.context == nil ? nil : contextButton.labelSize
+            usageContext: usage?.context == nil ? nil : contextButton.labelSize,
+            browserText: liveBrowserIndicator?.textSize
         ))
+    }
+
+    /// The live-browser line came, went or changed its words.
+    func liveBrowserChanged() {
+        liveBrowserIndicator?.style = textScale.map { TextStyles.composerStatus.scaled($0) } ?? TextStyles.composerStatus
+        setNeedsLayout()
+        composerDelegate?.composerDidInvalidateHeight(self)
+    }
+
+    /// The card and the status row's top (the card's, with no row), in
+    /// the composer's coordinates: where the live browser's player stands.
+    var liveBrowserAnchor: (card: CGRect, top: CGFloat) {
+        let layout = layout(width: bounds.width)
+        return (layout.card, (layout.status ?? layout.browser)?.frame.minY ?? layout.card.minY)
     }
 
     override func layoutSubviews() {
@@ -505,6 +530,7 @@ final class SessionComposerView: UIView, ChatComposerView, AgentInputCardDelegat
             statusDot.setLayoutFrame(row.dot)
             statusLabel.setLayoutFrame(row.text)
         }
+        liveBrowserIndicator?.place(layout.browser)
         card.setLayoutFrame(layout.card)
         if let week = layout.usage?.week {
             // The menu trigger is padded out 10 and pulled back in.
@@ -1150,6 +1176,7 @@ final class SessionComposerView: UIView, ChatComposerView, AgentInputCardDelegat
         let scale = textScale
         detailsScale = scale
         let style = scale.map { TextStyles.composerStatus.scaled($0) } ?? TextStyles.composerStatus
+        liveBrowserIndicator?.style = style
         if let voiceStatus {
             let color = UIColor(Palette.iconBlue)
             statusLabel.attributedText = style.attributedString("\(Strings.Voice.title) · \(voiceStatus)", color: color, lineBreakMode: .byTruncatingTail)

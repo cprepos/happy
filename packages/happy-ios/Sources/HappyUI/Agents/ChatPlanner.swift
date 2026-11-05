@@ -76,7 +76,7 @@ actor ChatPlanner {
     /// An inline page's height until it has measured itself.
     static let pageHeight: CGFloat = 120
     /// A live browser's card, which never measures itself.
-    static let liveBrowserHeight = LiveBrowserCardLayout.Metrics.height
+    static let liveBrowserHeight = LiveBrowserChipView.height
 
     private let syntax: CodeSyntaxService
     /// Each row as last planned, by item ID. Behind a lock rather than the

@@ -69,7 +69,7 @@ final class ChatPlanView: UIView {
     private var media: [ChatMediaView] = []
     private var fileStatuses: [ChatFileStatusView] = []
     private var pages: [InlinePageView] = []
-    private var liveBrowsers: [LiveBrowserCardView] = []
+    private var liveBrowsers: [LiveBrowserChipView] = []
     private var deliveries: [ChatDeliveryView] = []
     private var questionFields: [ChatQuestionFieldView] = []
 
@@ -304,7 +304,7 @@ final class ChatPlanView: UIView {
                 view.apply(page)
                 order.append(view)
             case .embed(.liveBrowser(let link), let frame):
-                let view = take(&liveBrowsers, &liveBrowserIndex) { LiveBrowserCardView() }
+                let view = take(&liveBrowsers, &liveBrowserIndex) { LiveBrowserChipView() }
                 view.setLayoutFrame(frame)
                 view.apply(link)
                 order.append(view)

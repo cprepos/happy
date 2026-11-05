@@ -50,6 +50,16 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
     /// A new task on its way to the screen from this one's compose.
     private var composing = false
     private let previewing: Bool
+    /// The chat's live browser: its red line over the card, its player.
+    private lazy var liveDock: LiveBrowserDock = {
+        let client = session.client
+        let agentID = media.agentId
+        let dock = LiveBrowserDock(host: self, chatKey: "agent.\(agentID)") {
+            LiveBrowserConnection(client: client) { try await client.browserWorkspace(agentID: agentID) }
+        }
+        dock.onLayoutChange = { [weak self] in self?.view.setNeedsLayout() }
+        return dock
+    }()
     private let previewPill = GlassCapsuleView()
     /// The card's ground over the messages above the list, fading out under the capsule.
     private let previewFade = PreviewFadeView()
@@ -287,6 +297,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         jump.addTarget(self, action: #selector(jumpToLatest), for: .touchUpInside)
         view.addSubview(jump)
         view.addSubview(card)
+        if !previewing { view.addSubview(liveDock.indicator) }
         slash.onPick = { [weak self] command in self?.picked(command) }
         slash.onChange = { [weak self] in self?.placeSlash() }
         view.addSubview(slash.list)
@@ -379,6 +390,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         updateBar(animated: animated)
         let conversation = conversation
         Task { await conversation.setVisible(true) }
+        liveDock.setOnScreen(true)
         // The model chip warns as its account runs low, so the readings are
         // followed while the composer shows.
         if usageWatch == nil { usageWatch = session.models.followUsage() }
@@ -441,6 +453,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         #endif
         let conversation = conversation
         Task { await conversation.setVisible(false) }
+        if !previewing { liveDock.setOnScreen(false) }
         usageWatch?.invalidate()
         usageWatch = nil
         // Covered or gone: the keyboard isn't this screen's to follow, and
@@ -571,7 +584,10 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
     }
 
     /// What rides the keyboard: placed from its top, so carried with it.
-    private var keyboardRiders: [UIView] { [card, meter, jump, composerScrim, slash.list] + (newWorkPanel.map { [$0] } ?? []) }
+    private var keyboardRiders: [UIView] {
+        [card, meter, jump, composerScrim, slash.list] + (newWorkPanel.map { [$0] } ?? [])
+            + (previewing ? [] : [liveDock.indicator] + liveDock.riders)
+    }
 
     /// The list's keyboard moved: the screen takes its new layout at once,
     /// the list's inset moving on `change`, and what rides the keyboard is
@@ -868,6 +884,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         if wasSettled != settled(snapshot), let intro { introView.configure(intro, settled: settled(snapshot)) }
         showIntro()
         if !snapshot.items.isEmpty { dismissNewWorkPanel() }
+        if !previewing { liveDock.update(link: snapshot.latestLiveBrowser) }
         updatePrimary()
         updateChips()
         updateSlash()
@@ -1327,15 +1344,20 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         if let frame = screen.meter { meter.setLayoutFrame(frame) }
         layoutNewWorkPanel(above: screen.card)
         picker?.follow()
-        let foot = ChatFootLayout(size: view.bounds.size, card: screen.card)
+        // The red live-browser line stands on the card, its dot at the
+        // card's right edge; the list and the jump button keep above it.
+        let line = ChatStatusLineLayout(above: screen.card, voice: nil, browser: liveDock.indicator.textSize)
+        liveDock.indicator.place(line?.browser)
+        let foot = ChatFootLayout(size: view.bounds.size, card: line.map { screen.card.union($0.frame) } ?? screen.card)
         composerScrim.setLayoutFrame(foot.scrim)
         jump.setLayoutFrame(foot.jump)
         // The transcript starts under the navigation bar and scrolls under
         // it. The list is inverted: its top edge is the composer's edge.
         if ultra.frame != view.bounds { ultra.frame = view.bounds }
-        ultra.setViewport(frame: screen.list, insets: UIEdgeInsets(top: screen.listBottom, left: 0, bottom: view.safeAreaInsets.top, right: 0),
+        ultra.setViewport(frame: screen.list, insets: UIEdgeInsets(top: screen.listBottom + (line?.frame.height ?? 0), left: 0, bottom: view.safeAreaInsets.top, right: 0),
                           keyboard: insetMotion)
         layoutTranscript()
+        liveDock.layoutPlayer(card: screen.card, anchor: line?.frame.minY ?? screen.card.minY)
         updateHeaderEdge()
         ultraKeyboard?.refresh()
     }
@@ -1958,52 +1980,14 @@ extension ChatViewController: ChatMediaProviding {
     var chatMedia: ChatMediaSource? { media }
 }
 
+extension ChatViewController: LiveBrowserDockHosting {
+    var liveBrowserDock: LiveBrowserDock? { previewing ? nil : liveDock }
+}
+
 extension ChatViewController: PageHosting {
     var pageClient: AgentClient { session.client }
     func page(open url: URL) { openBrowser(url, session: session, agentID: media.agentId) }
     var pageAgentID: String? { media.agentId }
-
-    /// A live browser full screen; while the agent waits on the person, with
-    /// a Done that hands control back and closes it.
-    func page(openLive link: LiveBrowserLink, status: LiveBrowserState.Status?) {
-        guard status == .takeover else { page(open: link.url); return }
-        let done = UIBarButtonItem()
-        done.style = .prominent
-        done.accessibilityIdentifier = "live-browser-done"
-        let browser = BrowserViewController(url: link.url, session: session, agentID: media.agentId, extraItems: [done])
-        done.primaryAction = UIAction(title: Strings.LiveBrowser.handBack) { [weak self, weak browser, weak done] _ in
-            self?.handBack(link, from: browser, item: done)
-        }
-        presentBrowser(browser)
-    }
-
-    /// POSTs the live browser's `/done` through the workspace, as the card
-    /// reads it, then closes the full screen; a failure leaves it open.
-    func handBack(_ link: LiveBrowserLink, from browser: BrowserViewController?, item: UIBarButtonItem?) {
-        item?.isEnabled = false
-        let client = session.client
-        let agentID = media.agentId
-        Task { [weak self] in
-            let fetcher = BrowserFetcher(client: client) { try await client.browserWorkspace(agentID: agentID) }
-            do {
-                _ = try await fetcher.send(method: "POST", url: link.doneURL)
-                await fetcher.stop()
-                guard let browser else { return }
-                if let navigation = browser.navigationController, let index = navigation.viewControllers.firstIndex(of: browser), index > 0 {
-                    navigation.popToViewController(navigation.viewControllers[index - 1], animated: true)
-                } else {
-                    browser.dismiss(animated: true)
-                }
-            } catch {
-                await fetcher.stop()
-                item?.isEnabled = true
-                guard let presenter: UIViewController = browser ?? self else { return }
-                let alert = UIAlertController(title: Strings.LiveBrowser.handBackFailed, message: Strings.LiveBrowser.unreachable, preferredStyle: .alert)
-                alert.addAction(UIAlertAction(title: Strings.Common.ok, style: .default))
-                presenter.present(alert, animated: true)
-            }
-        }
-    }
 
     func page(_ artifactId: String, measured height: CGFloat) {
         let height = min(max(1, height.rounded(.up)), 4000)

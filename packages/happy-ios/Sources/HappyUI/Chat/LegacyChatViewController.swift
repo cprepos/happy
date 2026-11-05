@@ -30,7 +30,8 @@ import UltraView
 /// `ApplyPipeline`). The main thread hands over what it decides (the width,
 /// what the reader opened) and applies only what changed. While a pass
 /// runs, newer snapshots merge into the next one.
-final class LegacyChatViewController: UIViewController, ChatListViewDelegate, ChatComposerDelegate, ComposeHosting, KeyboardPushed {
+final class LegacyChatViewController: UIViewController, ChatListViewDelegate, ChatComposerDelegate, ComposeHosting, KeyboardPushed, LiveBrowserDockHosting {
+    var liveBrowserDock: LiveBrowserDock? { liveDock }
     private let context: AppContext
     private let account: AccountSession
     /// Read by `AppCoordinator` to skip reopening the chat a tapped
@@ -65,6 +66,21 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
     private var gitStatus: GitStatus?
     private lazy var dock = ChatDockView()
     private lazy var composer: any ChatComposerView = makeComposer()
+    /// The chat's live browser: its red line in the composer's status
+    /// row, its player over the dock.
+    private lazy var liveDock: LiveBrowserDock = {
+        let dock = LiveBrowserDock(host: self, chatKey: "session.\(chatId)") { [weak self] in self?.liveConnection }
+        dock.onLayoutChange = { [weak self] in
+            (self?.composer as? SessionComposerView)?.liveBrowserChanged()
+            self?.view.setNeedsLayout()
+        }
+        return dock
+    }()
+    /// The computer the chat's live link goes through, once it is known
+    /// (`LegacyLinkRoute`); nil while it isn't, or none can be chosen.
+    private var liveConnection: LiveBrowserConnection?
+    private var liveRouting: Task<Void, Never>?
+    private var liveRouted: LiveBrowserLink?
     /// The composer stays hidden until its draft is restored, its taps
     /// caught meanwhile (`ChatComposerReveal`).
     private lazy var composerReveal = ChatComposerReveal(composer: composer)
@@ -423,6 +439,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
     private func installComposer() {
         composer.composerDelegate = self
         dock.addSubview(composer)
+        (composer as? SessionComposerView)?.liveBrowserIndicator = liveDock.indicator
         dock.addSubview(composerReveal.catcher)
     }
 
@@ -487,6 +504,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         appeared = true
+        liveDock.setOnScreen(true)
         startConstruction()
         // An empty compose has no transcript to stage: built now, its
         // composer can take the keyboard while the push still runs.
@@ -545,6 +563,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         // ChatList's `active`: a chat not shown asks for no older page.
         historyPager?.isActive = false
         appeared = false
+        liveDock.setOnScreen(false)
         if let keyboard = ultraKeyboard, keyboard.isActive {
             keyboard.deactivate()
             landDockRiders(on: keyboard.list)
@@ -898,6 +917,11 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         for (bar, frame) in zip(dockBars, screen.accessories) { bar.view.setLayoutFrame(frame) }
         composer.setLayoutFrame(screen.composer)
         composerReveal.layout(composerFrame: screen.composer)
+        if let session = composer as? SessionComposerView {
+            let anchor = session.liveBrowserAnchor
+            let card = session.convert(anchor.card, to: view)
+            liveDock.layoutPlayer(card: card, anchor: session.convert(CGPoint(x: 0, y: anchor.top), to: view).y)
+        }
         scrollButton.setLayoutFrame(screen.scrollButton)
         scrim.setLayoutFrame(screen.scrim)
         if let back = screen.backButton { landscapeBack.setLayoutFrame(back) }
@@ -937,7 +961,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
     }
 
     /// What rides the dock: placed by the keyboard, so carried with it.
-    private var dockRiders: [UIView] { [dock, scrollButton, scrim, placeholder] }
+    private var dockRiders: [UIView] { [dock, scrollButton, scrim, placeholder] + liveDock.riders }
 
     /// UltraList's keyboard moved: the screen takes its new layout at once,
     /// and what rides the dock is carried there from where it is drawn now,
@@ -1856,6 +1880,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
                 dismissAnsweredQuestions(facts)
                 updatePlaceholder()
                 updateComposer()
+                updateLiveBrowser(facts.liveBrowser)
                 if rigActivity.show(RigActivityIndicator.indicators(session.metadata), running: facts.runningSubagents) { updateDockBars() }
             }
             if let forms = update.questionForms { questionForms = forms }
@@ -2095,6 +2120,43 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
 
     func chatList(_ list: ChatListView, selectText text: String) {
         push(.textSelection(text: text), context: context)
+    }
+
+    /// The chat's newest live link, through the computer its links go
+    /// through: decided first, so the feed never reads through another.
+    private func updateLiveBrowser(_ link: LiveBrowserLink?) {
+        guard link != liveRouted else { return }
+        liveRouted = link
+        liveRouting?.cancel()
+        guard let link else {
+            liveConnection = nil
+            liveDock.update(link: nil)
+            return
+        }
+        let record = session.record
+        let machineId = record?.metadata?["machineId"]?.stringValue
+        let host = record?.metadata?["host"]?.stringValue
+        let store = account.store
+        liveRouting = Task { @MainActor [weak self] in
+            let (machine, machines) = await Task.detached(priority: .userInitiated) {
+                (machineId.flatMap { try? store.machine(id: $0) }, (try? store.machines()) ?? [])
+            }.value
+            guard let self, !Task.isCancelled, self.liveRouted == link else { return }
+            let name = record.flatMap { LegacyLinkRoute.machineName(session: $0, machine: machine) }
+            let route = LegacyLinkRoute.resolve(
+                machineId: machineId, machineName: name, agentNodeName: LegacyLinkRoute.agentNodeName(machine, among: machines),
+                computers: Self.legacyLinkComputers(self.context.account), settings: self.account.localSettings
+            )
+            // A chat whose computer isn't certain reads nothing: it says
+            // unavailable rather than look through another computer.
+            if case .computer(let id) = route, let client = Session.session(for: id, context: self.context)?.client {
+                let hint = BrowserMachineHint(machineID: machineId, hosts: [host, name].compactMap { $0 })
+                self.liveConnection = LiveBrowserConnection(client: client) { try await client.browserWorkspace(machine: hint) }
+            } else {
+                self.liveConnection = nil
+            }
+            self.liveDock.update(link: link)
+        }
     }
 
     func chatList(_ list: ChatListView, openLink url: String) {

@@ -69,8 +69,8 @@ extension Strings {
         }
     }
 
-    /// A live browser's card in a chat and its full screen
-    /// (`LiveBrowserCardView`).
+    /// A chat's live browser: its line, player, full screen and chips
+    /// (`LiveBrowserDock`).
     enum LiveBrowser {
         static let title = "Live Browser"
         static let watching = "Watching"
@@ -89,9 +89,6 @@ extension Strings {
         /// The link expired (410).
         static let expired = "This live browser has expired."
         static let unreachable = "Can’t reach the live browser right now."
-        /// The full screen's button that hands control back to the agent.
-        static let handBack = "Done"
-        static let handBackFailed = "Couldn’t Hand Back Control"
         /// The red line over the composer, before the status.
         static let indicator = "Live browser"
         static func indicator(_ status: String) -> String { "\(indicator) · \(status)" }

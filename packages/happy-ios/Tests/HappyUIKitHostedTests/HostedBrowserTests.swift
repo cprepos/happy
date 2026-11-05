@@ -82,6 +82,15 @@ actor BrowserDaemon: AgentTransport {
             Data("HTTP/1.1 \(status)\r\nContent-Type: \(type)\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8) + body
         }
         if head.line.contains("/live/0e0e0e0e") { return reply("410 Gone", "application/json", Data(#"{"error":"expired"}"#.utf8)) }
+        if head.line.hasPrefix("POST ") && head.line.contains("/take ") {
+            liveStatus = "user"
+            // A container per chat: its noVNC is wherever the bridge says.
+            return reply("200 OK", "application/json", Data(#"{"status":"user","reason":"Sign in","url":"https://example.com/login","title":"Log in to Example","novnc_url":"\#(Self.chatNoVNC)"}"#.utf8))
+        }
+        if head.line.hasPrefix("POST ") && head.line.contains("/release ") {
+            liveStatus = "watching"
+            return reply("200 OK", "application/json", Data(#"{"status":"watching","url":"https://example.com/login","title":"Log in to Example"}"#.utf8))
+        }
         if head.line.hasPrefix("POST ") && head.line.contains("/done ") {
             liveStatus = "watching"
             return reply("200 OK", "application/json", Data(#"{"ok":true}"#.utf8))
@@ -128,6 +137,9 @@ actor BrowserDaemon: AgentTransport {
 
     nonisolated static let novncModules = 48
     nonisolated static let takeover = "http://localhost:6080/vnc.html?autoconnect=true&resize=remote#password=s3cr%2Bt"
+    /// One chat's container's noVNC, as `POST /take` answers it.
+    nonisolated static let chatNoVNC = "http://localhost:6123/vnc.html?autoconnect=true&resize=remote"
+    func setLiveStatus(_ status: String) { liveStatus = status }
 
     /// The bridge serves `frame.jpg` as a PNG; the card reads it by its bytes.
     nonisolated static let frame: Data = UIGraphicsImageRenderer(size: CGSize(width: 64, height: 40)).image { context in
@@ -370,107 +382,6 @@ final class HostedBrowserTests: XCTestCase {
         let requests = await daemon.requests
         XCTAssertGreaterThanOrEqual(requests.filter { $0.hasPrefix("CONNECT localhost:6080 ") }.count,
                                     heads.filter { $0.host == "localhost:6080" }.count)
-    }
-
-    func testALiveBrowserCardPollsThroughItsChatsWorkspaceAndHandsBack() async throws {
-        let daemon = BrowserDaemon()
-        let account = AccountController(serverConfig: ServerConfig(storage: InMemoryKeyValueStore()), clientID: "browser-test", credentialStore: InMemoryCredentialStore(), storeDirectory: nil, agentTransport: { _ in daemon })
-        await account.agentConnections.setForeground(false)
-        let connection = try await account.agentConnections.add(JSONDecoder().decode(AgentConnectionCredentials.self,
-            from: Data(#"{"address":"browser-test","port":1,"deviceID":"\#(UUID().uuidString)","deviceToken":"native-secret"}"#.utf8)), name: "Studio Mac")
-        let context = AppContext(account: account, variant: .preview, version: "test")
-        let session = try XCTUnwrap(Session.session(for: connection.id, context: context))
-        let chat = ChatViewController(session: session, agentId: "agent1", title: "Preview", spaceId: nil, intro: nil, previewing: true)
-        let navigation = UINavigationController(rootViewController: chat)
-        let window = hostedKeyWindow(in: try await hostedActiveScene(), root: navigation)
-        defer {
-            window.isHidden = true; Session.forget(connection.id)
-            Task { try? await account.agentConnections.remove(connection.id) }
-        }
-        let id = "3f9a1c0e5b7d42e8a6c1f09b2d4e7a35"
-        let link = try XCTUnwrap(LiveBrowserLink(id: id))
-        // As ChatPlanView places it: in the chat, which it finds up the responder chain.
-        let card = LiveBrowserCardView()
-        card.frame = CGRect(x: 16, y: 120, width: 361, height: LiveBrowserCardLayout.Metrics.height)
-        chat.view.addSubview(card)
-        card.apply(link)
-        try await until { card.accessibilityValue == "takeover" }
-        XCTAssertTrue(card.isPolling)
-        XCTAssertTrue(card.accessibilityLabel?.contains(Strings.LiveBrowser.needsYou) == true)
-        XCTAssertTrue(card.accessibilityLabel?.contains("Log in to Example") == true)
-        XCTAssertTrue(card.accessibilityLabel?.contains("Sign in") == true, "the card says why the agent waits")
-        try await until { await daemon.requests.contains { $0.hasPrefix("GET /live/\(id)/frame.jpg") } }
-        var requests = await daemon.requests
-        XCTAssertTrue(requests.contains { $0.hasPrefix("CONNECT /v0/workspaces/work1/proxy") })
-        XCTAssertTrue(requests.contains { $0.hasPrefix("CONNECT localhost:6090") })
-        XCTAssertTrue(requests.contains { $0.hasPrefix("GET /live/\(id)/state HTTP/1.1") })
-        // Polls again while on screen.
-        let first = card.polls
-        try await until { card.polls > first }
-        try screenshot(window, name: "live-browser-card")
-
-        // Off screen: no more reads.
-        card.removeFromSuperview()
-        XCTAssertFalse(card.isPolling)
-        try await Task.sleep(for: .milliseconds(300))
-        let reads = await daemon.requests.filter { $0.contains("/live/\(id)/state") }.count
-        try await Task.sleep(for: .milliseconds(2000))
-        let later = await daemon.requests.filter { $0.contains("/live/\(id)/state") }.count
-        XCTAssertEqual(later, reads, "an off-screen card reads nothing")
-        chat.view.addSubview(card)
-        XCTAssertTrue(card.isPolling, "back on screen, it reads again")
-
-        // A tap opens it full screen, with Done while the agent waits.
-        card.sendActions(for: .touchUpInside)
-        try await until { navigation.topViewController is BrowserViewController }
-        let browser = try XCTUnwrap(navigation.topViewController as? BrowserViewController)
-        let done = try XCTUnwrap(browser.extraItems.first)
-        XCTAssertEqual(done.accessibilityIdentifier, "live-browser-done")
-        XCTAssertEqual(done.title, Strings.LiveBrowser.handBack)
-        try await until { navigation.topViewController === browser && browser.isViewLoaded && browser.transitionCoordinator == nil }
-        XCTAssertTrue(browser.navigationItem.rightBarButtonItems?.first === done, "Done is outermost")
-        XCTAssertTrue(browser.navigationItem.rightBarButtonItems?.contains { $0 === browser.shareItem } == true, "Share, with Open in Safari, stays")
-        // Full screen reaches the bridge's page the way the card reaches its
-        // frames: through the chat's workspace, to the computer's localhost.
-        try await until { await daemon.pageHeads.contains { $0.line.hasPrefix("GET /live/\(id) ") && $0.host == "localhost:6090" } }
-        try screenshot(window, name: "live-browser-takeover")
-        chat.handBack(link, from: browser, item: done)
-        try await until { await daemon.requests.contains { $0.hasPrefix("POST /live/\(id)/done HTTP/1.1") } }
-        try await until { navigation.topViewController === chat }
-        let liveStatus = await daemon.liveStatus
-        XCTAssertEqual(liveStatus, "watching")
-        requests = await daemon.requests
-        XCTAssertTrue(requests.filter { $0.hasPrefix("CONNECT /v0/workspaces/") }.allSatisfy { $0.hasPrefix("CONNECT /v0/workspaces/work1/proxy") })
-        try await until { card.accessibilityValue == "watching" }
-
-        // Watching: a tap opens it with no Done.
-        card.sendActions(for: .touchUpInside)
-        try await until { navigation.topViewController is BrowserViewController && navigation.topViewController?.transitionCoordinator == nil }
-        XCTAssertEqual((navigation.topViewController as? BrowserViewController)?.extraItems.count, 0)
-        navigation.popViewController(animated: false)
-    }
-
-    func testALiveBrowserThatExpiredSaysSo() async throws {
-        let daemon = BrowserDaemon()
-        let host = LiveHost(client: AgentClient(transport: daemon, token: "native-secret"))
-        let window = hostedKeyWindow(in: try await hostedActiveScene(), root: host)
-        defer { window.isHidden = true }
-        let card = LiveBrowserCardView()
-        card.frame = CGRect(x: 16, y: 120, width: 361, height: LiveBrowserCardLayout.Metrics.height)
-        host.view.addSubview(card)
-        card.apply(LiveBrowserLink(id: "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e"))
-        try await until { card.accessibilityValue == "expired" }
-        XCTAssertFalse(card.isPolling, "an expired browser is not read again")
-        XCTAssertTrue(card.accessibilityLabel?.contains(Strings.LiveBrowser.expired) == true)
-        card.apply(nil)
-        XCTAssertFalse(card.isPolling)
-    }
-
-    private final class LiveHost: UIViewController, PageHosting {
-        let pageClient: AgentClient
-        init(client: AgentClient) { pageClient = client; super.init(nibName: nil, bundle: nil) }
-        @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
-        func page(_ artifactId: String, measured height: CGFloat) {}
     }
 
     private func until(_ condition: () async -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {

@@ -689,7 +689,7 @@ final class LiveBrowserPlayerView: UIView {
 /// A live link in the transcript: a 44-point chip that opens the chat's
 /// player, or says a newer browser replaced it.
 final class LiveBrowserChipView: UIControl {
-    static let height: CGFloat = 44
+    nonisolated static let height: CGFloat = 44
     static let maxWidth: CGFloat = 320
 
     private(set) var link: LiveBrowserLink?

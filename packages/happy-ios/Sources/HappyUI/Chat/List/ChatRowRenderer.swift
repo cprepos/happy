@@ -298,10 +298,23 @@ enum ChatRowRenderer {
 
     /// MessageView's agent text: the markdown, then the copy button, which
     /// shows a tick for a moment after copying.
+    /// A live browser's link comes out of the text as a chip under it,
+    /// which opens the chat's player (`LiveBrowserDock`).
     static func agentText(_ message: AgentTextMessage, copied: Bool, diagrams: ChatMermaidHeights, width: CGFloat, style: ChatRowStyle) -> ChatRowPlan {
-        let markdown = MarkdownPiece(message.text, color: Palette.text, diagrams: diagrams, syntax: style.render.codeSyntax, in: style.text.environment)
-        let layout = AgentTextLayout(width: width, maxContentWidth: style.maxContentWidth, blocks: markdown.blocks)
+        var text = message.text
+        var links: [LiveBrowserLink] = []
+        if text.contains(LiveBrowserLink.origin) {
+            let segments = LiveBrowserLink.split(text)
+            links = segments.compactMap { if case .link(let link) = $0 { link } else { nil } }
+            if !links.isEmpty {
+                text = segments.compactMap { if case .markdown(let part) = $0 { part } else { nil } }
+                    .joined().trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        let markdown = MarkdownPiece(text, color: Palette.text, diagrams: diagrams, syntax: style.render.codeSyntax, in: style.text.environment)
+        let layout = AgentTextLayout(width: width, maxContentWidth: style.maxContentWidth, blocks: text.isEmpty ? [] : markdown.blocks, chips: links.count, chipHeight: LiveBrowserChipView.height)
         let drawn = markdown.draw(layout.markdown, origin: layout.markdownOrigin)
+        let chips: [ChatDrawItem] = zip(links, layout.chips).map { .embed(.liveBrowser($0), frame: $1) }
         let slop = AgentTextLayout.Metrics.copyHitSlop
         let copyTarget = CGRect(
             x: layout.copyButton.minX - slop.left, y: layout.copyButton.minY - slop.top,
@@ -309,7 +322,7 @@ enum ChatRowRenderer {
         )
         return ChatRowPlan(
             id: message.id, size: layout.size,
-            items: drawn.items + [.icon(.ionicons(copied ? "checkmark" : "copy-outline"), size: AgentTextLayout.Metrics.copyIconSize, frame: layout.copyIcon, tint: Palette.text)],
+            items: drawn.items + chips + [.icon(.ionicons(copied ? "checkmark" : "copy-outline"), size: AgentTextLayout.Metrics.copyIconSize, frame: layout.copyIcon, tint: Palette.text)],
             hits: [ChatHit(frame: copyTarget, action: .copyMessage(id: message.id, text: message.text))] + drawn.hits,
             accessibilityLabel: message.text,
             revealable: true,

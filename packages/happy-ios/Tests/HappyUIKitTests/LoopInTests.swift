@@ -150,15 +150,15 @@ final class LiveBrowserPlanTests: XCTestCase {
         let alone = ChatItem(id: "m1", role: .agent, pieces: [.liveBrowser(id: id, url: link.url)], delivery: .sent)
         let (shown, frame) = try XCTUnwrap(cards(ChatPlanner.plan(alone, key: key, copied: false, syntax: CodeSyntaxService())).first)
         XCTAssertEqual(shown, link)
-        XCTAssertEqual(frame, CGRect(x: 16, y: 8, width: 361, height: LiveBrowserCardLayout.Metrics.height))
-        XCTAssertEqual(LiveBrowserCardLayout.Metrics.height, 236)
+        XCTAssertEqual(frame, CGRect(x: 16, y: 8, width: 361, height: LiveBrowserChipView.height))
+        XCTAssertEqual(LiveBrowserChipView.height, 44)
 
         let between = ChatItem(id: "m2", role: .agent, pieces: [.text("Watch:"), .liveBrowser(id: id, url: link.url), .text("Done soon.")], delivery: .sent)
         let plan = ChatPlanner.plan(between, key: key, copied: false, syntax: CodeSyntaxService())
         let card = try XCTUnwrap(cards(plan).first?.1)
         XCTAssertEqual(card.minX, 16)
         XCTAssertEqual(card.width, 361)
-        XCTAssertEqual(card.height, 236)
+        XCTAssertEqual(card.height, 44)
         XCTAssertGreaterThan(card.minY, 8)
         XCTAssertGreaterThan(plan.size.height, card.maxY)
     }

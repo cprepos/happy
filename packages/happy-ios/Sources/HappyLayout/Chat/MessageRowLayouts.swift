@@ -208,21 +208,32 @@ public struct AgentTextLayout: Equatable, Sendable {
         public static let copyIconSize: CGFloat = 16
         /// COPY_HIT_SLOP: the glyph is small, its touch target is not.
         public static let copyHitSlop = LayoutInsets(top: 14, left: 14, bottom: 14, right: 20)
+        /// Between the text and a live browser's chip, and after the last.
+        public static let chipGap: CGFloat = 8
     }
 
     public var size: CGSize
     public var markdown: MarkdownLayout
     public var markdownOrigin: CGPoint
+    /// Each live browser's chip, under the text, across the column.
+    public var chips: [CGRect] = []
     public var copyButton: CGRect
     public var copyIcon: CGRect
 
-    public init(width: CGFloat, maxContentWidth: CGFloat = .greatestFiniteMagnitude, blocks: [MarkdownLayout.Block]) {
+    public init(width: CGFloat, maxContentWidth: CGFloat = .greatestFiniteMagnitude, blocks: [MarkdownLayout.Block], chips count: Int = 0, chipHeight: CGFloat = 44) {
         typealias M = Metrics
         let column = ChatColumn(rowWidth: width, maxContentWidth: maxContentWidth)
         let x = column.x + M.marginH
-        markdown = MarkdownLayout(width: max(0, column.width - 2 * M.marginH), blocks: blocks)
+        let inner = max(0, column.width - 2 * M.marginH)
+        markdown = MarkdownLayout(width: inner, blocks: blocks)
         markdownOrigin = CGPoint(x: x, y: M.marginV)
-        let copyY = M.marginV + markdown.size.height
+        var copyY = M.marginV + markdown.size.height
+        for index in 0..<max(0, count) {
+            if index > 0 || markdown.size.height > 0 { copyY += M.chipGap }
+            chips.append(CGRect(x: x, y: copyY, width: inner, height: chipHeight))
+            copyY += chipHeight
+        }
+        if count > 0 { copyY += M.chipGap }
         copyButton = CGRect(x: x, y: copyY, width: M.copyIconSize, height: M.copyHeight)
         copyIcon = CGRect(x: x, y: copyY + (M.copyHeight - M.copyIconSize) / 2, width: M.copyIconSize, height: M.copyIconSize)
         size = CGSize(width: max(0, width), height: copyY + M.copyHeight + M.marginV)
