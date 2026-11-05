@@ -11,7 +11,8 @@
 // old file and writes the new one. Exit 3: already upgraded (it has
 // pipe_targets, so a manage the operator removed is never added back), nothing
 // printed. Exit 1: unreadable or invalid, nothing printed.
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { parsePolicy } from '../lib/policy.mjs';
 
 export const MANAGE_ALL = Object.freeze({ create: true, update: true, remove: true, compare: true, pipe: [] });
@@ -29,7 +30,9 @@ export function upgradePolicy(raw) {
     return out;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Through a symlink (current -> releases/<sha>) argv[1] is the link path and
+// import.meta.url the real one, so compare real paths.
+if (process.argv[1] && fileURLToPath(import.meta.url) === realpathSync(process.argv[1])) {
     try {
         const up = upgradePolicy(JSON.parse(readFileSync(process.argv[2], 'utf8')));
         if (!up) process.exit(3);

@@ -27,7 +27,7 @@
 //   node server.mjs --check-policy [path]   validate a policy file and exit
 import { createServer as createHttpServer } from 'node:http';
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { statSync } from 'node:fs';
+import { realpathSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { loadConfig, readSecret, readSecretOrNull } from './lib/config.mjs';
 import { loadPolicy, PolicyError } from './lib/policy.mjs';
@@ -208,6 +208,8 @@ async function main(argv) {
     return null;
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+// Through a symlink (current -> releases/<sha>) argv[1] is the link path and
+// import.meta.url the real one, so compare real paths.
+if (process.argv[1] && fileURLToPath(import.meta.url) === realpathSync(process.argv[1])) {
     main(process.argv.slice(2)).then((code) => { if (code !== null) process.exit(code); }, (err) => { log(`fatal: ${err.message}`); process.exit(1); });
 }

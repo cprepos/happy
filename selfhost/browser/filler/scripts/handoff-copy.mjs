@@ -12,7 +12,7 @@
 // file with one link, owned by someone other than the reader (a file of one's
 // own there is a trick, not a handoff), at most 1 KiB, holding one token. The
 // value is written to <dst> (created, never overwritten) and never printed.
-import { closeSync, constants, fstatSync, openSync, readSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, fstatSync, openSync, readSync, realpathSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const TOKEN = /^[A-Za-z0-9._~+/=-]{16,512}$/;
@@ -50,7 +50,9 @@ export function copyHandoff(src, dst, { mode = 0o400, selfUid } = {}) {
     writeFileSync(dst, v, { mode, flag: 'wx' });
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+// Through a symlink (current -> releases/<sha>) argv[1] is the link path and
+// import.meta.url the real one, so compare real paths.
+if (process.argv[1] && fileURLToPath(import.meta.url) === realpathSync(process.argv[1])) {
     const [src, dst, flag, m] = process.argv.slice(2);
     const mode = flag === '--mode' ? Number.parseInt(m, 8) : 0o400;
     if (!src || !dst || (flag && flag !== '--mode') || ![0o400, 0o600].includes(mode)) {
