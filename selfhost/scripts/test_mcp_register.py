@@ -398,5 +398,150 @@ class RemoteRoundTripTest(Scratch):
         self.assertFalse(os.path.exists(os.path.join(self.macs, "calls.log")))
 
 
+class JsoncTest(unittest.TestCase):
+    def test_comments_and_trailing_commas(self):
+        m = load_module()
+        text = ('{\n  // a line comment\n  "$schema": "https://opencode.ai/config.json", /* block */\n'
+                '  "s": "keeps // and /* inside strings */ and \\" quotes",\n  "a": [1, 2,],\n}\n')
+        plain, had = m.strip_jsonc(text)
+        self.assertTrue(had)
+        self.assertEqual(json.loads(plain), {"$schema": "https://opencode.ai/config.json",
+                                             "s": 'keeps // and /* inside strings */ and " quotes', "a": [1, 2]})
+
+    def test_plain_json_has_no_comments(self):
+        m = load_module()
+        plain, had = m.strip_jsonc('{"$schema": "https://opencode.ai/config.json"}')
+        self.assertFalse(had)
+        self.assertEqual(json.loads(plain), {"$schema": "https://opencode.ai/config.json"})
+
+
+class MacHarnessTest(Scratch):
+    """prep-air's opencode.jsonc and a Gemini CLI that has not made ~/.gemini yet."""
+
+    BRIDGE = RemoteRoundTripTest.BRIDGE
+
+    put = RemoteRoundTripTest.put
+    read = RemoteRoundTripTest.read
+    run_script = RemoteRoundTripTest.run_script
+    mac_trash = RemoteRoundTripTest.mac_trash
+
+    def setUp(self):
+        super().setUp()
+        os.makedirs(os.path.join(self.macs, "prep-pro"))
+        self.jsonc = '{\n  "$schema": "https://opencode.ai/config.json"\n}\n'
+        self.put("prep-air", ".config/opencode/opencode.jsonc", self.jsonc)
+        # gemini is installed, but has never run: no ~/.gemini.
+        self.put("prep-air", ".local/bin/gemini", "#!/bin/sh\n")
+        os.chmod(os.path.join(self.macs, "prep-air/.local/bin/gemini"), 0o755)
+
+    def test_opencode_jsonc_and_new_gemini_folder_round_trip(self):
+        out = self.run_script("register")
+        self.assertIn("prep-air:~/.config/opencode/opencode.jsonc: added happy-browser-bridge", out)
+        self.assertFalse(os.path.exists(os.path.join(self.macs, "prep-air/.config/opencode/opencode.json")),
+                         "no second opencode config next to the .jsonc")
+        oc = json.loads(self.read("prep-air", ".config/opencode/opencode.jsonc"))
+        self.assertEqual(oc["$schema"], "https://opencode.ai/config.json")
+        self.assertEqual(oc["mcp"]["happy-browser-bridge"]["command"][:2], ["/bin/sh", "-c"])
+        copies = [p for p in self.mac_trash("prep-air") if p.endswith("opencode.jsonc")]
+        self.assertEqual(len(copies), 1)
+        with open(copies[0]) as f:
+            self.assertEqual(f.read(), self.jsonc)
+
+        self.assertIn("prep-air:~/.gemini/settings.json: created ~/.gemini (gemini is installed there)", out)
+        gem = json.loads(self.read("prep-air", ".gemini/settings.json"))
+        self.assertEqual(list(gem), ["mcpServers"], "only the servers, nothing else")
+        self.assertIn("happy-browser-bridge", gem["mcpServers"])
+
+        again = self.run_script("register")
+        self.assertNotIn(": added", again)
+
+        self.run_script("unregister")
+        self.assertEqual(self.read("prep-air", ".config/opencode/opencode.jsonc"), self.jsonc)
+        self.assertFalse(os.path.exists(os.path.join(self.macs, "prep-air/.gemini")),
+                         "the file and the empty folder it made went to the trash")
+        self.assertTrue([p for p in self.mac_trash("prep-air") if p.endswith(".gemini__settings.json")])
+
+    def test_jsonc_comments_go_but_the_backup_keeps_them(self):
+        text = '{\n  // mine\n  "$schema": "https://opencode.ai/config.json",\n  "model": "x",\n}\n'
+        self.put("prep-air", ".config/opencode/opencode.jsonc", text)
+        out = self.run_script("register")
+        self.assertIn("opencode.jsonc: its comments are not kept", out)
+        oc = json.loads(self.read("prep-air", ".config/opencode/opencode.jsonc"))
+        self.assertEqual(oc["model"], "x")
+        copies = [p for p in self.mac_trash("prep-air") if p.endswith("opencode.jsonc")]
+        with open(copies[0]) as f:
+            self.assertEqual(f.read(), text)
+
+    def test_no_gemini_binary_no_folder(self):
+        os.rename(os.path.join(self.macs, "prep-air/.local/bin/gemini"), os.path.join(self.root, "gemini-away"))
+        out = self.run_script("register")
+        self.assertIn("prep-air:~/.gemini/settings.json: missing, and so is its folder; left alone", out)
+        self.assertFalse(os.path.exists(os.path.join(self.macs, "prep-air/.gemini")))
+
+
+class SkillTest(Scratch):
+    """The agent-vault skill: copied from the repo here and to each Mac, and taken back by unregister."""
+
+    run_script = RemoteRoundTripTest.run_script
+    mac_trash = RemoteRoundTripTest.mac_trash
+    REL = ".claude/skills/agent-vault/SKILL.md"
+
+    def setUp(self):
+        super().setUp()
+        self.src = load_module().SKILL_SRC
+        with open(self.src) as f:
+            self.want = f.read()
+        for h in ("prep-air", "prep-pro"):
+            os.makedirs(os.path.join(self.macs, h, ".claude/skills"))
+
+    def test_the_repo_skill_has_no_secret_material(self):
+        self.assertTrue(self.want.startswith("---\nname: agent-vault\n"))
+        for pat in (r"[A-Za-z0-9+/=_-]{40,}", r"(?i)(password|token|secret)\s*[:=]\s*\S{6,}", r"\b[A-Z0-9]{10}\b"):
+            self.assertNotRegex(self.want, pat)
+
+    def test_local_copy_is_backed_up_replaced_and_put_back(self):
+        old = "---\nname: agent-vault\n---\nan older copy\n"
+        local = os.path.join(self.home, self.REL)
+        os.makedirs(os.path.dirname(local))
+        with open(local, "w") as f:
+            f.write(old)
+        out = self.run_script("register", "--no-remote")
+        self.assertIn("installed the agent-vault skill (replaced)", out)
+        with open(local) as f:
+            self.assertEqual(f.read(), self.want)
+        trash = os.path.join(self.root, "trash")
+        copies = [os.path.join(r, f) for r, _, fs in os.walk(trash) for f in fs if f.endswith("agent-vault__SKILL.md")]
+        self.assertEqual(len(copies), 1)
+        with open(copies[0]) as f:
+            self.assertEqual(f.read(), old)
+        self.assertIn("skill up to date", self.run_script("register", "--no-remote"))
+        self.run_script("unregister", "--no-remote")
+        with open(local) as f:
+            self.assertEqual(f.read(), old)
+
+    def test_macs_get_the_skill_and_unregister_moves_it_to_their_trash(self):
+        out = self.run_script("register")
+        for h in ("prep-air", "prep-pro"):
+            with open(os.path.join(self.macs, h, self.REL)) as f:
+                self.assertEqual(f.read(), self.want, h)
+            self.assertIn("%s:~/%s: installed the agent-vault skill (new file)" % (h, self.REL), out)
+        self.assertIn("skill up to date", self.run_script("register"))
+        self.run_script("unregister")
+        for h in ("prep-air", "prep-pro"):
+            self.assertFalse(os.path.exists(os.path.join(self.macs, h, ".claude/skills/agent-vault")), h)
+            self.assertTrue(os.path.isdir(os.path.join(self.macs, h, ".claude/skills")), "only what it made goes")
+            moved = [p for p in self.mac_trash(h) if p.endswith("agent-vault__SKILL.md")]
+            self.assertEqual(len(moved), 1, h)
+
+    def test_a_mac_copy_edited_after_register_is_left_alone(self):
+        self.run_script("register")
+        p = os.path.join(self.macs, "prep-pro", self.REL)
+        with open(p, "a") as f:
+            f.write("a local note\n")
+        out = self.run_script("unregister")
+        self.assertIn("prep-pro:~/%s: changed since register; left as it is" % self.REL, out)
+        self.assertTrue(os.path.exists(p))
+
+
 if __name__ == "__main__":
     unittest.main()

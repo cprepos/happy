@@ -15,15 +15,20 @@ Servers:
 Files here (each one that exists, or that its harness reads, is edited in place):
   ~/.codex/config.toml                              [mcp_servers.<name>], env_vars forwards HAPPY_SESSION_ID
                                                     and HAPPY_FORKED_FROM_SESSION_ID
-  ~/.config/opencode/opencode.json                  "mcp": {type local, command [...]}
+  ~/.config/opencode/opencode.json(c)               "mcp": {type local, command [...]}; the
+                                                    .jsonc is used when only it exists (its
+                                                    comments are not kept; the backup has them)
   ~/.gemini/settings.json                           "mcpServers" (Gemini CLI)
   ~/.gemini/config/mcp_config.json                  "mcpServers" (Antigravity / agy)
   ~/.claude.json                                    top-level "mcpServers", stdio
   ~/.local/share/happy-agent/happy/config/mcp.toml  [mcp_servers.<name>] (container paths)
+  ~/.claude/skills/agent-vault/SKILL.md             a copy of .agents/skills/agent-vault/SKILL.md
+                                                    (here and on each Mac)
 
 Files on the Macs (REMOTES below), over ssh, for the harnesses installed there.
 Each Mac is used only if `ssh <mac> 'ssh -o BatchMode=yes prep-ml true'` works.
-A missing file is created only when its folder exists. Their entries run the
+A missing file is created only when its folder exists (for Gemini CLI, also when
+the gemini binary is installed: its ~/.gemini is made on first run). Their entries run the
 servers on prep-ml through a `/bin/sh -c` wrapper (remote_wrapper): ssh forwards
 no environment, so the wrapper puts HAPPY_SESSION_ID, CLAUDE_CODE_SESSION_ID and
 HAPPY_FORKED_FROM_SESSION_ID on the remote command line, each one blanked
@@ -70,8 +75,14 @@ REMOTE_HOP = "prep-ml"
 REMOTE_NODE = "/usr/bin/node"   # on prep-ml
 WRAP_SSH = "/usr/bin/ssh"       # on the Mac
 REMOTE_TRASH = "~/happy-trash"  # on the Mac
+# Where a harness binary may be on a Mac (for creating a config folder it lacks).
+REMOTE_BIN_DIRS = ["/opt/homebrew/bin", "/usr/local/bin", "~/.local/bin", "~/.npm-global/bin", "~/.bun/bin", "~/.opencode/bin"]
+# The agent-vault skill, installed for Claude on this machine and on each Mac.
+SKILL_SRC = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..",
+                                          ".agents", "skills", "agent-vault", "SKILL.md"))
+SKILL_DEST = "~/.claude/skills/agent-vault/SKILL.md"
 REMOTES = [
-    ("prep-air", ["claude", "gemini", "happy-agent"]),
+    ("prep-air", ["claude", "opencode", "gemini", "happy-agent"]),
     ("prep-pro", ["claude", "codex", "opencode", "gemini", "antigravity", "happy-agent"]),
 ]
 # The chat ids a Mac harness hands its MCP servers, passed on to prep-ml.
@@ -159,15 +170,33 @@ class Backup:
                 os.makedirs(self.dir, exist_ok=True)
         return self.dir
 
+    def free(self, name):
+        """A name in the trash folder no earlier copy uses (a same-second run shares the folder)."""
+        dest, i = os.path.join(self.folder(), name), 1
+        while os.path.lexists(dest):
+            dest, i = os.path.join(self.folder(), "%s.%d" % (name, i)), i + 1
+        return dest
+
     def save(self, path):
         """cp the original (by its real path) into the trash folder; a note says where it came from."""
         real = os.path.realpath(path)
-        name = real.strip("/").replace("/", "__")
-        dest = os.path.join(self.folder(), name)
+        dest = self.free(real.strip("/").replace("/", "__"))
+        name = os.path.basename(dest)
         if not self.dry:
             shutil.copy2(real, dest)
             with open(os.path.join(self.dir, "MOVED.txt"), "a") as f:
                 f.write("%s -> %s (copy of the original, before mcp-register edited it)\n" % (real, name))
+        return dest
+
+    def move(self, path):
+        """mv a file register created (by its real path) into the trash folder."""
+        real = os.path.realpath(path)
+        dest = self.free(real.strip("/").replace("/", "__"))
+        name = os.path.basename(dest)
+        if not self.dry:
+            shutil.move(real, dest)
+            with open(os.path.join(self.dir, "MOVED.txt"), "a") as f:
+                f.write("%s -> %s (created by mcp-register, moved here by mcp-unregister)\n" % (real, name))
         return dest
 
 
@@ -209,6 +238,9 @@ class LocalIO:
     def may_create(self, path):
         return True
 
+    def parent_exists(self, path):
+        return os.path.isdir(os.path.dirname(os.path.realpath(os.path.expanduser(path))))
+
     def write(self, path, text, dry):
         write_text(os.path.expanduser(path), text, dry)
 
@@ -237,6 +269,8 @@ if op == "read":
     sys.stdout.write(json.dumps(out))
 elif op == "write":
     data = sys.stdin.read()
+    if not os.path.isdir(os.path.dirname(r)):
+        os.makedirs(os.path.dirname(r))
     mode = os.stat(r).st_mode & 0o777 if os.path.exists(r) else 0o600
     tmp = r + ".mcp-register.tmp"
     with open(tmp, "w") as f:
@@ -246,7 +280,10 @@ elif op == "write":
 elif op in ("backup", "trash"):
     d = os.path.expanduser(sys.argv[3])
     os.makedirs(d, exist_ok=True)
-    name = r.strip("/").replace("/", "__")
+    name = base = r.strip("/").replace("/", "__")
+    i = 1
+    while os.path.lexists(os.path.join(d, name)):
+        name, i = "%s.%d" % (base, i), i + 1
     dest = os.path.join(d, name)
     if op == "backup":
         shutil.copy2(r, dest)
@@ -257,6 +294,18 @@ elif op in ("backup", "trash"):
     with open(os.path.join(d, "MOVED.txt"), "a") as f:
         f.write("%s -> %s (%s)\n" % (r, name, why))
     sys.stdout.write(dest)
+elif op == "which":
+    dirs = sys.argv[3:]
+    sys.stdout.write(json.dumps(any(os.access(os.path.join(os.path.expanduser(d), sys.argv[2]), os.X_OK) for d in dirs)))
+elif op == "trashdir":
+    d = os.path.expanduser(sys.argv[3])
+    if os.path.isdir(r) and not os.listdir(r):
+        os.makedirs(d, exist_ok=True)
+        name = r.strip("/").replace("/", "__")
+        shutil.move(r, os.path.join(d, name))
+        with open(os.path.join(d, "MOVED.txt"), "a") as f:
+            f.write("%s -> %s (empty folder created by mcp-register, moved here by mcp-unregister)\n" % (r, name))
+        sys.stdout.write(os.path.join(d, name))
 elif op == "restore":
     src, d = sys.argv[3], os.path.expanduser(sys.argv[4])
     if not os.path.isfile(src):
@@ -325,6 +374,21 @@ class RemoteIO:
 
     def may_create(self, path):
         return self.parents.get(path, False)
+
+    def parent_exists(self, path):
+        if path not in self.parents:
+            self.read(path)
+        return self.parents[path]
+
+    def has_binary(self, name):
+        return json.loads(self.run(["which", name] + REMOTE_BIN_DIRS))
+
+    def trash_dir_if_empty(self, folder, dry):
+        """Move `folder` to the trash if it is empty; its destination, or None."""
+        if dry:
+            return None
+        out = self.run(["trashdir", folder, self.trash_dir()])
+        return "%s:%s" % (self.host, out) if out else None
 
     def write(self, path, text, dry):
         if not dry:
@@ -395,6 +459,57 @@ def json_indent(text):
     return m.group(1) if m else "  "
 
 
+def strip_jsonc(text):
+    """JSON with comments (opencode.jsonc) as plain JSON text: // and /* */
+    comments and trailing commas go, strings are kept as they are. Returns
+    (json text, whether it had comments)."""
+    out, i, n, had = [], 0, len(text), False
+    while i < n:
+        c = text[i]
+        if c == '"':
+            j = i + 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            out.append(text[i:j + 1])
+            i = j + 1
+        elif text.startswith("//", i):
+            j = text.find("\n", i)
+            i = n if j < 0 else j
+            had = True
+        elif text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            if j < 0:
+                raise ValueError("unterminated /* comment")
+            out.append(" ")
+            i = j + 2
+            had = True
+        else:
+            out.append(c)
+            i += 1
+    plain = "".join(out)
+    # Trailing commas: a comma (outside a string) followed only by space and } or ].
+    res, i, n = [], 0, len(plain)
+    while i < n:
+        c = plain[i]
+        if c == '"':
+            j = i + 1
+            while j < n and plain[j] != '"':
+                j += 2 if plain[j] == "\\" else 1
+            res.append(plain[i:j + 1])
+            i = j + 1
+            continue
+        if c == ",":
+            j = i + 1
+            while j < n and plain[j] in " \t\r\n":
+                j += 1
+            if j < n and plain[j] in "}]":
+                i += 1
+                continue
+        res.append(c)
+        i += 1
+    return "".join(res), had
+
+
 def mentions(entry, script):
     return script in json.dumps(entry)
 
@@ -418,17 +533,28 @@ def record_of(state, label):
 class JsonTarget:
     """A JSON file with a map of servers under `key`."""
 
-    def __init__(self, path, key, make, io=LOCAL):
+    def __init__(self, path, key, make, io=LOCAL, create_with=None):
         self.io = io
         self.file = path
         self.path = io.label(path)
         self.key = key
         self.make = make  # (script, env) -> entry
+        # A harness binary: when it is installed on the Mac, a missing folder
+        # for this file is created (Gemini CLI makes ~/.gemini only on first run).
+        self.create_with = create_with
+
+    def resolve(self, state, look=True):
+        """Settle which file this target edits (see OpencodeTarget)."""
 
     def parse(self, text):
         if text is None or not text.strip():
             return {}
+        if self.file.endswith(".jsonc"):
+            return json.loads(strip_jsonc(text)[0])
         return json.loads(text)
+
+    def comments_dropped(self, text):
+        return bool(text) and self.file.endswith(".jsonc") and strip_jsonc(text)[1]
 
     def dump(self, data, original):
         indent = json_indent(original)
@@ -460,10 +586,14 @@ class JsonTarget:
     def register(self, state, backup, dry, report):
         if not self.io.available(report):
             return
+        self.resolve(state)
         text = self.io.read(self.file)
+        made_dir = None
         if text is None and not self.io.may_create(self.file):
-            report.append("%s: missing, and so is its folder; left alone" % self.path)
-            return
+            if not (self.create_with and self.io.has_binary(self.create_with)):
+                report.append("%s: missing, and so is its folder; left alone" % self.path)
+                return
+            made_dir = os.path.dirname(self.file)
         data = self.parse(text)
         had_key = self.key in data
         table = data.setdefault(self.key, {})
@@ -491,15 +621,21 @@ class JsonTarget:
         if text is not None:
             saved = self.io.backup(self.file, backup, dry)
             report.append("%s: backed up to %s" % (self.path, saved))
+        if self.comments_dropped(text):
+            report.append("%s: its comments are not kept (the original, with them, is in the backup)" % self.path)
         written = self.dump(data, text)
         self.io.write(self.file, written, dry)
         self.record(state, self.path, text, had_key, added, saved, written)
+        if made_dir:
+            state[self.path]["created_dir"] = made_dir
+            report.append("%s: created %s (%s is installed there)" % (self.path, made_dir, self.create_with))
         if added:
             report.append("%s: added %s%s" % (self.path, ", ".join(added), " (new file)" if text is None else ""))
         if upgraded:
             report.append("%s: updated %s to the session-keyed wrapper" % (self.path, ", ".join(upgraded)))
 
     def unregister(self, state, backup, dry, report):
+        self.resolve(state, look=False)
         rec = record_of(state, self.path)
         names = rec["names"]
         if not names or not self.io.available(report):
@@ -521,6 +657,10 @@ class JsonTarget:
             if out is None:
                 report.append("%s: removed %s; the file it created moved to %s"
                               % (self.path, ", ".join(removed), self.io.trash(self.file, dry)))
+                if rec.get("created_dir"):
+                    moved = self.io.trash_dir_if_empty(rec["created_dir"], dry)
+                    if moved:
+                        report.append("%s: the empty folder it created moved to %s" % (self.path, moved))
             else:
                 report.append("%s: backed up to %s" % (self.path, self.io.backup(self.file, backup, dry)))
                 self.io.write(self.file, out, dry)
@@ -535,8 +675,130 @@ class JsonTarget:
             return "missing"
         if not text.strip():
             return "empty"
-        data = json.loads(text)
+        data = self.parse(text)
         return "ok (%s: %s)" % (self.key, ", ".join(sorted(data.get(self.key, {}))) or "none")
+
+
+class OpencodeTarget(JsonTarget):
+    """opencode reads ~/.config/opencode/opencode.json or opencode.jsonc. The
+    one recorded in the state file wins, then the one that exists, then .json."""
+
+    NAMES = ["~/.config/opencode/opencode.json", "~/.config/opencode/opencode.jsonc"]
+
+    def __init__(self, make, io=LOCAL):
+        super().__init__(self.NAMES[0], "mcp", make, io)
+        self.resolved = False
+
+    def resolve(self, state, look=True):
+        if self.resolved:
+            return
+        pick = next((p for p in self.NAMES if self.io.label(p) in state), None)
+        if pick is None and not look:
+            return  # unregister: nothing recorded for either name
+        if pick is None:
+            pick = next((p for p in self.NAMES if self.io.read(p) is not None), self.NAMES[0])
+        self.file, self.path, self.resolved = pick, self.io.label(pick), True
+
+    def verify(self):
+        if not self.resolved and not (self.io.remote and not PROBED.get(self.io.host)):
+            self.resolve(load_state())
+        return super().verify()
+
+
+# ---------------------------------------------------------------- the agent-vault skill
+
+class SkillTarget:
+    """The repo's agent-vault skill, copied to ~/.claude/skills/agent-vault/.
+
+    An existing copy that differs is backed up (./trash locally, ~/happy-trash on
+    a Mac) before it is replaced. unregister puts back the original copy it
+    backed up first, or moves the file (and the empty folder) it created to the
+    trash; a copy changed since register wrote it is left as it is."""
+
+    def __init__(self, io=LOCAL, src=None, dest=SKILL_DEST):
+        self.io = io
+        self.src = src or SKILL_SRC
+        self.file = dest
+        self.path = io.label(dest)
+
+    def source(self):
+        return read_text(self.src)
+
+    def register(self, state, backup, dry, report):
+        want = self.source()
+        if want is None:
+            report.append("%s: no skill at %s; left alone" % (self.path, self.src))
+            return
+        if not self.io.available(report):
+            return
+        have = self.io.read(self.file)
+        prev = state.get(self.path) or {}
+        if have == want:
+            report.append("%s: skill up to date" % self.path)
+            return
+        rec = dict(prev, skill=True)
+        if have is None:
+            if not prev:
+                rec["created_file"] = True
+                if not self.io.parent_exists(self.file):
+                    rec["created_dir"] = os.path.dirname(self.file)
+        else:
+            saved = self.io.backup(self.file, backup, dry)
+            report.append("%s: backed up to %s" % (self.path, saved))
+            rec["backups"] = prev.get("backups", []) + [saved]
+            if not prev:
+                rec["original_backup"] = saved
+        self.io.write(self.file, want, dry)
+        rec["written_sha"] = sha(want)
+        state[self.path] = rec
+        report.append("%s: installed the agent-vault skill%s" % (self.path, " (new file)" if have is None else " (replaced)"))
+
+    def unregister(self, state, backup, dry, report):
+        rec = state.get(self.path)
+        if not rec or not self.io.available(report):
+            return
+        have = self.io.read(self.file)
+        if have is None:
+            state.pop(self.path, None)
+            return
+        if rec.get("written_sha") != sha(have):
+            report.append("%s: changed since register; left as it is" % self.path)
+            state.pop(self.path, None)
+            return
+        if rec.get("original_backup"):
+            if self.io.remote:
+                moved = self.io.restore(self.file, rec["original_backup"], dry)
+            else:
+                moved = backup.save(os.path.expanduser(self.file))
+                if not dry:
+                    shutil.copyfile(rec["original_backup"], os.path.realpath(os.path.expanduser(self.file)))
+            report.append("%s: put back the original %s (the installed copy went to %s)"
+                          % (self.path, rec["original_backup"], moved))
+        elif rec.get("created_file"):
+            if self.io.remote:
+                moved = self.io.trash(self.file, dry)
+            else:
+                moved = backup.move(os.path.expanduser(self.file))
+            report.append("%s: the skill it installed moved to %s" % (self.path, moved))
+            if rec.get("created_dir"):
+                if self.io.remote:
+                    d = self.io.trash_dir_if_empty(rec["created_dir"], dry)
+                else:
+                    d = None
+                    real = os.path.expanduser(rec["created_dir"])
+                    if not dry and os.path.isdir(real) and not os.listdir(real):
+                        d = backup.move(real)
+                if d:
+                    report.append("%s: the empty folder it created moved to %s" % (self.path, d))
+        state.pop(self.path, None)
+
+    def verify(self):
+        if self.io.remote and not PROBED.get(self.io.host):
+            return "skipped (no ssh)"
+        have = self.io.read(self.file)
+        if have is None:
+            return "missing"
+        return "ok (skill matches the repo)" if have == self.source() else "differs from the repo copy"
 
 
 # ---------------------------------------------------------------- TOML files
@@ -752,13 +1014,13 @@ def remote_target(io, harness):
             "type": "stdio", "command": sh, "args": remote_argv(s, {}), "env": {}}, io)
     if harness == "gemini":
         return JsonTarget("~/.gemini/settings.json", "mcpServers", lambda s, env: {
-            "command": sh, "args": remote_argv(s, env), "env": {}, "timeout": 600000}, io)
+            "command": sh, "args": remote_argv(s, env), "env": {}, "timeout": 600000}, io, create_with="gemini")
     if harness == "antigravity":
         # prep-pro links this to ~/.gemini/config/mcp_config.json; writes go through the link.
         return JsonTarget("~/.gemini/antigravity/mcp_config.json", "mcpServers", lambda s, env: {
             "command": sh, "args": remote_argv(s, env), "env": {}}, io)
     if harness == "opencode":
-        return JsonTarget("~/.config/opencode/opencode.json", "mcp", lambda s, env: {
+        return OpencodeTarget(lambda s, env: {
             "type": "local", "command": [sh] + remote_argv(s, env), "enabled": True}, io)
     if harness == "codex":
         return TomlTarget("~/.codex/config.toml", lambda s, env: (sh, remote_argv(s, env), {}), remote_codex_extra, io)
@@ -771,7 +1033,7 @@ def remote_target(io, harness):
 def targets(remote=True):
     out = [
         TomlTarget("~/.codex/config.toml", lambda s, env: (HOST_NODE, [s], env), codex_extra),
-        JsonTarget("~/.config/opencode/opencode.json", "mcp", lambda s, env: {
+        OpencodeTarget(lambda s, env: {
             "type": "local", "command": [HOST_NODE, s], "enabled": True, **({"environment": dict(env)} if env else {})}),
         JsonTarget("~/.gemini/settings.json", "mcpServers", lambda s, env: {
             "command": HOST_NODE, "args": [s], "env": dict(env), "timeout": 600000}),
@@ -780,11 +1042,13 @@ def targets(remote=True):
         JsonTarget("~/.claude.json", "mcpServers", lambda s, env: {
             "type": "stdio", "command": "node", "args": [s], "env": {}}),
         TomlTarget("~/.local/share/happy-agent/happy/config/mcp.toml", lambda s, env: (AGENT_NODE, [s], env), agent_extra),
+        SkillTarget(),
     ]
     if remote:
         for host, harnesses in REMOTES:
             io = RemoteIO(host)
             out += [remote_target(io, h) for h in harnesses]
+            out.append(SkillTarget(io))
     return out
 
 
