@@ -75,7 +75,12 @@ final class HostedLiveBrowserTests: XCTestCase {
         // The line: its dot at the card's right edge, on the card.
         let line = try XCTUnwrap(host.line)
         let row = try XCTUnwrap(line.browser)
-        XCTAssertEqual(dock.indicator.frame, row.frame)
+        // The same frame, to a rounding: the line lays its row out from
+        // the composer's width, the indicator from its own.
+        for (a, b) in zip([dock.indicator.frame.minX, dock.indicator.frame.minY, dock.indicator.frame.width, dock.indicator.frame.height],
+                          [row.frame.minX, row.frame.minY, row.frame.width, row.frame.height]) {
+            XCTAssertEqual(a, b, accuracy: 0.01)
+        }
         XCTAssertEqual(row.dot.maxX, host.cardFrame.maxX)
         XCTAssertEqual(line.frame.maxY, host.cardFrame.minY)
         XCTAssertEqual(line.frame.height, 20)
