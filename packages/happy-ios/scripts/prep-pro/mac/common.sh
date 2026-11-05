@@ -101,7 +101,7 @@ gen_project() {
 seed_packages() {
   local dd=$1 src
   [[ -d $dd/SourcePackages/checkouts ]] && return 0
-  for src in $HF/dd/*/SourcePackages ~/happy-phone-build/20261101_221505/dd/SourcePackages; do
+  for src in $HF/dd/*/SourcePackages(N) ~/happy-phone-build/20261101_221505/dd/SourcePackages(N); do
     if [[ -d $src/checkouts ]]; then mkdir -p $dd && cp -cR $src $dd/SourcePackages && return 0; fi
   done
 }
