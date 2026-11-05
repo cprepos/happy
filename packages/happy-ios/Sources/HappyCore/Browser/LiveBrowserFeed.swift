@@ -158,14 +158,22 @@ public final class LiveBrowserFeed {
         polls += 1
         do {
             let data = try await transport.send(method: "GET", url: link.stateURL, body: nil, accept: "application/json")
-            let state = try JSONDecoder().decode(LiveBrowserState.self, from: data)
+            var state = try JSONDecoder().decode(LiveBrowserState.self, from: data)
             guard !Task.isCancelled else { return false }
-            if wantsFrames, !state.ended, let frame = try? await transport.send(method: "GET", url: link.frameURL, body: nil, accept: "image/*,*/*;q=0.8") {
+            // An asleep browser has no frame to give (503); none is asked for.
+            if wantsFrames, !state.ended, !state.asleep {
+                do {
+                    let frame = try await transport.send(method: "GET", url: link.frameURL, body: nil, accept: "image/*,*/*;q=0.8")
+                    guard !Task.isCancelled else { return false }
+                    if frame != self.frame {
+                        self.frame = frame
+                        if phase == .live(state) { publish() }
+                    }
+                } catch BrowserError.upstream(503) {
+                    // It fell asleep between the two reads.
+                    state.pod = .asleep
+                } catch {}
                 guard !Task.isCancelled else { return false }
-                if frame != self.frame {
-                    self.frame = frame
-                    if phase == .live(state) { publish() }
-                }
             }
             phase = .live(state)
             return !state.ended
@@ -184,14 +192,31 @@ public final class LiveBrowserFeed {
 
     // MARK: Control
 
+    /// How long Take control waits for an asleep browser to wake.
+    public static let wakeTimeout: Duration = .seconds(20)
+    /// The first wait before asking again; it grows to `wakeRetryMax`.
+    public static let wakeRetry: Duration = .milliseconds(500)
+    public static let wakeRetryMax: Duration = .seconds(1)
+
     /// Takes control (`POST /take`): the agent's actions are refused until
-    /// `release()`. Answers the noVNC page to drive it with.
+    /// `release()`. Answers the noVNC page to drive it with. An asleep
+    /// browser is woken: the bridge answers 202 (`waking`), the phase says
+    /// starting, and it is asked again until it runs, for up to `timeout`
+    /// (then `BrowserError.timeout`).
     @discardableResult
-    public func take() async throws -> LiveBrowserTake {
-        let data = try await post(link.takeURL)
-        let take = try JSONDecoder().decode(LiveBrowserTake.self, from: data)
-        phase = .live(take.state)
-        return take
+    public func take(timeout: Duration = LiveBrowserFeed.wakeTimeout, retry: Duration = LiveBrowserFeed.wakeRetry) async throws -> LiveBrowserTake {
+        let clock = ContinuousClock()
+        let deadline = clock.now + timeout
+        var wait = retry
+        while true {
+            let data = try await post(link.takeURL)
+            let take = try JSONDecoder().decode(LiveBrowserTake.self, from: data)
+            phase = .live(take.state)
+            guard take.waking else { return take }
+            guard clock.now + wait <= deadline else { throw BrowserError.timeout }
+            try await Task.sleep(for: wait)
+            wait = min(wait * 2, max(retry, Self.wakeRetryMax))
+        }
     }
 
     /// Ends the browser (`POST /end`): its session closes and the agent

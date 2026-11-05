@@ -1,4 +1,5 @@
 import Foundation
+import HappyCrypto
 import HappyWire
 
 /// A browser an agent drives, watched live (`selfhost/browser/bridge`): the
@@ -73,6 +74,24 @@ public struct LiveBrowserLink: Equatable, Sendable {
         }
         visit(result)
         return found
+    }
+
+    // MARK: By chat
+
+    /// The key a Happy session's browser goes by at the bridge: the first
+    /// 32 hex digits of sha256("happy:" + session id), as the bridge's
+    /// `chatKeyOf` makes it from the agent's `HAPPY_SESSION_ID`.
+    public static func chatKey(happySession id: String) -> String {
+        let digest = Hashing.sha256(Data("happy:\(id)".utf8))
+        return String(digest.map { String(format: "%02x", $0) }.joined().prefix(32))
+    }
+
+    /// `GET` names the chat's link, if it has one (`LiveBrowserChat`); 404
+    /// `no_link` when the chat never had a browser. Nil for a key that
+    /// isn't one.
+    public static func chatURL(key: String) -> URL? {
+        guard validID(key) else { return nil }
+        return URL(string: "\(origin)/live/chat/\(key)")
     }
 
     static func validID(_ id: String) -> Bool {
@@ -194,6 +213,21 @@ public struct LiveBrowserState: Equatable, Sendable, Decodable {
         }
     }
 
+    /// Where the chat's own browser is, when the bridge runs one per chat
+    /// (no `pod` field otherwise). A value a newer bridge adds is nil.
+    public enum Pod: String, Equatable, Sendable {
+        case running
+        /// Waking, or new: up in a few seconds.
+        case starting
+        /// Stopped while idle; the agent's next use wakes it, with its logins.
+        case asleep
+        case stopped
+        /// It failed; the next use starts a fresh one.
+        case crashed
+        /// The bridge has no browser for the chat now (`none`).
+        case unassigned = "none"
+    }
+
     public var status: Status
     /// Why the agent asked for the person, while it does.
     public var reason: String?
@@ -201,17 +235,29 @@ public struct LiveBrowserState: Equatable, Sendable, Decodable {
     public var url: String?
     public var title: String?
     public var lastAction: Action?
+    public var pod: Pod?
 
-    public init(status: Status, reason: String? = nil, url: String? = nil, title: String? = nil, lastAction: Action? = nil) {
-        self.status = status; self.reason = reason; self.url = url; self.title = title; self.lastAction = lastAction
+    public init(status: Status, reason: String? = nil, url: String? = nil, title: String? = nil, lastAction: Action? = nil, pod: Pod? = nil) {
+        self.status = status; self.reason = reason; self.url = url; self.title = title; self.lastAction = lastAction; self.pod = pod
     }
+
+    /// No browser runs for it now: nothing to show until the agent (or
+    /// Take control) wakes it. Its frame answers 503.
+    public var asleep: Bool {
+        switch pod {
+        case .asleep?, .stopped?, .crashed?, .unassigned?: !ended
+        case .running?, .starting?, nil: false
+        }
+    }
+    /// The browser is on its way up.
+    public var starting: Bool { pod == .starting && !ended }
 
     /// The person has the browser: they took it, or the agent asked them to.
     public var held: Bool { status == .user || status == .takeover }
     /// The browser's session closed; nothing more will come.
     public var ended: Bool { status == .done }
 
-    private enum CodingKeys: String, CodingKey { case status, reason, url, title, lastAction = "last_action" }
+    private enum CodingKeys: String, CodingKey { case status, reason, url, title, lastAction = "last_action", pod }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -222,6 +268,7 @@ public struct LiveBrowserState: Equatable, Sendable, Decodable {
         url = try container.decodeIfPresent(String.self, forKey: .url)
         title = try container.decodeIfPresent(String.self, forKey: .title)
         lastAction = try? container.decodeIfPresent(Action.self, forKey: .lastAction)
+        pod = (try? container.decodeIfPresent(String.self, forKey: .pod)).flatMap { Pod(rawValue: $0) }
     }
 }
 
@@ -239,6 +286,33 @@ public struct LiveBrowserTake: Equatable, Sendable, Decodable {
         state = try LiveBrowserState(from: decoder)
         let container = try decoder.container(keyedBy: CodingKeys.self)
         novncURL = (try? container.decodeIfPresent(String.self, forKey: .novncURL)).flatMap { URL(string: $0) }
+    }
+
+    /// The bridge's 202: the browser was asleep and is starting, with no
+    /// noVNC page yet; ask again.
+    public var waking: Bool { novncURL == nil && state.pod == .starting }
+}
+
+/// `GET /live/chat/<key>`'s answer: the chat's link, and whether a browser
+/// is up (or starting) for it. `live` is what the red line goes by.
+public struct LiveBrowserChat: Equatable, Sendable, Decodable {
+    public var link: LiveBrowserLink
+    public var live: Bool
+    public var state: LiveBrowserState
+
+    public init(link: LiveBrowserLink, live: Bool, state: LiveBrowserState) { self.link = link; self.live = live; self.state = state }
+
+    private enum CodingKeys: String, CodingKey { case id, live }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let id = try container.decode(String.self, forKey: .id)
+        guard let link = LiveBrowserLink(id: id) else {
+            throw DecodingError.dataCorruptedError(forKey: .id, in: container, debugDescription: "not a live browser id")
+        }
+        self.link = link
+        live = try container.decodeIfPresent(Bool.self, forKey: .live) ?? false
+        state = try LiveBrowserState(from: decoder)
     }
 }
 

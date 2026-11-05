@@ -29,6 +29,12 @@ struct LiveBrowserConnection: Sendable {
 /// - the full screen, with Take control and Release control;
 /// - the voice sheet, taken down to its strip while the player shows.
 ///
+/// A Happy CLI chat also asks the bridge for its link by the session
+/// (`lookUp(key:)`, `LiveBrowserChatWatch`) while it shows: what that
+/// answers wins over the transcript's link, and its `live` decides the
+/// red line. A browser asleep shows no line, and nothing reads its state
+/// until something opens it.
+///
 /// A chat screen hands it its link (`update(link:)`), places the line
 /// where its layout says (`indicator.place`), tells it where the card and
 /// the status line are (`layoutPlayer`), carries `riders` on the keyboard
@@ -48,6 +54,10 @@ final class LiveBrowserDock: NSObject {
 
     private(set) var feed: LiveBrowserFeed?
     var link: LiveBrowserLink? { feed?.link }
+    /// The newest link the chat's transcript holds.
+    private var transcriptLink: LiveBrowserLink?
+    /// The bridge's answer for this chat, asked while it shows.
+    private(set) var chatWatch: LiveBrowserChatWatch?
     let indicator = LiveBrowserIndicatorView()
     private(set) var player: LiveBrowserPlayerView?
     private(set) var isOnScreen = false
@@ -78,9 +88,54 @@ final class LiveBrowserDock: NSObject {
 
     // MARK: The host's part
 
-    /// The chat's newest live link, or nil. A new link replaces the old
-    /// one's feed, player and full screen.
+    /// The chat's newest live link in its transcript, or nil. The bridge's
+    /// answer by chat, when there is one, goes first.
     func update(link: LiveBrowserLink?) {
+        transcriptLink = link
+        follow()
+    }
+
+    /// Asks the bridge for the chat's link by `key` (`LiveBrowserLink.chatKey`)
+    /// while the chat shows; nil stops asking. Called again once a computer
+    /// to ask through is known.
+    func lookUp(key: String?) {
+        if let watch = chatWatch, watch.key == key {
+            watch.reconsider()
+            return
+        }
+        chatWatch?.close()
+        chatWatch = key.flatMap { key in
+            LiveBrowserChatWatch(key: key) { [weak self] in self?.lookupTransport() }
+        }
+        chatWatch?.onChange = { [weak self] _ in self?.lookupChanged() }
+        chatWatch?.setVisible(isOnScreen)
+        lookupChanged()
+    }
+
+    private func lookupChanged() {
+        follow()
+        reconsiderFeed()
+        refresh()
+    }
+
+    /// The link to show: the bridge's for this chat, else the transcript's.
+    private func follow() {
+        show(link: chatWatch?.answer.chat?.link ?? transcriptLink)
+    }
+
+    /// The bridge says no browser runs for this link now (`live` false):
+    /// no line, and the dock reads nothing, so the browser can sleep.
+    private var lookupSaysIdle: Bool {
+        guard let chat = chatWatch?.answer.chat, chat.link == feed?.link else { return false }
+        return !chat.live
+    }
+
+    private func reconsiderFeed() {
+        feed?.set(self, visible: isOnScreen && !lookupSaysIdle)
+    }
+
+    /// A new link replaces the old one's feed, player and full screen.
+    private func show(link: LiveBrowserLink?) {
         guard link != self.link else { return }
         feed?.close()
         closePlayer(animated: false)
@@ -90,7 +145,7 @@ final class LiveBrowserDock: NSObject {
         if let link {
             let feed = LiveBrowserFeed(link: link) { [weak self] in self?.makeTransport() }
             self.feed = feed
-            feed.attach(self, visible: isOnScreen) { [weak self] feed in self?.feedChanged(feed) }
+            feed.attach(self, visible: isOnScreen && !lookupSaysIdle) { [weak self] feed in self?.feedChanged(feed) }
         } else {
             feed = nil
         }
@@ -101,7 +156,8 @@ final class LiveBrowserDock: NSObject {
     func setOnScreen(_ onScreen: Bool) {
         guard onScreen != isOnScreen else { return }
         isOnScreen = onScreen
-        feed?.set(self, visible: onScreen)
+        chatWatch?.setVisible(onScreen)
+        reconsiderFeed()
         if let player { feed?.set(player, visible: onScreen) }
     }
 
@@ -142,6 +198,12 @@ final class LiveBrowserDock: NSObject {
         return BrowserFetcher(client: connection.client, workspace: connection.workspace)
     }
 
+    /// The lookup waits for a computer rather than be refused.
+    private func lookupTransport() -> LiveBrowserTransport? {
+        guard let connection = connect() else { return nil }
+        return BrowserFetcher(client: connection.client, workspace: connection.workspace)
+    }
+
     private func feedChanged(_ feed: LiveBrowserFeed) {
         guard feed === self.feed else { return }
         let status = feed.phase.state?.status
@@ -164,14 +226,24 @@ final class LiveBrowserDock: NSObject {
     static func status(_ phase: LiveBrowserFeed.Phase) -> String? {
         switch phase {
         case .connecting, .unreachable: Strings.LiveBrowser.connecting
-        case .live(let state): state.ended ? nil : Strings.LiveBrowser.status(state.status)
+        case .live(let state):
+            if state.ended { nil }
+            else if state.asleep { Strings.LiveBrowser.asleepStatus }
+            else if state.starting, state.status == .watching { Strings.LiveBrowser.starting }
+            else { Strings.LiveBrowser.status(state.status) }
         case .unavailable: Strings.LiveBrowser.unavailableStatus
         case .ended, .expired: nil
         }
     }
 
+    /// Whether the red line may show: the bridge's lookup doesn't say the
+    /// browser is idle, and the feed doesn't say it sleeps.
+    private var lineShows: Bool {
+        !lookupSaysIdle && feed?.phase.state?.asleep != true
+    }
+
     private func refresh() {
-        let status = feed.flatMap { Self.status($0.phase) }
+        let status = lineShows ? feed.flatMap { Self.status($0.phase) } : nil
         let changed = status != shownStatus
         shownStatus = status
         indicator.text = indicatorText
@@ -349,10 +421,14 @@ final class LiveBrowserDock: NSObject {
         guard let feed, !busy else { return }
         guard let connection = connection ?? connect() else { return alert(Strings.LiveBrowser.takeFailed, Strings.LiveBrowser.unavailable) }
         busy = true
+        // An asleep browser takes a few seconds to wake (`/take` 202): the
+        // feed says starting meanwhile.
+        player?.isBusy = true
         Task { [weak self] in
             do {
                 let take = try await feed.take()
                 guard let self else { return }
+                self.player?.isBusy = false
                 defer { self.busy = false }
                 guard self.feed === feed else { return }
                 self.controlTaken = true
@@ -374,6 +450,7 @@ final class LiveBrowserDock: NSObject {
             } catch {
                 guard let self else { return }
                 self.busy = false
+                self.player?.isBusy = false
                 self.alert(Strings.LiveBrowser.takeFailed, Strings.LiveBrowser.unreachable)
             }
         }
@@ -549,7 +626,8 @@ final class LiveBrowserFullScreenItems: UIViewController {
         }
         control.isEnabled = state.map { !$0.ended } ?? false
         endItem.isEnabled = state.map { !$0.ended } ?? false
-        navigationItem.subtitle = state?.lastAction.map(Strings.LiveBrowser.lastAction)
+        navigationItem.subtitle = state.flatMap { $0.asleep ? Strings.LiveBrowser.asleep : $0.starting ? Strings.LiveBrowser.startingBrowser : nil }
+            ?? state?.lastAction.map(Strings.LiveBrowser.lastAction)
             ?? state.map { Strings.LiveBrowser.status($0.status) }
     }
 }
@@ -812,6 +890,8 @@ final class LiveBrowserPlayerView: UIView {
         case .ended: Strings.LiveBrowser.ended
         case .expired: Strings.LiveBrowser.expired
         case .unreachable where picture.image == nil: Strings.LiveBrowser.unreachable
+        case .live(let state) where state.asleep: Strings.LiveBrowser.asleep
+        case .live(let state) where state.starting: Strings.LiveBrowser.startingBrowser
         default: nil
         }
         message.text = text
@@ -819,7 +899,7 @@ final class LiveBrowserPlayerView: UIView {
         picture.alpha = text == nil ? 1 : 0.25
         let status = LiveBrowserDock.status(feed.phase) ?? Strings.LiveBrowser.endedStatus
         pill.text = status
-        pillDot.backgroundColor = UIColor(LiveBrowserPlayerView.color(state?.status))
+        pillDot.backgroundColor = UIColor(state?.asleep == true ? Palette.textSecondary : LiveBrowserPlayerView.color(state?.status))
         let held = state?.status == .user
         action.setTitle(held ? Strings.LiveBrowser.release : Strings.LiveBrowser.takeOver, for: .normal)
         action.isEnabled = !feed.phase.isOver
@@ -961,7 +1041,8 @@ final class LiveBrowserChipView: UIControl {
             color = Palette.textSecondary
         } else if let feed = dock?.feed, feed.link == link {
             status = LiveBrowserDock.status(feed.phase) ?? Strings.LiveBrowser.endedStatus
-            color = LiveBrowserDock.status(feed.phase) == nil ? Palette.textSecondary : Palette.statusError
+            let quiet = LiveBrowserDock.status(feed.phase) == nil || feed.phase.state?.asleep == true
+            color = quiet ? Palette.textSecondary : Palette.statusError
         } else {
             status = Strings.LiveBrowser.open
             color = Palette.statusError

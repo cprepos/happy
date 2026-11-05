@@ -89,6 +89,14 @@ extension Strings {
         /// The link expired (410).
         static let expired = "This live browser has expired."
         static let unreachable = "Can’t reach the live browser right now."
+        /// The chat's browser stopped while idle (`pod: asleep`).
+        static let asleep = "Asleep — wakes when the agent uses it"
+        /// The status pill and chip while it sleeps.
+        static let asleepStatus = "Asleep"
+        /// It is on its way up (`pod: starting`).
+        static let starting = "Starting…"
+        /// Take control woke it, and waits for it (`/take` answered 202).
+        static let startingBrowser = "Starting browser…"
         /// The red line over the composer, before the status.
         static let indicator = "Live browser"
         static func indicator(_ status: String) -> String { "\(indicator) · \(status)" }

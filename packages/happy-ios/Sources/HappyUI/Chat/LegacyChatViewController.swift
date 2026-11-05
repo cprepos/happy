@@ -80,7 +80,10 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
     /// (`LegacyLinkRoute`); nil while it isn't, or none can be chosen.
     private var liveConnection: LiveBrowserConnection?
     private var liveRouting: Task<Void, Never>?
-    private var liveRouted: LiveBrowserLink?
+    /// The session and machine the computer was decided for.
+    private var liveRoutedFor: String?
+    /// The transcript's newest live link.
+    private var liveTranscriptLink: LiveBrowserLink?
     /// The composer stays hidden until its draft is restored, its taps
     /// caught meanwhile (`ChatComposerReveal`).
     private lazy var composerReveal = ChatComposerReveal(composer: composer)
@@ -505,6 +508,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         super.viewWillAppear(animated)
         appeared = true
         liveDock.setOnScreen(true)
+        routeLiveBrowser()
         startConstruction()
         // An empty compose has no transcript to stage: built now, its
         // composer can take the keyboard while the push still runs.
@@ -2122,27 +2126,36 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         push(.textSelection(text: text), context: context)
     }
 
-    /// The chat's newest live link, through the computer its links go
-    /// through: decided first, so the feed never reads through another.
+    /// The chat's newest live link in its transcript, through the computer
+    /// its links go through: decided first, so the feed never reads
+    /// through another.
     private func updateLiveBrowser(_ link: LiveBrowserLink?) {
-        guard link != liveRouted else { return }
-        liveRouted = link
+        guard link != liveTranscriptLink else { return }
+        liveTranscriptLink = link
+        if routeLiveBrowser() { liveDock.update(link: link) }
+    }
+
+    /// Decides the computer the chat's live browser goes through, once per
+    /// session and machine, and then asks the bridge for the session's
+    /// browser by its key, with or without a link in the transcript. True
+    /// once decided.
+    @discardableResult
+    private func routeLiveBrowser() -> Bool {
+        guard !isComposing, let record = session.record else { return false }
+        let machineId = record.metadata?["machineId"]?.stringValue
+        let chat = chatId
+        let routeKey = "\(chat)|\(machineId ?? "")"
+        if routeKey == liveRoutedFor { return liveRouting == nil }
+        liveRoutedFor = routeKey
         liveRouting?.cancel()
-        guard let link else {
-            liveConnection = nil
-            liveDock.update(link: nil)
-            return
-        }
-        let record = session.record
-        let machineId = record?.metadata?["machineId"]?.stringValue
-        let host = record?.metadata?["host"]?.stringValue
+        let host = record.metadata?["host"]?.stringValue
         let store = account.store
         liveRouting = Task { @MainActor [weak self] in
             let (machine, machines) = await Task.detached(priority: .userInitiated) {
                 (machineId.flatMap { try? store.machine(id: $0) }, (try? store.machines()) ?? [])
             }.value
-            guard let self, !Task.isCancelled, self.liveRouted == link else { return }
-            let name = record.flatMap { LegacyLinkRoute.machineName(session: $0, machine: machine) }
+            guard let self, !Task.isCancelled, self.liveRoutedFor == routeKey else { return }
+            let name = LegacyLinkRoute.machineName(session: record, machine: machine)
             let route = LegacyLinkRoute.resolve(
                 machineId: machineId, machineName: name, agentNodeName: LegacyLinkRoute.agentNodeName(machine, among: machines),
                 computers: Self.legacyLinkComputers(self.context.account), settings: self.account.localSettings
@@ -2155,8 +2168,11 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
             } else {
                 self.liveConnection = nil
             }
-            self.liveDock.update(link: link)
+            self.liveRouting = nil
+            self.liveDock.lookUp(key: self.liveConnection == nil ? nil : LiveBrowserLink.chatKey(happySession: chat))
+            self.liveDock.update(link: self.liveTranscriptLink)
         }
+        return false
     }
 
     func chatList(_ list: ChatListView, openLink url: String) {
