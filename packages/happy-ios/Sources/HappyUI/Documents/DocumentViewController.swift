@@ -323,7 +323,7 @@ final class DocumentViewController: UIViewController {
 
     @objc private func keyboardChanged(_ note: Notification) {
         let frame = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect) ?? .zero
-        let local = view.convert(frame, from: nil)
+        let local = view.keyboardFrame(fromScreen: frame)
         let next = note.name == UIResponder.keyboardWillHideNotification ? 0 : max(0, view.bounds.maxY - local.minY)
         guard next != keyboard else { return }
         keyboard = next

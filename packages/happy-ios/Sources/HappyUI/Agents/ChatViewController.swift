@@ -535,12 +535,12 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         let duration = (note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? NSNumber)?.doubleValue ?? 0.25
         let curve = (note.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? NSNumber)?.uintValue ?? 7
         let local = view.convert(end, from: screen.coordinateSpace)
-        // An undocked keyboard (an iPad's floating or split one) covers
-        // nothing, as the layout guide reads it with
-        // `followsUndockedKeyboard` off.
-        let docked = local.maxY >= view.bounds.maxY - 1
-        let top = !docked || local.minY >= view.bounds.maxY || local.isEmpty ? CGFloat.greatestFiniteMagnitude : local.minY
-        keyboardTop = top
+        // What the list's keyboard reads too (`KeyboardCover`): a keyboard
+        // along the bottom, an iPad's minimized bar floating over the edge
+        // included; one dragged up the screen covers nothing, as the
+        // layout guide reads it with `followsUndockedKeyboard` off.
+        let cover = KeyboardCover(bounds: view.bounds, safeBottom: view.safeAreaInsets.bottom, frame: local)
+        keyboardTop = cover?.top ?? .greatestFiniteMagnitude
         fingerOnKeyboard = false
         guard duration > 0 else {
             updateBar(animated: false)

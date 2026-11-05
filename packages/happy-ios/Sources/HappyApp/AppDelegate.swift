@@ -18,6 +18,8 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         PushNotifications.shared.install()
         // The store's transactions are listened for from the first moment: renewals, approvals, refunds.
         Offers.launch()
+        // The keyboard's frame is remembered from the first moment, for a screen made while it is up.
+        KeyboardFrames.start()
         return true
     }
 

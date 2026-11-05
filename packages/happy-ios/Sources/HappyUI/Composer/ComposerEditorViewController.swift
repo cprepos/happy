@@ -27,14 +27,22 @@ final class ComposerEditorViewController: UIViewController, UITextViewDelegate {
         size: ComposerEditorLayout.Metrics.collapseIconSize
     )
     private let initialSelection: NSRange
-    /// The keyboard's top in the view; nil while it is down.
-    private var keyboardTop: CGFloat?
+    /// The keyboard's top in the window, as the card's screen had it,
+    /// until a notification or the guide says otherwise.
+    private let openingKeyboardTop: CGFloat?
+    /// The keyboard's frame, in the screen's coordinates, as its last
+    /// notification here said; nil until one does.
+    private var heardFrame: CGRect?
+    /// Moves with every frame heard, so a held hide of the minimized bar
+    /// goes only if nothing came after it.
+    private var heard = 0
 
-    /// `keyboardTop` is where the keyboard already is, in the screen's
-    /// bounds: no notification says so while it stays up.
+    /// `keyboardTop` is where the keyboard already is, in the window: no
+    /// notification says so while it stays up.
     init(text: String, selection: NSRange, keyboardTop: CGFloat?) {
         initialSelection = selection
-        self.keyboardTop = keyboardTop
+        openingKeyboardTop = keyboardTop
+        KeyboardFrames.start()
         super.init(nibName: nil, bundle: nil)
         modalPresentationStyle = .overFullScreen
         modalTransitionStyle = .crossDissolve
@@ -75,7 +83,20 @@ final class ComposerEditorViewController: UIViewController, UITextViewDelegate {
         collapseButton.addTarget(self, action: #selector(collapse), for: .touchUpInside)
         view.addSubview(collapseButton)
 
+        view.keyboardLayoutGuide.followsUndockedKeyboard = false
         NotificationCenter.default.addObserver(self, selector: #selector(keyboardWillChange(_:)), name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(keyboardDidChange(_:)), name: UIResponder.keyboardDidChangeFrameNotification, object: nil)
+    }
+
+    /// The keyboard's top in the view, on every layout: what the chats read
+    /// (`KeyboardCover`), from this screen's notifications, the app's last
+    /// frame and the layout guide, an iPad's minimized bar included.
+    private var keyboardTop: CGFloat? {
+        let guideTop = view.keyboardLayoutGuide.layoutFrame.minY
+        if let cover = view.keyboardCover(heard: heardFrame, guideTop: guideTop) { return cover.top }
+        guard heardFrame == nil, let openingKeyboardTop, let window = view.window else { return nil }
+        let top = view.convert(CGPoint(x: 0, y: openingKeyboardTop), from: window).y
+        return top < view.bounds.maxY ? top : nil
     }
 
     override func viewIsAppearing(_ animated: Bool) {
@@ -117,16 +138,38 @@ final class ComposerEditorViewController: UIViewController, UITextViewDelegate {
     }
 
     @objc private func keyboardWillChange(_ note: Notification) {
-        guard let screen = view.window?.screen,
+        guard view.window != nil,
               let end = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue else { return }
         let duration = (note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? NSNumber)?.doubleValue ?? 0.25
         let curve = (note.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? NSNumber)?.uintValue ?? 7
-        let local = view.convert(end, from: screen.coordinateSpace)
-        keyboardTop = local.minY >= view.bounds.maxY || local.isEmpty ? nil : local.minY
+        heard &+= 1
+        let heard = heard
+        if let top = keyboardTop, view.bounds.maxY - top <= KeyboardCover.Metrics.barMaxCover,
+           KeyboardCover.covered(view.keyboardFrame(fromScreen: end), bounds: view.bounds, safeBottom: view.safeAreaInsets.bottom) == nil {
+            // The minimized bar says it goes, which it also says as it
+            // swaps for its word suggestions and back while the person
+            // types, the new frame right behind: it goes only if nothing
+            // has come up meanwhile.
+            DispatchQueue.main.asyncAfter(deadline: .now() + max(0, duration) + 0.15) { [weak self] in
+                guard let self, self.heard == heard, self.view.window != nil else { return }
+                self.heardFrame = end
+                self.view.setNeedsLayout()
+            }
+            return
+        }
+        heardFrame = end
         UIView.animate(withDuration: duration, delay: 0, options: [UIView.AnimationOptions(rawValue: curve << 16), .beginFromCurrentState]) {
             self.view.setNeedsLayout()
             self.view.layoutIfNeeded()
         }
+    }
+
+    @objc private func keyboardDidChange(_ note: Notification) {
+        guard view.window != nil, let end = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue else { return }
+        // A frame covering nothing is the bar's going, settled on its own.
+        guard KeyboardCover.covered(view.keyboardFrame(fromScreen: end), bounds: view.bounds, safeBottom: view.safeAreaInsets.bottom) != nil else { return }
+        heardFrame = end
+        view.setNeedsLayout()
     }
 
     func textViewDidChange(_ textView: UITextView) {
