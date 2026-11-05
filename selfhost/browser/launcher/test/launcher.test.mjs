@@ -127,7 +127,7 @@ test('pod templates: host network, loopback ports per slot, no published ports, 
         assert.equal(ce.NETWORK_INSPECTOR_CAPTURE_BODIES, 'false');
         assert.equal(ce.REQUIRE_AUTH_STATE_ENCRYPTION, 'true');
         assert.equal(ce.API_ALLOW_TOKENLESS_LOOPBACK, 'false');
-        assert.equal(ce.TAKEOVER_URL, `http://localhost:${p.novnc}/vnc.html?autoconnect=true&resize=scale`);
+        assert.equal(ce.TAKEOVER_URL, `http://localhost:${p.novnc}/vnc.html?autoconnect=true&resize=off&view_clip=true`);
         assert.ok(ctl.HostConfig.Binds[0].endsWith(`/data/pods/slot-${slot}:/data`));
         assert.ok(node.HostConfig.Binds.includes(`${BROWSER_DIR}/kiosk/fluxbox:/happy/fluxbox:ro`));
     }

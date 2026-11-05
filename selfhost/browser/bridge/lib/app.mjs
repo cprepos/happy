@@ -79,7 +79,7 @@ function cleanAction(a, at) {
 export function createBridge({ client, store, config, now = Date.now, log = () => {} }) {
     const {
         publicBase = 'http://localhost:6090',
-        novncUrl = 'http://localhost:6080/vnc.html?autoconnect=true&resize=scale',
+        novncUrl = 'http://localhost:6080/vnc.html?autoconnect=true&resize=off&view_clip=true',
         vncPassword = '',
         bridgeToken,
         frameCacheMs = 1000,

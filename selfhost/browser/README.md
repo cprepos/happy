@@ -63,7 +63,7 @@ Tunables, such as screen size, ports and `MAX_SESSIONS`, go in
   permission prompts, and x11vnc runs with `-noremote -norc -nowf -nonap`. `make
   browser-bridge-smoke` measures the window from inside the container
   (`scripts/kiosk-probe.mjs`) and checks no abstract X11 socket is visible on the host. The takeover URL is
-  `http://localhost:6080/vnc.html?autoconnect=true&resize=scale`.
+  `http://localhost:6080/vnc.html?autoconnect=true&resize=off&view_clip=true`.
 - **Host networking:** all three services run with `network_mode: host`, so `localhost` in
   Chromium is this machine and agents can open loopback-only services here (for example
   `http://localhost:8903/v1/models`). There are no port publishes; each listener binds
@@ -134,7 +134,7 @@ second would fill the disk. The path stays `frame.jpg`, as specified. Clients
 must go by `Content-Type`, not the extension.
 
 **Take control and the VNC password.** The button opens
-`http://localhost:6080/vnc.html?autoconnect=true&resize=scale#password=<vnc-password>`.
+`http://localhost:6080/vnc.html?autoconnect=true&resize=off&view_clip=true#password=<vnc-password>`.
 This avoids a password prompt on the phone. The tradeoff is that the password is
 in the page's HTML and in the noVNC URL. It sits in the fragment, so it is never
 sent to a server or a proxy log, but it does live in the in-app browser's

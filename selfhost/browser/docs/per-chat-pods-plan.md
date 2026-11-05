@@ -163,7 +163,7 @@ The key is `chatHash = sha256(source+':'+id).slice(0,32)`.
 - `list_sessions` and auth tools need no filtering: a pod controller only sees its own session, and its `AUTH_ROOT` holds only this chat's profiles. That directory per chat is how auth profiles are namespaced; `happy-chat` is the name reserved for the bridge's own saves.
 
 **`/take` and frames.**
-- `/take` (`lib/app.mjs:292-296`) returns that pod's `novnc_url`: `http://localhost:${6100+n}/vnc.html?autoconnect=true&resize=scale#password=<pod pw>`.
+- `/take` (`lib/app.mjs:292-296`) returns that pod's `novnc_url`: `http://localhost:${6100+n}/vnc.html?autoconnect=true&resize=off&view_clip=true#password=<pod pw>`.
 - On an asleep pod, `/take` wakes it: it returns 202 with `pod:'starting'`, and iOS retries.
 - `takeoverUrl` (`:79`) and `renderPage` (`:316`) become per record.
 - `captureFrame` and `refreshMeta` (`:90-158`) use the pod's client.
@@ -226,7 +226,7 @@ The key is `chatHash = sha256(source+':'+id).slice(0,32)`.
    - Behind `BRIDGE_LOG_META=1`, `mcp.mjs` logs to stderr the keys of `_meta` and of the client info, plus hashed `CLAUDE_CODE_SESSION_ID`/`HAPPY_*` env values, never raw values. Run it from Claude Code and from Happy Agent (`README.md:195-219`, `mcp.toml`).
    - Confirm the iOS proxy reaches `localhost:6100` (start a browser-node by hand on 6100) and that the noVNC Origin check passes under the alias host.
    - Time a manual cold start.
-1. **Window lock on the current stack:** wrapper, policy, fluxbox files, entrypoint patterns, viewport, `resize=scale`, plus kiosk checks in `bridge-smoke`. This is independent and ships first.
+1. **Window lock on the current stack:** wrapper, policy, fluxbox files, entrypoint patterns, viewport, `resize=off&view_clip=true`, plus kiosk checks in `bridge-smoke`. This is independent and ships first.
 2. **Launcher service and pod templates**, plus its tests and `browser-pods-*` targets.
 3. **PodManager in the bridge**, plus `pods.test`.
 4. **Routing:** `mcp.mjs` chat routing, per-chat links, per-pod `/take` and frames.

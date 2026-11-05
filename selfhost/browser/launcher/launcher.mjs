@@ -182,7 +182,7 @@ export function controllerSpec(cfg, { slot, podId, image, secrets }) {
             'BROWSER_WS_ENDPOINT_FILE=/data/browser-profile/browser-ws-endpoint.txt',
             'BROWSER_SANDBOX=auto',
             'CONTROLLER_RUN_AS=auto',
-            `TAKEOVER_URL=http://localhost:${p.novnc}/vnc.html?autoconnect=true&resize=scale`,
+            `TAKEOVER_URL=http://localhost:${p.novnc}/vnc.html?autoconnect=true&resize=off&view_clip=true`,
             'ARTIFACT_ROOT=/data/artifacts',
             'UPLOAD_ROOT=/data/uploads',
             'AUTH_ROOT=/data/auth',
