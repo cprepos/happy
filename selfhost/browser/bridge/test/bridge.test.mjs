@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { createBridge } from '../lib/app.mjs';
 import { LinkStore, ID_PATTERN } from '../lib/store.mjs';
 import { createMcpServer } from '../mcp.mjs';
+import { loadConfig } from '../lib/config.mjs';
 
 const BRIDGE_TOKEN = 'bridge-secret-token-0123456789abcdef';
 const VNC_PASSWORD = 'Vnc8Pass';
@@ -324,6 +325,17 @@ test('a pruned frame file on a live session is a 502, and the link stays watchin
     assert.equal(store.lookup(id).rec.status, 'watching');
 });
 
+test('defaults: a 1920x1200 desktop frame, and noVNC takeover scaled to fit', () => {
+    const cfg = loadConfig({ HAPPY_BROWSER_HOME: '/nonexistent' });
+    assert.equal(cfg.frameWidth, 1920);
+    assert.equal(cfg.frameHeight, 1200);
+    const u = new URL(cfg.novncUrl);
+    assert.equal(u.searchParams.get('resize'), 'scale');
+    assert.equal(u.searchParams.get('view_clip'), null);
+    const env = loadConfig({ HAPPY_BROWSER_HOME: '/nonexistent', BRIDGE_FRAME_WIDTH: '1280', BRIDGE_FRAME_HEIGHT: '800' });
+    assert.deepEqual([env.frameWidth, env.frameHeight], [1280, 800]);
+});
+
 test('page fits a 320-430 px phone: viewport meta, no fixed widths, frame box sized to the screen', async () => {
     const { id } = await link();
     const html = await (await fetch(`${base}/live/${id}`)).text();
@@ -335,7 +347,7 @@ test('page fits a 320-430 px phone: viewport meta, no fixed widths, frame box si
     assert.match(css, /safe-area-inset-right/);
     assert.match(css, /object-fit: contain/);
     assert.match(css, /aspect-ratio: var\(--frame-ar\)/);
-    assert.match(css, /--frame-ar: 480 \/ 1040/);
+    assert.match(css, /--frame-ar: 1920 \/ 1200/);
     assert.match(css, /overflow-wrap: anywhere/);
     // width / min-width / flex-basis in px above the narrowest phone would push the page wider.
     for (const [, prop, px] of css.matchAll(/(?<![-\w])((?:min-)?width|flex-basis)\s*:\s*(\d+)px/g)) {

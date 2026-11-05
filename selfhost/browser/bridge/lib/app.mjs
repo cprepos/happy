@@ -79,14 +79,14 @@ function cleanAction(a, at) {
 export function createBridge({ client, store, config, now = Date.now, log = () => {} }) {
     const {
         publicBase = 'http://localhost:6090',
-        novncUrl = 'http://localhost:6080/vnc.html?autoconnect=true&resize=off&view_clip=true',
+        novncUrl = 'http://localhost:6080/vnc.html?autoconnect=true&resize=scale',
         vncPassword = '',
         bridgeToken,
         frameCacheMs = 1000,
         shareTtlMinutes = 1440,
         allowedHosts = null, // e.g. ['localhost:6090', '127.0.0.1:6090']; null admits any
-        frameWidth = 480,
-        frameHeight = 1040,
+        frameWidth = 1920,
+        frameHeight = 1200,
         // async (rec) => {}: runs when the user ends a browser, before its session closes. A pod
         // manager hooks in here to save the login and stop the pod. Failures are logged only.
         onEnd = null,

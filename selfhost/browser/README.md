@@ -69,9 +69,11 @@ Tunables, such as screen size, ports and `MAX_SESSIONS`, go in
 
 ## Settings worth knowing
 
-- **Screen:** Xvfb is 480x1040 and so is the page: the window is locked (below), so the page
-  fills the whole screen. This is phone-shaped, so sites serve narrow layouts and noVNC is
-  legible on an iPhone.
+- **Screen:** Xvfb is 1920x1200 and so is the page: the window is locked (below), so the page
+  fills the whole screen. This is a desktop screen, so sites serve their desktop layouts, at
+  device scale factor 1 with no mobile user agent or device emulation. 16:10 is the shape of
+  the iOS mini player, so the live frame fills it. Set `BROWSER_WIDTH`/`BROWSER_HEIGHT` in
+  `.env.browser` to change it.
 - **One window, nothing else on screen:** `kiosk/` is mounted into browser-node.
   `happy-kiosk.mjs` runs in place of the image's `server.mjs` and holds every Chromium window
   in browser fullscreen (no tab strip, address bar or frame; a `window.open` popup too),
@@ -81,7 +83,8 @@ Tunables, such as screen size, ports and `MAX_SESSIONS`, go in
   permission prompts, and x11vnc runs with `-noremote -norc -nowf -nonap`. `make
   browser-bridge-smoke` measures the window from inside the container
   (`scripts/kiosk-probe.mjs`) and checks no abstract X11 socket is visible on the host. The takeover URL is
-  `http://localhost:6080/vnc.html?autoconnect=true&resize=off&view_clip=true`.
+  `http://localhost:6080/vnc.html?autoconnect=true&resize=scale`: noVNC scales the whole
+  desktop down to fit the phone (pinch-zoom for detail), so there is nothing to pan.
 - **Host networking:** all three services run with `network_mode: host`, so `localhost` in
   Chromium is this machine and agents can open loopback-only services here (for example
   `http://localhost:8903/v1/models`). There are no port publishes; each listener binds
@@ -135,8 +138,9 @@ Phone routes, opened in the iOS app's in-app browser through the workspace proxy
   shows the error in the frame box and keeps retrying.
 - The page fits 320-430 px phones: no fixed widths, safe-area insets, long
   titles ellipsized and URLs wrapped, and the frame box sized to the browser
-  viewport (`BRIDGE_FRAME_WIDTH`/`BRIDGE_FRAME_HEIGHT`, from `BROWSER_WIDTH` and
-  `BROWSER_VIEWPORT_HEIGHT`) with the image `object-fit: contain`.
+  viewport's aspect ratio (`BRIDGE_FRAME_WIDTH`/`BRIDGE_FRAME_HEIGHT`, from
+  `BROWSER_WIDTH` and `BROWSER_HEIGHT`) at 100% of the page width, with the image
+  `object-fit: contain`, so a 1920-wide frame scales down to the phone.
 - Private routes for the MCP server, `POST /api/{links,takeover,wait,release}`,
   need `Authorization: Bearer <bridge-token>`. The bridge refuses any Host header
   other than `localhost`/`127.0.0.1`/`[::1]` on its port (421).
@@ -152,7 +156,7 @@ second would fill the disk. The path stays `frame.jpg`, as specified. Clients
 must go by `Content-Type`, not the extension.
 
 **Take control and the VNC password.** The button opens
-`http://localhost:6080/vnc.html?autoconnect=true&resize=off&view_clip=true#password=<vnc-password>`.
+`http://localhost:6080/vnc.html?autoconnect=true&resize=scale#password=<vnc-password>`.
 This avoids a password prompt on the phone. The tradeoff is that the password is
 in the page's HTML and in the noVNC URL. It sits in the fragment, so it is never
 sent to a server or a proxy log, but it does live in the in-app browser's

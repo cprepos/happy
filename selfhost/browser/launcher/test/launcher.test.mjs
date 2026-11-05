@@ -121,13 +121,16 @@ test('pod templates: host network, loopback ports per slot, no published ports, 
         assert.equal(ne.NOVNC_PORT, String(p.novnc));
         assert.equal(ne.PLAYWRIGHT_SERVER_PORT, String(p.playwright));
         assert.equal(ne.VNC_PASSWORD, 'Abcd1234');
+        // A desktop screen, window and viewport by default (BROWSER_WIDTH/HEIGHT override).
+        assert.deepEqual([ne.BROWSER_WIDTH, ne.BROWSER_HEIGHT], ['1920', '1200']);
+        assert.deepEqual([ce.DEFAULT_VIEWPORT_WIDTH, ce.DEFAULT_VIEWPORT_HEIGHT], ['1920', '1200']);
         assert.deepEqual(ctl.Cmd, ['uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', String(p.api)]);
         assert.equal(ce.MAX_SESSIONS, '1');
         assert.equal(ce.ENABLE_TRACING, 'false');
         assert.equal(ce.NETWORK_INSPECTOR_CAPTURE_BODIES, 'false');
         assert.equal(ce.REQUIRE_AUTH_STATE_ENCRYPTION, 'true');
         assert.equal(ce.API_ALLOW_TOKENLESS_LOOPBACK, 'false');
-        assert.equal(ce.TAKEOVER_URL, `http://localhost:${p.novnc}/vnc.html?autoconnect=true&resize=off&view_clip=true`);
+        assert.equal(ce.TAKEOVER_URL, `http://localhost:${p.novnc}/vnc.html?autoconnect=true&resize=scale`);
         assert.ok(ctl.HostConfig.Binds[0].endsWith(`/data/pods/slot-${slot}:/data`));
         assert.ok(node.HostConfig.Binds.includes(`${BROWSER_DIR}/kiosk/fluxbox:/happy/fluxbox:ro`));
     }
