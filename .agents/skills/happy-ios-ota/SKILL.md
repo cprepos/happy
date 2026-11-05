@@ -52,7 +52,24 @@ Hosts: prep-pro compiles (see the prep-pro skill), prep-air signs and runs devic
 prep-air skill). The source comes from the deploy checkout `/home/prep/happy` (`git pull -q --ff-only fork main` first if you're
 building latest main). Use `ssh -o BatchMode=yes`.
 
-### 1. Stage source on prep-pro
+### 1–2 fast path (preferred): persistent tree and DerivedData
+```bash
+C=$(git -C /home/prep/happy rev-parse <commit>)
+TS=$(ssh -o BatchMode=yes prep-pro 'date +%Y%m%d_%H%M%S')
+make -C /home/prep/happy/packages/happy-ios ios-build-device COMMIT=$C PHONE_TS=$TS   # CLEAN=1 for a cold build
+```
+This syncs `packages/happy-ios` at `$C` into `~/happy-fast/trees/device-preview` with
+checksummed rsync (unchanged files keep their mtimes), applies the same `project.yml` and
+entitlements edits as `prep.sh`, builds Preview into the persistent
+`~/happy-fast/dd/device-preview`, and copies `Happy.app` to
+`~/happy-phone-build/$TS/dd/Build/Products/Preview-iphoneos/`, where `sign.sh` expects it. It
+blocks until the build ends and exits non-zero on failure. It waits for any other xcodebuild
+on prep-pro and holds the `~/happy-fast/lock` mkdir lock, so it never runs alongside
+`make ios-test-fast`. Then continue with "3–5 on prep-pro" below. Steps 1 and 2 are the old
+cold path (fresh `git archive` tree and DerivedData every time, about 5 min); keep them as
+the fallback.
+
+### 1. Stage source on prep-pro (fallback)
 ```bash
 C=$(git -C /home/prep/happy rev-parse <commit>)
 TS=$(ssh -o BatchMode=yes prep-pro 'date +%Y%m%d_%H%M%S')

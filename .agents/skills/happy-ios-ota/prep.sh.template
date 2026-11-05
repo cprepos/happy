@@ -1,4 +1,11 @@
 #!/bin/zsh
+# Fallback cold build. The fast path is `make -C packages/happy-ios
+# ios-build-device PHONE_TS=<ts>` (scripts/prep-pro): same project.yml edits,
+# but a persistent tree and DerivedData under ~/happy-fast, so an unchanged
+# module is not rebuilt. This script stamps every file with the commit time
+# (git archive) and starts from an empty DerivedData, so it rebuilds everything.
+# If you do use it, check `pgrep -fl xcodebuild` on prep-pro first and do not
+# start it while ~/happy-fast/lock exists.
 export PATH=/opt/homebrew/bin:$PATH
 set -e
 B=~/happy-phone-build/__TS__
@@ -23,5 +30,5 @@ P
 tail -1 $B/logs/xcodegen.log
 mkdir -p $B/dd
 cp -cR ~/happy-phone-build/20261101_221505/dd/SourcePackages $B/dd/SourcePackages
-xcodebuild build -project Happy.xcodeproj -scheme Happy -configuration Preview -destination "generic/platform=iOS" -derivedDataPath $B/dd CODE_SIGNING_ALLOWED=NO > $B/logs/compile.log 2>&1
+xcodebuild build -project Happy.xcodeproj -scheme Happy -configuration Preview -destination "generic/platform=iOS" -derivedDataPath $B/dd -showBuildTimingSummary CODE_SIGNING_ALLOWED=NO > $B/logs/compile.log 2>&1
 echo "COMPILE EXIT $?" >> $B/logs/compile.log
