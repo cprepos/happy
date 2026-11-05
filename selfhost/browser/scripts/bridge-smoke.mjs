@@ -79,8 +79,13 @@ try {
     const waited = bapi('/api/wait', { id: link.id, wait_s: 20 }).then((r) => r.json());
     await new Promise((r) => setTimeout(r, 300));
     const done = await (await fetch(`${live}/done`, { method: 'POST' })).json();
-    check(done.status === 'done', 'POST /done');
-    check((await waited).status === 'done', 'waiter woke with done');
+    check(done.status === 'watching', 'POST /done (alias of release) -> watching');
+    check((await waited).status === 'watching', 'waiter woke');
+
+    const took = await (await fetch(`${live}/take`, { method: 'POST' })).json();
+    check(took.status === 'user' && typeof took.novnc_url === 'string', `POST /take -> ${took.status}`);
+    const rel = await (await fetch(`${live}/release`, { method: 'POST' })).json();
+    check(rel.status === 'watching', `POST /release -> ${rel.status}`);
 
     const unknown = await fetch(`${BRIDGE}/live/${'0'.repeat(32)}/state`);
     check(unknown.status === 404, `unknown id -> ${unknown.status}`);
@@ -103,6 +108,12 @@ try {
     check(!leakedMcp, 'no secret in pass-through responses');
     const ll = await m.request('tools/call', { name: 'browser_live_link', arguments: { session_id: sessionId } });
     check(ll.result?.structuredContent?.link === link.url, 'mcp browser_live_link returns the same link');
+    await fetch(`${live}/take`, { method: 'POST' });
+    const refused = await m.request('tools/call', { name: 'browser_execute_action', arguments: { session_id: sessionId, action: { action: 'scroll', reason: 'smoke' } } });
+    check(refused.result?.isError && /taken control/.test(refused.result.content?.[0]?.text || ''), 'mcp execute_action refused while the user has control');
+    const obs = await m.request('tools/call', { name: 'browser_get_session', arguments: { session_id: sessionId } });
+    check(!obs.error && !obs.result?.isError, 'mcp get_session still works while the user has control');
+    await fetch(`${live}/release`, { method: 'POST' });
     const wait = m.request('tools/call', { name: 'browser_wait_for_human', arguments: { session_id: sessionId, reason: 'MCP smoke', timeout_s: 30 }, _meta: { progressToken: 'smoke' } });
     await new Promise((r) => setTimeout(r, 1500));
     check(m.notes.some((x) => x.method === 'notifications/progress' && x.params.message.includes(link.url)), 'mcp progress notification carries the link');

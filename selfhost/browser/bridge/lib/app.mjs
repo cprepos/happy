@@ -1,21 +1,30 @@
 // The live bridge's HTTP surface.
 //
 // Public, for the phone (reached only through the Happy Agent workspace proxy):
-//   GET  /live/<id>            phone page: live frame, status, Take control, Done
+//   GET  /live/<id>            phone page: live frame, status, Take control, Release control
 //   GET  /live/<id>/frame.jpg  latest frame (image/png as auto-browser captures it)
-//   GET  /live/<id>/state      {status: watching|takeover|done, reason, url, title}
-//   POST /live/<id>/done       ends a takeover
+//   GET  /live/<id>/state      {status: watching|user|takeover|done, reason, url, title, last_action}
+//   POST /live/<id>/take       the user takes control: watching -> user (takeover stays takeover);
+//                              -> state plus novnc_url
+//   POST /live/<id>/release    the user hands control back: user|takeover -> watching, waking waiters
+//   POST /live/<id>/done       alias of /release, for app builds that predate it
 // Unknown id -> 404, expired id -> 410.
 //
 // Private, for the MCP server (Authorization: Bearer <bridge-token>):
 //   POST /api/links     {session_id}                -> {id, url, status}
 //   POST /api/takeover  {session_id, reason}        -> {id, url, status}
-//   POST /api/wait      {id, wait_s}                -> state, once status leaves takeover or wait_s passes
+//   POST /api/wait      {id, wait_s}                -> state, once status leaves takeover/user or wait_s passes
 //   POST /api/release   {id, reason}                -> state; a takeover nobody finished goes back to watching
+//   POST /api/state     {session_id?, action?}      -> the session's link state ({status: null} without one);
+//                       with no session_id, a held link if any. With an action ({kind, target}) on a link
+//                       nobody holds, records it as last_action.
+//
+// Statuses: watching (the agent drives), user (the user took control on their own; the agent's
+// actions are refused), takeover (the agent asked for the user and waits), done (session closed).
 import { timingSafeEqual, randomBytes, createHash } from 'node:crypto';
 import { renderPage, renderGone } from './page.mjs';
 
-const LIVE_ROUTE = /^\/live\/([^/]+)(\/frame\.jpg|\/state|\/done)?\/?$/;
+const LIVE_ROUTE = /^\/live\/([^/]+)(\/frame\.jpg|\/state|\/done|\/take|\/release)?\/?$/;
 const MAX_BODY = 16 * 1024;
 const MAX_WAIT_S = 120;
 
@@ -31,9 +40,19 @@ function sameSecret(a, b) {
 // "active" is live; "ended" is accepted too in case a later controller names it so.
 export const ENDED_STATUSES = new Set(['closed', 'interrupted', 'failed', 'ended']);
 const isEnded = (s) => ENDED_STATUSES.has(s?.status);
+// The user is in the page: the agent waits (takeover) or is locked out (user).
+export const HELD_STATUSES = new Set(['takeover', 'user']);
+const ACTION_KINDS = new Set(['navigate', 'click', 'hover', 'select_option', 'type', 'press', 'scroll', 'wait', 'reload', 'go_back', 'go_forward', 'upload', 'eval_js', 'activate_tab', 'close_tab']);
 
 export function stateOf(rec) {
-    return { status: rec.status, reason: rec.reason ?? null, url: rec.url ?? null, title: rec.title ?? null };
+    return { status: rec.status, reason: rec.reason ?? null, url: rec.url ?? null, title: rec.title ?? null, last_action: rec.lastAction ?? null };
+}
+
+// {kind, target} from the MCP server: a known kind, and a short target with no control characters.
+function cleanAction(a, at) {
+    if (!a || typeof a !== 'object' || !ACTION_KINDS.has(a.kind)) return null;
+    const target = typeof a.target === 'string' ? a.target.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 120) : '';
+    return { kind: a.kind, target: target || null, at };
 }
 
 export function createBridge({ client, store, config, now = Date.now, log = () => {} }) {
@@ -61,7 +80,7 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
 
     function setStatus(rec, status, reason) {
         store.update(rec, { status, reason: reason ?? null });
-        if (status !== 'takeover') {
+        if (!HELD_STATUSES.has(status)) {
             const r = rt(rec.id);
             for (const wake of r.waiters) wake();
             r.waiters.clear();
@@ -139,7 +158,7 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
     }
 
     function waitForHandBack(rec, waitMs) {
-        if (rec.status !== 'takeover') return Promise.resolve();
+        if (!HELD_STATUSES.has(rec.status)) return Promise.resolve();
         return new Promise((resolve) => {
             const r = rt(rec.id);
             const wake = () => { clearTimeout(timer); r.waiters.delete(wake); resolve(); };
@@ -226,6 +245,18 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
             return send(res, 200, { id: rec.id, url: linkUrl(rec), status: rec.status });
         }
 
+        if (path === '/api/state') {
+            let rec = null;
+            if (body.session_id !== undefined && body.session_id !== null) rec = store.findSession(sessionIdOf(body));
+            else rec = store.all().find((r) => HELD_STATUSES.has(r.status)) ?? null;
+            if (!rec) return send(res, 200, { status: null });
+            if (body.action !== undefined && !HELD_STATUSES.has(rec.status)) {
+                const action = cleanAction(body.action, now());
+                if (action) store.update(rec, { lastAction: action });
+            }
+            return send(res, 200, { id: rec.id, ...stateOf(rec) });
+        }
+
         if (path === '/api/wait' || path === '/api/release') {
             const found = typeof body.id === 'string' ? store.lookup(body.id) : null;
             if (!found) return send(res, 404, { error: 'unknown_link' });
@@ -256,9 +287,15 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         const { rec } = found;
         store.touch(rec);
 
-        if (sub === '/done') {
+        if (sub === '/take' || sub === '/release' || sub === '/done') {
             if (req.method !== 'POST') return send(res, 405, { error: 'method_not_allowed' }, { Allow: 'POST' });
-            if (rec.status === 'takeover') setStatus(rec, 'done', null);
+            if (sub === '/take') {
+                if (rec.status === 'done' && rec.reason === 'session_closed') return send(res, 409, { error: 'session_closed', ...stateOf(rec) });
+                // From takeover the agent is already waiting for the user: nothing changes.
+                if (rec.status !== 'takeover' && rec.status !== 'user') setStatus(rec, 'user', 'user_took_control');
+                return send(res, 200, { ...stateOf(rec), novnc_url: takeoverUrl });
+            }
+            if (HELD_STATUSES.has(rec.status)) setStatus(rec, 'watching', 'user_released');
             return send(res, 200, stateOf(rec));
         }
         if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: 'method_not_allowed' }, { Allow: 'GET' });

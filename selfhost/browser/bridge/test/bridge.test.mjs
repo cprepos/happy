@@ -94,9 +94,13 @@ test('page, state and frame routes', async () => {
     assert.match(html, /prefers-color-scheme: dark/);
     assert.match(html, /Take control/);
     assert.ok(html.includes(`#password=${VNC_PASSWORD}`), 'Take control link carries the VNC password');
+    assert.match(html, />Release control</);
+    assert.match(html, /You have control/);
+    assert.match(html, /fetch\(base \+ '\/take', \{ method: 'POST' \}\)/);
+    assert.match(html, /fetch\(base \+ '\/release', \{ method: 'POST' \}\)/);
 
     const state = await (await fetch(`${base}/live/${id}/state`)).json();
-    assert.deepEqual(state, { status: 'watching', reason: null, url: 'https://news.ycombinator.com/', title: 'Hacker News' });
+    assert.deepEqual(state, { status: 'watching', reason: null, url: 'https://news.ycombinator.com/', title: 'Hacker News', last_action: null });
 
     const f = await fetch(`${base}/live/${id}/frame.jpg`);
     assert.equal(f.status, 200);
@@ -104,6 +108,8 @@ test('page, state and frame routes', async () => {
     assert.deepEqual(Buffer.from(await f.arrayBuffer()), PNG);
     assert.equal((await fetch(`${base}/live/${id}/frame.jpg`, { method: 'POST' })).status, 405);
     assert.equal((await fetch(`${base}/live/${id}/done`)).status, 405);
+    assert.equal((await fetch(`${base}/live/${id}/take`)).status, 405);
+    assert.equal((await fetch(`${base}/live/${id}/release`)).status, 405);
 });
 
 test('frames are cached for about a second and concurrent fetches coalesce', async () => {
@@ -132,7 +138,7 @@ test('unknown id is 404, expired id is 410', async () => {
     assert.notEqual(fresh.id, id, 'a new link replaces the expired one');
 });
 
-test('takeover then done wakes a waiter', async () => {
+test('takeover then done (the old alias of release) wakes a waiter', async () => {
     const t = await (await api('/api/takeover', { session_id: 'sess1', reason: 'Log in please' })).json();
     assert.equal(t.status, 'takeover');
     assert.deepEqual(client.calls.takeover, [{ id: 'sess1', reason: 'Log in please' }]);
@@ -143,8 +149,91 @@ test('takeover then done wakes a waiter', async () => {
     const waiting = api('/api/wait', { id: t.id, wait_s: 30 }).then((r) => r.json());
     await new Promise((r) => setTimeout(r, 50));
     const done = await (await fetch(`${base}/live/${t.id}/done`, { method: 'POST' })).json();
-    assert.equal(done.status, 'done');
-    assert.equal((await waiting).status, 'done');
+    assert.equal(done.status, 'watching');
+    assert.equal((await waiting).status, 'watching');
+});
+
+const post = (id, sub) => fetch(`${base}/live/${id}/${sub}`, { method: 'POST' });
+
+test('take: watching -> user with the noVNC url; release -> watching', async () => {
+    const { id } = await link();
+    const r = await post(id, 'take');
+    assert.equal(r.status, 200);
+    const t = await r.json();
+    assert.deepEqual([t.status, t.reason], ['user', 'user_took_control']);
+    assert.ok(t.novnc_url.includes(`#password=${VNC_PASSWORD}`));
+    assert.equal((await (await fetch(`${base}/live/${id}/state`)).json()).status, 'user');
+    assert.equal((await (await post(id, 'take')).json()).status, 'user', 'taking twice is a no-op');
+    const rel = await (await post(id, 'release')).json();
+    assert.deepEqual([rel.status, rel.reason], ['watching', 'user_released']);
+    assert.equal((await (await post(id, 'release')).json()).status, 'watching', 'releasing twice is a no-op');
+    store.flush();
+    const saved = JSON.parse(readFileSync(join(dir, 'links.json'), 'utf8')).links[0];
+    assert.equal(saved.status, 'watching');
+});
+
+test('user status survives a restart through the store file', async () => {
+    const { id } = await link();
+    await post(id, 'take');
+    store.flush();
+    const again = new LinkStore({ path: join(dir, 'links.json'), now: () => clock.t });
+    assert.equal(again.lookup(id).rec.status, 'user');
+});
+
+test('take during a takeover changes nothing; release ends it and wakes the waiter', async () => {
+    const t = await (await api('/api/takeover', { session_id: 'sess1', reason: 'CAPTCHA' })).json();
+    const waiting = api('/api/wait', { id: t.id, wait_s: 30 }).then((r) => r.json());
+    const took = await (await post(t.id, 'take')).json();
+    assert.deepEqual([took.status, took.reason], ['takeover', 'CAPTCHA']);
+    await new Promise((r) => setTimeout(r, 50));
+    const rel = await (await post(t.id, 'release')).json();
+    assert.equal(rel.status, 'watching');
+    assert.equal((await waiting).status, 'watching');
+});
+
+test('take on an ended session is refused', async () => {
+    const { id } = await link();
+    client.sessions.get('sess1').status = 'interrupted';
+    clock.t += 6000;
+    await fetch(`${base}/live/${id}/state`);
+    assert.equal((await post(id, 'take')).status, 409);
+});
+
+test('a waiter stays blocked while the user has control, and wakes on release', async () => {
+    const { id } = await link();
+    await post(id, 'take');
+    const started = Date.now();
+    const w = await (await api('/api/wait', { id, wait_s: 1 })).json();
+    assert.equal(w.status, 'user');
+    assert.ok(Date.now() - started >= 900, 'user status does not wake the waiter');
+    const waiting = api('/api/wait', { id, wait_s: 30 }).then((r) => r.json());
+    await new Promise((r) => setTimeout(r, 50));
+    await post(id, 'release');
+    assert.equal((await waiting).status, 'watching');
+    // /api/release is for unanswered takeovers: it leaves a user's control alone.
+    await post(id, 'take');
+    assert.equal((await (await api('/api/release', { id, reason: 'timeout' })).json()).status, 'user');
+});
+
+test('/api/state: by session, held link without one, and last_action recorded only when nobody holds it', async () => {
+    assert.deepEqual(await (await api('/api/state', { session_id: 'sess1' })).json(), { status: null });
+    const { id } = await link();
+    const s1 = await (await api('/api/state', { session_id: 'sess1', action: { kind: 'click', target: 'Sign\nin' } })).json();
+    assert.equal(s1.status, 'watching');
+    assert.deepEqual(s1.last_action, { kind: 'click', target: 'Sign in', at: clock.t });
+    const st = await (await fetch(`${base}/live/${id}/state`)).json();
+    assert.deepEqual(st.last_action, { kind: 'click', target: 'Sign in', at: clock.t });
+    assert.deepEqual(await (await api('/api/state', {})).json(), { status: null }, 'no held link');
+    await post(id, 'take');
+    assert.equal((await (await api('/api/state', {})).json()).status, 'user');
+    clock.t += 10;
+    const s2 = await (await api('/api/state', { session_id: 'sess1', action: { kind: 'type' } })).json();
+    assert.equal(s2.status, 'user');
+    assert.equal(s2.last_action.kind, 'click', 'a refused action is not recorded');
+    await post(id, 'release');
+    const s3 = await (await api('/api/state', { session_id: 'sess1', action: { kind: 'bogus' } })).json();
+    assert.equal(s3.last_action.kind, 'click', 'unknown kinds are ignored');
+    assert.equal((await api('/api/state', { session_id: '../x' })).status, 400);
 });
 
 test('wait times out while still in takeover; release returns it to watching', async () => {
@@ -302,6 +391,30 @@ test('mcp: browser_wait_for_human returns done when the user taps Done', async (
     await fetch(`${base}/live/${linkUrl[1]}/done`, { method: 'POST' });
     const r = await pending;
     assert.equal(r.result.structuredContent.status, 'done');
+});
+
+test('mcp: browser_wait_for_human when the user already has control keeps it theirs until Release', async () => {
+    const { call, out } = mcpHarness();
+    const { id } = await link();
+    await post(id, 'take');
+    const pending = call(8, 'browser_wait_for_human', { session_id: 'sess1', reason: 'Waiting', timeout_s: 30 }, { progressToken: 'p2' });
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(client.calls.takeover.length, 0, 'no takeover request');
+    const st = await (await fetch(`${base}/live/${id}/state`)).json();
+    assert.deepEqual([st.status, st.reason], ['user', 'user_took_control']);
+    assert.match(out.find((m) => m.method === 'notifications/progress').params.message, /has control/);
+    await post(id, 'release');
+    const r = await pending;
+    assert.equal(r.result.structuredContent.status, 'done');
+});
+
+test('mcp: a timed-out wait leaves the user in control', async () => {
+    const { call } = mcpHarness(1);
+    const { id } = await link();
+    await post(id, 'take');
+    const r = await call(9, 'browser_wait_for_human', { session_id: 'sess1', reason: 'x', timeout_s: 5 });
+    assert.equal(r.result.structuredContent.status, 'timeout');
+    assert.equal((await (await fetch(`${base}/live/${id}/state`)).json()).status, 'user');
 });
 
 test('mcp: browser_wait_for_human times out and releases the takeover', async () => {

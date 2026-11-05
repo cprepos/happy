@@ -3,7 +3,7 @@
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { createMcpServer, mapUpstreamTools } from '../mcp.mjs';
+import { createMcpServer, mapUpstreamTools, actionOf, USER_HAS_CONTROL } from '../mcp.mjs';
 import { createUpstreamMcp, parseSse, localToolName } from '../lib/upstream.mjs';
 
 const TOKEN = 'ab-secret-token-fedcba9876543210';
@@ -11,6 +11,7 @@ const UPSTREAM_TOOLS = [
     { name: 'browser.create_session', description: 'Create a session. Then use browser.observe.', inputSchema: { type: 'object', properties: { name: { type: 'string' } } } },
     { name: 'browser.list_sessions', description: 'List sessions.', inputSchema: { type: 'object', properties: {} }, annotations: { readOnlyHint: true } },
     { name: 'browser.observe', description: 'Observe.', inputSchema: { type: 'object', properties: { session_id: { type: 'string' } } } },
+    { name: 'browser.execute_action', description: 'Act.', inputSchema: { type: 'object', properties: { session_id: { type: 'string' }, action: { type: 'object' } } } },
 ];
 
 // ── mock auto-browser /mcp ───────────────────────────────────────────────
@@ -42,6 +43,7 @@ before(async () => {
             const { name, arguments: args } = msg.params;
             let reply;
             if (name === 'browser.list_sessions') reply = { jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: '[{"id":"s1"}]' }], structuredContent: { result: [{ id: 's1' }] }, isError: false } };
+            else if (name === 'browser.execute_action') reply = { jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: `acted ${args.action?.action}` }], isError: false } };
             else if (name === 'browser.observe') reply = { jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: `observed ${args.session_id}` }], isError: false } };
             else reply = { jsonrpc: '2.0', id: msg.id, error: { code: -32602, message: `Unknown tool: ${name}` } };
             if (mock.sse) {
@@ -78,7 +80,9 @@ test('names: dots map to underscores; descriptions follow; own names win', () =>
     assert.equal(localToolName('a b/c-d_e'), 'a_b_c-d_e');
     const logs = [];
     const m = mapUpstreamTools([...UPSTREAM_TOOLS, { name: 'browser.live_link', description: '' }, { name: 'browser_list_sessions', description: '' }], (l) => logs.push(l));
-    assert.deepEqual(m.tools.map((t) => t.name), ['browser_create_session', 'browser_list_sessions', 'browser_observe']);
+    assert.deepEqual(m.tools.map((t) => t.name), ['browser_create_session', 'browser_list_sessions', 'browser_observe', 'browser_execute_action']);
+    assert.match(m.tools[3].description, /Refused while the user has control/);
+    assert.doesNotMatch(m.tools[2].description, /Refused/);
     assert.equal(m.byLocal.get('browser_observe'), 'browser.observe');
     assert.match(m.tools[0].description, /use browser_observe\./);
     assert.match(m.tools[0].description, /browser_live_link/);
@@ -98,7 +102,7 @@ test('tools/list merges our tools with auto-browser\'s, sessions handled', async
     assert.match(init.result.instructions, /browser_live_link/);
     const r = await req(2, 'tools/list', {});
     const names = r.result.tools.map((t) => t.name);
-    assert.deepEqual(names, ['browser_live_link', 'browser_wait_for_human', 'browser_create_session', 'browser_list_sessions', 'browser_observe']);
+    assert.deepEqual(names, ['browser_live_link', 'browser_wait_for_human', 'browser_create_session', 'browser_list_sessions', 'browser_observe', 'browser_execute_action']);
     assert.deepEqual(r.result.tools[3].annotations, { readOnlyHint: true });
     assert.match(r.result.tools[1].inputSchema.properties.timeout_s.description, /max 570/);
     // initialize, then notifications/initialized with the new session id, then tools/list on it.
@@ -113,7 +117,7 @@ test('tools/list follows nextCursor', async () => {
     mock.page2 = true;
     const { req } = harness();
     const r = await req(1, 'tools/list', {});
-    assert.equal(r.result.tools.length, 5);
+    assert.equal(r.result.tools.length, 6);
 });
 
 test('tools/call forwards under the original name and returns the result verbatim (JSON)', async () => {
@@ -203,7 +207,7 @@ test('when auto-browser comes back, the client is told the tool list changed', a
     await new Promise((r) => setTimeout(r, 200));
     assert.ok(out.some((m) => m.method === 'notifications/tools/list_changed'));
     await mcp.handle({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
-    assert.equal(out.find((m) => m.id === 2).result.tools.length, 5);
+    assert.equal(out.find((m) => m.id === 2).result.tools.length, 6);
 });
 
 test('without pass-through, an unknown tool is a JSON-RPC error as before', async () => {
@@ -211,4 +215,69 @@ test('without pass-through, an unknown tool is a JSON-RPC error as before', asyn
     const mcp = createMcpServer({ bridgeUrl: 'http://127.0.0.1:9', bridgeToken: 'b', write: (m) => out.push(m) });
     await mcp.handle({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'browser_observe', arguments: {} } });
     assert.equal(out[0].error.code, -32602);
+});
+
+// ── the control lock, with the bridge's /api/state mocked ────────────────
+async function mockBridge(status) {
+    const seen = [];
+    const srv = createServer(async (req, res) => {
+        let body = '';
+        for await (const c of req) body += c;
+        seen.push({ path: req.url, auth: req.headers.authorization, body: JSON.parse(body || '{}') });
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(req.url === '/api/state' ? { id: 'x', status: status.value } : { error: 'nope' }));
+    });
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    return { srv, seen, url: `http://127.0.0.1:${srv.address().port}` };
+}
+
+test('while the user has control, execute_action is refused and observe still passes', async () => {
+    const status = { value: 'user' };
+    const b = await mockBridge(status);
+    try {
+        const out = [];
+        const upstream = createUpstreamMcp({ url, getToken: () => TOKEN, timeoutMs: 2000 });
+        const mcp = createMcpServer({ bridgeUrl: b.url, bridgeToken: 'bt', write: (m) => out.push(m), upstream, retryMs: 0 });
+        const call = async (id, name, args) => { await mcp.handle({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } }); return out.find((m) => m.id === id); };
+        const act = { session_id: 's1', action: { action: 'click', label: 'Sign in', reason: 'r' } };
+        const blocked = await call(1, 'browser_execute_action', act);
+        assert.equal(blocked.result.isError, true);
+        assert.equal(blocked.result.content[0].text, USER_HAS_CONTROL);
+        assert.equal(mock.requests.filter((x) => x.method === 'tools/call').length, 0, 'never reached auto-browser');
+        assert.deepEqual(b.seen[0], { path: '/api/state', auth: 'Bearer bt', body: { session_id: 's1', action: { kind: 'click', target: 'Sign in' } } });
+
+        const seen = await call(2, 'browser_observe', { session_id: 's1' });
+        assert.equal(seen.result.content[0].text, 'observed s1');
+        assert.equal(b.seen.length, 1, 'observe is not checked');
+
+        status.value = 'takeover';
+        assert.equal((await call(3, 'browser_execute_action', act)).result.isError, true, 'refused while the agent waits for the user too');
+
+        status.value = 'watching';
+        const ok = await call(4, 'browser_execute_action', act);
+        assert.equal(ok.result.content[0].text, 'acted click');
+        status.value = null;
+        assert.equal((await call(5, 'browser_execute_action', { action: { action: 'scroll', reason: 'r' } })).result.content[0].text, 'acted scroll');
+        assert.deepEqual(b.seen.at(-1).body, { action: { kind: 'scroll' } }, 'no session id: the bridge checks for any held link');
+    } finally {
+        b.srv.close();
+    }
+});
+
+test('a bridge that cannot answer does not block browsing', async () => {
+    const { req, call, logs } = harness(); // bridgeUrl is a closed port
+    await req(1, 'tools/list', {});
+    const r = await call(2, 'browser_execute_action', { session_id: 's1', action: { action: 'reload', reason: 'r' } });
+    assert.equal(r.result.content[0].text, 'acted reload');
+    assert.ok(logs.some((l) => /control check failed/.test(l)));
+});
+
+test('actionOf: kinds and short targets, never typed text', () => {
+    assert.deepEqual(actionOf('browser_execute_action', { action: { action: 'type', text: 'hunter2', element_id: 'e1' } }), { kind: 'type' });
+    assert.deepEqual(actionOf('browser_execute_action', { action: { action: 'navigate', url: 'https://example.com/a?b=c' } }), { kind: 'navigate', target: 'example.com' });
+    assert.deepEqual(actionOf('browser_execute_action', { action: { action: 'click', label: 'x'.repeat(200) } }).target.length, 120);
+    assert.deepEqual(actionOf('browser_execute_action', { action: { action: 'press', key: 'Enter' } }), { kind: 'press', target: 'Enter' });
+    assert.deepEqual(actionOf('browser_eval_js', { script: 'secret()' }), { kind: 'eval_js' });
+    assert.equal(actionOf('browser_wait_for_selector', {}), null);
+    assert.equal(actionOf('browser_execute_action', {}), null);
 });

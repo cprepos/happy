@@ -50,8 +50,8 @@ export class LinkStore {
         mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
         const tmp = `${this.path}.tmp`;
         // Only persistable fields: no share tokens, no frames.
-        const links = [...this.links.values()].map(({ id, sessionId, createdAt, lastSeenAt, status, reason, url, title }) =>
-            ({ id, sessionId, createdAt, lastSeenAt, status, reason, url, title }));
+        const links = [...this.links.values()].map(({ id, sessionId, createdAt, lastSeenAt, status, reason, url, title, lastAction }) =>
+            ({ id, sessionId, createdAt, lastSeenAt, status, reason, url, title, lastAction: lastAction ?? null }));
         writeFileSync(tmp, JSON.stringify({ links, expired: [...this.expired] }), { mode: 0o600 });
         renameSync(tmp, this.path);
     }
@@ -89,6 +89,18 @@ export class LinkStore {
         this.links.set(rec.id, rec);
         this.save();
         return rec;
+    }
+
+    /** The live link for a session, or null; never creates one. */
+    findSession(sessionId) {
+        this.sweep();
+        for (const rec of this.links.values()) if (rec.sessionId === sessionId) return rec;
+        return null;
+    }
+
+    all() {
+        this.sweep();
+        return [...this.links.values()];
     }
 
     /** {rec} for a live id, {expired: true} for an expired one, null for unknown. */

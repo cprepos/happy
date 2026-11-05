@@ -46,6 +46,7 @@ header { position: sticky; top: 0; z-index: 1; width: 100%; background: var(--su
 .pill { font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 999px; white-space: nowrap; }
 .pill.watching { background: var(--watch-bg); color: var(--watch-fg); }
 .pill.takeover { background: var(--need-bg); color: var(--need-fg); }
+.pill.user { background: var(--accent); color: var(--accent-text); }
 .pill.done, .pill.ended { background: var(--done-bg); color: var(--done-fg); }
 #reason { margin: 12px var(--gutter-r) 0 var(--gutter-l); padding: 10px 12px; border-radius: 10px;
   background: var(--need-bg); color: var(--need-fg); overflow-wrap: anywhere; }
@@ -74,7 +75,7 @@ export const FRAME_FAILURES_BEFORE_ERROR = 4;
 const SCRIPT = `
 (() => {
   const base = location.pathname.replace(/\\/+$/, '');
-  const LABEL = { watching: 'Watching', takeover: 'Needs you', done: 'Done', ended: 'Ended' };
+  const LABEL = { watching: 'Watching', takeover: 'Needs you', user: 'You have control', done: 'Done', ended: 'Ended' };
   const MAX_FAILS = ${FRAME_FAILURES_BEFORE_ERROR};
   const $ = (id) => document.getElementById(id);
   let state = JSON.parse($('initial').textContent);
@@ -99,7 +100,8 @@ const SCRIPT = `
     const needs = state.status === 'takeover';
     $('reason').hidden = !needs;
     $('reason').textContent = needs ? (state.reason || 'The agent needs you to take over.') : '';
-    $('done').hidden = !needs;
+    const held = needs || state.status === 'user';
+    $('done').hidden = !held;
     $('take').classList.toggle('primary', needs);
     document.title = (needs ? '⚠ ' : '') + (state.title || 'Live browser');
   }
@@ -165,10 +167,28 @@ const SCRIPT = `
   function schedule() { clearTimeout(timer); if (!stopped && !document.hidden) timer = setTimeout(tick, 1500); }
   document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); else clearTimeout(timer); });
 
+  // Take control records that the user has the browser (the agent's actions are refused until
+  // Release control), then opens noVNC. Without script the link still opens noVNC.
+  $('take').addEventListener('click', async (e) => {
+    e.preventDefault();
+    const fallback = $('take').href;
+    try {
+      const r = await fetch(base + '/take', { method: 'POST' });
+      if (r.ok) {
+        const t = await r.json();
+        state = t; render();
+        location.href = t.novnc_url || fallback;
+        return;
+      }
+      if (r.status === 409) return finish();
+    } catch (err) {}
+    location.href = fallback;
+  });
+
   $('done').addEventListener('click', async () => {
     $('done').disabled = true;
     try {
-      const r = await fetch(base + '/done', { method: 'POST' });
+      const r = await fetch(base + '/release', { method: 'POST' });
       if (r.ok) { state = await r.json(); render(); }
     } finally { $('done').disabled = false; }
   });
@@ -206,7 +226,7 @@ export function renderPage({ id, state, takeoverUrl, nonce, frameWidth = 480, fr
 </main>
 <footer>
   <a id="take" class="btn" href="${esc(takeoverUrl)}" rel="noreferrer">Take control</a>
-  <button id="done" class="btn primary" type="button" hidden>Done</button>
+  <button id="done" class="btn primary" type="button" hidden>Release control</button>
 </footer>
 <script id="initial" type="application/json">${jsonForScript(state)}</script>
 <script nonce="${nonce}">${SCRIPT}</script>
