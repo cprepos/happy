@@ -129,6 +129,10 @@ final class ChatUltraKeyboard: NSObject {
         holdsOnGuide = false
         if startsDown { height = 0 }
         startsDown = false
+        // Back from a screen presented over this one (the live browser full
+        // screen, the editor): the bar's guide settles in the window a
+        // little after the first layout, and may never say it moved.
+        rereadBar(after: 0.6)
         let accessoryHeight = accessoryHeight
         dismissal = KeyboardDismissalController(
             scrollView: list, coordinateView: view,
