@@ -210,6 +210,20 @@ final class ConversationTests: XCTestCase {
         }
     }
 
+    /// Chief of Staff's message, as the daemon stored it (2026-11-05).
+    func testTheChiefOfStaffsLiveBrowserMessageIsACard() {
+        let id = "d35b825e18ea32bebed6f63e89ce2047"
+        let text = "Hacker News is open in the live browser. Tap the card to watch it full screen:\n\nhttp://localhost:6090/live/\(id)\n\nThe link opens only in the Happy app. The test server at http://192.168.2.72:8088/ is still running, so let me know when to stop it."
+        let url = URL(string: "http://localhost:6090/live/\(id)")!
+        let expected: [ChatItem.Piece] = [
+            .text("Hacker News is open in the live browser. Tap the card to watch it full screen:"),
+            .liveBrowser(id: id, url: url),
+            .text("The link opens only in the Happy app. The test server at http://192.168.2.72:8088/ is still running, so let me know when to stop it."),
+        ]
+        XCTAssertEqual(Conversation.pieces(text, shown: [:], streaming: false), expected)
+        XCTAssertEqual(Conversation.pieces(text, shown: [:], streaming: true), expected)
+    }
+
     func testALiveBrowserLinkStillArrivingWaits() {
         let cut = "Watch: http://localhost:6090/live/\(Self.liveID.prefix(23))"
         XCTAssertEqual(Conversation.pieces(cut, shown: [:], streaming: true), [.text(cut)])
