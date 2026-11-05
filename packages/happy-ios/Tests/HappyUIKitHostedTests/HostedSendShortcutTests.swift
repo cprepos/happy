@@ -1,6 +1,7 @@
 #if canImport(UIKit)
 import Foundation
 import HappyCore
+import HappyWire
 @testable import HappyUI
 import UIKit
 import XCTest
