@@ -46,6 +46,36 @@ final class HostedSessionLiveBrowserTests: XCTestCase {
         ])
     }
 
+    /// The seeded account's first session as `id`, a codex one whose agent
+    /// called the bridge's browser_live_link and got the live view back.
+    nonisolated private static func seed(_ store: LocalStore, id: String, live: String) throws {
+        try SeededAccount.seed(store)
+        guard var row = try store.sessions().first else { return }
+        row.id = id
+        row.seq = 1
+        var fields = row.metadata?.objectValue ?? [:]
+        fields["flavor"] = .string("codex")
+        row.metadata = .object(fields)
+        try store.upsertSessions([row])
+        let at = SeededAccount.base + 1000
+        let events: [JSONValue] = [
+            Self.event("browse-e1", at: at, .object([
+                "t": .string("tool-call-start"), "call": .string("call-1"), "name": .string("mcp__happy-browser-bridge__browser_live_link"),
+                "title": .string("browser_live_link"), "description": .string(""), "args": .object(["session_id": .string("s1")]),
+            ])),
+            Self.event("browse-e2", at: at + 1, .object([
+                "t": .string("tool-call-end"), "call": .string("call-1"), "result": .string("Live view: \(live)"),
+            ])),
+        ]
+        let messages = events.enumerated().map { index, content in
+            MessageRecord(
+                id: "browse-m\(index)", sessionId: id, seq: index + 1, localId: nil, createdAt: at + Int64(index), updatedAt: at + Int64(index),
+                contentCipher: "harness", content: content
+            )
+        }
+        try store.applyMessagePage(sessionId: id, messages: messages, syncedThrough: messages.count)
+    }
+
     /// A session whose agent opened the browser and shared its live view.
     private func chat() async throws -> (LegacyChatViewController, UIWindow) {
         let controller = AccountController(
@@ -59,33 +89,7 @@ final class HostedSessionLiveBrowserTests: XCTestCase {
         let store = account.store
         let id = sessionId
         let live = "\(LiveBrowserLink.origin)/live/\(linkId)"
-        try await Task.detached { [store] in
-            try SeededAccount.seed(store)
-            guard var row = try store.sessions().first else { return }
-            row.id = id
-            row.seq = 1
-            var fields = row.metadata?.objectValue ?? [:]
-            fields["flavor"] = .string("codex")
-            row.metadata = .object(fields)
-            try store.upsertSessions([row])
-            let at = SeededAccount.base + 1000
-            let events: [JSONValue] = [
-                Self.event("browse-e1", at: at, .object([
-                    "t": .string("tool-call-start"), "call": .string("call-1"), "name": .string("mcp__happy-browser-bridge__browser_live_link"),
-                    "title": .string("browser_live_link"), "description": .string(""), "args": .object(["session_id": .string("s1")]),
-                ])),
-                Self.event("browse-e2", at: at + 1, .object([
-                    "t": .string("tool-call-end"), "call": .string("call-1"), "result": .string("Live view: \(live)"),
-                ])),
-            ]
-            let messages = events.enumerated().map { index, content in
-                MessageRecord(
-                    id: "browse-m\(index)", sessionId: id, seq: index + 1, localId: nil, createdAt: at + Int64(index), updatedAt: at + Int64(index),
-                    contentCipher: "harness", content: content
-                )
-            }
-            try store.applyMessagePage(sessionId: id, messages: messages, syncedThrough: messages.count)
-        }.value
+        try await Task.detached { [store] in try Self.seed(store, id: id, live: live) }.value
         let context = AppContext(account: controller, variant: .production, version: "test")
         let chat = LegacyChatViewController(context: context, session: account, sessionId: id)
         let navigation = UINavigationController(rootViewController: chat)
