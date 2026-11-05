@@ -44,6 +44,14 @@ public final class LiveBrowserFeed {
     public static let interval: Duration = .milliseconds(1500)
     /// Large or full screen.
     public static let fastInterval: Duration = .milliseconds(1000)
+    /// The longest one read of the state or the frame may take. The
+    /// workspace tunnel has no deadline of its own: a read that never
+    /// answered held the poll forever, and with it the picture, which no
+    /// resize or reattach could restart (a poll in flight is never
+    /// started again).
+    public static let requestTimeout: Duration = .seconds(8)
+    /// `requestTimeout`, shorter in tests.
+    public var requestTimeout: Duration = LiveBrowserFeed.requestTimeout
 
     public let link: LiveBrowserLink
     public private(set) var phase: Phase = .connecting { didSet { if phase != oldValue { publish() } } }
@@ -52,11 +60,20 @@ public final class LiveBrowserFeed {
     /// Polls made (tests).
     public private(set) var polls = 0
     public var isPolling: Bool { polling != nil }
+    /// Polling, yet nothing begun or finished for `stallLimit`: a read
+    /// stuck where even `requestTimeout` didn't reach it.
+    public var isStalled: Bool { polling != nil && ContinuousClock.now - lastActivity > stallLimit }
+    /// Longer than any poll may take: both its reads, and the wait.
+    public var stallLimit: Duration { requestTimeout * 2 + Self.interval }
 
     private let makeTransport: @MainActor () -> LiveBrowserTransport?
     private var transport: LiveBrowserTransport?
     private var polling: Task<Void, Never>?
     private var observers: [ObjectIdentifier: Observer] = [:]
+    /// When the poll last began, finished or woke.
+    private var lastActivity = ContinuousClock.now
+    /// Visible observers when last reconsidered.
+    private var visibleCount = 0
 
     private struct Observer {
         weak var owner: AnyObject?
@@ -113,8 +130,22 @@ public final class LiveBrowserFeed {
     /// How often it reads now: faster while something shows it large.
     public var currentInterval: Duration { watching.contains(where: \.fast) ? Self.fastInterval : Self.interval }
 
+    /// Polls again from scratch, over a new transport, if the poll is
+    /// stalled: the player shown again, or something else asking for it.
+    public func kick() {
+        guard isStalled else { return }
+        pause()
+        reconsider()
+    }
+
+    /// Any change in how many visible observers there are also restarts a
+    /// stalled poll; with none, or the browser over, it pauses.
     private func reconsider() {
-        if watching.isEmpty || phase.isOver { pause() } else { start() }
+        let count = watching.count
+        defer { visibleCount = count }
+        if count == 0 || phase.isOver { return pause() }
+        if count != visibleCount, isStalled { pause() }
+        start()
     }
 
     private func publish() {
@@ -127,11 +158,15 @@ public final class LiveBrowserFeed {
         guard polling == nil else { return }
         guard let transport = transport ?? makeTransport() else { return }
         self.transport = transport
+        lastActivity = .now
         polling = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
+                self.lastActivity = .now
                 let keepGoing = await self.poll(transport)
-                guard keepGoing, !Task.isCancelled else { break }
+                guard !Task.isCancelled else { return }
+                self.lastActivity = .now
+                guard keepGoing else { break }
                 try? await Task.sleep(for: self.currentInterval)
             }
             guard let self, !Task.isCancelled else { return }
@@ -157,13 +192,13 @@ public final class LiveBrowserFeed {
     private func poll(_ transport: LiveBrowserTransport) async -> Bool {
         polls += 1
         do {
-            let data = try await transport.send(method: "GET", url: link.stateURL, body: nil, accept: "application/json")
+            let data = try await read(link.stateURL, accept: "application/json", through: transport)
             var state = try JSONDecoder().decode(LiveBrowserState.self, from: data)
             guard !Task.isCancelled else { return false }
             // An asleep browser has no frame to give (503); none is asked for.
             if wantsFrames, !state.ended, !state.asleep {
                 do {
-                    let frame = try await transport.send(method: "GET", url: link.frameURL, body: nil, accept: "image/*,*/*;q=0.8")
+                    let frame = try await read(link.frameURL, accept: "image/*,*/*;q=0.8", through: transport)
                     guard !Task.isCancelled else { return false }
                     if frame != self.frame {
                         self.frame = frame
@@ -187,6 +222,74 @@ public final class LiveBrowserFeed {
             case BrowserError.upstream(501), BrowserError.unavailable: phase = .unavailable; return false
             default: phase = .unreachable; return true
             }
+        }
+    }
+
+    /// One GET, given up on (`BrowserError.timeout`) after
+    /// `requestTimeout` whether or not the transport lets go of it.
+    private func read(_ url: URL, accept: String, through transport: LiveBrowserTransport) async throws -> Data {
+        try await Self.within(requestTimeout) {
+            try await transport.send(method: "GET", url: url, body: nil, accept: accept)
+        }
+    }
+
+    /// `operation`'s answer, or `BrowserError.timeout` after `limit`, or
+    /// `CancellationError` once the caller is cancelled: the first of the
+    /// three. The operation is cancelled when it loses, but it isn't waited
+    /// for, so one that ignores cancellation can't hold the caller.
+    static func within<T: Sendable>(_ limit: Duration, _ operation: @escaping @Sendable () async throws -> T) async throws -> T {
+        let once = Once<T>()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                once.begin(continuation)
+                let work = Task {
+                    do { once.finish(.success(try await operation())) } catch { once.finish(.failure(error)) }
+                }
+                once.onLose { work.cancel() }
+                Task {
+                    try? await Task.sleep(for: limit)
+                    once.finish(.failure(BrowserError.timeout))
+                }
+            }
+        } onCancel: {
+            once.finish(.failure(CancellationError()))
+        }
+    }
+
+    /// The continuation `within` resumes once, whichever finishes first.
+    private final class Once<T: Sendable>: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<T, Error>?
+        private var early: Result<T, Error>?
+        private var done = false
+        private var lose: (() -> Void)?
+
+        func begin(_ continuation: CheckedContinuation<T, Error>) {
+            lock.lock()
+            if let early { lock.unlock(); continuation.resume(with: early); return }
+            self.continuation = continuation
+            lock.unlock()
+        }
+
+        func onLose(_ action: @escaping () -> Void) {
+            lock.lock()
+            if done { lock.unlock(); action(); return }
+            lose = action
+            lock.unlock()
+        }
+
+        func finish(_ result: Result<T, Error>) {
+            lock.lock()
+            guard !done else { lock.unlock(); return }
+            done = true
+            let continuation = continuation
+            self.continuation = nil
+            if continuation == nil { early = result }
+            let lose = lose
+            self.lose = nil
+            lock.unlock()
+            continuation?.resume(with: result)
+            lose?()
         }
     }
 
