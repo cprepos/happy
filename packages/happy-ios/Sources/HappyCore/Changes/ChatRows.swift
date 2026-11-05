@@ -233,6 +233,9 @@ public struct ChatSnapshotFacts: Equatable, Sendable {
     /// What the activity bar's panel lists. A finished subagent's last
     /// numbers change nothing here, so they cause no apply.
     public var runningSubagents: [SubagentInfo]
+    /// The chat's one live view: the newest live browser the agent linked
+    /// (`LiveBrowserLink.latest`), in the messages loaded.
+    public var liveBrowser: LiveBrowserLink?
 
     public init(_ snapshot: LegacyChatSnapshot) {
         isLoaded = snapshot.isLoaded
@@ -245,6 +248,8 @@ public struct ChatSnapshotFacts: Equatable, Sendable {
         runningSubagents = SubagentInfo.running(snapshot.subagents)
         var pendingQuestion = false
         var stored = Set<String>()
+        var live: LiveBrowserLink?
+        var newestLive = Int64.min
         for message in snapshot.messages {
             switch message {
             case .toolCall(let call):
@@ -253,10 +258,16 @@ public struct ChatSnapshotFacts: Equatable, Sendable {
                 }
             case .userText(let user):
                 if let localId = user.localId { stored.insert(localId) }
+            case .agentText(let text) where !text.isThinking:
+                if text.createdAt >= newestLive, text.text.contains(LiveBrowserLink.origin), let link = LiveBrowserLink.latest(in: [text.text]) {
+                    newestLive = text.createdAt
+                    live = link
+                }
             default:
                 break
             }
         }
+        liveBrowser = live
         hasPendingQuestion = pendingQuestion
         storedLocalIds = stored
     }
