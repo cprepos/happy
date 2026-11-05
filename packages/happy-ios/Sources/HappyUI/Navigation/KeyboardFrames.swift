@@ -105,6 +105,14 @@ final class UndockedKeyboardGuide: UIView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    /// Back in a window, its guide is read afresh and said again: what it
+    /// read out of the window doesn't count.
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        lastFrame = nil
+        setNeedsLayout()
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
         let frame = keyboardLayoutGuide.layoutFrame

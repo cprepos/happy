@@ -129,6 +129,10 @@ final class ChatUltraKeyboard: NSObject {
         holdsOnGuide = false
         if startsDown { height = 0 }
         startsDown = false
+        // Back from a screen presented over this one (the live browser full
+        // screen, the editor): the bar's guide settles in the window a
+        // little after the first layout, and may never say it moved.
+        rereadBar(after: 0.6)
         let accessoryHeight = accessoryHeight
         dismissal = KeyboardDismissalController(
             scrollView: list, coordinateView: view,
@@ -215,7 +219,10 @@ final class ChatUltraKeyboard: NSObject {
         let height = cover.map { view.bounds.maxY - $0.top } ?? 0
         keyboardLog.debug("chat undocked moved height=\(height, privacy: .public) was=\(self.height, privacy: .public)")
         let bar = KeyboardCover.Metrics.barMaxCover
-        guard abs(height - self.height) > 0.5, height <= bar, self.height <= bar else { return }
+        guard abs(height - self.height) > 0.5, height <= bar else { return }
+        // Still on the docked keyboard, whose going hasn't landed: the
+        // bar it collapsed into is read once it has.
+        guard self.height <= bar else { return rereadBar(after: 0.35) }
         if height > 0.5 {
             holdsOnGuide = false
             notified(height: height, Change(transition: .immediate))
@@ -229,6 +236,26 @@ final class ChatUltraKeyboard: NSObject {
                   self.measure(in: view, guideTop: view.keyboardLayoutGuide.layoutFrame.minY) == nil else { return }
             self.notified(height: 0, Change(transition: .immediate, finishes: true))
         }
+    }
+
+    /// The keyboard may have collapsed into the minimized bar (its
+    /// minimize control), the bar's frame coming only after the docked
+    /// keyboard's going: read the bar on the next turn of the run loop and
+    /// again once `delay` has played, rising to it if it is up. Only the
+    /// bar is taken; a docked keyboard is left to its notifications.
+    private func rereadBar(after delay: TimeInterval) {
+        let read: @MainActor @Sendable () -> Void = { [weak self] in
+            guard let self, self.isActive, !self.isDriving, let view = self.view, view.window != nil else { return }
+            let height = self.measure(in: view, guideTop: view.keyboardLayoutGuide.layoutFrame.minY)
+                .map { view.bounds.maxY - $0.top } ?? 0
+            let bar = KeyboardCover.Metrics.barMaxCover
+            guard height > 0.5, height <= bar, self.height <= bar, abs(height - self.height) > 0.5 else { return }
+            keyboardLog.debug("chat bar reread height=\(height, privacy: .public) was=\(self.height, privacy: .public)")
+            self.holdsOnGuide = false
+            self.notified(height: height, Change(transition: .immediate))
+        }
+        DispatchQueue.main.async(execute: read)
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0, delay) + 0.1, execute: read)
     }
 
     /// A frame in the screen's coordinates, in `view`: as UltraView's
@@ -298,6 +325,10 @@ final class ChatUltraKeyboard: NSObject {
     }
 
     @objc private func keyboardWillChangeFrame(_ notification: Notification) {
+        // Whoever moves this keyboard, it may be collapsing into the bar.
+        if isActive {
+            rereadBar(after: notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double ?? 0.25)
+        }
         guard isActive, dismissal?.handle(notification) != true, let view, view.window != nil,
               let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
         let duration = notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double ?? 0
@@ -385,6 +416,7 @@ final class ChatUltraKeyboard: NSObject {
     }
 
     @objc private func keyboardDidHide(_ notification: Notification) {
+        if isActive { rereadBar(after: 0) }
         guard isActive, dismissal?.handle(notification) != true, view?.window != nil else { return }
         // The minimized bar hides as it swaps for its suggestions too.
         if barUp {
