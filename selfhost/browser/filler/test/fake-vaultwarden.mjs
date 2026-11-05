@@ -1,8 +1,11 @@
 // A fake Vaultwarden on 127.0.0.1 for tests: prelogin, connect/token
 // (client_credentials), /api/sync. Its vault is built here with node:crypto,
 // the way a Bitwarden client would encrypt it: a user key under the stretched
-// master key, an RSA key pair, two organizations whose keys are RSA-wrapped,
-// and login items with and without their own item key.
+// master key, an RSA key pair, and login items in the account's personal vault
+// (under the user key), with and without their own item key. There is no
+// organization in the setup the filler is used with; one organization the
+// account is a member of, and an item of one it is not, check that org
+// ciphers are read with their org key and nothing else.
 import { createServer } from 'node:http';
 import { generateKeyPairSync, randomBytes, randomUUID } from 'node:crypto';
 import { encryptRsa, encryptSym, masterKey, stretchMasterKey } from '../lib/vaultcrypto.mjs';
@@ -15,8 +18,8 @@ export function buildVault({ email = 'agent@vault.test', password = 'correct hor
     const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
     const pkcs8 = privateKey.export({ format: 'der', type: 'pkcs8' });
     const orgs = {
-        acme: { id: randomUUID(), key: randomBytes(64), agents: randomUUID(), other: randomUUID() },
-        globex: { id: randomUUID(), key: randomBytes(64), agents: randomUUID(), other: randomUUID() },
+        shared: { id: randomUUID(), key: randomBytes(64), member: true },
+        foreign: { id: randomUUID(), key: randomBytes(64), member: false },
     };
     const userId = randomUUID();
     const clientId = `user.${userId}`;
@@ -24,30 +27,35 @@ export function buildVault({ email = 'agent@vault.test', password = 'correct hor
 
     const ciphers = [];
     const items = {};
-    function addLogin(label, org, { collection = 'agents', itemKey = false, username, password: pw, totp = null, uris, deleted = false, encType } = {}) {
-        const o = orgs[org];
+    function addLogin(label, { org = null, itemKey = false, type = 1, username, password: pw, totp = null, uris, deleted = false, encType } = {}) {
+        const o = org ? orgs[org] : null;
+        const base = o ? o.key : userKey;
         const ik = itemKey ? randomBytes(64) : null;
-        const k = ik || o.key;
+        const k = ik || base;
         const enc = (v) => (v == null ? null : encryptSym(v, k));
         const c = {
-            id: randomUUID(), organizationId: o.id, collectionIds: [o[collection]], type: 1,
-            key: ik ? encryptSym(ik, o.key) : null,
+            id: randomUUID(), organizationId: o ? o.id : null, collectionIds: [], type,
+            key: ik ? encryptSym(ik, base) : null,
             name: enc(label),
-            login: { username: enc(username), password: enc(pw), totp: enc(totp), uris: uris.map((u) => ({ uri: enc(u), match: null })) },
+            login: type !== 1 ? null : { username: enc(username), password: enc(pw), totp: enc(totp), uris: uris.map((u) => ({ uri: enc(u), match: null })) },
             deletedDate: deleted ? new Date().toISOString() : null,
         };
-        if (encType) c.login.password = `${encType}.${randomBytes(32).toString('base64')}`;
+        if (encType && c.login) c.login.password = `${encType}.${randomBytes(32).toString('base64')}`;
         ciphers.push(c);
         items[label] = { id: c.id, org, username, password: pw, totp, uris };
         return c;
     }
-    addLogin('acme-github', 'acme', { username: 'acme-bot@example.com', password: 'Acme+Pass/w0rd=1&x', totp: TOTP_SECRET, uris: ['https://github.com/login', 'https://www.github.com'] });
-    addLogin('acme-portal', 'acme', { itemKey: true, username: 'acme-ops', password: 'P0rtal "quoted" <tag> \'apos\'', uris: ['https://portal.acme.test'] });
-    addLogin('acme-private', 'acme', { collection: 'other', username: 'boss', password: 'not-for-agents-123', uris: ['https://github.com'] });
-    addLogin('acme-trashed', 'acme', { username: 'old', password: 'old-pass-zzz', uris: ['https://github.com'], deleted: true });
-    addLogin('acme-gitlab', 'acme', { username: 'gl', password: 'Gitlab-Pass-4321', uris: ['https://github.com'] });
-    addLogin('acme-badtype', 'acme', { username: 'weird', password: 'x', uris: ['https://github.com'], encType: '0' });
-    addLogin('globex-github', 'globex', { username: 'globex-bot', password: 'Globex-Secret-9876', totp: `otpauth://totp/Globex:bot?secret=${TOTP_SECRET}&algorithm=SHA256&digits=8&period=30`, uris: ['https://github.com'] });
+    addLogin('acme-github', { username: 'acme-bot@example.com', password: 'Acme+Pass/w0rd=1&x', totp: TOTP_SECRET, uris: ['https://github.com/login', 'https://www.github.com'] });
+    addLogin('acme-portal', { itemKey: true, username: 'acme-ops', password: 'P0rtal "quoted" <tag> \'apos\'', uris: ['https://portal.acme.test'] });
+    addLogin('acme-trashed', { username: 'old', password: 'old-pass-zzz', uris: ['https://github.com'], deleted: true });
+    addLogin('acme-gitlab', { username: 'gl', password: 'Gitlab-Pass-4321', uris: ['https://github.com'] });
+    addLogin('acme-badtype', { username: 'weird', password: 'x', uris: ['https://github.com'], encType: '0' });
+    addLogin('acme-note', { type: 2, uris: [] });
+    addLogin('globex-github', { username: 'globex-bot', password: 'Globex-Secret-9876', totp: `otpauth://totp/Globex:bot?secret=${TOTP_SECRET}&algorithm=SHA256&digits=8&period=30`, uris: ['https://github.com'] });
+    // Not listed in the test policy at all: the owner's own login, kept in the same vault.
+    addLogin('unlisted', { username: 'boss', password: 'not-for-agents-123', uris: ['https://github.com'] });
+    addLogin('org-shared', { org: 'shared', itemKey: true, username: 'shared-bot', password: 'Shared-Org-Pass-55', uris: ['https://github.com'] });
+    addLogin('org-foreign', { org: 'foreign', username: 'x', password: 'Foreign-Org-Pass-77', uris: ['https://github.com'] });
 
     const sync = {
         object: 'sync',
@@ -55,7 +63,7 @@ export function buildVault({ email = 'agent@vault.test', password = 'correct hor
             id: userId, email,
             key: encryptSym(userKey, stretched),
             privateKey: encryptSym(pkcs8, userKey),
-            organizations: Object.values(orgs).map((o) => ({ id: o.id, key: encryptRsa(o.key, publicKey), type: 2, status: 2 })),
+            organizations: Object.values(orgs).filter((o) => o.member).map((o) => ({ id: o.id, key: encryptRsa(o.key, publicKey), type: 2, status: 2 })),
         },
         ciphers,
         collections: [],

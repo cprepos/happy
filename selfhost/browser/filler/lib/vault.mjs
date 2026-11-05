@@ -2,9 +2,12 @@
 // memory. Holds the agent account's API key and user key; never the master
 // password. A sync is reused for ttlMs (15 s) and kept in memory only.
 //
-// Which ciphers may be decrypted at all is decided by the caller (fill.mjs)
-// through readItem's org and collection arguments: an item outside the
-// client's organization or its Agents collection is never decrypted.
+// There is no organization: the agent account keeps its logins in its own
+// personal vault, and any cipher it can decrypt (personal ones with its user
+// key, or, should it ever join one, an organization's with that org key) is
+// readable. Which item a chat may use is decided only by the root-owned
+// policy (policy.mjs): a chat reaches a cipher only through a name its client
+// lists, and every item id belongs to at most one client.
 import { createHash } from 'node:crypto';
 import { decryptKey, decryptSym, decryptSymText, VaultCryptoError } from './vaultcrypto.mjs';
 
@@ -94,23 +97,24 @@ export function createVault({ url, clientId, clientSecret, userKey, deviceId, fe
     }
 
     /**
-     * Decrypt one login item, but only if it is in orgId and collectionId.
+     * Decrypt one login item by id. The caller has already resolved the id
+     * through the chat's client policy.
      * Returns {username, password, totp, uris} (strings, or null for empty), or throws.
      */
-    async function readItem(itemId, { orgId, collectionId }) {
+    async function readItem(itemId) {
         const s = await sync();
         const c = findCipher(s, String(itemId).toLowerCase());
-        if (!c) throw new VaultError('item not found in the vault (or not shared with the agent account)', 404);
+        if (!c) throw new VaultError('item not found in the agent account\'s vault', 404);
         if (c.deletedDate) throw new VaultError('item is in the trash', 404);
-        if (String(c.organizationId || '').toLowerCase() !== orgId) throw new VaultError('item is not in this client\'s organization', 403);
-        const cols = (c.collectionIds || []).map((x) => String(x).toLowerCase());
-        if (!cols.includes(collectionId)) throw new VaultError('item is not in this client\'s Agents collection', 403);
         if (c.type !== 1 || !c.login) throw new VaultError('item is not a login', 422);
-        const orgKey = s.orgKeys.get(orgId);
-        if (!orgKey) throw new VaultError('no key for this organization (is the agent account confirmed?)', 403);
-        let key = orgKey;
+        // A personal item is under the user key; an organization item under
+        // that organization's key, which only a confirmed member holds.
+        const orgId = c.organizationId ? String(c.organizationId).toLowerCase() : null;
+        const baseKey = orgId ? s.orgKeys.get(orgId) : userKey;
+        if (!baseKey) throw new VaultError('the agent account holds no key for this item\'s organization', 403);
+        let key = baseKey;
         try {
-            if (c.key) key = decryptKey(c.key, { symKey: orgKey });
+            if (c.key) key = decryptKey(c.key, { symKey: baseKey });
             const dec = (v) => (v ? decryptSymText(v, key) : null);
             return {
                 username: dec(c.login.username),

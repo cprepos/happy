@@ -17,17 +17,16 @@ export function policyFor(v, over = {}) {
         version: 1,
         clients: {
             acme: {
-                org_id: v.orgs.acme.id, collection_id: v.orgs.acme.agents,
                 secrets: {
                     github: { item_id: v.items['acme-github'].id, hosts: ['github.com'], fields: ['username', 'password', 'totp'] },
                     portal: { item_id: v.items['acme-portal'].id, hosts: ['portal.acme.test'], fields: ['password'] },
-                    private: { item_id: v.items['acme-private'].id, hosts: ['github.com'], fields: ['password'] },
+                    // An item of an organization the agent account is not in: never decryptable.
+                    foreign: { item_id: v.items['org-foreign'].id, hosts: ['github.com'], fields: ['password'] },
                     // Policy says gitlab.com, the item says github.com: no host survives the intersection.
                     mismatch: { item_id: v.items['acme-gitlab'].id, hosts: ['gitlab.com'], fields: ['password'] },
                 },
             },
             globex: {
-                org_id: v.orgs.globex.id, collection_id: v.orgs.globex.agents,
                 secrets: { github: { item_id: v.items['globex-github'].id, hosts: ['github.com'], fields: ['password', 'totp'] } },
             },
         },

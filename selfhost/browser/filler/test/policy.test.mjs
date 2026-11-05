@@ -12,8 +12,8 @@ export function samplePolicy(over = {}) {
     return {
         version: 1,
         clients: {
-            acme: { org_id: A, collection_id: A.replace(/1/g, '3'), secrets: { github: { item_id: A.replace(/1/g, '5'), hosts: ['github.com'], fields: ['username', 'password', 'totp'] } } },
-            globex: { org_id: B, collection_id: B.replace(/2/g, '4'), secrets: { github: { item_id: B.replace(/2/g, '6'), hosts: ['github.com'], fields: ['password'] } } },
+            acme: { secrets: { github: { item_id: A.replace(/1/g, '5'), hosts: ['github.com'], fields: ['username', 'password', 'totp'] } } },
+            globex: { secrets: { github: { item_id: B.replace(/2/g, '6'), hosts: ['github.com'], fields: ['password'] } } },
         },
         chats: { 'chat-acme': 'acme', 'chat-globex': 'globex' },
         ...over,
@@ -59,7 +59,12 @@ test('malformed policies fail the whole load', () => {
         { version: 2 },
         samplePolicy({ chats: { 'c': 'nobody' } }),
         (() => { const x = samplePolicy(); x.clients.globex.secrets.github.item_id = x.clients.acme.secrets.github.item_id; return x; })(),
+        // The organization fields of the earlier design are refused, not ignored.
         (() => { const x = samplePolicy(); x.clients.globex.org_id = A; return x; })(),
+        (() => { const x = samplePolicy(); x.clients.acme.collection_id = A; return x; })(),
+        (() => { const x = samplePolicy(); x.clients.acme.folder = 'x'; return x; })(),
+        (() => { const x = samplePolicy(); x.clients.acme = null; return x; })(),
+        (() => { const x = samplePolicy(); x.clients.acme.secrets = []; return x; })(),
         (() => { const x = samplePolicy(); x.clients.acme.secrets.github.hosts = ['*.github.com']; return x; })(),
         (() => { const x = samplePolicy(); x.clients.acme.secrets.github.hosts = []; return x; })(),
         (() => { const x = samplePolicy(); x.clients.acme.secrets.github.fields = ['notes']; return x; })(),
@@ -67,6 +72,7 @@ test('malformed policies fail the whole load', () => {
     ];
     for (const c of cases) assert.throws(() => parsePolicy(c), PolicyError);
     assert.throws(() => parsePolicy('{not json'), PolicyError);
+    assert.throws(() => parsePolicy(cases[3]), /org_id and collection_id are no longer used/);
 });
 
 test('policy file permissions: not writable by group/world, not a symlink, root-owned', () => {

@@ -5,8 +5,8 @@
 // Guards, in order, for every fill:
 //   1. the chat is bound to a client in the policy; the session is not bound
 //      to another (chat, client);
-//   2. the name resolves through that client's policy to one item, which must
-//      be in the client's organization and Agents collection;
+//   2. the name resolves through that client's policy to one item id (each id
+//      belongs to one client only), read from the agent account's vault;
 //   3. allowed hosts = item https URIs ∩ policy hosts, matched exactly;
 //   4. the session's page is https on an allowed host;
 //   5. the element is in the main document's current interactables and its
@@ -85,7 +85,7 @@ export function createFiller({ getPolicy, vault, controllers, taint, audit, slee
     }
 
     async function readValue(ctx, entry) {
-        const item = await vault.readItem(entry.item_id, { orgId: ctx.cfg.org_id, collectionId: ctx.cfg.collection_id }).catch((err) => {
+        const item = await vault.readItem(entry.item_id).catch((err) => {
             throw new FillError(`vault: ${err.message}`, err.status === 404 ? 404 : 403, 'vault');
         });
         return item;

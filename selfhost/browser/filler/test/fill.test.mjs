@@ -67,7 +67,9 @@ test('refusals: unbound chat, wrong name, wrong host, wrong field kind, wrong el
             [{ ...base, element_id: 'u1' }, /cannot take a password/],
             [{ ...base, element_id: 'b1' }, /cannot take a password/],
             [{ ...base, element_id: 'zz' }, /element not found/],
-            [{ ...base, name: 'private.password' }, /Agents collection/],
+            [{ ...base, name: 'foreign.password' }, /no key for this item's organization/],
+            // Items in the same vault that the client does not list cannot be named.
+            [{ ...base, name: 'unlisted.password' }, /no such secret/],
             [{ ...base, name: 'mismatch.password' }, /no host that both/],
             [{ ...base, name: 'portal.password' }, /not on a host/],
         ];

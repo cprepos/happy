@@ -2,12 +2,14 @@
 // client's agent may have typed, for which fields and hosts.
 //
 //   { "version": 1,
-//     "clients": { "acme": { "org_id": "<org uuid>", "collection_id": "<Agents collection uuid>",
-//                            "secrets": { "github": { "item_id": "<cipher uuid>",
+//     "clients": { "acme": { "secrets": { "github": { "item_id": "<cipher uuid>",
 //                                                     "hosts": ["github.com"],
 //                                                     "fields": ["username", "password", "totp"] } } } },
 //     "chats": { "<happy session id>": "acme" } }
 //
+// The items live in the agent account's personal vault (no organization), so
+// this file is the only thing that separates clients: a chat reaches only the
+// item ids its client lists, and an item id may be listed by one client only.
 // The file must be owned by root and writable by nobody else (it lives at
 // /srv/happy-filler/policy.json, root:1990 0640): uid 1000 code, which the agent
 // runs as, can never rebind a chat or widen a secret. A malformed policy fails
@@ -36,13 +38,13 @@ export function parsePolicy(json) {
     if (!raw || raw.version !== 1 || typeof raw.clients !== 'object' || raw.clients === null) throw new PolicyError('policy needs version 1 and clients');
     const clients = new Map();
     const seenItems = new Map();
-    const seenOrgs = new Map();
     for (const [slug, c] of Object.entries(raw.clients)) {
         if (!SLUG.test(slug)) throw new PolicyError(`bad client slug ${JSON.stringify(slug).slice(0, 70)}`);
-        if (!c || !UUID.test(c.org_id || '') || !UUID.test(c.collection_id || '')) throw new PolicyError(`client ${slug}: org_id and collection_id must be uuids`);
-        const org = c.org_id.toLowerCase();
-        if (seenOrgs.has(org)) throw new PolicyError(`client ${slug}: org_id already belongs to client ${seenOrgs.get(org)}`);
-        seenOrgs.set(org, slug);
+        if (!c || typeof c !== 'object' || Array.isArray(c)) throw new PolicyError(`client ${slug}: must be an object`);
+        if ('org_id' in c || 'collection_id' in c) throw new PolicyError(`client ${slug}: org_id and collection_id are no longer used (the items are in the agent account's own vault); remove them`);
+        const extra = Object.keys(c).filter((k) => k !== 'secrets');
+        if (extra.length) throw new PolicyError(`client ${slug}: unknown key ${JSON.stringify(extra[0]).slice(0, 40)}`);
+        if (c.secrets !== undefined && (typeof c.secrets !== 'object' || c.secrets === null || Array.isArray(c.secrets))) throw new PolicyError(`client ${slug}: secrets must be an object`);
         const secrets = new Map();
         for (const [name, s] of Object.entries(c.secrets || {})) {
             if (!SLUG.test(name)) throw new PolicyError(`client ${slug}: bad secret name`);
@@ -60,7 +62,7 @@ export function parsePolicy(json) {
             if (!fields.length || fields.some((f) => !FIELDS.includes(f))) throw new PolicyError(`${slug}.${name}: fields must be some of ${FIELDS.join(', ')}`);
             secrets.set(name, Object.freeze({ item_id: item, hosts: Object.freeze(hosts), fields: Object.freeze([...new Set(fields)]) }));
         }
-        clients.set(slug, Object.freeze({ org_id: org, collection_id: c.collection_id.toLowerCase(), secrets }));
+        clients.set(slug, Object.freeze({ secrets }));
     }
     const chats = new Map();
     for (const [chat, slug] of Object.entries(raw.chats || {})) {

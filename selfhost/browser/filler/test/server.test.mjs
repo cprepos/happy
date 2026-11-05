@@ -126,7 +126,9 @@ test('enroll derives the user key from the master password and API key, and stor
         const base = { vaultUrl: fake.url, email: ` ${v.email.toUpperCase()} `, password: v.password, clientId: v.clientId, clientSecret: v.clientSecret, deviceId: 'dev-9' };
         const r = await enrollCore(base);
         assert.ok(r.userKey.equals(v.userKey));
-        assert.equal(r.orgs, 2);
+        // Personal, live logins only: not the trashed one, the note, or org items.
+        assert.equal(r.logins, 6);
+        assert.equal(r.orgs, 1);
         await assert.rejects(enrollCore({ ...base, password: 'wrong' }), /wrong master password/);
         await assert.rejects(enrollCore({ ...base, clientSecret: 'nope-nope' }), (e) => /HTTP 400/.test(e.message) && !e.message.includes('nope-nope'));
         await assert.rejects(enrollCore({ ...base, clientId: 'organization.x' }), /user\.<uuid>/);

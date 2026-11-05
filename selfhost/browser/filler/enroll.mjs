@@ -70,7 +70,9 @@ export async function enrollCore({ vaultUrl, email, password, clientId, clientSe
     if (profile.privateKey) {
         try { decryptSym(profile.privateKey, userKey); } catch { throw new EnrollError('the user key does not open the account private key'); }
     }
-    return { userKey, deviceId, email, orgs: (profile.organizations || []).length };
+    const ciphers = sync.ciphers || sync.Ciphers || [];
+    const logins = ciphers.filter((c) => c && c.type === 1 && !c.deletedDate && !c.organizationId).length;
+    return { userKey, deviceId, email, logins, orgs: (profile.organizations || []).length };
 }
 
 /** Write the enrollment files 0400, moving any earlier ones aside first. */
@@ -124,7 +126,7 @@ async function main() {
     } finally { password = null; }
     writeEnrollment(dir, { email: r.email, clientId, clientSecret, userKey: r.userKey, deviceId: r.deviceId });
     r.userKey.fill(0);
-    process.stderr.write(`Enrolled. The account is in ${r.orgs} organization(s). Restart the filler: make filler-up\n`);
+    process.stderr.write(`Enrolled. The account's own vault holds ${r.logins} login(s)${r.orgs ? ` (it is also in ${r.orgs} organization(s))` : ''}. Put their item ids in the policy (make filler-policy-edit), then restart the filler: make filler-up\n`);
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {

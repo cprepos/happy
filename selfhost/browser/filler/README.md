@@ -11,8 +11,11 @@ any copy of it that turns up in a later tool result is replaced with
   commit (not the working tree), and listens only on `127.0.0.1:6091`.
 - Logs in to the vault with the agent account's API key and user key. It never
   holds the master password.
-- Decrypts an item only if it is in the chat's client organization and that
-  organization's **Agents** collection.
+- Reads the **personal vault of the agent account**
+  (`agent@vault.girthbass.duckdns.org`). There is no organization: that
+  account holds only the logins agents may use, and your own account stays
+  separate. A chat reaches an item only through a name its client lists in the
+  root-owned policy, and an item may be listed by one client only.
 - Types a value only into a field of the right kind, only on a page that is
   https on a host that appears both in the vault item's URIs and in the policy,
   and only into a session bound to the same chat and client.
@@ -25,25 +28,26 @@ The design and its limits are in `selfhost/vault/docs/plan.md`.
 
 These steps come after the vault is up (`selfhost/vault/README.md`).
 
-1. **One organization per client** in the web vault
-   (`https://vault.girthbass.duckdns.org`), each with a collection named
-   `Agents`. Put only the logins the agent may use in `Agents`.
-2. **The agent account.** Invite `agent@vault.girthbass.duckdns.org` to each
-   client organization as a *User* with **Can view** on `Agents` only. No other
-   collection, and not *Can view, except passwords*, because the filler has to
-   read the password. Register the account with a long random master password
-   and set its KDF to **PBKDF2-SHA256** (Account settings > Security > Keys);
-   the filler refuses Argon2id. Then confirm the member in each organization.
-   Under Account settings > Security > Keys > **View API key**, note the
-   `client_id` and `client_secret`.
-3. `make filler-init` (sudo): directories, the bridge's client token, and an
+1. **Register the agent account.** `agent@vault.girthbass.duckdns.org` is
+   invited on the server (sign-ups are closed, so only an invited email can
+   register). At `https://vault.girthbass.duckdns.org` choose **Create
+   account** with that email and a long random master password; keep the
+   password in your own vault. Its KDF must be **PBKDF2-SHA256** (Settings >
+   Security > Keys > Encryption key settings); the filler refuses Argon2id.
+2. **Add the agent's logins.** Log in as the agent account (Bitwarden app or
+   web vault) and add each login agents may use, with its https URL and,
+   if wanted, its TOTP seed (Authenticator key). Nothing else goes in this
+   vault.
+3. **Note its API key:** Settings > Security > Keys > **View API key**, the
+   `client_id` (`user.<uuid>`) and `client_secret`.
+4. `make filler-init` (sudo): directories, the bridge's client token, and an
    empty policy.
-4. `make filler-install COMMIT=<sha>` (sudo): deploy the commit you reviewed.
-5. `make filler-enroll` (sudo, interactive): type the agent's email, the API
+5. `make filler-install COMMIT=<sha>` (sudo): deploy the commit you reviewed.
+6. `make filler-enroll` (sudo, interactive): type the agent's email, the API
    key and the master password. Only the API key and the derived user key are
    stored, as 0400 files.
-6. `make filler-policy-edit` (sudo): bind clients, secrets and chats (see below).
-7. `make filler-up`, then `make filler-status`.
+7. `make filler-policy-edit` (sudo): bind clients, secrets and chats (see below).
+8. `make filler-up`, then `make filler-status`.
 
 ## Policy: `/srv/happy-filler/policy.json` (root:1990 0640)
 
@@ -52,8 +56,6 @@ These steps come after the vault is up (`selfhost/vault/README.md`).
   "version": 1,
   "clients": {
     "acme": {
-      "org_id": "<organization uuid>",
-      "collection_id": "<its Agents collection uuid>",
       "secrets": {
         "github": { "item_id": "<item uuid>", "hosts": ["github.com"], "fields": ["username", "password", "totp"] }
       }
@@ -63,11 +65,15 @@ These steps come after the vault is up (`selfhost/vault/README.md`).
 }
 ```
 
-- The web vault URL shows the uuids: `…/#/organizations/<org_id>/vault?collectionId=<collection_id>&itemId=<item_id>`.
+- `item_id` is the login's uuid in the agent account's vault. Open the item in
+  the web vault (logged in as the agent): the URL ends in `itemId=<item_id>`.
+- `org_id` and `collection_id` belonged to an earlier, organization-based
+  design. A policy that still has them is refused.
 - `hosts` must also appear as https URIs on the vault item. Matching is exact:
   `github.com` does not allow `www.github.com`.
 - A chat with no entry in `chats` can use no secrets. There is no default.
-- An item, or an organization, may belong to only one client.
+- An item may belong to only one client. All clients' logins share one
+  vault, so this file is what keeps them apart: check each `item_id`.
 - The filler reloads the policy whenever the file changes. While the file is
   invalid, every fill is refused.
 
@@ -81,6 +87,9 @@ These steps come after the vault is up (`selfhost/vault/README.md`).
 | `make filler-audit` | recent fills and refusals |
 | `make filler-test` | unit tests |
 | `make filler-smoke` | end-to-end canary run with a leak sweep, against fakes |
+
+**Adding a login later.** Add it to the agent account's vault, then add its
+`item_id` under the client in `make filler-policy-edit`. No re-enroll needed.
 
 **Rotation.** If you rotate the agent's API key or encryption key in the web
 vault, run `make filler-enroll` again. To rotate the bridge's client token, run
