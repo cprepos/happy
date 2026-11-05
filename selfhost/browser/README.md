@@ -174,7 +174,7 @@ second would fill the disk. The path stays `frame.jpg`, as specified. Clients
 must go by `Content-Type`, not the extension.
 
 **Take control and the VNC password.** The button opens
-`http://localhost:6090/live/<id>/vnc/vnc.html?autoconnect=true&resize=scale&path=live/<id>/vnc/websockify#password=<vnc-password>`
+`http://localhost:6090/live/<id>/vnc/vnc.html?autoconnect=true&resize=scale&path=websockify#password=<vnc-password>`
 (the pod's own password for a pod link). `/take` returns the same absolute URL as
 `novnc_url`; the phone page reopens it at its own origin and path prefix.
 This avoids a password prompt on the phone. The tradeoff is that the password is

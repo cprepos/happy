@@ -134,7 +134,8 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
     // Absolute, so current apps can decode it with URL(string:). The password stays in the fragment.
     function vncPageUrl(rec, password) {
         const prefix = `live/${rec.id}/vnc`;
-        const query = [novncQuery, `path=${prefix}/websockify`].filter(Boolean).join('&');
+        // noVNC 1.6 resolves path= against vnc.html's own URL, so a bare name lands on <prefix>/websockify.
+        const query = [novncQuery, 'path=websockify'].filter(Boolean).join('&');
         return `${publicRoot}/${prefix}/vnc.html?${query}${password ? `#password=${encodeURIComponent(password)}` : ''}`;
     }
 

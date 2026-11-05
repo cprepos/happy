@@ -174,7 +174,7 @@ const SCRIPT = `
 
   // noVNC is served by the bridge under this link (<base>/vnc/). Open it at this page's own
   // origin and path prefix, so it works however the page was reached, and point noVNC's
-  // websocket (path=, relative to the origin) at the same prefix. The fragment (the password)
+  // websocket (path=, which noVNC resolves against vnc.html's URL) at the same prefix. The fragment (the password)
   // is kept as it is. Any other URL is opened unchanged.
   function viaPage(u) {
     try {
@@ -184,7 +184,7 @@ const SCRIPT = `
       q.delete('path');
       const rest = q.toString();
       return location.origin + base + '/vnc/vnc.html?' + (rest ? rest + '&' : '') +
-        'path=' + base.replace(/^\\/+/, '') + '/vnc/websockify' + v.hash;
+        'path=websockify' + v.hash;
     } catch (err) { return u; }
   }
 

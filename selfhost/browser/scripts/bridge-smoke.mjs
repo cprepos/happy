@@ -127,7 +127,7 @@ try {
     // password, so it is checked, never printed.
     const nv = new URL(took.novnc_url);
     check(nv.port === new URL(BRIDGE).port && nv.pathname === `/live/${link.id}/vnc/vnc.html`
-        && nv.searchParams.get('path') === `live/${link.id}/vnc/websockify` && nv.hash === `#password=${encodeURIComponent(vncPassword)}`,
+        && new URL(nv.searchParams.get('path') || '', nv).pathname === `/live/${link.id}/vnc/websockify` && nv.hash === `#password=${encodeURIComponent(vncPassword)}`,
         'novnc_url: the bridge port, the link\'s vnc path, path= and the password in the fragment');
     const vh = await fetch(`${live}/vnc/vnc.html`);
     const vhtml = await vh.text();

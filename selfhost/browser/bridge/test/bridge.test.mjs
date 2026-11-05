@@ -183,14 +183,17 @@ test('take: watching -> user with the noVNC url; release -> watching', async () 
 test('take: the noVNC url goes through the bridge port, with path= and the password in the fragment', async () => {
     const { id } = await link();
     const t = await (await post(id, 'take')).json();
-    assert.equal(t.novnc_url, `http://localhost:6090/live/${id}/vnc/vnc.html?autoconnect=true&resize=scale&path=live/${id}/vnc/websockify#password=${VNC_PASSWORD}`);
+    assert.equal(t.novnc_url, `http://localhost:6090/live/${id}/vnc/vnc.html?autoconnect=true&resize=scale&path=websockify#password=${VNC_PASSWORD}`);
+    // As noVNC 1.6 does it: path= against the page's own URL.
+    const nv = new URL(t.novnc_url);
+    assert.equal(new URL(nv.searchParams.get('path'), nv).pathname, `/live/${id}/vnc/websockify`);
     const u = new URL(t.novnc_url);
     assert.equal(u.port, '6090');
-    assert.equal(u.searchParams.get('path'), `live/${id}/vnc/websockify`);
+    assert.equal(u.searchParams.get('path'), 'websockify');
     assert.equal(u.hash, `#password=${VNC_PASSWORD}`);
     assert.ok(!u.search.includes(VNC_PASSWORD), 'the password is never in the query');
     // The page's Take control link is the same URL.
-    assert.ok((await (await fetch(`${base}/live/${id}`)).text()).includes(`/live/${id}/vnc/vnc.html?autoconnect=true&amp;resize=scale&amp;path=live/${id}/vnc/websockify#password=${VNC_PASSWORD}`));
+    assert.ok((await (await fetch(`${base}/live/${id}`)).text()).includes(`/live/${id}/vnc/vnc.html?autoconnect=true&amp;resize=scale&amp;path=websockify#password=${VNC_PASSWORD}`));
 });
 
 async function restartWithNovnc(extra = {}) {

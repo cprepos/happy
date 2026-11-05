@@ -139,12 +139,12 @@ test('the live page and frames use the chat\'s own pod and noVNC port and passwo
     assert.equal((await fetch(`${base}/live/${b.link_id}/frame.jpg`)).status, 200);
     assert.deepEqual(pods.calls.observe, [b.session_id]);
     const page = await (await fetch(`${base}/live/${a.link_id}`)).text();
-    assert.ok(page.includes(`http://localhost:6090/live/${a.link_id}/vnc/vnc.html?path=live/${a.link_id}/vnc/websockify#password=pw0`));
+    assert.ok(page.includes(`http://localhost:6090/live/${a.link_id}/vnc/vnc.html?path=websockify#password=pw0`));
     assert.doesNotMatch(page, /sharedpw/);
     const t = await (await fetch(`${base}/live/${b.link_id}/take`, { method: 'POST' })).json();
     assert.equal(t.status, 'user');
     // Through the bridge's own port: the link's path, noVNC's socket path, the pod's password.
-    assert.equal(t.novnc_url, `http://localhost:6090/live/${b.link_id}/vnc/vnc.html?path=live/${b.link_id}/vnc/websockify#password=pw1`);
+    assert.equal(t.novnc_url, `http://localhost:6090/live/${b.link_id}/vnc/vnc.html?path=websockify#password=pw1`);
     assert.doesNotMatch(t.novnc_url, /:610\d/);
     assert.ok(pods.calls.touch.includes(KEY_B));
     // Release keeps the login at once.
@@ -341,7 +341,7 @@ test('vnc: a link with no pod uses the shared noVNC port', async () => {
         const l = await (await api('/api/links', { session_id: 'shared1' })).json();
         assert.equal((await rawGet(`/live/${l.id}/vnc/vnc.html`)).body, 'vnc:shared:/vnc.html');
         const t = await (await fetch(`${base}/live/${l.id}/take`, { method: 'POST' })).json();
-        assert.equal(t.novnc_url, `http://localhost:6090/live/${l.id}/vnc/vnc.html?autoconnect=true&resize=scale&path=live/${l.id}/vnc/websockify#password=sharedpw`);
+        assert.equal(t.novnc_url, `http://localhost:6090/live/${l.id}/vnc/vnc.html?autoconnect=true&resize=scale&path=websockify#password=sharedpw`);
         const ws = await wsHandshake(bridgePort(), `/live/${l.id}/vnc/websockify`);
         assert.equal(ws.status, 101);
         assert.ok((await ws.read('hello:shared')).includes('hello:shared'));
