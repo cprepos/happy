@@ -149,6 +149,10 @@ final class HostedKeyboardBarTests: XCTestCase {
         var view: UIView
         /// The box above the keyboard, in the window.
         var box: () -> CGRect
+        /// The stack the screen is in, if any.
+        var navigation: UINavigationController? = nil
+        /// The chat's keyboard, if it is a chat.
+        var keyboard: () -> ChatUltraKeyboard? = { nil }
     }
 
     private func until(seconds: Double = 5, _ condition: () -> Bool) async throws -> Bool {
@@ -183,7 +187,13 @@ final class HostedKeyboardBarTests: XCTestCase {
 
     /// The long fixture session chat, floating on a phone's stack, or
     /// `inShell` beside the iPad's sidebar.
-    private func sessionChat(inShell: Bool = false, place: CGRect? = nil) async throws -> Screen {
+    private struct Account {
+        var controller: AccountController
+        var context: AppContext
+        var session: AccountSession
+    }
+
+    private func account() async throws -> Account {
         let controller = AccountController(
             serverConfig: ServerConfig(storage: InMemoryKeyValueStore()), clientID: "ios/test",
             credentialStore: InMemoryCredentialStore(), storeDirectory: nil,
@@ -191,36 +201,50 @@ final class HostedKeyboardBarTests: XCTestCase {
             transport: BarOffline(), connector: BarNoSocket()
         )
         try await controller.signIn(Credentials(token: "t", secret: Data(repeating: 5, count: 32)))
-        let account = try XCTUnwrap(controller.session)
-        let context = AppContext(account: controller, variant: .development, version: "test")
-        let chat = LegacyChatViewController(context: context, session: account, sessionId: FixtureScenarios.prefix + FixtureScenario.long.rawValue)
+        let session = try XCTUnwrap(controller.session)
+        return Account(controller: controller, context: AppContext(account: controller, variant: .development, version: "test"), session: session)
+    }
+
+    /// `chat`, once its rows are in.
+    private func shown(_ chat: LegacyChatViewController, in window: UIWindow, navigation: UINavigationController?) async throws -> Screen {
+        let constructed = try await until { chat.contentInstalled && chat.ultraKeyboard?.isActive == true }
+        XCTAssertTrue(constructed)
+        let list = try XCTUnwrap(subview(ChatListView.self, in: chat.view))
+        let dock = try XCTUnwrap(subview(ChatDockView.self, in: chat.view))
+        let drawn = try await until { list.plans.count > 3 && list.isDisplayReady }
+        XCTAssertTrue(drawn, "the fixture's rows never landed")
+        chat.view.layoutIfNeeded()
+        return Screen(window: window, view: chat.view, box: { [weak window] in
+            chat.view.layoutIfNeeded()
+            return dock.convert(dock.bounds, to: window)
+        }, navigation: navigation, keyboard: { chat.ultraKeyboard })
+    }
+
+    private func sessionChat(inShell: Bool = false, place: CGRect? = nil, pushedWithTheKeyboard: Bool = false) async throws -> Screen {
+        let account = try await account()
+        let context = account.context
+        let chat = LegacyChatViewController(context: context, session: account.session, sessionId: FixtureScenarios.prefix + FixtureScenario.long.rawValue)
+        if pushedWithTheKeyboard { chat.keyboardPushWillStart(keyboardUp: false) }
         let window: UIWindow
+        let stack: UINavigationController
         if inShell {
             let split = ShellViewController(context: context, phone: UINavigationController())
             window = try await host(split, place: place)
             split.view.layoutIfNeeded()
-            split.setStack([LegacyHomeViewController(context: context, session: account), chat], animated: false)
+            split.setStack([LegacyHomeViewController(context: context, session: account.session), chat], animated: false)
             window.layoutIfNeeded()
+            stack = split.main
         } else {
             let navigation = UINavigationController(rootViewController: UIViewController())
             navigation.pushViewController(chat, animated: false)
             navigation.traitOverrides.horizontalSizeClass = .compact
             window = try await host(navigation, place: place)
+            stack = navigation
         }
-        let constructed = try await until { chat.contentInstalled && chat.ultraKeyboard?.isActive == true }
-        XCTAssertTrue(constructed)
-        let list = try XCTUnwrap(subview(ChatListView.self, in: chat.view))
-        let dock = try XCTUnwrap(subview(ChatDockView.self, in: chat.view))
-        let drawn = try await until { list.plans.count > 20 && list.isDisplayReady }
-        XCTAssertTrue(drawn, "the fixture's rows never landed")
-        chat.view.layoutIfNeeded()
-        return Screen(window: window, view: chat.view) { [weak window] in
-            chat.view.layoutIfNeeded()
-            return dock.convert(dock.bounds, to: window)
-        }
+        return try await shown(chat, in: window, navigation: stack)
     }
 
-    private func agentChat(place: CGRect? = nil) async throws -> Screen {
+    private func agentChat(place: CGRect? = nil, pushedWithTheKeyboard: Bool = false) async throws -> Screen {
         let computer = BarComputer()
         let controller = AccountController(
             serverConfig: ServerConfig(storage: InMemoryKeyValueStore()), clientID: "ios/test",
@@ -237,7 +261,14 @@ final class HostedKeyboardBarTests: XCTestCase {
         let context = AppContext(account: controller, variant: .preview, version: "test")
         let session = try XCTUnwrap(Session.session(for: pairing.id, context: context))
         let chat = ChatViewController(session: session, agentId: "a", title: "Cache", spaceId: nil, intro: nil)
-        let window = try await host(UINavigationController(rootViewController: chat), place: place)
+        if pushedWithTheKeyboard {
+            // Its keyboard is made with its view.
+            chat.loadViewIfNeeded()
+            chat.keyboardPushWillStart(keyboardUp: false)
+        }
+        let navigation = UINavigationController(rootViewController: UIViewController())
+        navigation.pushViewController(chat, animated: false)
+        let window = try await host(navigation, place: place)
         addTeardownBlock { @MainActor in
             Session.forget(pairing.id)
             try? await controller.agentConnections.remove(pairing.id)
@@ -246,21 +277,25 @@ final class HostedKeyboardBarTests: XCTestCase {
         XCTAssertTrue(loaded, "the conversation never landed: \(chat.plans.count) rows")
         chat.view.layoutIfNeeded()
         let card = chat.card
-        return Screen(window: window, view: chat.view) { [weak window] in
+        return Screen(window: window, view: chat.view, box: { [weak window] in
             chat.view.layoutIfNeeded()
             return card.convert(card.bounds, to: window)
-        }
+        }, navigation: navigation, keyboard: { chat.ultraKeyboard })
     }
 
     private func editor(place: CGRect? = nil) async throws -> Screen {
         let editor = ComposerEditorViewController(text: "Run the tests", selection: NSRange(location: 0, length: 0), keyboardTop: nil)
+        // It takes the keyboard as it appears: read-only, the simulator's
+        // own keyboard stays away from the frames posted here.
+        editor.loadViewIfNeeded()
+        editor.textView.isEditable = false
         let window = try await host(editor, place: place)
         editor.view.layoutIfNeeded()
         let text = editor.textView
-        return Screen(window: window, view: editor.view) { [weak window] in
+        return Screen(window: window, view: editor.view, box: { [weak window] in
             editor.view.layoutIfNeeded()
             return text.convert(text.bounds, to: window)
-        }
+        })
     }
 
     // MARK: Checks
@@ -368,7 +403,105 @@ final class HostedKeyboardBarTests: XCTestCase {
         return CGRect(x: 60, y: 40, width: bounds.width - 120, height: bounds.height - 100)
     }
 
+    /// The docked keyboard is minimized to the bar, the person goes to
+    /// another screen and comes back, the bar up all along: the box clears
+    /// it again, though nothing says the bar is still there.
+    private func checkBackFromAnotherScreen(_ screen: Screen, animated: Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
+        let window = screen.window
+        let navigation = try XCTUnwrap(screen.navigation, file: file, line: line)
+        let gap = try await dockedGap(screen, file: file, line: line)
+        let rest = screen.box()
+        let docked = frame(.docked, in: window)
+        let pill = frame(.pill, in: window)
+        move(from: hidden(in: window), to: docked)
+        // Minimized: as a hide and the bar's show.
+        hide(from: docked, in: window)
+        move(from: hidden(in: window), to: pill)
+        assertClears(screen, pill, gap: gap, rest: rest, "minimized", file: file, line: line)
+
+        navigation.pushViewController(UIViewController(), animated: animated)
+        let away = try await until { screen.keyboard()?.isActive != true && navigation.transitionCoordinator == nil }
+        XCTAssertTrue(away, "the chat's keyboard stopped", file: file, line: line)
+        navigation.popViewController(animated: animated)
+        let back = try await until { screen.keyboard()?.isActive == true && navigation.transitionCoordinator == nil }
+        XCTAssertTrue(back, "back, the chat's keyboard started", file: file, line: line)
+        try await Task.sleep(for: .milliseconds(100))
+        assertClears(screen, pill, gap: gap, rest: rest, "back from another screen", file: file, line: line)
+
+        hide(from: pill, in: window)
+        let down = try await until { self.near(screen.box(), rest) }
+        XCTAssertTrue(down, "the box settles back once the bar goes", file: file, line: line)
+    }
+
+    /// Made with the bar up and pushed as the keyboard comes
+    /// (`KeyboardPush`, `startsDown`): the bar, up all along, is read.
+    private func checkPushedWithTheBarUp(_ make: () async throws -> Screen, file: StaticString = #filePath, line: UInt = #line) async throws {
+        let shown = try await make()
+        let gap = try await dockedGap(shown, file: file, line: line)
+        let rest = shown.box()
+        shown.window.isHidden = true
+        let pill = frame(.pill, in: shown.window)
+        move(from: hidden(in: shown.window), to: pill)
+        let made = try await make()
+        made.view.setNeedsLayout()
+        assertClears(made, pill, gap: gap, rest: rest, "pushed with the bar up", file: file, line: line)
+        hide(from: pill, in: made.window)
+        try await Task.sleep(for: .milliseconds(500))
+    }
+
     // MARK: Session chat
+
+    func testTheSessionChatClearsTheBarBackFromAnotherScreen() async throws {
+        try await checkBackFromAnotherScreen(try await sessionChat(), animated: false)
+    }
+
+    func testTheSessionChatClearsTheBarBackFromAnAnimatedPop() async throws {
+        try await checkBackFromAnotherScreen(try await sessionChat(), animated: true)
+    }
+
+    func testTheSessionChatBesideTheSidebarClearsTheBarBackFromAnotherScreen() async throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .pad, "an iPad's split view")
+        try await checkBackFromAnotherScreen(try await sessionChat(inShell: true), animated: true)
+    }
+
+    func testTheSessionChatPushedWithTheBarUpClearsIt() async throws {
+        try await checkPushedWithTheBarUp { try await self.sessionChat(pushedWithTheKeyboard: true) }
+    }
+
+    /// Two chats picked in turn from the sidebar, the bar up all along.
+    func testChatsPickedFromTheSidebarClearTheBar() async throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .pad, "an iPad's split view")
+        let account = try await account()
+        let context = account.context
+        let home = LegacyHomeViewController(context: context, session: account.session)
+        let first = LegacyChatViewController(context: context, session: account.session, sessionId: FixtureScenarios.prefix + FixtureScenario.long.rawValue)
+        let second = LegacyChatViewController(context: context, session: account.session, sessionId: FixtureScenarios.prefix + FixtureScenario.markdown.rawValue)
+        let split = ShellViewController(context: context, phone: UINavigationController())
+        let window = try await host(split, place: nil)
+        try XCTSkipUnless(window.bounds.width >= 768, "the split shell needs at least 768 points")
+        split.view.layoutIfNeeded()
+        split.setStack([home, first], animated: false)
+        window.layoutIfNeeded()
+        let one = try await shown(first, in: window, navigation: split.main)
+        let gap = try await dockedGap(one)
+        let rest = one.box()
+        let pill = frame(.pill, in: window)
+        move(from: hidden(in: window), to: pill)
+        assertClears(one, pill, gap: gap, rest: rest, "the first chat")
+
+        split.setStack([home, second], animated: false)
+        window.layoutIfNeeded()
+        let two = try await shown(second, in: window, navigation: split.main)
+        assertClears(two, pill, gap: gap, rest: rest, "the second chat, picked with the bar up")
+
+        split.setStack([home, first], animated: false)
+        window.layoutIfNeeded()
+        let again = try await until { first.ultraKeyboard?.isActive == true }
+        XCTAssertTrue(again)
+        assertClears(one, pill, gap: gap, rest: rest, "the first chat, picked again")
+        hide(from: pill, in: window)
+        try await Task.sleep(for: .milliseconds(500))
+    }
 
     func testTheSessionChatClearsTheBar() async throws {
         try await checkMadeWithBarUp { try await self.sessionChat() }
@@ -385,6 +518,18 @@ final class HostedKeyboardBarTests: XCTestCase {
     }
 
     // MARK: Agent chat
+
+    func testTheAgentChatClearsTheBarBackFromAnotherScreen() async throws {
+        try await checkBackFromAnotherScreen(try await agentChat(), animated: false)
+    }
+
+    func testTheAgentChatClearsTheBarBackFromAnAnimatedPop() async throws {
+        try await checkBackFromAnotherScreen(try await agentChat(), animated: true)
+    }
+
+    func testTheAgentChatPushedWithTheBarUpClearsIt() async throws {
+        try await checkPushedWithTheBarUp { try await self.agentChat(pushedWithTheKeyboard: true) }
+    }
 
     func testTheAgentChatClearsTheBar() async throws {
         try await checkMadeWithBarUp { try await self.agentChat() }

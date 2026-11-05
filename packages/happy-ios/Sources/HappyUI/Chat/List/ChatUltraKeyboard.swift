@@ -27,9 +27,11 @@ import UltraView
 ///
 /// What the keyboard covers is `KeyboardCover`'s one rule, an iPad's
 /// minimized bar included: the frame a notification gives, wherever along
-/// the bottom it sits, and the layout guide, read again after every
-/// notification has played and whenever the screen moves in the screen
-/// (a Stage Manager window dragged or resized).
+/// the bottom it sits, and the layout guide. The bar is read again after
+/// each of its notifications has played, whenever the screen moves in the
+/// screen (a Stage Manager window dragged or resized), and as the screen
+/// appears, from the app's last frame (`KeyboardFrames`), as no
+/// notification says it is still up.
 @MainActor
 final class ChatUltraKeyboard: NSObject {
     /// The keyboard moved: the screen lays itself out again at once, the
@@ -67,6 +69,9 @@ final class ChatUltraKeyboard: NSObject {
     /// The bar's last notification said it went while the guide still
     /// covered the screen: every layout reads the guide until it lets go.
     private var holdsOnGuide = false
+    /// The next read takes only the minimized bar the app last heard, not
+    /// the guide (`startsDown`).
+    private var barOnly = false
     /// Moves when the screen goes, with every notification and with every
     /// update of the controller's, so only the latest notification queued
     /// behind the list's pass applies, and none once the screen has gone or
@@ -105,7 +110,11 @@ final class ChatUltraKeyboard: NSObject {
     func activate() {
         guard !isActive, let view else { return }
         isActive = true
-        resync = !startsDown
+        // Pushed with the keyboard coming up, the guide already says where
+        // it will rest, ahead of its notification: only the minimized bar,
+        // up all along and never to be heard again, is read now.
+        resync = true
+        barOnly = startsDown
         heardFrame = nil
         measuredIn = nil
         holdsOnGuide = false
@@ -150,23 +159,28 @@ final class ChatUltraKeyboard: NSObject {
     /// would hold the dock up by the old safe area after a turn or a resized
     /// window.
     ///
-    /// Read again after every notification has played, as an iPad's
-    /// minimized bar or a keyboard the screen never heard (it was made with
-    /// the keyboard up) is in the guide and the app's last frame
-    /// (`KeyboardFrames`), and whenever the screen has moved in its screen.
+    /// Read again as the screen appears, after each of the minimized bar's
+    /// notifications has played, and as the screen moves in its screen
+    /// with the bar up: the bar, or a keyboard the screen never heard (it
+    /// was away, or made with the keyboard up), is in the guide and the
+    /// app's last frame (`KeyboardFrames`).
     func prepareLayout(guideTop: CGFloat) {
         guard isActive, let view, let window = view.window, !isDriving else { return }
         let place = view.convert(view.bounds, to: window.screen.coordinateSpace)
-        if let measuredIn, measuredIn != place { resync = true }
+        // The minimized bar is read again as the screen moves in its
+        // screen (a Stage Manager window dragged or resized).
+        if barUp || holdsOnGuide, let measuredIn, measuredIn != place { resync = true }
         if holdsOnGuide { resync = true }
         guard resync else { return }
         resync = false
         measuredIn = place
+        let barOnly = barOnly
+        self.barOnly = false
         let cover = KeyboardCover(
             bounds: view.bounds, safeBottom: view.safeAreaInsets.bottom,
-            frame: heardFrame.map(local),
-            remembered: heardFrame == nil ? KeyboardFrames.shared.screenFrame.map(local) : nil,
-            guideTop: guideTop
+            frame: barOnly ? nil : heardFrame.map(local),
+            remembered: barOnly || heardFrame == nil ? KeyboardFrames.shared.screenFrame.map(local) : nil,
+            guideTop: barOnly ? nil : guideTop
         )
         height = cover.map { view.bounds.maxY - $0.top } ?? 0
         if cover == nil { holdsOnGuide = false }
@@ -307,15 +321,17 @@ final class ChatUltraKeyboard: NSObject {
         }
     }
 
-    /// The keyboard's motion has played: the next layout reads it again,
-    /// guide and all.
+    /// The minimized bar's motion has played: the next layout reads it
+    /// again, guide and all. A docked keyboard is left to its will.
     @objc private func keyboardDidChangeFrame(_ notification: Notification) {
-        guard isActive, !isDriving, let view, view.window != nil else { return }
-        if let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect {
-            // The bar's going is settled on its own (`settleBar`).
-            if barUp, KeyboardCover(bounds: view.bounds, safeBottom: view.safeAreaInsets.bottom, frame: local(frame)) == nil { return }
-            heardFrame = frame
-        }
+        guard isActive, !isDriving, let view, view.window != nil,
+              let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+        let cover = KeyboardCover(bounds: view.bounds, safeBottom: view.safeAreaInsets.bottom, frame: local(frame))
+        let isBar = cover.map { view.bounds.maxY - $0.top <= KeyboardCover.Metrics.barMaxCover } ?? false
+        // A docked keyboard is where its will said; the bar's going is
+        // settled on its own (`settleBar`).
+        guard isBar || (barUp && cover != nil) else { return }
+        heardFrame = frame
         resync = true
         view.setNeedsLayout()
     }
