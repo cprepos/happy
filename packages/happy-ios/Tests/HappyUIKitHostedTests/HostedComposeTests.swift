@@ -152,7 +152,8 @@ final class HostedComposeTests: XCTestCase {
         try store.upsertSessions([row])
     }
 
-    private func legacyHome(refuses: Bool = false, secondMachine: Bool = false, happyAgent: Bool = false, log: SpawnLog? = nil) async throws -> (LegacyHomeViewController, UINavigationController, UIWindow, AccountSession, AppContext) {
+    private func legacyHome(refuses: Bool = false, secondMachine: Bool = false, happyAgent: Bool = false, log: SpawnLog? = nil,
+                            remember: ((NewSessionDraftStore) -> Void)? = nil) async throws -> (LegacyHomeViewController, UINavigationController, UIWindow, AccountSession, AppContext) {
         let controller = AccountController(
             serverConfig: ServerConfig(storage: InMemoryKeyValueStore()), clientID: "ios/test",
             credentialStore: InMemoryCredentialStore(), storeDirectory: nil,
@@ -171,6 +172,7 @@ final class HostedComposeTests: XCTestCase {
         drafts.setPath(SeededAccount.project)
         drafts.setInput("")
         if happyAgent { drafts.pickAgentType(.claude) }
+        remember?(drafts)
         LegacyComposeStart.makeStarter = { account in
             SessionStarter(environment: .init(
                 ops: ComposeMachine(store: account.store, refuses: refuses, log: log),
@@ -537,6 +539,104 @@ final class HostedComposeTests: XCTestCase {
         XCTAssertEqual(start.drafts.botName, "")
     }
 
+    // MARK: A bot or a task starts on the computer's default model
+
+    /// An earlier compose on Happy Agent left Opus picked.
+    private static func rememberOpusOnHappyAgent(_ drafts: NewSessionDraftStore) {
+        drafts.pickAgentType(.rig)
+        drafts.setModel("claude:opus", effort: "max")
+        drafts.setMachineId(happyAgent)
+    }
+
+    private func menuLines(_ window: UIWindow) -> [PickerLineView] {
+        Self.subviews(PickerLineView.self, in: window).filter { $0.window != nil }
+    }
+
+    private func optionLabels(_ window: UIWindow) -> [String] {
+        menuLines(window).compactMap { if case .option(_, let label, _, _, _) = $0.line { label } else { nil } }
+    }
+
+    /// Opens the model chip's list, as a tap does.
+    private func openModelList(_ card: AgentInputCardView, _ window: UIWindow) async throws {
+        let chip = try XCTUnwrap(Self.subviews(ComposerChipButton.self, in: card).first { $0.chip == .model && !$0.isHidden }, "no model chip")
+        chip.sendActions(for: .touchUpInside)
+        try await until { !self.optionLabels(window).isEmpty }
+    }
+
+    /// A task, with Opus remembered from an earlier compose on Happy
+    /// Agent, starts on the computer's default model: the chip names it,
+    /// its list opens with both, and the spawn asks for the default.
+    func testLegacyTaskStartsOnTheComputersDefaultModel() async throws {
+        let log = SpawnLog()
+        let (home, navigation, window, _, _) = try await legacyHome(happyAgent: true, log: log, remember: Self.rememberOpusOnHappyAgent)
+        defer { window.isHidden = true }
+        home.compose()
+        try await settle(navigation)
+        let chat = try XCTUnwrap(navigation.topViewController as? LegacyChatViewController)
+        let card = try await composerCard(in: chat)
+        let panel = try XCTUnwrap(Self.subview(NewWorkPanel.self, in: chat.view))
+        let start = try XCTUnwrap(chat.composeStart)
+        try await until { start.kinds.contains(.task) }
+        try pick(.task, in: panel)
+        try await until { start.drafts.createsTask && card.configuration.model?.menu?.selectedKey == "codex:gpt" }
+        XCTAssertEqual(card.configuration.model?.menu?.selectedKey, "codex:gpt", "the remembered Opus won over the computer's default")
+        try await openModelList(card, window)
+        XCTAssertEqual(Set(optionLabels(window)).isSuperset(of: ["GPT", "Opus"]), true, "\(optionLabels(window))")
+        keep(window, "legacy-task-default-model")
+        card.closeMenus()
+
+        card.setText("Fix the login redirect", selection: NSRange(location: 22, length: 0))
+        card.delegate?.agentInputCardDidChangeText(card)
+        card.delegate?.agentInputCardDidPressSend(card)
+        try await until { !chat.isComposing }
+        XCTAssertEqual(log.spawned.map(\.providerId), ["codex"])
+        XCTAssertEqual(log.spawned.map(\.modelId), ["gpt"])
+    }
+
+    /// A bot starts on the computer's default model too, and a model picked
+    /// from the chip's list in this compose is the one the spawn asks for.
+    func testLegacyBotStartsOnTheDefaultAndSpawnsWithAPick() async throws {
+        let log = SpawnLog()
+        let (home, navigation, window, _, _) = try await legacyHome(happyAgent: true, log: log, remember: Self.rememberOpusOnHappyAgent)
+        defer { window.isHidden = true }
+        home.compose()
+        try await settle(navigation)
+        let chat = try XCTUnwrap(navigation.topViewController as? LegacyChatViewController)
+        let card = try await composerCard(in: chat)
+        let panel = try XCTUnwrap(Self.subview(NewWorkPanel.self, in: chat.view))
+        let start = try XCTUnwrap(chat.composeStart)
+        try await until { start.kinds.contains(.bot) }
+        try pick(.bot, in: panel)
+        try await until { panel.sessionKind == .bot && card.configuration.model?.menu?.selectedKey == "codex:gpt" }
+        XCTAssertEqual(card.configuration.model?.menu?.selectedKey, "codex:gpt", "the remembered Opus won over the computer's default")
+        try await openModelList(card, window)
+        let opus = try XCTUnwrap(menuLines(window).first { if case .option(_, "Opus", _, _, _) = $0.line { true } else { false } }, "\(optionLabels(window))")
+        opus.sendActions(for: .touchUpInside)
+        try await until { card.configuration.model?.menu?.selectedKey == "claude:opus" }
+        card.closeMenus()
+
+        panel.name.text = "Release Captain"
+        panel.name.sendActions(for: .editingChanged)
+        card.setText("Plan the release", selection: NSRange(location: 16, length: 0))
+        card.delegate?.agentInputCardDidChangeText(card)
+        let composerView = try XCTUnwrap(Self.subview(SessionComposerView.self, in: chat.view))
+        try await until { !composerView.sending }
+        card.delegate?.agentInputCardDidPressSend(card)
+        try await until { !log.spawned.isEmpty }
+        XCTAssertEqual(log.spawned.map(\.providerId), ["claude"])
+        XCTAssertEqual(log.spawned.map(\.modelId), ["opus"])
+        XCTAssertEqual(log.spawned.map(\.happyAgentTarget), [.object(["kind": .string("bot"), "name": .string("Release Captain")])])
+        // The face that couldn't be painted is offered again; not now.
+        try await until { chat.presentedViewController is UIAlertController }
+        let offer = try XCTUnwrap(chat.presentedViewController as? UIAlertController)
+        typealias Handler = @convention(block) (UIAlertAction) -> Void
+        let notNow = try XCTUnwrap(offer.actions.first { $0.style == .cancel })
+        let handler = unsafeBitCast(try XCTUnwrap(notNow.value(forKey: "handler") as AnyObject?), to: Handler.self)
+        try await dismissAlert(on: chat)
+        handler(notNow)
+        try await until { !chat.isComposing }
+    }
+
     /// The panel's middle is the middle of the room between the bar and
     /// the composer.
     private func assertCentred(_ panel: NewWorkPanel, in chat: LegacyChatViewController, line: UInt = #line) {
@@ -689,6 +789,10 @@ final class HostedComposeTests: XCTestCase {
         if let directory = ProcessInfo.processInfo.environment["HAPPY_PREVIEW_DIR"] {
             try? image.pngData()?.write(to: URL(fileURLWithPath: directory).appendingPathComponent("\(name).png"))
         }
+    }
+
+    private static func subviews<T: UIView>(_ type: T.Type, in view: UIView) -> [T] {
+        ((view as? T).map { [$0] } ?? []) + view.subviews.flatMap { subviews(type, in: $0) }
     }
 
     private static func subview<T: UIView>(_ type: T.Type, in view: UIView) -> T? {
