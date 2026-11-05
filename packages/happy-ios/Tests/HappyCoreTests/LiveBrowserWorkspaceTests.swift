@@ -25,9 +25,23 @@ final class LiveBrowserWorkspaceTests: XCTestCase {
         XCTAssertEqual(list.pick(machine: BrowserMachineHint(machineID: "m-9", hosts: [])), "c")
     }
 
+    func testSeveralOnTheChatsMachineTakeTheFirst() {
+        // One Happy Agent with two projects: two host workspaces on one computer.
+        let list = BrowserHostWorkspaces(workspaces: [host("air", "prep-air"), host("happy", "prep-pro.local"), host("home", "Prep-Pro"), host("c")])
+        XCTAssertEqual(list.pick(machine: BrowserMachineHint(hosts: ["prep-pro"])), "happy")
+        let byID = BrowserHostWorkspaces(workspaces: [host("x", "prep-air"), host("p1", "prep-pro", machine: "m-1"), host("p2", machine: "m-1")])
+        XCTAssertEqual(byID.pick(machine: BrowserMachineHint(machineID: "m-1", hosts: [])), "p1")
+    }
+
+    func testMatchesOnDifferentComputersAreUnavailable() {
+        let list = BrowserHostWorkspaces(workspaces: [host("a", "prep-pro"), host("b", "prep-air"), host("c")])
+        XCTAssertNil(list.pick(machine: BrowserMachineHint(hosts: ["prep-pro", "prep-air"])), "the hint names two computers")
+        let ids = BrowserHostWorkspaces(workspaces: [host("a", machine: "m-1"), host("b", "studio")])
+        XCTAssertNil(ids.pick(machine: BrowserMachineHint(machineID: "m-1", hosts: ["studio"])), "an id and a name for different computers")
+    }
+
     func testSeveralWithoutAnAnswerAreUnavailable() {
         let list = BrowserHostWorkspaces(workspaces: [host("a", "prep-pro"), host("b", "prep-pro"), host("c")])
-        XCTAssertNil(list.pick(machine: BrowserMachineHint(hosts: ["prep-pro"])), "two match")
         XCTAssertNil(list.pick(machine: BrowserMachineHint(hosts: ["unknown"])), "none match")
         XCTAssertNil(list.pick(machine: BrowserMachineHint(hosts: [""])), "an empty name matches nothing")
         XCTAssertEqual(list.pick(machine: nil), "a", "no hint keeps the old first pick")

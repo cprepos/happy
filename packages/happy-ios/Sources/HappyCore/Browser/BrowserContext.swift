@@ -75,6 +75,13 @@ public struct BrowserHostWorkspaces: Decodable, Equatable, Sendable {
         }
 
         var names: [String] { [compute.machineId, compute.hostname, compute.host, hostname].compactMap { $0 } }
+
+        /// What says which computer this is, compared as `BrowserMachineHint`
+        /// compares: the machine id as is, host names without case or domain.
+        var computerNames: Set<String> {
+            let hosts = [compute.hostname, compute.host, hostname].compactMap { $0.map(BrowserMachineHint.short) }
+            return Set(hosts + [compute.machineId].compactMap { $0 }).subtracting([""])
+        }
     }
     public var workspaces: [Workspace]
 
@@ -82,12 +89,18 @@ public struct BrowserHostWorkspaces: Decodable, Equatable, Sendable {
 
     /// The one active local host workspace (never a runner's). Of several,
     /// the one on `machine`; nil when none is, or none says: a guess could
-    /// reach the wrong computer's browser.
+    /// reach the wrong computer's browser. Several on `machine` (one Happy
+    /// Agent with more than one project) reach the same computer's browser,
+    /// so the first of them in the listing's order is as good as any; but
+    /// when the hint's names match workspaces that share no name, they are
+    /// different computers and nothing is picked.
     public func pick(machine: BrowserMachineHint?) -> String? {
         let hosts = workspaces.filter { $0.status == "active" && $0.compute.type == "host" && $0.compute.runnerId == nil }
         if hosts.count <= 1 { return hosts.first?.id }
         guard let machine else { return hosts.first?.id }
         let matching = hosts.filter { machine.matches($0.names) }
-        return matching.count == 1 ? matching[0].id : nil
+        guard let first = matching.first else { return nil }
+        let shared = matching.dropFirst().reduce(first.computerNames) { $0.intersection($1.computerNames) }
+        return shared.isEmpty ? nil : first.id
     }
 }
