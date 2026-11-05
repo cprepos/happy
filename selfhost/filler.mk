@@ -41,6 +41,7 @@ FILLER_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))/br
 FILLER_REPO := $(abspath $(FILLER_DIR)/../../..)
 FILLER_ROOT := /srv/happy-filler
 FILLER_ACCOUNT := happy-filler
+FILLER_UID := 1990
 FILLER_ADMIN := $(FILLER_ROOT)/current/app/scripts/filler-admin.sh
 FILLER_URL ?= http://127.0.0.1:6091
 FILLER_AUDIT_LINES ?= 50
@@ -111,7 +112,7 @@ filler-token-issue:
 filler-status:
 	@echo "== secret filler ($(FILLER_ACCOUNT))"
 	@if [ -e $(FILLER_ROOT)/current/COMMIT ]; then echo "release: $$(cat $(FILLER_ROOT)/current/COMMIT)"; else echo "release: none installed"; fi
-	@printf "process: "; ps -o user=,pid=,etime= -C node 2>/dev/null | awk '$$1=="$(FILLER_ACCOUNT)"||$$1=="1990"{print; f=1} END{if(!f) print "not running"}'
+	@printf "process: "; ps -o uid=,pid=,etime= -C node 2>/dev/null | awk '$$1=="$(FILLER_UID)"{print "$(FILLER_ACCOUNT)", $$2, $$3; f=1} END{if(!f) print "not running"}'
 	@if docker container inspect -f '{{.State.Status}}' happy-filler-filler-1 2>/dev/null | grep -q running; then echo "note: the old docker filler happy-filler-filler-1 is running (make filler-account-setup stops it)"; fi
 	@echo "listening on 6091 (expect 127.0.0.1 only):"
 	@ss -ltnH | awk '{print $$4}' | grep -E ':6091$$' | sort -u || echo "  (none)"
