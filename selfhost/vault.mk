@@ -46,6 +46,12 @@ vault-status:
 	@printf "local  /alive : "; curl -fs --max-time 5 -o /dev/null -w '%{http_code}' $(VAULT_URL)/alive || printf " unreachable"; echo
 	@printf "public /alive : "; curl -s --max-time 8 -o /dev/null -w '%{http_code}' https://$(VAULT_SITE)/alive || printf " unreachable"; echo
 	@printf "public /admin : "; curl -s --max-time 8 -o /dev/null -w '%{http_code} (expect 404)' https://$(VAULT_SITE)/admin || printf " unreachable"; echo
+	@# Vaultwarden loads the env file into its own process (ENV_FILE), so
+	@# docker exec printenv never shows these; read key names from the mount.
+	@printf "env file      : "; docker exec happy-vault-vaultwarden-1 sh -c \
+		'f=/etc/vaultwarden.env; test -r $$f || { echo "not readable in the container"; exit 0; }; \
+		for k in ORG_CREATION_USERS ADMIN_TOKEN; do grep -qE "^$$k=.+" $$f && printf "%s set  " $$k || printf "%s unset  " $$k; done; echo' \
+		2>/dev/null || echo "container not running"
 	@printf "backup timer  : "; systemctl --user is-active happy-vault-backup.timer 2>/dev/null || true
 	@printf "newest backup : "; docker run --rm --network none -u 1991:1991 -v /srv/happy-vault/backups:/b:ro --entrypoint sh \
 		$$(awk '/^ *image: vaultwarden\/server:/{print $$2; exit}' $(VAULT_DIR)/compose.vault.yml) \

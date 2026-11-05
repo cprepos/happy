@@ -33,8 +33,20 @@ make vault-admin-on                                     # sudo: choose an admin 
 4. `make vault-admin-off` (sudo). This turns the admin panel off.
 5. `make vault-backup-timer`. This starts the nightly backup.
 
-Organizations and the agent account for the secret filler are in
-`selfhost/browser/filler/README.md`.
+The agent account for the secret filler (no organization: its logins sit in
+its own vault) is in `selfhost/browser/filler/README.md`.
+
+### The env file
+
+`/srv/happy-vault/vaultwarden.env` (root:1991 0640) holds `ORG_CREATION_USERS`
+and, while the admin panel is on, `ADMIN_TOKEN`. Compose does not read it:
+it is mounted read-only at `/etc/vaultwarden.env`, and Vaultwarden loads it
+itself at start (`ENV_FILE`). The values live only inside the Vaultwarden
+process, so `docker exec … printenv ADMIN_TOKEN` prints nothing even when the
+file is loaded. To check, use `make vault-status` (it reports each key as set
+or unset, never the value), or the log line `Using environment file
+/etc/vaultwarden.env`. With `ADMIN_TOKEN` unset, `/admin` on 127.0.0.1 shows
+"The admin panel is disabled".
 
 ## Clients
 
@@ -54,7 +66,7 @@ The server URL is the same everywhere: `https://vault.girthbass.duckdns.org`.
 ## Make targets (from `selfhost/`)
 
 ```
-make vault-status         # health, 127.0.0.1-only bind, public /alive, public /admin = 404, timer, newest backup
+make vault-status         # health, 127.0.0.1-only bind, public /alive, public /admin = 404, env keys set/unset, timer, newest backup
 make vault-up | vault-down | vault-logs
 make vault-backup         # one tarball now
 make vault-restore-check  # restore the newest tarball in a throwaway container; counts users, orgs, ciphers

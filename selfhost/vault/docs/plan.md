@@ -39,8 +39,8 @@ agent ─stdio─> mcp.mjs (uid 1000, never holds values)
     2. `GET /api/sync?excludeDomains=true`.
     3. Decrypt `profile.key` (EncString type 2, AES-256-CBC with HMAC-SHA256, MAC checked before decrypting) using the stored user key.
     4. Decrypt `profile.privateKey` (PKCS8).
-    5. Decrypt each organization key (type 4, RSA-OAEP-SHA1).
-    6. Decrypt the item key, if the cipher has one, with the organization key.
+    5. Decrypt each organization key (type 4, RSA-OAEP-SHA1), if the account is in any. In the chosen setup it is in none.
+    6. Decrypt the item key, if the cipher has one, with the user key (personal item) or its organization's key.
     7. Decrypt `login.username`, `password`, `totp` and `uris[].uri` with that key.
   - Any other EncString type fails closed.
 - **Unlock key storage: store the decrypted 64-byte user key, not the master password.**
@@ -50,11 +50,11 @@ agent ─stdio─> mcp.mjs (uid 1000, never holds values)
 - **Cache and sync:** the filler syncs on each fill or list if the last sync is more than 15 s old, and keeps everything in memory only. No websocket or push.
 - **Restart:** the filler unlocks itself from the 0400 key files at start. `make filler-lock` stops it.
   - Reasoning: anyone who can read uid 1990's files (root or docker) can read its memory too. Unlocking by hand on every restart would not reduce exposure.
-- **Isolation per client: one Vaultwarden organization per client slug, each with one collection called "Agents".**
-  - A dedicated user, `agent@vault.girthbass.duckdns.org`, has role User and "Can view" on Agents only.
-  - Do not rely on "hide passwords": only the client enforces it.
-  - The filler decrypts a cipher only if its `organizationId` is the chat's client org and its `collectionIds` include that org's Agents collection.
-  - You edit items from your own account in the Bitwarden app.
+- **Where the agent's logins live: the personal vault of a dedicated account, `agent@vault.girthbass.duckdns.org`. No organization** (decided 2026-11-05).
+  - The account holds only logins agents may use. Your own vault is a different account, so the filler cannot read any of your items.
+  - You add and edit the agent's logins by logging in as the agent account (Bitwarden app or web vault).
+  - The filler may read any cipher the account can decrypt. Isolation between clients is the root-owned `policy.json` alone: a chat reaches only the item ids its client lists, and an item id may be listed by one client only. The vault itself does not separate clients.
+  - Superseded: one organization per client with an "Agents" collection, and a filler check on `organizationId` and `collectionIds`. A policy that still has `org_id` or `collection_id` is refused.
 - **Chat to client:**
   - `mcp.mjs` sends `X-Happy-Chat` from its process environment (`HAPPY_SESSION_ID`, which happy-cli must pass to MCP children; see empirical check 6), never from tool arguments.
   - `policy.json` maps each chat to a client.
@@ -69,9 +69,10 @@ agent ─stdio─> mcp.mjs (uid 1000, never holds values)
   - Each backup holds a SQLite snapshot, `attachments/`, `rsa_key*` and `config.json`.
   - `/home/prep` is never used: `rsa_key.pem` signs login tokens.
   - The disk is 95% full, but the vault is tiny.
-- **`ADMIN_TOKEN`:** the Argon2 PHC string from `vaultwarden hash`, kept in `/srv/happy-vault/vaultwarden.env` (root, 0600). `make vault-admin-off` removes it after setup, which turns `/admin` off.
+- **`ADMIN_TOKEN`:** the Argon2 PHC string from `vaultwarden hash`, kept in `/srv/happy-vault/vaultwarden.env` (root:1991, 0640). `make vault-admin-off` removes it after setup, which turns `/admin` off.
 - **Sign-ups:** `SIGNUPS_ALLOWED=false` and `INVITATIONS_ALLOWED=true`, with no SMTP. An invited email can register directly.
-- **Org creation:** `ORG_CREATION_USERS` is your email, set in the env file.
+- **Org creation:** `ORG_CREATION_USERS` is your email, set in the env file. No organization is used; this only stops the agent account from creating one.
+- **The env file is read by Vaultwarden, not by compose.** It is mounted read-only at `/etc/vaultwarden.env` and named by `ENV_FILE`; Vaultwarden loads it into its own process at start (the log says `Using environment file /etc/vaultwarden.env`). So `docker exec … printenv` never shows these values, because an exec'd process gets only the compose `environment:`. `make vault-status` reports from the mounted file whether each key is set, never its value.
 - **Other settings:** `DOMAIN=https://vault.girthbass.duckdns.org`, `ROCKET_PORT=8222`, `IP_HEADER=X-Real-IP`, `PUSH_ENABLED=false`, `SENDS_ALLOWED=false`, `EMERGENCY_ACCESS_ALLOWED=false`, `PASSWORD_HINTS_ALLOWED=false`, plus the login rate limits.
 - **Websocket notifications** run on the main port (`/notifications/hub`), and Caddy proxies them as is.
 - **Phone:** in the Bitwarden iOS app, choose self-hosted with server URL `https://vault.girthbass.duckdns.org`. Without push, pull to refresh.
@@ -90,8 +91,8 @@ services:
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     ports: ["127.0.0.1:8222:8222"]
-    env_file: [/srv/happy-vault/vaultwarden.env]   # ADMIN_TOKEN (setup only), ORG_CREATION_USERS
     environment:
+      ENV_FILE: /etc/vaultwarden.env    # ADMIN_TOKEN (setup only), ORG_CREATION_USERS; mounted below
       DOMAIN: https://vault.girthbass.duckdns.org
       ROCKET_PORT: "8222"
       DATA_FOLDER: /data
@@ -159,9 +160,9 @@ vault.girthbass.duckdns.org {
   - `GET /healthz` → `{ok, unlocked, sync_age_s}`: no names
 - **`policy.json`** lives at `/srv/happy-filler/policy.json` (root:1990, 0640).
   - The filler refuses to start if the file is group- or world-writable or not owned by root.
-  - Shape: `{version:1, clients:{acme:{org_id, collection_id, secrets:{github:{item_id, hosts:["github.com"], fields:["username","password","totp"]}}}}, chats:{"<happy session id>":"acme"}}`
+  - Shape: `{version:1, clients:{acme:{secrets:{github:{item_id, hosts:["github.com"], fields:["username","password","totp"]}}}}, chats:{"<happy session id>":"acme"}}`
 - **Fill guards, in order:**
-  1. Name to item through the policy only; the item is checked against the org and the Agents collection.
+  1. Name to item through the policy only (each item id belongs to one client); the item is read from the agent account's vault.
   2. Allowed hosts are the intersection of the item's URI hostnames (https only) and the policy's hosts. Matching is exact and case-folded after punycode. No suffix match, no userinfo, default port only.
   3. Before typing, `GET /sessions/{id}` must show `https:` and an allowed host. The frame origin must equal the top origin (see empirical check 2).
   4. Field kind comes from the element's attributes (empirical check 1):
@@ -276,9 +277,8 @@ services:
 2. **Vaultwarden.** Add `compose.vault.yml`, the vault targets in `vault.mk`, and a README section. Then by hand:
    1. Apply the Caddy block.
    2. Create your account (admin on), then turn admin off.
-   3. Create one organization per client, each with an Agents collection.
-   4. Invite and register the agent account, then confirm its membership in the web vault.
-   5. Create its API key.
+   3. Invite and register the agent account (PBKDF2-SHA256), and add the logins agents may use to its own vault.
+   4. Create its API key.
 3. **Filler core.** `vaultcrypto`, `vault`, `totp`, `policy`, `hosts`, `scrub`, the fake Vaultwarden, and their tests.
 4. **Filler service.** `server.mjs`, the fill and login flows, taint, audit, the fake controller, `compose.filler.yml`, and the filler targets.
 5. **`mcp.mjs` integration.** The 3 tools, the guards, scrubbing, the chat header, and tests.
@@ -293,7 +293,7 @@ services:
 ## Risks that remain
 - **The docker group and sudo are root.** prep is in both, so any host agent session with docker can read `/srv`, `docker exec` into the filler and read its memory, and remount anything. The guarantees hold only for agents without docker, such as happy-agent (no socket), and fully only after step 8.
 - **Dotfiles.** happy-agent has `/home/prep` mounted read-write. It can edit `~/.bashrc`, user systemd units or the Caddyfile, and get code run later by your docker-capable shell. That is a path to escalate.
-- **Caddy runs as uid 1000.** A modified Caddyfile could serve a malicious web vault and capture your master password. Use the native apps; open the web vault only for organization admin tasks.
+- **Caddy runs as uid 1000.** A modified Caddyfile could serve a malicious web vault and capture your master password. Use the native apps; open the web vault only when you must.
 - **Race during typing.** The page can navigate during the controller's per-character typing. The check after the fill detects it, but the characters may already have gone to the new page.
 - **Leftovers before step 8:**
   - After-action screenshot artifacts in `data/artifacts` show non-password secrets and are readable by uid 1000.
@@ -302,7 +302,8 @@ services:
 - **Stored key.** The user key on disk is as strong as uid 1990's privacy, and anyone with root or docker has it. Rotation:
   - Rotate the agent API key in the web vault, then run `filler-enroll`.
   - Rotating the agent's encryption key also needs `filler-enroll`.
-  - To revoke, remove the agent from the organization.
+  - To revoke one login, delete it from the agent account's vault or remove it from the policy. To revoke everything, `make filler-lock` and rotate the agent's API key.
+- **One vault for every client.** All client logins sit in the same personal vault, so a wrong `item_id` in the policy would hand one client's login to another client's chats. The policy is root-owned and an item id may appear under one client only, but a typo is not caught.
   - Rotate `filler-client-token` with `filler-init` and a restart.
 
 ## Empirical checks still open
