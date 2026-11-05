@@ -207,6 +207,13 @@ do_install() {
   local mirror="$HOME/src.git"
   local g=(git --no-pager -c "safe.directory=$REPO" -c "safe.directory=$REPO/.git" --git-dir="$mirror")
   [[ -d "$mirror" ]] || git init -q --bare "$mirror"
+  # git 2.25 (Ubuntu 20.04) reads safe.directory from global config only and
+  # git-upload-pack does not inherit -c, so trust prep's repo in this
+  # account's own ~/.gitconfig (that one path, nothing else).
+  local d
+  for d in "$REPO" "$REPO/.git"; do
+    git config --global --get-all safe.directory 2>/dev/null | grep -qxF "$d" || git config --global --add safe.directory "$d"
+  done
   [[ -r "$REPO/.git" || -r "$REPO/HEAD" ]] || die "cannot read $REPO as $ACCOUNT"
   echo "filler-admin install: fetching $REPO"
   "${g[@]}" fetch -q --no-tags "file://$REPO" '+refs/heads/*:refs/prep/*' || die "git fetch from $REPO failed"

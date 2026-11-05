@@ -86,6 +86,8 @@ filler-install filler-setup:
 	$(FILLER_AS_ACCOUNT)
 	@test -n "$(COMMIT)" || { echo "usage: make $@ COMMIT=<sha> (the commit you reviewed)" >&2; exit 1; }
 	@set -e; m=$$HOME/src.git; [ -d $$m ] || git init -q --bare $$m; \
+	for d in "$(FILLER_REPO)" "$(FILLER_REPO)/.git"; do \
+		git config --global --get-all safe.directory 2>/dev/null | grep -qxF "$$d" || git config --global --add safe.directory "$$d"; done; \
 	git --no-pager -c "safe.directory=$(FILLER_REPO)" -c "safe.directory=$(FILLER_REPO)/.git" --git-dir=$$m fetch -q --no-tags "file://$(FILLER_REPO)" '+refs/heads/*:refs/prep/*'; \
 	install -d -m 0700 $$HOME/trash; s=$$(mktemp $$HOME/trash/filler-admin.XXXXXX.sh); \
 	git --no-pager --git-dir=$$m cat-file blob "$(COMMIT):selfhost/browser/filler/scripts/filler-admin.sh" >$$s; \
