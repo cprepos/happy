@@ -63,8 +63,16 @@ public final class LiveBrowserChatWatch {
         makeTransport = transport
     }
 
-    /// The wait before the next lookup: long while nothing runs.
-    public var currentInterval: Duration { answer.chat.map { $0.running ? interval : idleInterval } ?? interval }
+    /// Something shows the picture (the player): asked every `interval`
+    /// even while nothing runs, so a browser the agent wakes shows at once.
+    /// Becoming eager, or not, asks now.
+    public var eager = false {
+        didSet { if eager != oldValue { checkNow() } }
+    }
+
+    /// The wait before the next lookup: long while nothing runs, unless
+    /// eager.
+    public var currentInterval: Duration { eager ? interval : answer.chat.map { $0.running ? interval : idleInterval } ?? interval }
 
     /// Asks now rather than at the next turn (the feed stopped answering),
     /// if it shows.

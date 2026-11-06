@@ -149,6 +149,7 @@ final class LiveBrowserDock: NSObject {
         chatWatch?.close()
         chatWatch = keys.isEmpty ? nil : LiveBrowserChatWatch(keys: keys) { [weak self] in self?.lookupTransport() }
         chatWatch?.onChange = { [weak self] _ in self?.lookupChanged() }
+        chatWatch?.eager = player != nil
         chatWatch?.setVisible(isOnScreen)
         lookupChanged()
     }
@@ -345,9 +346,10 @@ final class LiveBrowserDock: NSObject {
     func openPlayer() {
         guard let feed, host?.viewIfLoaded != nil else { return }
         VoiceCoordinator.shared.minimizeSheet()
+        chatWatch?.eager = true
         if let player {
             player.pulse()
-            feed.kick()
+            freshen(feed)
             return
         }
         let player = LiveBrowserPlayerView()
@@ -362,7 +364,7 @@ final class LiveBrowserDock: NSObject {
         player.onDrop = { [weak self] center in self?.drop(at: center) }
         feed.attach(player, visible: isOnScreen, frames: true, fast: large) { [weak player] feed in player?.show(feed) }
         // Shown again after X: a poll that stalled starts over.
-        feed.kick()
+        freshen(feed)
         player.show(feed)
         if let view = host?.viewIfLoaded { view.addSubview(player) }
         if let placed { layoutPlayer(card: placed.card, anchor: placed.anchor) }
@@ -371,10 +373,20 @@ final class LiveBrowserDock: NSObject {
         NotificationCenter.default.post(name: Self.didChange, object: self)
     }
 
+    /// The player opened, or was asked for again: the bridge is asked for
+    /// the chat now, rather than its last answer (asleep, maybe 30 s old)
+    /// kept; a feed that stopped responding reads again; and a poll with
+    /// no picture yet starts over.
+    private func freshen(_ feed: LiveBrowserFeed) {
+        chatWatch?.checkNow()
+        if feed.phase == .notResponding, !lookupSaysIdle { feed.retry() } else { feed.pollNow() }
+    }
+
     /// The player goes; the line stays while the link is live.
     func closePlayer(animated: Bool) {
         guard let player else { return }
         self.player = nil
+        chatWatch?.eager = false
         feed?.detach(player)
         player.disappear(animated: animated)
         onLayoutChange?()

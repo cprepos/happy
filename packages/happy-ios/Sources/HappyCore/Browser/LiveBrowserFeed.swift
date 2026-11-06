@@ -164,6 +164,16 @@ public final class LiveBrowserFeed {
         reconsider()
     }
 
+    /// Something just began showing the picture (the player opened): a
+    /// poll that has brought no picture yet starts over now, its failures
+    /// forgotten, rather than wait out a read in flight; else as `kick()`.
+    public func pollNow() {
+        guard polling != nil, frame == nil else { return kick() }
+        failingSince = nil
+        pause()
+        reconsider()
+    }
+
     /// Any change in how many visible observers there are also restarts a
     /// stalled poll; with none, or the browser over, it pauses.
     private func reconsider() {
