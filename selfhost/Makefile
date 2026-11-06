@@ -68,7 +68,6 @@ migrate: env
 
 -include voice.mk
 -include cli.mk
--include webapp.mk
 -include browser.mk
 -include vault.mk
 -include filler.mk

@@ -682,8 +682,8 @@ SELFHOST_SERVER_URL=https://happy.example.com scripts/selfhost-project.sh
 open HappySelfHost.xcodeproj
 ```
 
-`selfhost/ios/build-on-mac.sh --native` runs the same thing and installs the
-app. `scripts/selfhost-project.sh` validates the values, derives
+Installing on a device is in `.agents/skills/happy-ios-ota/SKILL.md`.
+`scripts/selfhost-project.sh` validates the values, derives
 `.selfhost/Info-*.plist` from `App/` and generates the project from
 `project.selfhost.yml`, an overlay of `project.yml`. Both outputs are
 git-ignored and the team id only ever comes from the environment.

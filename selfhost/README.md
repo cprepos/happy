@@ -9,8 +9,8 @@ cloud dependencies. Everything runs on your LAN.
 |---|---|---|
 | **happy-server** + Postgres | API server, WebSocket sync, voice relay | Any Linux box (Docker) |
 | **happy-cli** | Agent daemon (Claude, OpenCode, etc.) | Same Linux box or any machine with Claude Code |
-| **Webapp** | Browser client at your server URL | Built and served by happy-server |
-| **iOS app** | Native iPhone client (sideloaded, free signing) | Built on a Mac, installed over Wi-Fi |
+| **Webapp** | Browser client at your server URL | Served by happy-server from `selfhost/webapp/` when present |
+| **iOS app** | Native iPhone and iPad client (`packages/happy-ios`) | Built on a Mac with Xcode |
 | **Voice pipeline** | STT → LLM → TTS, real-time over WebSocket | GPU Linux box (Docker) or Apple Silicon Mac |
 
 ## Architecture
@@ -62,14 +62,10 @@ and register it. It connects over WebSocket and appears as a "machine" in the ap
 
 ### 3. Webapp
 
-```sh
-cd selfhost
-make webapp-build   # builds the webapp into selfhost/webapp/
-# Restart the server to pick it up:
-make down && make up
-```
-
-The server serves the webapp at its root URL when `selfhost/webapp/index.html` exists.
+The server serves a web app at its root URL when `selfhost/webapp/index.html`
+exists. The Expo web build that used to fill that directory (`make webapp`) went
+with upstream's removal of `packages/happy-app`; a build already in
+`selfhost/webapp/` keeps being served, and nothing in this repo replaces it yet.
 
 ### 4. Voice (choose one path)
 
@@ -166,22 +162,11 @@ produces cased, punctuated transcripts with very low latency.
 
 ### 5. iOS app (optional)
 
-Requires a Mac with Xcode. Free Apple developer signing (re-sign every 7 days).
-
-```sh
-# From your Linux server (or wherever you cloned the repo):
-selfhost/ios/build-on-mac.sh --sync-only    # rsync code to the Mac
-# Then on the Mac:
-cd ~/happy-build
-selfhost/ios/build-on-mac.sh --build-only   # expo prebuild + xcodebuild
-selfhost/ios/build-on-mac.sh --install-only # install on connected iPhone
-```
-
-Add `--native` to build the native app (`packages/happy-ios`) instead of the
-Expo app.
-
-See `selfhost/ios/README.md` and `selfhost/ios/BUILD-ON-MAC.md` for details,
-including free-team limitations and troubleshooting.
+The native app is `packages/happy-ios`, built with Xcode on a Mac. For a
+personal Apple team, `packages/happy-ios/scripts/selfhost-project.sh` generates
+a project with its own bundle id and no push or associated domains (see
+`packages/happy-ios/AGENTS.md`). Installing on a device, directly or over the
+air, is described in `.agents/skills/happy-ios-ota/SKILL.md`.
 
 ## Environment files
 
@@ -189,7 +174,6 @@ including free-team limitations and troubleshooting.
 |---|---|---|
 | `selfhost/.env` | Server secrets, Postgres, public URL, LiveKit keys | `.env.example` |
 | `selfhost/.env.voice` | Voice pipeline config: GPU indices, models, LLM endpoint | `.env.voice.example` |
-| `selfhost/ios/.env.ios` | iOS signing: Apple team ID (lives on the Mac, never synced) | `.env.ios.example` |
 
 ## Directory structure
 
@@ -201,12 +185,11 @@ selfhost/
 ├── Makefile               ← make up/down/status/logs + includes below
 ├── voice.mk               ← make voice-up/voice-status/voice-smoke/...
 ├── cli.mk                 ← make cli-install/cli-status/...
-├── webapp.mk              ← make webapp-build
 ├── VOICE_SERVICES.md      ← full voice contract (endpoints, protocols, latencies)
 ├── livekit.yaml            ← LiveKit server config
 ├── .env.example
 ├── .env.voice.example
-├── scripts/               ← build-webapp.sh, voice-smoke.sh, voice-stream-e2e.mjs
+├── scripts/               ← voice-smoke.sh, voice-stream-e2e.mjs
 ├── stt/                   ← Nemotron STT Docker build context
 ├── mac-voice/             ← Kokoro TTS + Nemotron STT for Apple Silicon
 │   ├── README.md          ← setup, benchmarks, tuning
@@ -215,10 +198,6 @@ selfhost/
 │   ├── tts_server.py
 │   ├── stt_server.py
 │   └── requirements.txt
-├── ios/                   ← iOS build scripts
-│   ├── README.md
-│   ├── BUILD-ON-MAC.md
-│   └── build-on-mac.sh
 └── voice-test/            ← browser test page (make voice-try)
 ```
 
