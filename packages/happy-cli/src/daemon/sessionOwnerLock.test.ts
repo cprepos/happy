@@ -18,6 +18,7 @@ const { happyHome } = vi.hoisted(() => {
 import {
     acquireSessionOwnership,
     claimSessionOwnershipOrExit,
+    isSessionLockHeldByThisProcess,
     listLiveSessionOwners,
     readLiveSessionOwner,
     releaseAllSessionOwnership,
@@ -74,6 +75,19 @@ describe('sessionOwnerLock', () => {
         expect(readLock('s1')).toMatchObject({ pid: 100, startTime: 'start-100', sessionId: 's1' });
         expect(readLiveSessionOwner('s1', depsFor(1, table))?.pid).toBe(100);
         expect(listLiveSessionOwners(depsFor(1, table)).map((o) => o.sessionId)).toEqual(['s1']);
+    });
+
+    it('tells a process whether the lock still names it', () => {
+        const table = { 100: 'start-100', 200: 'start-200' };
+        expect(isSessionLockHeldByThisProcess('s1', depsFor(100, table))).toBe(false);
+        const result = acquireSessionOwnership('s1', depsFor(100, table));
+        expect(result.acquired).toBe(true);
+        expect(isSessionLockHeldByThisProcess('s1', depsFor(100, table))).toBe(true);
+        expect(isSessionLockHeldByThisProcess('s1', depsFor(200, table))).toBe(false);
+        // Same pid, different process (the pid was reused).
+        expect(isSessionLockHeldByThisProcess('s1', depsFor(100, { 100: 'start-other' }))).toBe(false);
+        writeFileSync(lockFile('s1'), JSON.stringify({ ...readLock('s1'), pid: 200, startTime: 'start-200' }));
+        expect(isSessionLockHeldByThisProcess('s1', depsFor(100, table))).toBe(false);
     });
 
     it('is re-entrant for the same process', () => {

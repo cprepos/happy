@@ -480,6 +480,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             // App-sent prompts will show up here because the SDK
             // writes them to the JSONL — dedupe by content.
             if (consumeAppPrompt(content)) return;
+            if (!session.admitLocalTranscriptEntry(raw)) return;
             session.sendClaudeSessionMessage(raw);
         },
         onTranscriptEvent: updateClaudeGoalState,

@@ -290,6 +290,29 @@ export function isSessionLockHeldBy(sessionId: string, pid: number, deps?: Parti
     return owner !== null && owner.pid === pid;
 }
 
+const ownStartTimes = new Map<number, string | null>();
+
+/**
+ * Whether the session's lock still names this process. Cheap enough to ask
+ * before each forwarded message: one small file read, with this process's
+ * own start time looked up once.
+ */
+export function isSessionLockHeldByThisProcess(sessionId: string, deps?: Partial<SessionOwnerLockDeps>): boolean {
+    if (!isValidSessionId(sessionId)) return false;
+    const d = resolveDeps(deps);
+    const record = readLockFile(join(d.locksDir(), `${sessionId}.lock`));
+    if (record === 'missing' || record === 'corrupt') return false;
+    const ownPid = d.pid();
+    if (record.pid !== ownPid) return false;
+    let ownStartTime = deps?.getStartTime ? undefined : ownStartTimes.get(ownPid);
+    if (ownStartTime === undefined) {
+        const current = d.getStartTime(ownPid);
+        ownStartTime = typeof current === 'string' ? current : null;
+        if (!deps?.getStartTime) ownStartTimes.set(ownPid, ownStartTime);
+    }
+    return isOwnRecord(record, ownPid, ownStartTime);
+}
+
 export function listLiveSessionOwners(deps?: Partial<SessionOwnerLockDeps>): SessionOwnerRecord[] {
     const dir = resolveDeps(deps).locksDir();
     let names: string[];

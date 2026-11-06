@@ -131,6 +131,7 @@ async function startRemoteRunClaudeHarness(opts: {
         updateMetadata: vi.fn((updater: (current: Record<string, unknown>) => Record<string, unknown>) => {
             metadata = updater(metadata);
         }),
+        admitLocalTranscriptEntry: vi.fn(() => true),
         sendClaudeSessionMessage: vi.fn(),
         onUserMessage: vi.fn(),
         onFileEvent: vi.fn(),
@@ -292,6 +293,7 @@ describe('runClaude remote JSONL scanner', () => {
             suppressNextArchiveSignal: vi.fn(),
             skipExistingMessages: vi.fn(),
             updateMetadata: vi.fn(),
+            admitLocalTranscriptEntry: vi.fn(() => true),
             sendClaudeSessionMessage: vi.fn((message: unknown) => {
                 sentMessages.push(message);
             }),
@@ -401,6 +403,7 @@ describe('runClaude remote JSONL scanner', () => {
             updateMetadata: vi.fn((updater: (current: typeof metadata) => typeof metadata) => {
                 metadata = updater(metadata);
             }),
+            admitLocalTranscriptEntry: vi.fn(() => true),
             sendClaudeSessionMessage: vi.fn((message: unknown) => {
                 sentMessages.push(message);
             }),

@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -48,5 +48,26 @@ describe('ApiClient.sessionSyncClient ownership', () => {
             exit.mockRestore();
             error.mockRestore();
         }
+    });
+
+    it('forwards only while the lock names this process, and stops checking once closed', async () => {
+        const instance = { setOwnershipCheck: vi.fn(), once: vi.fn() };
+        MockApiSessionClient.mockImplementation(function () { return instance; });
+        const api = await ApiClient.create({ token: 't', encryption: { type: 'legacy', secret: new Uint8Array(32) } } as never);
+        api.sessionSyncClient({ id: 'mine-session' } as never);
+
+        const check = instance.setOwnershipCheck.mock.calls[0][0] as () => boolean;
+        expect(check()).toBe(true);
+        const lockPath = join(happyHome, 'sessions', 'mine-session.lock');
+        const record = JSON.parse(readFileSync(lockPath, 'utf8'));
+        writeFileSync(lockPath, JSON.stringify({ ...record, pid: process.ppid }));
+        expect(check()).toBe(false);
+        writeFileSync(lockPath, JSON.stringify(record));
+
+        const [event, onClosed] = instance.once.mock.calls[0];
+        expect(event).toBe('closed');
+        onClosed();
+        expect(instance.setOwnershipCheck).toHaveBeenLastCalledWith(null);
+        expect(existsSync(lockPath)).toBe(false);
     });
 });

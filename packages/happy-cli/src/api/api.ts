@@ -2,7 +2,7 @@ import axios from 'axios'
 import { logger } from '@/ui/logger'
 import type { AgentState, CreateSessionResponse, Metadata, Session, Machine, MachineMetadata, DaemonState } from '@/api/types'
 import { ApiSessionClient } from './apiSession';
-import { claimSessionOwnershipOrExit } from '@/daemon/sessionOwnerLock';
+import { claimSessionOwnershipOrExit, isSessionLockHeldByThisProcess } from '@/daemon/sessionOwnerLock';
 import { ApiMachineClient } from './apiMachine';
 import { decodeBase64, encodeBase64, getRandomBytes, encrypt, decrypt, libsodiumEncryptForPublicKey } from './encryption';
 import { PushNotificationClient } from './pushNotifications';
@@ -281,7 +281,12 @@ export class ApiClient {
     // socket. If another live process owns it, this exits without attaching.
     const release = claimSessionOwnershipOrExit(session.id);
     const client = new ApiSessionClient(this.credential.token, session);
-    client.once('closed', release);
+    client.setOwnershipCheck(() => isSessionLockHeldByThisProcess(session.id));
+    client.once('closed', () => {
+      // Closing gives up the lock on purpose; that is not a lost ownership.
+      client.setOwnershipCheck(null);
+      release();
+    });
     return client;
   }
 
