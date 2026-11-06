@@ -101,8 +101,11 @@ then `make browser-bridge-restart BRIDGE_ENV=1` (a plain restart keeps the old e
 - `make browser-status` then accepts `192.168.2.72:6090` as the one bind beyond 127.0.0.1
   and fails on any other.
 
-Defence in depth, optional, as root (not applied by any target). iptables, inserted in this
-order so the accepts sit above the drop:
+**Firewall, as root (no target applies it).** prep-ml runs ufw, enabled with
+`DEFAULT_INPUT_POLICY="DROP"`, so until it admits the Macs their connections to
+`192.168.2.72:6090` time out (seen 2026-11-06): the ufw rules below are required there, not
+only defence in depth. On a host without a firewall, the iptables form is the optional
+second layer; it is inserted in this order so the accepts sit above the drop:
 
 ```
 sudo iptables -I INPUT -p tcp -d 192.168.2.72 --dport 6090 -j DROP
@@ -110,7 +113,7 @@ sudo iptables -I INPUT -p tcp -d 192.168.2.72 --dport 6090 -s 192.168.2.56 -j AC
 sudo iptables -I INPUT -p tcp -d 192.168.2.72 --dport 6090 -s 192.168.2.55 -j ACCEPT
 ```
 
-or, where ufw is enabled with its default deny incoming:
+or, where ufw is enabled with its default deny incoming (prep-ml):
 
 ```
 sudo ufw allow proto tcp from 192.168.2.55 to 192.168.2.72 port 6090
@@ -118,7 +121,8 @@ sudo ufw allow proto tcp from 192.168.2.56 to 192.168.2.72 port 6090
 ```
 
 The bridge runs with host networking and publishes no port, so these INPUT rules apply to it
-directly (Docker's own chains are not involved).
+directly (Docker's own chains are not involved). Undo with `sudo ufw delete allow proto tcp from 192.168.2.55 to 192.168.2.72 port 6090`
+(and `.56`).
 
 Rollback: remove (or comment out) the two lines from `.env.browser` (back it up to
 `~/trash/<ts>_env-browser/` first), run `make browser-bridge-restart BRIDGE_ENV=1`, and check
