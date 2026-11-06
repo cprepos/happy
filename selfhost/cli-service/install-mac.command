@@ -1,7 +1,7 @@
 #!/bin/bash
 # Double-click to install (or reinstall) Happy on this Mac:
 #   - the ~/happy checkout (cloned from the fork's main if it isn't here yet)
-#   - happy-cli and happy-agent, built and on PATH
+#   - happy-cli, built and on PATH
 #   - the Happy daemon as a login service: it starts on every login/restart
 #     and relaunches itself if it crashes.
 # Safe to re-run. Running chats survive it.
@@ -13,7 +13,6 @@ SERVER_URL="https://happy.girthbass.duckdns.org"
 NODE_VERSION="22.16.0"
 BIN="$HAPPY_ROOT/.node/bin"
 HAPPY="$BIN/happy"
-HAPPY_AGENT="$BIN/happy-agent"
 LABEL="com.happy.cli-daemon"
 export PATH="$BIN:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
@@ -99,9 +98,6 @@ if [ -n "$dist_backup" ]; then
     cp -an "$dist_backup/dist/." "$cli_dist/" 2>/dev/null
 fi
 [ "$cli_build_rc" -eq 0 ] || { echo "happy-cli build failed."; finish 1; }
-echo ""
-echo "==> Building happy-agent..."
-pnpm --filter happy-agent build || { echo "happy-agent build failed."; finish 1; }
 
 # 4. Command wrappers in ~/happy/.node/bin.
 cat > "$HAPPY" << 'WRAPPER'
@@ -112,23 +108,14 @@ export PATH="$HOME/.local/openclaw-npm/bin:$HAPPY_ROOT/.node/bin:/opt/homebrew/b
 NODE="$(command -v /opt/homebrew/opt/node@24/bin/node 2>/dev/null || echo "$HAPPY_ROOT/.node/bin/node")"
 exec "$NODE" "$HAPPY_ROOT/packages/happy-cli/bin/happy.mjs" "$@"
 WRAPPER
-cat > "$HAPPY_AGENT" << 'WRAPPER'
-#!/bin/sh
-# happy-agent defaults to the upstream server; point it at this machine's configured one.
-HAPPY_ROOT="$HOME/happy"
-export PATH="$HAPPY_ROOT/.node/bin:/opt/homebrew/bin:$PATH"
-if [ -z "${HAPPY_SERVER_URL:-}" ]; then
-    HAPPY_SERVER_URL="$(sed -n 's/.*"serverUrl"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${HAPPY_HOME_DIR:-$HOME/.happy}/settings.json" 2>/dev/null | head -1)"
-    if [ -z "$HAPPY_SERVER_URL" ]; then
-        echo "happy-agent: no serverUrl in ~/.happy/settings.json; set HAPPY_SERVER_URL." >&2
-        exit 1
-    fi
-    export HAPPY_SERVER_URL
+# The remote-control happy-agent CLI is gone (upstream removed
+# packages/happy-agent). A wrapper left by an older install would point at a
+# missing file, so it goes to the trash, never deleted.
+if [ -e "$BIN/happy-agent" ]; then
+    trash_dir="$HAPPY_ROOT/trash/$(date +%Y%m%d_%H%M%S)_happy-agent-wrapper"
+    mkdir -p "$trash_dir" && mv "$BIN/happy-agent" "$trash_dir/" && echo "    Moved the old happy-agent wrapper to $trash_dir"
 fi
-NODE="$(command -v /opt/homebrew/opt/node@24/bin/node 2>/dev/null || echo "$HAPPY_ROOT/.node/bin/node")"
-exec "$NODE" "$HAPPY_ROOT/packages/happy-agent/bin/happy-agent.mjs" "$@"
-WRAPPER
-chmod +x "$HAPPY" "$HAPPY_AGENT"
+chmod +x "$HAPPY"
 
 # Put the commands on PATH for new Terminal windows.
 if ! grep -qs 'happy/.node/bin' "$HOME/.zshrc"; then
@@ -151,9 +138,8 @@ EOF
 fi
 echo ""
 echo "    $("$HAPPY" --version 2>&1 | head -1)"
-echo "    happy-agent $("$HAPPY_AGENT" --version 2>&1 | head -1)"
 
-# 6. Link this Mac (daemon) and happy-agent to your account if they aren't yet.
+# 6. Link this Mac (daemon) to your account if it isn't yet.
 if [ ! -f "$HOME/.happy/access.key" ]; then
     echo ""
     echo "==> This Mac is not linked yet. Choose 'Mobile App' and scan the QR code."
@@ -162,11 +148,6 @@ fi
 if [ ! -f "$HOME/.happy/access.key" ]; then
     echo "Still not linked; stopping."
     finish 1
-fi
-if [ ! -f "$HOME/.happy/agent.key" ]; then
-    echo ""
-    echo "==> Signing in happy-agent. Scan this QR code with the Happy app too."
-    "$HAPPY_AGENT" auth login || { echo "happy-agent sign-in failed."; finish 1; }
 fi
 
 # 7. Stop the old service and any stray daemons that hold the lock.
@@ -196,6 +177,4 @@ else
     finish 1
 fi
 "$HAPPY" daemon status 2>&1 | head -8
-echo ""
-"$HAPPY_AGENT" auth status 2>&1 | head -3
 finish 0
