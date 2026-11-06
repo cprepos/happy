@@ -44,6 +44,8 @@ before(async () => {
             let reply;
             if (name === 'browser.list_sessions') reply = { jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: '[{"id":"s1"}]' }], structuredContent: { result: [{ id: 's1' }] }, isError: false } };
             else if (name === 'browser.execute_action') reply = { jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: `acted ${args.action?.action}` }], isError: false } };
+            // The session check the bridge makes before a call that names a session.
+            else if (name === 'browser.get_session') reply = { jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: `{"id":"${args.session_id}","status":"active"}` }], isError: false } };
             else if (name === 'browser.observe') reply = { jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: `observed ${args.session_id}` }], isError: false } };
             else reply = { jsonrpc: '2.0', id: msg.id, error: { code: -32602, message: `Unknown tool: ${name}` } };
             if (mock.sse) {
@@ -246,7 +248,7 @@ test('while the user has control, execute_action is refused and observe still pa
         const blocked = await call(1, 'browser_execute_action', act);
         assert.equal(blocked.result.isError, true);
         assert.equal(blocked.result.content[0].text, USER_HAS_CONTROL);
-        assert.equal(mock.requests.filter((x) => x.method === 'tools/call').length, 0, 'never reached auto-browser');
+        assert.equal(mock.requests.filter((x) => x.method === 'tools/call' && x.params?.name !== 'browser.get_session').length, 0, 'never reached auto-browser');
         assert.deepEqual(b.seen[0], { path: '/api/state', auth: 'Bearer bt', body: { session_id: 's1', action: { kind: 'click', target: 'Sign in' } } });
 
         const seen = await call(2, 'browser_observe', { session_id: 's1' });
@@ -331,7 +333,7 @@ test('a session the user ended gets USER_ENDED for any tool, and auto-browser is
             assert.equal(r.result.content[0].text, USER_ENDED);
         }
         assert.equal(USER_ENDED, 'The user ended this browser. Start a new one only if the task still needs it.');
-        assert.equal(mock.requests.filter((x) => x.method === 'tools/call').length, 0);
+        assert.equal(mock.requests.filter((x) => x.method === 'tools/call' && x.params?.name !== 'browser.get_session').length, 0);
         status.value = 'done'; status.reason = 'session_closed';
         assert.equal((await call(3, 'browser_observe', { session_id: 's1' })).result.content[0].text, 'observed s1', 'only the user ending it is refused');
     } finally {
