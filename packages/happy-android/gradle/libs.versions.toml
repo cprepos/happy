@@ -25,7 +25,7 @@ camerax = "1.6.2"
 play-review = "2.0.2"
 zxing = "3.5.4"
 # slopus/tailcat-kotlin at a pinned commit plus tools/tailcat/patches, built into vendor/maven by tools/tailcat/build.sh.
-tailcat = "0.1.0-4f041f4-p1"
+tailcat = "0.1.0-0630396-p1"
 firebase-messaging = "25.0.1"
 coil = "3.6.3"
 lottie = "6.7.1"
@@ -85,6 +85,7 @@ firebase-messaging = { module = "com.google.firebase:firebase-messaging", versio
 coil-compose = { module = "io.coil-kt.coil3:coil-compose", version.ref = "coil" }
 lottie-compose = { module = "com.airbnb.android:lottie-compose", version.ref = "lottie" }
 coil-network-okhttp = { module = "io.coil-kt.coil3:coil-network-okhttp", version.ref = "coil" }
+coil-gif = { module = "io.coil-kt.coil3:coil-gif", version.ref = "coil" }
 coil-test = { module = "io.coil-kt.coil3:coil-test", version.ref = "coil" }
 play-billing = { module = "com.android.billingclient:billing", version.ref = "play-billing" }
 livekit = { module = "io.livekit:livekit-android", version.ref = "livekit" }

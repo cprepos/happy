@@ -1,4 +1,5 @@
 #if canImport(UIKit)
+import HappyAnalytics
 import HappyCore
 import UIKit
 
@@ -111,7 +112,10 @@ final class SessionCallTargets: CallTargets {
             // Past the tool's deadline, or the call over: it doesn't go.
             guard !Task.isCancelled, !closed else { return .refused("No answer in time.") }
             // Refused only when this phone can't keep it: the call's targets are made tasks, never new ones.
-            if await chat.conversation.send(id: id, text: text) { return .queued }
+            if await chat.conversation.send(id: id, text: text) {
+                Analytics.shared.voiceSent(to: agentId, in: session.snapshot)
+                return .queued
+            }
             return .refused("It couldn't be kept on this phone.")
         }
     }

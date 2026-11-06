@@ -4,7 +4,7 @@ import HappyLayout
 import UIKit
 
 /// One paired computer's models and its accounts' usage, read for the
-/// composer's pickers, and what new work starts on.
+/// composer's pickers.
 @MainActor
 final class ModelState {
     private let client: AgentClient
@@ -96,10 +96,6 @@ final class ModelState {
             }
         }
     }
-
-    /// What a new bot or task starts on: the computer's default, never a
-    /// pick remembered from earlier work (a pick belongs to its own draft).
-    var newWorkMode: AgentWire.Mode? { catalog?.defaultMode() }
 
     func watch(_ watch: @escaping () -> Void) -> Watch {
         let id = UUID()

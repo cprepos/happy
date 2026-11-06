@@ -1,5 +1,6 @@
 #if canImport(UIKit)
 import AuthenticationServices
+import HappyAnalytics
 import HappyCore
 import HappyWire
 import UIKit
@@ -97,6 +98,7 @@ final class ServerSignInViewController: UIViewController, ASWebAuthenticationPre
                 signedIn = try await flow.saveProfile(name, for: signedIn)
             }
             try await context.account.addServer(signedIn)
+            Analytics.shared.teamServerSignedIn()
             // The window's root becomes the server's home; a sheet this
             // was shown in goes with the adding.
             if presentingViewController != nil, navigationController?.viewControllers.first === self { dismiss(animated: true) }
@@ -104,6 +106,7 @@ final class ServerSignInViewController: UIViewController, ASWebAuthenticationPre
         } catch OAuthError.cancelled {
         } catch {
             form.error = Strings.ServerSignIn.failure(error)
+            Analytics.shared.teamServerSignInFailed(error)
         }
     }
 

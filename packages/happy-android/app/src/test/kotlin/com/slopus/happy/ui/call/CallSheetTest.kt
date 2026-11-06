@@ -2,6 +2,8 @@ package com.slopus.happy.ui.call
 
 import android.content.Context
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -13,10 +15,12 @@ import com.slopus.happy.R
 import com.slopus.happy.payments.CallIntro
 import com.slopus.happy.payments.Offer
 import com.slopus.happy.payments.OfferSheet
-import com.slopus.happy.ui.connection.SupportSheet
+import com.slopus.happy.ui.connection.AgentVoiceTags
+import com.slopus.happy.ui.connection.SupportScreen
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import com.slopus.happy.ui.PHONE
+import com.slopus.happy.ui.bounds
 import com.slopus.happy.ui.node
 import com.slopus.happy.ui.setHappyContent
 import org.junit.Assert.assertEquals
@@ -123,11 +127,12 @@ class CallSheetTest {
         assertEquals(0, started)
     }
 
-    /** Support us: the boba's sheet sells the same subscription as a pledge, with no voice session. */
+    /** Support Happy's page sells the same subscription as a pledge, with no voice session, and manages it in the store. */
     @Test
     fun supportSellsTheSameSubscriptionWithoutVoice() {
         var subscribed = 0
-        rule.setHappyContent { SupportSheet(Offer.OnSale("9,99 €"), onDismiss = {}, onSubscribe = { subscribed++ }, onRestore = { com.slopus.happy.payments.RestoreResult.NothingFound }) }
+        var managed = 0
+        rule.setHappyContent { SupportScreen(Offer.OnSale("9,99 €"), onBack = {}, onSubscribe = { subscribed++ }, onRestore = { com.slopus.happy.payments.RestoreResult.NothingFound }, onManage = { managed++ }) }
         rule.waitForIdle()
         text("Support Happy open source").assertExists()
         text("Pledge 9,99 €/month").assertExists()
@@ -135,27 +140,59 @@ class CallSheetTest {
         text("Talk to your agents").assertDoesNotExist()
         text("5 hours of real-time voice included").assertDoesNotExist()
         rule.node(CallSheetTags.SESSION).assertDoesNotExist()
-        rule.node(CallSheetTags.SUBSCRIBE).performClick()
+        rule.node(AgentVoiceTags.SUBSCRIBE_BUTTON).assertIsEnabled().performClick()
         rule.waitForIdle()
         assertEquals(1, subscribed)
-        rule.node(CallSheetTags.RESTORE).performClick()
+        rule.node(AgentVoiceTags.PAGE_MANAGE).performClick()
+        rule.waitForIdle()
+        assertEquals(1, managed)
+        rule.node(AgentVoiceTags.PAGE_RESTORE).performClick()
         rule.waitForIdle()
         rule.onNodeWithText(context.getString(R.string.call_restore_none)).assertExists()
     }
 
-    /** Nothing on sale, it still opens and says so; with pro, it thanks and sells nothing more. */
+    /**
+     * Nothing on sale, it still opens and says so over Subscribe, which
+     * stays and is greyed out, Restore and Manage under it; with pro, it
+     * says what they pay and thanks, sells and restores nothing more and
+     * still manages.
+     */
     @Test
     fun supportSaysWhenNothingIsOnSaleAndThanksASubscriber() {
         var offer by androidx.compose.runtime.mutableStateOf<Offer>(Offer.Unavailable)
-        rule.setHappyContent { SupportSheet(offer, onDismiss = {}) }
+        var price by androidx.compose.runtime.mutableStateOf<String?>(null)
+        rule.setHappyContent { SupportScreen(offer, onBack = {}, onRestore = { com.slopus.happy.payments.RestoreResult.NothingFound }, subscribedPrice = price) }
         rule.waitForIdle()
         rule.onNodeWithText(context.getString(R.string.agent_voice_sheet_not_yet)).assertExists()
-        rule.node(CallSheetTags.SUBSCRIBE).assertDoesNotExist()
+        rule.node(AgentVoiceTags.SUBSCRIBE_BUTTON).assertIsNotEnabled()
+        rule.node(AgentVoiceTags.PAGE_RESTORE).assertIsEnabled()
+        rule.node(AgentVoiceTags.PAGE_MANAGE).assertIsEnabled()
+        assertTrue(rule.node(AgentVoiceTags.PAGE_RESTORE).bounds.top > rule.node(AgentVoiceTags.SUBSCRIBE_BUTTON).bounds.bottom)
         offer = Offer.Subscribed
         rule.waitForIdle()
-        rule.onNodeWithText(context.getString(R.string.settings_support_us_subtitle_pro)).assertExists()
-        rule.node(CallSheetTags.SUBSCRIBE).assertDoesNotExist()
-        rule.node(CallSheetTags.RESTORE).assertDoesNotExist()
+        text("You’re subscribed.").assertExists()
+        text("Thank you for your support!").assertExists()
+        assertTrue(rule.node(AgentVoiceTags.PAGE_THANKS).bounds.top >= rule.node(AgentVoiceTags.PAGE_SUBSCRIBED).bounds.bottom)
+        rule.node(AgentVoiceTags.SUBSCRIBE_BUTTON).assertDoesNotExist()
+        rule.node(AgentVoiceTags.PAGE_RESTORE).assertDoesNotExist()
+        rule.node(AgentVoiceTags.PAGE_MANAGE).assertIsEnabled()
+        price = "9,99 €"
+        rule.waitForIdle()
+        text("You’re subscribed at 9,99 €/month.").assertExists()
+        text("Thank you for your support!").assertExists()
+    }
+
+    /** Support Happy's page fits the screen: nothing scrolls, the footer sits at its foot. */
+    @Test
+    fun supportFitsWithoutScrolling() {
+        rule.setHappyContent { SupportScreen(Offer.OnSale("9,99 €"), onBack = {}, onRestore = { com.slopus.happy.payments.RestoreResult.NothingFound }) }
+        rule.waitForIdle()
+        text("Happy is open source. Support by sending us boba, get 5 hours of calls with agents").assertIsDisplayed()
+        rule.onAllNodes(androidx.compose.ui.test.hasScrollAction()).assertCountEquals(0)
+        val page = rule.node(AgentVoiceTags.PAGE).bounds
+        val manage = rule.node(AgentVoiceTags.PAGE_MANAGE).bounds
+        assertTrue(manage.bottom <= page.bottom)
+        rule.node(AgentVoiceTags.PAGE_MANAGE).assertIsDisplayed()
     }
 
     @Test

@@ -334,6 +334,7 @@ public final class AgentConnections {
             jobs[account.id] = Task.detached { [weak self] in
                 var current = account
                 var attempt = 0
+                var issue: (any Error)?
                 while !Task.isCancelled {
                     let transport = AgentEndpointTransport(endpoint: endpoint, metrics: meter, make: make)
                     do {
@@ -348,14 +349,16 @@ public final class AgentConnections {
                         }
                     } catch PairingError.revoked {
                         current.revoked = true; current.status = .revoked
-                        if !Task.isCancelled { await self?.apply(current, generation: generation) }
+                        if !Task.isCancelled { await self?.apply(current, generation: generation, issue: PairingError.revoked) }
                         await transport.close()
                         return
-                    } catch { }
+                    } catch {
+                        issue = error
+                    }
                     await transport.close()
                     if Task.isCancelled { return }
                     current.status = .retrying
-                    await self?.apply(current, generation: generation)
+                    await self?.apply(current, generation: generation, issue: issue)
                     let delay = Self.retryDelay(attempt)
                     attempt = min(attempt + 1, 5)
                     do { try await Task.sleep(for: .seconds(delay)) } catch { return }
@@ -366,9 +369,12 @@ public final class AgentConnections {
 
     nonisolated static func retryDelay(_ attempt: Int) -> Int { min(30, 1 << max(0, min(5, attempt))) }
 
-    private func apply(_ account: AgentConnection, generation: UInt64) async {
+    private func apply(_ account: AgentConnection, generation: UInt64, issue: (any Error)? = nil) async {
         guard !Task.isCancelled, self.generation == generation,
               let index = accounts.firstIndex(where: { $0.id == account.id }) else { return }
+        Happenings.post(.agentConnectionChanged(id: account.id, direct: account.server == nil,
+                                                 down: account.status == .retrying || account.status == .revoked,
+                                                 problem: issue.flatMap(Problem.init)))
         let previous = accounts[index]
         guard previous != account else { return }
         accounts[index] = account

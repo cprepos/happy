@@ -12,6 +12,19 @@ import CoreGraphics
 /// The title and the summary are one line each; the faces overlap by
 /// `faceOverlap`, the first leftmost. The dot's lane is kept whether or
 /// not the entry is unread.
+///
+/// An artifact's entry with a cover or a summary is a post: the same row
+/// on top, then under it its caption and its cover, both across the card
+/// from inset to inset, no wider than `postMaxWidth`:
+///
+///     |16| caption, four lines … Show more, or all of it |16|
+///     |16| ┌──────── cover, as tall as its shape ───────┐ |16|
+///          └───────────────────────────────────────────┘
+///                               16
+///
+/// Either may be missing. The caption is measured at `postWidth`, cut or
+/// in full as the reader left it; the cover is exactly its shape (16:9 or
+/// 1:1), so the post is measured without its picture.
 public struct FeedRowLayout: Equatable, Sendable {
     public var size: CGSize
     public var card: CGRect
@@ -23,11 +36,16 @@ public struct FeedRowLayout: Equatable, Sendable {
     public var faces: [CGRect]
     public var more: CGRect?
     public var summary: CGRect?
+    /// A post's caption and cover.
+    public var caption: CGRect?
+    public var cover: CGRect?
     public var separator: CGRect?
 
     /// `faces` is how many faces show (at most `maxFaces`), `more` the
     /// size of "+N" when there are more actors than that.
-    public init(width: CGFloat, maxWidth: CGFloat = .greatestFiniteMagnitude, place: CardPlace, title: Measurable, time: CGSize?, faces: Int, more: CGSize?, summary: Measurable?, hairline: CGFloat, scale: CGFloat = 1) {
+    /// `cover` is a post's cover's height over its width, `caption` the
+    /// words over it; with neither the row is compact.
+    public init(width: CGFloat, maxWidth: CGFloat = .greatestFiniteMagnitude, place: CardPlace, title: Measurable, time: CGSize?, faces: Int, more: CGSize?, summary: Measurable?, caption: Measurable? = nil, cover: CGFloat? = nil, hairline: CGFloat, scale: CGFloat = 1) {
         typealias M = FeedMetrics
         typealias C = CardListMetrics
         func pixel(_ value: CGFloat) -> CGFloat { (value * max(1, scale)).rounded() / max(1, scale) }
@@ -53,14 +71,28 @@ public struct FeedRowLayout: Equatable, Sendable {
         let lineHeight = max(shown > 0 ? M.face : 0, more?.height ?? 0, summarySize?.height ?? 0)
         let hasLine = lineHeight > 0
         let textHeight = titleSize.height + (hasLine ? M.lineGap + lineHeight : 0)
-        let height = max(M.minHeight, pixel(textHeight + 2 * C.padding))
-        let top = pixel((height - textHeight) / 2)
+        let rowHeight = max(M.minHeight, pixel(textHeight + 2 * C.padding))
+        let top = pixel((rowHeight - textHeight) / 2)
         let lineTop = top + titleSize.height + M.lineGap
         func centred(_ size: CGFloat, in top: CGFloat, _ height: CGFloat) -> CGFloat { pixel(top + (height - size) / 2) }
 
+        var height = rowHeight
+        let postWidth = Self.postWidth(width: width, maxWidth: maxWidth)
+        let ratio = cover.flatMap { $0 > 0 && $0.isFinite ? $0 : nil }
+        let captionSize = caption?.size(fitting: postWidth)
+        if let captionSize, captionSize.height > 0 {
+            self.caption = CGRect(x: avatarX, y: height, width: postWidth, height: pixel(captionSize.height))
+            height += pixel(captionSize.height) + (ratio == nil ? M.postBottom : M.postGap)
+        }
+        if let ratio {
+            let coverHeight = pixel(postWidth * ratio)
+            self.cover = CGRect(x: avatarX, y: height, width: postWidth, height: coverHeight)
+            height += coverHeight + M.postBottom
+        }
+
         size = CGSize(width: max(0, width), height: height)
         card = CGRect(x: column.x, y: 0, width: column.width, height: height)
-        avatar = CGRect(x: avatarX, y: pixel((height - M.avatar) / 2), width: M.avatar, height: M.avatar)
+        avatar = CGRect(x: avatarX, y: pixel((rowHeight - M.avatar) / 2), width: M.avatar, height: M.avatar)
         self.title = CGRect(x: textX, y: top, width: max(0, titleRight - textX), height: titleSize.height)
         self.time = time.map { CGRect(x: timeRight - $0.width, y: centred($0.height, in: top, titleSize.height), width: $0.width, height: $0.height) }
         dot = CGRect(x: dotX, y: centred(M.dot, in: top, titleSize.height), width: M.dot, height: M.dot)
@@ -70,5 +102,13 @@ public struct FeedRowLayout: Equatable, Sendable {
         self.more = more.map { CGRect(x: moreX ?? textX, y: centred($0.height, in: lineTop, lineHeight), width: $0.width, height: $0.height) }
         self.summary = summarySize.map { CGRect(x: summaryX, y: centred($0.height, in: lineTop, lineHeight), width: max(0, right - summaryX), height: $0.height) }
         separator = place.last ? nil : CGRect(x: textX, y: height - hairline, width: max(0, column.maxX - textX), height: hairline)
+    }
+
+    /// How wide a post's caption and cover are in a list `width` wide: the
+    /// card from inset to inset, at most `postMaxWidth`. The caption is
+    /// cut to its lines at this width.
+    public static func postWidth(width: CGFloat, maxWidth: CGFloat = .greatestFiniteMagnitude) -> CGFloat {
+        let column = CardColumn(width: width, maxWidth: maxWidth)
+        return min(FeedMetrics.postMaxWidth, max(0, column.width - 2 * CardListMetrics.inset))
     }
 }

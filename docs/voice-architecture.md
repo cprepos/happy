@@ -54,11 +54,9 @@ that server.
 
 **ElevenLabs limits.** Usage over the last 30 days, across all agents, is read
 from ElevenLabs under an identity keyed with the master secret; nothing is
-stored locally. 20 minutes are free, more needs an active RevenueCat
-entitlement, and 5 hours is the cap even with one. `selfhost/docker-compose.yml`
-passes no `REVENUECAT_API_KEY`, so on a self-hosted server every user counts as
-unsubscribed and is refused with `subscription_required` after 20 minutes per
-30 days. A user's own agent takes no grant, so none of this applies to it.
+stored locally. The server checks no subscription (the phones track those with
+RevenueCat); every account is capped at 5 hours per 30 days as a cost safety
+net, and is refused with `voice_hard_limit_reached` past it. A user's own agent takes no grant, so none of this applies to it.
 
 **Usage.** `GET /v1/voice/usage` follows what the server offers, not what the
 user picked. While ElevenLabs is offered it reports ElevenLabs' numbers and

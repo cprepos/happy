@@ -13,6 +13,7 @@ import com.slopus.happy.auth.AndroidKeyStoreKeys
 import com.slopus.happy.auth.AuthCredentials
 import com.slopus.happy.auth.CredentialStore
 import com.slopus.happy.model.Profile
+import com.slopus.happy.model.Settings
 import java.io.File
 import com.slopus.happy.auth.AuthApi
 import com.slopus.happy.auth.AuthRepository
@@ -21,8 +22,10 @@ import com.slopus.happy.auth.ExpoSecureStore
 import com.slopus.happy.auth.SecureStoreCredentialStore
 import com.slopus.happy.auth.SecureStoreKeys
 import com.slopus.happy.auth.tokenSubject
+import com.slopus.happy.config.FeatureFlags
 import com.slopus.happy.config.LiveAvatarsSetting
 import com.slopus.happy.config.LocalSettings
+import com.slopus.happy.config.PostHogFlags
 import com.slopus.happy.config.ServerConfig
 import com.slopus.happy.data.HappyDatabase
 import com.slopus.happy.data.HappyStore
@@ -75,7 +78,6 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
@@ -246,6 +248,11 @@ class AppGraph(
     /** The Happy CLI home's migration cards closed on this phone (iOS ea1a0902f). */
     val desktopMigration = com.slopus.happy.ui.migration.DesktopMigrationCards(
         context.getSharedPreferences(com.slopus.happy.ui.migration.DesktopMigrationCards.PREFS_NAME, Context.MODE_PRIVATE),
+    )
+    /** PostHog's flags for each Happy account, kept from the last answer, asked again in the foreground. */
+    val featureFlags = FeatureFlags(
+        context.getSharedPreferences(FeatureFlags.PREFS_NAME, Context.MODE_PRIVATE),
+        BuildConfig.POSTHOG_KEY.takeIf { it.isNotEmpty() }?.let { PostHogFlags(okHttp, it)::fetch },
     )
     private val accountLock = Mutex()
     /** Selection and removal publish atomically without waiting for another account's sync startup. */
@@ -459,6 +466,14 @@ class AppGraph(
         .flatMapLatest { it?.connectionStatus ?: flowOf(ConnectionStatus.DISCONNECTED) }
         .stateIn(scope, SharingStarted.Eagerly, ConnectionStatus.DISCONNECTED)
 
+    /**
+     * The Happy CLI home's migration card may show: PostHog's flag is on for
+     * the open Happy account, and its analytics are on.
+     */
+    val migrationNote: StateFlow<Boolean> = combine(accountState, settings.settings, featureFlags.on) { account, values, on ->
+        account != null && !values.analyticsOptOut && FeatureFlags.DIRECT_CONNECTION_MIGRATION_NOTE in on[account.anonId].orEmpty()
+    }.stateIn(scope, SharingStarted.Eagerly, false)
+
     /** The open relay account is catching up its stored state. */
     @OptIn(ExperimentalCoroutinesApi::class)
     val isSyncing: StateFlow<Boolean> = accountState
@@ -467,7 +482,7 @@ class AppGraph(
 
     /**
      * The app's one subscription, RevenueCat's `pro` through Play and
-     * RevenueCat's REST API, under the Happy account when one is signed in.
+     * RevenueCat's REST API, this install's whatever account is signed in.
      * Without the build's RevenueCat key it offers nothing.
      */
     val subscription: Subscription by lazy {
@@ -487,17 +502,16 @@ class AppGraph(
 
     init {
         scope.launch {
-            var relay: String? = null
-            combine(auth.state, openAccount, accountStore.registry) { _, _, _ -> voiceRelay(relay).also { relay = it } }
-                .distinctUntilChanged()
-                .collect {
-                    subscription.relay(it)
-                    // Another account's: whatever sheet was up for the last one goes.
-                    offers.close()
-                }
+            foreground.collect { if (it) subscription.refresh() }
         }
         scope.launch {
-            foreground.collect { if (it) subscription.refresh() }
+            featureFlags.load()
+            // The store is the account's by the time it opens, so its own opt-out is read, never the last account's.
+            combine(foreground, accountState) { visible, account -> account.takeIf { visible } }.collect { account ->
+                if (account != null && !withContext(Dispatchers.IO) { Settings.parse(store.effectiveSettings()).analyticsOptOut }) {
+                    featureFlags.refresh(account.anonId)
+                }
+            }
         }
         scope.launch {
             auth.state.collect { state -> accountLock.withLock { openAccount(state) } }
@@ -509,21 +523,6 @@ class AppGraph(
                 accountStore.updateDisplay(id, AccountDisplay.of(Profile.parse(store.profile())))
             }
         }
-    }
-
-    /**
-     * The Happy account voice's subscription is under: the open one; while
-     * an agent connection is open, the account open before it ([last], or
-     * before this launch), as long as it is still signed in here. Voice is
-     * used on agent connections, so opening one never changes whose
-     * subscription it is.
-     */
-    private fun voiceRelay(last: String?): String? = when (openAccount.value) {
-        is OpenAccount.Happy -> (auth.state.value as? AuthState.SignedIn)?.publicId?.takeIf(String::isNotBlank)
-        is OpenAccount.Agent -> (last ?: subscription.account)?.takeIf { subject ->
-            accountStore.registry.value.entries.any { accountStore.credentials(it.id)?.credentials?.token?.let(::tokenSubject) == subject }
-        }
-        OpenAccount.None -> null
     }
 
     /** Ask for a delta sync now (sign-in, app back in the foreground). No-op when signed out. */
@@ -783,4 +782,4 @@ sealed interface OpenAccount {
  * empties). The server choice, the secure store (cleared by [AuthRepository])
  * and the push token store (cleared by its own logout hook) are not here.
  */
-private val WIPED_PREFS = listOf(NewSessionDraftStore.PREFS_NAME, PrefsReviewStamps.PREFS_NAME, VoicePreferences.PREFS_NAME)
+private val WIPED_PREFS = listOf(NewSessionDraftStore.PREFS_NAME, PrefsReviewStamps.PREFS_NAME, VoicePreferences.PREFS_NAME, FeatureFlags.PREFS_NAME)

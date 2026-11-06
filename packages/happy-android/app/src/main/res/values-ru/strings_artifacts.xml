@@ -58,6 +58,7 @@
     <string name="artifact_kind_video">Видео</string>
     <string name="artifact_kind_document">Файл</string>
     <string name="artifact_kind_unknown">Артефакт</string>
+    <string name="artifact_kind_app">Приложение</string>
 
     <string name="artifact_card_kind_image_series">Серия изображений</string>
     <string name="artifact_card_kind_document">Документ</string>
@@ -89,11 +90,16 @@
 
     <string name="feed_activity">Активность</string>
     <string name="feed_following">Подписки</string>
+    <string name="feed_all">Все</string>
+    <string name="feed_highlights">Главное</string>
+    <string name="feed_highlights_empty_title">Главного пока нет</string>
+    <string name="feed_highlights_empty">Здесь появляются артефакты и новые задачи.</string>
+    <string name="feed_show_more">Показать ещё</string>
     <string name="feed_mark_all_read">Прочитать всё</string>
     <string name="feed_empty">Пока ничего не произошло. Здесь появятся новые задачи, боты, документы, списки дел и артефакты — со всеми их изменениями.</string>
-    <string name="feed_loading">Загрузка ленты…</string>
-    <string name="feed_unavailable">Не удалось загрузить ленту. Проверьте, что компьютер включён.</string>
-    <string name="feed_unsupported">Этот Happy Agent не ведёт ленту. Обновите его, чтобы она появилась.</string>
+    <string name="feed_loading">Загрузка активности…</string>
+    <string name="feed_unavailable">Не удалось загрузить активность. Проверьте, что компьютер включён.</string>
+    <string name="feed_unsupported">Этот Happy Agent пока не отслеживает активность. Обновите его, чтобы она появилась здесь.</string>
     <string name="feed_everywhere">Везде</string>
     <string name="feed_places">Места</string>
     <string name="feed_no_clusters">Пока не на что подписаться. Задачи, боты, документы и списки дел появятся здесь, когда в них что-нибудь произойдёт.</string>

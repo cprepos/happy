@@ -35,6 +35,10 @@ data class ArtifactSummary(
     /** Milliseconds since 1970. */
     val createdAt: Long,
     val updatedAt: Long,
+    /** The latest version's cover, summary and background, where the computer has them. */
+    val cover: ArtifactCover? = null,
+    val summary: String? = null,
+    val background: String? = null,
 ) {
     /** The entry is a picture or a recording: the row shows it small. */
     val showsPicture: Boolean get() = !live && entry?.isVisual == true
@@ -52,12 +56,25 @@ data class ArtifactSummary(
                 put("path", file.path)
                 put("mimeType", file.mimeType)
                 put("size", file.size)
+                file.thumbhash?.let { put("thumbhash", it) }
+                if (file.preview) put("preview", buildJsonObject {})
             })
         }
         put("fileCount", fileCount)
         put("live", live)
         put("createdAt", createdAt)
         put("updatedAt", updatedAt)
+        cover?.let { c ->
+            put("cover", buildJsonObject {
+                put("path", c.path)
+                put("mimeType", c.mimeType)
+                put("aspect", c.aspect.wire)
+                c.thumbhash?.let { put("thumbhash", it) }
+                if (c.preview) put("preview", buildJsonObject {})
+            })
+        }
+        summary?.let { put("summary", it) }
+        background?.let { put("background", it) }
     }
 
     companion object {
@@ -77,6 +94,9 @@ data class ArtifactSummary(
                 live = isLive(o["live"]),
                 createdAt = createdAt,
                 updatedAt = o["updatedAt"].num?.toLong() ?: createdAt,
+                cover = ArtifactCover.parse(o["cover"]),
+                summary = ArtifactCover.summary(o["summary"]),
+                background = ArtifactCover.background(o["background"]),
             )
         }
 
@@ -84,7 +104,7 @@ data class ArtifactSummary(
         internal fun entry(value: JsonElement?): ArtifactFile? {
             val o = value.obj ?: return null
             val path = o["path"].str ?: return null
-            return ArtifactFile(path, o["mimeType"].str.orEmpty(), o["size"].num?.toLong() ?: 0)
+            return ArtifactFile(path, o["mimeType"].str.orEmpty(), o["size"].num?.toLong() ?: 0, o["thumbhash"].str, o["preview"].obj != null)
         }
 
         /** `live` is `{ url, networkId }` on the wire and `true` once kept. */
@@ -135,6 +155,10 @@ object ArtifactCatalog {
                     fileCount = changes["fileCount"].num?.toInt() ?: before.fileCount,
                     live = changes["live"]?.let { it.obj != null } ?: before.live,
                     updatedAt = changes["updatedAt"].num?.toLong() ?: before.updatedAt,
+                    // Present and `null` clears; absent keeps.
+                    cover = if ("cover" in changes) ArtifactCover.parse(changes["cover"]) else before.cover,
+                    summary = if ("summary" in changes) ArtifactCover.summary(changes["summary"]) else before.summary,
+                    background = if ("background" in changes) ArtifactCover.background(changes["background"]) else before.background,
                 )
                 if (after == before) return Change.None
                 return Change.Changed(sorted(list.toMutableList().also { it[index] = after }))

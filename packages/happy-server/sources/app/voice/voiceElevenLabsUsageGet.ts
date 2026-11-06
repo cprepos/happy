@@ -1,8 +1,6 @@
 import * as crypto from "crypto";
 
-/** 20 minutes free per 30 days. */
-export const VOICE_FREE_LIMIT_SECONDS = 1200;
-/** 5 hours absolute cap per 30 days, even with a subscription. */
+/** 5 hours absolute cap per 30 days for every account; a cost safety net. */
 export const VOICE_HARD_LIMIT_SECONDS = 18000;
 /** ElevenLabs' maximum page size, not a conversation quota. */
 export const VOICE_USAGE_PAGE_SIZE = 100;

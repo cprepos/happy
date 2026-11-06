@@ -1,4 +1,5 @@
 #if canImport(UIKit)
+import HappyAnalytics
 import HappyCore
 import HappyLayout
 import UIKit
@@ -107,6 +108,7 @@ public final class RestoreQRViewController: UIViewController {
                 return
             } catch {
                 guard let self, !Task.isCancelled else { return }
+                Analytics.shared.accountRestoreFailed(error, secretKey: false)
                 Alerts.show(Strings.Common.error, Strings.Errors.authenticationFailed, on: self)
             }
         }
@@ -245,6 +247,7 @@ public final class RestoreSecretKeyViewController: UIViewController, UITextViewD
             let credentials = try await context.account.authService.restore(secretKey: key)
             try await context.account.signIn(credentials)
         } catch {
+            Analytics.shared.accountRestoreFailed(error, secretKey: true)
             Alerts.show(Strings.Common.error, Strings.Connect.invalidSecretKey, on: self)
         }
     }

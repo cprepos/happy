@@ -13,13 +13,11 @@ export type IntegrationEnvironment = {
     envDir: string;
     projectPath: string;
     serverPort: number;
-    expoPort: number;
 };
 
 type EnvironmentConfig = {
     projectPath: string;
     serverPort: number;
-    expoPort: number;
 };
 
 type EnvironmentsModule = {
@@ -65,7 +63,6 @@ export async function createIntegrationEnvironment(options?: {
             envDir: environments.getEnvironmentDir(name),
             projectPath: config.projectPath,
             serverPort: config.serverPort,
-            expoPort: config.expoPort,
         };
     } catch (error) {
         try {
@@ -82,7 +79,6 @@ export async function createIntegrationEnvironment(options?: {
 
 export function applyEnvironmentToProcess(env: IntegrationEnvironment) {
     process.env.HAPPY_SERVER_URL = `http://localhost:${env.serverPort}`;
-    process.env.HAPPY_WEBAPP_URL = `http://localhost:${env.expoPort}`;
     process.env.HAPPY_HOME_DIR = join(env.envDir, 'cli', 'home');
     process.env.HAPPY_PROJECT_DIR = env.projectPath;
     process.env.HAPPY_VARIANT = 'dev';

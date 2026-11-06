@@ -7,19 +7,110 @@ import HappyWire
 /// is kept as its tombstone: the Artifacts list leaves it out, the Feed
 /// still names it.
 public struct ArtifactSummary: Codable, Equatable, Sendable, Identifiable {
+    /// A still the daemon made of a picture's first frame or a
+    /// recording's poster, fitted within 640×640, served at
+    /// `/v0/artifacts/:id/versions/:n/previews/<the file's path>`; its size
+    /// in pixels. An older daemon makes none.
+    public struct Preview: Codable, Equatable, Sendable {
+        public var width: Double
+        public var height: Double
+
+        public init(width: Double, height: Double) {
+            self.width = width
+            self.height = height
+        }
+
+        init?(json: JSONValue?) {
+            guard let width = json?["width"]?.numberValue, let height = json?["height"]?.numberValue,
+                  width.isFinite, height.isFinite, width > 0, height > 0 else { return nil }
+            self.init(width: width, height: height)
+        }
+    }
+
+    /// A picture's ThumbHash as the daemon sends it (standard base64);
+    /// nil for `null`, nothing, or what can't be one.
+    static func thumbhash(_ json: JSONValue?) -> String? {
+        guard let value = json?.stringValue, !value.isEmpty, value.count <= 128 else { return nil }
+        return value
+    }
+
     public struct Entry: Codable, Equatable, Sendable {
         public var path: String
         public var mimeType: String
         public var size: Double
+        /// A picture's or a recording's, from a daemon that reads its media.
+        public var thumbhash: String?
+        public var preview: Preview?
 
-        public init(path: String, mimeType: String, size: Double) {
+        public init(path: String, mimeType: String, size: Double, thumbhash: String? = nil, preview: Preview? = nil) {
             self.path = path
             self.mimeType = mimeType
             self.size = size
+            self.thumbhash = thumbhash
+            self.preview = preview
         }
 
         /// The entry as a version names its files.
-        public var file: AgentWire.ArtifactVersion.File { .init(path: path, mimeType: mimeType, size: size) }
+        public var file: AgentWire.ArtifactVersion.File { .init(path: path, mimeType: mimeType, size: size, thumbhash: thumbhash, preview: preview) }
+    }
+
+    /// The latest version's cover (`cover`): a picture among its files,
+    /// its size in pixels, and the one of the standard shapes it is,
+    /// which the Feed shows its post at.
+    public struct Cover: Codable, Equatable, Sendable {
+        /// The shapes a cover may be (within 2%, the daemon checks); the
+        /// set may grow, and a shape this phone doesn't know is no cover.
+        public enum Aspect: String, Codable, Equatable, Sendable {
+            /// 16:9.
+            case wide
+            /// 1:1.
+            case square
+
+            /// Height over width.
+            public var ratio: Double {
+                switch self {
+                case .wide: 9.0 / 16.0
+                case .square: 1
+                }
+            }
+        }
+
+        public var path: String
+        public var mimeType: String
+        public var width: Double
+        public var height: Double
+        public var aspect: Aspect
+        /// Drawn while the picture loads; nil from an older daemon, or one
+        /// that couldn't decode it.
+        public var thumbhash: String?
+        /// Its still, for the lists' slots; a WebP or GIF cover may move.
+        public var preview: Preview?
+
+        public init(path: String, mimeType: String, width: Double, height: Double, aspect: Aspect, thumbhash: String? = nil, preview: Preview? = nil) {
+            self.path = path
+            self.mimeType = mimeType
+            self.width = width
+            self.height = height
+            self.aspect = aspect
+            self.thumbhash = thumbhash
+            self.preview = preview
+        }
+
+        /// The kinds of picture a cover may be; the daemon turns SVG into PNG.
+        public static let mimeTypes: Set<String> = ["image/png", "image/jpeg", "image/webp", "image/gif"]
+
+        /// A cover object; nil for `null`, or one without a path, a known
+        /// kind of picture, a size or a known shape (an older daemon's,
+        /// which sends no `aspect`).
+        init?(json: JSONValue?) {
+            guard let json, let path = json["path"]?.stringValue, !path.isEmpty,
+                  let mimeType = json["mimeType"]?.stringValue, Self.mimeTypes.contains(mimeType.lowercased()),
+                  let width = json["width"]?.numberValue, let height = json["height"]?.numberValue,
+                  width.isFinite, height.isFinite, width > 0, height > 0,
+                  let aspect = json["aspect"]?.stringValue.flatMap(Aspect.init(rawValue:)) else { return nil }
+            self.init(path: path, mimeType: mimeType.lowercased(), width: width, height: height, aspect: aspect,
+                      thumbhash: ArtifactSummary.thumbhash(json["thumbhash"]), preview: Preview(json: json["preview"]))
+        }
     }
 
     public var id: String
@@ -37,8 +128,15 @@ public struct ArtifactSummary: Codable, Equatable, Sendable, Identifiable {
     public var updatedAt: Double
     /// A tombstone (`status: "deleted"`): its versions are gone.
     public var deleted: Bool
+    /// The latest version's cover, and its one line about itself; nil
+    /// from a daemon without covers.
+    public var cover: Cover?
+    public var summary: String?
+    /// The colour the latest version is shown on (`#rgb`, `#rgba`,
+    /// `#rrggbb` or `#rrggbbaa`, lowercased); nil for a transparent slot.
+    public var background: String?
 
-    public init(id: String, type: String, title: String, latestVersion: Int, entry: Entry?, fileCount: Int = 1, live: Bool = false, createdAt: Double, updatedAt: Double, deleted: Bool = false) {
+    public init(id: String, type: String, title: String, latestVersion: Int, entry: Entry?, fileCount: Int = 1, live: Bool = false, createdAt: Double, updatedAt: Double, deleted: Bool = false, cover: Cover? = nil, summary: String? = nil, background: String? = nil) {
         self.id = id
         self.type = type
         self.title = title
@@ -49,6 +147,9 @@ public struct ArtifactSummary: Codable, Equatable, Sendable, Identifiable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.deleted = deleted
+        self.cover = cover
+        self.summary = summary
+        self.background = background
     }
 
     /// An artifact object, a tombstone included, or one this type kept;
@@ -65,17 +166,67 @@ public struct ArtifactSummary: Codable, Equatable, Sendable, Identifiable {
         createdAt = json["createdAt"]?.numberValue ?? 0
         updatedAt = json["updatedAt"]?.numberValue ?? createdAt
         deleted = json["deleted"]?.boolValue ?? (json["status"]?.stringValue == "deleted")
+        cover = Cover(json: json["cover"])
+        summary = Self.summary(json["summary"])
+        background = Self.background(json["background"])
+    }
+
+    /// Post-length words, their line breaks kept, as the daemon keeps
+    /// them; nil for `null` or nothing.
+    static func summary(_ json: JSONValue?) -> String? {
+        guard let text = json?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+        return text
+    }
+
+    /// `#rgb`, `#rgba`, `#rrggbb` or `#rrggbbaa`, and nothing else.
+    static func background(_ json: JSONValue?) -> String? {
+        json?.stringValue.flatMap { value in
+            value.range(of: "^#([0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$", options: .regularExpression) != nil ? value.lowercased() : nil
+        }
     }
 
     static func entry(_ json: JSONValue?) -> Entry? {
         guard let json, let path = json["path"]?.stringValue else { return nil }
-        return Entry(path: path, mimeType: json["mimeType"]?.stringValue ?? "", size: json["size"]?.numberValue ?? 0)
+        return Entry(path: path, mimeType: json["mimeType"]?.stringValue ?? "", size: json["size"]?.numberValue ?? 0,
+                     thumbhash: thumbhash(json["thumbhash"]), preview: Preview(json: json["preview"]))
     }
 
     /// The entry is a picture or a recording: the row shows it small.
     public var showsPicture: Bool {
         guard let entry, !live else { return false }
         return entry.mimeType.hasPrefix("image/") || entry.mimeType.hasPrefix("video/")
+    }
+
+    /// Where the latest version's cover is served
+    /// (`/v0/artifacts/:id/versions/:n/files/<path>`, each segment
+    /// escaped); nil without one, and for a tombstone, whose files are gone.
+    public var coverPath: String? {
+        guard let cover, !deleted else { return nil }
+        return served("files", cover.path)
+    }
+
+    /// Where the cover's still is served (`…/previews/<path>`), when the
+    /// daemon made one.
+    public var coverPreviewPath: String? {
+        guard let cover, cover.preview != nil, !deleted else { return nil }
+        return served("previews", cover.path)
+    }
+
+    /// Where a picture's or a recording's still is served: the entry's
+    /// first frame or poster, when the daemon made one.
+    public var entryPreviewPath: String? {
+        guard showsPicture, let entry, entry.preview != nil, !deleted else { return nil }
+        return served("previews", entry.path)
+    }
+
+    private func served(_ route: String, _ file: String) -> String {
+        Self.served(id: id, version: latestVersion, route: route, file: file)
+    }
+
+    /// `/v0/artifacts/:id/versions/:n/<route>/<path>`, each segment escaped.
+    public static func served(id: String, version: Int, route: String, file: String) -> String {
+        let path = file.split(separator: "/", omittingEmptySubsequences: false).map { AgentClient.escape(String($0)) }.joined(separator: "/")
+        return "/v0/artifacts/\(AgentClient.escape(id))/versions/\(version)/\(route)/\(path)"
     }
 
     /// What the artifact viewer opens: always the latest version.
@@ -125,6 +276,10 @@ public enum ArtifactCatalog {
             if let count = changes["fileCount"]?.numberValue { artifact.fileCount = Int(count) }
             if let live = changes["live"] { artifact.live = live.objectValue != nil }
             if let time = changes["updatedAt"]?.numberValue { artifact.updatedAt = time }
+            // Present and `null` clears them.
+            if changes["cover"] != nil { artifact.cover = ArtifactSummary.Cover(json: changes["cover"]) }
+            if changes["summary"] != nil { artifact.summary = ArtifactSummary.summary(changes["summary"]) }
+            if changes["background"] != nil { artifact.background = ArtifactSummary.background(changes["background"]) }
             guard artifact != next[index] else { return .none }
             next[index] = artifact
             return .changed(sorted(next))

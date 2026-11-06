@@ -74,10 +74,10 @@ class OffersTest {
     @Test
     fun oneSheetAtATimeAndACancelledAskTakesItsSheetAway() = runTest {
         val (_, offers) = setUp()
-        val first = async { offers.ask(OfferSheet.Support(offers.offer)) }
+        val first = async { offers.ask(OfferSheet.Welcome(offers.offer)) }
         runCurrent()
         assertEquals(OfferResult.Dismissed, offers.ask(OfferSheet.Required(offers.offer)))
-        assertTrue(offers.sheet.value is OfferSheet.Support)
+        assertTrue(offers.sheet.value is OfferSheet.Welcome)
         first.cancel()
         runCurrent()
         assertNull(offers.sheet.value)
@@ -111,25 +111,23 @@ class OffersTest {
     }
 
     @Test
-    fun aSubscriberOpeningSupportIsNotAnsweredAsANewPurchase() = runTest {
-        rc.pro["account-a"] = "happy"
+    fun aSubscriberOpeningASheetIsNotAnsweredAsANewPurchase() = runTest {
         val (subscription, offers) = setUp()
-        subscription.relay("account-a"); runCurrent()
+        rc.pro[subscription.customer] = "happy"
         subscription.refresh(); runCurrent()
         assertTrue(subscription.pro.value)
-        val asked = async { offers.ask(OfferSheet.Support(offers.offer)) }
+        val asked = async { offers.ask(OfferSheet.Required(offers.offer)) }
         runCurrent()
-        assertTrue(offers.sheet.value is OfferSheet.Support)
+        assertTrue(offers.sheet.value is OfferSheet.Required)
         offers.dismiss()
         assertEquals(OfferResult.Dismissed, asked.await())
     }
 
     @Test
-    fun anAccountChangeClosesWhateverIsUp() = runTest {
-        val (subscription, offers) = setUp()
+    fun closeTakesWhateverIsUpAway() = runTest {
+        val (_, offers) = setUp()
         val asked = async { offers.ask(OfferSheet.Required(offers.offer)) }
         runCurrent()
-        subscription.relay("account-b")
         offers.close()
         assertEquals(OfferResult.Dismissed, asked.await())
         assertNull(offers.sheet.value)

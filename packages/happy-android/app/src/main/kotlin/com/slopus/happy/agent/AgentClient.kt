@@ -223,9 +223,14 @@ class AgentClient private constructor(private val link: suspend () -> Link) {
      */
     val tunnelsBlocked: StateFlow<Boolean> = blocked.asStateFlow()
 
+    /** Health's `capabilities.search`, false until health is read. */
+    @Volatile var search: Boolean = false
+        private set
+
     /** What health said, kept so a tunnel needn't ask again. */
     fun noteHealth(info: AgentInfo) {
         webSocketTunnels = info.webSocketTunnels
+        search = info.search
     }
 
     internal fun blockTunnels() {

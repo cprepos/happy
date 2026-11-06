@@ -92,9 +92,9 @@ public struct FeedWords: Equatable, Sendable {
     public var open: String { word("open", "Open") }
     public var peek: String { word("peek", "Peek") }
     public var empty: String { word("empty", "Nothing has happened yet. New tasks, bots, documents, todo lists and artifacts show up here, with every change to them.") }
-    public var loading: String { word("loading", "Loading the feed…") }
-    public var unavailable: String { word("unavailable", "The feed couldn’t be loaded. Check that your computer is on.") }
-    public var unsupported: String { word("unsupported", "This Happy Agent doesn’t keep a feed. Updating it adds one.") }
+    public var loading: String { word("loading", "Loading activity…") }
+    public var unavailable: String { word("unavailable", "Activity couldn’t be loaded. Check that your computer is on.") }
+    public var unsupported: String { word("unsupported", "This Happy Agent doesn’t track activity yet. Update it to see activity here.") }
     public var everywhere: String { word("everywhere", "Everywhere") }
     public var places: String { word("places", "Places") }
     public var noClusters: String { word("noClusters", "Nothing to follow yet. Tasks, bots, documents and todo lists show up here once something happens in them.") }
@@ -107,6 +107,21 @@ public struct FeedWords: Equatable, Sendable {
     public var everything: String { word("everything", "Everything") }
     public var team: String { word("team", "Team") }
     public var muted: String { word("muted", "Muted") }
+    /// The feed's filter: everything, or its artifacts and tasks.
+    public var filter: String { word("filter", "Filter") }
+    public var all: String { word("all", "All") }
+    public var highlights: String { word("highlights", "Highlights") }
+    public var noHighlights: String { word("noHighlights", "No highlights yet. Artifacts and new tasks show up here.") }
+    /// A post's long summary, cut at its fourth line, and opened in full.
+    public var showMore: String { word("showMore", "Show more") }
+    public var showLess: String { word("showLess", "Show less") }
+
+    public func name(_ filter: FeedFilter) -> String {
+        switch filter {
+        case .all: all
+        case .highlights: highlights
+        }
+    }
 
     /// What a place in Following is called.
     public func name(_ name: FeedPlace.Name) -> String {

@@ -13,8 +13,14 @@ window, `ChatRowPlan` measurements and changesets. The composer,
 permissions, question forms, copy menus, links and history pager keep their
 controller actions.
 
-`ChatUltraListAdapter` uses `UltraListView(engineMode: .keyframe)` with
-inverted content and inverted rows (`ChatListView.flip`). `NodeRow` prepares
+`ChatUltraListAdapter` uses `UltraListView(engineMode: .keyframe)` standing
+the natural way up, oldest row at the top, with bottom gravity
+(`ListBottomGravity`): the list rests on its newest row, follows a reply
+streaming there by two lines of body text (`ChatFollow`, `isStreaming`) and
+shows a message that arrives finished whole. The person's own newest message,
+last at the foot (`ChatRowPlan.mine`: on its way, waiting or taken, and the
+footer under it in the relay chat), stays on the composer while what is above
+it grows, until a drag away or a row under it. `NodeRow` prepares
 and draws static boxes, text and icons in the library's bounded preparation
 window. TextKit drawing and link hit testing share a lock because they can
 run on different queues. Drawings resolve the captured appearance explicitly

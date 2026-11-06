@@ -52,7 +52,11 @@ public final class CallSession {
     public typealias Connect = @MainActor (CallGrant, CallStart, CallEvents) async throws -> any CallConnection
 
     public private(set) var state: CallState = .idle {
-        didSet { if state != oldValue { onState?(state) } }
+        didSet {
+            guard state != oldValue else { return }
+            Happenings.post(.callChanged(from: oldValue, to: state, at: now()))
+            onState?(state)
+        }
     }
     public var onState: (@MainActor (CallState) -> Void)?
     /// The waves' level, from what the call reported (`CallLevel`).

@@ -2,7 +2,9 @@
 import Foundation
 @testable import HappyCore
 @testable import HappyUI
+import HappyLayout
 import HappyWire
+import ImageIO
 import UIKit
 
 private struct FeedOffline: HTTPTransport {
@@ -21,13 +23,21 @@ private struct FeedNoSocket: WebSocketConnector {
 /// is still "New Task", as it was when the entry was made, until
 /// `rename()` names it on desktop. Seeing, read-all, following and
 /// peeking answer as the daemon does; with `live`, a new entry arrives
-/// over the stream a few seconds in.
+/// over the stream a few seconds in. Two artifacts carry covers, a title
+/// card under a summary long enough to cut and a square chart, which it
+/// draws and serves as their files, and one only a short summary; a
+/// teaser's cover is an animated WebP. As a daemon that reads its media
+/// does, it hashes each cover (ThumbHash) and serves stills (`previews/`)
+/// of some, and of a photo whose own file it never serves; the photo's
+/// still comes late, so its ThumbHash shows first;
+/// it filters the feed by subject unless `filtering` is off, as an older
+/// daemon's doesn't.
 private actor FeedComputer: AgentTransport {
     static let steveHash = "1QcSHQRnh493V4dIh4eXh1h4kJUI"
     static let adaHash = "HBkSHYSIeHiPiHh8eJd4eTN0EEQG"
     static let botHash = "HwgKPJxwd3dweHiHiHdwgAf3iA"
     static let bootstrap = #"""
-    {"cursor":"cursor-1","feedUnread":3,"profile":{"userId":"steve","name":"Steve","photo":{"thumbhash":"1QcSHQRnh493V4dIh4eXh1h4kJUI"}},"userSettings":[],
+    {"cursor":"cursor-1","feedUnread":4,"profile":{"userId":"steve","name":"Steve","photo":{"thumbhash":"1QcSHQRnh493V4dIh4eXh1h4kJUI"}},"userSettings":[],
      "projects":[{"id":"p","name":"happy","status":"active","orderKey":"a","agents":[]}],
      "workspaces":[],
      "bots":[{"id":"research","name":"Research","status":"active","avatar":{"thumbhash":"HwgKPJxwd3dweHiHiHdwgAf3iA"},"agent":{"id":"research-agent","workspaceId":"r","status":"idle"}}],
@@ -46,12 +56,37 @@ private actor FeedComputer: AgentTransport {
       {"id":"bo","name":"Bo","photo":null,"version":"1","updatedAt":1},
       {"id":"steve","name":"Steve","photo":{"thumbhash":"1QcSHQRnh493V4dIh4eXh1h4kJUI"},"version":"1","updatedAt":1}]}
     """#
-    static let artifacts = #"""
-    {"artifacts":[
-      {"id":"roadmap","type":"html","title":"Q4 roadmap","latestVersion":3,"createdAt":1,"updatedAt":2},
-      {"id":"mockups","type":"image_series","title":"Onboarding mockups","latestVersion":1,"createdAt":1,"updatedAt":1,"deleted":true}],
-     "nextPageCursor":null}
-    """#
+    /// The catalog, its times from now: covered ones, plain ones and a tombstone.
+    static func artifacts() -> String {
+        let now = Date().timeIntervalSince1970 * 1000
+        func ago(_ minutes: Double) -> Int { Int(now - minutes * 60_000) }
+        return #"""
+        {"artifacts":[
+          {"id":"roadmap","type":"html","title":"Q4 roadmap","latestVersion":3,"createdAt":1,"updatedAt":\#(ago(190)),
+           "summary":"What ships this quarter: the Feed, covers in every artifact list, and the new onboarding."},
+          {"id":"mockups","type":"image_series","title":"Onboarding mockups","latestVersion":1,"createdAt":1,"updatedAt":1,"deleted":true},
+          {"id":"revenue","type":"html","title":"Q3 revenue review","latestVersion":2,"createdAt":1,"updatedAt":\#(ago(12)),
+           "entry":{"path":"index.html","mimeType":"text/html","size":2048},
+           "cover":{"path":"cover.png","mimeType":"image/png","width":1600,"height":900,"aspect":"wide",
+                    "thumbhash":\#(Self.quoted(Self.media.revenueHash)),"preview":{"width":640,"height":360}},
+           "summary":"Revenue up 18% QoQ, driven by enterprise seats.\n\nEnterprise grew 31% on three new logos (Northwind, Globex, Initech) and 12% expansion across the existing base. Self-serve was flat at $2.1M, with churn down to 1.8% after the onboarding changes.\n\nGross margin held at 78%. Next quarter: price the team plan, ship SSO to every tier, and close the two renewals still in legal.","background":"#0b1f33"},
+          {"id":"latency","type":"image","title":"API latency, last 30 days","latestVersion":1,"createdAt":1,"updatedAt":\#(ago(300)),
+           "entry":{"path":"chart.png","mimeType":"image/png","size":4096},
+           "cover":{"path":"chart.png","mimeType":"image/png","width":1200,"height":1200,"aspect":"square"},
+           "summary":null,"background":null},
+          {"id":"teaser","type":"html","title":"Launch teaser","latestVersion":1,"createdAt":1,"updatedAt":\#(ago(25)),
+           "entry":{"path":"index.html","mimeType":"text/html","size":1024},
+           "cover":{"path":"cover.webp","mimeType":"image/webp","width":640,"height":360,"aspect":"wide",
+                    "thumbhash":\#(Self.quoted(Self.media.teaserHash)),"preview":{"width":640,"height":360}},
+           "summary":"The teaser loop for the launch page.","background":"#0b1f33"},
+          {"id":"whiteboard","type":"image","title":"Whiteboard sketch","latestVersion":1,"createdAt":1,"updatedAt":\#(ago(60 * 30)),
+           "entry":{"path":"sketch.png","mimeType":"image/png","size":80000,"width":1200,"height":900,
+                    "thumbhash":\#(Self.quoted(Self.media.sketchHash)),"preview":{"width":640,"height":480}}},
+          {"id":"notes","type":"markdown","title":"Interview notes with the design partner, the longer write-up","latestVersion":1,"createdAt":1,"updatedAt":\#(ago(60 * 26))},
+          {"id":"walkthrough","type":"video","title":"Onboarding walkthrough","latestVersion":1,"createdAt":1,"updatedAt":\#(ago(60 * 24 * 4))}],
+         "nextPageCursor":null}
+        """#
+    }
     static let todos: [String: String] = [
         "groceries/oat": #"{"todo":{"id":"oat","surfaceId":"groceries","text":"Oat milk","status":"active","version":"1"}}"#,
         "errands/keys": #"{"todo":{"id":"keys","surfaceId":"errands","text":"Pick up the keys","status":"active","version":"1"}}"#,
@@ -62,11 +97,15 @@ private actor FeedComputer: AgentTransport {
     private var clusters: [JSONValue]
     private var counter = 0
     private let live: Bool
+    private let filtering: Bool
     private var continuations: [AsyncThrowingStream<Data, Error>.Continuation] = []
+    /// The live entry comes once, however often the stream opens again.
+    private var arriving = false
     private(set) var requested: [String] = []
 
-    init(live: Bool) {
+    init(live: Bool, filtering: Bool = true) {
         self.live = live
+        self.filtering = filtering
         let now = Date().timeIntervalSince1970 * 1000
         func ago(_ minutes: Double) -> Double { (now - minutes * 60_000).rounded() }
         func item(_ n: Int, _ type: String, _ id: String, cluster: String, latest: String, todo: String? = nil, minutes: Double, created: Bool = false,
@@ -97,7 +136,13 @@ private actor FeedComputer: AgentTransport {
                  actors: [person("ada"), agent("adas-agent")], seen: true),
             item(7, "artifact", "mockups", cluster: "team", latest: "artifact.created", minutes: 60 * 24 * 45, created: true,
                  actors: [person("bo")], seen: true),
-        ]
+            item(8, "artifact", "revenue", cluster: "bot:research", latest: "artifact.updated", minutes: 12, created: true, updates: 1,
+                 actors: [agent("research-agent"), person("ada")]),
+            item(9, "artifact", "latency", cluster: "team", latest: "artifact.created", minutes: 60 * 5, created: true,
+                 actors: [person("bo")], seen: true),
+            item(10, "artifact", "teaser", cluster: "bot:research", latest: "artifact.created", minutes: 25, created: true,
+                 actors: [agent("research-agent")], seen: true),
+        ].sorted { ($0["cursor"]?.stringValue ?? "") > ($1["cursor"]?.stringValue ?? "") }
         func cluster(_ id: String, _ kind: String, state: String?) -> JSONValue {
             .object(["cluster": .string(id), "kind": .string(kind), "state": state.map(JSONValue.string) ?? .null, "lastAt": .number(now)])
         }
@@ -142,16 +187,26 @@ private actor FeedComputer: AgentTransport {
         requested.append("\(method) \(path)")
         let sent = body.flatMap { try? JSONDecoder().decode(JSONValue.self, from: $0) } ?? .null
         if path == "/v0/bootstrap/desktop" { return HTTP1Response(status: 200, body: Data(desktop.utf8)) }
-        if path == "/v0/health" { return try json(.object(["ok": .bool(true), "capabilities": .object(["feed": .bool(true)])])) }
+        if path == "/v0/health" {
+            return try json(.object(["ok": .bool(true), "capabilities": .object([
+                "feed": .bool(true), "feedSubjectFilter": .bool(filtering), "artifactCovers": .bool(true),
+            ])]))
+        }
         if path.hasPrefix("/v0/users?ids=") { return HTTP1Response(status: 200, body: Data(Self.users.utf8)) }
-        if path.hasPrefix("/v0/artifacts?") { return HTTP1Response(status: 200, body: Data(Self.artifacts.utf8)) }
+        if path.hasPrefix("/v0/artifacts?") { return HTTP1Response(status: 200, body: Data(Self.artifacts().utf8)) }
         if path.hasPrefix("/v0/surfaces/todo/"), let todo = Self.todos[String(path.dropFirst("/v0/surfaces/todo/".count))] {
             return HTTP1Response(status: 200, body: Data(todo.utf8))
         }
         if path.hasPrefix("/v0/feed?") {
-            let before = URLComponents(string: path)?.queryItems?.first { $0.name == "before" }?.value
-            let page = items.filter { before == nil || ($0["cursor"]?.stringValue ?? "") < before! }
-            return try json(.object(["items": .array(page), "unread": .number(Double(unread)), "hasMore": .bool(false)]))
+            let query = URLComponents(string: path)?.queryItems ?? []
+            let before = query.first { $0.name == "before" }?.value
+            // An older daemon reads past `subjects`.
+            let subjects = filtering ? query.first { $0.name == "subjects" }?.value.map { $0.split(separator: ",").map(String.init) } : nil
+            let about = items.filter { item in subjects.map { $0.contains(item["subject"]?["type"]?.stringValue ?? "") } ?? true }
+            let page = about.filter { before == nil || ($0["cursor"]?.stringValue ?? "") < before! }
+            var answer: [String: JSONValue] = ["items": .array(page), "unread": .number(Double(unread)), "hasMore": .bool(false)]
+            if subjects != nil { answer["filteredUnread"] = .number(Double(about.filter { $0["seenAt"] == .null }.count)) }
+            return try json(.object(answer))
         }
         if path == "/v0/feed/seen", method == "POST" {
             let subjects = sent["subjects"]?.arrayValue ?? []
@@ -167,7 +222,11 @@ private actor FeedComputer: AgentTransport {
         }
         if path == "/v0/feed/read-all", method == "POST" {
             let through = sent["through"]?.stringValue
-            _ = close { item in through.map { (item["cursor"]?.stringValue ?? "") <= $0 } ?? true }
+            let subjects = filtering ? sent["subjects"]?.arrayValue?.compactMap(\.stringValue) : nil
+            _ = close { item in
+                (through.map { (item["cursor"]?.stringValue ?? "") <= $0 } ?? true)
+                    && (subjects.map { $0.contains(item["subject"]?["type"]?.stringValue ?? "") } ?? true)
+            }
             return try json(.object(["unread": .number(Double(unread))]))
         }
         if path == "/v0/feed/clusters" { return try json(.object(["clusters": .array(clusters)])) }
@@ -191,7 +250,11 @@ private actor FeedComputer: AgentTransport {
             }
             return try json(.object(["cluster": cluster, "entries": .array(entries)]))
         }
-        if let picture = Self.picture(path) { return HTTP1Response(status: 200, headers: ["content-type": "image/png"], body: picture) }
+        if let served = Self.media.served(path) {
+            if served.late { try? await Task.sleep(for: .seconds(2.5)) }
+            return HTTP1Response(status: 200, headers: ["content-type": served.mimeType], body: served.data)
+        }
+        if let picture = Self.picture(path) ?? Self.cover(path) { return HTTP1Response(status: 200, headers: ["content-type": "image/png"], body: picture) }
         return HTTP1Response(status: 404, body: Data(#"{"error":"Not here.","code":"not_found"}"#.utf8))
     }
 
@@ -211,11 +274,130 @@ private actor FeedComputer: AgentTransport {
         }
     }
 
+    static func quoted(_ value: String?) -> String { value.map { "\"\($0)\"" } ?? "null" }
+
+    /// The teaser's animated WebP (`teaser-cover.webp`), the photo, the
+    /// stills a daemon makes of them and of the revenue card, and their
+    /// ThumbHashes, made once.
+    struct Media: Sendable {
+        let teaser: Data
+        let teaserStill: Data
+        let sketchStill: Data
+        let revenue: Data
+        let teaserHash: String?
+        let sketchHash: String?
+        let revenueHash: String?
+
+        init() {
+            teaser = Bundle.main.url(forResource: "teaser-cover", withExtension: "webp").flatMap { try? Data(contentsOf: $0) } ?? Data()
+            teaserStill = Self.still(teaser) ?? Data()
+            let format = UIGraphicsImageRendererFormat()
+            format.scale = 1
+            let sketch = UIGraphicsImageRenderer(size: CGSize(width: 640, height: 480), format: format).pngData { context in
+                UIColor(white: 0.97, alpha: 1).setFill()
+                context.fill(CGRect(x: 0, y: 0, width: 640, height: 480))
+                for (index, color) in [UIColor.systemBlue, .systemRed, .systemGreen].enumerated() {
+                    let path = UIBezierPath()
+                    path.move(to: CGPoint(x: 60, y: 120 + index * 110))
+                    path.addCurve(to: CGPoint(x: 580, y: 140 + index * 100), controlPoint1: CGPoint(x: 220, y: 40 + index * 120), controlPoint2: CGPoint(x: 420, y: 240 + index * 90))
+                    color.setStroke()
+                    path.lineWidth = 14
+                    path.lineCapStyle = .round
+                    path.stroke()
+                }
+            }
+            sketchStill = sketch
+            revenue = FeedComputer.cover("/v0/artifacts/revenue/versions/2/files/cover.png") ?? Data()
+            teaserHash = Self.hash(teaser)
+            sketchHash = Self.hash(sketch)
+            revenueHash = Self.hash(revenue)
+        }
+
+        /// The first frame as a PNG, as a daemon's preview is a still.
+        static func still(_ data: Data) -> Data? {
+            guard let source = CGImageSourceCreateWithData(data as CFData, nil), let frame = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+            return UIImage(cgImage: frame).pngData()
+        }
+
+        static func hash(_ data: Data) -> String? {
+            guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+                  let frame = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 100] as CFDictionary)
+            else { return nil }
+            return ThumbHashEncoder.base64(frame)
+        }
+
+        /// What it serves at `path`, and whether it comes late.
+        func served(_ path: String) -> (data: Data, mimeType: String, late: Bool)? {
+            switch path {
+            case "/v0/artifacts/teaser/versions/1/files/cover.webp": return (teaser, "image/webp", false)
+            case "/v0/artifacts/teaser/versions/1/previews/cover.webp": return (teaserStill, "image/png", false)
+            case "/v0/artifacts/whiteboard/versions/1/previews/sketch.png": return (sketchStill, "image/png", true)
+            case "/v0/artifacts/revenue/versions/2/previews/cover.png": return (revenue, "image/png", false)
+            default: return nil
+            }
+        }
+    }
+
+    static let media = Media()
+
+    /// The covers, drawn as an agent would make them: a title card with
+    /// its headline number, and a square chart, at their own pixel sizes.
+    fileprivate static func cover(_ path: String) -> Data? {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        switch path {
+        case "/v0/artifacts/revenue/versions/2/files/cover.png":
+            let size = CGSize(width: 1600, height: 900)
+            return UIGraphicsImageRenderer(size: size, format: format).pngData { context in
+                UIColor(red: 0.043, green: 0.122, blue: 0.2, alpha: 1).setFill()
+                context.fill(CGRect(origin: .zero, size: size))
+                func text(_ value: String, _ font: UIFont, _ color: UIColor, at point: CGPoint) {
+                    NSAttributedString(string: value, attributes: [.font: font, .foregroundColor: color]).draw(at: point)
+                }
+                text("Q3 REVENUE REVIEW", .systemFont(ofSize: 48, weight: .semibold), UIColor(white: 1, alpha: 0.6), at: CGPoint(x: 110, y: 110))
+                text("+18%", .systemFont(ofSize: 300, weight: .heavy), .white, at: CGPoint(x: 96, y: 170))
+                text("quarter over quarter, led by enterprise seats", .systemFont(ofSize: 52, weight: .regular), UIColor(white: 1, alpha: 0.75), at: CGPoint(x: 110, y: 560))
+                let bars: [CGFloat] = [0.42, 0.5, 0.47, 0.61, 0.66, 0.74, 0.88]
+                for (index, value) in bars.enumerated() {
+                    let height = 260 * value
+                    let color = index == bars.count - 1 ? UIColor.systemGreen : UIColor(white: 1, alpha: 0.22)
+                    color.setFill()
+                    UIBezierPath(roundedRect: CGRect(x: 1010 + CGFloat(index) * 70, y: 760 - height, width: 46, height: height), cornerRadius: 10).fill()
+                }
+            }
+        case "/v0/artifacts/latency/versions/1/files/chart.png":
+            let size = CGSize(width: 1200, height: 1200)
+            return UIGraphicsImageRenderer(size: size, format: format).pngData { context in
+                UIColor(red: 0.98, green: 0.97, blue: 0.94, alpha: 1).setFill()
+                context.fill(CGRect(origin: .zero, size: size))
+                NSAttributedString(string: "p95 latency", attributes: [.font: UIFont.systemFont(ofSize: 64, weight: .bold), .foregroundColor: UIColor.black]).draw(at: CGPoint(x: 90, y: 90))
+                NSAttributedString(string: "212 ms → 148 ms", attributes: [.font: UIFont.systemFont(ofSize: 110, weight: .heavy), .foregroundColor: UIColor.systemIndigo]).draw(at: CGPoint(x: 86, y: 180))
+                let line = UIBezierPath()
+                let values: [CGFloat] = [0.8, 0.78, 0.82, 0.75, 0.7, 0.72, 0.6, 0.55, 0.52, 0.48, 0.5, 0.42, 0.4]
+                for (index, value) in values.enumerated() {
+                    let point = CGPoint(x: 100 + CGFloat(index) * 83, y: 450 + (1 - value) * 600)
+                    index == 0 ? line.move(to: point) : line.addLine(to: point)
+                }
+                UIColor.systemIndigo.setStroke()
+                line.lineWidth = 14
+                line.lineJoinStyle = .round
+                line.stroke()
+                UIColor(white: 0, alpha: 0.15).setFill()
+                context.fill(CGRect(x: 100, y: 1100, width: 1000, height: 3))
+            }
+        default:
+            return nil
+        }
+    }
+
     func stream(path: String, credential: String, headers: [String: String]) async throws -> HTTP1Stream {
         let (body, continuation) = AsyncThrowingStream<Data, Error>.makeStream()
         continuations.append(continuation)
         continuation.yield(Data("event: hello\ndata: {\"cursor\":\"cursor-1\",\"resumed\":true}\n\n".utf8))
-        if live { Task { try? await Task.sleep(for: .seconds(4)); await self.arrive() } }
+        if live, !arriving {
+            arriving = true
+            Task { try? await Task.sleep(for: .seconds(4)); await self.arrive() }
+        }
         return HTTP1Stream(status: 200, body: body)
     }
 
@@ -271,7 +453,7 @@ final class AgentFeedHarness {
     }
 
     private func open(window: HarnessWindow, arguments: [String]) async {
-        let computer = FeedComputer(live: arguments.contains("-live"))
+        let computer = FeedComputer(live: arguments.contains("-live"), filtering: !arguments.contains("-noSubjectFilter"))
         let account = AccountController(
             serverConfig: ServerConfig(storage: InMemoryKeyValueStore()), clientID: "ios/agent-feed",
             credentialStore: InMemoryCredentialStore(), storeDirectory: nil,
@@ -299,6 +481,10 @@ final class AgentFeedHarness {
             if let tab = arguments.firstIndex(of: "-tab"), arguments.indices.contains(tab + 1), arguments[tab + 1] == "following" {
                 feed.loadViewIfNeeded()
                 feed.showFollowing()
+            }
+            if let index = arguments.firstIndex(of: "-filter"), arguments.indices.contains(index + 1), let filter = FeedFilter(rawValue: arguments[index + 1]) {
+                feed.loadViewIfNeeded()
+                feed.choose(filter)
             }
         } catch {
             print("AGENT_FEED error: \(error)")
@@ -350,6 +536,15 @@ private final class FeedScript {
         try? image.pngData()?.write(to: folder.appendingPathComponent("\(name)-\(style).png"))
     }
 
+    /// A post's cover has its picture, somewhere on screen.
+    private func coverCount(in view: UIView) -> Int {
+        ((view as? FeedCoverView)?.loaded == true ? 1 : 0) + view.subviews.reduce(0) { $0 + coverCount(in: $1) }
+    }
+
+    private func coverShown(in view: UIView) -> Bool {
+        (view as? FeedCoverView)?.loaded == true || view.subviews.contains { coverShown(in: $0) }
+    }
+
     private func feedRow() -> Row? { session.home.rows.first { $0.targetKind == "feed" } }
 
     private func entry(_ id: String, in list: CardListView) -> CardItem? { list.items.first { $0.id == id } }
@@ -361,7 +556,7 @@ private final class FeedScript {
     func run() async {
         let started = Date()
         check("home lists the Feed", await until(20) { feedRow() != nil })
-        check("the Feed row counts what is unread", await until { feedRow()?.count == 3 }, "count \(String(describing: feedRow()?.count))")
+        check("the Feed row counts what is unread", await until { feedRow()?.count == 4 }, "count \(String(describing: feedRow()?.count))")
         await shoot("feed-home")
 
         let feed = FeedViewController(session: session)
@@ -378,6 +573,93 @@ private final class FeedScript {
         check("a todo list says its newest todo", entry("item-2", in: list)?.accessibilityValue?.contains("Oat milk") == true, entry("item-2", in: list)?.accessibilityValue ?? "")
         await shoot("feed-activity")
 
+        // A covered artifact is a post: its row, its summary, its cover at
+        // the cover's shape; one without a cover stays a row.
+        let post = entry("item-8", in: list)
+        check("a covered artifact is a post", post?.overlays.contains { $0.kind == FeedListItems.coverKind } == true && (post?.size.height ?? 0) > 200,
+              "height \(post?.size.height ?? 0)")
+        let cover = post?.overlays.first { $0.kind == FeedListItems.coverKind }?.frame
+        check("its cover is 16:9 across the card", cover.map { abs($0.height - ($0.width * 9 / 16)) < 1 } ?? false, "\(cover.map { "\($0)" } ?? "none")")
+        check("and says its summary", post?.accessibilityValue?.contains("Revenue up 18% QoQ") == true, post?.accessibilityValue ?? "")
+        let caption = { (id: String) in self.entry(id, in: list)?.overlays.first { $0.kind == FeedListItems.toggleKind } }
+        let collapsed = post?.size.height ?? 0
+        check("a long summary is cut with Show more", caption("item-8")?.key.hasSuffix("|false") == true, caption("item-8")?.key ?? "none")
+        let square = entry("item-9", in: list)?.overlays.first { $0.kind == FeedListItems.coverKind }?.frame
+        check("a square chart is as tall as it is wide", square.map { abs($0.height - $0.width) < 1 } ?? false)
+        check("a summary without a cover is a post of words", entry("item-3", in: list).map {
+            !$0.overlays.contains { $0.kind == FeedListItems.coverKind } && caption("item-3") == nil && $0.size.height > 64 && $0.size.height < 160
+        } ?? false, "height \(entry("item-3", in: list)?.size.height ?? 0)")
+        check("an artifact with neither stays a row", entry("item-7", in: list).map { item in
+            !item.overlays.contains { $0.kind == FeedListItems.coverKind || $0.kind == FeedListItems.toggleKind } && item.size.height < 70
+        } ?? false, "height \(entry("item-7", in: list)?.size.height ?? 0)")
+        check("the cover arrives", await until { coverShown(in: feed.view) }, "")
+        await shoot("feed-covers")
+
+        // Show more opens the summary in place; the cover keeps its shape
+        // under it; a tap on Show less cuts it again.
+        feed.toggleSummary("item-8")
+        check("Show more opens it in full", await until { caption("item-8")?.key.hasSuffix("|true") == true && (self.entry("item-8", in: list)?.size.height ?? 0) > collapsed + 60 },
+              "\(collapsed) → \(entry("item-8", in: list)?.size.height ?? 0)")
+        let opened = entry("item-8", in: list)?.overlays.first { $0.kind == FeedListItems.coverKind }?.frame
+        check("the cover keeps its shape under it", opened.map { abs($0.height - ($0.width * 9 / 16)) < 1 && $0.minY > (cover?.minY ?? 0) } ?? false, "\(opened.map { "\($0)" } ?? "none")")
+        await shoot("feed-expanded")
+        if let less = caption("item-8")?.frame { list.onSelectAt?("item-8", CGPoint(x: less.midX, y: less.midY)) }
+        check("Show less cuts it again", await until { caption("item-8")?.key.hasSuffix("|false") == true && self.entry("item-8", in: list)?.size.height == collapsed })
+        check("and the screen stayed", navigation.topViewController === feed)
+
+        // The teaser's cover is an animated WebP: it plays while it is on
+        // screen, holds its frame off it, and stands still under Reduce Motion.
+        func teaser() -> FeedCoverView? {
+            guard let cover = feed.rows["item-10"]?.post?.cover else { return nil }
+            return list.rowView("item-10")?.overlay(FeedListItems.coverKey("item-10", cover)) as? FeedCoverView
+        }
+        check("a moving cover is a post", entry("item-10", in: list)?.overlays.contains { $0.kind == FeedListItems.coverKind } == true)
+        list.scroll(to: "item-10", animated: false)
+        check("it plays", await until { (teaser()?.animation?.advanced ?? 0) > 6 }, "\(teaser()?.animation?.advanced ?? -1) frames")
+        check("frame by frame, as the file says", (teaser()?.animation?.timing.delays.count ?? 0) > 10 && teaser()?.animation?.timing.loops == 0,
+              "\(teaser()?.animation?.timing.delays.count ?? 0) frames, \(teaser()?.animation?.timing.delays.first ?? 0) s")
+        await shoot("feed-animated")
+        let played = teaser()
+        list.scroll(to: "item-7", animated: false)
+        try? await Task.sleep(for: .milliseconds(300))
+        let held = played?.animation?.advanced ?? 0
+        try? await Task.sleep(for: .seconds(1))
+        check("off screen it holds its frame", (played?.animation?.advanced ?? 0) == held, "\(held) → \(played?.animation?.advanced ?? 0)")
+        list.scroll(to: "item-10", animated: false)
+        check("back on screen it plays again", await until {
+            guard let again = teaser()?.animation, again.playing else { return false }
+            return again.advanced > (teaser() === played ? held : 0) + 3
+        })
+        CoverAnimation.reduceMotion = { true }
+        NotificationCenter.default.post(name: UIAccessibility.reduceMotionStatusDidChangeNotification, object: nil)
+        try? await Task.sleep(for: .milliseconds(200))
+        let still = teaser()?.animation?.advanced ?? 0
+        try? await Task.sleep(for: .seconds(1))
+        check("under Reduce Motion it shows its first frame", teaser()?.animation?.index == 0 && teaser()?.animation?.advanced == still && teaser()?.animation?.playing == false)
+        await shoot("feed-reduce-motion")
+        CoverAnimation.reduceMotion = { UIAccessibility.isReduceMotionEnabled }
+        NotificationCenter.default.post(name: UIAccessibility.reduceMotionStatusDidChangeNotification, object: nil)
+        list.scrollToTop(animated: false)
+
+        // Highlights: artifacts and tasks only, as the bar's filter picks it.
+        feed.choose(.highlights)
+        let highlighted: Set<String> = ["item-1", "item-3", "item-6", "item-7", "item-8", "item-9", "item-10"]
+        check("Highlights shows artifacts and tasks only", await until {
+            let rows = Set(list.items.filter { $0.kind == .row }.map(\.id))
+            return rows == highlighted
+        }, list.items.filter { $0.kind == .row }.map(\.id).joined(separator: ", "))
+        check("the post shows there too", entry("item-8", in: list)?.overlays.contains { $0.kind == FeedListItems.coverKind } == true)
+        check("the cover arrives there too", await until { coverShown(in: feed.view) })
+        list.scrollToTop(animated: false)
+        await shoot("feed-highlights")
+        // The square chart whole.
+        list.scroll(to: "item-3", animated: false)
+        check("the square's cover arrives", await until { coverShown(in: feed.view) })
+        await shoot("feed-highlights-square")
+        list.scrollToTop(animated: false)
+        feed.choose(.all)
+        check("All shows everything again", await until { entry("item-2", in: list) != nil && entry("item-5", in: list) != nil })
+
         // Steve names his task on desktop: that row follows, no other is touched.
         let others = Dictionary(uniqueKeysWithValues: list.items.filter { $0.kind == .row && $0.id != "item-1" }.map { ($0.id, $0.revision) })
         await computer.rename()
@@ -389,7 +671,7 @@ private final class FeedScript {
         check("a new entry arrives over the stream", await until(15) { unread("item-50", in: list) })
         check("it is named from its Surface", title("item-50", in: list) == "Errands", title("item-50", in: list))
         check("and says the todo added", await until { entry("item-50", in: list)?.accessibilityValue?.contains("Pick up the keys") == true }, entry("item-50", in: list)?.accessibilityValue ?? "")
-        check("its count follows on home", await until { feedRow()?.count == 4 }, "count \(String(describing: feedRow()?.count))")
+        check("its count follows on home", await until { feedRow()?.count == 5 }, "count \(String(describing: feedRow()?.count))")
         list.scrollToTop(animated: false)
         await shoot("feed-live")
 
@@ -400,7 +682,7 @@ private final class FeedScript {
         navigation.popViewController(animated: true)
         _ = await until { navigation.topViewController === feed }
         check("an opened entry is seen", await until { !unread("item-2", in: list) })
-        check("and counted off", await until { feedRow()?.count == 3 }, "count \(String(describing: feedRow()?.count))")
+        check("and counted off", await until { feedRow()?.count == 4 }, "count \(String(describing: feedRow()?.count))")
 
         feed.readAll()
         check("Mark All Read leaves nothing unread", await until { list.items.allSatisfy { $0.accessibilityValue?.hasPrefix("Unread") != true } })
@@ -425,6 +707,35 @@ private final class FeedScript {
             check("under the place's name", peek.title == "Research", peek.title ?? "")
         }
         await shoot("feed-peek")
+
+        // The artifacts list: a 16:9 slot in every row, a wide cover filling
+        // it, a square whole in its middle, the rest their kind's glyph.
+        let artifacts = ArtifactsViewController(session: session)
+        navigation.pushViewController(artifacts, animated: true)
+        let catalog = artifacts.list
+        check("the artifacts list loads", await until { catalog.items.filter { $0.kind == .row }.count == 7 },
+              catalog.items.filter { $0.kind == .row }.map(\.id).joined(separator: ", "))
+        let rows = catalog.items.filter { $0.kind == .row }
+        check("every artifact row is one height", Set(rows.map(\.size.height)).count == 1, rows.map { "\($0.size.height)" }.joined(separator: ", "))
+        let wideSlot = rows.first { $0.id == "revenue" }?.overlays.first?.frame
+        check("a wide cover fills its slot", wideSlot?.size == ArtifactListMetrics.slot, "\(wideSlot.map { "\($0)" } ?? "none")")
+        let squareSlot = rows.first { $0.id == "latency" }?.overlays.first?.frame
+        check("a square stands whole in the middle", squareSlot?.size == CGSize(width: 40, height: 40), "\(squareSlot.map { "\($0)" } ?? "none")")
+        let pictured: Set<String> = ["revenue", "latency", "teaser", "whiteboard"]
+        check("the rest show their glyph", rows.filter { !pictured.contains($0.id) }.allSatisfy { $0.overlays.isEmpty })
+        // The photo's still is the daemon's preview, late: its ThumbHash first.
+        func slot(_ id: String) -> FeedCoverView? {
+            guard let artifact = artifacts.artifacts[id] else { return nil }
+            let key = artifact.coverPath.map(ArtifactListItems.coverKey) ?? ArtifactListItems.thumbnailKey(artifact)
+            return catalog.rowView(id)?.overlay(key) as? FeedCoverView
+        }
+        check("a photo's ThumbHash stands in for its still", await until { slot("whiteboard")?.placeholder == true }, "\(String(describing: slot("whiteboard")))")
+        await shoot("artifacts-placeholder")
+        check("then the daemon's still arrives", await until { slot("whiteboard")?.loaded == true })
+        check("the covers arrive in the list", await until { coverCount(in: artifacts.view) >= 4 }, "\(coverCount(in: artifacts.view))")
+        try? await Task.sleep(for: .milliseconds(600))
+        check("a moving cover stands still in the list", slot("teaser")?.loaded == true && slot("teaser")?.animation == nil)
+        await shoot("artifacts")
 
         let report: [String: Any] = ["style": style, "seconds": Date().timeIntervalSince(started), "checks": checks,
                                      "passed": checks.allSatisfy { $0["passed"] as? Bool == true }]

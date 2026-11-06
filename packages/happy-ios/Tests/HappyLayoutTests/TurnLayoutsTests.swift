@@ -48,12 +48,12 @@ final class TurnLayoutsTests: XCTestCase {
         let result = ToolResultLayout(width: 390, line: line, parts: [.media([screenshot, screenshot], columns: 2)])
         XCTAssertEqual(result.line, line)
         guard result.body.parts.count == 1, case .media(let frames) = result.body.parts[0] else { return XCTFail("one grid") }
-        // 358 across two columns, 8 between, is 175 each; nothing crops, so
-        // each is that wide at the picture's own 1228:550.
-        let picture: CGFloat = 175 / (1228.0 / 550)
-        XCTAssertEqual(picture, 78.38, accuracy: 0.01)
-        XCTAssertEqual(frames, [rect(16, 34, 175, picture), rect(199, 34, 175, picture)])
-        XCTAssertEqual(result.size, CGSize(width: 390, height: 34 + picture + 6))
+        let imageHeight: CGFloat = 175 * 550 / 1228
+        XCTAssertEqual(frames.count, 2)
+        for (frame, x) in zip(frames, [CGFloat(16), 199]) {
+            assertFrame(frame, rect(x, 34, 175, imageHeight))
+        }
+        assertSize(result.size, CGSize(width: 390, height: 34 + imageHeight + 6))
     }
 
     // MARK: How a turn ended

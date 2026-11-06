@@ -196,7 +196,7 @@ final class ArtifactsViewController: UIViewController, UISearchResultsUpdating {
 
     private func open(_ id: String) {
         guard let artifact = artifacts[id] else { return }
-        navigationController?.pushViewController(ArtifactViewController(session: session, artifact: artifact.artifact), animated: true)
+        openArtifact(artifact.artifact, session: session)
     }
 
     private func menu(_ id: String) -> UIMenu? {
@@ -208,12 +208,29 @@ final class ArtifactsViewController: UIViewController, UISearchResultsUpdating {
         ])
     }
 
+    /// A row's picture, still: the daemon's preview of its cover, else of
+    /// its picture or recording (its first frame, its poster), through the
+    /// computer's images as the Feed's posts read theirs, over its
+    /// ThumbHash. Without a preview, an older daemon's: the cover itself,
+    /// else the picture's own file or first frame (`ArtifactThumbnails`).
     private func makeOverlay(_ overlay: CardOverlay, id: String) -> UIView? {
-        guard overlay.kind == "thumbnail", let artifact = artifacts[id] else { return nil }
-        let view = ArtifactThumbnailView(radius: overlay.radius)
-        let pixels = Int((overlay.frame.width * max(traitCollection.displayScale, 2)).rounded(.up))
-        thumbnails.show(artifact, in: view, pixels: pixels)
-        return view
+        guard let artifact = artifacts[id] else { return nil }
+        let scale = traitCollection.displayScale
+        if overlay.kind == ArtifactListItems.thumbnailKind {
+            if let path = artifact.entryPreviewPath, let entry = artifact.entry, let preview = entry.preview {
+                return FeedCoverView(image: path, width: preview.width, height: preview.height, thumbhash: entry.thumbhash,
+                                     frame: overlay.frame, radius: overlay.radius, displayScale: scale, images: session.images)
+            }
+            let view = ArtifactThumbnailView(radius: overlay.radius)
+            view.image = ThumbHashImages.image(artifact.entry?.thumbhash)
+            let pixels = Int((max(overlay.frame.width, overlay.frame.height) * max(scale, 2)).rounded(.up))
+            thumbnails.show(artifact, in: view, pixels: pixels)
+            return view
+        }
+        guard overlay.kind == ArtifactListItems.coverKind, let cover = artifact.cover, let path = artifact.coverPath else { return nil }
+        let still = artifact.coverPreviewPath.flatMap { path in cover.preview.map { (path, $0.width, $0.height) } } ?? (path, cover.width, cover.height)
+        return FeedCoverView(image: still.0, width: still.1, height: still.2, thumbhash: cover.thumbhash,
+                             frame: overlay.frame, radius: overlay.radius, displayScale: scale, images: session.images)
     }
 }
 #endif

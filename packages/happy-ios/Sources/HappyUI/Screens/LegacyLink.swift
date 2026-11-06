@@ -1,4 +1,5 @@
 #if canImport(UIKit)
+import HappyAnalytics
 import HappyCore
 import UIKit
 
@@ -67,6 +68,12 @@ final class LegacyLink {
 
     var headerState: LinkState { Self.headerState(status: status, catchingUp: catchingUp, network: network) }
 
+    /// The socket down, or no network at all, is the relay out of reach.
+    private func report() {
+        guard let session else { return }
+        Analytics.shared.relayLinkChanged(session, down: !network || status != .connected, network: network)
+    }
+
     /// What headers show of the link, now and on every change.
     func watch(_ watch: @escaping (LinkState) -> Void) -> Watch {
         indicator.watch(watch)
@@ -77,6 +84,7 @@ final class LegacyLink {
     func receive(status: RealtimeStatus) {
         self.status = status
         indicator.want(headerState)
+        report()
     }
 
     func receive(catchingUp: Bool) {
@@ -87,6 +95,7 @@ final class LegacyLink {
     func receive(network: Bool) {
         self.network = network
         indicator.want(headerState)
+        report()
     }
 }
 #endif

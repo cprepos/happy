@@ -1,4 +1,5 @@
 #if canImport(UIKit)
+import HappyAnalytics
 import HappyCore
 import HappyLayout
 import HappyWire
@@ -10,10 +11,25 @@ import UIKit
 /// linked ones through the computer's network. Images, image series and
 /// videos show natively (`ArtifactGalleryView`), opening in the viewer.
 /// Other entries use the shared browser with an artifact-scoped file/API
-/// origin over the agent connection.
+/// origin over the agent connection, but for an app (`ArtifactPageMode`),
+/// which is presented full screen (`AppPageViewController`) in its place.
+/// A vault entry's version shows the same way (`Vault`), its files read
+/// through the vault's routes and its page on an origin with no bridge.
 final class ArtifactViewController: UIViewController, ChatMediaProviding {
+    /// A vault entry's version, as a version of an artifact: a file is
+    /// its one file, an app its manifest.
+    struct Vault {
+        let surfaceId: String
+        let entryId: String
+        let version: AgentWire.ArtifactVersion
+        let files: ArtifactMedia.Files
+        /// An app, whose files open as pages; a file has no page.
+        let app: Bool
+    }
+
     private let session: Session
     private let artifact: Artifact
+    private let vault: Vault?
     /// Opened from a link in another of its files: that version, that file.
     private let opened: (version: AgentWire.ArtifactVersion, path: String)?
     private var version: AgentWire.ArtifactVersion?
@@ -33,6 +49,9 @@ final class ArtifactViewController: UIViewController, ChatMediaProviding {
     private var plannedSizes = 0
     private var gallery: ArtifactGalleryView?
     private var browser: BrowserViewController?
+    /// An app's version and file, and the button that opens it again.
+    private var app: (version: Int, entry: String, close: ArtifactAppClose)?
+    private var openButton: UIButton?
     private var loading: Task<Void, Never>?
     /// How long the first drawing waits for the pictures' sizes, so it
     /// doesn't jump as they arrive.
@@ -43,6 +62,7 @@ final class ArtifactViewController: UIViewController, ChatMediaProviding {
     init(session: Session, artifact: Artifact) {
         self.session = session
         self.artifact = artifact
+        vault = nil
         opened = nil
         super.init(nibName: nil, bundle: nil)
         title = artifact.title.isEmpty ? Strings.untitledArtifact : artifact.title
@@ -53,9 +73,22 @@ final class ArtifactViewController: UIViewController, ChatMediaProviding {
     init(session: Session, artifact: Artifact, version: AgentWire.ArtifactVersion, path: String) {
         self.session = session
         self.artifact = artifact
+        vault = nil
         opened = (version, path)
         super.init(nibName: nil, bundle: nil)
         title = (path as NSString).lastPathComponent
+        navigationItem.largeTitleDisplayMode = .never
+    }
+
+    /// A vault entry's version at its entry, or at `path`, a file of it a
+    /// link opened.
+    init(session: Session, vault: Vault, path: String? = nil) {
+        self.session = session
+        self.vault = vault
+        artifact = Artifact(id: vault.entryId, version: vault.version.number, type: vault.app ? "html" : "file", title: vault.version.title, followsLatest: false)
+        opened = (vault.version, path ?? vault.version.entry?.path ?? "")
+        super.init(nibName: nil, bundle: nil)
+        title = path.map { ($0 as NSString).lastPathComponent } ?? vault.version.title
         navigationItem.largeTitleDisplayMode = .never
     }
 
@@ -66,8 +99,10 @@ final class ArtifactViewController: UIViewController, ChatMediaProviding {
         view.backgroundColor = UIColor(Palette.surface)
         view.accessibilityIdentifier = "artifact"
         // Opened: the Feed counts the artifact seen.
-        let subject = FeedSubject(type: "artifact", id: artifact.id)
-        Task { [feed = session.engine.feed] in await feed.seen(subject) }
+        if vault == nil {
+            let subject = FeedSubject(type: "artifact", id: artifact.id)
+            Task { [feed = session.engine.feed] in await feed.seen(subject) }
+        }
         scrollView.alwaysBounceVertical = true
         view.addSubview(scrollView)
         message.font = Fonts.ui(.regular, size: 15)
@@ -82,11 +117,16 @@ final class ArtifactViewController: UIViewController, ChatMediaProviding {
         scrollView.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tapped(_:))))
         // The artifact, at the version it was pinned to; a file a link
         // opened inside it has no link of its own.
-        if opened == nil {
+        if opened == nil, vault == nil {
             let target = HappyLink.Target.reference(.init(kind: .artifact, id: artifact.id, version: artifact.pinned ? artifact.version : nil))
             navigationItem.rightBarButtonItem = CopyLinkItem.make(target, instanceId: session.instanceId, identifier: "artifact-copy-link")
         }
         loading = Task { [weak self] in await self?.load() }
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        if app != nil, openButton == nil { presentApp() }
     }
 
     override func viewDidDisappear(_ animated: Bool) {
@@ -115,7 +155,8 @@ final class ArtifactViewController: UIViewController, ChatMediaProviding {
             guard let file = version.files.first(where: { $0.path == path }) ?? (path == entry.path ? entry : nil) else {
                 return show(message: Strings.artifactUnavailable)
             }
-            let media = ArtifactMedia(client: client, artifactId: artifact.id, version: version.number, library: session.media)
+            let media = vault.map { ArtifactMedia(client: client, files: $0.files, library: session.media, workspace: { throw BrowserError.unavailable }) }
+                ?? ArtifactMedia(client: client, artifactId: artifact.id, version: version.number, library: session.media)
             self.media = media
             if Self.isMarkdown(file) {
                 try await showDocument(file, version: version, media: media)
@@ -123,13 +164,17 @@ final class ArtifactViewController: UIViewController, ChatMediaProviding {
                 // An image series is all of its pictures, in path order.
                 let shown = file == entry ? version.files.filter(ArtifactMedia.isVisual) : [file]
                 await showGallery(shown.isEmpty ? [file] : shown, media: media)
+            } else if vault?.app == false {
+                show(message: Strings.artifactUnavailable)
             } else {
                 try await showWeb(version: version.number, entry: file.path)
             }
         } catch is CancellationError {
         } catch AgentClientError.status(404, _, _) {
+            Analytics.shared.artifactLoadFailed(nil, isFile: vault != nil)
             show(message: Strings.artifactDeleted)
         } catch {
+            Analytics.shared.artifactLoadFailed(error, isFile: vault != nil)
             show(message: Strings.artifactUnavailable)
         }
     }
@@ -299,6 +344,8 @@ final class ArtifactViewController: UIViewController, ChatMediaProviding {
             if ArtifactMedia.isVisual(file), !Self.isMarkdown(file) {
                 let shown = media.media(file)
                 openViewer([Picture(key: shown.key, thumbhash: nil, label: shown.label, size: media.knownSize(shown.key), isVideo: shown.isVideo)], index: 0)
+            } else if let vault {
+                navigationController?.pushViewController(ArtifactViewController(session: session, vault: vault, path: path), animated: true)
             } else {
                 navigationController?.pushViewController(ArtifactViewController(session: session, artifact: artifact, version: version, path: path), animated: true)
             }
@@ -371,9 +418,64 @@ final class ArtifactViewController: UIViewController, ChatMediaProviding {
     // MARK: Pages
 
     private func showWeb(version: Int, entry: String) async throws {
+        if let vault {
+            let page = try await BrowserPage.vault(client: session.client, surfaceId: vault.surfaceId, entryId: vault.entryId, version: version, entry: entry)
+            try Task.checkCancellation()
+            return showBrowser(BrowserViewController(url: page.url, session: session, page: page))
+        }
+        let declared = try? await session.client.artifactPage(artifact.id, version: version, path: entry, isEntry: opened == nil)
+        try Task.checkCancellation()
+        if let declared, declared.mode == .app { return showApp(version: version, entry: entry, close: declared.close) }
         let page = try await BrowserPage.artifact(client: session.client, id: artifact.id, version: version, entry: entry)
         try Task.checkCancellation()
         showBrowser(BrowserViewController(url: page.url, session: session, artifactID: artifact.id, page: page))
+    }
+
+    /// An app opens full screen over everything, and this viewer steps out
+    /// from under it, so closing it goes back to where it was opened from.
+    /// As a stack's root it stays, offering to open it again.
+    private func showApp(version: Int, entry: String, close: ArtifactAppClose) {
+        spinner.stopAnimating()
+        scrollView.isHidden = true
+        app = (version, entry, close)
+        presentApp()
+    }
+
+    private func presentApp() {
+        guard let app else { return }
+        // Not on screen yet, or still being pushed: once it is.
+        guard view.window != nil, presentedViewController == nil else { return }
+        if let coordinator = navigationController?.transitionCoordinator {
+            coordinator.animate(alongsideTransition: nil) { [weak self] context in
+                if !context.isCancelled { self?.presentApp() }
+            }
+            return
+        }
+        let controller = AppPageViewController(session: session, artifactID: artifact.id, version: app.version, entry: app.entry, close: app.close, title: title ?? "")
+        let navigation = navigationController
+        guard let navigation, navigation.viewControllers.first !== self, navigation.topViewController === self else {
+            showOpenButton()
+            present(controller, animated: true)
+            return
+        }
+        navigation.present(controller, animated: true) { [weak self, weak navigation] in
+            guard let self, let navigation else { return }
+            navigation.setViewControllers(navigation.viewControllers.filter { $0 !== self }, animated: false)
+        }
+    }
+
+    private func showOpenButton() {
+        guard openButton == nil else { return }
+        var configuration = UIButton.Configuration.filled()
+        configuration.title = Strings.ArtifactApp.open
+        configuration.image = .icon(.ionicons("game-controller"), size: 18)
+        configuration.imagePadding = 8
+        configuration.cornerStyle = .capsule
+        let button = UIButton(configuration: configuration, primaryAction: UIAction { [weak self] _ in self?.presentApp() })
+        button.accessibilityIdentifier = "artifact-app-open"
+        view.addSubview(button)
+        openButton = button
+        view.setNeedsLayout()
     }
 
     private func showBrowser(_ browser: BrowserViewController) {
@@ -390,6 +492,10 @@ final class ArtifactViewController: UIViewController, ChatMediaProviding {
         scrollView.frame = view.bounds
         gallery?.frame = view.bounds
         browser?.view.frame = view.bounds
+        if let openButton {
+            let size = openButton.sizeThatFits(view.bounds.size)
+            openButton.frame = CGRect(x: (view.bounds.width - size.width) / 2, y: (view.bounds.height - size.height) / 2, width: size.width, height: size.height)
+        }
         spinner.setLayoutFrame(ArtifactMediaLayout.spinner(size: view.bounds.size, safeArea: LayoutInsets(view.safeAreaInsets)))
         let width = view.bounds.width
         if documentText != nil, width > 0, plannedWidth != width {

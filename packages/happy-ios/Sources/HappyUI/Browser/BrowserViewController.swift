@@ -1,4 +1,5 @@
 #if canImport(UIKit)
+import HappyAnalytics
 import HappyCore
 import HappyIcons
 import HappyLayout
@@ -14,6 +15,10 @@ import WebKit
 ///
 /// Embedded in another screen (an artifact), the buttons go in that
 /// screen's header and its title stays.
+///
+/// An app (`ArtifactPageMode`, in `AppPageViewController`) has no header,
+/// loading bar or pull to refresh: its page fills the view, never scrolls,
+/// bounces or zooms, and runs with `AppPageScripts`.
 final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, TakesBackSwipe {
     let originalURL: URL
     private let session: Session?
@@ -49,6 +54,13 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
     private var crashReload: WKNavigation?
     private var link: LinkState?
     private var linkWatch: Watch?
+    private let isApp: Bool
+    /// Where an app's close button is, as its page is told.
+    var appClose = AppPageScripts.Close(corner: .topStart, box: 0, rightToLeft: false)
+    /// An app's page finished loading.
+    var appLoaded: (() -> Void)?
+    /// An app's page asked to close (`happyApp.close()`).
+    var appClosed: (() -> Void)?
     /// Every value the loading bar takes, in order (tests).
     var progressChanged: ((BrowserProgress) -> Void)?
     /// Called with the page's configuration before its web view is made:
@@ -67,8 +79,9 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
     lazy var reloadItem = UIBarButtonItem(primaryAction: UIAction(image: .icon(.ionicons("refresh"), size: 22)) { [weak self] _ in self?.reloadOrStop() })
     lazy var shareItem = UIBarButtonItem(image: .icon(.ionicons("share-outline"), size: 22), menu: UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] done in done(self?.shareActions() ?? []) }]))
 
-    init(url: URL, session: Session? = nil, agentID: String? = nil, artifactID: String? = nil, workspace: (@Sendable () async throws -> String)? = nil, page: BrowserPage? = nil, extraItems: [UIBarButtonItem] = []) {
+    init(url: URL, session: Session? = nil, agentID: String? = nil, artifactID: String? = nil, workspace: (@Sendable () async throws -> String)? = nil, page: BrowserPage? = nil, extraItems: [UIBarButtonItem] = [], app: Bool = false) {
         originalURL = url; self.session = session; self.agentID = agentID; self.artifactID = artifactID; self.workspace = workspace; self.page = page; self.extraItems = extraItems
+        isApp = app
         super.init(nibName: nil, bundle: nil)
         title = Self.isSynthetic(url) ? nil : url.host
         navigationItem.largeTitleDisplayMode = .never
@@ -106,6 +119,7 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
         shareItem.accessibilityLabel = Strings.Browser.share
         shareItem.accessibilityIdentifier = "browser-share"
         for child in [failureView, progressView] { view.addSubview(child) }
+        progressView.isHidden = isApp
         installHeader()
         if let session {
             linkWatch = session.watchHeader { [weak self] state in self?.linkChanged(state) }
@@ -122,6 +136,7 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
     /// two glass groups, any `extraItems` outermost; the system back button
     /// keeps the left.
     private func installHeader() {
+        guard !isApp else { return }
         let item = header.navigationItem
         let extra: [UIBarButtonItem] = extraItems.isEmpty ? [] : extraItems + [.fixedSpace(0)]
         item.rightBarButtonItems = extra + [shareItem, reloadItem, .fixedSpace(0), forwardItem, backItem]
@@ -162,19 +177,8 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
         let web = WKWebView(frame: view.bounds, configuration: page.configuration)
         web.accessibilityIdentifier = "browser-web"
         web.navigationDelegate = self; web.uiDelegate = self
-        web.allowsBackForwardNavigationGestures = !isRemoteScreen
-        // Until the page paints, the screen's own surface shows through:
-        // no white flash in dark mode.
-        web.isOpaque = false
-        web.backgroundColor = UIColor(Palette.surface)
-        web.scrollView.backgroundColor = UIColor(Palette.surface)
-        if isRemoteScreen {
-            lockRemoteScreen(web)
-        } else {
-            web.scrollView.refreshControl = refresh
-        }
-        HeaderBar.edge(web.scrollView, in: header)
         self.web = web
+        if isApp { makeApp(web) } else { makePage(web) }
         view.insertSubview(web, at: 0)
         observations = [
             web.observe(\.estimatedProgress) { [weak self] web, _ in
@@ -190,6 +194,52 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
         ]
         view.setNeedsLayout()
         return web
+    }
+
+    private func makePage(_ web: WKWebView) {
+        web.allowsBackForwardNavigationGestures = !isRemoteScreen
+        // Until the page paints, the screen's own surface shows through:
+        // no white flash in dark mode.
+        web.isOpaque = false
+        web.backgroundColor = UIColor(Palette.surface)
+        web.scrollView.backgroundColor = UIColor(Palette.surface)
+        if isRemoteScreen {
+            lockRemoteScreen(web)
+        } else {
+            web.scrollView.refreshControl = refresh
+        }
+        HeaderBar.edge(web.scrollView, in: header)
+    }
+
+    /// Nothing of the browser's: no swipe back or forward, no link
+    /// previews, and a page that stays where it is under the finger.
+    private func makeApp(_ web: WKWebView) {
+        view.backgroundColor = .black
+        let content = web.configuration.userContentController
+        content.removeScriptMessageHandler(forName: AppPageScripts.modeMessage)
+        content.add(AppPageScripts.Modes { [weak self] app in self?.appDeclared(app) }, name: AppPageScripts.modeMessage)
+        content.removeScriptMessageHandler(forName: AppPageScripts.appMessage)
+        content.add(AppPageScripts.Requests { [weak self] in self?.appClosed?() }, name: AppPageScripts.appMessage)
+        AppPageScripts.install(in: content, close: appClose)
+        web.allowsBackForwardNavigationGestures = false
+        web.allowsLinkPreview = false
+        web.isOpaque = false
+        web.backgroundColor = view.backgroundColor
+        web.scrollView.backgroundColor = view.backgroundColor
+        web.scrollView.contentInsetAdjustmentBehavior = .never
+        web.scrollView.keyboardDismissMode = .none
+        appDeclared(true)
+    }
+
+    /// A document in the app's frame said what it is: an app stays put;
+    /// one that isn't (a link inside it) scrolls as a page would.
+    private func appDeclared(_ app: Bool) {
+        guard let scrollView = web?.scrollView else { return }
+        scrollView.isScrollEnabled = !app
+        scrollView.bounces = !app
+        scrollView.alwaysBounceVertical = false
+        scrollView.alwaysBounceHorizontal = false
+        scrollView.pinchGestureRecognizer?.isEnabled = !app
     }
 
     private func load(_ url: URL, in web: WKWebView) {
@@ -233,6 +283,7 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
 
     private func fail(_ problem: BrowserProblem, url: URL?, beforeCommit: Bool) {
         self.problem = problem
+        Analytics.shared.browserLoadFailed(problem)
         failedURL = url ?? failedURL ?? originalURL
         failedBeforeCommit = beforeCommit
         setProgress { $0.hide() }
@@ -369,6 +420,10 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
         let layout = BrowserLayout(size: view.bounds.size, top: view.safeAreaInsets.top)
         web?.frame = layout.web
         progressView.frame = layout.progress
+        if isApp, let scrollView = web?.scrollView, !scrollView.isScrollEnabled {
+            // WebKit gives the pinch back with each new page.
+            scrollView.pinchGestureRecognizer?.isEnabled = false
+        }
         failureView.frame = layout.failure
         if isRemoteScreen, let web { lockRemoteScreen(web) }
     }
@@ -391,7 +446,7 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
 
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
-        if isMovingFromParent || isBeingDismissed || navigationController?.isBeingDismissed == true || parent?.isMovingFromParent == true {
+        if isMovingFromParent || isBeingDismissed || navigationController?.isBeingDismissed == true || parent?.isMovingFromParent == true || parent?.isBeingDismissed == true {
             close()
         }
     }
@@ -407,6 +462,8 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         if navigation !== crashReload { reloadedAfterCrash = false }
         crashReload = nil
+        if isApp, !webView.scrollView.isScrollEnabled { webView.scrollView.pinchGestureRecognizer?.isEnabled = false }
+        if isApp { appLoaded?() }
         updateHeader()
         // A remote screen's canvas has the focus without a tap first.
         if isRemoteScreen {

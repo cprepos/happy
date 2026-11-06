@@ -380,7 +380,7 @@ graph TB
 ## Integrations
 - **GitHub**: OAuth connect + webhook verification, optional if env vars are set.
 - **AI vendors**: encrypted token storage for `openai`, `anthropic`, `gemini`.
-- **Voice**: LiveKit audio bridge (`stream`) and ElevenLabs token minting with a RevenueCat subscription check (`elevenlabs`), each offered when configured.
+- **Voice**: LiveKit audio bridge (`stream`) and ElevenLabs token minting under a 5-hour-per-30-days usage hard cap (`elevenlabs`), each offered when configured. No subscription check; subscriptions live on the phones.
 - **Push tokens**: stored for later notification delivery.
 
 ## Observability

@@ -34,7 +34,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import com.slopus.happy.payments.OfferSheet
 import com.slopus.happy.payments.RestoreResult
 import com.slopus.happy.ui.call.RestoreAlert
 import androidx.compose.ui.Alignment
@@ -45,6 +44,11 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
+import com.slopus.happy.ui.browser.LocalLinkOpener
+import com.slopus.happy.ui.call.activity
+import com.slopus.happy.ui.settings.SettingsSpec
+import com.slopus.happy.ui.settings.openExternalUrl
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
@@ -73,6 +77,7 @@ import com.slopus.happy.ui.components.ItemGroup
 import com.slopus.happy.ui.components.ItemList
 import com.slopus.happy.ui.components.ItemSpec
 import com.slopus.happy.ui.components.Screen
+import com.slopus.happy.ui.conversation.conversationRequest
 import com.slopus.happy.ui.settings.SettingsCard
 import com.slopus.happy.ui.settings.SettingsEntry
 import com.slopus.happy.ui.settings.SettingsSection
@@ -121,12 +126,34 @@ internal fun NavGraphBuilder.agentSettingsPages(graph: AppGraph, nav: NavHostCon
         ProvideRowReveal(entry.toRoute<AgentVoiceRoute>().reveal) {
             AgentVoiceScreen(
                 rememberAgentVoiceSummary(graph.offers, graph.subscription),
-                onSubscribe = { graph.offers.show(OfferSheet.Support(graph.offers.offer)) },
+                onSubscribe = { nav.navigate(SupportRoute) },
                 onRestore = { scope.launch { restored = graph.offers.restore() } },
                 onBack = { nav.popBackStack() },
             )
         }
         restored?.let { RestoreAlert(it) { restored = null } }
+    }
+    page<SupportRoute> {
+        val offer by graph.offers.offers.collectAsStateWithLifecycle()
+        val unconfirmed by graph.offers.unconfirmed.collectAsStateWithLifecycle()
+        val subscribedPrice by graph.offers.subscribedPrice.collectAsStateWithLifecycle()
+        val activity = LocalContext.current.activity()
+        val scope = rememberCoroutineScope()
+        val uriHandler = LocalUriHandler.current
+        val linkOpener = LocalLinkOpener.current
+        SupportScreen(
+            offer = offer,
+            onBack = { nav.popBackStack() },
+            onSubscribe = { activity?.let { activity -> scope.launch { graph.offers.subscribe(activity) } } },
+            onRestore = graph.offers::restore,
+            // The phone's store, even with an agent's proxied browser open.
+            onManage = {
+                if (linkOpener != null) linkOpener.openExternal(SettingsSpec.SUBSCRIPTIONS_URL)
+                else openExternalUrl(uriHandler, SettingsSpec.SUBSCRIPTIONS_URL)
+            },
+            unconfirmed = unconfirmed,
+            subscribedPrice = subscribedPrice,
+        )
     }
     page<AgentDataStorageRoute> { entry -> AgentDataStorage(graph, nav, entry.toRoute<AgentDataStorageRoute>().connectionId) }
     page<AgentSharingRoute> { entry ->
@@ -134,6 +161,30 @@ internal fun NavGraphBuilder.agentSettingsPages(graph: AppGraph, nav: NavHostCon
         val session = remember(id) { graph.agentSessions.session(id) }
         val state = session?.sharing?.collectAsStateWithLifecycle()?.value ?: com.slopus.happy.agent.AgentSharingState.Loading
         AgentSharingScreen(state, { kind, enabled -> session?.setAutoJoin(kind, enabled) }, { nav.popBackStack() })
+    }
+    page<AgentAgentsRoute> { entry ->
+        val id = entry.toRoute<AgentAgentsRoute>().connectionId
+        val session = remember(id) { graph.agentSessions.session(id) } ?: return@page
+        val preferences by session.modelPreferences.collectAsStateWithLifecycle()
+        // The computer's models, read each time the page opens, as a new chat reads them.
+        val catalog by produceState<AgentModelsCatalog>(AgentModelsCatalog.Loading, session) {
+            value = try {
+                AgentModelsCatalog.Ready(com.slopus.happy.conversation.ConversationApi(session.conversationRequest()).catalog())
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                AgentModelsCatalog.Failed
+            }
+        }
+        AgentAgentsScreen(
+            preferences = preferences,
+            catalog = catalog,
+            onStart = session::setNewSessionStart,
+            onModel = session::setDefaultModel,
+            onEffort = session::setDefaultEffort,
+            onAccess = session::setDefaultAccess,
+            onBack = { nav.popBackStack() },
+        )
     }
     page<AgentProfileRoute> { entry ->
         val id = entry.toRoute<AgentProfileRoute>().connectionId

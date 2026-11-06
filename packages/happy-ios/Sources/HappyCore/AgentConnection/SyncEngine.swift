@@ -37,6 +37,9 @@ public actor SyncEngine {
     public nonisolated let documents: DocumentLibrary
     /// The todo lists open on this account or with changes on their way.
     public nonisolated let todos: TodoLibrary
+    /// The vaults' folders, Trash and settings open on this account, and
+    /// the uploads into them.
+    public nonisolated let vaults: VaultLibrary
     /// The person's Feed on this computer (`FeedLibrary`), followed for as
     /// long as the account is.
     public nonisolated let feed: FeedLibrary
@@ -132,6 +135,7 @@ public actor SyncEngine {
         let keep = EngineResources()
         todos = TodoLibrary(routes: client, outbox: intents, keep: keep, events: { await spaces.events(matching: ["todo."]) })
         todoDelivery.library = todos
+        vaults = VaultLibrary(routes: client, keep: keep, events: { await spaces.events(matching: ["vault."]) })
         feed = FeedLibrary(routes: client, outbox: intents, keep: keep)
         feedDelivery.library = feed
         artifacts = ArtifactCatalogFeed(
@@ -225,6 +229,7 @@ public actor SyncEngine {
         await spaces.stop()
         await documents.stop()
         await todos.stop()
+        await vaults.stop()
         await feed.stop()
         await artifacts.stop()
         await lookups.stop()
@@ -514,6 +519,23 @@ public actor SyncEngine {
 
     public func setProjectsHidden(_ hidden: Bool) async throws {
         try await setSetting(DesktopSettingKeys.projectsVisibility, value: .object(["projectsHidden": .bool(hidden)]))
+    }
+
+    /// The person's settings on this computer: edits on their way over the
+    /// computer's copy.
+    public func userSettings() -> [String: JSONValue] { snapshot.settings }
+
+    /// Changes what new sessions start on, writing only the keys it changed.
+    public func updateModelPreferences(_ change: @Sendable (inout ModelPreferences) -> Void) async throws {
+        let settings = snapshot.settings
+        var preferences = ModelPreferences(settings)
+        change(&preferences)
+        for write in preferences.writes(over: settings) { try await setSetting(write.key, value: write.value) }
+    }
+
+    /// The person started a session on `mode` (`ModelPreferences.started`).
+    public func sessionStarted(_ mode: AgentWire.Mode) async throws {
+        try await updateModelPreferences { $0 = $0.started(mode) }
     }
 
     public func cachedResource(_ key: String) async throws -> JSONValue? { try await database().checkpoint(key)?.value }
@@ -832,7 +854,7 @@ public actor SyncEngine {
     }
 
     private func layIntents() async {
-        let next = IntentOverlay(settling.map(\.intent) + waiting)
+        let next = IntentOverlay((settling.map(\.intent) + waiting).filter { !refusedIds.contains($0.id) })
         guard next != overlay else { return }
         overlay = next
         await spaces.setOverlay(next)
@@ -846,7 +868,6 @@ public actor SyncEngine {
         let id = rejection.intent.id
         if settling.contains(where: { $0.intent.id == id }) {
             settling.removeAll { $0.intent.id == id }
-            await layIntents()
         } else if waiting.contains(where: { $0.id == id }) {
             // The outbox's list without it may come after this, on its own
             // stream: off the overlay now, so what it hid is back by the
@@ -855,6 +876,7 @@ public actor SyncEngine {
             waiting.removeAll { $0.id == id }
             await layIntents()
         }
+        await layIntents()
         // A refused read or seen entry is nothing to tell; a todo list tells its own.
         guard rejection.intent.kind != .read, !rejection.intent.kind.isTodo, !rejection.intent.kind.isFeed else { return }
         snapshot.notice = rejection.reason
@@ -1009,7 +1031,7 @@ public actor SyncEngine {
                     try await database.updateMessage(message)
                 }
                 if message.mode == nil {
-                    message.mode = try await client.defaultMode()
+                    message.mode = try await client.defaultMode(ModelPreferences(snapshot.settings))
                     guard current(generation) else { return }
                     try await database.updateMessage(message)
                 }

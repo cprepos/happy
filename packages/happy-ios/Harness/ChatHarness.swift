@@ -15,7 +15,9 @@ import UltraView
 /// Launch arguments: `-fixture <name>` picks the chat (`long` by default);
 /// `-keyboard` opens the keyboard once the rows are in; `-scrollTo
 /// <fraction>` goes that far back through the history once the rows are
-/// in; `-qaLandscape` turns the window on its side.
+/// in; `-qaLandscape` turns the window on its side; `-openTool <id>` opens
+/// that tool row and `-openMessage <id>` its screen (`tool-2` is the
+/// `newFile` fixture's Write).
 ///
 /// `ChatScrollProbe` reports the list to the tests as the accessibility value
 /// of an element named `chat-scroll-probe`. With `-hideKeyboardButton`, an
@@ -57,6 +59,7 @@ final class HarnessSceneDelegate: UIResponder, UIWindowSceneDelegate {
     #if DEBUG || HAPPY_FIXTURES
     private var homeRenderer: HomeRendererHarness?
     private var agent: AgentHarness?
+    private var appMode: AppModeHarness?
     private var agentList: AgentListScrollHarness?
     private var composerKeyboardProbe: ComposerKeyboardProbe?
     private var realArchive: RealArchiveHarness?
@@ -72,6 +75,7 @@ final class HarnessSceneDelegate: UIResponder, UIWindowSceneDelegate {
     private var agentChat: AgentChatHarness?
     private var agentFeed: AgentFeedHarness?
     private var realFeed: RealFeedHarness?
+    private var realVault: RealVaultHarness?
     private var agentTools: AgentToolsHarness?
     private var splitApp: SplitAppHarness?
     #endif
@@ -149,8 +153,16 @@ final class HarnessSceneDelegate: UIResponder, UIWindowSceneDelegate {
             agentFeed = AgentFeedHarness(window: window, arguments: arguments)
             return
         }
+        if let index = arguments.firstIndex(of: "-screen"), arguments.indices.contains(index + 1), arguments[index + 1] == "appMode" {
+            appMode = AppModeHarness(window: window, arguments: arguments)
+            return
+        }
         if let index = arguments.firstIndex(of: "-screen"), arguments.indices.contains(index + 1), arguments[index + 1] == "realFeed" {
             realFeed = RealFeedHarness(window: window, arguments: arguments)
+            return
+        }
+        if let index = arguments.firstIndex(of: "-screen"), arguments.indices.contains(index + 1), arguments[index + 1] == "realVault" {
+            realVault = RealVaultHarness(window: window, arguments: arguments)
             return
         }
 
@@ -211,6 +223,22 @@ final class HarnessSceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
         #endif
         if keyboard { probe.focusComposerWhenFilled() }
+        func value(_ flag: String) -> String? {
+            let arguments = ProcessInfo.processInfo.arguments
+            return arguments.firstIndex(of: flag).flatMap { arguments.indices.contains($0 + 1) ? arguments[$0 + 1] : nil }
+        }
+        let action = value("-openTool").map(ChatRowAction.toggleTool) ?? value("-openMessage").map(ChatRowAction.openMessage)
+        if let action {
+            try? await Task.sleep(for: .seconds(1.5))
+            var stack: [UIView] = [chat.view]
+            while let view = stack.popLast() {
+                if let list = view as? ChatListView {
+                    chat.chatList(list, perform: action)
+                    break
+                }
+                stack.append(contentsOf: view.subviews)
+            }
+        }
     }
 }
 
@@ -710,8 +738,8 @@ extension ChatListView: ProbedChatList {
     var hasKeyboardInput: Bool { ultra.list.hasKeyboardInput }
     var listView: UIView { self }
     var rows: Int { plans.count }
-    var newestInset: CGFloat { contentInsets.top }
-    var oldestInset: CGFloat { contentInsets.bottom }
+    var newestInset: CGFloat { contentInsets.bottom }
+    var oldestInset: CGFloat { contentInsets.top }
 }
 
 /// The agents' transcript as the probe reads it.
@@ -722,20 +750,19 @@ struct AgentProbedList: ProbedChatList {
     var hasKeyboardInput: Bool { transcript.list.hasKeyboardInput }
     var listView: UIView { transcript.list }
     var rows: Int { chat.plans.count }
-    var isDisplayReady: Bool { !chat.plans.isEmpty && transcript.list.loadedItemView(at: 0) != nil }
+    var isDisplayReady: Bool { !chat.plans.isEmpty && transcript.list.items.indices.last.flatMap(transcript.list.loadedItemView(at:)) != nil }
     var visibleMinY: CGFloat { transcript.distanceFromNewest }
     var maximumVisibleMinY: CGFloat { transcript.distanceFromNewest + transcript.distanceFromOldest }
     var contentHeight: CGFloat { CGFloat(transcript.list.contentHeight) }
     var scrollOffset: CGFloat { visibleMinY - newestInset }
-    // Upside down: the list's top inset is the card's end.
-    var newestInset: CGFloat { CGFloat(transcript.list.viewportInsets.top) }
-    var oldestInset: CGFloat { CGFloat(transcript.list.viewportInsets.bottom) }
+    var newestInset: CGFloat { CGFloat(transcript.list.viewportInsets.bottom) }
+    var oldestInset: CGFloat { CGFloat(transcript.list.viewportInsets.top) }
     var isTracking: Bool { transcript.list.isTracking }
     var isDragging: Bool { transcript.list.isDragging }
     var isDecelerating: Bool { transcript.list.isDecelerating }
     var scrollGestureView: UIView { transcript.list.scrollGestureHostView }
     func setVisibleMinY(_ distance: CGFloat) {
-        transcript.list.scrollTo(.init(index: 0, pointOffset: -Double(distance)), transition: .none)
+        transcript.scroll(toDistanceFromNewest: distance)
     }
 }
 #endif

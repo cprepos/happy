@@ -1561,7 +1561,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         updateHeader()
         showHeader(animated: true)
         updatePlaceholder()
-        list.scrollToNewest(animated: true)
+        list.revealNextSend()
     }
 
     /// A session this screen just made, whose row the account's home
@@ -2357,7 +2357,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
             return
         }
         list.ultra.flight?.identify(localId)
-        list.scrollToNewest(animated: true)
+        list.revealNextSend()
         // A message sent while the agent waits on questions answers them:
         // once it is delivered, the forms are dismissed (SessionView's
         // handleSend), so the agent reads the text as the reply.

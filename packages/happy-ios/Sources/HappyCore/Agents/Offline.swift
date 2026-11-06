@@ -34,8 +34,8 @@ public struct OfflineSnapshot: Codable, Equatable, Sendable {
     /// `GET /v0/config` as the computer sent it: its order is the pickers'.
     public var config: String?
     /// The pick the removed home dock kept for new work. Still read, so a
-    /// copy that has it loads, but ignored: new work starts on the
-    /// computer's default (`ModelState.newWorkMode`).
+    /// copy that has it loads, but ignored: new work starts where the Start
+    /// On preference says (`Session.newWorkMode`).
     public var dockMode: AgentWire.Mode?
 
     public init() {}

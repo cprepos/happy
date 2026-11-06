@@ -81,6 +81,7 @@ enum Glyphs {
         case "calendar": .ionicons("calendar-outline")
         case "pulse": .ionicons("pulse-outline")
         case "users": .ionicons("people-outline")
+        case "vault": .ionicons("folder-open-outline")
         case "chevron-right": .ionicons("chevron-forward")
         case "chevron-down": .ionicons("chevron-down")
         case "open": .ionicons("chevron-forward")
@@ -97,8 +98,8 @@ enum Glyphs {
         case "more": .materialIcons("more-horiz")
         case "terminal": .ionicons("terminal-outline")
         case "home": .ionicons("home-outline")
-        // Desktop's `feed`: what happened, as a paper reads it.
-        case "feed": .ionicons("newspaper-outline")
+        // Desktop's `feed`: Activity, as GitHub draws its pulse.
+        case "feed": .octicons("pulse")
         default: .ionicons(name)
         }
     }

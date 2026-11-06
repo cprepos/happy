@@ -25,6 +25,8 @@ public struct Snapshot: Equatable, Sendable {
     /// (`ChatPrefill`); nil until the bots have been read, or where the
     /// account has no Chief of Staff running.
     public var happyAgentId: String?
+    /// The bots' own conversations, by agent id.
+    public var botAgentIds: Set<String> = []
     /// The person's V2 setting, which runs Prioritizing; nil until read.
     public var prioritizing: Bool?
     /// The last act the daemon refused: its reason, empty when it gave none.
@@ -111,6 +113,7 @@ public actor Store {
     /// Artifact titles references asked for, as read; and those being read.
     private var artifactTitles: [String: References.Artifact] = [:]
     private var artifactPages: [String: References.Page] = [:]
+    private var artifactApps: [String: Int] = [:]
     private var artifactReads: Set<String> = []
     /// People messages mention, as named, and those being read; the person reading.
     private var userNames: [String: String] = [:]
@@ -339,6 +342,7 @@ public actor Store {
             // What changed while away is read again when next asked for.
             artifactTitles = [:]
             artifactPages = [:]
+            artifactApps = [:]
             for event in pending { receive(event) }
             publish()
             keeping?.cancel()
@@ -412,25 +416,33 @@ public actor Store {
             for id in wanted {
                 let read: References.Artifact?
                 var page: References.Page?
+                var app: Int?
                 do {
                     let object = try await client.artifact(id)
                     read = References.artifact(object)
                     page = References.page(object)
+                    // An app is never run inline, so a page waits for its
+                    // start to say it isn't one; unread, it shows as before.
+                    if let entry = References.entry(object),
+                       (try? await client.artifactPage(id, version: entry.version, path: entry.path))?.mode == .app {
+                        app = entry.version
+                    }
                 } catch AgentClientError.status(404, _, _) {
                     read = .missing
                 } catch {
                     read = nil
                 }
-                await artifactRead(id, read, page: page)
+                await artifactRead(id, read, page: page, app: app)
             }
         }
     }
 
-    private func artifactRead(_ id: String, _ read: References.Artifact?, page: References.Page?) {
+    private func artifactRead(_ id: String, _ read: References.Artifact?, page: References.Page?, app: Int?) {
         artifactReads.remove(id)
         guard let read else { return }
         artifactTitles[id] = read
         artifactPages[id] = page
+        artifactApps[id] = app
         publish()
     }
 
@@ -564,6 +576,7 @@ public actor Store {
             }
             if type == "artifact.deleted" || changes["status"]?.stringValue == "deleted" {
                 artifactPages[id] = nil
+                artifactApps[id] = nil
             } else if case .active(_, "html", _) = held {
                 // A page shown inline follows its latest version, entry and display.
                 read(artifacts: [id])
@@ -660,9 +673,11 @@ public actor Store {
             snapshot.document = document
         }
         snapshot.happyAgentId = places.chiefOfStaffAgentId
+        snapshot.botAgentIds = Set(places.bots.compactMap { $0.agent?.id })
         var references = References.entities(owners: composedOwners)
         references.artifacts = artifactTitles
         references.pages = artifactPages
+        references.apps = artifactApps
         references.users = userNames
         references.me = me
         references.missingUsers = usersMissing

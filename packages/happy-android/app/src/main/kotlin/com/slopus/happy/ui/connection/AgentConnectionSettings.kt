@@ -38,6 +38,7 @@ import com.slopus.happy.R
 import com.slopus.happy.agent.AgentLinkStatus
 import com.slopus.happy.agent.AgentProfileState
 import com.slopus.happy.agent.CompletionSound
+import com.slopus.happy.payments.Offer
 import com.slopus.happy.ui.components.Avatar
 import com.slopus.happy.ui.components.Ionicon
 import com.slopus.happy.ui.components.ItemList
@@ -68,7 +69,6 @@ import com.slopus.happy.ui.settings.addAgentEntry
 import com.slopus.happy.ui.settings.rememberSettingsSearch
 import com.slopus.happy.ui.settings.settingsProfileEntries
 import com.slopus.happy.ui.settings.settingsSearchResults
-import com.slopus.happy.ui.settings.supportSection
 import com.slopus.happy.ui.settings.kindSubtitle
 import com.slopus.happy.ui.settings.SettingsTiles
 import com.slopus.happy.ui.settings.rememberAboutActions
@@ -119,10 +119,9 @@ fun agentSettingsIndex(): List<AgentSettingsRow> {
         row(AgentSettingsTags.APPEARANCE, stringResource(R.string.settings_appearance), Ionicon.ColorPaletteOutline),
         row(AgentPagesTags.HIDE_PROJECTS_ROW, stringResource(R.string.settings_hide_projects), Ionicon.FolderOutline, AgentSettingsPlace.Appearance),
         row(AgentVoiceTags.ROW, stringResource(R.string.agent_voice_title), Ionicon.MicOutline),
+        row(AgentAgentsTags.ROW, stringResource(R.string.settings_agents), Ionicon.OptionsOutline),
         row(DataStorageTags.ROW, stringResource(R.string.data_storage_title), Ionicon.ServerOutline),
         row(AgentSharingTags.ROW, stringResource(R.string.sharing_title), Ionicon.PeopleOutline),
-        row(SettingsTags.SUPPORT, stringResource(R.string.settings_support_us), Ionicon.HeartOutline),
-        row(SettingsTags.MANAGE_SUBSCRIPTIONS, stringResource(R.string.settings_manage_subscriptions), Ionicon.CardOutline),
         row(SettingsPageTags.ADD_AGENT, stringResource(R.string.settings_add_agent), Ionicon.Add),
         row(SettingsTags.WHATS_NEW, stringResource(R.string.settings_whats_new), Ionicon.SparklesOutline),
         row(SettingsTags.GITHUB, stringResource(R.string.settings_github), Ionicon.LogoGithub),
@@ -172,6 +171,8 @@ class AgentSettingsActions(
     /** Data and Storage: the media kept on this phone; null where nothing is kept. */
     val onDataStorage: (() -> Unit)? = null,
     val onSharing: (() -> Unit)? = null,
+    /** Agents: what a new chat starts on (desktop's New sessions); null where it isn't offered. */
+    val onAgents: (() -> Unit)? = null,
     /** Disconnects this connection; asked for only after the person confirmed. */
     val onRemove: () -> Unit = {},
     /** Opens this connection's Chief of Staff with [prefix] typed, unsent. */
@@ -188,8 +189,9 @@ data class AgentPerson(val name: String = "", val photo: ImageBitmap? = null, va
  * pencil badge whose menu asks its Chief of Staff to change its picture or
  * name (nothing is sent until the person sends it), its name and link
  * status under it; every account on the phone with Add Agent; the person's
- * own Profile here; Appearance (the theme and the desktop's Hide projects);
- * Support us; About; Disconnect, after a confirm. A device token can't reach
+ * own Profile here, with Support Happy's boba row under it; Appearance
+ * (the theme and the desktop's Hide projects); About; Disconnect, after a
+ * confirm. A device token can't reach
  * the agent's device list (API.md, "Credentials on the connector's
  * socket"), so disconnecting forgets the agent on this phone only.
  *
@@ -245,6 +247,15 @@ fun AgentConnectionSettingsScreen(
                 ),
                 agentVoiceEntry(voice, actions.onVoice),
             ) + listOfNotNull(
+                // Where the relay's Agents row is: after Voice.
+                actions.onAgents?.let { open ->
+                    SettingsEntry(
+                        id = AgentAgentsTags.ROW,
+                        title = stringResource(R.string.settings_agents),
+                        icon = { SettingsTile(Ionicon.OptionsOutline, SettingsTiles.teal) },
+                        onClick = open,
+                    )
+                },
                 actions.onDataStorage?.let { open ->
                     SettingsEntry(
                         id = DataStorageTags.ROW,
@@ -274,7 +285,7 @@ fun AgentConnectionSettingsScreen(
                 )
             }),
         ),
-        supportSection(about, aboutActions),
+        // Support Happy's boba row is this page's Support us, and its page manages subscriptions.
         aboutSection(about, aboutActions),
     ).filter { it.rows.isNotEmpty() }
     // The bar on the page's own grey (black in dark), the groups on it: one surface, as the chat's details.
@@ -311,7 +322,7 @@ fun AgentConnectionSettingsScreen(
                     // Support Happy right under Profile, the first card.
                     for ((index, section) in sections.withIndex()) {
                         SettingsCard(section)
-                        if (index == 0) SupportBobaCard(aboutActions.onSupport)
+                        if (index == 0) SupportBobaCard(aboutActions.onSupport, subscribed = voice.offer == Offer.Subscribed)
                     }
                     RemoveCard(agent = true, name = profile.name, onRemove = actions.onRemove)
                 }
@@ -423,6 +434,7 @@ internal fun AgentConnectionSettings(graph: AppGraph, nav: NavHostController, co
             onVoice = { nav.navigate(AgentVoiceRoute(connectionId)) },
             onDataStorage = { nav.navigate(AgentDataStorageRoute(connectionId)) },
             onSharing = { nav.navigate(AgentSharingRoute(connectionId)) },
+            onAgents = { nav.navigate(AgentAgentsRoute(connectionId)) },
             onAskChief = { prefix -> nav.openChiefOfStaff(connectionId, prefix) },
             onRemove = {
                 if (switcher != null) switcher.removingFromSettings { removeAgentConnection(graph, connectionId) }

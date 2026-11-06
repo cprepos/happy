@@ -34,7 +34,7 @@ let package = Package(
         // The app itself. xtool expects this to be the product it packages.
         .library(name: "HappyApp", targets: ["HappyApp"]),
         // Everything the app is built from, for the XcodeGen app target.
-        .library(name: "HappyKit", targets: ["HappyCrypto", "HappyWire", "HappyStore", "HappyCore", "HappyLayout", "HappyIcons", "HappyUI"]),
+        .library(name: "HappyKit", targets: ["HappyCrypto", "HappyWire", "HappyStore", "HappyCore", "HappyAnalytics", "HappyLayout", "HappyIcons", "HappyUI"]),
         .library(name: "HappyGuestKit", targets: ["HappyGuest", "HappyGuestUI"]),
         // Native platform shells share services/models, never UI frameworks.
         .library(name: "HappyClientKit", targets: ["HappyCrypto", "HappyWire", "HappyStore", "HappyCore", "HappyLayout", "HappyIcons"]),
@@ -47,8 +47,8 @@ let package = Package(
         .package(url: "https://github.com/elevenlabs/elevenlabs-swift-sdk.git", exact: "3.4.0"),
         // Native Home and chat's optional renderer. Pin the pre-1.0 API used by
         // NodeRow and the custom keyframe scroller.
-        .package(url: "https://github.com/slopus/ultraview.git", revision: "6f0e75537c46b1d6a7c104b76b28330b5dfb031b"),
-        .package(url: "https://github.com/slopus/tailcat-swift.git", revision: "f62543179c9cd6621ca31db0a8f627d440224ce5"),
+        .package(url: "https://github.com/slopus/ultraview.git", revision: "c06ba489739fde00c56fb111f975a01758177fda"),
+        .package(url: "https://github.com/slopus/tailcat-swift.git", revision: "d6e59efe5b161478158cf172e9e8b8252f6c88e4"),
         // The state pictures (`StateSceneView`), desktop's Lottie scenes.
         // lottie-spm is Lottie's prebuilt xcframework, so it adds no source
         // build; scenes play on its Core Animation engine, off the main
@@ -82,6 +82,13 @@ let package = Package(
             ]
         ),
         .target(
+            // Product analytics (docs/analytics-catalog.json), on its own:
+            // HappyCore never imports it. Deleting this target and the
+            // facade's call sites in HappyUI and HappyApp removes it all.
+            name: "HappyAnalytics",
+            dependencies: ["HappyCore", "HappyWire", "HappyStore"]
+        ),
+        .target(
             // Foundation only, no UIKit: sizes in, frames out.
             name: "HappyLayout"
         ),
@@ -95,7 +102,7 @@ let package = Package(
         .target(
             name: "HappyUI",
             dependencies: [
-                "HappyCore", "HappyCrypto", "HappyWire", "HappyStore", "HappyLayout", "HappyIcons",
+                "HappyCore", "HappyAnalytics", "HappyCrypto", "HappyWire", "HappyStore", "HappyLayout", "HappyIcons",
                 .product(name: "ElevenLabs", package: "elevenlabs-swift-sdk", condition: .when(platforms: [.iOS])),
                 .product(name: "UltraView", package: "ultraview", condition: .when(platforms: [.iOS])),
                 .product(name: "Lottie", package: "lottie-spm", condition: .when(platforms: [.iOS])),
@@ -106,7 +113,7 @@ let package = Package(
         ),
         .target(
             name: "HappyApp",
-            dependencies: ["HappyCore", "HappyStore", "HappyUI", "HappyGuestUI", "HappyGuest"]
+            dependencies: ["HappyCore", "HappyAnalytics", "HappyStore", "HappyUI", "HappyGuestUI", "HappyGuest"]
         ),
         .testTarget(
             name: "HappyCryptoTests",
@@ -127,6 +134,10 @@ let package = Package(
             resources: [.copy("Fixtures")]
         ),
         .testTarget(
+            name: "HappyAnalyticsTests",
+            dependencies: ["HappyAnalytics", "HappyCore", "HappyStore"]
+        ),
+        .testTarget(
             name: "HappyLayoutTests",
             dependencies: ["HappyLayout"],
             resources: [.copy("Fixtures")]
@@ -139,7 +150,9 @@ let package = Package(
             // Needs UIKit to measure real views. Compiles to nothing on Linux;
             // runs in the iOS simulator through the XcodeGen project.
             name: "HappyUIKitTests",
-            dependencies: ["HappyUI", "HappyLayout", "HappyIcons", "HappyCore"]
+            dependencies: ["HappyUI", "HappyLayout", "HappyIcons", "HappyCore"],
+            // Read from the XcodeGen bundle, which copies them.
+            exclude: ["Fixtures"]
         ),
     ]
 )

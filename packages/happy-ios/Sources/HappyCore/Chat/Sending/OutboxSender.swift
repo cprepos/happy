@@ -112,6 +112,7 @@ public struct OutboxSender: ChatSending {
         if message.source != .voice {
             try? sync.rigComposer.clearAfterSend(sessionId: sessionId, expectedStamp: draftStamp)
         }
+        Happenings.post(.relayMessageQueued(source: message.source, attachments: message.attachments.count))
         return id
     }
 

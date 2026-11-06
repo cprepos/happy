@@ -1,4 +1,5 @@
 #if canImport(UIKit)
+import HappyAnalytics
 import HappyCore
 import HappyCrypto
 import HappyLayout
@@ -113,7 +114,10 @@ final class AccountSettingsViewController: SettingsPageViewController {
                 self?.pushPermission = permission
                 self?.currentPushToken = current
             } catch {
-                if showError, let self { Alerts.show(Strings.Common.error, Strings.Push.loadFailed, on: self) }
+                if showError, let self {
+                    Alerts.show(Strings.Common.error, Strings.Push.loadFailed, on: self)
+                    Analytics.shared.pushSetupFailed(error)
+                }
             }
             self?.loadingPush = false
             self?.reload()

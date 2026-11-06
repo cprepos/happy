@@ -1,4 +1,5 @@
 #if canImport(UIKit)
+import HappyAnalytics
 import HappyCore
 import HappyLayout
 import HappyWire
@@ -55,7 +56,7 @@ enum PairingFlow {
             let pairing = AgentPairingViewController(context: context, link: link, start: start)
             controller.navigationController?.pushViewController(pairing, animated: true)
         } catch {
-            PairingAnalytics.shared.log(.failed(method: .agentConnection, start: start))
+            Analytics.shared.directPairingFailed(error, start: start)
             Alerts.show("Could not pair", error.localizedDescription, on: controller)
         }
         return true
@@ -133,20 +134,21 @@ final class AgentPairingViewController: UIViewController {
             screen.primary.title = "Loading computer…"
             try await context.account.addAgentConnection(credentials, name: link.name)
             finished = true
-            report(.completed(method: .agentConnection, start: start))
+            report { Analytics.shared.directPairingCompleted(start: $0) }
         } catch {
             finished = false
             fail(error)
         }
     }
-    private func report(_ event: PairingEvent) {
+    /// The pairing's one ending, told once.
+    private func report(_ ending: (PairingStart) -> Void) {
         guard !reported else { return }
         reported = true
-        PairingAnalytics.shared.log(event)
+        ending(start)
     }
     private func fail(_ error: Error) {
         guard !finished else { return }
-        report(.failed(method: .agentConnection, start: start))
+        report { Analytics.shared.directPairingFailed(error, start: $0) }
         finished = true; job?.cancel(); expiry?.cancel()
         let service = service; Task { await service.cancel() }
         screen.primary.isLoading = false; screen.primary.isEnabled = false; screen.primary.title = "Pairing ended"
@@ -155,7 +157,10 @@ final class AgentPairingViewController: UIViewController {
         view.setNeedsLayout()
     }
     private func cancel() {
-        if !finished { report(.cancelled(method: .agentConnection, start: start)) }
+        // "They don't match" once the emoji are up.
+        if !finished {
+            report { Analytics.shared.directPairingCancelled(start: $0, emojiMismatch: ready) }
+        }
         job?.cancel(); expiry?.cancel(); finished = true
         let service = service; Task { await service.cancel() }
         navigationController?.popViewController(animated: true)
@@ -165,7 +170,7 @@ final class AgentPairingViewController: UIViewController {
         super.viewDidDisappear(animated)
         if isMovingFromParent || navigationController == nil || navigationController?.isBeingDismissed == true {
             // Left before it ended: back, or the sheet swiped away.
-            if !finished { report(.cancelled(method: .agentConnection, start: start)) }
+            if !finished { report { Analytics.shared.directPairingCancelled(start: $0) } }
             job?.cancel(); expiry?.cancel()
             let service = service; Task { await service.cancel() }
         }

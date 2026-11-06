@@ -13,13 +13,11 @@ import { voiceBackendsCurrent } from "@/app/voice/voiceBackendsResolve";
 import { voiceConversationCreate } from "@/app/voice/voiceConversationCreate";
 import { voiceElevenLabsGrantCreate } from "@/app/voice/voiceElevenLabsGrantCreate";
 import {
-    VOICE_FREE_LIMIT_SECONDS,
     VOICE_HARD_LIMIT_SECONDS,
     VOICE_USAGE_PAGE_SIZE,
     voiceElevenLabsUsageGet,
     voiceElevenLabsUserId,
 } from "@/app/voice/voiceElevenLabsUsageGet";
-import { voiceSubscriptionCheck } from "@/app/voice/voiceSubscriptionCheck";
 import { voiceLiveKitConfig, voiceTokenCreate } from "@/app/voice/voiceTokenCreate";
 
 const USAGE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
@@ -131,13 +129,10 @@ export function voiceRoutes(app: Fastify) {
         if (elevenLabsApiKey && voiceBackendsCurrent().backends.includes('elevenlabs')) {
             const elevenUserId = voiceElevenLabsUserId(userId);
             try {
-                const [{ usedSeconds, conversationCount }, subscribed] = await Promise.all([
-                    voiceElevenLabsUsageGet(elevenLabsApiKey, elevenUserId),
-                    voiceSubscriptionCheck(userId),
-                ]);
+                const { usedSeconds, conversationCount } = await voiceElevenLabsUsageGet(elevenLabsApiKey, elevenUserId);
                 return reply.send({
                     usedSeconds,
-                    limitSeconds: subscribed ? VOICE_HARD_LIMIT_SECONDS : VOICE_FREE_LIMIT_SECONDS,
+                    limitSeconds: VOICE_HARD_LIMIT_SECONDS,
                     conversationCount,
                     // Legacy display field required by shipped clients; page size no longer gates voice.
                     conversationLimit: VOICE_USAGE_PAGE_SIZE,

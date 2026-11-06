@@ -24,6 +24,8 @@ public final class AgentClient: Sendable {
     /// A team server signed in to: refused, it wants signing in again,
     /// not pairing.
     public let signsIn: Bool
+    /// How the artifact pages read through it ask to be shown.
+    public let pageModes = ArtifactPageModes()
 
     init(transport: any AgentTransport, token: String, signsIn: Bool = false) {
         self.transport = transport
@@ -54,6 +56,8 @@ public final class AgentClient: Sendable {
         let response: HTTP1Response
         if let sent, let body, headers.isEmpty {
             response = try await transport.send(method: method, path: path, credential: token, body: body, category: category, sent: sent)
+        } else if let sent, let body {
+            response = try await transport.send(method: method, path: path, credential: token, body: body, headers: headers, category: category, sent: sent)
         } else {
             response = try await transport.request(method: method, path: path, credential: token, body: body, headers: headers, category: category)
         }
@@ -302,11 +306,11 @@ public final class AgentClient: Sendable {
         return nil
     }
 
-    /// The mode a conversation with no last composer mode sends with (`GET /v0/config` `defaults`).
-    /// What new work is sent with when nothing was picked: desktop's
-    /// default selection, the declared model at its own default effort.
-    public func defaultMode() async throws -> AgentWire.Mode {
-        try await modelCatalog().defaultMode()
+    /// The mode a conversation with no last composer mode sends with, and
+    /// new work when nothing was picked: what the person's preferences start
+    /// on over the computer's catalog (`ModelCatalog.startMode`).
+    public func defaultMode(_ preferences: ModelPreferences) async throws -> AgentWire.Mode {
+        try await modelCatalog().startMode(preferences)
     }
 
     /// The models every account offers, in the daemon's order.

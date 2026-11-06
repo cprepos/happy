@@ -1,4 +1,5 @@
 #if canImport(UIKit)
+import HappyAnalytics
 import HappyCore
 import HappyLayout
 import HappyStore
@@ -236,6 +237,7 @@ final class SessionChangesViewController: UIViewController {
                 self.list.reset()
             case .failure(let error):
                 self.gitLoad = .error(Self.message(error))
+                Analytics.shared.diffLoadFailed(error)
             }
             self.renderHappyAgent()
         }

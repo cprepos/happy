@@ -1,10 +1,8 @@
 import * as privacyKit from "privacy-kit";
 import type { VoiceConversationDenied, VoiceConversationElevenLabsGrant } from "@slopus/happy-wire";
 import { log } from "@/utils/log";
-import { voiceSubscriptionCheck } from "@/app/voice/voiceSubscriptionCheck";
 import {
     ELEVEN_LABS_API,
-    VOICE_FREE_LIMIT_SECONDS,
     VOICE_HARD_LIMIT_SECONDS,
     voiceElevenLabsUsageGet,
     voiceElevenLabsUserId,
@@ -12,8 +10,9 @@ import {
 
 /**
  * Decides whether a user may start ElevenLabs agent `agentId` and, if so, gets
- * the conversation token. Past the hard limit voice is denied; past the free
- * limit it needs an active subscription. The conversation id is read from the
+ * the conversation token. Past the hard limit voice is denied. Subscriptions
+ * live on the phones (RevenueCat, per install), so the server checks none; the
+ * hard limit is only a cost safety net. The conversation id is read from the
  * token, whose LiveKit room name contains it.
  *
  * A provider failure returns `{ error }`, and no token is ever issued on unknown
@@ -34,7 +33,7 @@ export async function voiceElevenLabsGrantCreate(
         return { error: 'Failed to get voice usage' };
     }
     const { usedSeconds, conversationCount } = usage;
-    log({ module: 'voice' }, `User ${userId}: ${usedSeconds}s used, ${conversationCount} convos (free=${VOICE_FREE_LIMIT_SECONDS}s, hard=${VOICE_HARD_LIMIT_SECONDS}s)`);
+    log({ module: 'voice' }, `User ${userId}: ${usedSeconds}s used, ${conversationCount} convos (hard=${VOICE_HARD_LIMIT_SECONDS}s)`);
 
     if (usedSeconds >= VOICE_HARD_LIMIT_SECONDS) {
         return {
@@ -44,20 +43,6 @@ export async function voiceElevenLabsGrantCreate(
             limitSeconds: VOICE_HARD_LIMIT_SECONDS,
             agentId,
         };
-    }
-
-    if (usedSeconds >= VOICE_FREE_LIMIT_SECONDS) {
-        const subscribed = await voiceSubscriptionCheck(userId);
-        log({ module: 'voice' }, `User ${userId}: subscription check = ${subscribed}`);
-        if (!subscribed) {
-            return {
-                allowed: false,
-                reason: 'subscription_required',
-                usedSeconds,
-                limitSeconds: VOICE_FREE_LIMIT_SECONDS,
-                agentId,
-            };
-        }
     }
 
     try {
@@ -91,7 +76,7 @@ export async function voiceElevenLabsGrantCreate(
             agentId,
             elevenUserId,
             usedSeconds,
-            limitSeconds: usedSeconds >= VOICE_FREE_LIMIT_SECONDS ? VOICE_HARD_LIMIT_SECONDS : VOICE_FREE_LIMIT_SECONDS,
+            limitSeconds: VOICE_HARD_LIMIT_SECONDS,
         };
     } catch (error) {
         log({ module: 'voice' }, `ElevenLabs request error for user ${userId}: ${error}`);

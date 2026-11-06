@@ -57,6 +57,62 @@ class ArtifactCatalogTest {
         assertEquals(items, ArtifactCatalog.fromKept(ArtifactCatalog.kept(items)))
     }
 
+    @Test fun theLatestVersionsCoverSummaryAndBackgroundAreKeptAndFollowTheirChanges() {
+        val read = ArtifactSummary.parse(
+            obj("""{"id":"a","type":"html","title":"Q3","latestVersion":2,"createdAt":1,"updatedAt":2,"background":"#0B1020","summary":"Up 18%.",
+                "cover":{"path":"cover.png","mimeType":"image/png","width":1600,"height":900,"aspect":"wide"}}"""),
+        )!!
+        assertEquals(ArtifactCover("cover.png", "image/png", ArtifactCover.Aspect.Wide), read.cover)
+        assertEquals("Up 18%.", read.summary)
+        assertEquals("#0b1020", read.background)
+        assertEquals(read, ArtifactSummary.parse(read.json()))
+        // An older daemon's artifact has none.
+        val older = ArtifactSummary.parse(obj("""{"id":"b","type":"markdown","title":"B","latestVersion":1,"createdAt":1,"updatedAt":1}"""))!!
+        assertEquals(null, older.cover)
+        // A change naming the cover sets it, `null` clears it, and one that doesn't name it keeps it.
+        val square = ArtifactCatalog.apply(
+            "artifact.updated",
+            obj("""{"artifactId":"a","changes":{"latestVersion":3,"updatedAt":3,"cover":{"path":"c.png","mimeType":"image/png","width":1200,"height":1200,"aspect":"square"}}}"""),
+            listOf(read),
+        ) as ArtifactCatalog.Change.Changed
+        assertEquals(ArtifactCover.Aspect.Square, square.items.single().cover?.aspect)
+        assertEquals("Up 18%.", square.items.single().summary)
+        val cleared = ArtifactCatalog.apply("artifact.updated", obj("""{"artifactId":"a","changes":{"updatedAt":4,"cover":null,"summary":null}}"""), square.items) as ArtifactCatalog.Change.Changed
+        assertEquals(null, cleared.items.single().cover)
+        assertEquals(null, cleared.items.single().summary)
+        assertEquals("#0b1020", cleared.items.single().background)
+    }
+
+    @Test fun aCoversAndAnEntrysThumbHashAndPreviewAreKeptAndAnOlderDaemonsAreNone() {
+        val read = ArtifactSummary.parse(
+            obj("""{"id":"a","type":"image","title":"Shots","latestVersion":2,"createdAt":1,"updatedAt":2,
+                "entry":{"path":"a.webp","mimeType":"image/webp","size":12,"thumbhash":"1QcSHQRnh493V4dIh4eXh1h4kJUI","preview":{"width":640,"height":427}},
+                "cover":{"path":"cover.webp","mimeType":"image/webp","width":1600,"height":900,"aspect":"wide","thumbhash":"3OcRJYB4d3h/iIeHeEh3eIhw+j3A","preview":{"width":640,"height":360}}}"""),
+        )!!
+        assertEquals(ArtifactCover("cover.webp", "image/webp", ArtifactCover.Aspect.Wide, "3OcRJYB4d3h/iIeHeEh3eIhw+j3A", preview = true), read.cover)
+        assertEquals(ArtifactFile("a.webp", "image/webp", 12, "1QcSHQRnh493V4dIh4eXh1h4kJUI", preview = true), read.entry)
+        assertEquals(read, ArtifactSummary.parse(read.json()))
+        val older = ArtifactSummary.parse(
+            obj("""{"id":"b","type":"image","title":"B","latestVersion":1,"createdAt":1,"updatedAt":1,
+                "entry":{"path":"b.png","mimeType":"image/png","size":3},"cover":{"path":"c.png","mimeType":"image/png","aspect":"square","thumbhash":null}}"""),
+        )!!
+        assertEquals(ArtifactCover("c.png", "image/png", ArtifactCover.Aspect.Square), older.cover)
+        assertEquals(ArtifactFile("b.png", "image/png", 3), older.entry)
+        // A changed cover brings its own preview, or says it has none by leaving it out.
+        val previewed = ArtifactCatalog.apply(
+            "artifact.updated",
+            obj("""{"artifactId":"b","changes":{"latestVersion":2,"updatedAt":2,"cover":{"path":"d.png","mimeType":"image/png","aspect":"wide","preview":{"width":640,"height":360}}}}"""),
+            listOf(older),
+        ) as ArtifactCatalog.Change.Changed
+        assertTrue(previewed.items.single().cover!!.preview)
+        val unpreviewed = ArtifactCatalog.apply(
+            "artifact.updated",
+            obj("""{"artifactId":"b","changes":{"latestVersion":3,"updatedAt":3,"cover":{"path":"e.png","mimeType":"image/png","aspect":"wide"}}}"""),
+            previewed.items,
+        ) as ArtifactCatalog.Change.Changed
+        assertFalse(unpreviewed.items.single().cover!!.preview)
+    }
+
     @Test fun eventsAddChangeAndRemove() {
         val list = listOf(summary("a", 30), summary("b", 20))
         val created = ArtifactCatalog.apply("artifact.created", obj("""{"artifact":{"id":"c","type":"html","title":"New","createdAt":40,"updatedAt":40}}"""), list)

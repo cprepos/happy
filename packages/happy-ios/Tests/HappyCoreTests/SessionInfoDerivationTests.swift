@@ -93,6 +93,14 @@ final class SessionInfoDerivationTests: XCTestCase {
         XCTAssertEqual(update.output.changes, SessionInfoChanges(rebuilt: [.quickActions, .metadata]))
     }
 
+    func testALiveBranchAlsoRebuildsTheMetadata() throws {
+        let first = try XCTUnwrap(derive(Self.detail(Self.record)))
+        let status = GitStatusParser.parse(status: "# branch.head main", unstagedNumstat: "")
+        let update = try XCTUnwrap(derive(Self.detail(Self.record), git: status, after: first.state))
+        XCTAssertEqual(update.output.changes, SessionInfoChanges(rebuilt: [.quickActions, .metadata]))
+        XCTAssertEqual(update.output.frame.model?.branch, "main")
+    }
+
     /// Home's record gives the title the first frame shows, so the screen's
     /// own snapshot, holding the same record, changes no title.
     func testHomesRecordSeedsTheTitleTheFirstFrameShows() throws {

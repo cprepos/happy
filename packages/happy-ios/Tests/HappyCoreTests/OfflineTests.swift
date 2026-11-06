@@ -33,8 +33,8 @@ final class OfflineTests: XCTestCase {
     }
 
     /// A copy written while the home dock kept a pick for new work still
-    /// loads, and the pick is never written again: new work starts on the
-    /// computer's default (`ModelState.newWorkMode`), read from the config.
+    /// loads, and the pick is never written again: new work starts where the
+    /// Start On preference says (`Session.newWorkMode`), read from the config.
     func testAStoredDockPickLoadsButIsIgnored() async throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let file = OfflineFile(directory: directory)

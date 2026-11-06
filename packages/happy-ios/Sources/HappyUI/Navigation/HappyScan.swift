@@ -1,4 +1,5 @@
 #if canImport(UIKit)
+import HappyAnalytics
 import HappyCore
 import HappyWire
 import OSLog
@@ -98,7 +99,7 @@ enum HappyScan {
         case .signInToServer(let link):
             return await signIn(to: link, context: context, start: start, on: controller)
         case .problem(let problem):
-            PairingAnalytics.shared.log(.failed(method: problem.isAgentConnection ? .agentConnection : .relay, start: start))
+            Analytics.shared.scanFailed(problem, start: start)
             report(problem, on: controller)
             return .ended
         }
@@ -116,7 +117,7 @@ enum HappyScan {
         let outcome = await LegacyPairingFlow.approve(link, session: session)
         busy(false)
         log.debug("approval \(String(describing: outcome), privacy: .public)")
-        PairingAnalytics.shared.log(outcome == .approved ? .completed(method: .relay, start: start) : .failed(method: .relay, start: start))
+        Analytics.shared.relayPairingEnded(outcome, start: start)
         LegacyPairingFlow.report(outcome, kind: kind, on: controller)
         guard outcome == .approved else { return .ended }
         // happy-app lets the computer turning up say it; from a settings
@@ -153,7 +154,7 @@ enum HappyScan {
             outcome = .failed
         }
         busy(false)
-        PairingAnalytics.shared.log(outcome == .approved ? .completed(method: .relay, start: start) : .failed(method: .relay, start: start))
+        Analytics.shared.accountForComputerEnded(outcome, start: start)
         guard outcome == .approved else {
             LegacyPairingFlow.report(outcome, kind: .terminal, on: window.flatMap(topmost) ?? controller)
             return .ended
@@ -256,13 +257,6 @@ enum HappyScan {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let head = text.firstIndex(of: "?").map { String(text[..<$0]) } ?? String(text.prefix(24))
         return "\(head) (\(text.utf8.count) bytes)"
-    }
-}
-
-private extension ScanProblem {
-    var isAgentConnection: Bool {
-        if case .agentConnection = self { return true }
-        return false
     }
 }
 #endif

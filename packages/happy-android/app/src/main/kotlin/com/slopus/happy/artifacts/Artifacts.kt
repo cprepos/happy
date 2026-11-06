@@ -35,9 +35,14 @@ data class ArtifactRef(
     }
 }
 
-/** One file of an artifact version, as its manifest lists it. */
+/**
+ * One file of an artifact version, as its manifest lists it. A picture or
+ * recording may carry its ThumbHash and whether the computer keeps a still
+ * [preview] of it (API.md "Media metadata and previews"); older daemons
+ * send neither.
+ */
 @Immutable
-data class ArtifactFile(val path: String, val mimeType: String, val size: Long) {
+data class ArtifactFile(val path: String, val mimeType: String, val size: Long, val thumbhash: String? = null, val preview: Boolean = false) {
     val name: String get() = path.substringAfterLast('/')
     val isVideo: Boolean get() = mimeType.startsWith("video/")
     /** A picture or a recording: shown natively, in the gallery and the viewer. */
@@ -65,8 +70,63 @@ data class ArtifactFile(val path: String, val mimeType: String, val size: Long) 
                 path = o["path"].str ?: return null,
                 mimeType = o["mimeType"].str ?: "application/octet-stream",
                 size = o["size"].num?.toLong() ?: 0,
+                thumbhash = o["thumbhash"].str,
+                preview = o["preview"].obj != null,
             )
         }
+    }
+}
+
+/**
+ * The picture the Feed shows for an artifact's version (API.md "Covers"):
+ * one of its files, in one of the standard shapes, so a post knows its
+ * height before the picture is read. Older daemons send none.
+ */
+@Immutable
+data class ArtifactCover(
+    val path: String,
+    val mimeType: String,
+    val aspect: Aspect,
+    /** Its placeholder until the picture lands; null when the computer couldn't make one, or an older one. */
+    val thumbhash: String? = null,
+    /** The computer keeps a still preview of it (`preview: { width, height }`), which a list's slot reads instead of the file. */
+    val preview: Boolean = false,
+) {
+    /** The shapes a cover comes in: 16:9 or 1:1, width over height. */
+    enum class Aspect(val wire: String, val ratio: Float) {
+        Wide("wide", 16f / 9f),
+        Square("square", 1f),
+    }
+
+    /** A picture this phone decodes: anything else (the daemon sends none) keeps the row. */
+    val drawable: Boolean get() = mimeType.substringBefore(';').trim().lowercase() in DECODED
+
+    companion object {
+        private val DECODED = setOf("image/png", "image/jpeg", "image/webp", "image/gif")
+
+        /**
+         * The wire's `cover`; null for `null` or an absent one, and for an
+         * `aspect` this phone doesn't know (a newer shape, or an older daemon's
+         * cover without one), which keeps the row.
+         */
+        fun parse(value: JsonElement?): ArtifactCover? {
+            val o = value.obj ?: return null
+            val path = o["path"].str?.takeIf { it.isNotEmpty() } ?: return null
+            val aspect = o["aspect"].str.let { wire -> Aspect.entries.firstOrNull { it.wire == wire } } ?: return null
+            return ArtifactCover(path, o["mimeType"].str.orEmpty(), aspect, o["thumbhash"].str, o["preview"].obj != null)
+        }
+
+        /** The most of a summary shown (the daemon's own limit). */
+        const val SUMMARY_MAX = 5000
+
+        /** The wire's `summary`: post-length text with its line breaks, or null for none. */
+        fun summary(value: JsonElement?): String? =
+            value.str?.replace("\r\n", "\n")?.trim()?.take(SUMMARY_MAX)?.takeIf { it.isNotEmpty() }
+
+        private val BACKGROUND = Regex("^#([0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
+
+        /** The wire's `background` (API.md "Backgrounds"): `#rgb`, `#rgba`, `#rrggbb` or `#rrggbbaa` in lower case, and nothing else. */
+        fun background(value: JsonElement?): String? = value.str?.takeIf { BACKGROUND.matches(it) }?.lowercase()
     }
 }
 

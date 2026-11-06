@@ -1,5 +1,6 @@
 #if canImport(UIKit)
 import Foundation
+import HappyAnalytics
 import HappyCore
 import HappyUI
 import UIKit
@@ -28,7 +29,18 @@ enum CompositionRoot {
                 }
             }
         )
+        startAnalytics(bundle: bundle, variant: variant, version: version)
         return AppContext(account: account, variant: variant, version: version)
+    }
+
+    private static func startAnalytics(bundle: Bundle, variant: AppVariant, version: String) {
+        #if DEBUG
+        let debug = true
+        #else
+        let debug = false
+        #endif
+        Analytics.shared.launch(bundle: bundle, debug: debug, variant: variant, appVersion: version,
+                                tablet: UIDevice.current.userInterfaceIdiom == .pad)
     }
 
     /// Application Support/Happy, as a path only: nothing touches the disk

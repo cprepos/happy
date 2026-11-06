@@ -1,4 +1,5 @@
 #if canImport(UIKit)
+import HappyAnalytics
 import HappyCore
 import HappyLayout
 import HappyWire
@@ -61,16 +62,16 @@ public final class AppCoordinator {
         // opens; with none, a paired computer rather than Welcome.
         let v2 = Preference(variant: context.variant)
         context.account.fallsBackToAgentConnection = true
-        PairingAnalytics.shared.variant = context.variant
+        Analytics.shared.follow(context.account)
         Task { @MainActor [weak self] in
             guard let account = self?.context.account else { return }
             // The Happy account's filter showed a computer's V2: that
             // computer is home now, from the first screen.
             await account.restore(openingAgentConnection: v2.takeFilterChoice(), preferred: v2.agentConnectionID)
+            // Analytics waits for every signed-in account's opt-out, read off the main thread.
+            Task { await Analytics.shared.accountsRestored() }
             self?.show(account.state)
             self?.accountRestored = true
-            // Only now, with the accounts read, is it known whose subscription it is.
-            Offers.shared.follow(account)
             self?.openPendingLink()
             self?.openPendingInstanceLink()
             self?.openNotificationSession()
@@ -238,7 +239,7 @@ public final class AppCoordinator {
         case .artifact:
             var artifact = Artifact(id: reference.id, version: reference.version ?? 1, type: "", title: "", followsLatest: reference.version == nil)
             artifact.pinned = reference.version != nil
-            navigation.pushViewController(ArtifactViewController(session: session, artifact: artifact), animated: true)
+            navigation.openArtifact(artifact, session: session, on: navigation)
         case .agent:
             let row = session.snapshot.allRows.first { ($0.kind == .space || $0.kind == .session) && $0.agentId == reference.id }
             navigation.pushViewController(ChatViewController(session: session, agentId: reference.id, title: row?.label ?? "", spaceId: row?.spaceId, intro: nil), animated: true)
@@ -279,7 +280,6 @@ public final class AppCoordinator {
         let session: AccountSession?
         if case .signedIn(let value) = state { session = value } else { session = nil }
         VoiceCoordinator.shared.accountDidChange(to: session)
-        if accountRestored { Offers.shared.tell(context.account) }
         let identity = session.map(ObjectIdentifier.init)
         let pending = context.account.pendingServerConfirmation
         let agentConnectionID = context.account.agentConnections.activeID

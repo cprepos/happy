@@ -8,6 +8,9 @@ import com.slopus.happy.connection.RequestCategory
 import com.slopus.happy.connection.agentTransport
 import com.slopus.happy.connection.Transport
 import com.slopus.happy.conversation.HeldConversations
+import com.slopus.happy.conversation.Mode
+import com.slopus.happy.conversation.ModelPreferences
+import com.slopus.happy.conversation.NewSessionStart
 import com.slopus.happy.conversation.UnsentWork
 import com.slopus.happy.data.DiskThread
 import com.slopus.happy.diagnostics.traced
@@ -15,6 +18,7 @@ import com.slopus.happy.documents.DocumentLibrary
 import com.slopus.happy.documents.DocumentStreams
 import com.slopus.happy.feed.AgentFeedRoutes
 import com.slopus.happy.feed.FeedLibrary
+import com.slopus.happy.feed.FeedCovers
 import com.slopus.happy.feed.FeedLookups
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
@@ -179,6 +183,9 @@ class AgentSession internal constructor(
         }
     }
 
+    /** The pictures covered artifacts show as Feed posts, kept with the connection's media. */
+    val feedCovers: FeedCovers by lazy { FeedCovers.of(ArtifactClient(client), media) }
+
     private val noticeState = MutableStateFlow<String?>(null)
 
     /** A refusal the computer gave to something done here, for home's notice; it clears after [NOTICE_MILLIS]. */
@@ -237,6 +244,37 @@ class AgentSession internal constructor(
         scope.launch { setSetting(DesktopSettings.COMPLETION_SOUND, DesktopSettings.completionSoundValue(sound)) }
     }
 
+    /**
+     * The person's model preferences, desktop's keys: what a new chat opens
+     * on, which each new chat's first message moves ([recordStart]).
+     */
+    val modelPreferences: StateFlow<ModelPreferences> = catalogState
+        .map { ModelPreferences.parse(it.settingValues) }
+        .distinctUntilChanged()
+        .stateIn(scope, SharingStarted.Eagerly, ModelPreferences.parse(catalogState.value.settingValues))
+
+    /** A new chat started on [mode] (desktop's `selectionStarted`): the keys that change go, each on its own. */
+    fun recordStart(mode: Mode) = changeModelPreferences { it.started(mode) }
+
+    /** Settings' New sessions start on. */
+    fun setNewSessionStart(start: NewSessionStart) = changeModelPreferences { it.copy(start = start) }
+
+    /** Settings' Default model: the model alone; its account stays the one picked last. */
+    fun setDefaultModel(modelId: String) = changeModelPreferences { it.copy(defaultModelId = modelId) }
+
+    /** Settings' Default effort, which every model runs where it can. */
+    fun setDefaultEffort(effort: String) = changeModelPreferences { it.copy(defaultEffort = effort) }
+
+    /** Settings' Default access mode. */
+    fun setDefaultAccess(mode: String) = changeModelPreferences { it.copy(access = mode) }
+
+    private fun changeModelPreferences(change: (ModelPreferences) -> ModelPreferences) {
+        scope.launch {
+            val current = ModelPreferences.parse(catalogState.value.settingValues)
+            for ((key, value) in current.changes(change(current))) setSetting(key, value)
+        }
+    }
+
     /** Sharing preferences belong to this person on this connection, including pending offline edits. */
     val sharing: StateFlow<AgentSharingState> = combine(catalogState, connections.accounts) { catalog, accounts ->
         AgentSharingState.from(catalog, accounts.firstOrNull { it.id == connectionId }?.protocol)
@@ -287,6 +325,15 @@ class AgentSession internal constructor(
      * out once the link is up, whether or not a list is opened.
      */
     val todos: com.slopus.happy.todos.TodoLibrary = com.slopus.happy.todos.connectionTodos(this, client, scope)
+
+    /** The connection's vaults: their routes, live events and the uploads in flight, which outlive the screen that started them. */
+    val vaults: com.slopus.happy.vaults.Vaults by lazy {
+        com.slopus.happy.vaults.Vaults(
+            client, events, scope,
+            kept = { key -> kotlinx.coroutines.withContext(Dispatchers.IO) { cachedResource(key) } },
+            keep = { key, value -> kotlinx.coroutines.withContext(Dispatchers.IO) { keepResource(key, value) } },
+        )
+    }
 
     /** Bots' pictures, as home's rows draw them. */
     /** Chat media kept on this phone for good, beside the catalog (iOS `MediaLibrary.agent`); null where nothing is kept. */
@@ -917,6 +964,14 @@ class AgentSession internal constructor(
 
     /** 1, 2, 4 … 30 seconds, as iOS retries a setting. */
     private fun settingsBackoff(attempt: Int): Long = (INITIAL_BACKOFF shl attempt.coerceAtMost(5)).coerceAtMost(30_000L)
+
+    /**
+     * Search's daemon half for [query] (`POST /v0/search`); null
+     * where health hasn't said the daemon has it, and the phone's own
+     * results stand alone.
+     */
+    suspend fun search(query: String): com.slopus.happy.search.SearchAnswer? =
+        if (client.search) com.slopus.happy.search.SearchClient(client).search(query) else null
 
     /**
      * A resource kept beside the catalog for offline use (iOS's

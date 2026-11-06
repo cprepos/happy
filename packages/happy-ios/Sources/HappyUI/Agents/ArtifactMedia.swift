@@ -21,9 +21,22 @@ final class ArtifactMedia: NSObject, ChatMediaSource, ChatMediaPlaying, ChatMedi
         case data(URL)
     }
 
-    let artifactId: String
-    let version: Int
-    private let client: AgentClient
+    /// Where a version's files are read from: an artifact's file route,
+    /// or a vault entry's (`VaultPreviewViewController`).
+    struct Files: Sendable {
+        /// Names the version where the media library keeps its files.
+        let resource: String
+        let read: @Sendable (_ path: String, _ range: String?) async throws -> HTTP1Response
+        /// The still the daemon made of a file (its `preview`), where it serves them.
+        var preview: (@Sendable (_ path: String) async throws -> Data)?
+
+        static func artifact(_ client: AgentClient, id: String, version: Int) -> Files {
+            Files(resource: "artifact/\(id)/\(version)", read: { path, range in try await client.artifactFile(id, version: version, path: path, range: range) },
+                  preview: { path in try await client.image(ArtifactSummary.served(id: id, version: version, route: "previews", file: path)) })
+        }
+    }
+
+    let files: Files
     /// Where the version's files are kept, read once.
     private let library: MediaLibrary?
     private let fetcher: BrowserFetcher
@@ -39,12 +52,15 @@ final class ArtifactMedia: NSObject, ChatMediaSource, ChatMediaPlaying, ChatMedi
 
     /// `workspace` names the workspace whose network reaches linked
     /// pictures (the artifact's source's, as the browser picks it).
-    init(client: AgentClient, artifactId: String, version: Int, library: MediaLibrary? = nil, workspace: (@Sendable () async throws -> String)? = nil) {
-        self.client = client
+    convenience init(client: AgentClient, artifactId: String, version: Int, library: MediaLibrary? = nil, workspace: (@Sendable () async throws -> String)? = nil) {
+        self.init(client: client, files: .artifact(client, id: artifactId, version: version), library: library,
+                  workspace: workspace ?? { [client] in try await client.browserWorkspace(artifactID: artifactId) })
+    }
+
+    init(client: AgentClient, files: Files, library: MediaLibrary?, workspace: @escaping @Sendable () async throws -> String) {
         self.library = library
-        self.artifactId = artifactId
-        self.version = version
-        fetcher = BrowserFetcher(client: client, workspace: workspace ?? { [client] in try await client.browserWorkspace(artifactID: artifactId) })
+        self.files = files
+        fetcher = BrowserFetcher(client: client, workspace: workspace)
         images.totalCostLimit = 64 * 1024 * 1024
         bytes.totalCostLimit = 48 * 1024 * 1024
         super.init()
@@ -83,7 +99,7 @@ final class ArtifactMedia: NSObject, ChatMediaSource, ChatMediaPlaying, ChatMedi
         let key = Self.key(file.path)
         items[key] = .file(file)
         let isVideo = Self.isVideo(file)
-        return ChatMedia(key: key, isVideo: isVideo, thumbhash: nil, label: Strings.media(isVideo: isVideo, name: (file.path as NSString).lastPathComponent))
+        return ChatMedia(key: key, isVideo: isVideo, thumbhash: file.thumbhash, label: Strings.media(isVideo: isVideo, name: (file.path as NSString).lastPathComponent))
     }
 
     /// A picture a document links to by its address.
@@ -108,9 +124,8 @@ final class ArtifactMedia: NSObject, ChatMediaSource, ChatMediaPlaying, ChatMedi
         if let kept = bytes.object(forKey: key as NSString) { return kept as Data }
         if let task = reading[key] { return await task.value }
         guard let item = items[key] else { return nil }
-        let client = client
         let fetcher = fetcher
-        let (artifactId, version) = (artifactId, version)
+        let files = files
         if case .file(let file) = item, let library {
             let (id, source) = (resourceID(file), source(file))
             let task = Task { try? await library.downloads.data(id, source: source, priority: .user) }
@@ -126,7 +141,7 @@ final class ArtifactMedia: NSObject, ChatMediaSource, ChatMediaPlaying, ChatMedi
                 var data = Data()
                 do {
                     try await AgentClient.read({ range in
-                        try await client.artifactFile(artifactId, version: version, path: file.path, range: range.map { "bytes=\($0.lowerBound)-\($0.upperBound)" })
+                        try await files.read(file.path, range.map { "bytes=\($0.lowerBound)-\($0.upperBound)" })
                     }, each: { piece, _, _ in data.append(piece) })
                 } catch { return nil }
                 return data
@@ -202,7 +217,7 @@ final class ArtifactMedia: NSObject, ChatMediaSource, ChatMediaPlaying, ChatMedi
         if let cached = cachedImage(key, pixels: pixels) { return cached }
         let image: UIImage?
         if case .file(let file) = items[key], Self.isVideo(file) {
-            image = await poster(key, pixels: pixels)
+            if let still = await preview(file, pixels: pixels) { image = still } else { image = await poster(key, pixels: pixels) }
         } else if let data = await data(key) {
             image = await Task.detached(priority: .userInitiated) { Images.decode(data, maxPixels: pixels) }.value
         } else {
@@ -213,6 +228,13 @@ final class ArtifactMedia: NSObject, ChatMediaSource, ChatMediaPlaying, ChatMedi
             images.setObject(Decoded(pixels: pixels, image: image), forKey: key as NSString, cost: cost)
         }
         return image
+    }
+
+    /// The poster the daemon made of a recording (its `preview`), so the
+    /// viewer shows it before playback reads a byte of the recording.
+    private func preview(_ file: AgentWire.ArtifactVersion.File, pixels: Int) async -> UIImage? {
+        guard file.preview != nil, let read = files.preview, let data = try? await read(file.path) else { return nil }
+        return await Task.detached(priority: .userInitiated) { Images.decode(data, maxPixels: pixels) }.value
     }
 
     /// A recording's first frame, read through its stream.
@@ -245,15 +267,14 @@ final class ArtifactMedia: NSObject, ChatMediaSource, ChatMediaPlaying, ChatMedi
     // MARK: Kept files
 
     /// Where a version's file is kept: a numbered version never changes.
-    func resourceID(_ file: AgentWire.ArtifactVersion.File) -> String { "artifact/\(artifactId)/\(version)/\(file.path)" }
+    func resourceID(_ file: AgentWire.ArtifactVersion.File) -> String { "\(files.resource)/\(file.path)" }
 
     /// Its bytes from the file route, a range at a time.
     func source(_ file: AgentWire.ArtifactVersion.File) -> MediaSource {
-        let client = client
-        let (artifactId, version, path) = (artifactId, version, file.path)
+        let (files, path) = (files, file.path)
         return MediaSource(length: Int(file.size)) { range in
             do {
-                let response = try await client.artifactFile(artifactId, version: version, path: path, range: MediaPiece.header(range))
+                let response = try await files.read(path, MediaPiece.header(range))
                 return try MediaPiece.http(status: response.status, headers: response.headers, body: response.body)
             } catch AgentClientError.status(let status, _, _) where (400..<500).contains(status) && status != 408 && status != 429 {
                 throw MediaError.status(status)
@@ -316,8 +337,7 @@ final class ArtifactMedia: NSObject, ChatMediaSource, ChatMediaPlaying, ChatMedi
             return linked ? target : nil
         }
         if case .file(let file) = item, Self.isVideo(file) {
-            let client = client
-            let (artifactId, version) = (artifactId, version)
+            let files = files
             let written = await Task.detached(priority: .userInitiated) { () -> Bool in
                 let manager = FileManager.default
                 do {
@@ -326,7 +346,7 @@ final class ArtifactMedia: NSObject, ChatMediaSource, ChatMediaPlaying, ChatMedi
                     let handle = try FileHandle(forWritingTo: target)
                     defer { try? handle.close() }
                     try await AgentClient.read({ range in
-                        try await client.artifactFile(artifactId, version: version, path: file.path, range: range.map { "bytes=\($0.lowerBound)-\($0.upperBound)" })
+                        try await files.read(file.path, range.map { "bytes=\($0.lowerBound)-\($0.upperBound)" })
                     }, each: { piece, _, _ in try handle.write(contentsOf: piece) })
                     return true
                 } catch {

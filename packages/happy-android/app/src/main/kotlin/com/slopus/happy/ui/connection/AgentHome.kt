@@ -56,6 +56,9 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
+import com.slopus.happy.search.SearchAnswer
+import com.slopus.happy.search.SearchClient
+import com.slopus.happy.search.SearchHit
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -119,7 +122,9 @@ import com.slopus.happy.ui.home.rememberAccountMenu
 import com.slopus.happy.ui.layout.LocalWindowLayout
 import com.slopus.happy.ui.layout.contentMaxWidth
 import com.slopus.happy.ui.theme.HappyTheme
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -155,6 +160,8 @@ class AgentHomeActions(
     val onOpenTodos: () -> Unit = {},
     /** Starts a voice call on this connection ([com.slopus.happy.call.CallController]); null shows no voice button. */
     val onVoice: (() -> Unit)? = null,
+    /** Opens a vault's folder ([folder]) or file that search found. */
+    val onOpenVaultItem: (surfaceId: String, itemId: String, folder: Boolean, name: String) -> Unit = { _, _, _, _ -> },
 )
 
 /** The colours of every bar on an agent connection's screens: the page's own [container], scrolled or not. */
@@ -243,6 +250,8 @@ fun AgentHomeScreen(
     listState: LazyListState = rememberLazyListState(),
     /** What search finds beyond home's rows, read while it is open ([AgentSearchSources.read]). */
     searchSources: suspend () -> AgentSearchSources = { AgentSearchSources.None },
+    /** Search's daemon half for a query ([AgentSession.search]); null, or answering null, searches the phone alone. */
+    search: (suspend (String) -> SearchAnswer?)? = null,
 ) {
     val colors = HappyTheme.colors
     val reduceMotion = rememberReduceMotion()
@@ -288,7 +297,24 @@ fun AgentHomeScreen(
     val sources by produceState(AgentSearchSources.None, searching, feed) {
         if (searching) value = searchSources()
     }
-    val results = remember(feed, query, searchEntries, sources) {
+    // The daemon's half, asked a moment after the typing stops; a new query cancels the one in flight.
+    val remote by produceState<SearchAnswer?>(null, searching, query, search) {
+        val asked = query.trim()
+        if (!searching || asked.isEmpty() || search == null) {
+            value = null
+            return@produceState
+        }
+        delay(SEARCH_DEBOUNCE_MS)
+        value = try {
+            search(asked)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // Offline or refused: the phone's results alone.
+            null
+        }
+    }
+    val results = remember(feed, query, searchEntries, sources, remote) {
         val label = { row: AgentFeedRow ->
             when (row) {
                 is AgentFeedRow.Conversation -> row.title ?: untitled
@@ -300,7 +326,9 @@ fun AgentHomeScreen(
                 is AgentFeedRow.Section -> null
             }
         }
-        agentSearchResults(feed, query, label, words, searchEntries.first, searchEntries.second, sources)
+        // Only the answer to what is typed now joins in; an earlier query's would bring in what no longer answers.
+        val answer = remote?.takeIf { it.query == query.trim().take(SearchClient.MAX_QUERY) }
+        agentSearchResults(feed, query, label, words, searchEntries.first, searchEntries.second, sources, answer)
     }
 
     // One ground under the bar and the page, the chat's own (surface), light and dark; the cards sit on it, as on iOS.
@@ -480,6 +508,7 @@ fun AgentHomeScreen(
                             focus.clearFocus()
                             actions.onOpenArtifact(artifact)
                         },
+                        onOpenHit = { hit -> openHit(hit, actions)?.let { open -> { focus.clearFocus(); open() } } },
                         onPull = { focus.clearFocus() },
                         onClose = closeSearch,
                         selected = sidebar?.selected,
@@ -553,6 +582,28 @@ private fun LeaveSurfaceDialogs(
 /** What home's page shows under the bar. */
 private enum class HomePhase { Loading, Offline, Empty, List }
 
+/** How long the typing rests before the daemon is asked (the design's ~120 ms). */
+private const val SEARCH_DEBOUNCE_MS = 120L
+
+/**
+ * What a result the daemon found opens, as the phone's own row of the
+ * same thing would: its conversation (a message's too), Surface, todo's
+ * list, event's calendar, artifact or vault item. A project or worktree opens nothing,
+ * as on home.
+ */
+private fun openHit(hit: SearchHit, actions: AgentHomeActions): (() -> Unit)? = when (hit) {
+    is SearchHit.Agent -> { { actions.onOpenConversation(hit.agentId) } }
+    is SearchHit.Message -> { { actions.onOpenConversation(hit.agentId) } }
+    is SearchHit.Document -> { { actions.onOpenSurface(AgentFeedRow.Surface(hit.surfaceId, hit.name, SurfaceReader.DOCUMENT)) } }
+    is SearchHit.Surface -> { { actions.onOpenSurface(AgentFeedRow.Surface(hit.surfaceId, hit.name, hit.surfaceType)) } }
+    is SearchHit.Todo -> { { actions.onOpenSurface(AgentFeedRow.Surface(hit.surfaceId, "", SurfaceReader.TODO)) } }
+    is SearchHit.CalendarEvent -> { { actions.onOpenSurface(AgentFeedRow.Surface(hit.surfaceId, "", "calendar")) } }
+    is SearchHit.Artifact -> { { actions.onOpenArtifact(ArtifactRef(hit.artifactId, 1, hit.artifactType, hit.title, followsLatest = true)) } }
+    is SearchHit.VaultFile -> { { actions.onOpenVaultItem(hit.surfaceId, hit.fileId, false, hit.name) } }
+    is SearchHit.VaultFolder -> { { actions.onOpenVaultItem(hit.surfaceId, hit.folderId, true, hit.name) } }
+    is SearchHit.Project, is SearchHit.Workspace -> null
+}
+
 /** Search's section headings and the kinds' names, in the person's language. */
 @Composable
 private fun rememberAgentSearchWords(): AgentSearchWords {
@@ -562,10 +613,6 @@ private fun rememberAgentSearchWords(): AgentSearchWords {
         AgentSearchWords(
             actions = resources.getString(R.string.agent_search_actions),
             settings = resources.getString(R.string.settings_title),
-            documents = resources.getString(R.string.agent_search_documents),
-            todos = resources.getString(R.string.agent_search_todos),
-            artifacts = resources.getString(R.string.artifacts_title),
-            shared = resources.getString(R.string.agent_search_shared),
             surfaceType = { type -> resources.getString(surfaceTypeName(type)) },
             artifactType = { type -> resources.getString(artifactTypeName(type)) },
         )
@@ -577,6 +624,7 @@ private fun surfaceTypeName(type: String): Int = when (type) {
     SurfaceReader.TODO -> R.string.agent_search_kind_todo
     "calendar" -> R.string.agent_search_kind_calendar
     "system_monitor" -> R.string.agent_search_kind_system_monitor
+    "vault" -> R.string.vaults_kind
     "chat" -> R.string.agent_search_kind_chat
     else -> R.string.agent_search_kind_document
 }
@@ -725,6 +773,7 @@ fun AgentHome(
     /** Signs the team server at [server] in again ([AgentConnection.server]). */
     onSignIn: (server: String) -> Unit = {},
     onOpenTodos: () -> Unit = {},
+    onOpenVaultItem: (surfaceId: String, itemId: String, folder: Boolean, name: String) -> Unit = { _, _, _, _ -> },
 ) {
     val session = remember(id) { graph.agentSessions.session(id) } ?: return
     val agents by graph.agentConnections.accounts.collectAsStateWithLifecycle()
@@ -741,7 +790,7 @@ fun AgentHome(
     val microphone = rememberMicrophonePermission()
     val voice = remember(graph, id, microphone) { { graph.calls.start(id) { microphone.request().granted } } }
     if (BuildConfig.DEBUG) CallLaunchHooks(graph, voice)
-    val actions = remember(graph, session, onOpenConversation, onCompose, onComposeWithPicture, onSettings, onSettingsRow, onOpenArtifacts, onOpenSurface, onOpenArtifact, onOpenFeed, add, switchAccount, onSignIn, onOpenTodos, voice) {
+    val actions = remember(graph, session, onOpenConversation, onCompose, onComposeWithPicture, onSettings, onSettingsRow, onOpenArtifacts, onOpenSurface, onOpenArtifact, onOpenFeed, add, switchAccount, onSignIn, onOpenTodos, voice, onOpenVaultItem) {
         AgentHomeActions(
             onOpenConversation = onOpenConversation,
             onCompose = onCompose,
@@ -758,6 +807,7 @@ fun AgentHome(
             onLeaveSurface = { session.leaveSurface(it.id) },
             onSignIn = { graph.agentConnections.accounts.value.firstOrNull { it.id == id }?.server?.let(onSignIn) },
             onVoice = voice,
+            onOpenVaultItem = onOpenVaultItem,
         )
     }
     CompositionLocalProvider(LocalAgentPictures provides session.pictures) {
@@ -775,6 +825,7 @@ fun AgentHome(
             searchSources = remember(session) {
                 { withContext(Dispatchers.IO) { AgentSearchSources.read(session.catalog.value, session.feed.value, session::cachedResource, session.intents.pending.value) } }
             },
+            search = remember(session) { { query -> session.search(query) } },
         )
     }
 }

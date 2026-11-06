@@ -1,4 +1,5 @@
 #if canImport(UIKit)
+import HappyAnalytics
 import HappyCore
 import HappyLayout
 import UIKit
@@ -111,6 +112,7 @@ final class WorkspaceChangesViewController: UIViewController {
                 self.gitLoad = .noRepository
             case .failure(let error):
                 self.gitLoad = .error(Self.message(error, fallback: Strings.ChangesDetail.loadFailed))
+                Analytics.shared.diffLoadFailed(error)
             }
             self.render()
         }

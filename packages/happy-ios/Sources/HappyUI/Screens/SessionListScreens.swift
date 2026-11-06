@@ -1,4 +1,5 @@
 #if canImport(UIKit)
+import HappyAnalytics
 import HappyCore
 import HappyLayout
 import HappyWire
@@ -249,11 +250,11 @@ final class SessionListViewController: UIViewController {
         var environment: HomeTextEnvironment
     }
 
-    /// The migration card's PostHog flag for this account; never asked for
-    /// someone who opted out of analytics.
+    /// The migration card's PostHog flag, for this install; never
+    /// asked for someone who opted out of analytics, here or on this device.
     @objc private func refreshMigrationFlag() {
         guard hasModel, context.account.session === session else { return }
-        MigrationNoteFlag.shared.refresh(session, settings: context.account.localSettings, optedOut: model.analyticsOptOut)
+        Analytics.shared.refreshMigrationFlag(accountOptedOut: model.analyticsOptOut)
     }
 
     /// HomeListHeader.tsx: the offline plaque, then the update banner,
@@ -273,7 +274,7 @@ final class SessionListViewController: UIViewController {
             migration: DesktopMigrationCard.path(
                 context.account,
                 serverAgent: model.hasServerAgent,
-                flag: MigrationNoteFlag.shared.isOn(context.account.localSettings, optedOut: model.analyticsOptOut)
+                flag: MigrationNoteFlag.shared.isOn(optedOut: model.analyticsOptOut)
             )
         )
         guard state != bannerState else { return }
