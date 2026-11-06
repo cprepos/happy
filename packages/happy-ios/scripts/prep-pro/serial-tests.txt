@@ -30,3 +30,6 @@ ScrollTrace
 /SessionInfoCodeBlockTests$
 /ComposerRestoreTests$
 /ChatOpeningTests$
+
+# Hosted classes that pass alone but flake when other simulators run
+/HostedLiveBrowserTests$
