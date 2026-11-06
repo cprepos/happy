@@ -375,7 +375,9 @@ final class HostedLiveBrowserTests: XCTestCase {
         XCTAssertNil(host.line, "no line: the card keeps its place")
     }
 
-    func testAChatWithNoComputerSaysUnavailable() async throws {
+    /// No computer: the player says unavailable, and with no browser the
+    /// bridge says is live there is no red line.
+    func testAChatWithNoComputerIsUnavailableWithNoLine() async throws {
         let host = Host()
         host.dock = LiveBrowserDock(host: host, chatKey: UUID().uuidString) { nil }
         let window = hostedKeyWindow(in: try await hostedActiveScene(), root: host)
@@ -384,7 +386,9 @@ final class HostedLiveBrowserTests: XCTestCase {
         host.dock.setOnScreen(true)
         host.dock.update(link: LiveBrowserLink(id: id))
         try await until { host.dock.feed?.phase == .unavailable }
-        XCTAssertEqual(host.dock.indicator.text, Strings.LiveBrowser.indicator(Strings.LiveBrowser.unavailableStatus))
+        XCTAssertEqual(LiveBrowserDock.status(.unavailable), Strings.LiveBrowser.unavailableStatus)
+        XCTAssertFalse(host.dock.browserRuns)
+        XCTAssertTrue(host.dock.indicator.isHidden, "not live: no red line")
     }
 
     func testAChipOpensItsChatsPlayerAndAnOlderOneSaysReplaced() async throws {

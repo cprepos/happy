@@ -47,7 +47,9 @@ final class LiveBrowserDock: NSObject {
     private weak var host: UIViewController?
     /// The chat this dock is for: where the player was left is kept by it.
     let chatKey: String
-    private let connect: @MainActor () -> LiveBrowserConnection?
+    /// The chat's computer, read each time it is needed; a test hands in
+    /// one of its own.
+    var connect: @MainActor () -> LiveBrowserConnection?
     /// The line came, went or changed its words, or the voice strip moved:
     /// the host lays out again (and measures the composer again).
     var onLayoutChange: (() -> Void)?

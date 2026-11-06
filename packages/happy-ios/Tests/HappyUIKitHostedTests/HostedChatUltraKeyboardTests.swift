@@ -1,6 +1,6 @@
 #if canImport(UIKit)
 import Foundation
-import HappyCore
+@testable import HappyCore
 import HappyLayout
 @testable import HappyUI
 import UIKit
@@ -380,6 +380,12 @@ final class HostedChatUltraKeyboardTests: XCTestCase {
                 let window = try XCTUnwrap(test.chat.view.window)
                 let where_ = "\(inShell ? "docked" : "floating"), line \(lineFirst ? "before" : "after") the keyboard"
                 let link = try XCTUnwrap(LiveBrowserLink(id: "3f9a1c0e5b7d42e8a6c1f09b2d4e7a35"))
+                // The line stands only for a browser the bridge says is
+                // live: a computer whose bridge answers so.
+                let daemon = BrowserDaemon()
+                await daemon.setLiveStatus("watching")
+                let client = AgentClient(transport: daemon, token: "native-secret")
+                test.chat.liveBrowserDock?.connect = { LiveBrowserConnection(client: client) { "work1" } }
                 if lineFirst {
                     test.chat.liveBrowserDock?.update(link: link)
                     try await assertNewestClearsTheLine(test, "\(where_), keyboard down")
