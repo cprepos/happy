@@ -28,4 +28,12 @@ export interface TrackedSession {
   message?: string;
   /** tmux session identifier (format: session:window) */
   tmuxSessionId?: string;
+  /**
+   * Start time of the live owner recorded in the session's lock. Set for
+   * entries the daemon did not spawn in this lifetime, so a reused pid is not
+   * mistaken for the owner.
+   */
+  ownerStartTime?: string | null;
+  /** Who started the adopted owner, from its lock record ('daemon' or 'terminal'). */
+  ownerStartedBy?: string;
 }

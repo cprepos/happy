@@ -134,6 +134,15 @@ export function isOwnerAlive(owner: SessionOwnerRecord, deps?: Partial<SessionOw
     return sameStartTime(owner.startTime, current);
 }
 
+/**
+ * Whether `pid` is still the process that had `startTime`. Daemon tracking
+ * entries without a child handle use this so a reused pid is not mistaken
+ * for the session owner.
+ */
+export function isProcessIdentityAlive(pid: number, startTime: string | null, deps?: Partial<SessionOwnerLockDeps>): boolean {
+    return isOwnerAlive({ pid, startTime, sessionId: '', acquiredAt: 0, cliVersion: '', startedBy: '' }, deps);
+}
+
 function isOwnRecord(record: SessionOwnerRecord, ownPid: number, ownStartTime: string | null): boolean {
     return record.pid === ownPid && sameStartTime(record.startTime, ownStartTime);
 }
