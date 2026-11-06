@@ -11,6 +11,7 @@ import androidx.compose.runtime.ProvidableCompositionLocal
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
+import com.slopus.happy.connection.PairingStart
 import kotlinx.coroutines.CompletableDeferred
 import com.slopus.happy.camera.cameraPresent
 
@@ -29,9 +30,10 @@ sealed interface ScanResult {
 /**
  * The other ways in that Add's scanner offers under its ⋮ (iOS's
  * `AccountAdding.otherWays`): a pasted link, restoring a Happy CLI account
- * from its key, and the server Happy CLI accounts sign in on.
+ * from its key, the server Happy CLI accounts sign in on, and Happy Cloud
+ * (the account menu's +, for a phone with no account yet).
  */
-enum class ScannerWay { EnterLink, Restore, Server }
+enum class ScannerWay { EnterLink, Restore, Server, Cloud }
 
 /** What the scanner is opened with: the [ways] its ⋮ offers (none, no ⋮) and the custom server's host, under Server. */
 data class ScanRequest(val ways: List<ScannerWay> = emptyList(), val serverLabel: String? = null)
@@ -117,4 +119,4 @@ fun rememberQrScanner(): QrScanner {
  * for `happy://direct?` codes, provided at the app's root. Null where
  * nothing can pair (tests, signed-out screens); such a code is then an error.
  */
-val LocalAgentPairing: ProvidableCompositionLocal<((String) -> Unit)?> = compositionLocalOf { null }
+val LocalAgentPairing: ProvidableCompositionLocal<((String, PairingStart) -> Unit)?> = compositionLocalOf { null }

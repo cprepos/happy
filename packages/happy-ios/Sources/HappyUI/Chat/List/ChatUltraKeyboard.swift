@@ -86,6 +86,8 @@ final class ChatUltraKeyboard: NSObject {
     private var generation: UInt64 = 0
     /// When the keyboard motion the last notification started ends.
     private var notifiedMotionEnd: CFTimeInterval = 0
+    /// How far the last notification's keyboard covers `view`.
+    private var notifiedHeight: CGFloat = 0
 
     private(set) var isActive = false
     /// The controller found a keyboard it can drive.
@@ -265,6 +267,17 @@ final class ChatUltraKeyboard: NSObject {
         dismissal?.resolvedKeyboardFrame(screenFrame) ?? view?.keyboardFrame(fromScreen: screenFrame) ?? screenFrame
     }
 
+    /// A swipe back let go of: the keyboard came back with the screen,
+    /// which its notifications meanwhile may not say (the hide the swipe
+    /// started can end after the keyboard is back). The next layout reads
+    /// where it rests off the layout guide, and nothing heard before
+    /// applies after.
+    func resyncWithGuide() {
+        guard isActive else { return }
+        generation &+= 1
+        resync = true
+    }
+
     /// After the screen's layout: the controller finds the keyboard and
     /// the window again.
     func refresh() {
@@ -341,6 +354,9 @@ final class ChatUltraKeyboard: NSObject {
                                   undocked: undocked.frame(in: view), undockedSeesBar: KeyboardFrames.shared.undockedSeesBar)
         let change = Change(transition: duration > 0 ? .keyboard(duration) : .immediate)
         notifiedMotionEnd = CACurrentMediaTime() + max(0, duration)
+        // How far this notification's keyboard covers the view, for the
+        // did-hide that a swipe back let go of undoes.
+        notifiedHeight = cover.map { view.bounds.maxY - $0.top } ?? 0
         guard cover != nil || !barUp else {
             // The minimized bar says it goes, which it also says as it
             // swaps for its word suggestions and back while the person
@@ -351,7 +367,7 @@ final class ChatUltraKeyboard: NSObject {
         }
         heardFrame = frame
         holdsOnGuide = false
-        notified(height: cover.map { view.bounds.maxY - $0.top } ?? 0, change)
+        notified(height: notifiedHeight, change)
     }
 
     /// The keyboard is the minimized bar, or a strip no taller.
@@ -426,6 +442,10 @@ final class ChatUltraKeyboard: NSObject {
             let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect
             return settleBar(after: 0, hidden: frame, Change(transition: .immediate))
         }
+        // The input still has the keyboard and the last notification
+        // brought it back: the hide this ends was undone, as a swipe back
+        // let go of undoes the one it started.
+        if hasInput(), notifiedHeight > 0 { return }
         // A phone on its side hears the hide as the keyboard starts to go:
         // its motion is landed once it has played, unless something has
         // moved the keyboard since.

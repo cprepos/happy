@@ -19,6 +19,8 @@ public struct ServerSignInFlow: Sendable {
         public let origin: AgentOrigin
         public var record: ServerSignInRecord
         public let access: OAuthAccess
+        /// The installation health reported at sign-in, when it was read.
+        public var instanceId: String? = nil
         public var needsProfile: Bool { record.userId == nil }
     }
 
@@ -37,6 +39,16 @@ public struct ServerSignInFlow: Sendable {
         return ServerSignInFlow(origin: origin, method: method, tokens: OAuthTokenClient(http: http), discovery: discovery, makeTransport: makeTransport)
     }
 
+    /// A Happy Cloud server, whose tokens come from the accounts API
+    /// (`CloudAccount.serverToken`) rather than a browser: nothing to
+    /// discover first, the method is the cloud's own.
+    public static func cloud(_ server: String, http: any HTTPTransport = NoRedirectURLSessionTransport(),
+                             makeTransport: @escaping @Sendable (AgentOrigin) -> any AgentTransport = ServerSignInFlow.transport) throws -> ServerSignInFlow {
+        let origin = try ServerURL.normalize(server)
+        return ServerSignInFlow(origin: origin, method: HappyCloud.method(server: origin.value), tokens: OAuthTokenClient(http: http),
+                                discovery: ServerDiscovery(http: http), makeTransport: makeTransport)
+    }
+
     /// The daemon over HTTPS only: a signed-in server never uses Tailcat.
     public static let transport: @Sendable (AgentOrigin) -> any AgentTransport = { AgentHTTPTransport(address: "", port: 0, publicUrl: $0.value, tailcatAvailable: false) }
 
@@ -45,27 +57,52 @@ public struct ServerSignInFlow: Sendable {
         try OAuthSignInRequest(method: method, audience: OAuthAudience(origin: origin), redirectUri: redirectUri)
     }
 
-    /// Exchanges the redirect's code, then asks the server who signed in.
-    /// With `instanceId` (the installation a scanned code named), the
-    /// server's health must report exactly it before anything is kept: a
-    /// code can't send the person's sign-in to another server.
-    public func complete(_ request: OAuthSignInRequest, callback: URL, instanceId: String? = nil) async throws -> SignedIn {
-        let (access, grant) = try await tokens.complete(request, callback: callback)
-        let who = try await discovery.discover(origin, token: access.token)
-        guard who.authenticated else { throw ServerSignInError.rejected }
-        if let instanceId { try await verify(instanceId, token: access.token) }
-        return SignedIn(origin: origin, record: ServerSignInRecord(method: method, grant: grant, userId: who.userId), access: access)
+    /// What the server's installation must be after sign-in.
+    public enum Installation: Sendable {
+        /// Anything: the one already known, or none, is kept.
+        case unchecked
+        /// Exactly this one (a scanned code's): a code can't send the
+        /// person's sign-in to another server.
+        case expected(String)
+        /// Whatever health reports, kept without a comparison: Happy
+        /// Cloud, whose address is the app's own.
+        case recorded
     }
 
-    /// Health (open to a member still being onboarded, API.md) must name
-    /// `instanceId`.
-    private func verify(_ instanceId: String, token: String) async throws {
+    /// Exchanges the redirect's code, then asks the server who signed in
+    /// and, as `installation` says, which installation it is.
+    public func complete(_ request: OAuthSignInRequest, callback: URL, installation: Installation = .unchecked) async throws -> SignedIn {
+        let (access, grant) = try await tokens.complete(request, callback: callback)
+        return try await signedIn(access: access, grant: grant, installation: installation)
+    }
+
+    /// Tokens for this server however they were issued: asks the server
+    /// who signed in and, as `installation` says, which installation it is.
+    public func signedIn(access: OAuthAccess, grant: OAuthGrant, installation: Installation) async throws -> SignedIn {
+        guard let audience = grant.audience.flatMap(OAuthAudience.init), audience == OAuthAudience(origin: origin), audience.accepts(access.token) else { throw OAuthError.wrongAudience }
+        let who = try await discovery.discover(origin, token: access.token)
+        guard who.authenticated else { throw ServerSignInError.rejected }
+        var signedIn = SignedIn(origin: origin, record: ServerSignInRecord(method: method, grant: grant, userId: who.userId), access: access)
+        switch installation {
+        case .unchecked: break
+        case .expected(let instanceId):
+            guard try await health(token: access.token) == instanceId else { throw ServerSignInError.wrongServer }
+            signedIn.instanceId = instanceId
+        case .recorded:
+            signedIn.instanceId = try await health(token: access.token).flatMap { HappyLink.isInstanceID($0) ? $0 : nil }
+        }
+        return signedIn
+    }
+
+    /// The `instanceId` health reports (open to a member still being
+    /// onboarded, API.md).
+    private func health(token: String) async throws -> String? {
         let transport = makeTransport(origin)
         defer { Task { await transport.close() } }
         let health = try await transport.request("/v0/health", credential: token)
         guard health.status == 200 else { throw SignInRequired.check(health) ? ServerSignInError.rejected : ServerSignInError.unreachable }
         struct Health: Decodable { let instanceId: String? }
-        guard (try? JSONDecoder().decode(Health.self, from: health.body))?.instanceId == instanceId else { throw ServerSignInError.wrongServer }
+        return (try? JSONDecoder().decode(Health.self, from: health.body))?.instanceId
     }
 
     /// Saves `name` as the person's profile, which makes them a member the

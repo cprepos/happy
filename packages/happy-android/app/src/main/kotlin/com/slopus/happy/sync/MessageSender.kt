@@ -1,5 +1,12 @@
 package com.slopus.happy.sync
 
+import com.slopus.happy.analytics.Analytics
+import com.slopus.happy.analytics.AnalyticsEvent
+import com.slopus.happy.analytics.ChatTarget
+import com.slopus.happy.analytics.Effort
+import com.slopus.happy.analytics.MessageSource
+import com.slopus.happy.analytics.ProviderKind
+import com.slopus.happy.analytics.SessionClient
 import com.slopus.happy.chat.ChatNormalizer
 import com.slopus.happy.chat.hasUnreceiptedUserMessage
 import com.slopus.happy.data.HappyStore
@@ -167,10 +174,11 @@ class MessageSender internal constructor(
         } catch (e: UnsupportedPermissionModeException) {
             return SendResult.NotSent(e.message)
         }
+        val thinking = isThinking(sessionId)
         val deliveryMeta = options.deliveryMeta ?: MessageMetaResolver.delivery(
             metadata,
             session.agentStateJson,
-            thinking = isThinking(sessionId),
+            thinking = thinking,
             isNewSession = options.source == "new_session",
             // Queued or in flight, or echoed with no receipt yet: happy-app holds all of them pending.
             hasPendingUserMessage = withContext(io) {
@@ -218,6 +226,7 @@ class MessageSender internal constructor(
             true
         }
         if (!accepted) return SendResult.NotSent(null)
+        recordSent(metadata, modeMeta, options, steering = thinking)
 
         // Accepted is irreversible: what follows runs even if the caller stops waiting.
         withContext(NonCancellable) {
@@ -228,6 +237,36 @@ class MessageSender internal constructor(
         if (options.awaitDelivery) flush.invalidateAndAwait() else flush.invalidate()
         maybeStartWatchdog()
         return SendResult.Accepted(localId)
+    }
+
+    /**
+     * `message_sent` for a Happy (relay) session's message, once it is
+     * queued, and a new session's first also `conversation_created`.
+     * [steering]: the agent was thinking when it went.
+     */
+    private fun recordSent(metadata: SessionMetadata?, mode: MessageModeMeta, options: SendOptions, steering: Boolean) {
+        val source = MessageSource.entries.firstOrNull { it.wire == options.source } ?: MessageSource.Chat
+        val providerKind = when (metadata?.flavor?.ifEmpty { null } ?: "claude") {
+            "claude" -> ProviderKind.Claude
+            "codex", "gpt", "openai" -> ProviderKind.Codex
+            "gemini" -> ProviderKind.Gemini
+            else -> ProviderKind.Other
+        }
+        val effort = Effort.of(mode.effort?.value)
+        if (source == MessageSource.NewSession) Analytics.record(AnalyticsEvent.ConversationCreated(mode.model?.value, providerKind, effort))
+        Analytics.record(
+            AnalyticsEvent.MessageSent(
+                source = source,
+                target = if (metadata?.bot != null) ChatTarget.Bot else ChatTarget.Session,
+                sessionClient = if (metadata.isRigV1()) SessionClient.HappyAgent else SessionClient.Cli,
+                model = mode.model?.value,
+                modelProviderKind = providerKind,
+                effort = effort,
+                taskDepth = null,
+                hasAttachment = options.attachments.isNotEmpty(),
+                isSteering = steering,
+            ),
+        )
     }
 
     /** A failed message goes back in the queue. */
@@ -408,7 +447,20 @@ class MessageSender internal constructor(
         /** v3SessionRoutes.ts sendMessagesBodySchema: `messages` holds 1 to 100. */
         const val MAX_BATCH = 100
 
-        private fun failureMessage(e: HttpStatusException) = "Server error: ${e.status}"
+        private const val SERVER_ERROR = "Server error: "
+
+        private fun failureMessage(e: HttpStatusException) = SERVER_ERROR + e.status
+
+        /**
+         * Why a failed row failed, typed, from the error it carries: timed
+         * out in the background, or refused with an HTTP status; null for
+         * anything else.
+         */
+        fun failure(error: String?): SendFailure? = when {
+            error == BACKGROUND_FAILURE -> SendFailure.TimedOut
+            error != null && error.startsWith(SERVER_ERROR) -> error.removePrefix(SERVER_ERROR).toIntOrNull()?.let(SendFailure::Refused)
+            else -> null
+        }
 
         /**
          * The user record exactly as sync.ts `sendMessage` builds it, key for
@@ -458,4 +510,12 @@ class MessageSender internal constructor(
             When you are in the plan mode, you must use the options mode to give the user a easy way to answer your questions if you know possible answers. Do not assume what is needed, when there is discrepancy between what you need and what you have, you must use the options mode.
         """.trimIndent()
     }
+}
+
+/** Why a send failed for good ([MessageSender.failure]): its row carries it. */
+sealed interface SendFailure {
+    /** Still unsent [MessageSender.BACKGROUND_SEND_TIMEOUT_MS] into the background. */
+    data object TimedOut : SendFailure
+    /** The server refused it with [status]. */
+    data class Refused(val status: Int) : SendFailure
 }

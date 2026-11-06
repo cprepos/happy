@@ -1,6 +1,7 @@
 package com.slopus.happy
 
 import android.content.Context
+import androidx.core.app.NotificationManagerCompat
 import com.slopus.happy.accounts.AccountDisplay
 import com.slopus.happy.accounts.AccountRemovals
 import com.slopus.happy.accounts.AccountStore
@@ -8,6 +9,19 @@ import com.slopus.happy.accounts.RnServerConfigImporter
 import com.slopus.happy.accounts.accountId
 import com.slopus.happy.call.CallController
 import com.slopus.happy.agent.AgentSessions
+import com.slopus.happy.analytics.Analytics
+import com.slopus.happy.analytics.AnalyticsAgent
+import com.slopus.happy.analytics.AnalyticsBuild
+import com.slopus.happy.analytics.AnalyticsEvent
+import com.slopus.happy.analytics.AnalyticsReasons
+import com.slopus.happy.analytics.AnalyticsSwitch
+import com.slopus.happy.analytics.AnalyticsTarget
+import com.slopus.happy.analytics.accountsOptedOut
+import com.slopus.happy.analytics.Bucket
+import com.slopus.happy.analytics.ConnectionIncidents
+import com.slopus.happy.analytics.LinkTransport
+import com.slopus.happy.analytics.Notifications
+import com.slopus.happy.connection.PairingStart
 import com.slopus.happy.agent.CompletionChime
 import com.slopus.happy.auth.AndroidKeyStoreKeys
 import com.slopus.happy.auth.AuthCredentials
@@ -25,7 +39,6 @@ import com.slopus.happy.auth.tokenSubject
 import com.slopus.happy.config.FeatureFlags
 import com.slopus.happy.config.LiveAvatarsSetting
 import com.slopus.happy.config.LocalSettings
-import com.slopus.happy.config.PostHogFlags
 import com.slopus.happy.config.ServerConfig
 import com.slopus.happy.data.HappyDatabase
 import com.slopus.happy.data.HappyStore
@@ -46,6 +59,8 @@ import com.slopus.happy.connection.AgentConnections
 import com.slopus.happy.connection.PairingFlow
 import com.slopus.happy.connection.ServerAuthClient
 import com.slopus.happy.connection.ServerSignInFlow
+import com.slopus.happy.connection.CloudAccount
+import com.slopus.happy.connection.HappyCloud
 import com.slopus.happy.connection.TailcatTransport
 import com.slopus.happy.connection.networkPath
 import com.slopus.happy.sync.AccountSync
@@ -73,6 +88,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -249,10 +265,22 @@ class AppGraph(
     val desktopMigration = com.slopus.happy.ui.migration.DesktopMigrationCards(
         context.getSharedPreferences(com.slopus.happy.ui.migration.DesktopMigrationCards.PREFS_NAME, Context.MODE_PRIVATE),
     )
-    /** PostHog's flags for each Happy account, kept from the last answer, asked again in the foreground. */
-    val featureFlags = FeatureFlags(
-        context.getSharedPreferences(FeatureFlags.PREFS_NAME, Context.MODE_PRIVATE),
-        BuildConfig.POSTHOG_KEY.takeIf { it.isNotEmpty() }?.let { PostHogFlags(okHttp, it)::fetch },
+    /** Where this build sends analytics ([AnalyticsTarget]), or nowhere: never a test or an instrumented run. */
+    private val analyticsTarget = AnalyticsTarget.of(
+        appContext,
+        AnalyticsBuild(debug = BuildConfig.DEBUG, buildType = BuildConfig.BUILD_TYPE, postHogKey = BuildConfig.POSTHOG_KEY, version = BuildConfig.VERSION_NAME),
+    )
+    /** PostHog's flags for this install, as analytics last heard them; none in a build that doesn't ask. */
+    val featureFlags = FeatureFlags()
+    /** This phone's own analytics switch, apart from each Happy account's (Settings › Data and Storage). */
+    val analyticsSwitch = AnalyticsSwitch(context.getSharedPreferences(AnalyticsSwitch.PREFS_NAME, Context.MODE_PRIVATE))
+
+    /** Every Happy account here, the open one as it is now ([accountsOptedOut]). */
+    private fun analyticsOptOuts(): Flow<Boolean> = accountsOptedOut(
+        ids = accountStore.registry.map { registry -> registry.entries.map { it.id } },
+        open = settings.document.map(Settings::analyticsOptOut),
+        changes = store.changes,
+        optedOut = { id -> Settings.analyticsOptOut(HappyStore(database(id)).effectiveSettingsOrThrow()) },
     )
     private val accountLock = Mutex()
     /** Selection and removal publish atomically without waiting for another account's sync startup. */
@@ -332,6 +360,16 @@ class AppGraph(
         pictures = File(context.filesDir, "agent-avatars"),
     )
 
+    /** The Happy Cloud account, where the build offers it: signed in once, then its servers are picked, created or joined. */
+    val cloudAccount: CloudAccount? = HappyCloud.accounts?.let { origin ->
+        CloudAccount(
+            scope = scope,
+            origin = origin,
+            auth = serverAuth,
+            http = okHttp,
+        )
+    }
+
     /**
      * The open agent connection's id, or null when a Happy account (or
      * nothing) is open. Only one account of either kind is open at a time.
@@ -407,9 +445,9 @@ class AppGraph(
     val agentPairing: StateFlow<PairingFlow?> = agentPairingState.asStateFlow()
 
     /** Starts connecting the agent behind a `happy://direct?` code, replacing any unfinished pairing. */
-    fun startAgentPairing(code: String) {
+    fun startAgentPairing(code: String, start: PairingStart) {
         agentPairingState.value?.close()
-        agentPairingState.value = PairingFlow(scope, agentConnections, deviceName).also { it.start(code) }
+        agentPairingState.value = PairingFlow(scope, agentConnections, deviceName, start).also { it.start(code) }
     }
 
     /** The pairing screen left. */
@@ -429,13 +467,21 @@ class AppGraph(
      * kept only as [instanceId]'s installation: the code's, or the one
      * [replacing] was.
      */
-    fun startServerSignIn(address: String, replacing: String? = null, instanceId: String? = null) {
+    fun startServerSignIn(address: String, replacing: String? = null, instanceId: String? = null, cloudId: String? = null) {
         serverSignInState.value?.close()
         val existing = agentConnections.accounts.value.firstOrNull { it.id == replacing }
         val onboarding = existing?.takeIf { it.profileRequired }?.server
+        // A Happy Cloud server with the account signed in: its token comes from the account, no browser.
+        val cloud = cloudAccount?.takeIf { HappyCloud.isServer(address) && it.signedIn() }
         // Another member signing in again on [replacing]: their own connection takes its place, and opens.
         serverSignInState.value = ServerSignInFlow(scope, agentConnections, serverAuth, replacing, instanceId ?: existing?.instanceId, onReplaced = { open(it) })
-            .also { flow -> if (onboarding != null) flow.onboard(onboarding) else flow.start(address) }
+            .also { flow ->
+                when {
+                    onboarding != null -> flow.onboard(onboarding)
+                    cloud != null -> flow.startWith(address) { origin -> cloud.serverToken(origin, cloudId) }
+                    else -> flow.start(address)
+                }
+            }
     }
 
     /** The sign-in screen left. */
@@ -449,6 +495,7 @@ class AppGraph(
         // Any app can send the redirect URI: nothing it holds takes the app down.
         try {
             serverSignInState.value?.callback(uri)
+            cloudAccount?.callback(uri)
         } catch (e: RuntimeException) {
             // Only the kind: the callback may carry a code.
             android.util.Log.w("ServerSignIn", "Ignored a callback that couldn't be read: ${e.javaClass.simpleName}")
@@ -467,11 +514,12 @@ class AppGraph(
         .stateIn(scope, SharingStarted.Eagerly, ConnectionStatus.DISCONNECTED)
 
     /**
-     * The Happy CLI home's migration card may show: PostHog's flag is on for
-     * the open Happy account, and its analytics are on.
+     * The Happy CLI home's migration card may show: a Happy account is open
+     * and PostHog's flag is on for this install, which analytics asks only
+     * while it is on.
      */
-    val migrationNote: StateFlow<Boolean> = combine(accountState, settings.settings, featureFlags.on) { account, values, on ->
-        account != null && !values.analyticsOptOut && FeatureFlags.DIRECT_CONNECTION_MIGRATION_NOTE in on[account.anonId].orEmpty()
+    val migrationNote: StateFlow<Boolean> = combine(accountState, featureFlags.on) { account, on ->
+        account != null && FeatureFlags.DIRECT_CONNECTION_MIGRATION_NOTE in on
     }.stateIn(scope, SharingStarted.Eagerly, false)
 
     /** The open relay account is catching up its stored state. */
@@ -504,14 +552,9 @@ class AppGraph(
         scope.launch {
             foreground.collect { if (it) subscription.refresh() }
         }
-        scope.launch {
-            featureFlags.load()
-            // The store is the account's by the time it opens, so its own opt-out is read, never the last account's.
-            combine(foreground, accountState) { visible, account -> account.takeIf { visible } }.collect { account ->
-                if (account != null && !withContext(Dispatchers.IO) { Settings.parse(store.effectiveSettings()).analyticsOptOut }) {
-                    featureFlags.refresh(account.anonId)
-                }
-            }
+        scope.launch(Dispatchers.IO) {
+            // Older builds kept each account's flags here; they are asked per install now, and kept in memory.
+            appContext.deleteSharedPreferences(FeatureFlags.RETIRED_PREFS_NAME)
         }
         scope.launch {
             auth.state.collect { state -> accountLock.withLock { openAccount(state) } }
@@ -553,6 +596,59 @@ class AppGraph(
         foreground = isForeground,
         network = appContext.networkPath(),
         chime = CompletionChime(appContext)::play,
+    )
+
+    init {
+        analyticsTarget?.let(::startAnalytics)
+    }
+
+    /**
+     * Analytics, in a build that sends: kept and sent only while this
+     * phone's switch is on and no account here opted out; until they are
+     * read nothing is kept.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private fun startAnalytics(target: AnalyticsTarget) {
+        val link = openAccount.flatMapLatest<OpenAccount, ConnectionIncidents.Link?> { open ->
+            when (open) {
+                is OpenAccount.Agent -> agentSessions.session(open.id)?.let { session ->
+                    val transport = if (agentConnections.accounts.value.firstOrNull { it.id == open.id }?.server != null) LinkTransport.Remote else LinkTransport.Direct
+                    session.status.map { ConnectionIncidents.Link(open.key, transport, AnalyticsReasons.link(it)) }
+                } ?: flowOf(null)
+                is OpenAccount.Happy -> connectionStatus.map { ConnectionIncidents.Link(open.key, LinkTransport.Relay, AnalyticsReasons.link(it)) }
+                OpenAccount.None -> flowOf(null)
+            }
+        }
+        Analytics.start(
+            context = appContext,
+            target = target,
+            switch = analyticsSwitch,
+            accountsOptedOut = analyticsOptOuts(),
+            scope = scope,
+            http = okHttp,
+            foreground = isForeground,
+            agent = ::analyticsAgent,
+            configuration = ::analyticsConfiguration,
+            links = link,
+            network = appContext.networkPath(),
+            flags = featureFlags::set,
+        )
+    }
+
+    /** The open account's side of every event: where its agent is, and which Happy Agent. */
+    private fun analyticsAgent(): AnalyticsAgent = when (val open = openAccount.value) {
+        is OpenAccount.Agent -> AnalyticsAgent(
+            location = "remote",
+            version = agentConnections.accounts.value.firstOrNull { it.id == open.id }?.daemonVersion,
+        )
+        is OpenAccount.Happy -> AnalyticsAgent(location = "relay")
+        OpenAccount.None -> AnalyticsAgent()
+    }
+
+    /** `app_opened`'s configuration, as it is when the app opens. */
+    private fun analyticsConfiguration() = AnalyticsEvent.AppOpened.Configuration(
+        notifications = if (NotificationManagerCompat.from(appContext).areNotificationsEnabled()) Notifications.Granted else Notifications.Denied,
+        agentsConnected = Bucket.of(agentConnections.accounts.value.size),
     )
 
     /**
@@ -782,4 +878,4 @@ sealed interface OpenAccount {
  * empties). The server choice, the secure store (cleared by [AuthRepository])
  * and the push token store (cleared by its own logout hook) are not here.
  */
-private val WIPED_PREFS = listOf(NewSessionDraftStore.PREFS_NAME, PrefsReviewStamps.PREFS_NAME, VoicePreferences.PREFS_NAME, FeatureFlags.PREFS_NAME)
+private val WIPED_PREFS = listOf(NewSessionDraftStore.PREFS_NAME, PrefsReviewStamps.PREFS_NAME, VoicePreferences.PREFS_NAME)

@@ -1,5 +1,10 @@
 package com.slopus.happy.connection
 
+import com.slopus.happy.analytics.Analytics
+import com.slopus.happy.analytics.AnalyticsEvent
+import com.slopus.happy.analytics.AnalyticsReasons
+import com.slopus.happy.analytics.SignInError
+import com.slopus.happy.analytics.SignInMethod
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -28,6 +33,17 @@ sealed interface ServerSignInState {
     data class Failed(val server: String?, val reason: ServerAuthException.Reason) : ServerSignInState
 }
 
+/** The server this sign-in is for; null once done, or when it failed before it had one. */
+val ServerSignInState.server: String? get() = when (this) {
+    is ServerSignInState.Checking -> server.takeIf { it.isNotEmpty() }
+    is ServerSignInState.Ready -> server
+    is ServerSignInState.InBrowser -> server
+    is ServerSignInState.Finishing -> server
+    is ServerSignInState.NeedsName -> server
+    is ServerSignInState.Done -> null
+    is ServerSignInState.Failed -> server
+}
+
 /**
  * Signing in to a team server behind an SSO load balancer (edge SSO
  * contract): from a server QR code desktop shows ([ServerInvite]), the
@@ -38,7 +54,9 @@ sealed interface ServerSignInState {
  * `instanceId` checked against [expectedInstance], and the server kept as
  * an agent connection. [replacing] signs an existing one in again. The
  * verifier and state live only in this object: a sign-in the app was
- * killed during starts over.
+ * killed during starts over. Closing records how it ended
+ * (`team_server_signed_in` or `sign_in_failed`; nothing when it was left),
+ * whatever retries came before.
  */
 class ServerSignInFlow(
     private val scope: CoroutineScope,
@@ -49,6 +67,7 @@ class ServerSignInFlow(
     private val expectedInstance: String? = null,
     /** Another member signed in again on [replacing]: the id of the connection of their own that took its place. */
     private val onReplaced: (String) -> Unit = {},
+    private val record: (AnalyticsEvent) -> Unit = Analytics::record,
 ) {
     private val mutableState = MutableStateFlow<ServerSignInState>(ServerSignInState.Checking(""))
     val state: StateFlow<ServerSignInState> = mutableState.asStateFlow()
@@ -64,6 +83,10 @@ class ServerSignInFlow(
     /** Who this grant signed in, once the server says (a new member: after their name is saved). */
     private var member: String? = null
     private var job: Job? = null
+    private var reported = false
+
+    /** Where [startWith] gets its token, kept for [retry]. */
+    private var tokenSource: (suspend (AgentOrigin) -> Pair<OAuthGrant, OAuthCredential>)? = null
 
     /**
      * [replacing] is signed in but has no profile on its server yet (the
@@ -123,18 +146,38 @@ class ServerSignInFlow(
         this.pending = null
         val server = pending.origin.value
         mutableState.value = ServerSignInState.Finishing(server)
-        run(server) {
-            val signedIn = auth.complete(pending, uri)
-            grant = signedIn
-            verified = false
-            val (authenticated, userId) = auth.check(pending.origin, signedIn.first.access.value)
-            if (!authenticated) throw ServerAuthException(ServerAuthException.Reason.Rejected)
-            member = userId
-            if (userId != null) return@run finish()
-            // A new member: checked before the name, so none is saved on another server, unless health is behind the profile gate too.
-            verify(pending.origin, signedIn.first.access.value, beforeProfile = true)
-            mutableState.value = ServerSignInState.NeedsName(server)
+        run(server) { signedIn(pending.origin, auth.complete(pending, uri)) }
+    }
+
+    /**
+     * Signs in to [address] with a token got without a browser: a Happy
+     * Cloud server's, from the account ([CloudAccount.serverToken]). Then as
+     * after the browser: checked with the server, a name if new, kept.
+     */
+    fun startWith(address: String, token: suspend (AgentOrigin) -> Pair<OAuthGrant, OAuthCredential>) {
+        tokenSource = token
+        val parsed = try {
+            ServerAuthClient.parseAddress(address)
+        } catch (e: ServerAuthException) {
+            mutableState.value = ServerSignInState.Failed(null, e.reason)
+            return
         }
+        origin = parsed
+        mutableState.value = ServerSignInState.Finishing(parsed.value)
+        run(parsed.value) { signedIn(parsed, token(parsed)) }
+    }
+
+    /** A grant for [origin] in hand: checked with the server, then kept, or a new member asked for a name first. */
+    private suspend fun signedIn(origin: AgentOrigin, signedIn: Pair<OAuthGrant, OAuthCredential>) {
+        grant = signedIn
+        verified = false
+        val (authenticated, userId) = auth.check(origin, signedIn.first.access.value)
+        if (!authenticated) throw ServerAuthException(ServerAuthException.Reason.Rejected)
+        member = userId
+        if (userId != null) return finish()
+        // A new member: checked before the name, so none is saved on another server, unless health is behind the profile gate too.
+        verify(origin, signedIn.first.access.value, beforeProfile = true)
+        mutableState.value = ServerSignInState.NeedsName(origin.value)
     }
 
     /** A new member's name, saved before the server is kept. */
@@ -186,6 +229,7 @@ class ServerSignInFlow(
     /** After a failure: the server's sign-in if it was found, else the server asked again. Without an address there is nothing to retry. */
     fun retry() {
         val origin = origin ?: return
+        tokenSource?.let { return startWith(origin.value, it) }
         val method = method
         if (method != null) mutableState.value = ServerSignInState.Ready(origin.value, method) else start(origin.value)
     }
@@ -194,6 +238,16 @@ class ServerSignInFlow(
         job?.cancel()
         pending = null
         grant = null
+        if (reported) return
+        reported = true
+        // Left without signing in sends nothing.
+        val event = when (val state = mutableState.value) {
+            is ServerSignInState.Done -> AnalyticsEvent.TeamServerSignedIn
+            is ServerSignInState.Failed -> AnalyticsEvent.SignInFailed(SignInMethod.TeamServer, AnalyticsReasons.signIn(state.reason))
+            is ServerSignInState.NeedsName -> if (state.failed) AnalyticsEvent.SignInFailed(SignInMethod.TeamServer, SignInError.ProfileRequired) else null
+            else -> null
+        }
+        event?.let(record)
     }
 
     private suspend fun finish() {
@@ -210,7 +264,7 @@ class ServerSignInFlow(
         // Kept as this member's: another's connection on this server is never reused.
         val userId = member ?: auth.check(origin, granted.access.value).let { (authenticated, userId) -> userId.takeIf { authenticated } }
             ?: throw ServerAuthException(ServerAuthException.Reason.Rejected)
-        val account = connections.addServer(origin, credential.copy(userId = userId), granted.access, fallbackName = origin.host, replacing = replacing)
+        val account = connections.addServer(origin, credential.copy(userId = userId), granted.access, fallbackName = HappyCloud.handle(origin.value) ?: origin.host, replacing = replacing)
         grant = null
         mutableState.value = ServerSignInState.Done(account)
         if (replacing != null && account.id != replacing) onReplaced(account.id)

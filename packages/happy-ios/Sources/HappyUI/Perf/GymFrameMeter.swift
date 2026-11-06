@@ -21,10 +21,10 @@ import UltraView
 public final class GymFrameMeter: NSObject {
     public static func installIfAsked(in window: UIWindow) {
         guard ProcessInfo.processInfo.environment["HAPPY_GYM_METER"] == "1" else { return }
-        // One meter a process, on the window asked for last: a script looks
-        // for what it scrolls in the meter's own window.
+        // A process's later window (the hosted tests make one a test)
+        // takes the one meter over.
         if let shared {
-            shared.place(in: window)
+            if shared.button.window !== window { shared.place(in: window) }
             return
         }
         let meter = GymFrameMeter(window: window)
@@ -70,12 +70,10 @@ public final class GymFrameMeter: NSObject {
         button.alpha = 0.02
         button.backgroundColor = .black
         button.addTarget(self, action: #selector(reset), for: .touchUpInside)
-        button.autoresizingMask = [.flexibleTopMargin, .flexibleRightMargin]
         run.accessibilityIdentifier = "gym-run"
         run.alpha = 0.02
         run.backgroundColor = .black
         run.addTarget(self, action: #selector(runScript), for: .touchUpInside)
-        run.autoresizingMask = [.flexibleTopMargin, .flexibleRightMargin]
         place(in: window)
         let link = CADisplayLink(target: self, selector: #selector(tick(_:)))
         link.add(to: .main, forMode: .common)
@@ -107,12 +105,14 @@ public final class GymFrameMeter: NSObject {
     nonisolated static let resetNotification = "com.slopus.happy.gym.reset"
     nonisolated static let runNotification = "com.slopus.happy.gym.run"
 
+    /// The button and the run button in `window`'s corner, on top.
     private func place(in window: UIWindow) {
-        guard button.window !== window else { return }
         window.addSubview(button)
         button.frame = CGRect(x: 0, y: window.bounds.height - 8, width: 8, height: 8)
+        button.autoresizingMask = [.flexibleTopMargin, .flexibleRightMargin]
         window.addSubview(run)
         run.frame = CGRect(x: 0, y: window.bounds.height - 20, width: 8, height: 8)
+        run.autoresizingMask = [.flexibleTopMargin, .flexibleRightMargin]
         keepOnTop(window)
     }
 

@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  values/strings_cloud.xml in ja: Android-only strings, not in happy-app's
+  catalogs. AndroidStringsTranslatedTest fails while one is missing here.
+-->
+<resources>
+    <string name="cloud_connect_row">Happy Cloud に接続</string>
+    <string name="cloud_connect_message">Happy Cloud アカウントにサインインまたは作成してから、サーバーを開くか、作成するか、参加してください。エージェントはクラウドで動くので、コンピューターは不要です。</string>
+    <string name="cloud_connect_confirm">接続</string>
+    <string name="cloud_needs_computer">Happy Cloud ではエージェントのみ動きます。これにはコンピューターが必要です。</string>
+    <string name="cloud_title">Happy Cloud</string>
+    <string name="cloud_your_servers">あなたのサーバー</string>
+    <string name="cloud_no_servers">サーバーはまだありません。下から作成するか参加してください。</string>
+    <string name="cloud_role_owner">オーナー</string>
+    <string name="cloud_role_member">メンバー</string>
+    <string name="cloud_create">新しいサーバーを作成</string>
+    <string name="cloud_create_detail">名前を選んでください。サーバーはユーザー名のように @名前 で表示されます。</string>
+    <string name="cloud_create_button">サーバーを作成</string>
+    <string name="cloud_join">サーバーに参加</string>
+    <string name="cloud_join_detail">サーバー名と、オーナーから受け取った招待コードを入力してください。</string>
+    <string name="cloud_join_button">参加</string>
+    <string name="cloud_invite_code">招待コード</string>
+    <string name="cloud_join_not_found">その名前と招待コードのサーバーはありません。</string>
+    <string name="cloud_name_placeholder">名前</string>
+    <string name="cloud_name_rules">3〜32 文字の英小文字・数字・ハイフン（先頭と末尾にハイフンは不可）。</string>
+    <string name="cloud_name_checking">確認中…</string>
+    <string name="cloud_name_available">%1$s は使用できます。</string>
+    <string name="cloud_name_taken">%1$s は使われています。</string>
+    <string name="cloud_name_reserved">%1$s は予約されています。</string>
+    <string name="cloud_failed">問題が発生しました。もう一度お試しください。</string>
+    <string name="cloud_connecting">%1$s に接続中…</string>
+    <string name="cloud_session_expired">Happy Cloud のサインインは 1 時間で切れます。サーバーを開く・作成する・参加するには、もう一度サインインしてください。この端末にあるサーバーはサインインしたままです。</string>
+    <string name="cloud_sign_out">Happy Cloud からサインアウト</string>
+    <string name="cloud_members">メンバー</string>
+    <string name="cloud_members_sign_in">このサーバーのメンバーを見るには Happy Cloud にサインインしてください。</string>
+    <string name="cloud_leave">サーバーから退出</string>
+    <string name="cloud_leave_confirm_title">%1$s から退出しますか？</string>
+    <string name="cloud_leave_confirm_message">すべての端末でこのサーバーのエージェントとタスクにアクセスできなくなります。新しい招待コードで戻れます。</string>
+    <string name="cloud_leave_last_owner">唯一のオーナーなので退出できません。</string>
+</resources>

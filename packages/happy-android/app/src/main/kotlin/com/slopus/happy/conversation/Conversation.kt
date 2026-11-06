@@ -1,5 +1,16 @@
 package com.slopus.happy.conversation
 
+import com.slopus.happy.analytics.Analytics
+import com.slopus.happy.analytics.AnalyticsEvent
+import com.slopus.happy.analytics.AnalyticsReasons
+import com.slopus.happy.analytics.ChatAddress
+import com.slopus.happy.analytics.CreateError
+import com.slopus.happy.analytics.Effort
+import com.slopus.happy.analytics.ErrorArea
+import com.slopus.happy.analytics.ErrorCode
+import com.slopus.happy.analytics.MessageSource
+import com.slopus.happy.analytics.ProviderKind
+import com.slopus.happy.analytics.SessionClient
 import androidx.compose.runtime.Immutable
 import com.slopus.happy.attachments.AttachmentPreview
 import com.slopus.happy.attachments.PendingPicture
@@ -163,6 +174,11 @@ class Conversation(
     private val preferences: StateFlow<ModelPreferences>? = null,
     /** A new chat's first message went with this mode: it is the session's start. */
     private val onStarted: (Mode) -> Unit = {},
+    /** Who this conversation is with, for `message_sent`; null where that isn't known. */
+    private val address: () -> ChatAddress? = { null },
+    /** Where its analytics go: [Analytics], or a test's list. */
+    private val record: (AnalyticsEvent) -> Unit = Analytics::record,
+    private val errorShown: (ErrorArea, ErrorCode) -> Unit = Analytics::errorShown,
 ) {
     /**
      * A send on its way: the person's [text], its pictures inline and its
@@ -178,6 +194,8 @@ class Conversation(
         var files: List<OutgoingFile> = emptyList(),
         /** A tool the agent runs before it reads this (a skill's `read_skill`). */
         val toolRequest: ToolRequest? = null,
+        /** A voice call's words ([sendAs]). */
+        val voice: Boolean = false,
         var accepted: Boolean = false,
         var failure: Problem? = null,
         val sentAt: Long,
@@ -393,6 +411,8 @@ class Conversation(
                 val events = held.orEmpty()
                 held = null
                 events.forEach(::receive)
+                // Kept rows show over a failed read; only an empty chat says it.
+                if (_state.value.rows.isEmpty()) errorShown(ErrorArea.ConversationLoad, AnalyticsReasons.error(e))
                 publish { it.copy(loaded = true, syncing = false, error = describe(e)) }
             }
         }
@@ -772,7 +792,7 @@ class Conversation(
         val id = ConversationApi.clientId()
         scope.launch(lane) {
             if (!created) locked = true
-            outgoing += Outgoing(id, trimmed, images, sentAt = now())
+            queue(Outgoing(id, trimmed, images, sentAt = now()))
             setDraftNow("")
             publish()
             pump()
@@ -789,7 +809,7 @@ class Conversation(
     suspend fun sendAs(id: String, text: String): Boolean = withContext(lane) {
         if (!created || closed || text.isBlank()) return@withContext false
         if (outgoing.any { it.id == id } || id in messages) return@withContext false
-        outgoing += Outgoing(id, text, emptyList(), sentAt = now())
+        queue(Outgoing(id, text, emptyList(), voice = true, sentAt = now()))
         publish()
         pump()
         true
@@ -831,7 +851,7 @@ class Conversation(
                 return@launch
             }
             if (!created) locked = true
-            outgoing += Outgoing(id, trimmed, images, files, sentAt = now(), waiting = pending.takeIf { it.isNotEmpty() })
+            queue(Outgoing(id, trimmed, images, files, sentAt = now(), waiting = pending.takeIf { it.isNotEmpty() }))
             setDraftNow("")
             publish()
             if (pending.isEmpty()) pump() else read(id, attachments.size, pending, readPictures)
@@ -917,7 +937,7 @@ class Conversation(
             setDraftNow("")
             if (command.isSkill) {
                 val text = if (given == null) "/$name" else "/$name $given"
-                outgoing += Outgoing(ConversationApi.clientId(), text, emptyList(), toolRequest = ToolRequest(READ_SKILL, mapOf("name" to name)), sentAt = now())
+                queue(Outgoing(ConversationApi.clientId(), text, emptyList(), toolRequest = ToolRequest(READ_SKILL, mapOf("name" to name)), sentAt = now()))
                 publish()
                 pump()
                 return@launch
@@ -1015,9 +1035,12 @@ class Conversation(
                 // Its photos still being read: it and everything after it wait ([prepared]).
                 if (next.waiting != null) break
                 writing = next.id
+                // A create that fails is told as `task_created` or `bot_created`, not as this send's error too.
+                var made = false
                 try {
                     next.images.indices.forEach { uploads.set(UploadBoard.pictureKey(next.id, it), UploadPhase.Preparing) }
                     ensureCreated()
+                    made = true
                     val mode = sendingMode() ?: throw IllegalStateException("No model is set up on this computer.")
                     upload(next.files)
                     val images = next.images
@@ -1038,6 +1061,7 @@ class Conversation(
                     // The first message of new work is its start: the person's next new chat opens on it.
                     if (starting) {
                         starting = false
+                        recordStarted(mode)
                         onStarted(mode)
                     }
                     if (message != null && message.id !in messages) {
@@ -1052,6 +1076,7 @@ class Conversation(
                 } catch (e: Exception) {
                     uploads.clear(next.id)
                     next.failure = describe(e)
+                    if (made) errorShown(ErrorArea.MessageSend, AnalyticsReasons.error(e))
                 } finally {
                     writing = null
                 }
@@ -1112,7 +1137,15 @@ class Conversation(
     private suspend fun ensureCreated() {
         val task = newTask ?: return
         val work = creating ?: scope.async(lane) {
-            val made = withRetries { api.createWork(task, choice) }
+            val made = try {
+                withRetries { api.createWork(task, choice) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                recordCreated(AnalyticsReasons.create(e))
+                throw e
+            }
+            recordCreated(null)
             newTask = null
             onTaskCreated(made)
             (made["task"] ?: made["bot"]).obj?.get("agent")?.let(AgentInfo::parse)?.let { agent = it }
@@ -1140,6 +1173,55 @@ class Conversation(
                 delay(retryDelayMillis * attempt)
             }
         }
+    }
+
+    /** `task_created` or `bot_created` as the attempt ended; [error] null when it worked. */
+    private fun recordCreated(error: CreateError?) {
+        record(if (choice.kind == WorkKind.Bot) AnalyticsEvent.BotCreated(error) else AnalyticsEvent.TaskCreated(error))
+    }
+
+    /**
+     * Takes [send] to deliver ([pump]). The person sent it: its
+     * `message_sent` goes now, once, with the mode it goes with as things
+     * stand, whether or not it ever reaches the computer, and not again on
+     * a retry. Steering: something before it is still running or on its way.
+     */
+    private fun queue(send: Outgoing) {
+        val newWork = starting && outgoing.isEmpty()
+        val steering = !newWork && (running || agent?.isWorking == true || outgoing.any { it.failure == null })
+        outgoing += send
+        recordSent(send, mode ?: catalog?.let(::defaultMode), newWork, steering)
+    }
+
+    /** New work's first message went with [mode]: its `conversation_created`. */
+    private fun recordStarted(mode: Mode) {
+        record(AnalyticsEvent.ConversationCreated(mode.modelId, providerKind(mode), Effort.of(mode.effort)))
+    }
+
+    private fun providerKind(mode: Mode) =
+        ProviderKind.of(catalog?.provider(mode.providerId)?.type ?: catalog?.model(mode.providerId, mode.modelId)?.providerType)
+
+    private fun recordSent(sent: Outgoing, mode: Mode?, newWork: Boolean, steering: Boolean) {
+        val address = address()
+        val attachments = sent.images.size + sent.files.size + (sent.waiting?.size ?: 0)
+        record(
+            AnalyticsEvent.MessageSent(
+                source = when {
+                    sent.voice -> MessageSource.Voice
+                    newWork -> MessageSource.NewSession
+                    else -> MessageSource.Chat
+                },
+                target = address?.target,
+                sessionClient = SessionClient.HappyAgent,
+                model = mode?.modelId,
+                modelProviderKind = mode?.let(::providerKind),
+                effort = mode?.let { Effort.of(it.effort) },
+                chiefOfStaff = address?.chiefOfStaff == true,
+                taskDepth = address?.taskDepth,
+                hasAttachment = attachments > 0,
+                isSteering = steering,
+            ),
+        )
     }
 
     private suspend fun sendingMode(): Mode? {

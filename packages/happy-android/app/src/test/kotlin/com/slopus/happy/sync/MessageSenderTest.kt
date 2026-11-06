@@ -290,6 +290,10 @@ class MessageSenderTest {
         h.foreground.value = true
         eventually(message = "failed") { outbox().singleOrNull()?.state == OutboxState.FAILED }
         assertEquals(MessageSender.BACKGROUND_FAILURE, outbox().single().error)
+        // The row carries why, typed, for its error_shown when it is seen.
+        assertEquals(SendFailure.TimedOut, MessageSender.failure(outbox().single().error))
+        assertEquals(SendFailure.Refused(403), MessageSender.failure("Server error: 403"))
+        assertNull(MessageSender.failure("HTTP 500"))
     }
 
     /** sync.send.test.ts: the synced Happy Agent draft is spent once its text is accepted. */

@@ -2,9 +2,14 @@ package com.slopus.happy.model.settings
 
 import com.slopus.happy.data.HappyStore
 import com.slopus.happy.model.Settings
+import android.util.Log
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -28,6 +33,9 @@ class SettingsRepository(
 ) {
     private val state = MutableStateFlow(Settings.Defaults)
     val settings: StateFlow<Settings> = state.asStateFlow()
+    private val raw = MutableStateFlow(EmptyJson)
+    /** What [settings] is parsed from, for a reader that checks one key on its own ([Settings.analyticsOptOut]). */
+    val document: StateFlow<JsonObject> = raw.asStateFlow()
 
     private val lock = Any()
     private var stored = EmptyJson
@@ -46,31 +54,44 @@ class SettingsRepository(
         }
     }
 
-    /** Sets the top-level keys in [delta] (applySettings). */
-    fun change(delta: JsonObject) {
-        if (delta.isEmpty()) return
+    /**
+     * Sets the top-level keys in [delta] (applySettings). Completes with
+     * whether it was written down: one that wasn't still shows, until the
+     * app starts again.
+     */
+    fun change(delta: JsonObject): Deferred<Boolean> {
+        if (delta.isEmpty()) return CompletableDeferred(true)
         synchronized(lock) {
             unwritten = JsonObject(unwritten + delta)
             publish()
         }
-        scope.launch(io) {
-            store.changeSettings(delta)
+        return scope.async(io) {
+            try {
+                store.changeSettings(delta)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w("Settings", "Settings not written: ${e.javaClass.simpleName}")
+                return@async false
+            }
             synchronized(lock) {
                 unwritten = JsonObject(unwritten.filter { (key, value) -> delta[key] != value })
             }
             onChanged()
+            true
         }
     }
 
     /** Changes the fields [transform] changes: `change { it.copy(analyticsOptOut = true) }`. */
-    fun change(transform: (Settings) -> Settings) {
+    fun change(transform: (Settings) -> Settings): Deferred<Boolean> {
         val before = state.value
         val beforeJson = before.toJson()
         val after = transform(before).toJson()
-        change(JsonObject(after.filter { (key, value) -> beforeJson[key] != value }))
+        return change(JsonObject(after.filter { (key, value) -> beforeJson[key] != value }))
     }
 
     private fun publish() {
-        state.value = Settings.parse(JsonObject(stored + unwritten))
+        raw.value = JsonObject(stored + unwritten)
+        state.value = Settings.parse(raw.value)
     }
 }

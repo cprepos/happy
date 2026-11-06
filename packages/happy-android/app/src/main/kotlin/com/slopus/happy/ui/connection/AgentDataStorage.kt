@@ -67,6 +67,8 @@ object DataStorageTags {
     const val ROW = "agentSettings.dataStorage"
     const val USAGE = "dataStorage.usage"
     const val CLEAR = "dataStorage.clear"
+    const val ANALYTICS = "dataStorage.analytics"
+    const val ANALYTICS_SWITCH = "dataStorage.analytics.switch"
     fun auto(kind: MediaAutoDownload.Kind) = "dataStorage.auto.${kind.name}"
     fun switch(kind: MediaAutoDownload.Kind) = "dataStorage.auto.${kind.name}.switch"
     fun limit(kind: MediaAutoDownload.Kind) = "dataStorage.limit.${kind.name}"
@@ -83,8 +85,11 @@ internal fun AgentDataStorage(graph: AppGraph, nav: NavHostController, connectio
 @Composable
 private fun MediaStoragePage(graph: AppGraph, nav: NavHostController, library: MediaLibrary?, connectionId: String?) {
     val rules by graph.mediaAutoDownload.rules.collectAsStateWithLifecycle()
+    val analytics by graph.analyticsSwitch.on.collectAsStateWithLifecycle()
     var usage by remember(library) { mutableStateOf<Long?>(null) }
     var clearing by remember(library) { mutableStateOf(false) }
+    /** What Settings says when the switch couldn't be set: a string, or nothing. */
+    var analyticsNotSaved by remember { mutableStateOf<Int?>(null) }
     val scope = rememberCoroutineScope()
     LaunchedEffect(library) { usage = library?.let { withContext(Dispatchers.IO) { it.usage() } } }
     DataStorageScreen(
@@ -105,7 +110,25 @@ private fun MediaStoragePage(graph: AppGraph, nav: NavHostController, library: M
         onBack = { nav.popBackStack() },
         onChooseLimit = { nav.navigate(MediaLimitRoute(it)) },
         onConnection = connectionId?.let { id -> { nav.navigate(ConnectionDiagnosticsRoute(id)) } },
+        analytics = analytics,
+        // Off takes effect at once even when it can't be written down; then the next start would turn it on again, which Settings says.
+        // On is refused while the last install id can't be deleted, or when it can't be written down: it stays off, and Settings says so.
+        onAnalytics = { on ->
+            scope.launch {
+                if (!graph.analyticsSwitch.set(on)) analyticsNotSaved = if (on) R.string.settings_analytics_not_turned_on else R.string.settings_analytics_not_saved
+            }
+        },
     )
+    analyticsNotSaved?.let { message ->
+        HappyAlert(
+            Alert(
+                title = stringResource(R.string.common_error),
+                message = stringResource(message),
+                buttons = listOf(AlertButton(stringResource(R.string.common_ok))),
+            ),
+            onDismiss = { analyticsNotSaved = null },
+        )
+    }
 }
 
 /**
@@ -113,6 +136,9 @@ private fun MediaStoragePage(graph: AppGraph, nav: NavHostController, library: M
  * media needs: what this connection's media takes on the phone, Clear Media
  * after a confirm, and Automatic Media Download's switches and size limits,
  * one setting for every network, with this account's Connection diagnostics on top.
+ * Last, this phone's Analytics switch ([analytics], when given): off, nothing
+ * is shared from this phone whatever its accounts say, and what waited to
+ * be sent is deleted.
  */
 @Composable
 fun DataStorageScreen(
@@ -123,6 +149,8 @@ fun DataStorageScreen(
     onBack: () -> Unit,
     onChooseLimit: (MediaAutoDownload.Kind) -> Unit = {},
     onConnection: (() -> Unit)? = null,
+    analytics: Boolean? = null,
+    onAnalytics: (Boolean) -> Unit = {},
 ) {
     var confirming by remember { mutableStateOf(false) }
     val size = usage?.let(MediaSizeText::size) ?: stringResource(R.string.data_storage_calculating)
@@ -186,6 +214,20 @@ fun DataStorageScreen(
         }
         SettingsCard(storage)
         SettingsCard(automatic)
+        if (analytics != null) {
+            SettingsCard(SettingsSection(
+                listOf(SettingsEntry(
+                    id = DataStorageTags.ANALYTICS,
+                    title = stringResource(R.string.settings_account_analytics),
+                    icon = { SettingsTile(Ionicon.AnalyticsOutline, SettingsTiles.blue) },
+                    toggle = analytics,
+                    onToggle = onAnalytics,
+                    toggleTag = DataStorageTags.ANALYTICS_SWITCH,
+                    chevron = false,
+                )),
+                footer = stringResource(R.string.settings_account_privacy_description),
+            ))
+        }
     }
     if (confirming && onClear != null) {
         HappyAlert(

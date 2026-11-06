@@ -276,6 +276,157 @@ final class MarkdownTests: XCTestCase {
     }
 }
 
+/// One agent writing one message, a word at a time.
+private actor StreamingServer: AgentTransport {
+    var text = "Hel"
+    var reads = 0
+    /// Whether history holds the message while it is written. The daemon's
+    /// doesn't: it has only the run's messages that are done.
+    var holdsWriting = true
+    /// The message grows on the computer; the offset it grew from.
+    func grow(_ append: String) -> Int {
+        let offset = text.utf16.count
+        text += append
+        return offset
+    }
+    func readCount() -> Int { reads }
+    func leaveOutWriting() { holdsWriting = false }
+
+    /// The message as it is now, whole, as `message.updated` carries it.
+    var message: JSONValue {
+        .object(["id": .string("m"), "role": .string("agent"), "createdAt": .number(1), "status": .string("streaming"), "metadata": .object([:]),
+                 "content": .array([.object(["type": .string("text"), "text": .string(text)])])])
+    }
+
+    func request(method: String, path: String, credential: String, body: Data?, headers: [String: String]) throws -> HTTP1Response {
+        let value: JSONValue
+        if path.contains("/messages?") {
+            reads += 1
+            let user: JSONValue = .object(["id": .string("u"), "role": .string("user"), "createdAt": .number(0), "metadata": .object([:]),
+                                           "content": .array([.object(["type": .string("text"), "text": .string("go")])])])
+            value = .object(["hasMore": .bool(false), "runs": .array([.object([
+                "id": .string("r0"), "status": .string("running"), "startedAt": .number(0),
+                "messages": .array(holdsWriting ? [user, message] : [user]),
+            ])])])
+        } else if path.hasSuffix("/bootstrap") {
+            value = .object(["agent": .object(["id": .string("s"), "workspaceId": .string("w"), "status": .string("working")]), "pending": .array([])])
+        } else {
+            value = .object([:])
+        }
+        return .init(status: 200, body: try JSONEncoder().encode(value))
+    }
+
+    func close() {}
+}
+
+private actor Latest {
+    var text = ""
+    var caughtUpWhileStreaming = false
+    var streaming = true
+    func set(_ text: String) {
+        self.text = text
+        if streaming, text.hasPrefix("Hello") { caughtUpWhileStreaming = true }
+    }
+    func stopped() { streaming = false }
+}
+
+final class ConversationGapTests: XCTestCase {
+    /// A missed word makes every later one disagree with what is held. The
+    /// conversation is read again while the agent is still writing, once,
+    /// and the words after the read lay on it: it doesn't wait for the
+    /// agent to stop.
+    func testAMissedWordIsReadAgainWhileTheAgentKeepsWriting() async throws {
+        let server = StreamingServer()
+        let client = AgentClient(transport: server, token: "t")
+        let engine = SyncEngine(client: client, directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        let conversation = Conversation(client: client, store: engine.spaces, agentId: "s")
+        let latest = Latest()
+        let updates = conversation.updates
+        let watching = Task {
+            for await snapshot in updates where snapshot.loaded {
+                await latest.set(snapshot.items.first { $0.role == .agent }?.text ?? "")
+            }
+        }
+        await conversation.start()
+        await conversation.setVisible(true)
+        var tries = 0
+        while await latest.text != "Hel", tries < 100 { tries += 1; try await Task.sleep(for: .milliseconds(20)) }
+        let opened = await latest.text
+        XCTAssertEqual(opened, "Hel")
+
+        _ = await server.grow("lo")  // never reaches the phone
+        for word in 0..<25 {
+            let offset = await server.grow(" w\(word)")
+            await engine.spaces.externalEvent(.object(["type": .string("message.delta"), "payload": .object([
+                "agentId": .string("s"), "messageId": .string("m"), "runId": .string("r0"),
+                "blockIndex": .number(0), "offset": .number(Double(offset)), "append": .string(" w\(word)")])]))
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        await latest.stopped()
+        let caughtUp = await latest.caughtUpWhileStreaming
+        XCTAssertTrue(caughtUp, "the chat stayed where the word was missed while the agent wrote")
+        let expected = await server.text
+        tries = 0
+        while await latest.text != expected, tries < 100 { tries += 1; try await Task.sleep(for: .milliseconds(20)) }
+        let final = await latest.text
+        XCTAssertEqual(final, expected)
+        let reads = await server.readCount()
+        XCTAssertLessThanOrEqual(reads, 3, "one read for the gap, not one per word")
+        watching.cancel()
+        await conversation.stop()
+    }
+
+    /// Opened while the agent writes: history hasn't the message yet, so
+    /// no read can lay its words. It is read for once, not on every word,
+    /// and the message's next whole self brings it, the words after it
+    /// laying on it.
+    func testAMessageHistoryHasNotYetIsReadForOnce() async throws {
+        let server = StreamingServer()
+        await server.leaveOutWriting()
+        let client = AgentClient(transport: server, token: "t")
+        let engine = SyncEngine(client: client, directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        let conversation = Conversation(client: client, store: engine.spaces, agentId: "s")
+        let latest = Latest()
+        let updates = conversation.updates
+        let watching = Task {
+            for await snapshot in updates where snapshot.loaded {
+                await latest.set(snapshot.items.first { $0.role == .agent }?.text ?? "")
+            }
+        }
+        await conversation.start()
+        await conversation.setVisible(true)
+        var tries = 0
+        while await server.readCount() < 1, tries < 100 { tries += 1; try await Task.sleep(for: .milliseconds(20)) }
+        try await Task.sleep(for: .milliseconds(100))
+        func word(_ word: String) async {
+            let offset = await server.grow(word)
+            await engine.spaces.externalEvent(.object(["type": .string("message.delta"), "payload": .object([
+                "agentId": .string("s"), "messageId": .string("m"), "runId": .string("r0"),
+                "blockIndex": .number(0), "offset": .number(Double(offset)), "append": .string(word)])]))
+        }
+        for index in 0..<25 {
+            await word(" w\(index)")
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let reads = await server.readCount()
+        XCTAssertLessThanOrEqual(reads, 2, "read again while history couldn't have it: \(reads) reads")
+
+        let whole = await server.message
+        await engine.spaces.externalEvent(.object(["type": .string("message.updated"), "payload": .object([
+            "agentId": .string("s"), "runId": .string("r0"), "message": whole])]))
+        await word(" after")
+        let expected = await server.text
+        tries = 0
+        while await latest.text != expected, tries < 100 { tries += 1; try await Task.sleep(for: .milliseconds(20)) }
+        let shown = await latest.text
+        XCTAssertEqual(shown, expected, "the whole message and the word after it")
+        let after = await server.readCount()
+        XCTAssertEqual(after, reads, "the mended message was read again")
+        watching.cancel()
+        await conversation.stop()
+    }
+}
+
 /// A daemon with one conversation of `runs` runs, all on its first page.
 private actor LongHistoryServer: AgentTransport {
     let runs: Int

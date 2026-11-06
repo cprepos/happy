@@ -22,6 +22,13 @@ private struct NavigationNoSockets: WebSocketConnector {
 /// or prove when pixels reach the physical display.
 @MainActor
 final class HostedNavigationTimingTests: XCTestCase {
+    override func setUp() {
+        super.setUp()
+        // A slower simulator gets its chats' rows in later.
+        ChatOpening.cap = TestTime.budget(ChatOpening.shippedCap)
+        addTeardownBlock { @MainActor in ChatOpening.cap = ChatOpening.shippedCap }
+    }
+
     private func until(_ condition: () -> Bool) async throws {
         let deadline = ContinuousClock.now + .seconds(5)
         while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
@@ -82,7 +89,17 @@ final class HostedNavigationTimingTests: XCTestCase {
         defer { window.isHidden = true; hostWindow?.makeKey() }
         window.layoutIfNeeded()
         if fromHome {
-            try await until { root.children.contains { $0 is SessionListViewController } }
+            try await until {
+                guard let home = root as? LegacyHomeViewController,
+                      home.children.contains(where: { $0 is SessionListViewController && $0.viewIfLoaded?.window === window }),
+                      home.navigationItem.leftBarButtonItem?.customView?.window === window else { return false }
+                if home.traitCollection.isSidebarColumn {
+                    return home.bottomBar.window === window && !home.bottomBar.isHidden
+                }
+                return home.bottomBar.isHidden && !navigation.isToolbarHidden
+                    && home.navigationItem.rightBarButtonItems?.contains { $0.accessibilityIdentifier == "settings" } == true
+                    && home.toolbarItems?.contains { $0.accessibilityIdentifier == "compose" } == true
+            }
             window.layoutIfNeeded()
         }
         let homeTurns = homeWatch.stop()

@@ -122,6 +122,7 @@ public actor Store {
     private var me: String?
     private var places = Places()
     private var placesReload: Task<Void, Never>?
+    private var placesDirty = false
     /// Names given here whose rename no read has carried yet.
     private var titleIntents: [String: (title: String, base: String?)] = [:]
 
@@ -145,9 +146,13 @@ public actor Store {
     public func startExternal() async { await restoreOffline() }
 
     @discardableResult
-    public func externalResync(loadSidebar: Bool) async -> Bool {
-        for listener in listeners.values { listener.continuation.yield(.resync) }
-        for listener in typeListeners.values { listener.continuation.yield(.resync) }
+    public func externalResync(loadSidebar: Bool, resync: Bool = true) async -> Bool {
+        // A stream that picked up where it left off replays what they
+        // missed: nothing is read again.
+        if resync {
+            for listener in listeners.values { listener.continuation.yield(.resync) }
+            for listener in typeListeners.values { listener.continuation.yield(.resync) }
+        }
         snapshot.live = true
         if loadSidebar {
             await load()
@@ -296,14 +301,10 @@ public actor Store {
     private func read() async {
         sidebarReadSucceeded = false
         do {
-            async let health = client.health()
-            async let sidebar = client.sidebar(widgets: true)
-            async let bots = client.bots()
-            async let tasks = client.tasks()
-            async let setting = client.userSetting(Self.settingKey)
-            async let surfaceList = client.surfaces()
-            async let profile = client.profileUser()
-            let capabilities = (try? await health)?.capabilities ?? AgentWire.Health.Capabilities()
+            // Spaces were removed from happy-agent (API.md): a daemon
+            // without `sidebarOperations` answers 404 there, so nothing of
+            // the sidebar document is asked before health says it exists.
+            let capabilities = (try? await client.health())?.capabilities ?? AgentWire.Health.Capabilities()
             self.capabilities = capabilities
             guard capabilities.sidebarOperations == true else {
                 snapshot.availability = .unsupported
@@ -311,6 +312,12 @@ public actor Store {
                 publish()
                 return
             }
+            async let sidebar = client.sidebar(widgets: true)
+            async let bots = client.bots()
+            async let tasks = client.tasks()
+            async let setting = client.userSetting(Self.settingKey)
+            async let surfaceList = client.surfaces()
+            async let profile = client.profileUser()
             let answer = try await sidebar
             let (botList, taskList) = try await (bots, tasks)
             snapshot.prioritizing = (try? await setting) == .bool(true)
@@ -374,13 +381,23 @@ public actor Store {
         publish()
     }
 
+    /// The bots and tasks are stale: read once things settle, and once
+    /// more for news that came during the read, as home's own loop does
+    /// (Proofs/: `Refresh`). Starting the wait again with each piece of
+    /// news, as this did, never read while news kept coming.
     private func schedulePlacesReload() {
-        placesReload?.cancel()
+        placesDirty = true
+        guard placesReload == nil else { return }
         placesReload = Task {
-            try? await Task.sleep(for: .milliseconds(300))
-            guard !Task.isCancelled else { return }
-            guard let (bots, tasks) = try? await (client.bots(), client.tasks()) else { return }
-            await adoptPlaces(bots: bots, tasks: tasks)
+            while placesDirty {
+                try? await Task.sleep(for: .milliseconds(300))
+                guard !Task.isCancelled else { return }
+                placesDirty = false
+                guard let (bots, tasks) = try? await (client.bots(), client.tasks()) else { placesDirty = true; break }
+                guard !Task.isCancelled else { return }
+                adoptPlaces(bots: bots, tasks: tasks)
+            }
+            placesReload = nil
         }
     }
 

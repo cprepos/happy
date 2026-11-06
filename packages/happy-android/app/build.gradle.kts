@@ -40,6 +40,20 @@ val revenueCatGoogleKey = providers.environmentVariable("EXPO_PUBLIC_REVENUE_CAT
     ?.takeIf { it.isNotBlank() }
     ?: providers.gradleProperty("happy.revenueCatGoogleKey").orNull.orEmpty()
 
+// Happy Cloud (the account menu's "Connect to Happy Cloud"): the one domain
+// every server (<name>.BASE) lives under, compiled in. HAPPY_CLOUD_BASE or -Phappy.cloudBase points a build
+// at another deployment.
+val happyCloudBase = providers.environmentVariable("HAPPY_CLOUD_BASE").orNull?.takeIf { it.isNotBlank() }
+    ?: providers.gradleProperty("happy.cloudBase").orNull?.takeIf { it.isNotBlank() }
+    ?: "happy-clusters.com"
+
+// Happy Cloud's accounts service, where the person signs in and their servers
+// are listed: its own origin, apart from HAPPY_CLOUD_BASE. HAPPY_CLOUD_ACCOUNTS
+// or -Phappy.cloudAccounts points a build at another one.
+val happyCloudAccounts = providers.environmentVariable("HAPPY_CLOUD_ACCOUNTS").orNull?.takeIf { it.isNotBlank() }
+    ?: providers.gradleProperty("happy.cloudAccounts").orNull?.takeIf { it.isNotBlank() }
+    ?: "https://auth.happy.engineering"
+
 // The agent connection voice call's public ElevenLabs agent
 // (docs/agent-voice-call.md): never in the repository, so from the
 // environment, -Phappy.callAgentId or the ignored local.properties. Without
@@ -50,8 +64,9 @@ val callAgentId = providers.environmentVariable("HAPPY_CALL_AGENT_ID").orNull?.t
         providers.fileContents(rootProject.layout.projectDirectory.file("local.properties")).asText.orNull?.let { load(it.reader()) }
     }.getProperty("happy.callAgentId")?.takeIf { it.isNotBlank() }
 
-// PostHog's public project key (the existing environment variable is retained);
-// only feature flags are read with it. Without one every flag is off.
+// PostHog's public project key (the existing environment variable is retained):
+// :analytics sends its events and asks this install's feature flags with it,
+// from release and preview builds. Without one nothing is sent and every flag is off.
 val postHogKey = providers.environmentVariable("EXPO_PUBLIC_POSTHOG_API_KEY").orNull
     ?.takeIf { it.isNotBlank() }
     ?: providers.gradleProperty("happy.postHogKey").orNull.orEmpty()
@@ -104,6 +119,8 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         buildConfigField("String", "DEFAULT_SERVER_URL", "\"https://api.cluster-fluster.com\"")
+        buildConfigField("String", "HAPPY_CLOUD_BASE", groovy.json.JsonOutput.toJson(happyCloudBase))
+        buildConfigField("String", "HAPPY_CLOUD_ACCOUNTS", groovy.json.JsonOutput.toJson(happyCloudAccounts))
         buildConfigField("String", "REVENUE_CAT_GOOGLE_KEY", groovy.json.JsonOutput.toJson(revenueCatGoogleKey))
         buildConfigField("String", "POSTHOG_KEY", groovy.json.JsonOutput.toJson(postHogKey))
         buildConfigField("String", "CALL_AGENT_ID", callAgentId?.let { groovy.json.JsonOutput.toJson(it.trim()) } ?: "null")
@@ -405,6 +422,8 @@ android.sourceSets.matching { it.name == "benchmarkBench" || it.name == "nonMini
 
 dependencies {
     implementation(project(":crypto"))
+    // Product analytics behind one facade; removable with its call sites (AGENTS.md "Analytics").
+    implementation(project(":analytics"))
     // Installs the Baseline Profile on sideloaded and pre-Play-cloud-profile installs.
     implementation(libs.androidx.profileinstaller)
 

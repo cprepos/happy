@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Happy Cloud (connection/HappyCloud.kt): the account menu's +, the account's
+  server picker (create, join), and what a cloud team, which has no compute,
+  says instead. Not in happy-app's catalogs.
+  Translated in values-*/ (AndroidStringsTranslatedTest).
+-->
+<resources>
+    <string name="cloud_connect_row">Connect to Happy Cloud</string>
+    <string name="cloud_connect_message">Sign in or create a Happy Cloud account, then open one of your servers, create one or join one. Agents run in the cloud; no computer needed.</string>
+    <string name="cloud_connect_confirm">Connect</string>
+    <string name="cloud_needs_computer">Happy Cloud runs agents only. This needs a computer.</string>
+    <string name="cloud_title">Happy Cloud</string>
+    <string name="cloud_your_servers">Your servers</string>
+    <string name="cloud_no_servers">No servers yet. Create one or join one below.</string>
+    <string name="cloud_role_owner">Owner</string>
+    <string name="cloud_role_member">Member</string>
+    <string name="cloud_create">Create a new server</string>
+    <string name="cloud_create_detail">Pick a name. People see your server as @name, like a username.</string>
+    <string name="cloud_create_button">Create server</string>
+    <string name="cloud_join">Join a server</string>
+    <string name="cloud_join_detail">Enter the server\'s name and the invite code its owner gave you.</string>
+    <string name="cloud_join_button">Join</string>
+    <string name="cloud_invite_code">Invite code</string>
+    <string name="cloud_join_not_found">No server has that name and invite code.</string>
+    <string name="cloud_name_placeholder">name</string>
+    <string name="cloud_name_rules">3 to 32 lowercase letters, digits or hyphens, not starting or ending with a hyphen.</string>
+    <string name="cloud_name_checking">Checking…</string>
+    <string name="cloud_name_available">%1$s is available.</string>
+    <string name="cloud_name_taken">%1$s is taken.</string>
+    <string name="cloud_name_reserved">%1$s is reserved.</string>
+    <string name="cloud_failed">Something went wrong. Try again.</string>
+    <string name="cloud_connecting">Connecting to %1$s…</string>
+    <string name="cloud_session_expired">Your Happy Cloud sign-in lasts an hour, and it\'s up. Sign in again to open, create or join a server. Servers already on this phone stay signed in.</string>
+    <string name="cloud_sign_out">Sign out of Happy Cloud</string>
+    <string name="cloud_members">Members</string>
+    <string name="cloud_members_sign_in">Sign in to Happy Cloud to see who is on this server.</string>
+    <string name="cloud_leave">Leave server</string>
+    <string name="cloud_leave_confirm_title">Leave %1$s?</string>
+    <string name="cloud_leave_confirm_message">You\'ll lose its agents and tasks on every device. You can come back with a new invite code.</string>
+    <string name="cloud_leave_last_owner">You\'re its only owner, so you can\'t leave it.</string>
+</resources>

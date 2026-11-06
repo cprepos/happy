@@ -49,7 +49,9 @@ final class AccountKindStringsTests: XCTestCase {
             rnServerImport: { .confirmed(ServerConfig.defaultServerURL) })
         let context = AppContext(account: account, variant: .preview, version: "test")
         let titles = AccountAdding.otherWays(context: context, from: UIViewController()).map(\.title)
-        XCTAssertEqual(titles, [Strings.Start.enterLink, "Restore Happy CLI account", "Happy CLI server"])
+        XCTAssertEqual(titles, ["Connect to Happy Cloud", Strings.Start.enterLink, "Restore Happy CLI account", "Happy CLI server"])
+        let production = AppContext(account: account, variant: .production, version: "test")
+        XCTAssertEqual(AccountAdding.otherWays(context: production, from: UIViewController()).map(\.title), [Strings.Start.enterLink, "Restore Happy CLI account", "Happy CLI server"])
     }
 
     func testAnotherLanguageSaysTheWordsAroundTheNames() async {

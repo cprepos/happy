@@ -475,7 +475,7 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
             let revoked = context.account.agentConnections.accounts.first { $0.id == id }?.revoked == true
             let serverRows: [[SettingsRow]] = server.map { origin in
                 [[
-                    Row(id: "server", title: Strings.ServerSignIn.server, value: URLComponents(string: origin)?.host ?? origin, accessory: .none),
+                    Row(id: "server", title: Strings.ServerSignIn.server, value: HappyCloud.handle(server: origin) ?? URLComponents(string: origin)?.host ?? origin, accessory: .none),
                     Row(id: "server-sign-in", title: revoked ? Strings.ServerSignIn.needsSignIn : Strings.ServerSignIn.signInAgain, accessory: .none, action: { [weak self] in
                         guard let self else { return }
                         let instanceId = context.account.agentConnections.accounts.first { $0.id == id }?.instanceId
@@ -702,7 +702,8 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
     /// with only agent connections has no account setting to turn off.
     /// Off deletes what was waiting to be sent.
     private func analyticsRow() -> SettingsRow {
-        SettingsRow(id: "device-analytics", title: Strings.SettingsAccount.analytics, icon: ("analytics-outline", .blue), accessory: .toggle,
+        let entry = SettingsIndex.analytics
+        return SettingsRow(id: entry.id, title: entry.title, icon: (entry.glyph, entry.tile), accessory: .toggle,
                     isOn: !Analytics.shared.deviceOptOut, toggled: { [weak self] on in
             let kept = Analytics.shared.setDeviceOptOut(!on)
             self?.rebuild()

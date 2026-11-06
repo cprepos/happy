@@ -1,5 +1,8 @@
 package com.slopus.happy.ui
 
+import com.slopus.happy.analytics.AnalyticsReasons
+import com.slopus.happy.connection.PairingStart
+import com.slopus.happy.analytics.SignInMethod
 import com.slopus.happy.ui.todos.todoRoutes
 
 import com.slopus.happy.ui.connection.openAgentSettingsRow
@@ -58,6 +61,8 @@ import com.slopus.happy.ui.connection.rememberHappyLinks
 import com.slopus.happy.ui.connection.signInToServer
 import com.slopus.happy.ui.connection.signInToServerAgain
 import com.slopus.happy.connection.ServerInvite
+import com.slopus.happy.ui.connection.LocalCloudConnect
+import com.slopus.happy.ui.connection.rememberCloudConnect
 import com.slopus.happy.ui.connect.rememberAddFlow
 import com.slopus.happy.ui.start.rememberCustomServerLabel
 import com.slopus.happy.ui.tablet.TabletShell
@@ -144,20 +149,23 @@ fun HappyApp(graph: AppGraph, onNavigationReady: (NavHostController) -> Unit = {
             SideEffect { onNavigationReady(nav) }
             val openSession = { id: String -> nav.navigate(SessionRoute(id)) }
             val troubleshoot = { nav.navigate(TroubleshootRoute) }
-            val connectAgent = remember(nav) { { code: String -> nav.connectAgent(graph, code) } }
+            val connectAgent = remember(nav) { { code: String, start: PairingStart -> nav.connectAgent(graph, code, start) } }
             val signInToServer = remember(nav) { { invite: ServerInvite -> nav.signInToServer(graph, invite) } }
             // Happy URLs (edge SSO §7): external ones only on their own installation's connection.
             val happyLinks = rememberHappyLinks(graph, nav, agent)
             // Every scanner, signed in or out, sends happy://direct? codes here.
             CompositionLocalProvider(LocalAgentPairing provides connectAgent, LocalServerSignIn provides signInToServer, LocalHappyLinks provides happyLinks) {
+              // The account menu's Happy Cloud (and Add's ⋮): confirm, then sign in to the compiled-in team server.
+              val cloud = rememberCloudConnect(graph, nav)
               // Add (the first screen's Connect, the account menu's Add): scan, then route the code.
               val add = rememberAddFlow(
                   graph,
                   onRestore = { nav.navigate(RestoreRoute) },
                   onServer = { nav.navigate(ServerRoute) },
                   serverLabel = rememberCustomServerLabel(graph),
+                  onCloud = cloud,
               )
-              CompositionLocalProvider(LocalAddFlow provides add) {
+              CompositionLocalProvider(LocalAddFlow provides add, LocalCloudConnect provides cloud) {
                 // Links: through the open agent connection in its browser, or as ever on a Happy account.
                 ProvideLinks(rememberLinks(graph, nav, agent)) {
                 // The account's home, sending what it opens through [go]: the stack's own pushes on its page, the
@@ -316,7 +324,7 @@ private fun RestoreManual(graph: AppGraph, nav: NavHostController) {
                 scope.launch {
                     restoring = true
                     try {
-                        graph.auth.restore(secretKey)
+                        AnalyticsReasons.signingIn(SignInMethod.RelayRestore) { graph.auth.restore(secretKey) }
                     } catch (e: CancellationException) {
                         throw e
                     } catch (_: Exception) {

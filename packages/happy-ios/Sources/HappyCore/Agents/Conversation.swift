@@ -373,6 +373,15 @@ public actor Conversation {
     /// Stands in for the checkpoint claim, for a test.
     private var claimOverride: (@Sendable (String) async throws -> Void)?
     private var reloadSoon: Task<Void, Never>?
+    /// History reads finished, read or failed.
+    private var reads = 0
+    /// Messages whose words stopped applying, with `reads` as they did.
+    /// Each is read for once. History doesn't hold a message the agent is
+    /// still writing, so one still behind after that read waits for its
+    /// next whole self (`message.updated`): read again on every word, the
+    /// chat read its whole page several times a second while the agent
+    /// wrote, at about 40% of a core.
+    private var behind: [String: Int] = [:]
     /// Events that came while history was being read, applied after it.
     private var heldEvents: [JSONValue]?
     /// Subagents made or retitled while history was being read, applied over
@@ -449,6 +458,11 @@ public actor Conversation {
     /// drawn from the previews, delivered once `prepared` has them.
     private var held: [String: [PreviewAttachment]] = [:]
     private var visible = false
+    /// Off screen, words drawn together (`publishSoon`).
+    private var publishing: Task<Void, Never>?
+    /// `cachedPieces`: what this publish drew, and what the last one did.
+    private var drawnPieces: [PiecesKey: [ChatItem.Piece]] = [:]
+    private var lastPieces: [PiecesKey: [ChatItem.Piece]] = [:]
     /// On screen, the reader at the newest message and at rest.
     private var readsNewest = false
 
@@ -556,6 +570,7 @@ public actor Conversation {
         askingRead?.cancel(); askingRead = nil
         reading?.cancel(); reading = nil
         reloadSoon?.cancel(); reloadSoon = nil
+        publishing?.cancel(); publishing = nil
         deliveryWatch?.cancel(); deliveryWatch = nil
         let sends = Array(delivering.values)
         sends.forEach { $0.cancel() }
@@ -567,6 +582,7 @@ public actor Conversation {
     /// The conversation is on screen: what arrives is read.
     public func setVisible(_ visible: Bool) {
         self.visible = visible
+        if visible, publishing != nil { publish() }
         if visible, !runs.isEmpty { markRead() }
         // Left: desktop's `releaseSession`.
         if !visible { trimHistory() }
@@ -707,6 +723,7 @@ public actor Conversation {
                     return
                 }
                 Self.note("read of \(agentId) failed")
+                reads += 1
                 snapshot.error = Store.describe(error)
                 Happenings.errorShown(.conversationLoad, error)
                 snapshot.loaded = true
@@ -737,6 +754,7 @@ public actor Conversation {
     }
 
     private func adopt(_ start: AgentWire.Bootstrap, _ history: AgentWire.MessagesResponse) {
+        reads += 1
         // The draft carries the mode the next message goes with (the last
         // pick, on any device), so it stands over what the agent last ran
         // with; this phone's own draft coming back would otherwise drop it.
@@ -833,12 +851,17 @@ public actor Conversation {
         } catch {}
     }
 
-    /// History disagreed with an event: read it again, once things settle.
+    /// History disagreed with an event: read it again, 300 ms on. Once a
+    /// word is missed every later one disagrees too, so the wait is never
+    /// started again: restarted with each, as it was, the chat stayed
+    /// where it broke for as long as the agent kept writing. Events that
+    /// come during the read are laid on it after (`Delta.replay_is_free`).
     private func reconcile() {
-        reloadSoon?.cancel()
+        guard reloadSoon == nil else { return }
         reloadSoon = Task {
             try? await Task.sleep(for: .milliseconds(300))
             if Task.isCancelled { return }
+            reloadSoon = nil
             reload()
         }
     }
@@ -852,6 +875,7 @@ public actor Conversation {
         case "message.created", "message.updated":
             guard let message = payload["message"].flatMap(Self.decodeMessage) else { return }
             messages[message.id] = message
+            behind[message.id] = nil
             attachmentCleanup.insert(message.id)
             outgoing.removeAll { $0.id == message.id }
             UploadProgressBoard.shared.clear(message: message.id)
@@ -864,6 +888,12 @@ public actor Conversation {
             guard let id = payload["messageId"]?.stringValue, let index = payload["blockIndex"]?.numberValue,
                   let offset = payload["offset"]?.numberValue, let append = payload["append"]?.stringValue else { return }
             guard let message = messages[id], let grown = Self.grow(message, block: Int(index), offset: Int(offset), append: append) else {
+                if let since = behind[id] {
+                    // Read for since it broke: the next whole message mends it.
+                    if reads > since { return }
+                } else {
+                    behind[id] = reads
+                }
                 reconcile()
                 return
             }
@@ -872,6 +902,7 @@ public actor Conversation {
         case "message.deleted":
             guard let id = payload["messageId"]?.stringValue else { return }
             messages.removeValue(forKey: id)
+            behind[id] = nil
             pending.removeAll { $0 == id }
             for index in runs.indices { runs[index].messageIds.removeAll { $0 == id } }
         case "run.started":
@@ -895,6 +926,9 @@ public actor Conversation {
             trimHistory()
         case "agent.updated":
             guard let changes = payload["changes"] else { return }
+            // A working agent's comes with every word, mostly saying
+            // nothing new: only a change is drawn.
+            let before = agentState
             if let status = changes["status"]?.stringValue {
                 self.status = status
                 snapshot.working = status != "idle"
@@ -909,6 +943,7 @@ public actor Conversation {
             }
             if let running = changes["subagents"]?["running"]?.numberValue { subagentsRunning = Int(running) }
             if let value = changes["title"] { snapshot.title = value.stringValue }
+            if agentState == before { return }
         case "agent.draft.updated":
             guard let draft = payload["draft"].flatMap({ Self.decode(AgentWire.Draft.self, $0) }) else { return }
             adoptDraft(draft, publishes: false)
@@ -924,7 +959,20 @@ public actor Conversation {
         default:
             return
         }
-        if publishes { publish() }
+        guard publishes else { return }
+        // Off screen, a word at a time is drawn by nobody: a warm
+        // conversation's streaming text arrives once a second.
+        if type == "message.delta", !visible { publishSoon() } else { publish() }
+    }
+
+    private func publishSoon() {
+        guard publishing == nil else { return }
+        publishing = Task {
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled else { return }
+            publishing = nil
+            publish()
+        }
     }
 
     /// A subagent of this one made or retitled: what its references and
@@ -972,30 +1020,34 @@ public actor Conversation {
     }
 
     /// `message.delta` applied exactly as the API says, or nil where the
-    /// message must be read again.
+    /// message must be read again. Only the block's UTF-16 view is walked,
+    /// from the offset: copied out whole on every word, a long answer cost
+    /// its length again per word, a third of the iPhone 12's time as a
+    /// reconnect replayed the words it missed.
     static func grow(_ message: AgentWire.Message, block index: Int, offset: Int, append: String) -> AgentWire.Message? {
         var message = message
-        guard message.content.indices.contains(index) else { return nil }
-        let current: String
+        guard message.content.indices.contains(index), offset >= 0 else { return nil }
+        var text: String
         switch message.content[index] {
-        case .text(let text), .reasoning(let text): current = text
+        case .text(let current), .reasoning(let current): text = current
         default: return nil
         }
-        let units = Array(current.utf16)
-        let added = Array(append.utf16)
-        guard units.count >= offset else { return nil }
-        let after = Array(units[offset...])
-        let grown: [UInt16]
-        if after.isEmpty {
-            grown = units + added
-        } else if after.count >= added.count {
-            guard Array(after.prefix(added.count)) == added else { return nil }
-            return message
+        let units = text.utf16
+        let count = units.count
+        guard count >= offset else { return nil }
+        let added = append.utf16
+        let after = count - offset
+        if after == 0 {
+            text += append
         } else {
-            guard Array(added.prefix(after.count)) == after else { return nil }
-            grown = units + added[after.count...]
+            let start = units.index(units.startIndex, offsetBy: offset)
+            if after >= added.count {
+                guard units[start...].starts(with: added) else { return nil }
+                return message
+            }
+            guard added.starts(with: units[start...]) else { return nil }
+            text += String(decoding: added.dropFirst(after), as: UTF16.self)
         }
-        let text = String(decoding: grown, as: UTF16.self)
         if case .reasoning = message.content[index] { message.content[index] = .reasoning(text) } else { message.content[index] = .text(text) }
         return message
     }
@@ -1300,7 +1352,13 @@ public actor Conversation {
         guard persistence != nil, keeping == nil else { return }
         keeping = Task {
             while conversationDirty {
-                do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+                // While the agent works its words change it many times a
+                // second, and each save writes the whole conversation: then
+                // it is kept every few seconds. A send is saved at once
+                // (`saveConversationNow`), and what streamed since the last
+                // save is read again from the computer.
+                let pause: Duration = snapshot.working ? .seconds(5) : .milliseconds(500)
+                do { try await Task.sleep(for: pause) } catch { return }
                 conversationDirty = false
                 _ = await persistConversation()
             }
@@ -1791,6 +1849,13 @@ public actor Conversation {
     /// block that places nothing shown, or lost content to a limit, is the
     /// Markdown it is; one still arriving is held back until it closes.
     static func pieces(_ text: String, shown: [String: Media], streaming: Bool) -> [ChatItem.Piece] {
+        made(text, shown: shown, streaming: streaming).pieces
+    }
+
+    /// `pieces`, and whether a layout block was among them: only then can
+    /// what was shown earlier change them.
+    private static func made(_ text: String, shown: [String: Media], streaming: Bool) -> (pieces: [ChatItem.Piece], layout: Bool) {
+        var layouts = false
         var pieces: [ChatItem.Piece] = []
         func markdown(_ text: String) {
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1812,6 +1877,7 @@ public actor Conversation {
                     }
                 }
             case .layout(let layout):
+                layouts = true
                 if !layout.complete {
                     if !streaming { markdown(layout.raw) }
                     continue
@@ -1828,11 +1894,53 @@ public actor Conversation {
                 pieces.append(.tree(media, parsed.tree))
             }
         }
-        return pieces
+        return (pieces, layouts)
+    }
+
+    private struct PiecesKey: Hashable {
+        var text: String
+        var streaming: Bool
+    }
+
+    /// `pieces` as the last publish made them, for text with no layout
+    /// block: a streaming conversation's earlier words aren't split again
+    /// with each new one. Holds only what that publish drew.
+    private func cachedPieces(_ text: String, shown: [String: Media], streaming: Bool) -> [ChatItem.Piece] {
+        let key = PiecesKey(text: text, streaming: streaming)
+        if let pieces = drawnPieces[key] ?? lastPieces[key] {
+            drawnPieces[key] = pieces
+            return pieces
+        }
+        let made = Self.made(text, shown: shown, streaming: streaming)
+        if !made.layout { drawnPieces[key] = made.pieces }
+        return made.pieces
+    }
+
+    /// What an `agent.updated` can change of what is drawn.
+    private struct AgentState: Equatable {
+        var status: String
+        var working: Bool
+        var wait: AgentWire.AgentWait?
+        var retrying: AgentWire.AgentRetrying?
+        var question: Bool
+        var asking: String?
+        var subagentsRunning: Int
+        var title: String?
+        var run: String?
+        var startedAt: Double?
+    }
+
+    private var agentState: AgentState {
+        AgentState(status: status, working: snapshot.working, wait: wait, retrying: retrying, question: question, asking: asking?.question.id,
+                   subagentsRunning: subagentsRunning, title: snapshot.title, run: activeRun?.id, startedAt: activeRun?.startedAt)
     }
 
     private func publish() {
+        publishing?.cancel(); publishing = nil
         keepConversation()
+        lastPieces = drawnPieces
+        drawnPieces = [:]
+        defer { lastPieces = [:] }
         var items: [ChatItem] = []
         // What a layout block's `<img src>` can name: media shown earlier.
         var shown: [String: Media] = [:]
@@ -2007,7 +2115,7 @@ public actor Conversation {
             case .text(let text):
                 let trimmed = (manager.map { Self.inboundText(text, agentId: $0) } ?? text).trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { continue }
-                pieces += role == .agent ? Self.pieces(trimmed, shown: shown, streaming: streaming || message.status == "streaming") : [.text(trimmed)]
+                pieces += role == .agent ? cachedPieces(trimmed, shown: shown, streaming: streaming || message.status == "streaming") : [.text(trimmed)]
             case .image(let mimeType, let data):
                 let key = "\(message.id):\(index)"
                 if pictures[key] == nil { pictures[key] = Data(base64Encoded: data) }

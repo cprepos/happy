@@ -289,8 +289,8 @@ final class HostedInstantSignOutTests: XCTestCase {
     /// 15 ms in a Debug simulator), so the milliseconds bound is loose enough
     /// for a loaded machine and far below any network wait.
     private func assertInstant(_ timing: Timing, line: UInt = #line) {
-        XCTAssertLessThanOrEqual(timing.frames, 2, "frame \(timing.frames) after the button showed it (\(timing.ms) ms)", line: line)
-        XCTAssertLessThan(timing.ms, 250, "took \(timing.ms) ms", line: line)
+        XCTAssertLessThanOrEqual(Double(timing.frames), TestTime.budget(2), "frame \(timing.frames) after the button showed it (\(timing.ms) ms)", line: line)
+        XCTAssertLessThan(timing.ms, TestTime.budget(250), "took \(timing.ms) ms", line: line)
     }
 
     func testSigningOutTheOpenHappyAccountOpensTheNextAtOnce() async throws {

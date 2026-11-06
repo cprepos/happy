@@ -1,0 +1,215 @@
+package com.slopus.happy.analytics
+
+import android.content.Context
+import androidx.test.core.app.ApplicationProvider
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.slopus.happy.data.HappyDatabase
+import com.slopus.happy.data.HappyStore
+import com.slopus.happy.model.Settings
+import com.slopus.happy.model.settings.SettingsRepository
+import com.slopus.happy.net.HappyJson
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.jsonObject
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import org.junit.runner.RunWith
+
+/**
+ * The account side of analytics consent, from the Account screen's switch
+ * (`SettingsRepository.change`) to what `Analytics.start` is told: the open
+ * account's opt-out counts at once, every other account's from its own
+ * database, nothing before they are read.
+ */
+@OptIn(ExperimentalCoroutinesApi::class)
+@RunWith(AndroidJUnit4::class)
+class AccountsOptedOutTest {
+    private val context = ApplicationProvider.getApplicationContext<Context>()
+    private val openDatabase = HappyDatabase(context, name = null)
+    private val otherDatabase = HappyDatabase(context, name = null)
+    private val open = HappyStore(openDatabase)
+    private val other = HappyStore(otherDatabase)
+
+    @After
+    fun tearDown() {
+        openDatabase.close()
+        otherDatabase.close()
+    }
+
+    private fun stored(store: HappyStore, optOut: Boolean) = stored(store, """{"analyticsOptOut":$optOut}""")
+
+    private fun stored(store: HappyStore, text: String) = store.saveSettings(HappyJson.parseToJsonElement(text).jsonObject, version = 1)
+
+    /** Settings stored as they came, readable or not. */
+    private fun storedRaw(database: HappyDatabase, text: String) = database.writableDatabase.execSQL(
+        "INSERT OR REPLACE INTO account(key, value, version) VALUES('settings', ?, 1)",
+        arrayOf(text),
+    )
+
+    /** What AppGraph reads for each account. */
+    private fun read(id: String): Boolean = Settings.analyticsOptOut(
+        when (id) {
+            "open" -> open
+            "other" -> other
+            else -> error("unreadable")
+        }.effectiveSettingsOrThrow(),
+    )
+
+    /** The consent for the open account and [ids], as AppGraph wires it, once settled. */
+    private fun kotlinx.coroutines.test.TestScope.settled(ids: List<String>): Boolean {
+        val io = StandardTestDispatcher(testScheduler)
+        val settings = SettingsRepository(open, backgroundScope, onChanged = {}, io = io)
+        val seen = mutableListOf<Boolean>()
+        backgroundScope.launch {
+            accountsOptedOut(MutableStateFlow(ids), settings.document.map(Settings::analyticsOptOut), open.changes, ::read, io)
+                .collect { seen += it }
+        }
+        advanceTimeBy(1_000)
+        runCurrent()
+        return seen.last()
+    }
+
+    @Test
+    fun turningTheOpenAccountsSwitchOffCountsAtOnce() = runTest {
+        stored(open, false)
+        stored(other, false)
+        val io = StandardTestDispatcher(testScheduler)
+        val settings = SettingsRepository(open, backgroundScope, onChanged = {}, io = io)
+        val seen = mutableListOf<Boolean>()
+        backgroundScope.launch {
+            accountsOptedOut(MutableStateFlow(listOf("open", "other")), settings.document.map(Settings::analyticsOptOut), open.changes, ::read, io)
+                .collect { seen += it }
+        }
+        runCurrent()
+        assertEquals("nothing before the accounts are read", emptyList<Boolean>(), seen)
+        advanceTimeBy(501)
+        runCurrent()
+        assertEquals(listOf(false), seen)
+
+        // The Account screen's switch: AccountScreen → SettingsRoutes → settings.change.
+        settings.change { it.copy(analyticsOptOut = true) }
+        runCurrent()
+        assertEquals("before the store or a sync has it", listOf(false, true), seen)
+        advanceTimeBy(1_000)
+        runCurrent()
+        assertEquals(true, seen.last())
+
+        settings.change { it.copy(analyticsOptOut = false) }
+        advanceTimeBy(1_000)
+        runCurrent()
+        assertEquals(false, seen.last())
+    }
+
+    @Test
+    fun anAccountNotOpenCountsAndOneThatCantBeReadIsOptedOut() = runTest {
+        stored(open, false)
+        stored(other, true)
+        val io = StandardTestDispatcher(testScheduler)
+        val ids = MutableStateFlow(listOf("open"))
+        val seen = mutableListOf<Boolean>()
+        backgroundScope.launch {
+            accountsOptedOut(ids, MutableStateFlow(false), open.changes, ::read, io).collect { seen += it }
+        }
+        advanceTimeBy(501)
+        runCurrent()
+        assertEquals(listOf(false), seen)
+        ids.value = listOf("open", "other")
+        runCurrent()
+        assertEquals(true, seen.last())
+        ids.value = listOf("open", "gone")
+        runCurrent()
+        assertEquals(true, seen.last())
+        stored(other, false)
+        ids.value = listOf("open", "other")
+        runCurrent()
+        assertEquals(false, seen.last())
+    }
+
+    @Test
+    fun aMalformedFieldBesideItDoesNotHideAnOptOut() = runTest {
+        // Settings.parse takes every field's default when one is malformed: the opt-out is read on its own.
+        val malformed = """{"viewInline":"yes","analyticsOptOut":true}"""
+        assertEquals(false, Settings.parse(HappyJson.parseToJsonElement(malformed)).analyticsOptOut)
+        stored(open, malformed)
+        stored(other, false)
+        assertEquals("the open account", true, settled(listOf("open", "other")))
+        stored(open, false)
+        stored(other, malformed)
+        assertEquals("another account", true, settled(listOf("open", "other")))
+    }
+
+    @Test
+    fun aMalformedOptOutIsOptedOut() = runTest {
+        stored(open, """{"analyticsOptOut":"no"}""")
+        stored(other, false)
+        assertEquals("the open account", true, settled(listOf("open", "other")))
+        stored(open, false)
+        stored(other, """{"analyticsOptOut":null}""")
+        assertEquals("another account", true, settled(listOf("open", "other")))
+        stored(other, """{"viewInline":true}""")
+        assertEquals("missing is not opted out", false, settled(listOf("open", "other")))
+    }
+
+    @Test
+    fun unreadableSettingsAreOptedOut() = runTest {
+        storedRaw(openDatabase, "{not json")
+        stored(other, false)
+        // The lenient read takes it for missing; analytics doesn't.
+        assertEquals(emptyMap<String, Any>(), open.effectiveSettings())
+        assertEquals("the open account", true, settled(listOf("open", "other")))
+        stored(open, false)
+        storedRaw(otherDatabase, "[1, 2]")
+        assertEquals("another account", true, settled(listOf("open", "other")))
+    }
+
+    /** The Account screen's switch off with the account's database refusing writes: off still, and said so. */
+    @Test
+    fun anOptOutThatCantBeWrittenIsSaid() = runTest {
+        stored(open, false)
+        val settings = SettingsRepository(open, backgroundScope, onChanged = {}, io = StandardTestDispatcher(testScheduler))
+        runCurrent()
+        openDatabase.writableDatabase.execSQL("CREATE TRIGGER no_writes BEFORE INSERT ON account BEGIN SELECT RAISE(ABORT, 'no writes'); END")
+        var notSaved = 0
+        backgroundScope.setAnalyticsOptOut(settings, optOut = true) { notSaved++ }
+        runCurrent()
+        assertEquals(1, notSaved)
+        assertTrue("off until the app starts again", settings.settings.value.analyticsOptOut)
+        assertFalse(read("open"))
+
+        openDatabase.writableDatabase.execSQL("DROP TRIGGER no_writes")
+        backgroundScope.setAnalyticsOptOut(settings, optOut = false) { notSaved++ }
+        runCurrent()
+        backgroundScope.setAnalyticsOptOut(settings, optOut = true) { notSaved++ }
+        runCurrent()
+        assertEquals("written this time", 1, notSaved)
+        assertTrue(read("open"))
+    }
+
+    /** Turning the Account screen's switch back on while analytics can't delete its last install id: refused, said, and the setting stays off. */
+    @Test
+    fun turningBackOnIsRefusedWhileTheLastIdCantBeDeleted() = runTest {
+        stored(open, true)
+        val settings = SettingsRepository(open, backgroundScope, onChanged = {}, io = StandardTestDispatcher(testScheduler))
+        runCurrent()
+        val said = mutableListOf<Boolean>()
+        backgroundScope.setAnalyticsOptOut(settings, optOut = false, allow = { false }) { said += it }
+        runCurrent()
+        assertEquals("the turning on was refused", listOf(false), said)
+        assertTrue(settings.settings.value.analyticsOptOut)
+        assertTrue("nothing written for a restart to read", read("open"))
+
+        backgroundScope.setAnalyticsOptOut(settings, optOut = false, allow = { true }) { said += it }
+        runCurrent()
+        assertEquals(listOf(false), said)
+        assertFalse(read("open"))
+    }
+}
