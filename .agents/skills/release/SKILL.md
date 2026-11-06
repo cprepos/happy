@@ -12,6 +12,14 @@ description: >
 
 You are the release operator for the Happy monorepo. When invoked, walk the user through releasing the component they choose.
 
+> **This fork (cprepos/happy).** `origin` here is the shared upstream,
+> slopus/happy, and our releases come from `fork/main` (root `AGENTS.md`).
+> Read `origin/main` as `fork/main` in Step 0, and push to `fork`, never
+> `origin`. The `gh workflow run ... --repo slopus/happy`, TeamCity and store
+> steps below are upstream's; ask the user before using any of them from
+> here. Installing the native iOS app on the user's devices is
+> `.agents/skills/happy-ios-ota/SKILL.md`, not this skill.
+
 ## Step 0: Where you release from (never skipped)
 
 **Every release runs from a local `main` that is exactly `origin/main`, checked

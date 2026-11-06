@@ -15,6 +15,10 @@ The rule the skill opens with is the one that is never skipped: **release from
 a local `main` that is exactly `origin/main`, checked against a fetch made right
 then, with a clean tree.** Not from a worktree. Not from a branch. Not from a
 `main` that is ahead or behind. Perform these checks before every release.
+In this fork `origin` is the upstream we merge from (see the next section), so
+the `main` a release must match is **`fork/main`**: read `origin/main` as
+`fork/main` wherever the release skill says it. The Expo preflight script that
+used to enforce this went with the Expo app; nothing checks it for you now.
 
 The only exception is one the user asks for by name in the current
 conversation. A standing instruction from an earlier session is not that, and
