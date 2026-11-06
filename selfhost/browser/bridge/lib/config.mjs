@@ -39,7 +39,7 @@ export function loadConfig(env = process.env) {
             launcherSocket: env.BRIDGE_LAUNCHER_SOCKET || join(home, 'run/launcher.sock'),
             maxPods: Math.max(1, Math.min(32, Number(env.BRIDGE_MAX_PODS) || 8)),
             warm: Math.max(0, Math.min(2, Number(env.BRIDGE_POD_WARM ?? 1))),
-            idleMs: Math.max(0.05, Number(env.BRIDGE_POD_IDLE_MIN) || 10) * 60_000,
+            idleMs: Math.max(0.05, Number(env.BRIDGE_POD_IDLE_MIN) || 60) * 60_000,
             bases: {
                 novnc: Number(env.POD_NOVNC_BASE || 6100),
                 api: Number(env.POD_API_BASE || 8100),

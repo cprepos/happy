@@ -58,6 +58,8 @@ function harness({ maxPods = 2, warm = 0, ensureMs = 0, readyAfter = 0, createFa
             async saveAuthProfile(sid, name) { calls.push(`ctl.saveAuthProfile:${slot}:${name}`); slotAuth.set(slot, true); return true; },
             async closeSession(sid) { calls.push(`ctl.closeSession:${slot}`); return true; },
             dead: new Set(),
+            approvals: 0,
+            async pendingApprovals() { if (c.approvalsFail) throw new Error('down'); return c.approvals; },
             async getSession(sid) {
                 calls.push(`ctl.getSession:${slot}`);
                 if (c.dead.has(sid)) { const e = new Error('not found'); e.status = 404; throw e; }
@@ -160,6 +162,107 @@ test('viewer activity or a held link keeps a pod up', async () => {
     h.store.update(h.store.findChat(A), { status: 'watching' });
     await h.mgr.idleSweep();
     assert.equal(h.mgr.podState(A), 'asleep');
+});
+
+test('the idle stop defaults to 60 minutes', async () => {
+    const h = harness({ idleMs: undefined });
+    assert.equal(h.mgr.status().idle_min, 60);
+    await h.mgr.ensure(A);
+    h.advance(45 * 60_000);
+    await h.mgr.idleSweep();
+    assert.equal(h.mgr.podState(A), 'running', 'a slow task 45 min in keeps its browser');
+    h.advance(16 * 60_000);
+    await h.mgr.idleSweep();
+    assert.equal(h.mgr.podState(A), 'asleep');
+});
+
+test('a watched live view keeps a pod up for as long as it is watched', async () => {
+    const h = harness();
+    await h.mgr.ensure(A);
+    // The phone polls frames/state (or holds a noVNC socket) for two hours, no agent call.
+    for (let i = 0; i < 24; i++) {
+        h.advance(5 * 60_000);
+        h.mgr.touchViewer(A);
+        await h.mgr.idleSweep();
+    }
+    assert.equal(h.mgr.podState(A), 'running');
+    h.advance(11 * 60_000);
+    await h.mgr.idleSweep();
+    assert.equal(h.mgr.podState(A), 'asleep', 'stopped once nobody watches');
+});
+
+test('a pending approval keeps an idle pod up until it is decided, or until protectMaxMs', async () => {
+    const h = harness({ protectMaxMs: 3 * 3600_000 });
+    await h.mgr.ensure(A);
+    h.clients.get(0).approvals = 1;
+    h.advance(30 * 60_000);
+    await h.mgr.idleSweep();
+    assert.equal(h.mgr.podState(A), 'running', 'approval pending');
+    assert.equal(h.mgr.status().pods[0].kept_for, 'approval_pending');
+    h.clients.get(0).approvals = 0;
+    await h.mgr.idleSweep();
+    assert.equal(h.mgr.podState(A), 'asleep', 'decided: idle as before');
+
+    await h.mgr.ensure(B);
+    const c = h.clients.get(0);
+    c.approvals = 2;
+    h.advance(2 * 3600_000);
+    await h.mgr.idleSweep();
+    assert.equal(h.mgr.podState(B), 'running');
+    h.advance(3600_000);
+    await h.mgr.idleSweep();
+    assert.equal(h.mgr.podState(B), 'asleep', 'a forgotten approval does not pin a pod for ever');
+});
+
+test('a controller that cannot list approvals does not keep a pod up', async () => {
+    const h = harness();
+    await h.mgr.ensure(A);
+    h.clients.get(0).approvalsFail = true;
+    h.advance(11 * 60_000);
+    await h.mgr.idleSweep();
+    assert.equal(h.mgr.podState(A), 'asleep');
+});
+
+test('hold() keeps a pod from the idle stop; the idle clock restarts at release', async () => {
+    const h = harness();
+    await h.mgr.ensure(A);
+    const release = h.mgr.hold(A, 'approval_ui');
+    h.advance(90 * 60_000);
+    await h.mgr.idleSweep();
+    assert.equal(h.mgr.podState(A), 'running');
+    assert.deepEqual(h.mgr.status().pods[0].holds, ['approval_ui']);
+    release();
+    release();
+    await h.mgr.idleSweep();
+    assert.equal(h.mgr.podState(A), 'running', 'just released: a fresh idle window');
+    h.advance(11 * 60_000);
+    await h.mgr.idleSweep();
+    assert.equal(h.mgr.podState(A), 'asleep');
+    assert.throws(() => h.mgr.hold('nope'), /bad chat_key/);
+});
+
+test('eviction skips protected pods and takes the longest idle of the rest', async () => {
+    const h = harness({ maxPods: 2 });
+    await h.mgr.ensure(A);
+    h.advance(5 * 60_000);
+    await h.mgr.ensure(B);
+    h.advance(5 * 60_000);
+    // A is the longest idle, but it has an approval pending: B goes instead.
+    h.clients.get(h.mgr._chats.get(A).slot).approvals = 1;
+    await h.mgr.ensure(C);
+    assert.equal(h.mgr.podState(A), 'running');
+    assert.equal(h.mgr.podState(B), 'asleep');
+    assert.equal(h.mgr.podState(C), 'running');
+    // C held by the bridge, A still pending: the cap holds and nothing is evicted.
+    const release = h.mgr.hold(C, 'test');
+    h.advance(5 * 60_000);
+    await assert.rejects(h.mgr.ensure(B), (e) => e instanceof PodError && e.code === 'busy');
+    assert.equal(h.up.size, 2, 'never more pods than the cap');
+    release();
+    h.advance(2 * 60_000);
+    await h.mgr.ensure(B);
+    assert.equal(h.mgr.podState(C), 'asleep');
+    assert.equal(h.mgr.podState(A), 'running');
 });
 
 test('restore passes the saved login only when the chat has one', async () => {

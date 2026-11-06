@@ -224,7 +224,8 @@ const SCRIPT = `
   }
 
   // Take control records that the user has the browser (the agent's actions are refused until
-  // Release control), then opens noVNC. Without script the link still opens noVNC.
+  // Release control), then opens noVNC with the password /take answers with. Without script the
+  // link still opens noVNC, which then asks for the password.
   $('take').addEventListener('click', async (e) => {
     e.preventDefault();
     const fallback = $('take').href;

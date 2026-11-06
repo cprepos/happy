@@ -67,9 +67,9 @@ The measurement step is `scripts/pod-bench.mjs` (`make browser-pod-bench`). It r
 
 **Idle stop.** Each chat keeps two timestamps:
 - `lastAgentAt`: every `/api/pod` call from `mcp.mjs`.
-- `lastViewerAt`: every `/live/<id>/state` or `frame.jpg` request.
+- `lastViewerAt`: every live-view request: the page, `/state`, `frame.jpg`, `/nav`, a noVNC file, and every few seconds while a noVNC socket is open.
 
-A pod is stopped when both are older than `BRIDGE_POD_IDLE_MIN` (default 10) and its link status is not `user` or `takeover`. The stop sequence is:
+A pod is stopped when both are older than `BRIDGE_POD_IDLE_MIN` (default 60) and it is not protected: its link status is not `user` or `takeover` (the user has control, or the agent waits in `browser_wait_for_human`), its controller has no approval pending for the session (`GET /approvals?status=pending&session_id=`), and nothing in the bridge holds it (`pods.hold(chatKey, why)`). An approval or a hold protects only until 12 hours pass with no activity at all. Eviction, when every slot is taken, skips protected pods too and takes the longest idle first. The stop sequence is:
 1. `POST /sessions/<sid>/auth-profiles {profile_name:'happy-chat'}` (AB `routes/auth_profiles.py:41`).
 2. `stash_auth`.
 3. `DELETE /sessions/<sid>`.

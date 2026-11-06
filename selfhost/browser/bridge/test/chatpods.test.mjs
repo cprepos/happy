@@ -146,7 +146,8 @@ test('the live page and frames use the chat\'s own pod and noVNC port and passwo
     assert.equal((await fetch(`${base}/live/${b.link_id}/frame.jpg`)).status, 200);
     assert.deepEqual(pods.calls.observe, [b.session_id]);
     const page = await (await fetch(`${base}/live/${a.link_id}`)).text();
-    assert.ok(page.includes(`http://localhost:6090/live/${a.link_id}/vnc/vnc.html?path=websockify#password=pw0`));
+    assert.ok(page.includes(`http://localhost:6090/live/${a.link_id}/vnc/vnc.html?path=websockify"`));
+    assert.ok(!page.includes('pw0'), 'the page never carries the pod password; POST /take does');
     assert.doesNotMatch(page, /sharedpw/);
     const t = await (await fetch(`${base}/live/${b.link_id}/take`, { method: 'POST' })).json();
     assert.equal(t.status, 'user');

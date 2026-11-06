@@ -107,7 +107,7 @@ test('page, state and frame routes', async () => {
     assert.match(html, /name="viewport"/);
     assert.match(html, /prefers-color-scheme: dark/);
     assert.match(html, /Take control/);
-    assert.ok(html.includes(`#password=${VNC_PASSWORD}`), 'Take control link carries the VNC password');
+    assert.ok(!html.includes(VNC_PASSWORD), 'the page never carries the VNC password (POST /take does)');
     assert.match(html, />Release control</);
     assert.match(html, /You have control/);
     assert.match(html, /fetch\(base \+ '\/take', \{ method: 'POST' \}\)/);
@@ -213,8 +213,10 @@ test('take: the noVNC url goes through the bridge port, with path= and the passw
     assert.equal(u.searchParams.get('path'), 'websockify');
     assert.equal(u.hash, `#password=${VNC_PASSWORD}`);
     assert.ok(!u.search.includes(VNC_PASSWORD), 'the password is never in the query');
-    // The page's Take control link is the same URL.
-    assert.ok((await (await fetch(`${base}/live/${id}`)).text()).includes(`/live/${id}/vnc/vnc.html?autoconnect=true&amp;resize=scale&amp;path=websockify#password=${VNC_PASSWORD}`));
+    // The page's Take control link is the same URL without the password.
+    const html = await (await fetch(`${base}/live/${id}`)).text();
+    assert.ok(html.includes(`/live/${id}/vnc/vnc.html?autoconnect=true&amp;resize=scale&amp;path=websockify"`));
+    assert.ok(!html.includes(VNC_PASSWORD));
 });
 
 async function restartWithNovnc(extra = {}) {

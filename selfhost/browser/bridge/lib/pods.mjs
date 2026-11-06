@@ -22,8 +22,13 @@
 //   stop      save the login (auth profile "happy-chat") -> stash it in the chat's directory ->
 //             close the session -> stop the pod -> the chat is asleep. Used by the idle timer, by
 //             eviction, by /api/pod/close and by the user ending the browser (/live/<id>/end).
-//   idle      a pod whose chat has had neither an agent call nor a viewer poll for idleMs, and
-//             whose link nobody holds (user, takeover), is stopped.
+//   idle      a pod whose chat has had neither an agent call nor a viewer request (live page,
+//             /state, frame, noVNC file or open noVNC socket) for idleMs (60 min by default) is
+//             stopped, unless it is protected: its link is held (the user has control, or the
+//             agent waits in wait_for_human), it has an approval pending on its controller, or
+//             something in the bridge holds it (hold()). Protection lapses after protectMaxMs
+//             without any activity, so a forgotten approval cannot pin a pod for ever. Eviction
+//             (all maxPods slots taken) skips protected pods too, longest idle first.
 //   health    every healthMs: launcher list plus /readyz per pod. Two failures in a row and the
 //             pod is stopped; an assigned pod's chat turns crashed, and its next call gets a new
 //             pod and session under the same link.
@@ -137,6 +142,11 @@ export function createPodClient({ baseUrl, token, fetchImpl = fetch, timeoutMs =
         saveAuthProfile: (sid, name) =>
             call('POST', `/sessions/${encodeURIComponent(sid)}/auth-profiles`, { profile_name: name }).then(() => true),
         listTabs: (sid) => call('GET', `/sessions/${encodeURIComponent(sid)}/tabs`),
+        // How many of the session's approvals still wait for a decision (none on an error).
+        async pendingApprovals(sid) {
+            const list = await call('GET', `/approvals?status=pending&session_id=${encodeURIComponent(sid)}`, undefined, 5000);
+            return Array.isArray(list) ? list.filter((a) => !a?.status || a.status === 'pending').length : 0;
+        },
     };
 }
 
@@ -185,7 +195,8 @@ export function createPodManager({
     store = null,                   // LinkStore: a chat's link (forChat) and whether it is held
     maxPods = 8,
     warm = 1,
-    idleMs = 10 * 60_000,
+    idleMs = 60 * 60_000,
+    protectMaxMs = 12 * 3600_000,   // no protection (approval, hold) outlives this much inactivity
     healthMs = 10_000,
     authEveryMs = 60_000,
     readyTimeoutMs = 30_000,
@@ -215,6 +226,7 @@ export function createPodManager({
     const failures = new Map();     // slot -> consecutive health failures
     const blocked = new Set();      // slots whose ports something else holds
     const timings = [];             // the last starts, for /api/pods and the bench
+    const holds = new Map();        // chatKey -> Map(token -> why): kept from the idle stop and eviction
     let refilling = null;
     let timers = [];
     let closed = false;
@@ -236,6 +248,39 @@ export function createPodManager({
     const linkOf = (chatKey) => store?.findChat?.(chatKey) ?? null;
     const held = (chatKey) => HELD.has(linkOf(chatKey)?.status);
     const lastActive = (chat) => Math.max(chat?.lastAgentAt || 0, chat?.lastViewerAt || 0);
+    // Why this chat's pod must not be stopped for being idle or evicted, or null. Held links
+    // always protect (they are released on their own when the viewer leaves); a hold or a
+    // pending approval only until protectMaxMs passes with no activity at all.
+    async function protectedBy(chat) {
+        if (held(chat.chatKey)) return 'held';
+        if (now() - lastActive(chat) >= protectMaxMs) return null;
+        const h = holds.get(chat.chatKey);
+        if (h && h.size) return [...h.values()][0];
+        const pod = chat.slot !== null ? pods.get(chat.slot) : null;
+        if (pod?.client?.pendingApprovals && chat.sessionId && pod.podId === chat.podId) {
+            try { if (await pod.client.pendingApprovals(chat.sessionId) > 0) return 'approval_pending'; }
+            catch { /* a controller that does not answer is the health check's business */ }
+        }
+        return null;
+    }
+    /** Keeps a chat's pod from the idle stop and eviction until the returned release() runs. */
+    function hold(chatKey, why = 'hold') {
+        if (!CHAT_KEY.test(chatKey || '')) throw new PodError('bad chat_key', 400, 'bad_request');
+        const token = Symbol(why);
+        if (!holds.has(chatKey)) holds.set(chatKey, new Map());
+        holds.get(chatKey).set(token, String(why));
+        let done = false;
+        return () => {
+            if (done) return;
+            done = true;
+            const h = holds.get(chatKey);
+            h?.delete(token);
+            if (h && !h.size) holds.delete(chatKey);
+            // Released: the idle clock starts from now, not from before the hold.
+            const chat = chats.get(chatKey);
+            if (chat) chat.lastAgentAt = Math.max(chat.lastAgentAt || 0, now());
+        };
+    }
     const warmPods = () => [...pods.values()].filter((p) => !p.chatKey && (p.state === 'ready' || p.state === 'starting'));
     const freeSlot = () => {
         for (let s = 0; s < maxPods; s++) if (!pods.has(s) && !blocked.has(s)) return s;
@@ -356,13 +401,19 @@ export function createPodManager({
 
     async function evict(forKey) {
         const t = now();
-        const victims = [...pods.values()]
-            .filter((p) => p.state === 'assigned' && p.chatKey && p.chatKey !== forKey && !held(p.chatKey) && !pending.has(p.chatKey))
+        const candidates = [...pods.values()]
+            .filter((p) => p.state === 'assigned' && p.chatKey && p.chatKey !== forKey && !held(p.chatKey) && !pending.has(p.chatKey) && !stopping.has(p.chatKey))
             .map((p) => ({ p, at: lastActive(chats.get(p.chatKey)) }))
             .filter(({ at }) => t - at >= evictMinIdleMs)
             .sort((a, b) => a.at - b.at);
-        if (!victims.length) throw new PodError(`all ${maxPods} browsers are busy; try again when one is free`, 503, 'busy');
-        const { p } = victims[0];
+        // Longest idle first, skipping any pod that is protected (approval pending, a hold).
+        let victim = null;
+        for (const c of candidates) {
+            const chat = chats.get(c.p.chatKey);
+            if (chat && !(await protectedBy(chat))) { victim = c; break; }
+        }
+        if (!victim) throw new PodError(`all ${maxPods} browsers are busy; try again when one is free`, 503, 'busy');
+        const { p } = victim;
         log(`pod slot ${p.slot}: evicting the least recently used chat to make room`);
         await stopChat(p.chatKey, 'evicted');
         return claimSlot() || warmPods()[0] || (() => { throw new PodError(`all ${maxPods} browsers are busy; try again when one is free`, 503, 'busy'); })();
@@ -705,8 +756,14 @@ export function createPodManager({
         const t = now();
         for (const chat of chats.values()) {
             if (chat.state !== 'running' || pending.has(chat.chatKey) || stopping.has(chat.chatKey)) continue;
-            if (held(chat.chatKey)) continue;
             if (t - lastActive(chat) < idleMs) continue;
+            const why = await protectedBy(chat);
+            if (why) {
+                if (chat.keptFor !== why) log(`pod slot ${chat.slot}: chat ${chat.chatKey.slice(0, 8)} idle but kept (${why})`);
+                chat.keptFor = why;
+                continue;
+            }
+            chat.keptFor = null;
             await stopChat(chat.chatKey, 'idle');
         }
     }
@@ -836,6 +893,7 @@ export function createPodManager({
             max_pods: maxPods,
             warm_target: warm,
             idle_min: idleMs / 60_000,
+            protect_max_min: protectMaxMs / 60_000,
             pods: [...pods.values()].sort((a, b) => a.slot - b.slot).map((p) => {
                 const chat = p.chatKey ? chats.get(p.chatKey) : null;
                 return {
@@ -844,6 +902,8 @@ export function createPodManager({
                     chat: p.chatKey ? p.chatKey.slice(0, 8) : null,
                     ports: p.ports,
                     held: p.chatKey ? held(p.chatKey) : false,
+                    holds: p.chatKey ? [...(holds.get(p.chatKey)?.values() || [])] : [],
+                    kept_for: chat?.keptFor ?? null,
                     idle_s: chat ? Math.round((t - lastActive(chat)) / 1000) : null,
                 };
             }),
@@ -855,7 +915,7 @@ export function createPodManager({
 
     return {
         ensure, stopChat, checkpointAuth, idleSweep, healthCheck, reconcile, refill, start, close,
-        chatForLink, chatForSession, podOf, podState, touchViewer, wake, status,
+        chatForLink, chatForSession, podOf, podState, touchViewer, wake, status, hold,
         liveness, sessionSeen, phantomSweep,
         get timings() { return timings.slice(); },
         _pods: pods, _chats: chats,

@@ -625,7 +625,10 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
             }
         }
         const nonce = randomBytes(12).toString('base64');
-        return send(res, 200, renderPage({ id: rec.id, state: stateOf(rec), takeoverUrl: takeoverUrlOf(rec, base) || `${linkUrl(rec, base)}`, nonce, frameWidth, frameHeight }), {
+        // The page's own Take control link carries no password: a GET of the page (by anyone the
+        // link reaches, an agent's fetch included) never shows it. POST /take answers with it.
+        const pageTake = takeoverUrlOf(rec, base);
+        return send(res, 200, renderPage({ id: rec.id, state: stateOf(rec), takeoverUrl: pageTake ? pageTake.split('#')[0] : `${linkUrl(rec, base)}`, nonce, frameWidth, frameHeight }), {
             'Content-Type': 'text/html; charset=utf-8',
             'Content-Security-Policy': `default-src 'none'; img-src 'self' blob:; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'`,
         });
