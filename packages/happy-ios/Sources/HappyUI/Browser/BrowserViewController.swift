@@ -169,16 +169,7 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
         web.backgroundColor = UIColor(Palette.surface)
         web.scrollView.backgroundColor = UIColor(Palette.surface)
         if isRemoteScreen {
-            let scroll = web.scrollView
-            scroll.isScrollEnabled = false
-            scroll.bounces = false
-            scroll.alwaysBounceVertical = false
-            scroll.alwaysBounceHorizontal = false
-            scroll.bouncesZoom = false
-            scroll.minimumZoomScale = 1
-            scroll.maximumZoomScale = 1
-            scroll.pinchGestureRecognizer?.isEnabled = false
-            scroll.panGestureRecognizer.isEnabled = false
+            lockRemoteScreen(web)
         } else {
             web.scrollView.refreshControl = refresh
         }
@@ -379,6 +370,23 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
         web?.frame = layout.web
         progressView.frame = layout.progress
         failureView.frame = layout.failure
+        if isRemoteScreen, let web { lockRemoteScreen(web) }
+    }
+
+    /// A remote screen neither scrolls, bounces nor zooms. WebKit sets the
+    /// zoom range again from the page's viewport whenever the view's size
+    /// or page changes, so this is applied again after each.
+    private func lockRemoteScreen(_ web: WKWebView) {
+        let scroll = web.scrollView
+        scroll.isScrollEnabled = false
+        scroll.bounces = false
+        scroll.alwaysBounceVertical = false
+        scroll.alwaysBounceHorizontal = false
+        scroll.bouncesZoom = false
+        scroll.minimumZoomScale = 1
+        scroll.maximumZoomScale = 1
+        scroll.pinchGestureRecognizer?.isEnabled = false
+        scroll.panGestureRecognizer.isEnabled = false
     }
 
     override func viewDidDisappear(_ animated: Bool) {
@@ -401,7 +409,10 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
         crashReload = nil
         updateHeader()
         // A remote screen's canvas has the focus without a tap first.
-        if isRemoteScreen { webView.evaluateJavaScript("window.liveBrowserFocusCanvas && window.liveBrowserFocusCanvas()") }
+        if isRemoteScreen {
+            lockRemoteScreen(webView)
+            webView.evaluateJavaScript("window.liveBrowserFocusCanvas && window.liveBrowserFocusCanvas()")
+        }
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
@@ -414,6 +425,7 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
         // A page arrived: whatever failed before it is behind it now.
         if problem != nil { clearFailure() }
         failedURL = nil
+        if isRemoteScreen { lockRemoteScreen(webView) }
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
