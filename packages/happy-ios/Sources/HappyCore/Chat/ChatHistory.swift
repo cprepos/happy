@@ -16,6 +16,10 @@ public struct ChatHistoryState: Equatable, Sendable {
     public var hasMore: Bool
     public var oldestSeq: Int?
     public var error: ChatHistoryFailure?
+    /// The newest page was asked for while this device held no record of
+    /// the session: nothing failed, but nothing will load until it is
+    /// asked for again, so the screen offers Retry.
+    public var missing = false
 }
 
 public struct OlderPageResult: Equatable, Sendable {
@@ -38,6 +42,7 @@ public actor ChatHistory {
         var coverage: ChatHistoryCoverage?
         var output: ChatHistoryState?
         var failure: ChatHistoryFailure?
+        var missing = false
         var subscribers: [UUID: AsyncStream<ChatHistoryState>.Continuation] = [:]
         var observation: Task<Void, Never>?
         var epoch = UUID()
@@ -184,6 +189,7 @@ public actor ChatHistory {
     private func start(_ sessionId: String, kind: ChatHistoryFailure.Operation) -> Task<OlderPageResult, Never> {
         let id = UUID()
         entries[sessionId]?.failure = nil
+        entries[sessionId]?.missing = false
         let task = Task { await self.download(sessionId, kind: kind, id: id) }
         operations[sessionId] = Operation(id: id, kind: kind, task: task)
         publish(sessionId)
@@ -222,6 +228,7 @@ public actor ChatHistory {
             // should leave the paging UI offering Retry for a dead session.
             entries[sessionId]?.coverage = nil
             entries[sessionId]?.failure = nil
+            if kind == .newest { entries[sessionId]?.missing = true }
         } catch {
             guard !stopped, operations[sessionId]?.id == id else { return .init(advanced: false, hasMore: false) }
             entries[sessionId]?.failure = ChatHistoryFailure(operation: kind, message: "Could not load messages. Try again.")
@@ -249,7 +256,7 @@ public actor ChatHistory {
                                 initialLoaded: coverage?.isLoaded ?? false,
                                 loadingNewest: kind == .newest, loadingOlder: kind == .older,
                                 hasMore: coverage?.hasMore ?? false, oldestSeq: coverage?.marker?.oldestRawSeq,
-                                error: entries[sessionId]?.failure)
+                                error: entries[sessionId]?.failure, missing: entries[sessionId]?.missing ?? false)
     }
 
     private func publish(_ sessionId: String) {

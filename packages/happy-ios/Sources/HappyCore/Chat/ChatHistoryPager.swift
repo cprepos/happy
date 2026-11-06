@@ -307,9 +307,10 @@ public final class ChatHistoryPager {
         paging.emptyStatus(hasMore: facts?.hasMoreOlder ?? false)
     }
 
-    /// The first load failed: the loading placeholder offers Retry.
+    /// The first load failed, or found no session here to load: the
+    /// loading placeholder offers Retry.
     public var firstLoadFailed: Bool {
         guard facts?.isLoaded != true, let status else { return false }
-        return status.error != nil && !status.loadingNewest
+        return (status.error != nil || status.missing) && !status.loadingNewest
     }
 }

@@ -76,6 +76,9 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
     private let ultra = AgentChatUltraList()
     private lazy var transcriptHeaderScrim = HeaderScrimView()
     private let introView = IntroView()
+    /// The read failed with nothing to show: the session chat's Retry, in
+    /// the transcript's place.
+    private lazy var loadFailure = ChatPlaceholderView()
     /// New work's Task or Bot and name, until its first message shows.
     private let newWorkPanel: NewWorkPanel?
     /// The panel has gone, or is going, for good.
@@ -262,6 +265,11 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         ultra.onReachedOldest = { [weak self] in self?.loadOlder() }
         ultra.onRowShown = { [weak self] id in self?.reportFailure(id) }
         view.addSubview(ultra)
+        loadFailure.traitOverrides.followsTextSize = true
+        loadFailure.isHidden = true
+        loadFailure.accessibilityIdentifier = "load-failed"
+        loadFailure.onAction = { [weak self] in self?.retryLoad() }
+        view.addSubview(loadFailure)
         if !previewing {
             // The header's own edge: the ground at the top, easing out
             // through the bar's foot (`HeaderScrim`).
@@ -354,7 +362,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         if let warm {
             // Read ahead: what it has shows on the first frame.
             session.warm.watch(warm.chat, token: warm.token) { [weak self] snapshot in self?.apply(snapshot) }
-            if warm.chat.snapshot.loaded { apply(warm.chat.snapshot) }
+            if warm.chat.snapshot.loaded || warm.chat.snapshot.error != nil { apply(warm.chat.snapshot) }
         } else {
             let updates = conversation.updates
             following = Task { [weak self] in
@@ -867,7 +875,24 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
     /// conversation has it, while history is read or its rows are first
     /// planned. A send into an empty one keeps it up.
     private func showIntro() {
-        introView.isHidden = intro == nil || reading(chat) || (!chat.items.isEmpty && !planShown)
+        introView.isHidden = intro == nil || reading(chat) || failed || (!chat.items.isEmpty && !planShown)
+    }
+
+    /// The read failed and there is nothing to show instead.
+    private var failed: Bool { chat.error != nil && chat.items.isEmpty && newTask == nil && !previewing }
+
+    private func updateLoadFailure() {
+        if failed { loadFailure.show(.loadFailed) }
+        if loadFailure.isHidden == failed {
+            loadFailure.isHidden = !failed
+            view.setNeedsLayout()
+        }
+    }
+
+    /// Retry: the conversation is read again.
+    private func retryLoad() {
+        let conversation = conversation
+        Task { await conversation.retryLoad() }
     }
 
     /// A task its first message makes, which hasn't been sent yet: it has
@@ -913,6 +938,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         updateHeaderStatus()
         if wasSettled != settled(snapshot), let intro { introView.configure(intro, settled: settled(snapshot)) }
         showIntro()
+        updateLoadFailure()
         if !snapshot.items.isEmpty { dismissNewWorkPanel() }
         if !previewing { liveDock.update(link: snapshot.latestLiveBrowser) }
         updatePrimary()
@@ -1373,6 +1399,9 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         ) { [card] width in card.height(fitting: width) }
         transcriptHeaderScrim.setLayoutFrame(screen.headerScrim)
         card.setLayoutFrame(screen.card)
+        if !loadFailure.isHidden {
+            loadFailure.setLayoutFrame(CGRect(x: screen.list.minX, y: screen.listTop, width: screen.list.width, height: screen.viewport))
+        }
         placeSlash()
         meter.isHidden = screen.meter == nil
         if let frame = screen.meter { meter.setLayoutFrame(frame) }

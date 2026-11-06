@@ -122,6 +122,20 @@ final class ChatHistoryPagerTests: XCTestCase {
         XCTAssertFalse(pager.firstLoadFailed)
     }
 
+    /// No session here to load is no failure, but nothing loads without
+    /// asking again: the placeholder offers Retry, not a spinner forever.
+    func testAFirstLoadThatFoundNoSessionOffersRetry() async {
+        let history = HeldHistory()
+        let (pager, _) = makePager(history)
+        pager.receive(facts(loaded: false, empty: true))
+        var missing = state()
+        missing.missing = true
+        history.publish(missing)
+        await until { pager.firstLoadFailed }
+        XCTAssertTrue(pager.firstLoadFailed)
+        XCTAssertNil(pager.status?.error)
+    }
+
     func testOnceLoadedTheFirstLoadRetryDoesNothing() async {
         let history = HeldHistory()
         let (pager, _) = makePager(history)
