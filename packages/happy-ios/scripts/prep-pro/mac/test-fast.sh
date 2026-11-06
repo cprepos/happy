@@ -62,6 +62,7 @@ seed_packages $DD
 t0=$SECONDS
 gen_project $P $HF/xcodegen-cache-sim > $L/xcodegen.log 2>&1 || { log "xcodegen failed"; cat $L/xcodegen.log; finish 2; }
 T[1_xcodegen]=$((SECONDS - t0))
+resolve_packages $P $DD HappySimTests || finish 2
 
 COMMON=(CODE_SIGNING_ALLOWED=NO ONLY_ACTIVE_ARCH=YES ARCHS=arm64 ${=$(cache_settings)})
 log "build-for-testing (Debug, arm64) -> $DD"
@@ -80,6 +81,7 @@ log "build-for-testing done in ${T[2_build_for_testing]} s"
 DEV_PID=
 if [[ ${DEVICE:-1} == 1 ]]; then
   seed_packages $DDD
+  resolve_packages $P $DDD Happy || finish 2
   log "device compile check (Debug, generic iOS) -> $DDD, in the background"
   ( s=$SECONDS
     xcodebuild build -project $P/Happy.xcodeproj -scheme Happy -configuration Debug \
