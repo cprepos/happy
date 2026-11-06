@@ -26,7 +26,13 @@ public final class LiveBrowserChatWatch {
     /// The key asked by now: the first until it answers `no_link`, then
     /// the next, round again; the one that names a link is kept.
     public private(set) var key: String
-    public var url: URL { LiveBrowserLink.chatURL(key: key)! }
+    public var url: URL { LiveBrowserLink.chatURL(key: key, origin: origin)! }
+    /// The bridge origin asked by now (`LiveBrowserLink.origins`): which one
+    /// the chat's computer reaches the bridge at isn't known, so each is
+    /// tried in turn until one answers, and that one is kept.
+    public private(set) var origin: String = LiveBrowserLink.origins[0]
+    private var originIndex = 0
+    private var originAnswered = false
     private var keyIndex = 0
     private var found = false
     /// The next key is asked at once, not at the next turn.
@@ -137,8 +143,10 @@ public final class LiveBrowserChatWatch {
         polls += 1
         do {
             let data = try await transport.send(method: "GET", url: url, body: nil, accept: "application/json")
-            let chat = try JSONDecoder().decode(LiveBrowserChat.self, from: data)
+            var chat = try JSONDecoder().decode(LiveBrowserChat.self, from: data)
             guard !Task.isCancelled else { return false }
+            originAnswered = true
+            if let link = chat.link.at(origin: origin) { chat.link = link }
             found = true
             answer = .link(chat)
             return true
@@ -147,6 +155,7 @@ public final class LiveBrowserChatWatch {
             switch error {
             // The agent may start one later: still asked.
             case BrowserError.upstream(404):
+                originAnswered = true
                 if !found, keys.count > 1 {
                     keyIndex = (keyIndex + 1) % keys.count
                     key = keys[keyIndex]
@@ -159,7 +168,15 @@ public final class LiveBrowserChatWatch {
             case BrowserError.upstream(501), BrowserError.unavailable: return false
             // A bridge from before the lookup answers 404 too; anything
             // else keeps the last answer and is asked again.
-            default: return true
+            default:
+                // No bridge at this origin from the chat's computer (refused,
+                // or not allowed in): the next one, at once, until one answers.
+                if !originAnswered, LiveBrowserLink.origins.count > 1 {
+                    originIndex = (originIndex + 1) % LiveBrowserLink.origins.count
+                    origin = LiveBrowserLink.origins[originIndex]
+                    if originIndex != 0 { nextKeyNow = true }
+                }
+                return true
             }
         }
     }

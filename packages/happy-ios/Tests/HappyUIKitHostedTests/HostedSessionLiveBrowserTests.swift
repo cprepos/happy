@@ -107,7 +107,7 @@ final class HostedSessionLiveBrowserTests: XCTestCase {
         let account = try XCTUnwrap(controller.session)
         let store = account.store
         let id = sessionId
-        let live = "\(LiveBrowserLink.origin)/live/\(linkId)"
+        let live = "\(LiveBrowserLink.localOrigin)/live/\(linkId)"
         try Self.seed(store, id: id, live: live, flavor: flavor, path: path)
         let context = AppContext(account: controller, variant: .production, version: "test")
         let chat = LegacyChatViewController(context: context, session: account, sessionId: id)

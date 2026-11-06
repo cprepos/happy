@@ -308,7 +308,7 @@ enum ChatRowRenderer {
     static func agentText(_ message: AgentTextMessage, copied: Bool, diagrams: ChatMermaidHeights, width: CGFloat, style: ChatRowStyle) -> ChatRowPlan {
         var text = message.text
         var links: [LiveBrowserLink] = []
-        if text.contains(LiveBrowserLink.origin) {
+        if LiveBrowserLink.mayContainLink(text) {
             let segments = LiveBrowserLink.split(text)
             links = segments.compactMap { if case .link(let link) = $0 { link } else { nil } }
             if !links.isEmpty {

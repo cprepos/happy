@@ -3,21 +3,50 @@ import HappyCrypto
 import HappyWire
 
 /// A browser an agent drives, watched live (`selfhost/browser/bridge`): the
-/// bridge on the agent's computer serves it at
-/// `http://localhost:6090/live/<id>`, reached only through the chat's
-/// workspace proxy. The id is an unguessable random token, 32 lowercase hex
+/// bridge serves it at `<origin>/live/<id>`, reached only through the chat's
+/// workspace proxy. The origin is the bridge as the chat's computer reaches
+/// it: its own `localhost` on the bridge's computer, the bridge's LAN
+/// address from another one (`origins`). The id is an unguessable random token, 32 lowercase hex
 /// digits; the bridge answers 404 for one it never made and 410 for one that
 /// expired.
 public struct LiveBrowserLink: Equatable, Sendable {
-    public static let origin = "http://localhost:6090"
+    /// The bridge on the chat's own computer.
+    public static let localOrigin = "http://localhost:6090"
+    /// The bridge over the LAN, from another computer (its LAN listener,
+    /// `BRIDGE_LAN_BIND`).
+    public static let lanOrigin = "http://192.168.2.72:6090"
+    /// Every origin a link may name: the only place they are listed. A
+    /// chat whose computer is unknown tries them in this order
+    /// (`LiveBrowserChatWatch`).
+    public static let origins = [lanOrigin, localOrigin]
+
     public var id: String
+    /// Which bridge, one of `origins`.
+    public var origin: String
     /// The live page, `/live/<id>`.
     public var url: URL
 
-    public init?(id: String) {
-        guard Self.validID(id), let url = URL(string: "\(Self.origin)/live/\(id)") else { return nil }
+    public init?(id: String, origin: String = LiveBrowserLink.localOrigin) {
+        guard Self.validID(id), Self.origins.contains(origin), let url = URL(string: "\(origin)/live/\(id)") else { return nil }
         self.id = id
+        self.origin = origin
         self.url = url
+    }
+
+    /// The link a live page's URL names, nil for any other URL.
+    public init?(url: URL) {
+        guard let scheme = url.scheme, let host = url.host, let port = url.port else { return nil }
+        let parts = url.path.split(separator: "/")
+        guard parts.count == 2, parts[0] == "live" else { return nil }
+        self.init(id: String(parts[1]), origin: "\(scheme)://\(host):\(port)")
+    }
+
+    /// The same browser at another bridge origin.
+    public func at(origin: String) -> LiveBrowserLink? { LiveBrowserLink(id: id, origin: origin) }
+
+    /// Whether `text` may hold a live link: a quick check before `split`.
+    public static func mayContainLink(_ text: String) -> Bool {
+        origins.contains { text.contains("\($0)/live/") }
     }
 
     /// The latest frame. Named `.jpg`, served as PNG: decode by content.
@@ -46,7 +75,7 @@ public struct LiveBrowserLink: Equatable, Sendable {
         var first = true
         for text in texts.reversed() {
             defer { first = false }
-            guard text.contains("\(origin)/live/") else { continue }
+            guard mayContainLink(text) else { continue }
             for segment in split(text, open: openLast && first).reversed() {
                 if case .link(let link) = segment { return link }
             }
@@ -64,11 +93,10 @@ public struct LiveBrowserLink: Equatable, Sendable {
         func visit(_ value: JSONValue) {
             switch value {
             case .string(let text):
-                guard text.contains("\(origin)/live/") else { return }
+                guard mayContainLink(text) else { return }
                 let whole = NSRange(location: 0, length: text.utf16.count)
                 for match in pattern.matches(in: text, range: whole) {
-                    let idRange = (1...3).lazy.map { match.range(at: $0) }.first { $0.location != NSNotFound }
-                    if let idRange, let range = Range(idRange, in: text), let link = LiveBrowserLink(id: String(text[range])) { found = link }
+                    if let link = link(of: match, in: text) { found = link }
                 }
             case .array(let items): items.forEach(visit)
             case .object(let object): object.keys.sorted().forEach { visit(object[$0]!) }
@@ -104,8 +132,8 @@ public struct LiveBrowserLink: Equatable, Sendable {
     /// `GET` names the chat's link, if it has one (`LiveBrowserChat`); 404
     /// `no_link` when the chat never had a browser. Nil for a key that
     /// isn't one.
-    public static func chatURL(key: String) -> URL? {
-        guard validID(key) else { return nil }
+    public static func chatURL(key: String, origin: String = LiveBrowserLink.localOrigin) -> URL? {
+        guard validID(key), origins.contains(origin) else { return nil }
         return URL(string: "\(origin)/live/chat/\(key)")
     }
 
@@ -126,7 +154,7 @@ public struct LiveBrowserLink: Equatable, Sendable {
     /// again stays the link it is. `open` text may still be arriving, so a
     /// link it ends with (its id perhaps cut) stays text until more comes.
     public static func split(_ text: String, open: Bool = false) -> [Segment] {
-        guard text.contains("\(origin)/live/") else { return [.markdown(text)] }
+        guard mayContainLink(text) else { return [.markdown(text)] }
         let units = text.utf16
         let whole = NSRange(location: 0, length: units.count)
         let code = codeRanges(text)
@@ -137,8 +165,7 @@ public struct LiveBrowserLink: Equatable, Sendable {
             let range = match.range
             guard !code.contains(where: { NSIntersectionRange($0, range).length > 0 }) else { continue }
             if open, NSMaxRange(range) == units.count { continue }
-            let idRange = (1...3).lazy.map { match.range(at: $0) }.first { $0.location != NSNotFound }
-            guard let idRange, let swiftRange = Range(idRange, in: text), let link = LiveBrowserLink(id: String(text[swiftRange])), !seen.contains(link.id) else { continue }
+            guard let link = link(of: match, in: text), !seen.contains(link.id) else { continue }
             seen.insert(link.id)
             if range.location > start, let before = Range(NSRange(location: start, length: range.location - start), in: text) {
                 segments.append(.markdown(String(text[before])))
@@ -152,15 +179,25 @@ public struct LiveBrowserLink: Equatable, Sendable {
         return segments.isEmpty ? [.markdown(text)] : segments
     }
 
-    /// Group 1 a Markdown link's, 2 an autolink's, 3 a bare link's id. The
-    /// id ends where its token does, so `/live/<id>/frame.jpg` or a longer
-    /// token is no link to a live page.
+    /// Groups 1 and 2 a Markdown link's origin and id, 3 and 4 an
+    /// autolink's, 5 and 6 a bare link's. The origin is exactly one of
+    /// `origins`. The id ends where its token does, so
+    /// `/live/<id>/frame.jpg` or a longer token is no link to a live page.
     private static let pattern: NSRegularExpression = {
-        let link = #"http://localhost:6090/live/([0-9a-f]{32})/?(?![A-Za-z0-9_\-/?#%])"#
+        let origin = "(" + origins.map(NSRegularExpression.escapedPattern(for:)).joined(separator: "|") + ")"
+        let link = origin + #"/live/([0-9a-f]{32})/?(?![A-Za-z0-9_\-/?#%])"#
         let markdown = #"(?<!!)\[[^\]\n]{0,300}\]\(\s*<?"# + link + #">?\s*\)"#
         let auto = "<" + link + ">"
         return try! NSRegularExpression(pattern: "\(markdown)|\(auto)|\(link)")
     }()
+
+    private static func link(of match: NSTextCheckingResult, in text: String) -> LiveBrowserLink? {
+        for group in [1, 3, 5] where match.range(at: group).location != NSNotFound {
+            guard let origin = Range(match.range(at: group), in: text), let id = Range(match.range(at: group + 1), in: text) else { return nil }
+            return LiveBrowserLink(id: String(text[id]), origin: String(text[origin]))
+        }
+        return nil
+    }
 
     /// Where `text` is code, fenced or inline, in UTF-16 offsets.
     private static func codeRanges(_ text: String) -> [NSRange] {
@@ -398,7 +435,7 @@ extension ChatSnapshot {
         for item in items.reversed() where item.role != .user {
             if case .tool(let tool) = item.role, let link = LiveBrowserLink.latest(inResult: tool.result) { return link }
             for piece in item.pieces.reversed() {
-                if case .liveBrowser(let id, _) = piece, let link = LiveBrowserLink(id: id) { return link }
+                if case .liveBrowser(let id, let url) = piece, let link = LiveBrowserLink(url: url) ?? LiveBrowserLink(id: id) { return link }
             }
         }
         return nil

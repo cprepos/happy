@@ -346,9 +346,9 @@ actor ChatPlanner {
                     parts.append(.markdown(markdown.blocks))
                     spoken.append(line)
                 }
-            case .liveBrowser(let id, _):
+            case .liveBrowser(let id, let url):
                 // Across the column, as an inline page is, at its own height.
-                guard let link = LiveBrowserLink(id: id) else { break }
+                guard let link = LiveBrowserLink(url: url) ?? LiveBrowserLink(id: id) else { break }
                 drafts.append(.liveBrowser(link))
                 parts.append(.page(height: Self.liveBrowserHeight))
             case .picture, .sentFile:

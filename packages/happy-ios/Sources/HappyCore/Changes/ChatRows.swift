@@ -265,7 +265,7 @@ public struct ChatSnapshotFacts: Equatable, Sendable {
             case .userText(let user):
                 if let localId = user.localId { stored.insert(localId) }
             case .agentText(let text) where !text.isThinking:
-                if text.createdAt >= newestLive, text.text.contains(LiveBrowserLink.origin), let link = LiveBrowserLink.latest(in: [text.text]) {
+                if text.createdAt >= newestLive, LiveBrowserLink.mayContainLink(text.text), let link = LiveBrowserLink.latest(in: [text.text]) {
                     newestLive = text.createdAt
                     live = link
                 }

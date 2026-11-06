@@ -346,7 +346,7 @@ enum ChatRows {
     static func liveBrowserChips(_ shown: [ChatListItem]) -> [String: LiveBrowserLink] {
         var seen: Set<String> = []
         for item in shown {
-            guard case .message(.agentText(let agent)) = item, agent.text.contains(LiveBrowserLink.origin) else { continue }
+            guard case .message(.agentText(let agent)) = item, LiveBrowserLink.mayContainLink(agent.text) else { continue }
             for case .link(let link) in LiveBrowserLink.split(agent.text) { seen.insert(link.id) }
         }
         var chips: [String: LiveBrowserLink] = [:]
