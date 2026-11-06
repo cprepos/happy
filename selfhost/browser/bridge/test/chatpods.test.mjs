@@ -57,6 +57,13 @@ function fakePods(store) {
             return { slot: c.slot, client: podClient(c.sessionId, calls), novncPort: pods.novncPortOf(c.slot), vncPassword: `pw${c.slot}`, sessionId: c.sessionId };
         },
         podState: (key) => chats.get(key)?.state ?? 'none',
+        liveness(key) {
+            const st = chats.get(key)?.state ?? 'none';
+            if (st === 'running') return { live: true, pod: 'running', reason: null };
+            if (st === 'crashed') return { live: false, pod: 'dead', reason: 'crashed' };
+            return { live: false, pod: st === 'none' ? 'none' : 'asleep', reason: st === 'none' ? 'no_browser' : 'asleep' };
+        },
+        sessionSeen: () => {},
         touchViewer: (key) => calls.touch.push(key),
         wake(key) { calls.wake.push(key); pods.ensure(key); return 'starting'; },
         status: () => ({ max_pods: 8, pods: [], chats: [...chats.keys()].map((k) => ({ chat: k.slice(0, 8) })) }),
@@ -564,4 +571,26 @@ test('preflight: shared browser (no pods) is never recovered: a gone session or 
     const down = mcpHarness({ podsOn: false, shared: 'down' });
     const d = await down.call('browser_observe', { session_id: 'x1' });
     assert.equal(d.result.isError, true);
+});
+
+test('phantoms: live is false with pod and live_reason once the browser is gone, everywhere the app looks; a held link is released', async () => {
+    await start();
+    const a = await (await api('/api/pod', { chat_key: KEY_A })).json();
+    const t = await fetch(`${base}/live/${a.link_id}/take`, { method: 'POST' });
+    assert.equal((await t.json()).live, true);
+    // The pod goes away under the held link (reaped, crashed).
+    pods.chats.get(KEY_A).state = 'crashed';
+    const d = await (await fetch(`${base}/live/chat/${KEY_A}`)).json();
+    assert.deepEqual([d.live, d.pod, d.live_reason], [false, 'dead', 'crashed']);
+    const s = await (await fetch(`${base}/live/${a.link_id}/state`)).json();
+    assert.deepEqual([s.live, s.pod], [false, 'dead']);
+    const st = await (await api('/api/state', { chat_key: KEY_A })).json();
+    assert.equal(st.live, false);
+    assert.equal(bridgeApp.sweepLinks(), 1);
+    const after = await (await fetch(`${base}/live/${a.link_id}/state`)).json();
+    assert.deepEqual([after.status, after.reason], ['watching', 'browser_asleep']);
+    // Ended by the user: done, never live.
+    await fetch(`${base}/live/${a.link_id}/end`, { method: 'POST' });
+    const e = await (await fetch(`${base}/live/chat/${KEY_A}`)).json();
+    assert.deepEqual([e.live, e.live_reason], [false, 'user_ended']);
 });

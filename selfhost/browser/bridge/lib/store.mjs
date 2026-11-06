@@ -151,7 +151,14 @@ export class LinkStore {
         }
     }
 
+    // A link's url is its last real page: about:blank, chrome:, data: and the like never replace
+    // it (a wake or a recovery reopens it), and its title goes with it.
     update(rec, fields) {
+        if ('url' in fields && fields.url !== null && !/^https?:\/\//i.test(String(fields.url))) {
+            fields = { ...fields };
+            delete fields.url;
+            if (rec.url) delete fields.title;
+        }
         Object.assign(rec, fields);
         this.save();
     }

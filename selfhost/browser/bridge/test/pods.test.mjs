@@ -509,3 +509,47 @@ test('preflight: check asks a live session once per window; a dead one is replac
     const again = await h.mgr.ensure(KEY, { check: true });
     assert.equal(again.recovered.reason, 'session_ended');
 });
+
+test('phantoms: a start stuck past its deadline is torn down and the chat left asleep, not hanging', async () => {
+    const h = harness({ ensureMs: 300, startTimeoutMs: 60 });
+    const KEY = 'b'.repeat(32);
+    await assert.rejects(h.mgr.ensure(KEY, {}), (e) => e.code === 'start_timeout');
+    assert.deepEqual(h.mgr.liveness(KEY), { live: false, pod: 'asleep', reason: 'asleep' });
+    assert.ok(h.calls.includes('launcher.stop:0'), 'its slot is stopped');
+    await delay(400); // the launcher answers late: nothing comes back to life
+    assert.equal(h.mgr.podState(KEY), 'asleep');
+    assert.equal(h.mgr._chats.get(KEY).slot, null);
+    assert.ok(!h.calls.some((c) => c.startsWith('ctl.createSession')), 'no session on the abandoned pod');
+});
+
+test('phantoms: live needs a session that answered lately; the sweep refreshes it, sleeps a dead one and clears a stale slot', async () => {
+    const h = harness();
+    const KEY = 'c'.repeat(32);
+    const d = await h.mgr.ensure(KEY, {});
+    assert.equal(h.mgr.liveness(KEY).live, true);
+    h.advance(151_000);
+    assert.deepEqual(h.mgr.liveness(KEY), { live: false, pod: 'dead', reason: 'session_not_answering' });
+    assert.equal(await h.mgr.phantomSweep(), 0);
+    assert.equal(h.mgr.liveness(KEY).live, true);
+
+    const link = h.store.findChat(KEY);
+    h.store.update(link, { url: 'https://news.ycombinator.com/news', title: 'HN' });
+    h.store.update(link, { url: 'about:blank', title: '' });
+    h.store.update(link, { url: 'chrome://newtab/' });
+    assert.equal(link.url, 'https://news.ycombinator.com/news', 'the last real page is kept');
+    assert.equal(link.title, 'HN');
+
+    h.clients.get(d.slot).dead.add(d.session_id);
+    assert.equal(await h.mgr.phantomSweep(), 1);
+    assert.deepEqual(h.mgr.liveness(KEY), { live: false, pod: 'asleep', reason: 'asleep' });
+    assert.ok(h.calls.some((c) => c.startsWith(`ctl.saveAuthProfile:${d.slot}`)), 'the sleep path saved the login');
+    assert.ok(h.calls.includes(`launcher.stash_auth:${d.slot}`));
+
+    // An asleep chat still naming a slot (from an older chats.json) is cleared.
+    Object.assign(h.mgr._chats.get(KEY), { slot: 2, podId: 'gone' });
+    assert.equal(await h.mgr.phantomSweep(), 1);
+    assert.equal(h.mgr._chats.get(KEY).slot, null);
+    // Woken again: it reopens the last real page.
+    await h.mgr.ensure(KEY, {});
+    assert.ok(h.calls.some((c) => c.endsWith(' https://news.ycombinator.com/news')));
+});

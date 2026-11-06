@@ -148,6 +148,7 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         viewerGraceMs = 10_000,
         // After /take, how long noVNC has to open its first socket before control is released.
         takeLoadMs = 60_000,
+        linkSweepMs = 60_000,      // held links whose browser is gone are released this often
         // POST /live/<id>/nav: how long a navigation may take before answering with what loaded.
         navTimeoutMs = 10_000,
     } = config;
@@ -201,7 +202,18 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         if (!p || !Number.isInteger(port) || port < 1 || port > 65535) return null;
         return { port, key: `pod:${p.slot}:${port}:${p.sessionId}` };
     }
-    const podField = (rec) => (podLink(rec) ? { pod: pods.podState(rec.chatKey) } : {});
+    // live: a browser is up for this link right now (its pod runs and its session answered
+    // lately, or it is starting), never for a done link. live_reason says why not.
+    function liveOf(rec) {
+        if (rec.status === 'done') {
+            const l = podLink(rec) ? pods.liveness(rec.chatKey) : null;
+            return { live: false, live_reason: rec.reason || 'done', ...(l ? { pod: l.pod === 'running' || l.pod === 'starting' ? 'asleep' : l.pod } : {}) };
+        }
+        if (!podLink(rec)) return { live: true, live_reason: null };
+        const l = pods.liveness(rec.chatKey);
+        return { live: l.live, live_reason: l.reason, pod: l.pod };
+    }
+    const podField = (rec) => liveOf(rec);
     // The runtime cache (share token, frame) belongs to one session: a pod restart starts afresh.
     function rtFor(rec) {
         const r = rt(rec.id);
@@ -512,9 +524,7 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
     function chatLink(res, key) {
         const rec = store.findChat(key);
         if (!rec) return send(res, 404, { error: 'no_link' });
-        const pod = pods ? pods.podState(key) : null;
-        const live = rec.status !== 'done' && (pod === null || pod === 'running' || pod === 'starting');
-        return send(res, 200, { id: rec.id, url: linkUrl(rec), live, ...stateOf(rec), ...(pod ? { pod } : {}) });
+        return send(res, 200, { id: rec.id, url: linkUrl(rec), ...stateOf(rec), ...liveOf(rec) });
     }
 
     // POST /live/<id>/nav: back, forward, reload or goto on the link's own session, for the
@@ -569,7 +579,7 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
                 if (podLink(rec) && !podOf(rec)) {
                     pods.touchViewer(rec.chatKey);
                     pods.wake(rec.chatKey);
-                    return send(res, 202, { ...stateOf(rec), pod: 'starting' });
+                    return send(res, 202, { ...stateOf(rec), live: true, live_reason: null, pod: 'starting' });
                 }
                 // From takeover the agent is already waiting for the user: nothing changes.
                 if (rec.status !== 'takeover' && rec.status !== 'user') setStatus(rec, 'user', 'user_took_control');
@@ -595,6 +605,7 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
             if (podLink(rec) && !podOf(rec)) return send(res, 503, { error: 'asleep' });
             try {
                 const f = await frame(rec);
+                if (podLink(rec)) pods.sessionSeen(rec.chatKey);
                 return send(res, 200, f.body, { 'Content-Type': f.contentType });
             } catch (err) {
                 if (err.status === 503) return send(res, 503, { error: 'asleep' });
@@ -777,7 +788,27 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         socket.on('close', () => closeTunnel(t, 'viewer_closed'));
     }
 
+    // A link the user holds while its browser is gone (asleep, crashed, reaped) holds nothing:
+    // it is released (reason browser_asleep), so no window shows a phantom browser in control.
+    // A browser that is starting is left alone. Returns how many were released.
+    function sweepLinks() {
+        if (!pods) return 0;
+        let n = 0;
+        for (const rec of store.all()) {
+            if (!podLink(rec) || !HELD_STATUSES.has(rec.status)) continue;
+            const l = pods.liveness(rec.chatKey);
+            if (l.live) continue;
+            setStatus(rec, 'watching', 'browser_asleep');
+            log(`sweep: /live/${rec.id.slice(0, 6)}… was held with its browser ${l.pod}; released`);
+            n++;
+        }
+        return n;
+    }
+    let linkSweepTimer = null;
+    if (pods && linkSweepMs > 0) { linkSweepTimer = setInterval(() => { try { sweepLinks(); } catch (e) { log(`sweep: ${e.message}`); } }, linkSweepMs); linkSweepTimer.unref?.(); }
+
     function close() {
+        if (linkSweepTimer) { clearInterval(linkSweepTimer); linkSweepTimer = null; }
         for (const id of [...leaveTimers.keys()]) disarmLeave(id);
         for (const t of [...tunnels]) closeTunnel(t, 'shutdown');
     }
@@ -838,5 +869,5 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         }
     }
 
-    return { handler, upgrade, close, shutdown, store, linkUrl, stateOf };
+    return { handler, upgrade, close, shutdown, store, linkUrl, stateOf, sweepLinks };
 }

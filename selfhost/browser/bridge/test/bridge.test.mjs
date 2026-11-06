@@ -114,7 +114,7 @@ test('page, state and frame routes', async () => {
     assert.match(html, /fetch\(base \+ '\/release', \{ method: 'POST' \}\)/);
 
     const state = await (await fetch(`${base}/live/${id}/state`)).json();
-    assert.deepEqual(state, { status: 'watching', reason: null, url: 'https://news.ycombinator.com/', title: 'Hacker News', last_action: null });
+    assert.deepEqual(state, { status: 'watching', reason: null, url: 'https://news.ycombinator.com/', title: 'Hacker News', last_action: null, live: true, live_reason: null });
 
     const f = await fetch(`${base}/live/${id}/frame.jpg`);
     assert.equal(f.status, 200);

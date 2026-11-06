@@ -100,7 +100,9 @@ server.requestTimeout = 0;
 server.headersTimeout = 15_000;
 server.keepAliveTimeout = 5_000;
 server.listen(cfg.port, cfg.host, () => log(`bridge listening on http://${cfg.host}:${cfg.port} -> ${pods ? `browser pods (max ${cfg.pods.maxPods}, warm ${cfg.pods.warm})` : cfg.autoBrowserUrl}`));
-pods?.start().catch((err) => log(`pods: start failed: ${err.message}`));
+// After the pods' start sweep, held links whose browser is gone are released too.
+pods?.start().then(() => { const n = bridge.sweepLinks(); if (n) log(`sweep at start: ${n} held link(s) with no browser released`); })
+    .catch((err) => log(`pods: start failed: ${err.message}`));
 
 const sweep = setInterval(() => store.sweep(), 60_000);
 sweep.unref();

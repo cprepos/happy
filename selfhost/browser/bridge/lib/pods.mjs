@@ -203,6 +203,9 @@ export function createPodManager({
     sessionCheckMs = 2000,          // ensure({check}): a session seen alive this recently is not asked again
     recoverLimit = 2,               // at most this many recoveries of a dead browser per chat ...
     recoverWindowMs = 5 * 60_000,   // ... in this window
+    startTimeoutMs = 90_000,        // a chat's start that takes longer is torn down and the chat left asleep
+    sessionFreshMs = 150_000,       // live: the session answered this recently (the sweep asks every minute)
+    sweepMs = 60_000,               // phantomSweep: running chats whose pod or session is gone
 } = {}) {
     warm = Math.max(0, Math.min(2, warm, maxPods));
     const pods = new Map();         // slot -> pod
@@ -446,6 +449,17 @@ export function createPodManager({
         }
         const previous = chat.sessionId;
         const resumeUrl = previous ? resumeUrlOf(chatKey) : null;
+        const gen = (chat.startGen || 0) + 1;
+        chat.startGen = gen;
+        chat.startedAt = now();
+        // A start abandoned by its deadline (abandonStart) must not touch the chat or a slot
+        // someone else has by now.
+        const stale = () => chat.startGen !== gen;
+        const dropPod = async (pod) => {
+            if (pods.get(pod.slot) !== pod) return;
+            pods.delete(pod.slot);
+            await launcher.call('stop', { slot: pod.slot }).catch(() => {});
+        };
         const p = (async () => {
             const t0 = now();
             chat.state = 'starting';
@@ -454,11 +468,12 @@ export function createPodManager({
             try {
                 got = await acquire(chatKey);
             } catch (err) {
-                chat.state = chat.sessionId ? 'asleep' : 'none';
+                if (!stale()) chat.state = chat.sessionId ? 'asleep' : 'none';
                 throw err;
             }
             const { pod: mine, warm: wasWarm, spare: fromSpare } = got;
             try {
+                if (stale()) throw new PodError('start abandoned', 503, 'start_timeout');
                 let adopted = false;
                 if (chat.hasAuth) {
                     try { adopted = !!(await launcher.call('adopt_auth', { slot: mine.slot, chat_hash: chatKey })).adopted; }
@@ -474,6 +489,7 @@ export function createPodManager({
                     session = await mine.client.createSession({});
                 }
                 const sessionMs = now() - s0;
+                if (stale()) throw new PodError('start abandoned', 503, 'start_timeout');
                 Object.assign(chat, { slot: mine.slot, podId: mine.podId, sessionId: session.id, state: 'running', lastAgentAt: now(), checkedAt: now() });
                 const link = store?.forChat?.(chatKey, session.id);
                 if (link) chat.linkId = link.id;
@@ -484,20 +500,121 @@ export function createPodManager({
                 persist();
                 return describe(chat);
             } catch (err) {
+                if (stale()) { await dropPod(mine); persist(); throw err; }
                 log(`pod slot ${mine.slot}: starting the session failed: ${short(err)}`);
                 chat.state = chat.sessionId ? 'asleep' : 'none';
-                pods.delete(mine.slot);
-                await launcher.call('stop', { slot: mine.slot }).catch(() => {});
+                await dropPod(mine);
                 persist();
                 throw err instanceof PodError ? err : new PodError(short(err));
             } finally {
                 refill();
             }
         })();
-        pending.set(chatKey, p);
+        let timer;
+        const deadline = new Promise((_, reject) => {
+            timer = setTimeout(() => {
+                abandonStart(chatKey, gen).finally(() => reject(new PodError(`the browser did not start within ${Math.round(startTimeoutMs / 1000)} s; it is asleep and starts again on the next call`, 503, 'start_timeout')));
+            }, startTimeoutMs);
+            timer.unref?.();
+        });
+        const timed = Promise.race([p, deadline]).finally(() => clearTimeout(timer));
+        p.catch(() => {});
+        timed.catch(() => {});
+        pending.set(chatKey, timed);
         let d;
-        try { d = await p; } finally { pending.delete(chatKey); }
+        try { d = await timed; } finally { if (pending.get(chatKey) === timed) pending.delete(chatKey); }
         return recovery && check ? { ...d, recovered: { reason: recovery, previous_session_id: previous } } : d;
+    }
+
+    // A start past startTimeoutMs: the pod it was getting is stopped (its login stashed first when
+    // the chat has none saved yet; a saved one is kept as it is), and the chat is left asleep,
+    // so the next call or wake starts it again from the saved login and the link's last page.
+    async function abandonStart(chatKey, gen) {
+        const chat = chats.get(chatKey);
+        if (!chat || chat.startGen !== gen) return;
+        chat.startGen = gen + 1;
+        for (const pod of [...pods.values()].filter((x) => x.chatKey === chatKey)) {
+            if (!chat.hasAuth) {
+                try { if ((await launcher.call('stash_auth', { slot: pod.slot, chat_hash: chatKey }))?.stashed) chat.hasAuth = true; }
+                catch (err) { log(`pod slot ${pod.slot}: keeping the login failed: ${short(err)}`); }
+            }
+            if (pods.get(pod.slot) === pod) pods.delete(pod.slot);
+            await launcher.call('stop', { slot: pod.slot }).catch((err) => log(`pod slot ${pod.slot}: stopping failed: ${short(err)}`));
+        }
+        Object.assign(chat, { state: 'asleep', slot: null, podId: null });
+        log(`chat ${chatKey.slice(0, 8)}: start took over ${Math.round(startTimeoutMs / 1000)} s; torn down, asleep`);
+        persist();
+        refill();
+    }
+
+    /**
+     * Is a browser up for this chat? {live, pod, reason}. live only while its pod runs and its
+     * session answered in the last sessionFreshMs, or while it starts (for under startTimeoutMs).
+     * pod: running | starting | asleep | dead | none.
+     */
+    function liveness(chatKey) {
+        const chat = chats.get(chatKey);
+        if (!chat || (chat.state === 'none' && !pending.has(chatKey))) return { live: false, pod: 'none', reason: 'no_browser' };
+        if (pending.has(chatKey) || chat.state === 'starting') {
+            return now() - (chat.startedAt || 0) < startTimeoutMs ? { live: true, pod: 'starting', reason: null } : { live: false, pod: 'dead', reason: 'start_stuck' };
+        }
+        if (chat.state === 'running') {
+            const pod = chat.slot !== null ? pods.get(chat.slot) : null;
+            if (!pod || pod.podId !== chat.podId || pod.state !== 'assigned') return { live: false, pod: 'dead', reason: 'pod_gone' };
+            if (!chat.checkedAt || now() - chat.checkedAt > sessionFreshMs) return { live: false, pod: 'dead', reason: 'session_not_answering' };
+            return { live: true, pod: 'running', reason: null };
+        }
+        if (chat.state === 'crashed') return { live: false, pod: 'dead', reason: 'crashed' };
+        return { live: false, pod: 'asleep', reason: 'asleep' };
+    }
+    // The session answered (a frame, an observe): it counts as alive for sessionFreshMs.
+    function sessionSeen(chatKey) {
+        const chat = chats.get(chatKey);
+        if (chat && chat.state === 'running') chat.checkedAt = now();
+    }
+
+    /**
+     * At start and every sweepMs: a chat that claims to run while its pod or session is gone is
+     * put to sleep (stopChat saves its login when the pod still answers; else the last saved one
+     * stays), a start the bridge is not doing is asleep, and a sleeping chat's slot is cleared.
+     * Returns how many it fixed.
+     */
+    async function phantomSweep() {
+        let fixed = 0;
+        for (const chat of [...chats.values()]) {
+            const key = chat.chatKey;
+            if (pending.has(key) || stopping.has(key)) continue;
+            const pod = chat.slot !== null ? pods.get(chat.slot) : null;
+            const ours = !!pod && pod.podId === chat.podId && pod.chatKey === key;
+            if (chat.state === 'running') {
+                if (!ours || pod.state !== 'assigned') {
+                    Object.assign(chat, { state: 'asleep', slot: null, podId: null });
+                    log(`sweep: chat ${key.slice(0, 8)} said running with no pod; asleep`);
+                    fixed++;
+                    continue;
+                }
+                let dead = null;
+                try {
+                    const s = await pod.client.getSession(chat.sessionId);
+                    if (s && DEAD_SESSION.has(String(s.status))) dead = 'session_ended';
+                } catch (err) {
+                    dead = err.status === 404 ? 'session_ended' : ((await pod.client.readyz().catch(() => false)) ? null : 'pod_crashed');
+                }
+                if (!dead) { chat.checkedAt = now(); continue; }
+                log(`sweep: chat ${key.slice(0, 8)} ${dead === 'session_ended' ? 'session ended' : 'pod not answering'}; putting it to sleep`);
+                await stopChat(key, dead === 'pod_crashed' ? 'crashed' : 'session_ended');
+                fixed++;
+            } else if (chat.state === 'starting') {
+                Object.assign(chat, { state: 'asleep', slot: null, podId: null });
+                fixed++;
+            } else if (chat.slot !== null || chat.podId !== null) {
+                chat.slot = null;
+                chat.podId = null;
+                fixed++;
+            }
+        }
+        if (fixed) persist();
+        return fixed;
     }
 
     // A forked chat's first login is its parent's, as of now: the parent's pod (if it runs) is
@@ -526,7 +643,10 @@ export function createPodManager({
         const chat = chats.get(chatKey);
         const pod = chat && chat.slot !== null ? pods.get(chat.slot) : null;
         if (!chat || !pod || pod.podId !== chat.podId) {
-            if (chat && chat.state === 'running') { chat.state = why === 'crashed' ? 'crashed' : 'asleep'; persist(); }
+            if (chat && chat.state === 'running') chat.state = why === 'crashed' ? 'crashed' : 'asleep';
+            // No pod of its own: a slot it still names is someone else's or gone.
+            if (chat && chat.state !== 'running' && chat.slot !== null) { chat.slot = null; chat.podId = null; }
+            if (chat) persist();
             return Promise.resolve(false);
         }
         const p = (async () => {
@@ -637,6 +757,7 @@ export function createPodManager({
                     learnBases(l.slot, l.ports);
                     chat.state = 'running';
                     chat.slot = l.slot;
+                    chat.checkedAt = now(); // answered readyz; the first sweep asks the session
                     adopted++;
                     continue;
                 }
@@ -646,16 +767,22 @@ export function createPodManager({
         }
         for (const chat of chats.values()) if (chat.state === 'running' && !pods.has(chat.slot)) { chat.state = 'asleep'; chat.slot = null; chat.podId = null; }
         persist();
+        // Loaded asleep from chats.json but still naming the slot it had: not any more.
+        for (const chat of chats.values()) if (chat.state !== 'running' && chat.slot !== null) { chat.slot = null; chat.podId = null; }
+        persist();
         if (adopted || removed) log(`pod reconcile: adopted ${adopted}, removed ${removed}`);
         return { adopted, removed };
     }
 
     async function start() {
         await reconcile();
+        const fixed = await phantomSweep().catch((e) => { log(`sweep: ${short(e)}`); return 0; });
+        if (fixed) log(`sweep at start: ${fixed} phantom browser(s) fixed`);
         refill();
         const every = (fn, ms) => { const t = setInterval(() => fn().catch((e) => log(`pod timer: ${short(e)}`)), ms); t.unref?.(); timers.push(t); };
         every(idleSweep, Math.min(30_000, Math.max(1000, Math.floor(idleMs / 4))));
         every(healthCheck, healthMs);
+        every(async () => { const n = await phantomSweep(); if (n) log(`sweep: ${n} phantom browser(s) fixed`); }, sweepMs);
     }
 
     // Pods stay up across a bridge restart (reconcile adopts them); only the timers stop.
@@ -729,6 +856,7 @@ export function createPodManager({
     return {
         ensure, stopChat, checkpointAuth, idleSweep, healthCheck, reconcile, refill, start, close,
         chatForLink, chatForSession, podOf, podState, touchViewer, wake, status,
+        liveness, sessionSeen, phantomSweep,
         get timings() { return timings.slice(); },
         _pods: pods, _chats: chats,
     };
