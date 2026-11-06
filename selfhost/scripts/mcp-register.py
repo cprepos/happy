@@ -90,6 +90,9 @@ REMOTE_HOP = "prep-ml"
 REMOTE_NODE = "/usr/bin/node"   # on prep-ml
 WRAP_SSH = "/usr/bin/ssh"       # on the Mac
 REMOTE_TRASH = "~/happy-trash"  # on the Mac
+# How a Mac reaches the bridge: its LAN listener (BRIDGE_LAN_BIND), not prep-ml's localhost.
+# The bridge's MCP server on prep-ml writes the links a Mac chat gets with this base.
+REMOTE_LINK_BASE = "http://192.168.2.72:6090"
 # Where a harness binary may be on a Mac (for creating a config folder it lacks).
 REMOTE_BIN_DIRS = ["/opt/homebrew/bin", "/usr/local/bin", "~/.local/bin", "~/.npm-global/bin", "~/.bun/bin", "~/.opencode/bin"]
 # The agent-vault skill, installed for Claude on this machine and on each Mac.
@@ -147,6 +150,8 @@ def remote_wrapper(script, env, ssh=WRAP_SSH, hop=REMOTE_HOP, node=REMOTE_NODE):
 
 
 def remote_argv(script, env):
+    if script == BRIDGE:
+        env = dict(env, BRIDGE_PUBLIC_BASE=REMOTE_LINK_BASE)
     return ["-c", remote_wrapper(script, env)]
 
 

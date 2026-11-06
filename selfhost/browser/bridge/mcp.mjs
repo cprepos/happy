@@ -357,7 +357,25 @@ export function createChatRouter({ bridge, makeUpstream, chat = null, newKey = (
 
 const ONE_BROWSER = 'Each chat has one browser. Use the session it already has; a fork or a second session is not available.';
 
-export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fetch, pollS = 60, upstream = null, waitMaxS = 3600, log = () => {}, retryMs = 30_000, metaProbe = null, secrets = null, chatPods = null, callChat = null, now = Date.now }) {
+// The bridge names its live pages at its own localhost (`linkFrom`); an agent on another
+// computer reaches them at the bridge's LAN address instead (BRIDGE_PUBLIC_BASE, `linkBase`).
+// Every live-page URL in a bridge answer is moved to `linkBase`; nothing else changes.
+export function linkRewriter(linkFrom, linkBase) {
+    const base = String(linkBase || '').replace(/\/+$/, '');
+    const from = String(linkFrom || '').replace(/\/+$/, '');
+    if (!from || !base || base === from || !/^https?:\/\/[A-Za-z0-9.-]+(:\d{1,5})?$/.test(base)) return (v) => v;
+    const prefix = `${from}/live/`;
+    const walk = (v) => {
+        if (typeof v === 'string') return v.startsWith(prefix) ? base + v.slice(from.length) : v;
+        if (Array.isArray(v)) return v.map(walk);
+        if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]));
+        return v;
+    };
+    return walk;
+}
+
+export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fetch, pollS = 60, upstream = null, waitMaxS = 3600, log = () => {}, retryMs = 30_000, metaProbe = null, secrets = null, chatPods = null, callChat = null, now = Date.now, linkFrom = null, linkBase = null }) {
+    const relink = linkRewriter(linkFrom, linkBase);
     const inflight = new Map(); // request id -> AbortController
     // chatPods: {chat: {key, source, forkedFrom?} | null, makeUpstream(url)}. Each call then goes to its chat's
     // pod when the bridge runs pods, and to `upstream` (the shared controller) when it doesn't.
@@ -607,6 +625,7 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
         });
         let data = null;
         try { data = await res.json(); } catch {}
+        if (res.ok) data = relink(data);
         if (!res.ok) {
             const why = data?.error || `HTTP ${res.status}`;
             const err = new Error(res.status === 404 && body.session_id ? `${why}: ${body.session_id}` : `bridge ${path}: ${why}`);
@@ -791,6 +810,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     let podPort = () => null;
     const server = createMcpServer({
         bridgeUrl: cfg.bridgeUrl,
+        linkFrom: `http://localhost:${cfg.port}`,
+        linkBase: cfg.publicBase,
         bridgeToken: readSecret(cfg.files.bridgeToken),
         write,
         upstream,
