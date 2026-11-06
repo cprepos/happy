@@ -26,19 +26,29 @@ extension UIViewController {
         case .unavailable:
             presentBrowser(BrowserViewController(url: url, session: nil))
         case .ask(let choices, let workspace):
-            let machineId = record.flatMap(LegacyBrowserRoute.machineId)
-            let machineName = record.flatMap { LegacyLinkRoute.machineName(session: $0, machine: machine) }
-            let alert = UIAlertController(title: Strings.Browser.relayPickerTitle(machineName), message: machineId == nil ? nil : Strings.Browser.relayPickerMessage, preferredStyle: .alert)
-            for computer in choices {
-                alert.addAction(UIAlertAction(title: computer.name, style: .default) { [weak self] _ in
-                    if let machineId { LegacyLinkRoute.remember(computer.id, for: machineId, settings: settings) }
-                    self?.presentBrowser(browser(computer.id, workspace))
-                })
+            askLegacyComputer(choices, session: record, machine: machine, settings: settings) { [weak self] id in
+                if let id { self?.presentBrowser(browser(id, workspace)) }
             }
-            alert.addAction(UIAlertAction(title: Strings.Common.cancel, style: .cancel))
-            alert.view.accessibilityIdentifier = "relay-link-picker"
-            present(alert, animated: true)
         }
+    }
+
+    /// Asks which paired computer a Happy session's machine is, keeping the
+    /// answer for the machine (`LegacyLinkRoute.remember`): its links and
+    /// its live browser ask the same. `picked` gets the computer, or nil
+    /// for Cancel.
+    func askLegacyComputer(_ choices: [LegacyLinkComputer], session record: SessionRecord?, machine: MachineRecord?, settings: LocalSettings, picked: @escaping @MainActor (String?) -> Void) {
+        let machineId = record.flatMap(LegacyBrowserRoute.machineId)
+        let machineName = record.flatMap { LegacyLinkRoute.machineName(session: $0, machine: machine) }
+        let alert = UIAlertController(title: Strings.Browser.relayPickerTitle(machineName), message: machineId == nil ? nil : Strings.Browser.relayPickerMessage, preferredStyle: .alert)
+        for computer in choices {
+            alert.addAction(UIAlertAction(title: computer.name, style: .default) { _ in
+                if let machineId { LegacyLinkRoute.remember(computer.id, for: machineId, settings: settings) }
+                picked(computer.id)
+            })
+        }
+        alert.addAction(UIAlertAction(title: Strings.Common.cancel, style: .cancel) { _ in picked(nil) })
+        alert.view.accessibilityIdentifier = "relay-link-picker"
+        present(alert, animated: true)
     }
 
     /// The paired computers a Happy CLI chat's links can go through: every

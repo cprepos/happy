@@ -10,6 +10,9 @@ import UIKit
 final class Session {
     let accountID: String
     private(set) var computerName: String
+    /// The signed-in Happy account this computer is paired in: where an
+    /// agent's mirrored Happy session is looked for.
+    private(set) weak var happyAccount: AccountController?
     /// The installation's health `instanceId`: what a link copied out of
     /// Happy names (`happy://<instanceId>/…`). Nil for an older daemon,
     /// which gets no such link.
@@ -135,6 +138,7 @@ final class Session {
     private init(accountID: String, engine: SyncEngine, account: AccountController) {
         media = MediaLibrary.agent(accountID)
         self.accountID = accountID
+        happyAccount = account
         computerName = account.agentConnections.accounts.first { $0.id == accountID }?.name ?? Strings.agentConnection
         instanceId = account.agentConnections.accounts.first { $0.id == accountID }?.instanceId
         placeholderSeed = account.agentConnections.placeholderSeed(for: accountID) ?? accountID

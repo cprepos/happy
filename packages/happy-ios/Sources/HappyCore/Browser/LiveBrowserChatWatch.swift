@@ -21,8 +21,16 @@ public final class LiveBrowserChatWatch {
     /// this seldom, so it still comes back when the agent wakes one.
     public static let idleInterval: Duration = .seconds(30)
 
-    public let key: String
-    public let url: URL
+    /// The keys the chat may go by, in order (`LiveBrowserChatIdentity.keys`).
+    public let keys: [String]
+    /// The key asked by now: the first until it answers `no_link`, then
+    /// the next, round again; the one that names a link is kept.
+    public private(set) var key: String
+    public var url: URL { LiveBrowserLink.chatURL(key: key)! }
+    private var keyIndex = 0
+    private var found = false
+    /// The next key is asked at once, not at the next turn.
+    private var nextKeyNow = false
     public private(set) var answer: Answer = .unknown {
         didSet { if answer != oldValue { onChange?(answer) } }
     }
@@ -40,10 +48,16 @@ public final class LiveBrowserChatWatch {
 
     /// Nil for a key that isn't one. `transport` is asked for each time
     /// polling starts; nil (no computer known yet) waits for `reconsider`.
-    public init?(key: String, interval: Duration = LiveBrowserChatWatch.interval, idleInterval: Duration = LiveBrowserChatWatch.idleInterval, transport: @escaping @MainActor () -> LiveBrowserTransport?) {
-        guard let url = LiveBrowserLink.chatURL(key: key) else { return nil }
-        self.key = key
-        self.url = url
+    public convenience init?(key: String, interval: Duration = LiveBrowserChatWatch.interval, idleInterval: Duration = LiveBrowserChatWatch.idleInterval, transport: @escaping @MainActor () -> LiveBrowserTransport?) {
+        self.init(keys: [key], interval: interval, idleInterval: idleInterval, transport: transport)
+    }
+
+    /// Nil when no key is one.
+    public init?(keys: [String], interval: Duration = LiveBrowserChatWatch.interval, idleInterval: Duration = LiveBrowserChatWatch.idleInterval, transport: @escaping @MainActor () -> LiveBrowserTransport?) {
+        let keys = keys.filter { LiveBrowserLink.chatURL(key: $0) != nil }
+        guard let first = keys.first else { return nil }
+        self.keys = keys
+        self.key = first
         self.interval = interval
         self.idleInterval = idleInterval
         makeTransport = transport
@@ -88,6 +102,7 @@ public final class LiveBrowserChatWatch {
                 guard let self else { return }
                 let keepGoing = await self.poll(transport)
                 guard keepGoing, !Task.isCancelled else { break }
+                if self.nextKeyNow { self.nextKeyNow = false; continue }
                 try? await Task.sleep(for: self.currentInterval)
             }
             guard let self, !Task.isCancelled else { return }
@@ -116,13 +131,23 @@ public final class LiveBrowserChatWatch {
             let data = try await transport.send(method: "GET", url: url, body: nil, accept: "application/json")
             let chat = try JSONDecoder().decode(LiveBrowserChat.self, from: data)
             guard !Task.isCancelled else { return false }
+            found = true
             answer = .link(chat)
             return true
         } catch {
             guard !Task.isCancelled, !(error is CancellationError) else { return false }
             switch error {
             // The agent may start one later: still asked.
-            case BrowserError.upstream(404): answer = .noLink; return true
+            case BrowserError.upstream(404):
+                if !found, keys.count > 1 {
+                    keyIndex = (keyIndex + 1) % keys.count
+                    key = keys[keyIndex]
+                    // Every key asked once with no link: no link.
+                    if keyIndex == 0 { answer = .noLink } else { nextKeyNow = true }
+                } else {
+                    answer = .noLink
+                }
+                return true
             case BrowserError.upstream(501), BrowserError.unavailable: return false
             // A bridge from before the lookup answers 404 too; anything
             // else keeps the last answer and is asked again.

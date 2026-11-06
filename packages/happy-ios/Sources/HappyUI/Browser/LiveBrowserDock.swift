@@ -1,6 +1,7 @@
 #if canImport(UIKit)
 import HappyCore
 import HappyLayout
+import HappyStore
 import UIKit
 import WebKit
 
@@ -50,6 +51,20 @@ final class LiveBrowserDock: NSObject {
     /// The chat's computer, read each time it is needed; a test hands in
     /// one of its own.
     var connect: @MainActor () -> LiveBrowserConnection?
+    /// The chat's computer and workspace as `route` decided them.
+    var routedConnection: LiveBrowserConnection?
+    /// The keys `route` asks the bridge by, in order (tests, and the log).
+    var routedKeys: [String] = []
+    /// What `route` was last asked for, and its work while it decides.
+    var routedFor: String?
+    var routing: Task<Void, Never>?
+    /// Made to decide its own computer (`route(_:through:)`): no link is
+    /// shown before it has.
+    private(set) var routesItself = false
+    /// The machine's computer isn't certain: the host asks the person, as
+    /// a link does (`LegacyLinkOpening`), and answers with the computer
+    /// picked, or nil. Unset, such a chat says unavailable.
+    var askComputer: ((_ choices: [LegacyLinkComputer], _ record: SessionRecord, _ picked: @escaping @MainActor (String?) -> Void) -> Void)?
     /// The line came, went or changed its words, or the voice strip moved:
     /// the host lays out again (and measures the composer again).
     var onLayoutChange: (() -> Void)?
@@ -98,12 +113,22 @@ final class LiveBrowserDock: NSObject {
         NotificationCenter.default.addObserver(self, selector: #selector(appForegrounded), name: UIApplication.willEnterForegroundNotification, object: nil)
     }
 
+    /// A dock whose computer is what `route(_:through:)` decides.
+    convenience init(host: UIViewController, chatKey: String) {
+        self.init(host: host, chatKey: chatKey) { nil }
+        connect = { [weak self] in self?.routedConnection }
+        routesItself = true
+    }
+
     // MARK: The host's part
 
     /// The chat's newest live link in its transcript, or nil. The bridge's
     /// answer by chat, when there is one, goes first.
     func update(link: LiveBrowserLink?) {
         transcriptLink = link
+        // Its computer not yet decided: shown once it is, so the feed never
+        // reads through another, or reads through none and stays unavailable.
+        guard routing == nil, !(routesItself && routedFor == nil) else { return }
         follow()
     }
 
@@ -111,14 +136,18 @@ final class LiveBrowserDock: NSObject {
     /// while the chat shows; nil stops asking. Called again once a computer
     /// to ask through is known.
     func lookUp(key: String?) {
-        if let watch = chatWatch, watch.key == key {
+        lookUp(keys: key.map { [$0] } ?? [])
+    }
+
+    /// `lookUp(key:)` by the first of `keys` that names a link, in order;
+    /// none stops asking.
+    func lookUp(keys: [String]) {
+        if let watch = chatWatch, watch.keys == keys {
             watch.reconsider()
             return
         }
         chatWatch?.close()
-        chatWatch = key.flatMap { key in
-            LiveBrowserChatWatch(key: key) { [weak self] in self?.lookupTransport() }
-        }
+        chatWatch = keys.isEmpty ? nil : LiveBrowserChatWatch(keys: keys) { [weak self] in self?.lookupTransport() }
         chatWatch?.onChange = { [weak self] _ in self?.lookupChanged() }
         chatWatch?.setVisible(isOnScreen)
         lookupChanged()

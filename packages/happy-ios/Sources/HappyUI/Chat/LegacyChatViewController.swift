@@ -69,19 +69,18 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
     /// The chat's live browser: its red line standing on the composer's
     /// card, as on an agent's chat, its player over the dock.
     private lazy var liveDock: LiveBrowserDock = {
-        let dock = LiveBrowserDock(host: self, chatKey: "session.\(chatId)") { [weak self] in self?.liveConnection }
+        let dock = LiveBrowserDock(host: self, chatKey: "session.\(chatId)")
         dock.onLayoutChange = { [weak self] in
             self?.measureLiveBrowserLine()
             self?.view.setNeedsLayout()
         }
+        // A machine whose computer isn't certain: asked as its links ask.
+        dock.askComputer = { [weak self] choices, record, picked in
+            guard let self else { return picked(nil) }
+            self.askLegacyComputer(choices, session: record, machine: nil, settings: self.account.localSettings, picked: picked)
+        }
         return dock
     }()
-    /// The computer the chat's live link goes through, once it is known
-    /// (`LegacyLinkRoute`); nil while it isn't, or none can be chosen.
-    private var liveConnection: LiveBrowserConnection?
-    private var liveRouting: Task<Void, Never>?
-    /// The session and machine the computer was decided for.
-    private var liveRoutedFor: String?
     /// The transcript's newest live link.
     private var liveTranscriptLink: LiveBrowserLink?
     /// The composer stays hidden until its draft is restored, its taps
@@ -2146,51 +2145,21 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         push(.textSelection(text: text), context: context)
     }
 
-    /// The chat's newest live link in its transcript, through the computer
-    /// its links go through: decided first, so the feed never reads
-    /// through another.
+    /// The chat's newest live link in its transcript, read through the
+    /// computer the dock decides for the chat (`route(_:through:)`).
     private func updateLiveBrowser(_ link: LiveBrowserLink?) {
         guard link != liveTranscriptLink else { return }
         liveTranscriptLink = link
-        if routeLiveBrowser() { liveDock.update(link: link) }
+        routeLiveBrowser()
+        liveDock.update(link: link)
     }
 
-    /// Decides the computer the chat's live browser goes through, once per
-    /// session and machine, and then asks the bridge for the session's
-    /// browser by its key, with or without a link in the transcript. True
-    /// once decided.
-    @discardableResult
-    private func routeLiveBrowser() -> Bool {
-        guard !isComposing, let record = session.record else { return false }
-        let machineId = record.metadata?["machineId"]?.stringValue
-        let chat = chatId
-        let routeKey = "\(chat)|\(machineId ?? "")"
-        if routeKey == liveRoutedFor { return liveRouting == nil }
-        liveRoutedFor = routeKey
-        liveRouting?.cancel()
-        let store = account.store
-        liveRouting = Task { @MainActor [weak self] in
-            let (machine, machines) = await Task.detached(priority: .userInitiated) {
-                (machineId.flatMap { try? store.machine(id: $0) }, (try? store.machines()) ?? [])
-            }.value
-            guard let self, !Task.isCancelled, self.liveRoutedFor == routeKey else { return }
-            let route = LegacyBrowserRoute.resolve(
-                session: record, machine: machine, machines: machines,
-                computers: Self.legacyLinkComputers(self.context.account), settings: self.account.localSettings
-            )
-            // A chat whose computer isn't certain reads nothing: it says
-            // unavailable rather than look through another computer. On
-            // that computer, the workspace the chat's folder is in.
-            if case .computer(let id, let workspace) = route, let client = Session.session(for: id, context: self.context)?.client {
-                self.liveConnection = LiveBrowserConnection(client: client) { try await workspace.find(client) }
-            } else {
-                self.liveConnection = nil
-            }
-            self.liveRouting = nil
-            self.liveDock.lookUp(key: self.liveConnection == nil ? nil : LiveBrowserLink.chatKey(happySession: chat))
-            self.liveDock.update(link: self.liveTranscriptLink)
-        }
-        return false
+    /// Names the chat to its live browser once its record is read: a bot's
+    /// mirror goes by its bot's workspace, a CLI session by its folder's,
+    /// both through the paired computer its machine is.
+    private func routeLiveBrowser() {
+        guard !isComposing, let record = session.record else { return }
+        liveDock.route(.session(record), through: .machine(account, context: context))
     }
 
     func chatList(_ list: ChatListView, openLink url: String) {

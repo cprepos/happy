@@ -55,11 +55,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
     let happySession: String?
     /// The chat's live browser: its red line over the card, its player.
     private lazy var liveDock: LiveBrowserDock = {
-        let client = session.client
-        let agentID = media.agentId
-        let dock = LiveBrowserDock(host: self, chatKey: "agent.\(agentID)") {
-            LiveBrowserConnection(client: client) { try await client.browserWorkspace(agentID: agentID) }
-        }
+        let dock = LiveBrowserDock(host: self, chatKey: "agent.\(media.agentId)")
         dock.onLayoutChange = { [weak self] in self?.view.setNeedsLayout() }
         return dock
     }()
@@ -395,8 +391,10 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         let conversation = conversation
         Task { await conversation.setVisible(true) }
         // The bridge keys the browser by the agent's Happy session when it
-        // has one, else by the agent.
-        if !previewing { liveDock.lookUp(key: liveBrowserKey) }
+        // has one, else by the agent; the dock finds which.
+        if !previewing, !media.agentId.isEmpty {
+            liveDock.route(liveBrowserIdentity, through: .client(session.client, happy: session.happyAccount?.session))
+        }
         liveDock.setOnScreen(true)
         // The model chip warns as its account runs low, so the readings are
         // followed while the composer shows.
@@ -499,8 +497,10 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
 
     /// The conversation shown: empty for new work until the daemon made it.
     var shownAgentId: String { media.agentId }
-    /// The key the bridge knows this chat's browser by.
-    var liveBrowserKey: String { LiveBrowserLink.chatKey(agent: media.agentId, happySession: happySession) }
+    /// The chat, as its live browser knows it.
+    var liveBrowserIdentity: LiveBrowserChatIdentity { .agent(id: media.agentId, happySession: happySession) }
+    /// The key the bridge is asked by first for this chat's browser.
+    var liveBrowserKey: String { liveBrowserIdentity.keys()[0] }
 
     /// The conversation's detail, over it: its numbers, its family and its
     /// activity, and its rename. New work has none until the daemon made it.
