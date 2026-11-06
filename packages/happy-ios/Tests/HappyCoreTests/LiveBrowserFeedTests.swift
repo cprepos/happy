@@ -174,6 +174,76 @@ final class LiveBrowserFeedTests: XCTestCase {
     }
 
     @MainActor
+    func testConnectingTooLongIsNotRespondingAndRetryReadsAgain() async throws {
+        let transport = FakeTransport()
+        transport.failure = .upstream(503)
+        let feed = LiveBrowserFeed(link: try XCTUnwrap(LiveBrowserLink(id: Self.a))) { transport }
+        feed.stuckLimit = .milliseconds(300)
+        let owner = NSObject()
+        feed.attach(owner) { _ in }
+        try await until { feed.phase == .notResponding && !feed.isPolling }
+        XCTAssertFalse(feed.phase.isOver)
+        XCTAssertFalse(feed.phase.isRunning)
+        let asked = transport.paths.count
+        try await Task.sleep(for: .milliseconds(1800))
+        XCTAssertEqual(transport.paths.count, asked, "not asked again on its own")
+
+        transport.failure = nil
+        feed.retry()
+        try await until { feed.phase.isRunning }
+        feed.detach(owner)
+    }
+
+    @MainActor
+    func testARestingFeedReadsNothingUntilRetried() async throws {
+        let transport = FakeTransport()
+        let feed = LiveBrowserFeed(link: try XCTUnwrap(LiveBrowserLink(id: Self.a))) { transport }
+        let owner = NSObject()
+        feed.attach(owner, frames: true) { _ in }
+        try await until { feed.phase.isRunning }
+        let asleep = LiveBrowserState(status: .watching, url: "https://news.example/", pod: .asleep, live: false)
+        feed.rest(asleep)
+        XCTAssertEqual(feed.phase, .dormant(asleep))
+        XCTAssertFalse(feed.isPolling)
+        let asked = transport.paths.count
+        feed.set(owner, visible: true)
+        try await Task.sleep(for: .milliseconds(1800))
+        XCTAssertEqual(transport.paths.count, asked, "no state, no frames while it rests")
+        feed.retry()
+        try await until { transport.paths.count > asked && feed.phase.isRunning }
+        feed.detach(owner)
+    }
+
+    @MainActor
+    func testRunningIsTheBridgesLiveAlone() throws {
+        let decode = { (json: String) in try JSONDecoder().decode(LiveBrowserState.self, from: Data(json.utf8)) }
+        XCTAssertTrue(try decode(#"{"status":"watching","pod":"running","live":true}"#).runs)
+        XCTAssertFalse(try decode(#"{"status":"watching","pod":"running","live":false}"#).runs, "pod says running; live says no")
+        XCTAssertTrue(try decode(#"{"status":"watching","pod":"running","live":false}"#).asleep)
+        XCTAssertFalse(try decode(#"{"status":"done","live":false}"#).runs)
+        XCTAssertTrue(try decode(#"{"status":"watching","pod":"starting","live":true}"#).runs)
+        // A bridge with no `live`: status and pod.
+        XCTAssertTrue(try decode(#"{"status":"watching"}"#).runs)
+        XCTAssertFalse(try decode(#"{"status":"watching","pod":"dead"}"#).runs)
+    }
+
+    @MainActor
+    func testNavigatePostsTheActionAndDecodesWhereThePageIs() async throws {
+        let transport = FakeTransport()
+        transport.posts["/nav"] = #"{"ok":true,"url":"https://example.com/","title":"Example","can_go_back":null,"can_go_forward":null,"timed_out":true}"#
+        let feed = LiveBrowserFeed(link: try XCTUnwrap(LiveBrowserLink(id: Self.a))) { transport }
+        let reply = try await feed.navigate(.goto("example.com"))
+        XCTAssertEqual(reply, LiveBrowserNavResult(url: "https://example.com/", title: "Example", timedOut: true))
+        XCTAssertEqual(transport.posted, ["/nav"])
+        let body = try XCTUnwrap(transport.bodies.first ?? nil)
+        XCTAssertEqual(try JSONSerialization.jsonObject(with: body) as? [String: String], ["action": "goto", "url": "example.com"])
+        XCTAssertEqual(String(decoding: LiveBrowserNavigation.back.body, as: UTF8.self), #"{"action":"back"}"#)
+
+        transport.posts["/nav"] = nil
+        do { try await feed.navigate(.reload); XCTFail("refused") } catch BrowserError.upstream(404) {}
+    }
+
+    @MainActor
     func testTakeAndReleasePostAndMoveThePhase() async throws {
         let transport = FakeTransport()
         transport.posts["/take"] = #"{"status":"user","novnc_url":"http://localhost:6080/vnc.html"}"#
@@ -223,6 +293,7 @@ private final class FakeTransport: LiveBrowserTransport, @unchecked Sendable {
     var failure: BrowserError?
     var posts: [String: String] = [:]
     var posted: [String] = []
+    var bodies: [Data?] = []
     var paths: [String] = []
     var stops = 0
 
@@ -230,6 +301,7 @@ private final class FakeTransport: LiveBrowserTransport, @unchecked Sendable {
         let suffix = "/" + url.lastPathComponent
         if method == "POST" {
             posted.append(suffix)
+            bodies.append(body)
             guard let answer = posts[suffix] else { throw BrowserError.upstream(404) }
             return Data(answer.utf8)
         }

@@ -33,7 +33,17 @@ final class LiveBrowserChatTests: XCTestCase {
         XCTAssertEqual(chat.link.id, Self.a)
         XCTAssertEqual(chat.link.url.absoluteString, "http://localhost:6090/live/\(Self.a)", "through the workspace, never the public URL")
         XCTAssertTrue(chat.live)
-        XCTAssertEqual(chat.state, LiveBrowserState(status: .watching, url: "https://news.example/", title: "News", pod: .running))
+        XCTAssertEqual(chat.state, LiveBrowserState(status: .watching, url: "https://news.example/", title: "News", pod: .running, live: true))
+        XCTAssertTrue(chat.running)
+
+        // The one field the red line keys off: live false is asleep, with
+        // its reason, whatever pod and status say.
+        let dead = try JSONDecoder().decode(LiveBrowserChat.self, from: Data(#"{"id":"\#(Self.a)","live":false,"live_reason":"session_not_answering","status":"watching","pod":"dead"}"#.utf8))
+        XCTAssertFalse(dead.running)
+        XCTAssertEqual(dead.state.pod, .dead)
+        XCTAssertEqual(dead.state.liveReason, "session_not_answering")
+        XCTAssertTrue(dead.state.asleep)
+        XCTAssertFalse(dead.state.runs)
 
         let asleep = try JSONDecoder().decode(LiveBrowserChat.self, from: Data(#"{"id":"\#(Self.a)","live":false,"status":"watching","pod":"asleep"}"#.utf8))
         XCTAssertFalse(asleep.live)
