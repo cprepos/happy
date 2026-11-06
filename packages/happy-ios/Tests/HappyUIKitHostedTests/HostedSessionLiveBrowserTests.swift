@@ -173,6 +173,9 @@ final class HostedSessionLiveBrowserTests: XCTestCase {
         let client = AgentClient(transport: daemon, token: "native-secret")
         dock.connect = { LiveBrowserConnection(client: client) { "work1" } }
         let link = try XCTUnwrap(LiveBrowserLink(id: linkId))
+        // Read again through it: the chat, with no paired computer, may
+        // already show the link as unavailable.
+        dock.update(link: nil)
         dock.update(link: link)
         let composer = try XCTUnwrap(descendants(chat.view).compactMap { $0 as? SessionComposerView }.first)
         let indicator = dock.indicator

@@ -162,6 +162,28 @@ final class LiveBrowserChatTests: XCTestCase {
         XCTAssertEqual(watch.polls, polls, "nothing while it doesn't show")
     }
 
+    /// A chat asked by its Happy session's key, then its agent's: the
+    /// key that names a link is kept.
+    @MainActor
+    func testTheLookupTriesItsKeysInOrderAndKeepsTheOneFound() async throws {
+        let identity = LiveBrowserChatIdentity.agent(id: "agent1", happySession: "happy1")
+        let keys = identity.keys()
+        XCTAssertEqual(keys, [LiveBrowserLink.chatKey(happySession: "happy1"), LiveBrowserLink.chatKey(agent: "agent1")])
+        XCTAssertEqual(LiveBrowserChatIdentity.agent(id: "agent1", happySession: nil).keys(), [LiveBrowserLink.chatKey(agent: "agent1")])
+        let transport = PodTransport()
+        transport.chat = #"{"id":"\#(Self.a)","live":true,"status":"watching"}"#
+        transport.chatKey = keys[1]
+        let watch = try XCTUnwrap(LiveBrowserChatWatch(keys: keys, interval: .milliseconds(20)) { transport })
+        watch.setVisible(true)
+        try await until { watch.answer.chat?.link.id == Self.a }
+        XCTAssertEqual(Array(transport.gets.prefix(2)), keys.map { "/live/chat/\($0)" })
+        XCTAssertEqual(watch.key, keys[1])
+        let polls = watch.polls
+        try await until { watch.polls > polls + 1 }
+        XCTAssertEqual(watch.key, keys[1], "kept")
+        watch.close()
+    }
+
     @MainActor
     func testNoLinkIsNoLineAndIsAskedAgain() async throws {
         let transport = PodTransport()
@@ -219,6 +241,8 @@ private final class PodTransport: LiveBrowserTransport, @unchecked Sendable {
     var state = #"{"status":"watching"}"#
     /// `/live/chat/<key>`'s answer; nil is 404 no_link.
     var chat: String?
+    /// The only key `chat` answers for, when set; others are no_link.
+    var chatKey: String?
     var frameStatus: Int?
     var failure: BrowserError?
     /// `/take`'s answers in turn; the last repeats.
@@ -237,7 +261,7 @@ private final class PodTransport: LiveBrowserTransport, @unchecked Sendable {
         gets.append(url.path)
         if let failure { throw failure }
         if url.path.hasPrefix("/live/chat/") {
-            guard let chat else { throw BrowserError.upstream(404) }
+            guard let chat, chatKey.map({ url.lastPathComponent == $0 }) ?? true else { throw BrowserError.upstream(404) }
             return Data(chat.utf8)
         }
         if url.lastPathComponent == "frame.jpg" {
