@@ -14,6 +14,7 @@ import { parseSpecialCommand } from '@/parsers/specialCommands';
 import { getEnvironmentInfo } from '@/ui/doctor';
 import { configuration } from '@/configuration';
 import { notifyDaemonSessionStarted } from '@/daemon/controlClient';
+import { consumeSessionScopedEnv } from '@/daemon/sessionEnvironment';
 import { initialMachineMetadata } from '@/daemon/run';
 import { startHappyServer } from '@/claude/utils/startHappyServer';
 import { startHookServer } from '@/claude/utils/startHookServer';
@@ -77,7 +78,11 @@ type PendingClaudeGoalAction = {
 export async function runClaude(credentials: Credentials, options: StartOptions = {}): Promise<void> {
     logger.debug(`[CLAUDE] ===== CLAUDE MODE STARTING =====`);
     logger.debug(`[CLAUDE] This is the Claude agent, NOT Gemini`);
-    
+
+    // Take the session-scoped launch values out of process.env before
+    // anything can spawn a child, so no descendant can join this session.
+    const sessionEnv = consumeSessionScopedEnv();
+
     const workingDirectory = process.cwd();
     const sessionTag = randomUUID();
 
@@ -126,9 +131,9 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     });
 
     // Lineage from the daemon's spawn RPC (set by app-side fork / duplicate).
-    const forkedFromSessionId = process.env.HAPPY_FORKED_FROM_SESSION_ID;
-    const forkedFromMessageId = process.env.HAPPY_FORKED_FROM_MESSAGE_ID;
-    const isSideChat = process.env.HAPPY_SIDE_CHAT === '1';
+    const forkedFromSessionId = sessionEnv.forkedFromSessionId;
+    const forkedFromMessageId = sessionEnv.forkedFromMessageId;
+    const isSideChat = sessionEnv.sideChat;
 
     let metadata: Metadata = {
         path: workingDirectory,
@@ -155,25 +160,21 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     };
 
     // Check for session reconnection env vars (set by daemon for resume-in-place)
-    const reconnectSessionId = process.env.HAPPY_RECONNECT_SESSION_ID;
-    const reconnectKeyBase64 = process.env.HAPPY_RECONNECT_ENCRYPTION_KEY;
-    const reconnectVariant = process.env.HAPPY_RECONNECT_ENCRYPTION_VARIANT as 'legacy' | 'dataKey' | undefined;
-    const reconnectSeq = process.env.HAPPY_RECONNECT_SEQ;
-    const reconnectMetadataVersion = process.env.HAPPY_RECONNECT_METADATA_VERSION;
-    const reconnectAgentStateVersion = process.env.HAPPY_RECONNECT_AGENT_STATE_VERSION;
+    const reconnect = sessionEnv.reconnect;
+    const reconnectSessionId = reconnect?.sessionId;
 
     let response: ApiSession | null;
-    if (reconnectSessionId && reconnectKeyBase64 && reconnectVariant) {
-        logger.debug(`[START] Reconnecting to existing session ${reconnectSessionId}`);
+    if (reconnect) {
+        logger.debug(`[START] Reconnecting to existing session ${reconnect.sessionId}`);
         response = {
-            id: reconnectSessionId,
-            seq: parseInt(reconnectSeq || '0', 10),
-            encryptionKey: decodeBase64(reconnectKeyBase64),
-            encryptionVariant: reconnectVariant,
+            id: reconnect.sessionId,
+            seq: reconnect.seq,
+            encryptionKey: decodeBase64(reconnect.keyBase64),
+            encryptionVariant: reconnect.variant,
             metadata,
-            metadataVersion: parseInt(reconnectMetadataVersion || '0', 10),
+            metadataVersion: reconnect.metadataVersion,
             agentState: state,
-            agentStateVersion: parseInt(reconnectAgentStateVersion || '0', 10),
+            agentStateVersion: reconnect.agentStateVersion,
         };
     } else {
         response = await api.getOrCreateSession({ tag: sessionTag, metadata, state });
@@ -311,7 +312,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     // Skipped on reconnect (HAPPY_RECONNECT_*) — that path reattaches
     // to the existing Happy session, where the server already has every
     // message it needs.
-    const forkClaudeSessionId = process.env.HAPPY_FORK_CLAUDE_SESSION_ID;
+    const forkClaudeSessionId = sessionEnv.forkClaudeSessionId;
     if (!reconnectSessionId && forkClaudeSessionId) {
         // Side chats resume the forked JSONL for full model context via the
         // SDK (`resume:`), but we deliberately do NOT replay the pre-fork

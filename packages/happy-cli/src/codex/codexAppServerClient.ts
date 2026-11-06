@@ -13,6 +13,7 @@
  * app-server wrapper or approval callbacks. See docs/plans/codex-app-server-migration.md.
  */
 
+import { sanitizeSessionEnvironment } from '@/daemon/sessionEnvironment';
 import { execSync, type ChildProcess } from 'node:child_process';
 import { spawn as crossSpawn } from 'cross-spawn';
 import { createInterface, type Interface as ReadlineInterface } from 'node:readline';
@@ -631,7 +632,9 @@ export class CodexAppServerClient {
 
         // Build env — same filtering as the old MCP client
         const env: Record<string, string> = {};
-        for (const [key, value] of Object.entries(process.env)) {
+        // Session-scoped launch values (HAPPY_RECONNECT_*, an inherited
+        // CODEX_THREAD_ID) never reach the app server or its tools.
+        for (const [key, value] of Object.entries(sanitizeSessionEnvironment(process.env))) {
             if (typeof value === 'string') env[key] = value;
         }
         Object.assign(env, this.extraEnv);

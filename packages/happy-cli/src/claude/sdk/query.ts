@@ -3,6 +3,7 @@
  * Maps internal QueryOptions to official SDK Options
  */
 
+import { sanitizeSessionEnvironment } from '@/daemon/sessionEnvironment'
 import { query as sdkQuery, type Options, type Query } from '@anthropic-ai/claude-agent-sdk'
 import type { QueryOptions, QueryPrompt, SDKMessage } from './types'
 import type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
@@ -62,7 +63,9 @@ export function query(params: { prompt: QueryPrompt; options?: QueryOptions }): 
     // CLAUDE_CODE_ENTRYPOINT="sdk-ts" and the picker would hide every Happy
     // session. See slopus/happy#1202.
     const env: Record<string, string> = {}
-    for (const [key, value] of Object.entries(process.env)) {
+    // Session-scoped launch values (HAPPY_RECONNECT_* and friends) never reach
+    // the agent: a `happy` run by one of its tools would join this session.
+    for (const [key, value] of Object.entries(sanitizeSessionEnvironment(process.env))) {
         if (typeof value === 'string') env[key] = value
     }
     env.CLAUDE_CODE_ENTRYPOINT = resolveHappyEntrypoint(process.env.CLAUDE_CODE_ENTRYPOINT)

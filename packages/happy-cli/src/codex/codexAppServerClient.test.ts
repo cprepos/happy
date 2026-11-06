@@ -154,6 +154,27 @@ describe('CodexAppServerClient sandbox integration', () => {
         await client.disconnect();
     });
 
+    it('never passes session-scoped launch values to the app server', async () => {
+        const saved = { ...process.env };
+        process.env.HAPPY_RECONNECT_SESSION_ID = 'leaked-session';
+        process.env.HAPPY_RECONNECT_ENCRYPTION_KEY = 'dummy';
+        process.env.CODEX_THREAD_ID = 'leaked-thread';
+        try {
+            const { CodexAppServerClient } = await import('./codexAppServerClient');
+            const client = new CodexAppServerClient(undefined, { HAPPY_SESSION_ID: 'bridge-session' });
+            await client.connect();
+            const env = mockSpawn.mock.calls[0][2].env as Record<string, string>;
+            expect(Object.keys(env).filter((key) => key.startsWith('HAPPY_RECONNECT_'))).toEqual([]);
+            expect(env).not.toHaveProperty('CODEX_THREAD_ID');
+            expect(env.HAPPY_SESSION_ID).toBe('bridge-session');
+            await client.disconnect();
+        } finally {
+            for (const key of Object.keys(process.env)) {
+                if (!(key in saved)) delete process.env[key];
+            }
+        }
+    });
+
     it('wraps transport when sandbox is enabled', async () => {
         // Dynamic import to ensure mocks are applied
         const { CodexAppServerClient } = await import('./codexAppServerClient');

@@ -6,6 +6,7 @@
  * error handling) is delegated to TransportHandler implementations.
  */
 
+import { sanitizeSessionEnvironment } from '@/daemon/sessionEnvironment';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { Readable, Writable } from 'node:stream';
 import {
@@ -447,14 +448,14 @@ export class AcpBackend implements AgentBackend {
         const fullCommand = [this.options.command, ...args].join(' ');
         this.process = spawn('cmd.exe', ['/c', fullCommand], {
           cwd: this.options.cwd,
-          env: { ...process.env, ...this.options.env },
+          env: { ...sanitizeSessionEnvironment(process.env), ...this.options.env },
           stdio: ['pipe', 'pipe', 'pipe'],
           windowsHide: true,
         });
       } else {
         this.process = spawn(this.options.command, args, {
           cwd: this.options.cwd,
-          env: { ...process.env, ...this.options.env },
+          env: { ...sanitizeSessionEnvironment(process.env), ...this.options.env },
           // Use 'pipe' for all stdio to capture output without printing to console
           // stdout and stderr will be handled by our event listeners
           stdio: ['pipe', 'pipe', 'pipe'],

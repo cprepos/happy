@@ -189,6 +189,7 @@ vi.mock('./AcpBackend', () => ({
 }));
 
 import { runAcp } from './runAcp';
+import { SESSION_SCOPED_ENV_KEYS } from '@/daemon/sessionEnvironment';
 
 describe('runAcp', () => {
   const stripAnsi = (line: string) => line.replace(/\u001b\[[0-9;]*m/g, '');
@@ -199,6 +200,10 @@ describe('runAcp', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // A test run started from inside a live session must not reconnect to it.
+    for (const key of SESSION_SCOPED_ENV_KEYS) {
+      delete process.env[key];
+    }
     mocks.sessionHandlers.clear();
     mocks.setUserMessageHandler(null);
     mocks.setKillHandler(null);

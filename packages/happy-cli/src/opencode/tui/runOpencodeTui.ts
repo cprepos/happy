@@ -41,7 +41,7 @@ import { logger } from '@/ui/logger';
 import { createSessionMetadata } from '@/utils/createSessionMetadata';
 import { setupOfflineReconnection } from '@/utils/setupOfflineReconnection';
 import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
-import { sanitizeSessionEnvironment } from '@/daemon/sessionEnvironment';
+import { consumeSessionScopedEnv, sanitizeSessionEnvironment, type SessionScopedEnvSnapshot } from '@/daemon/sessionEnvironment';
 import { connectionState } from '@/utils/serverConnectionErrors';
 import { createOpencodeMessageId, OpencodeClient, type OpencodeSessionInfo } from './opencodeClient';
 import { OpencodeEventMapper, type OpencodeMirrorAction } from './opencodeEventMapper';
@@ -207,18 +207,19 @@ async function findHappySessionToReconnect(
     stateDir: string,
     opencodeSessionId: string,
     happySessionId: string | undefined,
+    sessionEnv: SessionScopedEnvSnapshot,
 ): Promise<Session | null> {
-    const env = process.env;
-    if (env.HAPPY_RECONNECT_SESSION_ID && env.HAPPY_RECONNECT_ENCRYPTION_KEY && env.HAPPY_RECONNECT_ENCRYPTION_VARIANT) {
+    const reconnect = sessionEnv.reconnect;
+    if (reconnect) {
         return {
-            id: env.HAPPY_RECONNECT_SESSION_ID,
-            seq: parseInt(env.HAPPY_RECONNECT_SEQ || '0', 10),
-            encryptionKey: decodeBase64(env.HAPPY_RECONNECT_ENCRYPTION_KEY),
-            encryptionVariant: env.HAPPY_RECONNECT_ENCRYPTION_VARIANT as 'legacy' | 'dataKey',
+            id: reconnect.sessionId,
+            seq: reconnect.seq,
+            encryptionKey: decodeBase64(reconnect.keyBase64),
+            encryptionVariant: reconnect.variant,
             metadata: {} as Session['metadata'],
-            metadataVersion: parseInt(env.HAPPY_RECONNECT_METADATA_VERSION || '0', 10),
+            metadataVersion: reconnect.metadataVersion,
             agentState: null,
-            agentStateVersion: parseInt(env.HAPPY_RECONNECT_AGENT_STATE_VERSION || '0', 10),
+            agentStateVersion: reconnect.agentStateVersion,
         };
     }
     const found = findReconnectableHappySession({
@@ -249,6 +250,9 @@ export async function runOpencodeTui(opts: {
     /** Happy session (chat) to continue on resume, instead of the one linked to it. */
     happySessionId?: string;
 }): Promise<void> {
+    // Take the session-scoped launch values out of process.env before
+    // anything can spawn a child, so no descendant can join this session.
+    const sessionEnv = consumeSessionScopedEnv();
     const launchPolicy: OpencodePermissionPolicy = opts.permissionPolicy ?? 'auto';
     const stateDir = opencodeTuiStateDir();
     const reaped = reapOrphanedServers(stateDir);
@@ -290,7 +294,7 @@ export async function runOpencodeTui(opts: {
     const sessionTag = randomUUID();
     // Resuming continues the same Happy chat when its key is saved here.
     const existing = opts.resumeSessionId
-        ? await findHappySessionToReconnect(opts.credentials, stateDir, opts.resumeSessionId, opts.happySessionId)
+        ? await findHappySessionToReconnect(opts.credentials, stateDir, opts.resumeSessionId, opts.happySessionId, sessionEnv)
         : null;
     const response = existing
         ? { ...existing, metadata: { ...existing.metadata, ...metadata }, agentState: existing.agentState ?? state }
@@ -350,7 +354,7 @@ export async function runOpencodeTui(opts: {
             bin: opts.bin,
             cwd,
             // The Happy session id, so MCP servers OpenCode starts (the browser bridge) know which chat they serve.
-            env: { ...process.env, ...happySessionEnv(response?.id) },
+            env: { ...sanitizeSessionEnvironment(process.env), ...happySessionEnv(response?.id) },
             configContent: JSON.stringify({ mcp: { happy: { type: 'remote', url: happyServer.url, enabled: true } } }),
         });
     } catch (error) {
