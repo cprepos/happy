@@ -113,6 +113,35 @@ class McpRegisterTest(unittest.TestCase):
         self.assertNotIn("happy-browser-bridge env_vars added", out)
         self.assertEqual(self.codex_servers()["happy-browser-bridge"]["env_vars"], ["HAPPY_SESSION_ID"])
 
+    def run_action(self, action):
+        env = dict(os.environ, HOME=self.home, HAPPY_MCP_REGISTER_TRASH=self.trash)
+        r = subprocess.run([sys.executable, SCRIPT, action, "--no-remote"], env=env,
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return r.stdout
+
+    def test_local_opencode_config_is_never_touched(self):
+        oc_dir = os.path.join(self.home, ".config", "opencode")
+        os.makedirs(oc_dir)
+        oc = os.path.join(oc_dir, "opencode.json")
+        text = '{\n  "mcp": {\n    "searxng": {"type": "local", "command": ["s"]}\n  }\n}\n'
+        with open(oc, "w") as f:
+            f.write(text)
+        # An entry left in the state file by an older register must not make unregister act on it.
+        os.makedirs(os.path.dirname(self.state))
+        with open(self.state, "w") as f:
+            json.dump({oc: {"names": ["happy-browser-bridge"], "created_key": False, "was_empty": False}}, f)
+        open(self.codex, "w").close()
+        for action in ("register", "check", "unregister", "register"):
+            out = self.run_action(action)
+            self.assertNotIn(".config/opencode", out, action)
+            with open(oc) as f:
+                self.assertEqual(f.read(), text, action)
+        self.assertFalse(os.path.exists(os.path.join(oc_dir, "opencode.jsonc")))
+        if os.path.isdir(self.trash):
+            for d in os.listdir(self.trash):
+                self.assertFalse([f for f in os.listdir(os.path.join(self.trash, d)) if "opencode" in f])
+
 
 def load_module():
     """mcp-register.py as a module (for remote_wrapper); importing it writes nothing."""

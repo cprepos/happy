@@ -15,15 +15,15 @@ Servers:
 Files here (each one that exists, or that its harness reads, is edited in place):
   ~/.codex/config.toml                              [mcp_servers.<name>], env_vars forwards HAPPY_SESSION_ID
                                                     and HAPPY_FORKED_FROM_SESSION_ID
-  ~/.config/opencode/opencode.json(c)               "mcp": {type local, command [...]}; the
-                                                    .jsonc is used when only it exists (its
-                                                    comments are not kept; the backup has them)
   ~/.gemini/settings.json                           "mcpServers" (Gemini CLI)
   ~/.gemini/config/mcp_config.json                  "mcpServers" (Antigravity / agy)
   ~/.claude.json                                    top-level "mcpServers", stdio
   ~/.local/share/happy-agent/happy/config/mcp.toml  [mcp_servers.<name>] (container paths)
   ~/.claude/skills/agent-vault/SKILL.md             a copy of .agents/skills/agent-vault/SKILL.md
                                                     (here and on each Mac)
+
+Not here: ~/.config/opencode/opencode.json(c) on prep-ml is never read or written
+(register, unregister and check all skip it); only the Macs' opencode is registered.
 
 Files on the Macs (REMOTES below), over ssh, for the harnesses installed there.
 Each Mac is used only if `ssh <mac> 'ssh -o BatchMode=yes prep-ml true'` works.
@@ -1073,8 +1073,6 @@ def remote_target(io, harness):
 def targets(remote=True):
     out = [
         TomlTarget("~/.codex/config.toml", lambda s, env: (HOST_NODE, [s], env), codex_extra),
-        OpencodeTarget(lambda s, env: {
-            "type": "local", "command": [HOST_NODE, s], "enabled": True, **({"environment": dict(env)} if env else {})}),
         JsonTarget("~/.gemini/settings.json", "mcpServers", lambda s, env: {
             "command": HOST_NODE, "args": [s], "env": dict(env), "timeout": 600000}),
         JsonTarget("~/.gemini/config/mcp_config.json", "mcpServers", lambda s, env: {
