@@ -128,16 +128,43 @@ final class LiveBrowserDock: NSObject {
         refresh()
     }
 
+    /// The bridge's word on the feed's link wins over what the feed read:
+    /// not running, it rests as asleep with its last page; running again,
+    /// a resting feed reads again.
+    private func settleFeed() {
+        guard let feed, let chat = chatWatch?.answer.chat, chat.link == feed.link else { return }
+        if !chat.running {
+            var state = chat.state
+            // Done or dead at the bridge is asleep here: the agent's next
+            // browser call resumes it from the saved cookies and page.
+            if state.ended { state.status = .watching }
+            if !state.asleep { state.pod = .asleep }
+            if !holdsControl { feed.rest(state) }
+        } else if feed.phase.isResting {
+            feed.retry()
+        }
+    }
+
+    /// Retry or Check again, from the player: reads again, and asks the
+    /// bridge for the chat now.
+    func retryBrowser() {
+        // Asleep at the bridge: only the bridge can say otherwise.
+        if !lookupSaysIdle { feed?.retry() }
+        chatWatch?.checkNow()
+        refresh()
+    }
+
     /// The link to show: the bridge's for this chat, else the transcript's.
     private func follow() {
         show(link: chatWatch?.answer.chat?.link ?? transcriptLink)
+        settleFeed()
     }
 
     /// The bridge says no browser runs for this link now (`live` false):
     /// no line, and the dock reads nothing, so the browser can sleep.
     private var lookupSaysIdle: Bool {
         guard let chat = chatWatch?.answer.chat, chat.link == feed?.link else { return false }
-        return !chat.live
+        return !chat.running
     }
 
     private func reconsiderFeed() {
@@ -230,6 +257,8 @@ final class LiveBrowserDock: NSObject {
             controlTaken = false
             dropNoVNC()
         }
+        // Connecting too long: the bridge is asked whether it sleeps.
+        if feed.phase == .notResponding { chatWatch?.checkNow() }
         refresh()
     }
 
@@ -237,6 +266,8 @@ final class LiveBrowserDock: NSObject {
     static func status(_ phase: LiveBrowserFeed.Phase) -> String? {
         switch phase {
         case .connecting, .unreachable: Strings.LiveBrowser.connecting
+        case .dormant: Strings.LiveBrowser.asleepStatus
+        case .notResponding: Strings.LiveBrowser.notRespondingStatus
         case .live(let state):
             if state.ended { nil }
             else if state.asleep { Strings.LiveBrowser.asleepStatus }
@@ -247,10 +278,15 @@ final class LiveBrowserDock: NSObject {
         }
     }
 
-    /// Whether the red line may show: the bridge's lookup doesn't say the
-    /// browser is idle, and the feed doesn't say it sleeps.
-    private var lineShows: Bool {
-        !lookupSaysIdle && feed?.phase.state?.asleep != true
+    /// Whether the red line may show: only once the bridge answered that a
+    /// browser runs for the link (its state, and its lookup when asked),
+    /// never while connecting, asleep, dead, done or not responding.
+    private var lineShows: Bool { browserRuns }
+
+    /// The bridge says a browser runs for the chat's link: the red line,
+    /// and the chip's red dot.
+    var browserRuns: Bool {
+        !lookupSaysIdle && feed?.phase.isRunning == true
     }
 
     private func refresh() {
@@ -343,7 +379,8 @@ final class LiveBrowserDock: NSObject {
     /// The footer's button: Release while the person has the browser,
     /// else Take over, which takes it and opens it full screen.
     private func playerAction() {
-        if holdsControl { release() }
+        if feed?.phase.isResting == true { retryBrowser() }
+        else if holdsControl { release() }
         else { presentFullScreen(taking: true) }
     }
 
@@ -1100,6 +1137,8 @@ final class LiveBrowserPlayerView: UIView {
         case .unreachable where picture.image == nil: Strings.LiveBrowser.unreachable
         case .live(let state) where state.asleep: Strings.LiveBrowser.asleep
         case .live(let state) where state.starting: Strings.LiveBrowser.startingBrowser
+        case .dormant(let state): Strings.LiveBrowser.dormant(state.title ?? state.url)
+        case .notResponding: Strings.LiveBrowser.notResponding
         default: nil
         }
         message.text = text
@@ -1107,9 +1146,14 @@ final class LiveBrowserPlayerView: UIView {
         picture.alpha = text == nil ? 1 : 0.25
         let status = LiveBrowserDock.status(feed.phase) ?? Strings.LiveBrowser.endedStatus
         pill.text = status
-        pillDot.backgroundColor = UIColor(state?.asleep == true ? Palette.textSecondary : LiveBrowserPlayerView.color(state?.status))
+        pillDot.backgroundColor = UIColor(state?.asleep == true || state == nil ? Palette.textSecondary : LiveBrowserPlayerView.color(state?.status))
         let held = state?.status == .user
-        action.setTitle(held ? Strings.LiveBrowser.release : Strings.LiveBrowser.takeOver, for: .normal)
+        let title = switch feed.phase {
+        case .dormant: Strings.LiveBrowser.checkAgain
+        case .notResponding: Strings.LiveBrowser.retry
+        default: held ? Strings.LiveBrowser.release : Strings.LiveBrowser.takeOver
+        }
+        action.setTitle(title, for: .normal)
         action.isEnabled = !feed.phase.isOver
         isOver = feed.phase.isOver
         menuButton.isHidden = layout?.menu == nil || isOver
@@ -1250,11 +1294,12 @@ final class LiveBrowserChipView: UIControl {
             color = Palette.textSecondary
         } else if let feed = dock?.feed, feed.link == link {
             status = LiveBrowserDock.status(feed.phase) ?? Strings.LiveBrowser.endedStatus
-            let quiet = LiveBrowserDock.status(feed.phase) == nil || feed.phase.state?.asleep == true
-            color = quiet ? Palette.textSecondary : Palette.statusError
+            // Red only while the bridge says it runs.
+            color = dock?.browserRuns == true ? Palette.statusError : Palette.textSecondary
         } else {
+            // A link in the text says nothing of whether it runs.
             status = Strings.LiveBrowser.open
-            color = Palette.statusError
+            color = Palette.textSecondary
         }
         detail.text = status
         dot.backgroundColor = UIColor(color)

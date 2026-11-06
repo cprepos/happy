@@ -17,6 +17,9 @@ public final class LiveBrowserChatWatch {
     }
 
     public static let interval: Duration = .seconds(4)
+    /// While the answer's link has no browser running for it: asked
+    /// this seldom, so it still comes back when the agent wakes one.
+    public static let idleInterval: Duration = .seconds(30)
 
     public let key: String
     public let url: URL
@@ -30,18 +33,31 @@ public final class LiveBrowserChatWatch {
     public private(set) var isVisible = false
 
     private let interval: Duration
+    private let idleInterval: Duration
     private let makeTransport: @MainActor () -> LiveBrowserTransport?
     private var transport: LiveBrowserTransport?
     private var polling: Task<Void, Never>?
 
     /// Nil for a key that isn't one. `transport` is asked for each time
     /// polling starts; nil (no computer known yet) waits for `reconsider`.
-    public init?(key: String, interval: Duration = LiveBrowserChatWatch.interval, transport: @escaping @MainActor () -> LiveBrowserTransport?) {
+    public init?(key: String, interval: Duration = LiveBrowserChatWatch.interval, idleInterval: Duration = LiveBrowserChatWatch.idleInterval, transport: @escaping @MainActor () -> LiveBrowserTransport?) {
         guard let url = LiveBrowserLink.chatURL(key: key) else { return nil }
         self.key = key
         self.url = url
         self.interval = interval
+        self.idleInterval = idleInterval
         makeTransport = transport
+    }
+
+    /// The wait before the next lookup: long while nothing runs.
+    public var currentInterval: Duration { answer.chat.map { $0.running ? interval : idleInterval } ?? interval }
+
+    /// Asks now rather than at the next turn (the feed stopped answering),
+    /// if it shows.
+    public func checkNow() {
+        guard isVisible else { return }
+        pause()
+        start()
     }
 
     /// The chat shows, or not.
@@ -72,7 +88,7 @@ public final class LiveBrowserChatWatch {
                 guard let self else { return }
                 let keepGoing = await self.poll(transport)
                 guard keepGoing, !Task.isCancelled else { break }
-                try? await Task.sleep(for: self.interval)
+                try? await Task.sleep(for: self.currentInterval)
             }
             guard let self, !Task.isCancelled else { return }
             self.polling = nil

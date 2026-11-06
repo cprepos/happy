@@ -28,16 +28,35 @@ public final class LiveBrowserFeed {
         case unavailable
         /// Anything else; tried again on the next poll.
         case unreachable
+        /// The bridge says no browser runs for the link now (`/live/chat`
+        /// answered not live, asleep or done), with what it last had: it
+        /// rests, reading nothing, until `retry()`. The agent's next
+        /// browser call brings it back from its saved cookies and page.
+        case dormant(LiveBrowserState)
+        /// Connecting, with nothing answered (or no picture) for
+        /// `stuckLimit`: it stopped asking, until `retry()`.
+        case notResponding
 
         public var state: LiveBrowserState? { if case .live(let state) = self { state } else { nil } }
+        /// What the bridge last said of a dormant browser.
+        public var dormantState: LiveBrowserState? { if case .dormant(let state) = self { state } else { nil } }
         /// Nothing more will come: the link is gone, or its session closed.
         public var isOver: Bool {
             switch self {
             case .ended, .expired, .unavailable: true
             case .live(let state): state.ended
-            case .connecting, .unreachable: false
+            case .connecting, .unreachable, .dormant, .notResponding: false
             }
         }
+        /// Not read, though not over: `retry()` reads again.
+        public var isResting: Bool {
+            switch self {
+            case .dormant, .notResponding: true
+            default: false
+            }
+        }
+        /// The bridge answered, and says a browser runs for it.
+        public var isRunning: Bool { state.map { !$0.ended && !$0.asleep } ?? false }
     }
 
     /// Over the chat, small.
@@ -65,6 +84,13 @@ public final class LiveBrowserFeed {
     public var isStalled: Bool { polling != nil && ContinuousClock.now - lastActivity > stallLimit }
     /// Longer than any poll may take: both its reads, and the wait.
     public var stallLimit: Duration { requestTimeout * 2 + Self.interval }
+    /// How long it may connect, or show no picture, with nothing but
+    /// failures before it says not responding.
+    public static let stuckLimit: Duration = .seconds(20)
+    /// `stuckLimit`, shorter in tests.
+    public var stuckLimit: Duration = LiveBrowserFeed.stuckLimit
+    /// Since when every read failed (or no picture came), if they do.
+    private var failingSince: ContinuousClock.Instant?
 
     private let makeTransport: @MainActor () -> LiveBrowserTransport?
     private var transport: LiveBrowserTransport?
@@ -143,9 +169,39 @@ public final class LiveBrowserFeed {
     private func reconsider() {
         let count = watching.count
         defer { visibleCount = count }
-        if count == 0 || phase.isOver { return pause() }
+        if count == 0 || phase.isOver || phase.isResting { return pause() }
         if count != visibleCount, isStalled { pause() }
         start()
+    }
+
+    /// The bridge says no browser runs for the link: it stops reading,
+    /// frames and all, and shows `state` (its last page) as asleep.
+    public func rest(_ state: LiveBrowserState) {
+        guard !phase.isOver else { return }
+        failingSince = nil
+        phase = .dormant(state)
+        pause()
+    }
+
+    /// Reads again from scratch after resting (Retry, or the bridge saying
+    /// it runs again).
+    public func retry() {
+        guard phase.isResting else { return }
+        failingSince = nil
+        phase = .connecting
+        pause()
+        reconsider()
+    }
+
+    /// A read failed (or no picture came): true once that has gone on for
+    /// `stuckLimit`, and it is not responding.
+    private func failing() -> Bool {
+        let now = ContinuousClock.now
+        guard let since = failingSince else { failingSince = now; return false }
+        guard now - since >= stuckLimit else { return false }
+        failingSince = nil
+        phase = .notResponding
+        return true
     }
 
     private func publish() {
@@ -159,6 +215,8 @@ public final class LiveBrowserFeed {
         guard let transport = transport ?? makeTransport() else { return }
         self.transport = transport
         lastActivity = .now
+        // Time off screen isn't time failing.
+        failingSince = nil
         polling = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -196,6 +254,7 @@ public final class LiveBrowserFeed {
             var state = try JSONDecoder().decode(LiveBrowserState.self, from: data)
             guard !Task.isCancelled else { return false }
             // An asleep browser has no frame to give (503); none is asked for.
+            var pictureMissing = false
             if wantsFrames, !state.ended, !state.asleep {
                 do {
                     let frame = try await read(link.frameURL, accept: "image/*,*/*;q=0.8", through: transport)
@@ -207,8 +266,16 @@ public final class LiveBrowserFeed {
                 } catch BrowserError.upstream(503) {
                     // It fell asleep between the two reads.
                     state.pod = .asleep
-                } catch {}
+                } catch {
+                    pictureMissing = frame == nil
+                }
                 guard !Task.isCancelled else { return false }
+            }
+            // Never a picture for `stuckLimit`, though the state answers.
+            if pictureMissing {
+                if failing() { return false }
+            } else {
+                failingSince = nil
             }
             phase = .live(state)
             return !state.ended
@@ -220,7 +287,11 @@ public final class LiveBrowserFeed {
             // 501: the workspace's proxy refuses tunnels; `.unavailable`:
             // no workspace for the chat could be decided on.
             case BrowserError.upstream(501), BrowserError.unavailable: phase = .unavailable; return false
-            default: phase = .unreachable; return true
+            // 503 and the rest: asked again, until it has gone on too long.
+            default:
+                if failing() { return false }
+                phase = .unreachable
+                return true
             }
         }
     }

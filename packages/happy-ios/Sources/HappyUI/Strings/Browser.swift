@@ -93,6 +93,18 @@ extension Strings {
         static let asleep = "Asleep — wakes when the agent uses it"
         /// The status pill and chip while it sleeps.
         static let asleepStatus = "Asleep"
+        /// The bridge says no browser runs for the chat (`/live/chat`):
+        /// with its last page, when it had one.
+        static func dormant(_ page: String?) -> String {
+            let line = "Browser asleep — the agent reopens it on its next browser use."
+            guard let page, !page.isEmpty else { return line }
+            return "\(line)\n\(page)"
+        }
+        /// Connecting went on with nothing answering.
+        static let notResponding = "Browser not responding."
+        static let notRespondingStatus = "Not responding"
+        static let retry = "Retry"
+        static let checkAgain = "Check again"
         /// It is on its way up (`pod: starting`).
         static let starting = "Starting…"
         /// Take control woke it, and waits for it (`/take` answered 202).

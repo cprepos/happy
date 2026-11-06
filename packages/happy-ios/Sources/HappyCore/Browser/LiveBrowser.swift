@@ -238,6 +238,8 @@ public struct LiveBrowserState: Equatable, Sendable, Decodable {
         case crashed
         /// The bridge has no browser for the chat now (`none`).
         case unassigned = "none"
+        /// It went away and won't answer; the next use starts it again.
+        case dead
     }
 
     public var status: Status
@@ -257,7 +259,7 @@ public struct LiveBrowserState: Equatable, Sendable, Decodable {
     /// Take control) wakes it. Its frame answers 503.
     public var asleep: Bool {
         switch pod {
-        case .asleep?, .stopped?, .crashed?, .unassigned?: !ended
+        case .asleep?, .stopped?, .crashed?, .unassigned?, .dead?: !ended
         case .running?, .starting?, nil: false
         }
     }
@@ -326,6 +328,10 @@ public struct LiveBrowserChat: Equatable, Sendable, Decodable {
         live = try container.decodeIfPresent(Bool.self, forKey: .live) ?? false
         state = try LiveBrowserState(from: decoder)
     }
+
+    /// A browser actually runs for the chat: `live`, and not asleep, dead
+    /// or done. Only this shows the red line.
+    public var running: Bool { live && !state.ended && !state.asleep }
 }
 
 extension ChatSnapshot {
