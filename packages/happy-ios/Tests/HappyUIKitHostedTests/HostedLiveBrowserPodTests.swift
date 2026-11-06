@@ -200,6 +200,56 @@ final class HostedLiveBrowserPodTests: XCTestCase {
         try await assertPictureComing(daemon, dock, "reopened after X")
     }
 
+    /// The bridge said asleep, and the next lookup is 30 s off; the agent
+    /// woke it meanwhile. Opening the player asks the bridge at once and
+    /// shows the picture, with no trip to full screen and back.
+    func testOpeningThePlayerOnAWokenBrowserShowsThePicture() async throws {
+        let daemon = BrowserDaemon()
+        await daemon.setLiveStatus("watching")
+        await daemon.setLivePod("asleep")
+        await daemon.setChatLink(id)
+        let (host, window) = try await makeHost(daemon)
+        defer { window.isHidden = true; host.dock.lookUp(key: nil); host.dock.update(link: nil) }
+        let dock = host.dock!
+        dock.lookUp(key: key)
+        try await until { dock.feed?.phase.dormantState != nil }
+        XCTAssertEqual(dock.chatWatch?.currentInterval, LiveBrowserChatWatch.idleInterval)
+        await daemon.setLivePod("running")
+        dock.openPlayer()
+        XCTAssertEqual(dock.chatWatch?.eager, true)
+        try await until { dock.player?.shownImage != nil }
+        XCTAssertNil(host.presentedViewController, "nothing presented")
+        try await assertPictureComing(daemon, dock, "opened on a woken browser")
+        dock.closePlayer(animated: false)
+        XCTAssertEqual(dock.chatWatch?.eager, false)
+    }
+
+    /// A feed that stopped responding reads again when the player opens,
+    /// not only from its Retry button.
+    func testOpeningThePlayerRetriesAFeedNotResponding() async throws {
+        let daemon = BrowserDaemon()
+        await daemon.setLiveStatus("watching")
+        let (host, window) = try await makeHost(daemon)
+        defer { window.isHidden = true; host.dock.update(link: nil) }
+        let dock = host.dock!
+        dock.update(link: LiveBrowserLink(id: id))
+        let feed = try XCTUnwrap(dock.feed)
+        feed.requestTimeout = .milliseconds(300)
+        feed.stuckLimit = .seconds(1)
+        await daemon.setStalledFrames(1000)
+        dock.openPlayer()
+        try await until { feed.phase == .notResponding }
+        XCTAssertFalse(feed.isPolling)
+        dock.closePlayer(animated: false)
+        await daemon.setStalledFrames(0)
+        let reads = await daemon.frameReads
+        dock.openPlayer()
+        try await until { await daemon.frameReads > reads }
+        try await until { dock.player?.shownImage != nil }
+        XCTAssertNotEqual(feed.phase, .notResponding)
+        try await assertPictureComing(daemon, dock, "retried on open")
+    }
+
     /// Bigger and smaller, again and again, during the animation too.
     func testTogglingSizeKeepsThePictureComing() async throws {
         let daemon = BrowserDaemon()

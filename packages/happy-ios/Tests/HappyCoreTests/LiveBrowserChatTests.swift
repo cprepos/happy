@@ -225,6 +225,54 @@ final class LiveBrowserChatTests: XCTestCase {
         watch.close()
     }
 
+    /// Nothing runs, so the next lookup is the idle one, far off:
+    /// `checkNow` asks at once anyway.
+    @MainActor
+    func testCheckNowAsksAtOnceDuringTheIdleWait() async throws {
+        let transport = PodTransport()
+        transport.chat = #"{"id":"\#(Self.a)","live":false,"status":"watching","pod":"asleep"}"#
+        let watch = try XCTUnwrap(LiveBrowserChatWatch(key: Self.key, interval: .milliseconds(20), idleInterval: .seconds(10)) { transport })
+        watch.setVisible(true)
+        try await until { watch.answer.chat?.running == false }
+        let polls = watch.polls
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(watch.polls, polls, "the idle wait")
+        // The agent wakes it.
+        transport.chat = #"{"id":"\#(Self.a)","live":true,"status":"watching","pod":"running"}"#
+        watch.checkNow()
+        try await until { watch.answer.chat?.running == true }
+        watch.close()
+    }
+
+    /// While the player shows, the lookup is asked every `interval` even
+    /// though nothing runs; no longer once it goes.
+    @MainActor
+    func testAnEagerWatchAsksOftenWhileNotRunning() async throws {
+        let transport = PodTransport()
+        transport.chat = #"{"id":"\#(Self.a)","live":false,"status":"watching","pod":"asleep"}"#
+        let watch = try XCTUnwrap(LiveBrowserChatWatch(key: Self.key, interval: .milliseconds(20), idleInterval: .seconds(10)) { transport })
+        watch.setVisible(true)
+        try await until { watch.answer.chat?.running == false }
+        XCTAssertEqual(watch.currentInterval, .seconds(10))
+        let idle = watch.polls
+        watch.eager = true
+        XCTAssertEqual(watch.currentInterval, .milliseconds(20))
+        try await until { watch.polls > idle + 3 }
+        XCTAssertEqual(watch.answer.chat?.running, false)
+        // Woken: the next quick lookup sees it.
+        transport.chat = #"{"id":"\#(Self.a)","live":true,"status":"watching","pod":"running"}"#
+        try await until { watch.answer.chat?.running == true }
+        transport.chat = #"{"id":"\#(Self.a)","live":false,"status":"watching","pod":"asleep"}"#
+        try await until { watch.answer.chat?.running == false }
+        watch.eager = false
+        XCTAssertEqual(watch.currentInterval, .seconds(10))
+        try await Task.sleep(for: .milliseconds(100))
+        let calm = watch.polls
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(watch.polls, calm, "back to the idle wait")
+        watch.close()
+    }
+
     @MainActor
     private func until(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
         for _ in 0..<300 {
