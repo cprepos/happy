@@ -77,8 +77,8 @@ def test_fold_marks_interrupted_replies_on_the_request_only() -> None:
     out = {m.id: m for m in fold_system_messages(ctx).items if isinstance(m, llm.ChatMessage)}
     assert out["clipped"].text_content == "It dropped from about 33" + INTERRUPTED_MARKER
     assert out["whole"].text_content == "It is at 12 now."
-    # nothing was played, so there is nothing to mark
-    assert out["silent"].text_content == ""
+    # nothing was played, so the reply is left out of the request
+    assert "silent" not in out
     # the stored history is untouched
     stored = {m.id: m for m in ctx.items}
     assert stored["clipped"].text_content == "It dropped from about 33"
@@ -2318,3 +2318,69 @@ if __name__ == "__main__":
         if name.startswith("test_") and callable(fn):
             fn()
             print("ok", name)
+
+
+def _drop(parts: list) -> list:
+    from happy_voice.stage_direction import drop_stage_directions
+
+    async def gen():
+        for p in parts:
+            yield p
+
+    async def run():
+        return [c async for c in drop_stage_directions(gen())]
+
+    return asyncio.run(run())
+
+
+def _chunk(content=None, tool_calls=None, usage=False) -> llm.ChatChunk:
+    if usage:
+        return llm.ChatChunk(id="c", delta=None)
+    return llm.ChatChunk(id="c", delta=llm.ChoiceDelta(role="assistant", content=content, tool_calls=tool_calls or []))
+
+
+def _text_of(chunks: list) -> str:
+    return "".join(c if isinstance(c, str) else (c.delta.content or "") if c.delta else "" for c in chunks)
+
+
+def test_a_reply_that_is_only_a_bracketed_note_is_not_spoken() -> None:
+    # 2026-11-06: "[assistant turned away]" was spoken twice after a skip_turn in the history.
+    assert _text_of(_drop([_chunk(""), _chunk("[assistant"), _chunk(" turned"), _chunk(" away]"), _chunk(usage=True)])) == ""
+    assert _text_of(_drop(["  [interrupted: the user started talking]\n"])) == ""
+
+
+def test_a_reply_that_says_something_keeps_every_chunk_in_order() -> None:
+    for parts in (["Yes, ", "I can hear you."], ["[laughs]", " Yes, I can hear you."], ["[ok", "] sure"]):
+        out = _drop(parts)
+        assert out == parts
+
+
+def test_text_before_a_tool_call_keeps_its_place_and_a_lone_note_before_one_is_dropped() -> None:
+    call = llm.FunctionToolCall(name="skip_turn", arguments="{}", call_id="1")
+    out = _drop([_chunk("Sure."), _chunk(tool_calls=[call])])
+    assert _text_of(out) == "Sure." and out[-1].delta.tool_calls
+    out = _drop([_chunk("[silence]"), _chunk(tool_calls=[call])])
+    assert _text_of(out) == "" and len(out) == 1 and out[0].delta.tool_calls
+
+
+def test_the_prompt_forbids_bracketed_stage_directions() -> None:
+    assert "stage direction" in BASE_PROMPT and "skip_turn" in BASE_PROMPT
+
+
+def test_requests_leave_out_skip_turn_calls_and_replies_with_no_text() -> None:
+    # 2026-11-06: with these in the history the model's next reply was "[assistant turned away]".
+    ctx = llm.ChatContext()
+    ctx.add_message(role="system", content="prompt")
+    ctx.add_message(role="assistant", content="Hi, Happy here")
+    ctx.add_message(role="user", content="Hey Happy, can you hear me?")
+    ctx.items.append(llm.FunctionCall(call_id="1", name="skip_turn", arguments="{}"))
+    ctx.items.append(llm.FunctionCallOutput(call_id="1", name="skip_turn", output="", is_error=False))
+    ctx.add_message(role="assistant", content="", interrupted=True)
+    ctx.items.append(llm.FunctionCall(call_id="2", name="sendMessageToSession", arguments="{}"))
+    ctx.items.append(llm.FunctionCallOutput(call_id="2", name="sendMessageToSession", output="sent", is_error=False))
+    ctx.add_message(role="user", content="Are you able to hear me?")
+    out = fold_system_messages(ctx).items
+    assert [getattr(i, "role", None) or i.name for i in out] == [
+        "system", "assistant", "user", "sendMessageToSession", "sendMessageToSession", "user",
+    ]
+    assert len(ctx.items) == 9  # the stored history is untouched

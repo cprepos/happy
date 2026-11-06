@@ -48,6 +48,7 @@ from .prompt import (
     build_instructions,
 )
 from .speech_text import clip_for_speech, strip_markdown
+from .stage_direction import drop_stage_directions
 from .tts_trim import trim_leading_artifact
 from .voices import fetch_known_voices, resolve_tts
 from .warmup import WARMUP_PLACEHOLDER, PrefixWarmer
@@ -301,8 +302,8 @@ class HappyAssistant(Agent):
                 await warmer.begin_turn()
             t0 = time.monotonic()
             first = True
-            async for chunk in Agent.default.llm_node(
-                self, self._request_ctx(chat_ctx, tools), tools, model_settings
+            async for chunk in drop_stage_directions(
+                Agent.default.llm_node(self, self._request_ctx(chat_ctx, tools), tools, model_settings)
             ):
                 if first:
                     waited = time.monotonic() - t0

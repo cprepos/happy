@@ -10,6 +10,8 @@ It also tags assistant replies the user talked over with INTERRUPTED_MARKER. Liv
 the part that played and flags the message `interrupted`; untagged, the model reads its own
 replies ending mid-phrase and copies them ("It dropped from about 33", "About", "I"), which is
 what the 2026-11-03 call did after compaction left a tail of mostly clipped turns.
+
+And it leaves out skip_turn calls and assistant replies with no text (see `_left_out`).
 """
 
 from __future__ import annotations
@@ -74,10 +76,30 @@ def fold_system_messages(chat_ctx: llm.ChatContext) -> llm.ChatContext:
             items.append(llm.ChatMessage(role="user", content=[text], id=item.id))
             continue
         seen_other = True
+        if _left_out(item):
+            continue
         if isinstance(item, llm.ChatMessage):
             item = mark_interrupted(item)
         items.append(item)
     return llm.ChatContext(items)
+
+
+SKIP_TURN = "skip_turn"
+
+
+def _left_out(item: llm.ChatItem) -> bool:
+    """A history item that carries nothing the model should read: a skip_turn call and its
+    output, or an assistant reply with no text (cut off before a word played).
+
+    On 2026-11-06 a history holding one of these got "[assistant turned away]" as the next
+    reply, twice, spoken aloud; replayed, it also gets "[The user interrupted]" and "[attempt
+    failed]". Without them the model sees the user ask again, and answers.
+    """
+    if isinstance(item, (llm.FunctionCall, llm.FunctionCallOutput)):
+        return item.name == SKIP_TURN
+    if isinstance(item, llm.ChatMessage) and item.role == "assistant":
+        return not _text(item).strip()
+    return False
 
 
 # Session dumps run to thousands of characters; short updates ("Session became focused: X")

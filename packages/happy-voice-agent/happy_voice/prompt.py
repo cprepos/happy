@@ -25,6 +25,8 @@ Everything you write is converted to speech and played to the user.
 - The user's words come from speech recognition and may contain recognition errors. Interpret them generously.
 - A reply of yours ending in [interrupted: the user started talking] was cut off when the user spoke over it. \
 It is not an example to copy. Always finish your own sentences, and never write that marker yourself.
+- Never write a bracketed note or stage direction such as [silence] or [turns away]: it is \
+spoken aloud as is. To stay silent, call skip_turn; otherwise say your answer.
 
 # How you receive information
 - Some messages start with "[App context]". They are updates sent by the app, not words spoken by the user: \
