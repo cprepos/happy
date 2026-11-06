@@ -55,6 +55,13 @@ targets:
         # variant's Info.plist below.
         GENERATE_INFOPLIST_FILE: YES
         TARGETED_DEVICE_FAMILY: "1,2"
+        # The iPad binary also runs on Apple silicon Macs as "Designed for
+        # iPad" (destination platform=macOS,variant=Designed for iPad). Not
+        # Catalyst: the Mac runs the same iphoneos build. Xcode reads the
+        # MAC_ spelling; the MACOS_ one is kept beside it for older specs.
+        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: YES
+        SUPPORTS_MACOS_DESIGNED_FOR_IPHONE_IPAD: YES
+        SUPPORTS_MACCATALYST: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_STYLE: Automatic
         # Every variant has aps-environment "development", as the RN app's
