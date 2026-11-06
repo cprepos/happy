@@ -6,7 +6,7 @@ description: >
   devicectl or publish it to the over-the-air install page so the iPhone/iPad can install it
   from Safari anywhere. Use when the user asks to install a happy-ios build on the iPhone or
   iPad, wants an OTA / install link, or the device isn't reachable directly (user away from home).
-  Not for the Expo app (packages/happy-app): that goes through the repo's release skill (EAS).
+  Not for store releases or CLI publishes: those go through the repo's release skill.
 ---
 
 # happy-ios OTA install
@@ -19,8 +19,8 @@ Proven end to end on 2026-11-02, commit `41e3c1055`, build TS `20261102_200448`.
   2027-10-27). Over-the-air install only works on devices that are in that profile (the user's iPhone and iPad;
   get their UDIDs from `xcrun devicectl list devices` on prep-air). A new device needs adding to
   the profile and a re-sign.
-- It is not an EAS/Expo release, so `.agents/skills/release` doesn't cover it. That skill is for
-  `packages/happy-app`.
+- It is not a store release, so `.agents/skills/release` doesn't cover it. That skill is for
+  store builds and CLI publishes. (The Expo app it once covered, `packages/happy-app`, is gone.)
 - **Publishing replaces what the OTA page serves, which counts as a deploy.** The permission
   classifier blocks the publish step for agents ("Production Deploy"). Get the user's explicit
   OK in the current conversation, then run the publish step in the main session. Don't
