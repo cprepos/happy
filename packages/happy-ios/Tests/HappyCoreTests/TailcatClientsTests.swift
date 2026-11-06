@@ -140,6 +140,111 @@ final class TailcatClientsTests: XCTestCase {
         XCTAssertEqual(attempts.all.count, 2)
     }
 
+    /// A connect several requests wait on, held until `open`.
+    private final class HeldConnect: @unchecked Sendable {
+        private let lock = NSLock()
+        private var waiting: [CheckedContinuation<Void, Error>] = []
+        private var started = 0
+        private var cancelled = 0
+        var starts: Int { lock.withLock { started } }
+        var cancels: Int { lock.withLock { cancelled } }
+
+        private func drain() -> [CheckedContinuation<Void, Error>] {
+            lock.withLock {
+                defer { waiting = [] }
+                return waiting
+            }
+        }
+
+        func connect() async throws {
+            lock.withLock { started += 1 }
+            do {
+                try await withTaskCancellationHandler {
+                    try await withCheckedThrowingContinuation { continuation in
+                        lock.withLock { waiting.append(continuation) }
+                        // Cancelled before it was held: the handler found nothing.
+                        if Task.isCancelled { drain().forEach { $0.resume(throwing: CancellationError()) } }
+                    }
+                } onCancel: {
+                    drain().forEach { $0.resume(throwing: CancellationError()) }
+                }
+            } catch {
+                lock.withLock { cancelled += 1 }
+                throw error
+            }
+        }
+
+        func open() { drain().forEach { $0.resume() } }
+    }
+
+    private func held(_ connect: HeldConnect, _ made: Made) -> TailcatClients<Client> {
+        TailcatClients(connect: { category, key in
+            try await connect.connect()
+            let client = Client(category: category, key: try key.publicKey.rawValue)
+            made.add(client)
+            return client
+        }, disconnect: { $0.close() })
+    }
+
+    private func waitFor(_ condition: () -> Bool) async throws {
+        for _ in 0..<500 where !condition() { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertTrue(condition())
+    }
+
+    /// Two requests wait on one connect; the first is cancelled (a read
+    /// cancelled for a newer one): the second still gets the client.
+    func testOneWaiterCancelledLeavesTheSharedConnectToTheOthers() async throws {
+        let connect = HeldConnect(), made = Made()
+        let clients = held(connect, made)
+        let first = Task { try await clients.lease(.query) }
+        try await waitFor { connect.starts == 1 }
+        let second = Task { try await clients.lease(.query) }
+        // The second is waiting on the same connect before the first goes.
+        try await Task.sleep(for: .milliseconds(50))
+        first.cancel()
+        do { _ = try await first.value; XCTFail("a cancelled waiter got a client") } catch is CancellationError {}
+        XCTAssertEqual(connect.cancels, 0, "the connect goes on for the second")
+        connect.open()
+        let lease = try await second.value
+        XCTAssertIdentical(lease.client, made.all.first)
+        XCTAssertEqual(connect.starts, 1)
+        XCTAssertFalse(lease.client.closed)
+    }
+
+    /// The last waiter to go cancels the connect: nobody wants it.
+    func testTheLastWaiterGoneCancelsTheConnect() async throws {
+        let connect = HeldConnect(), made = Made()
+        let clients = held(connect, made)
+        let only = Task { try await clients.lease(.query) }
+        try await waitFor { connect.starts == 1 }
+        only.cancel()
+        do { _ = try await only.value; XCTFail("a cancelled waiter got a client") } catch is CancellationError {}
+        try await waitFor { connect.cancels == 1 }
+        // The next request connects afresh.
+        let next = Task { try await clients.lease(.query) }
+        try await waitFor { connect.starts == 2 }
+        connect.open()
+        _ = try await next.value
+        XCTAssertEqual(made.all.count, 1)
+    }
+
+    /// A request's deadline covers waiting for its client: past it, the
+    /// request gives up while the connect goes on for anyone else.
+    func testALeasePastItsDeadlineGivesUpWithoutTheConnect() async throws {
+        let connect = HeldConnect(), made = Made()
+        let clients = held(connect, made)
+        let patient = Task { try await clients.lease(.query) }
+        try await waitFor { connect.starts == 1 }
+        do {
+            _ = try await clients.lease(.query, until: .now + .milliseconds(100))
+            XCTFail("a lease past its deadline got a client")
+        } catch PairingError.unavailable {}
+        XCTAssertEqual(connect.cancels, 0)
+        connect.open()
+        _ = try await patient.value
+        XCTAssertEqual(connect.starts, 1)
+    }
+
     func testTheTransportPutsEachKindOfTrafficOnItsCategory() async throws {
         let asked = Made()
         let transport = TailcatHTTPTransport(port: 24781) { category, key in

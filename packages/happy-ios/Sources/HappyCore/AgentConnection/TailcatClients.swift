@@ -1,4 +1,5 @@
 import Foundation
+import HappyWire
 import Tailcat
 
 /// What a request to the computer is for. Each category has Tailcat
@@ -41,6 +42,9 @@ final class TailcatClients<Client: AnyObject & Sendable>: @unchecked Sendable {
         // Guarded by the pool's lock.
         fileprivate var client: Client?
         fileprivate var connecting: Task<Client, Error>?
+        /// Callers waiting on `connecting`. One leaving early (cancelled,
+        /// or past its deadline) cancels the connect only if it was the last.
+        fileprivate var waiters = 0
         fileprivate var inFlight = 0
         init(category: RequestCategory, index: Int) { self.category = category; self.index = index }
     }
@@ -83,16 +87,17 @@ final class TailcatClients<Client: AnyObject & Sendable>: @unchecked Sendable {
         return try body()
     }
 
-    /// A client for `category`, connected; waits while its slot connects.
+    /// A client for `category`, connected; waits while its slot connects,
+    /// until `deadline` if there is one (then `PairingError.unavailable`).
     /// Throws `CancellationError` once closed.
-    func lease(_ category: RequestCategory) async throws -> Lease {
+    func lease(_ category: RequestCategory, until deadline: ContinuousClock.Instant? = nil) async throws -> Lease {
         let slot = try locked {
             guard !closed else { throw CancellationError() }
             let slot = pick(category)
             slot.inFlight += 1
             return slot
         }
-        do { return Lease(slot: slot, client: try await client(slot), pool: self) }
+        do { return Lease(slot: slot, client: try await client(slot, until: deadline), pool: self) }
         catch {
             locked { slot.inFlight -= 1 }
             throw error
@@ -109,29 +114,52 @@ final class TailcatClients<Client: AnyObject & Sendable>: @unchecked Sendable {
         return slot
     }
 
-    private func client(_ slot: Slot) async throws -> Client {
+    private func client(_ slot: Slot, until deadline: ContinuousClock.Instant?) async throws -> Client {
         while true {
             let (ready, task) = try locked { () throws -> (Client?, Task<Client, Error>?) in
                 guard !closed else { throw CancellationError() }
                 if let client = slot.client { return (client, nil) }
-                if let connecting = slot.connecting { return (nil, connecting) }
+                if let connecting = slot.connecting {
+                    slot.waiters += 1
+                    return (nil, connecting)
+                }
                 let connect = connect, newKey = newKey, category = slot.category
                 let task = Task { try await connect(category, try newKey()) }
                 slot.connecting = task
+                slot.waiters = 1
                 return (nil, task)
             }
             if let ready { return ready }
             guard let task else { throw CancellationError() }
             let made: Client
-            do { made = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() } }
-            catch {
-                locked { if slot.connecting == task { slot.connecting = nil } }
+            switch await Self.wait(for: task, until: deadline) {
+            case .left(let error):
+                // Gone early: the connect goes on for whoever still waits.
+                let last = locked { () -> Bool in
+                    guard slot.connecting == task else { return false }
+                    slot.waiters -= 1
+                    guard slot.waiters <= 0 else { return false }
+                    slot.connecting = nil
+                    slot.waiters = 0
+                    return true
+                }
+                if last {
+                    task.cancel()
+                    // One that connects anyway has nobody to hold it.
+                    let disconnect = disconnect
+                    Task { if let made = try? await task.value { await disconnect(made) } }
+                }
                 throw error
+            case .done(.failure(let error)):
+                locked { if slot.connecting == task { slot.connecting = nil; slot.waiters = 0 } }
+                throw error
+            case .done(.success(let client)):
+                made = client
             }
             // The first caller back keeps it; callers that waited on the same connect see it up once.
             let (kept, owner, isClosed) = locked { () -> (Bool, Bool, Bool) in
                 let owner = slot.connecting == task
-                if owner { slot.connecting = nil; if !closed { slot.client = made } }
+                if owner { slot.connecting = nil; slot.waiters = 0; if !closed { slot.client = made } }
                 return (!closed && slot.client === made, owner, closed)
             }
             if kept { return made }
@@ -139,6 +167,68 @@ final class TailcatClients<Client: AnyObject & Sendable>: @unchecked Sendable {
             if owner { await disconnect(made) }
             if isClosed { throw CancellationError() }
             // Reset while it connected: connect again.
+        }
+    }
+
+    /// How one caller's wait on a shared connect ended.
+    enum Waited<T: Sendable>: Sendable {
+        /// The connect finished, either way.
+        case done(Result<T, Error>)
+        /// This caller left first: cancelled, or past its deadline.
+        case left(Error)
+    }
+
+    /// `task`'s result, or sooner when this caller is cancelled or
+    /// `deadline` passes. Never cancels `task`: other callers may be
+    /// waiting on it too.
+    static func wait<T: Sendable>(for task: Task<T, Error>, until deadline: ContinuousClock.Instant?) async -> Waited<T> {
+        let once = Once<Waited<T>>()
+        once.watch(Task { once.resume(.done(await task.result)) })
+        if let deadline {
+            once.watch(Task {
+                try? await Task.sleep(until: deadline, clock: .continuous)
+                if !Task.isCancelled { once.resume(.left(PairingError.unavailable)) }
+            })
+        }
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { once.set($0) }
+        } onCancel: { once.resume(.left(CancellationError())) }
+    }
+
+    /// The first of several answers, handed to one continuation whether it
+    /// came before or after the continuation did; the tasks racing to give
+    /// it are cancelled once it is in.
+    private final class Once<T: Sendable>: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<T, Never>?
+        private var answer: T?
+        private var watched: [Task<Void, Never>] = []
+
+        func watch(_ task: Task<Void, Never>) {
+            let answered = lock.withLock { () -> Bool in
+                if answer == nil { watched.append(task) }
+                return answer != nil
+            }
+            if answered { task.cancel() }
+        }
+
+        func set(_ continuation: CheckedContinuation<T, Never>) {
+            let answer = lock.withLock { () -> T? in
+                if self.answer == nil { self.continuation = continuation }
+                return self.answer
+            }
+            if let answer { continuation.resume(returning: answer) }
+        }
+
+        func resume(_ value: T) {
+            let (continuation, watched) = lock.withLock { () -> (CheckedContinuation<T, Never>?, [Task<Void, Never>])? in
+                guard answer == nil else { return nil }
+                answer = value
+                defer { self.continuation = nil; self.watched = [] }
+                return (self.continuation, self.watched)
+            } ?? (nil, [])
+            watched.forEach { $0.cancel() }
+            continuation?.resume(returning: value)
         }
     }
 

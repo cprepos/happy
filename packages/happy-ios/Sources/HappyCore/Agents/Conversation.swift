@@ -674,7 +674,7 @@ public actor Conversation {
 
     /// The newest runs and what is pending, read whole; events that arrive
     /// meanwhile are applied after.
-    private func reload() {
+    private func reload(attempt: Int = 0) {
         reading?.cancel()
         if heldEvents == nil { heldEvents = [] }
         let client = client
@@ -691,6 +691,21 @@ public actor Conversation {
                 adopt(start, history)
             } catch {
                 if Task.isCancelled { return }
+                // Cancelled underneath this read, not by it (a connect
+                // another caller gave up on): no answer, so no failure to
+                // keep. Read again shortly; past that, left unread for a
+                // reopen or the phone's return to read again.
+                if Self.cancelledUnderneath(error) {
+                    guard attempt < Self.transientRetries else {
+                        Self.note("read of \(agentId) cancelled underneath \(attempt + 1) times; left unread")
+                        return
+                    }
+                    Self.note("read of \(agentId) cancelled underneath; reading again")
+                    try? await Task.sleep(for: Self.transientBackoff(attempt))
+                    if Task.isCancelled { return }
+                    reload(attempt: attempt + 1)
+                    return
+                }
                 Self.note("read of \(agentId) failed")
                 snapshot.error = Store.describe(error)
                 Happenings.errorShown(.conversationLoad, error)
@@ -701,6 +716,15 @@ public actor Conversation {
                 publish()
             }
         }
+    }
+
+    /// Reads again after a read cancelled underneath it, before leaving it unread.
+    static let transientRetries = 3
+    static func transientBackoff(_ attempt: Int) -> Duration { .milliseconds(250 << min(attempt, 4)) }
+
+    /// A cancellation that is not the read's own: the caller checks that.
+    static func cancelledUnderneath(_ error: Error) -> Bool {
+        error is CancellationError || (error as? URLError)?.code == .cancelled
     }
 
     #if canImport(OSLog)

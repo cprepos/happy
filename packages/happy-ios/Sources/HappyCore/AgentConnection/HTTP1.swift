@@ -215,14 +215,14 @@ public final class AgentHTTPTransport: SelfMeteringTransport {
 
     /// The way a `category` request goes: a lease on one of that
     /// category's Tailcat clients, or none over HTTPS.
-    func lease(_ category: RequestCategory) async throws -> TailcatClients<Tunnel>.Lease? {
+    func lease(_ category: RequestCategory, until deadline: ContinuousClock.Instant? = nil) async throws -> TailcatClients<Tunnel>.Lease? {
         if let publicUrl {
             guard !publicFlows.isShut else { throw CancellationError() }
             _ = try AgentOrigin(publicUrl)
             return nil
         }
         guard tailcatAvailable else { throw PairingError.unavailable }
-        return try await clients.lease(category)
+        return try await clients.lease(category, until: deadline)
     }
 
     /// Lets go of `lease`'s client after a failure on it; HTTPS has none.
@@ -255,10 +255,14 @@ public final class AgentHTTPTransport: SelfMeteringTransport {
 
     private func perform(method: String, path: String, credential: String, body: Data?, headers: [String: String], category: RequestCategory, sent: (@Sendable (Int) -> Void)?) async throws -> HTTP1Response {
         guard ["GET", "POST", "PATCH", "PUT", "DELETE"].contains(method), Self.safe(path: path, credential: credential, headers: headers) else { throw PairingError.invalidResponse }
-        let lease = try await lease(category)
+        // The connect counts against the deadline too: a request waiting on
+        // a client that never comes up gives up when its answer would have.
+        let deadline = ContinuousClock.now + Self.deadline(category)
+        let lease = try await lease(category, until: deadline)
         defer { lease?.release() }
         do {
-            return try await exchange(lease: lease, category: category, method: method, path: path, credential: credential, body: body, headers: headers, timeout: Self.deadline(category), sent: sent)
+            let left = max(.zero, deadline - ContinuousClock.now)
+            return try await exchange(lease: lease, category: category, method: method, path: path, credential: credential, body: body, headers: headers, timeout: left, sent: sent)
         } catch {
             if Self.lostTunnel(error) { await reset(lease) }
             throw error
