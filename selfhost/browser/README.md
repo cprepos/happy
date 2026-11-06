@@ -54,22 +54,23 @@ The browser stack runs only here. A Mac chat reaches it two ways:
   chat's `HAPPY_SESSION_ID`, `CLAUDE_CODE_SESSION_ID` and
   `HAPPY_FORKED_FROM_SESSION_ID` on the remote command line (ssh forwards no env).
   Each value must match `^[A-Za-z0-9_-]{1,128}$` or it is sent blank.
-- **Live view and takeover:** the app opens `http://localhost:6090/live/...` and
-  `:6080` through the chat machine's workspace proxy, so each Mac runs the
-  `com.happy.browser-forward` launchd agent (`mac-forward/`): `ssh -N` with
-  `-L 127.0.0.1:6090:127.0.0.1:6090 -L 127.0.0.1:6080:127.0.0.1:6080 prep-ml`,
-  KeepAlive, logs in `~/Library/Logs/happy-browser-forward.log`. It binds the
-  Mac's loopback only. `install.sh` refuses when something else listens on either
-  port; `uninstall.sh` moves the plist to `~/happy-trash/`.
-  The tunnel is still required by the current iOS app: it builds every live-view URL
-  (`/live/chat/<key>`, `/live/<id>`, its frame, state, take and release) on the fixed origin
-  `http://localhost:6090` (`LiveBrowserLink.origin` in `packages/happy-ios`), only recognizes
-  links with that origin in chat text and tool results, and sends them through the chat
-  machine's workspace proxy. For a Mac chat that is the Mac's own localhost. The LAN listener
-  below is the bridge half of replacing the tunnel; the tunnel can go once the app takes a
-  per-chat bridge origin.
+- **Live view and takeover:** over the LAN, through the bridge's LAN listener below
+  (`http://192.168.2.72:6090`), sent through the chat machine's workspace proxy. A live link
+  names its bridge origin, `http://localhost:6090` for a prep-ml chat or
+  `http://192.168.2.72:6090` for a Mac chat (`LiveBrowserLink.origins` in
+  `packages/happy-ios`, the one list of them); the app recognizes exactly those two. The
+  links the MCP server hands a Mac chat use the LAN origin (`BRIDGE_PUBLIC_BASE`, which
+  `mcp-register` sets in the Mac wrappers). The app's by-chat lookup tries the LAN origin,
+  then localhost, and keeps the one that answers: from prep-ml the LAN listener refuses the
+  connection (prep-ml's own address is not allowed in), from a Mac nothing listens on
+  localhost:6090.
+  The Mac ssh tunnels (`com.happy.browser-forward`, `mac-forward/`) were removed on
+  2026-11-06 and nothing installs them. Their targets stay only for a rollback:
+  `make browser-forward-install HOST=prep-pro` puts one back (127.0.0.1:6090 and :6080 on
+  the Mac), `make browser-forward-uninstall HOST=...` moves its plist to `~/happy-trash/`.
+  App builds from before the per-link origin (OTA-only devices not yet updated) need them.
 
-### LAN listener (opt-in)
+### LAN listener
 
 With `BRIDGE_LAN_BIND` and `BRIDGE_LAN_ALLOW` in `selfhost/browser/.env.browser`, the bridge
 listens a second time, on `<BRIDGE_LAN_BIND>:6090`, beside `127.0.0.1:6090`:
@@ -95,8 +96,9 @@ then `make browser-bridge-restart BRIDGE_ENV=1` (a plain restart keeps the old e
   which run here over ssh) use loopback.
 - **URLs:** absolute URLs the LAN listener returns (`/live/chat/<key>`'s `url`, `/take`'s
   `novnc_url`, the page's Take control link) use `http://192.168.2.72:6090`
-  (`BRIDGE_LAN_PUBLIC_BASE` to change). Loopback responses and the links the MCP server
-  hands agents keep `http://localhost:6090`.
+  (`BRIDGE_LAN_PUBLIC_BASE` to change). Loopback responses keep `http://localhost:6090`; the
+  MCP server moves the live-page URLs in them to `BRIDGE_PUBLIC_BASE` when that is set (the
+  Mac wrappers).
 - Live link ids are still the capability: 128 random bits per link.
 - `make browser-status` then accepts `192.168.2.72:6090` as the one bind beyond 127.0.0.1
   and fails on any other.
@@ -126,8 +128,10 @@ directly (Docker's own chains are not involved). Undo with `sudo ufw delete allo
 
 Rollback: remove (or comment out) the two lines from `.env.browser` (back it up to
 `~/trash/<ts>_env-browser/` first), run `make browser-bridge-restart BRIDGE_ENV=1`, and check
-`make browser-status` shows 6090 on 127.0.0.1 only. The Mac tunnels are independent of it:
-`make browser-forward-install HOST=prep-pro` (and `HOST=prep-air`) puts one back.
+`make browser-status` shows 6090 on 127.0.0.1 only. Mac chats then lose live view until the
+tunnels are back: `make browser-forward-install HOST=prep-pro` (and `HOST=prep-air`), and
+`make mcp-register` from a checkout whose `REMOTE_LINK_BASE` (`scripts/mcp-register.py`) is
+`http://localhost:6090`.
 
 ## Files on disk
 
@@ -277,7 +281,8 @@ auto-browser tools it passes through use the controller token, which it reads
 from `secrets/api-token` itself, so the client's environment and config hold no
 secret.
 
-- `browser_live_link(session_id)` → `{link: "http://localhost:6090/live/<id>", ...}`.
+- `browser_live_link(session_id)` → `{link: "http://localhost:6090/live/<id>", ...}`
+  (`http://192.168.2.72:6090/...` for a Mac chat, `BRIDGE_PUBLIC_BASE`).
   The description tells the agent to call it right after creating a session and
   post the link in chat.
 - `browser_wait_for_human(session_id, reason, timeout_s)` asks auto-browser for a

@@ -15,7 +15,7 @@
 #   make browser-pod-bench     pod start times, cold and warm (test project only)
 #   make browser-pod-smoke     per-chat pods end to end (bridge with BRIDGE_PODS=1)
 #   make browser-pods-reap     remove pods no chat is using (asks first; DRY_RUN=1 lists only, FORCE=1 removes all)
-#   make browser-forward-install HOST=prep-air   Mac localhost:6090/:6080 tunnel to here (also -status, -uninstall)
+#   make browser-forward-install HOST=prep-air   rollback only: Mac localhost:6090/:6080 tunnel to here (also -status, -uninstall)
 
 BROWSER_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))/browser
 export HAPPY_BROWSER_HOME ?= $(HOME)/.local/share/happy-browser
@@ -129,8 +129,10 @@ browser-pod-smoke:
 	@BROWSER_BRIDGE="$(BROWSER_BRIDGE)" HAPPY_BROWSER_HOME="$(HAPPY_BROWSER_HOME)" BROWSER_PROJECT="$(BROWSER_PROJECT)" \
 		node $(BROWSER_DIR)/scripts/pod-smoke.mjs
 
-# The Mac port forward (browser/mac-forward/): a launchd agent on HOST keeps 127.0.0.1:6090 and
-# :6080 there tunnelled to this machine, so the app's live view and takeover work for Mac chats.
+# The Mac port forward (browser/mac-forward/), for a rollback only: Mac chats reach the bridge's
+# LAN listener now (README, "LAN listener"), and nothing runs these targets on its own. A launchd
+# agent on HOST keeps 127.0.0.1:6090 and :6080 there tunnelled to this machine, for app builds
+# from before links named their bridge origin.
 #   make browser-forward-install HOST=prep-air     copy the files over ssh, load the agent, check /healthz
 #   make browser-forward-status HOST=prep-air      agent state, listeners, /healthz through the tunnel
 #   make browser-forward-uninstall HOST=prep-air   stop it; the plist goes to ~/happy-trash on the Mac

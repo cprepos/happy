@@ -199,8 +199,10 @@ certificate would not match the alias.
 
 ## Live browser card
 
-An agent's text that links `http://localhost:6090/live/<id>` (the id 32
-lowercase hex digits; `LiveBrowserLink`) gets a card in the transcript
+An agent's text that links `http://localhost:6090/live/<id>`, or the bridge's
+LAN listener `http://192.168.2.72:6090/live/<id>` for a chat on another computer
+(the id 32 lowercase hex digits; `LiveBrowserLink`, whose `origins` are the one
+list of both) gets a card in the transcript
 (`LiveBrowserCardView`) in place of the link: bare, `<link>` or `[words](link)`,
 never in code, once per id. The card polls `GET /live/<id>/state` and
 `GET /live/<id>/frame.jpg` (read by its bytes; the bridge serves PNG) every

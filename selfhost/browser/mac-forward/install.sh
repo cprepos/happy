@@ -1,5 +1,7 @@
 #!/bin/bash
 # Install (or reinstall) the com.happy.browser-forward launchd user agent on this Mac.
+# Rollback only (2026-11-06): Mac chats use the bridge's LAN listener now, and the app picks
+# the bridge origin per link. See selfhost/browser/README.md, "LAN listener".
 # It keeps an ssh tunnel up from 127.0.0.1:6090 and 127.0.0.1:6080 here to the browser
 # bridge and noVNC on prep-ml, so the app's live view (http://localhost:6090/live/...) and
 # takeover work for chats that run on this Mac. Run it on the Mac, from this folder:

@@ -100,11 +100,12 @@ tests in `bridge/test/*.test.mjs`; routing in
 - **`live` is the only truth.** The red indicator follows
   `runs = live ?? (!ended && !asleep)`. Never show a red indicator for a dead
   browser: the phantom-browser bug fixed on iOS.
-- **Transport:** the bridge runs at `http://localhost:6090` on the computer and
-  is reached through the host-workspace tunnel. Android's
+- **Transport:** the bridge is at `http://localhost:6090` on its own computer and
+  `http://192.168.2.72:6090` (its LAN listener) from another; a link names which
+  (`LiveBrowserLink.origins`). Either is reached through the host-workspace tunnel. Android's
   `browser/BrowserProxy.kt`, `BrowserFetcher.kt` and `BrowserTunnel.kt` can
   carry it.
-- **Link detection:** `http://localhost:6090/live/([0-9a-f]{32})`.
+- **Link detection:** `(http://localhost:6090|http://192\.168\.2\.72:6090)/live/([0-9a-f]{32})`.
 
 **Work, in order:**
 1. **Core (L).** Port `HappyCore/Browser/{LiveBrowser, LiveBrowserChatIdentity,
