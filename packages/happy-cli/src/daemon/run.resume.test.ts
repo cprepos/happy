@@ -13,6 +13,8 @@ const mocks = vi.hoisted(() => ({
   spawn: vi.fn(),
   access: vi.fn(),
   persistSession: vi.fn(),
+  liveOwner: vi.fn(),
+  identityAlive: vi.fn(),
   logger: { debug: vi.fn(), debugLargeJson: vi.fn(), warn: vi.fn() },
 }));
 
@@ -31,6 +33,10 @@ vi.mock('@/utils/detectCLI', () => ({ detectCLIAvailability: () => ({}) }));
 vi.mock('@/utils/spawnHappyCLI', () => ({ spawnHappyCLI: mocks.spawn }));
 vi.mock('@/utils/tmux', () => ({ isTmuxAvailable: async () => false }));
 vi.mock('@/resume/localHappyAgentAuth', () => ({ detectResumeSupport: () => ({}), hasLocalHappyAgentAuth: () => false }));
+vi.mock('./sessionOwnerLock', () => ({
+  readLiveSessionOwner: mocks.liveOwner,
+  isProcessIdentityAlive: mocks.identityAlive,
+}));
 vi.mock('./happyTerminalBoot', () => ({ startHappyTerminalDaemon: vi.fn() }));
 vi.mock('@/persistence', () => ({
   readPersistedSessions: () => mocks.persisted,
@@ -75,6 +81,8 @@ describe('daemon resume fallback', () => {
     mocks.persisted = {};
     mocks.persistSession.mockReset();
     mocks.access.mockResolvedValue(undefined);
+    mocks.liveOwner.mockReturnValue(null);
+    mocks.identityAlive.mockReturnValue(true);
     // Never register real process handlers, stop daemons, bind ports, or spawn providers.
     vi.spyOn(process, 'on').mockReturnValue(process);
     vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('test exit'); });
@@ -454,5 +462,146 @@ describe('daemon resume fallback', () => {
       for (const child of owners) expect(() => realKill(child.pid!, 0)).toThrow();
       for (const pid of backends) expect(() => realKill(pid, 0)).toThrow();
     }
+  });
+
+  describe('session owner lock', () => {
+    const ownerRecord = (pid: number, startedBy = 'daemon') => ({
+      pid, startTime: `start-${pid}`, sessionId: 'old-session', acquiredAt: 1, cliVersion: 'test', startedBy,
+    });
+    const lockHeldBy = (pid: number, startedBy?: string) => {
+      mocks.liveOwner.mockImplementation((id: string) => id === 'old-session' ? ownerRecord(pid, startedBy) : null);
+    };
+
+    it('adopts a live lock owner on resume instead of spawning', async () => {
+      await boot();
+      lockHeldBy(4242);
+      expect(await mocks.handlers.resumeSession('old-session', { fallback })).toEqual({ type: 'success', sessionId: 'old-session' });
+      expect(mocks.spawn).not.toHaveBeenCalled();
+      expect(mocks.children()).toEqual([expect.objectContaining({ pid: 4242, startedBy: 'adopted', happySessionId: 'old-session' })]);
+    });
+
+    it('ignores a webhook from a non-owner while the lock is held, and never spawns after it dies', async () => {
+      await boot();
+      lockHeldBy(4242);
+      mocks.webhook('old-session', { ...metadata, hostPid: 5555 }, { ...fallback, encryptionKey: dataKey });
+      expect(mocks.persistSession).not.toHaveBeenCalled();
+      expect(mocks.children()).toEqual([]);
+      vi.mocked(process.kill).mockImplementation((pid) => {
+        if (pid === 5555) throw Object.assign(new Error('gone'), { code: 'ESRCH' });
+        return true;
+      });
+      expect(await mocks.handlers.resumeSession('old-session', { fallback })).toEqual({ type: 'success', sessionId: 'old-session' });
+      expect(mocks.spawn).not.toHaveBeenCalled();
+      expect(mocks.children().map((child: any) => child.pid)).toEqual([4242]);
+    });
+
+    it('accepts and persists the webhook from the lock owner itself', async () => {
+      await boot();
+      lockHeldBy(4242);
+      mocks.webhook('old-session', { ...metadata, hostPid: 4242 }, { ...fallback, encryptionKey: dataKey });
+      expect(mocks.persistSession).toHaveBeenCalledWith('old-session', expect.objectContaining({ metadata: expect.objectContaining({ hostPid: 4242 }) }));
+      expect(mocks.children().map((child: any) => child.pid)).toEqual([4242]);
+    });
+
+    it('without a lock, a second live process for a tracked session registers in memory only', async () => {
+      await boot();
+      mocks.webhook('old-session', { ...metadata, hostPid: 4242 }, { ...fallback, encryptionKey: dataKey });
+      expect(mocks.persistSession).toHaveBeenCalledTimes(1);
+      mocks.webhook('old-session', { ...metadata, hostPid: 5555 }, { ...fallback, encryptionKey: dataKey });
+      expect(mocks.persistSession).toHaveBeenCalledTimes(1);
+      expect(mocks.children().map((child: any) => child.pid).sort()).toEqual([4242, 5555]);
+    });
+
+    it('prunes dead entries for the session when a webhook arrives', async () => {
+      await boot();
+      mocks.webhook('old-session', { ...metadata, hostPid: 4242 }, { ...fallback, encryptionKey: dataKey });
+      vi.mocked(process.kill).mockImplementation((pid) => {
+        if (pid === 4242) throw Object.assign(new Error('gone'), { code: 'ESRCH' });
+        return true;
+      });
+      mocks.webhook('old-session', { ...metadata, hostPid: 5555 }, { ...fallback, encryptionKey: dataKey });
+      expect(mocks.persistSession).toHaveBeenCalledTimes(2);
+      expect(mocks.children().map((child: any) => child.pid)).toEqual([5555]);
+    });
+
+    it('treats a tracked owner whose pid was reused as dead', async () => {
+      await boot();
+      lockHeldBy(4242);
+      expect(await mocks.handlers.resumeSession('old-session', { fallback })).toMatchObject({ type: 'success' });
+      mocks.liveOwner.mockReturnValue(null);
+      mocks.identityAlive.mockReturnValue(false);
+      expect(await mocks.handlers.resumeSession('old-session', { fallback })).toMatchObject({ type: 'success' });
+      expect(mocks.spawn).toHaveBeenCalledTimes(1);
+      expect(mocks.children().map((child: any) => child.pid)).toEqual([12345]);
+    });
+
+    it('adopts a live lock owner of a persisted session at boot', async () => {
+      mocks.persisted = { 'old-session': { ...fallback, metadata: { ...metadata, hostPid: 4242 }, savedAt: Date.now() } };
+      lockHeldBy(4242);
+      await boot();
+      expect(mocks.children()).toEqual([expect.objectContaining({
+        pid: 4242, startedBy: 'adopted', happySessionId: 'old-session', ownerStartTime: 'start-4242',
+      })]);
+      expect(await mocks.handlers.resumeSession('old-session')).toEqual({ type: 'success', sessionId: 'old-session' });
+      expect(mocks.spawn).not.toHaveBeenCalled();
+    });
+
+    it('stops an adopted daemon-started owner through its process group', async () => {
+      lockHeldBy(4242, 'daemon');
+      mocks.persisted = { 'old-session': { ...fallback, metadata: { ...metadata, hostPid: 4242 }, savedAt: Date.now() } };
+      await boot();
+      expect(mocks.handlers.stopSession('old-session')).toBe(true);
+      expect(process.kill).toHaveBeenCalledWith(-4242, 'SIGTERM');
+    });
+
+    it('falls back to the pid when the adopted owner has no process group', async () => {
+      lockHeldBy(4242, 'daemon');
+      mocks.persisted = { 'old-session': { ...fallback, metadata: { ...metadata, hostPid: 4242 }, savedAt: Date.now() } };
+      await boot();
+      vi.mocked(process.kill).mockImplementation((pid) => {
+        if (pid === -4242) throw Object.assign(new Error('no group'), { code: 'ESRCH' });
+        return true;
+      });
+      expect(mocks.handlers.stopSession('old-session')).toBe(true);
+      expect(process.kill).toHaveBeenCalledWith(4242, 'SIGTERM');
+    });
+
+    it('relaunches normally when the lock is stale', async () => {
+      // readLiveSessionOwner reports no owner for a stale lock.
+      await boot();
+      expect(await mocks.handlers.resumeSession('old-session', { fallback })).toEqual({ type: 'success', sessionId: 'old-session' });
+      expect(mocks.spawn).toHaveBeenCalledTimes(1);
+    });
+
+    it('counts a reconnect child that exits because another owner holds the lock as a success', async () => {
+      await boot();
+      const child = Object.assign(new EventEmitter(), { pid: 12344 });
+      mocks.spawn.mockReturnValueOnce(child);
+      const resume = mocks.handlers.resumeSession('old-session', { fallback });
+      await vi.waitFor(() => expect(mocks.spawn).toHaveBeenCalledTimes(1));
+      lockHeldBy(4242);
+      child.emit('exit', 0, null);
+      expect(await resume).toEqual({ type: 'success', sessionId: 'old-session' });
+      expect(mocks.children().map((tracked: any) => tracked.pid)).toEqual([4242]);
+    });
+
+    it('incident: a leaked process reports in, dies, the daemon restarts, and resume still starts nothing', async () => {
+      mocks.persistSession.mockImplementation((id, record) => { mocks.persisted[id] = record; });
+      await boot();
+      // The real owner registers and holds the lock.
+      lockHeldBy(4242);
+      mocks.webhook('old-session', { ...metadata, hostPid: 4242 }, { ...fallback, encryptionKey: dataKey });
+      // A process that inherited the reconnect values reports in for the same session.
+      mocks.webhook('old-session', { ...metadata, hostPid: 6666 }, { ...fallback, encryptionKey: dataKey });
+      expect(mocks.persisted['old-session'].metadata.hostPid).toBe(4242);
+      vi.mocked(process.kill).mockImplementation((pid) => {
+        if (pid === 6666) throw Object.assign(new Error('gone'), { code: 'ESRCH' });
+        return true;
+      });
+      await boot();
+      expect(await mocks.handlers.resumeSession('old-session', { fallback })).toEqual({ type: 'success', sessionId: 'old-session' });
+      expect(mocks.spawn).not.toHaveBeenCalled();
+      expect(mocks.children().map((child: any) => child.pid)).toEqual([4242]);
+    });
   });
 });

@@ -32,9 +32,16 @@ set -euo pipefail
 # above. It runs dist/index.mjs directly: bin/happy.mjs would re-exec node with
 # these same flags through execFileSync, leaving a wrapper as the main process.
 #
-# Restart=always, not on-failure, because of how the daemon upgrades itself. When
-# dist/index.mjs changes on disk it spawns a detached `daemon start` and exits 0
-# (the bundleReplaced branch in packages/happy-cli/src/daemon/run.ts), which
+# HAPPY_DAEMON_SUPERVISOR tells the daemon it runs under this unit (launchd gets
+# the same variable below). When dist/index.mjs changes on disk, a supervised
+# daemon exits 75 and leaves the restart to the service manager, instead of
+# spawning an unsupervised replacement (the bundleReplaced branch in
+# packages/happy-cli/src/daemon/run.ts). Other CLI processes read it from
+# daemon.state.json and restart the daemon through systemctl or launchctl
+# rather than starting one beside it.
+#
+# Restart=always, not on-failure: an older daemon without the variable still
+# upgrades by spawning a detached `daemon start` and exiting 0, which
 # on-failure would treat as a finished service. The cost is that `happy daemon
 # stop` alone becomes a restart. To really stop it, `systemctl --user stop`, then
 # `happy daemon stop`: systemctl signals only the main process, and after a
@@ -145,6 +152,7 @@ ConditionPathExists=$home_dir/access.key
 Type=simple
 WorkingDirectory=%h/happy
 $env_lines
+Environment="HAPPY_DAEMON_SUPERVISOR=systemd:$unit_name"
 
 # Waits while another daemon holds the lock, then becomes the daemon. The reasons
 # are in selfhost/cli-service/install-service.sh.
@@ -298,6 +306,8 @@ cat > "$PLIST" << PLIST
         <string>$HOME/.local/openclaw-npm/bin:$HAPPY_ROOT/.node/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>HOME</key>
         <string>$HOME</string>
+        <key>HAPPY_DAEMON_SUPERVISOR</key>
+        <string>launchd:$LABEL</string>
 $OPENCLAW_PLIST_ENV
     </dict>
     <key>WorkingDirectory</key>

@@ -6,6 +6,7 @@
  * communication with the Happy server and mobile app.
  */
 
+import { consumeSessionScopedEnv } from '@/daemon/sessionEnvironment';
 import { render } from 'ink';
 import React from 'react';
 import { randomUUID } from 'node:crypto';
@@ -61,6 +62,9 @@ export async function runGemini(opts: {
   credentials: Credentials;
   startedBy?: 'daemon' | 'terminal';
 }): Promise<void> {
+  // These runners never reconnect in place, but still drop any inherited
+  // session-scoped values so no descendant can join another session.
+  consumeSessionScopedEnv();
   //
   // Define session
   //

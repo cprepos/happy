@@ -24,6 +24,7 @@
  * The daemon route contract is in docs/plans/happyify-desktop-sync.md.
  */
 
+import { claimSessionOwnershipOrExit } from '@/daemon/sessionOwnerLock';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
@@ -209,6 +210,9 @@ export async function runClaudeDesktopAttach(credentials: Credentials, options: 
     // already holds (its history and its title) is kept.
     const reattached = response.seq > 0;
     logger.debug(`[ATTACH] Session ${reattached ? 'reattached' : 'created'}: ${response.id}`);
+
+    // Claim the session before announcing it; a second attach exits here.
+    claimSessionOwnershipOrExit(response.id);
 
     const reported = await notifyDaemonSessionStarted(response.id, metadata, {
         encryptionKey: encodeBase64(response.encryptionKey),

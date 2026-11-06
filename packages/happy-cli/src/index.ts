@@ -38,10 +38,30 @@ import { ensureDaemonRunning } from './daemon/ensureDaemonRunning'
 import { handleCodexCommand } from './commands/codexCommand'
 import { handleDesktopCommand } from './commands/desktop'
 import { sanitizeSessionEnvironment } from './daemon/sessionEnvironment'
+import { isVersionRequest } from './utils/versionRequest'
 
 
 (async () => {
   const args = process.argv.slice(2)
+
+  // A version request prints and exits before auth, the daemon or any
+  // session logic, so `happy --version` run inside a session can never join
+  // or end that session.
+  if (isVersionRequest(args)) {
+    console.log(`happy version: ${packageJson.version}`)
+    try {
+      const claudeVersion = execFileSync(claudeCliPath, ['--version'], {
+        encoding: 'utf8',
+        windowsHide: true,
+        timeout: 10_000,
+        env: sanitizeSessionEnvironment(process.env),
+      })
+      process.stdout.write(claudeVersion)
+    } catch {
+      // The agent CLI is optional for a version query.
+    }
+    process.exit(0)
+  }
 
   // If --version is passed - do not log, its likely daemon inquiring about our version
   if (!args.includes('--version')) {
@@ -988,10 +1008,9 @@ ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
       process.exit(0)
     }
 
-    // Show version
+    // Version requests were answered and exited at the top of this file.
     if (showVersion) {
-      console.log(`happy version: ${packageJson.version}`)
-      // Don't exit - continue to pass --version to Claude Code
+      process.exit(0)
     }
 
     // Normal flow - auth and machine setup

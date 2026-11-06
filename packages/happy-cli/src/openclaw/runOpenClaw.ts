@@ -8,6 +8,7 @@
  * to Happy's AgentMessage format, and forwards everything through the session pipeline.
  */
 
+import { consumeSessionScopedEnv } from '@/daemon/sessionEnvironment';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
@@ -142,6 +143,9 @@ function resolveGatewayConfig(opts: RunOpenClawOptions): OpenClawGatewayConfig {
 }
 
 export async function runOpenClaw(opts: RunOpenClawOptions): Promise<void> {
+  // These runners never reconnect in place, but still drop any inherited
+  // session-scoped values so no descendant can join another session.
+  consumeSessionScopedEnv();
   const verbose = opts.verbose === true;
   const sessionTag = randomUUID();
   connectionState.setBackend('openclaw');

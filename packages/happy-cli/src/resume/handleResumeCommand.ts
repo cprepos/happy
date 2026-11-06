@@ -6,6 +6,7 @@ import { hasLocalHappyAgentAuth } from '@/resume/localHappyAgentAuth';
 import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
 import { buildSessionChildEnvironment, sanitizeSessionEnvironment } from '@/daemon/sessionEnvironment';
 
+import { readLiveSessionOwner } from '@/daemon/sessionOwnerLock';
 import { LocalResumeSessionError, resolveLocalReconnectableSession } from './localResumeStore';
 import { resolveHappySession, type ReconnectableHappySession, type ResumableHappySession } from './resolveHappySession';
 
@@ -193,6 +194,13 @@ export async function handleResumeCommand(args: string[]): Promise<void> {
     }
 
     if (reconnectableSession) {
+        // A live process already serves this session: a second one would
+        // answer every message again.
+        const owner = readLiveSessionOwner(reconnectableSession.id);
+        if (owner) {
+            console.log(`Session ${reconnectableSession.id} is already running (pid ${owner.pid}); not starting another.`);
+            return;
+        }
         const launch = buildResumeLaunch(reconnectableSession);
 
         if (!existsSync(launch.cwd)) {

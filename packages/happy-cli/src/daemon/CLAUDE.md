@@ -40,15 +40,36 @@ Control Flow:
 
 ### Version Mismatch Auto-Update
 
-The daemon detects when `npm upgrade happy` occurs:
-1. Heartbeat reads package.json from disk
-2. Compares `JSON.parse(package.json).version` with compiled `configuration.currentCliVersion`
-3. If mismatch detected:
-   - Spawns new daemon via `spawnHappyCLI(['daemon', 'start'])`
-   - Hangs and waits to be killed
-4. New daemon starts, sees old daemon.state.json version != its compiled version
-5. New daemon calls `stopDaemon()` which tries HTTP `/stop`, falls back to SIGKILL
-6. New daemon takes over
+The daemon detects a rebuilt or upgraded CLI by the mtime of `dist/index.mjs`:
+1. At startup the daemon records the bundle's mtime; each heartbeat compares it.
+2. If the bundle was replaced, the daemon releases its ownership (machine
+   connection, control server, daemon.state.json, lock) and hands off. What it
+   does next is `decideHandoff({ supervisor })` in `supervisor.ts`:
+   - **Supervised** (launchd or systemd, see below): it exits with code 75 and
+     spawns nothing. The service manager starts the new bundle, so the new
+     daemon is supervised too. `bin/happy.mjs` passes the exit code through.
+   - **Unsupervised**: it spawns `happy daemon start` and exits 0.
+3. Sessions are separate process groups and keep running; the new daemon
+   adopts them from their session owner locks (`~/.happy/sessions/<id>.lock`).
+
+Supervision:
+- `selfhost/cli-service/install-service.sh` sets `HAPPY_DAEMON_SUPERVISOR` in
+  the service definition: `launchd:com.happy.cli-daemon` (plist
+  EnvironmentVariables) or `systemd:happy-cli-daemon.service` (unit). On macOS
+  a job installed before that still has `XPC_SERVICE_NAME=com.happy.cli-daemon`,
+  which counts as the same. Neither reaches session children.
+- The daemon writes it to `daemon.state.json` as `supervisor`.
+
+Other CLI processes that find the running daemon's version differs from their
+own (`ensureDaemonRunning`, and `startDaemon` itself):
+- If the state has a `supervisor` and this process is not that service, they
+  restart it through the service manager (`launchctl kickstart -k
+  gui/$UID/com.happy.cli-daemon` or `systemctl --user restart
+  happy-cli-daemon.service`) and wait for a current daemon. Starting one
+  themselves would leave an unsupervised daemon that the service manager keeps
+  replacing.
+- If that fails, they log a warning and fall back to the old path: start a
+  daemon, which calls `stopDaemon()` (HTTP `/stop`, then SIGKILL) and takes over.
 
 ### Stopping the Daemon
 

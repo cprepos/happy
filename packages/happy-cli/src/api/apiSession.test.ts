@@ -62,7 +62,8 @@ vi.mock('@/configuration', () => ({
 vi.mock('@/ui/logger', () => ({
     logger: {
         debug: vi.fn(),
-        debugLargeJson: vi.fn()
+        debugLargeJson: vi.fn(),
+        warn: vi.fn()
     }
 }));
 
@@ -473,6 +474,39 @@ describe('ApiSessionClient v3 messages API migration', () => {
             }
         });
         expect(typeof (sessionUser as any).content.time).toBe('number');
+    });
+
+    it('forwards each local transcript uuid once per process', () => {
+        const client = new ApiSessionClient('fake-token', session);
+        const entry = { type: 'assistant', uuid: 'a-1', message: { role: 'assistant', content: [] } } as any;
+        expect(client.admitLocalTranscriptEntry(entry)).toBe(true);
+        expect(client.admitLocalTranscriptEntry({ ...entry })).toBe(false);
+        expect(client.admitLocalTranscriptEntry({ ...entry, uuid: 'a-2' })).toBe(true);
+        expect(client.admitLocalTranscriptEntry({ type: 'summary', summary: 's', leafUuid: 'x' } as any)).toBe(true);
+    });
+
+    it('does not post a duplicate transcript entry', async () => {
+        const client = new ApiSessionClient('fake-token', session);
+        const send = vi.spyOn(client, 'sendClaudeSessionMessage').mockImplementation(() => {});
+        const entry = { type: 'user', uuid: 'u-dup', isSidechain: false, message: { role: 'user', content: 'hi' } } as any;
+        await client.sendClaudeSessionMessageFromLocalTranscript(entry);
+        await client.sendClaudeSessionMessageFromLocalTranscript(entry);
+        expect(send).toHaveBeenCalledTimes(1);
+    });
+
+    it('stops forwarding transcript entries for good once the session lock no longer names this process', async () => {
+        const { logger } = await import('@/ui/logger');
+        const client = new ApiSessionClient('fake-token', session);
+        const send = vi.spyOn(client, 'sendClaudeSessionMessage').mockImplementation(() => {});
+        let owned = true;
+        client.setOwnershipCheck(() => owned);
+        await client.sendClaudeSessionMessageFromLocalTranscript({ type: 'user', uuid: 'u-1', isSidechain: false, message: { role: 'user', content: 'one' } } as any);
+        owned = false;
+        await client.sendClaudeSessionMessageFromLocalTranscript({ type: 'user', uuid: 'u-2', isSidechain: false, message: { role: 'user', content: 'two' } } as any);
+        owned = true;
+        await client.sendClaudeSessionMessageFromLocalTranscript({ type: 'user', uuid: 'u-3', isSidechain: false, message: { role: 'user', content: 'three' } } as any);
+        expect(send).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(expect.stringContaining('no longer holds the lock'));
     });
 
     it('uploads local Claude transcript image blocks and sends file before user text', async () => {

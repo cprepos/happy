@@ -316,3 +316,44 @@ describe('claudeLocal --continue handling', () => {
         expect(spawnedArgs).not.toContain('--dangerously-skip-permissions');
     });
 });
+
+describe('claudeLocal child environment', () => {
+    it('never passes session-scoped launch values to the agent', async () => {
+        mockSpawn.mockReturnValue({
+            stdio: [null, null, null, null],
+            on: vi.fn((event, callback) => {
+                if (event === 'exit') {
+                    process.nextTick(() => callback(0));
+                }
+            }),
+            addListener: vi.fn(),
+            removeListener: vi.fn(),
+            kill: vi.fn(),
+            stdout: { on: vi.fn() },
+            stderr: { on: vi.fn() },
+            stdin: { on: vi.fn(), end: vi.fn() },
+        });
+        mockSpawn.mockClear();
+        const saved = { ...process.env };
+        process.env.HAPPY_RECONNECT_SESSION_ID = 'leaked-session';
+        process.env.HAPPY_RECONNECT_ENCRYPTION_KEY = 'dummy';
+        process.env.HAPPY_RECONNECT_SEQ = '9';
+        try {
+            await claudeLocal({
+                abort: new AbortController().signal,
+                sessionId: null,
+                path: '/tmp',
+                onSessionFound: vi.fn(),
+                claudeEnvVars: { HAPPY_SESSION_ID: 'bridge-session' },
+            });
+        } finally {
+            for (const key of Object.keys(process.env)) {
+                if (!(key in saved)) delete process.env[key];
+            }
+        }
+
+        const env = mockSpawn.mock.calls[0][2].env as Record<string, string>;
+        expect(Object.keys(env).filter((key) => key.startsWith('HAPPY_RECONNECT_'))).toEqual([]);
+        expect(env.HAPPY_SESSION_ID).toBe('bridge-session');
+    });
+});

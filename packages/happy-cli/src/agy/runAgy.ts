@@ -10,6 +10,7 @@
  * same session pipeline used by the other backends.
  */
 
+import { consumeSessionScopedEnv } from '@/daemon/sessionEnvironment';
 import { randomUUID } from 'node:crypto';
 import React from 'react';
 import { render, type Instance as InkInstance } from 'ink';
@@ -50,6 +51,9 @@ export interface RunAgyOptions {
 }
 
 export async function runAgy(opts: RunAgyOptions): Promise<void> {
+  // Take the session-scoped launch values out of process.env before
+  // anything can spawn a child, so no descendant can join this session.
+  const sessionEnv = consumeSessionScopedEnv();
   const verbose = opts.verbose === true;
   const sessionTag = randomUUID();
   connectionState.setBackend('agy');
@@ -82,21 +86,19 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
   }
 
   // The daemon sets these to resume a Happy session in place.
-  const reconnectSessionId = process.env.HAPPY_RECONNECT_SESSION_ID;
-  const reconnectKeyBase64 = process.env.HAPPY_RECONNECT_ENCRYPTION_KEY;
-  const reconnectVariant = process.env.HAPPY_RECONNECT_ENCRYPTION_VARIANT as 'legacy' | 'dataKey' | undefined;
+  const reconnect = sessionEnv.reconnect;
   let response: ApiSession | null;
-  if (reconnectSessionId && reconnectKeyBase64 && reconnectVariant) {
-    log(`Reconnecting to existing session ${reconnectSessionId}`);
+  if (reconnect) {
+    log(`Reconnecting to existing session ${reconnect.sessionId}`);
     response = {
-      id: reconnectSessionId,
-      seq: parseInt(process.env.HAPPY_RECONNECT_SEQ || '0', 10),
-      encryptionKey: decodeBase64(reconnectKeyBase64),
-      encryptionVariant: reconnectVariant,
+      id: reconnect.sessionId,
+      seq: reconnect.seq,
+      encryptionKey: decodeBase64(reconnect.keyBase64),
+      encryptionVariant: reconnect.variant,
       metadata,
-      metadataVersion: parseInt(process.env.HAPPY_RECONNECT_METADATA_VERSION || '0', 10),
+      metadataVersion: reconnect.metadataVersion,
       agentState: state,
-      agentStateVersion: parseInt(process.env.HAPPY_RECONNECT_AGENT_STATE_VERSION || '0', 10),
+      agentStateVersion: reconnect.agentStateVersion,
     };
   } else {
     response = await api.getOrCreateSession({ tag: sessionTag, metadata, state });
@@ -119,7 +121,7 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
   session = initialSession;
 
   // On reconnect, un-archive the session and skip replaying old messages.
-  if (reconnectSessionId) {
+  if (reconnect) {
     session.suppressNextArchiveSignal();
     session.skipExistingMessages();
     session.updateMetadata((currentMetadata) => ({

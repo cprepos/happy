@@ -256,6 +256,12 @@ export class ApiSessionClient extends EventEmitter {
     private readonly sendSync: InvalidateSync;
     private readonly receiveSync: InvalidateSync;
     private reconnectCapabilityHeld = false;
+    /** Transcript entry uuids already forwarded by this process, oldest first. */
+    private forwardedTranscriptUuids = new Set<string>();
+    private static readonly MAX_FORWARDED_TRANSCRIPT_UUIDS = 10_000;
+    /** Whether this process still owns the session; null when ownership is not tracked. */
+    private ownershipCheck: (() => boolean) | null = null;
+    private transcriptForwardingStopped = false;
 
     constructor(token: string, session: Session) {
         super()
@@ -825,7 +831,43 @@ export class ApiSessionClient extends EventEmitter {
         this.applyClaudeSessionMessageSideEffects(body);
     }
 
+    /**
+     * Make transcript forwarding depend on this process owning the session.
+     * Once the check fails, forwarding stops for good.
+     */
+    setOwnershipCheck(check: (() => boolean) | null): void {
+        this.ownershipCheck = check;
+    }
+
+    /**
+     * Whether an entry read from the agent's local transcript should go to
+     * the server: only while this process still holds the session lock, and
+     * only once per transcript uuid. Two processes forwarding one transcript
+     * is how replies get posted twice.
+     */
+    admitLocalTranscriptEntry(body: RawJSONLines): boolean {
+        if (this.transcriptForwardingStopped) return false;
+        if (this.ownershipCheck && !this.ownershipCheck()) {
+            this.transcriptForwardingStopped = true;
+            logger.warn(`[SESSION OWNER] Process ${process.pid} no longer holds the lock for session ${this.sessionId}; it will not forward any more transcript entries.`);
+            return false;
+        }
+        const uuid = (body as { uuid?: unknown }).uuid;
+        if (typeof uuid !== 'string') return true;
+        if (this.forwardedTranscriptUuids.has(uuid)) {
+            logger.debug(`[API] Skipping transcript entry ${uuid}: already forwarded`);
+            return false;
+        }
+        this.forwardedTranscriptUuids.add(uuid);
+        if (this.forwardedTranscriptUuids.size > ApiSessionClient.MAX_FORWARDED_TRANSCRIPT_UUIDS) {
+            const oldest = this.forwardedTranscriptUuids.values().next().value;
+            if (oldest !== undefined) this.forwardedTranscriptUuids.delete(oldest);
+        }
+        return true;
+    }
+
     async sendClaudeSessionMessageFromLocalTranscript(body: RawJSONLines): Promise<void> {
+        if (!this.admitLocalTranscriptEntry(body)) return;
         const attachments = extractLocalTranscriptImageAttachments(body);
         if (attachments.length === 0) {
             this.sendClaudeSessionMessage(body);
@@ -1134,6 +1176,7 @@ export class ApiSessionClient extends EventEmitter {
             releaseReconnectCapabilityMonitor();
             this.reconnectCapabilityHeld = false;
         }
+        this.emit('closed');
     }
 
     private startSmartReconnect() {

@@ -1,3 +1,4 @@
+import { sanitizeSessionEnvironment } from '@/daemon/sessionEnvironment';
 import { spawn as crossSpawn } from "cross-spawn";
 import { resolve, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -259,8 +260,10 @@ export async function claudeLocal(opts: {
             // Launcher only intercepts fetch for thinking state tracking
             // HAPPY_MANAGED tells Happy's Claude Desktop plugin hooks that this
             // Claude already belongs to Happy, so they do not adopt it again.
+            // Session-scoped launch values (HAPPY_RECONNECT_* and friends)
+            // never reach the agent, so nothing it runs can join this session.
             const env = {
-                ...process.env,
+                ...sanitizeSessionEnvironment(process.env),
                 ...opts.claudeEnvVars,
                 HAPPY_MANAGED: '1'
             }

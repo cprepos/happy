@@ -38,9 +38,12 @@ import {
 import { startHappyTerminalDaemon } from './happyTerminalBoot';
 import { appendDaemonSpawnModeArgs, shouldForwardDaemonPermissionMode } from './spawnModeArgs';
 import { hasPersistedProcessConflict, isPidAlive, machineBootTimeMs } from './sessionLiveness';
+import { isProcessIdentityAlive, readLiveSessionOwner, type SessionOwnerRecord } from './sessionOwnerLock';
 import { createDesktopHub, openDesktopSession, runDesktopCommand, startDesktopSessionFromPhone } from './desktopHub';
 import { claudeCliPath } from '@/claude/claudeLocal';
 import { logsPrune } from '@/utils/logsPrune';
+import { decideHandoff, detectDaemonSupervisor } from './supervisor';
+import { restartDaemonThroughSupervisor } from './ensureDaemonRunning';
 
 /** Shell-escape a string for safe interpolation into tmux commands. */
 function shellescape(s: string): string {
@@ -70,6 +73,9 @@ export async function startDaemon(): Promise<void> {
   // environment, but never let session lineage or reconnect state reach a
   // later, unrelated child session.
   const ambientEnvironment = sanitizeSessionEnvironment(process.env);
+  // Read before anything else: the service manager (if any) that keeps this
+  // daemon running. It never reaches sessions (see DAEMON_SCOPED_ENV_KEYS).
+  const supervisor = detectDaemonSupervisor();
 
   // We don't have cleanup function at the time of server construction
   // Control flow is:
@@ -145,6 +151,16 @@ export async function startDaemon(): Promise<void> {
     // (launchd/systemd, similar to OpenClaw's model), so startup/start-at-login and upgrades
     // are owned by the OS instead of by the daemon trying to replace itself in-process.
     logger.debug('[DAEMON RUN] Daemon version mismatch detected, restarting daemon with current CLI version');
+    // A running daemon kept up by a service manager is restarted through it,
+    // unless this process is that service. Replacing it from here would leave
+    // an unsupervised daemon that the service manager then fights.
+    const runningState = await readDaemonState();
+    if (runningState?.supervisor && runningState.supervisor !== supervisor) {
+      if (await restartDaemonThroughSupervisor(runningState.supervisor)) {
+        console.log(`Daemon restarted by ${runningState.supervisor}`);
+        process.exit(0);
+      }
+    }
     await stopDaemon();
   } else {
     logger.debug('[DAEMON RUN] Daemon version matches, keeping existing daemon');
@@ -208,6 +224,43 @@ export async function startDaemon(): Promise<void> {
       logger.debug(`[DAEMON RUN] Loaded ${Object.keys(persisted).length} persisted sessions from disk`);
     }
 
+    // A tracked entry is the live owner only while its pid is alive and, for
+    // entries this daemon did not spawn, still the process that took the lock.
+    const isTrackedAlive = (pid: number, session: TrackedSession | undefined): boolean => {
+      if (!isPidAlive(pid)) return false;
+      if (session?.childProcess || session?.ownerStartTime === undefined) return true;
+      return isProcessIdentityAlive(pid, session.ownerStartTime);
+    };
+
+    // The session's lock names its one live owner. Track that process instead
+    // of starting another one, whoever started it.
+    const adoptLiveOwner = (happySessionId: string, owner: SessionOwnerRecord): TrackedSession => {
+      const existing = pidToTrackedSession.get(owner.pid);
+      if (existing && existing.happySessionId === happySessionId) {
+        existing.ownerStartTime ??= owner.startTime;
+        existing.ownerStartedBy ??= owner.startedBy;
+        return existing;
+      }
+      const known = sessionIdToFinishedSession.get(happySessionId);
+      const adopted: TrackedSession = {
+        startedBy: 'adopted',
+        pid: owner.pid,
+        happySessionId,
+        happySessionMetadataFromLocalWebhook: known?.happySessionMetadataFromLocalWebhook,
+        encryption: known?.encryption,
+        ownerStartTime: owner.startTime,
+        ownerStartedBy: owner.startedBy,
+      };
+      pidToTrackedSession.set(owner.pid, adopted);
+      logger.debug(`[DAEMON RUN] Adopted live owner PID ${owner.pid} (started by ${owner.startedBy}) of session ${happySessionId}`);
+      return adopted;
+    };
+
+    for (const id of Object.keys(persisted)) {
+      const owner = readLiveSessionOwner(id);
+      if (owner) adoptLiveOwner(id, owner);
+    }
+
     // Session spawning awaiter system
     const pidToAwaiter = new Map<number, (session: TrackedSession) => void>();
     const pidToSpawnFailure = new Map<number, (message: string) => void>();
@@ -265,8 +318,36 @@ export async function startDaemon(): Promise<void> {
         return;
       }
 
+      // The lock names the session's one live owner. Any other process
+      // reporting in for this session is not it: a stray process that
+      // inherited reconnect values, or a duplicate that lost the lock race.
+      // Recording it would point the daemon (and its persisted hostPid) at
+      // the wrong process.
+      const liveOwner = readLiveSessionOwner(sessionId);
+      if (liveOwner && liveOwner.pid !== pid) {
+        logger.debug(`[DAEMON RUN] Ignoring webhook for session ${sessionId} from PID ${pid}: the session lock is held by live PID ${liveOwner.pid}`);
+        return;
+      }
+
+      // Drop dead entries for this session; note a live one under another pid.
+      let otherLiveTrackedOwner: number | undefined;
+      for (const [otherPid, other] of Array.from(pidToTrackedSession.entries())) {
+        if (otherPid === pid || other.happySessionId !== sessionId) continue;
+        if (!isTrackedAlive(otherPid, other)) {
+          onChildExited(otherPid);
+          continue;
+        }
+        otherLiveTrackedOwner = otherPid;
+      }
+      // Without a lock to settle it, a second live process must not replace
+      // the persisted hostPid of the one already tracked.
+      const keepPersistedOwner = !liveOwner && otherLiveTrackedOwner !== undefined;
+      if (keepPersistedOwner) {
+        logger.debug(`[DAEMON RUN] Session ${sessionId} already has live tracked PID ${otherLiveTrackedOwner}; registering PID ${pid} in memory only`);
+      }
+
       // Persist encryption data to disk so it survives daemon restarts
-      if (encryption) {
+      if (encryption && !keepPersistedOwner) {
         persistSession(sessionId, {
           encryptionKey: encodeBase64(encryption.encryptionKey),
           encryptionVariant: encryption.encryptionVariant,
@@ -285,6 +366,7 @@ export async function startDaemon(): Promise<void> {
         existingSession.happySessionId = sessionId;
         existingSession.happySessionMetadataFromLocalWebhook = sessionMetadata;
         existingSession.encryption = encryption ?? existingSession.encryption;
+        if (liveOwner) existingSession.ownerStartedBy = liveOwner.startedBy;
         registeringPids.delete(pid);
         logger.debug(`[DAEMON RUN] Updated daemon-spawned session ${sessionId} with metadata`);
 
@@ -302,7 +384,8 @@ export async function startDaemon(): Promise<void> {
           happySessionId: sessionId,
           happySessionMetadataFromLocalWebhook: sessionMetadata,
           encryption,
-          pid
+          pid,
+          ...(liveOwner ? { ownerStartTime: liveOwner.startTime, ownerStartedBy: liveOwner.startedBy } : {}),
         };
         pidToTrackedSession.set(pid, trackedSession);
         logger.debug(`[DAEMON RUN] Registered externally-started session ${sessionId}`);
@@ -720,9 +803,24 @@ export async function startDaemon(): Promise<void> {
 
       happyProcess.on('exit', (code, signal) => {
         logger.debug(`[DAEMON RUN] Child PID ${happyProcess.pid} exited with code ${code}, signal ${signal}`);
-        if (happyProcess.pid) {
-          onChildExited(happyProcess.pid);
+        if (!happyProcess.pid) return;
+        const exitedPid = happyProcess.pid;
+        // A reconnect child that finds another live owner holding the session
+        // lock exits without reporting in. The session is running, so the
+        // resume succeeded: track that owner instead of reporting a failure.
+        const awaiter = pidToAwaiter.get(exitedPid);
+        const owner = awaiter && reconnect?.happySessionId ? readLiveSessionOwner(reconnect.happySessionId) : null;
+        if (awaiter && reconnect?.happySessionId && owner && owner.pid !== exitedPid) {
+          logger.debug(`[DAEMON RUN] Reconnect child ${exitedPid} exited because live PID ${owner.pid} owns session ${reconnect.happySessionId}`);
+          pidToAwaiter.delete(exitedPid);
+          const adopted = adoptLiveOwner(reconnect.happySessionId, owner);
+          adopted.happySessionMetadataFromLocalWebhook ??= reconnect.happySessionMetadataFromLocalWebhook;
+          adopted.encryption ??= reconnect.encryption;
+          awaiter(adopted);
+          onChildExited(exitedPid, { sessionStillRunning: true });
+          return;
         }
+        onChildExited(exitedPid);
       });
 
       logger.debug(`[DAEMON RUN] Waiting for session webhook for PID ${happyProcess.pid}`);
@@ -796,9 +894,9 @@ export async function startDaemon(): Promise<void> {
     };
 
     const resumeConflict = (happySessionId: string): SpawnSessionResult | undefined => {
-      for (const [pid, session] of pidToTrackedSession) {
+      for (const [pid, session] of Array.from(pidToTrackedSession.entries())) {
         if (session.happySessionId !== happySessionId) continue;
-        if (!isPidAlive(pid)) {
+        if (!isTrackedAlive(pid, session)) {
           onChildExited(pid);
           continue;
         }
@@ -810,7 +908,14 @@ export async function startDaemon(): Promise<void> {
         }
         return { type: 'success', sessionId: happySessionId };
       }
-      // Detached owners can outlive a daemon restart. A saved PID may have been
+      // A live lock owner is the session, whoever started it and whether or
+      // not this daemon has seen it. Track it; never start a second one.
+      const owner = readLiveSessionOwner(happySessionId);
+      if (owner) {
+        adoptLiveOwner(happySessionId, owner);
+        return { type: 'success', sessionId: happySessionId };
+      }
+      // Sessions from CLIs without the lock: detached owners can outlive a daemon restart. A saved PID may have been
       // reused, so neither adopt nor signal it. Refuse a duplicate until exit or
       // a local registration establishes ownership in this daemon.
       if (hasPersistedProcessConflict(readPersistedSessions()[happySessionId], bootTimeMs)) {
@@ -987,7 +1092,7 @@ export async function startDaemon(): Promise<void> {
         if (session.happySessionId === sessionId ||
           (sessionId.startsWith('PID-') && pid === parseInt(sessionId.replace('PID-', '')))) {
 
-          if (!isPidAlive(pid)) {
+          if (!isTrackedAlive(pid, session)) {
             onChildExited(pid);
             return true;
           }
@@ -1024,6 +1129,21 @@ export async function startDaemon(): Promise<void> {
                 logger.debug(`[DAEMON RUN] Failed to kill session ${sessionId}:`, error);
               }
             }
+          } else if (session.startedBy === 'adopted' && session.ownerStartedBy === 'daemon' && process.platform !== 'win32') {
+            // A daemon-spawned owner adopted after a daemon restart still leads
+            // its own process group (it was spawned detached), so signal the
+            // group as above to reach the agent backend too.
+            try {
+              process.kill(-pid, 'SIGTERM');
+              logger.debug(`[DAEMON RUN] Sent SIGTERM to process group of adopted session ${sessionId}`);
+            } catch (error) {
+              logger.debug(`[DAEMON RUN] Group kill failed for adopted session ${sessionId}, falling back:`, error);
+              try {
+                process.kill(pid, 'SIGTERM');
+              } catch (fallbackError) {
+                logger.debug(`[DAEMON RUN] Failed to kill adopted session PID ${pid}:`, fallbackError);
+              }
+            }
           } else {
             // For externally started sessions, try to kill by PID
             try {
@@ -1036,7 +1156,7 @@ export async function startDaemon(): Promise<void> {
 
           // SIGTERM requests exit; it does not prove it. Keep ownership until
           // the exit event or a liveness check confirms the process is gone.
-          if (!isPidAlive(pid)) onChildExited(pid);
+          if (!isTrackedAlive(pid, session)) onChildExited(pid);
           return true;
         }
       }
@@ -1046,12 +1166,14 @@ export async function startDaemon(): Promise<void> {
     };
 
     // Handle child process exit — preserve session data for resume
-    const onChildExited = (pid: number) => {
+    const onChildExited = (pid: number, { sessionStillRunning = false }: { sessionStillRunning?: boolean } = {}) => {
       pidToSpawnFailure.get(pid)?.(`Session process ${pid} exited before connecting.`);
       stoppingPids.delete(pid);
       registeringPids.delete(pid);
       const session = pidToTrackedSession.get(pid);
-      if (session?.happySessionId && session.encryption) {
+      if (sessionStillRunning) {
+        logger.debug(`[DAEMON RUN] Removing exited PID ${pid}; its session is still running under another owner`);
+      } else if (session?.happySessionId && session.encryption) {
         sessionIdToFinishedSession.set(session.happySessionId, session);
         // Expiry is measured from here on, so a session used for months stays
         // resumable for the full retention window after it stops.
@@ -1087,7 +1209,8 @@ export async function startDaemon(): Promise<void> {
       httpPort: controlPort,
       startTime: new Date().toLocaleString(),
       startedWithCliVersion: packageJson.version,
-      daemonLogPath: logger.logFilePath
+      daemonLogPath: logger.logFilePath,
+      ...(supervisor ? { supervisor } : {}),
     };
     writeDaemonState(fileState);
     logger.debug('[DAEMON RUN] Daemon state written');
@@ -1177,8 +1300,8 @@ export async function startDaemon(): Promise<void> {
       }
 
       // Prune stale sessions
-      for (const [pid, _] of pidToTrackedSession.entries()) {
-        if (!isPidAlive(pid)) {
+      for (const [pid, session] of Array.from(pidToTrackedSession.entries())) {
+        if (!isTrackedAlive(pid, session)) {
           // Process is dead, remove from tracking
           logger.debug(`[DAEMON RUN] Removing stale session with PID ${pid} (process no longer exists)`);
           onChildExited(pid);
@@ -1215,6 +1338,14 @@ export async function startDaemon(): Promise<void> {
         await cleanupDaemonState();
         await releaseDaemonLock(daemonLockHandle);
         await stopCaffeinate();
+
+        const handoff = decideHandoff({ supervisor });
+        if (handoff.action === 'exit-for-supervisor') {
+          // The service manager starts the new bundle, so the replacement
+          // stays supervised. A daemon spawned from here would not be.
+          logger.debug(`[DAEMON RUN] Exiting with ${handoff.exitCode} so ${supervisor} starts the new daemon`);
+          process.exit(handoff.exitCode);
+        }
 
         try {
           spawnHappyCLI(['daemon', 'start'], {

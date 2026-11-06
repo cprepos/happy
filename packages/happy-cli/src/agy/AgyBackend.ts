@@ -15,6 +15,7 @@
  * by the CLI flags (see cliArgs.ts) plus agy's own settings.json.
  */
 
+import { sanitizeSessionEnvironment } from '@/daemon/sessionEnvironment';
 import { spawn, type ChildProcess } from 'node:child_process';
 import type { PermissionMode } from '@/api/types';
 import type {
@@ -163,7 +164,7 @@ export class AgyBackend implements AgentBackend {
     await new Promise<void>((resolve, reject) => {
       const child = this.spawnFn(resolveAgyBin(), args, {
         cwd: this.cwd,
-        env: { ...process.env, ...this.env },
+        env: { ...sanitizeSessionEnvironment(process.env), ...this.env },
         windowsHide: true,
         // agy --print blocks until stdin reaches EOF. We never write stdin, so
         // give the child an empty stdin (immediate EOF) instead of an open pipe;
