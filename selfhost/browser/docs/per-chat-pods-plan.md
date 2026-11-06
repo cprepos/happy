@@ -118,7 +118,7 @@ Run it as `fluxbox -rc /happy/fluxbox/init`. The alternative is no window manage
 
 **4. Popups.** In kiosk mode, `target=_blank` and new tabs open as tabs of the one fullscreen window, with the tab strip hidden. A `window.open` popup (for example an OAuth sign-in) becomes a separate window, which fluxbox forces fullscreen and undecorated. The screen therefore always shows exactly one page, the top one; when it closes, the opener shows again.
 
-The controller already tracks these through `context.on("page")` (AB `browser/services/diagnostics.py:205-212`) and `bring_to_front` (AB `tabs.py:143,189`). We cannot hook that event from browser-node, because Playwright connections do not share contexts, and the controller is not ours to patch.
+The controller already tracks these through `context.on("page")` (AB `browser/services/diagnostics.py:205-212`) and `bring_to_front` (AB `tabs.py:143,189`). We cannot hook that event from browser-node, because Playwright connections do not share contexts. We patch the controller in exactly one place (the live view, see "Controller patch: live frames during an action" below); tab tracking is not part of that patch.
 
 Optional bridge fold (`BRIDGE_FOLD_TABS=1`): after mutating calls, if `/sessions/<sid>/tabs` has more than 1 tab and the newest has no `window.opener` need, close it and navigate the active tab to its URL. Keep at most 5 tabs. Do not use `--block-new-web-contents`, because it breaks OAuth popups.
 
@@ -369,3 +369,59 @@ The key is `chatHash = sha256(source+':'+id).slice(0,32)`.
   is about 440 MiB, so a second spare is not worth it on this host.
 - `make browser-pod-smoke` passes: two chats, two pods, own ports and noVNC passwords, every
   listener on 127.0.0.1, no abstract X11 socket, kiosk lock in both, idle stop, login survives.
+
+### Controller patch: live frames during an action (2026-11-06)
+
+**Why.** The live view polls `GET /share/<T>/observe`. In auto-browser 1.14.0, `share_snapshot()`
+takes `session.lock`, and every action holds that lock from its before-snapshot to its
+after-snapshot. A slow navigate (redirects, a page that streams) therefore froze the viewer on the
+pre-action frame, and the observe request itself hung for the whole action. Measured against a
+throwaway pod with an 8.7 s navigate, upstream answered one poll during the action and showed one
+frame.
+
+**What.** `controller-patch/happy_live_frames.py` is mounted read-only at
+`/happy/controller-patch/`, with `PYTHONPATH` pointing at it, and the controller runs
+`uvicorn happy_live_frames:app` instead of `app.main:app` in both `compose.browser.yml` and
+the launcher's `controllerSpec`. The image is not changed. On import the module:
+- refuses to start unless `app/version.py` says `1.14.0` and four upstream files
+  (`browser/services/observation.py`, `browser/page_read.py`, `artifacts.py`,
+  `routes/share.py`) match pinned sha256 hashes. An image bump makes the controller fail
+  loudly at boot, not silently run a stale patch.
+- replaces `BrowserObservationService.share_snapshot` and wraps `light_snapshot`, then
+  imports `app.main:app`.
+
+When the lock is free, `share_snapshot` takes it and captures as before. When an action holds it,
+it does not wait. It returns a fresh scrubbed frame captured without the lock (single-flight per
+session, at most one every 0.3 s, waits at most 2 s), or failing that the latest cached scrubbed
+frame. Every redacted action snapshot (`light_snapshot`) also refreshes that cache. Measured with
+the same 8 s navigate: 17 polls answered during the action, worst 1.5 s, typical 8 ms from cache
+or 400 ms for a fresh capture, nine distinct frames, and the URL and title switch to the new page
+mid-action.
+
+**Security.**
+- No unscrubbed frame is ever served or cached. Captures are written to
+  `/data/live-pending/<sid>/`, which is outside the artifact tree that `/artifacts` and
+  `/share/<T>/screenshots/` serve. They are scrubbed there with the controller's own
+  `_scrub_screenshot_if_needed` and moved into place with `os.replace` only if the result has no
+  `pii_scrub_skipped`. If OCR is unavailable, redaction fails, or strict mode withholds, the
+  pending file is deleted and the viewer keeps the previous scrubbed frame, or gets an error
+  if there is none. (Upstream's own capture writes the raw PNG into the artifact dir before
+  scrubbing; the patched lock-free path does not.)
+- If PII screenshot scrubbing is off, the patch hands straight back to upstream: it neither
+  captures nor caches anything new.
+- The share route, its token check and its file serving are untouched, so who can read is
+  unchanged. The lock-free path applies the same page checks as upstream reads
+  (`_assert_page_allowed` before and after, and `PageRead.moved()`; a page that navigates during
+  the capture is refused, not shown).
+- Approval policy and actions are untouched. Nothing about frame contents is logged.
+
+**Tests.** `make browser-controller-patch-test` runs 25 unit tests in a throwaway container from
+the pinned image, with no network. With the patch applied, the upstream suite passes except
+`test_share_snapshot.py::test_the_frame_is_redacted_when_screenshot_scrubbing_is_on` (4048
+passed, 1 failed; plain image 4049). That test's fake page has no `screenshot()`, because the
+patch captures through `page.screenshot` into the pending dir instead of
+`manager._capture_screenshot`. The redaction it checks is covered by the patch's own tests.
+
+**Rollback.** Set the controller command back to `app.main:app` in `compose.browser.yml` and
+`launcher.mjs`, drop the `PYTHONPATH` env and the patch mount, then recreate the shared
+controller and the launcher. Pods pick up the change when they are next created.

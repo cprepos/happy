@@ -170,13 +170,17 @@ export function nodeSpec(cfg, { slot, podId, vncPassword, image, seccomp }) {
 }
 
 // The controller: compose.browser.yml's controller service with this pod's port, takeover URL
-// and /data, one session, and a fast reconnect while the node is still starting.
+// and /data, one session, and a fast reconnect while the node is still starting. It serves the
+// app through controller-patch/happy_live_frames.py (live frames while an action runs), which
+// refuses to start on any controller but the 1.14.0 it was written against.
+export const CONTROLLER_PATCH_DIR = '/happy/controller-patch';
 export function controllerSpec(cfg, { slot, podId, image, secrets }) {
     const p = ports(cfg, slot);
     return {
         Image: image,
-        Cmd: ['uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', String(p.api)],
+        Cmd: ['uvicorn', 'happy_live_frames:app', '--host', '127.0.0.1', '--port', String(p.api)],
         Env: [
+            `PYTHONPATH=${CONTROLLER_PATCH_DIR}`,
             'APP_ENV=development',
             `API_BEARER_TOKEN=${secrets.apiToken}`,
             'API_BIND_SCOPE=loopback',
@@ -221,7 +225,10 @@ export function controllerSpec(cfg, { slot, podId, image, secrets }) {
             MemorySwap: 1 * GiB,
             Init: true,
             RestartPolicy: { Name: 'no' },
-            Binds: [`${slotDir(cfg, slot)}:/data`],
+            Binds: [
+                `${slotDir(cfg, slot)}:/data`,
+                `${cfg.browserDir}/controller-patch/happy_live_frames.py:${CONTROLLER_PATCH_DIR}/happy_live_frames.py:ro`,
+            ],
         },
     };
 }

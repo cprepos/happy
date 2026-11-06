@@ -124,7 +124,9 @@ test('pod templates: host network, loopback ports per slot, no published ports, 
         // A desktop screen, window and viewport by default (BROWSER_WIDTH/HEIGHT override).
         assert.deepEqual([ne.BROWSER_WIDTH, ne.BROWSER_HEIGHT], ['1920', '1200']);
         assert.deepEqual([ce.DEFAULT_VIEWPORT_WIDTH, ce.DEFAULT_VIEWPORT_HEIGHT], ['1920', '1200']);
-        assert.deepEqual(ctl.Cmd, ['uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', String(p.api)]);
+        assert.deepEqual(ctl.Cmd, ['uvicorn', 'happy_live_frames:app', '--host', '127.0.0.1', '--port', String(p.api)]);
+        assert.equal(ce.PYTHONPATH, '/happy/controller-patch');
+        assert.ok(ctl.HostConfig.Binds.includes(`${BROWSER_DIR}/controller-patch/happy_live_frames.py:/happy/controller-patch/happy_live_frames.py:ro`));
         assert.equal(ce.MAX_SESSIONS, '1');
         assert.equal(ce.ENABLE_TRACING, 'false');
         assert.equal(ce.NETWORK_INSPECTOR_CAPTURE_BODIES, 'false');
@@ -146,6 +148,12 @@ test('pod templates match the shared stack in compose.browser.yml', () => {
     for (const m of block.matchAll(/^      ([A-Z_]+):/gm)) assert.ok(keys.has(m[1]), `pod controller sets ${m[1]}`);
     assert.match(block, /ENABLE_TRACING: "false"/);
     assert.match(block, /NETWORK_INSPECTOR_CAPTURE_BODIES: "false"/);
+    // The same controller entry point and patch mount as the shared controller.
+    const ctlBlock = COMPOSE.split(/^  controller:$/m)[1].split(/^  \S/m)[0];
+    assert.match(ctlBlock, /^    command: \["uvicorn", "happy_live_frames:app", /m);
+    for (const m of ctlBlock.matchAll(/^      - \.\/(\S+):(\S+)$/gm)) {
+        assert.ok(ctl.HostConfig.Binds.includes(`${BROWSER_DIR}/${m[1]}:${m[2]}`), `pod controller mounts ./${m[1]}`);
+    }
     const node = nodeSpec(cfg, { slot: 0, podId: POD, vncPassword: 'Abcd1234', image: 'x', seccomp: SECCOMP });
     const nodeBlock = COMPOSE.split(/^  browser-node:$/m)[1].split(/^  controller:$/m)[0];
     for (const m of nodeBlock.matchAll(/^      - \.\/(\S+):(\S+)$/gm)) {

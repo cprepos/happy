@@ -9,6 +9,7 @@
 #   make browser-logs     follow logs (BROWSER_SVC=controller to pick one service)
 #   make browser-verify   MCP answers with the token (tools/list), refuses without it; noVNC demands a password
 #   make browser-bridge-test   bridge unit tests (node:test, auto-browser mocked)
+#   make browser-controller-patch-test  the controller patch (controller-patch/) against the pinned image
 #   make browser-bridge-smoke  end-to-end against the running stack: session, link, page, frame, takeover, done
 #   make browser-bridge-restart  restart only the bridge container; lists the held links it releases on the way down
 #   make browser-pod-bench     pod start times, cold and warm (test project only)
@@ -38,7 +39,7 @@ POD_FILTER = --filter label=happy-browser.pod=1 --filter label=happy-browser.pro
 
 .PHONY: browser-init browser-up browser-down browser-status browser-logs browser-verify browser-bridge-test browser-bridge-smoke browser-bridge-restart \
 	browser-pull browser-pods-status browser-pods-reap browser-entrypoint-check \
-	browser-pod-bench browser-pod-smoke
+	browser-pod-bench browser-pod-smoke browser-controller-patch-test
 
 browser-init:
 	@HAPPY_BROWSER_HOME="$(HAPPY_BROWSER_HOME)" bash $(BROWSER_DIR)/scripts/browser-init.sh
@@ -68,6 +69,15 @@ browser-verify:
 browser-bridge-test:
 	cd $(BROWSER_DIR)/bridge && node --test test/*.test.mjs
 	cd $(BROWSER_DIR)/launcher && node --test test/*.test.mjs
+
+# The controller patch (controller-patch/happy_live_frames.py) in a throwaway container of the
+# pinned controller image, no network: its pin check against the image's files, then its tests.
+CONTROLLER_IMAGE = $(shell sed -nE 's/^x-controller-image: &[a-z_]+ (.+)$$/\1/p' $(BROWSER_DIR)/compose.browser.yml)
+browser-controller-patch-test:
+	docker run --rm --name happy-controller-patch-test-$$$$ --network none --entrypoint python \
+		-e PYTHONPATH=/happy/controller-patch -e HAPPY_LIVE_FRAMES_NO_AUTOLOAD=1 -w /app \
+		-v $(BROWSER_DIR)/controller-patch:/happy/controller-patch:ro $(CONTROLLER_IMAGE) \
+		-m unittest -v test_happy_live_frames
 
 # Every image the stack and its pods run, by digest, so a pod never waits on a pull.
 browser-pull:
