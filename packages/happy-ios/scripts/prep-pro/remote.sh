@@ -4,6 +4,7 @@
 #   make ios-test-fast                 hosted + UIKit simulator tests, sharded, plus a Debug device compile check
 #   make ios-test-fast CLEAN=1         same, from a cold DerivedData (the old one is moved to ~/happy-fast/trash)
 #   make ios-build-device              unsigned Preview device build (PHONE_TS=<ts> hands it to sign.sh)
+#   make ios-build-ipad-mac            the same app, unsigned, for "My Mac (Designed for iPad)"
 #   make ios-fast-attach RUN=<ts>      follow a run that is still going
 #   make ios-fast-runs                 list recent runs
 # COMMIT defaults to HEAD of this repo. Other knobs are passed through to the
@@ -16,7 +17,7 @@ REPO=$(git -C "$HERE" rev-parse --show-toplevel)
 SSH=(ssh -o BatchMode=yes -o ServerAliveInterval=30 "$HOST")
 RHF='happy-fast'   # relative to the Mac home
 
-usage() { sed -n '2,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 passthrough_env() {
   local out=() v
@@ -107,6 +108,17 @@ case $cmd in
     TS=$(date +%Y%m%d_%H%M%S)
     sync_tree "$C" "device-$(tr 'A-Z' 'a-z' <<< "$CONFIG")" device
     launch "$TS" build-device.sh "$TS" "$CONFIG" "${PHONE_TS:-}"
+    echo "run $TS started on $HOST" >&2
+    follow "$TS"
+    ;;
+  ipad-mac)
+    C=$(git -C "$REPO" rev-parse "${COMMIT:-HEAD}^{commit}")
+    CONFIG=${CONFIG:-Preview}
+    [[ $CONFIG =~ ^(Preview|Debug|Release)$ ]] || { echo "CONFIG must be Preview, Debug or Release" >&2; exit 2; }
+    [[ -z ${PHONE_TS:-} || ${PHONE_TS} =~ ^[0-9]{8}_[0-9]{6}$ ]] || { echo "PHONE_TS must look like 20261104_120000" >&2; exit 2; }
+    TS=$(date +%Y%m%d_%H%M%S)
+    sync_tree "$C" "ipad-mac-$(tr 'A-Z' 'a-z' <<< "$CONFIG")" device
+    launch "$TS" build-device.sh "$TS" "$CONFIG" "${PHONE_TS:--}" mac
     echo "run $TS started on $HOST" >&2
     follow "$TS"
     ;;
