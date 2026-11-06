@@ -230,18 +230,31 @@ export function forkParentKey(env = process.env, ident = chatIdentity(env)) {
 
 // A daemon that serves many chats from one process (Happy Agent) names the chat per call instead:
 // its MCP client puts its own id for the tool call in _meta["claudecode/toolUseId"], and
-// lookup(id) answers which chat made that call ({source, id}, see lib/agentchat.mjs). Only _meta
-// is read, never the tool arguments, so the model cannot pick another chat's browser. Returns
-// {key, source}; null when the call carries no id (routed by session); NO_CALL_CHAT when an id
-// was given but its chat can't be told (the call is then refused).
+// lookup(id) answers which chat made that call ({source, id}, see lib/agentchat.mjs). Without a
+// call id (Happy Agent as deployed sends no _meta at all), lookup.match(name, args) finds the
+// daemon's own journal record of this call instead: the one in-flight call of that tool with
+// exactly these arguments. Either way the chat is the agent the daemon recorded, never a value
+// in the arguments, so the model cannot pick another chat's browser. Returns {key, source};
+// null when the call can't be found (routed by its browser session, as before); NO_CALL_CHAT
+// when a call id was given but its chat can't be told, or identical calls from two chats are in
+// flight (the call is then refused, and a retry tells them apart).
 export const NO_CALL_CHAT = Object.freeze({ unknown: true });
 const TOOL_USE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 export function callChatResolver(lookup, log = () => {}) {
-    return async function callChatOf(meta, signal) {
+    return async function callChatOf(meta, signal, call = null) {
         const id = meta && typeof meta === 'object' ? meta['claudecode/toolUseId'] : undefined;
-        // No call id at all: this client does not name its calls (Happy Agent sends no _meta), so
-        // the call is routed by its browser session as before, never guessed onto a chat.
-        if (id === undefined) return null;
+        if (id === undefined) {
+            if (typeof lookup.match !== 'function' || !call?.name) return null;
+            try {
+                const ident = await lookup.match(call.name, call.args, signal);
+                if (ident?.ambiguous) { log(`chat of tool call ${call.name}: identical calls from two chats in flight`); return NO_CALL_CHAT; }
+                if (ident && typeof ident.source === 'string' && typeof ident.id === 'string' && ident.id) return { key: chatKeyOf(ident), source: ident.source };
+                log(`chat of tool call ${call.name} not in the daemon's journal; routed by session`);
+            } catch (err) {
+                log(`chat of tool call not found: ${err.message}`);
+            }
+            return null;
+        }
         if (typeof id !== 'string' || !TOOL_USE_ID.test(id)) return NO_CALL_CHAT;
         try {
             const ident = await lookup(id, signal);
@@ -251,6 +264,17 @@ export function callChatResolver(lookup, log = () => {}) {
         }
         return NO_CALL_CHAT;
     };
+}
+// The per-call chat resolver for a process with no chat of its own, from the operator's env
+// (BRIDGE_AGENT_DB, BRIDGE_AGENT_PYTHON, BRIDGE_AGENT_SSH), never from a call. null: none.
+export function agentCallChat(ident, env = process.env, log = () => {}) {
+    if (ident || !env.BRIDGE_AGENT_DB) return null;
+    try {
+        return callChatResolver(createAgentChatLookup({ dbPath: env.BRIDGE_AGENT_DB, python: env.BRIDGE_AGENT_PYTHON || 'python3', ssh: env.BRIDGE_AGENT_SSH || null }), log);
+    } catch (err) {
+        log(`agent chat lookup off: ${err.message}`);
+        return null;
+    }
 }
 const NO_CHAT = 'this browser call could not be matched to its chat, so it was not sent to any browser. Try it again.';
 
@@ -386,9 +410,9 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
 
     // The chat a call comes from, when the MCP client names it per call (callChat). A process with
     // a chat of its own (HAPPY_SESSION_ID / CLAUDE_CODE_SESSION_ID) keeps that one. null: none.
-    async function chatOfCall(meta, signal) {
+    async function chatOfCall(meta, signal, call) {
         if (!router || !callChat || chatPods?.chat) return null;
-        return await callChat(meta, signal);
+        return await callChat(meta, signal, call);
     }
 
     // The chat's pod for this call, its session put into the arguments. Some tools are answered
@@ -698,7 +722,7 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
                 };
                 try {
                     const cc = name === 'browser_live_link' || name === 'browser_wait_for_human' || (upstream && !(secrets && secrets.isOwn(name)))
-                        ? await chatOfCall(params?._meta, ac.signal) : null;
+                        ? await chatOfCall(params?._meta, ac.signal, { name, args: params?.arguments ?? {} }) : null;
                     let out;
                     if (name === 'browser_live_link') out = await liveLink(args, ac.signal, cc);
                     else if (name === 'browser_wait_for_human') out = await waitForHuman(args, ac.signal, progress, cc);
@@ -772,10 +796,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         upstream,
         chatPods: upstream ? { chat: ident ? { key: chatKeyOf(ident), source: ident.source, ...(forkedFrom ? { forkedFrom } : {}) } : null, makeUpstream } : null,
         // Happy Agent (one process for all its chats): BRIDGE_AGENT_DB is the daemon's agent.sqlite,
-        // and each call's chat is looked up there from the call id the daemon put in _meta.
-        callChat: !ident && process.env.BRIDGE_AGENT_DB
-            ? callChatResolver(createAgentChatLookup({ dbPath: process.env.BRIDGE_AGENT_DB, python: process.env.BRIDGE_AGENT_PYTHON || 'python3' }), log)
-            : null,
+        // and each call's chat is looked up there: by the call id in _meta, else by the daemon's
+        // journal record of this very call (see callChatResolver).
+        // BRIDGE_AGENT_SSH: the host that daemon runs on, when it reaches this process over ssh.
+        callChat: agentCallChat(ident, process.env, log),
         waitMaxS: cfg.waitMaxS,
         log,
         metaProbe: createMetaProbe(),

@@ -280,18 +280,33 @@ tool_timeout_sec = 600
 ```
 
 Happy Agent runs this one process for all of its chats, with no chat id in its
-environment. `BRIDGE_AGENT_DB` gives each call its chat anyway: the daemon puts
-its own id for the tool call in `_meta["claudecode/toolUseId"]` and journals
-which agent made that call before running it, so `mcp.mjs` looks the id up in
-the daemon's database (read-only, through `bridge/lib/agentchat.py` and the
+environment. `BRIDGE_AGENT_DB` gives each call its chat anyway: the daemon
+journals every tool call it starts (`tool.started`: the agent, the call id, the
+tool and its arguments) before running it, so `mcp.mjs` finds this call's record
+in the daemon's database (read-only, through `bridge/lib/agentchat.py` and the
 container's `python3`; Node 20 has no SQLite) and takes the agent's Happy
-session. The chat key is then `sha256("happy:" + Happy session id)[:32]`, the
-same as a Happy CLI chat's, and with pods on each chat gets its own pod and is
-found with `GET /live/chat/<key>`. An agent with no Happy session gets
-`sha256("agent:" + agent id)[:32]`. Only `_meta` is read, never the tool
-arguments, and a call whose chat can't be found is refused rather than routed
-by the session it names. Without `BRIDGE_AGENT_DB` every browser session gets a
-pod of its own, as before.
+session. A client that names its call in `_meta["claudecode/toolUseId"]` is
+looked up by that id. Happy Agent as deployed sends no `_meta` at all (seen with
+`BRIDGE_LOG_META`, 2026-11-05), so its call is the one in-flight `tool.started`
+record of the same tool with exactly the same arguments that has not completed
+and was not matched before. The arguments only find the daemon's own record; the
+chat is the agent that record names, never a value in them.
+
+The chat key is then `sha256("happy:" + Happy session id)[:32]`, the same as a
+Happy CLI chat's, and with pods on each chat gets its own pod and is found with
+`GET /live/chat/<key>`. An agent with no Happy session gets
+`sha256("agent:" + agent id)[:32]`. A call id that can't be found, and identical
+calls in flight from two chats, are refused ("try it again"), never routed by
+the session they name. A call with no id that isn't in the journal is routed by
+its browser session, as before. Without `BRIDGE_AGENT_DB` every browser session
+gets a pod of its own, as before.
+
+On a Mac, Happy Agent's bridge runs here over ssh (`make mcp-register`), and its
+entry passes `BRIDGE_AGENT_DB=<the Mac's agent.sqlite>`,
+`BRIDGE_AGENT_SSH=<the Mac>` and `BRIDGE_AGENT_PYTHON=/usr/bin/python3`: the
+lookup runs on that Mac as `ssh <mac> python3 -I - <db> ...` with the script and
+the request on stdin (about 0.2 s a call). `make mcp-register` brings an older
+Happy Agent entry it wrote up to date.
 
 The vault secret tools (`browser_list_secrets`, `browser_fill_secret`,
 `browser_login`) in such a process name the chat `none` to the secret filler,

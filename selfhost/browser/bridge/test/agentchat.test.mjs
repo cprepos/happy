@@ -2,11 +2,11 @@
 // call id the daemon put in _meta, looked up in the daemon's database, never from tool arguments.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { callChatResolver, chatKeyOf, createMcpServer, NO_CALL_CHAT } from '../mcp.mjs';
+import { agentCallChat, callChatResolver, chatKeyOf, createMcpServer, NO_CALL_CHAT } from '../mcp.mjs';
 import { createAgentChatLookup } from '../lib/agentchat.mjs';
 
 const TOKEN = 'bridge-secret-token-0123456789abcdef';
@@ -49,6 +49,7 @@ function harness({ chat = null, lookup = async (id) => (CALLS[id] ? { source: 'h
     };
     const out = [];
     const counted = async (id, signal) => { seen.lookups.push(id); return lookup(id, signal); };
+    if (typeof lookup.match === 'function') counted.match = lookup.match;
     const server = createMcpServer({
         bridgeUrl: 'http://127.0.0.1:1', bridgeToken: TOKEN, write: (m) => out.push(m), fetchImpl, upstream: shared, retryMs: 0,
         chatPods: { chat, makeUpstream }, callChat: callChatResolver(counted),
@@ -146,7 +147,8 @@ test('call chat: pods off on the bridge -> the shared controller, as before', as
     const h = harness({ podsOn: false });
     await h.list();
     await h.call('browser_observe', { session_id: 'x1' }, meta('unknown'));
-    assert.deepEqual(h.seen.calls.map((c) => [c.url, c.args.session_id]), [['shared', 'x1']]);
+    // The session check before the call (get_session), then the call, both on the shared controller.
+    assert.deepEqual(h.seen.calls.map((c) => [c.url, c.name, c.args.session_id]), [['shared', 'browser.get_session', 'x1'], ['shared', 'browser.observe', 'x1']]);
 });
 
 // The lookup itself, against a database shaped like the daemon's (built with python3's sqlite3).
@@ -191,4 +193,113 @@ test('agent chat lookup: a missing database is an error, so the call is refused'
     await assert.rejects(() => lookup('callA1'), /agent chat lookup/);
     const r = callChatResolver(lookup);
     assert.equal(await r(meta('callA1')), NO_CALL_CHAT);
+});
+
+// Happy Agent as deployed sends no _meta: the call is found by the daemon's own journal record.
+function matchDb(rows) {
+    const dir = mkdtempSync(join(tmpdir(), 'agentmatch-'));
+    const db = join(dir, 'agent.sqlite');
+    execFileSync('python3', ['-I', '-c', `
+import sqlite3, sys, json, time
+c = sqlite3.connect(sys.argv[1])
+c.execute("CREATE TABLE happy_agent_events (event_id TEXT PRIMARY KEY, agent_id TEXT, occurred_at INTEGER NOT NULL, type TEXT NOT NULL, payload_json TEXT NOT NULL, payload_bytes INTEGER NOT NULL DEFAULT 0)")
+c.execute("CREATE TABLE happy_agent_happy_sessions (owner_id TEXT NOT NULL DEFAULT '', agent_id TEXT NOT NULL, session_id TEXT NOT NULL, remote_session_id TEXT, encryption_key_base64 TEXT NOT NULL, updated_at_ms INTEGER NOT NULL, PRIMARY KEY (owner_id, agent_id))")
+now = int(time.time() * 1000)
+for i, (agent, typ, payload, age_s) in enumerate(json.loads(sys.argv[2])):
+    c.execute("INSERT INTO happy_agent_events (event_id, agent_id, occurred_at, type, payload_json) VALUES (?, ?, ?, ?, ?)", ("01a1-%04d" % i, agent, now - age_s * 1000, typ, json.dumps(payload)))
+c.execute("INSERT INTO happy_agent_happy_sessions VALUES ('', 'agentA', 'agentA', 'happyA', 'secret-key', 1)")
+c.execute("INSERT INTO happy_agent_happy_sessions VALUES ('', 'agentB', 'agentB', 'happyB', 'secret-key', 1)")
+c.commit()
+`, db, JSON.stringify(rows)]);
+    return db;
+}
+const started = (agent, id, tool, args, ageS = 1) => [agent, 'tool.started', { rigEvent: { type: 'tool_execution_start', toolCall: { id, name: `mcp__browser__${tool}`, arguments: args, type: 'toolCall' } } }, ageS];
+const completed = (agent, id) => [agent, 'tool.completed', { callId: id }, 0];
+
+test('agent chat match: the in-flight journaled call with these exact arguments names the chat', async () => {
+    const db = matchDb([
+        started('agentA', 'a1', 'browser_observe', { session_id: 'sA' }),
+        started('agentB', 'b1', 'browser_observe', { session_id: 'sB' }),
+        started('agentA', 'a0', 'browser_create_session', {}, 30),
+        completed('agentA', 'a0'),
+        started('agentB', 'b2', 'browser_create_session', {}),
+        started('agentA', 'a2', 'browser_get_html', { session_id: 's' }),
+        started('agentB', 'b3', 'browser_get_html', { session_id: 's' }),
+        started('agentA', 'old', 'browser_list_tabs', { session_id: 'sA' }, 3600),
+        started('agentA', 'a3', 'browser_screenshot', { session_id: 'sA' }),
+        started('agentA', 'a4', 'browser_screenshot', { session_id: 'sA' }),
+    ]);
+    const lookup = createAgentChatLookup({ dbPath: db, waitMs: 80 });
+    assert.deepEqual(await lookup.match('browser_observe', { session_id: 'sA' }), { source: 'happy', id: 'happyA' });
+    assert.deepEqual(await lookup.match('browser_observe', { session_id: 'sB' }), { source: 'happy', id: 'happyB' });
+    assert.deepEqual(await lookup.match('browser_create_session', {}), { source: 'happy', id: 'happyB' }, 'a completed call is not this one');
+    assert.deepEqual(await lookup.match('browser_get_html', { session_id: 's' }), { ambiguous: true }, 'two chats, same call: no chat named');
+    assert.equal(await lookup.match('browser_observe', { session_id: 'sC' }), null, 'other arguments: not this call');
+    assert.equal(await lookup.match('browser_list_tabs', { session_id: 'sA' }), null, 'only recent calls count');
+    assert.equal(await lookup.match('browser_click', { session_id: 'sA' }), null);
+    assert.equal(await lookup.match("x' OR 1=1 --", {}), null, 'an ill-formed tool name is never run');
+    // Two identical calls from one chat: each is matched once, then none is left.
+    assert.deepEqual(await lookup.match('browser_screenshot', { session_id: 'sA' }), { source: 'happy', id: 'happyA' });
+    assert.deepEqual(await lookup.match('browser_screenshot', { session_id: 'sA' }), { source: 'happy', id: 'happyA' });
+    assert.equal(await lookup.match('browser_screenshot', { session_id: 'sA' }), null, 'a matched call is not matched again');
+});
+
+test('call chat without _meta: the journal match names the chat; ambiguous is refused; not found routes as before', async () => {
+    const r = callChatResolver(Object.assign(async () => null, {
+        match: async (name, args) => (args.who === 'two' ? { ambiguous: true } : args.who ? { source: 'happy', id: args.who } : null),
+    }));
+    assert.deepEqual(await r(undefined, undefined, { name: 'browser_observe', args: { who: 'S1' } }), { key: KEY_S1, source: 'happy' });
+    assert.equal(await r(undefined, undefined, { name: 'browser_observe', args: { who: 'two' } }), NO_CALL_CHAT);
+    assert.equal(await r(undefined, undefined, { name: 'browser_observe', args: {} }), null, 'not journaled: routed by session as before');
+    assert.equal(await callChatResolver(async () => null)(undefined, undefined, { name: 'browser_observe', args: {} }), null, 'no matcher: as before');
+    const failing = callChatResolver(Object.assign(async () => null, { match: async () => { throw new Error('db gone'); } }));
+    assert.equal(await failing(undefined, undefined, { name: 'browser_observe', args: {} }), null);
+});
+
+test('call chat without _meta, end to end: two chats in one process get their own pods, whatever session a call names', async () => {
+    const db = matchDb([
+        started('agentA', 'a1', 'browser_observe', {}),
+        started('agentB', 'b1', 'browser_observe', { session_id: 'pod0' }),
+        started('agentA', 'a2', 'browser_observe', { session_id: 'pod0', chat_key: 'x' }),
+        started('agentA', 'a3', 'browser_get_session', { session_id: 'z' }),
+        started('agentB', 'b3', 'browser_get_session', { session_id: 'z' }),
+    ]);
+    const KEY_A = chatKeyOf({ source: 'happy', id: 'happyA' });
+    const KEY_B = chatKeyOf({ source: 'happy', id: 'happyB' });
+    const h = harness({ lookup: createAgentChatLookup({ dbPath: db, waitMs: 80 }) });
+    await h.list();
+    await h.call('browser_observe', {});
+    await h.call('browser_observe', { session_id: 'pod0' }); // B names A's session: B gets its own
+    await h.call('browser_observe', { session_id: 'pod0', chat_key: 'x' });
+    assert.deepEqual(h.podKeys(), [KEY_A, KEY_B, KEY_A]);
+    assert.deepEqual(h.seen.calls.map((c) => [c.url, c.args.session_id]), [
+        ['http://127.0.0.1:8100/mcp', 'pod0'], ['http://127.0.0.1:8101/mcp', 'pod1'], ['http://127.0.0.1:8100/mcp', 'pod0'],
+    ]);
+    const before = h.seen.calls.length;
+    const amb = await h.call('browser_get_session', { session_id: 'z' });
+    assert.equal(amb.result.isError, true, 'identical calls from two chats: refused');
+    assert.equal(h.seen.calls.length, before);
+});
+
+test('agent chat lookup over ssh: the script and the request go over stdin, only plain words on the command line', async () => {
+    const db = matchDb([started('agentA', 'a1', 'browser_observe', { session_id: 'sA', text: "it's \"quoted\" \\ and ünïcode\n" })]);
+    const seen = [];
+    // Stands in for ssh: checks the command line, then runs the remote command here.
+    const fakeSsh = (cmd, args, opts, cb) => {
+        const at = args.indexOf('--');
+        seen.push({ cmd, host: args[at - 1], remote: args.slice(at + 1) });
+        return execFile(args[at + 1], args.slice(at + 2), opts, cb);
+    };
+    const lookup = createAgentChatLookup({ dbPath: db, ssh: 'prep-pro', waitMs: 80, execFileImpl: fakeSsh });
+    assert.deepEqual(await lookup.match('browser_observe', { session_id: 'sA', text: "it's \"quoted\" \\ and ünïcode\n" }), { source: 'happy', id: 'happyA' });
+    assert.equal(await lookup.match('browser_observe', { session_id: 'other' }), null);
+    assert.deepEqual(seen[0].cmd, 'ssh');
+    assert.equal(seen[0].host, 'prep-pro');
+    assert.deepEqual(seen[0].remote, ['python3', '-I', '-', db, '--match', '80']);
+    assert.ok(seen.every((s) => !s.remote.some((w) => w.includes('sA'))), 'arguments never on the command line');
+    assert.throws(() => createAgentChatLookup({ dbPath: db, ssh: 'prep-pro; rm -rf ~' }), /bad ssh host/);
+    assert.throws(() => createAgentChatLookup({ dbPath: '/tmp/a b.sqlite', ssh: 'prep-pro' }), /bad ssh host/);
+    assert.equal(agentCallChat(null, { BRIDGE_AGENT_DB: db, BRIDGE_AGENT_SSH: 'bad host' }), null, 'a bad host turns the lookup off');
+    assert.equal(agentCallChat({ source: 'happy', id: 'S' }, { BRIDGE_AGENT_DB: db }), null, 'a process with its own chat never looks calls up');
+    assert.equal(typeof agentCallChat(null, { BRIDGE_AGENT_DB: db, BRIDGE_AGENT_SSH: 'prep-pro' }), 'function');
 });

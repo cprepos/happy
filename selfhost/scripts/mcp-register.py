@@ -68,6 +68,21 @@ HOST_NODE = shutil.which("node") or "/usr/bin/node"
 AGENT_NODE = "/usr/local/bin/node"
 # Harnesses with a tool time limit: browser_wait_for_human returns inside it.
 WAIT = {"BRIDGE_WAIT_MAX_S": "570"}
+# Happy Agent serves all its chats from one bridge process; the bridge finds each call's chat in
+# the daemon's own database (selfhost/browser/README.md, "Happy Agent"). Here the container sees
+# the host's path; a Mac's daemon is read over ssh from prep-ml (BRIDGE_AGENT_SSH).
+LOCAL_AGENT_DB = os.path.join(HOME, ".local/share/happy-agent/.happy/agent/agent.sqlite")
+REMOTE_AGENT_DB = "/Users/cprepos/.local/share/happy-agent/.happy/agent/agent.sqlite"  # on the Mac
+REMOTE_PYTHON = "/usr/bin/python3"  # on the Mac
+
+
+def agent_env(script, env, host=None):
+    """The bridge's env in a Happy Agent config: where that daemon's database is."""
+    if script != BRIDGE:
+        return dict(env)
+    if host is None:
+        return dict(env, BRIDGE_AGENT_DB=LOCAL_AGENT_DB)
+    return dict(env, BRIDGE_AGENT_DB=REMOTE_AGENT_DB, BRIDGE_AGENT_SSH=host, BRIDGE_AGENT_PYTHON=REMOTE_PYTHON)
 RUN_TS = time.strftime("%Y%m%d_%H%M%S")
 
 # The Macs: which harness configs to edit on each (the ones installed there).
@@ -853,12 +868,29 @@ def env_vars_of(lines):
 
 
 class TomlTarget:
-    def __init__(self, path, make, extra, io=LOCAL):
+    def __init__(self, path, make, extra, io=LOCAL, refresh=False):
         self.io = io
         self.file = path
         self.path = io.label(path)
         self.make = make    # (script, env) -> (command, args, env for an `env =` line)
         self.extra = extra  # (name, env) -> list of extra lines
+        self.refresh = refresh  # rewrite its own blocks when what it would write now differs
+
+    def refresh_own(self, text, names, report):
+        """Brings the blocks this script wrote itself (between its markers, for names in its
+        state file) up to what it would write now. Every other line is left as it is."""
+        for name, script, env in servers():
+            if name not in names:
+                continue
+            m = self.own_block_re(name).search(text)
+            if not m:
+                continue
+            want = self.block(name, script, env).rstrip("\n")
+            if m.group(0) == want:
+                continue
+            text = text[:m.start()] + want + text[m.end():]
+            report.append("%s: %s brought up to date" % (self.path, name))
+        return text
 
     def block(self, name, script, env):
         command, args, benv = self.make(script, env)
@@ -910,6 +942,8 @@ class TomlTarget:
             text = ""
         prev = record_of(state, self.path)
         updated = self.update_env_vars(text, prev["names"], report)
+        if self.refresh:
+            updated = self.refresh_own(updated, prev["names"], report)
         blocks = toml_blocks(text)
         add = []
         for name, script, env in servers():
@@ -1026,7 +1060,7 @@ def remote_target(io, harness):
         return TomlTarget("~/.codex/config.toml", lambda s, env: (sh, remote_argv(s, env), {}), remote_codex_extra, io)
     if harness == "happy-agent":
         return TomlTarget("~/.local/share/happy-agent/happy/config/mcp.toml",
-                          lambda s, env: (sh, remote_argv(s, env), {}), agent_extra, io)
+                          lambda s, env: (sh, remote_argv(s, agent_env(s, env, io.host)), {}), agent_extra, io, refresh=True)
     raise ValueError("unknown harness %s" % harness)
 
 
@@ -1041,7 +1075,7 @@ def targets(remote=True):
             "command": HOST_NODE, "args": [s], "env": dict(env)}),
         JsonTarget("~/.claude.json", "mcpServers", lambda s, env: {
             "type": "stdio", "command": "node", "args": [s], "env": {}}),
-        TomlTarget("~/.local/share/happy-agent/happy/config/mcp.toml", lambda s, env: (AGENT_NODE, [s], env), agent_extra),
+        TomlTarget("~/.local/share/happy-agent/happy/config/mcp.toml", lambda s, env: (AGENT_NODE, [s], agent_env(s, env)), agent_extra, refresh=True),
         SkillTarget(),
     ]
     if remote:

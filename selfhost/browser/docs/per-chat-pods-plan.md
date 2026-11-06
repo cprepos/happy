@@ -339,6 +339,12 @@ The key is `chatHash = sha256(source+':'+id).slice(0,32)`.
   `agent.sqlite` before running the tool. `lib/agentchat.mjs` looks the id up read-only and takes
   the agent's Happy session (`happy_agent_happy_sessions.remote_session_id`), so the key matches a
   Happy CLI chat's. Unmatched calls are refused; tool arguments never pick the chat.
+- Happy Agent sends no `_meta` (BRIDGE_LOG_META on prep-ml: 53 calls, all `metaKeys: []`), so
+  the toolUseId path never fired and its 9 browser chats were keyed per session (`source:
+  "session"`, no key the app could compute). Now a call without an id is matched to its
+  in-flight `tool.started` record by tool and exact arguments (unclaimed, not completed); two
+  chats with identical calls in flight are refused. The Macs' daemons are read over ssh
+  (`BRIDGE_AGENT_SSH`).
 - App discovery: `GET /live/chat/<key>` (public, like `/live/<id>`), with
   `key = sha256("happy:" + happySessionId)[:32]`. Answers `{id, url, live, pod, status, ...}`,
   404 `no_link` when the chat never had a browser. `live` is false once the pod sleeps or the

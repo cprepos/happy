@@ -330,6 +330,16 @@ class RemoteRoundTripTest(Scratch):
             servers = toml.loads(self.read(host, rel))["mcp_servers"]
             for n in self.names:
                 self.assert_wrapped(servers[n], scripts[n])
+        # Happy Agent's bridge reads that Mac's daemon database over ssh; no other entry does.
+        for host in ("prep-air", "prep-pro"):
+            agent = toml.loads(self.read(host, ".local/share/happy-agent/happy/config/mcp.toml"))["mcp_servers"]
+            line = agent["happy-browser-bridge"]["args"][1]
+            self.assertIn(" BRIDGE_AGENT_DB=/Users/cprepos/.local/share/happy-agent/.happy/agent/agent.sqlite ", line)
+            self.assertIn(" BRIDGE_AGENT_SSH=%s " % host, line)
+            self.assertIn(" BRIDGE_AGENT_PYTHON=/usr/bin/python3 ", line)
+            if "vault" in agent:
+                self.assertNotIn("BRIDGE_AGENT", agent["vault"]["args"][1])
+        self.assertNotIn("BRIDGE_AGENT", self.read("prep-pro", ".codex/config.toml"))
         codex = toml.loads(self.read("prep-pro", ".codex/config.toml"))["mcp_servers"]
         self.assertEqual(codex["happy-browser-bridge"]["env_vars"],
                          ["HAPPY_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "HAPPY_FORKED_FROM_SESSION_ID"])
@@ -368,6 +378,20 @@ class RemoteRoundTripTest(Scratch):
         self.assertEqual(len(moved), 1)
         with open(self.state) as f:
             self.assertEqual([k for k in json.load(f) if not k.startswith("/")], [])
+
+    def test_an_older_happy_agent_entry_is_brought_up_to_date(self):
+        rel = ".local/share/happy-agent/happy/config/mcp.toml"
+        self.run_script("register")
+        now = self.read("prep-air", rel)
+        old = now.replace(" BRIDGE_AGENT_DB=/Users/cprepos/.local/share/happy-agent/.happy/agent/agent.sqlite"
+                          " BRIDGE_AGENT_PYTHON=/usr/bin/python3 BRIDGE_AGENT_SSH=prep-air", "")
+        self.assertNotEqual(old, now)
+        self.put("prep-air", rel, old + "\n# mine\n")
+        out = self.run_script("register")
+        self.assertIn("prep-air:~/%s: happy-browser-bridge brought up to date" % rel, out)
+        self.assertEqual(self.read("prep-air", rel), now + "\n# mine\n")
+        out = self.run_script("register")
+        self.assertNotIn("brought up to date", out)
 
     def test_a_file_changed_since_register_keeps_the_change(self):
         self.run_script("register")
