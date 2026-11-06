@@ -48,7 +48,10 @@ export function ownTools(waitMaxS = 3600) {
             'control. Returns {status: "done"} when the user handed control back (observe the page again before continuing, ' +
             'since it may have changed), {status: "timeout"} (you may ask again by calling it once more), {status: "released"} ' +
             '(control came back without the user releasing it: the bridge restarted, or the user left the live view; observe the page and call it again if you still need the user), ' +
-            'or {status: "ended"} (the user ended this browser: start a new one only if the task still needs it).',
+            'or {status: "ended"} (the user ended this browser: start a new one only if the task still needs it). ' +
+            'When a browser action came back {status: "approval_pending"}, call this to keep waiting for the user\'s approval: ' +
+            'it returns {status: "approved", approval_id} (repeat the exact same call once with that approval_id added) or ' +
+            '{status: "denied"} (do not retry; ask the user in chat).',
         inputSchema: {
             type: 'object',
             properties: {
@@ -76,6 +79,9 @@ const OWN_NAMES = new Set([...TOOLS.map((t) => t.name), ...SECRET_TOOL_NAMES]);
 
 const HELD = new Set(['user', 'takeover']);
 const isUserEnded = (s) => s?.status === 'done' && s?.reason === 'user_ended';
+export const APPROVAL_DENIED = 'The user denied this action. Do not retry it or look for another way to do the same thing. Tell the user in chat what you were trying to do and ask how they want to proceed.';
+export const APPROVAL_PENDING = 'The user has been asked to approve this action in the live view and has not answered yet. Do not repeat the action and do not send other actions for this session. Tell the user in chat that an approval is waiting for them (with the live link), then call browser_wait_for_human to keep waiting. When it returns approved, repeat the exact same call with approval_id added.';
+export const approvedRepeatNote = (aid) => `The user approved the action. Repeat the exact same call (same tool, same arguments) once, with approval_id: "${aid}" added; the approval is good for 15 minutes.`;
 export const VIEWER_LEFT = 'released: the user left the live view (closed it, or lost the connection) without releasing control. They may not be finished. Observe the page, and if you still need them, call browser_wait_for_human again.';
 export const BRIDGE_RESTARTING = 'released: bridge restarting. The user may not be finished. Observe the page, and if you still need them, call browser_wait_for_human again once the bridge is back (a few seconds).';
 export const USER_ENDED = 'The user ended this browser. Start a new one only if the task still needs it.';
@@ -374,7 +380,7 @@ export function linkRewriter(linkFrom, linkBase) {
     return walk;
 }
 
-export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fetch, pollS = 60, upstream = null, waitMaxS = 3600, log = () => {}, retryMs = 30_000, metaProbe = null, secrets = null, chatPods = null, callChat = null, now = Date.now, linkFrom = null, linkBase = null }) {
+export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fetch, pollS = 60, upstream = null, waitMaxS = 3600, approvalWaitS = null, log = () => {}, retryMs = 30_000, metaProbe = null, secrets = null, chatPods = null, callChat = null, now = Date.now, linkFrom = null, linkBase = null }) {
     const relink = linkRewriter(linkFrom, linkBase);
     const inflight = new Map(); // request id -> AbortController
     // chatPods: {chat: {key, source, forkedFrom?} | null, makeUpstream(url)}. Each call then goes to its chat's
@@ -382,6 +388,8 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
     const router = chatPods ? createChatRouter({ bridge: (p, b, s) => bridge(p, b, s), makeUpstream: chatPods.makeUpstream, chat: chatPods.chat, ...(chatPods.newKey ? { newKey: chatPods.newKey } : {}) }) : null;
     let withSession = new Set(); // local names of auto-browser tools that take a session_id
     const tools = ownTools(waitMaxS);
+    // How long a call that needs the user's approval waits for it before saying "still pending".
+    const approvalWait = Math.max(1, Math.min(waitMaxS, Number(approvalWaitS) || Math.min(900, waitMaxS)));
     let mapped = { tools: [], byLocal: new Map(), rename: (t) => t };
     let upstreamOk = false;
     let retryTimer = null;
@@ -501,7 +509,7 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
         return true;
     }
 
-    async function passThrough(id, name, args, meta, signal, cc = null) {
+    async function passThrough(id, name, args, meta, signal, cc = null, progress = () => {}) {
         if (!mapped.byLocal.has(name)) await refreshUpstream();
         const remote = mapped.byLocal.get(name);
         if (!remote) {
@@ -544,6 +552,14 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
             // Verbatim, under our request id.
             if (r.error) return write({ jsonrpc: '2.0', id, error: await scrubOut(gate, r.error, signal) });
             let out = r.result;
+            // auto-browser wants the user's yes first: ask them in the live view and wait here.
+            const pending = approvalRequired(out);
+            if (pending) {
+                const decided = await awaitApproval(pending, args, via, signal, progress, (a) => call(via, a));
+                if (signal.aborted) return;
+                if (decided.final) return result(id, await scrubOut(gate, decided.final, signal));
+                out = decided.result;
+            }
             if (via?.recovered && out && Array.isArray(out.content)) out = { ...out, content: [{ type: 'text', text: recoveredNote(via) }, ...out.content] };
             return result(id, await scrubOut(gate, await withLiveLink(name, args, out, signal, via), signal));
         } catch (err) {
@@ -665,6 +681,17 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
         if (await endedByUser(args, signal, via)) return { status: 'ended', note: USER_ENDED };
         // The user already took control on their own: keep it theirs (no "Needs you") and wait for Release.
         const current = await bridge('/api/state', ref, signal).catch(() => null);
+        // An action is waiting on the user's approval: wait for that decision, not a takeover.
+        if (current?.approval?.id && current.id) {
+            const aid = current.approval.id;
+            const l = await bridge('/api/links', ref, signal).catch(() => null);
+            const link = l?.url ?? null;
+            const st = await waitApproval(current.id, aid, link, timeoutS, signal, progress);
+            if (st === 'approved') return { status: 'approved', approval_id: aid, link, note: approvedRepeatNote(aid) };
+            if (st === 'denied') return { status: 'denied', approval_id: aid, link, note: APPROVAL_DENIED };
+            if (st === 'pending') return { status: 'timeout', approval_id: aid, link, waited_s: timeoutS, note: 'the user has not answered the approval yet; call browser_wait_for_human again to keep waiting' };
+            return { status: 'done', link, note: 'the approval request is no longer pending (the browser closed or it was withdrawn); observe the page before continuing' };
+        }
         let t;
         if (current?.status === 'user') {
             const l = await bridge('/api/links', ref, signal);
@@ -702,6 +729,81 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
         return { status: 'done', link: t.url, ...(state.reason === 'session_closed' ? { note: 'the browser session closed' } : {}) };
     }
 
+    // ── Approvals ─────────────────────────────────────────────────────────
+    // auto-browser answers a risky action (account settings, posting, payment, deleting) with
+    // {status: approval_required, approval_id}. The bridge shows it to the user in the live view
+    // and the app (scrubbed, with Approve and Deny), and this call waits for their answer like
+    // browser_wait_for_human: approved runs the same call again with the approval, denied tells
+    // the agent not to retry, and no answer in time says to keep waiting, not to repeat.
+    function approvalRequired(value) {
+        if (!value || typeof value !== 'object') return null;
+        let p = value.structuredContent;
+        if (!p || typeof p !== 'object' || p.status !== 'approval_required') {
+            p = null;
+            for (const c of Array.isArray(value.content) ? value.content : []) {
+                if (c?.type !== 'text' || typeof c.text !== 'string' || !c.text.includes('approval_required')) continue;
+                try { const j = JSON.parse(c.text); if (j?.status === 'approval_required') { p = j; break; } } catch {}
+            }
+        }
+        const aid = p?.approval_id ?? p?.approval?.id;
+        if (typeof aid !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(aid)) return null;
+        const sid = typeof p?.approval?.session_id === 'string' ? p.approval.session_id : null;
+        return { approvalId: aid, sessionId: sid, original: value };
+    }
+
+    // Waits on the bridge for approval `aid` of link `linkId`: approved | denied | pending | gone.
+    async function waitApproval(linkId, aid, link, timeoutS, signal, progress) {
+        const deadline = Date.now() + timeoutS * 1000;
+        progress(0, `Waiting for the user to approve or deny this action${link ? ` at ${link}` : ' in the live view'}.`);
+        let st = 'pending';
+        while (Date.now() < deadline) {
+            const waitS = Math.max(1, Math.min(pollS, Math.ceil((deadline - Date.now()) / 1000)));
+            const r = await bridge('/api/approval/wait', { id: linkId, approval_id: aid, wait_s: waitS }, signal);
+            st = r?.approval_status ?? 'gone';
+            if (st !== 'pending') break;
+            progress(Math.round(timeoutS - (deadline - Date.now()) / 1000), `Still waiting for the user's approval${link ? ` at ${link}` : ''}`);
+        }
+        return st;
+    }
+
+    // {final} to answer the call with, or {result} to go on with as the call's own result.
+    async function awaitApproval(pending, args, via, signal, progress, again) {
+        const sid = via?.session_id || pending.sessionId || (typeof args?.session_id === 'string' ? args.session_id : null);
+        if (!sid && !via) return { result: pending.original };
+        let reg;
+        try {
+            reg = await bridge('/api/approval', { ...linkRef(sid, via), approval_id: pending.approvalId }, signal);
+        } catch (err) {
+            if (signal.aborted) return { final: null };
+            log(`could not show approval ${pending.approvalId} to the user: ${err.message}`);
+            return { result: pending.original };
+        }
+        const aid = pending.approvalId;
+        let st;
+        try {
+            st = await waitApproval(reg.id, aid, reg.url, approvalWait, signal, progress);
+        } catch (err) {
+            if (signal.aborted) return { final: null };
+            throw err;
+        }
+        if (st === 'approved') {
+            let r;
+            try { r = await again({ ...args, approval_id: aid }); } catch (err) {
+                if (signal.aborted) return { final: null };
+                return { final: toolResult(`Error: the user approved the action, but running it failed: ${err.message}`, true) };
+            }
+            if (r?.error) return { final: toolResult(`Error: the user approved the action, but running it failed: ${r.error.message ?? 'unknown error'}`, true) };
+            const out = r?.result;
+            if (out && Array.isArray(out.content)) return { result: { ...out, content: [{ type: 'text', text: 'The user approved this action in the live view, and it ran.' }, ...out.content] } };
+            return { result: out };
+        }
+        if (st === 'denied') return { final: toolResult({ status: 'denied', approval_id: aid, link: reg.url, note: APPROVAL_DENIED }, true) };
+        if (st === 'pending') {
+            return { final: toolResult({ status: 'approval_pending', approval_id: aid, link: reg.url, waited_s: approvalWait, note: APPROVAL_PENDING }, true) };
+        }
+        return { final: toolResult({ status: 'approval_gone', approval_id: aid, note: 'The approval request is no longer pending (the browser closed or the request was withdrawn). Observe the page before deciding what to do; ask the user in chat before trying this action again.' }, true) };
+    }
+
     async function handle(msg) {
         const { id, method, params } = msg;
         const isRequest = id !== undefined && id !== null;
@@ -722,7 +824,11 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
                         ', CAPTCHA, two-factor, payment, a confirmation), call browser_wait_for_human ' +
                         'and do nothing in that session until it returns. The user can also take control from the live view at ' +
                         'any time: while they have it, actions that change the page are refused, and you should call ' +
-                        'browser_wait_for_human and wait until they release control. Observing and screenshots still work.',
+                        'browser_wait_for_human and wait until they release control. Observing and screenshots still work. ' +
+                        'Some actions (changing account settings, posting, payments, deleting) need the user\'s approval: the call ' +
+                        'then waits while the user is asked to Approve or Deny in the live view, and runs once they approve. If it ' +
+                        'comes back denied, do not retry; if it comes back approval_pending, do not repeat it: tell the user an ' +
+                        'approval is waiting and call browser_wait_for_human.',
                 });
             }
             case 'ping':
@@ -753,7 +859,7 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
                         }
                         out = await secrets.callOwn(name, args, ac.signal);
                     }
-                    else if (upstream) return await passThrough(id, name, args, params?._meta, ac.signal, cc);
+                    else if (upstream) return await passThrough(id, name, args, params?._meta, ac.signal, cc, progress);
                     else return error(id, -32602, `unknown tool ${name}`);
                     if (!ac.signal.aborted) result(id, toolResult(out));
                 } catch (err) {

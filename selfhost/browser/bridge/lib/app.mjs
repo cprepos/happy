@@ -11,6 +11,9 @@
 //   POST /live/<id>/nav        {action: back|forward|reload|goto, url?} on the link's session, only
 //                              while user|takeover (else 409); goto takes http(s) only (else 400).
 //                              -> {ok, url, title, can_go_back, can_go_forward}, timed_out after 10 s
+//   POST /live/<id>/approve    {approval_id} the user approves the action the agent is waiting on
+//   POST /live/<id>/deny       {approval_id} the user denies it. Both only for the link's own pending
+//                              approval (state.approval; else 409 no_pending_approval), and only its id.
 //   POST /live/<id>/end        the user ends the browser: the session closes, the link is done
 //                              (reason user_ended) and waiters wake
 //   GET  /live/chat/<chat_key> which link belongs to this chat: {id, url, live, pod, ...state};
@@ -29,6 +32,11 @@
 //   POST /api/state     {session_id?, action?}      -> the session's link state ({status: null} without one);
 //                       with no session_id, a held link if any. With an action ({kind, target}) on a link
 //                       nobody holds, records it as last_action.
+//   POST /api/approval  {session_id|chat_key, approval_id}
+//                       -> {id, url, approval}: an auto-browser approval of this link's own session,
+//                       still pending, is shown to the user (state.approval, scrubbed) until decided
+//   POST /api/approval/wait {id, approval_id, wait_s}
+//                       -> {approval_status: pending|approved|denied|gone, ...state}, once decided or wait_s passes
 //   /api/links, /api/takeover and /api/state also take {chat_key} instead of session_id.
 //
 // With per-chat pods (config.pods, lib/pods.mjs), also:
@@ -49,8 +57,9 @@ import { timingSafeEqual, randomBytes, createHash } from 'node:crypto';
 import { request as httpRequest } from 'node:http';
 import { connect as netConnect } from 'node:net';
 import { renderPage, renderGone } from './page.mjs';
+import { APPROVAL_ID, approvalSummary } from './approval.mjs';
 
-const LIVE_ROUTE = /^\/live\/([^/]+)(\/frame\.jpg|\/state|\/done|\/take|\/release|\/end|\/nav)?\/?$/;
+const LIVE_ROUTE = /^\/live\/([^/]+)(\/frame\.jpg|\/state|\/done|\/take|\/release|\/end|\/nav|\/approve|\/deny)?\/?$/;
 const CHAT_ROUTE = /^\/live\/chat\/([0-9a-f]{32})\/?$/;
 const CHAT_KEY = /^[0-9a-f]{32}$/;
 // noVNC through the bridge. Matched on the raw request path, before any URL normalising, so
@@ -119,9 +128,22 @@ export function navUrl(input) {
     return u.href;
 }
 
-export function stateOf(rec) {
-    return { status: rec.status, reason: rec.reason ?? null, url: rec.url ?? null, title: rec.title ?? null, last_action: rec.lastAction ?? null };
+// The approval the user is asked for: the link's own, for its current session, still pending.
+export function pendingApproval(rec) {
+    const a = rec.approval;
+    if (!a || a.status !== 'pending' || a.sessionId !== rec.sessionId || rec.status === 'done') return null;
+    return { id: a.id, kind: a.kind, summary: a.summary, details: a.details ?? [], asked_at: a.askedAt ?? null };
 }
+
+export function stateOf(rec) {
+    return {
+        status: rec.status, reason: rec.reason ?? null, url: rec.url ?? null, title: rec.title ?? null, last_action: rec.lastAction ?? null,
+        approval: pendingApproval(rec),
+    };
+}
+
+// auto-browser's approval status as the bridge names it.
+const APPROVAL_STATUS = { pending: 'pending', approved: 'approved', executed: 'approved', rejected: 'denied' };
 
 // {kind, target} from the MCP server: a known kind, and a short target with no control characters.
 function cleanAction(a, at) {
@@ -164,7 +186,7 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
     const runtime = new Map(); // id -> {share, frame, inflight, waiters, metaAt}
     const rt = (id) => {
         let r = runtime.get(id);
-        if (!r) runtime.set(id, (r = { share: null, frame: null, inflight: null, waiters: new Set(), metaAt: 0 }));
+        if (!r) runtime.set(id, (r = { share: null, frame: null, inflight: null, waiters: new Set(), approvalWaiters: new Set(), metaAt: 0 }));
         return r;
     };
     // `base` is the listener's public base: localhost for the loopback listener, the LAN address
@@ -232,6 +254,8 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
 
     function setStatus(rec, status, reason) {
         store.update(rec, { status, reason: reason ?? null });
+        // A closed browser has nothing left to approve.
+        if (status === 'done' && rec.approval?.status === 'pending') settleApproval(rec, 'gone');
         if (!HELD_STATUSES.has(status)) {
             disarmLeave(rec.id);
             closeTunnels(rec.id, status === 'done' ? 'ended' : 'released');
@@ -239,6 +263,78 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
             for (const wake of r.waiters) wake();
             r.waiters.clear();
         }
+    }
+
+    // ── Approvals ──────────────────────────────────────────────────────────
+    // An auto-browser approval the agent is waiting on, recorded on its link so the live view can
+    // ask the user. It always belongs to the link's own session (checked against the controller's
+    // record when it is registered, and again on every decision), so one chat can never see or
+    // decide another chat's approval.
+    function settleApproval(rec, status) {
+        if (!rec.approval) return;
+        store.update(rec, { approval: { ...rec.approval, status, decidedAt: now() } });
+        const r = rt(rec.id);
+        for (const wake of r.approvalWaiters) wake();
+        r.approvalWaiters.clear();
+    }
+
+    function waitForApproval(rec, waitMs) {
+        if (!pendingApproval(rec)) return Promise.resolve();
+        return new Promise((resolve) => {
+            const r = rt(rec.id);
+            const wake = () => { clearTimeout(timer); r.approvalWaiters.delete(wake); resolve(); };
+            const timer = setTimeout(wake, waitMs);
+            r.approvalWaiters.add(wake);
+        });
+    }
+
+    // Asks the controller where a pending approval stands: decided elsewhere (its own operator
+    // API), gone (a restarted pod, an unknown id), or still pending.
+    async function syncApproval(rec) {
+        const a = pendingApproval(rec);
+        if (!a) return;
+        const c = clientOf(rec);
+        if (!c) return;
+        let record;
+        try {
+            record = await c.getApproval(a.id);
+        } catch (err) {
+            if (err.status === 404) settleApproval(rec, 'gone');
+            return;
+        }
+        if (record?.session_id !== rec.sessionId) return settleApproval(rec, 'gone');
+        const status = APPROVAL_STATUS[record?.status] ?? 'gone';
+        if (status !== 'pending') settleApproval(rec, status);
+    }
+
+    // What became of approval `aid` on this link.
+    const approvalStatusOf = (rec, aid) => (rec.approval?.id === aid && rec.approval.sessionId === rec.sessionId ? rec.approval.status : 'gone');
+
+    // POST /live/<id>/approve|deny: the user's decision on the link's own pending approval.
+    async function decide(req, res, rec, approve) {
+        let body;
+        try { body = await readJson(req); } catch (err) { return send(res, err.status || 400, { error: err.message }); }
+        const a = pendingApproval(rec);
+        if (!a) return send(res, 409, { error: 'no_pending_approval', ...stateOf(rec), ...podField(rec) });
+        if (body?.approval_id !== a.id) return send(res, 409, { error: 'approval_changed', ...stateOf(rec), ...podField(rec) });
+        const c = clientOf(rec);
+        if (!c) return send(res, 503, { error: 'asleep' });
+        if (podLink(rec)) pods.touchViewer(rec.chatKey);
+        try {
+            const comment = approve ? 'Approved by the user from the live view' : 'Denied by the user from the live view';
+            const record = await (approve ? c.approve(a.id, comment) : c.reject(a.id, comment));
+            if (record?.session_id && record.session_id !== rec.sessionId) throw Object.assign(new Error('wrong session'), { status: 409 });
+        } catch (err) {
+            if (err.status === 409 || err.status === 404) {
+                await syncApproval(rec);
+                if (pendingApproval(rec)?.id === a.id) settleApproval(rec, 'gone');
+                return send(res, 409, { error: 'approval_not_pending', approval_status: approvalStatusOf(rec, a.id), ...stateOf(rec), ...podField(rec) });
+            }
+            return send(res, 502, { error: 'approval_failed' });
+        }
+        settleApproval(rec, approve ? 'approved' : 'denied');
+        log(`approval /live/${rec.id.slice(0, 6)}… ${approve ? 'approved' : 'denied'}`);
+        return send(res, 200, { ok: true, approval_status: approvalStatusOf(rec, a.id), ...stateOf(rec), ...podField(rec) });
     }
 
     async function shareToken(rec, { fresh = false } = {}) {
@@ -341,6 +437,8 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
             const s = await client.getSession(rec.sessionId);
             if (isEnded(s)) return sessionGone(rec);
             if (!rec.url) store.update(rec, { url: s.current_url ?? null, title: s.title ?? null });
+            // An approval decided or dropped elsewhere stops showing.
+            if (pendingApproval(rec)) await syncApproval(rec);
         } catch (err) {
             if (err.status === 404) sessionGone(rec);
         }
@@ -450,6 +548,46 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
                 if (action) store.update(rec, { lastAction: action });
             }
             return send(res, 200, { id: rec.id, ...stateOf(rec), ...podField(rec) });
+        }
+
+        if (path === '/api/approval') {
+            const aid = body?.approval_id;
+            if (typeof aid !== 'string' || !APPROVAL_ID.test(aid)) return send(res, 400, { error: 'approval_id is required' });
+            const { sid, rec: chatRec } = linkTarget(body);
+            if (!chatRec) await verifiedSession(sid);
+            const rec = chatRec || store.forSession(sid);
+            const c = clientOf(rec);
+            if (!c) return send(res, 503, { error: 'asleep' });
+            let record;
+            try {
+                record = await c.getApproval(aid);
+            } catch (err) {
+                return send(res, err.status === 404 ? 404 : 502, { error: err.status === 404 ? 'unknown_approval' : 'auto-browser unavailable' });
+            }
+            // Only this link's own session: never another chat's approval.
+            if (record?.session_id !== rec.sessionId) return send(res, 403, { error: 'not_this_session' });
+            if (record.status !== 'pending') {
+                return send(res, 409, { error: 'not_pending', approval_status: APPROVAL_STATUS[record.status] ?? 'gone' });
+            }
+            if (rec.approval?.id !== aid || rec.approval.status !== 'pending') {
+                store.update(rec, { approval: { id: aid, sessionId: rec.sessionId, ...approvalSummary(record, rec.url), askedAt: now(), status: 'pending', decidedAt: null } });
+            }
+            return send(res, 200, { id: rec.id, url: linkUrl(rec), approval: pendingApproval(rec) });
+        }
+
+        if (path === '/api/approval/wait') {
+            const found = typeof body.id === 'string' ? store.lookup(body.id) : null;
+            if (!found) return send(res, 404, { error: 'unknown_link' });
+            if (found.expired) return send(res, 410, { error: 'expired_link' });
+            const { rec } = found;
+            const aid = body.approval_id;
+            if (typeof aid !== 'string' || !APPROVAL_ID.test(aid)) return send(res, 400, { error: 'approval_id is required' });
+            if (pendingApproval(rec)?.id === aid) {
+                const waitS = Math.max(0, Math.min(MAX_WAIT_S, Number(body.wait_s) || 30));
+                await waitForApproval(rec, waitS * 1000);
+                if (pendingApproval(rec)?.id === aid) await syncApproval(rec);
+            }
+            return send(res, 200, { approval_status: approvalStatusOf(rec, aid), ...stateOf(rec) });
         }
 
         if (path === '/api/wait' || path === '/api/release') {
@@ -604,6 +742,10 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         if (sub === '/nav') {
             if (req.method !== 'POST') return send(res, 405, { error: 'method_not_allowed' }, { Allow: 'POST' });
             return nav(req, res, rec);
+        }
+        if (sub === '/approve' || sub === '/deny') {
+            if (req.method !== 'POST') return send(res, 405, { error: 'method_not_allowed' }, { Allow: 'POST' });
+            return decide(req, res, rec, sub === '/approve');
         }
         if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: 'method_not_allowed' }, { Allow: 'GET' });
 

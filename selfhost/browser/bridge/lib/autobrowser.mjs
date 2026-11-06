@@ -64,6 +64,14 @@ export function createAutoBrowserClient({ baseUrl, token, fetchImpl = fetch, tim
             const path = { back: 'go-back', forward: 'go-forward', reload: 'reload', goto: 'navigate' }[action];
             return call('POST', s + path, { body: action === 'goto' ? { url } : undefined, timeout }).then((r) => r.session ?? r);
         },
+        /** One approval record (status, kind, action, origin, session_id). Throws 404 for an unknown id. */
+        getApproval: (approvalId) => call('GET', `/approvals/${encodeURIComponent(approvalId)}`),
+        /** Approves a pending approval; 409 when it is no longer pending. */
+        approve: (approvalId, comment) =>
+            call('POST', `/approvals/${encodeURIComponent(approvalId)}/approve`, { body: comment ? { comment } : {} }),
+        /** Rejects a pending approval; 409 when it is no longer pending. */
+        reject: (approvalId, comment) =>
+            call('POST', `/approvals/${encodeURIComponent(approvalId)}/reject`, { body: comment ? { comment } : {} }),
         /** Closes the session and its browser. The record stays readable as "closed". */
         closeSession: (sessionId) => call('DELETE', `/sessions/${encodeURIComponent(sessionId)}`),
     };

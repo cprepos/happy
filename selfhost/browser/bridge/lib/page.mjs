@@ -50,6 +50,14 @@ header { position: sticky; top: 0; z-index: 1; width: 100%; background: var(--su
 .pill.done, .pill.ended { background: var(--done-bg); color: var(--done-fg); }
 #reason { margin: 12px var(--gutter-r) 0 var(--gutter-l); padding: 10px 12px; border-radius: 10px;
   background: var(--need-bg); color: var(--need-fg); overflow-wrap: anywhere; }
+#approval { margin: 12px var(--gutter-r) 0 var(--gutter-l); padding: 12px; border-radius: 10px;
+  background: var(--need-bg); color: var(--need-fg); border: 1px solid var(--need-fg); overflow-wrap: anywhere; }
+#approval h2 { margin: 0 0 4px; font-size: 16px; }
+#approval p { margin: 0 0 6px; }
+#approval ul { margin: 0 0 10px; padding-left: 18px; }
+#approval .row { display: flex; gap: 10px; }
+#approval .btn.deny { color: var(--err-fg); }
+#approval-msg { margin-top: 8px; font-size: 13px; }
 main { flex: 1; width: 100%; min-width: 0; padding: 12px var(--gutter-r) 12px var(--gutter-l); }
 #box { position: relative; width: 100%; max-width: ${frameWidth}px; margin: 0 auto; aspect-ratio: var(--frame-ar);
   max-height: calc(100vh - 170px); max-height: calc(100dvh - 170px); min-height: 200px;
@@ -128,8 +136,54 @@ const SCRIPT = `
     const held = needs || state.status === 'user';
     $('done').hidden = !held;
     $('take').classList.toggle('primary', needs);
-    document.title = (needs ? '⚠ ' : '') + (state.title || 'Live browser');
+    renderApproval();
+    document.title = (needs || state.approval ? '⚠ ' : '') + (state.title || 'Live browser');
   }
+
+  // The action the agent is waiting on the user's yes for. Text only (textContent): the summary
+  // comes scrubbed from the bridge, never with what was typed.
+  let shownApproval = null, deciding = false;
+  function renderApproval() {
+    const a = state.status !== 'done' ? state.approval : null;
+    $('approval').hidden = !a;
+    if (!a) { shownApproval = null; return; }
+    if (shownApproval === a.id) return;
+    shownApproval = a.id;
+    $('approval-summary').textContent = a.summary || 'The agent wants to do something that needs your approval.';
+    const list = $('approval-details');
+    list.textContent = '';
+    for (const d of (Array.isArray(a.details) ? a.details : [])) {
+      const li = document.createElement('li');
+      li.textContent = String(d);
+      list.appendChild(li);
+    }
+    $('approval-msg').textContent = '';
+    $('approve').disabled = $('deny').disabled = false;
+  }
+
+  async function decide(approve) {
+    const a = state.approval;
+    if (!a || deciding) return;
+    deciding = true;
+    $('approve').disabled = $('deny').disabled = true;
+    $('approval-msg').textContent = approve ? 'Approving…' : 'Denying…';
+    try {
+      const r = await fetch(base + (approve ? '/approve' : '/deny'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ approval_id: a.id }),
+      });
+      const body = await r.json().catch(() => null);
+      if (body && body.status) { state = body; shownApproval = null; render(); }
+      if (!r.ok) {
+        $('approval-msg').textContent = r.status === 409 ? 'This request is no longer waiting.' : 'That did not go through. Try again.';
+        $('approve').disabled = $('deny').disabled = !state.approval;
+      }
+    } catch (e) {
+      $('approval-msg').textContent = 'No connection. Try again.';
+      $('approve').disabled = $('deny').disabled = false;
+    } finally { deciding = false; }
+  }
+  $('approve').addEventListener('click', () => decide(true));
+  $('deny').addEventListener('click', () => decide(false));
 
   function stop() { stopped = true; clearTimeout(timer); spin(false); $('take').hidden = true; $('done').hidden = true; }
 
@@ -281,6 +335,16 @@ export function renderPage({ id, state, takeoverUrl, nonce, frameWidth = 1920, f
   <div id="url">${esc(state.url || '')}</div>
 </header>
 <div id="reason" hidden></div>
+<section id="approval" role="alertdialog" aria-labelledby="approval-title" hidden>
+  <h2 id="approval-title">Allow this browser action?</h2>
+  <p id="approval-summary"></p>
+  <ul id="approval-details"></ul>
+  <div class="row">
+    <button id="deny" class="btn deny" type="button">Deny</button>
+    <button id="approve" class="btn primary" type="button">Approve</button>
+  </div>
+  <div id="approval-msg" role="status"></div>
+</section>
 <main>
   <div id="box" class="noting">
     <img id="frame" alt="Live view of the agent's browser" hidden>
