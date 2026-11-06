@@ -138,7 +138,7 @@ final class LiveBrowserDock: NSObject {
             // Done or dead at the bridge is asleep here: the agent's next
             // browser call resumes it from the saved cookies and page.
             if state.ended { state.status = .watching }
-            if !state.asleep { state.pod = .asleep }
+            state.live = false
             if !holdsControl { feed.rest(state) }
         } else if feed.phase.isResting {
             feed.retry()

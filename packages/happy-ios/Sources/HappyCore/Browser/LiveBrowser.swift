@@ -253,15 +253,29 @@ public struct LiveBrowserState: Equatable, Sendable, Decodable {
     public var title: String?
     public var lastAction: Action?
     public var pod: Pod?
+    /// The bridge's one word on whether a browser runs for the link: its
+    /// pod running and its session answering lately, or starting a short
+    /// while. A done link is never live. Nil from a bridge before it.
+    public var live: Bool?
+    /// Why not live (`asleep`, `crashed`, `pod_gone`,
+    /// `session_not_answering`, `start_stuck`, `no_browser`, or the link's
+    /// own, like `user_ended`).
+    public var liveReason: String?
 
-    public init(status: Status, reason: String? = nil, url: String? = nil, title: String? = nil, lastAction: Action? = nil, pod: Pod? = nil) {
+    public init(status: Status, reason: String? = nil, url: String? = nil, title: String? = nil, lastAction: Action? = nil, pod: Pod? = nil, live: Bool? = nil, liveReason: String? = nil) {
         self.status = status; self.reason = reason; self.url = url; self.title = title; self.lastAction = lastAction; self.pod = pod
+        self.live = live; self.liveReason = liveReason
     }
+
+    /// A browser runs for it: the bridge's `live`, and only that (what its
+    /// status and pod say, from a bridge without it). The red line's rule.
+    public var runs: Bool { live ?? (!ended && !asleep) }
 
     /// No browser runs for it now: nothing to show until the agent (or
     /// Take control) wakes it. Its frame answers 503.
     public var asleep: Bool {
-        switch pod {
+        if live == false { return !ended }
+        return switch pod {
         case .asleep?, .stopped?, .crashed?, .unassigned?, .dead?: !ended
         case .running?, .starting?, nil: false
         }
@@ -274,7 +288,7 @@ public struct LiveBrowserState: Equatable, Sendable, Decodable {
     /// The browser's session closed; nothing more will come.
     public var ended: Bool { status == .done }
 
-    private enum CodingKeys: String, CodingKey { case status, reason, url, title, lastAction = "last_action", pod }
+    private enum CodingKeys: String, CodingKey { case status, reason, url, title, lastAction = "last_action", pod, live, liveReason = "live_reason" }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -286,6 +300,8 @@ public struct LiveBrowserState: Equatable, Sendable, Decodable {
         title = try container.decodeIfPresent(String.self, forKey: .title)
         lastAction = try? container.decodeIfPresent(Action.self, forKey: .lastAction)
         pod = (try? container.decodeIfPresent(String.self, forKey: .pod)).flatMap { Pod(rawValue: $0) }
+        live = try? container.decodeIfPresent(Bool.self, forKey: .live)
+        liveReason = try? container.decodeIfPresent(String.self, forKey: .liveReason)
     }
 }
 
@@ -369,9 +385,9 @@ public struct LiveBrowserChat: Equatable, Sendable, Decodable {
         state = try LiveBrowserState(from: decoder)
     }
 
-    /// A browser actually runs for the chat: `live`, and not asleep, dead
-    /// or done. Only this shows the red line.
-    public var running: Bool { live && !state.ended && !state.asleep }
+    /// A browser actually runs for the chat: the bridge's `live`, and
+    /// nothing else. Only this shows the red line.
+    public var running: Bool { live }
 }
 
 extension ChatSnapshot {

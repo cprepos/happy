@@ -56,7 +56,7 @@ public final class LiveBrowserFeed {
             }
         }
         /// The bridge answered, and says a browser runs for it.
-        public var isRunning: Bool { state.map { !$0.ended && !$0.asleep } ?? false }
+        public var isRunning: Bool { state?.runs ?? false }
     }
 
     /// Over the chat, small.
