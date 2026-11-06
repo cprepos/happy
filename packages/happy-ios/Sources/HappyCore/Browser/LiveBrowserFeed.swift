@@ -582,6 +582,25 @@ public final class LiveBrowserFeed {
         return try JSONDecoder().decode(LiveBrowserNavResult.self, from: data)
     }
 
+    /// Approves or denies the action the agent waits on (`POST /approve`
+    /// or `/deny`, with the approval's id). The bridge answers 409 when that
+    /// approval no longer waits (decided elsewhere, the browser closed):
+    /// the card goes away at once, and the next poll brings the state.
+    public func decide(_ approval: LiveBrowserState.Approval, approve: Bool) async throws {
+        let url = approve ? link.approveURL : link.denyURL
+        let data: Data
+        do {
+            data = try await post(url, body: approval.decisionBody)
+        } catch BrowserError.upstream(409) {
+            if case .live(var state) = phase, state.approval?.id == approval.id {
+                state.approval = nil
+                phase = .live(state)
+            }
+            throw BrowserError.upstream(409)
+        }
+        if let state = try? JSONDecoder().decode(LiveBrowserState.self, from: data) { phase = .live(state) }
+    }
+
     /// Over its own transport, which a paused feed may not have.
     private func post(_ url: URL, body: Data? = nil) async throws -> Data {
         if let transport { return try await transport.send(method: "POST", url: url, body: body, accept: "application/json") }

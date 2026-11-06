@@ -80,6 +80,11 @@ final class LiveBrowserDock: NSObject {
     private(set) var isOnScreen = false
     private var shownStatus: String?
     private var lastStatus: LiveBrowserState.Status?
+    /// The approval the alert last came up for, so each comes up on its own once.
+    private var askedApproval: String?
+    /// The approval alert while it shows: it goes once the approval does.
+    private weak var approvalAlert: UIAlertController?
+    private var approvalShown: String?
     private var corner: LiveBrowserDockLayout.Corner
     private var large: Bool
     private var placed: (card: CGRect, anchor: CGFloat)?
@@ -211,6 +216,8 @@ final class LiveBrowserDock: NSObject {
         closePlayer(animated: false)
         dismissFullScreen(animated: false)
         lastStatus = nil
+        askedApproval = nil
+        dismissApproval()
         controlTaken = false
         if let link {
             let feed = LiveBrowserFeed(link: link) { [weak self] in self?.makeTransport() }
@@ -280,6 +287,15 @@ final class LiveBrowserDock: NSObject {
         // Asked for: the player comes up on its own, once each time.
         if status == .takeover, lastStatus != .takeover, isOnScreen { openPlayer() }
         lastStatus = status
+        // An action waits on the person's yes: the player, and the question, once each.
+        let approval = feed.phase.state?.pendingApproval
+        if approval?.id != approvalShown { dismissApproval() }
+        if let approval, approval.id != askedApproval, isOnScreen {
+            askedApproval = approval.id
+            openPlayer()
+            // The full screen is the live page, which asks for itself.
+            if fullScreen == nil { askApproval(approval) }
+        }
         // The bridge let the person go (the agent took it back, or the link
         // ended): a noVNC page still up is driving nothing.
         // A read sent before `/take` can still answer watching: not for a
@@ -302,6 +318,7 @@ final class LiveBrowserDock: NSObject {
         case .notResponding: Strings.LiveBrowser.notRespondingStatus
         case .live(let state):
             if state.ended { nil }
+            else if state.pendingApproval != nil { Strings.LiveBrowser.needsApproval }
             else if state.asleep { Strings.LiveBrowser.asleepStatus }
             else if state.starting, state.status == .watching { Strings.LiveBrowser.starting }
             else { Strings.LiveBrowser.status(state.status) }
@@ -422,7 +439,8 @@ final class LiveBrowserDock: NSObject {
     /// The footer's button: Release while the person has the browser,
     /// else Take over, which takes it and opens it full screen.
     private func playerAction() {
-        if feed?.phase.isResting == true { retryBrowser() }
+        if let approval = feed?.phase.state?.pendingApproval { askApproval(approval) }
+        else if feed?.phase.isResting == true { retryBrowser() }
         else if holdsControl { release() }
         else { presentFullScreen(taking: true) }
     }
@@ -717,6 +735,49 @@ final class LiveBrowserDock: NSObject {
     func minimize() {
         if player == nil { openPlayer() }
         dismissFullScreen(animated: true)
+    }
+
+    // MARK: Approvals
+
+    /// Approve, Deny, or Not now for the action the agent waits on. The
+    /// words are the bridge's scrubbed summary: never what was typed.
+    private func askApproval(_ approval: LiveBrowserState.Approval) {
+        guard let host, approvalAlert == nil else { return }
+        var presenter: UIViewController = host
+        while let next = presenter.presentedViewController, !next.isBeingDismissed { presenter = next }
+        let alert = UIAlertController(title: Strings.LiveBrowser.approvalTitle, message: approval.text, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: Strings.LiveBrowser.deny, style: .destructive) { [weak self] _ in self?.decide(approval, approve: false) })
+        let approve = UIAlertAction(title: Strings.LiveBrowser.approve, style: .default) { [weak self] _ in self?.decide(approval, approve: true) }
+        alert.addAction(approve)
+        alert.addAction(UIAlertAction(title: Strings.LiveBrowser.notNow, style: .cancel))
+        alert.preferredAction = approve
+        alert.view.accessibilityIdentifier = "live-browser-approval"
+        approvalAlert = alert
+        approvalShown = approval.id
+        presenter.present(alert, animated: true)
+    }
+
+    /// The approval went (decided, elsewhere or here; the browser closed).
+    private func dismissApproval() {
+        approvalShown = nil
+        guard let alert = approvalAlert else { return }
+        approvalAlert = nil
+        if alert.presentingViewController != nil, !alert.isBeingDismissed { alert.dismiss(animated: true) }
+    }
+
+    private func decide(_ approval: LiveBrowserState.Approval, approve: Bool) {
+        approvalAlert = nil
+        approvalShown = nil
+        guard let feed else { return }
+        Task { [weak self] in
+            do {
+                try await feed.decide(approval, approve: approve)
+            } catch BrowserError.upstream(409) {
+                self?.alert(Strings.LiveBrowser.approvalFailed, Strings.LiveBrowser.approvalGone)
+            } catch {
+                self?.alert(Strings.LiveBrowser.approvalFailed, Strings.LiveBrowser.unreachable)
+            }
+        }
     }
 
     private func alert(_ title: String, _ message: String) {
@@ -1359,7 +1420,7 @@ final class LiveBrowserPlayerView: UIView {
         let title = switch feed.phase {
         case .dormant: Strings.LiveBrowser.checkAgain
         case .notResponding: Strings.LiveBrowser.retry
-        default: held ? Strings.LiveBrowser.release : Strings.LiveBrowser.takeOver
+        default: state?.pendingApproval != nil ? Strings.LiveBrowser.review : held ? Strings.LiveBrowser.release : Strings.LiveBrowser.takeOver
         }
         action.setTitle(title, for: .normal)
         action.isEnabled = !feed.phase.isOver

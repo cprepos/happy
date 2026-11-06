@@ -68,6 +68,11 @@ public struct LiveBrowserLink: Equatable, Sendable {
     /// POSTed by the person in control to move the page
     /// (`LiveBrowserNavigation`). Answers `LiveBrowserNavResult`.
     public var navURL: URL { url.appendingPathComponent("nav") }
+    /// POSTed with `LiveBrowserState.Approval.decisionBody` to approve the
+    /// action the agent waits on. Answers the state.
+    public var approveURL: URL { url.appendingPathComponent("approve") }
+    /// POSTed the same way to deny it.
+    public var denyURL: URL { url.appendingPathComponent("deny") }
 
     /// The newest live browser among `texts`, read from the last: a chat's
     /// one live view. Code and a link still arriving are no links (`split`).
@@ -265,6 +270,54 @@ public struct LiveBrowserState: Equatable, Sendable, Decodable {
         }
     }
 
+    /// An action the agent wants to take that waits on the person's yes
+    /// (changing account settings, posting, paying, deleting). The bridge
+    /// sends only a scrubbed summary: never what was typed, a field's value
+    /// or a tool's arguments.
+    public struct Approval: Equatable, Sendable, Decodable {
+        public var id: String
+        /// `write`, `upload`, `post`, `payment`, `account_change`,
+        /// `destructive`, or one a newer bridge adds.
+        public var kind: String
+        /// One sentence: "The agent wants to change account settings."
+        public var summary: String
+        /// Short lines: what it would do, the agent's reason, the page.
+        public var details: [String]
+        /// When it was asked, in ms since 1970.
+        public var askedAt: Double?
+
+        public init(id: String, kind: String = "write", summary: String, details: [String] = [], askedAt: Double? = nil) {
+            self.id = id; self.kind = kind; self.summary = summary; self.details = details; self.askedAt = askedAt
+        }
+
+        private enum CodingKeys: String, CodingKey { case id, kind, summary, details, askedAt = "asked_at" }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(String.self, forKey: .id)
+            guard !id.isEmpty, id.count <= 64 else {
+                throw DecodingError.dataCorruptedError(forKey: .id, in: container, debugDescription: "bad approval id")
+            }
+            kind = (try? container.decodeIfPresent(String.self, forKey: .kind)) ?? "write"
+            let said = (try? container.decodeIfPresent(String.self, forKey: .summary)) ?? ""
+            summary = said.isEmpty ? "The agent wants to do something that needs your approval." : said
+            details = ((try? container.decodeIfPresent([JSONValue].self, forKey: .details)) ?? []).compactMap {
+                if case .string(let line) = $0, !line.isEmpty { return line }
+                return nil
+            }
+            askedAt = try? container.decodeIfPresent(Double.self, forKey: .askedAt)
+        }
+
+        /// The summary and its details as one block of text, a line each.
+        public var text: String { ([summary] + details).joined(separator: "\n") }
+
+        /// `{"approval_id": id}`: what approve and deny send, so a decision
+        /// is only ever for the approval it was shown for.
+        public var decisionBody: Data {
+            (try? JSONSerialization.data(withJSONObject: ["approval_id": id], options: [.sortedKeys])) ?? Data()
+        }
+    }
+
     /// Where the chat's own browser is, when the bridge runs one per chat
     /// (no `pod` field otherwise). A value a newer bridge adds is nil.
     public enum Pod: String, Equatable, Sendable {
@@ -298,11 +351,17 @@ public struct LiveBrowserState: Equatable, Sendable, Decodable {
     /// `session_not_answering`, `start_stuck`, `no_browser`, or the link's
     /// own, like `user_ended`).
     public var liveReason: String?
+    /// The action the agent waits on the person's approval for, if any.
+    /// Never for a done link. Nil from a bridge before it.
+    public var approval: Approval?
 
-    public init(status: Status, reason: String? = nil, url: String? = nil, title: String? = nil, lastAction: Action? = nil, pod: Pod? = nil, live: Bool? = nil, liveReason: String? = nil) {
+    public init(status: Status, reason: String? = nil, url: String? = nil, title: String? = nil, lastAction: Action? = nil, pod: Pod? = nil, live: Bool? = nil, liveReason: String? = nil, approval: Approval? = nil) {
         self.status = status; self.reason = reason; self.url = url; self.title = title; self.lastAction = lastAction; self.pod = pod
-        self.live = live; self.liveReason = liveReason
+        self.live = live; self.liveReason = liveReason; self.approval = approval
     }
+
+    /// The approval the person is asked for now: none once the link is done.
+    public var pendingApproval: Approval? { ended ? nil : approval }
 
     /// A browser runs for it: the bridge's `live`, and only that (what its
     /// status and pod say, from a bridge without it). The red line's rule.
@@ -325,7 +384,7 @@ public struct LiveBrowserState: Equatable, Sendable, Decodable {
     /// The browser's session closed; nothing more will come.
     public var ended: Bool { status == .done }
 
-    private enum CodingKeys: String, CodingKey { case status, reason, url, title, lastAction = "last_action", pod, live, liveReason = "live_reason" }
+    private enum CodingKeys: String, CodingKey { case status, reason, url, title, lastAction = "last_action", pod, live, liveReason = "live_reason", approval }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -339,6 +398,8 @@ public struct LiveBrowserState: Equatable, Sendable, Decodable {
         pod = (try? container.decodeIfPresent(String.self, forKey: .pod)).flatMap { Pod(rawValue: $0) }
         live = try? container.decodeIfPresent(Bool.self, forKey: .live)
         liveReason = try? container.decodeIfPresent(String.self, forKey: .liveReason)
+        // A malformed approval is no approval: never a reason to drop the state.
+        approval = (try? container.decodeIfPresent(Approval.self, forKey: .approval)) ?? nil
     }
 }
 

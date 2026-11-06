@@ -125,6 +125,17 @@ extension Strings {
         static let endConfirm = "End this browser?"
         static let endConfirmDetail = "The agent will lose this page."
         static let endFailed = "Couldn’t End the Browser"
+        /// The agent waits on the person's yes for an action
+        /// (`state.approval`): the status, the alert, the player's button.
+        static let needsApproval = "Needs your approval"
+        static let approvalTitle = "Allow This Browser Action?"
+        static let approve = "Approve"
+        static let deny = "Deny"
+        static let notNow = "Not now"
+        static let review = "Review"
+        static let approvalFailed = "Couldn’t Send Your Answer"
+        /// `/approve` or `/deny` answered 409: decided elsewhere, or the browser closed.
+        static let approvalGone = "This request is no longer waiting."
         /// The take-control screen's own navigation (`POST /nav`).
         static let back = "Back"
         static let forward = "Forward"

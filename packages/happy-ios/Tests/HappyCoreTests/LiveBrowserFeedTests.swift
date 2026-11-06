@@ -75,6 +75,41 @@ final class LiveBrowserFeedTests: XCTestCase {
         XCTAssertNil(try JSONDecoder().decode(LiveBrowserState.self, from: Data(#"{"status":"watching","last_action":{"target":3}}"#.utf8)).lastAction)
     }
 
+    func testTheStateReadsAPendingApproval() throws {
+        let decode = { (json: String) in try JSONDecoder().decode(LiveBrowserState.self, from: Data(json.utf8)) }
+        let state = try JSONDecoder().decode(LiveBrowserState.self, from: Data(#"""
+        {"status":"watching","approval":{"id":"a1b2c3d4e5f6","kind":"account_change","summary":"The agent wants to change account settings.",
+         "details":["Type text (12 characters, hidden)","Page: accounts.example.com/settings",3,""],"asked_at":1762300000000,"later":true}}
+        """#.utf8))
+        let approval = try XCTUnwrap(state.approval)
+        XCTAssertEqual(approval, LiveBrowserState.Approval(id: "a1b2c3d4e5f6", kind: "account_change", summary: "The agent wants to change account settings.",
+                                                           details: ["Type text (12 characters, hidden)", "Page: accounts.example.com/settings"], askedAt: 1762300000000))
+        XCTAssertEqual(state.pendingApproval, approval)
+        XCTAssertEqual(approval.text, "The agent wants to change account settings.\nType text (12 characters, hidden)\nPage: accounts.example.com/settings")
+        XCTAssertEqual(try JSONSerialization.jsonObject(with: approval.decisionBody) as? [String: String], ["approval_id": "a1b2c3d4e5f6"])
+
+        // None, null, or malformed is no approval, and never costs the state.
+        XCTAssertNil(try decode(#"{"status":"watching"}"#).approval)
+        XCTAssertNil(try decode(#"{"status":"watching","approval":null}"#).approval)
+        XCTAssertNil(try decode(#"{"status":"watching","approval":{"kind":"post"}}"#).approval)
+        XCTAssertNil(try decode(#"{"status":"watching","approval":{"id":""}}"#).approval)
+        XCTAssertNil(try decode(#"{"status":"watching","approval":"yes"}"#).approval)
+        XCTAssertEqual(try decode(#"{"status":"takeover","approval":[1]}"#).status, .takeover)
+        // Only an id: a generic summary, kind write.
+        let bare = try XCTUnwrap(try decode(#"{"status":"watching","approval":{"id":"x1"}}"#).approval)
+        XCTAssertEqual(bare.kind, "write")
+        XCTAssertFalse(bare.summary.isEmpty)
+        XCTAssertEqual(bare.details, [])
+        // A done link asks nothing.
+        XCTAssertNil(try decode(#"{"status":"done","approval":{"id":"x1","summary":"s"}}"#).pendingApproval)
+    }
+
+    func testApproveAndDenyAreTheLinksOwn() throws {
+        let link = try XCTUnwrap(LiveBrowserLink(id: Self.a))
+        XCTAssertEqual(link.approveURL.absoluteString, "\(Self.live(Self.a))/approve")
+        XCTAssertEqual(link.denyURL.absoluteString, "\(Self.live(Self.a))/deny")
+    }
+
     func testTakeAndReleaseAreTheLinksOwn() throws {
         let link = try XCTUnwrap(LiveBrowserLink(id: Self.a))
         XCTAssertEqual(link.takeURL.absoluteString, "\(Self.live(Self.a))/take")
@@ -268,6 +303,32 @@ final class LiveBrowserFeedTests: XCTestCase {
     }
 
     @MainActor
+    func testDecidePostsTheApprovalsIdAndMovesThePhase() async throws {
+        let transport = FakeTransport()
+        let approval = LiveBrowserState.Approval(id: "ap1", kind: "post", summary: "The agent wants to post or send something.")
+        transport.posts["/approve"] = #"{"ok":true,"approval_status":"approved","status":"watching","approval":null}"#
+        transport.posts["/deny"] = #"{"ok":true,"approval_status":"denied","status":"watching","approval":null}"#
+        let feed = LiveBrowserFeed(link: try XCTUnwrap(LiveBrowserLink(id: Self.a))) { transport }
+        try await feed.decide(approval, approve: true)
+        XCTAssertEqual(transport.posted, ["/approve"])
+        XCTAssertEqual(try JSONSerialization.jsonObject(with: try XCTUnwrap(transport.bodies.last ?? nil)) as? [String: String], ["approval_id": "ap1"])
+        XCTAssertEqual(feed.phase, .live(LiveBrowserState(status: .watching)))
+        try await feed.decide(approval, approve: false)
+        XCTAssertEqual(transport.posted, ["/approve", "/deny"])
+
+        // No longer waiting (decided elsewhere): 409, and the card goes at once.
+        transport.posts["/take"] = #"{"status":"watching","approval":{"id":"ap2","summary":"s"},"novnc_url":"http://localhost:6080/vnc.html"}"#
+        try await feed.take()
+        XCTAssertEqual(feed.phase.state?.approval?.id, "ap2")
+        transport.postFailures["/approve"] = .upstream(409)
+        do {
+            try await feed.decide(LiveBrowserState.Approval(id: "ap2", summary: "s"), approve: true)
+            XCTFail("decided")
+        } catch { XCTAssertEqual(error as? BrowserError, .upstream(409)) }
+        XCTAssertNil(feed.phase.state?.approval)
+    }
+
+    @MainActor
     func testEndPostsAndTheFeedIsOver() async throws {
         let transport = FakeTransport()
         transport.posts["/end"] = #"{"status":"done","reason":"user_ended"}"#
@@ -295,6 +356,7 @@ private final class FakeTransport: LiveBrowserTransport, @unchecked Sendable {
     var state = #"{"status":"watching"}"#
     var failure: BrowserError?
     var posts: [String: String] = [:]
+    var postFailures: [String: BrowserError] = [:]
     var posted: [String] = []
     var bodies: [Data?] = []
     var paths: [String] = []
@@ -305,6 +367,7 @@ private final class FakeTransport: LiveBrowserTransport, @unchecked Sendable {
         if method == "POST" {
             posted.append(suffix)
             bodies.append(body)
+            if let failure = postFailures[suffix] { throw failure }
             guard let answer = posts[suffix] else { throw BrowserError.upstream(404) }
             return Data(answer.utf8)
         }
