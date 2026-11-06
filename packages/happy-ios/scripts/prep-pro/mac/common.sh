@@ -106,6 +106,22 @@ seed_packages() {
   done
 }
 
+# Builds pass -skipPackageUpdates, which fails once Package.swift or
+# Package.resolved moves a pin (the project's own resolved file and the
+# seeded checkouts still hold the old revision). Re-resolve for this
+# DerivedData whenever either file differs from the last resolve.
+#   resolve_packages <package dir> <derived data> <scheme>
+resolve_packages() {
+  local p=$1 dd=$2 scheme=$3 sum stamp=$2/.happy-packages.sha
+  sum=$(cat $p/Package.swift $p/Package.resolved 2>/dev/null | shasum -a 256 | cut -d' ' -f1)
+  [[ -f $stamp && $(cat $stamp) == $sum ]] && return 0
+  log "package pins changed (or new DerivedData): resolving packages for $dd"
+  mkdir -p $dd
+  xcodebuild -resolvePackageDependencies -project $p/Happy.xcodeproj -scheme "$scheme" \
+    -derivedDataPath $dd > $dd/resolve.log 2>&1 || { tail -20 $dd/resolve.log; return 1; }
+  print -r -- $sum > $stamp
+}
+
 # Compilation caching (CACHE=1). Measured on this project before it was made
 # opt-in; see the prep-pro skill for the numbers.
 cache_settings() {
