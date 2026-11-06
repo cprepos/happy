@@ -42,6 +42,8 @@ import { isProcessIdentityAlive, readLiveSessionOwner, type SessionOwnerRecord }
 import { createDesktopHub, openDesktopSession, runDesktopCommand, startDesktopSessionFromPhone } from './desktopHub';
 import { claudeCliPath } from '@/claude/claudeLocal';
 import { logsPrune } from '@/utils/logsPrune';
+import { decideHandoff, detectDaemonSupervisor } from './supervisor';
+import { restartDaemonThroughSupervisor } from './ensureDaemonRunning';
 
 /** Shell-escape a string for safe interpolation into tmux commands. */
 function shellescape(s: string): string {
@@ -71,6 +73,9 @@ export async function startDaemon(): Promise<void> {
   // environment, but never let session lineage or reconnect state reach a
   // later, unrelated child session.
   const ambientEnvironment = sanitizeSessionEnvironment(process.env);
+  // Read before anything else: the service manager (if any) that keeps this
+  // daemon running. It never reaches sessions (see DAEMON_SCOPED_ENV_KEYS).
+  const supervisor = detectDaemonSupervisor();
 
   // We don't have cleanup function at the time of server construction
   // Control flow is:
@@ -146,6 +151,16 @@ export async function startDaemon(): Promise<void> {
     // (launchd/systemd, similar to OpenClaw's model), so startup/start-at-login and upgrades
     // are owned by the OS instead of by the daemon trying to replace itself in-process.
     logger.debug('[DAEMON RUN] Daemon version mismatch detected, restarting daemon with current CLI version');
+    // A running daemon kept up by a service manager is restarted through it,
+    // unless this process is that service. Replacing it from here would leave
+    // an unsupervised daemon that the service manager then fights.
+    const runningState = await readDaemonState();
+    if (runningState?.supervisor && runningState.supervisor !== supervisor) {
+      if (await restartDaemonThroughSupervisor(runningState.supervisor)) {
+        console.log(`Daemon restarted by ${runningState.supervisor}`);
+        process.exit(0);
+      }
+    }
     await stopDaemon();
   } else {
     logger.debug('[DAEMON RUN] Daemon version matches, keeping existing daemon');
@@ -1194,7 +1209,8 @@ export async function startDaemon(): Promise<void> {
       httpPort: controlPort,
       startTime: new Date().toLocaleString(),
       startedWithCliVersion: packageJson.version,
-      daemonLogPath: logger.logFilePath
+      daemonLogPath: logger.logFilePath,
+      ...(supervisor ? { supervisor } : {}),
     };
     writeDaemonState(fileState);
     logger.debug('[DAEMON RUN] Daemon state written');
@@ -1322,6 +1338,14 @@ export async function startDaemon(): Promise<void> {
         await cleanupDaemonState();
         await releaseDaemonLock(daemonLockHandle);
         await stopCaffeinate();
+
+        const handoff = decideHandoff({ supervisor });
+        if (handoff.action === 'exit-for-supervisor') {
+          // The service manager starts the new bundle, so the replacement
+          // stays supervised. A daemon spawned from here would not be.
+          logger.debug(`[DAEMON RUN] Exiting with ${handoff.exitCode} so ${supervisor} starts the new daemon`);
+          process.exit(handoff.exitCode);
+        }
 
         try {
           spawnHappyCLI(['daemon', 'start'], {

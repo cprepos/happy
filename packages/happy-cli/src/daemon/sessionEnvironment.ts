@@ -121,6 +121,11 @@ export function buildSessionChildEnvironment(
     for (const key of DAEMON_SCOPED_ENV_KEYS) {
         delete child[key];
     }
+    // launchd names the job in XPC_SERVICE_NAME, which detectDaemonSupervisor
+    // reads for daemons installed before HAPPY_DAEMON_SUPERVISOR existed.
+    if (child.XPC_SERVICE_NAME === 'com.happy.cli-daemon') {
+        delete child.XPC_SERVICE_NAME;
+    }
     return {
         ...child,
         ...explicitEnv,

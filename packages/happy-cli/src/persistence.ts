@@ -78,6 +78,8 @@ export interface DaemonLocallyPersistedState {
   startedWithCliVersion: string;
   lastHeartbeat?: string;
   daemonLogPath?: string;
+  /** `launchd:<label>` or `systemd:<unit>` when a service manager keeps this daemon running. */
+  supervisor?: string;
 }
 
 export async function readSettings(): Promise<Settings> {

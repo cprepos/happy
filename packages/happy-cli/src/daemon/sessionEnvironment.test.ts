@@ -146,4 +146,9 @@ describe('sessionEnvironment', () => {
         expect(DAEMON_SCOPED_ENV_KEYS).toContain('HAPPY_DAEMON_SUPERVISOR');
         expect(childEnv).toEqual({ KEEP_ME: 'safe' });
     });
+
+    it("drops launchd's daemon job name but keeps any other", () => {
+        expect(buildSessionChildEnvironment({ XPC_SERVICE_NAME: 'com.happy.cli-daemon', KEEP_ME: 'safe' })).toEqual({ KEEP_ME: 'safe' });
+        expect(buildSessionChildEnvironment({ XPC_SERVICE_NAME: 'application.com.apple.Terminal' })).toEqual({ XPC_SERVICE_NAME: 'application.com.apple.Terminal' });
+    });
 });
