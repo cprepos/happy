@@ -36,6 +36,9 @@ public struct LiveBrowserLink: Equatable, Sendable {
     /// POSTed to end the browser: its session closes and the link is done
     /// (`user_ended`). Answers the state.
     public var endURL: URL { url.appendingPathComponent("end") }
+    /// POSTed by the person in control to move the page
+    /// (`LiveBrowserNavigation`). Answers `LiveBrowserNavResult`.
+    public var navURL: URL { url.appendingPathComponent("nav") }
 
     /// The newest live browser among `texts`, read from the last: a chat's
     /// one live view. Code and a link still arriving are no links (`split`).
@@ -305,6 +308,43 @@ public struct LiveBrowserTake: Equatable, Sendable, Decodable {
     /// The bridge's 202: the browser was asleep and is starting, with no
     /// noVNC page yet; ask again.
     public var waking: Bool { novncURL == nil && state.pod == .starting }
+}
+
+/// What the take-control screen's bar asks of the page (`POST /nav`).
+public enum LiveBrowserNavigation: Equatable, Sendable {
+    case back, forward, reload
+    /// http or https only; the bridge puts https:// before a bare host.
+    case goto(String)
+
+    public var body: Data {
+        let json: [String: String]
+        switch self {
+        case .back: json = ["action": "back"]
+        case .forward: json = ["action": "forward"]
+        case .reload: json = ["action": "reload"]
+        case .goto(let url): json = ["action": "goto", "url": url]
+        }
+        return (try? JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])) ?? Data()
+    }
+}
+
+/// `POST /live/<id>/nav`'s answer: where the page is now. `timedOut` when
+/// it was still loading as the bridge answered.
+public struct LiveBrowserNavResult: Equatable, Sendable, Decodable {
+    public var url: String?
+    public var title: String?
+    public var timedOut: Bool
+
+    public init(url: String?, title: String?, timedOut: Bool = false) { self.url = url; self.title = title; self.timedOut = timedOut }
+
+    private enum CodingKeys: String, CodingKey { case url, title, timedOut = "timed_out" }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        url = try? container.decodeIfPresent(String.self, forKey: .url)
+        title = try? container.decodeIfPresent(String.self, forKey: .title)
+        timedOut = (try? container.decodeIfPresent(Bool.self, forKey: .timedOut)) ?? false
+    }
 }
 
 /// `GET /live/chat/<key>`'s answer: the chat's link, and whether a browser

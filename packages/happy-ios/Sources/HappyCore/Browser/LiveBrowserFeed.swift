@@ -412,12 +412,21 @@ public final class LiveBrowserFeed {
         if let state = try? JSONDecoder().decode(LiveBrowserState.self, from: data) { phase = .live(state) }
     }
 
+    /// Moves the page while in control (`POST /nav`). The bridge answers
+    /// 400 for an address it won't open, 409 once control is gone, 503
+    /// asleep, 410 closed (`BrowserError.upstream`).
+    @discardableResult
+    public func navigate(_ action: LiveBrowserNavigation) async throws -> LiveBrowserNavResult {
+        let data = try await post(link.navURL, body: action.body)
+        return try JSONDecoder().decode(LiveBrowserNavResult.self, from: data)
+    }
+
     /// Over its own transport, which a paused feed may not have.
-    private func post(_ url: URL) async throws -> Data {
-        if let transport { return try await transport.send(method: "POST", url: url, body: nil, accept: "application/json") }
+    private func post(_ url: URL, body: Data? = nil) async throws -> Data {
+        if let transport { return try await transport.send(method: "POST", url: url, body: body, accept: "application/json") }
         guard let transport = makeTransport() else { throw BrowserError.unavailable }
         defer { Task { await transport.stop() } }
-        return try await transport.send(method: "POST", url: url, body: nil, accept: "application/json")
+        return try await transport.send(method: "POST", url: url, body: body, accept: "application/json")
     }
 }
 

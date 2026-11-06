@@ -384,6 +384,16 @@ final class LiveBrowserDock: NSObject {
         else { presentFullScreen(taking: true) }
     }
 
+    /// The noVNC page's bar: moves the page (`POST /nav`).
+    func navigate(_ action: LiveBrowserNavigation) async -> Result<LiveBrowserNavResult, LiveBrowserNavFailure> {
+        guard let feed else { return .failure(LiveBrowserNavFailure(BrowserError.unavailable)) }
+        do {
+            return .success(try await feed.navigate(action))
+        } catch {
+            return .failure(LiveBrowserNavFailure(error))
+        }
+    }
+
     /// Whether Release is what's offered: the person has the browser, or
     /// the agent asks for them while this app still holds it.
     var holdsControl: Bool {
@@ -716,8 +726,27 @@ final class LiveBrowserFullScreenItems: UIViewController {
         view.accessibilityIdentifier = isNoVNC ? "live-browser-novnc" : "live-browser-full-screen"
         addChild(browser)
         view.addSubview(browser.view)
-        browser.view.frame = view.bounds
-        browser.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        if isNoVNC {
+            // The bar under the header, clear of the keyboard pill at the
+            // bottom and of Minimize: noVNC below it.
+            let bar = navBar
+            bar.translatesAutoresizingMaskIntoConstraints = false
+            browser.view.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(bar)
+            view.backgroundColor = .systemBackground
+            NSLayoutConstraint.activate([
+                bar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+                bar.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+                bar.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+                browser.view.topAnchor.constraint(equalTo: bar.bottomAnchor),
+                browser.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                browser.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                browser.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            ])
+        } else {
+            browser.view.frame = view.bounds
+            browser.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        }
         browser.didMove(toParent: self)
         let minimize = UIBarButtonItem(image: UIImage(systemName: "chevron.down"), primaryAction: UIAction { [weak self] _ in self?.dock?.minimize() })
         minimize.accessibilityLabel = Strings.LiveBrowser.minimize
@@ -808,6 +837,101 @@ final class LiveBrowserFullScreenItems: UIViewController {
     /// The gestures noVNC holds off now (tests).
     var holdsGestures: Bool { !heldGestures.isEmpty || heldModal != nil }
 
+    // MARK: The noVNC page's bar
+
+    /// Back, Forward, Reload and the address, over noVNC (`POST /nav`).
+    /// The bridge knows no history, so Back and Forward are always on.
+    let address = UITextField()
+    private let spinner = UIActivityIndicatorView(style: .medium)
+    private let navMessage = UILabel()
+    /// Calls in flight.
+    private(set) var navigating = 0
+    private var messageClear: Task<Void, Never>?
+
+    private lazy var navBar: UIView = {
+        func button(_ symbol: String, _ label: String, _ id: String, _ action: LiveBrowserNavigation) -> UIButton {
+            let button = UIButton(type: .system)
+            button.setImage(UIImage(systemName: symbol), for: .normal)
+            button.accessibilityLabel = label
+            button.accessibilityIdentifier = id
+            button.addAction(UIAction { [weak self] _ in self?.navigate(action) }, for: .touchUpInside)
+            button.widthAnchor.constraint(equalToConstant: 36).isActive = true
+            return button
+        }
+        address.borderStyle = .roundedRect
+        address.font = .preferredFont(forTextStyle: .subheadline)
+        address.placeholder = Strings.LiveBrowser.address
+        address.accessibilityLabel = Strings.LiveBrowser.address
+        address.accessibilityIdentifier = "live-browser-address"
+        address.keyboardType = .URL
+        address.autocorrectionType = .no
+        address.autocapitalizationType = .none
+        address.spellCheckingType = .no
+        address.smartDashesType = .no
+        address.smartQuotesType = .no
+        address.returnKeyType = .go
+        address.clearButtonMode = .whileEditing
+        address.textContentType = .URL
+        address.delegate = self
+        address.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        spinner.hidesWhenStopped = true
+        spinner.accessibilityIdentifier = "live-browser-nav-spinner"
+        let row = UIStackView(arrangedSubviews: [
+            button("chevron.backward", Strings.LiveBrowser.back, "live-browser-back", .back),
+            button("chevron.forward", Strings.LiveBrowser.forward, "live-browser-forward", .forward),
+            button("arrow.clockwise", Strings.LiveBrowser.reload, "live-browser-reload", .reload),
+            address,
+            spinner,
+        ])
+        row.axis = .horizontal
+        row.spacing = 6
+        row.alignment = .center
+        navMessage.font = .preferredFont(forTextStyle: .footnote)
+        navMessage.textColor = .systemRed
+        navMessage.numberOfLines = 2
+        navMessage.isHidden = true
+        navMessage.accessibilityIdentifier = "live-browser-nav-message"
+        let stack = UIStackView(arrangedSubviews: [row, navMessage])
+        stack.axis = .vertical
+        stack.spacing = 4
+        stack.isLayoutMarginsRelativeArrangement = true
+        stack.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 6, leading: 10, bottom: 6, trailing: 10)
+        stack.backgroundColor = .secondarySystemBackground
+        stack.accessibilityIdentifier = "live-browser-nav-bar"
+        return stack
+    }()
+
+    func navigate(_ action: LiveBrowserNavigation) {
+        guard let dock else { return }
+        navigating += 1
+        spinner.startAnimating()
+        show(navMessage: nil)
+        Task { [weak self] in
+            let result = await dock.navigate(action)
+            guard let self else { return }
+            self.navigating -= 1
+            if self.navigating == 0 { self.spinner.stopAnimating() }
+            switch result {
+            case .success(let reply):
+                if let url = reply.url, !url.isEmpty, !self.address.isEditing { self.address.text = url }
+            case .failure(let failure):
+                self.show(navMessage: failure.message)
+            }
+        }
+    }
+
+    private func show(navMessage text: String?) {
+        messageClear?.cancel()
+        navMessage.text = text
+        navMessage.isHidden = text == nil
+        guard text != nil else { return }
+        messageClear = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(4))
+            guard !Task.isCancelled else { return }
+            self?.show(navMessage: nil)
+        }
+    }
+
     /// Before it loads too: it shows the state once it does. `held`,
     /// Release control; else Take control.
     func update(_ state: LiveBrowserState?, held: Bool) {
@@ -820,9 +944,36 @@ final class LiveBrowserFullScreenItems: UIViewController {
         }
         control.isEnabled = state.map { !$0.ended } ?? false
         endItem.isEnabled = state.map { !$0.ended } ?? false
+        if isNoVNC, !address.isEditing, navigating == 0, let url = state?.url, !url.isEmpty { address.text = url }
         navigationItem.subtitle = state.flatMap { $0.asleep ? Strings.LiveBrowser.asleep : $0.starting ? Strings.LiveBrowser.startingBrowser : nil }
             ?? state?.lastAction.map(Strings.LiveBrowser.lastAction)
             ?? state.map { Strings.LiveBrowser.status($0.status) }
+    }
+}
+
+extension LiveBrowserFullScreenItems: UITextFieldDelegate {
+    /// Return goes to the address typed.
+    func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+        let typed = (textField.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !typed.isEmpty else { return false }
+        textField.resignFirstResponder()
+        navigate(.goto(typed))
+        return true
+    }
+}
+
+/// Why `/nav` failed, in the words the bar shows.
+struct LiveBrowserNavFailure: Error, Equatable {
+    let message: String
+
+    init(_ error: Error) {
+        message = switch error {
+        case BrowserError.upstream(400): Strings.LiveBrowser.notAWebAddress
+        case BrowserError.upstream(409): Strings.LiveBrowser.notInControl
+        case BrowserError.upstream(503): Strings.LiveBrowser.navAsleep
+        case BrowserError.upstream(404), BrowserError.upstream(410): Strings.LiveBrowser.navGone
+        default: Strings.LiveBrowser.navFailed
+        }
     }
 }
 

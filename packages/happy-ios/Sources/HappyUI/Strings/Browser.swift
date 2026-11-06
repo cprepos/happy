@@ -125,6 +125,21 @@ extension Strings {
         static let endConfirm = "End this browser?"
         static let endConfirmDetail = "The agent will lose this page."
         static let endFailed = "Couldn’t End the Browser"
+        /// The take-control screen's own navigation (`POST /nav`).
+        static let back = "Back"
+        static let forward = "Forward"
+        static let reload = "Reload"
+        static let address = "Web address"
+        /// `/nav` answered 400 (`bad_url`).
+        static let notAWebAddress = "Not a web address"
+        /// `/nav` answered 409 (`not_in_control`).
+        static let notInControl = "You’re no longer in control."
+        /// `/nav` answered 503 (`asleep`).
+        static let navAsleep = "The browser is asleep."
+        /// `/nav` answered 404 or 410.
+        static let navGone = "This browser has ended."
+        /// Anything else.
+        static let navFailed = "Couldn’t reach the browser."
         /// The player's menu.
         static let more = "More"
         static let cancel = "Cancel"
