@@ -36,6 +36,7 @@ acquire_lock "build-device $CONFIG $TS"
 maybe_clean $DD
 seed_packages $DD
 gen_project $P $HF/xcodegen-cache-device-$CFG > $L/xcodegen.log 2>&1 || { cat $L/xcodegen.log; finish 2; }
+resolve_packages $P $DD Happy || finish 2
 
 t0=$SECONDS
 xcodebuild build -project $P/Happy.xcodeproj -scheme Happy -configuration $CONFIG \
