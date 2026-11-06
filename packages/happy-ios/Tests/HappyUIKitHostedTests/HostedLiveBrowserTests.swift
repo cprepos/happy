@@ -232,7 +232,9 @@ final class HostedLiveBrowserTests: XCTestCase {
         XCTAssertNotNil(host.presentedViewController, "still full screen, no close and reopen")
     }
 
-    func testANoVNCDisconnectGoesBackToTheFrameViewStillHeld() async throws {
+    /// noVNC dropping its connection is leaving noVNC: back to the frame
+    /// view, and control goes back with it, no exemption.
+    func testANoVNCDisconnectGoesBackToTheFrameViewAndReleases() async throws {
         let daemon = BrowserDaemon()
         let (host, window) = try await makeHost(daemon)
         defer { window.isHidden = true; host.dock.update(link: nil) }
@@ -247,16 +249,12 @@ final class HostedLiveBrowserTests: XCTestCase {
             """)
         try await until { navigation.viewControllers.count == 1 && navigation.transitionCoordinator == nil }
         let frame = try XCTUnwrap(navigation.viewControllers.first as? LiveBrowserFullScreenItems)
-        XCTAssertEqual(host.dock.feed?.phase.state?.status, .user)
-        XCTAssertEqual(frame.control.title, Strings.LiveBrowser.releaseControl, "the person still has it: Release, one tap")
-        XCTAssertTrue(frame.control.isEnabled)
-        let posts = await daemon.requests.filter { $0.hasPrefix("POST ") }
-        XCTAssertFalse(posts.contains { $0.contains("/release ") }, "dropping noVNC doesn't hand control back")
-
-        // And Release from there hands it back.
-        frame.control.primaryAction?.performWithSender(nil, target: nil)
+        XCTAssertFalse(frame.isNoVNC)
         try await until { await daemon.requests.contains { $0.hasPrefix("POST /live/\(self.id)/release HTTP/1.1") } }
         try await until { frame.control.title == Strings.LiveBrowser.takeControl }
+        XCTAssertTrue(frame.control.isEnabled, "Take control again, one tap")
+        let releases = await daemon.requests.filter { $0.hasPrefix("POST /live/\(self.id)/release ") }
+        XCTAssertEqual(releases.count, 1, "handed back once")
     }
 
     // MARK: End browser
