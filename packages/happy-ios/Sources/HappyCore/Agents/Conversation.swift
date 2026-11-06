@@ -1,5 +1,8 @@
 import Foundation
 import HappyWire
+#if canImport(OSLog)
+import OSLog
+#endif
 
 /// One entry in a V2 conversation as the phone shows it: what a
 /// person wrote, what the agent said, and the steps of its turns.
@@ -358,6 +361,17 @@ public actor Conversation {
     /// The agents this one spawns or retitles while it is open.
     private var children: Task<Void, Never>?
     private var reading: Task<Void, Never>?
+    /// Which `reload` `reading` is, so one that ends after a newer began
+    /// leaves the newer's in place.
+    private var readingId = UUID()
+    /// `start` is past its guard and not yet following: a second call, or
+    /// a retry, waits for it rather than starting again.
+    private var starting = false
+    /// `follow` has asked for history: a retry reads again from there.
+    private var followed = false
+    private var stopped = false
+    /// Stands in for the checkpoint claim, for a test.
+    private var claimOverride: (@Sendable (String) async throws -> Void)?
     private var reloadSoon: Task<Void, Never>?
     /// Events that came while history was being read, applied after it.
     private var heldEvents: [JSONValue]?
@@ -472,12 +486,17 @@ public actor Conversation {
     // MARK: Life
 
     public func start() async {
-        guard following == nil else { return }
+        guard following == nil, !starting, !stopped else { return }
+        starting = true
+        defer { starting = false }
         do { try await checkpointClaim(for: "conversation:\(agentId)").value }
         catch {
+            // Left not following, so `retryLoad` starts it again.
             checkpointClaims.removeValue(forKey: "conversation:\(agentId)")
+            Self.note("claim failed for \(agentId)")
             snapshot.error = "Could not open this conversation on this device."; publish(); return
         }
+        if stopped { return }
         if let creation {
             // A new task has nothing to read yet: it is shown at once, with
             // what was sent into it while it was being made (left and opened
@@ -500,7 +519,37 @@ public actor Conversation {
         }
     }
 
+    /// Reads again a conversation whose read failed, or that never
+    /// finished reading with nothing reading it now: a screen opening it,
+    /// or the phone coming back to it. A start that failed is started
+    /// again. Does nothing while a start or a read is underway, once read
+    /// without an error, for new work, or after `stop`; so it may be
+    /// called as often as it likes.
+    public func retryLoad() async {
+        guard !stopped, !starting, creation == nil else { return }
+        if following == nil {
+            Self.note("retrying start for \(agentId)")
+            if snapshot.error != nil { snapshot.error = nil; publish() }
+            await start()
+            return
+        }
+        guard followed, reading == nil, snapshot.error != nil || !snapshot.loaded else { return }
+        Self.note("retrying read for \(agentId)")
+        snapshot.error = nil
+        // Nothing to show meanwhile: back to reading, not an empty conversation.
+        if runs.isEmpty, pending.isEmpty { snapshot.loaded = false }
+        publish()
+        reload()
+    }
+
+    /// Whether a start or a read is underway, for a test.
+    var loadInFlight: Bool { starting || reading != nil }
+
+    /// Makes the checkpoint claim `claim`, for a test.
+    func overrideClaim(_ claim: @escaping @Sendable (String) async throws -> Void) { claimOverride = claim }
+
     public func stop() async {
+        stopped = true
         following?.cancel(); following = nil
         children?.cancel(); children = nil
         questionEvents?.cancel(); questionEvents = nil
@@ -606,6 +655,7 @@ public actor Conversation {
             }
         }
         heldEvents = []
+        followed = true
         reload()
         for send in outgoing where !send.accepted && send.failure == nil { deliver(send.id) }
         for await event in events {
@@ -629,7 +679,10 @@ public actor Conversation {
         if heldEvents == nil { heldEvents = [] }
         let client = client
         let agentId = agentId
+        let id = UUID()
+        readingId = id
         reading = Task {
+            defer { if readingId == id { reading = nil } }
             do {
                 async let bootstrap = client.bootstrap(agentId)
                 async let page = client.messages(agentId)
@@ -638,6 +691,7 @@ public actor Conversation {
                 adopt(start, history)
             } catch {
                 if Task.isCancelled { return }
+                Self.note("read of \(agentId) failed")
                 snapshot.error = Store.describe(error)
                 Happenings.errorShown(.conversationLoad, error)
                 snapshot.loaded = true
@@ -647,6 +701,15 @@ public actor Conversation {
                 publish()
             }
         }
+    }
+
+    #if canImport(OSLog)
+    private static let logger = Logger(subsystem: "app.happy", category: "Conversation")
+    #endif
+    private static func note(_ message: String) {
+        #if canImport(OSLog)
+        logger.notice("\(message, privacy: .public)")
+        #endif
     }
 
     private func adopt(_ start: AgentWire.Bootstrap, _ history: AgentWire.MessagesResponse) {
@@ -1296,7 +1359,9 @@ public actor Conversation {
         if let claim = checkpointClaims[key] { return claim }
         let persistence = persistence
         let owner = checkpointOwner
+        let claimOverride = claimOverride
         let claim = Task<Void, Error> {
+            if let claimOverride { return try await claimOverride(key) }
             if let persistence { try await persistence.claimConversation(key, owner: owner) }
         }
         checkpointClaims[key] = claim

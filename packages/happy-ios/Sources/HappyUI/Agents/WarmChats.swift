@@ -204,8 +204,16 @@ final class WarmChats {
     /// started now, kept while the screen holds it. Hand it back with
     /// `release`. Rows being laid out ahead go on: the screen takes them
     /// from the same planner.
+    /// One kept from before whose read failed, or never finished, is read
+    /// again (`Conversation.retryLoad`).
     func hold(_ agentId: String) -> (chat: Chat, token: UUID) {
-        let chat = chats[agentId] ?? begin(agentId)
+        let chat: Chat
+        if let kept = chats[agentId] {
+            chat = kept
+            retry(kept)
+        } else {
+            chat = begin(agentId)
+        }
         let token = UUID()
         chat.watchers[token] = { _ in }
         return (chat, token)
@@ -299,6 +307,13 @@ final class WarmChats {
         return chat
     }
 
+    /// Reads `chat` again if its read failed or never finished; nothing
+    /// if it is read or being read.
+    private func retry(_ chat: Chat) {
+        let conversation = chat.conversation
+        Task { await conversation.retryLoad() }
+    }
+
     private func stop(_ chat: Chat) {
         chat.following?.cancel()
         chat.planning?.cancel()
@@ -359,6 +374,9 @@ final class WarmChats {
     private func enterForeground() {
         background = false
         pressed = false
+        // What a screen shows that failed to read, or never finished, is
+        // read again; the rest come back with the ranking.
+        for chat in chats.values where !chat.watchers.isEmpty { retry(chat) }
         rerank()
         if started { schedule(after: Warmth.Limits.delay) }
     }
