@@ -275,6 +275,10 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
     async function captureFrame(rec) {
         const client = clientOf(rec);
         if (!client) throw asleepError();
+        // A frame's age counts from when it was asked for: each takes most of a second to make
+        // (the controller scrubs it), and an age from its end kept a viewer polling back to back
+        // on one frame for a whole extra second.
+        const asked = now();
         let observed;
         try {
             observed = await client.observeShared(await shareToken(rec));
@@ -294,7 +298,7 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
             throw Object.assign(new Error('frame file gone'), { status: 502 });
         }
         store.update(rec, { url: observed.url ?? rec.url, title: observed.title ?? rec.title });
-        return { at: now(), ...image };
+        return { at: asked, ...image };
     }
 
     function frame(rec) {

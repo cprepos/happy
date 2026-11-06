@@ -138,6 +138,21 @@ test('frames are cached for about a second and concurrent fetches coalesce', asy
     assert.equal(client.calls.share, 1, 'share token reused');
 });
 
+test("a frame's age counts from when it was asked for, not from when the slow capture ended", async () => {
+    const { id } = await link();
+    const observe = client.observeShared;
+    client.observeShared = async (token) => { clock.t += 700; return observe.call(client, token); };
+    try {
+        await fetch(`${base}/live/${id}/frame.jpg`).then((r) => r.arrayBuffer());
+        assert.equal(client.calls.observe, 1);
+        clock.t += 400; // 1.1 s after it was asked for, 0.4 s after it came
+        await fetch(`${base}/live/${id}/frame.jpg`).then((r) => r.arrayBuffer());
+        assert.equal(client.calls.observe, 2);
+    } finally {
+        client.observeShared = observe;
+    }
+});
+
 test('unknown id is 404, expired id is 410', async () => {
     assert.equal((await fetch(`${base}/live/${'0'.repeat(32)}`)).status, 404);
     assert.equal((await fetch(`${base}/live/not-an-id/state`)).status, 404);
@@ -528,7 +543,11 @@ test('page fits a 320-430 px phone: viewport meta, no fixed widths, frame box si
         assert.ok(Number(px) <= 320, `${prop}: ${px}px is wider than a 320 px phone`);
     }
     // The placeholder sits inside the frame box, not beside it.
-    assert.match(html, /<div id="box">\s*<img id="frame"[^>]*>\s*<div id="note"[^>]*>Loading the live view…<\/div>\s*<\/div>/);
+    assert.match(html, /<div id="box"[^>]*>\s*<img id="frame"[^>]*>\s*<div id="note"[^>]*>Loading the live view…<\/div>\s*<div id="spin"[^>]*><\/div>\s*<\/div>/);
+    // A spinner while it waits for a frame: shown at first, over the last frame once one is slow.
+    assert.match(css, /#spin::after \{[^}]*animation: spin/);
+    assert.match(html, /const SPIN_MS = \d+/);
+    assert.match(html, /if \(!haveFrame\) spin\(true\)/);
     // The page script handles an ended session and repeated frame failures.
     assert.match(html, /This live browser has ended/);
     assert.match(html, /f\.status === 404\) return finish\(\)/);

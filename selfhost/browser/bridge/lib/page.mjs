@@ -60,6 +60,16 @@ main { flex: 1; width: 100%; min-width: 0; padding: 12px var(--gutter-r) 12px va
   padding: 16px; text-align: center; color: var(--muted); overflow-wrap: anywhere; }
 #note.over { inset: auto 0 0 0; background: var(--surface); border-top: 1px solid var(--line); }
 #note.error { color: var(--err-fg); background: var(--err-bg); }
+/* Waiting for a frame (the first, or one the browser is slow to give while the agent acts):
+   a spinner over the middle of the picture, the last frame kept under it; above the words
+   when there are some. */
+#spin { position: absolute; top: 50%; left: 50%; width: 40px; height: 40px; margin: -20px 0 0 -20px;
+  border-radius: 50%; background: rgba(0, 0, 0, .45); pointer-events: none; }
+#box.noting #spin { margin-top: -64px; }
+#spin::after { content: ''; position: absolute; inset: 9px; border-radius: 50%;
+  border: 3px solid rgba(255, 255, 255, .3); border-top-color: #fff; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { #spin::after { animation-duration: 2.4s; } }
 footer { position: sticky; bottom: 0; width: 100%; background: var(--surface); border-top: 1px solid var(--line);
   padding: 10px var(--gutter-r) max(10px, env(safe-area-inset-bottom)) var(--gutter-l); display: flex; gap: 10px; }
 .btn { flex: 1 1 0; min-width: 0; display: inline-flex; justify-content: center; align-items: center; min-height: 44px;
@@ -71,15 +81,29 @@ footer { position: sticky; bottom: 0; width: 100%; background: var(--surface); b
 
 // Frame failures in a row before the page says so instead of spinning quietly.
 export const FRAME_FAILURES_BEFORE_ERROR = 4;
+// A frame asked for and not answered for this long: the spinner shows over the last one.
+export const FRAME_WAIT_SPIN_MS = 1200;
+// From one frame's answer to the next ask. The bridge makes about one fresh frame a second
+// (each is scrubbed), so frames are asked back to back rather than on a slow clock.
+export const FRAME_GAP_MS = 300;
 
 const SCRIPT = `
 (() => {
   const base = location.pathname.replace(/\\/+$/, '');
   const LABEL = { watching: 'Watching', takeover: 'Needs you', user: 'You have control', done: 'Done', ended: 'Ended' };
   const MAX_FAILS = ${FRAME_FAILURES_BEFORE_ERROR};
+  const SPIN_MS = ${FRAME_WAIT_SPIN_MS};
+  const GAP_MS = ${FRAME_GAP_MS};
   const $ = (id) => document.getElementById(id);
   let state = JSON.parse($('initial').textContent);
-  let stopped = false, timer = null, lastObjectUrl = null, fails = 0, haveFrame = false;
+  let stopped = false, timer = null, lastObjectUrl = null, fails = 0, haveFrame = false, spinTimer = null;
+
+  function spin(on) {
+    clearTimeout(spinTimer);
+    spinTimer = null;
+    $('spin').hidden = !on;
+    $('box').classList.toggle('noting', !$('note').hidden && !$('note').classList.contains('over'));
+  }
 
   const ended = () => state.status === 'done' && state.reason === 'session_closed';
 
@@ -89,6 +113,7 @@ const SCRIPT = `
     n.hidden = false;
     n.classList.toggle('error', error);
     n.classList.toggle('over', haveFrame && !$('frame').hidden);
+    $('box').classList.toggle('noting', !n.classList.contains('over'));
   }
 
   function render() {
@@ -106,7 +131,7 @@ const SCRIPT = `
     document.title = (needs ? '⚠ ' : '') + (state.title || 'Live browser');
   }
 
-  function stop() { stopped = true; clearTimeout(timer); $('take').hidden = true; $('done').hidden = true; }
+  function stop() { stopped = true; clearTimeout(timer); spin(false); $('take').hidden = true; $('done').hidden = true; }
 
   function finish() {
     if (!ended()) state = Object.assign({}, state, { status: 'done', reason: 'session_closed' });
@@ -140,10 +165,16 @@ const SCRIPT = `
       if (ended()) return finish();
       // A sleeping browser has no frames; it wakes when the agent uses it or on Take control.
       if (state.pod === 'asleep' || state.pod === 'crashed') {
+        spin(false);
         note(state.pod === 'asleep' ? 'The browser is asleep. Take control to wake it.' : 'The browser stopped. It restarts when it is used.');
         return schedule();
       }
+      // No picture yet: spinning already. Else only once this frame is slow in coming.
+      if (!haveFrame) spin(true);
+      else if (!spinTimer && $('spin').hidden) spinTimer = setTimeout(() => spin(true), SPIN_MS);
       const f = await fetch(base + '/frame.jpg', { cache: 'no-store' });
+      clearTimeout(spinTimer);
+      spinTimer = null;
       if (f.status === 410) return gone(410);
       if (f.status === 404) return finish();
       if (f.ok) {
@@ -161,15 +192,19 @@ const SCRIPT = `
         haveFrame = true;
         fails = 0;
         $('note').hidden = true;
+        spin(false);
+        return schedule(GAP_MS);
       } else {
         failed(f.status);
       }
     } catch (e) {
+      clearTimeout(spinTimer);
+      spinTimer = null;
       failed(0); // offline for a moment: keep the last frame
     }
     schedule();
   }
-  function schedule() { clearTimeout(timer); if (!stopped && !document.hidden) timer = setTimeout(tick, 1500); }
+  function schedule(ms = 1500) { clearTimeout(timer); if (!stopped && !document.hidden) timer = setTimeout(tick, ms); }
   document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); else clearTimeout(timer); });
 
   // noVNC is served by the bridge under this link (<base>/vnc/). Open it at this page's own
@@ -246,9 +281,10 @@ export function renderPage({ id, state, takeoverUrl, nonce, frameWidth = 1920, f
 </header>
 <div id="reason" hidden></div>
 <main>
-  <div id="box">
+  <div id="box" class="noting">
     <img id="frame" alt="Live view of the agent's browser" hidden>
     <div id="note" role="status">Loading the live view…</div>
+    <div id="spin" aria-hidden="true"></div>
   </div>
 </main>
 <footer>
