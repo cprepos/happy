@@ -751,9 +751,9 @@ same number on their own listings.
 
 ## Adding a harness
 
-`HarnessCatalogDriftTests` reads `happy-app/sources/utils/harnessCatalog.ts` and
-fails when it lists a harness that is neither offered here nor in the test's
-`excluded`, so a pull that adds one says so. Gemini and OpenClaw are excluded:
+There used to be a drift test against happy-app's `harnessCatalog.ts`. Upstream
+deleted happy-app, so nothing flags a harness added upstream any more: after a
+pull, check upstream's harness list by hand. Gemini and OpenClaw are excluded:
 an existing session shows its name, and neither can be started.
 
 Follow OpenCode. A harness upstream doesn't have goes in files of its own, and
