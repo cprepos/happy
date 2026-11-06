@@ -1062,7 +1062,8 @@ def remote_target(io, harness):
         return OpencodeTarget(lambda s, env: {
             "type": "local", "command": [sh] + remote_argv(s, env), "enabled": True}, io)
     if harness == "codex":
-        return TomlTarget("~/.codex/config.toml", lambda s, env: (sh, remote_argv(s, env), {}), remote_codex_extra, io)
+        # refresh: a wrapper it wrote before (without BRIDGE_PUBLIC_BASE, say) is rewritten.
+        return TomlTarget("~/.codex/config.toml", lambda s, env: (sh, remote_argv(s, env), {}), remote_codex_extra, io, refresh=True)
     if harness == "happy-agent":
         return TomlTarget("~/.local/share/happy-agent/happy/config/mcp.toml",
                           lambda s, env: (sh, remote_argv(s, agent_env(s, env, io.host)), {}), agent_extra, io, refresh=True)
