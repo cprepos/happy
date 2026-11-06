@@ -9,7 +9,9 @@
 # machine and agents can open services bound to 127.0.0.1 here. Every listener
 # binds 127.0.0.1 itself (there are no port publishes): noVNC, the Playwright
 # server, the controller and the bridge. Nothing is reachable from the LAN or
-# the internet; the phone reaches these ports through the Happy Agent workspace
+# the internet, with one opt-in exception: BRIDGE_LAN_BIND gives the bridge (6090
+# only) a second listener on a LAN address that serves only BRIDGE_LAN_ALLOW's
+# clients. The phone reaches these ports through the Happy Agent workspace
 # proxy, which dials localhost on this machine.
 #
 # Images are the project's published GHCR images for v1.14.0 (git commit
@@ -200,6 +202,12 @@ services:
       POD_NOVNC_BASE: ${POD_NOVNC_BASE:-6100}
       POD_API_BASE: ${POD_API_BASE:-8100}
       POD_PLAYWRIGHT_BASE: ${POD_PLAYWRIGHT_BASE:-9300}
+      # Optional second listener on one LAN address, for chats on the Macs (README, "LAN
+      # listener"): only BRIDGE_LAN_ALLOW's clients, only the Host <bind>:<port>, no /api routes.
+      # Unset (the default) the bridge binds 127.0.0.1 only. Set both in .env.browser.
+      BRIDGE_LAN_BIND: ${BRIDGE_LAN_BIND:-}
+      BRIDGE_LAN_ALLOW: ${BRIDGE_LAN_ALLOW:-}
+      BRIDGE_LAN_PUBLIC_BASE: ${BRIDGE_LAN_PUBLIC_BASE:-}
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:'+(process.env.BRIDGE_PORT||6090)+'/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
       interval: 10s

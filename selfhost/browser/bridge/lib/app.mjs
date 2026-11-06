@@ -68,6 +68,12 @@ const WS_RES_HEADERS = new Set(['upgrade', 'connection', 'sec-websocket-accept',
 const MAX_BODY = 16 * 1024;
 const MAX_WAIT_S = 120;
 
+// A client address as the allowlist spells it: an IPv4-mapped IPv6 address is its IPv4.
+export function normalizeAddress(addr) {
+    return String(addr || '').toLowerCase().replace(/^::ffff:(?=\d+\.\d+\.\d+\.\d+$)/, '');
+}
+const clientAllowed = (view, socket) => !view.allowFrom || view.allowFrom.has(normalizeAddress(socket?.remoteAddress));
+
 function sameSecret(a, b) {
     const ha = createHash('sha256').update(String(a)).digest();
     const hb = createHash('sha256').update(String(b)).digest();
@@ -154,26 +160,28 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
     } = config;
     if (!bridgeToken) throw new Error('bridgeToken is required');
 
+    const publicRoot = publicBase.replace(/\/+$/, '');
     const runtime = new Map(); // id -> {share, frame, inflight, waiters, metaAt}
     const rt = (id) => {
         let r = runtime.get(id);
         if (!r) runtime.set(id, (r = { share: null, frame: null, inflight: null, waiters: new Set(), metaAt: 0 }));
         return r;
     };
-    const linkUrl = (rec) => `${publicBase}/live/${rec.id}`;
+    // `base` is the listener's public base: localhost for the loopback listener, the LAN address
+    // for the LAN one (createBridge's listener()), so a link fetched over the LAN points back there.
+    const linkUrl = (rec, base = publicRoot) => `${base}/live/${rec.id}`;
     // noVNC's own query (autoconnect, resize) from NOVNC_URL; its port is the shared browser's
     // noVNC, which a link without a pod uses. Upstreams are always 127.0.0.1, and the port always
     // comes from the bridge's own records, never from the request.
     const novncBase = new URL(novncUrl);
     const sharedNovncPort = Number(novncBase.port) || 80;
     const novncQuery = (() => { const q = new URLSearchParams(novncBase.search); q.delete('path'); return q.toString(); })();
-    const publicRoot = publicBase.replace(/\/+$/, '');
     // Absolute, so current apps can decode it with URL(string:). The password stays in the fragment.
-    function vncPageUrl(rec, password) {
+    function vncPageUrl(rec, password, base = publicRoot) {
         const prefix = `live/${rec.id}/vnc`;
         // noVNC 1.6 resolves path= against vnc.html's own URL, so a bare name lands on <prefix>/websockify.
         const query = [novncQuery, 'path=websockify'].filter(Boolean).join('&');
-        return `${publicRoot}/${prefix}/vnc.html?${query}${password ? `#password=${encodeURIComponent(password)}` : ''}`;
+        return `${base}/${prefix}/vnc.html?${query}${password ? `#password=${encodeURIComponent(password)}` : ''}`;
     }
 
     // ── Per-chat pods ─────────────────────────────────────────────────────
@@ -187,11 +195,11 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         if (!chat) return client;
         return pods.podOf(chat.chatKey)?.client ?? null;
     }
-    function takeoverUrlOf(rec) {
-        if (!podLink(rec)) return vncPageUrl(rec, vncPassword);
+    function takeoverUrlOf(rec, base = publicRoot) {
+        if (!podLink(rec)) return vncPageUrl(rec, vncPassword, base);
         const p = podOf(rec);
         if (!p) return null;
-        return vncPageUrl(rec, p.vncPassword);
+        return vncPageUrl(rec, p.vncPassword, base);
     }
     // Where this link's noVNC is: its pod's port (null while the pod is asleep), else the shared
     // one. `key` names the pod instance, so a socket notices when its pod stops or is replaced.
@@ -525,10 +533,10 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
 
     // GET /live/chat/<chat_key>: the chat's link, so the app can show a chat's live browser
     // without finding the link in the chat's text. live: a browser is up (or starting) for it.
-    function chatLink(res, key) {
+    function chatLink(res, key, base) {
         const rec = store.findChat(key);
         if (!rec) return send(res, 404, { error: 'no_link' });
-        return send(res, 200, { id: rec.id, url: linkUrl(rec), ...stateOf(rec), ...liveOf(rec) });
+        return send(res, 200, { id: rec.id, url: linkUrl(rec, base), ...stateOf(rec), ...liveOf(rec) });
     }
 
     // POST /live/<id>/nav: back, forward, reload or goto on the link's own session, for the
@@ -560,7 +568,7 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         return send(res, 200, { ok: true, url: rec.url ?? null, title: rec.title ?? null, can_go_back: null, can_go_forward: null, ...(timedOut ? { timed_out: true } : {}) });
     }
 
-    async function live(req, res, id, sub) {
+    async function live(req, res, id, sub, base) {
         const found = store.lookup(id);
         const wantsHtml = !sub;
         if (!found) {
@@ -588,7 +596,7 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
                 // From takeover the agent is already waiting for the user: nothing changes.
                 if (rec.status !== 'takeover' && rec.status !== 'user') setStatus(rec, 'user', 'user_took_control');
                 if (!hasTunnel(rec.id)) armLeave(rec.id, takeLoadMs);
-                return send(res, 200, { ...stateOf(rec), ...podField(rec), novnc_url: takeoverUrlOf(rec) });
+                return send(res, 200, { ...stateOf(rec), ...podField(rec), novnc_url: takeoverUrlOf(rec, base) });
             }
             if (HELD_STATUSES.has(rec.status)) releaseHeld(rec, 'user_released');
             return send(res, 200, { ...stateOf(rec), ...podField(rec) });
@@ -617,7 +625,7 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
             }
         }
         const nonce = randomBytes(12).toString('base64');
-        return send(res, 200, renderPage({ id: rec.id, state: stateOf(rec), takeoverUrl: takeoverUrlOf(rec) || `${linkUrl(rec)}`, nonce, frameWidth, frameHeight }), {
+        return send(res, 200, renderPage({ id: rec.id, state: stateOf(rec), takeoverUrl: takeoverUrlOf(rec, base) || `${linkUrl(rec, base)}`, nonce, frameWidth, frameHeight }), {
             'Content-Type': 'text/html; charset=utf-8',
             'Content-Security-Policy': `default-src 'none'; img-src 'self' blob:; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'`,
         });
@@ -714,7 +722,7 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
 
     // server.on('upgrade'): the noVNC socket of a held link, piped to that link's own noVNC.
     // Every other upgrade is refused.
-    function upgrade(req, socket, head) {
+    function upgradeOn(view, req, socket, head) {
         let route = 'upgrade';
         socket.on('error', () => {});
         const refuse = (code, text) => {
@@ -722,7 +730,8 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
             socket.end(`HTTP/1.1 ${code} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
             socket.once('finish', () => socket.destroy());
         };
-        if (allowedHosts && !allowedHosts.includes(String(req.headers.host || '').toLowerCase())) { route = 'bad-host'; return refuse(421, 'Misdirected Request'); }
+        if (!clientAllowed(view, req.socket)) { route = 'lan-refused'; return refuse(403, 'Forbidden'); }
+        if (view.hosts && !view.hosts.includes(String(req.headers.host || '').toLowerCase())) { route = 'bad-host'; return refuse(421, 'Misdirected Request'); }
         const m = VNC_SOCKET.exec(rawPathOf(req));
         if (!m) return refuse(404, 'Not Found');
         const id = m[1];
@@ -840,31 +849,38 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         return held.map((r) => ({ id: r.id.slice(0, 8), title: r.title ?? null }));
     }
 
-    async function handler(req, res) {
+    async function handle(view, req, res) {
         const started = now();
         const url = new URL(req.url, 'http://bridge.invalid');
         const path = url.pathname;
         let route = path;
         res.on('finish', () => log(`${req.method} ${route} ${res.statusCode} ${now() - started}ms`));
         try {
-            if (allowedHosts && !allowedHosts.includes(String(req.headers.host || '').toLowerCase())) {
+            // A LAN listener serves only its allowlisted clients, before any routing.
+            if (!clientAllowed(view, req.socket)) {
+                route = 'lan-refused';
+                res.shouldKeepAlive = false;
+                return send(res, 403, { error: 'forbidden' }, { Connection: 'close' });
+            }
+            if (view.hosts && !view.hosts.includes(String(req.headers.host || '').toLowerCase())) {
                 route = 'bad-host';
                 return send(res, 421, { error: 'misdirected_request' });
             }
             if (path === '/healthz') return send(res, 200, { ok: true });
-            if (path.startsWith('/api/')) return await api(req, res, path);
+            // The MCP server's private routes are on loopback only.
+            if (path.startsWith('/api/')) return view.api ? await api(req, res, path) : send(res, 404, { error: 'not_found' });
             const raw = rawPathOf(req);
             if (VNC_PREFIX.test(raw) || VNC_PREFIX.test(path)) return await vncStatic(req, res, raw, (r) => { route = r; });
             const c = CHAT_ROUTE.exec(path);
             if (c) {
                 route = `/live/chat/${c[1].slice(0, 6)}…`;
                 if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: 'method_not_allowed' }, { Allow: 'GET' });
-                return chatLink(res, c[1]);
+                return chatLink(res, c[1], view.base);
             }
             const m = LIVE_ROUTE.exec(path);
             if (m) {
                 route = `/live/${m[1].slice(0, 6)}…${m[2] || ''}`;
-                return await live(req, res, m[1], m[2]);
+                return await live(req, res, m[1], m[2], view.base);
             }
             return send(res, 404, { error: 'not_found' });
         } catch (err) {
@@ -873,5 +889,20 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         }
     }
 
-    return { handler, upgrade, close, shutdown, store, linkUrl, stateOf, sweepLinks };
+    // A listener's view of the bridge. The default one (handler, upgrade) is the loopback
+    // listener: config.allowedHosts, every client, the private /api routes, publicBase. A LAN
+    // listener passes its own Host list, the client addresses it serves (allowFrom; anyone else
+    // gets 403 before any routing), its own base for the absolute URLs it returns, and api: false.
+    function listener({ allowedHosts: hosts = allowedHosts, allowFrom = null, publicBase: base = publicRoot, api: withApi = true } = {}) {
+        const view = {
+            hosts: hosts ? hosts.map((h) => String(h).toLowerCase()) : null,
+            allowFrom: allowFrom ? new Set(allowFrom.map(normalizeAddress)) : null,
+            base: String(base).replace(/\/+$/, ''),
+            api: withApi,
+        };
+        return { handler: (req, res) => handle(view, req, res), upgrade: (req, socket, head) => upgradeOn(view, req, socket, head), allows: (addr) => !view.allowFrom || view.allowFrom.has(normalizeAddress(addr)) };
+    }
+    const loopback = listener();
+
+    return { handler: loopback.handler, upgrade: loopback.upgrade, listener, close, shutdown, store, linkUrl, stateOf, sweepLinks };
 }

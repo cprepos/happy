@@ -48,6 +48,8 @@ export function loadConfig(env = process.env) {
             podsPath: env.BRIDGE_PODS_STORE || join(home, 'bridge/pods.json'),
             chatsPath: env.BRIDGE_CHATS_STORE || join(home, 'bridge/chats.json'),
         },
+        // Optional second listener on a LAN address (lanConfig below): null when off.
+        lan: lanConfig(env, port),
         files: {
             apiToken: join(secrets, 'api-token'),
             vncPassword: join(secrets, 'vnc-password'),
@@ -61,4 +63,23 @@ export function readSecret(path) {
     const v = readFileSync(path, 'utf8').trim();
     if (!v) throw new Error(`empty secret file ${path}`);
     return v;
+}
+
+const IPV4 = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+
+// The LAN listener, so Mac chats reach the live view without a tunnel. BRIDGE_LAN_BIND is one
+// IPv4 address of this machine (never 0.0.0.0); BRIDGE_LAN_ALLOW the client addresses it serves,
+// comma separated, at least one. It answers to the Host <bind>:<port> only, and its links use
+// BRIDGE_LAN_PUBLIC_BASE (default http://<bind>:<port>). Unset BRIDGE_LAN_BIND: no LAN listener.
+// A malformed setting throws, so the bridge refuses to start rather than listen wider.
+export function lanConfig(env, port) {
+    const bind = String(env.BRIDGE_LAN_BIND || '').trim();
+    if (!bind) return null;
+    if (!IPV4.test(bind) || bind === '0.0.0.0' || bind.startsWith('127.')) throw new Error(`BRIDGE_LAN_BIND must be one LAN IPv4 address of this machine, not ${JSON.stringify(bind)}`);
+    const allow = String(env.BRIDGE_LAN_ALLOW || '').split(',').map((a) => a.trim()).filter(Boolean);
+    if (!allow.length) throw new Error('BRIDGE_LAN_BIND is set but BRIDGE_LAN_ALLOW is empty: name the client addresses');
+    for (const a of allow) if (!IPV4.test(a) || a === '0.0.0.0') throw new Error(`BRIDGE_LAN_ALLOW: ${JSON.stringify(a)} is not one IPv4 address`);
+    const host = `${bind}:${port}`;
+    const publicBase = String(env.BRIDGE_LAN_PUBLIC_BASE || `http://${host}`).replace(/\/+$/, '');
+    return { bind, port, allow, allowedHosts: [host], publicBase };
 }

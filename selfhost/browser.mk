@@ -27,12 +27,18 @@ export HAPPY_BROWSER_DIR := $(BROWSER_DIR)
 BROWSER_LOCAL_ENV := $(BROWSER_DIR)/.env.browser
 BROWSER_COMPOSE := docker compose -p $(BROWSER_PROJECT) -f $(BROWSER_DIR)/compose.browser.yml \
 	--env-file $(BROWSER_SECRETS)/browser.env $(if $(wildcard $(BROWSER_LOCAL_ENV)),--env-file $(BROWSER_LOCAL_ENV))
+comma := ,
 BROWSER_SVC ?=
 BROWSER_API ?= http://127.0.0.1:8010
 BROWSER_BRIDGE ?= http://127.0.0.1:6090
 # Every port the stack listens on, all 127.0.0.1 (noVNC, controller, bridge, Playwright server).
 # Match selfhost/browser/.env.browser if it changes a port.
 BROWSER_PORTS ?= 6080|8010|6090|9223|61[0-3][0-9]|81[0-3][0-9]|93[0-3][0-9]
+# The bridge's opt-in LAN listener (BRIDGE_LAN_BIND in .env.browser): the one bind allowed beyond
+# 127.0.0.1, and only on the bridge's port.
+BRIDGE_LAN_BIND ?= $(shell sed -nE 's/^BRIDGE_LAN_BIND=([0-9.]+)[[:space:]]*$$/\1/p' $(BROWSER_LOCAL_ENV) 2>/dev/null | tail -1)
+BRIDGE_LAN_PORT ?= $(or $(shell sed -nE 's/^BRIDGE_PORT=([0-9]+)[[:space:]]*$$/\1/p' $(BROWSER_LOCAL_ENV) 2>/dev/null | tail -1),6090)
+BROWSER_BIND_OK = ^127\.0\.0\.1:$(if $(BRIDGE_LAN_BIND),|^$(subst .,\.,$(BRIDGE_LAN_BIND)):$(BRIDGE_LAN_PORT)$$)
 BROWSER_IMAGES = $(shell sed -nE 's/^x-(browser-node|controller)-image: &[a-z_]+ (.+)$$/\2/p' $(BROWSER_DIR)/compose.browser.yml) \
 	$(shell sed -nE 's/^    image: (node:.+)$$/\1/p' $(BROWSER_DIR)/compose.browser.yml | sort -u)
 POD_FILTER = --filter label=happy-browser.pod=1 --filter label=happy-browser.project=$(BROWSER_PROJECT)
@@ -53,10 +59,11 @@ browser-down:
 browser-status:
 	@$(BROWSER_COMPOSE) ps --format 'table {{.Service}}\t{{.Status}}\t{{.Ports}}'
 	@echo
-	@echo "listening on the live-browser ports $(BROWSER_PORTS) (expect 127.0.0.1 only):"
+	@echo "listening on the live-browser ports $(BROWSER_PORTS) (expect 127.0.0.1 only$(if $(BRIDGE_LAN_BIND),$(comma) plus $(BRIDGE_LAN_BIND):$(BRIDGE_LAN_PORT))):"
 	@ss -ltnH | awk '{print $$4}' | grep -E ':($(BROWSER_PORTS))$$' | sort -u || echo "  (none)"
-	@if ss -ltnH | awk '{print $$4}' | grep -E ':($(BROWSER_PORTS))$$' | grep -qvE '^127\.0\.0\.1:'; then \
-		echo "WARNING: a live-browser port is bound beyond 127.0.0.1"; exit 1; fi
+	@if ss -ltnH | awk '{print $$4}' | grep -E ':($(BROWSER_PORTS))$$' | grep -qvE '$(BROWSER_BIND_OK)'; then \
+		echo "WARNING: a live-browser port is bound beyond 127.0.0.1$(if $(BRIDGE_LAN_BIND), and $(BRIDGE_LAN_BIND):$(BRIDGE_LAN_PORT))"; exit 1; fi
+	@$(if $(BRIDGE_LAN_BIND),printf "bridge LAN /healthz: "; curl -fsS --max-time 5 -o /dev/null -w '%{http_code} from this host (not in the allowlist: expect 000)\n' http://$(BRIDGE_LAN_BIND):$(BRIDGE_LAN_PORT)/healthz || echo,true)
 	@printf "controller /healthz: "; curl -fsS --max-time 5 $(BROWSER_API)/healthz || echo "unreachable"; echo
 	@printf "bridge /healthz:     "; curl -fsS --max-time 5 $(BROWSER_BRIDGE)/healthz || echo "unreachable"; echo
 
@@ -156,9 +163,12 @@ browser-forward-uninstall: browser-forward-host
 # Restart only the bridge (to load new bridge code). On SIGTERM the bridge releases every held
 # link (noVNC sockets close, waiting agents get status released), saves links.json and exits,
 # well inside the 20 s given here. Pods are left running and the new bridge adopts them.
+# BRIDGE_ENV=1 recreates the container from compose instead (only the bridge, --no-deps), so a
+# changed .env.browser setting such as BRIDGE_LAN_BIND takes effect; a plain restart keeps the
+# container's old environment.
 browser-bridge-restart:
 	@HAPPY_BROWSER_HOME="$(HAPPY_BROWSER_HOME)" node $(BROWSER_DIR)/scripts/bridge-restart-check.mjs
-	docker restart -t 20 $(BROWSER_PROJECT)-bridge-1
+	$(if $(filter 1,$(BRIDGE_ENV)),$(BROWSER_COMPOSE) up -d --no-deps --force-recreate --timeout 20 bridge,docker restart -t 20 $(BROWSER_PROJECT)-bridge-1)
 	@for i in $$(seq 1 30); do curl -fsS --max-time 2 $(BROWSER_BRIDGE)/healthz >/dev/null 2>&1 && break; sleep 1; done
 	@printf "bridge /healthz: "; curl -fsS --max-time 5 $(BROWSER_BRIDGE)/healthz || { echo unreachable; exit 1; }; echo
 

@@ -1,7 +1,7 @@
 // node:test suite for the bridge, with auto-browser mocked.
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
+import { createServer, request as httpRequest } from 'node:http';
 import { mkdtempSync, readFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -717,4 +717,108 @@ test('nav: goto an allowed url, a refused scheme, and only while the user holds 
     assert.equal(navUrl('about:blank'), 'about:blank');
     assert.equal(navUrl('localhost:3000/x'), 'https://localhost:3000/x');
     assert.equal((await fetch(`${base}/live/${'0'.repeat(32)}/nav`, { method: 'POST' })).status, 404);
+});
+
+// ── The LAN listener (BRIDGE_LAN_BIND) ─────────────────────────────────────
+// A request with any Host header (fetch will not set one).
+function rawGet(port, path, { host, method = 'GET', headers = {} } = {}) {
+    return new Promise((resolve, reject) => {
+        const req = httpRequest({ host: '127.0.0.1', port, path, method, headers: { Host: host, ...headers } }, (res) => {
+            let body = '';
+            res.setEncoding('utf8');
+            res.on('data', (d) => { body += d; });
+            res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body }));
+        });
+        req.on('error', reject);
+        req.end();
+    });
+}
+const LAN_HOST = '192.168.2.72:6090';
+const LAN_BASE = `http://${LAN_HOST}`;
+async function lanServer(opts) {
+    const lan = bridgeApp.listener({ allowedHosts: [LAN_HOST], publicBase: LAN_BASE, api: false, ...opts });
+    const srv = createServer(lan.handler);
+    srv.on('upgrade', lan.upgrade);
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    return { lan, port: srv.address().port, close: () => new Promise((r) => { srv.closeAllConnections?.(); srv.close(r); }) };
+}
+
+test('LAN listener: an allowlisted client gets the live routes with LAN URLs; other Hosts 421, /api 404', async () => {
+    const up = await restartWithNovnc();
+    const l = await lanServer({ allowFrom: ['127.0.0.1'] });
+    // A loopback listener as server.mjs makes it: its own Hosts only.
+    const lo = await lanServer({ allowedHosts: ['localhost:6090', '127.0.0.1:6090'], allowFrom: null, publicBase: 'http://localhost:6090', api: true });
+    try {
+        const { id, url } = await link();
+        assert.equal(url, `http://localhost:6090/live/${id}`, 'the MCP server still gets the loopback link');
+        assert.equal((await rawGet(l.port, '/healthz', { host: LAN_HOST })).status, 200);
+        assert.equal((await rawGet(l.port, '/healthz', { host: 'localhost:6090' })).status, 421);
+        assert.equal((await rawGet(l.port, '/healthz', { host: '127.0.0.1:6090' })).status, 421);
+        assert.equal((await rawGet(l.port, '/healthz', { host: '192.168.2.72' })).status, 421);
+        assert.equal((await rawGet(l.port, '/api/links', { host: LAN_HOST, method: 'POST', headers: { Authorization: `Bearer ${BRIDGE_TOKEN}` } })).status, 404, 'no private routes on the LAN');
+        assert.equal((await rawGet(l.port, '/api/pods', { host: LAN_HOST, headers: { Authorization: `Bearer ${BRIDGE_TOKEN}` } })).status, 404);
+
+        const page = await rawGet(l.port, `/live/${id}`, { host: LAN_HOST });
+        assert.equal(page.status, 200);
+        assert.ok(page.body.includes(`${LAN_BASE}/live/${id}/vnc/vnc.html?`), 'Take control points at the LAN base');
+        assert.ok(!page.body.includes('http://localhost:6090'));
+        assert.equal((await rawGet(l.port, `/live/${id}/state`, { host: LAN_HOST })).status, 200);
+        assert.equal((await rawGet(l.port, `/live/${id}/frame.jpg`, { host: LAN_HOST })).status, 200);
+        assert.equal((await rawGet(l.port, `/live/${id}/vnc/vnc.html`, { host: LAN_HOST })).body, 'vnc:shared:/vnc.html');
+
+        const take = await rawGet(l.port, `/live/${id}/take`, { host: LAN_HOST, method: 'POST' });
+        assert.equal(take.status, 200);
+        assert.ok(JSON.parse(take.body).novnc_url.startsWith(`${LAN_BASE}/live/${id}/vnc/vnc.html?`));
+        // The same take over loopback still answers with the loopback base.
+        assert.ok((await (await post(id, 'take')).json()).novnc_url.startsWith(`http://localhost:6090/live/${id}/vnc/`));
+
+        assert.equal((await wsHandshake(l.port, `/live/${id}/vnc/websockify`, { host: 'localhost:6090' })).status, 421);
+        const ws = await wsHandshake(l.port, `/live/${id}/vnc/websockify`, { host: LAN_HOST });
+        assert.equal(ws.status, 101);
+        assert.ok((await ws.read('hello:shared')).includes('hello:shared'));
+        ws.socket.destroy();
+
+        // And the loopback listener does not answer to the LAN Host.
+        assert.equal((await rawGet(lo.port, '/healthz', { host: LAN_HOST })).status, 421);
+        assert.equal((await rawGet(lo.port, '/healthz', { host: 'localhost:6090' })).status, 200);
+    } finally { await lo.close(); await l.close(); await up.close(); }
+});
+
+test('LAN listener: a client not in the allowlist is refused before any routing', async () => {
+    const up = await restartWithNovnc();
+    const l = await lanServer({ allowFrom: ['192.168.2.55', '192.168.2.56'] });
+    try {
+        const { id } = await link();
+        await post(id, 'take');
+        for (const path of ['/healthz', `/live/${id}`, `/live/${id}/state`, `/live/${id}/frame.jpg`, `/live/${id}/vnc/vnc.html`, '/api/links', '/nope']) {
+            const r = await rawGet(l.port, path, { host: LAN_HOST });
+            assert.equal(r.status, 403, path);
+            assert.equal(r.body, '{"error":"forbidden"}');
+        }
+        assert.equal((await wsHandshake(l.port, `/live/${id}/vnc/websockify`, { host: LAN_HOST })).status, 403);
+        assert.equal(up.seen.http.length, 0, 'nothing reached noVNC');
+        assert.equal(up.seen.ws.length, 0);
+        assert.ok(logs.some((x) => x.includes('lan-refused')));
+        assert.ok(l.lan.allows('192.168.2.55'));
+        assert.ok(l.lan.allows('::ffff:192.168.2.56'), 'an IPv4-mapped address is its IPv4');
+        assert.ok(!l.lan.allows('127.0.0.1'));
+        assert.ok(!l.lan.allows('192.168.2.5'));
+        assert.ok(!l.lan.allows(''));
+    } finally { await l.close(); await up.close(); }
+});
+
+test('lanConfig: off when unset; refuses wildcard, loopback, an empty or malformed allowlist', async () => {
+    const { lanConfig } = await import('../lib/config.mjs');
+    assert.equal(lanConfig({}, 6090), null);
+    assert.equal(loadConfig({}).lan, null);
+    assert.deepEqual(lanConfig({ BRIDGE_LAN_BIND: '192.168.2.72', BRIDGE_LAN_ALLOW: '192.168.2.55, 192.168.2.56' }, 6090),
+        { bind: '192.168.2.72', port: 6090, allow: ['192.168.2.55', '192.168.2.56'], allowedHosts: ['192.168.2.72:6090'], publicBase: 'http://192.168.2.72:6090' });
+    assert.equal(lanConfig({ BRIDGE_LAN_BIND: '192.168.2.72', BRIDGE_LAN_ALLOW: '192.168.2.55', BRIDGE_LAN_PUBLIC_BASE: 'http://ml.lan:6090/' }, 6090).publicBase, 'http://ml.lan:6090');
+    for (const bind of ['0.0.0.0', '127.0.0.1', '::', '192.168.2.300', 'prep-ml', '192.168.2.72:6090']) {
+        assert.throws(() => lanConfig({ BRIDGE_LAN_BIND: bind, BRIDGE_LAN_ALLOW: '192.168.2.55' }, 6090), /BRIDGE_LAN_BIND/, bind);
+    }
+    assert.throws(() => lanConfig({ BRIDGE_LAN_BIND: '192.168.2.72' }, 6090), /BRIDGE_LAN_ALLOW is empty/);
+    for (const allow of ['0.0.0.0', '192.168.2.0/24', '*', 'prep-pro']) {
+        assert.throws(() => lanConfig({ BRIDGE_LAN_BIND: '192.168.2.72', BRIDGE_LAN_ALLOW: allow }, 6090), /BRIDGE_LAN_ALLOW/, allow);
+    }
 });

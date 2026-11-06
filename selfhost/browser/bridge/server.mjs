@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// happy-browser-bridge HTTP service, bound to 127.0.0.1:6090.
+// happy-browser-bridge HTTP service, bound to 127.0.0.1:6090 (and, with BRIDGE_LAN_BIND, a LAN address).
 import { readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { dirname, join } from 'node:path';
@@ -100,6 +100,25 @@ server.requestTimeout = 0;
 server.headersTimeout = 15_000;
 server.keepAliveTimeout = 5_000;
 server.listen(cfg.port, cfg.host, () => log(`bridge listening on http://${cfg.host}:${cfg.port} -> ${pods ? `browser pods (max ${cfg.pods.maxPods}, warm ${cfg.pods.warm})` : cfg.autoBrowserUrl}`));
+// The LAN listener (BRIDGE_LAN_BIND), for chats on the Macs: same bridge, but only the
+// BRIDGE_LAN_ALLOW clients (anyone else is dropped on connect, and refused 403 again per request),
+// only the Host <bind>:<port>, no /api routes, and absolute URLs on the LAN base.
+let lanServer = null;
+if (cfg.lan) {
+    const lan = bridge.listener({ allowedHosts: cfg.lan.allowedHosts, allowFrom: cfg.lan.allow, publicBase: cfg.lan.publicBase, api: false });
+    lanServer = createServer(lan.handler);
+    lanServer.on('connection', (socket) => {
+        if (lan.allows(socket.remoteAddress)) return;
+        log(`LAN connection from ${socket.remoteAddress} refused (not in BRIDGE_LAN_ALLOW)`);
+        socket.destroy();
+    });
+    lanServer.on('upgrade', lan.upgrade);
+    lanServer.requestTimeout = 0;
+    lanServer.headersTimeout = 15_000;
+    lanServer.keepAliveTimeout = 5_000;
+    lanServer.on('error', (err) => { log(`LAN listener ${cfg.lan.bind}:${cfg.lan.port}: ${err.message}`); process.exit(1); });
+    lanServer.listen(cfg.lan.port, cfg.lan.bind, () => log(`bridge also listening on http://${cfg.lan.bind}:${cfg.lan.port} for ${cfg.lan.allow.join(', ')} (links ${cfg.lan.publicBase})`));
+}
 // After the pods' start sweep, held links whose browser is gone are released too.
 pods?.start().then(() => { const n = bridge.sweepLinks(); if (n) log(`sweep at start: ${n} held link(s) with no browser released`); })
     .catch((err) => log(`pods: start failed: ${err.message}`));
@@ -122,6 +141,8 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
         } catch (err) { log(`${sig}: releasing held links failed: ${err.message}`); }
         store.flush();
         pods?.close();
+        lanServer?.close();
+        lanServer?.closeAllConnections?.();
         server.close(() => process.exit(0));
         server.closeIdleConnections?.();
     });

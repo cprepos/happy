@@ -3,14 +3,16 @@
 An agent drives a real, headful Chromium. You watch it, or take control, from
 the native iOS app. The app's in-app browser sends every request, including
 ones to `localhost`, through the Happy Agent workspace proxy. So everything here
-binds to `127.0.0.1` only. There is no public port, no Caddy route and no tunnel.
+binds to `127.0.0.1` only. There is no public port and no Caddy route. The one opt-in
+exception is the bridge's LAN listener (below): port 6090 on one LAN address, for a fixed
+list of client addresses.
 
 | Piece | Port (127.0.0.1) | What |
 |---|---|---|
 | auto-browser `browser-node` | 6080 | Xvfb + Chromium + noVNC (password required) |
 | auto-browser `browser-node` | 9223 | Playwright server the controller drives Chromium through (`PLAYWRIGHT_PORT`) |
 | auto-browser `controller` | 8010 | REST API + MCP at `/mcp` (Streamable HTTP, bearer token) |
-| live `bridge` (`bridge/`) | 6090 | phone page `/live/<id>`, frames, state, takeover hand-back; plus a stdio MCP server |
+| live `bridge` (`bridge/`) | 6090 | phone page `/live/<id>`, frames, state, takeover hand-back; plus a stdio MCP server. Optionally also on `192.168.2.72:6090` for the Macs (LAN listener) |
 
 auto-browser is [LvcidPsyche/auto-browser](https://github.com/LvcidPsyche/auto-browser)
 (MIT). We run its published GHCR images for v1.14.0, pinned by digest. Their OCI
@@ -32,6 +34,7 @@ make browser-bridge-smoke   # end to end on the running stack; makes and deletes
 make browser-pods-status    # each chat's pod: slot, containers, the bridge's view (chat, held, idle)
 make browser-pods-reap      # remove pods no chat is using; asks first (see below)
 make browser-forward-install HOST=prep-air   # Mac tunnel for the live view (also -status, -uninstall)
+make browser-bridge-restart BRIDGE_ENV=1     # recreate only the bridge, so a changed .env.browser applies
 ```
 
 `make browser-pods-reap` keeps every pod the bridge says is in use: one with a chat's
@@ -58,6 +61,69 @@ The browser stack runs only here. A Mac chat reaches it two ways:
   KeepAlive, logs in `~/Library/Logs/happy-browser-forward.log`. It binds the
   Mac's loopback only. `install.sh` refuses when something else listens on either
   port; `uninstall.sh` moves the plist to `~/happy-trash/`.
+  The tunnel is still required by the current iOS app: it builds every live-view URL
+  (`/live/chat/<key>`, `/live/<id>`, its frame, state, take and release) on the fixed origin
+  `http://localhost:6090` (`LiveBrowserLink.origin` in `packages/happy-ios`), only recognizes
+  links with that origin in chat text and tool results, and sends them through the chat
+  machine's workspace proxy. For a Mac chat that is the Mac's own localhost. The LAN listener
+  below is the bridge half of replacing the tunnel; the tunnel can go once the app takes a
+  per-chat bridge origin.
+
+### LAN listener (opt-in)
+
+With `BRIDGE_LAN_BIND` and `BRIDGE_LAN_ALLOW` in `selfhost/browser/.env.browser`, the bridge
+listens a second time, on `<BRIDGE_LAN_BIND>:6090`, beside `127.0.0.1:6090`:
+
+```
+BRIDGE_LAN_BIND=192.168.2.72
+BRIDGE_LAN_ALLOW=192.168.2.55,192.168.2.56
+```
+
+then `make browser-bridge-restart BRIDGE_ENV=1` (a plain restart keeps the old environment).
+
+- Only port 6090 is exposed. noVNC's files and its websocket go through the bridge
+  (`/live/<id>/vnc/...`), so take control needs nothing else. 6080, 8010, 9223, the pods'
+  ports and the filler's 6091 stay on 127.0.0.1.
+- **Client allowlist:** a connection from any address not in `BRIDGE_LAN_ALLOW` is destroyed
+  on connect, and every request and upgrade is checked again (403 `forbidden`, logged as
+  `lan-refused`) before any routing. IPv4 only, exact addresses, no ranges.
+  `BRIDGE_LAN_BIND` must be one IPv4 address (not `0.0.0.0` or loopback) and the allowlist
+  must not be empty; otherwise the bridge refuses to start.
+- **Host:** the LAN listener answers only to `Host: 192.168.2.72:6090` (421 otherwise), and
+  the loopback listener does not answer to that Host.
+- **No private routes:** `/api/*` is 404 on the LAN listener; the MCP servers (also the Macs',
+  which run here over ssh) use loopback.
+- **URLs:** absolute URLs the LAN listener returns (`/live/chat/<key>`'s `url`, `/take`'s
+  `novnc_url`, the page's Take control link) use `http://192.168.2.72:6090`
+  (`BRIDGE_LAN_PUBLIC_BASE` to change). Loopback responses and the links the MCP server
+  hands agents keep `http://localhost:6090`.
+- Live link ids are still the capability: 128 random bits per link.
+- `make browser-status` then accepts `192.168.2.72:6090` as the one bind beyond 127.0.0.1
+  and fails on any other.
+
+Defence in depth, optional, as root (not applied by any target). iptables, inserted in this
+order so the accepts sit above the drop:
+
+```
+sudo iptables -I INPUT -p tcp -d 192.168.2.72 --dport 6090 -j DROP
+sudo iptables -I INPUT -p tcp -d 192.168.2.72 --dport 6090 -s 192.168.2.56 -j ACCEPT
+sudo iptables -I INPUT -p tcp -d 192.168.2.72 --dport 6090 -s 192.168.2.55 -j ACCEPT
+```
+
+or, where ufw is enabled with its default deny incoming:
+
+```
+sudo ufw allow proto tcp from 192.168.2.55 to 192.168.2.72 port 6090
+sudo ufw allow proto tcp from 192.168.2.56 to 192.168.2.72 port 6090
+```
+
+The bridge runs with host networking and publishes no port, so these INPUT rules apply to it
+directly (Docker's own chains are not involved).
+
+Rollback: remove (or comment out) the two lines from `.env.browser` (back it up to
+`~/trash/<ts>_env-browser/` first), run `make browser-bridge-restart BRIDGE_ENV=1`, and check
+`make browser-status` shows 6090 on 127.0.0.1 only. The Mac tunnels are independent of it:
+`make browser-forward-install HOST=prep-pro` (and `HOST=prep-air`) puts one back.
 
 ## Files on disk
 
@@ -171,8 +237,9 @@ Phone routes, opened in the iOS app's in-app browser through the workspace proxy
   `BROWSER_WIDTH` and `BROWSER_HEIGHT`) at 100% of the page width, with the image
   `object-fit: contain`, so a 1920-wide frame scales down to the phone.
 - Private routes for the MCP server, `POST /api/{links,takeover,wait,release}`,
-  need `Authorization: Bearer <bridge-token>`. The bridge refuses any Host header
-  other than `localhost`/`127.0.0.1`/`[::1]` on its port (421).
+  need `Authorization: Bearer <bridge-token>` and exist on loopback only. The loopback
+  listener refuses any Host header other than `localhost`/`127.0.0.1`/`[::1]` on its port
+  (421); the LAN listener, any but `<BRIDGE_LAN_BIND>:<port>`.
 - Neither the controller token, nor the VNC password, nor share tokens appear
   in `/state`, the logs, or `links.json`. Logs show the first 6 characters of a
   link id only.
