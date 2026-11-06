@@ -1178,7 +1178,13 @@ final class LiveBrowserPlayerView: UIView {
     var onTap: (() -> Void)?
     var onDrop: ((CGPoint) -> Void)?
     var large = false { didSet { resize.setImage(UIImage(systemName: large ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right"), for: .normal); resize.accessibilityLabel = large ? Strings.LiveBrowser.smaller : Strings.LiveBrowser.bigger } }
-    var isBusy = false { didSet { spinner.isHidden = !isBusy; isBusy ? spinner.startAnimating() : spinner.stopAnimating() } }
+    /// Taking or giving back control, ending: the spinner shows.
+    var isBusy = false { didSet { updateSpinner() } }
+    /// The feed waits for a frame (none yet, or the bridge slow to make
+    /// the next): the spinner shows over the last one, small or large.
+    private(set) var isWaiting = false { didSet { if isWaiting != oldValue { updateSpinner() } } }
+    /// The spinner is showing (tests).
+    var isSpinning: Bool { !spinner.isHidden }
     private(set) var isDragging = false
 
     private let bar = UIView()
@@ -1253,6 +1259,12 @@ final class LiveBrowserPlayerView: UIView {
         ])
         spinner.color = .white
         spinner.isHidden = true
+        spinner.hidesWhenStopped = false
+        // A dark disc: white alone is lost on a light page.
+        spinner.backgroundColor = UIColor.black.withAlphaComponent(0.45)
+        spinner.bounds = CGRect(x: 0, y: 0, width: 36, height: 36)
+        spinner.layer.cornerRadius = 18
+        spinner.accessibilityIdentifier = "live-browser-player-spinner"
         for view in [bar, picture, message, footer, close, full, resize, menuButton, spinner] as [UIView] { addSubview(view) }
         for view in [pillDot, pill, action] as [UIView] { footer.addSubview(view) }
         picture.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tapped)))
@@ -1300,7 +1312,8 @@ final class LiveBrowserPlayerView: UIView {
         resize.isHidden = layout.resize == nil
         menuButton.frame = layout.menu ?? .zero
         menuButton.isHidden = layout.menu == nil || isOver
-        spinner.center = CGPoint(x: layout.picture.midX, y: layout.picture.midY)
+        // Over the picture's middle; above the words when there are some.
+        spinner.center = CGPoint(x: layout.picture.midX, y: layout.picture.midY - (message.isHidden ? 0 : 34))
         footer.frame = layout.footer
         let pad = M.footerPadding
         let height = layout.footer.height
@@ -1338,6 +1351,7 @@ final class LiveBrowserPlayerView: UIView {
         message.text = text
         message.isHidden = text == nil
         picture.alpha = text == nil ? 1 : 0.25
+        isWaiting = feed.isWaiting
         let status = LiveBrowserDock.status(feed.phase) ?? Strings.LiveBrowser.endedStatus
         pill.text = status
         pillDot.backgroundColor = UIColor(state?.asleep == true || state == nil ? Palette.textSecondary : LiveBrowserPlayerView.color(state?.status))
@@ -1354,6 +1368,14 @@ final class LiveBrowserPlayerView: UIView {
         accessibilityLabel = [Strings.LiveBrowser.title, status].joined(separator: ", ")
         accessibilityValue = state?.status.rawValue ?? "\(feed.phase)"
         setNeedsLayout()
+    }
+
+    private func updateSpinner() {
+        let spins = isBusy || isWaiting
+        guard spins == spinner.isHidden else { return }
+        spinner.isHidden = !spins
+        if spins { spinner.startAnimating() } else { spinner.stopAnimating() }
+        if spins { bringSubviewToFront(spinner) }
     }
 
     static func color(_ status: LiveBrowserState.Status?) -> ColorToken {

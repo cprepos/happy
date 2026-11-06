@@ -10,10 +10,11 @@ public protocol LiveBrowserTransport: Sendable {
 
 /// One chat's live browser, read once for everything that shows it: the
 /// mini player, the transcript's chip, the indicator over the composer and
-/// the full screen's header. Its state, then (while something on screen
-/// shows the picture) its frame, every `interval`, and only while at least
-/// one visible observer is attached; nothing at all once the browser is
-/// over. Observers are held weakly, by owner.
+/// the full screen's header. Its state every `interval`, and (while
+/// something on screen shows the picture) its frame in a loop of its own,
+/// one read at a time, `frameGap` apart; only while at least one visible
+/// observer is attached; nothing at all once the browser is over.
+/// Observers are held weakly, by owner.
 @MainActor
 public final class LiveBrowserFeed {
     public enum Phase: Equatable, Sendable {
@@ -59,10 +60,21 @@ public final class LiveBrowserFeed {
         public var isRunning: Bool { state?.runs ?? false }
     }
 
-    /// Over the chat, small.
+    /// The state, while nothing shows the picture (the line, a chip).
     public static let interval: Duration = .milliseconds(1500)
-    /// Large or full screen.
+    /// The state, while the picture shows, small or large.
     public static let fastInterval: Duration = .milliseconds(1000)
+    /// From one frame's answer to the next frame's ask. The bridge takes
+    /// most of a second to make a frame (it scrubs each one), so frames
+    /// come back to back rather than on a clock.
+    public static let frameGap: Duration = .milliseconds(300)
+    /// `frameGap`, shorter in tests.
+    public var frameGap: Duration = LiveBrowserFeed.frameGap
+    /// How long a frame may go unanswered (or the first not come) before
+    /// the feed says it is waiting, and the player spins.
+    public static let waitingAfter: Duration = .milliseconds(1200)
+    /// `waitingAfter`, shorter in tests.
+    public var waitingAfter: Duration = LiveBrowserFeed.waitingAfter
     /// The longest one read of the state or the frame may take. The
     /// workspace tunnel has no deadline of its own: a read that never
     /// answered held the poll forever, and with it the picture, which no
@@ -73,16 +85,37 @@ public final class LiveBrowserFeed {
     public var requestTimeout: Duration = LiveBrowserFeed.requestTimeout
 
     public let link: LiveBrowserLink
-    public private(set) var phase: Phase = .connecting { didSet { if phase != oldValue { publish() } } }
+    public private(set) var phase: Phase = .connecting {
+        didSet {
+            guard phase != oldValue else { return }
+            isWaiting = computeWaiting()
+            publish()
+        }
+    }
     /// The latest frame's bytes (PNG or JPEG; decode by content).
     public private(set) var frame: Data?
-    /// Polls made (tests).
+    /// Polls of the state made (tests).
     public private(set) var polls = 0
+    /// Frame reads asked (tests).
+    public private(set) var frameReads = 0
     public var isPolling: Bool { polling != nil }
+    /// Reading frames: something shows the picture.
+    public var isFraming: Bool { framing != nil }
+    /// The picture shows, and the frame it shows is not the latest one:
+    /// none has come yet, or the one asked for has gone `waitingAfter`
+    /// unanswered (the bridge busy with an action, a slow tunnel). The
+    /// player spins over the last frame. Never while asleep, resting or
+    /// over: those say so in words.
+    public private(set) var isWaiting = false
     /// Polling, yet nothing begun or finished for `stallLimit`: a read
     /// stuck where even `requestTimeout` didn't reach it.
-    public var isStalled: Bool { polling != nil && ContinuousClock.now - lastActivity > stallLimit }
-    /// Longer than any poll may take: both its reads, and the wait.
+    public var isStalled: Bool {
+        guard polling != nil else { return false }
+        let now = ContinuousClock.now
+        if now - lastActivity > stallLimit { return true }
+        return framing != nil && now - lastFrameActivity > requestTimeout + Self.interval + frameGap
+    }
+    /// Longer than any poll may take: its read, and the wait.
     public var stallLimit: Duration { requestTimeout * 2 + Self.interval }
     /// How long it may connect, or show no picture, with nothing but
     /// failures before it says not responding.
@@ -95,6 +128,16 @@ public final class LiveBrowserFeed {
     private let makeTransport: @MainActor () -> LiveBrowserTransport?
     private var transport: LiveBrowserTransport?
     private var polling: Task<Void, Never>?
+    /// The frame loop, while the picture shows.
+    private var framing: Task<Void, Never>?
+    /// When the frame read now in flight was asked, if one is.
+    private var frameAskedAt: ContinuousClock.Instant?
+    /// Re-reads `isWaiting` when a frame read goes unanswered too long.
+    private var waitWatch: Task<Void, Never>?
+    /// When the frame loop last began or finished a read.
+    private var lastFrameActivity = ContinuousClock.now
+    /// The last frame read failed, with no picture yet.
+    private var frameFailing = false
     private var observers: [ObjectIdentifier: Observer] = [:]
     /// When the poll last began, finished or woke.
     private var lastActivity = ContinuousClock.now
@@ -119,7 +162,9 @@ public final class LiveBrowserFeed {
     // MARK: Observers
 
     /// `owner` shows the feed: `update` runs on every change while it is
-    /// attached. `frames`: it shows the picture; `fast`: it shows it large.
+    /// attached. `frames`: it shows the picture (frames then come as fast
+    /// as the bridge makes them, and the state at `fastInterval`); `fast`:
+    /// it shows the state somewhere it must be quick, with no picture.
     public func attach(_ owner: AnyObject, visible: Bool = true, frames: Bool = false, fast: Bool = false, update: @escaping @MainActor (LiveBrowserFeed) -> Void) {
         observers[ObjectIdentifier(owner)] = Observer(owner: owner, visible: visible, frames: frames, fast: fast, update: update)
         reconsider()
@@ -153,8 +198,10 @@ public final class LiveBrowserFeed {
 
     private var wantsFrames: Bool { watching.contains(where: \.frames) }
 
-    /// How often it reads now: faster while something shows it large.
-    public var currentInterval: Duration { watching.contains(where: \.fast) ? Self.fastInterval : Self.interval }
+    /// How often it reads the state now: faster while something shows the
+    /// picture, small or large (the small player once read slower, and
+    /// only caught up when made large).
+    public var currentInterval: Duration { watching.contains(where: { $0.fast || $0.frames }) ? Self.fastInterval : Self.interval }
 
     /// Polls again from scratch, over a new transport, if the poll is
     /// stalled: the player shown again, or something else asking for it.
@@ -170,6 +217,7 @@ public final class LiveBrowserFeed {
     public func pollNow() {
         guard polling != nil, frame == nil else { return kick() }
         failingSince = nil
+        frameFailing = false
         pause()
         reconsider()
     }
@@ -189,6 +237,7 @@ public final class LiveBrowserFeed {
     public func rest(_ state: LiveBrowserState) {
         guard !phase.isOver else { return }
         failingSince = nil
+        frameFailing = false
         phase = .dormant(state)
         pause()
     }
@@ -198,6 +247,7 @@ public final class LiveBrowserFeed {
     public func retry() {
         guard phase.isResting else { return }
         failingSince = nil
+        frameFailing = false
         phase = .connecting
         pause()
         reconsider()
@@ -210,6 +260,7 @@ public final class LiveBrowserFeed {
         guard let since = failingSince else { failingSince = now; return false }
         guard now - since >= stuckLimit else { return false }
         failingSince = nil
+        frameFailing = false
         phase = .notResponding
         return true
     }
@@ -221,12 +272,14 @@ public final class LiveBrowserFeed {
     // MARK: Polling
 
     private func start() {
+        startFraming()
         guard polling == nil else { return }
         guard let transport = transport ?? makeTransport() else { return }
         self.transport = transport
         lastActivity = .now
         // Time off screen isn't time failing.
         failingSince = nil
+        frameFailing = false
         polling = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -239,13 +292,16 @@ public final class LiveBrowserFeed {
             }
             guard let self, !Task.isCancelled else { return }
             self.polling = nil
+            self.stopFraming()
             self.releaseTransport()
         }
+        startFraming()
     }
 
     private func pause() {
         polling?.cancel()
         polling = nil
+        stopFraming()
         releaseTransport()
     }
 
@@ -255,39 +311,22 @@ public final class LiveBrowserFeed {
         Task { await transport.stop() }
     }
 
-    /// One read of the state and, if shown, the frame; false once there is
-    /// nothing more to read.
+    /// One read of the state; false once there is nothing more to read.
+    /// The picture is the frame loop's.
     private func poll(_ transport: LiveBrowserTransport) async -> Bool {
         polls += 1
         do {
             let data = try await read(link.stateURL, accept: "application/json", through: transport)
-            var state = try JSONDecoder().decode(LiveBrowserState.self, from: data)
+            let state = try JSONDecoder().decode(LiveBrowserState.self, from: data)
             guard !Task.isCancelled else { return false }
-            // An asleep browser has no frame to give (503); none is asked for.
-            var pictureMissing = false
-            if wantsFrames, !state.ended, !state.asleep {
-                do {
-                    let frame = try await read(link.frameURL, accept: "image/*,*/*;q=0.8", through: transport)
-                    guard !Task.isCancelled else { return false }
-                    if frame != self.frame {
-                        self.frame = frame
-                        if phase == .live(state) { publish() }
-                    }
-                } catch BrowserError.upstream(503) {
-                    // It fell asleep between the two reads.
-                    state.pod = .asleep
-                } catch {
-                    pictureMissing = frame == nil
-                }
-                guard !Task.isCancelled else { return false }
-            }
             // Never a picture for `stuckLimit`, though the state answers.
-            if pictureMissing {
+            if wantsFrames, frame == nil, frameFailing, !state.asleep, !state.ended {
                 if failing() { return false }
             } else {
                 failingSince = nil
             }
             phase = .live(state)
+            refreshWaiting()
             return !state.ended
         } catch {
             guard !Task.isCancelled, !(error is CancellationError) else { return false }
@@ -304,6 +343,118 @@ public final class LiveBrowserFeed {
                 return true
             }
         }
+    }
+
+    // MARK: Frames
+
+    /// The frame loop: while the state loop runs and something shows the
+    /// picture, one frame read at a time, the next asked `frameGap` after
+    /// the last answered, at the same pace small or large. Apart from the
+    /// state, so a slow state read never holds the picture back, nor a slow
+    /// picture the state.
+    private func startFraming() {
+        guard polling != nil, wantsFrames, framing == nil, let transport else {
+            if !wantsFrames { stopFraming() }
+            return
+        }
+        lastFrameActivity = .now
+        framing = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                let wait = await self.readFrame(transport)
+                guard !Task.isCancelled else { return }
+                try? await Task.sleep(for: wait)
+            }
+        }
+        refreshWaiting()
+    }
+
+    private func stopFraming() {
+        framing?.cancel()
+        framing = nil
+        frameAskedAt = nil
+        waitWatch?.cancel()
+        waitWatch = nil
+        refreshWaiting()
+    }
+
+    /// How soon the frame loop looks again for the state's first answer.
+    static let stateWait: Duration = .milliseconds(50)
+
+    /// One frame read; answers how long to wait before the next.
+    private func readFrame(_ transport: LiveBrowserTransport) async -> Duration {
+        lastFrameActivity = .now
+        // Not before the bridge has said the browser runs: an asleep one
+        // has no frame to give (503), and an over one none at all.
+        guard let state = phase.state else { return Self.stateWait }
+        if state.asleep || state.ended { return currentInterval }
+        frameReads += 1
+        let asked = ContinuousClock.now
+        frameAskedAt = asked
+        watchWaiting(from: asked)
+        defer {
+            if frameAskedAt == asked { frameAskedAt = nil }
+            lastFrameActivity = .now
+        }
+        do {
+            let frame = try await read(link.frameURL, accept: "image/*,*/*;q=0.8", through: transport)
+            guard !Task.isCancelled else { return .zero }
+            frameFailing = false
+            frameAskedAt = nil
+            let waited = isWaiting
+            isWaiting = computeWaiting()
+            if frame != self.frame {
+                self.frame = frame
+                publish()
+            } else if waited != isWaiting {
+                publish()
+            }
+            return frameGap
+        } catch BrowserError.upstream(503) {
+            guard !Task.isCancelled else { return .zero }
+            // It fell asleep: the state says so until it wakes.
+            if case .live(var state) = phase {
+                state.pod = .asleep
+                phase = .live(state)
+            }
+            frameAskedAt = nil
+            refreshWaiting()
+            return currentInterval
+        } catch {
+            guard !Task.isCancelled else { return .zero }
+            if frame == nil { frameFailing = true }
+            frameAskedAt = nil
+            refreshWaiting()
+            return currentInterval
+        }
+    }
+
+    /// Re-reads `isWaiting` once a frame read asked at `asked` has gone
+    /// `waitingAfter` unanswered.
+    private func watchWaiting(from asked: ContinuousClock.Instant) {
+        waitWatch?.cancel()
+        let delay = waitingAfter
+        waitWatch = Task { [weak self] in
+            try? await Task.sleep(until: asked + delay, clock: .continuous)
+            guard !Task.isCancelled else { return }
+            self?.refreshWaiting()
+        }
+    }
+
+    private func computeWaiting() -> Bool {
+        guard framing != nil, wantsFrames, !phase.isOver, !phase.isResting else { return false }
+        if let state = phase.state, state.asleep || state.ended { return false }
+        if frame == nil { return true }
+        guard let asked = frameAskedAt else { return false }
+        return ContinuousClock.now - asked >= waitingAfter
+    }
+
+    /// `isWaiting` as it is now, published if it changed.
+    private func refreshWaiting() {
+        let now = computeWaiting()
+        guard now != isWaiting else { return }
+        isWaiting = now
+        publish()
     }
 
     /// One GET, given up on (`BrowserError.timeout`) after

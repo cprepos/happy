@@ -105,6 +105,9 @@ final class LiveBrowserFeedTests: XCTestCase {
         feed.set(owner, frames: true)
         try await until { feed.frame != nil }
         XCTAssertEqual(feed.frame, Data("png".utf8))
+        // The small player reads as fast as the large one.
+        XCTAssertEqual(feed.currentInterval, LiveBrowserFeed.fastInterval)
+        feed.set(owner, frames: false)
         XCTAssertEqual(feed.currentInterval, LiveBrowserFeed.interval)
         feed.set(owner, fast: true)
         XCTAssertEqual(feed.currentInterval, LiveBrowserFeed.fastInterval)
