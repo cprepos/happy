@@ -2,6 +2,7 @@ import axios from 'axios'
 import { logger } from '@/ui/logger'
 import type { AgentState, CreateSessionResponse, Metadata, Session, Machine, MachineMetadata, DaemonState } from '@/api/types'
 import { ApiSessionClient } from './apiSession';
+import { claimSessionOwnershipOrExit } from '@/daemon/sessionOwnerLock';
 import { ApiMachineClient } from './apiMachine';
 import { decodeBase64, encodeBase64, getRandomBytes, encrypt, decrypt, libsodiumEncryptForPublicKey } from './encryption';
 import { PushNotificationClient } from './pushNotifications';
@@ -276,7 +277,12 @@ export class ApiClient {
   }
 
   sessionSyncClient(session: Session): ApiSessionClient {
-    return new ApiSessionClient(this.credential.token, session);
+    // One live owner per session: take the owner lock before opening a
+    // socket. If another live process owns it, this exits without attaching.
+    const release = claimSessionOwnershipOrExit(session.id);
+    const client = new ApiSessionClient(this.credential.token, session);
+    client.once('closed', release);
+    return client;
   }
 
   machineSyncClient(machine: Machine): ApiMachineClient {

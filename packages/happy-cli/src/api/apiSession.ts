@@ -1134,6 +1134,7 @@ export class ApiSessionClient extends EventEmitter {
             releaseReconnectCapabilityMonitor();
             this.reconnectCapabilityHeld = false;
         }
+        this.emit('closed');
     }
 
     private startSmartReconnect() {

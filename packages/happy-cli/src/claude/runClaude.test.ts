@@ -46,6 +46,10 @@ vi.mock('@/daemon/run', () => ({
     initialMachineMetadata: {},
 }));
 
+vi.mock('@/daemon/sessionOwnerLock', () => ({
+    claimSessionOwnershipOrExit: vi.fn(() => () => {}),
+}));
+
 vi.mock('@/claude/utils/startHappyServer', () => ({
     startHappyServer: mockStartHappyServer,
 }));

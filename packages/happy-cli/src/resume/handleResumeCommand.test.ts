@@ -17,6 +17,10 @@ vi.mock('node:fs', async (importOriginal) => {
     };
 });
 
+vi.mock('@/daemon/sessionOwnerLock', () => ({
+    readLiveSessionOwner: vi.fn(() => null),
+}));
+
 vi.mock('@/utils/spawnHappyCLI', () => ({
     spawnHappyCLI: mocks.mockSpawnHappyCLI,
 }));
@@ -54,6 +58,7 @@ import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
 
 import { buildResumeLaunch, formatResumeHelp, handleResumeCommand, parseResumeCommandArgs } from './handleResumeCommand';
 import { LocalResumeSessionError } from './localResumeStore';
+import { readLiveSessionOwner } from '@/daemon/sessionOwnerLock';
 
 function createChildProcess(exitCode: number | null = 0) {
     const handlers = new Map<string, (...args: any[]) => void>();
@@ -263,6 +268,25 @@ describe('formatResumeHelp', () => {
 });
 
 describe('handleResumeCommand', () => {
+    it('does not start a second process when the session already has a live owner', async () => {
+        mocks.mockResolveLocalReconnectableSession.mockResolvedValue(createReconnectableSession());
+        vi.mocked(readLiveSessionOwner).mockReturnValueOnce({
+            pid: 4242,
+            startTime: 'linux:boot:1',
+            sessionId: 'session-1',
+            acquiredAt: 1,
+            cliVersion: '1.0.0',
+            startedBy: 'daemon',
+        });
+        const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+        await handleResumeCommand(['session-1']);
+
+        expect(spawnHappyCLI).not.toHaveBeenCalled();
+        expect(log).toHaveBeenCalledWith(expect.stringContaining('already running (pid 4242)'));
+        log.mockRestore();
+    });
+
     it('resumes from local persisted encryption data without legacy agent.key auth', async () => {
         const session = createReconnectableSession();
         mocks.mockResolveLocalReconnectableSession.mockResolvedValue(session);

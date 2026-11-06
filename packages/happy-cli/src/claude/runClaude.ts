@@ -15,6 +15,7 @@ import { getEnvironmentInfo } from '@/ui/doctor';
 import { configuration } from '@/configuration';
 import { notifyDaemonSessionStarted } from '@/daemon/controlClient';
 import { consumeSessionScopedEnv } from '@/daemon/sessionEnvironment';
+import { claimSessionOwnershipOrExit } from '@/daemon/sessionOwnerLock';
 import { initialMachineMetadata } from '@/daemon/run';
 import { startHappyServer } from '@/claude/utils/startHappyServer';
 import { startHookServer } from '@/claude/utils/startHookServer';
@@ -259,6 +260,10 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
     }
 
     logger.debug(`Session created: ${response.id}`);
+
+    // Claim the session before anything else announces it (the daemon
+    // webhook below, the socket). A second process exits here.
+    claimSessionOwnershipOrExit(response.id);
 
     // Always report to daemon if it exists
     try {
