@@ -1074,6 +1074,10 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
             awaitingRecordTask.task?.cancel()
         }
         sessionApplied = true
+        // A record read after the screen appeared, or one now naming
+        // another machine: the live browser is routed now, not left
+        // waiting for the transcript's next link.
+        routeLiveBrowser()
         rows?.update { $0.session = state }
         updateHeader()
         updateCliWarning()

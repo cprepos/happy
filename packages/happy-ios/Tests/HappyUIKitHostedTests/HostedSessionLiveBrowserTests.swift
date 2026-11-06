@@ -166,6 +166,12 @@ final class HostedSessionLiveBrowserTests: XCTestCase {
     func testTheRedLineStandsOnTheComposersCard() async throws {
         let (chat, window) = try await chat()
         let dock = try XCTUnwrap(chat.liveBrowserDock)
+        // The line stands only for a browser the bridge says is live: a
+        // computer whose bridge answers so.
+        let daemon = BrowserDaemon()
+        await daemon.setLiveStatus("watching")
+        let client = AgentClient(transport: daemon, token: "native-secret")
+        dock.connect = { LiveBrowserConnection(client: client) { "work1" } }
         let link = try XCTUnwrap(LiveBrowserLink(id: linkId))
         dock.update(link: link)
         let composer = try XCTUnwrap(descendants(chat.view).compactMap { $0 as? SessionComposerView }.first)
@@ -235,8 +241,13 @@ final class HostedSessionLiveBrowserTests: XCTestCase {
         try await waitFor("the page", file: file, line: line) { await daemon.pageHeads.contains { $0.host == "localhost:5173" } }
         let tunnelled = await daemon.tunnelledWorkspaces
         XCTAssertEqual(tunnelled, [workspace], "the link goes the live view's way", file: file, line: line)
+        // Back once the push is done, and on the chat once it is in the
+        // window again: full screen is presented from it.
+        try await waitFor("the push done", file: file, line: line) { navigation.transitionCoordinator == nil }
         navigation.popViewController(animated: false)
-        try await waitFor("back on the chat", file: file, line: line) { navigation.topViewController === chat }
+        try await waitFor("back on the chat", file: file, line: line) {
+            navigation.topViewController === chat && navigation.transitionCoordinator == nil && chat.viewIfLoaded?.window != nil
+        }
     }
 
     private func waitFor(_ what: String, seconds: Double = 15, file: StaticString = #filePath, line: UInt = #line, _ condition: () async -> Bool) async throws {
