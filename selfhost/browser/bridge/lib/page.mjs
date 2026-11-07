@@ -135,6 +135,8 @@ const SCRIPT = `
     $('reason').textContent = needs ? (state.reason || 'The agent needs you to take over.') : '';
     const held = needs || state.status === 'user';
     $('done').hidden = !held;
+    // Sleep: only for a chat's own browser (state.pod) while it runs; it wakes on the next use.
+    $('sleep').hidden = stopped || state.status === 'done' || !(state.pod === 'running' || state.pod === 'starting');
     $('take').classList.toggle('primary', needs);
     renderApproval();
     document.title = (needs || state.approval ? '⚠ ' : '') + (state.title || 'Live browser');
@@ -185,7 +187,7 @@ const SCRIPT = `
   $('approve').addEventListener('click', () => decide(true));
   $('deny').addEventListener('click', () => decide(false));
 
-  function stop() { stopped = true; clearTimeout(timer); spin(false); $('take').hidden = true; $('done').hidden = true; }
+  function stop() { stopped = true; clearTimeout(timer); spin(false); $('take').hidden = true; $('done').hidden = true; $('sleep').hidden = true; }
 
   function finish() {
     if (!ended()) state = Object.assign({}, state, { status: 'done', reason: 'session_closed' });
@@ -310,6 +312,24 @@ const SCRIPT = `
     } finally { $('done').disabled = false; }
   });
 
+  // Sleep stops the browser and keeps its login and page; the agent's next call or Take control
+  // wakes it where it was.
+  $('sleep').addEventListener('click', async () => {
+    $('sleep').disabled = true;
+    try {
+      const r = await fetch(base + '/sleep', { method: 'POST' });
+      const body = await r.json().catch(() => null);
+      if (body && body.status) { state = body; render(); }
+      if (r.ok && state.pod === 'asleep') {
+        $('frame').hidden = true;
+        haveFrame = false;
+        spin(false);
+        note('The browser is asleep. Take control to wake it.');
+      }
+    } catch (err) {
+    } finally { $('sleep').disabled = false; }
+  });
+
   render();
   if (ended()) finish(); else tick();
 })();
@@ -355,6 +375,7 @@ export function renderPage({ id, state, takeoverUrl, nonce, frameWidth = 1920, f
 <footer>
   <a id="take" class="btn" href="${esc(takeoverUrl)}" rel="noreferrer">Take control</a>
   <button id="done" class="btn primary" type="button" hidden>Release control</button>
+  <button id="sleep" class="btn" type="button" hidden>Sleep</button>
 </footer>
 <script id="initial" type="application/json">${jsonForScript(state)}</script>
 <script nonce="${nonce}">${SCRIPT}</script>
