@@ -178,6 +178,8 @@ public final class LiveBrowserFeed {
     private var lastFrameActivity = ContinuousClock.now
     /// The last frame read failed, with no picture yet.
     private var frameFailing = false
+    /// The last frame read failed.
+    private var frameMissed = false
     private var observers: [ObjectIdentifier: Observer] = [:]
     /// When the poll last began, finished or woke.
     private var lastActivity = ContinuousClock.now
@@ -443,6 +445,7 @@ public final class LiveBrowserFeed {
             if frameAskedAt == asked { frameAskedAt = nil }
             lastFrameActivity = .now
         }
+        var movedOrigin = false
         do {
             let asked = activeLink
             let frame: Data
@@ -450,10 +453,11 @@ public final class LiveBrowserFeed {
                 frame = try await read(asked.frameURL, accept: "image/*,*/*;q=0.8", through: transport)
             } catch {
                 // The next frame is asked at the next origin.
-                if !Task.isCancelled { missed(asked, error) }
+                if !Task.isCancelled { movedOrigin = missed(asked, error) }
                 throw error
             }
             guard !Task.isCancelled else { return .zero }
+            frameMissed = false
             frameFailing = false
             frameAskedAt = nil
             lastFrameAt = .now
@@ -481,7 +485,12 @@ public final class LiveBrowserFeed {
             if frame == nil { frameFailing = true }
             frameAskedAt = nil
             refreshWaiting()
-            return currentInterval
+            // The first miss after a good frame, moved to the other
+            // origin: asked there at once, so the picture keeps coming.
+            // Missed there too: at the poll's pace, not back and forth.
+            let again = movedOrigin && !frameMissed
+            frameMissed = true
+            return again ? frameGap : currentInterval
         }
     }
 

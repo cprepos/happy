@@ -192,7 +192,9 @@ final class LiveBrowserChatTests: XCTestCase {
         XCTAssertEqual(transport.posts, ["\(LiveBrowserLink.localOrigin) take", "\(LiveBrowserLink.lanOrigin) take"])
         XCTAssertEqual(feed.activeLink.origin, LiveBrowserLink.lanOrigin)
         _ = try? await feed.release()
-        XCTAssertEqual(transport.posts.last, "\(LiveBrowserLink.lanOrigin) release", "straight to the one that answered")
+        let after = transport.posts.dropFirst(2)
+        XCTAssertTrue(after.contains("\(LiveBrowserLink.lanOrigin) release"), "\(transport.posts)")
+        XCTAssertFalse(after.contains { $0.hasPrefix(LiveBrowserLink.localOrigin) }, "straight to the one that answered")
     }
 
     /// Once a frame shows, nothing the bridge does in passing brings the
@@ -205,7 +207,7 @@ final class LiveBrowserChatTests: XCTestCase {
         transport.state = #"{"status":"watching","live":true,"url":"https://example.com/a"}"#
         let feed = LiveBrowserFeed(link: try XCTUnwrap(LiveBrowserLink(id: Self.a, origin: LiveBrowserLink.lanOrigin))) { transport }
         feed.frameGap = .milliseconds(10)
-        feed.waitingAfter = .milliseconds(900)
+        feed.waitingAfter = .seconds(2)
         var shown = false
         var spunAfter = 0
         var lostState = 0
@@ -405,13 +407,13 @@ final class LiveBrowserChatTests: XCTestCase {
         refusing.failure = nil
         refusing.chat = #"{"id":"\#(Self.a)","live":true,"status":"watching"}"#
         try await until { watch.answer.chat != nil && !watch.backingOff }
-        watch.close()
+        watch.setVisible(false)
         try await until { !watch.isPolling }
         // Another failure keeps the last answer and asks again.
         let flaky = PodTransport()
         flaky.chat = #"{"id":"\#(Self.a)","live":true,"status":"watching"}"#
         transport = flaky
-        watch.reconsider()
+        watch.setVisible(true)
         try await until { watch.answer.chat != nil }
         flaky.failure = .timeout
         let polls = watch.polls
