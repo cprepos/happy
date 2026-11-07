@@ -65,6 +65,10 @@ public struct LiveBrowserLink: Equatable, Sendable {
     /// POSTed to end the browser: its session closes and the link is done
     /// (`user_ended`). Answers the state.
     public var endURL: URL { url.appendingPathComponent("end") }
+    /// POSTed to put the browser to sleep: the login is kept and the pod
+    /// stops, and the next agent call or `takeURL` wakes it on its last page.
+    /// The link stays watching. Answers the state (`pod: asleep`).
+    public var sleepURL: URL { url.appendingPathComponent("sleep") }
     /// POSTed by the person in control to move the page
     /// (`LiveBrowserNavigation`). Answers `LiveBrowserNavResult`.
     public var navURL: URL { url.appendingPathComponent("nav") }

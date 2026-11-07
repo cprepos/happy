@@ -303,7 +303,7 @@ final class HostedLiveBrowserTests: XCTestCase {
         let sheet = try await endSheet(host)
         XCTAssertEqual(sheet.preferredStyle, .actionSheet)
         XCTAssertEqual(sheet.title, "End this browser?")
-        XCTAssertEqual(sheet.message, "The agent will lose this page.")
+        XCTAssertEqual(sheet.message, "Logins are kept; it starts fresh next time.")
         XCTAssertEqual(sheet.actions.map(\.title), [Strings.LiveBrowser.endBrowser, Strings.LiveBrowser.cancel])
         XCTAssertEqual(sheet.actions.map(\.style), [.destructive, .cancel])
         try screenshot(window, name: "live-browser-end-confirm")
@@ -326,7 +326,7 @@ final class HostedLiveBrowserTests: XCTestCase {
         defer { window.isHidden = true; host.dock.update(link: nil) }
         let (navigation, noVNC) = try await takeOver(host, daemon)
         // Minimize and End browser at the left; Release control alone at the right.
-        XCTAssertEqual(noVNC.navigationItem.leftBarButtonItems?.map(\.accessibilityIdentifier), ["live-browser-minimize", "live-browser-end"])
+        XCTAssertEqual(noVNC.navigationItem.leftBarButtonItems?.map(\.accessibilityIdentifier), ["live-browser-minimize", "live-browser-end", "live-browser-sleep"])
         XCTAssertEqual(noVNC.navigationItem.rightBarButtonItems, [noVNC.control])
         XCTAssertTrue(noVNC.endItem.isEnabled)
         let frame = try XCTUnwrap(navigation.viewControllers.first as? LiveBrowserFullScreenItems)

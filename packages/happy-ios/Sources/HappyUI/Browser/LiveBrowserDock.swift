@@ -377,6 +377,7 @@ final class LiveBrowserDock: NSObject {
         player.onResize = { [weak self] in self?.resize() }
         player.onAction = { [weak self] in self?.playerAction() }
         player.onEnd = { [weak self, weak player] in self?.confirmEnd(from: player?.menuButton) }
+        player.onSleep = { [weak self] in self?.sleep() }
         player.onTap = { [weak self] in self?.presentFullScreen(taking: false) }
         player.onDrop = { [weak self] center in self?.drop(at: center) }
         feed.attach(player, visible: isOnScreen, frames: true, fast: large) { [weak player] feed in player?.show(feed) }
@@ -732,6 +733,34 @@ final class LiveBrowserDock: NSObject {
         }
     }
 
+    /// Puts the browser to sleep (`POST /sleep`), with no question: the
+    /// logins and the page are kept, and the agent's next call or Take
+    /// control wakes it where it was. Control goes back to the agent; the
+    /// full screen goes, and the player shows it asleep.
+    func sleep() {
+        guard let feed, !busy, !feed.phase.isOver else { return }
+        busy = true
+        player?.isBusy = true
+        Task { [weak self] in
+            do {
+                try await feed.sleep()
+                guard let self else { return }
+                self.busy = false
+                self.player?.isBusy = false
+                guard self.feed === feed else { return }
+                self.controlTaken = false
+                self.dismissFullScreen(animated: true)
+                self.refresh()
+            } catch {
+                guard let self else { return }
+                self.busy = false
+                self.player?.isBusy = false
+                let refused = error as? BrowserError == .upstream(404) || error as? BrowserError == .upstream(409)
+                self.alert(Strings.LiveBrowser.sleepFailed, refused ? Strings.LiveBrowser.sleepRefused : Strings.LiveBrowser.unreachable)
+            }
+        }
+    }
+
     /// Back to the player.
     func minimize() {
         if player == nil { openPlayer() }
@@ -815,6 +844,8 @@ final class LiveBrowserFullScreenItems: UIViewController {
     let control = UIBarButtonItem()
     /// End browser: at the left by Minimize, far from Release control.
     let endItem = UIBarButtonItem()
+    /// Sleep browser: beside End, not destructive.
+    let sleepItem = UIBarButtonItem()
     private var state: LiveBrowserState?
     private var held = false
 
@@ -867,7 +898,13 @@ final class LiveBrowserFullScreenItems: UIViewController {
             guard let self else { return }
             self.dock?.confirmEnd(from: self.endItem)
         }
-        navigationItem.leftBarButtonItems = [minimize, endItem]
+        sleepItem.image = UIImage(systemName: "moon.zzz")
+        sleepItem.accessibilityLabel = Strings.LiveBrowser.sleepBrowser
+        sleepItem.accessibilityIdentifier = "live-browser-sleep"
+        sleepItem.primaryAction = UIAction(title: Strings.LiveBrowser.sleepBrowser, image: UIImage(systemName: "moon.zzz")) { [weak self] _ in
+            self?.dock?.sleep()
+        }
+        navigationItem.leftBarButtonItems = [minimize, endItem, sleepItem]
         control.style = .prominent
         control.accessibilityIdentifier = "live-browser-control"
         // Control alone at the right, or with reload on the frame view: the
@@ -1049,6 +1086,7 @@ final class LiveBrowserFullScreenItems: UIViewController {
         }
         control.isEnabled = state.map { !$0.ended } ?? false
         endItem.isEnabled = state.map { !$0.ended } ?? false
+        sleepItem.isEnabled = state.map { !$0.ended && !$0.asleep } ?? false
         if isNoVNC, !address.isEditing, navigating == 0, let url = state?.url, !url.isEmpty { address.text = url }
         navigationItem.subtitle = state.flatMap { $0.asleep ? Strings.LiveBrowser.asleep : $0.starting ? Strings.LiveBrowser.startingBrowser : nil }
             ?? state?.lastAction.map(Strings.LiveBrowser.lastAction)
@@ -1237,6 +1275,8 @@ final class LiveBrowserPlayerView: UIView {
     var onAction: (() -> Void)?
     /// The menu's End browser.
     var onEnd: (() -> Void)?
+    /// The menu's Sleep browser.
+    var onSleep: (() -> Void)?
     var onTap: (() -> Void)?
     var onDrop: ((CGPoint) -> Void)?
     var large = false { didSet { resize.setImage(UIImage(systemName: large ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right"), for: .normal); resize.accessibilityLabel = large ? Strings.LiveBrowser.smaller : Strings.LiveBrowser.bigger } }
@@ -1317,6 +1357,7 @@ final class LiveBrowserPlayerView: UIView {
         menuButton.accessibilityIdentifier = "live-browser-player-menu"
         menuButton.showsMenuAsPrimaryAction = true
         menuButton.menu = UIMenu(children: [
+            UIAction(title: Strings.LiveBrowser.sleepBrowser, image: UIImage(systemName: "moon.zzz")) { [weak self] _ in self?.onSleep?() },
             UIAction(title: Strings.LiveBrowser.endBrowser, image: UIImage(systemName: "xmark.octagon"), attributes: .destructive) { [weak self] _ in self?.onEnd?() },
         ])
         spinner.color = .white

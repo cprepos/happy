@@ -120,10 +120,18 @@ extension Strings {
         static let release = "Release"
         static let takeFailed = "Couldn’t Take Control"
         static let releaseFailed = "Couldn’t Release Control"
-        /// Closes the browser's session for good: the agent loses the page.
+        /// Stops the browser and keeps its logins: the agent's next call
+        /// wakes it on the same page.
+        static let sleepBrowser = "Sleep browser"
+        static let sleepFailed = "Couldn’t Put the Browser to Sleep"
+        /// The bridge has no Sleep for this browser (an older bridge, a
+        /// shared browser) or it is still starting.
+        static let sleepRefused = "This browser can’t sleep right now."
+        /// Closes the browser's session: the logins are kept, the page is
+        /// not; the next browser starts on a new page.
         static let endBrowser = "End browser"
         static let endConfirm = "End this browser?"
-        static let endConfirmDetail = "The agent will lose this page."
+        static let endConfirmDetail = "Logins are kept; it starts fresh next time."
         static let endFailed = "Couldn’t End the Browser"
         /// The agent waits on the person's yes for an action
         /// (`state.approval`): the status, the alert, the player's button.

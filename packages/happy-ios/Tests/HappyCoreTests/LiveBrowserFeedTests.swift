@@ -342,6 +342,19 @@ final class LiveBrowserFeedTests: XCTestCase {
     }
 
     @MainActor
+    func testSleepPostsAndTheBrowserIsAsleepNotOver() async throws {
+        let transport = FakeTransport()
+        transport.posts["/sleep"] = #"{"status":"watching","reason":"user_slept","pod":"asleep","live":false,"live_reason":"asleep"}"#
+        let feed = LiveBrowserFeed(link: try XCTUnwrap(LiveBrowserLink(id: Self.a))) { transport }
+        XCTAssertEqual(feed.link.sleepURL.absoluteString, "\(Self.live(Self.a))/sleep")
+        try await feed.sleep()
+        XCTAssertEqual(transport.posted, ["/sleep"])
+        XCTAssertEqual(feed.phase.state?.status, .watching)
+        XCTAssertEqual(feed.phase.state?.asleep, true)
+        XCTAssertFalse(feed.phase.isOver)
+    }
+
+    @MainActor
     private func until(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
         for _ in 0..<300 {
             if condition() { return }

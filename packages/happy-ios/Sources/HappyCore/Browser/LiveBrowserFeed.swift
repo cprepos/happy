@@ -684,6 +684,16 @@ public final class LiveBrowserFeed {
         if let state = try? JSONDecoder().decode(LiveBrowserState.self, from: data) { phase = .live(state) }
     }
 
+    /// Puts the browser to sleep (`POST /sleep`): the login is kept and its
+    /// pod stops; the agent's next call or `take()` wakes it on its last
+    /// page. The feed is not over: the state says asleep (`pod: asleep`),
+    /// control is the agent's again. A bridge from before it answers 404,
+    /// one without per-chat browsers 409 (`BrowserError.upstream`).
+    public func sleep() async throws {
+        let data = try await post({ $0.sleepURL })
+        if let state = try? JSONDecoder().decode(LiveBrowserState.self, from: data) { phase = .live(state) }
+    }
+
     /// Hands control back (`POST /release`); a bridge from before it
     /// (404) is asked with `/done`.
     public func release() async throws {
