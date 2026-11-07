@@ -77,14 +77,11 @@ LLM_LINE = "  gateways: [default, lan]  # browser-stack: the coder API on the LA
 
 
 def script_paths():
-    """The two stdio MCP servers, wherever this checkout keeps them."""
-    for bridge, vault in [
-        (os.path.join(STACK, "browser/bridge/mcp.mjs"), os.path.join(STACK, "vault-mcp/mcp.mjs")),
-        (os.path.join(STACK, "..", "selfhost/browser/bridge/mcp.mjs"), os.path.join(STACK, "..", "selfhost/vault-mcp/mcp.mjs")),
-    ]:
-        if os.path.isfile(bridge):
-            return os.path.normpath(bridge), os.path.normpath(vault)
-    sys.exit("no bridge MCP server found under %s" % STACK)
+    """The two stdio MCP servers in this checkout."""
+    bridge, vault = os.path.join(STACK, "browser/bridge/mcp.mjs"), os.path.join(STACK, "vault-mcp/mcp.mjs")
+    if not os.path.isfile(bridge):
+        sys.exit("no bridge MCP server at %s" % bridge)
+    return bridge, vault
 
 
 def read_keys(required=True):

@@ -1,0 +1,273 @@
+# Live browser for agents: auto-browser (github.com/LvcidPsyche/auto-browser, MIT)
+# running headful Chromium on Xvfb with a noVNC viewer, plus its controller,
+# which serves the REST API and the MCP endpoint (/mcp, Streamable HTTP).
+#
+# Run through the Makefile (browser-stack/browser.mk): make browser-init, browser-up,
+# browser-status, browser-logs, browser-down. See browser-stack/browser/README.md.
+#
+# All three services use host networking, so Chromium's `localhost` is this
+# machine and agents can open services bound to 127.0.0.1 here. Every listener
+# binds 127.0.0.1 itself (there are no port publishes): noVNC, the Playwright
+# server, the controller and the bridge. Nothing is reachable from the LAN or
+# the internet, with one opt-in exception: BRIDGE_LAN_BIND gives the bridge (6090
+# only) a second listener on a LAN address that serves only BRIDGE_LAN_ALLOW's
+# clients. The phone reaches these ports through the Happy Agent workspace
+# proxy, which dials localhost on this machine.
+#
+# Images are the project's published GHCR images for v1.14.0 (git commit
+# 38377f1f04660446feb3e000b8134635f384dac5, as their OCI revision label says),
+# pinned by digest so a re-tag upstream cannot change what runs here.
+name: happy-browser
+
+x-browser-node-image: &browser_node_image ghcr.io/lvcidpsyche/auto-browser-browser-node:1.14.0@sha256:d5c1672e5816edd5beb38085016d4431adf0c4d39a6b41338c6fc60acb63ead1
+x-controller-image: &controller_image ghcr.io/lvcidpsyche/auto-browser-controller:1.14.0@sha256:db3964398befa498fcc4749d4c490080e0b38c7bebcef0dc05a6dd6e562932e0
+
+services:
+  browser-node:
+    image: *browser_node_image
+    network_mode: host
+    # The image's /entrypoint.sh, patched so noVNC binds 127.0.0.1 and Xvfb
+    # opens no TCP or abstract socket (scripts/browser-node-entrypoint.sh).
+    entrypoint: ["/happy/browser-node-entrypoint.sh"]
+    shm_size: 2gb
+    restart: unless-stopped
+    # As upstream: root only until setpriv drops to the browser user.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, KILL, SETGID, SETUID]
+    # Chromium's own sandbox needs moby's default seccomp plus chroot, clone and
+    # unshare. Vendored unchanged from auto-browser 38377f1f
+    # (controller/app/browser/seccomp/chromium-sandbox.json).
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=./seccomp/chromium-sandbox.json
+    pids_limit: 2048
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          test -s /data/profile/browser-ws-endpoint.txt
+          && curl -s --max-time 3 -o /dev/null http://127.0.0.1:$${PLAYWRIGHT_SERVER_PORT}/
+          && curl -fsS --max-time 3 http://127.0.0.1:$${NOVNC_PORT}/ >/dev/null
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    environment:
+      # Xvfb screen and Chromium window: a desktop screen, so sites serve their
+      # desktop layouts. 16:10, the shape of the iOS mini player. No mobile user
+      # agent or device emulation; device scale factor 1.
+      BROWSER_WIDTH: ${BROWSER_WIDTH:-1920}
+      BROWSER_HEIGHT: ${BROWSER_HEIGHT:-1200}
+      BROWSER_URL: about:blank
+      BROWSER_WS_ENDPOINT_FILE: /data/profile/browser-ws-endpoint.txt
+      # Host network: the Playwright server binds loopback and the controller
+      # reaches it at ws://127.0.0.1:<port>/... (the endpoint file says so).
+      PLAYWRIGHT_SERVER_HOST: 127.0.0.1
+      PLAYWRIGHT_SERVER_PORT: ${PLAYWRIGHT_PORT:-9223}
+      PLAYWRIGHT_SERVER_ADVERTISED_HOST: 127.0.0.1
+      NOVNC_PORT: ${NOVNC_PORT:-6080}
+      BROWSER_SANDBOX: auto
+      BROWSER_SECCOMP_PROFILE: auto-browser
+      # Required here (make browser-init generates it). Only 8 characters count.
+      VNC_PASSWORD: ${VNC_PASSWORD:?run make browser-init}
+      # The takeover URL uses localhost, a loopback name noVNC already admits.
+      NOVNC_ALLOWED_HOSTS: ""
+      NOVNC_ALLOWED_ORIGINS: ""
+    volumes:
+      - ${HAPPY_BROWSER_HOME:?}/data/browser-profile:/data/profile
+      - ${HAPPY_BROWSER_HOME:?}/data/downloads:/data/downloads
+      - ./scripts/browser-node-entrypoint.sh:/happy/browser-node-entrypoint.sh:ro
+      # The window lock (kiosk/): happy-kiosk.mjs holds every Chromium window
+      # in browser fullscreen, a managed policy, and fluxbox with no bindings,
+      # menu or toolbar.
+      - ./kiosk/happy-kiosk.mjs:/opt/browser-node/happy-kiosk.mjs:ro
+      - ./kiosk/policy.json:/etc/chromium/policies/managed/happy-kiosk.json:ro
+      - ./kiosk/policy.json:/etc/opt/chrome_for_testing/policies/managed/happy-kiosk.json:ro
+      - ./kiosk/fluxbox:/happy/fluxbox:ro
+
+  controller:
+    image: *controller_image
+    network_mode: host
+    # The image runs uvicorn on 0.0.0.0:8000; on the host network it binds
+    # 127.0.0.1:$API_PORT itself. It serves app.main:app through
+    # controller-patch/happy_live_frames.py, which keeps the live view moving while an
+    # action holds the session (scrubbed frames only) and refuses to start on any
+    # controller but the 1.14.0 it was written against. Rollback: app.main:app here.
+    command: ["uvicorn", "happy_live_frames:app", "--host", "127.0.0.1", "--port", "${API_PORT:-8010}"]
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    stop_grace_period: 60s
+    depends_on:
+      browser-node:
+        condition: service_healthy
+    healthcheck:
+      # The image has no curl; python is there.
+      test: ["CMD", "python3", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:${API_PORT:-8010}/healthz', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    environment:
+      # development: production refuses ALLOWED_HOSTS=* and demands operator ids.
+      APP_ENV: development
+      API_BEARER_TOKEN: ${API_BEARER_TOKEN:?run make browser-init}
+      API_BIND_SCOPE: loopback
+      API_TOKEN_FILE: /data/api-token
+      API_ALLOW_TOKENLESS_LOOPBACK: "false"
+      CONTROLLER_ALLOWED_HOSTS: localhost,127.0.0.1,::1
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      BROWSER_WS_ENDPOINT_FILE: /data/browser-profile/browser-ws-endpoint.txt
+      BROWSER_SANDBOX: auto
+      CONTROLLER_RUN_AS: auto
+      # resize=scale: noVNC shrinks the whole desktop to fit the phone screen.
+      TAKEOVER_URL: http://localhost:${NOVNC_PORT:-6080}/vnc.html?autoconnect=true&resize=scale
+      ARTIFACT_ROOT: /data/artifacts
+      UPLOAD_ROOT: /data/uploads
+      AUTH_ROOT: /data/auth
+      APPROVAL_ROOT: /data/approvals
+      AUDIT_ROOT: /data/audit
+      JOB_STORE_ROOT: /data/jobs
+      SESSION_STORE_ROOT: /data/sessions
+      MEMORY_ROOT: /data/memory
+      CLI_HOME: /data/cli-home
+      # Saved logins (storage state) are written Fernet-encrypted, and an
+      # unencrypted one is refused.
+      AUTH_STATE_ENCRYPTION_KEY: ${AUTH_STATE_ENCRYPTION_KEY:?run make browser-init}
+      REQUIRE_AUTH_STATE_ENCRYPTION: "true"
+      # Signs the observer tokens the bridge uses for live frames; fixed so
+      # they survive a controller restart.
+      SHARE_TOKEN_SECRET: ${SHARE_TOKEN_SECRET:?run make browser-init}
+      # Agents browse anywhere ("*" turns the host allowlist off). Chromium is
+      # on the host network, so that includes every service on this machine,
+      # loopback-only ones too: http://localhost:<port> is this machine.
+      ALLOWED_HOSTS: "*"
+      MAX_SESSIONS: ${MAX_SESSIONS:-3}
+      MCP_TOOL_PROFILE: ${MCP_TOOL_PROFILE:-curated}
+      DEFAULT_VIEWPORT_WIDTH: ${BROWSER_WIDTH:-1920}
+      # Kiosk: the page is the whole screen (no tab strip or toolbar).
+      DEFAULT_VIEWPORT_HEIGHT: ${BROWSER_HEIGHT:-1200}
+      # Rate limits are per bearer token, which the agents and the bridge's
+      # one-frame-a-second polling share; 120/min (upstream) is too tight.
+      REQUEST_RATE_LIMIT_REQUESTS: ${REQUEST_RATE_LIMIT_REQUESTS:-1200}
+      REQUEST_RATE_LIMIT_WINDOW_SECONDS: "60"
+      PII_SCRUB_SCREENSHOT: ${PII_SCRUB_SCREENSHOT:-true}
+      # Secrets typed by the secret filler (browser-stack/browser/filler) must not
+      # be written anywhere. A trace records each keystroke's params and DOM
+      # snapshots; the network inspector keeps request bodies, and a login
+      # POST body holds the password. Both stay off, whatever the defaults.
+      ENABLE_TRACING: "false"
+      NETWORK_INSPECTOR_CAPTURE_BODIES: "false"
+      # No model provider keys: the controller's own agent loop is unused; the
+      # calling agent (Claude Code, Happy Agent) drives the browser over MCP.
+      PYTHONPATH: /happy/controller-patch
+    volumes:
+      - ${HAPPY_BROWSER_HOME:?}/data:/data
+      - ./controller-patch/happy_live_frames.py:/happy/controller-patch/happy_live_frames.py:ro
+
+  # The live bridge (browser-stack/browser/bridge): the phone page /live/<id>, its
+  # frames and state, and the takeover hand-back the MCP tool waits on. Plain
+  # node, no dependencies, the source mounted read-only. Host networking so it
+  # binds 127.0.0.1:6090 itself and reaches the controller on 127.0.0.1:8010;
+  # it runs as the host user so it can read the 600 secret files.
+  bridge:
+    image: node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
+    restart: unless-stopped
+    network_mode: host
+    user: "${BRIDGE_UID:-1000}:${BRIDGE_GID:-1000}"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      controller:
+        condition: service_healthy
+    working_dir: /app
+    command: ["node", "/app/server.mjs"]
+    environment:
+      HAPPY_BROWSER_HOME: /happy-browser
+      BRIDGE_HOST: 127.0.0.1
+      BRIDGE_PORT: ${BRIDGE_PORT:-6090}
+      AUTO_BROWSER_URL: http://127.0.0.1:${API_PORT:-8010}
+      NOVNC_URL: http://localhost:${NOVNC_PORT:-6080}/vnc.html?autoconnect=true&resize=scale
+      BRIDGE_LINK_IDLE_HOURS: ${BRIDGE_LINK_IDLE_HOURS:-12}
+      # The shape of a frame: the controller's default viewport, as set above.
+      BRIDGE_FRAME_WIDTH: ${BROWSER_WIDTH:-1920}
+      BRIDGE_FRAME_HEIGHT: ${BROWSER_HEIGHT:-1200}
+      # One browser pod per chat (bridge/lib/pods.mjs), started through the launcher below.
+      # Off by default: the bridge then drives the shared browser above.
+      BRIDGE_PODS: ${BRIDGE_PODS:-0}
+      BRIDGE_LAUNCHER_SOCKET: /happy-browser/run/launcher.sock
+      BRIDGE_MAX_PODS: ${BRIDGE_MAX_PODS:-8}
+      BRIDGE_POD_WARM: ${BRIDGE_POD_WARM:-1}
+      BRIDGE_POD_IDLE_MIN: ${BRIDGE_POD_IDLE_MIN:-60}
+      POD_NOVNC_BASE: ${POD_NOVNC_BASE:-6100}
+      POD_API_BASE: ${POD_API_BASE:-8100}
+      POD_PLAYWRIGHT_BASE: ${POD_PLAYWRIGHT_BASE:-9300}
+      # Optional second listener on one LAN address, for chats on the Macs (README, "LAN
+      # listener"): only BRIDGE_LAN_ALLOW's clients, only the Host <bind>:<port>, no /api routes.
+      # Unset (the default) the bridge binds 127.0.0.1 only. Set both in .env.browser.
+      BRIDGE_LAN_BIND: ${BRIDGE_LAN_BIND:-}
+      BRIDGE_LAN_ALLOW: ${BRIDGE_LAN_ALLOW:-}
+      BRIDGE_LAN_PUBLIC_BASE: ${BRIDGE_LAN_PUBLIC_BASE:-}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:'+(process.env.BRIDGE_PORT||6090)+'/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
+    volumes:
+      - ./bridge:/app:ro
+      - ${HAPPY_BROWSER_HOME:?}/secrets:/happy-browser/secrets:ro
+      - ${HAPPY_BROWSER_HOME:?}/bridge:/happy-browser/bridge
+      # The launcher's socket. Only the bridge mounts it; no pod ever does.
+      - ${HAPPY_BROWSER_HOME:?}/run:/happy-browser/run
+
+  # The pod launcher (browser-stack/browser/launcher): starts and stops each chat's browser pod (a
+  # browser-node and its own controller, both host network, all listeners on 127.0.0.1) from
+  # fixed templates. It is the only container with the Docker socket, so it has no network at
+  # all and answers only on a unix socket in run/, which only the bridge mounts. Root, for the
+  # socket and to wipe slot directories the browser user owns, with every capability dropped
+  # but those. The repo and data/pods, data/chats are mounted at their host paths, because the
+  # bind sources it hands Docker are host paths.
+  launcher:
+    image: node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
+    restart: unless-stopped
+    network_mode: none
+    user: "0:0"
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    security_opt: ["no-new-privileges:true"]
+    command: ["node", "${HAPPY_BROWSER_DIR:?run through browser-stack/browser.mk}/launcher/launcher.mjs"]
+    environment:
+      LAUNCHER_BROWSER_DIR: ${HAPPY_BROWSER_DIR:?run through browser-stack/browser.mk}
+      LAUNCHER_HOME: ${HAPPY_BROWSER_HOME:?}
+      LAUNCHER_SECRETS_DIR: /secrets
+      LAUNCHER_SOCKET: /launcher-run/launcher.sock
+      LAUNCHER_PROJECT: ${BROWSER_PROJECT:-happy-browser}
+      LAUNCHER_SOCKET_UID: ${BRIDGE_UID:-1000}
+      LAUNCHER_SOCKET_GID: ${BRIDGE_GID:-1000}
+      POD_DATA_UID: ${BRIDGE_UID:-1000}
+      POD_DATA_GID: ${BRIDGE_GID:-1000}
+      MAX_PODS: ${BRIDGE_MAX_PODS:-8}
+      POD_NOVNC_BASE: ${POD_NOVNC_BASE:-6100}
+      POD_API_BASE: ${POD_API_BASE:-8100}
+      POD_PLAYWRIGHT_BASE: ${POD_PLAYWRIGHT_BASE:-9300}
+      BROWSER_WIDTH: ${BROWSER_WIDTH:-1920}
+      BROWSER_HEIGHT: ${BROWSER_HEIGHT:-1200}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      MCP_TOOL_PROFILE: ${MCP_TOOL_PROFILE:-curated}
+      REQUEST_RATE_LIMIT_REQUESTS: ${REQUEST_RATE_LIMIT_REQUESTS:-1200}
+      PII_SCRUB_SCREENSHOT: ${PII_SCRUB_SCREENSHOT:-true}
+    healthcheck:
+      test: ["CMD", "test", "-S", "/launcher-run/launcher.sock"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 5s
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${HAPPY_BROWSER_DIR:?}:${HAPPY_BROWSER_DIR:?}:ro
+      - ${HAPPY_BROWSER_HOME:?}/data/pods:${HAPPY_BROWSER_HOME:?}/data/pods
+      - ${HAPPY_BROWSER_HOME:?}/data/chats:${HAPPY_BROWSER_HOME:?}/data/chats
+      - ${HAPPY_BROWSER_HOME:?}/secrets:/secrets:ro
+      - ${HAPPY_BROWSER_HOME:?}/run:/launcher-run

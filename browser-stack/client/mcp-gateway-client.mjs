@@ -22,7 +22,7 @@
 import http from 'node:http';
 import https from 'node:https';
 import { randomUUID } from 'node:crypto';
-import { readFileSync, statSync } from 'node:fs';
+import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { createInterface } from 'node:readline';
 import { pathToFileURL } from 'node:url';
@@ -321,4 +321,5 @@ async function main() {
     process.on('SIGINT', end);
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) main();
+const isMain = (() => { try { return import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href; } catch { return false; } })();
+if (isMain) main();

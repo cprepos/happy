@@ -2,7 +2,7 @@
 
 A self-hosted Bitwarden-compatible server on prep-ml for all of your devices:
 the phone, prep-air, prep-pro and the browser extensions. The browser agent's
-secret filler (`selfhost/browser/filler`) also reads it, through its own
+secret filler (`browser-stack/browser/filler`) also reads it, through its own
 restricted account. Design: [docs/plan.md](docs/plan.md).
 
 - Its own compose project, `happy-vault` (`compose.vault.yml`), with
@@ -34,7 +34,7 @@ make vault-admin-on                                     # sudo: choose an admin 
 5. `make vault-backup-timer`. This starts the nightly backup.
 
 The agent account for the secret filler (no organization: its logins sit in
-its own vault) is in `selfhost/browser/filler/README.md`.
+its own vault) is in `browser-stack/browser/filler/README.md`.
 
 ### The env file
 

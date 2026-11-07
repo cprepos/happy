@@ -1,0 +1,305 @@
+// A daemon serving many chats from one MCP process (Happy Agent): each call's chat comes from the
+// call id the daemon put in _meta, looked up in the daemon's database, never from tool arguments.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { execFile, execFileSync } from 'node:child_process';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { agentCallChat, callChatResolver, chatKeyOf, createMcpServer, NO_CALL_CHAT } from '../mcp.mjs';
+import { createAgentChatLookup } from '../../../identity/agentchat.mjs';
+
+const TOKEN = 'bridge-secret-token-0123456789abcdef';
+const KEY_S1 = chatKeyOf({ source: 'happy', id: 'S1' });
+const KEY_S2 = chatKeyOf({ source: 'happy', id: 'S2' });
+const UP_TOOLS = [
+    { name: 'browser.observe', inputSchema: { type: 'object', properties: { session_id: { type: 'string' } } } },
+    { name: 'browser.execute_action', inputSchema: { type: 'object', properties: { session_id: { type: 'string' }, action: { type: 'object' } } } },
+    { name: 'browser.get_session', inputSchema: { type: 'object', properties: { session_id: { type: 'string' } } } },
+];
+
+// The daemon's view: call id -> Happy session of the agent that made the call.
+const CALLS = { c1: 'S1', c2: 'S2', c3: 'S1' };
+
+function harness({ chat = null, lookup = async (id) => (CALLS[id] ? { source: 'happy', id: CALLS[id] } : null), podsOn = true } = {}) {
+    const seen = { bridge: [], calls: [], lookups: [] };
+    const podFor = new Map();
+    let n = 0;
+    const makeUpstream = (url) => ({
+        listTools: async () => UP_TOOLS,
+        async callTool(name, args) { seen.calls.push({ url, name, args }); return { result: { content: [{ type: 'text', text: 'ok' }] } }; },
+    });
+    const shared = { listTools: async () => UP_TOOLS, async callTool(name, args) { seen.calls.push({ url: 'shared', name, args }); return { result: { content: [] } }; } };
+    const json = (status, body) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+    const fetchImpl = async (url, init) => {
+        const path = new URL(url).pathname;
+        const body = JSON.parse(init.body || '{}');
+        seen.bridge.push({ path, body });
+        if (!podsOn && (path.startsWith('/api/pod') || path === '/api/tools')) return json(409, { error: 'pods_disabled' });
+        if (path === '/api/tools') return json(200, { tools: UP_TOOLS });
+        if (path === '/api/pod') {
+            if (!body.chat_key) return json(404, { error: 'no_chat' });
+            if (!podFor.has(body.chat_key)) podFor.set(body.chat_key, { slot: n, sid: `pod${n++}` });
+            const p = podFor.get(body.chat_key);
+            return json(200, { chat_key: body.chat_key, session_id: p.sid, mcp_url: `http://127.0.0.1:${8100 + p.slot}/mcp`, api_url: `http://127.0.0.1:${8100 + p.slot}`, link_id: `L${p.slot}`, url: `http://localhost/live/L${p.slot}` });
+        }
+        if (path === '/api/state') return json(200, { status: 'watching' });
+        if (path === '/api/links') return json(200, { id: 'L', url: 'http://localhost/live/L', status: 'watching' });
+        return json(404, { error: 'not_found' });
+    };
+    const out = [];
+    const counted = async (id, signal) => { seen.lookups.push(id); return lookup(id, signal); };
+    if (typeof lookup.match === 'function') counted.match = lookup.match;
+    const server = createMcpServer({
+        bridgeUrl: 'http://127.0.0.1:1', bridgeToken: TOKEN, write: (m) => out.push(m), fetchImpl, upstream: shared, retryMs: 0,
+        chatPods: { chat, makeUpstream }, callChat: callChatResolver(counted),
+    });
+    let rid = 0;
+    const call = async (name, args = {}, meta = undefined) => {
+        const id = ++rid;
+        await server.handle({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args, ...(meta ? { _meta: meta } : {}) } });
+        return out.find((m) => m.id === id);
+    };
+    const list = async () => { await server.handle({ jsonrpc: '2.0', id: 'l', method: 'tools/list' }); return out.find((m) => m.id === 'l'); };
+    const podKeys = () => seen.bridge.filter((b) => b.path === '/api/pod').map((b) => b.body.chat_key);
+    return { server, seen, call, list, podKeys };
+}
+const meta = (id) => ({ 'claudecode/toolUseId': id, progressToken: 7 });
+
+test('call chat: the call id in _meta names the chat; key is sha256("happy:" + Happy session id)', async () => {
+    const r = callChatResolver(async (id) => (id === 'c1' ? { source: 'happy', id: 'S1' } : null));
+    assert.deepEqual(await r(meta('c1')), { key: KEY_S1, source: 'happy' });
+    assert.equal(await r(meta('nope')), NO_CALL_CHAT);
+    assert.equal(await r(undefined), null, 'no call id: routed by session');
+    assert.equal(await r({ progressToken: 1 }), null, 'no call id: routed by session');
+    assert.equal(await r(meta('bad id; drop')), NO_CALL_CHAT, 'an ill-formed id is not looked up');
+    const failing = callChatResolver(async () => { throw new Error('db gone'); });
+    assert.equal(await failing(meta('c1')), NO_CALL_CHAT);
+});
+
+test('call chat: two chats in one process get two pods; each call goes to its own chat\'s pod', async () => {
+    const h = harness();
+    await h.list();
+    await h.call('browser_observe', {}, meta('c1'));
+    await h.call('browser_observe', {}, meta('c2'));
+    await h.call('browser_execute_action', { action: { action: 'click' } }, meta('c3'));
+    assert.deepEqual(h.podKeys(), [KEY_S1, KEY_S2, KEY_S1]);
+    assert.ok(h.seen.bridge.filter((b) => b.path === '/api/pod').every((b) => b.body.source === 'happy'));
+    assert.deepEqual(h.seen.calls.map((c) => [c.url, c.args.session_id]), [
+        ['http://127.0.0.1:8100/mcp', 'pod0'], ['http://127.0.0.1:8101/mcp', 'pod1'], ['http://127.0.0.1:8100/mcp', 'pod0'],
+    ]);
+});
+
+test('call chat: ids the model puts in the arguments are ignored; another chat\'s session is remapped to its own', async () => {
+    const h = harness();
+    await h.list();
+    await h.call('browser_observe', {}, meta('c2')); // chat S2 gets pod0
+    h.seen.bridge.length = 0;
+    h.seen.calls.length = 0;
+    // Chat S1 names S2's session and every chat-ish field it can think of, including a _meta of its own.
+    const args = {
+        session_id: 'pod0', chat_key: KEY_S2, chat_id: 'S2', happy_session_id: 'S2', HAPPY_SESSION_ID: 'S2', client_id: 'S2',
+        _meta: { 'claudecode/toolUseId': 'c2' },
+    };
+    await h.call('browser_observe', args, meta('c1'));
+    assert.deepEqual(h.podKeys(), [KEY_S1], 'routed by the daemon\'s call id only');
+    assert.equal(h.seen.calls.length, 1);
+    assert.equal(h.seen.calls[0].url, 'http://127.0.0.1:8101/mcp');
+    assert.equal(h.seen.calls[0].args.session_id, 'pod1', 'the session is S1\'s own');
+    assert.ok(h.seen.bridge.every((b) => b.body.chat_key === undefined || b.body.chat_key === KEY_S1));
+    assert.ok(!h.seen.bridge.some((b) => b.body.session_id === 'pod0'), 'S2\'s session is never asked about');
+    assert.deepEqual(h.seen.lookups.slice(-1), ['c1']);
+});
+
+test('call chat: a call whose chat cannot be told is refused, not sent to a pod named by its arguments', async () => {
+    const h = harness();
+    await h.list();
+    await h.call('browser_observe', {}, meta('c2'));
+    h.seen.bridge.length = 0;
+    h.seen.calls.length = 0;
+    const r1 = await h.call('browser_observe', { session_id: 'pod0' }, meta('unknown'));
+    assert.equal(r1.result.isError, true);
+    assert.match(r1.result.content[0].text, /could not be matched to its chat/);
+    const r3 = await h.call('browser_live_link', { session_id: 'pod0' }, meta('unknown'));
+    assert.equal(r3.result.isError, true);
+    assert.equal(h.seen.calls.length, 0);
+    assert.ok(!h.seen.bridge.some((b) => b.path === '/api/pod' || b.path === '/api/links'), 'no pod or link looked up');
+});
+
+test('call chat: own tools name the call\'s chat, whatever session_id they are given', async () => {
+    const h = harness();
+    await h.list();
+    const r = await h.call('browser_live_link', { session_id: 'someone-elses' }, meta('c2'));
+    assert.equal(r.result.isError, false);
+    assert.ok(h.seen.bridge.some((b) => b.path === '/api/links' && b.body.chat_key === KEY_S2 && !b.body.session_id));
+});
+
+test('call chat: a process with its own chat (HAPPY_SESSION_ID) keeps it and never looks calls up', async () => {
+    const own = { key: chatKeyOf({ source: 'happy', id: 'ENV' }), source: 'happy' };
+    const h = harness({ chat: own });
+    await h.list();
+    await h.call('browser_observe', {}, meta('c1'));
+    assert.deepEqual(h.podKeys(), [own.key]);
+    assert.equal(h.seen.lookups.length, 0);
+});
+
+test('call chat: pods off on the bridge -> the shared controller, as before', async () => {
+    const h = harness({ podsOn: false });
+    await h.list();
+    await h.call('browser_observe', { session_id: 'x1' }, meta('unknown'));
+    // The session check before the call (get_session), then the call, both on the shared controller.
+    assert.deepEqual(h.seen.calls.map((c) => [c.url, c.name, c.args.session_id]), [['shared', 'browser.get_session', 'x1'], ['shared', 'browser.observe', 'x1']]);
+});
+
+// The lookup itself, against a database shaped like the daemon's (built with python3's sqlite3).
+function fixtureDb() {
+    const dir = mkdtempSync(join(tmpdir(), 'agentchat-'));
+    const db = join(dir, 'agent.sqlite');
+    const ev = (id, agent, type, payload) => [id, agent, type, JSON.stringify(payload)];
+    const rows = [
+        ev('01a1-0001', 'agentA', 'tool.started', { rigEvent: { type: 'tool_execution_start', toolCall: { id: 'callA1', name: 'mcp__browser__browser_observe', arguments: { session_id: 'x' } } } }),
+        ev('01a1-0002', 'agentB', 'tool.started', { rigEvent: { type: 'tool_execution_start', toolCall: { id: 'callB1', name: 'mcp__browser__browser_observe', arguments: {} } } }),
+        // A completed event carrying another agent's call id must not count.
+        ev('01a1-0003', 'agentB', 'tool.completed', { callId: 'callA2' }),
+    ];
+    execFileSync('python3', ['-I', '-c', `
+import sqlite3, sys, json
+c = sqlite3.connect(sys.argv[1])
+c.execute("CREATE TABLE happy_agent_events (event_id TEXT PRIMARY KEY, agent_id TEXT, occurred_at INTEGER NOT NULL, type TEXT NOT NULL, payload_json TEXT NOT NULL, payload_bytes INTEGER NOT NULL DEFAULT 0)")
+c.execute("CREATE TABLE happy_agent_module_history_tool_calls (agent_id TEXT NOT NULL, call_id TEXT NOT NULL, record_id TEXT NOT NULL, PRIMARY KEY (agent_id, call_id))")
+c.execute("CREATE TABLE happy_agent_happy_sessions (owner_id TEXT NOT NULL DEFAULT '', agent_id TEXT NOT NULL, session_id TEXT NOT NULL, remote_session_id TEXT, encryption_key_base64 TEXT NOT NULL, updated_at_ms INTEGER NOT NULL, PRIMARY KEY (owner_id, agent_id))")
+for r in json.loads(sys.argv[2]):
+    c.execute("INSERT INTO happy_agent_events (event_id, agent_id, occurred_at, type, payload_json) VALUES (?, ?, 0, ?, ?)", r)
+c.execute("INSERT INTO happy_agent_module_history_tool_calls VALUES ('agentC', 'callC1', 'r1')")
+c.execute("INSERT INTO happy_agent_happy_sessions VALUES ('', 'agentA', 'agentA', 'happyA', 'secret-key', 1)")
+c.execute("INSERT INTO happy_agent_happy_sessions VALUES ('', 'agentB', 'agentB', NULL, 'secret-key', 1)")
+c.commit()
+`, db, JSON.stringify(rows)]);
+    return db;
+}
+
+test('agent chat lookup: call id -> the agent\'s Happy session, else the agent; unknown -> null', async () => {
+    const lookup = createAgentChatLookup({ dbPath: fixtureDb(), waitMs: 100 });
+    assert.deepEqual(await lookup('callA1'), { source: 'happy', id: 'happyA' });
+    assert.deepEqual(await lookup('callB1'), { source: 'agent', id: 'agentB' }, 'no Happy session: the agent id');
+    assert.deepEqual(await lookup('callC1'), { source: 'agent', id: 'agentC' }, 'found in the tool-call history too');
+    assert.equal(await lookup('callA2'), null, 'only tool.started events name a call\'s agent');
+    assert.equal(await lookup('nope'), null);
+    assert.equal(await lookup("x' OR 1=1 --"), null, 'an ill-formed id is never run');
+});
+
+test('agent chat lookup: a missing database is an error, so the call is refused', async () => {
+    const lookup = createAgentChatLookup({ dbPath: join(tmpdir(), 'no-such-dir-agentchat', 'agent.sqlite'), waitMs: 50 });
+    await assert.rejects(() => lookup('callA1'), /agent chat lookup/);
+    const r = callChatResolver(lookup);
+    assert.equal(await r(meta('callA1')), NO_CALL_CHAT);
+});
+
+// Happy Agent as deployed sends no _meta: the call is found by the daemon's own journal record.
+function matchDb(rows) {
+    const dir = mkdtempSync(join(tmpdir(), 'agentmatch-'));
+    const db = join(dir, 'agent.sqlite');
+    execFileSync('python3', ['-I', '-c', `
+import sqlite3, sys, json, time
+c = sqlite3.connect(sys.argv[1])
+c.execute("CREATE TABLE happy_agent_events (event_id TEXT PRIMARY KEY, agent_id TEXT, occurred_at INTEGER NOT NULL, type TEXT NOT NULL, payload_json TEXT NOT NULL, payload_bytes INTEGER NOT NULL DEFAULT 0)")
+c.execute("CREATE TABLE happy_agent_happy_sessions (owner_id TEXT NOT NULL DEFAULT '', agent_id TEXT NOT NULL, session_id TEXT NOT NULL, remote_session_id TEXT, encryption_key_base64 TEXT NOT NULL, updated_at_ms INTEGER NOT NULL, PRIMARY KEY (owner_id, agent_id))")
+now = int(time.time() * 1000)
+for i, (agent, typ, payload, age_s) in enumerate(json.loads(sys.argv[2])):
+    c.execute("INSERT INTO happy_agent_events (event_id, agent_id, occurred_at, type, payload_json) VALUES (?, ?, ?, ?, ?)", ("01a1-%04d" % i, agent, now - age_s * 1000, typ, json.dumps(payload)))
+c.execute("INSERT INTO happy_agent_happy_sessions VALUES ('', 'agentA', 'agentA', 'happyA', 'secret-key', 1)")
+c.execute("INSERT INTO happy_agent_happy_sessions VALUES ('', 'agentB', 'agentB', 'happyB', 'secret-key', 1)")
+c.commit()
+`, db, JSON.stringify(rows)]);
+    return db;
+}
+const started = (agent, id, tool, args, ageS = 1) => [agent, 'tool.started', { rigEvent: { type: 'tool_execution_start', toolCall: { id, name: `mcp__browser__${tool}`, arguments: args, type: 'toolCall' } } }, ageS];
+const completed = (agent, id) => [agent, 'tool.completed', { callId: id }, 0];
+
+test('agent chat match: the in-flight journaled call with these exact arguments names the chat', async () => {
+    const db = matchDb([
+        started('agentA', 'a1', 'browser_observe', { session_id: 'sA' }),
+        started('agentB', 'b1', 'browser_observe', { session_id: 'sB' }),
+        started('agentA', 'a0', 'browser_create_session', {}, 30),
+        completed('agentA', 'a0'),
+        started('agentB', 'b2', 'browser_create_session', {}),
+        started('agentA', 'a2', 'browser_get_html', { session_id: 's' }),
+        started('agentB', 'b3', 'browser_get_html', { session_id: 's' }),
+        started('agentA', 'old', 'browser_list_tabs', { session_id: 'sA' }, 3600),
+        started('agentA', 'a3', 'browser_screenshot', { session_id: 'sA' }),
+        started('agentA', 'a4', 'browser_screenshot', { session_id: 'sA' }),
+    ]);
+    const lookup = createAgentChatLookup({ dbPath: db, waitMs: 80 });
+    assert.deepEqual(await lookup.match('browser_observe', { session_id: 'sA' }), { source: 'happy', id: 'happyA' });
+    assert.deepEqual(await lookup.match('browser_observe', { session_id: 'sB' }), { source: 'happy', id: 'happyB' });
+    assert.deepEqual(await lookup.match('browser_create_session', {}), { source: 'happy', id: 'happyB' }, 'a completed call is not this one');
+    assert.deepEqual(await lookup.match('browser_get_html', { session_id: 's' }), { ambiguous: true }, 'two chats, same call: no chat named');
+    assert.equal(await lookup.match('browser_observe', { session_id: 'sC' }), null, 'other arguments: not this call');
+    assert.equal(await lookup.match('browser_list_tabs', { session_id: 'sA' }), null, 'only recent calls count');
+    assert.equal(await lookup.match('browser_click', { session_id: 'sA' }), null);
+    assert.equal(await lookup.match("x' OR 1=1 --", {}), null, 'an ill-formed tool name is never run');
+    // Two identical calls from one chat: each is matched once, then none is left.
+    assert.deepEqual(await lookup.match('browser_screenshot', { session_id: 'sA' }), { source: 'happy', id: 'happyA' });
+    assert.deepEqual(await lookup.match('browser_screenshot', { session_id: 'sA' }), { source: 'happy', id: 'happyA' });
+    assert.equal(await lookup.match('browser_screenshot', { session_id: 'sA' }), null, 'a matched call is not matched again');
+});
+
+test('call chat without _meta: the journal match names the chat; ambiguous is refused; not found routes as before', async () => {
+    const r = callChatResolver(Object.assign(async () => null, {
+        match: async (name, args) => (args.who === 'two' ? { ambiguous: true } : args.who ? { source: 'happy', id: args.who } : null),
+    }));
+    assert.deepEqual(await r(undefined, undefined, { name: 'browser_observe', args: { who: 'S1' } }), { key: KEY_S1, source: 'happy' });
+    assert.equal(await r(undefined, undefined, { name: 'browser_observe', args: { who: 'two' } }), NO_CALL_CHAT);
+    assert.equal(await r(undefined, undefined, { name: 'browser_observe', args: {} }), null, 'not journaled: routed by session as before');
+    assert.equal(await callChatResolver(async () => null)(undefined, undefined, { name: 'browser_observe', args: {} }), null, 'no matcher: as before');
+    const failing = callChatResolver(Object.assign(async () => null, { match: async () => { throw new Error('db gone'); } }));
+    assert.equal(await failing(undefined, undefined, { name: 'browser_observe', args: {} }), null);
+});
+
+test('call chat without _meta, end to end: two chats in one process get their own pods, whatever session a call names', async () => {
+    const db = matchDb([
+        started('agentA', 'a1', 'browser_observe', {}),
+        started('agentB', 'b1', 'browser_observe', { session_id: 'pod0' }),
+        started('agentA', 'a2', 'browser_observe', { session_id: 'pod0', chat_key: 'x' }),
+        started('agentA', 'a3', 'browser_get_session', { session_id: 'z' }),
+        started('agentB', 'b3', 'browser_get_session', { session_id: 'z' }),
+    ]);
+    const KEY_A = chatKeyOf({ source: 'happy', id: 'happyA' });
+    const KEY_B = chatKeyOf({ source: 'happy', id: 'happyB' });
+    const h = harness({ lookup: createAgentChatLookup({ dbPath: db, waitMs: 80 }) });
+    await h.list();
+    await h.call('browser_observe', {});
+    await h.call('browser_observe', { session_id: 'pod0' }); // B names A's session: B gets its own
+    await h.call('browser_observe', { session_id: 'pod0', chat_key: 'x' });
+    assert.deepEqual(h.podKeys(), [KEY_A, KEY_B, KEY_A]);
+    assert.deepEqual(h.seen.calls.map((c) => [c.url, c.args.session_id]), [
+        ['http://127.0.0.1:8100/mcp', 'pod0'], ['http://127.0.0.1:8101/mcp', 'pod1'], ['http://127.0.0.1:8100/mcp', 'pod0'],
+    ]);
+    const before = h.seen.calls.length;
+    const amb = await h.call('browser_get_session', { session_id: 'z' });
+    assert.equal(amb.result.isError, true, 'identical calls from two chats: refused');
+    assert.equal(h.seen.calls.length, before);
+});
+
+test('agent chat lookup over ssh: the script and the request go over stdin, only plain words on the command line', async () => {
+    const db = matchDb([started('agentA', 'a1', 'browser_observe', { session_id: 'sA', text: "it's \"quoted\" \\ and ünïcode\n" })]);
+    const seen = [];
+    // Stands in for ssh: checks the command line, then runs the remote command here.
+    const fakeSsh = (cmd, args, opts, cb) => {
+        const at = args.indexOf('--');
+        seen.push({ cmd, host: args[at - 1], remote: args.slice(at + 1) });
+        return execFile(args[at + 1], args.slice(at + 2), opts, cb);
+    };
+    const lookup = createAgentChatLookup({ dbPath: db, ssh: 'prep-pro', waitMs: 80, execFileImpl: fakeSsh });
+    assert.deepEqual(await lookup.match('browser_observe', { session_id: 'sA', text: "it's \"quoted\" \\ and ünïcode\n" }), { source: 'happy', id: 'happyA' });
+    assert.equal(await lookup.match('browser_observe', { session_id: 'other' }), null);
+    assert.deepEqual(seen[0].cmd, 'ssh');
+    assert.equal(seen[0].host, 'prep-pro');
+    assert.deepEqual(seen[0].remote, ['python3', '-I', '-', db, '--match', '80']);
+    assert.ok(seen.every((s) => !s.remote.some((w) => w.includes('sA'))), 'arguments never on the command line');
+    assert.throws(() => createAgentChatLookup({ dbPath: db, ssh: 'prep-pro; rm -rf ~' }), /bad ssh host/);
+    assert.throws(() => createAgentChatLookup({ dbPath: '/tmp/a b.sqlite', ssh: 'prep-pro' }), /bad ssh host/);
+    assert.equal(agentCallChat(null, { BRIDGE_AGENT_DB: db, BRIDGE_AGENT_SSH: 'bad host' }), null, 'a bad host turns the lookup off');
+    assert.equal(agentCallChat({ source: 'happy', id: 'S' }, { BRIDGE_AGENT_DB: db }), null, 'a process with its own chat never looks calls up');
+    assert.equal(typeof agentCallChat(null, { BRIDGE_AGENT_DB: db, BRIDGE_AGENT_SSH: 'prep-pro' }), 'function');
+});

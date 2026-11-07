@@ -1,6 +1,6 @@
 # Vaultwarden (github.com/dani-garcia/vaultwarden, AGPL-3.0): a self-hosted
 # Bitwarden-compatible server, for the secrets the browser agent may type
-# through the secret filler (selfhost/browser/filler). Run it through make
+# through the secret filler (browser-stack/browser/filler). Run it through make
 # (selfhost/vault.mk): vault-init, vault-up, vault-status. See ./README.md.
 #
 # It listens on 127.0.0.1:8222 only. The phone and desktop Bitwarden apps

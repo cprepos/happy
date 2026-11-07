@@ -51,8 +51,8 @@ nature.
 ### Neither app
 
 The vault (Vaultwarden filler, logins and passwords) has no screen in either
-app. It is agent-side only: `selfhost/vault`, `selfhost/vault-mcp` and
-`selfhost/browser/filler`.
+app. It is agent-side only: `selfhost/vault`, `browser-stack/vault-mcp` and
+`browser-stack/browser/filler`.
 
 ## Phase 0: Prerequisites
 
@@ -77,7 +77,7 @@ app. It is agent-side only: `selfhost/vault`, `selfhost/vault-mcp` and
 
 The largest item, and the most used. The bridge is done, so this is app work.
 
-**Contract to mirror** (`selfhost/browser/bridge/lib/app.mjs`, header lines 4–22;
+**Contract to mirror** (`browser-stack/browser/bridge/lib/app.mjs`, header lines 4–22;
 tests in `bridge/test/*.test.mjs`; routing in
 `packages/happy-ios/docs/browser-proxy.md`):
 

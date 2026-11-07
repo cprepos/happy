@@ -2,7 +2,7 @@ import Foundation
 import HappyCrypto
 import HappyWire
 
-/// A browser an agent drives, watched live (`selfhost/browser/bridge`): the
+/// A browser an agent drives, watched live (`browser-stack/browser/bridge`): the
 /// bridge serves it at `<origin>/live/<id>`, reached only through the chat's
 /// workspace proxy. The origin is the bridge as the chat's computer reaches
 /// it: its own `localhost` on the bridge's computer, the bridge's LAN

@@ -40,27 +40,10 @@ status:
 logs:
 	$(COMPOSE) logs -f --tail=200
 
-# Register the live browser bridge (and the vault MCP server, when present)
-# with Codex, Gemini, Antigravity, Claude and Happy Agent, and over ssh with the
-# harnesses on prep-air and prep-pro, opencode included (run on prep-ml, keyed by
-# the chat's session id). prep-ml's own opencode config is never touched. Originals go to ../trash/<ts>_mcp-configs/, a Mac's to its own
-# ~/happy-trash/<ts>_mcp-configs/. DRY=1 says what would change; NO_REMOTE=1 leaves
-# the Macs alone. See scripts/mcp-register.py.
-MCP_REGISTER = python3 $(CURDIR)/scripts/mcp-register.py $(if $(DRY),--dry-run) $(if $(NO_REMOTE),--no-remote)
-
-.PHONY: mcp-register mcp-unregister mcp-check mcp-register-test
-# Its tests run it against a scratch home folder, never the real one.
-mcp-register-test:
-	cd $(CURDIR)/scripts && python3 -m unittest -v test_mcp_register
-
-mcp-register:
-	$(MCP_REGISTER) register
-
-mcp-unregister:
-	$(MCP_REGISTER) unregister
-
-mcp-check:
-	$(MCP_REGISTER) check
+# The browser stack (live browser, bridge, filler, vault MCP server, MCP registration) lives in
+# ../browser-stack; its make fragments are included here so every browser-*, filler-*,
+# vault-mcp-* and mcp-* target still works from this directory.
+BROWSER_STACK_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../browser-stack)
 
 # Apply pending Prisma migrations (also done automatically on server start).
 migrate: env
@@ -68,6 +51,8 @@ migrate: env
 
 -include voice.mk
 -include cli.mk
--include browser.mk
 -include vault.mk
--include filler.mk
+-include $(BROWSER_STACK_DIR)/browser.mk
+-include $(BROWSER_STACK_DIR)/filler.mk
+-include $(BROWSER_STACK_DIR)/register.mk
+-include $(BROWSER_STACK_DIR)/gateway.mk

@@ -14,7 +14,7 @@ description: >
 # Agent vault (Vaultwarden + secret filler)
 
 <!-- Installed to ~/.claude/skills/agent-vault/ on prep-ml, prep-air and prep-pro by
-     `make mcp-register` (selfhost/scripts/mcp-register.py). Edit the repo copy,
+     `make mcp-register` (browser-stack/scripts/mcp-register.py). Edit the repo copy,
      .agents/skills/agent-vault/SKILL.md, not an installed one. -->
 
 ## Where things run
@@ -23,7 +23,8 @@ Everything below lives on **prep-ml** (the Linux box): Vaultwarden, the filler, 
 bridge and its Chromium, and both MCP servers. It is the same on every machine:
 
 - **On prep-ml** the `vault` and `happy-browser-bridge` MCP entries run
-  `node selfhost/vault-mcp/mcp.mjs` and `node selfhost/browser/bridge/mcp.mjs` directly.
+  `node selfhost/vault-mcp/mcp.mjs` and `node selfhost/browser/bridge/mcp.mjs` directly (both
+  are symlinks into `browser-stack/`, kept so existing configs need no change).
 - **On prep-air and prep-pro** (Macs) the same entries are a `/bin/sh -c` wrapper that runs
   `ssh -o BatchMode=yes prep-ml /usr/bin/node <script>` and hands prep-ml the chat's
   `HAPPY_SESSION_ID` (plus `CLAUDE_CODE_SESSION_ID` and `HAPPY_FORKED_FROM_SESSION_ID`). The
@@ -73,7 +74,7 @@ After a fill the session is **tainted**: `browser_eval_js`, full `browser_get_ht
 value selectors, copy keys, fork and save-auth-profile are refused, and every result is scrubbed.
 Use `browser_observe`, `browser_find_elements`, `browser_get_html(text_only=true)`.
 
-## Vault tools (vault MCP, `selfhost/vault-mcp/mcp.mjs`)
+## Vault tools (vault MCP, `browser-stack/vault-mcp/mcp.mjs`)
 
 These are the only way an agent touches the vault. Never use the bw CLI, the Vaultwarden API,
 the filler's files, `docker exec`, or the token file directly, on any machine.
@@ -146,8 +147,8 @@ On a Mac none of these exist locally. Run the safe ones only when they help the 
   `filler-controller-token-take`, `filler-outbox-clear`.
 - **No sudo for anything filler-related**, except the one-time `make filler-account-setup
   COMMIT=<sha>`, already done. Never suggest it again unless the happy-filler account is missing.
-- Filler code lives in `selfhost/browser/filler`, bridge side in
-  `selfhost/browser/bridge/lib/secrets.mjs`. Changes go through a commit pushed to `fork`, then a
+- Filler code lives in `browser-stack/browser/filler`, bridge side in
+  `browser-stack/browser/bridge/lib/secrets.mjs`. Changes go through a commit pushed to `fork`, then a
   `filler-install` of that SHA.
 - The bridge's and the vault's MCP processes are per chat (on a Mac, one ssh per server per
   session). Happy Agent's single process on prep-ml is a child of the `happy-agent` container's

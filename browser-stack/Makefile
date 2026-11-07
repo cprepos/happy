@@ -1,27 +1,21 @@
-# Browser stack: the live browser bridge, the vault MCP server, the filler, and
-# the LAN gateway the Macs reach them through. Run from anywhere:
-#   make -C browser-stack <target>
+# Browser stack: the live browser (auto-browser, per-chat pods, the live bridge), the secret
+# filler, the vault MCP server, MCP registration, and the LAN gateway the Macs use.
+# Run here or with `make -C browser-stack <target>`; selfhost/Makefile includes the same
+# fragments, so `make -C selfhost <target>` works too. See README.md.
 
 SHELL := /bin/bash
-HERE := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 
-.PHONY: help gateway-config gateway-keys gateway-test
-
+.PHONY: help test
 help:
-	@echo "Targets: gateway-config [WRITE=1] [ROUTES=browser,vault] gateway-keys gateway-test"
+	@echo "browser-*: browser-up browser-down browser-status browser-logs browser-verify browser-bridge-test ... (browser.mk)"
+	@echo "filler-*:  filler-status filler-install COMMIT= filler-test vault-mcp-test ... (filler.mk)"
+	@echo "mcp-*:     mcp-register mcp-check mcp-unregister mcp-register-test (register.mk)"
+	@echo "gateway-*: gateway-config [WRITE=1] gateway-keys gateway-test (gateway.mk)"
+	@echo "test:      every unit suite here (bridge, launcher, identity, filler, vault MCP, client, mcp-register)"
 
-# The browser stack's marked blocks in the host agentgateway config (LAN gateway,
-# per-Mac keys, /browser and /vault routes). Shows the diff with keys redacted and
-# validates it; WRITE=1 backs the config up to ../happy-trash and writes it.
-GATEWAY_CONFIG = python3 $(HERE)/gateway/gateway-config.py
-gateway-config:
-	$(GATEWAY_CONFIG) $(if $(WRITE),write,show) $(if $(ROUTES),--routes $(ROUTES))
+include browser.mk
+include filler.mk
+include register.mk
+include gateway.mk
 
-# A 64-hex-digit key per Mac in ~/.config/browser-stack/gateway-keys (mode 600).
-# Never overwrites one; never prints one.
-gateway-keys:
-	$(GATEWAY_CONFIG) keys
-
-# The gateway client's tests (a scratch agentgateway on loopback when one is installed).
-gateway-test:
-	cd $(HERE) && node --test client/test/
+test: browser-bridge-test filler-test vault-mcp-test gateway-test mcp-register-test
