@@ -108,6 +108,33 @@ final class LiveBrowserFeedFrameTests: XCTestCase {
         transport.releaseFrames()
     }
 
+    /// Each read slower than `waitingAfter` counted from the frame before
+    /// it (the gap plus the read), though under it alone, every one the
+    /// same picture: the bridge slow to capture an unchanged page, which is
+    /// no stall. Never waiting once the first frame is up.
+    @MainActor
+    func testSlowAnswersOfAnUnchangedPageNeverWait() async throws {
+        let transport = FrameTransport()
+        transport.sameFrame = true
+        transport.frameDelay = .milliseconds(300)
+        let feed = LiveBrowserFeed(link: try XCTUnwrap(LiveBrowserLink(id: Self.a))) { transport }
+        feed.frameGap = .milliseconds(150)
+        feed.waitingAfter = .milliseconds(400)
+        var shown = false
+        var spunAfter = 0
+        let player = NSObject()
+        feed.attach(player, frames: true) { feed in
+            if feed.frame != nil, !feed.isWaiting { shown = true }
+            if shown, feed.isWaiting { spunAfter += 1 }
+        }
+        try await until { shown }
+        let reads = feed.frameReads
+        try await until { feed.frameReads >= reads + 5 }
+        XCTAssertEqual(spunAfter, 0, "a slow answer, or the same picture again, is not waiting")
+        XCTAssertFalse(feed.isWaiting)
+        feed.detach(player)
+    }
+
     @MainActor
     func testNoWaitingWithoutThePictureOrWhileAsleep() async throws {
         let transport = FrameTransport()
@@ -154,6 +181,8 @@ private final class FrameTransport: LiveBrowserTransport, @unchecked Sendable {
     private var waiters: [CheckedContinuation<Void, Never>] = []
     var frameDelay: Duration = .zero
     var stateDelay: Duration = .zero
+    /// Every frame the same bytes: a page that does not change.
+    var sameFrame = false
 
     var mostFramesAtOnce: Int { lock.withLock { _most } }
     var held: Int { lock.withLock { _held } }
@@ -191,7 +220,7 @@ private final class FrameTransport: LiveBrowserTransport, @unchecked Sendable {
         }
         if frameDelay > .zero { try? await Task.sleep(for: frameDelay) }
         let n = lock.withLock { () -> Int in count += 1; return count }
-        return Data("frame \(n)".utf8)
+        return Data((sameFrame ? "frame" : "frame \(n)").utf8)
     }
 
     func stop() async {}

@@ -84,12 +84,17 @@ public final class LiveBrowserFeed {
     public static let frameGap: Duration = .milliseconds(300)
     /// `frameGap`, shorter in tests.
     public var frameGap: Duration = LiveBrowserFeed.frameGap
-    /// How long the picture may go without a good frame before the feed
-    /// says it is waiting, and the player spins. Until then the last good
-    /// frame stays up, with no spinner, through the next frame, a state
-    /// read, a page change or a retry at the other origin: the bridge
-    /// refreshes often, and a spinner each time is noise. With no frame
-    /// yet (the first connect) it is waiting at once.
+    /// How long frame reads may go without one answering with a frame
+    /// before the feed says it is waiting, and the player spins: counted
+    /// from the ask of the first read in that run, so a read that is slow
+    /// but answers never counts from the frame before it, and any frame
+    /// ends the run, the same picture again included (a page that does not
+    /// change is not a stall). Until then the last good frame stays up, with
+    /// no spinner, through a state read, a page change or a retry at the
+    /// other origin. The bridge answers a frame read within about 1.5 s
+    /// with the frame it has while a capture runs long, so a run this long
+    /// is a connection or a browser in trouble. With no frame yet (the
+    /// first connect) it is waiting at once.
     public static let staleFrameLimit: Duration = .seconds(4)
     /// `staleFrameLimit`.
     public static let waitingAfter: Duration = staleFrameLimit
@@ -164,13 +169,16 @@ public final class LiveBrowserFeed {
     private var framing: Task<Void, Never>?
     /// When the frame read now in flight was asked, if one is.
     private var frameAskedAt: ContinuousClock.Instant?
-    /// When the last good frame came (or the frame loop began again with
-    /// one up); `isWaiting` counts `waitingAfter` from it.
-    private var lastFrameAt: ContinuousClock.Instant?
-    /// A good frame came under `waitingAfter` ago: the picture is current.
+    /// When the first frame read of the run that has not answered with a
+    /// frame was asked; nil while the last one did (or the frame loop just
+    /// began again). `isWaiting` counts `waitingAfter` from it.
+    private var waitingSince: ContinuousClock.Instant?
+    /// A frame is up, and frame reads have not gone `waitingAfter` without
+    /// one: the picture is current.
     private var frameIsFresh: Bool {
-        guard frame != nil, let at = lastFrameAt else { return false }
-        return ContinuousClock.now - at < waitingAfter
+        guard frame != nil else { return false }
+        guard let since = waitingSince else { return true }
+        return ContinuousClock.now - since < waitingAfter
     }
     /// Re-reads `isWaiting` when a frame read goes unanswered too long.
     private var waitWatch: Task<Void, Never>?
@@ -404,9 +412,9 @@ public final class LiveBrowserFeed {
             return
         }
         lastFrameActivity = .now
-        // The frame up is the last good one, from now: no spinner over it
-        // for `waitingAfter`.
-        if frame != nil { lastFrameAt = .now }
+        // Reads start a new run: no spinner over the frame up unless they
+        // go `waitingAfter` without one.
+        waitingSince = nil
         framing = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -440,7 +448,8 @@ public final class LiveBrowserFeed {
         frameReads += 1
         let asked = ContinuousClock.now
         frameAskedAt = asked
-        watchWaiting(from: frame == nil ? asked : (lastFrameAt ?? asked))
+        if waitingSince == nil { waitingSince = asked }
+        watchWaiting(from: frame == nil ? asked : (waitingSince ?? asked))
         defer {
             if frameAskedAt == asked { frameAskedAt = nil }
             lastFrameActivity = .now
@@ -460,7 +469,7 @@ public final class LiveBrowserFeed {
             frameMissed = false
             frameFailing = false
             frameAskedAt = nil
-            lastFrameAt = .now
+            waitingSince = nil
             let waited = isWaiting
             isWaiting = computeWaiting()
             if frame != self.frame {
@@ -472,7 +481,9 @@ public final class LiveBrowserFeed {
             return frameGap
         } catch BrowserError.upstream(503) {
             guard !Task.isCancelled else { return .zero }
-            // It fell asleep: the state says so until it wakes.
+            // It fell asleep: the state says so until it wakes, and
+            // frames start again later as a new run.
+            waitingSince = nil
             if case .live(var state) = phase {
                 state.pod = .asleep
                 phase = .live(state)
@@ -494,8 +505,8 @@ public final class LiveBrowserFeed {
         }
     }
 
-    /// Re-reads `isWaiting` `waitingAfter` after `asked` (the last good
-    /// frame, or with none the read's ask).
+    /// Re-reads `isWaiting` `waitingAfter` after `asked` (the first ask of
+    /// the run of reads without a frame, or with none up the read's ask).
     private func watchWaiting(from asked: ContinuousClock.Instant) {
         waitWatch?.cancel()
         let delay = waitingAfter
@@ -510,8 +521,8 @@ public final class LiveBrowserFeed {
         guard framing != nil, wantsFrames, !phase.isOver, !phase.isResting else { return false }
         if let state = phase.state, state.asleep || state.ended { return false }
         if frame == nil { return true }
-        // A good frame is up: waiting only once none has come for
-        // `waitingAfter`, whatever is read or retried meanwhile.
+        // A good frame is up: waiting only once frame reads have gone
+        // `waitingAfter` without one, whatever is retried meanwhile.
         return !frameIsFresh
     }
 
