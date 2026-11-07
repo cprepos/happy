@@ -197,6 +197,45 @@ test('end and close go through the pod stop; the link is done', async () => {
     assert.equal(tools.tools[0].name, 'browser.observe');
 });
 
+test('sleep: POST only; stops the pod with why slept and leaves the link watching on its page', async () => {
+    await start();
+    const a = await (await api('/api/pod', { chat_key: KEY_A })).json();
+    assert.equal((await fetch(`${base}/live/${a.link_id}/sleep`)).status, 405);
+    const r = await fetch(`${base}/live/${a.link_id}/sleep`, { method: 'POST' });
+    assert.equal(r.status, 200);
+    const body = await r.json();
+    assert.equal(body.status, 'watching');
+    assert.equal(body.pod, 'asleep');
+    assert.deepEqual(pods.calls.stop, [{ key: KEY_A, why: 'slept' }]);
+    // Asleep already: nothing changes.
+    const again = await fetch(`${base}/live/${a.link_id}/sleep`, { method: 'POST' });
+    assert.equal(again.status, 200);
+    assert.equal(pods.calls.stop.length, 1);
+    // The next take wakes it.
+    assert.equal((await fetch(`${base}/live/${a.link_id}/take`, { method: 'POST' })).status, 202);
+});
+
+test('sleep: a held link is released first (user_slept), a done link is refused', async () => {
+    await start();
+    const a = await (await api('/api/pod', { chat_key: KEY_A })).json();
+    assert.equal((await (await fetch(`${base}/live/${a.link_id}/take`, { method: 'POST' })).json()).status, 'user');
+    const r = await (await fetch(`${base}/live/${a.link_id}/sleep`, { method: 'POST' })).json();
+    assert.deepEqual([r.status, r.reason, r.pod], ['watching', 'user_slept', 'asleep']);
+    await api('/api/pod', { chat_key: KEY_A });
+    await fetch(`${base}/live/${a.link_id}/end`, { method: 'POST' });
+    const d = await fetch(`${base}/live/${a.link_id}/sleep`, { method: 'POST' });
+    assert.equal(d.status, 409);
+    assert.equal((await d.json()).error, 'user_ended');
+});
+
+test('sleep: without pods it answers 409 pods_disabled', async () => {
+    await start({ withPods: false });
+    const l = await (await api('/api/links', { session_id: 'shared1' })).json();
+    const r = await fetch(`${base}/live/${l.id}/sleep`, { method: 'POST' });
+    assert.equal(r.status, 409);
+    assert.equal((await r.json()).error, 'pods_disabled');
+});
+
 // ── noVNC through the bridge ───────────────────────────────────────────────
 // A raw GET: fetch() would normalise `..` before it is sent.
 const rawGet = (path, headers = {}) => new Promise((resolve, reject) => {

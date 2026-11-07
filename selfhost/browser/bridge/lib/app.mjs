@@ -15,7 +15,13 @@
 //   POST /live/<id>/deny       {approval_id} the user denies it. Both only for the link's own pending
 //                              approval (state.approval; else 409 no_pending_approval), and only its id.
 //   POST /live/<id>/end        the user ends the browser: the session closes, the link is done
-//                              (reason user_ended) and waiters wake
+//                              (reason user_ended) and waiters wake. With pods, the login is kept
+//                              and the next browser starts on a new page
+//   POST /live/<id>/sleep      pods only: the user puts the browser to sleep: the login is saved,
+//                              the pod stops (pod: asleep) and a held link is released (reason
+//                              user_slept, waking waiters). The link stays watching, so the next
+//                              agent call or /take wakes it on its last page. 409 pods_disabled
+//                              without pods, 409 <reason> on a done link; asleep already: no change
 //   GET  /live/chat/<chat_key> which link belongs to this chat: {id, url, live, pod, ...state};
 //                              404 when the chat has none. chat_key is sha256("happy:" + the Happy
 //                              session id), first 32 hex chars. The source of truth for whether
@@ -59,7 +65,7 @@ import { connect as netConnect } from 'node:net';
 import { renderPage, renderGone } from './page.mjs';
 import { APPROVAL_ID, approvalSummary } from './approval.mjs';
 
-const LIVE_ROUTE = /^\/live\/([^/]+)(\/frame\.jpg|\/state|\/done|\/take|\/release|\/end|\/nav|\/approve|\/deny)?\/?$/;
+const LIVE_ROUTE = /^\/live\/([^/]+)(\/frame\.jpg|\/state|\/done|\/take|\/release|\/end|\/sleep|\/nav|\/approve|\/deny)?\/?$/;
 const CHAT_ROUTE = /^\/live\/chat\/([0-9a-f]{32})\/?$/;
 const CHAT_KEY = /^[0-9a-f]{32}$/;
 // noVNC through the bridge. Matched on the raw request path, before any URL normalising, so
@@ -374,6 +380,24 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         r.share = null;
         setStatus(rec, 'done', 'user_ended');
         return stateOf(rec);
+    }
+
+    // The user put this browser to sleep from the app: like the idle stop, the login is saved and
+    // the pod stops, and the next agent call or /take wakes it on the link's last page.
+    async function sleepBrowser(rec) {
+        if (!podLink(rec)) return [409, { error: 'pods_disabled', ...stateOf(rec) }];
+        if (rec.status === 'done') return [409, { error: rec.reason || 'session_closed', ...stateOf(rec), ...podField(rec) }];
+        const l = pods.liveness(rec.chatKey);
+        if (l.pod === 'asleep' || l.pod === 'none') return [200, { ...stateOf(rec), ...podField(rec) }];
+        // A browser on its way up has no pod to stop yet; the app asks again once it runs.
+        if (l.pod === 'starting') return [409, { error: 'browser_starting', ...stateOf(rec), ...podField(rec) }];
+        if (HELD_STATUSES.has(rec.status)) setStatus(rec, 'watching', 'user_slept');
+        await pods.stopChat(rec.chatKey, 'slept');
+        const r = rt(rec.id);
+        r.frame = null;
+        r.share = null;
+        log(`sleep /live/${rec.id.slice(0, 6)}…: browser put to sleep`);
+        return [200, { ...stateOf(rec), ...podField(rec) }];
     }
 
     async function captureFrame(rec) {
@@ -738,6 +762,11 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
             }
             if (HELD_STATUSES.has(rec.status)) releaseHeld(rec, 'user_released');
             return send(res, 200, { ...stateOf(rec), ...podField(rec) });
+        }
+        if (sub === '/sleep') {
+            if (req.method !== 'POST') return send(res, 405, { error: 'method_not_allowed' }, { Allow: 'POST' });
+            const [code, body] = await sleepBrowser(rec);
+            return send(res, code, body);
         }
         if (sub === '/nav') {
             if (req.method !== 'POST') return send(res, 405, { error: 'method_not_allowed' }, { Allow: 'POST' });

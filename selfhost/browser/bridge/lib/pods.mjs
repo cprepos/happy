@@ -21,7 +21,9 @@
 //             for one chat share one start. The spare pool refills in the background.
 //   stop      save the login (auth profile "happy-chat") -> stash it in the chat's directory ->
 //             close the session -> stop the pod -> the chat is asleep. Used by the idle timer, by
-//             eviction, by /api/pod/close and by the user ending the browser (/live/<id>/end).
+//             eviction, by /api/pod/close, by the user putting it to sleep (/live/<id>/sleep) and by the
+//             user ending it (/live/<id>/end). The next start reopens the link's last page, except
+//             after the user's End: that one keeps the login and starts on a new page (chat.fresh).
 //   idle      a pod whose chat has had neither an agent call nor a viewer request (live page,
 //             /state, frame, noVNC file or open noVNC socket) for idleMs (60 min by default) is
 //             stopped, unless it is protected: its link is held (the user has control, or the
@@ -239,8 +241,8 @@ export function createPodManager({
     const savedPods = loadJson(podsPath)?.pods || [];
 
     function persist() {
-        saveJson(chatsPath, { chats: [...chats.values()].map(({ chatKey, source, linkId, slot, podId, sessionId, state, lastAgentAt, lastViewerAt, hasAuth, forkChecked }) =>
-            ({ chatKey, source: source ?? null, linkId: linkId ?? null, slot: slot ?? null, podId: podId ?? null, sessionId: sessionId ?? null, state, lastAgentAt: lastAgentAt ?? 0, lastViewerAt: lastViewerAt ?? 0, hasAuth: !!hasAuth, forkChecked: !!forkChecked })) });
+        saveJson(chatsPath, { chats: [...chats.values()].map(({ chatKey, source, linkId, slot, podId, sessionId, state, lastAgentAt, lastViewerAt, hasAuth, forkChecked, fresh }) =>
+            ({ chatKey, source: source ?? null, linkId: linkId ?? null, slot: slot ?? null, podId: podId ?? null, sessionId: sessionId ?? null, state, lastAgentAt: lastAgentAt ?? 0, lastViewerAt: lastViewerAt ?? 0, hasAuth: !!hasAuth, forkChecked: !!forkChecked, fresh: !!fresh })) });
         saveJson(podsPath, { pods: [...pods.values()].map(({ slot, podId, vncPassword, ports, state, chatKey }) =>
             ({ slot, podId, vncPassword, ports, state, chatKey: chatKey ?? null, sessionId: chatKey ? chats.get(chatKey)?.sessionId ?? null : null })) });
     }
@@ -499,7 +501,10 @@ export function createPodManager({
             recovery = chat.state === 'crashed' || chat.state === 'running' ? 'pod_crashed' : 'pod_asleep';
         }
         const previous = chat.sessionId;
-        const resumeUrl = previous ? resumeUrlOf(chatKey) : null;
+        // Ended by the user (stopChat 'user_ended'): the login is kept, the last page is not.
+        const fresh = !!chat.fresh;
+        const resumeUrl = previous && !fresh ? resumeUrlOf(chatKey) : null;
+        if (check && fresh && recovery) recovery = 'ended';
         const gen = (chat.startGen || 0) + 1;
         chat.startGen = gen;
         chat.startedAt = now();
@@ -541,9 +546,11 @@ export function createPodManager({
                 }
                 const sessionMs = now() - s0;
                 if (stale()) throw new PodError('start abandoned', 503, 'start_timeout');
-                Object.assign(chat, { slot: mine.slot, podId: mine.podId, sessionId: session.id, state: 'running', lastAgentAt: now(), checkedAt: now() });
+                Object.assign(chat, { slot: mine.slot, podId: mine.podId, sessionId: session.id, state: 'running', lastAgentAt: now(), checkedAt: now(), fresh: false });
                 const link = store?.forChat?.(chatKey, session.id);
                 if (link) chat.linkId = link.id;
+                // A fresh start's link forgets the page it was ended on.
+                if (link && fresh) store.update?.(link, { url: null, title: null });
                 const timing = { warm: wasWarm, spare: fromSpare, total_ms: now() - t0, session_ms: sessionMs, ...(wasWarm ? {} : mine.timings), at: now() };
                 timings.push(timing);
                 if (timings.length > 50) timings.shift();
@@ -692,14 +699,19 @@ export function createPodManager({
     function stopChat(chatKey, why = 'idle') {
         if (stopping.has(chatKey)) return stopping.get(chatKey);
         const chat = chats.get(chatKey);
+        // Only the user's End starts the next browser on a new page; any other stop of a running
+        // browser (idle, sleep, the agent's close, a crash) resumes on the last one. With no
+        // browser running nothing has opened since, so an earlier End still stands.
         const pod = chat && chat.slot !== null ? pods.get(chat.slot) : null;
         if (!chat || !pod || pod.podId !== chat.podId) {
+            if (chat && why === 'user_ended') chat.fresh = true;
             if (chat && chat.state === 'running') chat.state = why === 'crashed' ? 'crashed' : 'asleep';
             // No pod of its own: a slot it still names is someone else's or gone.
             if (chat && chat.state !== 'running' && chat.slot !== null) { chat.slot = null; chat.podId = null; }
             if (chat) persist();
             return Promise.resolve(false);
         }
+        chat.fresh = why === 'user_ended';
         const p = (async () => {
             pod.state = 'stopping';
             const sid = chat.sessionId;

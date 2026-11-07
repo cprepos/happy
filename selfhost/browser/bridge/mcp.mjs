@@ -121,11 +121,12 @@ export const READ_ONLY_TOOLS = new Set([
     'browser_get_session', 'browser_list_sessions', 'browser_wait_for_selector', 'browser_list_downloads',
     'browser_read_download', 'browser_live_link', 'browser_create_session', 'browser_list_auth_profiles', 'browser_list_secrets',
 ]);
-const RECOVERY_WHY = { session_ended: 'its session ended', pod_crashed: 'it stopped answering', pod_asleep: 'it was asleep' };
+const RECOVERY_WHY = { session_ended: 'its session ended', pod_crashed: 'it stopped answering', pod_asleep: 'it was asleep', ended: 'it was ended' };
 export function recoveredNote(via) {
     const r = via.recovered;
     return `The browser was restarted (${RECOVERY_WHY[r.reason] || r.reason}). Session ${r.previous_session_id || '(none)'} is gone; `
-        + `this chat's browser is now session ${via.session_id}, signed in with its saved login and reopened at its last page if it had one.`
+        + `this chat's browser is now session ${via.session_id}, signed in with its saved login and `
+        + (r.reason === 'ended' ? 'on a new page (the user ended the last one).' : 'reopened at its last page if it had one.')
         + (via.url ? ` Live view: ${via.url}` : '');
 }
 export const RECOVERED_REFUSED = 'Nothing was done: observe the page again (browser_observe) before acting, since element ids from before no longer apply.';

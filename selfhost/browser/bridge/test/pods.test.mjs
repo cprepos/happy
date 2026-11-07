@@ -656,3 +656,70 @@ test('phantoms: live needs a session that answered lately; the sweep refreshes i
     await h.mgr.ensure(KEY, {});
     assert.ok(h.calls.some((c) => c.endsWith(' https://news.ycombinator.com/news')));
 });
+
+// Sleep (the user's Sleep button, an idle stop, the agent's close) resumes on the last page;
+// only the user's End starts the next browser on a new page, still signed in.
+async function stoppedWith(why, paths = {}) {
+    const h = harness(paths);
+    await h.mgr.ensure(A);
+    h.store.update(h.store.findChat(A), { url: 'https://example.com/cart', title: 'Cart' });
+    assert.equal(await h.mgr.stopChat(A, why), true);
+    return h;
+}
+const starts = (h) => h.calls.filter((c) => c.startsWith('ctl.createSession'));
+
+test('sleep: a slept chat wakes on its last page with its login', async () => {
+    const h = await stoppedWith('slept');
+    h.calls.length = 0;
+    await h.mgr.ensure(A);
+    assert.deepEqual(starts(h), ['ctl.createSession:0:happy-chat https://example.com/cart']);
+    assert.equal(h.store.findChat(A).url, 'https://example.com/cart');
+});
+
+test('sleep: the agent closing the browser still resumes on the last page', async () => {
+    const h = await stoppedWith('closed');
+    h.calls.length = 0;
+    await h.mgr.ensure(A);
+    assert.deepEqual(starts(h), ['ctl.createSession:0:happy-chat https://example.com/cart']);
+});
+
+test('end: an ended chat starts signed in on a new page, and the link forgets the old one', async () => {
+    const h = await stoppedWith('user_ended');
+    h.calls.length = 0;
+    const d = await h.mgr.ensure(A, { check: true });
+    assert.deepEqual(starts(h), ['ctl.createSession:0:happy-chat']);
+    assert.equal(d.recovered.reason, 'ended');
+    const link = h.store.findChat(A);
+    assert.equal(link.url, null);
+    assert.equal(link.title, null);
+    // One fresh start only: after that, stops resume on the last page again.
+    link.url = 'https://example.com/next';
+    await h.mgr.stopChat(A, 'idle');
+    h.calls.length = 0;
+    const d2 = await h.mgr.ensure(A, { check: true });
+    assert.deepEqual(starts(h), ['ctl.createSession:0:happy-chat https://example.com/next']);
+    assert.equal(d2.recovered.reason, 'pod_asleep');
+});
+
+test('end: a close after End with nothing running keeps the next start fresh', async () => {
+    const h = await stoppedWith('user_ended');
+    assert.equal(await h.mgr.stopChat(A, 'closed'), false);
+    h.calls.length = 0;
+    await h.mgr.ensure(A);
+    assert.deepEqual(starts(h), ['ctl.createSession:0:happy-chat']);
+});
+
+test('end: the fresh start survives a bridge restart and clears after one start', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pods-fresh-'));
+    const paths = { chatsPath: join(dir, 'chats.json'), podsPath: join(dir, 'pods.json') };
+    const store = new LinkStore();
+    const h = await stoppedWith('user_ended', { ...paths, store });
+    const saved = JSON.parse(readFileSync(paths.chatsPath, 'utf8')).chats.find((c) => c.chatKey === A);
+    assert.equal(saved.fresh, true);
+    const h2 = harness({ ...paths, store });
+    h2.authDirs.set(A, true);
+    await h2.mgr.ensure(A);
+    assert.deepEqual(starts(h2), ['ctl.createSession:0:happy-chat']);
+    const after = JSON.parse(readFileSync(paths.chatsPath, 'utf8')).chats.find((c) => c.chatKey === A);
+    assert.equal(after.fresh, false);
+});
