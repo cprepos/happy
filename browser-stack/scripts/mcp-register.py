@@ -27,7 +27,7 @@ Not here: ~/.config/opencode/opencode.json(c) on prep-ml is never read or writte
 
 Files on the Macs (REMOTES below), read and written over ssh (setup only), for the
 harnesses installed there. How their entries reach the servers is MAC_TRANSPORT:
-  gateway  the entry runs the gateway client on the Mac (MAC_CLIENT) against the LAN
+  gateway  (the default) the entry runs the gateway client on the Mac (MAC_CLIENT) against the LAN
            gateway on prep-ml; nothing uses ssh at run time. A Mac is used only if the
            client, its key and node are there (make gateway-mac-install HOST=<mac>).
   ssh      (rollback) a `/bin/sh -c` wrapper (remote_wrapper) that runs the server on
@@ -99,11 +99,11 @@ REMOTE_HOP = "prep-ml"
 REMOTE_NODE = "/usr/bin/node"   # on prep-ml
 WRAP_SSH = "/usr/bin/ssh"       # on the Mac
 REMOTE_TRASH = "~/happy-trash"  # on the Mac
-# How a Mac entry reaches the servers. "gateway": the entry runs the stack's
+# How a Mac entry reaches the servers. "gateway" (the default): the entry runs the stack's
 # gateway client on the Mac, which forwards to the LAN gateway on prep-ml (no ssh at run
 # time). "ssh": the older /bin/sh wrapper that runs the server on prep-ml over ssh, kept
 # as the rollback (MAC_TRANSPORT=ssh make mcp-register).
-MAC_TRANSPORT = os.environ.get("MAC_TRANSPORT") or "ssh"
+MAC_TRANSPORT = os.environ.get("MAC_TRANSPORT") or "gateway"
 GATEWAY_BASE = "http://192.168.2.72:8904"
 GATEWAY_ROUTES = {"happy-browser-bridge": "/browser/mcp", "vault": "/vault/mcp"}
 MAC_NODE = os.environ.get("BROWSER_STACK_MAC_NODE") or "/opt/homebrew/bin/node"  # on the Mac

@@ -49,11 +49,16 @@ target used to. Saved logins (`data/chats`) are never touched.
 
 The browser stack runs only here. A Mac chat reaches it two ways:
 
-- **MCP:** `make mcp-register` gives each Mac harness a `/bin/sh -c` entry that runs
-  the bridge (and the vault) on prep-ml over `ssh -o BatchMode=yes`, passing the
-  chat's `HAPPY_SESSION_ID`, `CLAUDE_CODE_SESSION_ID` and
-  `HAPPY_FORKED_FROM_SESSION_ID` on the remote command line (ssh forwards no env).
-  Each value must match `^[A-Za-z0-9_-]{1,128}$` or it is sent blank.
+- **MCP:** `make mcp-register` gives each Mac harness an entry that runs the stack's
+  gateway client on the Mac (`node ~/.local/share/browser-stack/client/mcp-gateway-client.mjs
+  --url http://192.168.2.72:8904/browser/mcp`, and `/vault/mcp`). The client forwards to the
+  LAN gateway on prep-ml with that Mac's key, and stamps each tool call with the chat it came
+  from (`HAPPY_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`, `HAPPY_FORKED_FROM_SESSION_ID` from the
+  harness's environment). Nothing uses ssh at run time. `../README.md`, "The LAN gateway", has
+  the details. `make gateway-mac-install HOST=<mac>` puts the client and the key there.
+  Rollback: `MAC_TRANSPORT=ssh make mcp-register` writes the older `/bin/sh -c` wrapper,
+  which runs the bridge on prep-ml over `ssh -o BatchMode=yes` with the ids on the remote
+  command line (each blanked unless it matches `^[A-Za-z0-9_-]{1,128}$`).
 - **Live view and takeover:** over the LAN, through the bridge's LAN listener below
   (`http://192.168.2.72:6090`), sent through the chat machine's workspace proxy. A live link
   names its bridge origin, `http://localhost:6090` for a prep-ml chat or
@@ -93,7 +98,7 @@ then `make browser-bridge-restart BRIDGE_ENV=1` (a plain restart keeps the old e
 - **Host:** the LAN listener answers only to `Host: 192.168.2.72:6090` (421 otherwise), and
   the loopback listener does not answer to that Host.
 - **No private routes:** `/api/*` is 404 on the LAN listener; the MCP servers (also the Macs',
-  which run here over ssh) use loopback.
+  which the LAN gateway starts here) use loopback.
 - **URLs:** absolute URLs the LAN listener returns (`/live/chat/<key>`'s `url`, `/take`'s
   `novnc_url`, the page's Take control link) use `http://192.168.2.72:6090`
   (`BRIDGE_LAN_PUBLIC_BASE` to change). Loopback responses keep `http://localhost:6090`; the
@@ -377,12 +382,13 @@ the session they name. A call with no id that isn't in the journal is routed by
 its browser session, as before. Without `BRIDGE_AGENT_DB` every browser session
 gets a pod of its own, as before.
 
-On a Mac, Happy Agent's bridge runs here over ssh (`make mcp-register`), and its
-entry passes `BRIDGE_AGENT_DB=<the Mac's agent.sqlite>`,
-`BRIDGE_AGENT_SSH=<the Mac>` and `BRIDGE_AGENT_PYTHON=/usr/bin/python3`: the
-lookup runs on that Mac as `ssh <mac> python3 -I - <db> ...` with the script and
-the request on stdin (about 0.2 s a call). `make mcp-register` brings an older
-Happy Agent entry it wrote up to date.
+On a Mac, Happy Agent's entry runs the gateway client with `--agent-db <the Mac's
+agent.sqlite>`. The client does the lookup on the Mac (`identity/agentchat.py`, read-only,
+`/usr/bin/python3 -I`) and stamps the chat it finds on the call, and the bridge on prep-ml
+takes the chat from that stamp. A call it cannot place goes out without a chat and is
+refused. `make mcp-register` brings an older Happy Agent entry it wrote up to date. With
+`MAC_TRANSPORT=ssh` (rollback) the bridge runs on prep-ml instead and does the lookup as
+`ssh <mac> python3 -I - <db> ...` (`BRIDGE_AGENT_SSH`).
 
 The vault secret tools (`browser_list_secrets`, `browser_fill_secret`,
 `browser_login`) in such a process name the chat `none` to the secret filler,

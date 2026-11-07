@@ -25,11 +25,12 @@ bridge and its Chromium, and both MCP servers. It is the same on every machine:
 - **On prep-ml** the `vault` and `happy-browser-bridge` MCP entries run
   `node selfhost/vault-mcp/mcp.mjs` and `node selfhost/browser/bridge/mcp.mjs` directly (both
   are symlinks into `browser-stack/`, kept so existing configs need no change).
-- **On prep-air and prep-pro** (Macs) the same entries are a `/bin/sh -c` wrapper that runs
-  `ssh -o BatchMode=yes prep-ml /usr/bin/node <script>` and hands prep-ml the chat's
-  `HAPPY_SESSION_ID` (plus `CLAUDE_CODE_SESSION_ID` and `HAPPY_FORKED_FROM_SESSION_ID`). The
-  tools behave exactly as on prep-ml: same logins, same policy, same browser (it is on prep-ml,
-  and its live link works from the phone).
+- **On prep-air and prep-pro** (Macs) the same entries run a small gateway client on the Mac
+  (`mcp-gateway-client.mjs` in `~/.local/share/browser-stack/client`). It forwards the tools to
+  prep-ml's LAN gateway (`http://192.168.2.72:8904`) with that Mac's key and tells prep-ml
+  which chat the call is from (the chat's `HAPPY_SESSION_ID`). The tools behave exactly as on
+  prep-ml: same logins, same policy, same browser (it is on prep-ml, and its live link works
+  from the phone).
 
 So on a Mac: the paths, the containers and the `make` targets named here are **prep-ml's**, not
 the Mac's. Don't look for them locally, and don't try to install anything on the Mac for the
@@ -150,8 +151,8 @@ On a Mac none of these exist locally. Run the safe ones only when they help the 
 - Filler code lives in `browser-stack/browser/filler`, bridge side in
   `secrets.mjs` under `browser-stack/browser/bridge/lib`. Changes go through a commit pushed to `fork`, then a
   `filler-install` of that SHA.
-- The bridge's and the vault's MCP processes are per chat (on a Mac, one ssh per server per
-  session). Happy Agent's single process on prep-ml is a child of the `happy-agent` container's
+- The bridge's and the vault's MCP processes are per chat (on a Mac, the LAN gateway starts
+  one per server per session). Happy Agent's single process on prep-ml is a child of the `happy-agent` container's
   `happy-agent-linux-x64 run`; killing it respawns it with fresh code (do this only when no
   link is in user/takeover, unless the user says restart anyway).
 

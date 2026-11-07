@@ -190,8 +190,11 @@ class Scratch(unittest.TestCase):
         self.tmp.cleanup()
 
     def env(self, **extra):
-        return dict(os.environ, HOME=self.home, HAPPY_MCP_REGISTER_TRASH=os.path.join(self.root, "trash"),
-                    FAKE_SSH_ROOT=self.macs, PATH=self.bin + os.pathsep + os.environ.get("PATH", ""), **extra)
+        # The ssh-wrapper tests set MAC_TRANSPORT=ssh (the rollback); GatewayTransportTest sets its own.
+        env = dict(os.environ, HOME=self.home, HAPPY_MCP_REGISTER_TRASH=os.path.join(self.root, "trash"),
+                   FAKE_SSH_ROOT=self.macs, PATH=self.bin + os.pathsep + os.environ.get("PATH", ""), MAC_TRANSPORT="ssh")
+        env.update(extra)
+        return env
 
 
 class RemoteWrapperTest(Scratch):
