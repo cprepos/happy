@@ -175,7 +175,7 @@ worker uses 250). Three things follow from pointing at 8903 rather than a tier p
   cannot overlap there at all, and a coding agent on that tier blocks voice outright.
 - **8903 is the only entrypoint.** The old `coder-tool-proxy` on 8899 (it appended a searxng tool
   to every request and forced `stream = False` upstream) is retired; Caddy's `/coder/*` goes
-  straight to 8903, and the Macs reach the same gateway on its LAN listener (192.168.2.72:8903,
+  straight to 8903, and the Macs reach the same gateway on its LAN listener (192.168.2.72:8904,
   per-Mac API key).
 
 **The name `coder` alone 404s on both *tier* ports (9080, 9081).** When a turn fails with
