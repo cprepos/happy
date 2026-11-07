@@ -15,7 +15,6 @@
 #   make browser-pod-bench     pod start times, cold and warm (test project only)
 #   make browser-pod-smoke     per-chat pods end to end (bridge with BRIDGE_PODS=1)
 #   make browser-pods-reap     remove pods no chat is using (asks first; DRY_RUN=1 lists only, FORCE=1 removes all)
-#   make browser-forward-install HOST=prep-air   rollback only: Mac localhost:6090/:6080 tunnel to here (also -status, -uninstall)
 
 BROWSER_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))/browser
 # BROWSER_STACK_HOME is the name to use; HAPPY_BROWSER_HOME is still read, and is exported
@@ -132,39 +131,6 @@ browser-pod-bench:
 browser-pod-smoke:
 	@BROWSER_BRIDGE="$(BROWSER_BRIDGE)" HAPPY_BROWSER_HOME="$(HAPPY_BROWSER_HOME)" BROWSER_PROJECT="$(BROWSER_PROJECT)" \
 		node $(BROWSER_DIR)/scripts/pod-smoke.mjs
-
-# The Mac port forward (browser/mac-forward/), for a rollback only: Mac chats reach the bridge's
-# LAN listener now (README, "LAN listener"), and nothing runs these targets on its own. A launchd
-# agent on HOST keeps 127.0.0.1:6090 and :6080 there tunnelled to this machine, for app builds
-# from before links named their bridge origin.
-#   make browser-forward-install HOST=prep-air     copy the files over ssh, load the agent, check /healthz
-#   make browser-forward-status HOST=prep-air      agent state, listeners, /healthz through the tunnel
-#   make browser-forward-uninstall HOST=prep-air   stop it; the plist goes to ~/happy-trash on the Mac
-# Non-interactive ssh to the Macs has a minimal PATH, so the remote commands use absolute paths.
-FORWARD_DIR := $(BROWSER_DIR)/mac-forward
-FORWARD_REMOTE_DIR := .local/share/happy-browser-forward
-FORWARD_SSH = ssh -o BatchMode=yes -o ConnectTimeout=10 -o LogLevel=ERROR
-
-.PHONY: browser-forward-install browser-forward-status browser-forward-uninstall browser-forward-host
-browser-forward-host:
-	@case "$(HOST)" in ""|*[!A-Za-z0-9._-]*) echo "set HOST=prep-air or HOST=prep-pro"; exit 1;; esac
-
-browser-forward-install: browser-forward-host
-	@$(FORWARD_SSH) $(HOST) '/bin/mkdir -p "$$HOME/$(FORWARD_REMOTE_DIR)"'
-	@scp -q -o BatchMode=yes -o LogLevel=ERROR $(FORWARD_DIR)/com.happy.browser-forward.plist \
-		$(FORWARD_DIR)/install.sh $(FORWARD_DIR)/uninstall.sh $(HOST):$(FORWARD_REMOTE_DIR)/
-	@$(FORWARD_SSH) $(HOST) '/bin/bash "$$HOME/$(FORWARD_REMOTE_DIR)/install.sh"'
-
-browser-forward-status: browser-forward-host
-	@$(FORWARD_SSH) $(HOST) 'export PATH=/usr/bin:/bin:/usr/sbin:/sbin; \
-		echo "agent:"; launchctl print "gui/$$(id -u)/com.happy.browser-forward" 2>/dev/null | grep -E "^[[:space:]]*(state|pid|last exit code) =" || echo "  not loaded"; \
-		echo "listening on 6090/6080 (expect 127.0.0.1 only):"; lsof -nP -iTCP:6090 -iTCP:6080 -sTCP:LISTEN | awk "NR>1 {print \"  \" \$$1, \$$2, \$$9}" | sort -u; \
-		if lsof -nP -iTCP:6090 -iTCP:6080 -sTCP:LISTEN | awk "NR>1 {print \$$9}" | grep -qv "^127\.0\.0\.1:"; then echo "WARNING: bound beyond 127.0.0.1"; exit 1; fi; \
-		printf "bridge /healthz: "; curl -fsS --max-time 5 http://127.0.0.1:6090/healthz 2>/dev/null || printf unreachable; echo; \
-		printf "noVNC :6080:     HTTP "; curl -s -o /dev/null -w "%{http_code}" --max-time 5 http://127.0.0.1:6080/; echo'
-
-browser-forward-uninstall: browser-forward-host
-	@$(FORWARD_SSH) $(HOST) '/bin/bash "$$HOME/$(FORWARD_REMOTE_DIR)/uninstall.sh"'
 
 # Restart only the bridge (to load new bridge code). On SIGTERM the bridge releases every held
 # link (noVNC sockets close, waiting agents get status released), saves links.json and exits,

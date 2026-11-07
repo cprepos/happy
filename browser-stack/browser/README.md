@@ -33,7 +33,6 @@ make browser-bridge-smoke   # end to end on the running stack; makes and deletes
                             # with pods, one throwaway chat's pod)
 make browser-pods-status    # each chat's pod: slot, containers, the bridge's view (chat, held, idle)
 make browser-pods-reap      # remove pods no chat is using; asks first (see below)
-make browser-forward-install HOST=prep-air   # Mac tunnel for the live view (also -status, -uninstall)
 make browser-bridge-restart BRIDGE_ENV=1     # recreate only the bridge, so a changed .env.browser applies
 ```
 
@@ -69,11 +68,8 @@ The browser stack runs only here. A Mac chat reaches it two ways:
   then localhost, and keeps the one that answers: from prep-ml the LAN listener refuses the
   connection (prep-ml's own address is not allowed in), from a Mac nothing listens on
   localhost:6090.
-  The Mac ssh tunnels (`com.happy.browser-forward`, `mac-forward/`) were removed on
-  2026-11-06 and nothing installs them. Their targets stay only for a rollback:
-  `make browser-forward-install HOST=prep-pro` puts one back (127.0.0.1:6090 and :6080 on
-  the Mac), `make browser-forward-uninstall HOST=...` moves its plist to `~/happy-trash/`.
-  App builds from before the per-link origin (OTA-only devices not yet updated) need them.
+  The Mac ssh tunnels (`com.happy.browser-forward`, `mac-forward/`) are retired; their files
+  and make targets are in `/home/prep/happy-trash/20261107_001731_browser-forward/` on prep-ml.
 
 ### LAN listener
 
@@ -133,10 +129,8 @@ directly (Docker's own chains are not involved). Undo with `sudo ufw delete allo
 
 Rollback: remove (or comment out) the two lines from `.env.browser` (back it up to
 `~/trash/<ts>_env-browser/` first), run `make browser-bridge-restart BRIDGE_ENV=1`, and check
-`make browser-status` shows 6090 on 127.0.0.1 only. Mac chats then lose live view until the
-tunnels are back: `make browser-forward-install HOST=prep-pro` (and `HOST=prep-air`), and
-`make mcp-register` from a checkout whose `REMOTE_LINK_BASE` (`scripts/mcp-register.py`) is
-`http://localhost:6090`.
+`make browser-status` shows 6090 on 127.0.0.1 only. Mac chats then lose the live view (the
+old ssh tunnels are retired; see "Chats on the Macs" for where their files are).
 
 ## Files on disk
 
