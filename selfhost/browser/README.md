@@ -359,7 +359,7 @@ Happy Agent runs this one process for all of its chats, with no chat id in its
 environment. `BRIDGE_AGENT_DB` gives each call its chat anyway: the daemon
 journals every tool call it starts (`tool.started`: the agent, the call id, the
 tool and its arguments) before running it, so `mcp.mjs` finds this call's record
-in the daemon's database (read-only, through `bridge/lib/agentchat.py` and the
+in the daemon's database (read-only, through `browser-stack/identity/agentchat.py` and the
 container's `python3`; Node 20 has no SQLite) and takes the agent's Happy
 session. A client that names its call in `_meta["claudecode/toolUseId"]` is
 looked up by that id. Happy Agent as deployed sends no `_meta` at all (seen with

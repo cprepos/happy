@@ -7,7 +7,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { agentCallChat, callChatResolver, chatKeyOf, createMcpServer, NO_CALL_CHAT } from '../mcp.mjs';
-import { createAgentChatLookup } from '../lib/agentchat.mjs';
+import { createAgentChatLookup } from '../../../../browser-stack/identity/agentchat.mjs';
 
 const TOKEN = 'bridge-secret-token-0123456789abcdef';
 const KEY_S1 = chatKeyOf({ source: 'happy', id: 'S1' });

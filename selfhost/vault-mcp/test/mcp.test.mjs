@@ -163,3 +163,54 @@ test('stdio: initialize, tools/list and a call through the real process', async 
         await f.close();
     }
 });
+
+// Behind the LAN gateway (fromMeta): the chat of each call is the _meta the Mac's client stamps.
+function metaClient(opts) {
+    const out = [];
+    const server = createVaultMcp({ readToken: () => TOKEN, write: (m) => out.push(m), ...opts });
+    let n = 0;
+    return async (name, args, meta) => {
+        const id = ++n;
+        await server.handle({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args, ...(meta ? { _meta: meta } : {}) } });
+        return out.find((m) => m.id === id);
+    };
+}
+const chatMeta = (c) => ({ 'browserstack/chat': c });
+
+test('fromMeta: each call tells the filler its own chat (Happy session id, else none)', async () => {
+    const f = await fakeFiller(() => [200, { items: [] }]);
+    try {
+        const call = metaClient({ fillerUrl: f.url, fromMeta: true, chat: 'PROCESS' });
+        await call('vault_list', {}, chatMeta({ source: 'happy', id: 'S1' }));
+        await call('vault_list', {}, chatMeta({ source: 'happy', id: 'S2' }));
+        await call('vault_list', {}, chatMeta({ source: 'claude', id: 'C1' }));
+        assert.deepEqual(f.calls.map((c) => c.chat), ['S1', 'S2', NO_CHAT]);
+    } finally { await f.close(); }
+});
+
+test('fromMeta: a call with no chat, or a malformed one, never reaches the filler', async () => {
+    const f = await fakeFiller(() => [200, { items: [] }]);
+    try {
+        const call = metaClient({ fillerUrl: f.url, fromMeta: true });
+        for (const meta of [undefined, {}, chatMeta({ source: 'happy', id: 'a b' }), chatMeta({ source: 'x', id: 'S1' }), chatMeta('S1')]) {
+            const r = await call('vault_list', {}, meta);
+            assert.equal(r.result.isError, true);
+            assert.match(textOf(r), /could not be matched to its chat/);
+        }
+        // Not from the arguments either (the schema refuses unknown ones before anything is sent).
+        const r = await call('vault_list', { chat: 'S1' });
+        assert.equal(r.result.isError, true);
+        assert.equal(f.calls.length, 0);
+    } finally { await f.close(); }
+});
+
+test('without fromMeta a forged browserstack/chat _meta is ignored: the process chat is used', async () => {
+    const f = await fakeFiller(() => [200, { items: [] }]);
+    try {
+        const call = metaClient({ fillerUrl: f.url, chat: 'OWN' });
+        await call('vault_list', {}, chatMeta({ source: 'happy', id: 'VICTIM' }));
+        const none = metaClient({ fillerUrl: f.url });
+        await none('vault_list', {}, chatMeta({ source: 'happy', id: 'VICTIM' }));
+        assert.deepEqual(f.calls.map((c) => c.chat), ['OWN', NO_CHAT]);
+    } finally { await f.close(); }
+});

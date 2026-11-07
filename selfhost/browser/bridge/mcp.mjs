@@ -11,7 +11,8 @@ import { createInterface } from 'node:readline';
 import { loadConfig, readSecret } from './lib/config.mjs';
 import { createUpstreamMcp, localToolName } from './lib/upstream.mjs';
 import { createSecretGate, SECRET_TOOL_NAMES } from './lib/secrets.mjs';
-import { createAgentChatLookup } from './lib/agentchat.mjs';
+import { createAgentChatLookup } from '../../../browser-stack/identity/agentchat.mjs';
+import { chatFromMeta, chatOfMeta, fillerChatOf, withoutChatMeta } from '../../../browser-stack/identity/chatmeta.mjs';
 
 const PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const SERVER_INFO = { name: 'happy-browser-bridge', version: '1.2.0' };
@@ -237,7 +238,7 @@ export function forkParentKey(env = process.env, ident = chatIdentity(env)) {
 
 // A daemon that serves many chats from one process (Happy Agent) names the chat per call instead:
 // its MCP client puts its own id for the tool call in _meta["claudecode/toolUseId"], and
-// lookup(id) answers which chat made that call ({source, id}, see lib/agentchat.mjs). Without a
+// lookup(id) answers which chat made that call ({source, id}, see browser-stack/identity/agentchat.mjs). Without a
 // call id (Happy Agent as deployed sends no _meta at all), lookup.match(name, args) finds the
 // daemon's own journal record of this call instead: the one in-flight call of that tool with
 // exactly these arguments. Either way the chat is the agent the daemon recorded, never a value
@@ -283,6 +284,22 @@ export function agentCallChat(ident, env = process.env, log = () => {}) {
         return null;
     }
 }
+// Behind the LAN gateway (BROWSER_CHAT_FROM_META=1, set by the operator only): each call's chat
+// is the one the Mac's gateway client stamped in _meta (browser-stack/identity/chatmeta.mjs). A call without it is
+// refused (NO_CALL_CHAT), never routed by its arguments. fromMeta lets a fork's parent through.
+export function metaCallChat() {
+    return async function callChatOf(meta) {
+        const c = chatOfMeta(meta);
+        if (!c) return NO_CALL_CHAT;
+        return {
+            key: chatKeyOf(c),
+            source: c.source,
+            fromMeta: true,
+            fillerChat: fillerChatOf(c),
+            ...(c.forkedFrom ? { forkedFrom: chatKeyOf({ source: 'happy', id: c.forkedFrom }) } : {}),
+        };
+    };
+}
 const NO_CHAT = 'this browser call could not be matched to its chat, so it was not sent to any browser. Try it again.';
 
 // Routes each call to its chat's pod through the bridge (/api/pod), one upstream MCP client per
@@ -325,8 +342,9 @@ export function createChatRouter({ bridge, makeUpstream, chat = null, newKey = (
             let key = keyFor(name, args, c);
             let d;
             try {
-                // forked_from only for this process's own chat, never one a call names.
-                const fork = c && c === chat && chat.forkedFrom ? { forked_from: chat.forkedFrom } : {};
+                // forked_from only for this process's own chat, or one the gateway client named in
+                // _meta (metaCallChat), never one a daemon's journal or the arguments name.
+                const fork = c && (c === chat || c.fromMeta === true) && c.forkedFrom ? { forked_from: c.forkedFrom } : {};
                 const flags = { ...(verify ? { verify: true } : {}), ...(check ? { check: true } : {}) };
                 if (key) d = await bridge('/api/pod', { chat_key: key, source: c?.source ?? 'session', ...fork, ...flags }, signal);
                 else {
@@ -346,8 +364,9 @@ export function createChatRouter({ bridge, makeUpstream, chat = null, newKey = (
         markLegacy() { legacyAt = now(); known = true; },
         keyOfSession: (sid) => (sid ? bySession.get(sid) ?? null : null),
         // The pod's API port for a call's session (the secret filler types into that pod).
-        apiPortFor(args) {
-            const key = (chat && this.pods) ? chat.key : bySession.get(args?.session_id);
+        // cc: the call's own chat, when the client named one per call.
+        apiPortFor(args, cc = null) {
+            const key = cc?.key && this.pods ? cc.key : (chat && this.pods) ? chat.key : bySession.get(args?.session_id);
             const url = key ? pods.get(key)?.api_url : null;
             return url ? Number(new URL(url).port) : null;
         },
@@ -381,7 +400,9 @@ export function linkRewriter(linkFrom, linkBase) {
     return walk;
 }
 
-export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fetch, pollS = 60, upstream = null, waitMaxS = 3600, approvalWaitS = null, log = () => {}, retryMs = 30_000, metaProbe = null, secrets = null, chatPods = null, callChat = null, now = Date.now, linkFrom = null, linkBase = null }) {
+export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fetch, pollS = 60, upstream = null, waitMaxS = 3600, approvalWaitS = null, log = () => {}, retryMs = 30_000, metaProbe = null, secrets = null, chatPods = null, callChat = null, chatFromMeta: fromMeta = false, now = Date.now, linkFrom = null, linkBase = null }) {
+    // fromMeta: every call names its chat in _meta (the LAN gateway's client); nothing else does.
+    if (fromMeta) { callChat = metaCallChat(); if (chatPods) chatPods = { ...chatPods, chat: null }; }
     const relink = linkRewriter(linkFrom, linkBase);
     const inflight = new Map(); // request id -> AbortController
     // chatPods: {chat: {key, source, forkedFrom?} | null, makeUpstream(url)}. Each call then goes to its chat's
@@ -523,7 +544,7 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
         let via = routedCall.via;
         args = routedCall.args;
         if (!via && !(await sharedPreflight(id, name, args, meta, signal))) return;
-        const gate = await secretsBefore(id, name, args, signal);
+        const gate = await secretsBefore(id, name, args, signal, cc);
         if (!gate) return;
         // One state check per call: a page-changing tool asks whether the user holds the browser
         // (recording the action), any other tool on a session only whether the user ended it.
@@ -570,10 +591,11 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
 
     // The secret filler's gate (lib/secrets.mjs) around a passed-through call. Writes the refusal
     // and returns null when the call may not go ahead; the filler being down refuses too.
-    async function secretsBefore(id, name, args, signal) {
+    async function secretsBefore(id, name, args, signal, cc = null) {
         if (!secrets) return { scrub: false };
+        const ctx = secretCtx(cc);
         let g;
-        try { g = await secrets.before(name, args, signal); } catch (err) {
+        try { g = { ...(await secrets.before(name, args, signal, ctx)), ctx }; } catch (err) {
             if (!signal.aborted) result(id, toolResult(`Error: ${err.message}`, true));
             return null;
         }
@@ -582,7 +604,10 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
         return g;
     }
     // A result (or error) with every filled secret replaced by [secret:<name>]. Throws if the filler can't scrub.
-    const scrubOut = async (gate, value, signal) => (gate.scrub ? secrets.scrub(value, signal) : value);
+    const scrubOut = async (gate, value, signal) => (gate.scrub ? secrets.scrub(value, signal, gate.ctx) : value);
+    // The filler's view of a call's chat: with fromMeta, the chat the call named (its Happy
+    // session, else "none") and its pod; otherwise the process's own (lib/secrets.mjs).
+    const secretCtx = (cc) => (fromMeta ? { chat: cc?.fillerChat ?? null, cc } : {});
 
     // Every result about a browser session carries its live link, so the link reaches the chat even
     // when the agent never calls browser_live_link. Asking for it creates the link the first time.
@@ -847,8 +872,12 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
                     if (token !== undefined) write({ jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken: token, progress: p, message } });
                 };
                 try {
-                    const cc = name === 'browser_live_link' || name === 'browser_wait_for_human' || (upstream && !(secrets && secrets.isOwn(name)))
-                        ? await chatOfCall(params?._meta, ac.signal, { name, args: params?.arguments ?? {} }) : null;
+                    // Behind the gateway every call names its chat; one that doesn't goes nowhere.
+                    const cc = fromMeta ? await callChat(params?._meta)
+                        : name === 'browser_live_link' || name === 'browser_wait_for_human' || (upstream && !(secrets && secrets.isOwn(name)))
+                            ? await chatOfCall(params?._meta, ac.signal, { name, args: params?.arguments ?? {} }) : null;
+                    if (cc?.unknown && fromMeta) return result(id, toolResult(`Error: ${NO_CHAT}`, true));
+                    const meta = withoutChatMeta(params?._meta);
                     let out;
                     if (name === 'browser_live_link') out = await liveLink(args, ac.signal, cc);
                     else if (name === 'browser_wait_for_human') out = await waitForHuman(args, ac.signal, progress, cc);
@@ -858,9 +887,9 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
                             const via = await ownVia(args, ac.signal, cc, true);
                             if (via?.recovered) return result(id, toolResult(`${recoveredNote(via)} ${RECOVERED_REFUSED}`, true));
                         }
-                        out = await secrets.callOwn(name, args, ac.signal);
+                        out = await secrets.callOwn(name, args, ac.signal, secretCtx(cc));
                     }
-                    else if (upstream) return await passThrough(id, name, args, params?._meta, ac.signal, cc, progress);
+                    else if (upstream) return await passThrough(id, name, args, meta, ac.signal, cc, progress);
                     else return error(id, -32602, `unknown tool ${name}`);
                     if (!ac.signal.aborted) result(id, toolResult(out));
                 } catch (err) {
@@ -906,15 +935,17 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         onNotification: (m) => { if (m.method === 'notifications/progress') write(m); },
     });
     // Per-chat pods: each pod's MCP endpoint gets a client like `upstream`.
-    const ident = chatIdentity();
-    const forkedFrom = forkParentKey(process.env, ident);
+    // Behind the LAN gateway each call names its chat in _meta; the environment names none.
+    const fromMeta = chatFromMeta();
+    const ident = fromMeta ? null : chatIdentity();
+    const forkedFrom = fromMeta ? null : forkParentKey(process.env, ident);
     const makeUpstream = (url) => createUpstreamMcp({
         url,
         getToken: () => readSecret(cfg.files.apiToken),
         timeoutMs: cfg.passthroughTimeoutS * 1000,
         onNotification: (m) => { if (m.method === 'notifications/progress') write(m); },
     });
-    let podPort = () => null;
+    let podPort = (_args, _cc) => null;
     const server = createMcpServer({
         bridgeUrl: cfg.bridgeUrl,
         linkFrom: `http://localhost:${cfg.port}`,
@@ -927,19 +958,20 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         // and each call's chat is looked up there: by the call id in _meta, else by the daemon's
         // journal record of this very call (see callChatResolver).
         // BRIDGE_AGENT_SSH: the host that daemon runs on, when it reaches this process over ssh.
-        callChat: agentCallChat(ident, process.env, log),
+        callChat: fromMeta ? null : agentCallChat(ident, process.env, log),
+        chatFromMeta: fromMeta,
         waitMaxS: cfg.waitMaxS,
         log,
         metaProbe: createMetaProbe(),
         secrets: createSecretGate({
             fillerUrl: cfg.fillerUrl,
             tokenPath: cfg.files.fillerToken,
-            chat: process.env.HAPPY_SESSION_ID || null,
+            chat: fromMeta ? null : process.env.HAPPY_SESSION_ID || null,
             // The chat's pod when pods are on, else the shared controller.
-            controllerPort: (args) => podPort(args) ?? cfg.autoBrowserPort,
+            controllerPort: (args, cc) => podPort(args, cc) ?? cfg.autoBrowserPort,
         }),
     });
-    podPort = (args) => server.router?.apiPortFor(args) ?? null;
+    podPort = (args, cc) => server.router?.apiPortFor(args, cc) ?? null;
     const rl = createInterface({ input: process.stdin });
     rl.on('line', (l) => server.onLine(l));
     rl.on('close', () => process.exit(0));

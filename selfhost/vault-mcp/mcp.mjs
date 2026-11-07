@@ -16,10 +16,13 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { runPipe, scrubValue } from './lib/pipe.mjs';
+import { chatFromMeta, chatOfMeta, fillerChatOf } from '../../browser-stack/identity/chatmeta.mjs';
 
 const PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const SERVER_INFO = { name: 'happy-vault', version: '1.0.0' };
 export const NO_CHAT = 'none'; // must match NO_CHAT in browser/filler/lib/policy.mjs
+// Behind the LAN gateway (fromMeta): a call whose _meta names no chat goes nowhere.
+export const NO_META_CHAT = 'this vault call could not be matched to its chat, so it was not sent to the vault. Try it again.';
 
 const ID = { type: 'string', pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$', description: 'The login\'s id, from vault_list or vault_search.' };
 const NAME = { type: 'string', minLength: 1, maxLength: 100, description: 'The login\'s name in the vault. Its slug becomes the fill name browser_login and browser_fill_secret use.' };
@@ -142,7 +145,11 @@ export function defaultHome(env = process.env) {
     return env.HAPPY_VAULT_MCP_HOME || join(homedir(), '.local', 'share', 'happy-vault-mcp');
 }
 
-export function createVaultMcp({ fillerUrl = 'http://127.0.0.1:6091', tokenPath, readToken, chat = null, write, fetchImpl = fetch, pipe = runPipe, timeoutMs = 120_000 }) {
+// fromMeta (BROWSER_CHAT_FROM_META=1, the operator's env only): agentgateway runs one process for
+// many chats, and each call's chat is the one the Mac's gateway client put in
+// _meta["browserstack/chat"] (browser-stack/identity/chatmeta.mjs), never the tool arguments. The
+// filler hears its Happy session id, else "none", as it would from HAPPY_SESSION_ID.
+export function createVaultMcp({ fillerUrl = 'http://127.0.0.1:6091', tokenPath, readToken, chat = null, fromMeta = false, write, fetchImpl = fetch, pipe = runPipe, timeoutMs = 120_000 }) {
     const base = fillerUrl.replace(/\/+$/, '');
     const token = readToken || (() => {
         let t;
@@ -158,8 +165,8 @@ export function createVaultMcp({ fillerUrl = 'http://127.0.0.1:6091', tokenPath,
         ...(isError ? { isError: true } : {}),
     });
 
-    async function filler(action, body, signal) {
-        const headers = { Authorization: `Bearer ${token()}`, 'Content-Type': 'application/json', 'X-Happy-Chat': chat || NO_CHAT };
+    async function filler(action, body, signal, who = chat) {
+        const headers = { Authorization: `Bearer ${token()}`, 'Content-Type': 'application/json', 'X-Happy-Chat': who || NO_CHAT, 'X-Client-Chat': who || NO_CHAT };
         const sig = signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs);
         let res;
         try {
@@ -174,13 +181,13 @@ export function createVaultMcp({ fillerUrl = 'http://127.0.0.1:6091', tokenPath,
         return data;
     }
 
-    async function call(name, args, signal) {
+    async function call(name, args, signal, who = chat) {
         const tool = TOOL_BY_NAME.get(name);
         const bad = checkArgs(tool.inputSchema, args);
         if (bad) throw new Error(bad);
         const action = name.slice('vault_'.length);
-        if (action !== 'pipe') return filler(action, args, signal);
-        const got = await filler('pipe', args, signal);
+        if (action !== 'pipe') return filler(action, args, signal, who);
+        const got = await filler('pipe', args, signal, who);
         const label = `${args.field}`;
         let value = typeof got?.value === 'string' ? got.value : '';
         try {
@@ -214,10 +221,16 @@ export function createVaultMcp({ fillerUrl = 'http://127.0.0.1:6091', tokenPath,
             case 'tools/call': {
                 const name = params?.name;
                 if (!TOOL_BY_NAME.has(name)) return error(id, -32602, `unknown tool ${String(name).slice(0, 64)}`);
+                let who = chat;
+                if (fromMeta) {
+                    const c = chatOfMeta(params?._meta);
+                    if (!c) return result(id, toolResult(`Error: ${NO_META_CHAT}`, true));
+                    who = fillerChatOf(c);
+                }
                 const ac = new AbortController();
                 inflight.set(id, ac);
                 try {
-                    const out = await call(name, params?.arguments ?? {}, ac.signal);
+                    const out = await call(name, params?.arguments ?? {}, ac.signal, who);
                     if (!ac.signal.aborted) result(id, toolResult(out));
                 } catch (err) {
                     if (!ac.signal.aborted) result(id, toolResult(`Error: ${err.message}`, true));
@@ -250,7 +263,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     const server = createVaultMcp({
         fillerUrl: process.env.HAPPY_VAULT_FILLER_URL || 'http://127.0.0.1:6091',
         tokenPath: join(defaultHome(), 'secrets', 'vault-client-token'),
-        chat: process.env.HAPPY_SESSION_ID || null,
+        // Behind the LAN gateway each call names its chat in _meta; the environment names none.
+        chat: chatFromMeta() ? null : process.env.HAPPY_SESSION_ID || null,
+        fromMeta: chatFromMeta(),
         write: (obj) => process.stdout.write(JSON.stringify(obj) + '\n'),
     });
     const rl = createInterface({ input: process.stdin });

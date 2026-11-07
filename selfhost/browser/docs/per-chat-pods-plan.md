@@ -336,7 +336,7 @@ The key is `chatHash = sha256(source+':'+id).slice(0,32)`.
 - Happy Agent, per call (`BRIDGE_AGENT_DB`, 2026-11-05): Happy Agent is an upstream binary, so it
   can neither spawn a bridge per chat nor add a chat id to `_meta`. But the `claudecode/toolUseId`
   it sends is its own tool call id, and it journals `tool.started` (agent id, `toolCall.id`) in
-  `agent.sqlite` before running the tool. `lib/agentchat.mjs` looks the id up read-only and takes
+  `agent.sqlite` before running the tool. `browser-stack/identity/agentchat.mjs` looks the id up read-only and takes
   the agent's Happy session (`happy_agent_happy_sessions.remote_session_id`), so the key matches a
   Happy CLI chat's. Unmatched calls are refused; tool arguments never pick the chat.
 - Happy Agent sends no `_meta` (BRIDGE_LOG_META on prep-ml: 53 calls, all `metaKeys: []`), so

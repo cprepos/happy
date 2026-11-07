@@ -119,8 +119,10 @@ export function createSecretGate({ fillerUrl, tokenPath, chat = null, fetchImpl 
     const configured = () => existsSync(tokenPath);
     const token = () => readFileSync(tokenPath, 'utf8').trim();
 
-    async function call(path, body, signal) {
-        const headers = { Authorization: `Bearer ${token()}`, 'Content-Type': 'application/json', 'X-Happy-Chat': chat || NO_CHAT };
+    // ctx.chat (when given): this call's chat, named per call behind the gateway; else the process's.
+    async function call(path, body, signal, ctx = {}) {
+        const who = 'chat' in ctx ? ctx.chat : chat;
+        const headers = { Authorization: `Bearer ${token()}`, 'Content-Type': 'application/json', 'X-Happy-Chat': who || NO_CHAT, 'X-Client-Chat': who || NO_CHAT };
         let res;
         try {
             res = await fetchImpl(base + path, { method: 'POST', headers, body: JSON.stringify(body), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs) });
@@ -133,7 +135,7 @@ export function createSecretGate({ fillerUrl, tokenPath, chat = null, fetchImpl 
         if (!res.ok) throw new Error(data?.error ? `secret filler: ${data.error}` : `secret filler: HTTP ${res.status}`);
         return data;
     }
-    const port = (args) => { const p = controllerPort(args); return Number.isInteger(p) ? { controller_port: p } : {}; };
+    const port = (args, ctx = {}) => { const p = controllerPort(args, ctx.cc ?? null); return Number.isInteger(p) ? { controller_port: p } : {}; };
     const sid = (args) => (typeof args?.session_id === 'string' && args.session_id ? args.session_id : null);
 
     return {
@@ -142,12 +144,12 @@ export function createSecretGate({ fillerUrl, tokenPath, chat = null, fetchImpl 
         isOwn: (name) => SECRET_TOOL_NAMES.has(name),
 
         /** Run one of the three tools. Returns the filler's JSON answer; throws with a message for the agent. */
-        async callOwn(name, args, signal) {
+        async callOwn(name, args, signal, ctx = {}) {
             if (!configured()) throw new Error('vault secrets are not set up on this machine (make filler-token-issue NAME=bridge-client as happy-filler, then make filler-token-take)');
             const a = args || {};
-            if (name === 'browser_list_secrets') return call('/v1/list', {}, signal);
-            if (name === 'browser_fill_secret') return call('/v1/fill', { session_id: String(a.session_id ?? ''), element_id: String(a.element_id ?? ''), name: String(a.name ?? ''), ...port(a) }, signal);
-            if (name === 'browser_login') return call('/v1/login', { session_id: String(a.session_id ?? ''), site: String(a.site ?? ''), ...port(a) }, signal);
+            if (name === 'browser_list_secrets') return call('/v1/list', {}, signal, ctx);
+            if (name === 'browser_fill_secret') return call('/v1/fill', { session_id: String(a.session_id ?? ''), element_id: String(a.element_id ?? ''), name: String(a.name ?? ''), ...port(a, ctx) }, signal, ctx);
+            if (name === 'browser_login') return call('/v1/login', { session_id: String(a.session_id ?? ''), site: String(a.site ?? ''), ...port(a, ctx) }, signal, ctx);
             throw new Error(`unknown tool ${name}`);
         },
 
@@ -156,18 +158,18 @@ export function createSecretGate({ fillerUrl, tokenPath, chat = null, fetchImpl 
          * for the agent or null; scrub says the result must go through /v1/scrub
          * (always, once the filler is set up: a fill may land while this call runs).
          */
-        async before(name, args, signal) {
+        async before(name, args, signal, ctx = {}) {
             const always = refusal(name, args, false);
             if (always) return { refuse: always, scrub: false };
             if (!configured()) return { refuse: null, scrub: false };
-            const s = await call('/v1/session', { ...(sid(args) ? { session_id: sid(args) } : {}), ...port(args) }, signal);
+            const s = await call('/v1/session', { ...(sid(args) ? { session_id: sid(args) } : {}), ...port(args, ctx) }, signal, ctx);
             const tainted = sid(args) ? !!s?.tainted || (!!s?.any_tainted && name === 'browser_fork_session') : !!s?.any_tainted;
             return { refuse: refusal(name, args, tainted), scrub: true };
         },
 
         /** Scrub a result (or error) with the values of every tainted session. */
-        async scrub(payload, signal) {
-            const r = await call('/v1/scrub', { payload }, signal);
+        async scrub(payload, signal, ctx = {}) {
+            const r = await call('/v1/scrub', { payload }, signal, ctx);
             return r?.payload;
         },
     };
