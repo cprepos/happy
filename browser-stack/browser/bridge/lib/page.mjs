@@ -89,11 +89,17 @@ footer { position: sticky; bottom: 0; width: 100%; background: var(--surface); b
 
 // Frame failures in a row before the page says so instead of spinning quietly.
 export const FRAME_FAILURES_BEFORE_ERROR = 4;
-// No good frame for this long: the spinner shows over the last one. Until then the last frame
-// stays up, with no spinner, through the next frame, a state read or a retry: the bridge takes
-// about a second per frame, so a shorter wait spun between nearly every refresh. Matches the
-// app's inline player (LiveBrowserFeed.staleFrameLimit, 4 s). With no frame yet it spins at once.
+// Frame reads unanswered or failing for this long: the spinner shows over the last frame. It is
+// counted from the ask of the first read in the run that has not answered with a frame, and any
+// frame ends the run, the same one as before included: a page that does not change is not a
+// stall. A read never waits on the bridge much past its frameWaitMs (1.5 s), so a run this long
+// is a connection or a browser in trouble, not a slow capture. Matches the app's inline player
+// (LiveBrowserFeed.waitingAfter, 4 s). With no frame yet it spins at once.
 export const FRAME_WAIT_SPIN_MS = 4000;
+// One read of the state or the frame gets this long, then counts as failed and is asked again:
+// a fetch that never answered held the loop, and with it the picture, for good. As the app's
+// LiveBrowserFeed.requestTimeout.
+export const FRAME_READ_TIMEOUT_MS = 8000;
 // From one frame's answer to the next ask. The bridge makes about one fresh frame a second
 // (each is scrubbed), so frames are asked back to back rather than on a slow clock.
 export const FRAME_GAP_MS = 300;
@@ -105,14 +111,26 @@ const SCRIPT = `
   const MAX_FAILS = ${FRAME_FAILURES_BEFORE_ERROR};
   const SPIN_MS = ${FRAME_WAIT_SPIN_MS};
   const GAP_MS = ${FRAME_GAP_MS};
+  const READ_MS = ${FRAME_READ_TIMEOUT_MS};
   const $ = (id) => document.getElementById(id);
   let state = JSON.parse($('initial').textContent);
-  let stopped = false, timer = null, lastObjectUrl = null, fails = 0, haveFrame = false, spinTimer = null, lastFrameAt = 0;
+  let stopped = false, timer = null, lastObjectUrl = null, fails = 0, haveFrame = false, spinTimer = null, waitingSince = 0;
 
-  // The spinner, due SPIN_MS after the last good frame (at once if that has passed).
+  // The spinner, due SPIN_MS after the run of unanswered frame reads began (at once if that has
+  // passed). waitingSince: when the first read of that run was asked; 0 while the last one answered.
   function armSpin() {
     clearTimeout(spinTimer);
-    spinTimer = setTimeout(() => spin(true), Math.max(0, lastFrameAt + SPIN_MS - Date.now()));
+    spinTimer = setTimeout(() => spin(true), Math.max(0, waitingSince + SPIN_MS - Date.now()));
+  }
+
+  // A GET of base + path that gives up after READ_MS, its body read by take(response) within it.
+  async function get(path, take) {
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), READ_MS);
+    try {
+      const r = await fetch(base + path, { cache: 'no-store', signal: ac.signal });
+      return { r, body: await take(r) };
+    } finally { clearTimeout(t); }
   }
 
   function spin(on) {
@@ -224,27 +242,28 @@ const SCRIPT = `
   async function tick() {
     if (stopped) return;
     try {
-      const s = await fetch(base + '/state', { cache: 'no-store' });
+      const { r: s, body: read } = await get('/state', (r) => (r.ok ? r.json() : null));
       if (s.status === 404 || s.status === 410) return gone(s.status);
-      if (s.ok) { state = await s.json(); render(); }
+      if (s.ok) { state = read; render(); }
       if (ended()) return finish();
       // A sleeping browser has no frames; it wakes when the agent uses it or on Take control.
       if (state.pod === 'asleep' || state.pod === 'crashed') {
         spin(false);
-        lastFrameAt = Date.now(); // frames start again later: no spinner at once over the last one
+        waitingSince = 0; // frames start again later: no spinner at once over the last one
         note(state.pod === 'asleep' ? 'The browser is asleep. Take control to wake it.' : 'The browser stopped. It restarts when it is used.');
         return schedule();
       }
-      // No picture yet: spinning already. Else only once this frame is slow in coming.
-      // No picture yet: spinning already. Else only once no good frame has come for SPIN_MS,
-      // counted from the last one, whatever is read or retried meanwhile.
+      // No picture yet: spinning already. Else only once frame reads have gone SPIN_MS without
+      // a frame, counted from the first of them, whatever is retried meanwhile. A slow read that
+      // answers, or the same picture again, is not that.
+      if (!waitingSince) waitingSince = Date.now();
       if (!haveFrame) spin(true);
       else if (!spinTimer && $('spin').hidden) armSpin();
-      const f = await fetch(base + '/frame.jpg', { cache: 'no-store' });
+      const { r: f, body: blob } = await get('/frame.jpg', (r) => (r.ok ? r.blob() : null));
       if (f.status === 410) return gone(410);
       if (f.status === 404) return finish();
       if (f.ok) {
-        const url = URL.createObjectURL(await f.blob());
+        const url = URL.createObjectURL(blob);
         // Decoded off screen first, then swapped in: the last frame stays up until the new one
         // can be painted, never a blank or half-drawn picture in between.
         const next = new Image();
@@ -260,7 +279,7 @@ const SCRIPT = `
           $('box').style.setProperty('--frame-ar', next.naturalWidth + ' / ' + next.naturalHeight);
         }
         haveFrame = true;
-        lastFrameAt = Date.now();
+        waitingSince = 0;
         fails = 0;
         $('note').hidden = true;
         spin(false);
@@ -269,14 +288,14 @@ const SCRIPT = `
         failed(f.status);
       }
     } catch (e) {
-      failed(0); // offline for a moment: keep the last frame
+      failed(0); // offline for a moment, or no answer in READ_MS: keep the last frame
     }
     schedule();
   }
   function schedule(ms = 1500) { clearTimeout(timer); if (!stopped && !document.hidden) timer = setTimeout(tick, ms); }
   document.addEventListener('visibilitychange', () => {
-    // Shown again: the frame up counts as the last good one from now, as in the app's player.
-    if (!document.hidden) { if (haveFrame) { lastFrameAt = Date.now(); if (spinTimer) armSpin(); } tick(); }
+    // Shown again: reads start a new run, as in the app's player; the spinner only if they fail.
+    if (!document.hidden) { waitingSince = 0; if (haveFrame) spin(false); tick(); }
     else clearTimeout(timer);
   });
 

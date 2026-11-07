@@ -153,6 +153,54 @@ test("a frame's age counts from when it was asked for, not from when the slow ca
     }
 });
 
+test('a slow capture: the earlier frame answers after frameWaitMs; a failed one still fails; a stale one waits', async () => {
+    bridgeApp.close();
+    server.closeAllConnections?.();
+    await new Promise((r) => server.close(r));
+    await start({ config: { frameWaitMs: 100, frameStaleMs: 15_000 } });
+    const { id } = await link();
+    const first = Buffer.from('first');
+    const frameOf = client.fetchFrame;
+    client.fetchFrame = async () => ({ contentType: 'image/png', body: first });
+    await fetch(`${base}/live/${id}/frame.jpg`).then((r) => r.arrayBuffer());
+    // The next capture is held (a screenshot and scrub under an action), well past frameWaitMs.
+    let release;
+    const held = new Promise((r) => { release = r; });
+    client.fetchFrame = async () => { await held; return { contentType: 'image/png', body: PNG }; };
+    try {
+        clock.t += 1500;
+        const started = Date.now();
+        const r = await fetch(`${base}/live/${id}/frame.jpg`);
+        assert.equal(r.status, 200);
+        assert.deepEqual(Buffer.from(await r.arrayBuffer()), first, 'the earlier frame, not a wait');
+        assert.ok(Date.now() - started < 1000, 'answered within about frameWaitMs');
+        assert.equal(client.calls.observe, 2);
+        release();
+        await new Promise((r) => setTimeout(r, 20));
+        assert.deepEqual(Buffer.from(await (await fetch(`${base}/live/${id}/frame.jpg`)).arrayBuffer()), PNG, 'then the new one');
+
+        // A capture that fails answers as a failure, earlier frame or not.
+        clock.t += 1500;
+        client.fetchFrame = async () => { throw Object.assign(new Error('gone'), { status: 404 }); };
+        assert.equal((await fetch(`${base}/live/${id}/frame.jpg`)).status, 502);
+
+        // An earlier frame older than frameStaleMs does not stand in: the read waits.
+        clock.t += 20_000;
+        let release2;
+        const held2 = new Promise((r) => { release2 = r; });
+        client.fetchFrame = async () => { await held2; return { contentType: 'image/png', body: first }; };
+        let answered = false;
+        const pending = fetch(`${base}/live/${id}/frame.jpg`).then(async (res) => { answered = true; return Buffer.from(await res.arrayBuffer()); });
+        await new Promise((r) => setTimeout(r, 300));
+        assert.equal(answered, false, 'a stale frame does not stand in');
+        release2();
+        assert.deepEqual(await pending, first);
+    } finally {
+        client.fetchFrame = frameOf;
+        release();
+    }
+});
+
 test('unknown id is 404, expired id is 410', async () => {
     assert.equal((await fetch(`${base}/live/${'0'.repeat(32)}`)).status, 404);
     assert.equal((await fetch(`${base}/live/not-an-id/state`)).status, 404);
@@ -550,11 +598,13 @@ test('page fits a 320-430 px phone: viewport meta, no fixed widths, frame box si
     assert.match(css, /#spin::after \{[^}]*animation: spin/);
     assert.match(html, /const SPIN_MS = \d+/);
     assert.match(html, /if \(!haveFrame\) spin\(true\)/);
-    // Between refreshes the last frame stays up with no spinner: it spins only once no good frame
-    // has come for as long as the app's inline player allows (4 s), and a new frame is decoded
-    // off screen before it replaces the one shown.
+    // Between refreshes the last frame stays up with no spinner: it spins only once frame reads
+    // have gone as long as the app's inline player allows (4 s) without a frame, counted from the
+    // first of them (test/pagespin.test.mjs runs it), each read given up on after 8 s, and a new
+    // frame is decoded off screen before it replaces the one shown.
     assert.match(html, /const SPIN_MS = 4000/);
-    assert.match(html, /lastFrameAt \+ SPIN_MS - Date\.now\(\)/);
+    assert.match(html, /const READ_MS = 8000/);
+    assert.match(html, /waitingSince \+ SPIN_MS - Date\.now\(\)/);
     assert.match(html, /await next\.decode\(\)/);
     // The page script handles an ended session and repeated frame failures.
     assert.match(html, /This live browser has ended/);

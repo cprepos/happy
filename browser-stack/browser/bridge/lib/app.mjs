@@ -165,6 +165,14 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         vncPassword = '',
         bridgeToken,
         frameCacheMs = 1000,
+        // A frame read with an earlier frame in hand waits at most this long for the capture under
+        // way, then answers with that earlier frame. A capture (screenshot + OCR scrub) takes
+        // 1.4 s typically and over 4 s while an action runs: a viewer that waited for every one saw
+        // reads slower than its spinner limit while nothing was wrong.
+        frameWaitMs = 1500,
+        // The earlier frame stands in only while it is younger than this. Past it the read waits
+        // for the capture (or its failure), so a capture that is really stuck still shows as slow.
+        frameStaleMs = 15_000,
         shareTtlMinutes = 1440,
         allowedHosts = null, // e.g. ['localhost:6090', '127.0.0.1:6090']; null admits any
         frameWidth = 1920,
@@ -432,6 +440,17 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
     function frame(rec) {
         const r = rtFor(rec);
         if (r.frame && now() - r.frame.at < frameCacheMs) return Promise.resolve(r.frame);
+        const capture = startCapture(rec, r);
+        const earlier = r.frame;
+        if (!earlier || now() - earlier.at >= frameStaleMs) return capture;
+        // The new frame if it comes within frameWaitMs, else the one before it. A failed capture
+        // still answers as a failure: the earlier frame covers slowness, not errors.
+        let timer;
+        const waited = new Promise((resolve) => { timer = setTimeout(() => resolve(earlier), frameWaitMs); });
+        return Promise.race([capture, waited]).finally(() => clearTimeout(timer));
+    }
+
+    function startCapture(rec, r) {
         if (!r.inflight) {
             r.inflight = captureFrame(rec)
                 .then((f) => (r.frame = f))
