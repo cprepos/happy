@@ -195,6 +195,54 @@ final class LiveBrowserChatTests: XCTestCase {
         XCTAssertEqual(transport.posts.last, "\(LiveBrowserLink.lanOrigin) release", "straight to the one that answered")
     }
 
+    /// Once a frame shows, nothing the bridge does in passing brings the
+    /// spinner back: the page changing, the origin refusing and the feed
+    /// moving to the other one, a moment with neither answering. Only no
+    /// good frame for `waitingAfter` does.
+    @MainActor
+    func testAShownFrameStaysUpThroughRefreshesAndRetries() async throws {
+        let transport = PodTransport()
+        transport.state = #"{"status":"watching","live":true,"url":"https://example.com/a"}"#
+        let feed = LiveBrowserFeed(link: try XCTUnwrap(LiveBrowserLink(id: Self.a, origin: LiveBrowserLink.lanOrigin))) { transport }
+        feed.frameGap = .milliseconds(10)
+        feed.waitingAfter = .milliseconds(900)
+        var shown = false
+        var spunAfter = 0
+        var lostState = 0
+        let owner = NSObject()
+        feed.attach(owner, frames: true, fast: true) { feed in
+            if feed.frame != nil, !feed.isWaiting { shown = true }
+            guard shown else { return }
+            if feed.isWaiting { spunAfter += 1 }
+            if feed.phase.state == nil { lostState += 1 }
+        }
+        XCTAssertTrue(feed.isWaiting, "no frame yet: the first connect spins")
+        try await until { shown }
+        // A reload: the page changes.
+        transport.state = #"{"status":"watching","live":true,"url":"https://example.com/b"}"#
+        try await until { feed.phase.state?.url == "https://example.com/b" }
+        // The origin it reads at answers 502: retried at the other.
+        transport.unreachable = [LiveBrowserLink.lanOrigin]
+        let reads = feed.frameReads
+        try await until { feed.originMoves == 1 && feed.frameReads > reads + 3 }
+        XCTAssertEqual(feed.activeLink.origin, LiveBrowserLink.localOrigin)
+        // Neither answers, for less than `waitingAfter`.
+        transport.unreachable = Set(LiveBrowserLink.origins)
+        try await Task.sleep(for: .milliseconds(300))
+        transport.unreachable = []
+        let back = feed.frameReads
+        try await until { feed.frameReads > back + 3 }
+        XCTAssertEqual(spunAfter, 0, "no spinner over a shown frame")
+        XCTAssertEqual(lostState, 0, "never back to connecting")
+        XCTAssertFalse(feed.isWaiting)
+        XCTAssertNotNil(feed.frame)
+        // No good frame for `waitingAfter`: now it spins, the frame kept.
+        transport.unreachable = Set(LiveBrowserLink.origins)
+        try await until { feed.isWaiting }
+        XCTAssertNotNil(feed.frame)
+        feed.detach(owner)
+    }
+
     /// What the bridge itself says is never a reason to move: a gone
     /// link, an asleep frame, a refused approval, the workspace's 501.
     func testOnlyANonAnswerMovesTheOrigin() {

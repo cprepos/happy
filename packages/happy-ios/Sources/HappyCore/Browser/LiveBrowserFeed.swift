@@ -84,9 +84,15 @@ public final class LiveBrowserFeed {
     public static let frameGap: Duration = .milliseconds(300)
     /// `frameGap`, shorter in tests.
     public var frameGap: Duration = LiveBrowserFeed.frameGap
-    /// How long a frame may go unanswered (or the first not come) before
-    /// the feed says it is waiting, and the player spins.
-    public static let waitingAfter: Duration = .milliseconds(1200)
+    /// How long the picture may go without a good frame before the feed
+    /// says it is waiting, and the player spins. Until then the last good
+    /// frame stays up, with no spinner, through the next frame, a state
+    /// read, a page change or a retry at the other origin: the bridge
+    /// refreshes often, and a spinner each time is noise. With no frame
+    /// yet (the first connect) it is waiting at once.
+    public static let staleFrameLimit: Duration = .seconds(4)
+    /// `staleFrameLimit`.
+    public static let waitingAfter: Duration = staleFrameLimit
     /// `waitingAfter`, shorter in tests.
     public var waitingAfter: Duration = LiveBrowserFeed.waitingAfter
     /// The longest one read of the state or the frame may take. The
@@ -158,6 +164,14 @@ public final class LiveBrowserFeed {
     private var framing: Task<Void, Never>?
     /// When the frame read now in flight was asked, if one is.
     private var frameAskedAt: ContinuousClock.Instant?
+    /// When the last good frame came (or the frame loop began again with
+    /// one up); `isWaiting` counts `waitingAfter` from it.
+    private var lastFrameAt: ContinuousClock.Instant?
+    /// A good frame came under `waitingAfter` ago: the picture is current.
+    private var frameIsFresh: Bool {
+        guard frame != nil, let at = lastFrameAt else { return false }
+        return ContinuousClock.now - at < waitingAfter
+    }
     /// Re-reads `isWaiting` when a frame read goes unanswered too long.
     private var waitWatch: Task<Void, Never>?
     /// When the frame loop last began or finished a read.
@@ -366,6 +380,9 @@ public final class LiveBrowserFeed {
             // 503 and the rest: asked again, until it has gone on too long.
             default:
                 if failing() { return false }
+                // A read missed at both origins while the picture is
+                // current: the browser still shows, as it was.
+                if phase.state != nil, frameIsFresh { return true }
                 phase = .unreachable
                 return true
             }
@@ -385,6 +402,9 @@ public final class LiveBrowserFeed {
             return
         }
         lastFrameActivity = .now
+        // The frame up is the last good one, from now: no spinner over it
+        // for `waitingAfter`.
+        if frame != nil { lastFrameAt = .now }
         framing = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -418,7 +438,7 @@ public final class LiveBrowserFeed {
         frameReads += 1
         let asked = ContinuousClock.now
         frameAskedAt = asked
-        watchWaiting(from: asked)
+        watchWaiting(from: frame == nil ? asked : (lastFrameAt ?? asked))
         defer {
             if frameAskedAt == asked { frameAskedAt = nil }
             lastFrameActivity = .now
@@ -436,6 +456,7 @@ public final class LiveBrowserFeed {
             guard !Task.isCancelled else { return .zero }
             frameFailing = false
             frameAskedAt = nil
+            lastFrameAt = .now
             let waited = isWaiting
             isWaiting = computeWaiting()
             if frame != self.frame {
@@ -464,8 +485,8 @@ public final class LiveBrowserFeed {
         }
     }
 
-    /// Re-reads `isWaiting` once a frame read asked at `asked` has gone
-    /// `waitingAfter` unanswered.
+    /// Re-reads `isWaiting` `waitingAfter` after `asked` (the last good
+    /// frame, or with none the read's ask).
     private func watchWaiting(from asked: ContinuousClock.Instant) {
         waitWatch?.cancel()
         let delay = waitingAfter
@@ -480,8 +501,9 @@ public final class LiveBrowserFeed {
         guard framing != nil, wantsFrames, !phase.isOver, !phase.isResting else { return false }
         if let state = phase.state, state.asleep || state.ended { return false }
         if frame == nil { return true }
-        guard let asked = frameAskedAt else { return false }
-        return ContinuousClock.now - asked >= waitingAfter
+        // A good frame is up: waiting only once none has come for
+        // `waitingAfter`, whatever is read or retried meanwhile.
+        return !frameIsFresh
     }
 
     /// `isWaiting` as it is now, published if it changed.
@@ -498,7 +520,7 @@ public final class LiveBrowserFeed {
     /// answered there: worth asking at the other. The bridge's own answers
     /// (404 gone, 410 expired, 409, 400, 503 asleep) and what no origin
     /// changes (501 and `unavailable`: the workspace; cancelled) are not.
-    public static func missesOrigin(_ error: Error) -> Bool {
+    nonisolated public static func missesOrigin(_ error: Error) -> Bool {
         if error is CancellationError { return false }
         switch error {
         case BrowserError.upstream(let code): return ![400, 404, 409, 410, 501, 503].contains(code)
