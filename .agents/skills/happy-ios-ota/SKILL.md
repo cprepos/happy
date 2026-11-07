@@ -2,16 +2,26 @@
 name: happy-ios-ota
 description: >
   Build the native Happy iOS app (packages/happy-ios, bundle org.girthbass.native, "Happy v2
-  (preview)") from a commit, sign it, and either install it on a device over USB/LAN with
-  devicectl or publish it to the over-the-air install page so the iPhone/iPad can install it
-  from Safari anywhere. Use when the user asks to install a happy-ios build on the iPhone or
-  iPad, wants an OTA / install link, or the device isn't reachable directly (user away from home).
+  (preview)") from a commit, sign it, and install it on the iPhone/iPad over the LAN with
+  devicectl. Use when the user asks to install a happy-ios build on the iPhone, iPad or Mac.
+  The public over-the-air install page is switched off (2026-11-06): every install goes over
+  the LAN, and when the user is away they VPN in and the install still goes over 192.168.x.
   Not for store releases or CLI publishes: those go through the repo's release skill.
 ---
 
 # happy-ios OTA install
 
 Proven end to end on 2026-11-02, commit `41e3c1055`, build TS `20261102_200448`.
+
+## Installs go over the LAN only (the user's call, 2026-11-06)
+
+All the devices are on the home Wi-Fi, so there is no OTA install page any more. When the user
+is away from home they VPN in, and the install still goes straight to the device over its
+192.168.x address with devicectl (step 5a / the prep-pro steps). Don't publish the .ipa
+anywhere, don't hand out an install link, and don't turn the Caddy `/ota/*` route back on
+unless the user asks for it in the current conversation. Installing over the VPN hadn't been
+tried as of 2026-11-06: if devicectl shows the device as unavailable while it's on the VPN, tell
+the user what devicectl reported. Don't fall back to OTA.
 
 ## What this is (and isn't)
 
@@ -21,14 +31,17 @@ Proven end to end on 2026-11-02, commit `41e3c1055`, build TS `20261102_200448`.
   the profile and a re-sign.
 - It is not a store release, so `.agents/skills/release` doesn't cover it. That skill is for
   store builds and CLI publishes. (The Expo app it once covered, `packages/happy-app`, is gone.)
-- **Publishing replaces what the OTA page serves, which counts as a deploy.** The permission
-  classifier blocks the publish step for agents ("Production Deploy"). Get the user's explicit
-  OK in the current conversation, then run the publish step in the main session. Don't
-  route around a block.
 
-## Hosting (already set up — no Caddy change needed)
+## Former OTA hosting (switched off 2026-11-06, kept for reference)
 
-- `/home/prep/caddy/Caddyfile`, site `happy.girthbass.duckdns.org`, has a no-auth
+- **The route is off.** The `handle_path /ota/*` block in `/home/prep/caddy/Caddyfile` is
+  commented out. With it off, `/ota/...` falls through to the web app and returns its HTML page,
+  not the .ipa. The Caddyfile from before the change is in
+  `~/happy-trash/20261106_222749_caddyfile_before_ota_disable/`.
+- **The files are still there.** `/home/prep/happy-ota/` (the last published `Happy.ipa`
+  is build `20261106_220446`, plus its `.bak-*` files) was left in place, not deleted.
+- **The rest of this section describes how it worked when it was on.**
+- `/home/prep/caddy/Caddyfile`, site `happy.girthbass.duckdns.org`, had a no-auth
   `handle_path /ota/*` → `root /home/prep/happy-ota`. It sets plist→`text/xml`,
   ipa→`application/octet-stream`, `no-store`, `noindex`, and hides `.current`.
   The Caddyfile contains plaintext API tokens: never print it whole, and never repeat those tokens.
@@ -133,6 +146,10 @@ ssh prep-air "xcrun devicectl list devices"   # "unavailable" = not reachable �
 ssh prep-air "xcrun devicectl device install app --device <UDID> ~/happy-phone-build/$TS/signed/Happy.app && \
               xcrun devicectl device process launch --device <UDID> org.girthbass.native"
 ```
+
+### 5b–7. OTA packaging and publishing (switched off; only if the user turns OTA back on)
+Publishing replaced what the OTA page served, so it counted as a deploy. It needed the user's
+explicit OK in the current conversation and ran in the main session.
 
 ### 5b. Package the .ipa (this box)
 ```bash
