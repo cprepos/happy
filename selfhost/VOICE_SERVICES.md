@@ -160,7 +160,6 @@ OpenAI Chat Completions. The host's coder stack was split into two tiers behind 
 | 9080 | `coder-dense` | Qwen3.8-27B FP8, TP=2, GPUs 2+3 | what plain `coder` used to be; ~90 tok/s decode |
 | 9081 | `coder-moe` | Qwen3.6-35B-A3B int4 (~3B active), TP=1 on GPU 1, `--max-num-seqs 1` | ~178 tok/s decode |
 | 8903 | `coder` (virtual) | agentgateway + the `vllm-sr-router` ExtProc classifier on gRPC 50051 | **what voice uses**; routes each turn to a tier and fails over |
-| 8899 | `coder` (virtual) | `coder-tool-proxy` in front of the gateway | the stack's public entrypoint. **Voice must not use it** |
 
 Default model **`coder`** at the gateway (host service, no API key; keep `max_tokens` modest -- the
 worker uses 250). Three things follow from pointing at 8903 rather than a tier port:
@@ -174,10 +173,10 @@ worker uses 250). Three things follow from pointing at 8903 rather than a tier p
   `happy_voice/warmup.py` can warm a tier the turn does not land on. A lost optimization, bounded by
   `WARMUP_TURN_WAIT` (0.5 s), not a fault. Watch `coder-moe`'s `--max-num-seqs 1`: warm-up and turn
   cannot overlap there at all, and a coding agent on that tier blocks voice outright.
-- **Not 8899.** `coder-tool-proxy` appends a searxng MCP tool to every caller's `tools` and sets
-  `stream = False` upstream, emitting the finished answer as one synthetic SSE chunk. First-token
-  latency would become full generation time and the warm-up a full generation. It serves the same
-  `coder` name, so the mistake is silent -- only the latency shows it.
+- **8903 is the only entrypoint.** The old `coder-tool-proxy` on 8899 (it appended a searxng tool
+  to every request and forced `stream = False` upstream) is retired; Caddy's `/coder/*` goes
+  straight to 8903, and the Macs reach the same gateway on its LAN listener (192.168.2.72:8903,
+  per-Mac API key).
 
 **The name `coder` alone 404s on both *tier* ports (9080, 9081).** When a turn fails with
 `The model 'coder' does not exist` and the user reports "STT not working", this is why -- the STT is

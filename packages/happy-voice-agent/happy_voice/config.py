@@ -120,9 +120,8 @@ class Settings:
     # and any backend that cannot reliably emit tool calls drops the relay to Claude Code
     # entirely. tests/e2e_fake_app.py step 8 is the regression test for the second.
     #
-    # Not 8903's neighbour 8899 either: that is coder-tool-proxy, which injects a searxng tool
-    # into every request and sets stream=False upstream, so first-token latency would become
-    # full generation time.
+    # (The old coder-tool-proxy on 8899, which forced stream=False upstream, is retired; 8903
+    # is the only coder entrypoint.)
     llm_base_url: str = field(default_factory=lambda: _env("LLM_BASE_URL", "http://127.0.0.1:8903/v1"))
     llm_model: str = field(default_factory=lambda: _env("LLM_MODEL", "coder"))
     llm_api_key: str = field(default_factory=lambda: _env("LLM_API_KEY", "not-needed"))

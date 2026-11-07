@@ -172,8 +172,8 @@ services:
       TTS_URL: ${TTS_URL:-http://127.0.0.1:${TTS_PORT:-8880}/v1}
       # default: the host coder stack's virtual `coder` model on agentgateway (systemd), leaving
       # the choice of backend to the gateway. Voice does not name a tier -- naming the MoE one
-      # cost it tool calling on 2026-10-29, and the tier layout is the gateway's to settle. Not
-      # 8899, the tool proxy, which would cost voice its streaming. See happy_voice/config.py.
+      # cost it tool calling on 2026-10-29, and the tier layout is the gateway's to settle. See
+      # happy_voice/config.py.
       # .env.voice's LLM_MODEL is the local-llm profile's HF weights id, so the agent reads
       # VOICE_LLM_* instead.
       LLM_BASE_URL: ${VOICE_LLM_BASE_URL:-http://127.0.0.1:8903/v1}
