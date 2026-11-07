@@ -93,6 +93,18 @@ REMOTE_HOP = "prep-ml"
 REMOTE_NODE = "/usr/bin/node"   # on prep-ml
 WRAP_SSH = "/usr/bin/ssh"       # on the Mac
 REMOTE_TRASH = "~/happy-trash"  # on the Mac
+# How a Mac entry reaches the servers. "gateway": the entry runs the stack's
+# gateway client on the Mac, which forwards to the LAN gateway on prep-ml (no ssh at run
+# time). "ssh": the older /bin/sh wrapper that runs the server on prep-ml over ssh, kept
+# as the rollback (MAC_TRANSPORT=ssh make mcp-register).
+MAC_TRANSPORT = os.environ.get("MAC_TRANSPORT") or "ssh"
+GATEWAY_BASE = "http://192.168.2.72:8904"
+GATEWAY_ROUTES = {"happy-browser-bridge": "/browser/mcp", "vault": "/vault/mcp"}
+MAC_NODE = os.environ.get("BROWSER_STACK_MAC_NODE") or "/opt/homebrew/bin/node"  # on the Mac
+# on the Mac: client/ and identity/, put there by `make gateway-mac-install HOST=<mac>`
+MAC_STACK = os.environ.get("BROWSER_STACK_MAC_DIR") or "/Users/cprepos/.local/share/browser-stack"
+MAC_CLIENT = MAC_STACK + "/client/mcp-gateway-client.mjs"
+MAC_KEY = "~/.config/browser-stack/gateway-key"  # on the Mac, mode 600
 # How a Mac reaches the bridge: its LAN listener (BRIDGE_LAN_BIND), not prep-ml's localhost.
 # The bridge's MCP server on prep-ml writes the links a Mac chat gets with this base.
 REMOTE_LINK_BASE = "http://192.168.2.72:6090"
@@ -150,6 +162,36 @@ def remote_wrapper(script, env, ssh=WRAP_SSH, hop=REMOTE_HOP, node=REMOTE_NODE):
     remote += [node, script]
     parts.append("exec %s -o BatchMode=yes -o LogLevel=ERROR %s %s" % (ssh, hop, " ".join(remote)))
     return "; ".join(parts)
+
+
+def gateway_url(script):
+    name = next(n for n, s, _ in servers() if s == script)
+    return GATEWAY_BASE + GATEWAY_ROUTES[name]
+
+
+def marks(script):
+    """What in an entry shows it runs `script`: its path (local, or the ssh wrapper)
+    or its route on the LAN gateway (a gateway client entry)."""
+    out = [script]
+    for name, s, _ in servers():
+        if s == script and name in GATEWAY_ROUTES:
+            out.append(GATEWAY_BASE + GATEWAY_ROUTES[name])
+    return out
+
+
+def mac_command(script, env, agent=False, transport=None):
+    """(command, args) for a Mac entry that runs `script`, by MAC_TRANSPORT."""
+    transport = transport or MAC_TRANSPORT
+    if transport == "ssh":
+        return "/bin/sh", remote_argv(script, env)
+    if transport != "gateway":
+        raise ValueError("MAC_TRANSPORT must be gateway or ssh, not %r" % transport)
+    args = [MAC_CLIENT, "--url", gateway_url(script)]
+    if agent:
+        # A Happy Agent daemon runs every chat in one process: the client reads which
+        # chat a call is from in that Mac's daemon database (locally, read-only).
+        args += ["--agent-db", REMOTE_AGENT_DB, "--agent-python", REMOTE_PYTHON]
+    return MAC_NODE, args
 
 
 def remote_argv(script, env):
@@ -366,7 +408,21 @@ class RemoteIO:
         return "%s/%s_mcp-configs" % (REMOTE_TRASH, RUN_TS)
 
     def available(self, report):
-        """`ssh <mac> 'ssh -o BatchMode=yes prep-ml true'`, once per Mac per run."""
+        """Once per Mac per run. ssh: `ssh <mac> 'ssh -o BatchMode=yes prep-ml true'`.
+        gateway: the client, its key and node are on the Mac (`make gateway-mac-install`)."""
+        if self.host not in PROBED and MAC_TRANSPORT == "gateway":
+            probe = SSH + [self.host, "test -f %s && test -f %s && test -x %s" % (MAC_CLIENT, MAC_KEY, MAC_NODE)]
+            try:
+                r = subprocess.run(probe, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=40)
+                ok, why = r.returncode == 0, "exit %d" % r.returncode
+            except (OSError, subprocess.TimeoutExpired) as e:
+                ok, why = False, type(e).__name__
+            PROBED[self.host] = ok
+            if ok:
+                report.append("%s: the gateway client, its key and %s are there" % (self.host, MAC_NODE))
+            else:
+                report.append("%s: no gateway client, key or node there (%s; make gateway-mac-install HOST=%s); its configs left alone"
+                              % (self.host, why, self.host))
         if self.host not in PROBED:
             probe = SSH + [self.host, "ssh -o BatchMode=yes -o ConnectTimeout=10 %s true" % REMOTE_HOP]
             try:
@@ -534,7 +590,8 @@ def strip_jsonc(text):
 
 
 def mentions(entry, script):
-    return script in json.dumps(entry)
+    text = json.dumps(entry)
+    return any(m in text for m in marks(script))
 
 
 def ours(entry):
@@ -655,7 +712,7 @@ class JsonTarget:
         if added:
             report.append("%s: added %s%s" % (self.path, ", ".join(added), " (new file)" if text is None else ""))
         if upgraded:
-            report.append("%s: updated %s to the session-keyed wrapper" % (self.path, ", ".join(upgraded)))
+            report.append("%s: updated %s to the current entry (%s)" % (self.path, ", ".join(upgraded), MAC_TRANSPORT))
 
     def unregister(self, state, backup, dry, report):
         self.resolve(state, look=False)
@@ -955,7 +1012,7 @@ class TomlTarget:
         blocks = toml_blocks(text)
         add = []
         for name, script, env in servers():
-            have = [n for n, b in blocks if script in b]
+            have = [n for n, b in blocks if any(m in b for m in marks(script))]
             if have:
                 report.append("%s: %s already registered as %s" % (self.path, name, ", ".join(have)))
                 continue
@@ -1049,31 +1106,51 @@ def agent_extra(name, env):
 
 
 def remote_target(io, harness):
-    """One Mac harness config, its entries running the servers on prep-ml."""
-    sh = "/bin/sh"
+    """One Mac harness config, its entries reaching the servers on prep-ml (mac_command)."""
+    def cmd(s, env, agent=False):
+        if agent and MAC_TRANSPORT == "ssh":
+            env = agent_env(s, env, io.host)
+        return mac_command(s, env, agent=agent)
     if harness == "claude":
-        return JsonTarget("~/.claude.json", "mcpServers", lambda s, env: {
-            "type": "stdio", "command": sh, "args": remote_argv(s, {}), "env": {}}, io)
+        def make(s, env):
+            c, a = cmd(s, {})
+            return {"type": "stdio", "command": c, "args": a, "env": {}}
+        return JsonTarget("~/.claude.json", "mcpServers", make, io)
     if harness == "gemini":
-        return JsonTarget("~/.gemini/settings.json", "mcpServers", lambda s, env: {
-            "command": sh, "args": remote_argv(s, env), "env": {}, "timeout": 600000}, io, create_with="gemini")
+        def make(s, env):
+            c, a = cmd(s, env)
+            return {"command": c, "args": a, "env": {}, "timeout": 600000}
+        return JsonTarget("~/.gemini/settings.json", "mcpServers", make, io, create_with="gemini")
     if harness == "antigravity":
         # prep-pro links this to ~/.gemini/config/mcp_config.json; writes go through the link.
-        return JsonTarget("~/.gemini/antigravity/mcp_config.json", "mcpServers", lambda s, env: {
-            "command": sh, "args": remote_argv(s, env), "env": {}}, io)
+        def make(s, env):
+            c, a = cmd(s, env)
+            return {"command": c, "args": a, "env": {}}
+        return JsonTarget("~/.gemini/antigravity/mcp_config.json", "mcpServers", make, io)
     if harness == "opencode":
-        return OpencodeTarget(lambda s, env: {
-            "type": "local", "command": [sh] + remote_argv(s, env), "enabled": True}, io)
+        def make(s, env):
+            c, a = cmd(s, env)
+            return {"type": "local", "command": [c] + a, "enabled": True}
+        return OpencodeTarget(make, io)
     if harness == "codex":
-        # refresh: a wrapper it wrote before (without BRIDGE_PUBLIC_BASE, say) is rewritten.
-        return TomlTarget("~/.codex/config.toml", lambda s, env: (sh, remote_argv(s, env), {}), remote_codex_extra, io, refresh=True)
+        # refresh: an entry it wrote before (the ssh wrapper, say) is rewritten.
+        return TomlTarget("~/.codex/config.toml", lambda s, env: cmd(s, env) + ({},), remote_codex_extra, io, refresh=True)
     if harness == "happy-agent":
         return TomlTarget("~/.local/share/happy-agent/happy/config/mcp.toml",
-                          lambda s, env: (sh, remote_argv(s, agent_env(s, env, io.host)), {}), agent_extra, io, refresh=True)
+                          lambda s, env: cmd(s, env, agent=True) + ({},), agent_extra, io, refresh=True)
     raise ValueError("unknown harness %s" % harness)
 
 
-def targets(remote=True):
+def only_filter(spec):
+    """`prep-air:claude,gemini prep-pro` -> {host: set of harnesses, or None for all}."""
+    out = {}
+    for part in (spec or "").replace(";", " ").split():
+        host, _, hs = part.partition(":")
+        out[host] = set(hs.split(",")) if hs else None
+    return out
+
+
+def targets(remote=True, only=None):
     out = [
         TomlTarget("~/.codex/config.toml", lambda s, env: (HOST_NODE, [s], env), codex_extra),
         JsonTarget("~/.gemini/settings.json", "mcpServers", lambda s, env: {
@@ -1087,8 +1164,11 @@ def targets(remote=True):
     ]
     if remote:
         for host, harnesses in REMOTES:
+            if only and host not in only:
+                continue
+            pick = only.get(host) if only else None
             io = RemoteIO(host)
-            out += [remote_target(io, h) for h in harnesses]
+            out += [remote_target(io, h) for h in harnesses if pick is None or h in pick]
             out.append(SkillTarget(io))
     return out
 
@@ -1098,7 +1178,13 @@ def main():
     ap.add_argument("action", choices=["register", "unregister", "check"])
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--no-remote", action="store_true", help="leave the Macs alone")
+    ap.add_argument("--mac-transport", choices=["gateway", "ssh"], help="how Mac entries reach prep-ml (MAC_TRANSPORT)")
+    ap.add_argument("--only", help="the Macs (and harnesses) to touch, e.g. 'prep-air:claude prep-pro' (MAC_ONLY)")
     a = ap.parse_args()
+    global MAC_TRANSPORT
+    if a.mac_transport:
+        MAC_TRANSPORT = a.mac_transport
+    only = only_filter(a.only or os.environ.get("MAC_ONLY"))
 
     if not os.path.isfile(BRIDGE):
         sys.exit("no bridge at %s" % BRIDGE)
@@ -1106,7 +1192,7 @@ def main():
     backup = Backup(a.dry_run)
     report = []
     failed = False
-    all_targets = targets(remote=not a.no_remote)
+    all_targets = targets(remote=not a.no_remote, only=only)
     for t in all_targets:
         try:
             if a.action == "register":

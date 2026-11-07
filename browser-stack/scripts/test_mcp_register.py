@@ -352,7 +352,7 @@ class RemoteRoundTripTest(Scratch):
                 with self.subTest(host=host, file=rel, name=n):
                     self.assert_wrapped(data[key][n], scripts[n])
         self.assertEqual(json.loads(self.read("prep-pro", ".claude.json"))["mcpServers"]["mine"], {"command": "x"})
-        self.assertIn("updated %s to the session-keyed wrapper" % ", ".join(self.names), out)
+        self.assertIn("updated %s to the current entry (ssh)" % ", ".join(self.names), out)
         self.assertTrue(os.path.islink(link))
         for host, rel in [("prep-air", ".local/share/happy-agent/happy/config/mcp.toml"), ("prep-pro", ".codex/config.toml"),
                           ("prep-pro", ".local/share/happy-agent/happy/config/mcp.toml")]:
@@ -594,6 +594,93 @@ class SkillTest(Scratch):
         out = self.run_script("unregister")
         self.assertIn("prep-pro:~/%s: changed since register; left as it is" % self.REL, out)
         self.assertTrue(os.path.exists(p))
+
+class GatewayTransportTest(Scratch):
+    """MAC_TRANSPORT=gateway: Mac entries run the gateway client, no ssh at run time;
+    switching back and forth rewrites our entries in place, and unregister still restores."""
+
+    put = RemoteRoundTripTest.put
+    read = RemoteRoundTripTest.read
+    BRIDGE_URL = "http://192.168.2.72:8904/browser/mcp"
+    VAULT_URL = "http://192.168.2.72:8904/vault/mcp"
+
+    def setUp(self):
+        super().setUp()
+        os.makedirs(os.path.join(self.macs, "prep-pro"))
+        self.stack = os.path.join(self.macs, "prep-air", "stack")
+        self.node = os.path.join(self.macs, "prep-air", "node")
+        self.claude = '{\n  "numStartups": 3\n}\n'
+        self.agent = "# agent servers\n"
+        self.put("prep-air", ".claude.json", self.claude)
+        self.put("prep-air", ".local/share/happy-agent/happy/config/mcp.toml", self.agent)
+
+    def install_client(self):
+        self.put("prep-air", "stack/client/mcp-gateway-client.mjs", "// client\n")
+        self.put("prep-air", ".config/browser-stack/gateway-key", "k\n")
+        self.put("prep-air", "node", "#!/bin/sh\n")
+        os.chmod(self.node, 0o755)
+
+    def run_script(self, action, transport, *extra):
+        env = self.env(MAC_TRANSPORT=transport, BROWSER_STACK_MAC_DIR=self.stack, BROWSER_STACK_MAC_NODE=self.node)
+        r = subprocess.run([sys.executable, SCRIPT, action, *extra], env=env, capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return r.stdout
+
+    def entries(self):
+        claude = json.loads(self.read("prep-air", ".claude.json"))["mcpServers"]
+        agent = toml.loads(self.read("prep-air", ".local/share/happy-agent/happy/config/mcp.toml"))["mcp_servers"]
+        return claude, agent
+
+    def test_no_client_on_the_mac_leaves_it_alone(self):
+        out = self.run_script("register", "gateway")
+        self.assertIn("prep-air: no gateway client, key or node there", out)
+        self.assertEqual(self.read("prep-air", ".claude.json"), self.claude)
+
+    def test_ssh_to_gateway_and_back(self):
+        self.run_script("register", "ssh")
+        claude, _ = self.entries()
+        self.assertEqual(claude["happy-browser-bridge"]["command"], "/bin/sh")
+
+        self.install_client()
+        out = self.run_script("register", "gateway")
+        self.assertIn("prep-air:~/.claude.json: updated happy-browser-bridge", out)
+        claude, agent = self.entries()
+        client = os.path.join(self.stack, "client/mcp-gateway-client.mjs")
+        b = claude["happy-browser-bridge"]
+        self.assertEqual(b["command"], self.node)
+        self.assertEqual(b["args"], [client, "--url", self.BRIDGE_URL])
+        self.assertNotIn("ssh", json.dumps(claude))
+        ab = agent["happy-browser-bridge"]
+        self.assertEqual(ab["command"], self.node)
+        self.assertEqual(ab["args"][:3], [client, "--url", self.BRIDGE_URL])
+        self.assertIn("--agent-db", ab["args"])
+        self.assertNotIn("ssh", json.dumps(agent), "no BRIDGE_AGENT_SSH, no wrapper")
+        if "vault" in claude:
+            self.assertEqual(claude["vault"]["args"], [client, "--url", self.VAULT_URL])
+            self.assertEqual(agent["vault"]["args"][:3], [client, "--url", self.VAULT_URL])
+
+        again = self.run_script("register", "gateway")
+        self.assertNotIn(": added", again)
+        self.assertNotIn(": updated", again)
+        self.assertNotIn("brought up to date", again)
+        self.assertEqual(len(self.entries()[0]), len(claude), "no second entry for the same server")
+
+        self.run_script("register", "ssh")
+        claude, agent = self.entries()
+        self.assertEqual(claude["happy-browser-bridge"]["command"], "/bin/sh")
+        self.assertIn("BRIDGE_AGENT_SSH=prep-air", agent["happy-browser-bridge"]["args"][1])
+
+        self.run_script("register", "gateway")
+        self.run_script("unregister", "gateway")
+        self.assertEqual(self.read("prep-air", ".claude.json"), self.claude)
+        self.assertEqual(self.read("prep-air", ".local/share/happy-agent/happy/config/mcp.toml"), self.agent)
+
+    def test_only_touches_the_named_harness(self):
+        self.install_client()
+        out = self.run_script("register", "gateway", "--only", "prep-air:claude")
+        self.assertIn("prep-air:~/.claude.json: added happy-browser-bridge", out)
+        self.assertEqual(self.read("prep-air", ".local/share/happy-agent/happy/config/mcp.toml"), self.agent)
+        self.assertNotIn("prep-pro", out)
 
 
 if __name__ == "__main__":

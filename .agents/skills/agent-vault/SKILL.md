@@ -148,7 +148,7 @@ On a Mac none of these exist locally. Run the safe ones only when they help the 
 - **No sudo for anything filler-related**, except the one-time `make filler-account-setup
   COMMIT=<sha>`, already done. Never suggest it again unless the happy-filler account is missing.
 - Filler code lives in `browser-stack/browser/filler`, bridge side in
-  `browser-stack/browser/bridge/lib/secrets.mjs`. Changes go through a commit pushed to `fork`, then a
+  `secrets.mjs` under `browser-stack/browser/bridge/lib`. Changes go through a commit pushed to `fork`, then a
   `filler-install` of that SHA.
 - The bridge's and the vault's MCP processes are per chat (on a Mac, one ssh per server per
   session). Happy Agent's single process on prep-ml is a child of the `happy-agent` container's
