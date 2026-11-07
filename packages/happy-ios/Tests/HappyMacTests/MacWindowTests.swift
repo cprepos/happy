@@ -85,14 +85,16 @@ final class MacWindowTests: XCTestCase {
         XCTAssertTrue(window.makeFirstResponder(editor))
         editor.insertText("Run the tests", replacementRange: NSRange(location: 0, length: 0))
 
-        /// The key as the menu bar matches it, with ⌘ held.
+        /// The Edit item for `key`, sent as the menu bar sends it: to the
+        /// key window's first responder. A test run from ssh may leave the
+        /// app inactive with no key window; then the item's action goes
+        /// straight to the window's first responder, which is where the
+        /// menu would have sent it.
         func press(_ key: String) -> Bool {
-            let event = NSEvent.keyEvent(
-                with: .keyDown, location: .zero, modifierFlags: [.command], timestamp: 0,
-                windowNumber: window.windowNumber, context: nil, characters: key, charactersIgnoringModifiers: key,
-                isARepeat: false, keyCode: 0
-            )
-            return event.map { NSApp.mainMenu?.performKeyEquivalent(with: $0) ?? false } ?? false
+            guard let item = edit.items.first(where: { $0.keyEquivalent == key && $0.keyEquivalentModifierMask == [.command] }),
+                  let action = item.action else { return false }
+            if NSApp.keyWindow === window { return NSApp.sendAction(action, to: nil, from: item) }
+            return window.firstResponder?.tryToPerform(action, with: item) ?? false
         }
         XCTAssertTrue(press("a"), "⌘A")
         XCTAssertEqual(editor.selectedRange(), NSRange(location: 0, length: 13))

@@ -80,6 +80,11 @@ final class HostedEditShortcutTests: XCTestCase {
         UIPasteboard.general.string = "Fix the build"
         XCTAssertTrue(text.canPerformAction(paste, withSender: nil), file: file, line: line)
         edit(paste, file: file, line: line)
+        // A text view's paste reads the pasteboard off the main thread.
+        let deadline = ContinuousClock.now + .seconds(3)
+        while text.text != "Fix the build", ContinuousClock.now < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
         XCTAssertEqual(text.text, "Fix the build", "⌘V pastes", file: file, line: line)
     }
 
