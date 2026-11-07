@@ -25,14 +25,20 @@ Files here (each one that exists, or that its harness reads, is edited in place)
 Not here: ~/.config/opencode/opencode.json(c) on prep-ml is never read or written
 (register, unregister and check all skip it); only the Macs' opencode is registered.
 
-Files on the Macs (REMOTES below), over ssh, for the harnesses installed there.
-Each Mac is used only if `ssh <mac> 'ssh -o BatchMode=yes prep-ml true'` works.
-A missing file is created only when its folder exists (for Gemini CLI, also when
-the gemini binary is installed: its ~/.gemini is made on first run). Their entries run the
-servers on prep-ml through a `/bin/sh -c` wrapper (remote_wrapper): ssh forwards
-no environment, so the wrapper puts HAPPY_SESSION_ID, CLAUDE_CODE_SESSION_ID and
-HAPPY_FORKED_FROM_SESSION_ID on the remote command line, each one blanked
-unless it matches ^[A-Za-z0-9_-]{1,128}$ (prep-ml's shell parses it again).
+Files on the Macs (REMOTES below), read and written over ssh (setup only), for the
+harnesses installed there. How their entries reach the servers is MAC_TRANSPORT:
+  gateway  the entry runs the gateway client on the Mac (MAC_CLIENT) against the LAN
+           gateway on prep-ml; nothing uses ssh at run time. A Mac is used only if the
+           client, its key and node are there (make gateway-mac-install HOST=<mac>).
+  ssh      (rollback) a `/bin/sh -c` wrapper (remote_wrapper) that runs the server on
+           prep-ml over ssh: ssh forwards no environment, so it puts HAPPY_SESSION_ID,
+           CLAUDE_CODE_SESSION_ID and HAPPY_FORKED_FROM_SESSION_ID on the remote command
+           line, each one blanked unless it matches ^[A-Za-z0-9_-]{1,128}$. A Mac is used
+           only if `ssh <mac> 'ssh -o BatchMode=yes prep-ml true'` works.
+Changing MAC_TRANSPORT rewrites the entries recorded as ours. --only 'prep-air:claude'
+(or MAC_ONLY) limits a run to some Macs and harnesses. A missing file is created only
+when its folder exists (for Gemini CLI, also when the gemini binary is installed: its
+~/.gemini is made on first run).
 
 Before a file is changed its original is copied to
 /home/prep/happy/trash/<ts>_mcp-configs/ (a Mac's to ~/happy-trash/<ts>_mcp-configs/
