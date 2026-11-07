@@ -61,7 +61,7 @@ final class HostedEditShortcutTests: XCTestCase {
     }
 
     /// Select All, Copy, Cut and Paste round trip in a focused text view.
-    private func assertEditing(_ text: UITextView, file: StaticString = #filePath, line: UInt = #line) {
+    private func assertEditing(_ text: UITextView, file: StaticString = #filePath, line: UInt = #line) async throws {
         XCTAssertTrue(text.isFirstResponder, "the box has the keyboard", file: file, line: line)
         assertNoEditShortcutTaken(from: text, file: file, line: line)
         text.insertText("Run the tests")
@@ -80,10 +80,12 @@ final class HostedEditShortcutTests: XCTestCase {
         UIPasteboard.general.string = "Fix the build"
         XCTAssertTrue(text.canPerformAction(paste, withSender: nil), file: file, line: line)
         edit(paste, file: file, line: line)
-        // A text view's paste reads the pasteboard off the main thread.
+        // A text view's paste reads the pasteboard off the main thread and
+        // lands back on the main queue, which only drains once this test
+        // yields: a nested run loop inside a main-actor job does not.
         let deadline = ContinuousClock.now + .seconds(3)
         while text.text != "Fix the build", ContinuousClock.now < deadline {
-            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+            try await Task.sleep(for: .milliseconds(20))
         }
         XCTAssertEqual(text.text, "Fix the build", "⌘V pastes", file: file, line: line)
     }
@@ -97,7 +99,7 @@ final class HostedEditShortcutTests: XCTestCase {
         card.frame = CGRect(x: 8, y: 200, width: width, height: card.height(fitting: width))
         card.layoutIfNeeded()
         XCTAssertTrue(card.textView.becomeFirstResponder())
-        assertEditing(card.textView)
+        try await assertEditing(card.textView)
     }
 
     func testTheCardPastesTextWithAPictureHandlerSet() async throws {
@@ -111,7 +113,7 @@ final class HostedEditShortcutTests: XCTestCase {
         card.frame = CGRect(x: 8, y: 200, width: width, height: card.height(fitting: width))
         card.layoutIfNeeded()
         XCTAssertTrue(card.textView.becomeFirstResponder())
-        assertEditing(card.textView)
+        try await assertEditing(card.textView)
         XCTAssertEqual(attached, 0, "copied text pastes as text")
     }
 
@@ -121,7 +123,7 @@ final class HostedEditShortcutTests: XCTestCase {
         editor.onSend = {}
         _ = try await window(editor)
         XCTAssertTrue(editor.textView.becomeFirstResponder())
-        assertEditing(editor.textView)
+        try await assertEditing(editor.textView)
     }
 
     func testTheNewSessionPromptEdits() async throws {
@@ -132,7 +134,7 @@ final class HostedEditShortcutTests: XCTestCase {
         composer.frame = CGRect(x: 8, y: 200, width: root.bounds.width - 16, height: 160)
         composer.layoutIfNeeded()
         XCTAssertTrue(composer.textView.becomeFirstResponder())
-        assertEditing(composer.textView)
+        try await assertEditing(composer.textView)
     }
 
     func testTheAttachCaptionEdits() async throws {
@@ -144,7 +146,7 @@ final class HostedEditShortcutTests: XCTestCase {
         panel.setPicking(true, animated: false)
         panel.layoutIfNeeded()
         XCTAssertTrue(panel.field.becomeFirstResponder())
-        assertEditing(panel.field)
+        try await assertEditing(panel.field)
     }
 
     func testTheInlineQuestionFieldEdits() async throws {
@@ -155,7 +157,7 @@ final class HostedEditShortcutTests: XCTestCase {
         root.addSubview(field)
         field.frame = CGRect(x: 8, y: 200, width: root.bounds.width - 16, height: 80)
         XCTAssertTrue(field.becomeFirstResponder())
-        assertEditing(field)
+        try await assertEditing(field)
     }
 
     // MARK: A lifted message
