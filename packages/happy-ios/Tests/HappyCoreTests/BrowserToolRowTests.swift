@@ -66,6 +66,25 @@ final class BrowserToolRowTests: XCTestCase {
         XCTAssertEqual(label(p + "browser_list_downloads"), "List Downloads")
     }
 
+    func testRunningSaysWhatItIsDoing() {
+        let p = "mcp__happy-browser-bridge__"
+        let navigate: JSONValue = ["action": ["action": "navigate", "url": "https://www.example.com/a"]]
+        XCTAssertEqual(label(p + "browser_execute_action", navigate, state: .running), "Opening example.com…")
+        XCTAssertEqual(label(p + "browser_execute_action", navigate), "Opened example.com")
+        XCTAssertEqual(label(p + "browser_execute_action", navigate, state: .error), "Opened example.com")
+        XCTAssertEqual(label(p + "browser_create_session", state: .running), "Opening the browser…")
+        XCTAssertEqual(label(p + "browser_create_session"), "Opened the browser")
+        XCTAssertEqual(label(p + "browser_create_session", ["start_url": "https://news.example"], state: .running), "Opening news.example…")
+        let click: JSONValue = ["action": ["action": "click", "label": "Send"]]
+        XCTAssertEqual(label(p + "browser_execute_action", click, state: .running), "Clicking Send…")
+        XCTAssertEqual(label(p + "browser_execute_action", click), "Clicked Send")
+        XCTAssertEqual(label(p + "browser_execute_action", ["action": ["action": "type", "label": "Search"]], state: .running), "Typing in Search…")
+        XCTAssertEqual(label(p + "browser_execute_action", ["action": ["action": "scroll"]], state: .running), "Scrolling…")
+        XCTAssertEqual(label(p + "browser_observe", state: .running), "Looking at the page…")
+        XCTAssertEqual(label(p + "browser_close_session", state: .running), "Closing the browser…")
+        XCTAssertEqual(label(p + "browser_list_downloads", state: .running), "List Downloads")
+    }
+
     func testTypedTextNeverShows() {
         let typed = label("mcp__happy-browser-bridge__browser_execute_action", ["action": ["action": "type", "label": "Password", "text": "hunter2"]])
         XCTAssertFalse(typed.contains("hunter2"))
