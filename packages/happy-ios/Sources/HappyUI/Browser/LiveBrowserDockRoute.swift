@@ -54,12 +54,31 @@ extension LiveBrowserDock {
             }
             let workspace = identity.workspace
             self.routedConnection = LiveBrowserConnection(client: client) { try await workspace.find(client) }
-            let keys = await Self.keys(for: identity, client: client, computer: computer)
+            let keys = await Self.keys(for: identity, client: client, computer: computer, within: Self.keysTimeout)
             guard !Task.isCancelled, self.routedFor == routeKey else { return }
             self.routedKeys = keys
             self.routing = nil
             Self.log(identity, keys: keys)
             self.lookUp(keys: keys)
+        }
+    }
+
+    /// How long finding an agent's mirrored Happy session may take before
+    /// the chat is asked for by the keys it has without it. A call to the
+    /// computer that never answered held the lookup back for good: no
+    /// `/live/chat` was ever asked, and the chat showed no browser.
+    static let keysTimeout: Duration = .seconds(6)
+
+    /// `keys(for:client:computer:)`, or `identity.keys()` once `limit` passes.
+    private static func keys(for identity: LiveBrowserChatIdentity, client: AgentClient, computer: LiveBrowserComputer, within limit: Duration) async -> [String] {
+        let fallback = identity.keys()
+        do {
+            let keys = try await LiveBrowserFeed.within(limit) { @MainActor in await Self.keys(for: identity, client: client, computer: computer) }
+            return keys.isEmpty ? fallback : keys
+        } catch {
+            if Task.isCancelled { return fallback }
+            LiveBrowserLog.info("live browser: finding the chat's keys took over \(limit); asking by \(fallback.count) key(s)")
+            return fallback
         }
     }
 

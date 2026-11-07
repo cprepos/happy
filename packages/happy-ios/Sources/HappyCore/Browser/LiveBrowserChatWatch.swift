@@ -37,6 +37,13 @@ public final class LiveBrowserChatWatch {
     private var found = false
     /// The next key is asked at once, not at the next turn.
     private var nextKeyNow = false
+    /// The last lookup failed in a way asking again soon can't help (the
+    /// workspace refuses tunnels, or none could be decided on): asked
+    /// again at `idleInterval`, never given up on, since the computer or
+    /// its workspace may come back.
+    public private(set) var backingOff = false
+    /// The last lookup failed (logged once until one answers).
+    private var failed = false
     public private(set) var answer: Answer = .unknown {
         didSet { if answer != oldValue { onChange?(answer) } }
     }
@@ -78,7 +85,10 @@ public final class LiveBrowserChatWatch {
 
     /// The wait before the next lookup: long while nothing runs, unless
     /// eager.
-    public var currentInterval: Duration { eager ? interval : answer.chat.map { $0.running ? interval : idleInterval } ?? interval }
+    public var currentInterval: Duration {
+        if backingOff { return idleInterval }
+        return eager ? interval : answer.chat.map { $0.running ? interval : idleInterval } ?? interval
+    }
 
     /// Asks now rather than at the next turn (the feed stopped answering),
     /// if it shows.
@@ -147,15 +157,23 @@ public final class LiveBrowserChatWatch {
             guard !Task.isCancelled else { return false }
             originAnswered = true
             if let link = chat.link.at(origin: origin) { chat.link = link }
+            if failed || !found { LiveBrowserLog.info("live browser lookup \(key.prefix(6)): answered at \(origin), live \(chat.running)") }
+            failed = false
+            backingOff = false
             found = true
             answer = .link(chat)
             return true
         } catch {
             guard !Task.isCancelled, !(error is CancellationError) else { return false }
+            if case BrowserError.upstream(404) = error {} else if !failed {
+                failed = true
+                LiveBrowserLog.info("live browser lookup \(key.prefix(6)) at \(origin) failed: \(String(describing: error))")
+            }
             switch error {
             // The agent may start one later: still asked.
             case BrowserError.upstream(404):
                 originAnswered = true
+                backingOff = false
                 if !found, keys.count > 1 {
                     keyIndex = (keyIndex + 1) % keys.count
                     key = keys[keyIndex]
@@ -165,15 +183,22 @@ public final class LiveBrowserChatWatch {
                     answer = .noLink
                 }
                 return true
-            case BrowserError.upstream(501), BrowserError.unavailable: return false
+            // Not this origin's doing: asked again later, not given up on
+            // (it once stopped here for good, and the chat never found its
+            // browser until it was opened again).
+            case BrowserError.upstream(501), BrowserError.unavailable:
+                backingOff = true
+                return true
             // A bridge from before the lookup answers 404 too; anything
             // else keeps the last answer and is asked again.
             default:
                 // No bridge at this origin from the chat's computer (refused,
                 // or not allowed in): the next one, at once, until one answers.
+                backingOff = false
                 if !originAnswered, LiveBrowserLink.origins.count > 1 {
                     originIndex = (originIndex + 1) % LiveBrowserLink.origins.count
                     origin = LiveBrowserLink.origins[originIndex]
+                    LiveBrowserLog.info("live browser lookup \(key.prefix(6)): trying \(origin)")
                     if originIndex != 0 { nextKeyNow = true }
                 }
                 return true

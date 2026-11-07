@@ -474,7 +474,8 @@ final class LiveBrowserDock: NSObject {
         guard let connection = connect() else { return alert(Strings.LiveBrowser.title, Strings.LiveBrowser.unavailable) }
         busy = true
         player?.isBusy = true
-        let link = feed.link
+        // At the origin the feed reads it from: the one the chat's computer reaches.
+        let link = feed.activeLink
         Task { [weak self] in
             do {
                 let workspace = try await connection.workspace()
@@ -1560,7 +1561,8 @@ final class LiveBrowserChipView: UIControl {
     /// Its link isn't the chat's newest any more.
     var isReplaced: Bool {
         guard let link, let current = dock?.link else { return false }
-        return current != link
+        // The same browser at another origin is the same browser.
+        return current.id != link.id
     }
 
     private func render() {
@@ -1569,7 +1571,7 @@ final class LiveBrowserChipView: UIControl {
         if isReplaced {
             status = Strings.LiveBrowser.replaced
             color = Palette.textSecondary
-        } else if let feed = dock?.feed, feed.link == link {
+        } else if let feed = dock?.feed, feed.link.id == link?.id {
             status = LiveBrowserDock.status(feed.phase) ?? Strings.LiveBrowser.endedStatus
             // Red only while the bridge says it runs.
             color = dock?.browserRuns == true ? Palette.statusError : Palette.textSecondary

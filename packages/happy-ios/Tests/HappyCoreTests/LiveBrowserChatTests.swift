@@ -140,6 +140,86 @@ final class LiveBrowserChatTests: XCTestCase {
 
     // MARK: The bridge's origin
 
+    /// A Mac chat's link names `localhost`, which its computer no longer
+    /// reaches (the workspace proxy answers 502): the feed moves to the LAN
+    /// origin at once, keeps it, and shows the browser.
+    @MainActor
+    func testTheFeedMovesToTheOriginThatAnswers() async throws {
+        let transport = PodTransport()
+        transport.state = #"{"status":"watching","live":true,"pod":"running"}"#
+        transport.unreachable = [LiveBrowserLink.localOrigin]
+        let link = try XCTUnwrap(LiveBrowserLink(id: Self.a, origin: LiveBrowserLink.localOrigin))
+        let feed = LiveBrowserFeed(link: link) { transport }
+        feed.frameGap = .milliseconds(10)
+        let owner = NSObject()
+        feed.attach(owner, frames: true) { _ in }
+        try await until { feed.phase.state != nil && feed.frame != nil }
+        XCTAssertEqual(feed.link, link, "still the chat's link")
+        XCTAssertEqual(feed.activeLink.origin, LiveBrowserLink.lanOrigin)
+        XCTAssertEqual(feed.originMoves, 1)
+        XCTAssertEqual(transport.origins.first, LiveBrowserLink.localOrigin)
+        let asked = transport.origins.count
+        try await until { transport.origins.count > asked + 3 }
+        XCTAssertEqual(Set(transport.origins.dropFirst(asked)), [LiveBrowserLink.lanOrigin], "kept")
+        XCTAssertEqual(feed.originMoves, 1)
+        feed.detach(owner)
+    }
+
+    /// And the other way, a chat on the bridge's own computer whose link
+    /// names the LAN listener that refuses it.
+    @MainActor
+    func testTheFeedMovesToLocalhostWhenTheLANIsRefused() async throws {
+        let transport = PodTransport()
+        transport.state = #"{"status":"watching","live":true}"#
+        transport.unreachable = [LiveBrowserLink.lanOrigin]
+        let feed = LiveBrowserFeed(link: try XCTUnwrap(LiveBrowserLink(id: Self.a, origin: LiveBrowserLink.lanOrigin))) { transport }
+        feed.attach(NSObject()) { _ in }
+        try await until { feed.phase.state != nil }
+        XCTAssertEqual(feed.activeLink.origin, LiveBrowserLink.localOrigin)
+        XCTAssertFalse(feed.phase.isOver)
+    }
+
+    /// Take control (and Release) go where the feed reads, and a post the
+    /// bridge never got is sent again at the next origin.
+    @MainActor
+    func testTakeAndReleaseGoToTheOriginThatAnswers() async throws {
+        let transport = PodTransport()
+        transport.unreachable = [LiveBrowserLink.localOrigin]
+        transport.takes = [#"{"status":"user","pod":"running","novnc_url":"http://192.168.2.72:6090/live/\#(Self.a)/vnc/vnc.html"}"#]
+        let feed = LiveBrowserFeed(link: try XCTUnwrap(LiveBrowserLink(id: Self.a, origin: LiveBrowserLink.localOrigin))) { transport }
+        let take = try await feed.take(timeout: .seconds(5), retry: .milliseconds(20))
+        XCTAssertNotNil(take.novncURL)
+        XCTAssertEqual(transport.posts, ["\(LiveBrowserLink.localOrigin) take", "\(LiveBrowserLink.lanOrigin) take"])
+        XCTAssertEqual(feed.activeLink.origin, LiveBrowserLink.lanOrigin)
+        _ = try? await feed.release()
+        XCTAssertEqual(transport.posts.last, "\(LiveBrowserLink.lanOrigin) release", "straight to the one that answered")
+    }
+
+    /// What the bridge itself says is never a reason to move: a gone
+    /// link, an asleep frame, a refused approval, the workspace's 501.
+    func testOnlyANonAnswerMovesTheOrigin() {
+        for code in [404, 410, 409, 400, 503, 501] { XCTAssertFalse(LiveBrowserFeed.missesOrigin(BrowserError.upstream(code)), "\(code)") }
+        for code in [502, 504, 500, 403] { XCTAssertTrue(LiveBrowserFeed.missesOrigin(BrowserError.upstream(code)), "\(code)") }
+        XCTAssertTrue(LiveBrowserFeed.missesOrigin(BrowserError.timeout))
+        XCTAssertTrue(LiveBrowserFeed.missesOrigin(BrowserError.malformed))
+        XCTAssertTrue(LiveBrowserFeed.missesOrigin(URLError(.networkConnectionLost)))
+        XCTAssertFalse(LiveBrowserFeed.missesOrigin(BrowserError.unavailable))
+        XCTAssertFalse(LiveBrowserFeed.missesOrigin(CancellationError()))
+    }
+
+    /// Both origins down: still the chat's feed, asked again, unreachable
+    /// rather than over.
+    @MainActor
+    func testWithNeitherOriginAnsweringItKeepsAsking() async throws {
+        let transport = PodTransport()
+        transport.unreachable = Set(LiveBrowserLink.origins)
+        let feed = LiveBrowserFeed(link: try XCTUnwrap(LiveBrowserLink(id: Self.a))) { transport }
+        feed.attach(NSObject()) { _ in }
+        try await until { feed.phase == .unreachable && transport.origins.count >= 4 }
+        XCTAssertEqual(Set(transport.origins), Set(LiveBrowserLink.origins))
+        XCTAssertFalse(feed.phase.isOver)
+    }
+
     func testALinkNamesItsBridgeOriginOneOfTwo() throws {
         let lan = try XCTUnwrap(LiveBrowserLink(id: Self.a, origin: LiveBrowserLink.lanOrigin))
         XCTAssertEqual(lan.url.absoluteString, "http://192.168.2.72:6090/live/\(Self.a)")
@@ -257,17 +337,28 @@ final class LiveBrowserChatTests: XCTestCase {
     }
 
     @MainActor
-    func testTheLookupWaitsForAComputerAndStopsOnARefusal() async throws {
+    func testTheLookupWaitsForAComputerAndBacksOffOnARefusal() async throws {
         var transport: PodTransport?
-        let watch = try XCTUnwrap(LiveBrowserChatWatch(key: Self.key, interval: .milliseconds(20)) { transport })
+        let watch = try XCTUnwrap(LiveBrowserChatWatch(key: Self.key, interval: .milliseconds(20), idleInterval: .milliseconds(200)) { transport })
         watch.setVisible(true)
         XCTAssertFalse(watch.isPolling, "no computer yet")
         let refusing = PodTransport()
         refusing.failure = .upstream(501)
         transport = refusing
         watch.reconsider()
-        try await until { refusing.gets.count == 1 && !watch.isPolling }
+        // Asked again, at the idle pace, never given up on.
+        try await until { refusing.gets.count == 1 && watch.backingOff }
+        XCTAssertTrue(watch.isPolling)
         XCTAssertEqual(watch.answer, .unknown)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(refusing.gets.count, 1, "not at the fast pace")
+        try await until { refusing.gets.count >= 2 }
+        // The workspace comes back.
+        refusing.failure = nil
+        refusing.chat = #"{"id":"\#(Self.a)","live":true,"status":"watching"}"#
+        try await until { watch.answer.chat != nil && !watch.backingOff }
+        watch.close()
+        try await until { !watch.isPolling }
         // Another failure keeps the last answer and asks again.
         let flaky = PodTransport()
         flaky.chat = #"{"id":"\#(Self.a)","live":true,"status":"watching"}"#
@@ -361,8 +452,14 @@ private final class PodTransport: LiveBrowserTransport, @unchecked Sendable {
     var unreachable: Set<String> = []
     var stops = 0
 
+    /// Every POST's origin and last path part, in order.
+    var posts: [String] = []
+
     func send(method: String, url: URL, body: Data?, accept: String) async throws -> Data {
         if method == "POST" {
+            let origin = "\(url.scheme!)://\(url.host!):\(url.port!)"
+            posts.append("\(origin) \(url.lastPathComponent)")
+            if unreachable.contains(origin) { throw BrowserError.upstream(502) }
             guard url.lastPathComponent == "take", !takes.isEmpty else { throw BrowserError.upstream(404) }
             let answer = takes[min(takeCount, takes.count - 1)]
             takeCount += 1

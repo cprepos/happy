@@ -1,4 +1,18 @@
 import Foundation
+#if canImport(OSLog)
+import OSLog
+#endif
+
+/// What the live browser's feed and lookup say of a request that went
+/// nowhere: ids shortened, never a page's contents.
+public enum LiveBrowserLog {
+    #if canImport(OSLog)
+    private static let logger = Logger(subsystem: "app.happy", category: "LiveBrowser")
+    public static func info(_ message: String) { logger.notice("\(message, privacy: .public)") }
+    #else
+    public static func info(_ message: String) { print("[LiveBrowser] \(message)") }
+    #endif
+}
 
 /// How a live browser's feed reaches the bridge: through the chat's
 /// workspace (`BrowserFetcher`), or a fake in tests.
@@ -84,7 +98,19 @@ public final class LiveBrowserFeed {
     /// `requestTimeout`, shorter in tests.
     public var requestTimeout: Duration = LiveBrowserFeed.requestTimeout
 
+    /// The browser, as the feed was made for it: what the chat names, and
+    /// what a feed is told apart by.
     public let link: LiveBrowserLink
+    /// `link` at the bridge origin that answers from the chat's computer.
+    /// It starts as `link`'s own; a read or post there that gets no answer
+    /// from the bridge (the tunnel refused, 502, a dropped connection, no
+    /// answer in time) moves it to the next of `LiveBrowserLink.origins`,
+    /// and the one that answers is kept. A link a chat posted for one
+    /// origin still shows from a computer that reaches the bridge at the
+    /// other (a Mac chat's `localhost` link, with no tunnel to it).
+    public private(set) var activeLink: LiveBrowserLink
+    /// Origins moved to (tests).
+    public private(set) var originMoves = 0
     public private(set) var phase: Phase = .connecting {
         didSet {
             guard phase != oldValue else { return }
@@ -156,6 +182,7 @@ public final class LiveBrowserFeed {
     /// nil (no computer to reach it through) leaves the feed connecting.
     public init(link: LiveBrowserLink, transport: @escaping @MainActor () -> LiveBrowserTransport?) {
         self.link = link
+        activeLink = link
         makeTransport = transport
     }
 
@@ -316,7 +343,7 @@ public final class LiveBrowserFeed {
     private func poll(_ transport: LiveBrowserTransport) async -> Bool {
         polls += 1
         do {
-            let data = try await read(link.stateURL, accept: "application/json", through: transport)
+            let data = try await readMoving({ $0.stateURL }, accept: "application/json", through: transport)
             let state = try JSONDecoder().decode(LiveBrowserState.self, from: data)
             guard !Task.isCancelled else { return false }
             // Never a picture for `stuckLimit`, though the state answers.
@@ -397,7 +424,15 @@ public final class LiveBrowserFeed {
             lastFrameActivity = .now
         }
         do {
-            let frame = try await read(link.frameURL, accept: "image/*,*/*;q=0.8", through: transport)
+            let asked = activeLink
+            let frame: Data
+            do {
+                frame = try await read(asked.frameURL, accept: "image/*,*/*;q=0.8", through: transport)
+            } catch {
+                // The next frame is asked at the next origin.
+                if !Task.isCancelled { missed(asked, error) }
+                throw error
+            }
             guard !Task.isCancelled else { return .zero }
             frameFailing = false
             frameAskedAt = nil
@@ -457,6 +492,63 @@ public final class LiveBrowserFeed {
         publish()
     }
 
+    // MARK: Origins
+
+    /// Whether `error`, from a request at one origin, says the bridge never
+    /// answered there: worth asking at the other. The bridge's own answers
+    /// (404 gone, 410 expired, 409, 400, 503 asleep) and what no origin
+    /// changes (501 and `unavailable`: the workspace; cancelled) are not.
+    public static func missesOrigin(_ error: Error) -> Bool {
+        if error is CancellationError { return false }
+        switch error {
+        case BrowserError.upstream(let code): return ![400, 404, 409, 410, 501, 503].contains(code)
+        case BrowserError.unavailable, BrowserError.forbidden, BrowserError.tunnelsBlocked, BrowserError.tooLarge: return false
+        default: return true
+        }
+    }
+
+    /// The origin after `link`'s, round again.
+    static func nextOrigin(after origin: String) -> String? {
+        let origins = LiveBrowserLink.origins
+        guard origins.count > 1 else { return nil }
+        let index = origins.firstIndex(of: origin) ?? -1
+        return origins[(index + 1) % origins.count]
+    }
+
+    /// A request at `asked` missed (`missesOrigin`): the next ones go to
+    /// the next origin, unless another request already moved it. True when
+    /// it moved.
+    @discardableResult
+    private func missed(_ asked: LiveBrowserLink, _ error: Error) -> Bool {
+        guard Self.missesOrigin(error), asked == activeLink,
+              let origin = Self.nextOrigin(after: asked.origin), let next = link.at(origin: origin), next != asked else { return false }
+        activeLink = next
+        originMoves += 1
+        LiveBrowserLog.info("live browser \(link.id.prefix(6)): no answer at \(asked.origin) (\(String(describing: error))); trying \(origin)")
+        return true
+    }
+
+    /// `missed`, or another request moved it since `asked` was sent: either
+    /// way, worth asking again at the active origin.
+    private func moved(_ asked: LiveBrowserLink, _ error: Error) -> Bool {
+        missed(asked, error) || (Self.missesOrigin(error) && asked != activeLink)
+    }
+
+    /// A GET of `path` at the active origin; one that misses there is asked
+    /// at once at the next (each origin once).
+    private func readMoving(_ path: (LiveBrowserLink) -> URL, accept: String, through transport: LiveBrowserTransport) async throws -> Data {
+        var tries = 0
+        while true {
+            let asked = activeLink
+            do {
+                return try await read(path(asked), accept: accept, through: transport)
+            } catch {
+                tries += 1
+                guard !Task.isCancelled, moved(asked, error), tries < LiveBrowserLink.origins.count else { throw error }
+            }
+        }
+    }
+
     /// One GET, given up on (`BrowserError.timeout`) after
     /// `requestTimeout` whether or not the transport lets go of it.
     private func read(_ url: URL, accept: String, through transport: LiveBrowserTransport) async throws -> Data {
@@ -469,7 +561,7 @@ public final class LiveBrowserFeed {
     /// `CancellationError` once the caller is cancelled: the first of the
     /// three. The operation is cancelled when it loses, but it isn't waited
     /// for, so one that ignores cancellation can't hold the caller.
-    static func within<T: Sendable>(_ limit: Duration, _ operation: @escaping @Sendable () async throws -> T) async throws -> T {
+    public static func within<T: Sendable>(_ limit: Duration, _ operation: @escaping @Sendable () async throws -> T) async throws -> T {
         let once = Once<T>()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
@@ -544,7 +636,7 @@ public final class LiveBrowserFeed {
         let deadline = clock.now + timeout
         var wait = retry
         while true {
-            let data = try await post(link.takeURL)
+            let data = try await post({ $0.takeURL })
             let take = try JSONDecoder().decode(LiveBrowserTake.self, from: data)
             phase = .live(take.state)
             guard take.waking else { return take }
@@ -557,7 +649,7 @@ public final class LiveBrowserFeed {
     /// Ends the browser (`POST /end`): its session closes and the agent
     /// loses the page. The feed is then over (`done`, `user_ended`).
     public func end() async throws {
-        let data = try await post(link.endURL)
+        let data = try await post({ $0.endURL })
         if let state = try? JSONDecoder().decode(LiveBrowserState.self, from: data) { phase = .live(state) }
     }
 
@@ -566,9 +658,9 @@ public final class LiveBrowserFeed {
     public func release() async throws {
         let data: Data
         do {
-            data = try await post(link.releaseURL)
+            data = try await post({ $0.releaseURL })
         } catch BrowserError.upstream(404) {
-            data = try await post(link.doneURL)
+            data = try await post({ $0.doneURL })
         }
         if let state = try? JSONDecoder().decode(LiveBrowserState.self, from: data) { phase = .live(state) }
     }
@@ -578,7 +670,7 @@ public final class LiveBrowserFeed {
     /// asleep, 410 closed (`BrowserError.upstream`).
     @discardableResult
     public func navigate(_ action: LiveBrowserNavigation) async throws -> LiveBrowserNavResult {
-        let data = try await post(link.navURL, body: action.body)
+        let data = try await post({ $0.navURL }, body: action.body)
         return try JSONDecoder().decode(LiveBrowserNavResult.self, from: data)
     }
 
@@ -587,10 +679,9 @@ public final class LiveBrowserFeed {
     /// approval no longer waits (decided elsewhere, the browser closed):
     /// the card goes away at once, and the next poll brings the state.
     public func decide(_ approval: LiveBrowserState.Approval, approve: Bool) async throws {
-        let url = approve ? link.approveURL : link.denyURL
         let data: Data
         do {
-            data = try await post(url, body: approval.decisionBody)
+            data = try await post({ approve ? $0.approveURL : $0.denyURL }, body: approval.decisionBody)
         } catch BrowserError.upstream(409) {
             if case .live(var state) = phase, state.approval?.id == approval.id {
                 state.approval = nil
@@ -601,12 +692,27 @@ public final class LiveBrowserFeed {
         if let state = try? JSONDecoder().decode(LiveBrowserState.self, from: data) { phase = .live(state) }
     }
 
-    /// Over its own transport, which a paused feed may not have.
-    private func post(_ url: URL, body: Data? = nil) async throws -> Data {
-        if let transport { return try await transport.send(method: "POST", url: url, body: body, accept: "application/json") }
+    /// Over its own transport, which a paused feed may not have, at the
+    /// active origin. One the bridge never got (`missesOrigin`, but not a
+    /// timeout, which it may have got) is sent again at the next origin.
+    private func post(_ path: @escaping (LiveBrowserLink) -> URL, body: Data? = nil) async throws -> Data {
+        if let transport { return try await post(path, body: body, through: transport) }
         guard let transport = makeTransport() else { throw BrowserError.unavailable }
         defer { Task { await transport.stop() } }
-        return try await transport.send(method: "POST", url: url, body: body, accept: "application/json")
+        return try await post(path, body: body, through: transport)
+    }
+
+    private func post(_ path: (LiveBrowserLink) -> URL, body: Data?, through transport: LiveBrowserTransport) async throws -> Data {
+        var tries = 0
+        while true {
+            let asked = activeLink
+            do {
+                return try await transport.send(method: "POST", url: path(asked), body: body, accept: "application/json")
+            } catch {
+                tries += 1
+                guard moved(asked, error), !(error as? BrowserError == .timeout), tries < LiveBrowserLink.origins.count else { throw error }
+            }
+        }
     }
 }
 
