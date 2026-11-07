@@ -48,6 +48,74 @@ final class MacWindowTests: XCTestCase {
         XCTAssertEqual(editor.selectedRange().length, editor.string.utf16.count)
     }
 
+    /// ⌘C, ⌘X, ⌘V, ⌘A and ⌘Z are the Edit menu's, sent to whatever has focus.
+    @MainActor
+    func testEditMenuCopiesAndPastesInTheComposer() throws {
+        let controller = try XCTUnwrap((NSApp.delegate as? MacAppDelegate)?.controller)
+        let window = try XCTUnwrap(controller.window)
+        let edit = try XCTUnwrap(NSApp.mainMenu?.item(withTitle: "Edit")?.submenu)
+        let expected: [(String, String, String)] = [
+            ("Undo", "undo:", "z"), ("Cut", "cut:", "x"), ("Copy", "copy:", "c"),
+            ("Paste", "paste:", "v"), ("Select All", "selectAll:", "a"),
+        ]
+        for (title, action, key) in expected {
+            let item = try XCTUnwrap(edit.item(withTitle: title), title)
+            XCTAssertEqual(item.action.map(NSStringFromSelector), action, title)
+            XCTAssertEqual(item.keyEquivalent, key, title)
+            XCTAssertEqual(item.keyEquivalentModifierMask, [.command], title)
+            XCTAssertNil(item.target, "\(title) goes to the first responder")
+        }
+
+        let editor = controller.root.conversation.composer
+        XCTAssertTrue(editor.allowsUndo, "Undo has something to undo")
+        let pasteboard = NSPasteboard.general
+        let saved = pasteboard.string(forType: .string)
+        let previous = (controller.root.conversation.isHidden, controller.root.welcome.isHidden, editor.isEditable, editor.string)
+        defer {
+            editor.string = previous.3; editor.isEditable = previous.2
+            controller.root.welcome.isHidden = previous.1; controller.root.conversation.isHidden = previous.0
+            window.makeFirstResponder(nil)
+            pasteboard.clearContents()
+            if let saved { pasteboard.setString(saved, forType: .string) }
+        }
+        controller.root.welcome.isHidden = true; controller.root.conversation.isHidden = false
+        editor.isEditable = true; editor.string = ""
+        controller.root.layoutSubtreeIfNeeded()
+        window.makeKeyAndOrderFront(nil)
+        XCTAssertTrue(window.makeFirstResponder(editor))
+        editor.insertText("Run the tests", replacementRange: NSRange(location: 0, length: 0))
+
+        /// The key as the menu bar matches it, with ⌘ held.
+        func press(_ key: String) -> Bool {
+            let event = NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: [.command], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, characters: key, charactersIgnoringModifiers: key,
+                isARepeat: false, keyCode: 0
+            )
+            return event.map { NSApp.mainMenu?.performKeyEquivalent(with: $0) ?? false } ?? false
+        }
+        XCTAssertTrue(press("a"), "⌘A")
+        XCTAssertEqual(editor.selectedRange(), NSRange(location: 0, length: 13))
+        pasteboard.clearContents()
+        XCTAssertTrue(press("c"), "⌘C")
+        XCTAssertEqual(pasteboard.string(forType: .string), "Run the tests")
+        XCTAssertTrue(press("x"), "⌘X")
+        XCTAssertEqual(editor.string, "")
+        pasteboard.clearContents(); pasteboard.setString("Fix the build", forType: .string)
+        XCTAssertTrue(press("v"), "⌘V")
+        XCTAssertEqual(editor.string, "Fix the build")
+    }
+
+    /// A message's text takes the click though its row is never selected,
+    /// so there is something for ⌘C to copy.
+    @MainActor
+    func testTranscriptTextTakesTheSelection() {
+        let table = MacTranscriptTable()
+        let field = NSTextField(wrappingLabelWithString: "Agent output")
+        field.isSelectable = true
+        XCTAssertTrue(table.validateProposedFirstResponder(field, for: nil))
+    }
+
     @MainActor
     func testCaptureActualAppKitWindow() async throws {
         try await Task.sleep(for: .milliseconds(500))

@@ -97,6 +97,9 @@ final class MessageLiftOverlay: UIView, UIScrollViewDelegate {
         source.host?.view.endEditing(true)
         let overlay = MessageLiftOverlay(source: source, window: window, canvas: canvas)
         window.addSubview(overlay)
+        // Edit > Copy and Select All (⌘C, ⌘A) reach the first responder:
+        // with the keyboard put away, that is the lifted message.
+        overlay.becomeFirstResponder()
         shown = overlay
         source.setLifted(true)
         Haptics.play(.hold)
@@ -113,7 +116,7 @@ final class MessageLiftOverlay: UIView, UIScrollViewDelegate {
         // The items run once the overlay exists.
         let target = LiftTarget()
         menu = HoldMenuView(items: [[
-            MenuItem(title: Strings.Chat.copy, icon: "copy-outline") { target.overlay?.copy(whole) },
+            MenuItem(title: Strings.Chat.copy, icon: "copy-outline") { target.overlay?.copyText(whole) },
             MenuItem(title: Strings.MessageSelection.select, icon: "text-outline") { target.overlay?.selection.selectAll() },
         ]])
         self.selection = MessageTextSelectionView(selectable: selection, size: source.plan.size)
@@ -177,10 +180,10 @@ final class MessageLiftOverlay: UIView, UIScrollViewDelegate {
         content.accessibilityTraits = .staticText
         content.accessibilityIdentifier = "lifted-message"
         content.accessibilityCustomActions = [
-            UIAccessibilityCustomAction(name: Strings.Chat.copy) { [weak self] _ in self?.copy(whole); return true },
+            UIAccessibilityCustomAction(name: Strings.Chat.copy) { [weak self] _ in self?.copyText(whole); return true },
         ]
         self.selection.onActive = { [weak self] active in self?.selectionChanged(active) }
-        self.selection.onCopy = { [weak self] text in self?.copy(text) }
+        self.selection.onCopy = { [weak self] text in self?.copyText(text) }
         self.selection.onShare = { [weak self] text in self?.share(text) }
         self.selection.onSelectionRead = { [weak self] text in self?.content.accessibilityValue = text }
         updateBand()
@@ -289,6 +292,7 @@ final class MessageLiftOverlay: UIView, UIScrollViewDelegate {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         source.setLifted(false)
+        if isFirstResponder { resignFirstResponder() }
         removeFromSuperview()
         CATransaction.commit()
         if Self.shown === self { Self.shown = nil }
@@ -308,9 +312,33 @@ final class MessageLiftOverlay: UIView, UIScrollViewDelegate {
         return true
     }
 
+    // MARK: Edit menu and keyboard
+
+    /// The message's words are drawn, not a text view's, so nothing else
+    /// answers Edit > Copy (⌘C) or Select All (⌘A) while it is lifted.
+    override var canBecomeFirstResponder: Bool { !closing }
+
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(copy(_:)) { return !closing }
+        if action == #selector(selectAll(_:)) { return !closing && selection.run.length > 0 }
+        return super.canPerformAction(action, withSender: sender)
+    }
+
+    /// What is selected, else the whole message, as the menu's Copy.
+    override func copy(_ sender: Any?) {
+        guard !closing else { return }
+        copyText(selection.selectedText ?? source.selection.whole)
+    }
+
+    /// The menu's Select: all of the words, with their menu.
+    override func selectAll(_ sender: Any?) {
+        guard !closing else { return }
+        selection.selectAll()
+    }
+
     // MARK: Actions
 
-    fileprivate func copy(_ text: String) {
+    fileprivate func copyText(_ text: String) {
         UIPasteboard.general.string = text
         dismiss()
     }

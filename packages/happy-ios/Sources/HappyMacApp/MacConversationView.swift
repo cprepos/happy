@@ -4,7 +4,7 @@ import HappyLayout
 
 final class MacConversationView: FlippedView, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate {
     let title = NSTextField(labelWithString: "Select a session")
-    let table = NSTableView()
+    let table = MacTranscriptTable()
     let composer = NSTextView()
     let send = NSButton(title: "Send", target: nil, action: nil)
     let more = NSButton(title: "Load older", target: nil, action: nil)
@@ -29,6 +29,8 @@ final class MacConversationView: FlippedView, NSTableViewDataSource, NSTableView
         transcriptScroll.documentView = table; transcriptScroll.hasVerticalScroller = true
         transcriptScroll.drawsBackground = false; table.backgroundColor = .windowBackgroundColor
         composer.isRichText = false; composer.font = .systemFont(ofSize: 14)
+        // Edit > Undo and Redo (⌘Z, ⇧⌘Z) have nothing to undo without this.
+        composer.allowsUndo = true
         composer.isVerticallyResizable = true; composer.isHorizontallyResizable = false
         composer.textContainer?.widthTracksTextView = true
         composer.textContainerInset = NSSize(width: 12, height: 12)
@@ -95,6 +97,17 @@ final class MacConversationView: FlippedView, NSTableViewDataSource, NSTableView
         }
         cell.onPermission = { [weak self] allow in if let id = row.permissionID { self?.onPermission?(id, allow) } }
         cell.onRetry = { [weak self] in if let id = row.localID { self?.onRetry?(id) } }
+    }
+}
+
+/// The transcript, whose rows are never selected: its message text still
+/// takes a click and a drag, so Edit > Copy (⌘C) and Select All (⌘A) have
+/// a selection to work on. NSTableView gives a non-editable text field
+/// the first responder only in a selected row.
+final class MacTranscriptTable: NSTableView {
+    override func validateProposedFirstResponder(_ responder: NSResponder, for event: NSEvent?) -> Bool {
+        if let field = responder as? NSTextField, field.isSelectable { return true }
+        return super.validateProposedFirstResponder(responder, for: event)
     }
 }
 
