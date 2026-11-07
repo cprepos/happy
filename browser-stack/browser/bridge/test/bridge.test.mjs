@@ -550,6 +550,12 @@ test('page fits a 320-430 px phone: viewport meta, no fixed widths, frame box si
     assert.match(css, /#spin::after \{[^}]*animation: spin/);
     assert.match(html, /const SPIN_MS = \d+/);
     assert.match(html, /if \(!haveFrame\) spin\(true\)/);
+    // Between refreshes the last frame stays up with no spinner: it spins only once no good frame
+    // has come for as long as the app's inline player allows (4 s), and a new frame is decoded
+    // off screen before it replaces the one shown.
+    assert.match(html, /const SPIN_MS = 4000/);
+    assert.match(html, /lastFrameAt \+ SPIN_MS - Date\.now\(\)/);
+    assert.match(html, /await next\.decode\(\)/);
     // The page script handles an ended session and repeated frame failures.
     assert.match(html, /This live browser has ended/);
     assert.match(html, /f\.status === 404\) return finish\(\)/);

@@ -89,8 +89,11 @@ footer { position: sticky; bottom: 0; width: 100%; background: var(--surface); b
 
 // Frame failures in a row before the page says so instead of spinning quietly.
 export const FRAME_FAILURES_BEFORE_ERROR = 4;
-// A frame asked for and not answered for this long: the spinner shows over the last one.
-export const FRAME_WAIT_SPIN_MS = 1200;
+// No good frame for this long: the spinner shows over the last one. Until then the last frame
+// stays up, with no spinner, through the next frame, a state read or a retry: the bridge takes
+// about a second per frame, so a shorter wait spun between nearly every refresh. Matches the
+// app's inline player (LiveBrowserFeed.staleFrameLimit, 4 s). With no frame yet it spins at once.
+export const FRAME_WAIT_SPIN_MS = 4000;
 // From one frame's answer to the next ask. The bridge makes about one fresh frame a second
 // (each is scrubbed), so frames are asked back to back rather than on a slow clock.
 export const FRAME_GAP_MS = 300;
@@ -104,7 +107,13 @@ const SCRIPT = `
   const GAP_MS = ${FRAME_GAP_MS};
   const $ = (id) => document.getElementById(id);
   let state = JSON.parse($('initial').textContent);
-  let stopped = false, timer = null, lastObjectUrl = null, fails = 0, haveFrame = false, spinTimer = null;
+  let stopped = false, timer = null, lastObjectUrl = null, fails = 0, haveFrame = false, spinTimer = null, lastFrameAt = 0;
+
+  // The spinner, due SPIN_MS after the last good frame (at once if that has passed).
+  function armSpin() {
+    clearTimeout(spinTimer);
+    spinTimer = setTimeout(() => spin(true), Math.max(0, lastFrameAt + SPIN_MS - Date.now()));
+  }
 
   function spin(on) {
     clearTimeout(spinTimer);
@@ -222,30 +231,36 @@ const SCRIPT = `
       // A sleeping browser has no frames; it wakes when the agent uses it or on Take control.
       if (state.pod === 'asleep' || state.pod === 'crashed') {
         spin(false);
+        lastFrameAt = Date.now(); // frames start again later: no spinner at once over the last one
         note(state.pod === 'asleep' ? 'The browser is asleep. Take control to wake it.' : 'The browser stopped. It restarts when it is used.');
         return schedule();
       }
       // No picture yet: spinning already. Else only once this frame is slow in coming.
+      // No picture yet: spinning already. Else only once no good frame has come for SPIN_MS,
+      // counted from the last one, whatever is read or retried meanwhile.
       if (!haveFrame) spin(true);
-      else if (!spinTimer && $('spin').hidden) spinTimer = setTimeout(() => spin(true), SPIN_MS);
+      else if (!spinTimer && $('spin').hidden) armSpin();
       const f = await fetch(base + '/frame.jpg', { cache: 'no-store' });
-      clearTimeout(spinTimer);
-      spinTimer = null;
       if (f.status === 410) return gone(410);
       if (f.status === 404) return finish();
       if (f.ok) {
         const url = URL.createObjectURL(await f.blob());
+        // Decoded off screen first, then swapped in: the last frame stays up until the new one
+        // can be painted, never a blank or half-drawn picture in between.
+        const next = new Image();
+        next.src = url;
+        try { await next.decode(); } catch (err) { URL.revokeObjectURL(url); failed(0); return schedule(); }
+        if (stopped) { URL.revokeObjectURL(url); return; }
         const img = $('frame');
-        img.onload = () => {
-          if (lastObjectUrl && lastObjectUrl !== url) URL.revokeObjectURL(lastObjectUrl);
-          lastObjectUrl = url;
-          if (img.naturalWidth && img.naturalHeight) {
-            $('box').style.setProperty('--frame-ar', img.naturalWidth + ' / ' + img.naturalHeight);
-          }
-        };
         img.src = url;
         img.hidden = false;
+        if (lastObjectUrl && lastObjectUrl !== url) URL.revokeObjectURL(lastObjectUrl);
+        lastObjectUrl = url;
+        if (next.naturalWidth && next.naturalHeight) {
+          $('box').style.setProperty('--frame-ar', next.naturalWidth + ' / ' + next.naturalHeight);
+        }
         haveFrame = true;
+        lastFrameAt = Date.now();
         fails = 0;
         $('note').hidden = true;
         spin(false);
@@ -254,14 +269,16 @@ const SCRIPT = `
         failed(f.status);
       }
     } catch (e) {
-      clearTimeout(spinTimer);
-      spinTimer = null;
       failed(0); // offline for a moment: keep the last frame
     }
     schedule();
   }
   function schedule(ms = 1500) { clearTimeout(timer); if (!stopped && !document.hidden) timer = setTimeout(tick, ms); }
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); else clearTimeout(timer); });
+  document.addEventListener('visibilitychange', () => {
+    // Shown again: the frame up counts as the last good one from now, as in the app's player.
+    if (!document.hidden) { if (haveFrame) { lastFrameAt = Date.now(); if (spinTimer) armSpin(); } tick(); }
+    else clearTimeout(timer);
+  });
 
   // noVNC is served by the bridge under this link (<base>/vnc/). Open it at this page's own
   // origin and path prefix, so it works however the page was reached, and point noVNC's
