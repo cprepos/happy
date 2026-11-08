@@ -222,7 +222,11 @@ public final class LiveBrowserChatWatch {
                 backingOff = true
                 return true
             // A bridge from before the lookup answers 404 too; anything
-            // else keeps the last answer and is asked again.
+            // else keeps the last answer and is asked again. That includes
+            // `closedBeforeResponse`: the origin accepted, then hung up
+            // before answering (prep-ml's LAN address through the agent's
+            // proxy), so the next origin is tried at once.
+            case BrowserError.closedBeforeResponse: fallthrough
             default:
                 // No bridge at this origin from the chat's computer (refused,
                 // or not allowed in): the next one, at once, until one answers.

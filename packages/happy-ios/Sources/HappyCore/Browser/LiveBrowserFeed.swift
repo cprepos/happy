@@ -540,6 +540,8 @@ public final class LiveBrowserFeed {
     /// answered there: worth asking at the other. The bridge's own answers
     /// (404 gone, 410 expired, 409, 400, 503 asleep) and what no origin
     /// changes (501 and `unavailable`: the workspace; cancelled) are not.
+    /// `closedBeforeResponse` (accepted, then hung up before a head) falls
+    /// to `default`: a miss, so the other origin is asked.
     nonisolated public static func missesOrigin(_ error: Error) -> Bool {
         if error is CancellationError { return false }
         switch error {
@@ -747,7 +749,8 @@ public final class LiveBrowserFeed {
 
     /// Over its own transport, which a paused feed may not have, at the
     /// active origin. One the bridge never got (`missesOrigin`, but not a
-    /// timeout, which it may have got) is sent again at the next origin.
+    /// timeout or a hang-up before the head, which it may have got and acted
+    /// on) is sent again at the next origin.
     private func post(_ path: @escaping (LiveBrowserLink) -> URL, body: Data? = nil) async throws -> Data {
         if let transport { return try await post(path, body: body, through: transport) }
         guard let transport = makeTransport() else { throw BrowserError.unavailable }
@@ -763,7 +766,8 @@ public final class LiveBrowserFeed {
                 return try await transport.send(method: "POST", url: path(asked), body: body, accept: "application/json")
             } catch {
                 tries += 1
-                guard moved(asked, error), !(error as? BrowserError == .timeout), tries < LiveBrowserLink.origins.count else { throw error }
+                let mayHaveArrived = [BrowserError.timeout, .closedBeforeResponse].contains(error as? BrowserError)
+                guard moved(asked, error), !mayHaveArrived, tries < LiveBrowserLink.origins.count else { throw error }
             }
         }
     }

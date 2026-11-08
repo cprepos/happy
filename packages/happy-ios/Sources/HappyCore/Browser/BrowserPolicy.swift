@@ -116,6 +116,9 @@ public enum BrowserError: Error, Equatable, Sendable {
     case forbidden, malformed, tooLarge, unavailable, timeout, upstream(Int)
     /// The server's network carries neither CONNECT nor WebSocket tunnels.
     case tunnelsBlocked
+    /// The target accepted the connection (every CONNECT answered 200),
+    /// then closed it before sending a response head.
+    case closedBeforeResponse
 }
 
 /// A bounded HTTP head, preserving duplicate response fields (notably Set-Cookie).

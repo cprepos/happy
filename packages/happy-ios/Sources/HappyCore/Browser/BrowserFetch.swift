@@ -176,7 +176,10 @@ enum BrowserExchange {
 
     /// One response, its body by its length, its chunks, or to the close.
     static func read(_ stream: any BrowserStream) async throws -> (status: Int, location: String?, body: Data) {
-        let (head, rest) = try await BrowserRelay.head(stream)
+        // Through the tunnel, an end before the head is the target hanging
+        // up, not a missing route (`BrowserRelay.head`'s `.unavailable`).
+        let head: BrowserHTTPHead, rest: Data
+        do { (head, rest) = try await BrowserRelay.head(stream) } catch BrowserError.unavailable { throw BrowserError.closedBeforeResponse }
         let parts = head.line.split(separator: " ")
         guard parts.count >= 2, parts[0].hasPrefix("HTTP/1."), let status = Int(parts[1]) else { throw BrowserError.malformed }
         let chunked = head.value("transfer-encoding")?.lowercased().contains("chunked") == true

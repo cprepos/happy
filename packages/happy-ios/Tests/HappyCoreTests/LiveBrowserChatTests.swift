@@ -179,6 +179,37 @@ final class LiveBrowserChatTests: XCTestCase {
         XCTAssertFalse(feed.phase.isOver)
     }
 
+    /// The LAN address accepts and hangs up before answering: a miss, so
+    /// the feed reads at localhost.
+    @MainActor
+    func testTheFeedMovesToLocalhostWhenTheLANDropsTheConnection() async throws {
+        let transport = PodTransport()
+        transport.state = #"{"status":"watching","live":true}"#
+        transport.dropping = [LiveBrowserLink.lanOrigin]
+        let feed = LiveBrowserFeed(link: try XCTUnwrap(LiveBrowserLink(id: Self.a, origin: LiveBrowserLink.lanOrigin))) { transport }
+        feed.attach(NSObject()) { _ in }
+        try await until { feed.phase.state != nil }
+        XCTAssertEqual(feed.activeLink.origin, LiveBrowserLink.localOrigin)
+        XCTAssertFalse(feed.phase.isOver)
+    }
+
+    /// A take the LAN hung up on may have reached the bridge: not sent
+    /// again at localhost.
+    @MainActor
+    func testATakeTheLANHungUpOnIsNotSentAgain() async throws {
+        let transport = PodTransport()
+        transport.dropping = [LiveBrowserLink.lanOrigin]
+        transport.takes = [#"{"status":"user","pod":"running"}"#]
+        let feed = LiveBrowserFeed(link: try XCTUnwrap(LiveBrowserLink(id: Self.a, origin: LiveBrowserLink.lanOrigin))) { transport }
+        do {
+            _ = try await feed.take(timeout: .seconds(5), retry: .milliseconds(20))
+            XCTFail("took")
+        } catch {
+            XCTAssertEqual(error as? BrowserError, .closedBeforeResponse)
+        }
+        XCTAssertEqual(transport.posts, ["\(LiveBrowserLink.lanOrigin) take"])
+    }
+
     /// Take control (and Release) go where the feed reads, and a post the
     /// bridge never got is sent again at the next origin.
     @MainActor
@@ -254,6 +285,7 @@ final class LiveBrowserChatTests: XCTestCase {
         XCTAssertTrue(LiveBrowserFeed.missesOrigin(BrowserError.malformed))
         XCTAssertTrue(LiveBrowserFeed.missesOrigin(URLError(.networkConnectionLost)))
         XCTAssertFalse(LiveBrowserFeed.missesOrigin(BrowserError.unavailable))
+        XCTAssertTrue(LiveBrowserFeed.missesOrigin(BrowserError.closedBeforeResponse))
         XCTAssertFalse(LiveBrowserFeed.missesOrigin(CancellationError()))
     }
 
@@ -321,6 +353,24 @@ final class LiveBrowserChatTests: XCTestCase {
         let polls = watch.polls
         try await until { watch.polls > polls + 1 }
         XCTAssertEqual(transport.origins.dropFirst().filter { $0 == LiveBrowserLink.lanOrigin }.count, 0, "kept")
+        watch.close()
+    }
+
+    /// prep-ml through the agent's proxy: both CONNECTs answer, then the
+    /// LAN address hangs up before a head. Not a missing route to back off
+    /// from: the lookup moves to localhost at once.
+    @MainActor
+    func testTheLookupMovesToLocalhostWhenTheLANDropsTheConnection() async throws {
+        let transport = PodTransport()
+        transport.chat = #"{"id":"\#(Self.a)","live":true,"status":"watching"}"#
+        transport.dropping = [LiveBrowserLink.lanOrigin]
+        let watch = try XCTUnwrap(LiveBrowserChatWatch(key: Self.key, interval: .milliseconds(20), idleInterval: .seconds(10)) { transport })
+        watch.setVisible(true)
+        try await until { watch.answer.chat != nil }
+        XCTAssertEqual(watch.origin, LiveBrowserLink.localOrigin)
+        XCTAssertEqual(watch.answer.chat?.link.origin, LiveBrowserLink.localOrigin)
+        XCTAssertEqual(Array(transport.origins.prefix(2)), [LiveBrowserLink.lanOrigin, LiveBrowserLink.localOrigin])
+        XCTAssertFalse(watch.backingOff)
         watch.close()
     }
 
@@ -500,6 +550,10 @@ private final class PodTransport: LiveBrowserTransport, @unchecked Sendable {
     /// Origins the computer can't reach: answered 502, as the workspace
     /// proxy does when it can't connect.
     var unreachable: Set<String> = []
+    /// Origins that accept, then hang up before a response head
+    /// (`closedBeforeResponse`), as prep-ml's LAN address does through
+    /// the workspace proxy.
+    var dropping: Set<String> = []
     var stops = 0
 
     /// Every POST's origin and last path part, in order.
@@ -510,6 +564,7 @@ private final class PodTransport: LiveBrowserTransport, @unchecked Sendable {
             let origin = "\(url.scheme!)://\(url.host!):\(url.port!)"
             posts.append("\(origin) \(url.lastPathComponent)")
             if unreachable.contains(origin) { throw BrowserError.upstream(502) }
+            if dropping.contains(origin) { throw BrowserError.closedBeforeResponse }
             guard url.lastPathComponent == "take", !takes.isEmpty else { throw BrowserError.upstream(404) }
             let answer = takes[min(takeCount, takes.count - 1)]
             takeCount += 1
@@ -519,6 +574,7 @@ private final class PodTransport: LiveBrowserTransport, @unchecked Sendable {
         let origin = "\(url.scheme!)://\(url.host!):\(url.port!)"
         origins.append(origin)
         if unreachable.contains(origin) { throw BrowserError.upstream(502) }
+        if dropping.contains(origin) { throw BrowserError.closedBeforeResponse }
         if let failure { throw failure }
         if url.path.hasPrefix("/live/chat/") {
             guard let chat, chatKey.map({ url.lastPathComponent == $0 }) ?? true else { throw BrowserError.upstream(404) }

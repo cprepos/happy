@@ -169,6 +169,18 @@ final class BrowserTests: XCTestCase {
         XCTAssertEqual(written[2], "GET /live/3f9a1c0e5b7d42e8a6c1f09b2d4e7a35/state HTTP/1.1\r\nHost: localhost:6090\r\nAccept: application/json\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n")
     }
 
+    func testATargetThatHangsUpBeforeAHeadClosedBeforeResponse() async throws {
+        let url = URL(string: "http://192.168.1.20:6090/live/3f9a1c0e5b7d42e8a6c1f09b2d4e7a35/state")!
+        let bytes = Bytes([Data("HTTP/1.1 200 OK\r\n\r\n".utf8), Data("HTTP/1.1 200 OK\r\n\r\n".utf8)])
+        let client = AgentClient(transport: Transport(bytes), token: "native-token")
+        do { _ = try await BrowserExchange.send(client, workspaceID: "work1", method: "GET", url: url, body: nil, accept: "application/json"); XCTFail() }
+        catch { XCTAssertEqual(error as? BrowserError, .closedBeforeResponse) }
+        // An end at the outer CONNECT is still no route.
+        let none = AgentClient(transport: Transport(Bytes([])), token: "native-token")
+        do { _ = try await BrowserExchange.send(none, workspaceID: "work1", method: "GET", url: url, body: nil, accept: "application/json"); XCTFail() }
+        catch { XCTAssertEqual(error as? BrowserError, .unavailable) }
+    }
+
     #if canImport(Network)
     func testTheFetcherPostsAndRefusesAFailure() async throws {
         let bytes = Bytes([Data("HTTP/1.1 200 OK\r\n\r\n".utf8), Data("HTTP/1.1 200 OK\r\n\r\n".utf8), Data("HTTP/1.1 204 No Content\r\n\r\n".utf8)])

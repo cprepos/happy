@@ -22,6 +22,8 @@ struct BrowserFailure {
             if cause as? BrowserError == .timeout { self.init(504, "Gateway Timeout", "upstream_timeout") }
             else if cause as? BrowserError == .malformed || cause as? BrowserError == .tooLarge {
                 self.init(502, "Bad Gateway", "upstream_response_invalid")
+            } else if cause as? BrowserError == .closedBeforeResponse {
+                self.init(502, "Bad Gateway", "upstream_transport")
             } else if cause as? TailcatTransportError == .resourceLimit {
                 self.init(503, "Service Unavailable", "upstream_capacity")
             } else { self.init(502, "Bad Gateway", "upstream_transport") }
@@ -34,6 +36,7 @@ struct BrowserFailure {
         case BrowserError.unavailable: self.init(503, "Service Unavailable", "route_unavailable")
         case BrowserError.timeout: self.init(408, "Request Timeout", "request_timeout")
         case BrowserError.tunnelsBlocked: self.init(503, "Service Unavailable", "tunnels_blocked")
+        case BrowserError.closedBeforeResponse: self.init(502, "Bad Gateway", "upstream_transport")
         case AgentClientError.revoked, is TunnelRefusal: self.init(401, "Unauthorized", "sign_in_required")
         case BrowserError.upstream(let status) where (400...599).contains(status):
             self.init(status, "Upstream Refused", "upstream_refused")
