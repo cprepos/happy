@@ -41,7 +41,7 @@ test('list: each client sees only the logins it reaches, as metadata', async () 
         for (const n of ['gmail', 'unlisted', 'apple']) assert.ok(names.includes(n), n);
         for (const n of ['acme-github', 'globex-github', 'org-shared', 'acme-trashed']) assert.ok(!names.includes(n), n);
         const gm = all.items.find((i) => i.name === 'gmail');
-        assert.deepEqual(Object.keys(gm).sort(), ['fields', 'hosts', 'id', 'name', 'revision_date', 'secret', 'trashed', 'uris', 'username']);
+        assert.deepEqual(Object.keys(gm).sort(), ['custom_fields', 'fields', 'hosts', 'id', 'name', 'revision_date', 'secret', 'trashed', 'uris', 'username']);
         assert.equal(gm.username, 'agent@gmail.test');
         assert.deepEqual(gm.fields, ['username', 'password']);
         t.noValues(all);
@@ -186,4 +186,104 @@ test('pipe: only allowlisted targets and args; the value comes back only for the
         assert.ok(!t.auditText().includes(t.v.items['acme-github'].password));
         assert.ok(t.auditText().includes('"target":"docker-login"'));
     } finally { await t.close(); }
+});
+
+// Custom fields: names in list, values only through compare and pipe.
+const CUSTOM_VALUES = ['Jira-Api-Token-Zq81xW', 'eu-west', 'Dup-Value-One-111', 'Dup-Value-Two-222', 'Portal-Token-7c1e9a', 'Portal-ApiKey-55d2', 'Shared-Org-Token-31'];
+async function mkCustom(opts = {}) {
+    const t = await setup();
+    const p = managePolicy(t.v);
+    // acme's portal secret lets its vault tools use the custom field "token" only (not "api-key").
+    p.clients.acme.secrets.portal = { ...p.clients.acme.secrets.portal, custom_fields: ['token'] };
+    p.clients.acme.manage.pipe = ['docker-login', 'sha'];
+    const policy = parsePolicy(JSON.stringify(p));
+    const m = createManager({ getPolicy: () => policy, vault: t.vault, audit: t.audit, ...opts });
+    const auditText = () => readdirSync(join(t.dir, 'audit')).map((f) => readFileSync(join(t.dir, 'audit', f), 'utf8')).join('');
+    const noValues = (obj) => { const s = JSON.stringify(obj); for (const x of CUSTOM_VALUES) assert.ok(!s.includes(x), `a custom value leaked: ${x}`); };
+    return { ...t, m, policy, auditText, noValues };
+}
+
+test('custom fields: list and search show names only; explicit secrets only the names their policy lists', async () => {
+    const t = await mkCustom();
+    try {
+        const all = await t.m.list({ chat: D });
+        const jira = all.items.find((i) => i.name === 'jira');
+        assert.deepEqual(jira.custom_fields, ['token', 'Region', 'enabled', 'dup', 'empty', 'broken']);
+        assert.deepEqual(jira.fields, ['username', 'password']);
+        assert.deepEqual(all.items.find((i) => i.name === 'gmail').custom_fields, []);
+        t.noValues(all);
+        t.noValues(await t.m.search({ chat: D, query: 'jira' }));
+        const acme = await t.m.list({ chat: 'chat-acme' });
+        assert.deepEqual(acme.items.find((i) => i.name === 'acme-portal').custom_fields, ['token']);
+        assert.deepEqual(acme.items.find((i) => i.name === 'acme-github').custom_fields, []);
+        t.noValues(acme);
+        // Without custom_fields in its policy secret, an explicit client sees none.
+        const t2 = await mk();
+        try { assert.deepEqual((await t2.m.list({ chat: 'chat-acme' })).items.find((i) => i.name === 'acme-portal').custom_fields, []); } finally { await t2.close(); }
+    } finally { await t.close(); }
+});
+
+test('custom fields: pipe and compare by exact name; unknown 404 lists names, duplicate 409, both or neither refused', async () => {
+    const t = await mkCustom();
+    try {
+        const id = t.v.items.jira.id;
+        const sha = (s) => createHash('sha256').update(s).digest('hex');
+        const r = await t.m.pipe({ chat: D, id, custom_field: 'token', target: 'sha' });
+        assert.deepEqual(r, { target: 'sha', argv: ['sha256sum'], value: 'Jira-Api-Token-Zq81xW' });
+        assert.equal((await t.m.pipe({ chat: D, id, custom_field: 'enabled', target: 'sha' })).value, 'true');
+        assert.deepEqual(await t.m.compare({ chat: D, id, custom_field: 'token', algo: 'sha256', digest: sha('Jira-Api-Token-Zq81xW') }), { match: true });
+        assert.deepEqual(await t.m.compare({ chat: D, id, custom_field: 'Region', algo: 'sha256', digest: sha('eu-west') }), { match: true });
+        assert.deepEqual(await t.m.compare({ chat: D, id, custom_field: 'token', algo: 'sha256', digest: sha('nope') }), { match: false });
+        // Case-sensitive, exact: "Token" and "region" are unknown, and the refusal lists the names.
+        await assert.rejects(t.m.pipe({ chat: D, id, custom_field: 'Token', target: 'sha' }), (e) => e.status === 404 && /"token", "Region", "enabled", "dup", "empty", "broken"/.test(e.message) && /case-sensitive/.test(e.message));
+        await assert.rejects(t.m.compare({ chat: D, id, custom_field: 'region', algo: 'sha256', digest: sha('eu-west') }), (e) => e.status === 404);
+        await assert.rejects(t.m.pipe({ chat: D, id, custom_field: 'linked-user', target: 'sha' }), (e) => e.status === 404, 'a linked field has no value');
+        await assert.rejects(t.m.pipe({ chat: D, id, custom_field: 'dup', target: 'sha' }), (e) => e.status === 409 && e.outcome === 'refused_ambiguous');
+        await assert.rejects(t.m.compare({ chat: D, id, custom_field: 'dup', algo: 'sha256', digest: sha('Dup-Value-One-111') }), (e) => e.status === 409);
+        await assert.rejects(t.m.pipe({ chat: D, id, custom_field: 'empty', target: 'sha' }), (e) => e.status === 404 && /no custom field "empty" value/.test(e.message));
+        await assert.rejects(t.m.pipe({ chat: D, id, custom_field: 'broken', target: 'sha' }), (e) => e.status === 404);
+        // Exactly one of field and custom_field, and a well-formed name.
+        await assert.rejects(t.m.pipe({ chat: D, id, field: 'password', custom_field: 'token', target: 'sha' }), (e) => e.status === 400 && /exactly one/.test(e.message));
+        await assert.rejects(t.m.pipe({ chat: D, id, target: 'sha' }), /exactly one/);
+        await assert.rejects(t.m.compare({ chat: D, id, field: 'password', custom_field: 'token', algo: 'sha256', digest: 'x' }), /exactly one/);
+        for (const bad of ['', 'x'.repeat(65), 'to/ken', 'tok\nen', 42, null]) await assert.rejects(t.m.pipe({ chat: D, id, custom_field: bad, target: 'sha' }), (e) => e.status === 400, String(bad));
+        // An org item is never reached; another client's custom field is not either.
+        await assert.rejects(t.m.pipe({ chat: D, id: t.v.items['org-shared'].id, custom_field: 'token', target: 'sha' }), (e) => e.status === 404);
+        await assert.rejects(t.m.pipe({ chat: 'chat-acme', id, custom_field: 'token', target: 'sha' }), (e) => e.status === 404);
+        // acme's explicit secret lists "token" only.
+        const portal = t.v.items['acme-portal'].id;
+        assert.equal((await t.m.pipe({ chat: 'chat-acme', id: portal, custom_field: 'token', target: 'sha' })).value, 'Portal-Token-7c1e9a');
+        await assert.rejects(t.m.pipe({ chat: 'chat-acme', id: portal, custom_field: 'api-key', target: 'sha' }), (e) => e.status === 404 && /its custom fields: "token"/.test(e.message));
+        // {username} in argv still comes from the login.
+        const dl = await t.m.pipe({ chat: 'chat-acme', id: portal, custom_field: 'token', target: 'docker-login', args: { registry: 'ghcr.io' } });
+        assert.deepEqual(dl.argv, ['docker', 'login', '--username', 'acme-ops', '--password-stdin', 'ghcr.io']);
+        // The audit names the custom field, never a value.
+        const a = t.auditText();
+        assert.ok(a.includes('"field_kind":"custom:token"') && a.includes('"field_kind":"custom:dup"') && a.includes('"target":"sha"'));
+        for (const x of CUSTOM_VALUES) assert.ok(!a.includes(x) && !a.includes(sha(x)), x);
+    } finally { await t.close(); }
+});
+
+test('custom fields: every value read is nulled once pipe or compare is done', async () => {
+    const t0 = await setup();
+    const recs = [];
+    const vault = { ...t0.vault, readItem: async (id) => { const r = await t0.vault.readItem(id); recs.push(r); return r; } };
+    const policy = parsePolicy(JSON.stringify(managePolicy(t0.v)));
+    const m = createManager({ getPolicy: () => policy, vault, audit: t0.audit });
+    try {
+        const id = t0.v.items.jira.id;
+        const r = await m.pipe({ chat: D, id, custom_field: 'token', target: 'sha' });
+        assert.equal(r.value, 'Jira-Api-Token-Zq81xW', 'the answer keeps its own copy for the runner');
+        await m.compare({ chat: D, id, custom_field: 'Region', algo: 'sha256', digest: 'a'.repeat(64) });
+        await m.compare({ chat: D, id, field: 'password', algo: 'sha256', digest: 'a'.repeat(64) });
+        await assert.rejects(m.pipe({ chat: D, id, custom_field: 'empty', target: 'sha' }), (e) => e.status === 404);
+        assert.equal(recs.length, 4);
+        for (const rec of recs) {
+            assert.equal(rec.custom, null);
+            assert.equal(rec.password, null);
+            assert.equal(rec.totp, null);
+        }
+        assert.equal(recs[0].username, 'agent@jira.test', 'pipe keeps the username for argv');
+        assert.equal(recs[1].username, null);
+    } finally { await t0.close(); }
 });

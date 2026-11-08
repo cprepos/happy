@@ -22,6 +22,11 @@ import { createHash, randomBytes } from 'node:crypto';
 import { decryptKey, decryptSym, decryptSymText, encryptSym, VaultCryptoError } from './vaultcrypto.mjs';
 import { httpsHost } from './hosts.mjs';
 import { buildEquivalence, equivalentsFor } from './domains.mjs';
+import { CUSTOM_FIELD_NAME } from './policy.mjs';
+
+// Bitwarden custom field types: 0 text, 1 hidden, 2 boolean, 3 linked (a
+// pointer to the login's own username or password, with no value of its own).
+const LINKED_FIELD = 3;
 
 export class VaultError extends Error {
     constructor(message, status = 502) { super(message); this.status = status; }
@@ -136,7 +141,12 @@ export function createVault({ url, clientId, clientSecret, userKey, deviceId, fe
     /**
      * Decrypt one login item by id. The caller has already resolved the id
      * through the chat's client policy.
-     * Returns {username, password, totp, uris} (strings, or null for empty), or throws.
+     * Returns {username, password, totp, uris, custom} (strings, or null for
+     * empty), or throws. custom is the item's custom fields as [{name, value}]:
+     * text, hidden and boolean ones (a boolean's value is "true" or "false"),
+     * decrypted with the item's key. Linked fields (no value of their own),
+     * unnamed ones and any that do not decrypt are left out. Fill never uses
+     * custom; only the vault tools' compare and pipe do (manage.mjs).
      */
     async function readItem(itemId) {
         const s = await sync();
@@ -158,11 +168,34 @@ export function createVault({ url, clientId, clientSecret, userKey, deviceId, fe
                 password: dec(c.login.password),
                 totp: dec(c.login.totp),
                 uris: (c.login.uris || []).map((u) => dec(u?.uri)).filter(Boolean),
+                custom: customFields(c, key, true),
             };
         } catch (err) {
             if (err instanceof VaultCryptoError) throw new VaultError(`cannot decrypt item: ${err.message}`, 422);
             throw err;
         }
+    }
+
+    /**
+     * A cipher's custom fields under its key: [{name, value}] (withValues) or
+     * [names]. Skipped: linked fields, unnamed ones, names that are not a
+     * CUSTOM_FIELD_NAME (the vault tools could not name them), and anything
+     * that does not decrypt. Duplicate names are kept, so a caller can refuse
+     * an ambiguous one.
+     */
+    function customFields(c, key, withValues) {
+        const out = [];
+        for (const f of Array.isArray(c.fields) ? c.fields : []) {
+            if (!f || f.type === LINKED_FIELD || !f.name) continue;
+            let name; let value = null;
+            try {
+                name = decryptSymText(f.name, key);
+                if (withValues && f.value) value = decryptSymText(f.value, key);
+            } catch { continue; }
+            if (typeof name !== 'string' || !CUSTOM_FIELD_NAME.test(name)) continue;
+            out.push(withValues ? { name, value } : name);
+        }
+        return out;
     }
 
     /**
@@ -225,9 +258,11 @@ export function createVault({ url, clientId, clientSecret, userKey, deviceId, fe
 
     /**
      * Login metadata for the vault tools: {id, name, username, uris, hosts,
-     * fields, revision_date, trashed, organization}. The username is shown
-     * (agents pick and create accounts by it); the password and TOTP never are,
-     * only whether they are set. trash: true also lists trashed logins.
+     * fields, custom_fields, revision_date, trashed, organization}. The username
+     * is shown (agents pick and create accounts by it); the password and TOTP
+     * never are, only whether they are set. custom_fields is the names of the
+     * login's custom fields, never their values. trash: true also lists
+     * trashed logins.
      */
     async function listItems({ force = true, trash = false } = {}) {
         const s = await sync({ force });
@@ -248,6 +283,7 @@ export function createVault({ url, clientId, clientSecret, userKey, deviceId, fe
                 uris: raw.map(shownUri).filter(Boolean),
                 hosts,
                 fields: ['username', 'password', 'totp'].filter((f) => !!c.login[f]),
+                custom_fields: customFields(c, k.key, false),
                 revision_date: c.revisionDate || null,
                 trashed: !!c.deletedDate,
                 ...(k.orgId ? { organization: true } : {}),

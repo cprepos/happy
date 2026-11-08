@@ -12,7 +12,8 @@
 // the processes wrote to stdout/stderr. Exits 0 on a clean run.
 //
 // The vault routes (/v1/vault/*, the vault-client-token) are driven too:
-// create and rotate (passwords the filler generates), compare, a pipe, remove
+// create and rotate (passwords the filler generates), compare, a pipe (also of
+// a custom field, "token" on the jira login), remove
 // and restore. Their generated passwords join the canaries; the pipe answer,
 // the one route meant to hand a value to vault-mcp's runner, is checked to
 // carry exactly that value and is the only place it may appear.
@@ -154,6 +155,18 @@ try {
     check(yes.json.match === true && no.json.match === false, 'compare answers match / no match');
     const piped = await vcall('pipe', { id: created.json.id, field: 'password', target: 'sha' });
     check(piped.status === 200 && piped.json.value === gen2 && !piped.json.argv.includes(gen2), 'pipe hands the value to the runner, outside argv');
+    // A custom field ("token" on the jira login): its name in the listing, its value only in the pipe answer.
+    const jiraId = v.items.jira.id;
+    const jiraToken = v.items.jira.fields.find((f) => f.name === 'token').value;
+    const listed = await vcall('list', {});
+    vaultOut.push(listed);
+    check(listed.json.items?.find((i) => i.id === jiraId)?.custom_fields?.includes('token'), 'list names the custom field token');
+    const cpiped = await vcall('pipe', { id: jiraId, custom_field: 'token', target: 'sha' });
+    check(cpiped.status === 200 && cpiped.json.value === jiraToken && !cpiped.json.argv.includes(jiraToken), 'pipe hands a custom field value to the runner, outside argv');
+    const cyes = await vcall('compare', { id: jiraId, custom_field: 'token', algo: 'sha256', digest: createHash('sha256').update(jiraToken).digest('hex') });
+    const cboth = await vcall('pipe', { id: jiraId, field: 'password', custom_field: 'token', target: 'sha' });
+    vaultOut.push(cyes, cboth);
+    check(cyes.json.match === true && cboth.status === 400, 'compare by custom field; field and custom_field together refused');
     const evil = await vcall('pipe', { id: created.json.id, field: 'password', target: 'docker-login', args: { registry: 'x' } });
     vaultOut.push(evil);
     check(evil.status === 403, 'a pipe target outside the client\'s list is refused');
@@ -166,7 +179,7 @@ try {
 
     // The leak sweep.
     // The username and password in every encoded form; the TOTP code as typed, as a whole digit run.
-    const forms = [...new Set([item.password, item.username, gen1, gen2].filter(Boolean).flatMap((c) => [c, ...variantsOf(c)]))];
+    const forms = [...new Set([item.password, item.username, gen1, gen2, v.items.jira.fields.find((f) => f.name === 'token').value].filter(Boolean).flatMap((c) => [c, ...variantsOf(c)]))];
     const code = ctl.typed.find((t) => t.element_id === 't1')?.text;
     check(/^\d{6,10}$/.test(code || ''), 'a TOTP code was typed');
     const codeRe = code ? new RegExp(`(?<!\\d)${code}(?!\\d)`) : null;

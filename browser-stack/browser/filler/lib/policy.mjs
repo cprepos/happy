@@ -4,9 +4,17 @@
 //   { "version": 1,
 //     "clients": { "acme": { "secrets": { "github": { "item_id": "<cipher uuid>",
 //                                                     "hosts": ["github.com"],
-//                                                     "fields": ["username", "password", "totp"] } } } },
+//                                                     "fields": ["username", "password", "totp"],
+//                                                     "custom_fields": ["token"] } } } },   // optional
 //     "chats": { "<happy session id>": "acme" },
 //     "default_client": "acme" }          // optional
+//
+// custom_fields (optional) names the item's Bitwarden custom fields the
+// client's vault tools may see in vault_list and use with vault_compare and
+// vault_pipe (custom_field: "<name>", an exact, case-sensitive match). They are
+// never fillable in a browser: fill uses fields only. A secret needs at least
+// one of fields and custom_fields. An all_items client reaches every custom
+// field of its logins.
 //
 // A client may also say "all_items": true: every login in the agent account's
 // personal vault that no client lists by item_id may then be used by that
@@ -66,6 +74,8 @@ import { normalizeHost } from './hosts.mjs';
 export class PolicyError extends Error {}
 
 export const FIELDS = ['username', 'password', 'totp'];
+/** A custom field name the vault tools take (custom_field) and the policy lists (custom_fields). */
+export const CUSTOM_FIELD_NAME = /^[A-Za-z0-9 _.-]{1,64}$/;
 const SLUG = /^[a-z0-9][a-z0-9_-]{0,62}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CHAT = /^[A-Za-z0-9_.:-]{1,200}$/;
@@ -169,9 +179,14 @@ export function parsePolicy(json) {
                 return n;
             });
             if (!hosts.length) throw new PolicyError(`${slug}.${name}: needs at least one host`);
-            const fields = Array.isArray(s.fields) ? s.fields : [];
-            if (!fields.length || fields.some((f) => !FIELDS.includes(f))) throw new PolicyError(`${slug}.${name}: fields must be some of ${FIELDS.join(', ')}`);
-            secrets.set(name, Object.freeze({ item_id: item, hosts: Object.freeze(hosts), fields: Object.freeze([...new Set(fields)]) }));
+            if (s.fields !== undefined && !Array.isArray(s.fields)) throw new PolicyError(`${slug}.${name}: fields must be a list`);
+            const fields = s.fields ?? [];
+            if (fields.some((f) => !FIELDS.includes(f))) throw new PolicyError(`${slug}.${name}: fields must be some of ${FIELDS.join(', ')}`);
+            if (s.custom_fields !== undefined && !Array.isArray(s.custom_fields)) throw new PolicyError(`${slug}.${name}: custom_fields must be a list of custom field names`);
+            const custom = s.custom_fields ?? [];
+            for (const f of custom) if (typeof f !== 'string' || !CUSTOM_FIELD_NAME.test(f)) throw new PolicyError(`${slug}.${name}: custom field name ${JSON.stringify(f)?.slice(0, 70)} must be 1..64 of A-Z a-z 0-9 space _ . -`);
+            if (!fields.length && !custom.length) throw new PolicyError(`${slug}.${name}: fields must be some of ${FIELDS.join(', ')} (or list custom_fields)`);
+            secrets.set(name, Object.freeze({ item_id: item, hosts: Object.freeze(hosts), fields: Object.freeze([...new Set(fields)]), custom_fields: Object.freeze([...new Set(custom)]) }));
         }
         if (c.all_items !== undefined && typeof c.all_items !== 'boolean') throw new PolicyError(`client ${slug}: all_items must be true or false`);
         const allItems = c.all_items === true;

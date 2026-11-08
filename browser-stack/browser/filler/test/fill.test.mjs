@@ -419,3 +419,30 @@ test('equivalent domains: explicit secrets stay exact, and "equivalent_domains":
         assert.equal(t.ctl.typed.length, 2);
     } finally { await t.close(); }
 });
+
+test('custom fields are never fillable: not listed, not resolvable, never typed by login', async () => {
+    const t = await setup();
+    try {
+        const custom = ['Jira-Api-Token-Zq81xW', 'eu-west', 'Portal-Token-7c1e9a'];
+        // all_items: the jira login fills its username and password only.
+        const policy = parsePolicy(ALL);
+        const f = createFiller({ ...t.deps, getPolicy: () => policy });
+        const names = (await f.list({ chat: NO_CHAT })).secrets.map((x) => x.name);
+        assert.deepEqual(names.filter((n) => n.startsWith('jira.')), ['jira.username', 'jira.password']);
+        t.ctl.addSession('j', loginPages('https://team.atlassian.net'));
+        for (const name of ['jira.token', 'jira.Region', 'jira.custom:token']) await assert.rejects(f.fill({ chat: NO_CHAT, session_id: 'j', element_id: 'p1', name }), /no such secret/, name);
+        await f.login({ chat: NO_CHAT, session_id: 'j', site: 'jira' }).catch(() => {});
+        assert.ok(t.ctl.typed.length >= 1);
+        for (const x of t.ctl.typed) assert.ok(!custom.includes(x.text), 'a custom field value was typed');
+        // An explicit secret that lists custom_fields: still only its fields are fill names.
+        const p = policyFor(t.v);
+        p.clients.acme.secrets.portal = { ...p.clients.acme.secrets.portal, custom_fields: ['token'] };
+        const pol2 = parsePolicy(p);
+        const f2 = createFiller({ ...t.deps, getPolicy: () => pol2 });
+        assert.deepEqual((await f2.list({ chat: 'chat-acme' })).secrets.filter((s) => s.name.startsWith('portal.')).map((s) => s.name), ['portal.password']);
+        t.ctl.addSession('p', loginPages('https://portal.acme.test'));
+        await assert.rejects(f2.fill({ chat: 'chat-acme', session_id: 'p', element_id: 'p1', name: 'portal.token' }), /no such secret/);
+        for (const x of t.ctl.typed) assert.ok(!custom.includes(x.text));
+        assert.ok(!custom.some((x) => auditText(t.dir).includes(x)));
+    } finally { await t.close(); }
+});

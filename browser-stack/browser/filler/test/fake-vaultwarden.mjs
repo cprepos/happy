@@ -44,7 +44,9 @@ export function buildVault({ email = 'agent@vault.test', password = 'correct hor
 
     const ciphers = [];
     const items = {};
-    function addLogin(label, { org = null, itemKey = false, type = 1, username, password: pw, totp = null, uris, deleted = false, encType, match = null } = {}) {
+    // fields: Bitwarden custom fields [{name, value, type}] (type 0 text, 1 hidden, 2 boolean, 3 linked with linkedId),
+    // encrypted under the item's key like the login's own values; badName / badValue store an undecryptable one.
+    function addLogin(label, { org = null, itemKey = false, type = 1, username, password: pw, totp = null, uris, deleted = false, encType, match = null, fields = [] } = {}) {
         const o = org ? orgs[org] : null;
         const base = o ? o.key : userKey;
         const ik = itemKey ? randomBytes(64) : null;
@@ -55,16 +57,23 @@ export function buildVault({ email = 'agent@vault.test', password = 'correct hor
             key: ik ? encryptSym(ik, base) : null,
             name: enc(label),
             login: type !== 1 ? null : { username: enc(username), password: enc(pw), totp: enc(totp), uris: uris.map((u) => ({ uri: enc(u), match })) },
+            fields: fields.map((f) => ({
+                type: f.type ?? 0,
+                name: f.badName ? `2.${randomBytes(16).toString('base64')}|${randomBytes(16).toString('base64')}|${randomBytes(32).toString('base64')}` : enc(f.name),
+                value: f.badValue ? `2.${randomBytes(16).toString('base64')}|${randomBytes(16).toString('base64')}|${randomBytes(32).toString('base64')}` : (f.type === 3 ? null : enc(f.value)),
+                linkedId: f.type === 3 ? (f.linkedId ?? 101) : null,
+            })),
             deletedDate: deleted ? new Date().toISOString() : null,
             revisionDate: new Date(Date.UTC(2026, 0, 1)).toISOString(),
         };
         if (encType && c.login) c.login.password = `${encType}.${randomBytes(32).toString('base64')}`;
         ciphers.push(c);
-        items[label] = { id: c.id, org, username, password: pw, totp, uris };
+        items[label] = { id: c.id, org, username, password: pw, totp, uris, fields };
         return c;
     }
     addLogin('acme-github', { username: 'acme-bot@example.com', password: 'Acme+Pass/w0rd=1&x', totp: TOTP_SECRET, uris: ['https://github.com/login', 'https://www.github.com'] });
-    addLogin('acme-portal', { itemKey: true, username: 'acme-ops', password: 'P0rtal "quoted" <tag> \'apos\'', uris: ['https://portal.acme.test'] });
+    addLogin('acme-portal', { itemKey: true, username: 'acme-ops', password: 'P0rtal "quoted" <tag> \'apos\'', uris: ['https://portal.acme.test'],
+        fields: [{ name: 'token', value: 'Portal-Token-7c1e9a', type: 1 }, { name: 'api-key', value: 'Portal-ApiKey-55d2', type: 1 }] });
     addLogin('acme-trashed', { username: 'old', password: 'old-pass-zzz', uris: ['https://github.com'], deleted: true });
     addLogin('acme-gitlab', { username: 'gl', password: 'Gitlab-Pass-4321', uris: ['https://github.com'] });
     addLogin('acme-badtype', { username: 'weird', password: 'x', uris: ['https://github.com'], encType: '0' });
@@ -72,7 +81,22 @@ export function buildVault({ email = 'agent@vault.test', password = 'correct hor
     addLogin('globex-github', { username: 'globex-bot', password: 'Globex-Secret-9876', totp: `otpauth://totp/Globex:bot?secret=${TOTP_SECRET}&algorithm=SHA256&digits=8&period=30`, uris: ['https://github.com'] });
     // Not listed in the test policy at all: the owner's own login, kept in the same vault.
     addLogin('unlisted', { username: 'boss', password: 'not-for-agents-123', uris: ['https://github.com'] });
-    addLogin('org-shared', { org: 'shared', itemKey: true, username: 'shared-bot', password: 'Shared-Org-Pass-55', uris: ['https://github.com'] });
+    // Custom fields of every type, a duplicate name, and undecryptable ones (personal, no item key).
+    addLogin('jira', {
+        username: 'agent@jira.test', password: 'Jira-Pass-8080', uris: ['https://team.atlassian.net'],
+        fields: [
+            { name: 'token', value: 'Jira-Api-Token-Zq81xW', type: 1 },
+            { name: 'Region', value: 'eu-west', type: 0 },
+            { name: 'enabled', value: 'true', type: 2 },
+            { name: 'linked-user', type: 3, linkedId: 100 },
+            { name: 'dup', value: 'Dup-Value-One-111', type: 1 },
+            { name: 'dup', value: 'Dup-Value-Two-222', type: 1 },
+            { name: 'empty', value: null, type: 0 },
+            { name: 'broken', badValue: true, type: 1 },
+            { badName: true, value: 'x', type: 0 },
+        ],
+    });
+    addLogin('org-shared', { org: 'shared', itemKey: true, username: 'shared-bot', password: 'Shared-Org-Pass-55', uris: ['https://github.com'], fields: [{ name: 'token', value: 'Shared-Org-Token-31', type: 1 }] });
     // Equivalent domains: gmail.com is in Google's group, apple.com in an excluded group, foo.co.uk in a custom one.
     addLogin('gmail', { username: 'agent@gmail.test', password: 'Gmail-Pass-2468', uris: ['https://www.gmail.com/'] });
     addLogin('gmail-host', { username: 'agent2@gmail.test', password: 'GmailHost-Pass-1357', uris: ['https://www.gmail.com/'], match: 1 });

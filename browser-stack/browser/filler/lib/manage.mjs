@@ -8,11 +8,20 @@
 //   update  {id, name?, uris?, username?, rotate_password?:spec} -> meta + changed
 //   remove  {id}                                  -> {id, trashed: true} (soft delete)
 //   restore {id}                                  -> meta
-//   compare {id, field, algo, digest, salt?}      -> {match}
-//   pipe    {id, field, target, args?}            -> {target, argv, value}
+//   compare {id, field | custom_field, algo, digest, salt?} -> {match}
+//   pipe    {id, field | custom_field, target, args?}      -> {target, argv, value}
 //
-// meta is {id, name, secret?, username, uris, hosts, fields, revision_date,
-// trashed}: never a password or TOTP value, only whether one is set. A new or
+// meta is {id, name, secret?, username, uris, hosts, fields, custom_fields,
+// revision_date, trashed}: never a password or TOTP value, only whether one is
+// set, and only the names of custom fields.
+
+// compare and pipe take exactly one of field (username, password, totp) and
+// custom_field (the exact, case-sensitive name of one of the login's Bitwarden
+// custom fields, as vault_list shows it). A custom field is reachable only by
+// all_items clients and by explicit secrets whose policy lists it in
+// custom_fields. Two custom fields with the same name are refused as
+// ambiguous, so only one value is ever chosen. The audit names it
+// "custom:<name>", never its value. A new or
 // rotated password is always random (generate.mjs), made here; an agent never
 // supplies one. compare answers match or no match, never a hash. pipe is the
 // one route that hands a value back: to vault-mcp's pipe runner, which writes
@@ -24,7 +33,7 @@
 // agent account's personal vault only. Every call is audited: action, item id,
 // the names of the fields changed, outcome; never a value.
 import { FillError } from './fill.mjs';
-import { itemSlug, FIELDS, NO_CHAT } from './policy.mjs';
+import { itemSlug, FIELDS, NO_CHAT, CUSTOM_FIELD_NAME } from './policy.mjs';
 import { compareValue, ALGOS, HashError } from './hashes.mjs';
 import { generatePassword, checkSpec, GenerateError } from './generate.mjs';
 
@@ -39,8 +48,8 @@ const KEYS = {
     update: ['id', 'name', 'uris', 'username', 'rotate_password'],
     remove: ['id'],
     restore: ['id'],
-    compare: ['id', 'field', 'algo', 'digest', 'salt'],
-    pipe: ['id', 'field', 'target', 'args'],
+    compare: ['id', 'field', 'custom_field', 'algo', 'digest', 'salt'],
+    pipe: ['id', 'field', 'custom_field', 'target', 'args'],
 };
 const bad = (msg) => new FillError(msg, 400, 'bad_request');
 
@@ -68,6 +77,15 @@ export function checkUris(v) {
 const checkId = (v) => { if (typeof v !== 'string' || !UUID.test(v)) throw bad('id must be an item id (uuid) from vault_list'); return v.toLowerCase(); };
 const checkBool = (v, what) => { if (v !== undefined && typeof v !== 'boolean') throw bad(`${what} must be true or false`); return v === true; };
 const checkField = (v) => { if (!FIELDS.includes(v)) throw bad(`field must be one of ${FIELDS.join(', ')}`); return v; };
+/** compare/pipe: {field} or {custom}, from exactly one of body.field and body.custom_field. */
+function checkWhich(body) {
+    const hasField = body.field !== undefined; const hasCustom = body.custom_field !== undefined;
+    if (hasField === hasCustom) throw bad('give exactly one of field (username, password, totp) and custom_field (a custom field name from vault_list)');
+    if (hasField) return { field: checkField(body.field) };
+    if (typeof body.custom_field !== 'string' || !CUSTOM_FIELD_NAME.test(body.custom_field)) throw bad('custom_field must be 1..64 of A-Z a-z 0-9 space _ . - (a name from vault_list custom_fields)');
+    return { custom: body.custom_field };
+}
+const kindOf = (w) => (w.custom !== undefined ? `custom:${w.custom}` : w.field);
 
 export function createManager({ getPolicy, vault, audit, now = () => Date.now(), compareLimit = { max: 20, windowMs: 10 * 60_000 } }) {
     const compares = new Map(); // `${client}/${id}` -> [timestamps]
@@ -103,7 +121,8 @@ export function createManager({ getPolicy, vault, audit, now = () => Date.now(),
             const listedBy = ctx.policy.listedBy(it.id);
             if (listedBy === ctx.client) {
                 const names = bySecretId.get(it.id) || [];
-                out.push({ ...it, secret: names[0], listed: true, fields: it.fields.filter((f) => names.some((n) => ctx.cfg.secrets.get(n).fields.includes(f))) });
+                const allow = (key, list) => list.filter((f) => names.some((n) => ctx.cfg.secrets.get(n)[key].includes(f)));
+                out.push({ ...it, secret: names[0], listed: true, fields: allow('fields', it.fields), custom_fields: allow('custom_fields', it.custom_fields || []) });
             } else if (!listedBy && all && !it.organization) {
                 const slug = itemSlug(it.name);
                 out.push({ ...it, ...(slug && !ctx.cfg.secrets.has(slug) && !it.trashed ? { secret: slug } : {}) });
@@ -113,8 +132,37 @@ export function createManager({ getPolicy, vault, audit, now = () => Date.now(),
     }
     const meta = (it) => ({
         id: it.id, name: it.name, ...(it.secret ? { secret: it.secret } : {}), username: it.username,
-        uris: it.uris, hosts: it.hosts, fields: it.fields, revision_date: it.revision_date, trashed: it.trashed,
+        uris: it.uris, hosts: it.hosts, fields: it.fields, custom_fields: [...new Set(it.custom_fields || [])], revision_date: it.revision_date, trashed: it.trashed,
     });
+    // Whether this chat may use the field or custom field w of a login it reaches (it, from
+    // view): throws 404 (naming the custom fields it may use) or 409 (a duplicate name).
+    function usable(it, w) {
+        if (w.field !== undefined) {
+            if (!it.fields.includes(w.field)) throw new FillError(`that login has no ${w.field} this chat may use`, 404, 'not_found');
+        } else {
+            const names = it.custom_fields || [];
+            if (!names.includes(w.custom)) {
+                const shown = [...new Set(names)];
+                throw new FillError(`that login has no custom field "${w.custom}" this chat may use (its custom fields: ${shown.length ? shown.map((n) => JSON.stringify(n)).join(', ') : 'none'}; names are case-sensitive)`, 404, 'not_found');
+            }
+            if (names.filter((n) => n === w.custom).length > 1) throw ambiguous(w.custom);
+        }
+    }
+    const ambiguous = (n) => new FillError(`that login has more than one custom field named "${n}"; ambiguous, rename one in the vault`, 409, 'refused_ambiguous');
+    // The value of w, after usable(): reads the item and returns {rec, value}. The caller wipes rec.
+    async function valueOf(id, w) {
+        const rec = await vault.readItem(id).catch((e) => { throw vaultErr(e); });
+        if (w.field !== undefined) return { rec, value: rec[w.field] };
+        const hits = (rec.custom || []).filter((c) => c.name === w.custom);
+        if (hits.length > 1) { wipe(rec); throw ambiguous(w.custom); }
+        return { rec, value: hits[0]?.value ?? null };
+    }
+    // Drop every value a readItem returned (keep: the username, which pipe's argv may use).
+    function wipe(rec, { keepUsername = false } = {}) {
+        for (const f of FIELDS) if (!(keepUsername && f === 'username')) rec[f] = null;
+        for (const c of rec.custom || []) c.value = null;
+        rec.custom = null;
+    }
     async function item(ctx, id, { trash = false } = {}) {
         const it = (await view(ctx, { trash })).find((x) => x.id === id);
         if (!it) throw new FillError('no login with that id is reachable from this chat (see vault_list)', 404, 'not_found');
@@ -210,28 +258,29 @@ export function createManager({ getPolicy, vault, audit, now = () => Date.now(),
         compare: (body) => run('compare', body, async (ctx, ev) => {
             need(ctx, 'compare');
             const id = checkId(body.id);
-            const field = checkField(body.field);
+            const which = checkWhich(body);
             if (!ALGOS.includes(body.algo)) throw bad(`algo must be one of ${ALGOS.join(', ')}`);
-            Object.assign(ev, { item_id: id, field_kind: field, algo: body.algo });
+            Object.assign(ev, { item_id: id, field_kind: kindOf(which), algo: body.algo });
             const it = await item(ctx, id);
-            if (!it.fields.includes(field)) throw new FillError(`that login has no ${field} this chat may use`, 404, 'not_found');
+            usable(it, which);
             const key = `${ctx.client}/${id}`;
             const t = now();
             const recent = (compares.get(key) || []).filter((x) => t - x < compareLimit.windowMs);
             if (recent.length >= compareLimit.max) throw new FillError(`too many compares for this login; wait ${Math.ceil(compareLimit.windowMs / 60_000)} minutes`, 429, 'rate_limited');
             recent.push(t); compares.set(key, recent);
-            const rec = await vault.readItem(id).catch((e) => { throw vaultErr(e); });
+            const { rec, value } = await valueOf(id, which);
             try {
-                return { match: compareValue(rec[field] ?? '', { algo: body.algo, digest: body.digest, salt: body.salt }) };
-            } finally { for (const f of FIELDS) rec[f] = null; }
+                return { match: compareValue(value ?? '', { algo: body.algo, digest: body.digest, salt: body.salt }) };
+            } finally { wipe(rec); }
         }),
 
         pipe: (body) => run('pipe', body, async (ctx, ev) => {
             need(ctx, 'pipe');
             const id = checkId(body.id);
-            const field = checkField(body.field);
+            const which = checkWhich(body);
+            const what = which.custom !== undefined ? `custom field "${which.custom}"` : which.field;
             const name = typeof body.target === 'string' ? body.target : '';
-            Object.assign(ev, { item_id: id, field_kind: field, target: name.slice(0, 64) });
+            Object.assign(ev, { item_id: id, field_kind: kindOf(which), target: name.slice(0, 64) });
             const target = ctx.policy.pipeTarget(name);
             if (!target || !ctx.manage.pipe.includes(name)) throw new FillError(`pipe target "${name.slice(0, 64)}" is not one this chat's client may use (allowed: ${ctx.manage.pipe.join(', ')})`, 403, 'refused_target');
             const args = body.args ?? {};
@@ -241,12 +290,10 @@ export function createManager({ getPolicy, vault, audit, now = () => Date.now(),
             for (const [slot, re] of target.args) {
                 if (typeof args[slot] !== 'string' || !re.test(args[slot])) throw bad(`args.${slot} does not match what target ${name} allows`);
             }
-            const it = await item(ctx, id);
-            if (!it.fields.includes(field)) throw new FillError(`that login has no ${field} this chat may use`, 404, 'not_found');
-            const rec = await vault.readItem(id).catch((e) => { throw vaultErr(e); });
+            usable(await item(ctx, id), which);
+            const { rec, value } = await valueOf(id, which);
             try {
-                const value = rec[field];
-                if (!value) throw new FillError(`that login has no ${field}`, 404, 'not_found');
+                if (!value) throw new FillError(`that login has no ${what} value`, 404, 'not_found');
                 const argv = target.argv.map((a) => {
                     if (a === '{username}') {
                         if (!rec.username) throw new FillError(`target ${name} needs the login's username, and it has none`, 422, 'refused');
@@ -256,7 +303,7 @@ export function createManager({ getPolicy, vault, audit, now = () => Date.now(),
                     return m ? args[m[1]] : a;
                 });
                 return { target: name, argv, value };
-            } finally { for (const f of FIELDS) if (f !== 'username') rec[f] = null; }
+            } finally { wipe(rec, { keepUsername: true }); }
         }),
     };
 }

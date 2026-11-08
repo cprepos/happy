@@ -198,3 +198,34 @@ test('manage and pipe_targets: strict keys, create needs all_items, pipe names m
     bad({ targets: { x: { argv: ['cmd'], env: {} } } }, /unknown key/);
     bad({ targets: { x: { argv: [] } } }, /argv must be/);
 });
+
+test('custom_fields on an explicit secret: optional, a list of exact names, never fill names', () => {
+    const p = samplePolicy();
+    assert.deepEqual([...parsePolicy(p).client('acme').secrets.get('github').custom_fields], [], 'absent means none');
+    p.clients.acme.secrets.github.custom_fields = ['token', 'API Key', 'token', 'a.b_c-d'];
+    const pol = parsePolicy(p);
+    assert.deepEqual([...pol.client('acme').secrets.get('github').custom_fields], ['token', 'API Key', 'a.b_c-d']);
+    // Fill names stay username, password and totp only.
+    assert.deepEqual(pol.entries('acme').map((e) => e.field), ['username', 'password', 'totp']);
+    assert.equal(pol.resolve('acme', 'github.token'), null);
+    // A secret may list only custom fields.
+    const only = samplePolicy();
+    delete only.clients.acme.secrets.github.fields;
+    only.clients.acme.secrets.github.custom_fields = ['token'];
+    const po = parsePolicy(only);
+    assert.deepEqual(po.entries('acme'), []);
+    assert.deepEqual([...po.client('acme').secrets.get('github').custom_fields], ['token']);
+    for (const bad of ['token', [''], ['x'.repeat(65)], ['to/ken'], ['tok\nen'], [42], [null]]) {
+        const x = samplePolicy();
+        x.clients.acme.secrets.github.custom_fields = bad;
+        assert.throws(() => parsePolicy(x), PolicyError, JSON.stringify(bad));
+    }
+    // Neither fields nor custom_fields is still refused.
+    const none = samplePolicy();
+    none.clients.acme.secrets.github.fields = [];
+    assert.throws(() => parsePolicy(none), /fields must be some of/);
+    const none2 = samplePolicy();
+    none2.clients.acme.secrets.github.fields = [];
+    none2.clients.acme.secrets.github.custom_fields = [];
+    assert.throws(() => parsePolicy(none2), /fields must be some of/);
+});
