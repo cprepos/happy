@@ -214,3 +214,54 @@ test('without fromMeta a forged browserstack/chat _meta is ignored: the process 
         assert.deepEqual(f.calls.map((c) => c.chat), ['OWN', NO_CHAT]);
     } finally { await f.close(); }
 });
+
+test('custom_field: compare and pipe take exactly one of field and custom_field, a well-formed name', async () => {
+    const f = await fakeFiller(() => [200, { match: true }]);
+    try {
+        const c = client({ fillerUrl: f.url });
+        for (const name of ['vault_compare', 'vault_pipe']) {
+            const t = TOOLS.find((x) => x.name === name);
+            assert.deepEqual(t.inputSchema.properties.custom_field.pattern, '^[A-Za-z0-9 _.-]{1,64}$');
+            assert.ok(!t.inputSchema.required.includes('field') && !t.inputSchema.required.includes('custom_field'), name);
+            assert.ok(!('exactlyOne' in JSON.parse(JSON.stringify(t.inputSchema))), 'no non-standard keyword in tools/list');
+            assert.ok(!('oneOf' in t.inputSchema) && !('anyOf' in t.inputSchema), 'no top-level oneOf/anyOf');
+        }
+        assert.match(TOOLS.find((x) => x.name === 'vault_list').description, /custom_fields/);
+        assert.match(TOOLS.find((x) => x.name === 'vault_pipe').inputSchema.properties.field.description, /stored TOTP seed/);
+        assert.doesNotMatch(TOOLS.find((x) => x.name === 'vault_pipe').inputSchema.properties.field.description, /totp is the current code/);
+        const cmp = { id: ID, algo: 'sha256', digest: 'ab' };
+        for (const [name, args, msg] of [
+            ['vault_compare', { ...cmp }, /exactly one of field, custom_field/],
+            ['vault_compare', { ...cmp, field: 'password', custom_field: 'token' }, /exactly one of field, custom_field/],
+            ['vault_pipe', { id: ID, target: 'sha' }, /exactly one of field, custom_field/],
+            ['vault_pipe', { id: ID, target: 'sha', field: 'password', custom_field: 'token' }, /exactly one/],
+            ['vault_pipe', { id: ID, target: 'sha', custom_field: '' }, /custom_field is too short/],
+            ['vault_pipe', { id: ID, target: 'sha', custom_field: 'x'.repeat(65) }, /custom_field is too long/],
+            ['vault_pipe', { id: ID, target: 'sha', custom_field: 'to/ken' }, /custom_field is not in the expected form/],
+            ['vault_pipe', { id: ID, target: 'sha', custom_field: 7 }, /custom_field must be a string/],
+            ['vault_pipe', { id: ID, target: 'sha', field: 'notes' }, /field must be one of/],
+        ]) {
+            const r = await c.call(name, args);
+            assert.equal(r.result.isError, true, JSON.stringify(args));
+            assert.match(textOf(r), msg);
+        }
+        assert.equal(f.calls.length, 0, 'refused locally');
+        assert.deepEqual(JSON.parse(textOf(await c.call('vault_compare', { ...cmp, custom_field: 'API key.v2' }))), { match: true });
+        assert.deepEqual(f.calls[0].body, { ...cmp, custom_field: 'API key.v2' });
+    } finally { await f.close(); }
+});
+
+test('vault_pipe with custom_field: the value is scrubbed as [secret:<name>]', async () => {
+    const f = await fakeFiller(() => [200, { target: 'jira-login', argv: ECHO, value: VALUE }]);
+    try {
+        const c = client({ fillerUrl: f.url });
+        const r = await c.call('vault_pipe', { id: ID, custom_field: 'token', target: 'jira-login', args: { site: 'team.atlassian.net' } });
+        const text = textOf(r);
+        assert.equal(r.result.isError, undefined, text);
+        const out = JSON.parse(text);
+        assert.match(out.stdout, /^got \[secret:token\]/);
+        assert.equal(out.stderr, '"[secret:token]" [secret:token]\n');
+        assert.ok(!text.includes(VALUE) && !text.includes(Buffer.from(VALUE).toString('base64')) && !text.includes(encodeURIComponent(VALUE)));
+        assert.deepEqual(f.calls[0].body, { id: ID, custom_field: 'token', target: 'jira-login', args: { site: 'team.atlassian.net' } });
+    } finally { await f.close(); }
+});

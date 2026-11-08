@@ -6,7 +6,7 @@
 // (~/.local/share/happy-vault-mcp/secrets/vault-client-token, written by
 // make filler-token-issue NAME=vault-client and make filler-token-take; a different token from the browser bridge's).
 //
-// No tool returns a password or TOTP value. New passwords are generated in
+// No tool returns a password, TOTP or custom field value. New passwords are generated in
 // the filler. vault_compare answers match or no match. vault_pipe is the one
 // call where a value reaches this process: lib/pipe.mjs writes it to an
 // allowlisted command's stdin and returns only the scrubbed output.
@@ -39,14 +39,22 @@ const SPEC = {
     },
     additionalProperties: false,
 };
-const FIELD = { type: 'string', enum: ['username', 'password', 'totp'], description: 'Which value of the login (totp is the current code).' };
+const FIELD = { type: 'string', enum: ['username', 'password', 'totp'], description: 'Which value of the login: username, password, or totp (the stored TOTP seed or otpauth URI, not a current code). Give this or custom_field, not both.' };
+const CUSTOM_FIELD = { type: 'string', minLength: 1, maxLength: 64, pattern: '^[A-Za-z0-9 _.-]{1,64}$', description: 'The exact, case-sensitive name of one of the login\'s custom fields, as vault_list shows it in custom_fields (for example "token"). Give this or field, not both.' };
+// compare and pipe take exactly one of these (checked in checkArgs; not in the schema, since
+// tool schemas may not use a top-level oneOf).
+const ONE_OF = ['field', 'custom_field'];
 const TRASH = { type: 'boolean', description: 'Also list logins in the vault trash (default false).' };
-const obj = (properties, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
+const obj = (properties, required = [], exactlyOne = null) => {
+    const s = { type: 'object', properties, required, additionalProperties: false };
+    if (exactlyOne) Object.defineProperty(s, 'exactlyOne', { value: exactlyOne, enumerable: false }); // not sent in tools/list
+    return s;
+};
 
 export const TOOLS = [
     {
         name: 'vault_list',
-        description: 'List the vault logins this chat may use: id, name, fill name (secret), username, URIs, hosts, which fields are set, revision date, trashed. Never a password or TOTP value.',
+        description: 'List the vault logins this chat may use: id, name, fill name (secret), username, URIs, hosts, which fields are set, custom_fields (the names of the login\'s custom fields you may use with vault_pipe and vault_compare), revision date, trashed. Never a password, TOTP or custom field value.',
         inputSchema: obj({ include_trash: TRASH }),
     },
     {
@@ -76,22 +84,22 @@ export const TOOLS = [
     },
     {
         name: 'vault_compare',
-        description: 'Check whether a login\'s value matches a hash you have (from a config file, a database row, a leak list). Answers {match: true|false} only; the value and its hash never come back. algo: sha256 or sha512 (hex digest of salt + value; salt optional), bcrypt ($2a$/$2b$/$2y$ string), argon2 (PHC string $argon2id$...). Rate limited per login.',
+        description: 'Check whether a login\'s value matches a hash you have (from a config file, a database row, a leak list). Answers {match: true|false} only; the value and its hash never come back. algo: sha256 or sha512 (hex digest of salt + value; salt optional), bcrypt ($2a$/$2b$/$2y$ string), argon2 (PHC string $argon2id$...). Rate limited per login. Give field or custom_field.',
         inputSchema: obj({
-            id: ID, field: FIELD,
+            id: ID, field: FIELD, custom_field: CUSTOM_FIELD,
             algo: { type: 'string', enum: ['sha256', 'sha512', 'bcrypt', 'argon2'] },
             digest: { type: 'string', minLength: 1, maxLength: 512, description: 'The hash to check against.' },
             salt: { type: 'string', maxLength: 256, description: 'sha256/sha512 only: a prefix hashed before the value.' },
-        }, ['id', 'field', 'algo', 'digest']),
+        }, ['id', 'algo', 'digest'], ONE_OF),
     },
     {
         name: 'vault_pipe',
-        description: 'Feed a login\'s value to the standard input of a command the vault owner allowlisted (the filler policy\'s pipe_targets, for example docker-login or gh-auth), for logging a CLI in without the value ever appearing in chat, arguments or files. Returns the command\'s exit code and output, with the value scrubbed out. Targets your client may not use are refused; the refusal lists the allowed ones.',
+        description: 'Feed a login\'s value to the standard input of a command the vault owner allowlisted (the filler policy\'s pipe_targets, for example docker-login or gh-auth), for logging a CLI in without the value ever appearing in chat, arguments or files. Returns the command\'s exit code and output, with the value scrubbed out. Targets your client may not use are refused; the refusal lists the allowed ones. Give field (username, password, totp) or custom_field (a name from vault_list custom_fields, such as token); in the output the value shows as [secret:<field or custom field name>].',
         inputSchema: obj({
-            id: ID, field: FIELD,
+            id: ID, field: FIELD, custom_field: CUSTOM_FIELD,
             target: { type: 'string', minLength: 1, maxLength: 64, pattern: '^[a-z0-9][a-z0-9_-]*$', description: 'The pipe target\'s name.' },
             args: { type: 'object', additionalProperties: { type: 'string', maxLength: 256 }, description: 'Values for the target\'s {arg:slot} placeholders, each checked against the target\'s pattern.' },
-        }, ['id', 'field', 'target']),
+        }, ['id', 'target'], ONE_OF),
     },
 ];
 const TOOL_BY_NAME = new Map(TOOLS.map((t) => [t.name, t]));
@@ -111,6 +119,7 @@ export function checkArgs(schema, v, at = 'arguments') {
         if (!v || typeof v !== 'object' || Array.isArray(v)) return `${at} must be an object`;
         const props = schema.properties || {};
         for (const k of schema.required || []) if (!Object.hasOwn(v, k)) return `${at}.${k} is required`;
+        if (schema.exactlyOne && schema.exactlyOne.filter((k) => Object.hasOwn(v, k)).length !== 1) return `${at}: give exactly one of ${schema.exactlyOne.join(', ')}`;
         for (const [k, x] of Object.entries(v)) {
             const sub = Object.hasOwn(props, k) ? props[k] : schema.additionalProperties;
             if (sub === false || sub === undefined) return `${at}: unknown key ${JSON.stringify(k).slice(0, 40)} (allowed: ${Object.keys(props).join(', ') || 'none'})`;
@@ -189,7 +198,8 @@ export function createVaultMcp({ fillerUrl = 'http://127.0.0.1:6091', tokenPath,
         const action = name.slice('vault_'.length);
         if (action !== 'pipe') return filler(action, args, signal, who);
         const got = await filler('pipe', args, signal, who);
-        const label = `${args.field}`;
+        // The scrub label: the field, or the custom field's name ("[secret:token]").
+        const label = `${args.custom_field ?? args.field}`;
         let value = typeof got?.value === 'string' ? got.value : '';
         try {
             const run = await pipe({ argv: got?.argv, value, label });

@@ -151,6 +151,12 @@ happy-filler with `make filler-policy-edit`.
   the web vault (logged in as the agent): the URL ends in `itemId=<item_id>`.
 - `org_id` and `collection_id` belonged to an earlier, organization-based
   design. A policy that still has them is refused.
+- `custom_fields` (optional, e.g. `["token"]`) names the item's Bitwarden
+  custom fields this client's vault tools may see and use (`vault_compare`,
+  `vault_pipe` with `custom_field`). Names are exact and case-sensitive, 1..64
+  of `A-Z a-z 0-9 space _ . -`. Custom fields are never fillable in a browser.
+  A secret needs `fields`, `custom_fields`, or both. An `all_items` client
+  reaches every custom field of its logins.
 - `hosts` must also appear as https URIs on the vault item. Matching is exact:
   `github.com` does not allow `www.github.com`.
 - A chat with no entry in `chats` can use no secrets, unless the policy sets
@@ -252,13 +258,22 @@ filler's files or docker. Each tool is a thin client of the filler's
 
 | tool | what it does | needs (`manage.*`) |
 |---|---|---|
-| `vault_list` / `vault_search` | the logins the chat reaches: id, name, fill name, username, URIs, which fields are set, trashed. Never a password or TOTP value | (any client) |
+| `vault_list` / `vault_search` | the logins the chat reaches: id, name, fill name, username, URIs, which fields are set, `custom_fields` (names only), trashed. Never a password, TOTP or custom field value | (any client) |
 | `vault_create` | a new login; the filler generates the password (default 32 characters from all classes, 16..128) | `create` (only with `all_items`) |
 | `vault_update` | rename, new URIs or username, `rotate_password` (a new random one; the old one goes to the item's password history) | `update` |
 | `vault_remove` | **soft delete** to the vault trash | `remove` |
 | `vault_restore` | back from the trash | `remove` |
 | `vault_compare` | `{match: true\|false}` against a sha256/sha512 (hex, optional salt prefix), bcrypt or argon2 (PHC) digest; 20 per client and login per 10 minutes | `compare` |
 | `vault_pipe` | the value on the stdin of an allowlisted command; returns its exit code and scrubbed output | `pipe: [target names]` |
+
+`vault_compare` and `vault_pipe` take exactly one of `field` (`username`,
+`password`, `totp`; totp is the stored seed, not a current code) and
+`custom_field` (a custom field's exact name from `vault_list`, e.g. `token`).
+Text, hidden and boolean custom fields have values (a boolean is `true` or
+`false`); linked ones do not. An unknown name is a 404 that lists the
+login's custom field names; two fields with the same name are a 409
+(ambiguous). The audit records `field_kind: "custom:<name>"`, never a value,
+and the pipe's output is scrubbed to `[secret:<name>]`.
 
 - New passwords are always random and generated inside the filler. An agent
   never supplies or sees one: it sets a new password on a site with
@@ -317,7 +332,12 @@ the chat id (a process without one sends `none`, served by `default_client`).
   only, never into argv. With the example, `vault_pipe(id, "password",
   "docker-login", {"registry": "ghcr.io"})` runs `docker login --username
   <user> --password-stdin ghcr.io`, and `vault_pipe(id, "password",
-  "gh-token")` logs `gh` in with a token stored as the login's password.
+  "gh-token")` logs `gh` in with a token stored as the login's password. A
+  token kept in a custom field goes the same way:
+  `vault_pipe {id, custom_field: "token", target: "jira-login", args: {site: "<team>.atlassian.net"}}`
+  with a target like `{"argv": ["acli", "jira", "auth", "login", "--site",
+  "{arg:site}", "--email", "{username}", "--token"], "args": {"site":
+  "[a-z0-9][a-z0-9-]*\\.atlassian\\.net"}}`.
 - `make filler-install` upgrades an older policy once (one with no
   `pipe_targets`): it backs it up to `policy-backups/`, gives the
   `all_items` client `manage` with every action on and `"pipe": []`, and
