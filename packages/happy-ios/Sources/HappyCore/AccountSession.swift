@@ -322,23 +322,54 @@ public final class AccountSession: Sendable {
             await sync.setConnected(true)
             await rigComposer?.setConnected(true)
         case .event("update", let payload?):
-            if let update = try? payload.decode(as: UpdateContainer.self) {
-                await sync.handle(update)
-                switch update.body {
-                case .newMessage(let id, _): await gitStatus?.invalidate(sessionId: id)
-                case .updateSession(let body): await gitStatus?.invalidate(sessionId: body.id)
-                case .deleteSession(let id):
-                    await gitStatus?.clearForSession(sessionId: id)
-                    fileCache?.removeSession(sessionId: id)
-                default: break
-                }
+            guard let update = try? payload.decode(as: UpdateContainer.self) else {
+                await undecodable(update: payload, sync: sync)
+                break
+            }
+            await sync.handle(update)
+            switch update.body {
+            case .newMessage(let id, _): await gitStatus?.invalidate(sessionId: id)
+            case .updateSession(let body): await gitStatus?.invalidate(sessionId: body.id)
+            case .deleteSession(let id):
+                await gitStatus?.clearForSession(sessionId: id)
+                fileCache?.removeSession(sessionId: id)
+            default: break
             }
         case .event("ephemeral", let payload?):
-            if let ephemeral = try? payload.decode(as: EphemeralEvent.self) {
-                await sync.handle(ephemeral)
+            guard let ephemeral = try? payload.decode(as: EphemeralEvent.self) else {
+                await undecodable(ephemeral: payload, sync: sync)
+                break
             }
+            await sync.handle(ephemeral)
         case .event:
             break
+        }
+    }
+
+    /// An update this build cannot read still says something changed: the
+    /// change is pulled instead of dropped, so the chat or list it touched
+    /// does not stay stale until the next reconnect. Only the type is
+    /// logged, never the payload.
+    static func undecodable(update payload: JSONValue, sync: LegacySyncEngine) async {
+        let body = payload["body"]
+        let type = body?["t"]?.stringValue ?? "?"
+        SyncLog.error("update of type \(type) did not decode; pulling instead")
+        if type == "new-message", let sessionId = body?["sid"]?.stringValue {
+            await sync.invalidate(.messages(sessionId: sessionId))
+        } else {
+            await sync.syncAll()
+        }
+    }
+
+    /// Presence this build cannot read: what it would have changed is in
+    /// the session or machine records, pulled again.
+    static func undecodable(ephemeral payload: JSONValue, sync: LegacySyncEngine) async {
+        let type = payload["type"]?.stringValue ?? "?"
+        SyncLog.error("ephemeral of type \(type) did not decode; pulling instead")
+        switch type {
+        case "activity": await sync.invalidate(.sessions)
+        case "machine-activity", "machine-status": await sync.invalidate(.machines)
+        default: await sync.syncAll()
         }
     }
 }

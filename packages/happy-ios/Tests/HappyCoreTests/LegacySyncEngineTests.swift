@@ -153,6 +153,22 @@ final class LegacySyncEngineTests: XCTestCase {
         XCTAssertEqual(http.requests("GET /v3/sessions/s/messages").count, 2)
     }
 
+    func testAnUpdateThatDoesNotDecodePullsTheSessionsMessages() async throws {
+        let fixture = self.fixture!
+        try store.upsertSessions([RecordDecoder(keyRing: KeyRing(keys: fixture.keys)).session(fixture.session("s", seq: 1, updatedAt: 1))])
+        try store.applyMessagePage(sessionId: "s", messages: [], syncedThrough: 0)
+        http.on("GET /v3/sessions/s/messages") { _ in
+            (200, try JSONEncoder().encode(MessagesPage(messages: [fixture.message(seq: 1, text: "one")], hasMore: false)))
+        }
+        let (_, status) = AsyncStream.makeStream(of: RealtimeStatus.self)
+        // A new message this build cannot read: its `message` is no object.
+        let payload = try JSONValue.decode(Data(#"{"id":"u","seq":2,"createdAt":0,"body":{"t":"new-message","sid":"s","message":42}}"#.utf8))
+        await AccountSession.route(.event(name: "update", payload: payload), sync: engine, status: status)
+        await engine.waitForIdle()
+        XCTAssertEqual(http.requests("GET /v3/sessions/s/messages").count, 1, "the undecodable update is pulled, not dropped")
+        XCTAssertEqual(try store.messages(sessionId: "s").map(\.seq), [1])
+    }
+
     func testLiveMessagesFastPathAndGapRecovery() async throws {
         let fixture = self.fixture!
         try store.upsertSessions([RecordDecoder(keyRing: KeyRing(keys: fixture.keys)).session(fixture.session("s", seq: 1, updatedAt: 1))])
