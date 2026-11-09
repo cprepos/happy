@@ -6,6 +6,10 @@ public enum RealtimeStatus: Equatable, Sendable {
     case connecting
     case connected
     case error
+    /// The server refused this account's credentials several times in a
+    /// row. The same token cannot do better, so the socket stops spinning
+    /// and tries again only now and then.
+    case unauthorized
 }
 
 public enum RealtimeEvent: Equatable, Sendable {
@@ -38,12 +42,25 @@ public actor SocketIOClient {
     private let auth: @Sendable () async -> JSONValue
     private let backoff: Backoff
     private let sleep: InvalidateSync.Sleep
+    private let handshakeTimeout: Duration
     private let continuation: AsyncStream<RealtimeEvent>.Continuation
 
+    /// Connect refusals in a row that make the status `.unauthorized`.
+    static let rejectionLimit = 3
+    /// The pause between attempts once refused that many times.
+    static let rejectedRetry: Duration = .seconds(60)
+
     private var wantsConnection = false
+    /// Bumped by every disconnect. A loop, and the socket it opened, belong
+    /// to the generation it started in; once that has passed, whatever it
+    /// still says (a status, a socket, an event) is ignored, so overlapping
+    /// reconnects cannot write over the newer connection.
+    private var generation = 0
     private var loop: Task<Void, Never>?
     private var connection: WebSocketConnection?
     private var lastPacketAt = ContinuousClock.now
+    /// Connect refusals since the last good connect.
+    private var rejections = 0
     private var nextAckId = 0
     private var pendingAcks: [Int: CheckedContinuation<[JSONValue], Error>] = [:]
 
@@ -52,14 +69,18 @@ public actor SocketIOClient {
         connector: WebSocketConnector = URLSessionWebSocketConnector(),
         backoff: Backoff = Backoff(initial: .seconds(1), maximum: .seconds(5)),
         sleep: @escaping InvalidateSync.Sleep = InvalidateSync.taskSleep,
+        handshakeTimeout: Duration = .seconds(20),
         auth: @escaping @Sendable () async -> JSONValue
     ) {
         self.url = url
         self.connector = connector
         self.backoff = backoff
         self.sleep = sleep
+        self.handshakeTimeout = handshakeTimeout
         self.auth = auth
-        (events, continuation) = AsyncStream.makeStream(of: RealtimeEvent.self, bufferingPolicy: .bufferingNewest(1_000))
+        // Unbounded: a burst while the reader is busy (a big catch-up) must
+        // not drop an update; a dropped one is a chat that stays stale.
+        (events, continuation) = AsyncStream.makeStream(of: RealtimeEvent.self, bufferingPolicy: .unbounded)
     }
 
     deinit {
@@ -71,20 +92,26 @@ public actor SocketIOClient {
     public func connect() {
         wantsConnection = true
         guard loop == nil else { return }
-        loop = Task { await self.runLoop() }
+        let generation = self.generation
+        loop = Task { await self.runLoop(generation: generation) }
     }
 
     public func disconnect() async {
+        // Everything is let go of before the first await: a connect or
+        // reconnect that runs while the old socket is still closing starts
+        // a clean loop, and the old loop's late writes are ignored.
         wantsConnection = false
+        generation += 1
         loop?.cancel()
         loop = nil
-        if let connection {
-            try? await connection.send(EngineIOPacket.message(SocketIOPacket.disconnect.text).text)
-            await connection.close()
-        }
+        let old = connection
         connection = nil
         failPendingAcks(SocketIOError.closed)
         setStatus(.disconnected)
+        if let old {
+            try? await old.send(EngineIOPacket.message(SocketIOPacket.disconnect.text).text)
+            await old.close()
+        }
     }
 
     /// Drops the current socket and connects again, e.g. after a token change.
@@ -126,48 +153,69 @@ public actor SocketIOClient {
 
     // MARK: Connection loop
 
-    private func runLoop() async {
+    /// Whether a loop of `generation` still owns the client.
+    private func isCurrent(_ generation: Int) -> Bool {
+        wantsConnection && generation == self.generation
+    }
+
+    private func runLoop(generation: Int) async {
         var attempt = 0
-        while wantsConnection && !Task.isCancelled {
+        while isCurrent(generation) && !Task.isCancelled {
             setStatus(.connecting)
-            var failed = false
+            var failure: Error?
             do {
-                try await runConnection { attempt = 0 }
+                try await runConnection(generation: generation) { attempt = 0 }
             } catch {
-                failed = true
+                failure = error
             }
             // After a disconnect the socket and acks are already let go of,
             // and a reconnect's new loop may hold its own by now.
-            guard wantsConnection && !Task.isCancelled else { break }
+            guard isCurrent(generation) && !Task.isCancelled else { break }
             connection = nil
             failPendingAcks(SocketIOError.closed)
-            setStatus(failed ? .error : .disconnected)
+            if case .connectRejected? = failure as? SocketIOError { rejections += 1 }
+            let unauthorized = rejections >= Self.rejectionLimit
+            let next: RealtimeStatus = if unauthorized { .unauthorized } else if failure != nil { .error } else { .disconnected }
+            setStatus(next)
             attempt += 1
-            try? await sleep(backoff.delay(attempt: attempt))
+            try? await sleep(unauthorized ? Self.rejectedRetry : backoff.delay(attempt: attempt))
         }
     }
 
-    private func runConnection(onConnected: () -> Void) async throws {
+    private func runConnection(generation: Int, onConnected: () -> Void) async throws {
         let connection = try await connector.connect(to: url)
         // A disconnect while this was connecting had no socket to close.
-        guard !Task.isCancelled else {
+        guard isCurrent(generation) && !Task.isCancelled else {
             await connection.close()
             return
         }
         self.connection = connection
         defer { Task { await connection.close() } }
 
+        // Watched from before the Engine.IO open: a server that accepts the
+        // socket and then says nothing, or never answers the namespace
+        // CONNECT, gets `handshakeTimeout` and is then dropped, rather than
+        // leaving the client "connecting" until the system gives up.
+        lastPacketAt = .now
+        let deadline = startHandshakeDeadline(generation: generation, connection: connection)
+        defer { deadline.cancel() }
+
         guard case .open(let handshake)? = EngineIOPacket(text: try await connection.receive()) else {
             throw SocketIOError.protocolViolation("expected Engine.IO open")
         }
+        guard isCurrent(generation) else { return }
         lastPacketAt = .now
-        let watchdog = startWatchdog(handshake: handshake, connection: connection)
+        let watchdog = startWatchdog(handshake: handshake, generation: generation, connection: connection)
         defer { watchdog.cancel() }
 
-        try await connection.send(EngineIOPacket.message(SocketIOPacket.connect(await auth()).text).text)
+        let credentials = await auth()
+        guard isCurrent(generation) else { return }
+        try await connection.send(EngineIOPacket.message(SocketIOPacket.connect(credentials).text).text)
 
         while !Task.isCancelled {
             let text = try await connection.receive()
+            // A newer connection owns the client: this one says nothing more.
+            guard isCurrent(generation) else { return }
             lastPacketAt = .now
             guard let packet = EngineIOPacket(text: text) else { continue }
             switch packet {
@@ -179,6 +227,8 @@ public actor SocketIOClient {
                 guard let message = SocketIOPacket(text: payload) else { continue }
                 switch message {
                 case .connect:
+                    deadline.cancel()
+                    rejections = 0
                     setStatus(.connected)
                     onConnected()
                     continuation.yield(.connected)
@@ -197,13 +247,25 @@ public actor SocketIOClient {
         }
     }
 
+    /// Closes `connection` unless its namespace CONNECT is acknowledged
+    /// within `handshakeTimeout`; cancelled once it is.
+    private func startHandshakeDeadline(generation: Int, connection: WebSocketConnection) -> Task<Void, Never> {
+        let timeout = handshakeTimeout
+        return Task {
+            do { try await Task.sleep(for: timeout) } catch { return }
+            guard self.isCurrent(generation) else { return }
+            await connection.close()
+        }
+    }
+
     /// The server pings every `pingInterval`; if nothing arrives for
     /// interval + timeout the link is dead even if TCP has not noticed.
-    private func startWatchdog(handshake: EngineIOHandshake, connection: WebSocketConnection) -> Task<Void, Never> {
+    private func startWatchdog(handshake: EngineIOHandshake, generation: Int, connection: WebSocketConnection) -> Task<Void, Never> {
         let limit = Duration.milliseconds(handshake.pingInterval + handshake.pingTimeout)
         return Task {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(5))
+                guard self.isCurrent(generation) else { return }
                 if ContinuousClock.now - self.lastPacketAt > limit {
                     await connection.close()
                     return

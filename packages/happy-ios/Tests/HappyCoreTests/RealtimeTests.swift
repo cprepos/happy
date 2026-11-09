@@ -172,6 +172,74 @@ final class SocketIOClientTests: XCTestCase {
         await client.disconnect()
         await eventually { await metrics.snapshot().totals.count(.streamsClosed, .socket) == 2 }
     }
+
+    func testOverlappingReconnectsEndConnectedOnALiveSocket() async throws {
+        let connector = FakeConnector()
+        let client = SocketIOClient(url: URL(string: "wss://x/")!, connector: connector,
+                                    backoff: Backoff(initial: .milliseconds(1), maximum: .milliseconds(1))) { .object([:]) }
+        await client.connect()
+        await eventually { connector.latest != nil }
+        let first = try XCTUnwrap(connector.latest)
+        first.push(#"0{"sid":"s","upgrades":[],"pingInterval":25000,"pingTimeout":20000}"#)
+        first.push(#"40{"sid":"ns"}"#)
+        await eventually { await client.status == .connected }
+        // The old socket's close stalls, so each reconnect's disconnect is
+        // still awaiting while the next one starts.
+        first.holdSends()
+        let reconnects = (0..<3).map { _ in Task { await client.reconnect() } }
+        try? await Task.sleep(for: .milliseconds(20))
+        first.releaseSends()
+        for reconnect in reconnects { await reconnect.value }
+        await eventually { connector.sockets.count >= 2 }
+        try? await Task.sleep(for: .milliseconds(20))
+        let live = try XCTUnwrap(connector.latest)
+        XCTAssertFalse(live === first)
+        live.push(#"0{"sid":"s2","upgrades":[],"pingInterval":25000,"pingTimeout":20000}"#)
+        live.push(#"40{"sid":"ns2"}"#)
+        await eventually { await client.status == .connected }
+        // A stale loop's late failure does not flip the status back.
+        try? await Task.sleep(for: .milliseconds(50))
+        let status = await client.status
+        XCTAssertEqual(status, .connected)
+        try await client.emit("still-here", .null)
+        XCTAssertTrue(live.sent.contains { $0.contains("still-here") })
+        let others = connector.sockets.filter { $0 !== live }
+        XCTAssertTrue(others.allSatisfy { socket in !socket.sent.contains { $0.contains("still-here") } })
+        await client.disconnect()
+    }
+
+    func testAServerThatNeverAnswersTheConnectIsDroppedAndRetried() async throws {
+        let connector = FakeConnector()
+        let client = SocketIOClient(url: URL(string: "wss://x/")!, connector: connector,
+                                    backoff: Backoff(initial: .milliseconds(1), maximum: .milliseconds(1)),
+                                    handshakeTimeout: .milliseconds(50)) { .object([:]) }
+        await client.connect()
+        // No Engine.IO open at all: the deadline still closes the socket.
+        await eventually { connector.sockets.count >= 2 }
+        let second = try XCTUnwrap(connector.latest)
+        // Open, then silence where the CONNECT ack should be.
+        second.push(#"0{"sid":"s","upgrades":[],"pingInterval":25000,"pingTimeout":20000}"#)
+        await eventually { connector.sockets.count >= 3 }
+        await client.disconnect()
+    }
+
+    func testRepeatedConnectRefusalsSayUnauthorized() async throws {
+        let connector = FakeConnector()
+        let client = SocketIOClient(url: URL(string: "wss://x/")!, connector: connector,
+                                    backoff: Backoff(initial: .milliseconds(1), maximum: .milliseconds(1))) { .object([:]) }
+        await client.connect()
+        for attempt in 1...SocketIOClient.rejectionLimit {
+            await eventually { connector.sockets.count >= attempt }
+            let socket = try XCTUnwrap(connector.latest)
+            socket.push(#"0{"sid":"s","upgrades":[],"pingInterval":25000,"pingTimeout":20000}"#)
+            socket.push(#"44{"message":"Invalid authentication token"}"#)
+        }
+        await eventually { await client.status == .unauthorized }
+        // It waits a long while before asking again, rather than spinning.
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(connector.sockets.count, SocketIOClient.rejectionLimit)
+        await client.disconnect()
+    }
 }
 
 final class AccountSessionTests: XCTestCase {

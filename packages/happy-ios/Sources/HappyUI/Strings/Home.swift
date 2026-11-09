@@ -16,6 +16,9 @@ extension Strings {
             case .connecting: localized("status.connecting", "connecting")
             case .disconnected: localized("status.disconnected", "disconnected")
             case .error: localized("status.error", "error")
+            // Not in happy-app (no en.ts key): the server keeps refusing
+            // this sign-in.
+            case .unauthorized: "signed out"
             }
         }
 

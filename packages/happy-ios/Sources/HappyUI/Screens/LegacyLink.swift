@@ -62,6 +62,8 @@ final class LegacyLink {
     /// socket that is down is one on its way back: "connecting…".
     static func headerState(status: RealtimeStatus, catchingUp: Bool, network: Bool) -> LinkState {
         if !network { return .waitingForNetwork }
+        // Refused again and again: not on its way back by itself.
+        if status == .unauthorized { return .offline }
         guard status == .connected else { return .connecting }
         return catchingUp ? .syncing : .online
     }
