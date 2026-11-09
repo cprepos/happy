@@ -21,6 +21,7 @@ public final class AgentConnections {
     /// The phone's way out as last heard (`watchNetwork`).
     private var networkWatch: NetworkPathWatch?
     private var networkSatisfied = true
+    private var networkInterface: NetworkPathDetails.Interface = .other
     private var loaded = false
     private var engines: [String: SyncEngine] = [:]
     private var selecting: Task<Void, Never>?
@@ -314,7 +315,8 @@ public final class AgentConnections {
         }
     }
 
-    /// The phone's network came back, or the app did: what was learned
+    /// The phone's network came back, moved between interfaces (Wi-Fi to
+    /// cellular, or back), or the app came back: what was learned
     /// about proxy tunnels is forgotten, and each computer's held Tailcat
     /// clients look for their paths again, without waiting on them.
     public func networkChanged() {
@@ -325,13 +327,19 @@ public final class AgentConnections {
 
     private func watchNetwork() {
         guard networkWatch == nil else { return }
-        networkSatisfied = NetworkPath.shared.isSatisfied
-        networkWatch = NetworkPath.shared.watch { [weak self] satisfied in
+        let current = NetworkPath.shared.details
+        networkSatisfied = current.satisfied
+        networkInterface = current.interface
+        networkWatch = NetworkPath.shared.watchDetails { [weak self] path in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                let back = satisfied && !self.networkSatisfied
-                self.networkSatisfied = satisfied
-                if back { self.networkChanged() }
+                let back = path.satisfied && !self.networkSatisfied
+                // Wi-Fi to cellular (or back) leaves direct paths on the
+                // old interface, dead while the phone still has a way out.
+                let moved = path.satisfied && self.networkSatisfied && path.interface != self.networkInterface
+                self.networkSatisfied = path.satisfied
+                self.networkInterface = path.interface
+                if back || moved { self.networkChanged() }
             }
         }
     }
