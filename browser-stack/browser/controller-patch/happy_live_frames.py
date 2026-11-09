@@ -430,10 +430,11 @@ SCREEN_MAX_BYTES = 48 * 1024 * 1024
 SCREEN_PAGE_TIMEOUT_SECONDS = 5.0
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 # Used only when the window's geometry cannot be read or makes no sense: the top of the screen, full
-# width, this many pixels tall. It is Chromium's tab strip + toolbar (address bar) + the "controlled
-# by automated software" info bar at devicePixelRatio 1 in a maximized window, as measured on the
-# browser node (1920x1200 Xvfb, fluxbox). Larger than that only ever spares a few page pixels at the top.
-CHROME_STRIP_FALLBACK_PX = 130
+# width, this many pixels tall. It is Chromium's tab strip + toolbar (address bar) at devicePixelRatio 1
+# in a maximized window, as measured live on a pod (1920x1200 Xvfb, fluxbox): outerHeight - innerHeight
+# = 87. Kept at the measured height, not above it: a larger strip would leave the top of the page
+# unredacted, a smaller one only redacts part of the address bar.
+CHROME_STRIP_FALLBACK_PX = 87
 # The browser UI above the page is never taller than this many CSS pixels; geometry saying so is wrong.
 CHROME_STRIP_MAX_CSS_PX = 400
 WINDOW_SCRIPT = """() => ({
