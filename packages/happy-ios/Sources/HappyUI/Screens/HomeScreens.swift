@@ -438,7 +438,7 @@ public final class LegacyHomeViewController: UIViewController, ComposeHosting {
         }
     }
 
-    override var keyCommands: [UIKeyCommand]? {
+    public override var keyCommands: [UIKeyCommand]? {
         [RefreshShortcut.command(action: #selector(refreshFromKeyboard))] + (super.keyCommands ?? [])
     }
 
