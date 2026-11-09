@@ -362,8 +362,11 @@ public actor LegacySyncEngine {
     func pullPendingMessages() async throws {
         ThreadRules.assertOffMain()
         let sessions = try store.sessionsNeedingMessageSync(limit: options.messageSessionsPerPass)
-        try await pullMessageBatch(sessions)
-        if sessions.count == options.messageSessionsPerPass {
+        let received = try await pullMessageBatch(sessions)
+        // Another pass only when this one moved something: a session whose
+        // last seqs never arrive (burned on the server) stays selected, and
+        // a full pass of such sessions would otherwise run forever.
+        if sessions.count == options.messageSessionsPerPass, received > 0 {
             await invalidate(.pendingMessages)
         }
     }
@@ -374,7 +377,11 @@ public actor LegacySyncEngine {
         try await pullMessageBatch([session])
     }
 
-    private func pullMessageBatch(_ sessions: [SessionRecord]) async throws {
+    /// Downloads what each session has after its cursor; returns how many
+    /// messages arrived.
+    @discardableResult
+    private func pullMessageBatch(_ sessions: [SessionRecord]) async throws -> Int {
+        var received = 0
         let store = self.store
         let batch = SyncWriteBatch<MessageBatchItem, NoSyncCheckpoint>(
             maximumRecords: options.messageWriteBatchSize, maximumBytes: options.writeBatchMaximumBytes,
@@ -394,8 +401,12 @@ public actor LegacySyncEngine {
                     let page = try await api.messages(sessionId: session.id, afterSeq: afterSeq, limit: options.messagesPageSize)
                     let records = page.messages.map { decoder.message($0, sessionId: session.id, cipher: cipher) }
                     let lastSeq = page.messages.map(\.seq).max()
+                    received += page.messages.count
                     var items = records.map(MessageBatchItem.record)
-                    if !page.hasMore { items.append(.cursor(sessionId: session.id, through: max(lastSeq ?? 0, session.seq))) }
+                    // The cursor goes only as far as what arrived. Moving it
+                    // to the session's seq skipped, for good, any message the
+                    // server had counted but not yet listed.
+                    if !page.hasMore { items.append(.cursor(sessionId: session.id, through: lastSeq ?? afterSeq)) }
                     try await batch.append(items)
                     guard page.hasMore, let lastSeq, lastSeq > afterSeq else { break }
                     afterSeq = lastSeq
@@ -408,6 +419,7 @@ public actor LegacySyncEngine {
             throw error
         }
         try await batch.finish()
+        return received
     }
 
     /// Group records back into page writes at commit time. Cursor markers

@@ -153,6 +153,32 @@ final class LegacySyncEngineTests: XCTestCase {
         XCTAssertEqual(http.requests("GET /v3/sessions/s/messages").count, 2)
     }
 
+    func testTheCursorStopsAtTheHighestSeqReceived() async throws {
+        let fixture = self.fixture!
+        final class Listed: @unchecked Sendable { var through = 3 }
+        let listed = Listed()
+        http.on("GET /v2/sessions") { _ in
+            (200, try JSONEncoder().encode(SessionsPage(sessions: [fixture.session("s", seq: 5, updatedAt: 1)], nextCursor: nil, hasNext: false)))
+        }
+        http.on("GET /v3/sessions/s/messages") { request in
+            let after = Int(request.query("after_seq") ?? "") ?? -1
+            let page = (1...listed.through).map { fixture.message(seq: $0, text: "m\($0)") }.filter { $0.seq > after }
+            return (200, try JSONEncoder().encode(MessagesPage(messages: page, hasMore: false)))
+        }
+
+        // The session says 5, but the server lists only up to 3 so far.
+        await engine.run(.sessions)
+        await engine.waitForIdle()
+        XCTAssertEqual(try store.session(id: "s")?.syncedMessageSeq, 3, "not the session's seq: 4 and 5 never arrived")
+
+        // They arrive later, and the next pass fetches them after 3.
+        listed.through = 5
+        await engine.run(.pendingMessages)
+        XCTAssertEqual(http.requests("GET /v3/sessions/s/messages").last?.query("after_seq"), "3")
+        XCTAssertEqual(try store.messages(sessionId: "s").map(\.seq), [1, 2, 3, 4, 5])
+        XCTAssertEqual(try store.session(id: "s")?.syncedMessageSeq, 5)
+    }
+
     func testAnUpdateThatDoesNotDecodePullsTheSessionsMessages() async throws {
         let fixture = self.fixture!
         try store.upsertSessions([RecordDecoder(keyRing: KeyRing(keys: fixture.keys)).session(fixture.session("s", seq: 1, updatedAt: 1))])
