@@ -264,6 +264,15 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         ultra.host = self
         ultra.onReachedOldest = { [weak self] in self?.loadOlder() }
         ultra.onRowShown = { [weak self] id in self?.reportFailure(id) }
+        if !previewing {
+            let pull = PullToRefresh(list: ultra.list) { [weak self] in
+                await self?.refreshChat() ?? .offline
+            }
+            // Only at the oldest message with no older page on its way, so
+            // the pull and the paging never fight over the top.
+            pull.isEnabled = { [weak self] in self?.olderLoads == 0 }
+            ultra.pull = pull
+        }
         view.addSubview(ultra)
         loadFailure.traitOverrides.followsTextSize = true
         loadFailure.isHidden = true
@@ -314,7 +323,11 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         view.addSubview(slash.list)
         meter.isHidden = true
         view.addSubview(meter)
-        header.onOpen = { [weak self] in self?.openDetail() }
+        // While the status says the link is down a tap refreshes instead.
+        header.onOpen = { [weak self] in
+            guard let self else { return }
+            if headerState != .online, !previewing { refresh() } else { openDetail() }
+        }
 
         keyboardTracker.isHidden = true
         keyboardTracker.isUserInteractionEnabled = false
@@ -1867,8 +1880,39 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
     private func loadOlder() {
         guard chat.hasMore else { return }
         let conversation = conversation
-        Task { await conversation.loadOlder() }
+        olderLoads += 1
+        Task { [weak self] in
+            await conversation.loadOlder()
+            self?.olderLoads -= 1
+        }
     }
+
+    /// Older pages on their way; a pull waits for none.
+    private var olderLoads = 0
+
+    /// Pull-to-refresh's work: the computer's connection and this chat
+    /// asked again, and a live browser read again.
+    private func refreshChat() async -> RefreshOutcome {
+        if let dock = liveBrowserDock, dock.feed != nil { dock.retryBrowser() }
+        let outcome = await session.refresh(conversation: conversation)
+        // An older page that failed while the link was down: at the top,
+        // ask again now that the link is back.
+        if outcome == .refreshed, chat.hasMore, ultra.list.reachedTop { loadOlder() }
+        return outcome
+    }
+
+    /// The pull's refresh without the pull: Command-R, or the header's
+    /// status tapped while it is not online.
+    func refresh() {
+        ultra.pull?.refresh()
+    }
+
+    override var keyCommands: [UIKeyCommand]? {
+        guard !previewing else { return super.keyCommands }
+        return [RefreshShortcut.command(action: #selector(refreshFromKeyboard))] + (super.keyCommands ?? [])
+    }
+
+    @objc private func refreshFromKeyboard() { refresh() }
 
     /// A link in a row: the reference it names, else the web.
     private func open(link: String) {

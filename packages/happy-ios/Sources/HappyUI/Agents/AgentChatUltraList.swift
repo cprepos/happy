@@ -144,7 +144,10 @@ final class AgentChatUltraList: UIView {
         list.onScroll = { [weak self] _ in self?.scrolled() }
         list.onVisibleWindowChanged = { [weak self] in self?.scrolled() }
         list.willBeginDragging = { [weak self] in self?.host?.transcriptWillBeginDragging() }
-        list.didEndDragging = { [weak self] in self?.host?.transcriptDidEndDragging() }
+        list.didEndDragging = { [weak self] in
+            self?.pull?.handleEndDrag()
+            self?.host?.transcriptDidEndDragging()
+        }
         list.onLoadedEdgeReached = { [weak self] edge in
             guard let self, isActive, edge == .top else { return }
             onReachedOldest?()
@@ -205,7 +208,7 @@ final class AgentChatUltraList: UIView {
                 self.insets = insets
                 // A new size keeps the row read at the top where it is,
                 // not the distance from the composer.
-                list.applyChanges(newInsets: .init(top: insets.top, bottom: insets.bottom), anchorMode: .preserveVisibleContent,
+                list.applyChanges(newInsets: .init(top: insets.top + held, bottom: insets.bottom), anchorMode: .preserveVisibleContent,
                                   compensatesInsetChange: keyboard?.compensates ?? false, transition: keyboard?.transition ?? .none)
             }
             list.resize(to: frame)
@@ -225,7 +228,7 @@ final class AgentChatUltraList: UIView {
             return
         }
         list.applyChanges(newSize: keyboard == nil || sizeChanged ? size : nil,
-                          newInsets: .init(top: insets.top, bottom: insets.bottom),
+                          newInsets: .init(top: insets.top + held, bottom: insets.bottom),
                           anchorMode: .preserveVisibleContent,
                           compensatesInsetChange: keyboard?.compensates ?? !list.isTracking,
                           transition: keyboard?.transition ?? .none)
@@ -356,7 +359,7 @@ final class AgentChatUltraList: UIView {
             followOnly && !follows ? .none : transition
         }
         list.applyChanges(items: items, newSize: viewportSize,
-                          newInsets: .init(top: insets.top, bottom: insets.bottom),
+                          newInsets: .init(top: insets.top + held, bottom: insets.bottom),
                           scrollTo: target,
                           anchorMode: .preserveVisibleContent,
                           transition: Self.transition(eased, moved: moved, grew: grew))
@@ -447,8 +450,14 @@ final class AgentChatUltraList: UIView {
         if onScreen.update(id, shown: shown) { onRowShown?(id) }
     }
 
+    /// Pull-to-refresh, when the chat gives the list one: it pulls only at
+    /// the oldest message, and its held room goes above the first row.
+    var pull: PullToRefresh?
+    private var held: CGFloat { pull?.heldInset ?? 0 }
+
     private func scrolled() {
         guard isActive else { return }
+        pull?.handleScroll()
         followsNewest = distanceFromNewest <= Self.followThreshold
         host?.transcriptScrolled()
     }
