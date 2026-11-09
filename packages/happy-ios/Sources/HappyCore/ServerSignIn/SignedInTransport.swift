@@ -171,5 +171,6 @@ public final class SignedInTransport: SelfMeteringTransport {
     public func browserConnection() async throws -> any BrowserStream { try await base.browserConnection() }
     public func reset() async { await base.reset() }
     public func reset(_ category: RequestCategory) async { await base.reset(category) }
+    public func networkChanged() async { await base.networkChanged() }
     public func close() async { await base.close() }
 }

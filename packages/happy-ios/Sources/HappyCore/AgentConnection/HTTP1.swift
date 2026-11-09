@@ -36,6 +36,9 @@ public protocol AgentTransport: Sendable {
     func reset() async
     /// Lets go of `category`'s connections; the other categories' stay.
     func reset(_ category: RequestCategory) async
+    /// The phone's network changed, or the app came back: each client held
+    /// looks for its way to the computer again, keeping what is open.
+    func networkChanged() async
     func close() async
     /// The bearer to write into a request this transport doesn't frame
     /// itself (an artifact request on a browser connection): `credential`,
@@ -93,6 +96,8 @@ extension AgentTransport {
     public func reset() async {}
 
     public func reset(_ category: RequestCategory) async { await reset() }
+
+    public func networkChanged() async {}
 
     public func bearer(_ credential: String) async throws -> String { credential }
 
@@ -211,6 +216,13 @@ public final class AgentHTTPTransport: SelfMeteringTransport {
     public func reset(_ category: RequestCategory) async {
         await clients.reset(category)
         await publicFlows.close(category)
+    }
+
+    /// Each Tailcat client connected now probes its paths again: a direct
+    /// path over the network the phone left is dropped for the relay at
+    /// once, instead of when its flows time out.
+    public func networkChanged() async {
+        for tunnel in clients.held() { await tunnel.client.notifyNetworkChanged() }
     }
 
     /// The way a `category` request goes: a lease on one of that

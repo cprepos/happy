@@ -268,6 +268,9 @@ final class TailcatClients<Client: AnyObject & Sendable>: @unchecked Sendable {
         for client in old { await disconnect(client) }
     }
 
+    /// The clients connected now, of every category.
+    func held() -> [Client] { locked { slots.compactMap(\.client) } }
+
     /// How many places `category` has, connected or not.
     func count(_ category: RequestCategory) -> Int { locked { slots.filter { $0.category == category }.count } }
 }

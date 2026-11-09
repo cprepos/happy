@@ -367,6 +367,7 @@ public struct MeteredAgentTransport: AgentTransport {
 
     public func reset() async { await base.reset() }
     public func reset(_ category: RequestCategory) async { await base.reset(category) }
+    public func networkChanged() async { await base.networkChanged() }
     public func close() async { await base.close() }
 }
 

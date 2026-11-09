@@ -18,6 +18,9 @@ public final class AgentConnections {
     private var jobs: [String: Task<Void, Never>] = [:]
     private var generation: UInt64 = 0
     private var foreground = true
+    /// The phone's way out as last heard (`watchNetwork`).
+    private var networkWatch: NetworkPathWatch?
+    private var networkSatisfied = true
     private var loaded = false
     private var engines: [String: SyncEngine] = [:]
     private var selecting: Task<Void, Never>?
@@ -30,6 +33,7 @@ public final class AgentConnections {
     public init(credentials: any AgentConnectionCredentialStore, directory: URL?, makeTransport: @escaping @Sendable (AgentConnectionCredentials) -> any AgentTransport = { AgentHTTPTransport(address: $0.address, port: $0.port, publicUrl: $0.publicUrl, tailcatAvailable: $0.tailcatAvailable != false) }) {
         storage = AgentConnectionStorage(credentials: credentials, directory: directory)
         self.makeTransport = makeTransport
+        watchNetwork()
     }
 
     public var active: AgentConnection? { accounts.first { $0.id == activeID } }
@@ -310,8 +314,31 @@ public final class AgentConnections {
         }
     }
 
+    /// The phone's network came back, or the app did: what was learned
+    /// about proxy tunnels is forgotten, and each computer's held Tailcat
+    /// clients look for their paths again, without waiting on them.
+    public func networkChanged() {
+        TunnelSupport.shared.forget()
+        let transports = engines.values.map { $0.client.transport }
+        Task { for transport in transports { await transport.networkChanged() } }
+    }
+
+    private func watchNetwork() {
+        guard networkWatch == nil else { return }
+        networkSatisfied = NetworkPath.shared.isSatisfied
+        networkWatch = NetworkPath.shared.watch { [weak self] satisfied in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let back = satisfied && !self.networkSatisfied
+                self.networkSatisfied = satisfied
+                if back { self.networkChanged() }
+            }
+        }
+    }
+
     public func setForeground(_ active: Bool) async {
         foreground = active; generation &+= 1
+        if active { watchNetwork(); networkChanged() }
         let pending = jobs; jobs.removeAll()
         pending.values.forEach { $0.cancel() }
         for job in pending.values { await job.value }
