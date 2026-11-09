@@ -235,6 +235,35 @@ the offline spell, so the title says "Connecting…" until this try
 answers; legacy: `AccountSession.networkReturned`, a fresh socket), and
 what waited is sent.
 
+## Refreshing
+
+A pull down past a list's top asks the account's link again rather than
+waiting out its backoff. So do Command-R ("Refresh" in the shortcuts) and
+a tap on a header while it shows a status rather than the name.
+
+- **What it asks.** Legacy: `AccountSession.refresh(scope:)` reconnects the
+  socket and restarts the scope's pulls (`.home`: sessions and pending
+  messages; `.chat(id)`: that session's messages; `.machines`). Calls for a
+  scope already refreshing share that refresh. Agent:
+  `Session.refresh(conversation:)` reconnects the engine and reads the open
+  chat again; an open chat with a live browser also retries the browser.
+- **How long.** The spinner holds until the pulls land, at most 15 s. Past
+  that the pulls go on, the spinner lets go, and a short "Still
+  reconnecting…" shows at the list's top. With no network path the answer
+  is at once `.offline`, and the title already says why.
+- **Where.** Home and the sidebar, both kinds of chat (only at a chat's
+  true top, never while an older page is loading, so the pull never fights
+  the older-page loader; a refresh that lands also retries an older page
+  that failed), and with the system's control: the machine screen, session
+  info and detail, changes, a file, and document and todo history. Those
+  last screens read their own content again first and ask the link only
+  when that read finds no answer. The browser screen keeps its own reload.
+- **The parts.** `PullRefreshLayout` (HappyLayout, pure, tested) is the
+  state machine: idle, pulling, armed, refreshing, ending, with the
+  thresholds and spinner frame in `PullRefreshMetrics`. `PullToRefresh`
+  (HappyUI) drives it from an UltraList; `attachRefresh(to:action:)` puts
+  the same action on a `UIRefreshControl`.
+
 ## Tests
 
 - `IntentOutboxTests` (HappyCore): coalescing, ack never removes a newer
@@ -270,3 +299,7 @@ what waited is sent.
   saying "waiting for network…". When the network is back each message
   is posted once, in order, the archive once, and the bubbles settle in
   the order they were sent.
+- `PullRefreshLayoutTests` (HappyLayout): pulling, arming and disarming,
+  a pull let go short of the threshold, a disabled pull, the Mac's
+  threshold, scrolls ignored while refreshing, ending back to idle, and
+  the spinner's frame in the pull and while held.

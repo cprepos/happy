@@ -31,9 +31,16 @@ chat's row is drawn and read selected in the sidebar; the status bar's tap
 scrolls to the top (the list is the one scroll host in the window that
 claims it); VoiceOver reads each row with its label, traits and an Actions
 action for its long press; a new text size keeps the first row below the
-header where it was (`preserveVisibleContent`). The table had no
-pull-to-refresh, drag to reorder or search inside the list, and neither does
-the list.
+header where it was (`preserveVisibleContent`). The table had no drag to
+reorder or search inside the list, and neither does the list.
+
+Pulled down past its top, the list refreshes (`PullToRefresh`, over the
+pure `PullRefreshLayout`): a spinner shows in the pull, a light tap arms it
+at 64 points (90 for a Mac's trackpad), and letting go there holds the
+list 56 points down under the spinner until the account's link has been
+asked again (`AccountSession.refresh(scope: .home)`, or
+`Session.refresh()` for an agent). Command-R and a tap on the title while
+it shows a status do the same. See offline-first.md, "Refreshing".
 
 The adapter caches unchanged descriptors and prepared content by identity
 and revision. Revisions increase across removal and reinsertion, so old
