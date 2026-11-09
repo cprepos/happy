@@ -63,6 +63,12 @@ final class AgentHomeViewController: UIViewController, ComposeHosting {
 
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
 
+    override var keyCommands: [UIKeyCommand]? {
+        [RefreshShortcut.command(action: #selector(refreshFromKeyboard))] + (super.keyCommands ?? [])
+    }
+
+    @objc private func refreshFromKeyboard() { v2.refresh() }
+
     override func viewDidLoad() {
         super.viewDidLoad()
         // The conversation's own ground, light and dark; none as the iPad's
@@ -97,6 +103,7 @@ final class AgentHomeViewController: UIViewController, ComposeHosting {
         }
         v2.onListScroll = { [weak self] in self?.placeSearchField() }
         switcher = AccountSwitcher(context: context, controller: self)
+        switcher?.onRefresh = { [weak self] in self?.v2.refresh() }
         headerWatch = Session.session(for: id, context: context)?.watchHeader { [weak self] in self?.headerState = $0 }
         updateTitle()
         applyChrome()

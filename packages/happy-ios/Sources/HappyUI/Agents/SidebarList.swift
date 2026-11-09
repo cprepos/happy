@@ -79,6 +79,16 @@ final class SidebarList: UIView {
     }
     /// The room above the rows and below them, and the indicator's.
     private(set) var contentInsets = UIEdgeInsets.zero
+    /// Pull-to-refresh, when the owner gives the list one. Its held room
+    /// goes on top of `contentInsets`, in the list and in the edge that
+    /// mirrors it, so the bar's shade and the indicator see it too.
+    var pull: PullToRefresh? {
+        didSet {
+            pull?.appliesInsets = false
+            pull?.onHeldInsetChanged = { [weak self] _ in self?.heldInsetChanged() }
+        }
+    }
+    private var held: CGFloat { pull?.heldInset ?? 0 }
     private var prepared: Prepared?
     /// The slots at another width, for a width change that lays the rows
     /// on screen out again before the list derives them there.
@@ -179,6 +189,7 @@ final class SidebarList: UIView {
         }
         list.didEndDragging = { [weak self] in
             guard let self else { return }
+            pull?.handleEndDrag()
             onDidEndDragging?(list.isDecelerating)
         }
         list.didEndScrolling = { [weak self] in self?.onDidEndDecelerating?() }
@@ -419,21 +430,33 @@ final class SidebarList: UIView {
         edge.verticalScrollIndicatorInsets = indicator
         guard insets != contentInsets else { return }
         contentInsets = insets
-        edge.contentInset = insets
+        var mirrored = insets
+        mirrored.top += held
+        edge.contentInset = mirrored
         resizeList()
-        list.applyChanges(newSize: band.width > 0 ? band.size : nil, newInsets: .init(top: insets.top, bottom: insets.bottom), anchorMode: keepsTop ? .automatic : .preserveVisibleContent, compensatesInsetChange: keepsTop, transition: .none)
+        list.applyChanges(newSize: band.width > 0 ? band.size : nil, newInsets: .init(top: insets.top + held, bottom: insets.bottom), anchorMode: keepsTop ? .automatic : .preserveVisibleContent, compensatesInsetChange: keepsTop, transition: .none)
+        mirror()
+    }
+
+    /// A refresh began or ended: its room opens or closes above the rows,
+    /// taken out of the pull so nothing jumps.
+    private func heldInsetChanged() {
+        var mirrored = contentInsets
+        mirrored.top += held
+        edge.contentInset = mirrored
+        list.applyChanges(newInsets: .init(top: contentInsets.top + held, bottom: contentInsets.bottom), absorbsEdgeChangeIntoOverscroll: true)
         mirror()
     }
 
     /// The list's place as a scroll view's `contentOffset.y`: `-top` at rest
     /// at its top, less past it under a pull, more as it is read down.
     var contentOffsetY: CGFloat {
-        guard let prepared else { return -contentInsets.top }
+        guard let prepared else { return -(contentInsets.top + held) }
         for index in list.loadedIndexRange {
             guard let top = prepared.top(at: index), let frame = list.settledFrame(at: index) else { continue }
             return top - frame.minY
         }
-        return -contentInsets.top
+        return -(contentInsets.top + held)
     }
 
     var isAtTop: Bool { contentOffsetY <= -contentInsets.top + 1 }
@@ -466,6 +489,7 @@ final class SidebarList: UIView {
 
     private func scrolled() {
         if list.isDecelerating, !list.isTracking { glidedAt = CACurrentMediaTime() }
+        pull?.handleScroll()
         mirror()
         flashIndicator(force: false)
         onScroll?()

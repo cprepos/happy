@@ -130,6 +130,11 @@ final class HomeViewController: UIViewController {
         sidebar.onMove = { [weak self] in self?.onListScroll?() }
         sidebar.onDidEndDragging = { [weak self] decelerate in self?.listDidEndDragging(decelerate: decelerate) }
         sidebar.onDidEndDecelerating = { [weak self] in self?.listDidEndDecelerating() }
+        let pull = PullToRefresh(list: sidebar.list) { [weak self] in
+            await self?.session?.refresh() ?? .offline
+        }
+        pull.isEnabled = { [weak self] in self?.session != nil && self?.search == nil }
+        sidebar.pull = pull
         empty.onPair = { [weak self] in
             guard let self else { return }
             AccountAdding.begin(context: context, from: self)
@@ -307,6 +312,13 @@ final class HomeViewController: UIViewController {
         catalogWatches = []
         if let feed = surfaceCatalog { Task { await feed.stop() } }
         surfaceCatalog = nil
+    }
+
+    /// The pull's refresh without the pull, its spinner held over the
+    /// rows: Command-R, or the status tapped while it is not online.
+    func refresh() {
+        guard session != nil else { return }
+        sidebar.pull?.refresh()
     }
 
     /// The bar's field opened. Home stays exactly as it is, and so does the
