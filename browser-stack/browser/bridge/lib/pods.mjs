@@ -160,11 +160,16 @@ export function createPodClient({ baseUrl, token, fetchImpl = fetch, timeoutMs =
         // The whole-screen capture's controller steps (controller-patch/happy_live_frames.py):
         // the session's tab to the front -> {token, url, title}; then the captured PNG checked,
         // OCR-scrubbed and filed as an artifact -> {url, title, screenshot_path, screenshot_url,
-        // width, height, png, pii_scrubbed, screenshot_pii_scrub?}.
-        screenFront: (sid, { activate = true } = {}) =>
-            call('POST', `/happy/sessions/${encodeURIComponent(sid)}/screen/front`, { activate }, 15_000),
-        screenScrub: (sid, { token, png, label }) =>
-            call('POST', `/happy/sessions/${encodeURIComponent(sid)}/screen/scrub`, { token, png, label }, 90_000),
+        // width, height, png, pii_scrubbed, redaction, chrome_strip, screenshot_pii_scrub?}.
+        // redact false (the explicit opt-in) files it unscrubbed; the controller refuses that under
+        // PII_SCRUB_SCREENSHOT_STRICT.
+        screenFront: (sid, { activate = true, redact = true } = {}) =>
+            call('POST', `/happy/sessions/${encodeURIComponent(sid)}/screen/front`, { activate, redact }, 15_000),
+        screenScrub: (sid, { token, png, label, redact = true }) =>
+            call('POST', `/happy/sessions/${encodeURIComponent(sid)}/screen/scrub`, { token, png, label, redact }, 90_000),
+        // browser_screenshot scope "page" with redact false: the viewport, filed unscrubbed.
+        pageShot: (sid, { label, redact = true }) =>
+            call('POST', `/happy/sessions/${encodeURIComponent(sid)}/page-shot`, { label, redact }, 90_000),
         // How many of the session's approvals still wait for a decision (none on an error).
         async pendingApprovals(sid) {
             const list = await call('GET', `/approvals?status=pending&session_id=${encodeURIComponent(sid)}`, undefined, 5000);
@@ -918,14 +923,52 @@ export function createPodManager({
      * PNG, scrubbed), session_id, url, title, captured_at, screenshot_path, screenshot_url,
      * pii_scrubbed, screenshot_pii_scrub?}
      */
-    async function screenShot(chatKey, { activate = true, label = 'manual' } = {}) {
+    // The result fields both shots share (controller reply -> bridge reply).
+    function shotReply(p, out, capturedAt) {
+        return {
+            mime: 'image/png',
+            width: out.width,
+            height: out.height,
+            data: out.png,
+            session_id: p.sessionId,
+            url: out.url,
+            title: out.title,
+            captured_at: capturedAt,
+            screenshot_path: out.screenshot_path,
+            screenshot_url: out.screenshot_url,
+            pii_scrubbed: out.pii_scrubbed === true,
+            redaction: typeof out.redaction === 'string' ? out.redaction : (out.pii_scrubbed === true ? 'on' : 'unknown'),
+            ...(out.chrome_strip ? { chrome_strip: out.chrome_strip } : {}),
+            ...(out.screenshot_pii_scrub ? { screenshot_pii_scrub: out.screenshot_pii_scrub } : {}),
+        };
+    }
+    const tooOld = (what) => new PodError(`this browser pod's controller has no ${what} yet (it predates it); it gets it when the pod restarts, e.g. after the browser sleeps`, 501, 'screen_unsupported');
+
+    /** browser_screenshot scope "page" with redact false: the chat's own session's viewport, unscrubbed. */
+    async function pageShot(chatKey, { label = 'manual', redact = true } = {}) {
+        if (!CHAT_KEY.test(chatKey || '')) throw new PodError('bad chat_key', 400, 'bad_request');
+        const p = podOf(chatKey);
+        if (!p || !p.sessionId) throw new PodError('this chat\'s browser is asleep', 503, 'asleep');
+        const capturedAt = new Date(now()).toISOString();
+        try {
+            const out = await p.client.pageShot(p.sessionId, { label, redact });
+            if (redact === false && out.redaction !== 'off_by_request') throw new PodError('the controller did not confirm an unredacted capture', 502, 'pod_error');
+            return shotReply(p, out, capturedAt);
+        } catch (err) {
+            if (err.status === 404 && /Not Found/.test(err.message)) throw tooOld('unredacted page capture');
+            if (err.detail && [403, 409, 503].includes(err.status)) throw new PodError(`page capture refused: ${err.detail}`, err.status, err.code);
+            throw err;
+        }
+    }
+
+    async function screenShot(chatKey, { activate = true, label = 'manual', redact = true } = {}) {
         if (!CHAT_KEY.test(chatKey || '')) throw new PodError('bad chat_key', 400, 'bad_request');
         for (let attempt = 0; ; attempt++) {
             const p = podOf(chatKey);
             const podId = chats.get(chatKey)?.podId;
             if (!p || !p.sessionId) throw new PodError('this chat\'s browser is asleep', 503, 'asleep');
             try {
-                const front = await p.client.screenFront(p.sessionId, { activate });
+                const front = await p.client.screenFront(p.sessionId, { activate, redact });
                 const capturedAt = new Date(now()).toISOString();
                 const raw = await launcher.call('screen', { slot: p.slot, pod_id: podId });
                 // The pod (and its session) must still be the chat's own after the capture.
@@ -933,21 +976,10 @@ export function createPodManager({
                 if (!still || still.slot !== p.slot || chats.get(chatKey)?.podId !== podId || still.sessionId !== p.sessionId) {
                     throw new PodError('this chat\'s browser changed while the screen was captured; take it again', 409, 'moved');
                 }
-                const out = await p.client.screenScrub(p.sessionId, { token: front.token, png: raw.data, label });
-                return {
-                    mime: 'image/png',
-                    width: out.width,
-                    height: out.height,
-                    data: out.png,
-                    session_id: p.sessionId,
-                    url: out.url,
-                    title: out.title,
-                    captured_at: capturedAt,
-                    screenshot_path: out.screenshot_path,
-                    screenshot_url: out.screenshot_url,
-                    pii_scrubbed: out.pii_scrubbed === true,
-                    ...(out.screenshot_pii_scrub ? { screenshot_pii_scrub: out.screenshot_pii_scrub } : {}),
-                };
+                const out = await p.client.screenScrub(p.sessionId, { token: front.token, png: raw.data, label, redact });
+                // A controller that knows no redact switch scrubs anyway: say so rather than claim otherwise.
+                if (redact === false && out.redaction !== 'off_by_request') throw new PodError('the controller did not confirm an unredacted capture; it may predate redact: false (restart the pod)', 502, 'pod_error');
+                return shotReply(p, out, capturedAt);
             } catch (err) {
                 if (err.status === 404 && /Not Found/.test(err.message)) {
                     throw new PodError('this browser pod\'s controller has no screen capture yet (it predates it); it gets it when the pod restarts, e.g. after the browser sleeps. Use scope "page" meanwhile', 501, 'screen_unsupported');
@@ -1008,7 +1040,7 @@ export function createPodManager({
 
     return {
         ensure, stopChat, checkpointAuth, idleSweep, healthCheck, reconcile, refill, start, close,
-        chatForLink, chatForSession, podOf, podState, touchViewer, wake, status, hold, screen, screenShot,
+        chatForLink, chatForSession, podOf, podState, touchViewer, wake, status, hold, screen, screenShot, pageShot,
         liveness, sessionSeen, phantomSweep,
         get timings() { return timings.slice(); },
         _pods: pods, _chats: chats,

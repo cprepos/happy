@@ -58,12 +58,16 @@
 //   POST /api/pod       {chat_key, source?, verify?} or {session_id}
 //                       -> {mcp_url, session_id, link_id, url, slot}: the chat's pod, started or woken
 //   POST /api/pod/close {chat_key}                  -> saves the login, closes the session, stops the pod
-//   POST /api/screen    {chat_key, activate?, label?} -> {mime, width, height, data (base64 PNG),
-//                       session_id, url, title, captured_at, screenshot_path, screenshot_url,
-//                       pii_scrubbed, screenshot_pii_scrub?}: that chat's pod's whole screen
-//                       (browser_screenshot scope "screen") with its session's tab brought to the
-//                       front (activate false: it must already be), OCR-scrubbed by the pod's
-//                       controller and filed as the session's artifact; 503 asleep (never wakes it)
+//   POST /api/screen    {chat_key, activate?, label?, redact?} -> {mime, width, height, data (base64
+//                       PNG), session_id, url, title, captured_at, screenshot_path, screenshot_url,
+//                       pii_scrubbed, redaction, chrome_strip, screenshot_pii_scrub?}: that chat's
+//                       pod's whole screen (browser_screenshot scope "screen") with its session's tab
+//                       brought to the front (activate false: it must already be), OCR-scrubbed by
+//                       the pod's controller except the browser's own address bar strip (redact
+//                       false, only when sent as false: not at all) and filed as the session's
+//                       artifact; 503 asleep (never wakes it)
+//   POST /api/page-shot {chat_key, label?, redact?} -> the same fields: that chat's session's page
+//                       (viewport), for browser_screenshot scope "page" with redact false
 //   POST /api/tools     {}                          -> {tools}: auto-browser's tool list, cached, so
 //                       listing tools never starts a pod
 //   GET  /api/pods                                  -> slots, chats, recent start timings
@@ -596,7 +600,7 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         if (path === '/api/pods' && req.method === 'GET') return send(res, 200, pods ? { pods: true, ...pods.status() } : { pods: false });
         if (req.method !== 'POST') return send(res, 405, { error: 'method_not_allowed' });
         const body = await readJson(req);
-        if (path.startsWith('/api/pod') || path === '/api/tools' || path === '/api/screen') return podApi(res, path, body);
+        if (path.startsWith('/api/pod') || path === '/api/tools' || path === '/api/screen' || path === '/api/page-shot') return podApi(res, path, body);
 
         if (path === '/api/links' || path === '/api/takeover') {
             const { sid, rec: chatRec } = linkTarget(body);
@@ -743,7 +747,12 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
             }
             if (path === '/api/screen') {
                 const label = typeof body.label === 'string' && body.label ? body.label.slice(0, 100) : 'manual';
-                return send(res, 200, await pods.screenShot(chatKeyOf(body), { activate: body.activate !== false, label }));
+                // Unredacted only when asked for in so many words.
+                return send(res, 200, await pods.screenShot(chatKeyOf(body), { activate: body.activate !== false, label, redact: body.redact !== false }));
+            }
+            if (path === '/api/page-shot') {
+                const label = typeof body.label === 'string' && body.label ? body.label.slice(0, 100) : 'manual';
+                return send(res, 200, await pods.pageShot(chatKeyOf(body), { label, redact: body.redact !== false }));
             }
             if (path === '/api/tools') {
                 if (!listTools) return send(res, 503, { error: 'no tool list' });

@@ -397,18 +397,52 @@ async def editable_focused(page: Any) -> bool | None:
 #   3. POST /happy/sessions/{id}/screen/scrub {token, png (base64), label}: refused unless the
 #      session's page is still the one step 1 saw, on the same URL, still in front, and not refused.
 #      The image is written outside the artifact tree, OCR-scrubbed through the controller's own
-#      redaction (OCR reads the whole image, so its boxes are the image's own and the browser's own UI
-#      is scrubbed as the page is), and only then moved into the session's artifact directory as
+#      redaction, and only then moved into the session's artifact directory as
 #      <stamp>Z-screen-<label>.png. -> {url, title, screenshot_path, screenshot_url, width, height,
-#      png, pii_scrubbed, screenshot_pii_scrub?}. With PII_SCRUB_SCREENSHOT off the image is stored as
-#      captured, as page screenshots are; PII_SCRUB_SCREENSHOT_STRICT withholds an unscrubbable one
-#      (SCREENSHOT_WITHHELD, 503) as it does those.
+#      png, pii_scrubbed, redaction, chrome_strip, screenshot_pii_scrub?}. With PII_SCRUB_SCREENSHOT
+#      off the image is stored as captured, as page screenshots are; PII_SCRUB_SCREENSHOT_STRICT
+#      withholds an unscrubbable one (SCREENSHOT_WITHHELD, 503) as it does those.
+#
+# The browser's own UI strip (tab strip, address bar, toolbar: the top of the window, above the page)
+# is never redacted: the URL in the address bar is the point of the evidence. OCR reads the whole
+# image; words that lie wholly inside that strip are dropped from the redaction boxes, and everything
+# else (the page, any other window or dialog) is scrubbed as a page screenshot is. The strip comes
+# from the window's own geometry, read from the page at both steps: screenX/screenY (where the window
+# is), outerWidth, and outerHeight - innerHeight (the browser UI above the page), times
+# devicePixelRatio. Steps 1 and 3 must agree on it, or the window moved and the shot is refused.
+#
+# redact (both steps, default true): false is the explicit opt-in for full-fidelity evidence: the
+# capture is filed as it was on screen, unscrubbed, and the result says so (pii_scrubbed false,
+# redaction "off_by_request"). PII_SCRUB_SCREENSHOT_STRICT makes
+# scrubbing mandatory: with it on, redact false is refused (403 redaction_required), never quietly
+# scrubbed or quietly not. Every shot, redacted or not, is written to the controller's audit log
+# (event evidence_screenshot, with redacted true/false); an unredacted one that cannot be recorded
+# there is not kept.
+#
+# POST /happy/sessions/{id}/page-shot {label?, redact?} is browser_screenshot scope "page" with the
+# same redact switch: upstream's capture of the page (viewport), with redaction through the
+# controller's own _capture_screenshot_redacted when redact is true, as upstream's screenshot does,
+# and without it when false; the same result fields and audit event as the screen shot.
 
 SCREEN_TOKEN_ATTR = "_happy_screen_tokens"
 SCREEN_TOKEN_SECONDS = 30.0
 SCREEN_MAX_BYTES = 48 * 1024 * 1024
 SCREEN_PAGE_TIMEOUT_SECONDS = 5.0
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+# Used only when the window's geometry cannot be read or makes no sense: the top of the screen, full
+# width, this many pixels tall. It is Chromium's tab strip + toolbar (address bar) + the "controlled
+# by automated software" info bar at devicePixelRatio 1 in a maximized window, as measured on the
+# browser node (1920x1200 Xvfb, fluxbox). Larger than that only ever spares a few page pixels at the top.
+CHROME_STRIP_FALLBACK_PX = 130
+# The browser UI above the page is never taller than this many CSS pixels; geometry saying so is wrong.
+CHROME_STRIP_MAX_CSS_PX = 400
+WINDOW_SCRIPT = """() => ({
+  visibility: document.visibilityState,
+  screenX: window.screenX, screenY: window.screenY,
+  outerWidth: window.outerWidth, outerHeight: window.outerHeight,
+  innerWidth: window.innerWidth, innerHeight: window.innerHeight,
+  dpr: window.devicePixelRatio,
+})"""
 
 
 class ScreenRefused(Exception):
@@ -435,11 +469,111 @@ def _page_read() -> Any:
     return page_read
 
 
-async def _in_front(session: Any) -> bool:
-    state = await _page_read().bounded(
-        session.page.evaluate("() => document.visibilityState"), seconds=SCREEN_PAGE_TIMEOUT_SECONDS
+async def _window_state(session: Any) -> dict[str, Any]:
+    """Whether the tab is the one its window shows, and where the window and its UI strip are."""
+    state = await _page_read().bounded(session.page.evaluate(WINDOW_SCRIPT), seconds=SCREEN_PAGE_TIMEOUT_SECONDS)
+    return state if isinstance(state, dict) else {}
+
+
+def _geometry(state: dict[str, Any]) -> dict[str, float] | None:
+    """The window geometry from a _window_state, or None if any of it is missing or not a number."""
+    keys = ("screenX", "screenY", "outerWidth", "outerHeight", "innerWidth", "innerHeight", "dpr")
+    values = {k: state.get(k) for k in keys}
+    if not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in values.values()):
+        return None
+    return {k: float(v) for k, v in values.items()}
+
+
+def chrome_strip(geometry: dict[str, float] | None, width: int, height: int) -> dict[str, Any]:
+    """The browser's UI strip (tab strip, address bar, toolbar) in image pixels: {x, y, width, height, source}."""
+    if geometry is not None:
+        dpr = geometry["dpr"] if 0.5 <= geometry["dpr"] <= 4 else 0.0
+        top_ui = geometry["outerHeight"] - geometry["innerHeight"]
+        if dpr and 0 < top_ui <= CHROME_STRIP_MAX_CSS_PX and geometry["outerWidth"] > 0:
+            left = max(0, round(geometry["screenX"] * dpr))
+            top = max(0, round(geometry["screenY"] * dpr))
+            right = min(width, round((geometry["screenX"] + geometry["outerWidth"]) * dpr))
+            bottom = min(height, round((geometry["screenY"] + top_ui) * dpr))
+            if right > left and bottom > top:
+                return {"x": left, "y": top, "width": right - left, "height": bottom - top, "source": "window"}
+    return {"x": 0, "y": 0, "width": width, "height": min(height, CHROME_STRIP_FALLBACK_PX), "source": "fallback"}
+
+
+def _in_strip(block: Any, strip: dict[str, Any]) -> bool:
+    """Whether an OCR word lies wholly inside the UI strip (2 px of slack for OCR's box edges)."""
+    try:
+        box = block["bbox"]
+        x, y, w, h = (int(box[k]) for k in ("x", "y", "width", "height"))
+    except (KeyError, TypeError, ValueError):
+        return False  # a word without a usable box stays in the redaction
+    slack = 2
+    return (
+        x >= strip["x"] - slack
+        and y >= strip["y"] - slack
+        and x + w <= strip["x"] + strip["width"] + slack
+        and y + h <= strip["y"] + strip["height"] + slack
     )
-    return state == "visible"
+
+
+def outside_strip(ocr: Any, strip: dict[str, Any]) -> Any:
+    """The OCR result without the words in the UI strip, in both lists redaction may read."""
+    if not isinstance(ocr, dict) or ocr.get("available", True) is False:
+        return ocr
+    out = dict(ocr)
+    for key in ("redaction_blocks", "blocks"):
+        if isinstance(ocr.get(key), list):
+            out[key] = [b for b in ocr[key] if not _in_strip(b, strip)]
+    return out
+
+
+def _redaction(redact: bool, scrubbing: bool, shot: dict[str, Any]) -> str:
+    """The result's redaction field: off_by_request, on, off_by_policy, unavailable."""
+    if not redact:
+        return "off_by_request"
+    if not scrubbing:
+        return "off_by_policy"  # PII_SCRUB_SCREENSHOT off: page screenshots are not scrubbed either
+    if "pii_scrub_skipped" in shot:
+        return "unavailable"  # OCR could not run; screenshot_pii_scrub says why
+    return "on"
+
+
+async def _audit_shot(manager: Any, session: Any, *, scope: str, redaction: str, url: str, screenshot_url: str) -> None:
+    """The evidence trail for one browser_screenshot: whether it was redacted. An unredacted shot that
+    cannot be recorded is refused (ScreenRefused 503) before it is filed."""
+    try:
+        await manager.audit.append(
+            event_type="evidence_screenshot",
+            status="ok",
+            action="browser_screenshot",
+            session_id=session.id,
+            details={
+                "scope": scope,
+                "redacted": redaction == "on",
+                "redaction": redaction,
+                "url": url,
+                "screenshot_url": screenshot_url,
+            },
+        )
+    except Exception as exc:
+        logger.warning("evidence screenshot: audit failed: %s", type(exc).__name__)
+        if redaction != "on":
+            raise ScreenRefused(
+                503, "audit_failed", "The unredacted screenshot could not be recorded in the audit log, so it was not kept."
+            ) from None
+
+
+def _strict(manager: Any) -> bool:
+    return getattr(manager.pii_scrubber, "screenshot_strict", False) is True
+
+
+def _refuse_unredacted(manager: Any) -> None:
+    if _strict(manager):
+        raise ScreenRefused(
+            403,
+            "redaction_required",
+            "This deployment requires screenshots to be PII-scrubbed (PII_SCRUB_SCREENSHOT_STRICT is on), "
+            "so redact: false is refused. Take the screenshot with redaction.",
+        )
 
 
 async def _screen_title(session: Any) -> str:
@@ -471,8 +605,12 @@ def _moved() -> PermissionError:
     return PermissionError(_page_read().MOVED_DETAIL)
 
 
-async def screen_front(manager: Any, session_id: str, *, activate: bool = True) -> dict[str, Any]:
+async def screen_front(
+    manager: Any, session_id: str, *, activate: bool = True, redact: bool = True
+) -> dict[str, Any]:
     """Step 1: the session's tab in front of its window, and a token for step 3."""
+    if not redact:
+        _refuse_unredacted(manager)
     # An unknown session, or another operator's, is a KeyError: the app's 404.
     session = await manager.get_session(session_id)
     manager._assert_page_allowed(session)
@@ -481,7 +619,8 @@ async def screen_front(manager: Any, session_id: str, *, activate: bool = True) 
         read = _page_read().start_read(manager, session)
         if activate:
             await _page_read().bounded(session.page.bring_to_front(), seconds=SCREEN_PAGE_TIMEOUT_SECONDS)
-        if not await _in_front(session):
+        state = await _window_state(session)
+        if state.get("visibility") != "visible":
             raise ScreenRefused(
                 409,
                 "not_in_front",
@@ -494,21 +633,23 @@ async def screen_front(manager: Any, session_id: str, *, activate: bool = True) 
         url = manager._shown_url(session.page)
         title = await _screen_title(session)
         token = secrets.token_hex(16)
-        _screen_tokens(session)[token] = {"read": read, "url": url, "at": time.monotonic()}
+        _screen_tokens(session)[token] = {"read": read, "url": url, "geometry": _geometry(state), "at": time.monotonic()}
         return {"token": token, "url": url, "title": title}
     finally:
         session.lock.release()
 
 
 async def screen_scrub(
-    manager: Any, session_id: str, *, token: str, png: bytes, label: str = "manual"
+    manager: Any, session_id: str, *, token: str, png: bytes, label: str = "manual", redact: bool = True
 ) -> dict[str, Any]:
     """Step 3: check the page has not moved since step 1, scrub the capture, file it as an artifact."""
     from app.browser.services.observation import _scrub_disclosure
 
+    if not redact:
+        _refuse_unredacted(manager)
     if len(png) > SCREEN_MAX_BYTES:
         raise ScreenRefused(413, "too_large", "screen image too large")
-    png_size(png)
+    width, height = png_size(png)
     session = await manager.get_session(session_id)
     manager._assert_page_allowed(session)
     await _acquire(session)
@@ -523,8 +664,13 @@ async def screen_scrub(
         url = manager._shown_url(session.page)
         if url != entry["url"]:
             raise ScreenRefused(409, "moved", "The page navigated while the screen was captured. Take it again.")
-        if not await _in_front(session):
+        state = await _window_state(session)
+        if state.get("visibility") != "visible":
             raise ScreenRefused(409, "not_in_front", "This session's tab left the front while the screen was captured.")
+        geometry = _geometry(state)
+        if geometry != entry.get("geometry"):
+            raise ScreenRefused(409, "moved", "The browser window moved or changed size while the screen was captured. Take it again.")
+        strip = chrome_strip(geometry, width, height)
         title = await _screen_title(session)
 
         safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "-", label or "manual").strip(".-")[:100] or "manual"
@@ -535,14 +681,17 @@ async def screen_scrub(
         await asyncio.to_thread(pending_dir.mkdir, parents=True, exist_ok=True)
         await asyncio.to_thread(pending.write_bytes, png)
         shot: dict[str, Any] = {"path": str(pending), "url": target["url"]}
-        scrubbing = getattr(manager.pii_scrubber, "screenshot_enabled", False) is True
+        scrubbing = redact and getattr(manager.pii_scrubber, "screenshot_enabled", False) is True
         if scrubbing:
             # The controller's own redaction, as _capture_screenshot_redacted runs it for a page
-            # screenshot. Strict mode deletes the image and raises SCREENSHOT_WITHHELD.
-            ocr = await manager.ocr.extract_from_image(str(pending))
+            # screenshot, minus the words in the browser's UI strip. Strict mode deletes the image and
+            # raises SCREENSHOT_WITHHELD.
+            ocr = outside_strip(await manager.ocr.extract_from_image(str(pending)), strip)
             await manager.observation._scrub_screenshot_if_needed(session, shot, ocr)
         if read.moved():
             raise _moved()
+        redaction = _redaction(redact, scrubbing, shot)
+        await _audit_shot(manager, session, scope="screen", redaction=redaction, url=url, screenshot_url=target["url"])
         await asyncio.to_thread(os.replace, pending, final)
         pending = None
         data = await asyncio.to_thread(final.read_bytes)
@@ -556,11 +705,61 @@ async def screen_scrub(
             "height": height,
             "png": base64.b64encode(data).decode("ascii"),
             "pii_scrubbed": scrubbing and "pii_scrub_skipped" not in shot,
+            "redaction": redaction,
+            "chrome_strip": strip,
             **_scrub_disclosure(shot),
         }
     finally:
         if pending is not None:
             pending.unlink(missing_ok=True)
+        session.lock.release()
+
+
+async def page_shot(manager: Any, session_id: str, *, label: str = "manual", redact: bool = True) -> dict[str, Any]:
+    """browser_screenshot scope "page" with the redact switch: the viewport, filed as an artifact."""
+    from app.browser.services.observation import _scrub_disclosure
+
+    if not redact:
+        _refuse_unredacted(manager)
+    session = await manager.get_session(session_id)
+    manager._assert_page_allowed(session)
+    await _acquire(session)
+    shot: dict[str, Any] | None = None
+    try:
+        read = _page_read().start_read(manager, session)
+        safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "-", label or "manual").strip(".-")[:100] or "manual"
+        scrubbing = redact and getattr(manager.pii_scrubber, "screenshot_enabled", False) is True
+        if redact:
+            # Upstream's own path for browser.screenshot (strict mode withholds what it cannot scrub).
+            shot = await manager.observation._capture_screenshot_redacted(session, safe_label)
+        else:
+            shot = await manager._capture_screenshot(session, safe_label)
+        url = manager._shown_url(session.page)
+        if read.moved():
+            raise _moved()
+        title = await _screen_title(session)
+        redaction = _redaction(redact, scrubbing, shot)
+        await _audit_shot(manager, session, scope="page", redaction=redaction, url=url, screenshot_url=shot["url"])
+        data = await asyncio.to_thread(Path(shot["path"]).read_bytes)
+        width, height = png_size(data)
+        result = {
+            "url": url,
+            "title": title,
+            "screenshot_path": shot["path"],
+            "screenshot_url": shot["url"],
+            "width": width,
+            "height": height,
+            "png": base64.b64encode(data).decode("ascii"),
+            "pii_scrubbed": scrubbing and "pii_scrub_skipped" not in shot,
+            "redaction": redaction,
+            **_scrub_disclosure(shot),
+        }
+        shot = None
+        return result
+    finally:
+        if shot is not None and shot.get("path"):
+            # Refused after the capture: the image is not kept where a route could serve it.
+            Path(shot["path"]).unlink(missing_ok=True)
         session.lock.release()
 
 
@@ -582,8 +781,9 @@ def install_screen_routes(application: Any, manager: Any) -> None:
         except Exception:
             body = {}
         activate = not (isinstance(body, dict) and body.get("activate") is False)
+        redact = not (isinstance(body, dict) and body.get("redact") is False)
         try:
-            return await screen_front(manager, session_id, activate=activate)
+            return await screen_front(manager, session_id, activate=activate, redact=redact)
         except (ScreenRefused, PermissionError) as exc:
             return _screen_refusal(exc)
 
@@ -591,22 +791,41 @@ def install_screen_routes(application: Any, manager: Any) -> None:
         try:
             body = await request.json()
             token, label = body["token"], body.get("label") or "manual"
+            redact = body.get("redact", True)
             if not isinstance(token, str) or not isinstance(label, str) or not isinstance(body["png"], str):
+                raise TypeError
+            if not isinstance(redact, bool):
                 raise TypeError
             png = base64.b64decode(body["png"], validate=True)
         except (ValueError, KeyError, TypeError, binascii.Error):
-            return _screen_refusal(ScreenRefused(400, "bad_request", "expects {token, png (base64), label?}"))
+            return _screen_refusal(ScreenRefused(400, "bad_request", "expects {token, png (base64), label?, redact?}"))
         try:
-            return await screen_scrub(manager, session_id, token=token, png=png, label=label)
+            return await screen_scrub(manager, session_id, token=token, png=png, label=label, redact=redact)
+        except (ScreenRefused, PermissionError) as exc:
+            return _screen_refusal(exc)
+
+    async def page(session_id: str, request: Request) -> Any:
+        try:
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise TypeError
+            label, redact = body.get("label") or "manual", body.get("redact", True)
+            if not isinstance(label, str) or not isinstance(redact, bool):
+                raise TypeError
+        except (ValueError, TypeError):
+            return _screen_refusal(ScreenRefused(400, "bad_request", "expects {label?, redact?}"))
+        try:
+            return await page_shot(manager, session_id, label=label, redact=redact)
         except (ScreenRefused, PermissionError) as exc:
             return _screen_refusal(exc)
 
     # This module's annotations are strings (from __future__), resolved in its globals, where
     # Request is not: without these FastAPI would take `request` for a query parameter.
-    for handler in (front, scrub):
+    for handler in (front, scrub, page):
         handler.__annotations__["request"] = Request
     application.add_api_route("/happy/sessions/{session_id}/screen/front", front, methods=["POST"], include_in_schema=False)
     application.add_api_route("/happy/sessions/{session_id}/screen/scrub", scrub, methods=["POST"], include_in_schema=False)
+    application.add_api_route("/happy/sessions/{session_id}/page-shot", page, methods=["POST"], include_in_schema=False)
 
 
 def install_routes(application: Any, manager: Any) -> None:

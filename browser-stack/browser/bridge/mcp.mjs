@@ -183,10 +183,19 @@ const SCOPE_PROP = {
 const SCREEN_ONLY_PODS = 'Error: scope "screen" needs a browser of this chat\'s own (per-chat browser pods). This browser is shared, and its screen would show other chats\' windows. Use scope "page".';
 // Said in a shared-browser screenshot taken without a scope, which falls back to "page".
 const SHARED_PAGE_NOTE = 'This browser is shared between chats, so this screenshot is of the page only, without the address bar (scope "screen" needs a browser of this chat\'s own).';
-/** browser_screenshot's input schema with `scope` added. */
+// browser_screenshot's other bridge-side argument. Redacted by default; false is the explicit opt-in
+// for full-fidelity evidence (the browser's address bar is never redacted either way). A deployment
+// with PII_SCRUB_SCREENSHOT_STRICT on refuses false. Needs a browser of the chat's own.
+const REDACT_PROP = {
+    type: 'boolean',
+    default: true,
+    description: 'true (default): personal data in the image (emails, phone numbers, card numbers, ...) is blacked out; the browser\'s address bar with the URL is never redacted. false: the image exactly as it was on screen, unredacted, for compliance evidence; the result says redaction "off_by_request" and the request is recorded in the audit log. Use false only when the evidence must show the page as it was.',
+};
+const REDACT_ONLY_PODS = 'Error: redact: false needs a browser of this chat\'s own (per-chat browser pods). This browser is shared between chats, so its screenshots are always redacted.';
+/** browser_screenshot's input schema with `scope` and `redact` added. */
 export function withScopeParam(schema) {
     const base = schema && typeof schema === 'object' && !Array.isArray(schema) ? schema : { type: 'object' };
-    return { ...base, type: 'object', properties: { ...(base.properties || {}), scope: SCOPE_PROP } };
+    return { ...base, type: 'object', properties: { ...(base.properties || {}), scope: SCOPE_PROP, redact: REDACT_PROP } };
 }
 
 /** Expose upstream tools under API-safe names, with references in descriptions renamed too. */
@@ -202,7 +211,7 @@ export function mapUpstreamTools(tools, log = () => {}) {
         byLocal.set(name, t.name);
         const description = rename(t.description || '') + (HINTS[name] || '') + (MUTATING_TOOLS.has(name) ? LOCK_HINT : '');
         listed.push(name === 'browser_screenshot'
-            ? { ...t, name, description: description + ' By default (scope "screen") the image is the whole browser window as the live view shows it, with the tab strip and the address bar showing the URL, and the result carries the URL, title and capture time; scope "page" gives the page content only.', inputSchema: withScopeParam(t.inputSchema) }
+            ? { ...t, name, description: description + ' By default (scope "screen") the image is the whole browser window as the live view shows it, with the tab strip and the address bar showing the URL, and the result carries the URL, title and capture time; scope "page" gives the page content only. Personal data in the image is redacted unless redact is false (full-fidelity evidence); the address bar is never redacted.', inputSchema: withScopeParam(t.inputSchema) }
             : { ...t, name, description });
     }
     return { tools: listed, byLocal, rename };
@@ -571,6 +580,14 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
             if (scope === undefined) scope = null;
             if (scope !== null && !SCREENSHOT_SCOPES.includes(scope)) return result(id, toolResult(`Error: scope must be one of ${SCREENSHOT_SCOPES.map((v) => `"${v}"`).join(', ')}`, true));
         }
+        // redact, likewise the bridge's: true (or absent) redacts, only false opts out.
+        let redact = true;
+        if (name === 'browser_screenshot' && args && typeof args === 'object' && 'redact' in args) {
+            let r;
+            ({ redact: r, ...args } = args);
+            if (r !== undefined && r !== null && typeof r !== 'boolean') return result(id, toolResult('Error: redact must be true or false', true));
+            redact = r !== false;
+        }
         // Routing first: the secret gate and the control check both need the chat's session.
         const routedCall = await routeCall(id, name, args, signal, cc);
         if (routedCall.done) return;
@@ -579,10 +596,12 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
         const sharedPageNote = name === 'browser_screenshot' && scope === null && !via;
         if (name === 'browser_screenshot' && scope === null) scope = via ? 'screen' : 'page';
         if (scope === 'screen' && !via) return result(id, toolResult(SCREEN_ONLY_PODS, true));
+        if (!redact && !via) return result(id, toolResult(REDACT_ONLY_PODS, true));
         if (!via && !(await sharedPreflight(id, name, args, meta, signal))) return;
         const gate = await secretsBefore(id, name, args, signal, cc);
         if (!gate) return;
-        if (scope === 'screen') return screenShot(id, name, args, signal, via, gate);
+        // The whole window, or an unredacted page: through the bridge, for this chat's own pod.
+        if (scope === 'screen' || !redact) return screenShot(id, name, args, signal, via, gate, { scope, redact });
         // One state check per call: a page-changing tool asks whether the user holds the browser
         // (recording the action), any other tool on a session only whether the user ended it.
         const state = MUTATING_TOOLS.has(name) ? await guard(name, args, signal, via) : await sessionState(args, signal, via);
@@ -632,13 +651,16 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
     // inside that pod, and the controller OCR-scrub it and file it as an artifact). Only ever the
     // pod `via` names, the one router.route resolved for this call's chat; no tool argument picks it.
     // While the user holds the browser their tab is not changed: the session's must be in front.
-    async function screenShot(id, name, args, signal, via, gate) {
+    // scope "page" with redact false comes here too: the session's page, unredacted (/api/page-shot).
+    async function screenShot(id, name, args, signal, via, gate, { scope = 'screen', redact = true } = {}) {
         try {
             const state = await sessionState(args, signal, via);
             if (signal.aborted) return;
             if (isUserEnded(state)) return result(id, toolResult(USER_ENDED, true));
             const label = typeof args?.label === 'string' && args.label ? args.label : 'manual';
-            const shot = await bridge('/api/screen', { chat_key: via.key, activate: !HELD.has(state?.status), label }, signal);
+            const shot = scope === 'screen'
+                ? await bridge('/api/screen', { chat_key: via.key, activate: !HELD.has(state?.status), label, redact }, signal)
+                : await bridge('/api/page-shot', { chat_key: via.key, label, redact }, signal);
             if (signal.aborted) return;
             // A bridge from before the scrubbed capture answers with the raw screen: never pass that on.
             if (typeof shot?.screenshot_url !== 'string' || typeof shot?.captured_at !== 'string') {
@@ -647,8 +669,12 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
             if (shot.session_id !== via.session_id) {
                 return result(id, toolResult('Error: the screen capture came back for another session than this chat\'s; nothing is returned. Try again.', true));
             }
+            // Asked for unredacted: only an image the controller says it left unredacted (an older one scrubs).
+            if (!redact && shot.redaction !== 'off_by_request') {
+                return result(id, toolResult('Error: the browser did not confirm an unredacted capture (its controller may predate redact: false; it updates when the browser restarts). Nothing is returned.', true));
+            }
             const info = {
-                scope: 'screen',
+                scope,
                 session_id: via.session_id,
                 url: shot.url,
                 title: shot.title,
@@ -658,6 +684,7 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
                 screenshot_path: shot.screenshot_path,
                 screenshot_url: shot.screenshot_url,
                 pii_scrubbed: shot.pii_scrubbed === true,
+                redaction: typeof shot.redaction === 'string' ? shot.redaction : (shot.pii_scrubbed === true ? 'on' : 'unknown'),
                 ...(shot.screenshot_pii_scrub ? { screenshot_pii_scrub: shot.screenshot_pii_scrub } : {}),
             };
             let out = {

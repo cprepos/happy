@@ -346,9 +346,29 @@ secret.
     2. the launcher execs `scripts/screen-capture.py` in that pod's node as the `browser`
        user (the pod id is checked, so a chat can only ever capture its own pod's screen);
     3. the controller (`/happy/sessions/<id>/screen/scrub`) checks the tab did not move or
-       navigate and is still in front, OCRs the whole image and redacts PII exactly as for
-       page screenshots (strict mode withholds an image it cannot scrub), and only then files
-       it in the session's artifact directory as `<time>-screen-<label>.png`.
+       navigate, the window did not move, and the tab is still in front; OCRs the whole image
+       and redacts PII as for page screenshots (strict mode withholds an image it cannot
+       scrub), except in the browser's own UI strip; and only then files it in the session's
+       artifact directory as `<time>-screen-<label>.png`.
+    The address bar is never redacted: the URL is the point of the evidence. The strip (tab
+    strip, address bar, toolbar) is the window's top `outerHeight - innerHeight` CSS pixels
+    at `screenX`/`screenY`, `outerWidth` wide, times `devicePixelRatio`, read from the page at
+    both steps (`chrome_strip` in the result; `source: "fallback"` if the geometry could not
+    be read, then the top `CHROME_STRIP_FALLBACK_PX` of the screen). OCR words wholly inside
+    it are left out of the redaction; the page and any other window are scrubbed.
+  - `browser_screenshot` also gets `redact` (boolean, default `true`). `false` is the explicit
+    opt-in for full-fidelity evidence: the image is filed exactly as it was on screen, and the
+    result says `pii_scrubbed: false, redaction: "off_by_request"` (a redacted one says
+    `redaction: "on"`, or `"off_by_policy"` / `"unavailable"` when the deployment's scrubbing
+    is off or OCR could not run). Every screen shot, and every unredacted page shot, is
+    written to the controller's audit log as `evidence_screenshot` with `redacted` and
+    `redaction`; an unredacted image that cannot be recorded there is not kept.
+    `redact: false` works for both scopes with a pod of the chat's own: `"page"` then goes
+    through the bridge (`POST /api/page-shot` -> the controller's
+    `/happy/sessions/<id>/page-shot`) instead of upstream's tool; a redacted `"page"` is
+    still upstream's own screenshot. On the shared browser `redact: false` is refused.
+    `PII_SCRUB_SCREENSHOT_STRICT=true` makes scrubbing mandatory: the controller then refuses
+    `redact: false` (403 `redaction_required`).
     Anything moving in between (another tab, navigation, the pod restarting) refuses the shot
     (one retry) rather than file a picture of something else. A pod still running an older
     controller patch answers 501 `screen_unsupported` until it restarts. With no pods (shared

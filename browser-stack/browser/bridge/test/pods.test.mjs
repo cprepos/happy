@@ -65,17 +65,25 @@ function harness({ maxPods = 2, warm = 0, ensureMs = 0, readyAfter = 0, createFa
             approvals: 0,
             async pendingApprovals() { if (c.approvalsFail) throw new Error('down'); return c.approvals; },
             screenQueue: [], // errors (or null) the next screenFront / screenScrub calls throw, in order
-            async screenFront(sid, { activate }) {
-                calls.push(`ctl.screenFront:${slot}:${sid}:${activate}`);
+            async screenFront(sid, { activate, redact }) {
+                calls.push(`ctl.screenFront:${slot}:${sid}:${activate}${redact === false ? ':raw' : ''}`);
                 const e = c.screenQueue.shift();
                 if (e) throw e;
                 return { token: `tok-${slot}-${calls.length}`, url: 'https://example.com/', title: 'Example' };
             },
-            async screenScrub(sid, { token, png, label }) {
-                calls.push(`ctl.screenScrub:${slot}:${sid}:${token.startsWith(`tok-${slot}-`) ? 'tok' : 'bad'}:${png}:${label}`);
+            async screenScrub(sid, { token, png, label, redact }) {
+                calls.push(`ctl.screenScrub:${slot}:${sid}:${token.startsWith(`tok-${slot}-`) ? 'tok' : 'bad'}:${png}:${label}${redact === false ? ':raw' : ''}`);
                 const e = c.screenQueue.shift();
                 if (e) throw e;
-                return { url: 'https://example.com/', title: 'Example', screenshot_path: `/data/artifacts/${sid}/x-screen-${label}.png`, screenshot_url: `/artifacts/${sid}/x-screen-${label}.png`, width: 1920, height: 1200, png: 'U0NSVUJCRUQ=', pii_scrubbed: true };
+                const raw = redact === false && !c.ignoresRedact;
+                return { url: 'https://example.com/', title: 'Example', screenshot_path: `/data/artifacts/${sid}/x-screen-${label}.png`, screenshot_url: `/artifacts/${sid}/x-screen-${label}.png`, width: 1920, height: 1200, png: raw ? 'UkFX' : 'U0NSVUJCRUQ=', pii_scrubbed: !raw, redaction: raw ? 'off_by_request' : 'on', chrome_strip: { x: 0, y: 0, width: 1920, height: 120, source: 'window' } };
+            },
+            async pageShot(sid, { label, redact }) {
+                calls.push(`ctl.pageShot:${slot}:${sid}:${label}:${redact}`);
+                const e = c.screenQueue.shift();
+                if (e) throw e;
+                const raw = redact === false && !c.ignoresRedact;
+                return { url: 'https://example.com/', title: 'Example', screenshot_path: `/data/artifacts/${sid}/x-${label}.png`, screenshot_url: `/artifacts/${sid}/x-${label}.png`, width: 1280, height: 800, png: raw ? 'UkFX' : 'U0NSVUJCRUQ=', pii_scrubbed: !raw, redaction: raw ? 'off_by_request' : 'on' };
             },
             async getSession(sid) {
                 calls.push(`ctl.getSession:${slot}`);
@@ -768,6 +776,8 @@ test('screenShot: the chat\'s own tab forward, its own pod\'s screen, scrubbed b
     assert.equal(shot.url, 'https://example.com/');
     assert.equal(shot.title, 'Example');
     assert.equal(shot.pii_scrubbed, true);
+    assert.equal(shot.redaction, 'on');
+    assert.deepEqual(shot.chrome_strip, { x: 0, y: 0, width: 1920, height: 120, source: 'window' });
     assert.equal(shot.screenshot_url, '/artifacts/s2/x-screen-evidence.png');
     assert.match(shot.captured_at, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
     // Held by the user: their tab is not changed.
@@ -802,4 +812,29 @@ test('screenShot: a page that moved is captured again once; a refusal is passed 
     c.screenQueue.push(err(404, undefined, null));
     c.screenQueue[0].message = 'pod POST /happy -> 404 {"detail":"Not Found"}';
     await assert.rejects(h.mgr.screenShot(A), (e) => e.status === 501 && e.code === 'screen_unsupported');
+});
+
+test('screenShot / pageShot: redact false is passed to the chat\'s own controller and must come back unredacted', async () => {
+    const h = harness();
+    await h.mgr.ensure(A);
+    h.calls.length = 0;
+    const raw = await h.mgr.screenShot(A, { label: 'ev', redact: false });
+    assert.deepEqual(h.calls, ['ctl.screenFront:0:s1:true:raw', 'launcher.screen:0:pod', 'ctl.screenScrub:0:s1:tok:iVBORw0K:ev:raw']);
+    assert.deepEqual([raw.data, raw.pii_scrubbed, raw.redaction], ['UkFX', false, 'off_by_request']);
+    h.calls.length = 0;
+    const page = await h.mgr.pageShot(A, { label: 'p', redact: false });
+    assert.deepEqual(h.calls, ['ctl.pageShot:0:s1:p:false']);
+    assert.deepEqual([page.session_id, page.width, page.redaction, page.pii_scrubbed], ['s1', 1280, 'off_by_request', false]);
+    assert.match(page.captured_at, /Z$/);
+    // A controller that did not honour it: refused, not passed off as unredacted.
+    h.clients.get(0).ignoresRedact = true;
+    await assert.rejects(h.mgr.screenShot(A, { redact: false }), (e) => e.status === 502);
+    await assert.rejects(h.mgr.pageShot(A, { redact: false }), (e) => e.status === 502);
+    // The deployment's strict mode, in the controller's words.
+    const c = h.clients.get(0);
+    c.screenQueue.push(Object.assign(new PodError('pod POST -> 403', 403, 'redaction_required'), { detail: 'This deployment requires screenshots to be PII-scrubbed' }));
+    await assert.rejects(h.mgr.pageShot(A, { redact: false }), (e) => e.status === 403 && e.code === 'redaction_required' && /requires/.test(e.message));
+    await h.mgr.stopChat(A, 'idle');
+    await assert.rejects(h.mgr.pageShot(A, { redact: false }), (e) => e.status === 503);
+    await assert.rejects(h.mgr.pageShot('nothex'), (e) => e.status === 400);
 });

@@ -61,9 +61,14 @@ class FakePage:
         self.fronted = getattr(self, "fronted", 0) + 1
         self.visibility = "visible"
 
-    async def evaluate(self, script: str) -> str:
-        assert "visibilityState" in script
-        return getattr(self, "visibility", "visible")
+    async def evaluate(self, script: str) -> dict:
+        assert "visibilityState" in script and "outerHeight" in script
+        # A maximized 1920x1200 window at (0, 0) with 120 px of browser UI above the page.
+        geometry = getattr(self, "geometry", None)
+        if geometry is None:
+            geometry = {"screenX": 0, "screenY": 0, "outerWidth": 1920, "outerHeight": 1200,
+                        "innerWidth": 1920, "innerHeight": 1080, "dpr": 1}
+        return {"visibility": getattr(self, "visibility", "visible"), **geometry}
 
 
 class Scrubber:
@@ -400,12 +405,167 @@ class ScreenTests(Base):
             return {"path": str(Path(session.artifact_dir) / name), "url": f"/artifacts/{session.id}/{name}"}
 
         m.artifacts = SimpleNamespace(screenshot_target=target)
+        m.audit = SimpleNamespace(append=AsyncMock())
         # The scrubber sees PNGs here, so it marks them by what it was handed, not by RAW.
-        self.scrubber.screenshot = lambda raw, blocks: (raw + b"SCRUBBED", [{"kind": "email"}])
+        self.scrubbed_blocks: list = []
 
-    async def shoot(self, **kw: object) -> dict:
-        front = await hlf.screen_front(self.service.manager, "s1", **kw)
-        return await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], png=png(), label="evidence 1")
+        def scrub(raw: bytes, blocks: list) -> tuple[bytes, list]:
+            self.scrubbed_blocks.append(blocks)
+            return raw + b"SCRUBBED", [{"kind": "email"}]
+
+        self.scrubber.screenshot = scrub
+
+    async def shoot(self, redact: bool = True, **kw: object) -> dict:
+        front = await hlf.screen_front(self.service.manager, "s1", redact=redact, **kw)
+        return await hlf.screen_scrub(
+            self.service.manager, "s1", token=front["token"], png=png(), label="evidence 1", redact=redact
+        )
+
+    def audits(self) -> list[dict]:
+        return [c.kwargs for c in self.service.manager.audit.append.call_args_list]
+
+    @staticmethod
+    def word(text: str, x: int, y: int, w: int = 80, h: int = 14) -> dict:
+        return {"text": text, "bbox": {"x": x, "y": y, "width": w, "height": h}, "line": [1, 1, 1]}
+
+    async def test_the_address_bar_is_never_redacted_and_the_page_is(self) -> None:
+        url_word = self.word("user@example.com", 300, 60)  # in the address bar
+        tab_word = self.word("Inbox", 40, 10)  # in the tab strip
+        page_word = self.word("jane@example.com", 300, 400)  # in the page
+        straddling = self.word("x@y.z", 300, 110, h=30)  # reaches into the page: stays
+        self.service.manager.ocr.extract_from_image.return_value = {
+            "available": True,
+            "redaction_blocks": [url_word, tab_word, page_word, straddling],
+            "blocks": [url_word, page_word],
+        }
+        seen_ocr = []
+        real = self.service._scrub_screenshot_if_needed
+
+        async def spy(session, shot, ocr):
+            seen_ocr.append(ocr)
+            return await real(session, shot, ocr)
+
+        self.service._scrub_screenshot_if_needed = spy
+        out = await self.shoot()
+        self.assertEqual(out["chrome_strip"], {"x": 0, "y": 0, "width": 1920, "height": 120, "source": "window"})
+        self.assertEqual(seen_ocr[0]["redaction_blocks"], [page_word, straddling])
+        self.assertEqual(seen_ocr[0]["blocks"], [page_word])
+        self.assertEqual(self.scrubbed_blocks, [[page_word, straddling]])
+        self.assertEqual((out["redaction"], out["pii_scrubbed"]), ("on", True))
+
+    async def test_only_the_address_bar_words_means_nothing_to_redact(self) -> None:
+        # With every word in the strip, redaction must not fall back to the unfiltered "blocks".
+        url_word = self.word("user@example.com", 300, 60)
+        self.service.manager.ocr.extract_from_image.return_value = {
+            "available": True, "redaction_blocks": [url_word], "blocks": [url_word]
+        }
+        out = await self.shoot()
+        self.assertEqual(self.scrubbed_blocks, [])
+        self.assertTrue(out["pii_scrubbed"])
+
+    def test_the_strip_follows_the_window(self) -> None:
+        g = {"screenX": 100, "screenY": 50, "outerWidth": 800, "outerHeight": 600,
+             "innerWidth": 800, "innerHeight": 500, "dpr": 2}
+        self.assertEqual(
+            hlf.chrome_strip(hlf._geometry(g), 3840, 2400),
+            {"x": 200, "y": 100, "width": 1600, "height": 200, "source": "window"},
+        )
+        for bad in (None, {**g, "dpr": None}, {**g, "innerHeight": 600}, {**g, "innerHeight": -1000}):
+            strip = hlf.chrome_strip(hlf._geometry(bad) if bad else None, 1920, 1200)
+            self.assertEqual(strip, {"x": 0, "y": 0, "width": 1920, "height": hlf.CHROME_STRIP_FALLBACK_PX, "source": "fallback"})
+
+    async def test_a_window_that_moved_between_the_steps_is_refused(self) -> None:
+        front = await hlf.screen_front(self.service.manager, "s1")
+        self.page.geometry = {"screenX": 0, "screenY": 0, "outerWidth": 1920, "outerHeight": 1200,
+                              "innerWidth": 1920, "innerHeight": 1000, "dpr": 1}
+        with self.assertRaises(hlf.ScreenRefused) as cm:
+            await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], png=png())
+        self.assertEqual(cm.exception.code, "moved")
+        self.assertEqual(self.artifact_pngs(), [])
+
+    async def test_redact_false_files_the_capture_as_it_was_and_audits_it(self) -> None:
+        out = await self.shoot(redact=False)
+        self.assertEqual((out["pii_scrubbed"], out["redaction"]), (False, "off_by_request"))
+        self.assertEqual(Path(out["screenshot_path"]).read_bytes(), png())
+        self.service.manager.ocr.extract_from_image.assert_not_called()
+        [audit] = self.audits()
+        self.assertEqual(audit["event_type"], "evidence_screenshot")
+        self.assertEqual(audit["details"]["redacted"], False)
+        self.assertEqual(audit["details"]["redaction"], "off_by_request")
+        self.assertEqual(audit["details"]["scope"], "screen")
+        self.assertEqual(audit["details"]["screenshot_url"], out["screenshot_url"])
+
+    async def test_a_redacted_shot_is_audited_as_redacted(self) -> None:
+        await self.shoot()
+        [audit] = self.audits()
+        self.assertEqual((audit["details"]["redacted"], audit["details"]["redaction"]), (True, "on"))
+
+    async def test_strict_mode_refuses_redact_false_at_both_steps(self) -> None:
+        front = await hlf.screen_front(self.service.manager, "s1", redact=False)
+        self.scrubber.screenshot_strict = True
+        for call in (
+            lambda: hlf.screen_front(self.service.manager, "s1", redact=False),
+            lambda: hlf.screen_scrub(self.service.manager, "s1", token=front["token"], png=png(), redact=False),
+        ):
+            with self.assertRaises(hlf.ScreenRefused) as cm:
+                await call()
+            self.assertEqual((cm.exception.status, cm.exception.code), (403, "redaction_required"))
+        self.assertEqual(self.artifact_pngs(), [])
+
+    async def test_an_unredacted_shot_that_cannot_be_audited_is_not_kept(self) -> None:
+        self.service.manager.audit.append.side_effect = OSError("disk")
+        with self.assertRaises(hlf.ScreenRefused) as cm:
+            await self.shoot(redact=False)
+        self.assertEqual(cm.exception.code, "audit_failed")
+        self.assertEqual(self.artifact_pngs(), [])
+        self.assertEqual(list(hlf._pending_dir(self.session).iterdir()), [])
+        # A redacted one is kept: the audit is its record, not its permission.
+        out = await self.shoot()
+        self.assertTrue(Path(out["screenshot_path"]).is_file())
+
+    async def page_setup(self) -> None:
+        m = self.service.manager
+
+        async def raw(session, label):
+            path = Path(session.artifact_dir) / f"20260101T000000Z-{label}.png"
+            path.write_bytes(png(1280, 800))
+            return {"path": str(path), "url": f"/artifacts/s1/{path.name}"}
+
+        m._capture_screenshot = AsyncMock(side_effect=raw)
+
+    async def test_page_shot_redacts_by_default_and_not_on_request(self) -> None:
+        await self.page_setup()
+        out = await hlf.page_shot(self.service.manager, "s1", label="p")
+        self.assertEqual((out["redaction"], out["pii_scrubbed"], out["width"]), ("on", True, 1280))
+        self.service.manager.ocr.extract_from_image.assert_called_once()
+        self.service.manager.ocr.extract_from_image.reset_mock()
+        out = await hlf.page_shot(self.service.manager, "s1", label="p", redact=False)
+        self.assertEqual((out["redaction"], out["pii_scrubbed"]), ("off_by_request", False))
+        self.assertEqual(Path(out["screenshot_path"]).read_bytes(), png(1280, 800))
+        self.service.manager.ocr.extract_from_image.assert_not_called()
+        self.assertEqual([a["details"]["redaction"] for a in self.audits()], ["on", "off_by_request"])
+        self.assertEqual({a["details"]["scope"] for a in self.audits()}, {"page"})
+        self.assertFalse(self.session.lock.locked())
+
+    async def test_page_shot_refusals(self) -> None:
+        await self.page_setup()
+        self.scrubber.screenshot_strict = True
+        with self.assertRaises(hlf.ScreenRefused) as cm:
+            await hlf.page_shot(self.service.manager, "s1", redact=False)
+        self.assertEqual(cm.exception.code, "redaction_required")
+        self.scrubber.screenshot_strict = False
+
+        async def moving(session, label):
+            path = Path(session.artifact_dir) / "20260101T000000Z-moved.png"
+            path.write_bytes(png())
+            session.page = FakePage(session.artifact_dir)  # another tab meanwhile
+            return {"path": str(path), "url": "/artifacts/s1/x.png"}
+
+        self.service.manager._capture_screenshot = AsyncMock(side_effect=moving)
+        with self.assertRaises(PermissionError):
+            await hlf.page_shot(self.service.manager, "s1", redact=False)
+        self.assertEqual(self.artifact_pngs(), [])
+        self.assertFalse(self.session.lock.locked())
 
     async def test_brings_the_tab_forward_and_files_a_scrubbed_artifact(self) -> None:
         self.page.visibility = "hidden"
@@ -561,8 +721,27 @@ class ScreenTests(Base):
         self.page.visibility = "hidden"
         held = client.post("/happy/sessions/s1/screen/front", json={"activate": False})
         self.assertEqual((held.status_code, held.json()["code"]), (409, "not_in_front"))
+        self.page.visibility = "visible"
+        front = client.post("/happy/sessions/s1/screen/front", json={"redact": False}).json()
+        raw = client.post(
+            "/happy/sessions/s1/screen/scrub",
+            json={"token": front["token"], "png": base64.b64encode(png()).decode(), "redact": False},
+        )
+        self.assertEqual(raw.json()["redaction"], "off_by_request")
+        bad = client.post("/happy/sessions/s1/screen/scrub", json={"token": "t", "png": "", "redact": "no"})
+        self.assertEqual((bad.status_code, bad.json()["code"]), (400, "bad_request"))
+        self.scrubber.screenshot_strict = True
+        strict = client.post("/happy/sessions/s1/screen/front", json={"redact": False})
+        self.assertEqual((strict.status_code, strict.json()["code"]), (403, "redaction_required"))
+        strict = client.post("/happy/sessions/s1/page-shot", json={"redact": False})
+        self.assertEqual((strict.status_code, strict.json()["code"]), (403, "redaction_required"))
+        self.scrubber.screenshot_strict = False
+        bad = client.post("/happy/sessions/s1/page-shot", json={"redact": 0})
+        self.assertEqual((bad.status_code, bad.json()["code"]), (400, "bad_request"))
         self.service.manager._assert_page_allowed.side_effect = PermissionError("refused")
         refused = client.post("/happy/sessions/s1/screen/front", json={})
+        self.assertEqual((refused.status_code, refused.json()["code"]), (403, "page_refused"))
+        refused = client.post("/happy/sessions/s1/page-shot", json={})
         self.assertEqual((refused.status_code, refused.json()["code"]), (403, "page_refused"))
 
 
