@@ -680,6 +680,18 @@ final class SignedInTransportTests: XCTestCase {
         await XCTAssertThrowsAsync(try await auth.bearer()) { XCTAssertEqual($0 as? OAuthError, .network) }
         var state = await auth.state
         XCTAssertEqual(state, .signedIn)
+        // A busy or failing authorization server, or a page that isn't
+        // JSON, is tried again later; the grant stands.
+        http.json(acme.refreshUrl!, status: 503, #"{"error":"temporarily_unavailable"}"#)
+        await XCTAssertThrowsAsync(try await auth.bearer()) { XCTAssertEqual($0 as? OAuthError, .network) }
+        http.json(acme.refreshUrl!, status: 429, #"{"error":"slow_down"}"#)
+        await XCTAssertThrowsAsync(try await auth.bearer()) { XCTAssertEqual($0 as? OAuthError, .network) }
+        http.on(acme.refreshUrl!) { _ in HTTPResponse(status: 400, body: Data("<html>proxy</html>".utf8), headers: ["Content-Type": "text/html"]) }
+        await XCTAssertThrowsAsync(try await auth.bearer()) { XCTAssertEqual($0 as? OAuthError, .network) }
+        http.json(acme.refreshUrl!, status: 400, #"{"error":"invalid_client"}"#)
+        await XCTAssertThrowsAsync(try await auth.bearer()) { XCTAssertEqual($0 as? OAuthError, .server(code: "invalid_client", description: nil)) }
+        state = await auth.state
+        XCTAssertEqual(state, .signedIn, "only invalid_grant means signing in again")
         http.json(acme.refreshUrl!, status: 400, #"{"error":"invalid_grant"}"#)
         await XCTAssertThrowsAsync(try await auth.bearer())
         state = await auth.state

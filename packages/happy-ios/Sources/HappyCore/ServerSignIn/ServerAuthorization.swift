@@ -91,11 +91,14 @@ public actor ServerAuthorization {
         do {
             return try await task.value
         } catch {
-            // A network failure keeps the grant for the next try; the
-            // authorization server refusing it means signing in again.
+            // Only the authorization server saying the grant is no good
+            // (`invalid_grant`) means signing in again, as do a grant that
+            // can't be refreshed and a token for another server. Anything
+            // else (no network, a 5xx, a 429, a page that isn't JSON, any
+            // other error code) keeps the grant for the next try.
             if refreshing == task {
                 switch error {
-                case OAuthError.server, OAuthError.invalidResponse, OAuthError.refreshUnavailable, OAuthError.wrongAudience: signInRequired()
+                case OAuthError.server(code: "invalid_grant", _), OAuthError.refreshUnavailable, OAuthError.wrongAudience: signInRequired()
                 default: break
                 }
             }

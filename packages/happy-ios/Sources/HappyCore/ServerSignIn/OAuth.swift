@@ -360,6 +360,14 @@ public struct OAuthTokenClient: Sendable {
         catch is CancellationError { throw CancellationError() }
         catch { throw OAuthError.network }
         struct Failure: Decodable { let error: String; let error_description: String? }
+        // A busy or failing authorization server (5xx, 429), or a body that
+        // isn't JSON at all (a proxy's error page, a captive portal), says
+        // nothing about the grant: it is tried again like a network failure.
+        // A redirect is the endpoint's answer, and stays invalid.
+        guard response.status < 500, response.status != 429 else { throw OAuthError.network }
+        if !(300..<400).contains(response.status), !((try? JSONSerialization.jsonObject(with: response.body)) is [String: Any]) {
+            throw OAuthError.network
+        }
         guard (200..<300).contains(response.status) else {
             if let failure = try? JSONDecoder().decode(Failure.self, from: response.body), !failure.error.isEmpty {
                 throw OAuthError.server(code: failure.error, description: failure.error_description)
