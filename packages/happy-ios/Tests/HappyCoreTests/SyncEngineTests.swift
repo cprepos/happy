@@ -163,6 +163,11 @@ private actor SyncFixture: AgentTransport {
         return .init(status: 200, body: body)
     }
     func close() { continuations.forEach { $0.finish() }; continuations.removeAll() }
+    /// Each `reset(_:)` heard, by category.
+    var resets: [RequestCategory] = []
+    func reset(_ category: RequestCategory) { resets.append(category) }
+    func resetCount(_ category: RequestCategory) -> Int { resets.filter { $0 == category }.count }
+    func streamsOpened() -> Int { streamHeaders.count }
 }
 
 final class SyncEngineTests: XCTestCase {
@@ -235,6 +240,62 @@ final class SyncEngineTests: XCTestCase {
         await transport.drop()
         _ = try await wait(engine) { !$0.live }
         try await eventually { await transport.bootstrapReads() > afterGap }
+        await engine.stop()
+    }
+
+    /// A start that comes while a pause is still waiting on its tasks
+    /// begins a new run; it used to find the old runner set and do nothing,
+    /// leaving the engine paused until the app was relaunched.
+    func testAStartDuringAPauseLeavesTheEngineRunning() async throws {
+        let transport = SyncFixture()
+        let engine = SyncEngine(client: AgentClient(transport: transport, token: "test"), directory: nil)
+        await engine.start()
+        _ = try await wait(engine) { $0.live && !$0.syncing }
+        try await eventually { await engine.deliveryAllowed }
+        let opened = await transport.streamsOpened()
+        let pausing = Task { await engine.pause() }
+        // The pause has begun once delivery is no longer allowed.
+        while await engine.deliveryAllowed { await Task.yield() }
+        await engine.start()
+        await pausing.value
+        try await eventually { await transport.streamsOpened() > opened }
+        try await eventually { await engine.deliveryAllowed }
+        await engine.stop()
+    }
+
+    /// Pull to refresh on a live engine: the realtime and query clients are
+    /// let go (never the file client), home is read whole again although
+    /// the stream could have resumed, and it answers once caught up.
+    func testAResyncOnALiveEngineResetsRealtimeAndQueryAndReadsHomeAgain() async throws {
+        let transport = SyncFixture()
+        await transport.setDaemon("d1")
+        let engine = SyncEngine(client: AgentClient(transport: transport, token: "test"), directory: nil)
+        await engine.start()
+        _ = try await wait(engine) { $0.live && !$0.syncing }
+        let reads = await transport.bootstrapReads()
+        let caughtUp = await engine.resync(timeout: .seconds(4))
+        XCTAssertTrue(caughtUp)
+        let realtime = await transport.resetCount(.realtime)
+        let query = await transport.resetCount(.query)
+        let file = await transport.resetCount(.file)
+        XCTAssertEqual(realtime, 1)
+        XCTAssertEqual(query, 1)
+        XCTAssertEqual(file, 0)
+        let after = await transport.bootstrapReads()
+        XCTAssertGreaterThan(after, reads, "a refresh reads home whole, not resuming")
+        await engine.stop()
+    }
+
+    /// A paused engine is left paused: nothing is reset or started.
+    func testAResyncLeavesAPausedEngineAlone() async throws {
+        let transport = SyncFixture()
+        let engine = SyncEngine(client: AgentClient(transport: transport, token: "test"), directory: nil)
+        let caughtUp = await engine.resync(timeout: .seconds(1))
+        XCTAssertFalse(caughtUp)
+        let resets = await transport.resets
+        XCTAssertEqual(resets, [])
+        let opened = await transport.streamsOpened()
+        XCTAssertEqual(opened, 0)
         await engine.stop()
     }
 
