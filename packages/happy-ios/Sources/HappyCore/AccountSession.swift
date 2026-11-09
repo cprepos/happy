@@ -299,10 +299,15 @@ public final class AccountSession: Sendable {
         await realtime.reconnect()
     }
 
-    /// Away this long, or a socket silent this long, and coming back to the
-    /// foreground starts over: iOS may have frozen the socket while the app
-    /// was suspended and dropped the updates sent meanwhile.
+    /// Away this long, and coming back to the foreground starts over: iOS
+    /// may have frozen the socket while the app was suspended and dropped
+    /// the updates sent meanwhile.
     static let staleAfter: Duration = .seconds(20)
+
+    /// A socket silent this long is taken for dead. The server pings every
+    /// 15 s (happy-server `socketConfig.ts` `pingInterval`), so a healthy
+    /// socket is never quiet for two of them plus a margin.
+    static let silentAfter: Duration = .seconds(40)
 
     /// Tells the server whether the app is in the foreground, so it can
     /// suppress pushes while the user is looking at the app. Back after a
@@ -322,7 +327,7 @@ public final class AccountSession: Sendable {
     }
 
     static func isStale(away: Duration?, silence: Duration?) -> Bool {
-        (away ?? .zero) > staleAfter || (silence ?? .zero) > staleAfter
+        (away ?? .zero) > staleAfter || (silence ?? .zero) > silentAfter
     }
 
     /// A new socket (whose catch-up pulls what changed), every list pulled

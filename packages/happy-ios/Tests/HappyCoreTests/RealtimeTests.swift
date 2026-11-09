@@ -337,6 +337,15 @@ final class AccountSessionTests: XCTestCase {
         await session.stop()
     }
 
+    func testHealthySocketBetweenPingsIsNotStale() {
+        // The server pings every 15 s: a socket quiet for one ping and its
+        // answer is alive, and only two missed pings make it dead.
+        XCTAssertFalse(AccountSession.isStale(away: .seconds(1), silence: .seconds(25)))
+        XCTAssertFalse(AccountSession.isStale(away: nil, silence: .seconds(30)))
+        XCTAssertTrue(AccountSession.isStale(away: nil, silence: .seconds(41)))
+        XCTAssertTrue(AccountSession.isStale(away: .seconds(21), silence: .seconds(1)))
+    }
+
     func testRefreshReconnectsEvenWhenConnected() async throws {
         let http = emptyServer()
         let connector = FakeConnector()
