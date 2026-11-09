@@ -280,7 +280,7 @@ final class LiveBrowserVNCController: UIViewController {
 
     /// The screen let the keyboard go. Hidden here (the button, the key
     /// row's hide, the focus leaving a field), the keys come back to the
-    /// controller; taken by another field (the address), they stay there
+    /// controller; taken by another field, they stay there
     /// until the screen is tapped.
     private func keyboardWentDown() {
         guard !screen.showsKeyboard else { return }

@@ -937,7 +937,19 @@ final class LiveBrowserFullScreenItems: UIViewController {
         let content = self.content
         addChild(content)
         view.addSubview(content.view)
-        if isNoVNC {
+        if viewer != nil {
+            // The native viewer: no bar of ours under the header. The
+            // picture is Chrome's window, address bar and all, so it
+            // has the whole page below the header.
+            content.view.translatesAutoresizingMaskIntoConstraints = false
+            view.backgroundColor = .systemBackground
+            NSLayoutConstraint.activate([
+                content.view.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+                content.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                content.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                content.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            ])
+        } else if isNoVNC {
             // The bar under the header, clear of the keyboard pill at the
             // bottom and of Minimize: noVNC below it.
             let bar = navBar
@@ -1073,7 +1085,9 @@ final class LiveBrowserFullScreenItems: UIViewController {
 
     // MARK: The noVNC page's bar
 
-    /// Back, Forward, Reload and the address, over noVNC (`POST /nav`).
+    /// Back, Forward, Reload and the address, over noVNC's web page
+    /// (`POST /nav`); not over the native viewer, whose picture shows
+    /// Chrome's own.
     /// The bridge knows no history, so Back and Forward are always on.
     let address = UITextField()
     private let spinner = UIActivityIndicatorView(style: .medium)
@@ -1180,7 +1194,7 @@ final class LiveBrowserFullScreenItems: UIViewController {
         endItem.isEnabled = state.map { !$0.ended } ?? false
         sleepItem.isEnabled = state.map { !$0.ended && !$0.asleep } ?? false
         viewer?.pageFocusChanged(held ? state?.editableFocused : nil)
-        if isNoVNC, !address.isEditing, navigating == 0, let url = state?.url, !url.isEmpty { address.text = url }
+        if isNoVNC, viewer == nil, !address.isEditing, navigating == 0, let url = state?.url, !url.isEmpty { address.text = url }
         navigationItem.subtitle = state.flatMap { $0.asleep ? Strings.LiveBrowser.asleep : $0.starting ? Strings.LiveBrowser.startingBrowser : nil }
             ?? state?.lastAction.map(Strings.LiveBrowser.lastAction)
             ?? state.map { Strings.LiveBrowser.status($0.status) }
