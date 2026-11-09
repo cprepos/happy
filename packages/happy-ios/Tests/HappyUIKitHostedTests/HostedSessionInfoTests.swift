@@ -158,7 +158,7 @@ final class HostedSessionInfoTests: XCTestCase {
     }
 
     func testTheTitleOpensSessionInfoWithItsGroupsOnScreen() async throws {
-        let (controller, account) = try await signedIn(agentState: .object(["controlledByUser": .bool(false)]))
+        let (controller, account) = try await signedIn(agentState: .object(["controlledByUser": .bool(false)]), connector: ForeverConnecting())
         let context = AppContext(account: controller, variant: .development, version: "test")
         let (window, navigation, root) = try await hosted()
         root.push(.session(id: Self.sessionId), context: context)
@@ -180,6 +180,18 @@ final class HostedSessionInfoTests: XCTestCase {
             keep(window, "hosted-legacy-chat-header-\(name)")
         }
         window.overrideUserInterfaceStyle = .unspecified
+        // No socket here: while the header says "connecting…" a tap on it
+        // refreshes instead, and the chat stays.
+        let link = LegacyLink.link(for: account)
+        let connecting = try await until { link.indicator.shown == .connecting }
+        XCTAssertTrue(connecting, "the link never said connecting")
+        title.onOpen?()
+        XCTAssertTrue(navigation.topViewController === chat, "a tap while connecting opened something")
+        // Told it's live, the tap opens the session's info.
+        link.receive(status: .connected)
+        link.receive(catchingUp: false)
+        let live = try await until { link.indicator.shown == .online }
+        XCTAssertTrue(live, "the link never came back live")
         title.onOpen?()
         let info = try XCTUnwrap(navigation.topViewController as? SessionInfoViewController)
         let opened = try await until { !self.shownGroups(info, in: window).isEmpty }
