@@ -284,10 +284,13 @@ public final class AccountSession: Sendable {
         catchUp.finish()
     }
 
-    /// The phone has a way out again (`NetworkPath`): connect now rather
-    /// than when the socket's backoff says, so what waited goes at once.
+    /// The phone has a way out again, or a different one (`NetworkPath`):
+    /// connect now rather than when the socket's backoff says, so what
+    /// waited goes at once. A socket that still says connected is replaced
+    /// too: after a move from Wi-Fi to cellular it is bound to the old
+    /// interface, and would only be found dead by the watchdog. The new
+    /// connection's catch-up pulls whatever was missed.
     public func networkReturned() async {
-        guard await realtime.status != .connected else { return }
         await realtime.reconnect()
     }
 

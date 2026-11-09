@@ -110,13 +110,18 @@ public final class LegacyHomeViewController: UIViewController, ComposeHosting {
         observation = pipeline.observation
         // The link as home's title says it, and as this account's chats do.
         linkWatch = LegacyLink.link(for: session).watch { [weak self] in self?.headerState = $0 }
-        networkWatch = NetworkPath.shared.watch { [weak self] satisfied in
+        networkWatch = NetworkPath.shared.watchDetails { [weak self] path in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                let back = satisfied && !self.networkPath
-                self.networkPath = satisfied
-                // Back from airplane mode: reconnect, and send what waited, now.
-                if back, self.isCurrentAccount { Task { [session = self.session] in await session.networkReturned() } }
+                let back = path.satisfied && !self.networkPath
+                // Wi-Fi to cellular (or back) leaves the socket on the old
+                // interface, dead but still looking connected.
+                let moved = path.satisfied && self.networkPath && path.interface != self.networkInterface
+                self.networkPath = path.satisfied
+                self.networkInterface = path.interface
+                // Back from airplane mode, or on a new interface: reconnect,
+                // and send what waited, now.
+                if back || moved, self.isCurrentAccount { Task { [session = self.session] in await session.networkReturned() } }
             }
         }
         // An archive, leave or delete refused with no screen waiting on it
@@ -425,6 +430,7 @@ public final class LegacyHomeViewController: UIViewController, ComposeHosting {
     /// Whether the phone has a way out at all (`NetworkPath`): its return
     /// reconnects at once.
     private var networkPath = NetworkPath.shared.isSatisfied
+    private var networkInterface = NetworkPath.shared.details.interface
     private var networkWatch: NetworkPathWatch?
 
     private lazy var settingsItem = HeaderBar.settingsItem { [weak self] in self?.openSettings() }
