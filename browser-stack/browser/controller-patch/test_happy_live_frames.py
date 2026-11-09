@@ -57,6 +57,14 @@ class FakePage:
     def is_closed(self) -> bool:
         return False
 
+    async def bring_to_front(self) -> None:
+        self.fronted = getattr(self, "fronted", 0) + 1
+        self.visibility = "visible"
+
+    async def evaluate(self, script: str) -> str:
+        assert "visibilityState" in script
+        return getattr(self, "visibility", "visible")
+
 
 class Scrubber:
     def __init__(self) -> None:
@@ -370,6 +378,192 @@ class LightSnapshotTests(Base):
         patched = await self.service.light_snapshot(self.session, label="before-click")
         plain = await UPSTREAM_LIGHT(self.service, self.session, label="before-click")
         self.assertEqual(set(patched), set(plain))
+
+
+def png(width: int = 1920, height: int = 1200, tail: bytes = b"") -> bytes:
+    import struct
+
+    return hlf.PNG_SIGNATURE + struct.pack(">I", 13) + b"IHDR" + struct.pack(">II", width, height) + b"\x08\x02\x00\x00\x00" + tail
+
+
+class ScreenTests(Base):
+    def setUp(self) -> None:
+        super().setUp()
+        m = self.service.manager
+        m.observation = self.service
+        m._shown_url = lambda page: page.url
+        counter = {"n": 0}
+
+        def target(session: SimpleNamespace, label: str) -> dict[str, str]:
+            counter["n"] += 1
+            name = f"20260101T00000{counter['n']:03d}Z-{label}.png"
+            return {"path": str(Path(session.artifact_dir) / name), "url": f"/artifacts/{session.id}/{name}"}
+
+        m.artifacts = SimpleNamespace(screenshot_target=target)
+        # The scrubber sees PNGs here, so it marks them by what it was handed, not by RAW.
+        self.scrubber.screenshot = lambda raw, blocks: (raw + b"SCRUBBED", [{"kind": "email"}])
+
+    async def shoot(self, **kw: object) -> dict:
+        front = await hlf.screen_front(self.service.manager, "s1", **kw)
+        return await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], png=png(), label="evidence 1")
+
+    async def test_brings_the_tab_forward_and_files_a_scrubbed_artifact(self) -> None:
+        self.page.visibility = "hidden"
+        out = await self.shoot()
+        self.assertEqual(self.page.fronted, 1)
+        self.assertEqual(out["url"], "https://example.com/one")
+        self.assertEqual(out["title"], "Title https://example.com/one")
+        self.assertEqual((out["width"], out["height"]), (1920, 1200))
+        self.assertTrue(out["pii_scrubbed"])
+        self.assertNotIn("screenshot_pii_scrub", out)
+        self.assertTrue(out["screenshot_path"].endswith("Z-screen-evidence-1.png"))
+        self.assertEqual(out["screenshot_url"], "/artifacts/s1/" + Path(out["screenshot_path"]).name)
+        data = Path(out["screenshot_path"]).read_bytes()
+        self.assertTrue(data.endswith(b"SCRUBBED"))
+        import base64
+
+        self.assertEqual(base64.b64decode(out["png"]), data)
+        self.assertEqual(list(hlf._pending_dir(self.session).iterdir()), [])
+        self.assertFalse(self.session.lock.locked())
+        self.assertIsNone(self.session.last_screenshot)
+
+    async def test_ocr_reads_the_image_outside_the_artifact_tree(self) -> None:
+        seen = []
+        self.service.manager.ocr.extract_from_image.side_effect = lambda path: seen.append(path) or {
+            "available": True, "redaction_blocks": [{"text": "x"}]
+        }
+        await self.shoot()
+        self.assertEqual(len(seen), 1)
+        self.assertFalse(Path(seen[0]).is_relative_to(self.session.artifact_dir))
+
+    async def test_without_activate_a_tab_not_in_front_is_refused(self) -> None:
+        self.page.visibility = "hidden"
+        with self.assertRaises(hlf.ScreenRefused) as cm:
+            await hlf.screen_front(self.service.manager, "s1", activate=False)
+        self.assertEqual(cm.exception.code, "not_in_front")
+        self.assertEqual(getattr(self.page, "fronted", 0), 0)
+        self.assertFalse(self.session.lock.locked())
+
+    async def test_a_tab_that_will_not_come_forward_is_refused(self) -> None:
+        async def stuck() -> None:
+            self.page.visibility = "hidden"
+
+        self.page.bring_to_front = stuck
+        with self.assertRaises(hlf.ScreenRefused) as cm:
+            await hlf.screen_front(self.service.manager, "s1")
+        self.assertEqual(cm.exception.code, "not_in_front")
+
+    async def test_a_page_that_navigated_meanwhile_is_refused_and_nothing_filed(self) -> None:
+        front = await hlf.screen_front(self.service.manager, "s1")
+        self.page.url = "https://example.com/two"
+        with self.assertRaises(hlf.ScreenRefused) as cm:
+            await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], png=png())
+        self.assertEqual(cm.exception.code, "moved")
+        self.assertEqual(self.artifact_pngs(), [])
+
+    async def test_another_tab_meanwhile_is_refused(self) -> None:
+        front = await hlf.screen_front(self.service.manager, "s1")
+        self.session.page = FakePage(self.session.artifact_dir)
+        with self.assertRaises(PermissionError):
+            await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], png=png())
+        self.assertEqual(self.artifact_pngs(), [])
+
+    async def test_a_page_refused_meanwhile_is_refused(self) -> None:
+        front = await hlf.screen_front(self.service.manager, "s1")
+        self.service.manager._page_refused.return_value = True
+        with self.assertRaises(PermissionError):
+            await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], png=png())
+        self.assertEqual(self.artifact_pngs(), [])
+
+    async def test_a_page_refused_while_it_is_scrubbed_is_refused_and_the_image_deleted(self) -> None:
+        front = await hlf.screen_front(self.service.manager, "s1")
+
+        def ocr(path: str) -> dict:
+            self.service.manager._page_refused.return_value = True
+            return {"available": True, "redaction_blocks": [{"text": "x"}]}
+
+        self.service.manager.ocr.extract_from_image.side_effect = ocr
+        with self.assertRaises(PermissionError):
+            await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], png=png())
+        self.assertEqual(self.artifact_pngs(), [])
+        self.assertEqual(list(hlf._pending_dir(self.session).iterdir()), [])
+        self.assertFalse(self.session.lock.locked())
+
+    async def test_a_refused_page_is_never_brought_forward(self) -> None:
+        self.service.manager._assert_page_allowed.side_effect = PermissionError("refused")
+        with self.assertRaises(PermissionError):
+            await hlf.screen_front(self.service.manager, "s1")
+        self.assertEqual(getattr(self.page, "fronted", 0), 0)
+
+    async def test_a_token_is_used_once_and_expires(self) -> None:
+        front = await hlf.screen_front(self.service.manager, "s1")
+        await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], png=png())
+        with self.assertRaises(hlf.ScreenRefused) as cm:
+            await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], png=png())
+        self.assertEqual(cm.exception.code, "stale")
+        front = await hlf.screen_front(self.service.manager, "s1")
+        getattr(self.session, hlf.SCREEN_TOKEN_ATTR)[front["token"]]["at"] -= hlf.SCREEN_TOKEN_SECONDS + 1
+        with self.assertRaises(hlf.ScreenRefused) as cm:
+            await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], png=png())
+        self.assertEqual(cm.exception.code, "stale")
+
+    async def test_not_a_png_is_refused(self) -> None:
+        front = await hlf.screen_front(self.service.manager, "s1")
+        with self.assertRaises(hlf.ScreenRefused) as cm:
+            await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], png=b"GIF89a....")
+        self.assertEqual(cm.exception.code, "bad_image")
+
+    async def test_ocr_unavailable_is_disclosed_and_strict_withholds(self) -> None:
+        self.service.manager.ocr.extract_from_image.return_value = {"available": False, "error": "tesseract_not_found"}
+        out = await self.shoot()
+        self.assertFalse(out["pii_scrubbed"])
+        self.assertEqual(out["screenshot_pii_scrub"], {"applied": False, "reason": "tesseract_not_found"})
+        self.scrubber.screenshot_strict = True
+        before = self.artifact_pngs()
+        with self.assertRaises(Exception) as cm:
+            await self.shoot()
+        self.assertIn("withheld", str(cm.exception))
+        self.assertEqual(self.artifact_pngs(), before)
+        self.assertEqual(list(hlf._pending_dir(self.session).iterdir()), [])
+        self.assertFalse(self.session.lock.locked())
+
+    async def test_scrubbing_off_files_the_capture_as_is(self) -> None:
+        self.scrubber.screenshot_enabled = False
+        out = await self.shoot()
+        self.assertFalse(out["pii_scrubbed"])
+        self.assertEqual(Path(out["screenshot_path"]).read_bytes(), png())
+        self.service.manager.ocr.extract_from_image.assert_not_called()
+
+    def test_the_routes(self) -> None:
+        import base64
+
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        application = FastAPI()
+        hlf.install_routes(application, self.service.manager)
+        client = TestClient(application)
+        front = client.post("/happy/sessions/s1/screen/front", json={"activate": True})
+        self.assertEqual(front.status_code, 200)
+        token = front.json()["token"]
+        bad = client.post("/happy/sessions/s1/screen/scrub", json={"token": token, "png": "%%%"})
+        self.assertEqual((bad.status_code, bad.json()["code"]), (400, "bad_request"))
+        ok = client.post(
+            "/happy/sessions/s1/screen/scrub",
+            json={"token": token, "png": base64.b64encode(png()).decode(), "label": "x"},
+        )
+        self.assertEqual(ok.status_code, 200)
+        self.assertEqual(ok.json()["url"], "https://example.com/one")
+        again = client.post(
+            "/happy/sessions/s1/screen/scrub", json={"token": token, "png": base64.b64encode(png()).decode()}
+        )
+        self.assertEqual((again.status_code, again.json()["code"]), (409, "stale"))
+        self.page.visibility = "hidden"
+        held = client.post("/happy/sessions/s1/screen/front", json={"activate": False})
+        self.assertEqual((held.status_code, held.json()["code"]), (409, "not_in_front"))
+        self.service.manager._assert_page_allowed.side_effect = PermissionError("refused")
+        refused = client.post("/happy/sessions/s1/screen/front", json={})
+        self.assertEqual((refused.status_code, refused.json()["code"]), (403, "page_refused"))
 
 
 if __name__ == "__main__":

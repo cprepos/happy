@@ -64,6 +64,19 @@ function harness({ maxPods = 2, warm = 0, ensureMs = 0, readyAfter = 0, createFa
             dead: new Set(),
             approvals: 0,
             async pendingApprovals() { if (c.approvalsFail) throw new Error('down'); return c.approvals; },
+            screenQueue: [], // errors (or null) the next screenFront / screenScrub calls throw, in order
+            async screenFront(sid, { activate }) {
+                calls.push(`ctl.screenFront:${slot}:${sid}:${activate}`);
+                const e = c.screenQueue.shift();
+                if (e) throw e;
+                return { token: `tok-${slot}-${calls.length}`, url: 'https://example.com/', title: 'Example' };
+            },
+            async screenScrub(sid, { token, png, label }) {
+                calls.push(`ctl.screenScrub:${slot}:${sid}:${token.startsWith(`tok-${slot}-`) ? 'tok' : 'bad'}:${png}:${label}`);
+                const e = c.screenQueue.shift();
+                if (e) throw e;
+                return { url: 'https://example.com/', title: 'Example', screenshot_path: `/data/artifacts/${sid}/x-screen-${label}.png`, screenshot_url: `/artifacts/${sid}/x-screen-${label}.png`, width: 1920, height: 1200, png: 'U0NSVUJCRUQ=', pii_scrubbed: true };
+            },
             async getSession(sid) {
                 calls.push(`ctl.getSession:${slot}`);
                 if (c.dead.has(sid)) { const e = new Error('not found'); e.status = 404; throw e; }
@@ -741,4 +754,52 @@ test('end: the fresh start survives a bridge restart and clears after one start'
     assert.deepEqual(starts(h2), ['ctl.createSession:0:happy-chat']);
     const after = JSON.parse(readFileSync(paths.chatsPath, 'utf8')).chats.find((c) => c.chatKey === A);
     assert.equal(after.fresh, false);
+});
+
+test('screenShot: the chat\'s own tab forward, its own pod\'s screen, scrubbed by its own controller', async () => {
+    const h = harness();
+    await h.mgr.ensure(A);
+    await h.mgr.ensure(B);
+    h.calls.length = 0;
+    const shot = await h.mgr.screenShot(B, { label: 'evidence' });
+    assert.deepEqual(h.calls, ['ctl.screenFront:1:s2:true', 'launcher.screen:1:pod', 'ctl.screenScrub:1:s2:tok:iVBORw0K:evidence']);
+    assert.equal(shot.data, 'U0NSVUJCRUQ=', 'the scrubbed image, never the raw capture');
+    assert.equal(shot.session_id, 's2');
+    assert.equal(shot.url, 'https://example.com/');
+    assert.equal(shot.title, 'Example');
+    assert.equal(shot.pii_scrubbed, true);
+    assert.equal(shot.screenshot_url, '/artifacts/s2/x-screen-evidence.png');
+    assert.match(shot.captured_at, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
+    // Held by the user: their tab is not changed.
+    h.calls.length = 0;
+    await h.mgr.screenShot(A, { activate: false });
+    assert.deepEqual(h.calls[0], 'ctl.screenFront:0:s1:false');
+    // Asleep, unknown or malformed: refused, never woken.
+    await h.mgr.stopChat(A, 'idle');
+    h.calls.length = 0;
+    await assert.rejects(h.mgr.screenShot(A), (e) => e.status === 503 && /asleep/.test(e.message));
+    await assert.rejects(h.mgr.screenShot('c'.repeat(32)), (e) => e.status === 503);
+    await assert.rejects(h.mgr.screenShot('nothex'), (e) => e.status === 400);
+    assert.deepEqual(h.calls, []);
+});
+
+test('screenShot: a page that moved is captured again once; a refusal is passed on in the controller\'s words', async () => {
+    const h = harness();
+    await h.mgr.ensure(A);
+    const c = h.clients.get(0);
+    const err = (status, code, detail) => Object.assign(new PodError(`pod POST /happy -> ${status}`, status, code), { detail });
+    c.screenQueue.push(null, err(409, 'moved', 'The page navigated'));
+    h.calls.length = 0;
+    const shot = await h.mgr.screenShot(A);
+    assert.equal(shot.data, 'U0NSVUJCRUQ=');
+    assert.equal(h.calls.filter((x) => x.startsWith('launcher.screen')).length, 2);
+    c.screenQueue.push(null, err(409, 'moved', 'x'), null, err(409, 'moved', 'The page navigated again'));
+    await assert.rejects(h.mgr.screenShot(A), (e) => e.status === 409 && /refused: The page navigated again/.test(e.message));
+    c.screenQueue.push(err(409, 'not_in_front', 'This session\'s tab is not the one the browser window shows'));
+    h.calls.length = 0;
+    await assert.rejects(h.mgr.screenShot(A), (e) => e.status === 409 && e.code === 'not_in_front');
+    assert.ok(!h.calls.some((x) => x.startsWith('launcher.screen')), 'nothing captured when the tab is not in front');
+    c.screenQueue.push(err(404, undefined, null));
+    c.screenQueue[0].message = 'pod POST /happy -> 404 {"detail":"Not Found"}';
+    await assert.rejects(h.mgr.screenShot(A), (e) => e.status === 501 && e.code === 'screen_unsupported');
 });

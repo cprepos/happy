@@ -58,8 +58,12 @@
 //   POST /api/pod       {chat_key, source?, verify?} or {session_id}
 //                       -> {mcp_url, session_id, link_id, url, slot}: the chat's pod, started or woken
 //   POST /api/pod/close {chat_key}                  -> saves the login, closes the session, stops the pod
-//   POST /api/screen    {chat_key}                  -> {mime, width, height, data (base64 PNG)}: that
-//                       chat's pod's whole screen (browser_screenshot scope "screen"); 503 asleep
+//   POST /api/screen    {chat_key, activate?, label?} -> {mime, width, height, data (base64 PNG),
+//                       session_id, url, title, captured_at, screenshot_path, screenshot_url,
+//                       pii_scrubbed, screenshot_pii_scrub?}: that chat's pod's whole screen
+//                       (browser_screenshot scope "screen") with its session's tab brought to the
+//                       front (activate false: it must already be), OCR-scrubbed by the pod's
+//                       controller and filed as the session's artifact; 503 asleep (never wakes it)
 //   POST /api/tools     {}                          -> {tools}: auto-browser's tool list, cached, so
 //                       listing tools never starts a pod
 //   GET  /api/pods                                  -> slots, chats, recent start timings
@@ -738,7 +742,8 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
                 return send(res, 200, { closed: stopped, pod: pods.podState(key) });
             }
             if (path === '/api/screen') {
-                return send(res, 200, await pods.screen(chatKeyOf(body)));
+                const label = typeof body.label === 'string' && body.label ? body.label.slice(0, 100) : 'manual';
+                return send(res, 200, await pods.screenShot(chatKeyOf(body), { activate: body.activate !== false, label }));
             }
             if (path === '/api/tools') {
                 if (!listTools) return send(res, 503, { error: 'no tool list' });

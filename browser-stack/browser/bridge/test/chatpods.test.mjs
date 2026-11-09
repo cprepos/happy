@@ -31,7 +31,7 @@ function podClient(sid, calls) {
 
 // A pod manager with the shape of lib/pods.mjs: chats run, sleep and wake on command.
 function fakePods(store) {
-    const calls = { ensure: [], stop: [], wake: [], touch: [], checkpoint: [], observe: [], takeover: [], close: [], screen: [] };
+    const calls = { ensure: [], stop: [], wake: [], touch: [], checkpoint: [], observe: [], takeover: [], close: [], screen: [], screenShot: [] };
     const chats = new Map(); // key -> {sessionId, state, slot, n}
     let n = 0;
     const pods = {
@@ -64,6 +64,13 @@ function fakePods(store) {
             if (pods.screenFail) throw pods.screenFail;
             if (chats.get(key)?.state !== 'running') throw Object.assign(new Error('asleep'), { status: 503 });
             return { mime: 'image/png', width: 1920, height: 1200, data: Buffer.concat([PNG, Buffer.from(key.slice(0, 1))]).toString('base64') };
+        },
+        async screenShot(key, opts) {
+            calls.screenShot.push({ key, ...opts });
+            if (!/^[0-9a-f]{32}$/.test(key)) throw Object.assign(new Error('bad chat_key'), { status: 400 });
+            const c = chats.get(key);
+            if (c?.state !== 'running') throw Object.assign(new Error('asleep'), { status: 503 });
+            return { mime: 'image/png', width: 1920, height: 1200, data: 'c2NydWJiZWQ=', session_id: c.sessionId, url: 'https://example.com/', title: 'Example', captured_at: '2026-11-09T12:00:00.000Z', screenshot_path: `/a/${c.sessionId}/x.png`, screenshot_url: `/artifacts/${c.sessionId}/x.png`, pii_scrubbed: true };
         },
         liveness(key) {
             const st = chats.get(key)?.state ?? 'none';
@@ -194,9 +201,13 @@ test('screen: /api/screen and screen.png show the chat\'s own pod, cached a seco
     await start();
     const a = await (await api('/api/pod', { chat_key: KEY_A })).json();
     const b = await (await api('/api/pod', { chat_key: KEY_B })).json();
-    const s = await (await api('/api/screen', { chat_key: KEY_B })).json();
-    assert.deepEqual([s.mime, s.width, s.height], ['image/png', 1920, 1200]);
-    assert.equal(Buffer.from(s.data, 'base64').at(-1), 'b'.charCodeAt(0));
+    // /api/screen is the scrubbed evidence capture of the chat's own session.
+    const s = await (await api('/api/screen', { chat_key: KEY_B, label: 'proof', activate: false })).json();
+    assert.deepEqual([s.mime, s.width, s.height, s.session_id, s.url, s.pii_scrubbed], ['image/png', 1920, 1200, b.session_id, 'https://example.com/', true]);
+    assert.deepEqual(pods.calls.screenShot, [{ key: KEY_B, activate: false, label: 'proof' }]);
+    await api('/api/screen', { chat_key: KEY_A });
+    assert.deepEqual(pods.calls.screenShot[1], { key: KEY_A, activate: true, label: 'manual' });
+    assert.deepEqual(pods.calls.screen, [], 'not the raw capture');
     assert.equal((await api('/api/screen', { chat_key: 'nothex' })).status, 400);
     assert.equal((await fetch(base + '/api/screen', { method: 'POST', body: JSON.stringify({ chat_key: KEY_A }) })).status, 401);
     pods.calls.screen.length = 0;
@@ -462,7 +473,7 @@ const UP_TOOLS = [
     { name: 'browser.screenshot', inputSchema: { type: 'object', properties: { session_id: { type: 'string' }, label: { type: 'string' } }, additionalProperties: false } },
 ];
 
-function mcpHarness({ chat = { key: KEY_A, source: 'happy' }, podsOn = true, refuseOnce = false, recoverOnce = null, capped = false, shared: sharedMode = 'ok' } = {}) {
+function mcpHarness({ chat = { key: KEY_A, source: 'happy' }, podsOn = true, refuseOnce = false, recoverOnce = null, capped = false, shared: sharedMode = 'ok', linkStatus = 'watching', screenReply = null } = {}) {
     const seen = { bridge: [], calls: [] };
     let n = 0;
     const podFor = new Map();
@@ -490,7 +501,10 @@ function mcpHarness({ chat = { key: KEY_A, source: 'happy' }, podsOn = true, ref
         const body = JSON.parse(init.body || '{}');
         seen.bridge.push({ path, body });
         if (!podsOn && (path.startsWith('/api/pod') || path === '/api/tools' || path === '/api/screen')) return json(409, { error: 'pods_disabled' });
-        if (path === '/api/screen') return json(200, { mime: 'image/png', width: 1920, height: 1200, data: `png-of-${body.chat_key.slice(0, 4)}` });
+        if (path === '/api/screen') {
+            if (screenReply) return json(200, screenReply(body));
+            return json(200, { mime: 'image/png', width: 1920, height: 1200, data: `png-of-${body.chat_key.slice(0, 4)}`, session_id: podFor.get(body.chat_key)?.sid, url: 'https://example.com/a', title: 'A', captured_at: '2026-11-09T12:00:00.000Z', screenshot_path: '/data/x.png', screenshot_url: '/artifacts/x.png', pii_scrubbed: true });
+        }
         if (path === '/api/tools') return json(200, { tools: UP_TOOLS });
         if (path === '/api/pod') {
             const key = body.chat_key;
@@ -503,7 +517,7 @@ function mcpHarness({ chat = { key: KEY_A, source: 'happy' }, podsOn = true, ref
             return json(200, { chat_key: key, session_id: p.sid, mcp_url: `http://127.0.0.1:${8100 + p.slot}/mcp`, api_url: `http://127.0.0.1:${8100 + p.slot}`, link_id: `L${p.slot}`, url: `http://localhost/live/L${p.slot}` });
         }
         if (path === '/api/pod/close') return json(200, { closed: true });
-        if (path === '/api/state') return json(200, { status: 'watching' });
+        if (path === '/api/state') return json(200, { status: linkStatus });
         if (path === '/api/links') return json(200, { id: 'L', url: 'http://localhost/live/L', status: 'watching' });
         return json(404, { error: 'not_found' });
     };
@@ -692,41 +706,78 @@ test('phantoms: live is false with pod and live_reason once the browser is gone,
     assert.deepEqual([e.live, e.live_reason], [false, 'user_ended']);
 });
 
-test('router: browser_screenshot scope — page is forwarded without it, screen is the chat\'s own pod screen', async () => {
+test('router: browser_screenshot — the whole window by default, page on request', async () => {
     const h = mcpHarness();
     const listed = await h.list();
     const shot = listed.result.tools.find((t) => t.name === 'browser_screenshot');
     assert.deepEqual(shot.inputSchema.properties.scope.enum, ['page', 'screen']);
-    assert.equal(shot.inputSchema.properties.scope.default, 'page');
+    assert.equal(shot.inputSchema.properties.scope.default, 'screen');
     assert.ok(shot.inputSchema.properties.label, 'the upstream fields stay');
-    assert.match(shot.description, /scope "screen"/);
+    assert.match(shot.description, /address bar/);
 
-    // page (default, explicit, or null): forwarded, with no scope field.
-    for (const args of [{}, { scope: 'page', label: 'x' }, { scope: null }]) {
-        h.seen.calls.length = 0;
-        const r = await h.call('browser_screenshot', args);
-        assert.equal(r.result.isError, undefined);
-        assert.equal(h.seen.calls.length, 1);
-        assert.equal(h.seen.calls[0].name, 'browser.screenshot');
-        assert.ok(!('scope' in h.seen.calls[0].args));
-    }
-
-    // screen: the bridge's /api/screen for this chat, whatever session the agent names; nothing upstream.
+    // page: forwarded, with no scope field.
     h.seen.calls.length = 0;
-    h.seen.bridge.length = 0;
-    const r = await h.call('browser_screenshot', { scope: 'screen', session_id: 'someone-elses' });
-    assert.equal(r.result.isError, false);
-    const screens = h.seen.bridge.filter((b) => b.path === '/api/screen');
-    assert.deepEqual(screens.map((b) => b.body), [{ chat_key: KEY_A }]);
-    assert.equal(h.seen.calls.filter((c) => c.name === 'browser.screenshot').length, 0);
-    const info = JSON.parse(r.result.content.find((c) => c.type === 'text' && c.text.startsWith('{"scope"')).text);
-    assert.deepEqual(info, { scope: 'screen', session_id: 'pod0', width: 1920, height: 1200 });
-    const img = r.result.content.find((c) => c.type === 'image');
-    assert.deepEqual([img.data, img.mimeType], [`png-of-${KEY_A.slice(0, 4)}`, 'image/png']);
+    const p = await h.call('browser_screenshot', { scope: 'page', label: 'x' });
+    assert.equal(p.result.isError, undefined);
+    assert.equal(h.seen.calls.length, 1);
+    assert.equal(h.seen.calls[0].name, 'browser.screenshot');
+    assert.ok(!('scope' in h.seen.calls[0].args));
+
+    // screen (default, explicit, or null): the bridge's /api/screen for this chat, whatever session
+    // the agent names; nothing upstream.
+    for (const args of [{}, { scope: 'screen', session_id: 'someone-elses', label: 'proof' }, { scope: null }]) {
+        h.seen.calls.length = 0;
+        h.seen.bridge.length = 0;
+        const r = await h.call('browser_screenshot', args);
+        assert.equal(r.result.isError, false);
+        const screens = h.seen.bridge.filter((b) => b.path === '/api/screen');
+        assert.deepEqual(screens.map((b) => b.body), [{ chat_key: KEY_A, activate: true, label: args.label || 'manual' }]);
+        assert.equal(h.seen.calls.filter((c) => c.name === 'browser.screenshot').length, 0);
+        const info = JSON.parse(r.result.content.find((c) => c.type === 'text' && c.text.startsWith('{"scope"')).text);
+        assert.deepEqual(info, {
+            scope: 'screen', session_id: 'pod0', url: 'https://example.com/a', title: 'A', captured_at: '2026-11-09T12:00:00.000Z',
+            width: 1920, height: 1200, screenshot_path: '/data/x.png', screenshot_url: '/artifacts/x.png', pii_scrubbed: true,
+        });
+        assert.deepEqual(r.result.structuredContent.url, 'https://example.com/a');
+        const img = r.result.content.find((c) => c.type === 'image');
+        assert.deepEqual([img.data, img.mimeType], [`png-of-${KEY_A.slice(0, 4)}`, 'image/png']);
+    }
 
     const bad = await h.call('browser_screenshot', { scope: 'desktop' });
     assert.equal(bad.result.isError, true);
     assert.match(bad.result.content[0].text, /scope must be one of "page", "screen"/);
+});
+
+test('router: a screen shot while the user holds the browser leaves their tab alone', async () => {
+    const h = mcpHarness({ linkStatus: 'user' });
+    await h.list();
+    const r = await h.call('browser_screenshot', {});
+    assert.equal(r.result.isError, false);
+    assert.deepEqual(h.seen.bridge.filter((b) => b.path === '/api/screen').map((b) => b.body.activate), [false]);
+});
+
+test('router: a screen reply without the scrubbed capture\'s fields, or for another session, is never passed on', async () => {
+    const old = mcpHarness({ screenReply: () => ({ mime: 'image/png', width: 1920, height: 1200, data: 'raw' }) });
+    await old.list();
+    const r1 = await old.call('browser_screenshot', {});
+    assert.equal(r1.result.isError, true);
+    assert.ok(!r1.result.content.some((c) => c.type === 'image'));
+    assert.match(r1.result.content[0].text, /older/);
+    const other = mcpHarness({ screenReply: () => ({ mime: 'image/png', width: 1, height: 1, data: 'x', session_id: 'pod9', captured_at: 't', screenshot_url: '/a' }) });
+    await other.list();
+    const r2 = await other.call('browser_screenshot', {});
+    assert.equal(r2.result.isError, true);
+    assert.ok(!r2.result.content.some((c) => c.type === 'image'));
+});
+
+test('router: on the shared browser a screenshot without a scope is of the page, and says so', async () => {
+    const h = mcpHarness({ podsOn: false });
+    await h.list();
+    const r = await h.call('browser_screenshot', { session_id: 'x1' });
+    assert.ok(!r.result.isError);
+    assert.ok(r.result.content.some((c) => c.type === 'text' && /shared between chats.*page only/.test(c.text)));
+    assert.ok(!h.seen.bridge.some((b) => b.path === '/api/screen'));
+    assert.ok(h.seen.calls.some((c) => c.name === 'browser.screenshot' && !('scope' in c.args)));
 });
 
 test('router: scope "screen" is refused on the shared browser', async () => {

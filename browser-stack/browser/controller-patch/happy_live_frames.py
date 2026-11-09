@@ -25,7 +25,13 @@ while the person holds the browser, so the app's native viewer brings up the key
 answers only that one boolean, never the field or its value; it takes no lock and changes nothing in
 the page. The controller's bearer-token middleware and session ownership apply to it as to any route.
 
-The route and its token check (app/routes/share.py) are untouched; the patch refuses to load if
+And two routes for browser_screenshot's whole-screen capture (see "the whole-screen screenshot" below):
+POST /happy/sessions/{session_id}/screen/front brings the session's tab to the front and hands out a
+one-use token; POST /happy/sessions/{session_id}/screen/scrub takes the PNG the bridge had the pod's
+node capture, checks the page did not move, OCR-scrubs it through the controller's own redaction and
+files it in the session's artifact directory, as a page screenshot is.
+
+The share route and its token check (app/routes/share.py) are untouched; the patch refuses to load if
 that file, or any file whose behaviour it relies on, is not the 1.14.0 file it was written against.
 
 Loaded by running uvicorn on this module (happy_live_frames:app) instead of app.main:app, with this
@@ -35,10 +41,14 @@ file's directory on PYTHONPATH: see compose.browser.yml and launcher/launcher.mj
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import hashlib
 import logging
 import os
 import re
+import secrets
+import struct
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -374,8 +384,233 @@ async def editable_focused(page: Any) -> bool | None:
     return None
 
 
+# ── the whole-screen screenshot ─────────────────────────────────────────────
+#
+# browser_screenshot's default scope, "screen": the browser window as the live view shows it (tab
+# strip, address bar, dialogs). The X screen lives in the pod's browser node, which the controller
+# cannot read, so the bridge runs three steps for one chat's own pod:
+#   1. POST /happy/sessions/{id}/screen/front {activate}: the session's tab is brought to the front of
+#      its window (activate false: not, while the person holding the browser looks at it), and must
+#      then be the tab the window shows (document.visibilityState). -> {token, url, title}. The token
+#      keeps the page and its count of refused commits, as a PageRead does.
+#   2. The launcher captures the pod's X screen (scripts/screen-capture.py).
+#   3. POST /happy/sessions/{id}/screen/scrub {token, png (base64), label}: refused unless the
+#      session's page is still the one step 1 saw, on the same URL, still in front, and not refused.
+#      The image is written outside the artifact tree, OCR-scrubbed through the controller's own
+#      redaction (OCR reads the whole image, so its boxes are the image's own and the browser's own UI
+#      is scrubbed as the page is), and only then moved into the session's artifact directory as
+#      <stamp>Z-screen-<label>.png. -> {url, title, screenshot_path, screenshot_url, width, height,
+#      png, pii_scrubbed, screenshot_pii_scrub?}. With PII_SCRUB_SCREENSHOT off the image is stored as
+#      captured, as page screenshots are; PII_SCRUB_SCREENSHOT_STRICT withholds an unscrubbable one
+#      (SCREENSHOT_WITHHELD, 503) as it does those.
+
+SCREEN_TOKEN_ATTR = "_happy_screen_tokens"
+SCREEN_TOKEN_SECONDS = 30.0
+SCREEN_MAX_BYTES = 48 * 1024 * 1024
+SCREEN_PAGE_TIMEOUT_SECONDS = 5.0
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+class ScreenRefused(Exception):
+    def __init__(self, status: int, code: str, detail: str) -> None:
+        super().__init__(detail)
+        self.status = status
+        self.code = code
+        self.detail = detail
+
+
+def png_size(data: bytes) -> tuple[int, int]:
+    """Width and height from a PNG's IHDR; ScreenRefused if it is not a PNG."""
+    if len(data) < 24 or not data.startswith(PNG_SIGNATURE) or data[12:16] != b"IHDR":
+        raise ScreenRefused(400, "bad_image", "not a PNG")
+    width, height = struct.unpack(">II", data[16:24])
+    if not (0 < width <= 16384 and 0 < height <= 16384):
+        raise ScreenRefused(400, "bad_image", "PNG size out of range")
+    return width, height
+
+
+def _page_read() -> Any:
+    from app.browser import page_read
+
+    return page_read
+
+
+async def _in_front(session: Any) -> bool:
+    state = await _page_read().bounded(
+        session.page.evaluate("() => document.visibilityState"), seconds=SCREEN_PAGE_TIMEOUT_SECONDS
+    )
+    return state == "visible"
+
+
+async def _screen_title(session: Any) -> str:
+    try:
+        return await _page_read().bounded(session.page.title(), seconds=SCREEN_PAGE_TIMEOUT_SECONDS)
+    except Exception:
+        return ""  # mid-navigation the title may not answer
+
+
+async def _acquire(session: Any) -> None:
+    try:
+        await asyncio.wait_for(session.lock.acquire(), timeout=_page_read().READ_LOCK_TIMEOUT_SECONDS)
+    except TimeoutError:
+        raise ScreenRefused(409, "busy", "The session is busy with another call. Try again.") from None
+
+
+def _screen_tokens(session: Any) -> dict[str, Any]:
+    tokens = getattr(session, SCREEN_TOKEN_ATTR, None)
+    if tokens is None:
+        tokens = {}
+        setattr(session, SCREEN_TOKEN_ATTR, tokens)
+    cutoff = time.monotonic() - SCREEN_TOKEN_SECONDS
+    for key in [k for k, v in tokens.items() if v["at"] < cutoff]:
+        tokens.pop(key, None)
+    return tokens
+
+
+def _moved() -> PermissionError:
+    return PermissionError(_page_read().MOVED_DETAIL)
+
+
+async def screen_front(manager: Any, session_id: str, *, activate: bool = True) -> dict[str, Any]:
+    """Step 1: the session's tab in front of its window, and a token for step 3."""
+    # An unknown session, or another operator's, is a KeyError: the app's 404.
+    session = await manager.get_session(session_id)
+    manager._assert_page_allowed(session)
+    await _acquire(session)
+    try:
+        read = _page_read().start_read(manager, session)
+        if activate:
+            await _page_read().bounded(session.page.bring_to_front(), seconds=SCREEN_PAGE_TIMEOUT_SECONDS)
+        if not await _in_front(session):
+            raise ScreenRefused(
+                409,
+                "not_in_front",
+                "This session's tab is not the one the browser window shows"
+                + ("" if activate else " (the person holding the browser has another tab in front)")
+                + ", so a screen capture would not show it.",
+            )
+        if read.moved():
+            raise _moved()
+        url = manager._shown_url(session.page)
+        title = await _screen_title(session)
+        token = secrets.token_hex(16)
+        _screen_tokens(session)[token] = {"read": read, "url": url, "at": time.monotonic()}
+        return {"token": token, "url": url, "title": title}
+    finally:
+        session.lock.release()
+
+
+async def screen_scrub(
+    manager: Any, session_id: str, *, token: str, png: bytes, label: str = "manual"
+) -> dict[str, Any]:
+    """Step 3: check the page has not moved since step 1, scrub the capture, file it as an artifact."""
+    from app.browser.services.observation import _scrub_disclosure
+
+    if len(png) > SCREEN_MAX_BYTES:
+        raise ScreenRefused(413, "too_large", "screen image too large")
+    png_size(png)
+    session = await manager.get_session(session_id)
+    manager._assert_page_allowed(session)
+    await _acquire(session)
+    pending: Path | None = None
+    try:
+        entry = _screen_tokens(session).pop(token, None)
+        if entry is None:
+            raise ScreenRefused(409, "stale", "The screen capture's token is unknown or expired. Take it again.")
+        read = entry["read"]
+        if read.moved():
+            raise _moved()
+        url = manager._shown_url(session.page)
+        if url != entry["url"]:
+            raise ScreenRefused(409, "moved", "The page navigated while the screen was captured. Take it again.")
+        if not await _in_front(session):
+            raise ScreenRefused(409, "not_in_front", "This session's tab left the front while the screen was captured.")
+        title = await _screen_title(session)
+
+        safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "-", label or "manual").strip(".-")[:100] or "manual"
+        target = manager.artifacts.screenshot_target(session, "screen-" + safe_label)
+        final = Path(target["path"])
+        pending_dir = _pending_dir(session)
+        pending = pending_dir / final.name
+        await asyncio.to_thread(pending_dir.mkdir, parents=True, exist_ok=True)
+        await asyncio.to_thread(pending.write_bytes, png)
+        shot: dict[str, Any] = {"path": str(pending), "url": target["url"]}
+        scrubbing = getattr(manager.pii_scrubber, "screenshot_enabled", False) is True
+        if scrubbing:
+            # The controller's own redaction, as _capture_screenshot_redacted runs it for a page
+            # screenshot. Strict mode deletes the image and raises SCREENSHOT_WITHHELD.
+            ocr = await manager.ocr.extract_from_image(str(pending))
+            await manager.observation._scrub_screenshot_if_needed(session, shot, ocr)
+        if read.moved():
+            raise _moved()
+        await asyncio.to_thread(os.replace, pending, final)
+        pending = None
+        data = await asyncio.to_thread(final.read_bytes)
+        width, height = png_size(data)
+        return {
+            "url": url,
+            "title": title,
+            "screenshot_path": str(final),
+            "screenshot_url": target["url"],
+            "width": width,
+            "height": height,
+            "png": base64.b64encode(data).decode("ascii"),
+            "pii_scrubbed": scrubbing and "pii_scrub_skipped" not in shot,
+            **_scrub_disclosure(shot),
+        }
+    finally:
+        if pending is not None:
+            pending.unlink(missing_ok=True)
+        session.lock.release()
+
+
+def _screen_refusal(exc: Exception) -> Any:
+    from fastapi.responses import JSONResponse
+
+    if isinstance(exc, ScreenRefused):
+        return JSONResponse(status_code=exc.status, content={"detail": exc.detail, "code": exc.code})
+    return JSONResponse(status_code=403, content={"detail": _page_read().MOVED_DETAIL, "code": "page_refused"})
+
+
+def install_screen_routes(application: Any, manager: Any) -> None:
+    """POST /happy/sessions/{session_id}/screen/front and .../screen/scrub (see above)."""
+    from fastapi import Request
+
+    async def front(session_id: str, request: Request) -> Any:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        activate = not (isinstance(body, dict) and body.get("activate") is False)
+        try:
+            return await screen_front(manager, session_id, activate=activate)
+        except (ScreenRefused, PermissionError) as exc:
+            return _screen_refusal(exc)
+
+    async def scrub(session_id: str, request: Request) -> Any:
+        try:
+            body = await request.json()
+            token, label = body["token"], body.get("label") or "manual"
+            if not isinstance(token, str) or not isinstance(label, str) or not isinstance(body["png"], str):
+                raise TypeError
+            png = base64.b64decode(body["png"], validate=True)
+        except (ValueError, KeyError, TypeError, binascii.Error):
+            return _screen_refusal(ScreenRefused(400, "bad_request", "expects {token, png (base64), label?}"))
+        try:
+            return await screen_scrub(manager, session_id, token=token, png=png, label=label)
+        except (ScreenRefused, PermissionError) as exc:
+            return _screen_refusal(exc)
+
+    # This module's annotations are strings (from __future__), resolved in its globals, where
+    # Request is not: without these FastAPI would take `request` for a query parameter.
+    for handler in (front, scrub):
+        handler.__annotations__["request"] = Request
+    application.add_api_route("/happy/sessions/{session_id}/screen/front", front, methods=["POST"], include_in_schema=False)
+    application.add_api_route("/happy/sessions/{session_id}/screen/scrub", scrub, methods=["POST"], include_in_schema=False)
+
+
 def install_routes(application: Any, manager: Any) -> None:
-    """GET /happy/sessions/{session_id}/focus, behind the controller's own auth middleware."""
+    """GET /happy/sessions/{session_id}/focus and the screen routes, behind the controller's own auth middleware."""
     if getattr(application.state, "happy_focus_route", False):
         return
 
@@ -390,6 +625,7 @@ def install_routes(application: Any, manager: Any) -> None:
             return {"editable_focused": None}
 
     application.add_api_route("/happy/sessions/{session_id}/focus", focus, methods=["GET"], include_in_schema=False)
+    install_screen_routes(application, manager)
     application.state.happy_focus_route = True
 
 

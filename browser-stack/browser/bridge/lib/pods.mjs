@@ -119,9 +119,20 @@ export function createPodClient({ baseUrl, token, fetchImpl = fetch, timeoutMs =
             throw new PodError(`pod controller unreachable: ${err.cause?.code || err.name}`, 502, 'unreachable');
         }
         if (!res.ok) {
-            let detail = '';
-            try { detail = (await res.text()).slice(0, 200); } catch {}
-            throw new PodError(`pod ${method} ${path.split('/').slice(0, 2).join('/')} -> ${res.status} ${detail}`, res.status);
+            let body = '';
+            try { body = (await res.text()).slice(0, 4000); } catch {}
+            const detail = body.slice(0, 200);
+            // The happy screen routes answer {detail, code}; the code is kept for the caller.
+            let code, said;
+            try {
+                const j = JSON.parse(body);
+                if (typeof j?.code === 'string') code = j.code;
+                if (typeof j?.detail === 'string') said = j.detail;
+                else if (typeof j?.error === 'string') said = j.error;
+            } catch {}
+            const err = new PodError(`pod ${method} ${path.split('/').slice(0, 2).join('/')} -> ${res.status} ${detail}`, res.status, code);
+            if (said) err.detail = said;
+            throw err;
         }
         return res.json();
     }
@@ -146,6 +157,14 @@ export function createPodClient({ baseUrl, token, fetchImpl = fetch, timeoutMs =
         saveAuthProfile: (sid, name) =>
             call('POST', `/sessions/${encodeURIComponent(sid)}/auth-profiles`, { profile_name: name }).then(() => true),
         listTabs: (sid) => call('GET', `/sessions/${encodeURIComponent(sid)}/tabs`),
+        // The whole-screen capture's controller steps (controller-patch/happy_live_frames.py):
+        // the session's tab to the front -> {token, url, title}; then the captured PNG checked,
+        // OCR-scrubbed and filed as an artifact -> {url, title, screenshot_path, screenshot_url,
+        // width, height, png, pii_scrubbed, screenshot_pii_scrub?}.
+        screenFront: (sid, { activate = true } = {}) =>
+            call('POST', `/happy/sessions/${encodeURIComponent(sid)}/screen/front`, { activate }, 15_000),
+        screenScrub: (sid, { token, png, label }) =>
+            call('POST', `/happy/sessions/${encodeURIComponent(sid)}/screen/scrub`, { token, png, label }, 90_000),
         // How many of the session's approvals still wait for a decision (none on an error).
         async pendingApprovals(sid) {
             const list = await call('GET', `/approvals?status=pending&session_id=${encodeURIComponent(sid)}`, undefined, 5000);
@@ -890,6 +909,56 @@ export function createPodManager({
         if (!p) throw new PodError('this chat\'s browser is asleep', 503, 'asleep');
         return launcher.call('screen', { slot: p.slot, pod_id: chats.get(chatKey).podId });
     }
+    /**
+     * browser_screenshot's whole-screen capture, for the chat's own pod only: the controller brings
+     * the session's tab to the front (activate false: it must already be there), the launcher
+     * captures the pod's X screen, and the controller checks the page did not move meanwhile,
+     * OCR-scrubs the image and files it as the session's artifact. A page that navigated in between
+     * is captured again, once. Never starts or wakes a pod. -> {mime, width, height, data (base64
+     * PNG, scrubbed), session_id, url, title, captured_at, screenshot_path, screenshot_url,
+     * pii_scrubbed, screenshot_pii_scrub?}
+     */
+    async function screenShot(chatKey, { activate = true, label = 'manual' } = {}) {
+        if (!CHAT_KEY.test(chatKey || '')) throw new PodError('bad chat_key', 400, 'bad_request');
+        for (let attempt = 0; ; attempt++) {
+            const p = podOf(chatKey);
+            const podId = chats.get(chatKey)?.podId;
+            if (!p || !p.sessionId) throw new PodError('this chat\'s browser is asleep', 503, 'asleep');
+            try {
+                const front = await p.client.screenFront(p.sessionId, { activate });
+                const capturedAt = new Date(now()).toISOString();
+                const raw = await launcher.call('screen', { slot: p.slot, pod_id: podId });
+                // The pod (and its session) must still be the chat's own after the capture.
+                const still = podOf(chatKey);
+                if (!still || still.slot !== p.slot || chats.get(chatKey)?.podId !== podId || still.sessionId !== p.sessionId) {
+                    throw new PodError('this chat\'s browser changed while the screen was captured; take it again', 409, 'moved');
+                }
+                const out = await p.client.screenScrub(p.sessionId, { token: front.token, png: raw.data, label });
+                return {
+                    mime: 'image/png',
+                    width: out.width,
+                    height: out.height,
+                    data: out.png,
+                    session_id: p.sessionId,
+                    url: out.url,
+                    title: out.title,
+                    captured_at: capturedAt,
+                    screenshot_path: out.screenshot_path,
+                    screenshot_url: out.screenshot_url,
+                    pii_scrubbed: out.pii_scrubbed === true,
+                    ...(out.screenshot_pii_scrub ? { screenshot_pii_scrub: out.screenshot_pii_scrub } : {}),
+                };
+            } catch (err) {
+                if (err.status === 404 && /Not Found/.test(err.message)) {
+                    throw new PodError('this browser pod\'s controller has no screen capture yet (it predates it); it gets it when the pod restarts, e.g. after the browser sleeps. Use scope "page" meanwhile', 501, 'screen_unsupported');
+                }
+                if (attempt === 0 && err.status === 409 && (err.code === 'moved' || err.code === 'stale')) continue;
+                // The controller's own refusal (not in front, page refused, busy, withheld) in its words.
+                if (err.detail && [403, 409, 413, 503].includes(err.status)) throw new PodError(`screen capture refused: ${err.detail}`, err.status, err.code);
+                throw err;
+            }
+        }
+    }
     /** running | starting | asleep | crashed | none, for /state's `pod` field. */
     function podState(chatKey) {
         const chat = chats.get(chatKey);
@@ -939,7 +1008,7 @@ export function createPodManager({
 
     return {
         ensure, stopChat, checkpointAuth, idleSweep, healthCheck, reconcile, refill, start, close,
-        chatForLink, chatForSession, podOf, podState, touchViewer, wake, status, hold, screen,
+        chatForLink, chatForSession, podOf, podState, touchViewer, wake, status, hold, screen, screenShot,
         liveness, sessionSeen, phantomSweep,
         get timings() { return timings.slice(); },
         _pods: pods, _chats: chats,

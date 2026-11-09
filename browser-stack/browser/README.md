@@ -331,15 +331,30 @@ secret.
   tools is skipped. `browser_create_session`, `browser_observe` and
   `browser_request_human_takeover` get one sentence appended that points at
   `browser_live_link` / `browser_wait_for_human`.
-  - `browser_screenshot` gets a `scope` argument, `"page"` (the default: forwarded to
-    auto-browser as before, without `scope`) or `"screen"`: the whole X display of the chat's
-    own pod, with the tab strip, address bar and any popup windows, returned the same way (a
-    JSON text part with `scope`, `session_id`, `width`, `height`, then the PNG as an image
-    part). The bridge asks the launcher for the chat's pod by chat key (`POST /api/screen`),
-    the launcher checks the pod id and execs `scripts/screen-capture.py` in that pod's node as
-    the `browser` user, so a chat can only ever capture its own pod's screen. With no pods
-    (shared mode) `"screen"` is refused, as a shared display would show other chats' pages.
-    The screen PNG is not PII-scrubbed; it is the same pixels the live view shows.
+  - `browser_screenshot` gets a `scope` argument, `"screen"` (the default) or `"page"`
+    (forwarded to auto-browser as before, without `scope`: the viewport only). `"screen"` is
+    the whole X display of the chat's own pod as the live view shows it, at native resolution,
+    with the tab strip, address bar and toolbar, so the URL is in the picture (evidence). The
+    result is a JSON text part with `scope`, `session_id`, `url`, `title`, `captured_at`,
+    `width`, `height`, `screenshot_path`, `screenshot_url`, `pii_scrubbed` (and
+    `screenshot_pii_scrub` when the scrub could not run), then the PNG as an image part.
+    How a screen shot is taken (`POST /api/screen` -> `pods.screenShot`):
+    1. the pod's controller brings the chat's session tab to the front
+       (`/happy/sessions/<id>/screen/front`; skipped while the user holds control, and then
+       refused unless the session's tab is already in front) and hands back a one-use token
+       tied to that tab and URL;
+    2. the launcher execs `scripts/screen-capture.py` in that pod's node as the `browser`
+       user (the pod id is checked, so a chat can only ever capture its own pod's screen);
+    3. the controller (`/happy/sessions/<id>/screen/scrub`) checks the tab did not move or
+       navigate and is still in front, OCRs the whole image and redacts PII exactly as for
+       page screenshots (strict mode withholds an image it cannot scrub), and only then files
+       it in the session's artifact directory as `<time>-screen-<label>.png`.
+    Anything moving in between (another tab, navigation, the pod restarting) refuses the shot
+    (one retry) rather than file a picture of something else. A pod still running an older
+    controller patch answers 501 `screen_unsupported` until it restarts. With no pods (shared
+    mode) `"screen"` is refused, as a shared display would show other chats' pages; a call
+    without a scope then takes the page screenshot and says so.
+    The live view's `/live/<id>/screen.png` is the raw, unscrubbed display, like noVNC.
   - A call is forwarded with its arguments and `_meta` (so a progress token
     reaches auto-browser, and its progress comes back), and auto-browser's result
     or JSON-RPC error is returned verbatim. Limit per call:

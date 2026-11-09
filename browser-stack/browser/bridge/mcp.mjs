@@ -167,17 +167,22 @@ const HINTS = {
 };
 const LOCK_HINT = ' Refused while the user has control of the browser; then call browser_wait_for_human and wait.';
 
-// browser_screenshot's one bridge-side argument. "page" (the default) is auto-browser's own page
-// screenshot; "screen" is the whole browser screen as the user sees it in the live view (window,
-// tab strip, address bar, any popup or dialog), taken inside this chat's own browser pod.
+// browser_screenshot's one bridge-side argument. "screen" (the default with per-chat pods) is the
+// whole browser window as the user sees it in the live view (tab strip, address bar with the URL,
+// any popup or dialog), taken inside this chat's own browser pod with the session's tab brought to
+// the front, then OCR-scrubbed and filed as an artifact by the pod's controller. "page" is
+// auto-browser's own screenshot of the page only (the default on the shared browser, which has no
+// screen of its own to show).
 export const SCREENSHOT_SCOPES = ['page', 'screen'];
 const SCOPE_PROP = {
     type: 'string',
     enum: SCREENSHOT_SCOPES,
-    default: 'page',
-    description: '"page" (default): the current page only. "screen": the whole browser screen as the user sees it in the live view, including the tab strip, address bar and any dialog or popup window.',
+    default: 'screen',
+    description: '"screen" (default): the whole browser window as the user sees it in the live view, with the tab strip, the address bar showing the URL, and any dialog or popup window; the session\'s tab is brought to the front first. "page": the current page\'s content only, without the browser\'s own UI.',
 };
 const SCREEN_ONLY_PODS = 'Error: scope "screen" needs a browser of this chat\'s own (per-chat browser pods). This browser is shared, and its screen would show other chats\' windows. Use scope "page".';
+// Said in a shared-browser screenshot taken without a scope, which falls back to "page".
+const SHARED_PAGE_NOTE = 'This browser is shared between chats, so this screenshot is of the page only, without the address bar (scope "screen" needs a browser of this chat\'s own).';
 /** browser_screenshot's input schema with `scope` added. */
 export function withScopeParam(schema) {
     const base = schema && typeof schema === 'object' && !Array.isArray(schema) ? schema : { type: 'object' };
@@ -197,7 +202,7 @@ export function mapUpstreamTools(tools, log = () => {}) {
         byLocal.set(name, t.name);
         const description = rename(t.description || '') + (HINTS[name] || '') + (MUTATING_TOOLS.has(name) ? LOCK_HINT : '');
         listed.push(name === 'browser_screenshot'
-            ? { ...t, name, description: description + ' scope "screen" shows the whole browser screen (tab strip, address bar, dialogs) instead of the page.', inputSchema: withScopeParam(t.inputSchema) }
+            ? { ...t, name, description: description + ' By default (scope "screen") the image is the whole browser window as the live view shows it, with the tab strip and the address bar showing the URL, and the result carries the URL, title and capture time; scope "page" gives the page content only.', inputSchema: withScopeParam(t.inputSchema) }
             : { ...t, name, description });
     }
     return { tools: listed, byLocal, rename };
@@ -559,17 +564,20 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
             return error(id, -32602, `unknown tool ${name}`);
         }
         // browser_screenshot's scope is the bridge's, never passed on (auto-browser refuses extra fields).
-        let scope = 'page';
+        // No scope given: "screen" with a pod of the chat's own, "page" on the shared browser.
+        let scope = null;
         if (name === 'browser_screenshot' && args && typeof args === 'object' && 'scope' in args) {
             ({ scope, ...args } = args);
-            if (scope === undefined || scope === null) scope = 'page';
-            if (!SCREENSHOT_SCOPES.includes(scope)) return result(id, toolResult(`Error: scope must be one of ${SCREENSHOT_SCOPES.map((v) => `"${v}"`).join(', ')}`, true));
+            if (scope === undefined) scope = null;
+            if (scope !== null && !SCREENSHOT_SCOPES.includes(scope)) return result(id, toolResult(`Error: scope must be one of ${SCREENSHOT_SCOPES.map((v) => `"${v}"`).join(', ')}`, true));
         }
         // Routing first: the secret gate and the control check both need the chat's session.
         const routedCall = await routeCall(id, name, args, signal, cc);
         if (routedCall.done) return;
         let via = routedCall.via;
         args = routedCall.args;
+        const sharedPageNote = name === 'browser_screenshot' && scope === null && !via;
+        if (name === 'browser_screenshot' && scope === null) scope = via ? 'screen' : 'page';
         if (scope === 'screen' && !via) return result(id, toolResult(SCREEN_ONLY_PODS, true));
         if (!via && !(await sharedPreflight(id, name, args, meta, signal))) return;
         const gate = await secretsBefore(id, name, args, signal, cc);
@@ -612,6 +620,7 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
                 out = decided.result;
             }
             if (via?.recovered && out && Array.isArray(out.content)) out = { ...out, content: [{ type: 'text', text: recoveredNote(via) }, ...out.content] };
+            if (sharedPageNote && out && !out.isError && Array.isArray(out.content)) out = { ...out, content: [{ type: 'text', text: SHARED_PAGE_NOTE }, ...out.content] };
             return result(id, await scrubOut(gate, await withLiveLink(name, args, out, signal, via), signal));
         } catch (err) {
             if (!signal.aborted) return result(id, toolResult(`Error: ${err.message}`, true));
@@ -619,15 +628,38 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
     }
 
     // browser_screenshot scope "screen": the chat's pod's whole X screen, through the bridge (which
-    // asks the launcher to capture it inside that pod). Only ever the pod `via` names, the one
-    // router.route resolved for this call's chat; no tool argument picks it.
+    // has the pod's controller bring the session's tab forward, the launcher capture the screen
+    // inside that pod, and the controller OCR-scrub it and file it as an artifact). Only ever the
+    // pod `via` names, the one router.route resolved for this call's chat; no tool argument picks it.
+    // While the user holds the browser their tab is not changed: the session's must be in front.
     async function screenShot(id, name, args, signal, via, gate) {
         try {
-            if (await endedByUser(args, signal, via)) return result(id, toolResult(USER_ENDED, true));
+            const state = await sessionState(args, signal, via);
             if (signal.aborted) return;
-            const shot = await bridge('/api/screen', { chat_key: via.key }, signal);
+            if (isUserEnded(state)) return result(id, toolResult(USER_ENDED, true));
+            const label = typeof args?.label === 'string' && args.label ? args.label : 'manual';
+            const shot = await bridge('/api/screen', { chat_key: via.key, activate: !HELD.has(state?.status), label }, signal);
             if (signal.aborted) return;
-            const info = { scope: 'screen', session_id: via.session_id, width: shot.width, height: shot.height };
+            // A bridge from before the scrubbed capture answers with the raw screen: never pass that on.
+            if (typeof shot?.screenshot_url !== 'string' || typeof shot?.captured_at !== 'string') {
+                return result(id, toolResult('Error: the browser bridge is older than this tool and cannot scrub a screen capture; restart it, or use scope "page".', true));
+            }
+            if (shot.session_id !== via.session_id) {
+                return result(id, toolResult('Error: the screen capture came back for another session than this chat\'s; nothing is returned. Try again.', true));
+            }
+            const info = {
+                scope: 'screen',
+                session_id: via.session_id,
+                url: shot.url,
+                title: shot.title,
+                captured_at: shot.captured_at,
+                width: shot.width,
+                height: shot.height,
+                screenshot_path: shot.screenshot_path,
+                screenshot_url: shot.screenshot_url,
+                pii_scrubbed: shot.pii_scrubbed === true,
+                ...(shot.screenshot_pii_scrub ? { screenshot_pii_scrub: shot.screenshot_pii_scrub } : {}),
+            };
             let out = {
                 content: [{ type: 'text', text: JSON.stringify(info) }, { type: 'image', data: shot.data, mimeType: shot.mime || 'image/png' }],
                 structuredContent: info,
