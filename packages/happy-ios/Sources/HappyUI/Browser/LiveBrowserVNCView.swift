@@ -319,10 +319,11 @@ final class LiveBrowserVNCView: UIView, UIGestureRecognizerDelegate {
     }
 
     /// The display link keeps its target: this keeps the view weakly.
-    private final class GlideTarget: NSObject {
+    /// It runs on the main run loop, so it is the main actor's.
+    @MainActor private final class GlideTarget: NSObject {
         weak var view: LiveBrowserVNCView?
         init(_ view: LiveBrowserVNCView) { self.view = view }
-        @objc func tick(_ link: CADisplayLink) { MainActor.assumeIsolated { view?.glideTick(link) } }
+        @objc func tick(_ link: CADisplayLink) { view?.glideTick(link) }
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
