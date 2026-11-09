@@ -258,7 +258,11 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         // on it, as the agent chat's is; nothing is measured to show it.
         sessionStatus = cached.map { SessionComposerView.headerStatus(record: $0, now: home?.presenceNow) }
         header.statuses = SessionComposerView.headerStatuses + Strings.HeaderStatus.spinning
-        header.onOpen = { [weak self] in self?.openInfo() }
+        header.onOpen = { [weak self] in
+            guard let self else { return }
+            // While the status says the link is down a tap refreshes instead.
+            if link != .online { refresh() } else { openInfo() }
+        }
         headerTitle = navigationItem.title ?? ""
         applyTitleAndStatus()
         navigationItem.titleView = header
@@ -328,6 +332,11 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         list.delegate = self
         list.olderEnd.onAction = { [weak self] in self?.historyPager?.olderAction() }
         list.olderEnd.onHistoryAction = { [weak self] in self?.loadDesktopHistory() }
+        let pull = PullToRefresh(list: list.ultra.list) { [weak self] in
+            await self?.refreshChat() ?? .offline
+        }
+        pull.isEnabled = { [weak self] in self?.pullMayRefresh ?? false }
+        list.ultra.pull = pull
         // The rows are planned at the list's text size (`ChatRowText`); the
         // placeholder, the header, the CLI warning and the bars over the
         // composer each carry the trait and measure their text off main at
@@ -788,6 +797,39 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
             self.updatePlaceholder()
         }
     }
+
+    /// A pull may arm only at the true top: no older page on its way and
+    /// no grown window still to render, so it never fights the paging.
+    private var pullMayRefresh: Bool {
+        guard !ComposeChat.isComposeId(chatId), !PendingChats.isPendingChatId(chatId) else { return false }
+        return historyPager?.olderStatus(windowReachesOldest: reachesOldest) != .loading
+            && windowRequests.grows == appliedGrows
+    }
+
+    /// Pull-to-refresh's work: the account's link and this chat's messages
+    /// asked again, and an older page that failed asked for again once the
+    /// link is back.
+    private func refreshChat() async -> RefreshOutcome {
+        let outcome = await account.refresh(scope: .chat(chatId))
+        if outcome == .refreshed, let historyPager,
+           historyPager.olderStatus(windowReachesOldest: reachesOldest) == .error {
+            historyPager.olderAction()
+        }
+        return outcome
+    }
+
+    /// The pull's refresh without the pull: Command-R, or the header's
+    /// status tapped while it is not online.
+    func refresh() {
+        guard pullMayRefresh else { return }
+        list.ultra.pull?.refresh()
+    }
+
+    override var keyCommands: [UIKeyCommand]? {
+        [RefreshShortcut.command(action: #selector(refreshFromKeyboard))] + (super.keyCommands ?? [])
+    }
+
+    @objc private func refreshFromKeyboard() { refresh() }
 
     /// EmptyMessages' Retry and Load more are older fetches; the loading
     /// placeholder's Retry asks for the newest page again.

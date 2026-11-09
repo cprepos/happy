@@ -408,6 +408,10 @@ final class ChatUltraListAdapter {
     /// canvas: going back to a bitmap would swap their drawing on screen.
     private var revealed: Set<String> = []
     var onScroll: (() -> Void)?
+    /// Pull-to-refresh, when the chat gives the list one: it pulls only
+    /// above the older-messages row, and its held room goes over it.
+    var pull: PullToRefresh?
+    private var held: CGFloat { pull?.heldInset ?? 0 }
     var onAction: ((ChatRowAction) -> Void)?
     var onLink: ((String) -> Void)?
     var onHold: ((ChatRowAction, UIView, CGRect, CGPoint) -> Void)?
@@ -434,7 +438,11 @@ final class ChatUltraListAdapter {
         list.bottomGravity = ListBottomGravity(followBudget: Double(followBudget))
         list.keyboardDismissMode = .interactive
         list.accessibilityIdentifier = "chat.ultralist"
-        list.onScroll = { [weak self] _ in self?.onScroll?() }
+        list.onScroll = { [weak self] _ in
+            self?.pull?.handleScroll()
+            self?.onScroll?()
+        }
+        list.didEndDragging = { [weak self] in self?.pull?.handleEndDrag() }
         list.onVisibleWindowChanged = { [weak self] in
             self?.land()
             self?.onScroll?()
@@ -486,7 +494,7 @@ final class ChatUltraListAdapter {
                 self.insets = insets
                 // A new size keeps the row read at the top where it is,
                 // not the distance from the composer.
-                list.applyChanges(newInsets: .init(top: insets.top, bottom: insets.bottom), anchorMode: .preserveVisibleContent,
+                list.applyChanges(newInsets: .init(top: insets.top + held, bottom: insets.bottom), anchorMode: .preserveVisibleContent,
                                   compensatesInsetChange: keyboard?.compensates ?? false, transition: keyboard?.transition ?? .none)
             }
             list.resize(to: frame)
@@ -505,7 +513,7 @@ final class ChatUltraListAdapter {
             if keyboard?.finishes == true { list.finishViewportTransition() }
             return
         }
-        list.applyChanges(newSize: keyboard == nil || sizeChanged ? size : nil, newInsets: .init(top: insets.top, bottom: insets.bottom), anchorMode: .preserveVisibleContent,
+        list.applyChanges(newSize: keyboard == nil || sizeChanged ? size : nil, newInsets: .init(top: insets.top + held, bottom: insets.bottom), anchorMode: .preserveVisibleContent,
                           compensatesInsetChange: keyboard?.compensates ?? !list.isTracking, transition: keyboard?.transition ?? .none)
         flight?.follow(in: list)
     }
@@ -614,7 +622,7 @@ final class ChatUltraListAdapter {
         } else {
             follow || reveals || !followOnly ? transition : .none
         }
-        list.applyChanges(items: items, newSize: viewportSize, newInsets: .init(top: insets.top, bottom: insets.bottom), scrollTo: scroll,
+        list.applyChanges(items: items, newSize: viewportSize, newInsets: .init(top: insets.top + held, bottom: insets.bottom), scrollTo: scroll,
                           anchorMode: .preserveVisibleContent, transition: AgentChatUltraList.transition(eased, moved: moved, grew: grew))
         if lands { list.performAfterCurrentPass { [weak self] in self?.land() } }
     }
@@ -675,7 +683,7 @@ final class ChatUltraListAdapter {
         isActive = false
         reveal.stopAll()
         onScroll = nil; onAction = nil; onLink = nil; onHold = nil; onSelectText = nil
-        list.onScroll = nil; list.onVisibleWindowChanged = nil
+        list.onScroll = nil; list.onVisibleWindowChanged = nil; list.didEndDragging = nil; pull = nil
         list.applyChanges(items: [], transition: .none)
         list.removeFromSuperview()
         rows.removeAll()
