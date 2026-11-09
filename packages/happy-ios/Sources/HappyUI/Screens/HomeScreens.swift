@@ -85,6 +85,7 @@ public final class LegacyHomeViewController: UIViewController, ComposeHosting {
         view.addSubview(bottomBar)
         minimalBackButton()
         switcher = AccountSwitcher(context: context, controller: self)
+        switcher?.onRefresh = { [weak self] in self?.refresh() }
         let pipeline = ApplyPipeline<HomeDerivation.Input, HomeDerivation.Applied, HomeUpdate>(
             input: HomeDerivation.Input(
                 expandedProjects: context.account.localSettings.expandedProjects,
@@ -425,6 +426,23 @@ public final class LegacyHomeViewController: UIViewController, ComposeHosting {
     var headerState: Strings.HeaderStatus.State = .online {
         didSet { if headerState != oldValue { switcher?.link = headerState } }
     }
+
+    /// Asks the server again for home: through the list's pull, so its
+    /// spinner shows, or straight to the account when no list is up (the
+    /// connecting and offline notices).
+    func refresh() {
+        if let list = content as? SessionListViewController {
+            list.refresh()
+        } else {
+            Task { [session] in _ = await session.refresh(scope: .home) }
+        }
+    }
+
+    override var keyCommands: [UIKeyCommand]? {
+        [RefreshShortcut.command(action: #selector(refreshFromKeyboard))] + (super.keyCommands ?? [])
+    }
+
+    @objc private func refreshFromKeyboard() { refresh() }
     private var linkWatch: Watch?
 
     /// Whether the phone has a way out at all (`NetworkPath`): its return

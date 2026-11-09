@@ -38,7 +38,18 @@ final class AccountSwitcher: NSObject {
             button.setStatus(Strings.HeaderStatus.title(link), animated: true, bar: controller?.navigationController?.navigationBar)
             describe()
             announceSoon()
+            updatePrimaryAction()
         }
+    }
+    /// The screen's refresh. While the link isn't live a tap on its status
+    /// runs it (the menu is then a long press away); online, a tap opens
+    /// the menu as before.
+    var onRefresh: (() -> Void)? {
+        didSet { updatePrimaryAction() }
+    }
+
+    private func updatePrimaryAction() {
+        button.showsMenuAsPrimaryAction = link == .online || onRefresh == nil
     }
     /// The last change VoiceOver was told of, and the one on its way.
     private var announced: LinkState = .online
@@ -57,6 +68,10 @@ final class AccountSwitcher: NSObject {
         button.accessibilityIdentifier = "account-switcher"
         button.showsMenuAsPrimaryAction = true
         button.menu = UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] done in done(self?.menuElements() ?? []) }])
+        button.addAction(UIAction { [weak self] _ in
+            guard let self, link != .online else { return }
+            onRefresh?()
+        }, for: .primaryActionTriggered)
         observation = context.account.observeAccounts { [weak self] _ in self?.show() }
         show()
     }

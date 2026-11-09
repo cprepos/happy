@@ -332,6 +332,15 @@ class HomeUltraListView: UIView {
         addSubview(list); list.swipeActions.allowsFullSwipe = false
         list.accessibilityIdentifier = "home.ultralist"
     }
+
+    /// Pull-to-refresh, when the owner has one: the list's scrolls and
+    /// drag ends go to it, and its held room is added to the top inset.
+    var pull: PullToRefresh? {
+        didSet {
+            list.onScroll = pull == nil ? nil : { [weak self] _ in self?.pull?.handleScroll() }
+            list.didEndDragging = pull == nil ? nil : { [weak self] in self?.pull?.handleEndDrag() }
+        }
+    }
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     override func layoutSubviews() { super.layoutSubviews(); list.frame = sidesBand }
@@ -368,7 +377,7 @@ class HomeUltraListView: UIView {
         // in its exact commit, and never touch the list-owned row opacity.
         if archiveAppearance { CATransaction.begin(); CATransaction.setDisableActions(true) }
         let beforePass = list.appliedPassCount
-        list.applyChanges(items: rows, newSize: band.size, newInsets: .init(top: top, bottom: bottom), anchorMode: .preserveVisibleContent, animatesInsertions: !archiveAppearance, transition: rows == nil || UIAccessibility.isReduceMotionEnabled ? .none : fade)
+        list.applyChanges(items: rows, newSize: band.size, newInsets: .init(top: top + (pull?.heldInset ?? 0), bottom: bottom), anchorMode: .preserveVisibleContent, animatesInsertions: !archiveAppearance, transition: rows == nil || UIAccessibility.isReduceMotionEnabled ? .none : fade)
         if archiveAppearance, list.appliedPassCount != beforePass {
             for case let view as HomeUltraRowView in list.loadedItemViews where inserted.contains(view.identity) { view.beginArchiveAppearance() }
             for view in departing { view.beginArchiveDeparture() }

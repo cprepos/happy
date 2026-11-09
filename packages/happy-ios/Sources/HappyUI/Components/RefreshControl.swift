@@ -20,4 +20,16 @@ public func attachRefresh(to scrollView: UIScrollView, action: @escaping @MainAc
     scrollView.refreshControl = control
     return control
 }
+
+/// Command-R: the same refresh as a pull, listed in the keyboard's
+/// shortcuts as "Refresh". Each screen with a refresh lists it in its
+/// `keyCommands`.
+@MainActor
+public enum RefreshShortcut {
+    public static func command(action: Selector) -> UIKeyCommand {
+        let command = UIKeyCommand(title: Strings.Sync.refresh, action: action, input: "r", modifierFlags: .command)
+        command.discoverabilityTitle = Strings.Sync.refresh
+        return command
+    }
+}
 #endif

@@ -158,11 +158,18 @@ final class SessionListViewController: UIViewController {
         // As the iPad's sidebar the rows stand on the system's sidebar.
         registerForTraitChanges([SidebarColumnTrait.self]) { (self: Self, _) in self.ultraList.clearsGround = self.traitCollection.isSidebarColumn }
         ultraList.clearsGround = traitCollection.isSidebarColumn
+        rendered.pull = PullToRefresh(list: rendered.list) { [weak self] in
+            await self?.session.refresh(scope: .home) ?? .offline
+        }
         // The rows come in with the first text environment.
         requestTextEnvironment()
         updateBanners()
         applyContentInsets()
     }
+
+    /// The pull's refresh without the pull, its spinner held over the
+    /// rows: home's Command-R, or its status tapped while not online.
+    func refresh() { rendered.pull?.refresh() }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
