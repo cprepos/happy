@@ -22,10 +22,10 @@ public final class PullToRefresh {
 
     /// Whether a pull may arm now. A chat says no while it pages in older
     /// messages, so the two never fight over the top.
-    public var isEnabled: () -> Bool = { true }
+    public var isEnabled: @MainActor () -> Bool = { true }
     /// The held room changed. An owner that keeps a mirror of the list's
     /// insets (the sidebar's `SidebarListEdge`) adds it there too.
-    public var onHeldInsetChanged: ((CGFloat) -> Void)?
+    public var onHeldInsetChanged: (@MainActor (CGFloat) -> Void)?
     /// When false the owner applies `heldInset` itself on
     /// `onHeldInsetChanged`, instead of this changing the list's insets.
     public var appliesInsets = true
