@@ -413,6 +413,58 @@ final class InvalidateSyncTests: XCTestCase {
         XCTAssertFalse(running)
     }
 
+    func testRestartDuringBackoffRunsAtOnce() async throws {
+        let attempts = PageCounter()
+        let pauses = DelayLog()
+        let sync = InvalidateSync(sleep: { delay in
+            pauses.append(delay)
+            try await Task.sleep(for: .seconds(3600))
+        }) {
+            attempts.count += 1
+            if attempts.count == 1 { throw URLError(.notConnectedToInternet) }
+        }
+        await sync.invalidate()
+        await eventually { pauses.values.count == 1 }
+        await sync.restartAndAwait()
+        XCTAssertEqual(attempts.count, 2, "the restart skipped the hour-long pause and ran again")
+        let running = await sync.isRunning
+        XCTAssertFalse(running)
+    }
+
+    func testStopStillEndsALoopThatWasRestarted() async throws {
+        let attempts = PageCounter()
+        let pauses = DelayLog()
+        let sync = InvalidateSync(sleep: { delay in
+            pauses.append(delay)
+            try await Task.sleep(for: .seconds(3600))
+        }) {
+            attempts.count += 1
+            throw URLError(.notConnectedToInternet)
+        }
+        await sync.invalidate()
+        await eventually { pauses.values.count == 1 }
+        await sync.restart()
+        await eventually { pauses.values.count == 2 }
+        await sync.stop()
+        let running = await sync.isRunning
+        XCTAssertFalse(running)
+        let after = attempts.count
+        await sync.restart()
+        await sync.invalidate()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(attempts.count, after, "a stopped sync runs nothing more")
+    }
+
+    func testARunPastItsTimeoutIsCancelledAndRetried() async throws {
+        let attempts = PageCounter()
+        let sync = InvalidateSync(sleep: { _ in }, timeout: .milliseconds(50)) {
+            attempts.count += 1
+            if attempts.count == 1 { try await Task.sleep(for: .seconds(3600)) }
+        }
+        await sync.invalidateAndAwait()
+        XCTAssertEqual(attempts.count, 2)
+    }
+
     func testBackoffDelays() {
         let backoff = Backoff(initial: .seconds(1), maximum: .seconds(30))
         XCTAssertEqual((1...7).map(backoff.delay(attempt:)), [1, 2, 4, 8, 16, 30, 30].map { Duration.seconds($0) })

@@ -62,6 +62,11 @@ public actor LegacySyncEngine {
         /// Version conflicts tolerated per settings push before backing off.
         public var settingsPushAttempts = 3
         public var backoff: Backoff = .standard
+        /// Longest one pull may take before it is cancelled and retried, so
+        /// a request that hangs cannot hold its job (and every invalidation
+        /// queued behind it) indefinitely. The outbox has none: an upload
+        /// over a slow link can rightly take longer.
+        public var runTimeout: Duration? = .seconds(120)
         public var sendAttempts = 5
         public var sendRetryInitialMs: Int64 = 1_000
         public var sendRetryMaximumMs: Int64 = 60_000
@@ -213,6 +218,18 @@ public actor LegacySyncEngine {
         await self.job(job)?.invalidateAndAwait()
     }
 
+    /// Runs `job` now, cancelling a run in flight or a backoff pause before
+    /// a retry, without waiting for it (`InvalidateSync.restart`).
+    public func restart(_ job: Job) async {
+        await self.job(job)?.restart()
+    }
+
+    /// `restart`, then waits for the run to succeed.
+    public func restartAndAwait(_ job: Job) async {
+        ThreadRules.assertOffMain()
+        await self.job(job)?.restartAndAwait()
+    }
+
     /// Returns once no job is running, including follow-ups that running
     /// jobs scheduled. For tests and for "pull to refresh" style waits.
     public func waitForIdle() async {
@@ -229,7 +246,8 @@ public actor LegacySyncEngine {
     private func job(_ job: Job) -> InvalidateSync? {
         guard !stopped else { return nil }
         if let existing = jobs[job] { return existing }
-        let sync = InvalidateSync(backoff: options.backoff, sleep: sleep) { [weak self] in
+        let timeout = job == .outbox ? nil : options.runTimeout
+        let sync = InvalidateSync(backoff: options.backoff, sleep: sleep, timeout: timeout) { [weak self] in
             try await self?.perform(job)
         }
         jobs[job] = sync
@@ -239,7 +257,18 @@ public actor LegacySyncEngine {
     private func perform(_ job: Job) async throws {
         switch job {
         case .sessions:
-            try await pullSessions()
+            // The follow-ups read what is already stored, so they run whether
+            // or not this pull got through: a failing session list must not
+            // also hold back the messages and projects of the sessions known.
+            do {
+                try await pullSessions()
+            } catch {
+                if !Task.isCancelled {
+                    await invalidate(.pendingMessages)
+                    await invalidate(.projects)
+                }
+                throw error
+            }
             await invalidate(.pendingMessages)
             await invalidate(.projects)
         case .machines:

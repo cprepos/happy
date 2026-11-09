@@ -41,21 +41,35 @@ public actor InvalidateSync {
     /// allocation"). A stored closure is compiled once, in this module.
     public static let taskSleep: Sleep = { try await Task.sleep(for: $0) }
 
+    /// A run that took longer than its `timeout`; it was cancelled and is
+    /// retried with backoff like any other failure.
+    public struct TimedOut: Error, Equatable {}
+
     private let operation: @Sendable () async throws -> Void
     private let backoff: Backoff
     private let sleep: Sleep
+    private let timeout: Duration?
     private var task: Task<Void, Never>?
+    /// Bumped by `restart`: a drain of an older generation was cancelled and
+    /// leaves the task, the waiters and the dirty flag to the newer one.
+    private var generation = 0
     private var dirty = false
     private var stopped = false
     private var waiters: [UUID: CheckedContinuation<Void, Never>] = [:]
 
+    /// `timeout` bounds each run (nil: none): a request that hangs without
+    /// failing would otherwise hold the job, and every invalidation queued
+    /// behind it, until the system gives up. It is measured on the real
+    /// clock, not `sleep`, which only paces retries.
     public init(
         backoff: Backoff = .standard,
         sleep: @escaping Sleep = InvalidateSync.taskSleep,
+        timeout: Duration? = nil,
         operation: @escaping @Sendable () async throws -> Void
     ) {
         self.backoff = backoff
         self.sleep = sleep
+        self.timeout = timeout
         self.operation = operation
     }
 
@@ -65,8 +79,34 @@ public actor InvalidateSync {
         guard !stopped else { return }
         dirty = true
         if task == nil {
-            task = Task { await self.drain() }
+            let generation = self.generation
+            task = Task { await self.drain(generation) }
         }
+    }
+
+    /// Runs now: a run in flight, or a backoff pause before a retry, is
+    /// cancelled, and a fresh run starts once the cancelled one has ended
+    /// (runs never overlap). For a person asking for fresh data, who should
+    /// not wait out a backoff or a request that has stalled.
+    public func restart() {
+        guard !stopped else { return }
+        dirty = true
+        let previous = task
+        previous?.cancel()
+        generation += 1
+        let generation = self.generation
+        task = Task {
+            await previous?.value
+            await self.drain(generation)
+        }
+    }
+
+    /// `restart`, then returns once a run has succeeded (or the sync was
+    /// stopped).
+    public func restartAndAwait() async {
+        guard !Task.isCancelled else { return }
+        restart()
+        await awaitRun()
     }
 
     /// Invalidates and returns once a run that started after this call has
@@ -74,6 +114,10 @@ public actor InvalidateSync {
     public func invalidateAndAwait() async {
         guard !Task.isCancelled else { return }
         invalidate()
+        await awaitRun()
+    }
+
+    private func awaitRun() async {
         guard task != nil else { return }
         let id = UUID()
         await withTaskCancellationHandler {
@@ -115,12 +159,12 @@ public actor InvalidateSync {
         task = nil
     }
 
-    private func drain() async {
+    private func drain(_ generation: Int) async {
         var attempt = 0
-        while dirty && !stopped {
+        while dirty && !stopped && generation == self.generation && !Task.isCancelled {
             dirty = false
             do {
-                try await operation()
+                try await runOnce()
                 attempt = 0
             } catch {
                 if stopped || Task.isCancelled { break }
@@ -129,8 +173,27 @@ public actor InvalidateSync {
                 try? await sleep(backoff.delay(attempt: attempt))
             }
         }
+        // A restart superseded this drain: the newer one owns what is left.
+        guard generation == self.generation else { return }
         task = nil
         resumeWaiters()
+    }
+
+    /// One run of the operation, cancelled and failed with `TimedOut` past
+    /// `timeout`. A run that ignores cancellation is still waited for, so
+    /// runs never overlap.
+    private func runOnce() async throws {
+        guard let timeout else { return try await operation() }
+        let operation = self.operation
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask { try await operation() }
+            group.addTask {
+                try await Task.sleep(for: timeout)
+                throw TimedOut()
+            }
+            defer { group.cancelAll() }
+            _ = try await group.next()
+        }
     }
 
     private func resumeWaiters() {
