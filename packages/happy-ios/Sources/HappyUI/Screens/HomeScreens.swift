@@ -101,7 +101,8 @@ public final class LegacyHomeViewController: UIViewController, ComposeHosting {
             }
         )
         clockWake.onWake { [weak pipeline] in pipeline?.update { _ in } }
-        pipeline.follow(session.homeFeed.snapshots()) { $0.snapshot = $1 }
+        // Subscribed again if the feed ever ends, so home never freezes.
+        pipeline.follow(resubscribing: { [homeFeed = session.homeFeed] in homeFeed.snapshots() }) { $0.snapshot = $1 }
         // FlatSessionRow's draft glyph: one draft appearing or going
         // reconfigures that row alone.
         pipeline.followDrafts(session.homeFeed, into: \.draftSessionIds)

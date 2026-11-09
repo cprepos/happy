@@ -194,7 +194,7 @@ struct ChatServices {
                     return true
                 }
             )
-            pipeline.follow(feed.snapshots()) { $0 = $1 }
+            pipeline.follow(resubscribing: { feed.snapshots() }) { $0 = $1 }
             return pipeline.observation
         }
     }
@@ -229,7 +229,7 @@ struct ChatServices {
                     return true
                 }
             )
-            pipeline.follow(feed.snapshots()) { $0 = $1 }
+            pipeline.follow(resubscribing: { feed.snapshots() }) { $0 = $1 }
             return pipeline.observation
         }
     }

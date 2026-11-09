@@ -1,5 +1,6 @@
 import Dispatch
 import Foundation
+import HappyStore
 
 /// What an `ApplyPipeline` has done, for the exact-count tests and the
 /// debug apply log.
@@ -150,6 +151,35 @@ public final class ApplyPipeline<Input: Sendable, State: Sendable, Output: Senda
             for await value in stream {
                 guard let self, !Task.isCancelled else { return }
                 self.update(ifChanged: { assign(&$0, value) })
+            }
+        }
+        let keep: Bool = lock.withLock {
+            guard !cancelled else { return false }
+            feeds.append(task)
+            return true
+        }
+        if !keep { task.cancel() }
+    }
+
+    /// Like `follow(_:_:)`, for a feed that should outlive a stream ending
+    /// under it: `subscribe` is called again, after a pause, whenever its
+    /// stream ends while the pipeline still runs. A stream that ends before
+    /// yielding anything (its account stopped) is not subscribed again.
+    public func follow<Value: Sendable>(resubscribing subscribe: @escaping @Sendable () -> AsyncStream<Value>,
+                                        _ assign: @escaping @Sendable (inout Input, Value) -> Void) {
+        let task = Task.detached(priority: priority) { [weak self] in
+            var failures = 0
+            while !Task.isCancelled {
+                var delivered = false
+                for await value in subscribe() {
+                    guard let self, !Task.isCancelled else { return }
+                    delivered = true
+                    self.update(ifChanged: { assign(&$0, value); return true })
+                }
+                guard !Task.isCancelled, delivered, self != nil else { return }
+                failures += 1
+                SyncLog.error("a screen's feed ended, subscribing again")
+                try? await Task.sleep(for: ObservationRetry.delay(afterFailures: failures))
             }
         }
         let keep: Bool = lock.withLock {

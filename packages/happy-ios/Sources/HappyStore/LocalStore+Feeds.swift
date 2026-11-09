@@ -6,7 +6,12 @@ extension LocalStore {
     /// The home snapshot last handed to its subscribers, read at once; nil
     /// while nothing subscribes.
     public var latestHomeSnapshot: LegacyHomeSnapshot? { homeHub.latest }
-    public func settingsSnapshots() -> AsyncStream<SettingsSnapshot> { Self.stream(settingsObservation) }
+    /// A failed read is logged and the observation subscribed again, so the
+    /// settings never stop updating until the app is relaunched.
+    public func settingsSnapshots() -> AsyncStream<SettingsSnapshot> {
+        let observation = settingsObservation
+        return ObservationRetry.stream("settings") { observation.valuesWithAsyncCallbacks() }
+    }
     public func machineSnapshots() -> AsyncStream<MachinesSnapshot> { machinesHub.snapshots() }
 
     public func stopSnapshotProducers() async {
@@ -27,19 +32,6 @@ extension LocalStore {
         await homeHub.refresh()
         await machinesHub.refresh()
         await troubleshootingHub.refresh()
-    }
-
-    private static func stream<Value: Sendable>(_ observation: SharedValueObservation<Value>) -> AsyncStream<Value> {
-        AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
-            let cancellable = observation.startWithAsyncCallbacks(onError: { error in
-                print("HappyStore snapshot observation stopped: \(error)")
-                continuation.finish()
-            }, onChange: { value in
-                if case .terminated = continuation.yield(value) { return false }
-                return true
-            })
-            continuation.onTermination = { _ in cancellable.cancel() }
-        }
     }
 
     @MainActor

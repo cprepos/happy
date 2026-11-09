@@ -12,46 +12,62 @@ public final class LocalChatFeed: ChatFeed {
 
     /// Yields disk immediately, then only visible chat changes. Terminating
     /// the stream cancels its database observation and releases the reducer.
+    /// A failed read is logged and the chat observed again after a pause,
+    /// keeping the last snapshot on screen until then: the stream ends only
+    /// when its consumer stops listening.
     public func snapshots(sessionId: String) -> AsyncStream<LegacyChatSnapshot> {
         AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
             let task = Task {
                 var state = FeedState(sessionId: sessionId)
-                do {
-                    // Register observation first so a write during the first
-                    // disk read cannot fall between read and subscription.
-                    let changes = store.chatChanges(sessionId: sessionId)
-                    var lastSnapshot = state.apply(try store.chatPage(sessionId: sessionId))
-                    continuation.yield(lastSnapshot)
-                    for try await change in changes {
-                        if Task.isCancelled {
-                            break
+                var lastSnapshot: LegacyChatSnapshot?
+                var failures = 0
+                while !Task.isCancelled {
+                    do {
+                        // Register observation first so a write during the
+                        // first disk read cannot fall between read and
+                        // subscription.
+                        let changes = store.chatChanges(sessionId: sessionId)
+                        if failures > 0 { state.reset(windowDiscarded: false) }
+                        let first = state.apply(try store.chatPage(sessionId: sessionId))
+                        if first != lastSnapshot {
+                            continuation.yield(first)
+                            lastSnapshot = first
                         }
-                        guard change != state.lastChange else {
-                            continue
+                        failures = 0
+                        for try await change in changes {
+                            if Task.isCancelled {
+                                break
+                            }
+                            guard change != state.lastChange else {
+                                continue
+                            }
+                            var page = try store.chatPage(sessionId: sessionId, afterRowId: state.lastRowId)
+                            // The transactional page can be newer than the
+                            // observation hint. Reset from its actual boundary.
+                            let discarded = state.discardsRecords(for: page.change)
+                            let reset = discarded ||
+                                page.change.messageCount < state.recordCount || page.change.lastRowId < state.lastRowId
+                            if reset {
+                                state.reset(windowDiscarded: discarded)
+                                page = try store.chatPage(sessionId: sessionId)
+                            }
+                            if page.change.messageCount != state.recordCount + page.records.count {
+                                state.reset(windowDiscarded: false)
+                                page = try store.chatPage(sessionId: sessionId)
+                            }
+                            let snapshot = state.apply(page)
+                            if snapshot != lastSnapshot {
+                                continuation.yield(snapshot)
+                                lastSnapshot = snapshot
+                            }
                         }
-                        var page = try store.chatPage(sessionId: sessionId, afterRowId: state.lastRowId)
-                        // The transactional page can be newer than the
-                        // observation hint. Reset from its actual boundary.
-                        let discarded = state.discardsRecords(for: page.change)
-                        let reset = discarded ||
-                            page.change.messageCount < state.recordCount || page.change.lastRowId < state.lastRowId
-                        if reset {
-                            state.reset(windowDiscarded: discarded)
-                            page = try store.chatPage(sessionId: sessionId)
-                        }
-                        if page.change.messageCount != state.recordCount + page.records.count {
-                            state.reset(windowDiscarded: false)
-                            page = try store.chatPage(sessionId: sessionId)
-                        }
-                        let snapshot = state.apply(page)
-                        if snapshot != lastSnapshot {
-                            continuation.yield(snapshot)
-                            lastSnapshot = snapshot
-                        }
+                        break
+                    } catch {
+                        guard !Task.isCancelled else { break }
+                        failures += 1
+                        SyncLog.error("chat observation failed, subscribing again: \(error)")
+                        try? await Task.sleep(for: ObservationRetry.delay(afterFailures: failures))
                     }
-                } catch {
-                    // ChatFeed's stream is nonthrowing. Keep the last disk
-                    // snapshot visible when observation ends with an error.
                 }
                 continuation.finish()
             }

@@ -47,14 +47,18 @@ extension LocalStore {
 
     public func chatHistoryCoverageSnapshots(sessionId: String) -> AsyncStream<ChatHistoryCoverage?> {
         let writer = writer
-        return AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
-            let cancellable = ValueObservation.tracking { db in
-                ThreadRules.assertOffMain()
-                return try Self.fetchChatHistoryCoverage(db, sessionId: sessionId)
-            }.removeDuplicates().start(in: writer, scheduling: .async(onQueue: Self.historyQueue),
-                                      onError: { _ in continuation.finish() },
-                                      onChange: { continuation.yield($0) })
-            continuation.onTermination = { _ in cancellable.cancel() }
+        // A failed read subscribes again rather than ending, so the chat
+        // keeps paging after a database error.
+        return ObservationRetry.stream("chat history coverage") {
+            AsyncThrowingStream<ChatHistoryCoverage?, Error>(bufferingPolicy: .bufferingNewest(1)) { continuation in
+                let cancellable = ValueObservation.tracking { db in
+                    ThreadRules.assertOffMain()
+                    return try Self.fetchChatHistoryCoverage(db, sessionId: sessionId)
+                }.removeDuplicates().start(in: writer, scheduling: .async(onQueue: Self.historyQueue),
+                                          onError: { continuation.finish(throwing: $0) },
+                                          onChange: { continuation.yield($0) })
+                continuation.onTermination = { _ in cancellable.cancel() }
+            }
         }
     }
 

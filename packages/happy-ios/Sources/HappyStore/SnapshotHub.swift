@@ -16,6 +16,8 @@ actor SnapshotHub<Value: Equatable & Sendable> {
     private var task: Task<Void, Never>?
     private var generation: UInt64 = 0
     private var retiring: [UUID: Task<Void, Never>] = [:]
+    /// Observation failures in a row, for the pause before the next try.
+    private var failures = 0
 
     init(observation: SharedValueObservation<Value>, project: @escaping @Sendable (Value) -> Value) {
         self.observation = observation
@@ -44,6 +46,14 @@ actor SnapshotHub<Value: Equatable & Sendable> {
         subscribers[id] = continuation
         if let published { continuation.yield(published) }
         guard task == nil else { return }
+        observe()
+    }
+
+    /// Starts the shared observation. One that fails is logged and started
+    /// again after a pause while anyone still listens: subscribers keep
+    /// their last value and hear the next one, rather than being finished
+    /// and left frozen until relaunch.
+    private func observe() {
         let observation = self.observation
         let token = generation
         task = Task { [weak self] in
@@ -53,17 +63,31 @@ actor SnapshotHub<Value: Equatable & Sendable> {
                     await self?.receive(value, generation: token)
                 }
             } catch {
+                guard !Task.isCancelled, let delay = await self?.failed(error, generation: token) else { return }
+                try? await Task.sleep(for: delay)
                 guard !Task.isCancelled else { return }
-                // The public stream is nonthrowing; make a stopped producer
-                // diagnosable, then allow a new subscription to restart it.
-                print("HappyStore snapshot observation stopped: \(error)")
-                await self?.finish(generation: token)
+                await self?.resubscribe(generation: token)
             }
         }
     }
 
+    /// The pause before observing again, or nil when this observation was
+    /// already let go of.
+    private func failed(_ error: Error, generation token: UInt64) -> Duration? {
+        guard token == generation else { return nil }
+        failures += 1
+        SyncLog.error("snapshot observation failed, subscribing again: \(error)")
+        return ObservationRetry.delay(afterFailures: failures)
+    }
+
+    private func resubscribe(generation token: UInt64) {
+        guard token == generation, !subscribers.isEmpty else { return }
+        observe()
+    }
+
     private func receive(_ value: Value, generation token: UInt64) {
         guard !Task.isCancelled, token == generation else { return }
+        failures = 0
         raw = value
         refresh()
     }
@@ -85,18 +109,6 @@ actor SnapshotHub<Value: Equatable & Sendable> {
             raw = nil
             published = nil
         }
-    }
-
-    private func finish(generation token: UInt64) {
-        guard token == generation else { return }
-        generation &+= 1
-        let continuations = Array(subscribers.values)
-        subscribers.removeAll()
-        if let task { retire(task) }
-        task = nil
-        raw = nil
-        published = nil
-        for continuation in continuations { continuation.finish() }
     }
 
     /// Account stop waits for cancellation to reach the underlying shared

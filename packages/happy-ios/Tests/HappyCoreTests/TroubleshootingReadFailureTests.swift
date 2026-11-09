@@ -9,15 +9,26 @@ private final class TroubleProjectionFault: @unchecked Sendable {
     enum Shape: Sendable { case healthy, sqlNull, object, shortArray }
     private let lock = NSLock()
     private var shape: Shape = .healthy
+    private var faulted = 0
     var value: Shape {
         get { lock.withLock { shape } }
         set { lock.withLock { shape = newValue } }
+    }
+    /// Reads that met the fault.
+    var failedReads: Int { lock.withLock { faulted } }
+
+    /// The current shape, counting a read that meets the fault.
+    func read() -> Shape {
+        lock.withLock {
+            if shape != .healthy { faulted += 1 }
+            return shape
+        }
     }
 }
 
 final class TroubleshootingReadFailureTests: XCTestCase {
     @MainActor
-    func testInvalidProjectionEndsStreamRetainsVisibleContentAndRecovers() async throws {
+    func testInvalidProjectionRetainsVisibleContentAndTheSameStreamRecovers() async throws {
         for shape in [TroubleProjectionFault.Shape.sqlNull, .object, .shortArray] {
             let fault = TroubleProjectionFault()
             var configuration = Configuration()
@@ -25,7 +36,7 @@ final class TroubleshootingReadFailureTests: XCTestCase {
             // machine projection and membership predicates use other arities.
             configuration.prepareDatabase { db in
                 db.add(function: DatabaseFunction("json_extract", argumentCount: 5) { arguments in
-                    switch fault.value {
+                    switch fault.read() {
                     case .sqlNull: return nil
                     case .object: return "{}"
                     case .shortArray: return "[]"
@@ -69,18 +80,17 @@ final class TroubleshootingReadFailureTests: XCTestCase {
             record.metadataVersion += 1
             record.updatedAt += 1
             try store.upsertSessions([record])
-            let ended = try await syncPerfNext(raw)
-            XCTAssertNil(ended, "the tracking error finishes the observed stream")
-            screen.stop()
-            await feed.stop()
+            // The observation meets the fault: it is logged and retried,
+            // and nothing new reaches the screen meanwhile.
+            await applyPerfWait { fault.failedReads >= 2 }
             XCTAssertEqual(recorder.outputs, [cached], "a failed read preserves the last applied screen content")
             fault.value = .healthy
-            let fresh = TroubleshootingFeed(store: store)
-            screen.start { fresh.snapshots() }
+            let recovered = try await syncPerfNext(raw)
+            XCTAssertNotNil(recovered, "the failed read's stream stays open and recovers")
             await applyPerfWait { recorder.outputs.count == 2 }
             XCTAssertTrue(recorder.outputs.last?.aiPrompt.contains("recovered") == true)
             screen.stop()
-            await fresh.stop()
+            await feed.stop()
             await store.stopSnapshotProducers()
         }
     }

@@ -272,7 +272,9 @@ final class SyncPerfObservationTests: XCTestCase {
         await store.stopSnapshotProducers()
     }
 
-    func testObservationErrorFinishesStreamAndResubscriptionRecovers() async throws {
+    /// A1: a read that throws is logged and observed again; the same
+    /// subscriber hears the value once the database reads again.
+    func testObservationErrorKeepsTheStreamAndRecovers() async throws {
         let store = try LocalStore.inMemory()
         let schema = try await store.writer.read { db in
             try String.fetchOne(db, sql: "SELECT sql FROM sqlite_master WHERE name = 'accountSettings'")!
@@ -281,10 +283,11 @@ final class SyncPerfObservationTests: XCTestCase {
         _ = try await syncPerfNext(home)
         try await store.writer.write { db in try db.execute(sql: "DROP TABLE accountSettings") }
         try store.addPendingSettings(["trigger": .bool(true)])
-        let ended = try await syncPerfNext(home)
-        XCTAssertNil(ended)
+        // Let the failed read happen before the table comes back.
+        try await Task.sleep(for: .milliseconds(50))
         try await store.writer.write { db in try db.execute(sql: schema) }
-        let restarted = try await syncPerfNext(HomeFeed(store: store).snapshots())
-        XCTAssertEqual(restarted?.settings.pending["trigger"], .bool(true))
+        let recovered = try await syncPerfNext(home)
+        XCTAssertEqual(recovered?.settings.pending["trigger"], .bool(true), "the same stream recovers")
+        await store.stopSnapshotProducers()
     }
 }
