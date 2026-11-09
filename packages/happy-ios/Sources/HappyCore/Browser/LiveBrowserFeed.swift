@@ -122,6 +122,13 @@ public final class LiveBrowserFeed {
     public private(set) var activeLink: LiveBrowserLink
     /// Origins moved to (tests).
     public private(set) var originMoves = 0
+    /// Counts the answers of `/take`, `/release` and the other POSTs that
+    /// change who has the browser. A state read sent before one of them
+    /// answered says what was true before it, and is dropped: a read in
+    /// flight across Release must not hand control back to the person on
+    /// screen, nor one across Take control take it away.
+    private var controlAnswers = 0
+
     public private(set) var phase: Phase = .connecting {
         didSet {
             guard phase != oldValue else { return }
@@ -366,10 +373,13 @@ public final class LiveBrowserFeed {
     /// The picture is the frame loop's.
     private func poll(_ transport: LiveBrowserTransport) async -> Bool {
         polls += 1
+        let answers = controlAnswers
         do {
             let data = try await readMoving({ $0.stateURL }, accept: "application/json", through: transport)
             let state = try JSONDecoder().decode(LiveBrowserState.self, from: data)
             guard !Task.isCancelled else { return false }
+            // Asked before control changed hands: the next read says.
+            guard answers == controlAnswers else { return true }
             // Never a picture for `stuckLimit`, though the state answers.
             if wantsFrames, frame == nil, frameFailing, !state.asleep, !state.ended {
                 if failing() { return false }
@@ -683,6 +693,7 @@ public final class LiveBrowserFeed {
         while true {
             let data = try await post({ $0.takeURL })
             let take = try JSONDecoder().decode(LiveBrowserTake.self, from: data)
+            controlAnswers += 1
             phase = .live(take.state)
             guard take.waking else { return take }
             guard clock.now + wait <= deadline else { throw BrowserError.timeout }
@@ -695,7 +706,7 @@ public final class LiveBrowserFeed {
     /// loses the page. The feed is then over (`done`, `user_ended`).
     public func end() async throws {
         let data = try await post({ $0.endURL })
-        if let state = try? JSONDecoder().decode(LiveBrowserState.self, from: data) { phase = .live(state) }
+        answered(data)
     }
 
     /// Puts the browser to sleep (`POST /sleep`): the login is kept and its
@@ -705,7 +716,7 @@ public final class LiveBrowserFeed {
     /// one without per-chat browsers 409 (`BrowserError.upstream`).
     public func sleep() async throws {
         let data = try await post({ $0.sleepURL })
-        if let state = try? JSONDecoder().decode(LiveBrowserState.self, from: data) { phase = .live(state) }
+        answered(data)
     }
 
     /// Hands control back (`POST /release`); a bridge from before it
@@ -717,6 +728,12 @@ public final class LiveBrowserFeed {
         } catch BrowserError.upstream(404) {
             data = try await post({ $0.doneURL })
         }
+        answered(data)
+    }
+
+    /// The state a control POST answered with, over any read sent before it.
+    private func answered(_ data: Data) {
+        controlAnswers += 1
         if let state = try? JSONDecoder().decode(LiveBrowserState.self, from: data) { phase = .live(state) }
     }
 

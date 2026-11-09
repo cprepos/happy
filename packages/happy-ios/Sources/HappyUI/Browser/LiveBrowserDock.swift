@@ -376,6 +376,7 @@ final class LiveBrowserDock: NSObject {
         player.onFullScreen = { [weak self] in self?.presentFullScreen(taking: false) }
         player.onResize = { [weak self] in self?.resize() }
         player.onAction = { [weak self] in self?.playerAction() }
+        player.holdsControl = { [weak self] in self?.holdsControl ?? false }
         player.onEnd = { [weak self, weak player] in self?.confirmEnd(from: player?.menuButton) }
         player.onSleep = { [weak self] in self?.sleep() }
         player.onTap = { [weak self] in self?.presentFullScreen(taking: false) }
@@ -1365,6 +1366,9 @@ final class LiveBrowserPlayerView: UIView {
     var onSleep: (() -> Void)?
     var onTap: (() -> Void)?
     var onDrop: ((CGPoint) -> Void)?
+    /// Whether Release is what's offered: the dock's word, which knows
+    /// this app took control under the agent's asking (`takeover`).
+    var holdsControl: (() -> Bool)?
     var large = false { didSet { resize.setImage(UIImage(systemName: large ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right"), for: .normal); resize.accessibilityLabel = large ? Strings.LiveBrowser.smaller : Strings.LiveBrowser.bigger } }
     /// Taking or giving back control, ending: the spinner shows.
     var isBusy = false { didSet { updateSpinner() } }
@@ -1544,7 +1548,7 @@ final class LiveBrowserPlayerView: UIView {
         let status = LiveBrowserDock.status(feed.phase) ?? Strings.LiveBrowser.endedStatus
         pill.text = status
         pillDot.backgroundColor = UIColor(state?.asleep == true || state == nil ? Palette.textSecondary : LiveBrowserPlayerView.color(state?.status))
-        let held = state?.status == .user
+        let held = holdsControl?() ?? (state?.status == .user)
         let title = switch feed.phase {
         case .dormant: Strings.LiveBrowser.checkAgain
         case .notResponding: Strings.LiveBrowser.retry
