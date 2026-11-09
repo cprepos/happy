@@ -58,6 +58,9 @@ services:
       # agent or device emulation; device scale factor 1.
       BROWSER_WIDTH: ${BROWSER_WIDTH:-1920}
       BROWSER_HEIGHT: ${BROWSER_HEIGHT:-1200}
+      # 0 (default): a normal Chromium window, maximized, with its tab strip and address bar.
+      # 1: the kiosk, one page and no browser UI. README, "Settings worth knowing".
+      BROWSER_KIOSK: ${BROWSER_KIOSK:-0}
       BROWSER_URL: about:blank
       BROWSER_WS_ENDPOINT_FILE: /data/profile/browser-ws-endpoint.txt
       # Host network: the Playwright server binds loopback and the controller
@@ -78,8 +81,8 @@ services:
       - ${HAPPY_BROWSER_HOME:?}/data/downloads:/data/downloads
       - ./scripts/browser-node-entrypoint.sh:/happy/browser-node-entrypoint.sh:ro
       # The window lock (kiosk/): happy-kiosk.mjs holds every Chromium window
-      # in browser fullscreen, a managed policy, and fluxbox with no bindings,
-      # menu or toolbar.
+      # maximized (or fullscreen with BROWSER_KIOSK=1), a managed policy, and
+      # fluxbox with no bindings, menu or toolbar on a plain dark desktop.
       - ./kiosk/happy-kiosk.mjs:/opt/browser-node/happy-kiosk.mjs:ro
       - ./kiosk/policy.json:/etc/chromium/policies/managed/happy-kiosk.json:ro
       - ./kiosk/policy.json:/etc/opt/chrome_for_testing/policies/managed/happy-kiosk.json:ro
@@ -144,8 +147,9 @@ services:
       MAX_SESSIONS: ${MAX_SESSIONS:-3}
       MCP_TOOL_PROFILE: ${MCP_TOOL_PROFILE:-curated}
       DEFAULT_VIEWPORT_WIDTH: ${BROWSER_WIDTH:-1920}
-      # Kiosk: the page is the whole screen (no tab strip or toolbar).
-      DEFAULT_VIEWPORT_HEIGHT: ${BROWSER_HEIGHT:-1200}
+      # The screen less Chromium's tab strip and toolbar (the whole screen with BROWSER_KIOSK=1),
+      # so the page fills the maximized window exactly. browser.mk works it out.
+      DEFAULT_VIEWPORT_HEIGHT: ${BROWSER_VIEWPORT_HEIGHT:?run through browser-stack/browser.mk}
       # Rate limits are per bearer token, which the agents and the bridge's
       # one-frame-a-second polling share; 120/min (upstream) is too tight.
       REQUEST_RATE_LIMIT_REQUESTS: ${REQUEST_RATE_LIMIT_REQUESTS:-1200}
@@ -191,7 +195,7 @@ services:
       BRIDGE_LINK_IDLE_HOURS: ${BRIDGE_LINK_IDLE_HOURS:-12}
       # The shape of a frame: the controller's default viewport, as set above.
       BRIDGE_FRAME_WIDTH: ${BROWSER_WIDTH:-1920}
-      BRIDGE_FRAME_HEIGHT: ${BROWSER_HEIGHT:-1200}
+      BRIDGE_FRAME_HEIGHT: ${BROWSER_VIEWPORT_HEIGHT:?run through browser-stack/browser.mk}
       # One browser pod per chat (bridge/lib/pods.mjs), started through the launcher below.
       # Off by default: the bridge then drives the shared browser above.
       BRIDGE_PODS: ${BRIDGE_PODS:-0}
@@ -254,6 +258,8 @@ services:
       POD_PLAYWRIGHT_BASE: ${POD_PLAYWRIGHT_BASE:-9300}
       BROWSER_WIDTH: ${BROWSER_WIDTH:-1920}
       BROWSER_HEIGHT: ${BROWSER_HEIGHT:-1200}
+      BROWSER_KIOSK: ${BROWSER_KIOSK:-0}
+      BROWSER_VIEWPORT_HEIGHT: ${BROWSER_VIEWPORT_HEIGHT:?run through browser-stack/browser.mk}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       MCP_TOOL_PROFILE: ${MCP_TOOL_PROFILE:-curated}
       REQUEST_RATE_LIMIT_REQUESTS: ${REQUEST_RATE_LIMIT_REQUESTS:-1200}

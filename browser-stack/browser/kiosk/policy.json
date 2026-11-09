@@ -1,11 +1,20 @@
 {
   "BrowserGuestModeEnabled": false,
   "BrowserAddPersonEnabled": false,
+  "BrowserSignin": 0,
+  "SyncDisabled": true,
+  "IncognitoModeAvailability": 1,
   "PasswordManagerEnabled": false,
   "TranslateEnabled": false,
   "AutofillCreditCardEnabled": false,
   "PrintingEnabled": false,
   "DefaultNotificationsSetting": 2,
   "DefaultGeolocationSetting": 2,
-  "PromptForDownloadLocation": false
+  "PromptForDownloadLocation": false,
+  "AllowFileSelectionDialogs": false,
+  "ExtensionInstallBlocklist": ["*"],
+  "NewTabPageLocation": "about:blank",
+  "HomepageLocation": "about:blank",
+  "URLBlocklist": ["chrome://*", "chrome-untrusted://*", "devtools://*", "file://*"],
+  "URLAllowlist": ["chrome://newtab", "chrome://new-tab-page"]
 }

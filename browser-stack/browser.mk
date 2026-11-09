@@ -41,6 +41,16 @@ BROWSER_PORTS ?= 6080|8010|6090|9223|61[0-3][0-9]|81[0-3][0-9]|93[0-3][0-9]
 # 127.0.0.1, and only on the bridge's port.
 BRIDGE_LAN_BIND ?= $(shell sed -nE 's/^BRIDGE_LAN_BIND=([0-9.]+)[[:space:]]*$$/\1/p' $(BROWSER_LOCAL_ENV) 2>/dev/null | tail -1)
 BRIDGE_LAN_PORT ?= $(or $(shell sed -nE 's/^BRIDGE_PORT=([0-9]+)[[:space:]]*$$/\1/p' $(BROWSER_LOCAL_ENV) 2>/dev/null | tail -1),6090)
+# The browser's window (BROWSER_KIOSK in .env.browser): 0, the default, a normal Chromium window
+# maximized to the screen, with its tab strip and address bar; 1, the kiosk (one page, no browser
+# UI). The page's height follows: the whole screen in kiosk mode, the screen less Chromium's tab
+# strip and toolbar (CHROME_UI_HEIGHT, measured on the pinned image) otherwise. Exported, so
+# compose (and through it the launcher, for every pod) uses these over .env.browser's.
+BROWSER_KIOSK ?= $(or $(shell sed -nE 's/^BROWSER_KIOSK=([^[:space:]]*)[[:space:]]*$$/\1/p' $(BROWSER_LOCAL_ENV) 2>/dev/null | tail -1),0)
+BROWSER_HEIGHT ?= $(or $(shell sed -nE 's/^BROWSER_HEIGHT=([0-9]+)[[:space:]]*$$/\1/p' $(BROWSER_LOCAL_ENV) 2>/dev/null | tail -1),1200)
+CHROME_UI_HEIGHT := 87
+BROWSER_VIEWPORT_HEIGHT ?= $(if $(filter 1,$(BROWSER_KIOSK)),$(BROWSER_HEIGHT),$(shell expr $(BROWSER_HEIGHT) - $(CHROME_UI_HEIGHT)))
+export BROWSER_KIOSK BROWSER_HEIGHT BROWSER_VIEWPORT_HEIGHT
 BROWSER_BIND_OK = ^127\.0\.0\.1:$(if $(BRIDGE_LAN_BIND),|^$(subst .,\.,$(BRIDGE_LAN_BIND)):$(BRIDGE_LAN_PORT)$$)
 BROWSER_IMAGES = $(shell sed -nE 's/^x-(browser-node|controller)-image: &[a-z_]+ (.+)$$/\2/p' $(BROWSER_DIR)/compose.browser.yml) \
 	$(shell sed -nE 's/^    image: (node:.+)$$/\1/p' $(BROWSER_DIR)/compose.browser.yml | sort -u)
@@ -79,6 +89,7 @@ browser-verify:
 browser-bridge-test:
 	cd $(BROWSER_DIR)/bridge && node --test test/*.test.mjs
 	cd $(BROWSER_DIR)/launcher && node --test test/*.test.mjs
+	cd $(BROWSER_DIR)/kiosk && node --test test/*.test.mjs
 
 # The controller patch (controller-patch/happy_live_frames.py) in a throwaway container of the
 # pinned controller image, no network: its pin check against the image's files, then its tests.
@@ -115,9 +126,16 @@ browser-pods-reap:
 browser-entrypoint-check:
 	@set -e; t=$$(mktemp -d); trap 'rm -rf "$$t"' EXIT; \
 	docker run --rm --network none --entrypoint cat $$(sed -nE 's/^x-browser-node-image: &[a-z_]+ (.+)$$/\1/p' $(BROWSER_DIR)/compose.browser.yml) /entrypoint.sh >"$$t/entrypoint.sh"; \
-	BROWSER_NODE_ENTRYPOINT_SRC="$$t/entrypoint.sh" BROWSER_NODE_ENTRYPOINT_OUT="$$t/out.sh" BROWSER_NODE_ENTRYPOINT_DRY_RUN=1 \
-		PLAYWRIGHT_SERVER_HOST=127.0.0.1 NOVNC_PORT=6100 bash $(BROWSER_DIR)/scripts/browser-node-entrypoint.sh; \
-	echo "entrypoint patch: all five patterns match once; $$(diff "$$t/entrypoint.sh" "$$t/out.sh" | grep -c '^>') lines changed"
+	for k in 0 1; do \
+		BROWSER_KIOSK=$$k BROWSER_NODE_ENTRYPOINT_SRC="$$t/entrypoint.sh" BROWSER_NODE_ENTRYPOINT_OUT="$$t/out.sh" BROWSER_NODE_ENTRYPOINT_DRY_RUN=1 \
+			PLAYWRIGHT_SERVER_HOST=127.0.0.1 NOVNC_PORT=6100 bash $(BROWSER_DIR)/scripts/browser-node-entrypoint.sh; \
+		grep -qE "fluxbox -rc /happy/fluxbox/init$$([ $$k = 0 ] && echo '\.window') >" "$$t/out.sh"; \
+		echo "entrypoint patch (BROWSER_KIOSK=$$k): all five patterns match once; $$(diff "$$t/entrypoint.sh" "$$t/out.sh" | grep -c '^>') lines changed"; \
+	done; \
+	if BROWSER_KIOSK=yes BROWSER_NODE_ENTRYPOINT_SRC="$$t/entrypoint.sh" BROWSER_NODE_ENTRYPOINT_OUT="$$t/out.sh" BROWSER_NODE_ENTRYPOINT_DRY_RUN=1 \
+		PLAYWRIGHT_SERVER_HOST=127.0.0.1 NOVNC_PORT=6100 bash $(BROWSER_DIR)/scripts/browser-node-entrypoint.sh 2>/dev/null; then \
+		echo "entrypoint patch: BROWSER_KIOSK=yes was accepted" >&2; exit 1; fi; \
+	echo "entrypoint patch: BROWSER_KIOSK other than 0 or 1 is refused"
 
 # Pod start times through the real launcher, cold and warm, p50/p95 per phase (RUNS=5, VERSION).
 # Refuses while any pod of the project is up: run it against a test project.

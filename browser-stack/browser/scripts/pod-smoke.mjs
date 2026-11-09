@@ -1,6 +1,6 @@
 // End to end against a bridge running with BRIDGE_PODS=1 (`make browser-pod-smoke`): two chats get
 // two pods with their own sessions, links, ports and noVNC passwords; every listener is on
-// 127.0.0.1 and no abstract X11 socket is visible; each pod's browser is kiosk-locked; a pod left
+// 127.0.0.1 and no abstract X11 socket is visible; each pod's browser window is locked to the screen; a pod left
 // idle stops by itself (run the bridge with a short BRIDGE_POD_IDLE_MIN, e.g. 0.3) and a login
 // cookie set before the stop is there after it wakes.
 // Never prints a token, password or noVNC URL: passwords are compared, not shown.
@@ -10,6 +10,13 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createUpstreamMcp } from '../bridge/lib/upstream.mjs';
+
+// The window rule kiosk-probe.mjs measures against: at 0,0 and the full screen, and either no
+// browser UI at all (kiosk) or some (a normal window: tab strip, address bar).
+const windowShaped = (w, kiosk) => !!w && w.screenX === 0 && w.screenY === 0
+    && w.outerWidth === w.screenWidth && w.outerHeight === w.screenHeight && w.innerWidth === w.screenWidth
+    && (kiosk ? w.innerHeight === w.screenHeight : w.innerHeight < w.outerHeight);
+const WANT_KIOSK = process.env.BROWSER_KIOSK === '1';
 
 const BRIDGE = (process.env.BROWSER_BRIDGE || 'http://127.0.0.1:6090').replace(/\/+$/, '');
 const HOME = process.env.HAPPY_BROWSER_HOME;
@@ -75,15 +82,15 @@ try {
     const x = spawnSync('ss', ['-xlpH'], { encoding: 'utf8' }).stdout;
     check(!/@\/tmp\/\.X11-unix\//.test(x) && !/X11/.test(x.split('\n').filter((l) => l.includes('@')).join('\n')), 'no abstract X11 socket visible (ss -xlp)');
 
-    // Kiosk lock in each pod's browser-node.
+    // The window lock in each pod's browser-node (maximized, or the kiosk with BROWSER_KIOSK=1).
     const probe = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'kiosk-probe.mjs'));
     for (const p of [pa, pb]) {
         const name = `${PROJECT}-pod-${p.slot}-node`;
         const r = spawnSync('docker', ['exec', '-i', '-w', '/opt/browser-node', '-u', 'browser', name, 'node', '--input-type=module', '-'], { input: probe, encoding: 'utf8', timeout: 60_000 });
         let g = {};
         try { g = JSON.parse(r.stdout.trim().split('\n').pop()); } catch { g = { error: `exit ${r.status}` }; }
-        const full = (w) => !!w && w.screenX === 0 && w.screenY === 0 && w.innerHeight === w.screenHeight && w.innerWidth === w.screenWidth;
-        check(!g.error && full(g.page) && full(g.popup), `slot ${p.slot}: page and popup fill the screen, no browser UI`);
+        check(!g.error && g.kiosk === WANT_KIOSK && windowShaped(g.page, WANT_KIOSK) && windowShaped(g.popup, WANT_KIOSK),
+            `slot ${p.slot}: page and popup fill the screen, ${WANT_KIOSK ? 'no browser UI (kiosk)' : 'maximized with the browser UI'}`);
     }
 
     // A login cookie survives the idle stop.

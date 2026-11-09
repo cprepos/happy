@@ -3,8 +3,12 @@
 // container's own Playwright server, opens a page and a window.open popup, and prints one JSON
 // line with each window's geometry. It never prints the endpoint, which carries a secret path.
 //
-// The kiosk flags are browser-wide, so a fresh context on this connection shows what an agent's
-// session shows. viewport: null keeps the window's own size, as the controller does.
+// The window flags are browser-wide, so a fresh context on this connection shows what an agent's
+// session shows. viewport: null keeps the window's own size. `kiosk` is the container's own
+// BROWSER_KIOSK (docker exec inherits it): with 1 every window is fullscreen with no browser UI,
+// with 0 maximized with its tab strip and address bar. windowShaped() below is the check, and is
+// exported for bridge-smoke.mjs and pod-smoke.mjs (the probe's import of playwright resolves only
+// in the container, so they copy it).
 import { readFileSync } from "node:fs";
 import { chromium } from "playwright";
 
@@ -14,7 +18,7 @@ const geometry = () => ({
   innerWidth, innerHeight, outerWidth, outerHeight, screenX, screenY,
   screenWidth: screen.width, screenHeight: screen.height,
 });
-const out = {};
+const out = { kiosk: process.env.BROWSER_KIOSK === "1" };
 try {
   const context = await browser.newContext({ viewport: null });
   const page = await context.newPage();

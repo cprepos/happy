@@ -48,11 +48,18 @@ function mcp(ident = null) {
     return { request, notes, close: () => child.stdin.end() };
 }
 
-// The browser shows one page and nothing else: Chromium in kiosk mode (no tab strip, no address
-// bar, no window frame), and a window.open popup is fullscreen too. Measured from inside the
-// browser-node by scripts/kiosk-probe.mjs. And Xvfb must not listen on the abstract socket
+// The browser fills the screen and nothing else shows: a maximized Chromium window with its tab
+// strip and address bar (BROWSER_KIOSK=0, the default), or with BROWSER_KIOSK=1 the kiosk (no
+// tab strip, no address bar, no window frame); a window.open popup the same. Measured from inside
+// the browser-node by scripts/kiosk-probe.mjs. And Xvfb must not listen on the abstract socket
 // @/tmp/.X11-unix/X99: with host networking it would be in the host's namespace, a display
 // anything on this machine could open.
+// The window rule kiosk-probe.mjs measures against: at 0,0 and the full screen, and either no
+// browser UI at all (kiosk) or some (a normal window: tab strip, address bar).
+const windowShaped = (w, kiosk) => !!w && w.screenX === 0 && w.screenY === 0
+    && w.outerWidth === w.screenWidth && w.outerHeight === w.screenHeight && w.innerWidth === w.screenWidth
+    && (kiosk ? w.innerHeight === w.screenHeight : w.innerHeight < w.outerHeight);
+const WANT_KIOSK = process.env.BROWSER_KIOSK === '1';
 function kiosk() {
     const probe = spawnSync('docker', ['exec', '-i', '-w', '/opt/browser-node', '-u', 'browser', NODE_CONTAINER, 'node', '--input-type=module', '-'], {
         input: readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'kiosk-probe.mjs')), encoding: 'utf8', timeout: 60000,
@@ -60,10 +67,10 @@ function kiosk() {
     let g = {};
     try { g = JSON.parse(probe.stdout.trim().split('\n').pop()); } catch { g = { error: `probe exited ${probe.status}` }; }
     check(!g.error, `kiosk probe ran in ${NODE_CONTAINER}${g.error ? `: ${g.error}` : ''}`);
-    const full = (w) => !!w && w.screenX === 0 && w.screenY === 0 && w.outerHeight === w.innerHeight
-        && w.innerHeight === w.screenHeight && w.innerWidth === w.screenWidth;
-    check(full(g.page), `page fills the screen with no browser UI: ${JSON.stringify(g.page)}`);
-    check(full(g.popup), `window.open popup fills the screen too: ${JSON.stringify(g.popup)}`);
+    check(g.kiosk === WANT_KIOSK, `browser-node runs with BROWSER_KIOSK=${WANT_KIOSK ? 1 : 0}`);
+    const how = WANT_KIOSK ? 'with no browser UI' : 'maximized, with its tab strip and address bar';
+    check(windowShaped(g.page, WANT_KIOSK), `page fills the screen ${how}: ${JSON.stringify(g.page)}`);
+    check(windowShaped(g.popup, WANT_KIOSK), `window.open popup fills the screen too: ${JSON.stringify(g.popup)}`);
     const ss = spawnSync('ss', ['-xlH'], { encoding: 'utf8' });
     check(ss.status === 0 && !/@\/tmp\/\.X11-unix\//.test(ss.stdout), 'no abstract X11 socket in the host network namespace');
 }

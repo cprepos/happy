@@ -1,0 +1,9 @@
+session.screen0.toolbar.visible: false
+session.screen0.slit.autoHide: true
+session.screen0.workspaces: 1
+session.screen0.defaultDeco: NONE
+session.screen0.allowRemoteActions: false
+session.styleFile: /happy/fluxbox/style
+session.keyFile: /happy/fluxbox/keys
+session.appsFile: /happy/fluxbox/apps.window
+session.menuFile: /happy/fluxbox/menu
