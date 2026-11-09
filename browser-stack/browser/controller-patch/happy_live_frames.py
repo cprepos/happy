@@ -18,6 +18,13 @@ What this changes (share_snapshot and light_snapshot only; nothing else in the c
 - A frame that could not be scrubbed is never cached and never served by these paths. With
   PII_SCRUB_SCREENSHOT off, none of this runs: share_snapshot is upstream's, unchanged.
 
+It also adds one read-only route, GET /happy/sessions/{session_id}/focus -> {"editable_focused": bool|null}:
+whether the page's focus is in a field that takes typing (a text-like input, a textarea, an editable
+element; not disabled or read-only), followed into shadow roots and frames. The live bridge asks it
+while the person holds the browser, so the app's native viewer brings up the keyboard by itself. It
+answers only that one boolean, never the field or its value; it takes no lock and changes nothing in
+the page. The controller's bearer-token middleware and session ownership apply to it as to any route.
+
 The route and its token check (app/routes/share.py) are untouched; the patch refuses to load if
 that file, or any file whose behaviour it relies on, is not the 1.14.0 file it was written against.
 
@@ -57,6 +64,10 @@ TITLE_TIMEOUT_SECONDS = 2.0
 # A poll that lands this soon after a lockless capture finished reuses it rather than starting another.
 MIN_CAPTURE_INTERVAL_SECONDS = 0.3
 PENDING_KEEP_SECONDS = 60.0
+
+# The focus read: how long it may take, and the frames it looks into.
+FOCUS_TIMEOUT_SECONDS = 1.5
+FOCUS_MAX_FRAMES = 8
 
 _FRAME_ATTR = "_happy_live_frame"
 _TASK_ATTR = "_happy_live_capture"
@@ -319,6 +330,69 @@ def build(observation_module: Any, page_read_module: Any) -> dict[str, Any]:
     return {"share_snapshot": share_snapshot, "light_snapshot": light_snapshot}
 
 
+# ── the focus read ──────────────────────────────────────────────────────────
+
+# In one frame: "editable" when its focused element takes typing, "frame" when the focus is in a
+# child frame, "none" otherwise. Shadow roots are followed; nothing about the element leaves the page.
+FOCUS_SCRIPT = """() => {
+  if (document.designMode === 'on') return document.hasFocus() ? 'editable' : 'none';
+  let el = document.activeElement;
+  while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
+  if (!el || el === document.body || el === document.documentElement) return 'none';
+  const tag = el.tagName;
+  if (tag === 'IFRAME' || tag === 'FRAME') return 'frame';
+  if (el.isContentEditable) return 'editable';
+  const off = el.disabled === true || el.readOnly === true;
+  if (tag === 'TEXTAREA') return off ? 'none' : 'editable';
+  if (tag === 'INPUT') {
+    const texty = ['text', 'search', 'email', 'url', 'tel', 'password', 'number',
+      'date', 'datetime-local', 'month', 'week', 'time'];
+    return !off && texty.includes(String(el.type).toLowerCase()) ? 'editable' : 'none';
+  }
+  return 'none';
+}"""
+
+
+async def editable_focused(page: Any) -> bool | None:
+    """True when the page's focus is in a field that takes typing, None when it can't be told."""
+    where = await asyncio.wait_for(page.main_frame.evaluate(FOCUS_SCRIPT), timeout=FOCUS_TIMEOUT_SECONDS)
+    if where != "frame":
+        return where == "editable"
+    # The focus is in a child frame: the one whose document has it says.
+    for frame in page.frames[1 : FOCUS_MAX_FRAMES + 1]:
+        try:
+            focused = await asyncio.wait_for(frame.evaluate("() => document.hasFocus()"), timeout=FOCUS_TIMEOUT_SECONDS)
+            if not focused:
+                continue
+            inner = await asyncio.wait_for(frame.evaluate(FOCUS_SCRIPT), timeout=FOCUS_TIMEOUT_SECONDS)
+        except Exception:
+            continue
+        if inner == "editable":
+            return True
+        if inner == "none":
+            return False
+    return None
+
+
+def install_routes(application: Any, manager: Any) -> None:
+    """GET /happy/sessions/{session_id}/focus, behind the controller's own auth middleware."""
+    if getattr(application.state, "happy_focus_route", False):
+        return
+
+    async def focus(session_id: str) -> dict[str, Any]:
+        # An unknown session, or another operator's, is a KeyError: the app's 404.
+        session = await manager.get_session(session_id)
+        try:
+            manager._assert_page_allowed(session)
+            return {"editable_focused": await editable_focused(session.page)}
+        except Exception as exc:
+            logger.debug("focus read failed: %s", type(exc).__name__)
+            return {"editable_focused": None}
+
+    application.add_api_route("/happy/sessions/{session_id}/focus", focus, methods=["GET"], include_in_schema=False)
+    application.state.happy_focus_route = True
+
+
 def apply() -> None:
     from app.browser import page_read
     from app.browser.services import observation
@@ -335,4 +409,6 @@ def apply() -> None:
 if os.environ.get("HAPPY_LIVE_FRAMES_NO_AUTOLOAD") != "1":
     verify()
     apply()
-    from app.main import app  # noqa: E402,F401 - what uvicorn serves
+    from app.main import app, manager  # noqa: E402 - what uvicorn serves
+
+    install_routes(app, manager)

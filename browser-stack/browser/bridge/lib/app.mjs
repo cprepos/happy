@@ -8,6 +8,11 @@
 //                              PII-scrubbed, as noVNC is not. 404 no_screen on the shared browser,
 //                              503 asleep (does not wake it)
 //   GET  /live/<id>/state      {status: watching|user|takeover|done, reason, url, title, last_action}
+//                              while held (user|takeover), also editable_focused: true when the page's
+//                              focus is in a field that takes typing, false when not; absent when it
+//                              can't be told (asleep, a controller without the focus route). The app's
+//                              native viewer brings up the keyboard from it. Only the boolean, never
+//                              the field or its value
 //   POST /live/<id>/take       the user takes control: watching -> user (takeover stays takeover);
 //                              -> state plus novnc_url
 //   POST /live/<id>/release    the user hands control back: user|takeover -> watching, waking waiters
@@ -199,6 +204,10 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         linkSweepMs = 60_000,      // held links whose browser is gone are released this often
         // POST /live/<id>/nav: how long a navigation may take before answering with what loaded.
         navTimeoutMs = 10_000,
+        // /state's editable_focused: an answer this young is reused, and a controller that has no
+        // focus route (404) is not asked again for focusRetryMs.
+        focusCacheMs = 250,
+        focusRetryMs = 60_000,
     } = config;
     if (!bridgeToken) throw new Error('bridgeToken is required');
 
@@ -267,7 +276,7 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
     // The runtime cache (share token, frame) belongs to one session: a pod restart starts afresh.
     function rtFor(rec) {
         const r = rt(rec.id);
-        if (r.sid !== rec.sessionId) Object.assign(r, { sid: rec.sessionId, share: null, frame: null, metaAt: 0 });
+        if (r.sid !== rec.sessionId) Object.assign(r, { sid: rec.sessionId, share: null, frame: null, metaAt: 0, focus: null, focusOffUntil: 0 });
         return r;
     }
     const asleepError = () => Object.assign(new Error('asleep'), { status: 503 });
@@ -491,6 +500,26 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         } catch (err) {
             if (err.status === 404) sessionGone(rec);
         }
+    }
+
+    // /state's editable_focused, while the person holds the browser: {} when it can't be told.
+    // One read in flight per link, shared by the polls that arrive meanwhile.
+    async function focusOf(rec) {
+        if (!HELD_STATUSES.has(rec.status)) return {};
+        const c = clientOf(rec);
+        if (!c || typeof c.focus !== 'function') return {};
+        const r = rtFor(rec);
+        const field = (v) => (typeof v === 'boolean' ? { editable_focused: v } : {});
+        if (r.focus && now() - r.focus.at < focusCacheMs) return field(r.focus.value);
+        if (now() < (r.focusOffUntil ?? 0)) return {};
+        if (!r.focusInflight) {
+            const sid = rec.sessionId;
+            r.focusInflight = c.focus(sid)
+                .then((v) => { if (r.sid === sid) r.focus = { value: v, at: now() }; return v; })
+                .catch((err) => { if (err.status === 404) r.focusOffUntil = now() + focusRetryMs; return null; })
+                .finally(() => { r.focusInflight = null; });
+        }
+        return field(await r.focusInflight);
     }
 
     function waitForHandBack(rec, waitMs) {
@@ -811,7 +840,8 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         if (podLink(rec)) pods.touchViewer(rec.chatKey);
         if (sub === '/state') {
             await refreshMeta(rec);
-            return send(res, 200, { ...stateOf(rec), ...podField(rec) });
+            const focus = await focusOf(rec);
+            return send(res, 200, { ...stateOf(rec), ...podField(rec), ...focus });
         }
         if (sub === '/frame.jpg') {
             if (podLink(rec) && !podOf(rec)) return send(res, 503, { error: 'asleep' });

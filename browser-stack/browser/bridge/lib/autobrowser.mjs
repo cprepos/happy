@@ -64,6 +64,14 @@ export function createAutoBrowserClient({ baseUrl, token, fetchImpl = fetch, tim
             const path = { back: 'go-back', forward: 'go-forward', reload: 'reload', goto: 'navigate' }[action];
             return call('POST', s + path, { body: action === 'goto' ? { url } : undefined, timeout }).then((r) => r.session ?? r);
         },
+        /**
+         * Whether the page's focus is in a field that takes typing: true, false, or null when the
+         * controller can't tell. The route is controller-patch's (happy_live_frames.py); a
+         * controller without it answers 404.
+         */
+        focus: (sessionId, timeout = 2500) =>
+            call('GET', `/happy/sessions/${encodeURIComponent(sessionId)}/focus`, { timeout })
+                .then((r) => (typeof r?.editable_focused === 'boolean' ? r.editable_focused : null)),
         /** One approval record (status, kind, action, origin, session_id). Throws 404 for an unknown id. */
         getApproval: (approvalId) => call('GET', `/approvals/${encodeURIComponent(approvalId)}`),
         /** Approves a pending approval; 409 when it is no longer pending. */
