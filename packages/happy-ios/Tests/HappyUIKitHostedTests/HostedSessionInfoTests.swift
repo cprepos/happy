@@ -183,14 +183,20 @@ final class HostedSessionInfoTests: XCTestCase {
         // No socket here: while the header says "connecting…" a tap on it
         // refreshes instead, and the chat stays.
         let link = LegacyLink.link(for: account)
-        let connecting = try await until { link.indicator.shown == .connecting }
+        // The socket's own "connecting" has come, so it can't land after
+        // the "connected" below and undo it.
+        let connecting = try await until { link.status == .connecting && link.indicator.shown == .connecting }
         XCTAssertTrue(connecting, "the link never said connecting")
         title.onOpen?()
         XCTAssertTrue(navigation.topViewController === chat, "a tap while connecting opened something")
-        // Told it's live, the tap opens the session's info.
-        link.receive(status: .connected)
-        link.receive(catchingUp: false)
-        let live = try await until { link.indicator.shown == .online }
+        // Told it's live, the tap opens the session's info. The tap's
+        // refresh reconnects the socket, whose "connecting" may land
+        // after, so it's told again until the header shows it live.
+        let live = try await until {
+            link.receive(status: .connected)
+            link.receive(catchingUp: false)
+            return link.indicator.shown == .online
+        }
         XCTAssertTrue(live, "the link never came back live")
         title.onOpen?()
         let info = try XCTUnwrap(navigation.topViewController as? SessionInfoViewController)
