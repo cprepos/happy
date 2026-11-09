@@ -294,7 +294,11 @@ final class HostedLiveBrowserTests: XCTestCase {
         XCTAssertLessThan(menu.midX, player.bounds.midX)
         XCTAssertEqual(menu.minY, 0)
         XCTAssertGreaterThanOrEqual(menu.height, 44)
-        let item = try XCTUnwrap(player.menuButton.menu?.children.first as? UIAction)
+        // Sleep browser first, then End browser, the destructive one.
+        let actions = (player.menuButton.menu?.children ?? []).compactMap { $0 as? UIAction }
+        XCTAssertEqual(actions.map(\.title), [Strings.LiveBrowser.sleepBrowser, Strings.LiveBrowser.endBrowser])
+        XCTAssertFalse(actions.first?.attributes.contains(.destructive) ?? true)
+        let item = try XCTUnwrap(actions.last)
         XCTAssertEqual(item.title, Strings.LiveBrowser.endBrowser)
         XCTAssertTrue(item.attributes.contains(.destructive))
 
@@ -330,7 +334,8 @@ final class HostedLiveBrowserTests: XCTestCase {
         XCTAssertEqual(noVNC.navigationItem.rightBarButtonItems, [noVNC.control])
         XCTAssertTrue(noVNC.endItem.isEnabled)
         let frame = try XCTUnwrap(navigation.viewControllers.first as? LiveBrowserFullScreenItems)
-        XCTAssertEqual(frame.navigationItem.leftBarButtonItems?.last, frame.endItem)
+        // End at the left with Sleep beside it.
+        XCTAssertEqual(frame.navigationItem.leftBarButtonItems?.suffix(2).map { $0 }, [frame.endItem, frame.sleepItem])
         XCTAssertFalse(frame.navigationItem.rightBarButtonItems?.contains(frame.endItem) ?? true)
 
         noVNC.endItem.primaryAction?.performWithSender(nil, target: nil)
