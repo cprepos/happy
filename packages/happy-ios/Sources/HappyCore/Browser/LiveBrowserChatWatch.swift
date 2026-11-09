@@ -20,6 +20,8 @@ public final class LiveBrowserChatWatch {
     /// While the answer's link has no browser running for it: asked
     /// this seldom, so it still comes back when the agent wakes one.
     public static let idleInterval: Duration = .seconds(30)
+    /// The longest one lookup is waited for.
+    static let lookupDeadline: Duration = .seconds(15)
 
     /// The keys the chat may go by, in order (`LiveBrowserChatIdentity.keys`).
     public let keys: [String]
@@ -94,6 +96,7 @@ public final class LiveBrowserChatWatch {
     /// if it shows.
     public func checkNow() {
         guard isVisible else { return }
+        forgetFailure()
         pause()
         start()
     }
@@ -106,8 +109,31 @@ public final class LiveBrowserChatWatch {
 
     /// Starts if it should and can: a computer to ask through may have
     /// come since.
+    ///
+    /// A watch whose last lookup failed starts over on a fresh transport,
+    /// and may try the other origins again: the one that answered before
+    /// isn't held to once it stops answering (the phone may have moved to
+    /// a network that reaches the bridge at another).
+    /// At most once an `interval`, however often it is reconsidered.
     public func reconsider() {
-        if isVisible { start() } else { pause() }
+        guard isVisible else { return pause() }
+        let now = ContinuousClock.now
+        if failed, polling != nil, freshAt.map({ now - $0 >= interval }) ?? true {
+            freshAt = now
+            forgetFailure()
+            pause()
+        }
+        start()
+    }
+
+    /// When `reconsider` last started over.
+    private var freshAt: ContinuousClock.Instant?
+
+    /// After a failed lookup, the origin that answered before is no
+    /// longer the only one tried.
+    private func forgetFailure() {
+        guard failed || backingOff else { return }
+        originAnswered = false
     }
 
     /// Stops for good: the chat let it go.
@@ -152,7 +178,12 @@ public final class LiveBrowserChatWatch {
     private func poll(_ transport: LiveBrowserTransport) async -> Bool {
         polls += 1
         do {
-            let data = try await transport.send(method: "GET", url: url, body: nil, accept: "application/json")
+            let target = url
+            // A send that never answers (a tunnel gone quiet) is a failed
+            // lookup, not a watch held up for good.
+            let data = try await LiveBrowserFeed.within(Self.lookupDeadline) {
+                try await transport.send(method: "GET", url: target, body: nil, accept: "application/json")
+            }
             var chat = try JSONDecoder().decode(LiveBrowserChat.self, from: data)
             guard !Task.isCancelled else { return false }
             originAnswered = true
@@ -173,6 +204,7 @@ public final class LiveBrowserChatWatch {
             // The agent may start one later: still asked.
             case BrowserError.upstream(404):
                 originAnswered = true
+                failed = false
                 backingOff = false
                 if !found, keys.count > 1 {
                     keyIndex = (keyIndex + 1) % keys.count

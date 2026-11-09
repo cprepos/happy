@@ -602,8 +602,9 @@ public final class LiveBrowserFeed {
     /// `operation`'s answer, or `BrowserError.timeout` after `limit`, or
     /// `CancellationError` once the caller is cancelled: the first of the
     /// three. The operation is cancelled when it loses, but it isn't waited
-    /// for, so one that ignores cancellation can't hold the caller.
-    public static func within<T: Sendable>(_ limit: Duration, _ operation: @escaping @Sendable () async throws -> T) async throws -> T {
+    /// for, so one that ignores cancellation can't hold the caller. Off the
+    /// main actor, so a deadline elsewhere doesn't wait on it.
+    nonisolated public static func within<T: Sendable>(_ limit: Duration, _ operation: @escaping @Sendable () async throws -> T) async throws -> T {
         let once = Once<T>()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in

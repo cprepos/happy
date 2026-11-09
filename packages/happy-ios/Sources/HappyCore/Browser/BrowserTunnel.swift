@@ -154,6 +154,11 @@ public enum BrowserRelay {
         }
     }
 
+    /// How long an exchange waits for its response head: past any long poll
+    /// a page makes (WebKit gives up on a request after 60 s), short of a
+    /// tunnel that went quiet holding the page's connection for good.
+    static let exchangeHeadDeadline: Duration = .seconds(120)
+
     /// The one exchange of a connection whose request head already went to
     /// `remote`: the rest of its body follows, and its response comes back
     /// saying `Connection: close`, after which both ends close. A server may
@@ -166,14 +171,15 @@ public enum BrowserRelay {
             try await withThrowingTaskGroup(of: Void.self) { group in
                 group.addTask { try await pipe(local, to: remote) }
                 group.addTask {
-                    // No head deadline: a long poll answers when it answers.
-                    var (response, bytes) = try await head(remote, timeout: nil)
+                    // A long deadline: a long poll answers when it answers,
+                    // a dead tunnel never does.
+                    var (response, bytes) = try await head(remote, timeout: exchangeHeadDeadline)
                     var interim = 0
                     while let status = response.statusCode, (100..<200).contains(status), status != 101 {
                         interim += 1
                         guard interim <= 8 else { throw BrowserError.malformed }
                         try await local.write(response.data)
-                        (response, bytes) = try await head(remote, initial: bytes, timeout: nil)
+                        (response, bytes) = try await head(remote, initial: bytes, timeout: exchangeHeadDeadline)
                     }
                     if response.statusCode == 101 {
                         try await local.write(response.data)

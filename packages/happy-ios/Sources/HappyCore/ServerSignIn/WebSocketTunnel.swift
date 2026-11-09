@@ -39,6 +39,8 @@ public final class WebSocketTunnel: BrowserStream, @unchecked Sendable {
     static let maximumMessage = 1 << 20
     static let pingInterval: Duration = .seconds(20)
     static let silence: TimeInterval = 45
+    /// The longest a ping's write is waited for.
+    static let pingDeadline: Duration = .seconds(15)
     private static let guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
     private let base: any BrowserStream
@@ -107,7 +109,13 @@ public final class WebSocketTunnel: BrowserStream, @unchecked Sendable {
                     await self.base.close()
                     return
                 }
-                try? await self.writer.send(opcode: 0x9, payload: Data())
+                // A ping stuck behind a write that never finishes would
+                // stop the silence check too: past the deadline the tunnel
+                // is dead.
+                let writer = self.writer
+                do { try await LiveBrowserFeed.within(Self.pingDeadline) { try await writer.send(opcode: 0x9, payload: Data()) } }
+                catch BrowserError.timeout { await self.base.close(); return }
+                catch {}
             }
         }
     }
