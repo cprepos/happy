@@ -26,7 +26,8 @@ struct VNCImage: @unchecked Sendable {
 ///
 /// - one finger taps a left click, where it taps (or, as a trackpad, where
 ///   the pointer is);
-/// - a long press or a two-finger tap is a right click;
+/// - a long press or a two-finger tap is a right click, and so is the
+///   next tap after the bar's Right click armed it (`rightClickArmed`);
 /// - two fingers dragging scroll the page under them, and a fling glides on;
 /// - pinching zooms, and one finger pans the zoomed desktop (unzoomed, it
 ///   drags with the left button down: selecting text, moving a slider);
@@ -34,7 +35,9 @@ struct VNCImage: @unchecked Sendable {
 ///   follows it.
 ///
 /// It is the keyboard's first responder too (`UIKeyInput`): what's typed
-/// goes as keys, and the accessory row has the keys a phone lacks.
+/// goes as keys, and the accessory row has the keys a phone lacks. A
+/// hardware keyboard's keys go through `hardwarePressesBegan`, which the
+/// controller calls too while the on-screen keyboard is down.
 @MainActor
 final class LiveBrowserVNCView: UIView, UIGestureRecognizerDelegate {
     /// Where input goes: the connection, while there is one.
@@ -44,6 +47,14 @@ final class LiveBrowserVNCView: UIView, UIGestureRecognizerDelegate {
     var sendText: ((String) -> Void)?
     /// ⌘V on a hardware keyboard: the controller's Paste.
     var onPaste: (() -> Void)?
+    /// A one-finger tap clicked (left, or right while armed).
+    var onTap: (() -> Void)?
+    /// The next tap is a right click, once; any right click disarms it.
+    var rightClickArmed = false
+    /// The armed right click was used (or another right click made it moot).
+    var onRightClickUsed: (() -> Void)?
+    /// It stopped being the first responder.
+    var onResigned: (() -> Void)?
 
     private(set) var viewport = VNCViewport(bounds: .zero, content: CGSize(width: 1920, height: 1200))
     private(set) var pointer = VNCPointer(width: 1920, height: 1200)
@@ -178,19 +189,33 @@ final class LiveBrowserVNCView: UIView, UIGestureRecognizerDelegate {
 
     @objc private func tapped(_ gesture: UITapGestureRecognizer) {
         stopGlide()
-        emit(pointer.click(.left, at: target(gesture.location(in: self))))
+        if rightClickArmed {
+            rightClick(at: gesture.location(in: self))
+        } else {
+            emit(pointer.click(.left, at: target(gesture.location(in: self))))
+        }
+        onTap?()
     }
 
     @objc private func rightTapped(_ gesture: UITapGestureRecognizer) {
         stopGlide()
-        emit(pointer.click(.right, at: target(gesture.location(in: self))))
+        rightClick(at: gesture.location(in: self))
     }
 
     @objc private func pressed(_ gesture: UILongPressGestureRecognizer) {
         guard gesture.state == .began else { return }
         stopGlide()
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-        emit(pointer.click(.right, at: target(gesture.location(in: self))))
+        rightClick(at: gesture.location(in: self))
+    }
+
+    /// A right click where the touch was (as a trackpad, at the pointer);
+    /// an armed right click is spent.
+    private func rightClick(at location: CGPoint) {
+        emit(pointer.click(.right, at: target(location)))
+        guard rightClickArmed else { return }
+        rightClickArmed = false
+        onRightClickUsed?()
     }
 
     @objc private func hovered(_ gesture: UIHoverGestureRecognizer) {
@@ -368,6 +393,12 @@ final class LiveBrowserVNCView: UIView, UIGestureRecognizerDelegate {
 
     override var canBecomeFirstResponder: Bool { showsKeyboard }
 
+    override func resignFirstResponder() -> Bool {
+        let resigned = super.resignFirstResponder()
+        if resigned { onResigned?() }
+        return resigned
+    }
+
     /// The key row over the keyboard (`LiveBrowserVNCKeyRow`).
     var keyRow: UIView?
     override var inputAccessoryView: UIView? { keyRow }
@@ -375,6 +406,23 @@ final class LiveBrowserVNCView: UIView, UIGestureRecognizerDelegate {
     private var hardwareHeld: [UIKeyboardHIDUsage: (keysym: UInt32, modifiers: [UInt32])] = [:]
 
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        let unhandled = hardwarePressesBegan(presses)
+        if !unhandled.isEmpty { super.pressesBegan(unhandled, with: event) }
+    }
+
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        let unhandled = hardwarePressesEnded(presses)
+        if !unhandled.isEmpty { super.pressesEnded(unhandled, with: event) }
+    }
+
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        hardwarePressesCancelled(presses)
+        super.pressesCancelled(presses, with: event)
+    }
+
+    /// Hardware keys down, sent as keys; answers the presses it didn't
+    /// take (modifiers alone, keys with no keysym), for the next responder.
+    func hardwarePressesBegan(_ presses: Set<UIPress>) -> Set<UIPress> {
         var unhandled = Set<UIPress>()
         for press in presses {
             guard let key = press.key, let mapped = Self.keysym(key) else { unhandled.insert(press); continue }
@@ -383,21 +431,20 @@ final class LiveBrowserVNCView: UIView, UIGestureRecognizerDelegate {
             sendKey?(mapped.keysym, modifiers)
             hardwareHeld[key.keyCode] = (mapped.keysym, modifiers)
         }
-        if !unhandled.isEmpty { super.pressesBegan(unhandled, with: event) }
+        return unhandled
     }
 
-    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+    func hardwarePressesEnded(_ presses: Set<UIPress>) -> Set<UIPress> {
         var unhandled = Set<UIPress>()
         for press in presses {
             guard let key = press.key, Self.keysym(key) != nil else { unhandled.insert(press); continue }
             hardwareHeld[key.keyCode] = nil
         }
-        if !unhandled.isEmpty { super.pressesEnded(unhandled, with: event) }
+        return unhandled
     }
 
-    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+    func hardwarePressesCancelled(_ presses: Set<UIPress>) {
         for press in presses { if let key = press.key { hardwareHeld[key.keyCode] = nil } }
-        super.pressesCancelled(presses, with: event)
     }
 
     /// A hardware key's keysym: the keys with names by their HID usage,

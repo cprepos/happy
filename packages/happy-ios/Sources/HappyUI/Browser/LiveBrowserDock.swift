@@ -674,6 +674,11 @@ final class LiveBrowserDock: NSObject {
             }
             viewer.onGiveUp = { [weak self] in self?.dropNoVNC() }
             viewer.onUseWebViewer = { [weak self] in self?.switchViewer(native: false) }
+            // Just after a tap: did the click put the page's focus in a field?
+            viewer.readFocus = { [weak self] in
+                guard let feed = self?.feed, let state = try? await feed.readState() else { return nil }
+                return state.editableFocused
+            }
             return LiveBrowserFullScreenItems(dock: self, viewer: viewer)
         }
         let page = try await BrowserPage.workspace(client: place.client, url: place.url, workspaceID: place.workspaceID)
@@ -1174,6 +1179,7 @@ final class LiveBrowserFullScreenItems: UIViewController {
         control.isEnabled = state.map { !$0.ended } ?? false
         endItem.isEnabled = state.map { !$0.ended } ?? false
         sleepItem.isEnabled = state.map { !$0.ended && !$0.asleep } ?? false
+        viewer?.pageFocusChanged(held ? state?.editableFocused : nil)
         if isNoVNC, !address.isEditing, navigating == 0, let url = state?.url, !url.isEmpty { address.text = url }
         navigationItem.subtitle = state.flatMap { $0.asleep ? Strings.LiveBrowser.asleep : $0.starting ? Strings.LiveBrowser.startingBrowser : nil }
             ?? state?.lastAction.map(Strings.LiveBrowser.lastAction)

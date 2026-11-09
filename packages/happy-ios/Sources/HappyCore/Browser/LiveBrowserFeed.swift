@@ -409,6 +409,25 @@ public final class LiveBrowserFeed {
         }
     }
 
+    /// One read of the state now, beside the poll: the native viewer asks,
+    /// just after a tap, whether the page's focus went into a field. It
+    /// shows as the poll's answer would, unless control changed hands
+    /// while it was asked.
+    public func readState() async throws -> LiveBrowserState {
+        let answers = controlAnswers
+        let data: Data
+        if let transport {
+            data = try await readMoving({ $0.stateURL }, accept: "application/json", through: transport)
+        } else {
+            guard let transport = makeTransport() else { throw BrowserError.unavailable }
+            defer { Task { await transport.stop() } }
+            data = try await readMoving({ $0.stateURL }, accept: "application/json", through: transport)
+        }
+        let state = try JSONDecoder().decode(LiveBrowserState.self, from: data)
+        if answers == controlAnswers, case .live = phase { phase = .live(state) }
+        return state
+    }
+
     // MARK: Frames
 
     /// The frame loop: while the state loop runs and something shows the

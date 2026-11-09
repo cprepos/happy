@@ -358,10 +358,15 @@ public struct LiveBrowserState: Equatable, Sendable, Decodable {
     /// The action the agent waits on the person's approval for, if any.
     /// Never for a done link. Nil from a bridge before it.
     public var approval: Approval?
+    /// While the person holds the browser: the page's focus is in a field
+    /// that takes typing (a text input, a textarea, an editable element),
+    /// so the native viewer brings up the keyboard. Nil when not held, when
+    /// the bridge couldn't tell, and from a bridge before it.
+    public var editableFocused: Bool?
 
-    public init(status: Status, reason: String? = nil, url: String? = nil, title: String? = nil, lastAction: Action? = nil, pod: Pod? = nil, live: Bool? = nil, liveReason: String? = nil, approval: Approval? = nil) {
+    public init(status: Status, reason: String? = nil, url: String? = nil, title: String? = nil, lastAction: Action? = nil, pod: Pod? = nil, live: Bool? = nil, liveReason: String? = nil, approval: Approval? = nil, editableFocused: Bool? = nil) {
         self.status = status; self.reason = reason; self.url = url; self.title = title; self.lastAction = lastAction; self.pod = pod
-        self.live = live; self.liveReason = liveReason; self.approval = approval
+        self.live = live; self.liveReason = liveReason; self.approval = approval; self.editableFocused = editableFocused
     }
 
     /// The approval the person is asked for now: none once the link is done.
@@ -388,7 +393,7 @@ public struct LiveBrowserState: Equatable, Sendable, Decodable {
     /// The browser's session closed; nothing more will come.
     public var ended: Bool { status == .done }
 
-    private enum CodingKeys: String, CodingKey { case status, reason, url, title, lastAction = "last_action", pod, live, liveReason = "live_reason", approval }
+    private enum CodingKeys: String, CodingKey { case status, reason, url, title, lastAction = "last_action", pod, live, liveReason = "live_reason", approval, editableFocused = "editable_focused" }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -404,6 +409,7 @@ public struct LiveBrowserState: Equatable, Sendable, Decodable {
         liveReason = try? container.decodeIfPresent(String.self, forKey: .liveReason)
         // A malformed approval is no approval: never a reason to drop the state.
         approval = (try? container.decodeIfPresent(Approval.self, forKey: .approval)) ?? nil
+        editableFocused = (try? container.decodeIfPresent(Bool.self, forKey: .editableFocused)) ?? nil
     }
 }
 

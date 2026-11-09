@@ -143,6 +143,11 @@ extension Strings {
             static let webViewer = "Use the web viewer (noVNC)"
             static let nativeViewer = "Use the native viewer"
             static let rightClick = "Right click"
+            static let rightClickArmed = "Right click: tap where to right-click"
+            static let rightClickCancelled = "Right click cancelled"
+            /// The armed Right click button's accessibility value.
+            static let rightClickOn = "On, the next tap right-clicks"
+            static let rightClickOff = "Off"
             static let escape = "Esc"
             static let tab = "Tab"
             static let control = "Ctrl"

@@ -1,4 +1,5 @@
 #if canImport(UIKit)
+import GameController
 import HappyCore
 import HappyLayout
 import UIKit
@@ -17,7 +18,13 @@ enum LiveBrowserViewerSetting {
 /// The native viewer of a held live browser: its VNC socket, through the
 /// workspace proxy, drawn by `LiveBrowserVNCView`, with a bar for the
 /// keyboard, paste and copy, the trackpad and a right click; More
-/// fits the zoomed page back to the screen. A dropped
+/// fits the zoomed page back to the screen.
+///
+/// Typing needs no Keyboard button: it is the first responder while it
+/// shows, so a hardware keyboard's keys always reach the browser, and the
+/// on-screen keyboard comes up by itself when a tap puts the page's focus
+/// in a field (the bridge's `editable_focused`, asked for just after the
+/// tap) and goes again when the focus leaves it. A dropped
 /// connection is tried again while the link is held; after a few tries in
 /// a row with nothing it gives up (`onGiveUp`).
 @MainActor
@@ -32,6 +39,9 @@ final class LiveBrowserVNCController: UIViewController {
     var onGiveUp: (() -> Void)?
     /// The bar's More menu: switch to the web viewer.
     var onUseWebViewer: (() -> Void)?
+    /// Reads the state now: whether the page's focus is in a field, nil
+    /// when the bridge doesn't say (one before `editable_focused`).
+    var readFocus: (@MainActor () async -> Bool?)?
 
     let screen = LiveBrowserVNCView()
     private let bar = UIToolbar()
@@ -56,6 +66,15 @@ final class LiveBrowserVNCController: UIViewController {
     private let trackpadItem = UIBarButtonItem()
     private let rightClickItem = UIBarButtonItem()
     private let moreItem = UIBarButtonItem()
+
+    /// The page's focus as the state last said it, while held.
+    private var pageFocus: Bool?
+    /// The on-screen keyboard is up because the focus went into a field:
+    /// it goes again when the focus leaves. One opened with the Keyboard
+    /// button stays until it is hidden.
+    private var keyboardFollowsFocus = false
+    /// The reads after a tap.
+    private var focusCheck: Task<Void, Never>?
 
     init(target: LiveBrowserVNCTarget, connect: @escaping Connect) {
         self.target = target
@@ -131,6 +150,9 @@ final class LiveBrowserVNCController: UIViewController {
         screen.sendText = { [weak self] text in self?.client?.type(text) }
         screen.onPaste = { [weak self] in self?.paste() }
         screen.onArmedChange = { [weak self] in self?.keyRow.update() }
+        screen.onTap = { [weak self] in self?.screenTapped() }
+        screen.onRightClickUsed = { [weak self] in self?.showRightClick(armed: false) }
+        screen.onResigned = { [weak self] in self?.keyboardWentDown() }
 
         configureBar()
         show(status: Strings.LiveBrowser.Viewer.connecting, busy: true)
@@ -171,8 +193,9 @@ final class LiveBrowserVNCController: UIViewController {
         rightClickItem.image = UIImage(systemName: "cursorarrow.click.2")
         rightClickItem.accessibilityLabel = S.rightClick
         rightClickItem.accessibilityIdentifier = "live-browser-vnc-right-click"
+        rightClickItem.accessibilityValue = S.rightClickOff
         rightClickItem.primaryAction = UIAction(title: S.rightClick, image: UIImage(systemName: "cursorarrow.click.2")) { [weak self] _ in
-            self?.rightClick()
+            self?.toggleRightClick()
         }
 
         moreItem.image = UIImage(systemName: "ellipsis")
@@ -191,19 +214,120 @@ final class LiveBrowserVNCController: UIViewController {
         bar.accessibilityIdentifier = "live-browser-vnc-bar"
     }
 
-    /// A right click where the pointer is.
-    private func rightClick() {
-        var pointer = screen.pointer
-        client?.pointer(pointer.click(.right))
+    /// Right click arms the next tap: it right-clicks where it lands (as
+    /// a trackpad, at the pointer), once. Tapped again, it is called off.
+    private func toggleRightClick() {
+        let armed = !screen.rightClickArmed
+        screen.rightClickArmed = armed
+        showRightClick(armed: armed)
+        say(armed ? Strings.LiveBrowser.Viewer.rightClickArmed : Strings.LiveBrowser.Viewer.rightClickCancelled)
+    }
+
+    private func showRightClick(armed: Bool) {
+        rightClickItem.isSelected = armed
+        rightClickItem.tintColor = armed ? .systemOrange : nil
+        rightClickItem.image = UIImage(systemName: armed ? "cursorarrow.click.badge.clock" : "cursorarrow.click.2")
+        rightClickItem.accessibilityValue = armed ? Strings.LiveBrowser.Viewer.rightClickOn : Strings.LiveBrowser.Viewer.rightClickOff
     }
 
     private func toggleKeyboard() {
+        keyboardFollowsFocus = false
         if screen.isFirstResponder {
             screen.showsKeyboard = false
         } else {
-            screen.showsKeyboard = true
-            screen.keyRow = keyRow
-            screen.becomeFirstResponder()
+            showKeyboard()
+        }
+    }
+
+    private func showKeyboard() {
+        screen.showsKeyboard = true
+        screen.keyRow = keyRow
+        screen.becomeFirstResponder()
+    }
+
+    // MARK: Typing without the Keyboard button
+
+    // The first responder while the on-screen keyboard is down: a hardware
+    // keyboard's keys come here and go to the browser as the screen sends
+    // them. Not a text input, so no keyboard comes up for it.
+    override var canBecomeFirstResponder: Bool { !stopped }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        claimKeys()
+    }
+
+    /// Takes the keys, unless the screen has them (its keyboard is up).
+    private func claimKeys() {
+        guard !stopped, !screen.isFirstResponder, !isFirstResponder, view.window != nil else { return }
+        becomeFirstResponder()
+    }
+
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        let unhandled = screen.hardwarePressesBegan(presses)
+        if !unhandled.isEmpty { super.pressesBegan(unhandled, with: event) }
+    }
+
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        let unhandled = screen.hardwarePressesEnded(presses)
+        if !unhandled.isEmpty { super.pressesEnded(unhandled, with: event) }
+    }
+
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        screen.hardwarePressesCancelled(presses)
+        super.pressesCancelled(presses, with: event)
+    }
+
+    /// The screen let the keyboard go. Hidden here (the button, the key
+    /// row's hide, the focus leaving a field), the keys come back to the
+    /// controller; taken by another field (the address), they stay there
+    /// until the screen is tapped.
+    private func keyboardWentDown() {
+        guard !screen.showsKeyboard else { return }
+        keyboardFollowsFocus = false
+        // After the resign has finished.
+        Task { [weak self] in self?.claimKeys() }
+    }
+
+    /// A tap clicked: the keys come back here, and the state is asked a
+    /// moment later whether the click put the focus in a field (and again,
+    /// a little later, for a page slow to move it).
+    private func screenTapped() {
+        claimKeys()
+        guard readFocus != nil else { return }
+        focusCheck?.cancel()
+        focusCheck = Task { [weak self] in
+            for delay in [250, 700] {
+                try? await Task.sleep(for: .milliseconds(delay))
+                guard !Task.isCancelled, let read = self?.readFocus else { return }
+                guard let editable = await read() else { return }
+                guard !Task.isCancelled, let self else { return }
+                self.pageFocus = editable
+                self.follow(editable)
+                if editable { return }
+            }
+        }
+    }
+
+    /// The state's `editable_focused` (nil when not held, or from a bridge
+    /// without it): a change shows or hides the keyboard.
+    func pageFocusChanged(_ editable: Bool?) {
+        guard let editable else { pageFocus = nil; return }
+        guard editable != pageFocus else { return }
+        pageFocus = editable
+        follow(editable)
+    }
+
+    /// The keyboard up for a field, down once the focus has left the field
+    /// it came up for. Not with a hardware keyboard: it types already.
+    private func follow(_ editable: Bool) {
+        guard connected, !stopped else { return }
+        if editable {
+            guard !screen.isFirstResponder, GCKeyboard.coalesced == nil else { return }
+            showKeyboard()
+            keyboardFollowsFocus = screen.isFirstResponder
+        } else if keyboardFollowsFocus, screen.isFirstResponder {
+            screen.showsKeyboard = false
         }
     }
 
@@ -268,6 +392,9 @@ final class LiveBrowserVNCController: UIViewController {
     /// The connection goes, for good: released, or the page left.
     func stop() {
         stopped = true
+        focusCheck?.cancel()
+        focusCheck = nil
+        if isFirstResponder { resignFirstResponder() }
         screen.stopGlide()
         session?.cancel()
         session = nil
