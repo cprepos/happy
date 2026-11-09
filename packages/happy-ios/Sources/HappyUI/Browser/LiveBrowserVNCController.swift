@@ -16,7 +16,8 @@ enum LiveBrowserViewerSetting {
 
 /// The native viewer of a held live browser: its VNC socket, through the
 /// workspace proxy, drawn by `LiveBrowserVNCView`, with a bar for the
-/// keyboard, paste and copy, the trackpad and the zoom. A dropped
+/// keyboard, paste and copy, the trackpad and a right click; More
+/// fits the zoomed page back to the screen. A dropped
 /// connection is tried again while the link is held; after a few tries in
 /// a row with nothing it gives up (`onGiveUp`).
 @MainActor
@@ -53,7 +54,7 @@ final class LiveBrowserVNCController: UIViewController {
     private let pasteItem = UIBarButtonItem()
     private let copyItem = UIBarButtonItem()
     private let trackpadItem = UIBarButtonItem()
-    private let fitItem = UIBarButtonItem()
+    private let rightClickItem = UIBarButtonItem()
     private let moreItem = UIBarButtonItem()
 
     init(target: LiveBrowserVNCTarget, connect: @escaping Connect) {
@@ -167,28 +168,33 @@ final class LiveBrowserVNCController: UIViewController {
             self?.toggleTrackpad()
         }
 
-        fitItem.image = UIImage(systemName: "arrow.down.right.and.arrow.up.left")
-        fitItem.accessibilityLabel = S.fit
-        fitItem.accessibilityIdentifier = "live-browser-vnc-fit"
-        fitItem.primaryAction = UIAction(title: S.fit, image: UIImage(systemName: "arrow.down.right.and.arrow.up.left")) { [weak self] _ in
-            self?.screen.fit()
+        rightClickItem.image = UIImage(systemName: "cursorarrow.click.2")
+        rightClickItem.accessibilityLabel = S.rightClick
+        rightClickItem.accessibilityIdentifier = "live-browser-vnc-right-click"
+        rightClickItem.primaryAction = UIAction(title: S.rightClick, image: UIImage(systemName: "cursorarrow.click.2")) { [weak self] _ in
+            self?.rightClick()
         }
 
         moreItem.image = UIImage(systemName: "ellipsis")
         moreItem.accessibilityLabel = S.more
         moreItem.accessibilityIdentifier = "live-browser-vnc-more"
         moreItem.menu = UIMenu(children: [
-            UIAction(title: S.rightClick, image: UIImage(systemName: "cursorarrow.click.2")) { [weak self] _ in
-                guard let self else { return }
-                var pointer = self.screen.pointer
-                self.client?.pointer(pointer.click(.right))
+            // Zoomed in, back out to the whole page.
+            UIAction(title: S.fit, subtitle: S.fitDetail, image: UIImage(systemName: "arrow.down.right.and.arrow.up.left")) { [weak self] _ in
+                self?.screen.fit()
             },
             UIAction(title: S.webViewer, image: UIImage(systemName: "globe")) { [weak self] _ in self?.onUseWebViewer?() },
         ])
 
         let space = { UIBarButtonItem(systemItem: .flexibleSpace) }
-        bar.items = [keyboardItem, space(), pasteItem, space(), copyItem, space(), trackpadItem, space(), fitItem, space(), moreItem]
+        bar.items = [keyboardItem, space(), pasteItem, space(), copyItem, space(), trackpadItem, space(), rightClickItem, space(), moreItem]
         bar.accessibilityIdentifier = "live-browser-vnc-bar"
+    }
+
+    /// A right click where the pointer is.
+    private func rightClick() {
+        var pointer = screen.pointer
+        client?.pointer(pointer.click(.right))
     }
 
     private func toggleKeyboard() {
