@@ -334,6 +334,23 @@ public final class AgentConnections {
         job?.cancel(); await job?.value
     }
 
+    /// Pull to refresh: asks `id`'s computer again now, over a new
+    /// transport, instead of when the retry backoff says. A revoked
+    /// computer is left alone, and so is every computer while the app is
+    /// in the background (`.paused`).
+    public func restartConnection(_ id: String) async {
+        func eligible() -> Bool {
+            guard foreground, let account = accounts.first(where: { $0.id == id }) else { return false }
+            return !account.revoked && account.status != .revoked && account.status != .paused
+        }
+        guard eligible() else { return }
+        await stop(id)
+        // The app may have gone to the background, or the computer been
+        // removed or revoked, while the old job wound down.
+        guard eligible(), jobs[id] == nil else { return }
+        startConnections()
+    }
+
     private func startConnections() {
         guard foreground else { return }
         for account in accounts where jobs[account.id] == nil && !account.revoked {

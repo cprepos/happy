@@ -556,6 +556,29 @@ public actor Conversation {
         reload()
     }
 
+    /// Pull to refresh: the conversation read whole again now, whether or
+    /// not the last read failed, and unsent messages offered again, as
+    /// after the stream's resync. One whose start failed is started again.
+    /// Returns once that read has ended (a read retried after a cancel
+    /// underneath it included). Nothing for new work, or after `stop`.
+    public func refresh() async {
+        guard !stopped, !starting, creation == nil else { return }
+        guard following != nil else {
+            if snapshot.error != nil { snapshot.error = nil; publish() }
+            await start()
+            return
+        }
+        // Still restoring what was kept: its first read is on its way.
+        guard followed else { return }
+        if snapshot.error != nil { snapshot.error = nil; publish() }
+        reload()
+        for send in outgoing where !send.accepted && send.failure == nil { deliver(send.id) }
+        while let current = reading {
+            await current.value
+            if reading == current { break }
+        }
+    }
+
     /// Whether a start or a read is underway, for a test.
     var loadInFlight: Bool { starting || reading != nil }
 
