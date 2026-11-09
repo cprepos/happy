@@ -261,6 +261,37 @@ final class TailcatClientsTests: XCTestCase {
         XCTAssertEqual(Set(asked.all.map(\.key)).count, 6)
     }
 
+    /// The event stream's deadline covers waiting for its client: a connect
+    /// that never finishes gives up at the deadline, the connect is let go,
+    /// and the next stream connects afresh.
+    func testAStreamWhoseLeaseHangsTimesOutAndConnectsAfresh() async throws {
+        final class Hung: @unchecked Sendable {
+            private let lock = NSLock()
+            private var started = 0, cancelled = 0
+            var starts: Int { lock.withLock { started } }
+            var cancels: Int { lock.withLock { cancelled } }
+            func connect() async {
+                lock.withLock { started += 1 }
+                do { try await Task.sleep(for: .seconds(3600)) } catch { lock.withLock { cancelled += 1 } }
+            }
+        }
+        let hung = Hung()
+        let transport = TailcatHTTPTransport(port: 24781) { _, _ in
+            await hung.connect()
+            throw CancellationError()
+        }
+        let started = ContinuousClock.now
+        do {
+            _ = try await transport.stream(path: "/v0/events/stream", credential: "token", headers: [:], within: .milliseconds(200))
+            XCTFail("a stream with no client opened")
+        } catch PairingError.unavailable {}
+        XCTAssertLessThan(ContinuousClock.now - started, .seconds(5))
+        try await waitFor { hung.cancels == 1 }
+        _ = try? await transport.stream(path: "/v0/events/stream", credential: "token", headers: [:], within: .milliseconds(100))
+        XCTAssertEqual(hung.starts, 2)
+        await transport.close()
+    }
+
     // MARK: Call sites
 
     /// What each request was sent as.

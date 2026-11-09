@@ -9,12 +9,75 @@ extension TailcatHTTPTransport {
             && headers.allSatisfy { !$0.key.contains("\r") && !$0.key.contains("\n") && !$0.key.contains(":") && !$0.value.contains("\r") && !$0.value.contains("\n") }
     }
 
-    /// Over the `.realtime` client. The head must arrive within 35 seconds;
-    /// the body then has no deadline and runs until the server ends it or the
+    /// How long `stream` may take to have its head: the client's lease, the
+    /// flow, the request's write and the response head, all together.
+    static let streamHeadDeadline: Duration = .seconds(35)
+
+    /// Over the `.realtime` client. The head must arrive within
+    /// `streamHeadDeadline`, counted from the call, so a client that never
+    /// comes up or a flow that never opens gives up too; then the
+    /// `.realtime` clients are let go, so the next try connects afresh.
+    /// The body has no deadline and runs until the server ends it or the
     /// consumer stops iterating.
     public func stream(path: String, credential: String, headers: [String: String]) async throws -> HTTP1Stream {
+        try await stream(path: path, credential: credential, headers: headers, within: Self.streamHeadDeadline)
+    }
+
+    /// `stream` with its own head deadline (tests).
+    func stream(path: String, credential: String, headers: [String: String], within limit: Duration) async throws -> HTTP1Stream {
         guard Self.safe(path: path, credential: credential, headers: headers) else { throw PairingError.invalidResponse }
-        let lease = try await lease(.realtime)
+        let deadline = ContinuousClock.now + limit
+        // Raced in a task of its own rather than a task group: a group
+        // waits for every child, and a lease or flow that ignores
+        // cancellation would hold the caller past the deadline.
+        let opening = Task { try await self.openStream(path: path, credential: credential, headers: headers, until: deadline) }
+        let opened: OpenedStream
+        switch await TailcatClients<Tunnel>.wait(for: opening, until: deadline) {
+        case .done(.success(let value)): opened = value
+        case .done(.failure(let error)): throw error
+        case .left(let error):
+            opening.cancel()
+            // One that opens anyway has nobody to read it.
+            Task { if let late = try? await opening.value { await late.stream.close() } }
+            if !(error is CancellationError) { await reset(.realtime) }
+            throw error
+        }
+        let stream = opened.stream, rest = opened.rest
+        let chunked = opened.head.headers["transfer-encoding"]?.lowercased() == "chunked"
+        let body = AsyncThrowingStream<Data, Error> { continuation in
+            let reader = Task {
+                var decoder = HTTP1BodyDecoder(chunked: chunked)
+                do {
+                    var bytes = rest
+                    while true {
+                        let decoded = try decoder.append(bytes)
+                        if !decoded.isEmpty { continuation.yield(decoded) }
+                        if decoder.finished { break }
+                        try Task.checkCancellation()
+                        bytes = try await stream.read(maximumBytes: 65536)
+                        if bytes.isEmpty { break }
+                    }
+                    continuation.finish()
+                } catch { continuation.finish(throwing: error) }
+                await stream.close()
+            }
+            continuation.onTermination = { _ in reader.cancel(); Task { await stream.close() } }
+        }
+        return HTTP1Stream(status: opened.head.status, headers: opened.head.headers, body: body)
+    }
+
+    /// A stream past its response head: the head, the body bytes that came
+    /// with it, and the flow the rest of the body comes on.
+    struct OpenedStream: Sendable {
+        let head: HTTP1Head
+        let rest: Data
+        let stream: any BrowserStream
+    }
+
+    /// Leases, opens the flow, writes the request and reads the head.
+    /// Cancelling it closes the flow, so a read waiting on it ends.
+    private func openStream(path: String, credential: String, headers: [String: String], until deadline: ContinuousClock.Instant) async throws -> OpenedStream {
+        let lease = try await lease(.realtime, until: deadline)
         let stream: any BrowserStream
         do { stream = try await flow(lease, .realtime) } catch {
             lease?.release()
@@ -22,46 +85,21 @@ extension TailcatHTTPTransport {
             throw error
         }
         do {
-            var head = "GET \(path) HTTP/1.1\r\nHost: \(authority)\r\nAuthorization: Bearer \(credential)\r\nConnection: close\r\nAccept: text/event-stream\r\n"
-            for (name, value) in headers { head += "\(name): \(value)\r\n" }
-            try await stream.write(Data((head + "\r\n").utf8))
-            let (responseHead, rest) = try await withThrowingTaskGroup(of: (HTTP1Head, Data).self) { group in
-                group.addTask {
-                    var buffer = Data()
-                    while true {
-                        try Task.checkCancellation()
-                        let bytes = try await stream.read(maximumBytes: 65536)
-                        buffer.append(bytes)
-                        if let parsed = try HTTP1Head.parse(buffer) { return parsed }
-                        if bytes.isEmpty { throw PairingError.unavailable }
+            return try await withTaskCancellationHandler {
+                var head = "GET \(path) HTTP/1.1\r\nHost: \(authority)\r\nAuthorization: Bearer \(credential)\r\nConnection: close\r\nAccept: text/event-stream\r\n"
+                for (name, value) in headers { head += "\(name): \(value)\r\n" }
+                try await stream.write(Data((head + "\r\n").utf8))
+                var buffer = Data()
+                while true {
+                    try Task.checkCancellation()
+                    let bytes = try await stream.read(maximumBytes: 65536)
+                    buffer.append(bytes)
+                    if let parsed = try HTTP1Head.parse(buffer) {
+                        return OpenedStream(head: parsed.0, rest: parsed.1, stream: stream)
                     }
+                    if bytes.isEmpty { throw PairingError.unavailable }
                 }
-                group.addTask { try await Task.sleep(for: .seconds(35)); throw PairingError.unavailable }
-                defer { group.cancelAll() }
-                guard let value = try await group.next() else { throw PairingError.unavailable }
-                return value
-            }
-            let chunked = responseHead.headers["transfer-encoding"]?.lowercased() == "chunked"
-            let body = AsyncThrowingStream<Data, Error> { continuation in
-                let reader = Task {
-                    var decoder = HTTP1BodyDecoder(chunked: chunked)
-                    do {
-                        var bytes = rest
-                        while true {
-                            let decoded = try decoder.append(bytes)
-                            if !decoded.isEmpty { continuation.yield(decoded) }
-                            if decoder.finished { break }
-                            try Task.checkCancellation()
-                            bytes = try await stream.read(maximumBytes: 65536)
-                            if bytes.isEmpty { break }
-                        }
-                        continuation.finish()
-                    } catch { continuation.finish(throwing: error) }
-                    await stream.close()
-                }
-                continuation.onTermination = { _ in reader.cancel(); Task { await stream.close() } }
-            }
-            return HTTP1Stream(status: responseHead.status, headers: responseHead.headers, body: body)
+            } onCancel: { Task { await stream.close() } }
         } catch {
             await stream.close()
             // No answer on a stream the tunnel opened: the far side may
