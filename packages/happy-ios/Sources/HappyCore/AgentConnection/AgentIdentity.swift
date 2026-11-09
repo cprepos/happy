@@ -2,8 +2,14 @@ import Foundation
 import HappyWire
 
 enum AgentIdentity {
+    /// How long one identity refresh (health, config, and the avatar when
+    /// it is fetched inline) may take before it counts as a failure.
+    static let deadline: Duration = .seconds(40)
+
     /// A serialized config+image read. ETag, not ThumbHash, identifies bytes.
-    static func refresh(_ account: AgentConnection, transport: any AgentTransport, token: String) async throws -> AgentConnection {
+    /// With `avatar` false the picture is left to `avatar(etag:…)`, so a
+    /// slow picture never holds the connection's status back.
+    static func refresh(_ account: AgentConnection, transport: any AgentTransport, token: String, avatar fetchAvatar: Bool = true) async throws -> AgentConnection {
         func check(_ response: HTTP1Response) throws {
             if response.status == 401 || response.status == 403 { throw PairingError.revoked }
             guard response.status == 200 else { throw PairingError.unavailable }
@@ -31,20 +37,56 @@ enum AgentIdentity {
             updated.name = AgentName.friendly(node.name)
             updated.thumbhash = node.avatar?.thumbhash
             if node.avatar == nil { updated.avatar = nil; updated.avatarETag = nil }
-            else {
-                let image = try await transport.request("/v0/node/avatar", credential: token, headers: account.avatarETag.map { ["If-None-Match": $0] } ?? [:], category: .file)
-                if image.status == 401 || image.status == 403 { throw PairingError.revoked }
-                switch image.status {
-                case 200:
-                    guard image.body.count <= 8 * 1024 * 1024, image.headers["content-type"]?.lowercased().hasPrefix("image/") == true else { throw PairingError.invalidResponse }
-                    updated.avatar = image.body; updated.avatarETag = image.headers["etag"]
-                case 304: break
-                case 404: updated.avatar = nil; updated.avatarETag = nil
-                default: throw PairingError.unavailable
-                }
+            else if fetchAvatar {
+                apply(try await avatar(etag: account.avatarETag, transport: transport, token: token), to: &updated)
             }
         }
         updated.status = .connected
         return updated
+    }
+
+    /// `refresh` without the picture, given up after `deadline` as
+    /// `PairingError.unavailable` even when the transport ignores
+    /// cancellation: the identity loop's step, so a request stuck on a dead
+    /// tunnel turns into a retry instead of "connecting…" for good.
+    static func refresh(_ account: AgentConnection, transport: any AgentTransport, token: String, within limit: Duration) async throws -> AgentConnection {
+        do {
+            return try await LiveBrowserFeed.within(limit) {
+                try await refresh(account, transport: transport, token: token, avatar: false)
+            }
+        } catch BrowserError.timeout {
+            throw PairingError.unavailable
+        }
+    }
+
+    /// What `/v0/node/avatar` answered.
+    enum Avatar: Equatable, Sendable {
+        case image(Data, etag: String?)
+        /// 304: the bytes held are current.
+        case unchanged
+        /// 404: the computer has no picture after all.
+        case missing
+    }
+
+    /// The computer's picture, conditional on `etag`, over a `.file` client.
+    static func avatar(etag: String?, transport: any AgentTransport, token: String) async throws -> Avatar {
+        let image = try await transport.request("/v0/node/avatar", credential: token, headers: etag.map { ["If-None-Match": $0] } ?? [:], category: .file)
+        if image.status == 401 || image.status == 403 { throw PairingError.revoked }
+        switch image.status {
+        case 200:
+            guard image.body.count <= 8 * 1024 * 1024, image.headers["content-type"]?.lowercased().hasPrefix("image/") == true else { throw PairingError.invalidResponse }
+            return .image(image.body, etag: image.headers["etag"])
+        case 304: return .unchanged
+        case 404: return .missing
+        default: throw PairingError.unavailable
+        }
+    }
+
+    static func apply(_ answer: Avatar, to account: inout AgentConnection) {
+        switch answer {
+        case .image(let data, let etag): account.avatar = data; account.avatarETag = etag
+        case .unchanged: break
+        case .missing: account.avatar = nil; account.avatarETag = nil
+        }
     }
 }

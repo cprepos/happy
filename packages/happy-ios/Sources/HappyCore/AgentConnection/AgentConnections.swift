@@ -343,26 +343,35 @@ public final class AgentConnections {
                 var current = account
                 var attempt = 0
                 var issue: (any Error)?
+                // The picture comes after `.connected`, never before it.
+                var picture: AvatarFetch?
+                defer { picture?.cancel() }
                 while !Task.isCancelled {
                     let transport = AgentEndpointTransport(endpoint: endpoint, metrics: meter, make: make)
                     do {
                         current.status = attempt == 0 ? .connecting : .retrying
                         await self?.apply(current, generation: generation)
                         while !Task.isCancelled {
-                            current = try await AgentIdentity.refresh(current, transport: transport, token: credential.deviceToken)
+                            current = try await AgentIdentity.refresh(current, transport: transport, token: credential.deviceToken, within: AgentIdentity.deadline)
                             try Task.checkCancellation()
                             await self?.apply(current, generation: generation)
                             attempt = 0
+                            if let thumbhash = current.thumbhash, !(picture?.running ?? false), let owner = self {
+                                picture = AvatarFetch(id: account.id, thumbhash: thumbhash, transport: transport, token: credential.deviceToken, generation: generation, owner: owner)
+                            }
                             try await Task.sleep(for: interval)
                         }
                     } catch PairingError.revoked {
                         current.revoked = true; current.status = .revoked
                         if !Task.isCancelled { await self?.apply(current, generation: generation, issue: PairingError.revoked) }
+                        picture?.cancel(); picture = nil
                         await transport.close()
                         return
                     } catch {
                         issue = error
                     }
+                    // The picture goes with the transport it was asked on.
+                    picture?.cancel(); picture = nil
                     await transport.close()
                     if Task.isCancelled { return }
                     current.status = .retrying
@@ -384,6 +393,10 @@ public final class AgentConnections {
                                                  down: account.status == .retrying || account.status == .revoked,
                                                  problem: issue.flatMap(Problem.init)))
         let previous = accounts[index]
+        var account = account
+        // While the computer has a picture, its bytes are the avatar
+        // fetch's to change (`applyAvatar`), never the loop's older copy.
+        if account.thumbhash != nil { account.avatar = previous.avatar; account.avatarETag = previous.avatarETag }
         guard previous != account else { return }
         accounts[index] = account
         onChange?()
@@ -392,4 +405,52 @@ public final class AgentConnections {
             try? await storage.update(account)
         }
     }
+
+    /// The avatar fetch's answer, kept if the computer still shows the
+    /// picture it was asked for.
+    fileprivate func applyAvatar(_ answer: AgentIdentity.Avatar, id: String, thumbhash: String, generation: UInt64) async {
+        guard !Task.isCancelled, self.generation == generation,
+              let index = accounts.firstIndex(where: { $0.id == id }), accounts[index].thumbhash == thumbhash else { return }
+        var updated = accounts[index]
+        AgentIdentity.apply(answer, to: &updated)
+        guard updated != accounts[index] else { return }
+        accounts[index] = updated
+        onChange?()
+        try? await storage.update(updated)
+    }
+
+    fileprivate func avatarETag(_ id: String) -> String? { accounts.first { $0.id == id }?.avatarETag }
+}
+
+/// One fire-and-forget read of a computer's picture, after its identity
+/// loop has said `.connected`. It runs over the loop's transport on a
+/// `.file` client, so a picture that is slow to come (its slot has a
+/// 15 minute deadline) never holds the status back; the loop starts
+/// another only once this one is over.
+private final class AvatarFetch: @unchecked Sendable {
+    /// How long one read may take before the next refresh may try again.
+    static let limit: Duration = .seconds(120)
+
+    private let lock = NSLock()
+    private var isRunning = true
+    private var task: Task<Void, Never>?
+
+    var running: Bool { lock.withLock { isRunning } }
+
+    init(id: String, thumbhash: String, transport: any AgentTransport, token: String, generation: UInt64, owner: AgentConnections) {
+        let task = Task { [weak self, weak owner] in
+            defer { self?.finish() }
+            guard !Task.isCancelled, let owner else { return }
+            let etag = await owner.avatarETag(id)
+            guard !Task.isCancelled,
+                  let answer = try? await LiveBrowserFeed.within(AvatarFetch.limit, { try await AgentIdentity.avatar(etag: etag, transport: transport, token: token) }),
+                  !Task.isCancelled else { return }
+            await owner.applyAvatar(answer, id: id, thumbhash: thumbhash, generation: generation)
+        }
+        lock.withLock { self.task = task }
+    }
+
+    private func finish() { lock.withLock { isRunning = false } }
+
+    func cancel() { lock.withLock { task }?.cancel() }
 }
