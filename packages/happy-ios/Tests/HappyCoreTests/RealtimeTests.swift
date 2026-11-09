@@ -282,6 +282,111 @@ final class AccountSessionTests: XCTestCase {
 
         await session.stop()
     }
+
+    /// One account for the server and the phone, so the phone can open
+    /// the sessions the server lists.
+    private let fixture = ServerFixture()
+
+    private func makeSession(_ transport: HTTPTransport, _ connector: FakeConnector) throws -> AccountSession {
+        try AccountSession(
+            credentials: Credentials(token: "tok", secret: fixture.keys.secret),
+            store: try LocalStore.inMemory(),
+            dependencies: .init(serverURL: testServer, clientID: "ios/1", transport: transport, connector: connector)
+        )
+    }
+
+    private func emptyServer() -> FakeHTTP {
+        let http = FakeHTTP()
+        http.on("GET /v2/sessions", json: SessionsPage(sessions: [fixture.session("open-chat", updatedAt: 10)], nextCursor: nil, hasNext: false))
+        http.onRaw("GET /v3/sessions/open-chat/messages", #"{"messages":[],"hasMore":false}"#)
+        http.onRaw("GET /v1/machines", "[]")
+        http.onRaw("GET /v1/account/settings", #"{"settings":null,"settingsVersion":0}"#)
+        return http
+    }
+
+    private func connect(_ session: AccountSession, _ connector: FakeConnector, socket number: Int) async throws {
+        await eventually { connector.sockets.count >= number }
+        let socket = try XCTUnwrap(connector.latest)
+        socket.push(#"0{"sid":"s","upgrades":[],"pingInterval":25000,"pingTimeout":20000}"#)
+        socket.push("40{}")
+        await eventually { await session.realtime.status == .connected }
+    }
+
+    func testForegroundAfterALongBackgroundReconnectsAndPullsAgain() async throws {
+        let http = emptyServer()
+        let connector = FakeConnector()
+        let session = try makeSession(http, connector)
+        await session.start()
+        try await connect(session, connector, socket: 1)
+        await session.sync.waitForIdle()
+
+        // A moment away: the socket is kept.
+        await session.sendAppState("background")
+        await session.sendAppState("active")
+        XCTAssertEqual(connector.sockets.count, 1)
+
+        session.chatAppeared("open-chat")
+        let sessionPulls = http.requests("GET /v2/sessions").count
+        let chatPulls = http.requests("GET /v3/sessions/open-chat/messages").count
+        await session.sendAppState("background")
+        session.resync.advanceClock(by: .seconds(60))
+        await session.sendAppState("active")
+        await eventually { connector.sockets.count == 2 }
+        await eventually { http.requests("GET /v2/sessions").count > sessionPulls }
+        await eventually { http.requests("GET /v3/sessions/open-chat/messages").count > chatPulls }
+        await session.stop()
+    }
+
+    func testRefreshReconnectsEvenWhenConnected() async throws {
+        let http = emptyServer()
+        let connector = FakeConnector()
+        let session = try makeSession(http, connector)
+        await session.start()
+        try await connect(session, connector, socket: 1)
+        await session.sync.waitForIdle()
+        let machinePulls = http.requests("GET /v1/machines").count
+
+        let outcome = await session.refresh(scope: .machines, timeout: .seconds(5))
+        XCTAssertEqual(outcome, .refreshed)
+        XCTAssertEqual(connector.sockets.count, 2, "a socket that says connected is replaced")
+        XCTAssertGreaterThan(http.requests("GET /v1/machines").count, machinePulls)
+        await session.stop()
+    }
+
+    func testARefreshThatTimesOutLeavesThePullRunning() async throws {
+        let http = emptyServer()
+        let requested = Gate()
+        let release = Gate()
+        let connector = FakeConnector()
+        let session = try makeSession(HeldRouteHTTP(http, route: "GET /v1/machines", requested: requested, release: release), connector)
+
+        let outcome = await session.refresh(scope: .machines, timeout: .milliseconds(100))
+        XCTAssertEqual(outcome, .timedOut)
+        await requested.wait()
+        await release.open()
+        await eventually { !http.requests("GET /v1/machines").isEmpty }
+        await session.sync.waitForIdle()
+        await session.stop()
+    }
+
+    func testConcurrentRefreshesShareOneRun() async throws {
+        let http = emptyServer()
+        let requested = Gate()
+        let release = Gate()
+        let connector = FakeConnector()
+        let session = try makeSession(HeldRouteHTTP(http, route: "GET /v1/machines", requested: requested, release: release), connector)
+
+        let first = Task { await session.refresh(scope: .machines, timeout: .seconds(5)) }
+        await requested.wait()
+        let second = Task { await session.refresh(scope: .machines, timeout: .seconds(5)) }
+        try? await Task.sleep(for: .milliseconds(20))
+        await release.open()
+        let outcomes = [await first.value, await second.value]
+        XCTAssertEqual(outcomes, [.refreshed, .refreshed])
+        XCTAssertEqual(http.requests("GET /v1/machines").count, 1, "the second refresh joined the first rather than restarting it")
+        XCTAssertEqual(connector.sockets.count, 1, "and did not replace the socket again")
+        await session.stop()
+    }
 }
 
 final class EventLog: @unchecked Sendable {

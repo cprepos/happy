@@ -566,6 +566,8 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         // In its window now, which a later layout may not follow.
         ultraKeyboard?.refresh()
         VoiceCoordinator.shared.focus(account: account, sessionId: chatId)
+        // Pulled again when the app comes back from a long background.
+        account.chatAppeared(chatId)
         takeComposeFocus()
         keyboardPushed = false
     }
@@ -575,6 +577,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         // ChatList's `active`: a chat not shown asks for no older page.
         historyPager?.isActive = false
         appeared = false
+        account.chatDisappeared(chatId)
         liveDock.setOnScreen(false)
         // Closed, not covered: control taken here goes back.
         if isMovingFromParent || isBeingDismissed || navigationController?.isBeingDismissed == true { liveDock.hostClosed() }

@@ -114,6 +114,13 @@ public actor SocketIOClient {
         }
     }
 
+    /// How long the current socket has gone without a packet from the
+    /// server; nil with no socket. A socket left over from the background
+    /// can look connected and be dead.
+    public var silence: Duration? {
+        connection == nil ? nil : ContinuousClock.now - lastPacketAt
+    }
+
     /// Drops the current socket and connects again, e.g. after a token change.
     public func reconnect() async {
         await disconnect()
