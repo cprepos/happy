@@ -62,8 +62,11 @@ vault-status:
 	@printf "backup timer  : "; systemctl --user is-active happy-vault-backup.timer 2>/dev/null || true
 	@echo "newest backup per location (STALE = older than 26h):"
 	@bash $(VAULT_DIR)/scripts/vault-backup.sh status || echo "  unknown"
-	@printf "secrets timer : "; systemctl is-active happy-vault-secrets-backup.timer 2>/dev/null || echo "  (install: make vault-backup-setup)"
-	@printf "secrets last  : "; systemctl show happy-vault-secrets-backup.service -p Result -p ExecMainExitTimestamp --value 2>/dev/null | paste -sd' ' -
+	@if [ "$$(systemctl show happy-vault-secrets-backup.timer -p LoadState --value 2>/dev/null)" = loaded ]; then \
+		printf "secrets timer : %s; last run: %s, %s\n" "$$(systemctl is-active happy-vault-secrets-backup.timer)" \
+			"$$(systemctl show happy-vault-secrets-backup.service -p ExecMainExitTimestamp --value)" \
+			"$$(systemctl show happy-vault-secrets-backup.service -p Result --value)"; \
+	else echo "secrets timer : not installed (make vault-backup-setup)"; fi
 
 vault-admin-on:
 	sudo bash $(VAULT_DIR)/scripts/vault-admin.sh on
