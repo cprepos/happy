@@ -921,6 +921,16 @@ public final class LocalStore: Sendable {
 
     static func insertMessage(_ message: MessageRecord, _ db: Database) throws {
         try message.insert(db, onConflict: .ignore)
+        // Already stored: a copy kept without content (it did not decrypt
+        // then) takes this one's, so a later good fetch repairs the row
+        // rather than leaving a blank bubble for good.
+        if db.changesCount == 0, message.content != nil,
+           var stored = try MessageRecord.fetchOne(db, key: message.id), stored.content == nil {
+            let old = stored
+            stored.content = message.content
+            stored.contentCipher = message.contentCipher
+            try stored.updateChanges(db, from: old)
+        }
         if let localId = message.localId {
             // The server has it now: the pending send is done.
             try OutboxRecord.deleteOne(db, key: localId)

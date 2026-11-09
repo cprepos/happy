@@ -63,7 +63,14 @@ struct RecordDecoder: Sendable {
     }
 
     func message(_ message: SessionMessage, sessionId: String, cipher: RecordCipher?) -> MessageRecord {
-        MessageRecord(
+        let content = cipher?.decrypt(base64: message.content.c)
+        if content == nil {
+            // Stored without content; a later fetch that opens it repairs
+            // the row (`LocalStore.insertMessage`). Ids only, never text.
+            let reason = cipher == nil ? "no session key" : "did not decrypt"
+            SyncLog.error("message \(message.id) seq \(message.seq) in session \(sessionId): \(reason)")
+        }
+        return MessageRecord(
             id: message.id,
             sessionId: sessionId,
             seq: message.seq,
@@ -71,7 +78,7 @@ struct RecordDecoder: Sendable {
             createdAt: message.createdAt,
             updatedAt: message.updatedAt,
             contentCipher: message.content.c,
-            content: cipher?.decrypt(base64: message.content.c)
+            content: content
         )
     }
 

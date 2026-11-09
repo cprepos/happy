@@ -179,6 +179,28 @@ final class LegacySyncEngineTests: XCTestCase {
         XCTAssertEqual(try store.session(id: "s")?.syncedMessageSeq, 5)
     }
 
+    func testAMessageStoredWithoutContentIsRepairedByALaterGoodCopy() async throws {
+        let fixture = self.fixture!
+        try store.upsertSessions([RecordDecoder(keyRing: KeyRing(keys: fixture.keys)).session(fixture.session("s", seq: 1, updatedAt: 1))])
+        let wire = fixture.message(seq: 1, text: "one")
+        let decoder = RecordDecoder(keyRing: KeyRing(keys: fixture.keys))
+        // First seen without its key: stored, but blank.
+        let blank = decoder.message(wire, sessionId: "s", cipher: nil)
+        XCTAssertNil(blank.content)
+        try store.applyMessagePages([MessagePageWrite(sessionId: "s", messages: [blank], syncedThrough: 1)])
+        XCTAssertNil(try store.messages(sessionId: "s").first?.content)
+        // The same message again, now readable, fills the row in.
+        let opened = try await engine.cipher(forSession: "s")
+        let cipher = try XCTUnwrap(opened)
+        let good = decoder.message(wire, sessionId: "s", cipher: cipher)
+        try store.applyMessagePages([MessagePageWrite(sessionId: "s", messages: [good], syncedThrough: 1)])
+        XCTAssertEqual(try store.messages(sessionId: "s").first?.content, good.content)
+        XCTAssertNotNil(good.content)
+        // A blank copy never overwrites a good row.
+        try store.applyMessagePages([MessagePageWrite(sessionId: "s", messages: [blank], syncedThrough: 1)])
+        XCTAssertEqual(try store.messages(sessionId: "s").first?.content, good.content)
+    }
+
     func testAnUpdateThatDoesNotDecodePullsTheSessionsMessages() async throws {
         let fixture = self.fixture!
         try store.upsertSessions([RecordDecoder(keyRing: KeyRing(keys: fixture.keys)).session(fixture.session("s", seq: 1, updatedAt: 1))])
