@@ -3,6 +3,10 @@
 // Public, for the phone (reached only through the Happy Agent workspace proxy):
 //   GET  /live/<id>            phone page: live frame, status, Take control, Release control
 //   GET  /live/<id>/frame.jpg  latest frame (image/png as auto-browser captures it)
+//   GET  /live/<id>/screen.png pods only: the pod's whole screen (tab strip, address bar, dialogs),
+//                              captured in the pod, at most one capture a second per link. Not
+//                              PII-scrubbed, as noVNC is not. 404 no_screen on the shared browser,
+//                              503 asleep (does not wake it)
 //   GET  /live/<id>/state      {status: watching|user|takeover|done, reason, url, title, last_action}
 //   POST /live/<id>/take       the user takes control: watching -> user (takeover stays takeover);
 //                              -> state plus novnc_url
@@ -49,6 +53,8 @@
 //   POST /api/pod       {chat_key, source?, verify?} or {session_id}
 //                       -> {mcp_url, session_id, link_id, url, slot}: the chat's pod, started or woken
 //   POST /api/pod/close {chat_key}                  -> saves the login, closes the session, stops the pod
+//   POST /api/screen    {chat_key}                  -> {mime, width, height, data (base64 PNG)}: that
+//                       chat's pod's whole screen (browser_screenshot scope "screen"); 503 asleep
 //   POST /api/tools     {}                          -> {tools}: auto-browser's tool list, cached, so
 //                       listing tools never starts a pod
 //   GET  /api/pods                                  -> slots, chats, recent start timings
@@ -65,7 +71,7 @@ import { connect as netConnect } from 'node:net';
 import { renderPage, renderGone } from './page.mjs';
 import { APPROVAL_ID, approvalSummary } from './approval.mjs';
 
-const LIVE_ROUTE = /^\/live\/([^/]+)(\/frame\.jpg|\/state|\/done|\/take|\/release|\/end|\/sleep|\/nav|\/approve|\/deny)?\/?$/;
+const LIVE_ROUTE = /^\/live\/([^/]+)(\/frame\.jpg|\/screen\.png|\/state|\/done|\/take|\/release|\/end|\/sleep|\/nav|\/approve|\/deny)?\/?$/;
 const CHAT_ROUTE = /^\/live\/chat\/([0-9a-f]{32})\/?$/;
 const CHAT_KEY = /^[0-9a-f]{32}$/;
 // noVNC through the bridge. Matched on the raw request path, before any URL normalising, so
@@ -557,7 +563,7 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         if (path === '/api/pods' && req.method === 'GET') return send(res, 200, pods ? { pods: true, ...pods.status() } : { pods: false });
         if (req.method !== 'POST') return send(res, 405, { error: 'method_not_allowed' });
         const body = await readJson(req);
-        if (path.startsWith('/api/pod') || path === '/api/tools') return podApi(res, path, body);
+        if (path.startsWith('/api/pod') || path === '/api/tools' || path === '/api/screen') return podApi(res, path, body);
 
         if (path === '/api/links' || path === '/api/takeover') {
             const { sid, rec: chatRec } = linkTarget(body);
@@ -696,10 +702,14 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
                 if (rec) {
                     const r = rt(rec.id);
                     r.frame = null;
+                    r.screen = null;
                     r.share = null;
                     if (rec.status !== 'done') setStatus(rec, 'done', 'session_closed');
                 }
                 return send(res, 200, { closed: stopped, pod: pods.podState(key) });
+            }
+            if (path === '/api/screen') {
+                return send(res, 200, await pods.screen(chatKeyOf(body)));
             }
             if (path === '/api/tools') {
                 if (!listTools) return send(res, 503, { error: 'no tool list' });
@@ -814,6 +824,16 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
                 return send(res, err.status === 404 ? 404 : 502, { error: err.status === 404 ? 'session_closed' : 'frame_unavailable' });
             }
         }
+        if (sub === '/screen.png') {
+            if (!podLink(rec)) return send(res, 404, { error: 'no_screen' });
+            if (!podOf(rec)) return send(res, 503, { error: 'asleep' });
+            try {
+                const shot = await screenOf(rec);
+                return send(res, 200, shot, { 'Content-Type': 'image/png' });
+            } catch (err) {
+                return send(res, err.status === 503 ? 503 : 502, { error: err.status === 503 ? 'asleep' : 'screen_unavailable' });
+            }
+        }
         const nonce = randomBytes(12).toString('base64');
         // The page's own Take control link carries no password: a GET of the page (by anyone the
         // link reaches, an agent's fetch included) never shows it. POST /take answers with it.
@@ -822,6 +842,19 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
             'Content-Type': 'text/html; charset=utf-8',
             'Content-Security-Policy': `default-src 'none'; img-src 'self' blob:; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'`,
         });
+    }
+
+    // A link's screen.png: one capture in flight per link, and a capture less than a second old
+    // is served again, so a polling viewer costs the pod at most one capture a second.
+    async function screenOf(rec) {
+        const r = rt(rec.id);
+        if (r.screen && now() - r.screen.at < 1000) return r.screen.body;
+        if (!r.screenInflight) {
+            r.screenInflight = pods.screen(rec.chatKey)
+                .then((shot) => { r.screen = { at: now(), body: Buffer.from(shot.data, 'base64') }; return r.screen.body; })
+                .finally(() => { r.screenInflight = null; });
+        }
+        return r.screenInflight;
     }
 
     // ── noVNC through the bridge ──────────────────────────────────────────

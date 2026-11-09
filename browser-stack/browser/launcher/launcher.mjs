@@ -15,6 +15,12 @@
 //   {"id":4,"op":"adopt_auth","slot":0,"chat_hash":"<32 hex>"}
 //   {"id":5,"op":"stash_auth","slot":0,"chat_hash":"<32 hex>","keep":false}
 //   {"id":6,"op":"copy_auth","from_chat_hash":"<32 hex>","chat_hash":"<32 hex>"}
+//   {"id":7,"op":"screen","slot":0,"pod_id":"<32 hex>"}
+//
+// screen is the one op that runs something inside a pod: scripts/screen-capture.py, read from
+// this repo when the launcher starts, run as the browser user in that slot's node container
+// (only if it still carries that pod_id), which prints the whole X screen as a PNG. The reply
+// is {"mime":"image/png","width":..,"height":..,"data":"<base64>"}.
 //
 // Every reply is {"id":..,"ok":true,"result":..} or {"id":..,"ok":false,"error":".."}. Nothing
 // else is accepted: no image, mount, port, env or command comes from a caller. Image digests are
@@ -33,7 +39,12 @@ import { fileURLToPath } from 'node:url';
 export const HARD_MAX_PODS = 32;
 export const ID_RE = /^[0-9a-f]{32}$/;
 export const VNC_RE = /^[A-Za-z0-9]{8}$/;
-export const OPS = new Set(['ensure', 'stop', 'list', 'adopt_auth', 'stash_auth', 'copy_auth']);
+export const OPS = new Set(['ensure', 'stop', 'list', 'adopt_auth', 'stash_auth', 'copy_auth', 'screen']);
+// The height of Chromium's tab strip and toolbar in a maximized window (measured on the pinned
+// image at 1920x1200). With BROWSER_KIOSK=0 the page gets the screen less this, so Playwright's
+// window and the maximized one agree and nothing is clipped.
+export const CHROME_UI_HEIGHT = 87;
+export const SCREEN_MAX_BYTES = 16 * 1024 * 1024;
 const GiB = 1024 ** 3;
 
 export function launcherConfig(env = process.env) {
@@ -58,6 +69,7 @@ export function launcherConfig(env = process.env) {
         playwrightBase: num('POD_PLAYWRIGHT_BASE', 9300),
         width: num('BROWSER_WIDTH', 1920),
         height: num('BROWSER_HEIGHT', 1200),
+        kiosk: kioskFlag(env.BROWSER_KIOSK),
         dataUid: num('POD_DATA_UID', 1000),
         dataGid: num('POD_DATA_GID', 1000),
         socketUid: num('LAUNCHER_SOCKET_UID', 1000),
@@ -68,12 +80,23 @@ export function launcherConfig(env = process.env) {
         piiScrub: env.PII_SCRUB_SCREENSHOT || 'true',
         mcpProfile: env.MCP_TOOL_PROFILE || 'curated',
     };
+    cfg.viewportHeight = num('BROWSER_VIEWPORT_HEIGHT', viewportHeight(cfg));
+    if (cfg.viewportHeight < 1 || cfg.viewportHeight > cfg.height) throw new Error('BROWSER_VIEWPORT_HEIGHT must be 1..BROWSER_HEIGHT');
     if (!/^[a-z0-9][a-z0-9_-]*$/.test(cfg.project)) throw new Error('LAUNCHER_PROJECT must be a compose project name');
     for (const base of ['novncBase', 'apiBase', 'playwrightBase']) {
         if (cfg[base] < 1024 || cfg[base] + HARD_MAX_PODS > 65535) throw new Error(`${base} out of range`);
     }
     return cfg;
 }
+
+export function kioskFlag(v) {
+    const s = v === undefined ? '' : String(v); // exactly as the entrypoint takes it
+    if (s === '' || s === '0') return false;
+    if (s === '1') return true;
+    throw new Error('BROWSER_KIOSK must be 0 or 1');
+}
+// The page's height: the whole screen in kiosk mode, the screen less Chromium's own UI otherwise.
+export const viewportHeight = ({ kiosk, height }) => (kiosk ? height : height - CHROME_UI_HEIGHT);
 
 // The two image references in compose.browser.yml (x-browser-node-image, x-controller-image).
 export function composeImages(composeText) {
@@ -95,11 +118,11 @@ export const slotDir = (cfg, slot) => join(cfg.podsDir, `slot-${slot}`);
 export function validate(cfg, req) {
     if (!req || typeof req !== 'object' || Array.isArray(req)) throw new Error('bad request');
     if (!OPS.has(req.op)) throw new Error('unknown op');
-    const allowed = { ensure: ['slot', 'pod_id', 'vnc_password'], stop: ['slot'], list: [], adopt_auth: ['slot', 'chat_hash'], stash_auth: ['slot', 'chat_hash', 'keep'], copy_auth: ['from_chat_hash', 'chat_hash'] }[req.op];
+    const allowed = { ensure: ['slot', 'pod_id', 'vnc_password'], stop: ['slot'], list: [], adopt_auth: ['slot', 'chat_hash'], stash_auth: ['slot', 'chat_hash', 'keep'], copy_auth: ['from_chat_hash', 'chat_hash'], screen: ['slot', 'pod_id'] }[req.op];
     for (const k of Object.keys(req)) if (k !== 'id' && k !== 'op' && !allowed.includes(k)) throw new Error(`unexpected field ${k}`);
     if (allowed.includes('slot') && !(Number.isInteger(req.slot) && req.slot >= 0 && req.slot < cfg.maxPods)) throw new Error('bad slot');
+    if (allowed.includes('pod_id') && (typeof req.pod_id !== 'string' || !ID_RE.test(req.pod_id))) throw new Error('bad pod_id');
     if (req.op === 'ensure') {
-        if (typeof req.pod_id !== 'string' || !ID_RE.test(req.pod_id)) throw new Error('bad pod_id');
         if (typeof req.vnc_password !== 'string' || !VNC_RE.test(req.vnc_password)) throw new Error('bad vnc_password');
     }
     if (allowed.includes('chat_hash') && (typeof req.chat_hash !== 'string' || !ID_RE.test(req.chat_hash))) throw new Error('bad chat_hash');
@@ -131,6 +154,7 @@ export function nodeSpec(cfg, { slot, podId, vncPassword, image, seccomp }) {
         Env: [
             `BROWSER_WIDTH=${cfg.width}`,
             `BROWSER_HEIGHT=${cfg.height}`,
+            `BROWSER_KIOSK=${cfg.kiosk ? 1 : 0}`,
             'BROWSER_URL=about:blank',
             'BROWSER_WS_ENDPOINT_FILE=/data/profile/browser-ws-endpoint.txt',
             'PLAYWRIGHT_SERVER_HOST=127.0.0.1',
@@ -208,7 +232,7 @@ export function controllerSpec(cfg, { slot, podId, image, secrets }) {
             `MAX_SESSIONS=${cfg.maxSessions}`,
             `MCP_TOOL_PROFILE=${cfg.mcpProfile}`,
             `DEFAULT_VIEWPORT_WIDTH=${cfg.width}`,
-            `DEFAULT_VIEWPORT_HEIGHT=${cfg.height}`,
+            `DEFAULT_VIEWPORT_HEIGHT=${cfg.viewportHeight}`,
             `REQUEST_RATE_LIMIT_REQUESTS=${cfg.rateLimit}`,
             'REQUEST_RATE_LIMIT_WINDOW_SECONDS=60',
             `PII_SCRUB_SCREENSHOT=${cfg.piiScrub}`,
@@ -233,8 +257,42 @@ export function controllerSpec(cfg, { slot, podId, image, secrets }) {
     };
 }
 
+// Docker's multiplexed exec stream: frames of [stream, 0, 0, 0, size (u32 BE)] + payload.
+export function demux(buf) {
+    const out = { stdout: [], stderr: [] };
+    let i = 0;
+    while (i + 8 <= buf.length) {
+        const size = buf.readUInt32BE(i + 4);
+        const end = Math.min(buf.length, i + 8 + size);
+        (buf[i] === 2 ? out.stderr : out.stdout).push(buf.subarray(i + 8, end));
+        i = end;
+    }
+    return { stdout: Buffer.concat(out.stdout), stderr: Buffer.concat(out.stderr) };
+}
+
 // A minimal Engine API client over the unix socket.
 export function createEngine(socketPath, { timeoutMs = 60000 } = {}) {
+    // An exec's output, raw, up to maxBytes (the call fails past that).
+    const stream = (path, body, { maxBytes, timeout }) => new Promise((resolve, reject) => {
+        const data = Buffer.from(JSON.stringify(body));
+        const req = httpRequest({ socketPath, method: 'POST', path: `/v1.43${path}`, timeout, headers: { 'Content-Type': 'application/json', 'Content-Length': data.length } }, (res) => {
+            const chunks = [];
+            let n = 0;
+            res.on('data', (c) => {
+                n += c.length;
+                if (n > maxBytes) { req.destroy(new Error('exec output too large')); return; }
+                chunks.push(c);
+            });
+            res.on('end', () => {
+                if (res.statusCode >= 400) reject(new Error(`engine exec start -> ${res.statusCode}`));
+                else resolve(Buffer.concat(chunks));
+            });
+            res.on('error', reject);
+        });
+        req.on('timeout', () => req.destroy(new Error('engine exec timed out')));
+        req.on('error', reject);
+        req.end(data);
+    });
     const call = (method, path, body) => new Promise((resolve, reject) => {
         const data = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
         const req = httpRequest({ socketPath, method, path: `/v1.43${path}`, timeout: timeoutMs, headers: data ? { 'Content-Type': 'application/json', 'Content-Length': data.length } : {} }, (res) => {
@@ -262,6 +320,13 @@ export function createEngine(socketPath, { timeoutMs = 60000 } = {}) {
         start: (id) => call('POST', `/containers/${encodeURIComponent(id)}/start`),
         remove: (id) => call('DELETE', `/containers/${encodeURIComponent(id)}?force=true&v=true`).catch((e) => { if (e.status !== 404) throw e; }),
         image: (ref) => call('GET', `/images/${encodeURIComponent(ref)}/json`),
+        // Runs cmd in a running container and returns { exitCode, stdout, stderr } (Buffers).
+        async exec(id, { cmd, user, env = [] }, { maxBytes = SCREEN_MAX_BYTES + 65536, timeout = 20000 } = {}) {
+            const ex = await call('POST', `/containers/${encodeURIComponent(id)}/exec`, { AttachStdin: false, AttachStdout: true, AttachStderr: true, Tty: false, User: user, Env: env, Cmd: cmd });
+            const raw = await stream(`/exec/${encodeURIComponent(ex.Id)}/start`, { Detach: false, Tty: false }, { maxBytes, timeout });
+            const info = await call('GET', `/exec/${encodeURIComponent(ex.Id)}/json`);
+            return { exitCode: info.ExitCode, ...demux(raw) };
+        },
     };
 }
 
@@ -270,7 +335,13 @@ export function readSecrets(dir) {
     return { apiToken: f('api-token'), authStateKey: f('auth-state-key'), shareTokenSecret: f('share-token-secret') };
 }
 
-export function createLauncher(cfg, { engine, images, seccomp, secrets, log = console } = {}) {
+// A PNG's size, from its IHDR; null if buf is not a PNG.
+export function pngSize(buf) {
+    if (buf.length < 24 || buf.readUInt32BE(0) !== 0x89504e47 || buf.toString('latin1', 12, 16) !== 'IHDR') return null;
+    return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+}
+
+export function createLauncher(cfg, { engine, images, seccomp, secrets, captureScript = '', log = console } = {}) {
     const locks = new Map();
     const serial = (slot, fn) => {
         const prev = locks.get(slot) || Promise.resolve();
@@ -419,6 +490,19 @@ export function createLauncher(cfg, { engine, images, seccomp, secrets, log = co
                 return { copied: true };
             }));
         },
+        // The pod's whole X screen. Not serialized with the slot: it only reads, and a pod that
+        // is removed meanwhile just fails the exec.
+        async screen({ slot, pod_id: podId }) {
+            if (!captureScript) throw new Error('screen capture is not available');
+            const node = (await containersFor(slot)).find((c) => c.Labels['happy-browser.pod_id'] === podId && c.Labels['happy-browser.role'] === 'node');
+            if (!node || node.State !== 'running') throw new Error('pod is not running');
+            const r = await engine.exec(node.Id, { cmd: ['python3', '-I', '-c', captureScript], user: 'browser', env: ['DISPLAY=:99'] });
+            if (r.exitCode !== 0) throw new Error(`screen capture failed: ${r.stderr.toString('utf8').trim().split('\n').pop()?.slice(0, 200) || `exit ${r.exitCode}`}`);
+            const size = pngSize(r.stdout);
+            if (!size) throw new Error('screen capture returned no image');
+            if (r.stdout.length > SCREEN_MAX_BYTES) throw new Error('screen capture too large');
+            return { mime: 'image/png', ...size, data: r.stdout.toString('base64') };
+        },
     };
 
     async function handle(req) {
@@ -480,7 +564,8 @@ async function main() {
     }
     mkdirSync(cfg.podsDir, { recursive: true });
     mkdirSync(cfg.chatsDir, { recursive: true, mode: 0o700 });
-    const launcher = createLauncher(cfg, { engine, images, seccomp, secrets });
+    const captureScript = readFileSync(join(cfg.browserDir, 'scripts', 'screen-capture.py'), 'utf8');
+    const launcher = createLauncher(cfg, { engine, images, seccomp, secrets, captureScript });
     await serve(launcher, cfg.socketPath, { uid: cfg.socketUid, gid: cfg.socketGid });
     for (const s of ['SIGINT', 'SIGTERM']) process.on(s, () => process.exit(0));
 }

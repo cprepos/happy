@@ -153,20 +153,49 @@ Tunables, such as screen size, ports and `MAX_SESSIONS`, go in
 
 ## Settings worth knowing
 
-- **Screen:** Xvfb is 1920x1200 and so is the page: the window is locked (below), so the page
-  fills the whole screen. This is a desktop screen, so sites serve their desktop layouts, at
-  device scale factor 1 with no mobile user agent or device emulation. 16:10 is the shape of
-  the iOS mini player, so the live frame fills it. Set `BROWSER_WIDTH`/`BROWSER_HEIGHT` in
-  `.env.browser` to change it.
-- **One window, nothing else on screen:** `kiosk/` is mounted into browser-node.
-  `happy-kiosk.mjs` runs in place of the image's `server.mjs` and holds every Chromium window
-  in browser fullscreen (no tab strip, address bar or frame; a `window.open` popup too),
-  re-checking every 2 s. Chromium's own `--kiosk` does not reach windows Playwright opens, so
-  the lock is done over CDP. `kiosk/fluxbox` gives fluxbox no toolbar, menu or key bindings,
-  `kiosk/policy.json` turns off guest mode, profiles, the password manager, printing and
-  permission prompts, and x11vnc runs with `-noremote -norc -nowf -nonap`. `make
-  browser-bridge-smoke` measures the window from inside the container
-  (`scripts/kiosk-probe.mjs`) and checks no abstract X11 socket is visible on the host. The takeover URL is
+- **Screen:** Xvfb is 1920x1200. This is a desktop screen, so sites serve their desktop
+  layouts, at device scale factor 1 with no mobile user agent or device emulation. 16:10 is
+  the shape of the iOS mini player, so the live frame fills it. Set `BROWSER_WIDTH`/
+  `BROWSER_HEIGHT` in `.env.browser` to change it. The page is the screen less Chrome's
+  87 px of tab strip and address bar (1920x1113): `browser.mk` works out
+  `BROWSER_VIEWPORT_HEIGHT` from `BROWSER_KIOSK` and hands it to the controller, the bridge
+  frame and the launcher, so Playwright's viewport matches the maximized window exactly.
+- **A normal browser window, maximized (`BROWSER_KIOSK=0`, the default):** `kiosk/` is
+  mounted into browser-node. `happy-kiosk.mjs` runs in place of the image's `server.mjs` and
+  holds every Chromium window (a `window.open` popup too) maximized at 1920x1200 with its tab
+  strip and address bar showing, re-checking every 2 s over CDP: a window someone makes
+  fullscreen, minimizes or drags smaller comes back within a sweep. `kiosk/fluxbox/init.window`
+  gives fluxbox a plain dark desktop (`kiosk/fluxbox/style`, solid #1e1e1e) with no toolbar,
+  slit, menu, icons or key bindings, and `apps.window` maximizes every window with no frame.
+  **The trade-off:** anyone in control of the live view (a takeover, or the noVNC page) can
+  now type a URL into the address bar, open tabs and use the back button; the kiosk took that
+  away. Agent actions are unchanged: they still go through the bridge and its approval rules,
+  and the address bar is not a way round them for the agent. What a person can reach is
+  limited by `kiosk/policy.json`: no guest mode, profiles, sign-in, sync, password manager,
+  printing, translate or permission prompts; no extension installs; downloads go only to the
+  profile's own directory with no file chooser; and `chrome://*`, `chrome-untrusted://*`,
+  `devtools://*` and `file://*` are blocked (`ERR_BLOCKED_BY_ADMINISTRATOR`) apart from the new
+  tab page. Playwright's contexts are off the record, so settings and extensions pages are
+  unavailable anyway. Not covered: `DeveloperToolsAvailability` breaks Playwright (`newPage`
+  fails), so DevTools is not blocked by policy and F12 by a person in control can open it.
+  `view-source:` gets past the URLBlocklist (Chromium checks the inner URL, and
+  `view-source:file:///etc/passwd` shows the file; a `view-source:*` entry has no effect), so
+  the warden sends any page that commits a `view-source:` URL to `about:blank` at once.
+  A known Chromium bug: with the URLBlocklist in force, `chrome://inspect` and then at once
+  `chrome://downloads` (both blocked, back to back through Playwright) crash the browser
+  process with SIGTRAP, a failed internal check, in about a third of tries; with no policy, or
+  a second between them, it never happened in our runs. The browser-node exits with it. The
+  shared stack's node comes back by itself (`restart: unless-stopped`); a pod's does not
+  restart in place (`RestartPolicy: no`), but the bridge's health check stops it after two
+  failed checks and the chat's next call gets a new pod on its last page, as for any crash.
+- **The kiosk (`BROWSER_KIOSK=1`):** set it in `.env.browser` (or on the `make` line) to bring
+  the kiosk back: every window held in browser fullscreen with no tab strip, address bar or
+  frame, fluxbox on `kiosk/fluxbox/init`, and the page the full 1920x1200. Chromium's own
+  `--kiosk` does not reach windows Playwright opens, so either way the lock is done over CDP.
+  x11vnc runs with `-noremote -norc -nowf -nonap` in both modes. `make browser-bridge-smoke`
+  (and the pod smoke) measures the window from inside the container
+  (`scripts/kiosk-probe.mjs`) for the mode `BROWSER_KIOSK` names and checks no abstract X11
+  socket is visible on the host. The takeover URL is
   `http://localhost:6080/vnc.html?autoconnect=true&resize=scale`: noVNC scales the whole
   desktop down to fit the phone (pinch-zoom for detail), so there is nothing to pan.
 - **Host networking:** all three services run with `network_mode: host`, so `localhost` in
@@ -205,6 +234,7 @@ Phone routes, opened in the iOS app's in-app browser through the workspace proxy
 |---|---|
 | `GET /live/<id>` | phone page: frame refreshed every 1.5 s, title and url, a pill (Watching / Needs you / Done), Take control, Done |
 | `GET /live/<id>/frame.jpg` | latest frame, fetched server-side and cached 1 s; served with the upstream type, which is `image/png` |
+| `GET /live/<id>/screen.png` | the whole pod screen (browser UI included) as `image/png`, captured in the pod, cached 1 s, one capture at a time per link. A link with no pod → 404; asleep pod → 503 |
 | `GET /live/<id>/state` | `{"status":"watching"\|"takeover"\|"done","reason":string\|null,"url":string\|null,"title":string\|null}` |
 | `POST /live/<id>/done` | ends a takeover (status `done`) and wakes the waiting agent |
 | `GET /live/<id>/vnc/<file>` | noVNC's own files (`vnc.html`, `app/…`, `core/…`), from the link's pod's websockify (`127.0.0.1:6100+slot`), or the shared `127.0.0.1:6080` for a link with no pod. Asleep pod → 503 |
@@ -301,6 +331,15 @@ secret.
   tools is skipped. `browser_create_session`, `browser_observe` and
   `browser_request_human_takeover` get one sentence appended that points at
   `browser_live_link` / `browser_wait_for_human`.
+  - `browser_screenshot` gets a `scope` argument, `"page"` (the default: forwarded to
+    auto-browser as before, without `scope`) or `"screen"`: the whole X display of the chat's
+    own pod, with the tab strip, address bar and any popup windows, returned the same way (a
+    JSON text part with `scope`, `session_id`, `width`, `height`, then the PNG as an image
+    part). The bridge asks the launcher for the chat's pod by chat key (`POST /api/screen`),
+    the launcher checks the pod id and execs `scripts/screen-capture.py` in that pod's node as
+    the `browser` user, so a chat can only ever capture its own pod's screen. With no pods
+    (shared mode) `"screen"` is refused, as a shared display would show other chats' pages.
+    The screen PNG is not PII-scrubbed; it is the same pixels the live view shows.
   - A call is forwarded with its arguments and `_meta` (so a progress token
     reaches auto-browser, and its progress comes back), and auto-browser's result
     or JSON-RPC error is returned verbatim. Limit per call:

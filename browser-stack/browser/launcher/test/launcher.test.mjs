@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 import {
     launcherConfig, composeImages, nodeSpec, controllerSpec, validate, createEngine, createLauncher, serve, ports, HARD_MAX_PODS,
+    kioskFlag, viewportHeight, demux, pngSize, CHROME_UI_HEIGHT,
 } from '../launcher.mjs';
 
 const BROWSER_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -35,6 +36,9 @@ async function fakeEngine(dir) {
     const socketPath = join(dir, 'docker.sock');
     const containers = new Map();
     const calls = [];
+    const execs = new Map();
+    // What an exec prints and exits with: { stdout, stderr, exitCode }.
+    const exec = { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), exitCode: 0 };
     let n = 0;
     const server = createServer((req, res) => {
         let body = '';
@@ -58,6 +62,23 @@ async function fakeEngine(dir) {
                 const c = containers.get(m[1]); if (!c) return send(404, { message: 'no such container' });
                 c.State = 'running'; return send(204);
             }
+            if (req.method === 'POST' && (m = path.match(/^\/containers\/([^/]+)\/exec$/))) {
+                if (!containers.has(m[1])) return send(404, { message: 'no such container' });
+                const id = `e${++n}`;
+                execs.set(id, { container: m[1], spec: JSON.parse(body) });
+                return send(201, { Id: id });
+            }
+            if (req.method === 'POST' && (m = path.match(/^\/exec\/([^/]+)\/start$/))) {
+                if (!execs.has(m[1])) return send(404, { message: 'no such exec' });
+                const frame = (kind, b) => { const h = Buffer.alloc(8); h[0] = kind; h.writeUInt32BE(b.length, 4); return Buffer.concat([h, b]); };
+                res.writeHead(200, { 'Content-Type': 'application/vnd.docker.raw-stream' });
+                // The stdout in two frames, to check they are joined.
+                const half = exec.stdout.length >> 1;
+                return res.end(Buffer.concat([frame(1, exec.stdout.subarray(0, half)), frame(2, exec.stderr), frame(1, exec.stdout.subarray(half))]));
+            }
+            if (req.method === 'GET' && (m = path.match(/^\/exec\/([^/]+)\/json$/))) {
+                return send(200, { ExitCode: exec.exitCode, Running: false });
+            }
             if (req.method === 'DELETE' && (m = path.match(/^\/containers\/([^/]+)$/))) {
                 if (!containers.delete(m[1])) return send(404, { message: 'no such container' });
                 return send(204);
@@ -66,7 +87,7 @@ async function fakeEngine(dir) {
         });
     });
     await new Promise((r) => server.listen(socketPath, r));
-    return { socketPath, containers, calls, close: () => new Promise((r) => server.close(r)) };
+    return { socketPath, containers, calls, execs, exec, close: () => new Promise((r) => server.close(r)) };
 }
 
 test('images are the digests pinned in compose.browser.yml', () => {
@@ -121,9 +142,10 @@ test('pod templates: host network, loopback ports per slot, no published ports, 
         assert.equal(ne.NOVNC_PORT, String(p.novnc));
         assert.equal(ne.PLAYWRIGHT_SERVER_PORT, String(p.playwright));
         assert.equal(ne.VNC_PASSWORD, 'Abcd1234');
-        // A desktop screen, window and viewport by default (BROWSER_WIDTH/HEIGHT override).
-        assert.deepEqual([ne.BROWSER_WIDTH, ne.BROWSER_HEIGHT], ['1920', '1200']);
-        assert.deepEqual([ce.DEFAULT_VIEWPORT_WIDTH, ce.DEFAULT_VIEWPORT_HEIGHT], ['1920', '1200']);
+        // A desktop screen and window by default (BROWSER_WIDTH/HEIGHT override); the page is
+        // the screen less the maximized window's tab strip and address bar.
+        assert.deepEqual([ne.BROWSER_WIDTH, ne.BROWSER_HEIGHT, ne.BROWSER_KIOSK], ['1920', '1200', '0']);
+        assert.deepEqual([ce.DEFAULT_VIEWPORT_WIDTH, ce.DEFAULT_VIEWPORT_HEIGHT], ['1920', '1113']);
         assert.deepEqual(ctl.Cmd, ['uvicorn', 'happy_live_frames:app', '--host', '127.0.0.1', '--port', String(p.api)]);
         assert.equal(ce.PYTHONPATH, '/happy/controller-patch');
         assert.ok(ctl.HostConfig.Binds.includes(`${BROWSER_DIR}/controller-patch/happy_live_frames.py:/happy/controller-patch/happy_live_frames.py:ro`));
@@ -161,6 +183,94 @@ test('pod templates match the shared stack in compose.browser.yml', () => {
     }
 });
 
+// A PNG header with an IHDR of w x h (enough for pngSize).
+function fakePng(w, h, pad = 0) {
+    const b = Buffer.alloc(33 + pad);
+    b.writeUInt32BE(0x89504e47, 0); b.writeUInt32BE(0x0d0a1a0a, 4);
+    b.writeUInt32BE(13, 8); b.write('IHDR', 12, 'latin1');
+    b.writeUInt32BE(w, 16); b.writeUInt32BE(h, 20);
+    return b;
+}
+
+test('window mode: BROWSER_KIOSK picks the viewport and reaches the pod node', () => {
+    assert.equal(kioskFlag(undefined), false);
+    assert.equal(kioskFlag(''), false);
+    assert.equal(kioskFlag('0'), false);
+    assert.equal(kioskFlag('1'), true);
+    for (const v of ['yes', 'true', '2', ' 1']) assert.throws(() => kioskFlag(v), /BROWSER_KIOSK/);
+    assert.equal(CHROME_UI_HEIGHT, 87);
+    assert.equal(viewportHeight({ kiosk: false, height: 1200 }), 1113);
+    assert.equal(viewportHeight({ kiosk: true, height: 1200 }), 1200);
+
+    const envOf = (spec, k) => spec.Env.find((e) => e.startsWith(`${k}=`));
+    const win = setup().cfg;
+    assert.equal(win.kiosk, false);
+    assert.equal(win.viewportHeight, 1113);
+    assert.equal(envOf(nodeSpec(win, { slot: 0, podId: POD, vncPassword: 'Abcd1234', image: 'x', seccomp: SECCOMP }), 'BROWSER_KIOSK'), 'BROWSER_KIOSK=0');
+    assert.equal(envOf(controllerSpec(win, { slot: 0, podId: POD, image: 'x', secrets: SECRETS }), 'DEFAULT_VIEWPORT_HEIGHT'), 'DEFAULT_VIEWPORT_HEIGHT=1113');
+
+    const kiosk = setup({ BROWSER_KIOSK: '1' }).cfg;
+    assert.equal(kiosk.viewportHeight, 1200);
+    assert.equal(envOf(nodeSpec(kiosk, { slot: 0, podId: POD, vncPassword: 'Abcd1234', image: 'x', seccomp: SECCOMP }), 'BROWSER_KIOSK'), 'BROWSER_KIOSK=1');
+    assert.equal(envOf(controllerSpec(kiosk, { slot: 0, podId: POD, image: 'x', secrets: SECRETS }), 'DEFAULT_VIEWPORT_HEIGHT'), 'DEFAULT_VIEWPORT_HEIGHT=1200');
+
+    // browser.mk's value wins, within the screen.
+    assert.equal(setup({ BROWSER_VIEWPORT_HEIGHT: '1100' }).cfg.viewportHeight, 1100);
+    assert.throws(() => setup({ BROWSER_VIEWPORT_HEIGHT: '1201' }));
+    assert.throws(() => setup({ BROWSER_KIOSK: 'yes' }), /BROWSER_KIOSK/);
+});
+
+test('demux and pngSize', () => {
+    const frame = (kind, s) => { const b = Buffer.from(s); const h = Buffer.alloc(8); h[0] = kind; h.writeUInt32BE(b.length, 4); return Buffer.concat([h, b]); };
+    const d = demux(Buffer.concat([frame(1, 'ab'), frame(2, 'err'), frame(1, 'cd'), frame(1, '')]));
+    assert.equal(d.stdout.toString(), 'abcd');
+    assert.equal(d.stderr.toString(), 'err');
+    // A truncated last frame keeps what arrived.
+    assert.equal(demux(frame(1, 'xyz').subarray(0, 10)).stdout.toString(), 'xy');
+    assert.deepEqual(demux(Buffer.alloc(0)), { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) });
+    assert.deepEqual(pngSize(fakePng(1920, 1200)), { width: 1920, height: 1200 });
+    assert.equal(pngSize(Buffer.from('not a png at all, really not')), null);
+    assert.equal(pngSize(Buffer.alloc(10)), null);
+});
+
+test('screen: execs the capture script in that pod\'s node only', async () => {
+    const { home, cfg } = setup();
+    const eng = await fakeEngine(home);
+    const launcher = createLauncher(cfg, { engine: createEngine(eng.socketPath), images: composeImages(COMPOSE), seccomp: SECCOMP, secrets: SECRETS, captureScript: 'print(1)', log: { log() {}, warn() {} } });
+    try {
+        assert.equal((await launcher.handle({ op: 'screen', slot: 1, pod_id: POD })).error, 'pod is not running');
+        await launcher.handle({ op: 'ensure', slot: 1, pod_id: POD, vnc_password: 'Abcd1234' });
+        const png = fakePng(1920, 1200, 100);
+        eng.exec.stdout = png;
+        const r = await launcher.handle({ op: 'screen', slot: 1, pod_id: POD });
+        assert.equal(r.ok, true, r.error);
+        assert.deepEqual(r.result, { mime: 'image/png', width: 1920, height: 1200, data: png.toString('base64') });
+        const [ex] = [...eng.execs.values()];
+        const node = [...eng.containers.values()].find((c) => c.Labels['happy-browser.role'] === 'node');
+        assert.equal(ex.container, node.Id, 'runs in the node, not the controller');
+        assert.deepEqual(ex.spec.Cmd, ['python3', '-I', '-c', 'print(1)']);
+        assert.equal(ex.spec.User, 'browser');
+        assert.deepEqual(ex.spec.Env, ['DISPLAY=:99']);
+
+        // Another pod id on the same slot (a chat that lost it) gets nothing.
+        assert.equal((await launcher.handle({ op: 'screen', slot: 1, pod_id: 'c'.repeat(32) })).error, 'pod is not running');
+        assert.equal((await launcher.handle({ op: 'screen', slot: 2, pod_id: POD })).error, 'pod is not running');
+        assert.equal(eng.execs.size, 1);
+
+        eng.exec.exitCode = 1;
+        eng.exec.stdout = Buffer.alloc(0);
+        eng.exec.stderr = Buffer.from('Traceback...\nscreen-capture: cannot open the display\n');
+        assert.equal((await launcher.handle({ op: 'screen', slot: 1, pod_id: POD })).error, 'screen capture failed: screen-capture: cannot open the display');
+        eng.exec.exitCode = 0;
+        eng.exec.stderr = Buffer.alloc(0);
+        eng.exec.stdout = Buffer.from('garbage that is not a png');
+        assert.equal((await launcher.handle({ op: 'screen', slot: 1, pod_id: POD })).error, 'screen capture returned no image');
+
+        const none = createLauncher(cfg, { engine: createEngine(eng.socketPath), images: composeImages(COMPOSE), seccomp: SECCOMP, secrets: SECRETS, log: { log() {}, warn() {} } });
+        assert.equal((await none.handle({ op: 'screen', slot: 1, pod_id: POD })).error, 'screen capture is not available');
+    } finally { await eng.close(); }
+});
+
 test('config: slots and port bases are bounded', () => {
     assert.throws(() => setup({ MAX_PODS: String(HARD_MAX_PODS + 1) }), /MAX_PODS/);
     assert.throws(() => setup({ MAX_PODS: '0' }), /MAX_PODS/);
@@ -168,7 +278,7 @@ test('config: slots and port bases are bounded', () => {
     assert.throws(() => launcherConfig({}), /required/);
 });
 
-test('validation: only the six ops, with exact fields', () => {
+test('validation: only the seven ops, with exact fields', () => {
     const { cfg } = setup({ MAX_PODS: '4' });
     const ok = (r) => assert.doesNotThrow(() => validate(cfg, r));
     const bad = (r, re) => assert.throws(() => validate(cfg, r), re);
@@ -178,6 +288,10 @@ test('validation: only the six ops, with exact fields', () => {
     ok({ op: 'adopt_auth', slot: 1, chat_hash: CHAT });
     ok({ op: 'stash_auth', slot: 1, chat_hash: CHAT, keep: true });
     ok({ op: 'copy_auth', from_chat_hash: 'e'.repeat(32), chat_hash: CHAT });
+    ok({ op: 'screen', slot: 0, pod_id: POD });
+    bad({ op: 'screen', slot: 0 }, /bad pod_id/);
+    bad({ op: 'screen', slot: 4, pod_id: POD }, /bad slot/);
+    bad({ op: 'screen', slot: 0, pod_id: POD, cmd: 'id' }, /unexpected field cmd/);
     bad({ op: 'copy_auth', from_chat_hash: CHAT, chat_hash: CHAT }, /must differ/);
     bad({ op: 'copy_auth', from_chat_hash: '../' + 'e'.repeat(29), chat_hash: CHAT }, /bad from_chat_hash/);
     bad({ op: 'copy_auth', from_chat_hash: 'E'.repeat(32), chat_hash: CHAT }, /bad from_chat_hash/);

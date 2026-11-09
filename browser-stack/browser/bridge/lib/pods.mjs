@@ -82,8 +82,10 @@ export function createLauncherClient(socketPath, { timeoutMs = 120_000 } = {}) {
                 const timer = setTimeout(() => finish(new PodError(`launcher ${op} timed out`)), timeoutMs);
                 conn.setEncoding('utf8');
                 conn.on('data', (d) => {
+                    // Only the new chunk is searched: a screen reply is megabytes on one line.
+                    const at = d.indexOf('\n');
+                    const nl = at < 0 ? -1 : buf.length + at;
                     buf += d;
-                    const nl = buf.indexOf('\n');
                     if (nl < 0) return;
                     let res;
                     try { res = JSON.parse(buf.slice(0, nl)); } catch { return finish(new PodError(`launcher ${op}: bad reply`)); }
@@ -878,6 +880,16 @@ export function createPodManager({
         if (!chat || chat.state !== 'running' || !pod || pod.state !== 'assigned' || pod.podId !== chat.podId) return null;
         return { slot: pod.slot, client: pod.client, novncPort: pod.ports.novnc, vncPassword: pod.vncPassword, sessionId: chat.sessionId };
     }
+    /**
+     * The chat's pod's whole screen as a PNG ({mime, width, height, data: base64}), captured by the
+     * launcher inside that pod (op screen, which also checks the pod id). Never starts a pod.
+     */
+    async function screen(chatKey) {
+        if (!CHAT_KEY.test(chatKey || '')) throw new PodError('bad chat_key', 400, 'bad_request');
+        const p = podOf(chatKey);
+        if (!p) throw new PodError('this chat\'s browser is asleep', 503, 'asleep');
+        return launcher.call('screen', { slot: p.slot, pod_id: chats.get(chatKey).podId });
+    }
     /** running | starting | asleep | crashed | none, for /state's `pod` field. */
     function podState(chatKey) {
         const chat = chats.get(chatKey);
@@ -927,7 +939,7 @@ export function createPodManager({
 
     return {
         ensure, stopChat, checkpointAuth, idleSweep, healthCheck, reconcile, refill, start, close,
-        chatForLink, chatForSession, podOf, podState, touchViewer, wake, status, hold,
+        chatForLink, chatForSession, podOf, podState, touchViewer, wake, status, hold, screen,
         liveness, sessionSeen, phantomSweep,
         get timings() { return timings.slice(); },
         _pods: pods, _chats: chats,

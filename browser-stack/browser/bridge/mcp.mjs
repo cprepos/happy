@@ -167,6 +167,23 @@ const HINTS = {
 };
 const LOCK_HINT = ' Refused while the user has control of the browser; then call browser_wait_for_human and wait.';
 
+// browser_screenshot's one bridge-side argument. "page" (the default) is auto-browser's own page
+// screenshot; "screen" is the whole browser screen as the user sees it in the live view (window,
+// tab strip, address bar, any popup or dialog), taken inside this chat's own browser pod.
+export const SCREENSHOT_SCOPES = ['page', 'screen'];
+const SCOPE_PROP = {
+    type: 'string',
+    enum: SCREENSHOT_SCOPES,
+    default: 'page',
+    description: '"page" (default): the current page only. "screen": the whole browser screen as the user sees it in the live view, including the tab strip, address bar and any dialog or popup window.',
+};
+const SCREEN_ONLY_PODS = 'Error: scope "screen" needs a browser of this chat\'s own (per-chat browser pods). This browser is shared, and its screen would show other chats\' windows. Use scope "page".';
+/** browser_screenshot's input schema with `scope` added. */
+export function withScopeParam(schema) {
+    const base = schema && typeof schema === 'object' && !Array.isArray(schema) ? schema : { type: 'object' };
+    return { ...base, type: 'object', properties: { ...(base.properties || {}), scope: SCOPE_PROP } };
+}
+
 /** Expose upstream tools under API-safe names, with references in descriptions renamed too. */
 export function mapUpstreamTools(tools, log = () => {}) {
     const byLocal = new Map();
@@ -179,7 +196,9 @@ export function mapUpstreamTools(tools, log = () => {}) {
         if (OWN_NAMES.has(name) || byLocal.has(name)) { log(`skipping auto-browser tool ${t.name}: name ${name} already taken`); continue; }
         byLocal.set(name, t.name);
         const description = rename(t.description || '') + (HINTS[name] || '') + (MUTATING_TOOLS.has(name) ? LOCK_HINT : '');
-        listed.push({ ...t, name, description });
+        listed.push(name === 'browser_screenshot'
+            ? { ...t, name, description: description + ' scope "screen" shows the whole browser screen (tab strip, address bar, dialogs) instead of the page.', inputSchema: withScopeParam(t.inputSchema) }
+            : { ...t, name, description });
     }
     return { tools: listed, byLocal, rename };
 }
@@ -539,14 +558,23 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
             if (!upstreamOk) return result(id, toolResult(`Error: ${name} is an auto-browser tool, but auto-browser is not reachable right now. Is the browser stack up?`, true));
             return error(id, -32602, `unknown tool ${name}`);
         }
+        // browser_screenshot's scope is the bridge's, never passed on (auto-browser refuses extra fields).
+        let scope = 'page';
+        if (name === 'browser_screenshot' && args && typeof args === 'object' && 'scope' in args) {
+            ({ scope, ...args } = args);
+            if (scope === undefined || scope === null) scope = 'page';
+            if (!SCREENSHOT_SCOPES.includes(scope)) return result(id, toolResult(`Error: scope must be one of ${SCREENSHOT_SCOPES.map((v) => `"${v}"`).join(', ')}`, true));
+        }
         // Routing first: the secret gate and the control check both need the chat's session.
         const routedCall = await routeCall(id, name, args, signal, cc);
         if (routedCall.done) return;
         let via = routedCall.via;
         args = routedCall.args;
+        if (scope === 'screen' && !via) return result(id, toolResult(SCREEN_ONLY_PODS, true));
         if (!via && !(await sharedPreflight(id, name, args, meta, signal))) return;
         const gate = await secretsBefore(id, name, args, signal, cc);
         if (!gate) return;
+        if (scope === 'screen') return screenShot(id, name, args, signal, via, gate);
         // One state check per call: a page-changing tool asks whether the user holds the browser
         // (recording the action), any other tool on a session only whether the user ended it.
         const state = MUTATING_TOOLS.has(name) ? await guard(name, args, signal, via) : await sessionState(args, signal, via);
@@ -584,6 +612,28 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
                 out = decided.result;
             }
             if (via?.recovered && out && Array.isArray(out.content)) out = { ...out, content: [{ type: 'text', text: recoveredNote(via) }, ...out.content] };
+            return result(id, await scrubOut(gate, await withLiveLink(name, args, out, signal, via), signal));
+        } catch (err) {
+            if (!signal.aborted) return result(id, toolResult(`Error: ${err.message}`, true));
+        }
+    }
+
+    // browser_screenshot scope "screen": the chat's pod's whole X screen, through the bridge (which
+    // asks the launcher to capture it inside that pod). Only ever the pod `via` names, the one
+    // router.route resolved for this call's chat; no tool argument picks it.
+    async function screenShot(id, name, args, signal, via, gate) {
+        try {
+            if (await endedByUser(args, signal, via)) return result(id, toolResult(USER_ENDED, true));
+            if (signal.aborted) return;
+            const shot = await bridge('/api/screen', { chat_key: via.key }, signal);
+            if (signal.aborted) return;
+            const info = { scope: 'screen', session_id: via.session_id, width: shot.width, height: shot.height };
+            let out = {
+                content: [{ type: 'text', text: JSON.stringify(info) }, { type: 'image', data: shot.data, mimeType: shot.mime || 'image/png' }],
+                structuredContent: info,
+                isError: false,
+            };
+            if (via.recovered) out = { ...out, content: [{ type: 'text', text: recoveredNote(via) }, ...out.content] };
             return result(id, await scrubOut(gate, await withLiveLink(name, args, out, signal, via), signal));
         } catch (err) {
             if (!signal.aborted) return result(id, toolResult(`Error: ${err.message}`, true));

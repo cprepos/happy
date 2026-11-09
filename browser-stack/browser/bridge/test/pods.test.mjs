@@ -42,6 +42,10 @@ function harness({ maxPods = 2, warm = 0, ensureMs = 0, readyAfter = 0, createFa
                 authDirs.set(args.chat_hash, true);
                 return { copied: true };
             }
+            if (op === 'screen') {
+                calls[calls.length - 1] = `launcher.screen:${args.slot}:${args.pod_id === up.get(args.slot)?.pod_id ? 'pod' : 'other'}`;
+                return { mime: 'image/png', width: 1920, height: 1200, data: 'iVBORw0K' };
+            }
             throw new Error('unknown op');
         },
     };
@@ -407,6 +411,21 @@ test('lookups by link and session, and stopChat for an ended browser', async () 
     assert.equal(await h.mgr.stopChat(A, 'user_ended'), true);
     assert.equal(h.mgr.podState(A), 'asleep');
     assert.equal(await h.mgr.stopChat(A, 'user_ended'), false, 'nothing left to stop');
+});
+
+test('screen asks the launcher for the chat\'s own slot and pod id, and never wakes a sleeping chat', async () => {
+    const h = harness();
+    await h.mgr.ensure(A);
+    await h.mgr.ensure(B);
+    h.calls.length = 0;
+    assert.deepEqual(await h.mgr.screen(B), { mime: 'image/png', width: 1920, height: 1200, data: 'iVBORw0K' });
+    assert.deepEqual(h.calls, ['launcher.screen:1:pod']);
+    await h.mgr.stopChat(A, 'idle');
+    h.calls.length = 0;
+    await assert.rejects(h.mgr.screen(A), (e) => e.status === 503 && /asleep/.test(e.message));
+    await assert.rejects(h.mgr.screen('c'.repeat(32)), (e) => e.status === 503);
+    await assert.rejects(h.mgr.screen('nothex'), (e) => e.status === 400);
+    assert.deepEqual(h.calls, [], 'no launcher call and no wake');
 });
 
 test('reconcile adopts recorded pods that are up and ready and removes everything else', async () => {
