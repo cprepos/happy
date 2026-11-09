@@ -24,9 +24,20 @@ final class HostedSessionLiveBrowserTests: XCTestCase {
     private let sessionId = "browsing"
     private let linkId = "3f9a1c0e5b7d42e8a6c1f09b2d4e7a35"
 
+    /// It drives noVNC's web page: the native viewer is the default, so
+    /// the fallback is chosen for it, and put back after.
+    private var usedWebViewer = false
+
     override func setUp() {
         super.setUp()
         LegacyFonts.registerBundledFonts()
+        usedWebViewer = LiveBrowserViewerSetting.usesWebViewer
+        LiveBrowserViewerSetting.usesWebViewer = true
+    }
+
+    override func tearDown() {
+        LiveBrowserViewerSetting.usesWebViewer = usedWebViewer
+        super.tearDown()
     }
 
     private func descendants(_ view: UIView) -> [UIView] { [view] + view.subviews.flatMap(descendants) }

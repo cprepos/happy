@@ -805,6 +805,24 @@ final class WebSocketTunnelTests: XCTestCase {
         XCTAssertTrue(end.isEmpty)
     }
 
+    func testAnUpgradeInsideATunnelNamesItsHostAndProtocolAndNoToken() async throws {
+        let head = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: \(accept)\r\nSec-WebSocket-Protocol: binary\r\n\r\n"
+        let pipe = Pipe([Data(head.utf8)])
+        _ = try await WebSocketTunnel.open(pipe, path: "/live/abc/vnc/websockify", credential: nil, host: "192.168.2.10:7790",
+                                           protocols: ["binary"], key: key, mask: mask, keepalive: false)
+        let request = String(decoding: pipe.writes[0], as: UTF8.self)
+        XCTAssertTrue(request.hasPrefix("GET /live/abc/vnc/websockify HTTP/1.1\r\nHost: 192.168.2.10:7790\r\n"))
+        XCTAssertFalse(request.contains("Authorization"))
+        XCTAssertTrue(request.contains("\r\nSec-WebSocket-Version: 13\r\n"))
+        XCTAssertTrue(request.contains("\r\nSec-WebSocket-Protocol: binary\r\n"))
+        XCTAssertTrue(request.hasSuffix("\r\n\r\n"))
+        // Header injection is refused before anything is written.
+        let bad = Pipe([Data(head.utf8)])
+        await XCTAssertThrowsAsync(try await WebSocketTunnel.open(bad, path: "/x", credential: nil, host: "a\r\nX: y", key: key, keepalive: false))
+        await XCTAssertThrowsAsync(try await WebSocketTunnel.open(bad, path: "/x", credential: nil, protocols: ["a b"], key: key, keepalive: false))
+        XCTAssertTrue(bad.writes.isEmpty)
+    }
+
     func testLargeWritesAreSplitAndAnEmptyWriteHalfCloses() async throws {
         let head = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: upgrade\r\nSec-WebSocket-Accept: \(accept)\r\n\r\n"
         let pipe = Pipe([Data(head.utf8)])

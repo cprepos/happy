@@ -14,6 +14,21 @@ final class HostedLiveBrowserPodTests: XCTestCase {
     private let id = "3f9a1c0e5b7d42e8a6c1f09b2d4e7a35"
     private let key = LiveBrowserLink.chatKey(happySession: "cmhk2v9q40001ab12cd34ef56")
 
+    /// These drive noVNC's web page: the native viewer is the default,
+    /// so the fallback is chosen for them, and put back after.
+    private var usedWebViewer = false
+
+    override func setUp() {
+        super.setUp()
+        usedWebViewer = LiveBrowserViewerSetting.usesWebViewer
+        LiveBrowserViewerSetting.usesWebViewer = true
+    }
+
+    override func tearDown() {
+        LiveBrowserViewerSetting.usesWebViewer = usedWebViewer
+        super.tearDown()
+    }
+
     private final class Host: UIViewController, LiveBrowserDockHosting {
         var dock: LiveBrowserDock!
         var liveBrowserDock: LiveBrowserDock? { dock }

@@ -554,7 +554,8 @@ final class LiveBrowserDock: NSObject {
     /// again with the controls for the state now.
     func dropNoVNC() {
         guard let fullScreen, let noVNC = noVNCPage else { return }
-        noVNC.browser.close()
+        noVNC.browser?.close()
+        noVNC.viewer?.stop()
         guard let frame = fullScreen.viewControllers.first(where: { ($0 as? LiveBrowserFullScreenItems)?.isNoVNC == false }) else {
             return minimize()
         }
@@ -634,16 +635,13 @@ final class LiveBrowserDock: NSObject {
                 if let url = take.novncURL, self.fullScreen != nil, self.noVNCPage == nil {
                     let id: String
                     if let workspace { id = workspace } else { id = try await connection.workspace() }
-                    let page = try await BrowserPage.workspace(client: connection.client, url: url, workspaceID: id)
-                    let browser = BrowserViewController(url: url, page: page, extraItems: [])
-                    browser.isRemoteScreen = true
-                    let watch = LiveBrowserNoVNCWatch()
-                    watch.disconnected = { [weak self] in self?.dropNoVNC() }
-                    browser.configure = { watch.install(in: $0) }
-                    browser.onFailure = { [weak self] _ in self?.dropNoVNC() }
-                    let items = LiveBrowserFullScreenItems(dock: self, browser: browser, noVNC: true)
-                    self.fullScreen?.pushViewController(items, animated: true)
-                    items.update(feed.phase.state, held: self.holdsControl)
+                    let place = ControlPlace(url: url, client: connection.client, workspaceID: id)
+                    self.controlPlace = place
+                    let items = try await self.controlPage(place, native: !LiveBrowserViewerSetting.usesWebViewer)
+                    if self.fullScreen != nil, self.noVNCPage == nil {
+                        self.fullScreen?.pushViewController(items, animated: true)
+                        items.update(feed.phase.state, held: self.holdsControl)
+                    }
                 }
                 self.refresh()
             } catch {
@@ -652,6 +650,57 @@ final class LiveBrowserDock: NSObject {
                 self.player?.isBusy = false
                 self.alert(Strings.LiveBrowser.takeFailed, Strings.LiveBrowser.unreachable)
             }
+        }
+    }
+
+    /// Where control's page connects: the address `/take` answered, and
+    /// the computer and workspace it goes through.
+    struct ControlPlace {
+        let url: URL
+        let client: AgentClient
+        let workspaceID: String
+    }
+    /// The last take's, for switching viewers while it is held.
+    private var controlPlace: ControlPlace?
+
+    /// Control's page: the native viewer when asked for and the address
+    /// is one it can reach, noVNC's web page else.
+    private func controlPage(_ place: ControlPlace, native: Bool) async throws -> LiveBrowserFullScreenItems {
+        if native, let target = LiveBrowserVNCTarget(novncURL: place.url) {
+            let client = place.client, workspaceID = place.workspaceID
+            let viewer = LiveBrowserVNCController(target: target) {
+                try await client.liveBrowserVNC(target, workspaceID: workspaceID)
+            }
+            viewer.onGiveUp = { [weak self] in self?.dropNoVNC() }
+            viewer.onUseWebViewer = { [weak self] in self?.switchViewer(native: false) }
+            return LiveBrowserFullScreenItems(dock: self, viewer: viewer)
+        }
+        let page = try await BrowserPage.workspace(client: place.client, url: place.url, workspaceID: place.workspaceID)
+        let browser = BrowserViewController(url: place.url, page: page, extraItems: [])
+        browser.isRemoteScreen = true
+        let watch = LiveBrowserNoVNCWatch()
+        watch.disconnected = { [weak self] in self?.dropNoVNC() }
+        browser.configure = { watch.install(in: $0) }
+        browser.onFailure = { [weak self] _ in self?.dropNoVNC() }
+        return LiveBrowserFullScreenItems(dock: self, browser: browser, noVNC: true)
+    }
+
+    /// The other viewer in place of the one showing, control kept: the
+    /// choice is remembered on this device.
+    func switchViewer(native: Bool) {
+        guard let place = controlPlace, let old = noVNCPage, holdsControl else { return }
+        LiveBrowserViewerSetting.usesWebViewer = !native
+        Task { [weak self] in
+            guard let self, let items = try? await self.controlPage(place, native: native),
+                  let fullScreen = self.fullScreen, self.noVNCPage === old else { return }
+            old.swappedOut = true
+            old.browser?.close()
+            old.viewer?.stop()
+            var stack = fullScreen.viewControllers
+            stack.removeLast()
+            stack.append(items)
+            fullScreen.setViewControllers(stack, animated: false)
+            items.update(self.feed?.phase.state, held: self.holdsControl)
         }
     }
 
@@ -838,9 +887,15 @@ final class LiveBrowserDock: NSObject {
 /// the left and Take control or Release control at the right.
 @MainActor
 final class LiveBrowserFullScreenItems: UIViewController {
-    let browser: BrowserViewController
+    /// The web page shown: the live frame view, or noVNC's page.
+    let browser: BrowserViewController!
+    /// The native viewer of a held browser, in noVNC's place.
+    let viewer: LiveBrowserVNCController?
     private weak var dock: LiveBrowserDock?
+    /// Control's page (noVNC or the native viewer), not the frame view.
     let isNoVNC: Bool
+    /// Replaced by the other viewer: leaving hands nothing back.
+    var swappedOut = false
     let control = UIBarButtonItem()
     /// End browser: at the left by Minimize, far from Release control.
     let endItem = UIBarButtonItem()
@@ -852,38 +907,52 @@ final class LiveBrowserFullScreenItems: UIViewController {
     init(dock: LiveBrowserDock, browser: BrowserViewController, noVNC: Bool) {
         self.dock = dock
         self.browser = browser
+        self.viewer = nil
         self.isNoVNC = noVNC
         super.init(nibName: nil, bundle: nil)
     }
+
+    /// Control's page with the native viewer.
+    init(dock: LiveBrowserDock, viewer: LiveBrowserVNCController) {
+        self.dock = dock
+        self.browser = nil
+        self.viewer = viewer
+        self.isNoVNC = true
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    /// What fills the page under the header.
+    private var content: UIViewController { viewer ?? browser }
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
 
     override func viewDidLoad() {
         super.viewDidLoad()
         view.accessibilityIdentifier = isNoVNC ? "live-browser-novnc" : "live-browser-full-screen"
-        addChild(browser)
-        view.addSubview(browser.view)
+        let content = self.content
+        addChild(content)
+        view.addSubview(content.view)
         if isNoVNC {
             // The bar under the header, clear of the keyboard pill at the
             // bottom and of Minimize: noVNC below it.
             let bar = navBar
             bar.translatesAutoresizingMaskIntoConstraints = false
-            browser.view.translatesAutoresizingMaskIntoConstraints = false
+            content.view.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview(bar)
             view.backgroundColor = .systemBackground
             NSLayoutConstraint.activate([
                 bar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
                 bar.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
                 bar.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
-                browser.view.topAnchor.constraint(equalTo: bar.bottomAnchor),
-                browser.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-                browser.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-                browser.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+                content.view.topAnchor.constraint(equalTo: bar.bottomAnchor),
+                content.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                content.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                content.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             ])
         } else {
-            browser.view.frame = view.bounds
-            browser.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            content.view.frame = view.bounds
+            content.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         }
-        browser.didMove(toParent: self)
+        content.didMove(toParent: self)
         let minimize = UIBarButtonItem(image: UIImage(systemName: "chevron.down"), primaryAction: UIAction { [weak self] _ in self?.dock?.minimize() })
         minimize.accessibilityLabel = Strings.LiveBrowser.minimize
         minimize.accessibilityIdentifier = "live-browser-minimize"
@@ -910,7 +979,19 @@ final class LiveBrowserFullScreenItems: UIViewController {
         // Control alone at the right, or with reload on the frame view: the
         // browser's back, forward and share pushed it into the header's
         // overflow menu on a phone, out of sight under noVNC.
-        navigationItem.rightBarButtonItems = isNoVNC ? [control] : [control, browser.reloadItem]
+        if viewer != nil {
+            navigationItem.rightBarButtonItems = [control]
+        } else if isNoVNC {
+            // noVNC's page, the fallback: the native viewer a tap away.
+            let native = UIBarButtonItem(image: UIImage(systemName: "rectangle.on.rectangle"), primaryAction: UIAction { [weak self] _ in
+                self?.dock?.switchViewer(native: true)
+            })
+            native.accessibilityLabel = Strings.LiveBrowser.Viewer.nativeViewer
+            native.accessibilityIdentifier = "live-browser-native-viewer"
+            navigationItem.rightBarButtonItems = [control, native]
+        } else {
+            navigationItem.rightBarButtonItems = [control, browser.reloadItem]
+        }
         update(state, held: held)
     }
 
@@ -933,6 +1014,7 @@ final class LiveBrowserFullScreenItems: UIViewController {
         guard isNoVNC else { return }
         restoreGestures()
         let navigation = navigationController
+        guard !swappedOut else { return }
         if isMovingFromParent || isBeingDismissed || navigation?.isBeingDismissed == true { dock?.noVNCLeft() }
     }
 
@@ -940,7 +1022,11 @@ final class LiveBrowserFullScreenItems: UIViewController {
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         guard isNoVNC else { return }
-        if parent == nil || navigationController?.presentingViewController == nil { dock?.noVNCLeft() }
+        let gone = parent == nil || navigationController?.presentingViewController == nil
+        // The native viewer's socket goes with its page, however it went.
+        if gone { viewer?.stop() }
+        guard !swappedOut else { return }
+        if gone { dock?.noVNCLeft() }
     }
 
     /// noVNC has every touch: no swipe back, no pull to dismiss, no split

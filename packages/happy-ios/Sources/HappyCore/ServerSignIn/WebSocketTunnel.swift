@@ -62,13 +62,25 @@ public final class WebSocketTunnel: BrowserStream, @unchecked Sendable {
 
     /// Upgrades `stream` at `path`, the credential in `Authorization` only.
     /// A refusal is thrown as `TunnelRefusal` with its (bounded) body.
-    public static func open(_ stream: any BrowserStream, path: String, credential: String, key: Data = OAuthSignInRequest.randomBytes(16),
+    ///
+    /// `credential` nil sends no `Authorization` (the live browser's VNC
+    /// socket is authorised by its link, not a bearer); `host` replaces the
+    /// stream's authority in `Host`; `protocols` go in
+    /// `Sec-WebSocket-Protocol`, which websockify wants as `binary`.
+    public static func open(_ stream: any BrowserStream, path: String, credential: String?, host: String? = nil, protocols: [String] = [],
+                            key: Data = OAuthSignInRequest.randomBytes(16),
                             mask: @escaping @Sendable () -> [UInt8] = WebSocketTunnel.randomMask, keepalive: Bool = true) async throws -> WebSocketTunnel {
+        let unsafe: (String) -> Bool = { $0.contains(where: { $0 == "\r" || $0 == "\n" }) }
         guard path.hasPrefix("/"), !path.contains(where: { $0 == "\r" || $0 == "\n" || $0 == " " }),
-              !credential.contains(where: { $0 == "\r" || $0 == "\n" }) else { throw WebSocketTunnelError.protocolViolation }
+              !(credential.map(unsafe) ?? false), !(host.map(unsafe) ?? false), host?.isEmpty != true,
+              !protocols.contains(where: { $0.isEmpty || unsafe($0) || $0.contains(",") || $0.contains(" ") })
+        else { throw WebSocketTunnelError.protocolViolation }
         let encodedKey = key.base64EncodedString()
-        let head = "GET \(path) HTTP/1.1\r\nHost: \(stream.authority)\r\nAuthorization: Bearer \(credential)\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
-            + "Sec-WebSocket-Key: \(encodedKey)\r\nSec-WebSocket-Version: 13\r\n\r\n"
+        var head = "GET \(path) HTTP/1.1\r\nHost: \(host ?? stream.authority)\r\n"
+        if let credential { head += "Authorization: Bearer \(credential)\r\n" }
+        head += "Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: \(encodedKey)\r\nSec-WebSocket-Version: 13\r\n"
+        if !protocols.isEmpty { head += "Sec-WebSocket-Protocol: \(protocols.joined(separator: ", "))\r\n" }
+        head += "\r\n"
         try await stream.write(Data(head.utf8))
         let (response, rest) = try await BrowserRelay.head(stream)
         let status = Int(response.line.split(separator: " ").dropFirst().first ?? "") ?? 0

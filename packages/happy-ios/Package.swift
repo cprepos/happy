@@ -74,9 +74,15 @@ let package = Package(
             ]
         ),
         .target(
+            // The system zlib, for the live browser's VNC viewer (ZRLE):
+            // a header that makes zlib's init macros callable from Swift.
+            name: "CZlib",
+            linkerSettings: [.linkedLibrary("z")]
+        ),
+        .target(
             name: "HappyCore",
             dependencies: [
-                "HappyCrypto", "HappyWire", "HappyStore",
+                "HappyCrypto", "HappyWire", "HappyStore", "CZlib",
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "Tailcat", package: "tailcat-swift"),
             ]
@@ -130,7 +136,7 @@ let package = Package(
         ),
         .testTarget(
             name: "HappyCoreTests",
-            dependencies: ["HappyCore", "HappyCrypto"],
+            dependencies: ["HappyCore", "HappyCrypto", "CZlib"],
             resources: [.copy("Fixtures")]
         ),
         .testTarget(
