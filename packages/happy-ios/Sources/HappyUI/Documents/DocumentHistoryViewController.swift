@@ -38,12 +38,29 @@ final class DocumentHistoryViewController: UITableViewController {
         empty.adjustsFontForContentSizeCategory = true
         tableView.backgroundView = empty
         load()
+        attachRefresh(to: tableView) { [weak self] in await self?.reload() ?? .offline }
     }
 
-    private func load() {
+    override var keyCommands: [UIKeyCommand]? {
+        [RefreshShortcut.command(action: #selector(refreshFromKeyboard))] + (super.keyCommands ?? [])
+    }
+
+    @objc private func refreshFromKeyboard() { runRefresh(on: tableView) }
+
+    /// The pull: the log read again, and the computer's connection
+    /// started over first when that read fails.
+    private func reload() async -> RefreshOutcome {
+        if await load().value { return .refreshed }
+        let outcome = await session.refresh()
+        return await load().value ? .refreshed : outcome
+    }
+
+    /// Reads the whole log; true when it was read.
+    @discardableResult
+    private func load() -> Task<Bool, Never> {
         let client = session.client
         let surfaceId = surfaceId
-        Task { [weak self] in
+        return Task { [weak self] in
             // Every page, read off the main thread; a long log is a few of them.
             let read = await Task.detached { () -> [DocumentChange]? in
                 var all: [DocumentChange] = []
@@ -56,12 +73,13 @@ final class DocumentHistoryViewController: UITableViewController {
                 }
                 return all.reversed()
             }.value
-            guard let self else { return }
+            guard let self else { return false }
             self.changes = read ?? []
             self.empty.text = read == nil ? Strings.Documents.unavailable : Strings.Documents.historyEmpty
             self.tableView.backgroundView?.isHidden = !(read ?? []).isEmpty
             self.tableView.reloadData()
             self.loadAuthors()
+            return read != nil
         }
     }
 

@@ -21,6 +21,18 @@ public func attachRefresh(to scrollView: UIScrollView, action: @escaping @MainAc
     return control
 }
 
+/// The attached control's refresh without the pull (Command-R): its
+/// spinner shown, and shown in view when the list rests at its top.
+@MainActor
+public func runRefresh(on scrollView: UIScrollView) {
+    guard let control = scrollView.refreshControl, !control.isRefreshing else { return }
+    let top = -scrollView.adjustedContentInset.top
+    let atTop = scrollView.contentOffset.y <= top + 1
+    control.beginRefreshing()
+    if atTop { scrollView.setContentOffset(CGPoint(x: scrollView.contentOffset.x, y: top - control.frame.height), animated: true) }
+    control.sendActions(for: .valueChanged)
+}
+
 /// Command-R: the same refresh as a pull, listed in the keyboard's
 /// shortcuts as "Refresh". Each screen with a refresh lists it in its
 /// `keyCommands`.

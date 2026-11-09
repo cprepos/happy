@@ -98,6 +98,29 @@ final class SessionChangesViewController: UIViewController {
         )
         pipeline.follow(session.homeFeed.snapshots()) { $0 = $1 }
         observation = pipeline.observation
+        attachRefresh(to: list.collectionView) { [weak self] in await self?.reload() ?? .offline }
+    }
+
+    override var keyCommands: [UIKeyCommand]? {
+        [RefreshShortcut.command(action: #selector(refreshFromKeyboard))] + (super.keyCommands ?? [])
+    }
+
+    @objc private func refreshFromKeyboard() { runRefresh(on: list.collectionView) }
+
+    /// The pull: the changes read again from the computer, and the
+    /// account's link asked again when that read finds no answer.
+    private func reload() async -> RefreshOutcome {
+        switch mode {
+        case .happyAgent?:
+            loadGitState()
+            _ = await gitStateTask?.value
+            if case .ready = gitLoad { return .refreshed }
+        case .legacy?:
+            if await session.detailGitStatus.refresh(sessionId: sessionId) != nil { return .refreshed }
+        case nil:
+            break
+        }
+        return await session.refresh(scope: .chat(sessionId))
     }
 
     override func viewWillAppear(_ animated: Bool) {

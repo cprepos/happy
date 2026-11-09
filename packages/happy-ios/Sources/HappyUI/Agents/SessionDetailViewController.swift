@@ -195,6 +195,7 @@ final class SessionDetailViewController: UIViewController, UIGestureRecognizerDe
         applyActivity()
         applyShared()
         askShared(media: true, links: true)
+        attachRefresh(to: scroll) { [weak self] in await self?.reload() ?? .offline }
         #if DEBUG
         if let mode = ProcessInfo.processInfo.environment["HAPPY_DETAIL_PROBE"] { startProbe(relayout: mode == "relayout") }
         #endif
@@ -204,6 +205,21 @@ final class SessionDetailViewController: UIViewController, UIGestureRecognizerDe
         super.viewDidDisappear(animated)
         guard isMovingFromParent || navigationController == nil else { return }
         finish()
+    }
+
+    override var keyCommands: [UIKeyCommand]? {
+        [RefreshShortcut.command(action: #selector(refreshFromKeyboard))] + (super.keyCommands ?? [])
+    }
+
+    @objc private func refreshFromKeyboard() { runRefresh(on: scroll) }
+
+    /// The pull: the computer's connection and this chat asked again,
+    /// then what failed to load and the shared media and links.
+    private func reload() async -> RefreshOutcome {
+        let outcome = await session.refresh(conversation: warm.chat.conversation)
+        loader.retryFailed()
+        askShared(media: true, links: true)
+        return outcome
     }
 
     private var finished = false

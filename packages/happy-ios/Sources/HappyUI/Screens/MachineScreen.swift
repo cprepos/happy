@@ -13,7 +13,6 @@ final class MachineViewController: UIViewController {
     private let session: AccountSession
     private let machineId: String
     private let list = GroupedListView()
-    private let refresh = UIRefreshControl()
     /// What the screen shows, worked out off the main thread by the
     /// account's machine feed; nil until the first one.
     private var content: MachineScreenContent?
@@ -47,9 +46,15 @@ final class MachineViewController: UIViewController {
         followsTextSize()
         // Screens pushed from here go back with the chevron alone.
         minimalBackButton()
-        refresh.addTarget(self, action: #selector(pulledToRefresh), for: .valueChanged)
-        list.refreshControl = refresh
+        // The account's link and its computers asked again.
+        attachRefresh(to: list) { [session] in await session.refresh(scope: .machines) }
     }
+
+    override var keyCommands: [UIKeyCommand]? {
+        [RefreshShortcut.command(action: #selector(refreshFromKeyboard))] + (super.keyCommands ?? [])
+    }
+
+    @objc private func refreshFromKeyboard() { runRefresh(on: list) }
 
     /// The machine and its recent sessions, read only while this screen is
     /// on screen.
@@ -262,14 +267,6 @@ final class MachineViewController: UIViewController {
     }
 
     // MARK: Actions
-
-    @objc private func pulledToRefresh() {
-        let actions = session.detailActions
-        Task { @MainActor [weak self] in
-            await actions.refreshMachines()
-            self?.refresh.endRefreshing()
-        }
-    }
 
     private func confirmStopDaemon() {
         typealias S = Strings.MachineDetail

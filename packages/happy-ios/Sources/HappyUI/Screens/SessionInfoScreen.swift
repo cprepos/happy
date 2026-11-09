@@ -141,6 +141,26 @@ final class SessionInfoViewController: UIViewController, UIScrollViewDelegate {
         showLoadStatus(.loading)
         beginObservation()
         loadVoiceConfig()
+        attachRefresh(to: scroll) { [weak self] in await self?.reload() ?? .offline }
+    }
+
+    override var keyCommands: [UIKeyCommand]? {
+        [RefreshShortcut.command(action: #selector(refreshFromKeyboard))] + (super.keyCommands ?? [])
+    }
+
+    @objc private func refreshFromKeyboard() { runRefresh(on: scroll) }
+
+    /// The pull: the chat's own state asked of the server again, and its
+    /// git status read again beside it. A page that never loaded starts
+    /// its reading over too.
+    private func reload() async -> RefreshOutcome {
+        if loadState != .ready { retryLoading() }
+        let git = session.detailGitStatus
+        let id = sessionId
+        let status = Task { _ = await git.refresh(sessionId: id) }
+        let outcome = await session.refresh(scope: .chat(id))
+        await status.value
+        return outcome
     }
 
     /// Asks until the server answers. Meanwhile the Voice row stands on the

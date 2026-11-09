@@ -43,20 +43,38 @@ final class TodoHistoryViewController: UITableViewController {
         empty.adjustsFontForContentSizeCategory = true
         tableView.backgroundView = empty
         load()
+        attachRefresh(to: tableView) { [weak self] in await self?.reload() ?? .offline }
     }
 
-    private func load() {
+    override var keyCommands: [UIKeyCommand]? {
+        [RefreshShortcut.command(action: #selector(refreshFromKeyboard))] + (super.keyCommands ?? [])
+    }
+
+    @objc private func refreshFromKeyboard() { runRefresh(on: tableView) }
+
+    /// The pull: the history read again, and the computer's connection
+    /// started over first when that read fails.
+    private func reload() async -> RefreshOutcome {
+        if await load().value { return .refreshed }
+        let outcome = await session.refresh()
+        return await load().value ? .refreshed : outcome
+    }
+
+    /// Reads the todo's history; true when it was read.
+    @discardableResult
+    private func load() -> Task<Bool, Never> {
         let library = session.engine.todos
         let surfaceId = surfaceId, todoId = todo.id
-        Task { [weak self] in
+        return Task { [weak self] in
             let read = try? await library.history(surfaceId, todoId)
-            guard let self else { return }
+            guard let self else { return false }
             let revisions = read?.revisions ?? []
             rows = Array(zip(revisions, TodoRevision.changes(revisions)).reversed()).map { ($0.0, $0.1) }
             names = read?.names ?? [:]
             empty.text = read == nil ? Strings.Todos.historyUnavailable : Strings.Todos.historyEmpty
             tableView.backgroundView?.isHidden = !rows.isEmpty
             tableView.reloadData()
+            return read != nil
         }
     }
 

@@ -121,6 +121,23 @@ final class SessionFileViewController: UIViewController {
         updateMode()
         render()
         load()
+        attachRefresh(to: lines) { [weak self] in await self?.reload() ?? .offline }
+    }
+
+    override var keyCommands: [UIKeyCommand]? {
+        [RefreshShortcut.command(action: #selector(refreshFromKeyboard))] + (super.keyCommands ?? [])
+    }
+
+    @objc private func refreshFromKeyboard() { runRefresh(on: lines) }
+
+    /// The pull: the file read again from the computer, and the account's
+    /// link asked again when that read fails.
+    private func reload() async -> RefreshOutcome {
+        loadTask?.cancel()
+        load()
+        _ = await loadTask?.value
+        guard error != nil else { return .refreshed }
+        return await session.refresh(scope: .chat(sessionId))
     }
 
     override func viewDidLayoutSubviews() {
