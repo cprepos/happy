@@ -16,6 +16,12 @@ HF=${HF:-$HOME/happy-fast}
 SIM_PREFIX=${SIM_PREFIX:-happy-fast}
 SIM_TYPE=${SIM_TYPE:-com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro}
 SIM_RUNTIME=${SIM_RUNTIME:-com.apple.CoreSimulator.SimRuntime.iOS-26-5}
+# A build Mac on a newer Xcode (prep-air) lacks iOS 26.5: use its newest
+# plain iOS runtime instead.
+if ! xcrun simctl list runtimes 2>/dev/null | grep -q -- "$SIM_RUNTIME\$"; then
+  SIM_RUNTIME=$(xcrun simctl list runtimes 2>/dev/null \
+    | grep -oE 'com\.apple\.CoreSimulator\.SimRuntime\.iOS-[0-9]+-[0-9]+$' | sort -V | tail -1)
+fi
 
 log() { print -r -- "[$(date +%H:%M:%S)] $*"; }
 
