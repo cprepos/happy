@@ -2,31 +2,67 @@ import Foundation
 import HappyWire
 
 /// How an HTTPS server's proxy tunnels open (edge SSO contract §4), learned
-/// once per origin for the app's lifetime so a blocked server isn't tried
-/// again and again:
+/// per origin so a blocked server isn't tried again and again:
 ///
 /// - `webSocket` when health reports `capabilities.webSocketTunnels`;
-/// - otherwise CONNECT, until something in front of the daemon refuses it
-///   (an answer that isn't Happy's JSON, or a dropped connection), which
-///   makes it `blocked`: previews say so instead of retrying.
-final class TunnelSupport: @unchecked Sendable {
+/// - otherwise CONNECT, until something in front of the daemon definitively
+///   refuses it (an answer below 500 that isn't Happy's JSON), which makes
+///   it `blocked`: previews say so instead of retrying.
+///
+/// A timeout, a dropped connection or a 5xx never blocks: those are the
+/// network or the server having a bad moment, not the edge's policy. A
+/// block lasts `blockedFor`, and `forget()` (foreground, network change,
+/// refresh) clears everything learned.
+public final class TunnelSupport: @unchecked Sendable {
     enum Mode: Equatable, Sendable { case webSocket, connect, blocked }
 
-    static let shared = TunnelSupport()
+    public static let shared = TunnelSupport()
+    /// How long a definitive refusal keeps an origin blocked.
+    static let blockedFor: TimeInterval = 60
+
     private let lock = NSLock()
+    private let now: @Sendable () -> Date
     private var modes: [String: Mode] = [:]
+    private var blockedAt: [String: Date] = [:]
 
-    func mode(_ origin: String) -> Mode? { lock.withLock { modes[origin] } }
+    init(now: @escaping @Sendable () -> Date = { Date() }) { self.now = now }
 
-    func set(_ mode: Mode, for origin: String) {
+    func mode(_ origin: String) -> Mode? {
         lock.withLock {
-            // Blocked stays blocked until the app starts again.
-            guard modes[origin] != .blocked else { return }
-            modes[origin] = mode
+            expireLocked(origin)
+            return modes[origin]
         }
     }
 
-    func forget() { lock.withLock { modes.removeAll() } }
+    func set(_ mode: Mode, for origin: String) {
+        lock.withLock {
+            expireLocked(origin)
+            // Blocked stays blocked until its time runs out or `forget()`.
+            guard modes[origin] != .blocked else { return }
+            modes[origin] = mode
+            if mode == .blocked { blockedAt[origin] = now() }
+        }
+    }
+
+    /// Clears every origin's mode, so the next tunnel learns afresh.
+    public func forget() {
+        lock.withLock {
+            modes.removeAll()
+            blockedAt.removeAll()
+        }
+    }
+
+    /// Whether a refusal that is neither sign-in nor the daemon's own error
+    /// is the edge's settled answer: it said something, below 500.
+    static func isDefinitive(status: Int) -> Bool { (200..<500).contains(status) }
+
+    /// Called with `lock` held.
+    private func expireLocked(_ origin: String) {
+        guard modes[origin] == .blocked, let since = blockedAt[origin],
+              now().timeIntervalSince(since) >= Self.blockedFor else { return }
+        modes[origin] = nil
+        blockedAt[origin] = nil
+    }
 }
 
 extension AgentHTTPTransport {
@@ -83,9 +119,9 @@ extension AgentHTTPTransport {
             do { (head, rest) = try await BrowserRelay.head(stream) }
             catch is CancellationError { throw CancellationError() }
             catch {
-                // Dropped without an answer: the edge doesn't carry CONNECT.
-                TunnelSupport.shared.set(.blocked, for: origin)
-                throw BrowserError.tunnelsBlocked
+                // Dropped or timed out without an answer. That may be the
+                // edge, but it may as well be the network: never a block.
+                throw BrowserError.unavailable
             }
             let status = Int(head.line.split(separator: " ").dropFirst().first ?? "") ?? 0
             guard status == 200, rest.isEmpty else {
@@ -103,12 +139,15 @@ extension AgentHTTPTransport {
     }
 
     /// A refusal that needs signing in goes up as it is; the daemon's own
-    /// is an ordinary upstream answer; anything else is the edge refusing
-    /// tunnels.
-    static func classify(_ refusal: TunnelRefusal, origin: String) -> any Error {
+    /// is an ordinary upstream answer; a 5xx or an unreadable status is a
+    /// passing failure; anything else is the edge refusing tunnels.
+    static func classify(_ refusal: TunnelRefusal, origin: String, support: TunnelSupport = .shared) -> any Error {
         if refusal.requiresSignIn { return refusal }
         if refusal.isHappyError { return BrowserError.upstream(refusal.status) }
-        TunnelSupport.shared.set(.blocked, for: origin)
+        guard TunnelSupport.isDefinitive(status: refusal.status) else {
+            return refusal.status >= 500 ? BrowserError.upstream(refusal.status) : BrowserError.unavailable
+        }
+        support.set(.blocked, for: origin)
         return BrowserError.tunnelsBlocked
     }
 }

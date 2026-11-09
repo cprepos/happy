@@ -841,4 +841,44 @@ final class WebSocketTunnelTests: XCTestCase {
         TunnelSupport.shared.set(.webSocket, for: origin)
         XCTAssertEqual(TunnelSupport.shared.mode(origin), .blocked)
     }
+
+    /// Only an edge's settled answer blocks: a 5xx from whatever fronts the
+    /// daemon, or a reply with no readable status (a dropped or timed-out
+    /// head), is a passing failure and the next preview tries again.
+    func testAPassingFailureNeverBlocksTheOrigin() {
+        let support = TunnelSupport()
+        let origin = "https://flaky.example"
+        let gateway = AgentHTTPTransport.classify(TunnelRefusal(status: 504, contentType: "text/html", body: Data()), origin: origin, support: support)
+        XCTAssertEqual(gateway as? BrowserError, .upstream(504))
+        let dropped = AgentHTTPTransport.classify(TunnelRefusal(status: 0, contentType: nil, body: Data()), origin: origin, support: support)
+        XCTAssertEqual(dropped as? BrowserError, .unavailable)
+        XCTAssertNil(support.mode(origin))
+        support.set(.connect, for: origin)
+        XCTAssertEqual(support.mode(origin), .connect)
+    }
+
+    /// A block lasts a minute, and `forget()` lifts it at once.
+    func testABlockExpiresAndForgetLiftsIt() {
+        final class Clock: @unchecked Sendable {
+            private let lock = NSLock()
+            private var value = Date(timeIntervalSince1970: 1_000_000)
+            var now: Date { lock.withLock { value } }
+            func advance(_ seconds: TimeInterval) { lock.withLock { value += seconds } }
+        }
+        let clock = Clock()
+        let support = TunnelSupport(now: { clock.now })
+        let origin = "https://edge.example"
+        let edge = AgentHTTPTransport.classify(TunnelRefusal(status: 405, contentType: "text/html", body: Data()), origin: origin, support: support)
+        XCTAssertEqual(edge as? BrowserError, .tunnelsBlocked)
+        clock.advance(TunnelSupport.blockedFor - 1)
+        XCTAssertEqual(support.mode(origin), .blocked)
+        support.set(.connect, for: origin)
+        XCTAssertEqual(support.mode(origin), .blocked, "a block isn't overwritten while it lasts")
+        clock.advance(1)
+        XCTAssertNil(support.mode(origin), "past its minute the origin is learned again")
+        support.set(.blocked, for: origin)
+        XCTAssertEqual(support.mode(origin), .blocked)
+        support.forget()
+        XCTAssertNil(support.mode(origin))
+    }
 }
