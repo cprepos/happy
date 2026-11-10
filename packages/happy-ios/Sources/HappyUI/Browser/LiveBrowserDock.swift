@@ -412,7 +412,8 @@ final class LiveBrowserDock: NSObject {
 
     /// A chip's tap: its link's player, if it is still the chat's.
     func open(_ link: LiveBrowserLink) {
-        guard link == self.link else { return }
+        // The same browser at another origin is the same browser.
+        guard link.id == self.link?.id else { return }
         openPlayer()
     }
 
