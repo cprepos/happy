@@ -30,7 +30,8 @@ Preserve credential and push compatibility on upgrades.
   `vendor/elevenlabs` fixes audio focus, teardown and call-local mute.
 - **An agent connection's voice call** (`call/`, `ui/call/`), iOS's
   `HappyCore/Call` ported: apart from the relay's voice above, its own new
-  hosted ElevenLabs agent and four client tools (`CallTool`), no permission
+  hosted ElevenLabs agent, its system prompt sent from the phone
+  (`CallPrompt`) and v3's four client tools (`CallTool`), no permission
   or question tool, hearing only new words and stopping errors from the last
   four conversations visited. Home's three-bar button sits immediately left of compose
   (`ComposeFab(onVoice)`); the call's bar (`CallFrame`, after Telegram-iOS's
@@ -41,9 +42,9 @@ Preserve credential and push compatibility on upgrades.
   It ends when the app leaves the foreground, another account opens or the
   relay's voice starts. For launch it connects to a public agent by its ID
   (`PublicAgentCallGrants`), a connection mechanism and not authentication;
-  the ID comes from `HAPPY_CALL_AGENT_ID`, `-Phappy.callAgentId` or the
-  ignored `local.properties` into `BuildConfig.CALL_AGENT_ID`, and is never
-  committed. Without it the tap says "Voice isn't set up for this
+  the ID comes from `HAPPY_CALL_AGENT_V3_ID`, `-Phappy.callAgentV3Id` or the
+  ignored `local.properties` (`happy.callAgentV3Id`) into
+  `BuildConfig.CALL_AGENT_ID`, and is never committed. Without it the tap says "Voice isn't set up for this
   connection yet". Each device gets 20 free connected minutes in any
   rolling 30 days, 5 hours a month with the subscription (`CallAllowance`,
   local). The app's own sheet (`CallSheet`, no vendor UI) is the welcome,
@@ -52,7 +53,7 @@ Preserve credential and push compatibility on upgrades.
   what the store and RevenueCat say is on sale (`Offer.OnSale`), never a
   made-up price (`Preview` is a debug-only test screen). A `ModalBottomSheet` calls
   `SheetStatusIcons()` so the bar under its scrim keeps light icons.
-  `openSession` replaces a conversation on top and goes over anything else
+  `navigate` to a conversation replaces one on top and goes over anything else
   (`openConversationInPlace`). See
   `docs/agent-voice-call.md` at the repository root. The `happy.call.*`
   intent extras (`CallFixtures`), `CallProbe` and `CallLiveDeviceCheck`
@@ -349,34 +350,55 @@ win:
   `openAgentSettingsRow` opens the agent's Settings or Appearance page with
   `reveal`, or Chief of Staff with the ask for name and avatar.
 - **Agent home search** looks and moves as iOS's
-  (`HappyCore/Agents/Search.swift`, `ui/connection/AgentSearch.kt`): the
-  results fade in over home (200 ms ease-out) on its own ground, drawn as
-  home is, and home never moves under them. Nothing typed shows the eight
-  bots and tasks last active (`AgentSearch.recent`). A query is the node's
-  one search (happy-agent API.md, "Search"): one flat card fusing the
-  phone's half with the daemon's, then quick actions and settings (local
-  only), each under its heading, at most six, or "Nothing found" in a
-  capsule. It is the only search over vaults; a vault has none of its own.
+  (`HappyCore/Agents/Search.swift`, `SearchShown.swift`,
+  `ui/connection/AgentSearch.kt`) and lists what desktop's ⌘K palette
+  lists (happy-desktop `commandPaletteResults.ts`): the results fade in
+  over home (200 ms ease-out) on its own ground, and home never moves under
+  them. Nothing typed shows the eight bots and tasks last active
+  (`AgentSearch.recent`). A query is the node's one search (happy-agent
+  API.md, "Search"): one flat card of at most 12 things found
+  (`FOUND_LIMIT`), the phone's half fused with the daemon's, and quick
+  actions and settings (local only), each under its heading, at most six,
+  or "Nothing found" in a capsule. Each section stands where its best
+  answer puts it, as desktop's do; what was found comes first once the
+  daemon has answered with anything. It is the only search over vaults; a
+  vault has none of its own.
   - The phone's half (`localSearch`), at keystroke speed, from what it
-    holds: home's conversations (`agent:`), projects and worktrees, the
-    catalog's documents (`document:`) and other Surfaces (`surface:`),
-    joined or not (`AgentSearchSources`, read only while search is open),
-    the open todos kept (`todo:`), the kept artifact page (`artifact:`),
-    and home's own pages (`home:`, phone only). Each kind is ranked by
-    desktop's `AgentSearch.rank` (words in any order, a kind's name three
-    below a title match, joined before not), then the kinds fused as the
-    daemon fuses its providers: by place, then provider order.
-  - The daemon's half: `POST /v0/search` with `{q, limit}`
-    (`search/Search.kt`), 120 ms after the typing rests, cancelled by the
-    next keystroke, only where health says `capabilities.search`; offline
-    or older, the phone's alone. `SearchFusion` is the shared RRF (k = 60)
-    over `key`, the client package's vectors in `test/resources/search/`
-    (from happy-agent c67719baf, client 0.0.158). A daemon's answer joins
-    only the query it was for. A result found by both keeps the phone's
-    row unless the daemon has a content line for it; vault items, messages
-    (titled by their conversation, opening it), events and content matches
-    are the daemon's rows, with a second line (66 high). People and skills
-    have no page on the phone and are left out with unknown types.
+    holds: home's conversations (`agent:`), the catalog's documents
+    (`document:`) and other Surfaces (`surface:`), joined or not
+    (`AgentSearchSources`, read only while search is open), the open todos
+    kept (`todo:`), the kept artifact page (`artifact:`), and home's own
+    pages (`home:`, phone only). Each kind is ranked by desktop's
+    `AgentSearch.rank` (words in any order, a kind's name three below a
+    title match, joined before not), then the kinds fused as the daemon
+    fuses its providers: by place, then provider order; its best 12 go to
+    the fusion.
+  - The daemon's half: `POST /v0/search` with `{q, limit: 20}` and no
+    `types`, as desktop asks (`search/Search.kt`), 120 ms after the typing
+    rests, cancelled by the next keystroke, only where health says
+    `capabilities.search`; offline or older, the phone's alone.
+    `SearchFusion` is the shared RRF (k = 60) over `key`, the client
+    package's vectors in `test/resources/search/` (from happy-agent
+    c67719baf, client 0.0.158). A daemon's answer joins only the query it
+    was for. What the phone has nowhere to open is left out before the
+    fusion, as desktop's `remoteRow` leaves out what it can't open:
+    projects and worktrees (they open nothing on the phone, as their home
+    headings don't), anything archived, a conversation or message in no
+    workspace, and skills, which don't parse. People (`type: "user"`, only
+    `userId` and `name`) stand apart under People, after what was found, at
+    most six in the daemon's order, and only on a Happy Cloud server
+    (`AgentHomeActions.onOpenPerson`); each wears their face from the team
+    directory (`TeamDirectory`, `GET /v0/users?ids=`, never a profile read
+    per row) and opens their profile.
+  - Every found row is a title and desktop's meta under it (66 high): a
+    conversation's kind (Bot, Task, Subtask) or, for a project's chat, its
+    project and worktree; a Surface's kind; an artifact's type; a todo's
+    list, "Done" first when done; a vault item's vault and path; an
+    event's calendar and day; a message is its words, under its
+    conversation, "Agent" when an agent wrote it, and its day. A content
+    match's words take that line, on the phone's row too when both found
+    it. The phone's own rows wear home's marks and open as home opens
+    them; home's own pages draw as home draws them.
   What a result opens leaves the search for coming back; new work, Cancel
   or back, and a pull down from the results' top end it.
   The Happy CLI home has no search, as on iOS.
@@ -834,8 +856,27 @@ ANDROID_SERIAL=<device> ./gradlew :benchmark:connectedBenchmarkBenchAndroidTest 
 
 ### Versions and signing
 
-- `versionName` is owned by `app/build.gradle.kts`. `HAPPY_VERSION_NAME` or
-  `-Phappy.versionName` overrides it.
+- `versionName` is CalVer `YYYY.M.C`: the UTC year, the month without a
+  leading zero, and a counter that starts at 1 each month (`2026.11.1`).
+  Every variant carries the same one, and every build of it differs only
+  by its versionCode. The checked-in default (`defaultVersionName` in
+  `app/build.gradle.kts`) is the upcoming release. `C` moves only when a
+  version is released publicly (a Play production rollout); uploads to a
+  test track, production builds included, don't move it. The next version
+  is the highest `C` this UTC month's release tags carry, plus one, else 1,
+  and a month without a release restamps it to the new month.
+- The build released publicly is tagged
+  `native-android-<versionName>-build<versionCode>` when its rollout
+  starts, never at upload; Android counts on its own, and tags of other
+  schemes (`2.0.0`) don't count. Uploads get no tag; their upload record
+  goes in the release report.
+- `node scripts/native-version.cjs next android` prints the upcoming
+  version from the tags; `check android` fails unless the default is it;
+  `set android` writes it. Before any store build run `check android`, and
+  if it fails, `set android`, commit and land that on `main` first.
+- `HAPPY_VERSION_NAME` or `-Phappy.versionName` overrides the default. A
+  signed release or preview build whose versionName isn't CalVer fails in
+  `pre<Variant>Build`.
 - `versionCode` is EAS's remote, auto-incremented build number
   (`eas.json` `appVersionSource: remote`). There is no counter in the repo:
   a store build passes the next number as `HAPPY_VERSION_CODE` or
@@ -846,6 +887,14 @@ ANDROID_SERIAL=<device> ./gradlew :benchmark:connectedBenchmarkBenchAndroidTest 
   (`keystore.properties.example` lists the keys). Without them `release`
   builds unsigned and `preview` debug-signed, so `assembleRelease` works
   anywhere, CI included.
+- Every `release` and `preview` build, signed or not, needs the voice agent:
+  `HAPPY_CALL_AGENT_V3_ID` (or `-Phappy.callAgentV3Id`, or `happy.callAgentV3Id`
+  in `local.properties`), an ElevenLabs `agent_…` ID. Without it the build
+  fails in `pre<Variant>Build` rather than ship a voice button that only says
+  voice isn't set up. v2's old `HAPPY_CALL_AGENT_ID` is ignored. A build that
+  ships nowhere (CI, a local `assembleRelease` to check R8) sets
+  `HAPPY_RELEASE_WITHOUT_CALL_AGENT=1` instead. Debug, bench and tests never
+  need it.
 - PostHog's public project key comes from `EXPO_PUBLIC_POSTHOG_API_KEY` or
   `-Phappy.postHogKey`, as happy-app's and Happy Desktop's do; nothing is
   checked in. A build without it reads every feature flag as off and sends
@@ -859,7 +908,8 @@ ANDROID_SERIAL=<device> ./gradlew :benchmark:connectedBenchmarkBenchAndroidTest 
 - Shipping goes through the `release` skill like every other release.
 - CI: `.github/workflows/happy-android.yml` runs `assembleDebug
   assembleRelease testDebugUnitTest :crypto:test` on changes under
-  `packages/happy-android/` and shared mobile resources. It has no signing secrets.
+  `packages/happy-android/` and shared mobile resources. It has no signing
+  secrets and no voice agent (`HAPPY_RELEASE_WITHOUT_CALL_AGENT=1`).
 
 The JDK toolchain (21) is provisioned by the foojay resolver if the machine
 only has a JRE. In the agent sandbox Gradle needs network and local sockets:
@@ -1119,15 +1169,53 @@ change its wire behaviour on Android alone.
   title, a scene above it) with one primary action at the bottom
   (`CloudScreens.kt`, `CloudFrame`); servers are cards on it.
   Sign-in methods are the accounts page's (Apple and GitHub now); the app
-  shows none of its own. Your servers' ⋮ has "Sign out of Happy Cloud", which
+  shows none of its own, but one hidden: the welcome's sparkles pressed ten
+  times within four seconds (`CloudWelcome`) reveal a test account's login
+  and password, for people and agents testing without Apple or GitHub.
+  Nothing of it is composed before then. It posts `POST /v1/auth/password`
+  (`CloudAccount.signInWithPassword`) for the same hour's pass, then goes on
+  as after the browser; a wrong login or password, or a lockout, shows under
+  the fields. The password stays in that composition only: never saved with
+  the screen, stored or logged. Test accounts exist only when an operator
+  creates one. Your servers' ⋮ has "Sign out of Happy Cloud", which
   forgets the pass; servers on the phone stay signed in. Removing a cloud
   server (`removeAgentConnection`) first revokes its session at the accounts
   service (`POST /revoke`, its refresh token and `client_id`, no account
   token; `CloudAccount.revoke`, best effort, not waited on). A cloud server's
-  Settings has Members (`CloudMembers.kt`: `GET /v1/servers/:id/members`, and
-  Leave server, `POST /v1/servers/:id/leave`, confirmed, then the server is
-  removed here too; its only owner gets `last_owner`), asking for the sign-in
-  when the pass is gone.
+  Settings has Members (`CloudMembers.kt`, `agent/AgentMembers.kt`). Since
+  the roles cutover the team is the server's (members contract): `GET
+  /v0/members` with each role's name from `GET /v0/roles` (a built-in one in
+  the app's words where roles can't be read), read again on every connect,
+  `member.*`, `role.*` and `profile.updated`, since a member's name is
+  their profile's (there is no `member.added`); Leave server is `POST
+  /v0/members/leave`, confirmed, then the server is removed here too, and
+  its last owner gets `409 last_owner`. No account pass is needed. A
+  member with a `userId` opens their profile (`MemberProfile.kt`,
+  `agent/MemberProfiles.kt`; cluster `GET /v0/users/:id/profile`, Happy
+  Cloud only): the agent page's header and tiles with their picture round,
+  job title and team role, Usage (tasks, active tasks, active days of the
+  last 30, last active), Tokens per window (input plus output, which
+  already hold cache and reasoning, summed over providers and models) and
+  Recent activity, their latest ten tasks, each opening its conversation. The
+  accounts service lists servers without a role now (`CloudServer.role` is
+  optional; the picker shows a role only where one is listed).
+  A cloud server's team roles gate what shows (`agent/AgentPermissions.kt`):
+  `GET /v0/permissions`'s `granted`, read on every connect, `role.*` and
+  `member.updated`
+  event (`AgentSession.permissions`), and nothing granted until it is read
+  or when reading fails; any other server gates nothing. Without
+  `content.write` there is no compose, voice call, todo or document
+  editing, adding or moving calendar events, or vault changes, and a chat
+  says "your role can't send messages" in the composer's place; the Chief
+  of Staff's chat and settings' asks of it need `bots.manage`. A vault
+  Surface's `access` (`none` locks it: its name, and nothing asked;
+  `read` hides every change) and `policyVault` (its `Global` and
+  `Security` folders and their `AGENTS.md` / `SECURITY.md` keep their
+  names and places, `PolicyPlaces`; no retention settings) come with the
+  snapshot, read again on `vault.settings.updated`. A `403 forbidden`
+  reads "You don't have permission to do that." (`Problem.Forbidden`,
+  `IntentRefusal.FORBIDDEN`), never the server's words. Mobile edits no
+  roles or access rules; iOS matches field for field.
   People read a cloud server's address as `@name`, like a username, until
   Happy Cloud has its own domain (`HappyCloud.handle`: the picker, create,
   join, the server sign-in screen, the account menu); the URL is used as
@@ -1207,6 +1295,23 @@ change its wire behaviour on Android alone.
   connection; `openOutside` never hands a Happy URL to the system. Sharing a
   bundled artifact's page shares its external link, and isn't offered when the
   server has no `instanceId`. Chat doesn't render `happy://` links as links yet.
+- **Settings links and buttons** (API.md "Happy links", `ui/connection/SettingsLinks.kt`):
+  `happy://settings/<page>` is a closed list of pages (`HappyUrls.SETTINGS_PAGES`).
+  The Markdown parser splits a link's title from its destination; a well-formed
+  Happy link titled exactly `button` is lifted out of its paragraph, header or
+  list into a `MarkdownBlock.Buttons` after it, drawn as full-width RoundButtons
+  stacked in order. A malformed or blank-labelled settings link, and a
+  malformed button, are their label as inert text. Pages open as iOS maps them:
+  general → Settings, account → Profile, sharing, voice, servers → Happy Cloud's
+  servers (Settings elsewhere), members → Members on Happy Cloud; every other
+  page opens `https://<name>.HAPPY_CLOUD_WEB/#/settings/<page>` in a Custom Tab
+  on a Happy Cloud server and is inert anywhere else. A conversation's rows
+  are parsed for their connection (`AgentSession.settingsPages`, through
+  `ConversationRowBuilder.hasPage` and `LiveText`): a settings link to a page
+  it lacks is its words, inline, and a button its words in its place. Buttons
+  elsewhere ask `LinkOpener.opens` and show their words when nothing opens.
+  Unlocked `happy://settings…` from outside is still happy-app's path
+  (`DeepLinks`); only the instance form opens a settings link.
 
 ## Push
 
@@ -1772,7 +1877,17 @@ is `packages/happy-ios`. The wire keeps its own names
   existing ones). `HttpsTransport` (an agent with a public URL) has no
   clients: each socket is its own TLS connection tagged with its category,
   so `reset(category)` closes only that category's, with the same
-  deadlines; `AgentEndpointTransport` passes the category on. It uses
+  deadlines; `AgentEndpointTransport` passes the category on. A session
+  kept through the background (`AppGraph.setForeground` →
+  `AgentSessions.backgrounded`) resumes its transport before its link next
+  runs, open then or later (`Transport.resumed`, iOS's): every client is
+  woken (`TailcatClient.wake`), which checks rather than assumes anything
+  broke. The relay is pinged and replaced only if it doesn't answer within
+  two seconds, every direct path is probed and one that stopped answering
+  dropped, and an expired session rekeys; clients, requests under way and
+  live sessions stay. tailcat-kotlin watches no network itself, so a network
+  that returns gets the same check on every kept client
+  (`Transport.networkChanged`, from `AgentSession.networkReturned`). It uses
   tailcat-kotlin's default DERP map (`https://tailcat.dev/derpmap.json`),
   cached in `noBackupFilesDir/tailcat/derpmap.json` (`FileDerpMapCache`):
   with no network and no cached map, connecting fails.
@@ -1816,6 +1931,19 @@ iOS's `docs/browser-proxy.md` is the contract; `browser/` ports it
   pass, so the link's own click, a bubble's copy menu and text selection
   never also fire; a drag past the touch slop lets go and scrolls
   (`LinksTest`, which covers each site).
+- **Live artifacts** (`ArtifactShow.Live`, `ArtifactLoader.livePage`) open
+  the URL of the version shown, a pinned version its own, http or https, with
+  `BrowserProxy.Scope.Live`: every tunnel, to the page's origin or any other
+  host, is `CONNECT /v0/artifacts/:id/proxy` (`BrowserNetwork.artifact`), in
+  the network the artifact was made on, where the daemon checks each
+  destination against its URL (happy-agent API.md, "Live URLs"). No workspace
+  is looked up and nothing falls back to another network. There is no data
+  bridge: the page's `/api/…` is the site's own. Its WebView has a profile of
+  its own (below), as every page does. A refusal of the route itself (404, 501,
+  503) is `BrowserException.Kind.LiveUnavailable` (`browser_proxy_live_unavailable`),
+  shown as "This Page's Computer Isn't Available"; a refusal inside the open
+  tunnel is what it was. Over HTTPS the route is its WebSocket twin, as every
+  tunnel's is (`BrowserTunnel.outer`).
 - **Remote only.** Every WebView request goes through `ProxyController`'s
   override to the loopback `BrowserProxy`, with no bypass rules, applied
   before the first load; a WebView without `PROXY_OVERRIDE` shows
@@ -1844,6 +1972,7 @@ iOS's `docs/browser-proxy.md` is the contract; `browser/` ports it
     sees it. iOS allows them in web content only; Android has no
     WebView-only switch, and a base-config allowance would also open
     cleartext to the app's native clients.
+    A live artifact at plain http off localhost hits the same refusal.
   - The listener binds 127.0.0.1 by address: Android's
     `getLoopbackAddress()` is `::1`, which WebView's `127.0.0.1` rule
     can't reach.
@@ -1981,3 +2110,14 @@ command runs at once and the draft clears) and `draft` (a skill becomes
 `Problem.CommandGone`/`CommandBusy`); a skill is a user message `/name args`
 carrying one `read_skill` tool_call_request, as desktop sends it. The command's
 words never go out as a message otherwise.
+
+A new chat, before it has an agent, offers the computer's global skills in the
+same list (`ConversationApi.skills`: `GET /v0/skills` 100 a page, read again
+from the start on 409, enabled and ready ones only; 404/501 offer none). They
+are read as the new chat starts and again on `skills.updated` or a reconnect.
+A first message that is `/skill args` with an offered name (`Conversation.send`)
+goes as a skill does in a chat: `/name args` asking for `read_skill`, sent as
+the task or bot's first message once it is made. The new agent's catalog (its
+bootstrap) decides: without that name, or with attachments, the words go as
+plain text. A failure leaves the message failed with Retry, as a first send's
+does. Other commands wait for an agent.

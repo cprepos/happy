@@ -284,10 +284,14 @@ final class SessionDetailViewController: UIViewController, UIGestureRecognizerDe
         view.setNeedsLayout()
     }
 
-    /// A task or a bot is renamed; Happy never.
+    /// A task or a bot is renamed; Happy only on a Happy Cloud server, whose
+    /// Chief of Staff keeps its identity and conversation through it.
     private var canRename: Bool {
         guard let row, spaceId != nil else { return false }
-        return !row.isHappy && (row.targetKind == "task" || row.targetKind == "bot")
+        // A cloud role that can't write content renames nothing, nor the
+        // Chief of Staff without `bots.manage` (`RoleGate`).
+        guard session.gate.allowsSending(toChiefOfStaff: row.isHappy) else { return false }
+        return (!row.isHappy || session.isCloud) && (row.targetKind == "task" || row.targetKind == "bot")
     }
 
     private static func subtitle(subtask: Bool, working: Bool) -> String {
@@ -433,6 +437,7 @@ final class SessionDetailViewController: UIViewController, UIGestureRecognizerDe
         let settled = detail?.completed.count ?? 0
         var shownSections = permissionChoice?().map { [ProfileSection(id: "controls", rows: [Self.permissionRow($0) { [weak self] in self?.permissionChoice?() } relaid: { [weak self] in self?.view.setNeedsLayout() }])] } ?? []
         if let workspaceId = row?.workspaceId { shownSections.append(ProfileSection(id: "workspace", rows: [changesRow(workspaceId)])) }
+        if row?.isHappy == true, session.isCloud { shownSections.append(ProfileSection(id: "providers", rows: [providersRow()])) }
         sections.show(shownSections)
         let layout = SessionDetailLayout(
             width: width, nameHeight: header.nameHeight, nameWidth: header.nameWidth,
@@ -493,6 +498,15 @@ final class SessionDetailViewController: UIViewController, UIGestureRecognizerDe
         return SettingsRow(id: "workspace-changes", title: Strings.WorkspaceChanges.changes, icon: ("git-compare-outline", .orange), value: value, accessory: .chevron, action: { [weak self] in
             guard let self else { return }
             navigationController?.pushViewController(WorkspaceChangesViewController(session: session, workspaceId: workspaceId), animated: true)
+        })
+    }
+
+    /// The Chief of Staff's, on a Happy Cloud server: where its greeting
+    /// sends the person to connect a provider, AI providers.
+    private func providersRow() -> SettingsRow {
+        SettingsRow(SettingsIndex.providers, action: { [weak self] in
+            guard let self else { return }
+            ProvidersViewController.open(.providers, session: session, from: self)
         })
     }
 
@@ -972,6 +986,10 @@ final class DetailMarkView: UIView {
     var mark: Row.Mark = .none {
         didSet { if mark != oldValue { apply() } }
     }
+    /// A person's picture or placeholder, drawn as a circle.
+    var round = false {
+        didSet { if round != oldValue { setNeedsLayout() } }
+    }
     private let seedling = MarkView()
     private let picture = UIImageView()
     private let markPicture = MarkPicture()
@@ -996,8 +1014,8 @@ final class DetailMarkView: UIView {
         seedling.frame = bounds
         picture.frame = bounds
         if case .glyph = mark { picture.layer.cornerRadius = bounds.width * 0.28 }
-        if case .image = mark { picture.layer.cornerRadius = bounds.width * 0.22 }
-        if case .placeholder = mark { picture.layer.cornerRadius = bounds.width * 0.22 }
+        if case .image = mark { picture.layer.cornerRadius = bounds.width * (round ? 0.5 : 0.22) }
+        if case .placeholder = mark { picture.layer.cornerRadius = bounds.width * (round ? 0.5 : 0.22) }
     }
 
     private func apply() {

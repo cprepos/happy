@@ -68,3 +68,39 @@ committed as that file gunzipped, byte for byte (SHA-256
 author and licence are **not verified**: confirm them before a release
 build ships it. `packages/happy-android/app/src/main/res/raw/state_boba.json`
 is the same bytes.
+
+## `tickets.json`, the empty Artifacts list
+
+Not desktop's, and not under `LICENSE` here. Supplied by Steve on 7 November
+2026 for the Artifacts screen with nothing in it (`ArtifactListItems`, the
+`tickets` scene) as a Telegram sticker's Lottie JSON, already decompressed
+(`tickets.json`, "26_YELLOWTICKET_amp1", 512×512, 60 fps, frames 60–240), and
+committed byte for byte (SHA-256
+`8715ac66cadbd7cba548b81f7366e190592a7c515811c0df69d65ac8e9db51d4`). Its
+`"tgs":1` key stays, as the TV's, boba's and mic's do; Lottie ignores it, and
+a play from progress 0 starts at its in-point, frame 60. Its author and
+licence are **not verified**: confirm them before a release build ships it.
+Android ships the same bytes for its empty Artifacts list.
+
+## `record-bin.json`, a cancelled recording
+
+Not desktop's, and not under `LICENSE` here. Telegram-iOS's
+`submodules/TelegramUI/Resources/Animations/BinRed.json` (master, fetched
+7 November 2026), committed byte for byte (SHA-256
+`17347187deec39d484a45cac4dbc0c016ea7f8b2422cbfd3708968f9d100d1ab`): the
+recording's red dot jumping into a bin that closes on it, which
+`RecordOverlay` plays where a cancelled recording's dot was, as
+`ChatTextInputPanelNode` does. Telegram-iOS is GPL-2.0; adapted with
+permission from Steve, as the rest of the microphone is.
+
+## `record-lock.json` and `record-lock-wait.json`, the recording's lock
+
+Not desktop's, and not under `LICENSE` here. Telegram-iOS's
+`submodules/TelegramUI/Resources/Animations/Lock.json` (SHA-256
+`7f54014258403eae59daad48098be0d221d2c8085500d9461c8d8b7613a1bcd6`) and
+`LockWait.json` (SHA-256
+`60ce28150af8210c0090f0b37f766e38484fc8e2a7302a31fa3c6863f707c1db`), master,
+fetched 7 November 2026 and committed byte for byte: `LockView`'s lock,
+bobbing while it waits and closing into stop as the finger slides up, which
+`RecordOverlay`'s pill draws as Telegram's does. Telegram-iOS is GPL-2.0;
+adapted with permission from Steve, as the rest of the microphone is.

@@ -9,12 +9,19 @@ public struct HomeSnapshot: Equatable, Sendable {
     public var syncing = true
     public var rows: [Row] = []
     public var allRows: [Row] = []
+    /// The active tasks the person isn't in, which search finds too.
+    public var unjoinedTasks: [Row] = []
     public var settings: [String: JSONValue] = [:]
     /// The person signed in as a team user; nil outside a team.
     public var userId: String?
     /// The person's own picture's ThumbHash, for the faces that are theirs.
     public var profilePhoto: String?
     public var error: String?
+    /// The stream is down and being opened again, however it failed: it is
+    /// asked again with backoff for as long as the engine runs, so it is on
+    /// its way back, "connecting…", as a Happy account's socket is, never
+    /// an `error` home says. Android's `AgentSession.reconnecting`.
+    public var reconnecting = false
     /// An action the computer refused, said for a moment while it rolls back.
     public var notice: String?
     public init() {}
@@ -94,6 +101,18 @@ public actor SyncEngine {
     private let url: URL?
     private var storage: SyncStorage?
     private var desktop: DesktopSnapshot?
+    /// What `spaces` was last given of the bootstrap's bots, tasks and
+    /// Surfaces, in order.
+    private var shared: (owners: [DesktopSnapshot.Owner], surfaces: [DesktopSnapshot.Surface])?
+    private var sharing: Task<Void, Never>?
+    /// Where each agent of `desktop` stands (`AgentIndex`), made on the
+    /// first update after each read; nil until then.
+    private var agentIndex: AgentIndex?
+    /// Each agent's row among `snapshot.allRows`, and each row's place
+    /// among `snapshot.rows`, as `derive` last drew them: an update redraws
+    /// only its agent's row.
+    private var agentRows: [String: Int] = [:]
+    private var shownRows: [String: Int] = [:]
     private var snapshot = HomeSnapshot()
     private var listeners: [UUID: AsyncStream<HomeSnapshot>.Continuation] = [:]
     private var runner: Task<Void, Never>?
@@ -325,7 +344,8 @@ public actor SyncEngine {
             guard try await LiveBrowserFeed.within(Self.setupDeadline, { try await self.setUp(generation) }) else { return }
         } catch {
             guard current(generation) else { return }
-            snapshot.error = Store.describe(error)
+            // What this phone keeps could not be read: nothing to do with the link.
+            snapshot.error = "Could not open this connection on this device."
             publish()
             return
         }
@@ -338,6 +358,7 @@ public actor SyncEngine {
         let database = try database()
         if desktop == nil, let cached = try await database.checkpoint("desktop") {
             desktop = try JSONDecoder().decode(DesktopSnapshot.self, from: JSONEncoder().encode(cached.value))
+            agentIndex = nil
             cursor = cached.cursor
         }
         if users.isEmpty, let kept = try await database.checkpoint("users"),
@@ -377,6 +398,8 @@ public actor SyncEngine {
                 let resuming = desktop != nil && verifiedDaemon != nil && streamCursor != nil && covered == signalled
                 if !resuming {
                     try await reconcile(generation)
+                    // The server answered: what is left is catching up.
+                    if snapshot.reconnecting { snapshot.reconnecting = false; publish() }
                     streamCursor = cursor
                     beginDelivery(generation)
                     beginMessageDelivery(generation)
@@ -398,11 +421,11 @@ public actor SyncEngine {
                         await documents.frame(frame.event, data: frame.data)
                         continue
                     }
-                    guard let event = try? JSONDecoder().decode(JSONValue.self, from: Data(frame.data.utf8)) else { continue }
+                    guard let event = try? JSONValue.decode(Data(frame.data.utf8)) else { continue }
                     await spaces.externalEvent(event)
                     guard current(generation) else { return }
                     if event["type"]?.stringValue?.hasPrefix("feed.") == true { await feed.receive(event) }
-                    await lookups.receive(event)
+                    if FeedLookups.reads(event) { await lookups.receive(event) }
                     if event["type"] == .string("git.updated"),
                        let id = event["payload"]?["workspaceId"]?.stringValue,
                        gitInterest.contains(id), let value = event["payload"]?["git"],
@@ -425,13 +448,15 @@ public actor SyncEngine {
                     // A working agent's `agent.updated` comes with every word:
                     // laid over the held bootstrap, it is read again only when a
                     // version was missed (`AgentUpdate`).
-                    if event["type"] == .string("agent.updated"), let desktop {
-                        switch AgentUpdate.apply(event["payload"] ?? .null, to: desktop) {
-                        case .applied(let next):
-                            self.desktop = next
-                            deriveSoon()
-                        case .unchanged: break
-                        case .reread: scheduleReconcile(generation)
+                    if event["type"] == .string("agent.updated"), desktop != nil {
+                        if agentIndex == nil, let desktop { agentIndex = AgentIndex(desktop) }
+                        // Changed where it is held: nothing else of it is copied.
+                        if let index = agentIndex {
+                            switch AgentUpdate.apply(event["payload"] ?? .null, to: &desktop!, index: index) {
+                            case .applied(let patches): agentsMoved(patches)
+                            case .unchanged: break
+                            case .reread: scheduleReconcile(generation)
+                            }
                         }
                     } else if let type = event["type"]?.stringValue,
                        ["project.", "workspace.", "bot.", "task.", "agent.", "surface.", "user_settings."].contains(where: type.hasPrefix),
@@ -440,18 +465,21 @@ public actor SyncEngine {
                     if let id = frame.id { streamCursor = id }
                 }
             } catch AgentClientError.revoked {
-                snapshot.live = false
+                snapshot.live = false; snapshot.reconnecting = false
                 snapshot.error = client.signsIn ? "Your sign-in to this server has ended. Sign in again." : "This device was disconnected. Pair it again."
                 publish()
                 return
             } catch {
                 guard current(generation) else { return }
-                snapshot.live = false; snapshot.error = Store.describe(error)
+                snapshot.live = false
+                snapshot.reconnecting = true
                 publish()
             }
             await documents.closed()
             guard current(generation) else { return }
-            snapshot.live = false; publish()
+            snapshot.live = false
+            snapshot.reconnecting = true
+            publish()
             // A signed-in server's edge closes idle connections; come back
             // quickly (edge SSO contract §5: 0.1 s doubling to 10 s).
             let delay: Duration = client.signsIn ? .milliseconds(min(10_000, 100 << min(attempt, 7))) : .seconds(min(30, 1 << min(attempt, 5)))
@@ -466,12 +494,12 @@ public actor SyncEngine {
         guard current(generation) else { throw CancellationError() }
         sidebarSyncing = true
         snapshot.syncing = true
-        snapshot.live = true; snapshot.error = nil
+        snapshot.live = true; snapshot.error = nil; snapshot.reconnecting = false
         watchGit()
         publish()
         // The bootstrap cursor precedes its reads. Opening from
         // it is safe even after a crash, replay or daemon replacement.
-        let hello = try JSONDecoder().decode(JSONValue.self, from: Data(frame.data.utf8))
+        let hello = try JSONValue.decode(Data(frame.data.utf8))
         let gap = hello["gap"] == .bool(true)
         let daemon = hello["daemonId"]?.stringValue
         // Everything since the cursor follows, from the same process.
@@ -583,6 +611,7 @@ public actor SyncEngine {
         adopted = read
         covered = max(covered, asOf)
         self.desktop = self.desktop.map { AgentUpdate.keepingNewer(desktop, than: $0) } ?? desktop
+        agentIndex = nil
         verified = true
         cursor = desktop.cursor
         await feed.bootstrap(unread: desktop.feedUnread, cursor: desktop.cursor)
@@ -687,10 +716,12 @@ public actor SyncEngine {
         try await database().claimConversation(key, owner: owner)
     }
 
-    func keepConversation(_ key: String, value: JSONValue, owner: SyncStorage.ConversationOwner) async throws -> Bool {
+    func keepConversation(_ key: String, value: Data, owner: SyncStorage.ConversationOwner) async throws -> Bool {
         guard !stopped else { throw CancellationError() }
-        return try await database().commitConversation(.init(value: value, cursor: nil), named: key, owner: owner)
+        return try await database().commitConversation(value, named: key, owner: owner)
     }
+
+    func keptConversation(_ key: String) async throws -> Data? { try await database().checkpointData(key) }
 
     public func setSetting(_ key: String, value: JSONValue) async throws {
         guard !stopped else { throw CancellationError() }
@@ -734,18 +765,22 @@ public actor SyncEngine {
             } catch {
                 // Retain the original timestamp and ID, including across
                 // suspension and relaunch. Reconnect retries the same intent.
-                snapshot.error = Store.describe(error)
-                publish()
-                if let error = error as? AgentClientError, error == .revoked || (error.status.map { (400..<500).contains($0) } ?? false) { return }
+                // A refusal is said; one that only didn't reach the computer
+                // is the link's, which the title says.
+                if let error = error as? AgentClientError, error == .revoked || (error.status.map { (400..<500).contains($0) } ?? false) {
+                    snapshot.error = Store.describe(error)
+                    publish()
+                    return
+                }
                 do { try await Task.sleep(for: .seconds(min(30, 1 << min(attempt, 5)))) } catch { return }
                 attempt += 1
             }
         }
     }
 
-    /// Agents' updates, a row's time and its working state, drawn together
-    /// a few times a second rather than once a word; nothing reaches home
-    /// when the rows came out the same.
+    /// Home drawn whole a moment on, for an agent's update that takes its
+    /// row away or brings it back (`agentsMoved`); several drawn together,
+    /// and nothing reaches home when the rows came out the same.
     private func deriveSoon() {
         guard deriving == nil else { return }
         deriving = Task {
@@ -763,20 +798,82 @@ public actor SyncEngine {
         snapshot.loaded = desktop != nil
         if let desktop {
             snapshot.allRows = overlay.apply(SidebarRows.make(desktop, settings: snapshot.settings, users: users, feed: feedRow))
+            agentRows = [:]
             for index in snapshot.allRows.indices {
                 snapshot.allRows[index].lineChanges = snapshot.allRows[index].workspaceId.flatMap { gitSnapshots[$0]?.visible }
+                if SidebarRows.drawsAgent(snapshot.allRows[index]), let agentId = snapshot.allRows[index].agentId { agentRows[agentId] = index }
             }
             snapshot.rows = Rows.visible(snapshot.allRows)
+            snapshot.unjoinedTasks = SidebarRows.unjoinedTasks(desktop)
+            shownRows = Dictionary(snapshot.rows.enumerated().map { ($0.element.id, $0.offset) }, uniquingKeysWith: { first, _ in first })
             snapshot.userId = desktop.profile?.userId
             snapshot.profilePhoto = desktop.profile?.photo?.thumbhash
         }
+        shareDirectory()
         if publishing { publish() }
     }
 
-    private func publish() {
+    /// The bots, tasks and Surfaces to `spaces`, which names and opens
+    /// what messages refer to: on a daemon without the sidebar document
+    /// it reads none of them itself.
+    private func shareDirectory() {
+        guard let desktop else { return }
+        let owners = (desktop.bots ?? []) + (desktop.tasks ?? [])
+        let surfaces = desktop.surfaces ?? []
+        guard shared?.owners != owners || shared?.surfaces != surfaces else { return }
+        shared = (owners, surfaces)
+        let encoder = JSONEncoder()
+        let json = owners.compactMap { owner in (try? encoder.encode(owner)).flatMap { try? JSONValue.decode($0) } }
+        let listed = surfaces.map { AgentWire.Surface(id: $0.id, type: $0.type, name: $0.name, access: $0.access, policyVault: $0.policyVault) }
+        let previous = sharing
+        let spaces = spaces
+        sharing = Task {
+            await previous?.value
+            await spaces.externalDirectory(owners: json, surfaces: listed)
+        }
+    }
+
+    /// Agents' updates laid over the bootstrap (`AgentUpdate.Patch`): only
+    /// what their rows draw moving redraws anything, and then only their
+    /// rows and the rows above them, at once. A working agent's come with
+    /// every word, and drew home whole a few times a second for a time
+    /// that moves once a minute. A row coming or going draws it whole.
+    private func agentsMoved(_ patches: [AgentUpdate.Patch]) {
+        var titled = false
+        var moved: [AgentWire.Agent] = []
+        for patch in patches {
+            for (before, after) in zip(patch.before, patch.after) {
+                let was = SidebarRows.Drawn(before), now = SidebarRows.Drawn(after)
+                guard was != now else { continue }
+                if was.archived != now.archived { return deriveSoon() }
+                if was.title != now.title { titled = true }
+                moved.append(after)
+            }
+        }
+        // Titles are what the Feed's directory reads of agents, and what references name.
+        if titled { deriveDirectory(); shareDirectory() }
+        guard !moved.isEmpty else { return }
+        var redrawn = false
+        for agent in moved {
+            guard let index = agentRows[agent.id], snapshot.allRows.indices.contains(index), snapshot.allRows[index].agentId == agent.id else { continue }
+            var row = snapshot.allRows[index]
+            SidebarRows.redraw(&row, for: agent)
+            // What the person did that the computer hasn't heard yet stays over it.
+            if overlay.read.contains(agent.id) { row.unread = false; row.isNew = false }
+            guard row != snapshot.allRows[index] else { continue }
+            snapshot.allRows[index] = row
+            if let shown = shownRows[row.id], snapshot.rows.indices.contains(shown), snapshot.rows[shown].id == row.id { snapshot.rows[shown] = row }
+            redrawn = true
+        }
+        if redrawn { publish(rowsMoved: false) }
+    }
+
+    /// `rowsMoved`: rows may have come or gone, so the workspaces whose
+    /// line counts are followed are looked at again.
+    private func publish(rowsMoved: Bool = true) {
         if !snapshot.live { gitWatcher?.cancel(); gitWatcher = nil; gitInterest = [] }
         for listener in listeners.values { listener.yield(snapshot) }
-        watchGit()
+        if rowsMoved { watchGit() }
     }
 
     /// One subscription set per open account, never one request per row.
@@ -800,7 +897,9 @@ public actor SyncEngine {
                     guard current(generation), gitInterest == ids else { return }
                     receiveGit(response.snapshots)
                 } catch { if Task.isCancelled { return } }
-                do { try await Task.sleep(for: .seconds(30)) } catch { return }
+                // Renewed within 30 seconds as before, but from 20 on with the
+                // computer's heartbeat, while the radio is up for it anyway.
+                do { try await RadioWake.shared.next(after: .seconds(20), by: .seconds(30)) } catch { return }
             }
         }
     }
@@ -948,6 +1047,18 @@ public actor SyncEngine {
         return try? await intents.enqueue(.leave, target: id, value: .object(["kind": .string(kind)]))
     }
 
+    /// Joins a Surface the person opened without being in it (desktop
+    /// de78af49's `happyAgentRouterSurfaceOpen`): its row comes once the
+    /// computer has it, as the `surface.updated` that says so reads home
+    /// again. One already in their list, or one home doesn't know, sends
+    /// nothing.
+    public func join(surfaceId: String) async {
+        guard !stopped, let desktop, let surface = desktop.surfaces?.first(where: { $0.id == surfaceId }),
+              !surface.members.contains(where: { $0.userId == desktop.profile?.userId }),
+              !waiting.contains(where: { $0.kind == .join && $0.target == surfaceId }) else { return }
+        _ = try? await intents.enqueue(.join, target: surfaceId, value: .object(["kind": .string("surface")]))
+    }
+
     /// Names a task or bot (`kind`): the row wears it at once.
     @discardableResult
     public func rename(kind: String, id: String, title: String) async -> Intent? {
@@ -1072,6 +1183,8 @@ public actor SyncEngine {
                 }
             case .leave:
                 if kind == "surface" { try await client.leaveSurface(intent.target, mutationId: intent.id) } else { try await client.leaveTask(intent.target, mutationId: intent.id) }
+            case .join:
+                try await client.joinSurface(intent.target, mutationId: intent.id)
             case .answer:
                 guard let agentId = intent.value["agentId"]?.stringValue, let answers = answers(intent.value) else { return }
                 _ = try await client.answerQuestion(agentId, questionId: intent.target, answers: answers, mutationId: intent.id)

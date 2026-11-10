@@ -6,8 +6,6 @@
 <resources>
     <string name="conversation_details">Szczegóły czatu</string>
     <string name="conversation_offline">Offline</string>
-    <string name="conversation_revoked">To urządzenie zostało usunięte</string>
-    <string name="conversation_update_required">Wymagana aktualizacja</string>
     <string name="conversation_unavailable">To połączenie z agentem jest niedostępne na tym urządzeniu.</string>
     <string name="conversation_empty">Brak wiadomości.</string>
     <string name="conversation_read_only">Tą rozmową steruje inny agent i nie przyjmuje ona wiadomości.</string>
@@ -94,6 +92,8 @@
     <string name="conversation_problem_refused">Agent odmówił (%1$d).</string>
     <string name="conversation_problem_unknown">Coś poszło nie tak.</string>
     <string name="conversation_problem_pictures">Nie udało się odczytać obrazów do wysłania.</string>
+    <string name="conversation_problem_files_unavailable">Załączniki plików nie są jeszcze dostępne na tym serwerze.</string>
+    <string name="conversation_problem_file_too_large">%1$s ma ponad 25 MB i nie można go tu wysłać.</string>
     <string name="conversation_failure_signin_missing">%1$s nie jest zalogowany. Uruchom `%2$s` i spróbuj ponownie.</string>
     <string name="conversation_failure_cannot_authenticate">%1$s nie mógł się uwierzytelnić. Sprawdź ustawienia logowania i spróbuj ponownie.</string>
     <string name="conversation_failure_usage_limit">Osiągnięto limit użycia %1$s.</string>
@@ -106,4 +106,6 @@
     <string name="conversation_failure_internal">Coś poszło nie tak: %1$s</string>
     <string name="conversation_editor_expand">Rozwiń</string>
     <string name="conversation_editor_collapse">Zwiń</string>
+    <string name="problem_forbidden">Nie masz uprawnień, aby to zrobić.</string>
+    <string name="conversation_role_read_only">Możesz czytać tę rozmowę, ale Twoja rola nie może wysyłać wiadomości.</string>
 </resources>

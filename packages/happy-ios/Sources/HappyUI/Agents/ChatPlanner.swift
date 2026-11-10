@@ -24,12 +24,19 @@ actor ChatPlanner {
         var switchTarget: SwitchTarget?
         /// Models' names by ID, for what a failure was switched to.
         var modelNames: [String: String] = [:]
+        /// Whether the person's role may run a failed turn again.
+        var actionable = true
+        /// The server the conversation is on, which says where a settings
+        /// link opens (`SettingsLinkPlace`).
+        var server: String?
     }
 
     /// A row as it was planned, and what from.
     struct Planned: @unchecked Sendable {
         var item: ChatItem
         var key: Key
+        /// `key`'s number in `plans`; 0 for one it hasn't numbered.
+        var keyNumber: Int
         var copied: Bool
         var opened: Bool
         var proposals: [ProposalShown?]
@@ -93,6 +100,20 @@ actor ChatPlanner {
         self.syntax = syntax
     }
 
+    /// The key each row was last planned with, as a number: the same key
+    /// keeps its number, so a row is told planned with it in one step, not
+    /// by comparing every reference the key holds once per row.
+    private var keys: [(key: Key, number: Int)] = []
+    private var keyNumbers = 0
+
+    private func number(_ key: Key) -> Int {
+        if let known = keys.first(where: { $0.key == key }) { return known.number }
+        keyNumbers += 1
+        // The rows' key and a failure card's: two are all a pass needs.
+        keys = Array((keys + [(key, keyNumbers)]).suffix(4))
+        return keyNumbers
+    }
+
     /// `proposals` are the sidebar proposals the items show, as they stand;
     /// `opened` the other agents' messages opened to read.
     func plans(_ items: [ChatItem], key: Key, copied: String?, opened: Set<String> = [], proposals: [String: ProposalShown] = [:]) -> [ChatRowPlan] {
@@ -103,24 +124,31 @@ actor ChatPlanner {
         var others = key
         others.switchTarget = nil
         others.modelNames = [:]
+        let othersNumber = number(others)
+        var failureNumber: Int?
         var shownTimes: [String: Double?] = [:]
         for var item in items {
             if item.role == .user {
-                if let first = times[item.id] { item.time = first }
+                if let first = times[item.id], item.time != first { item.time = first }
                 shownTimes[item.id] = item.time
             }
             let isCopied = copied == item.id
             let isOpened = opened.contains(item.id)
             let shown = item.proposalIds.map { proposals[$0] }
             var reads = others
-            if case .failure = item.role { reads = key }
+            var readsNumber = othersNumber
+            if case .failure = item.role {
+                reads = key
+                if failureNumber == nil { failureNumber = number(key) }
+                readsNumber = failureNumber ?? 0
+            }
             let plan: ChatRowPlan
-            if let cached = cache[item.id], cached.item == item, cached.key == reads, cached.copied == isCopied, cached.opened == isOpened, cached.proposals == shown {
+            if let cached = cache[item.id], (cached.keyNumber == 0 ? cached.key == reads : cached.keyNumber == readsNumber), cached.item == item, cached.copied == isCopied, cached.opened == isOpened, cached.proposals == shown {
                 plan = cached.plan
             } else {
                 plan = Self.plan(item, key: reads, copied: isCopied, opened: isOpened, syntax: syntax, proposals: proposals)
             }
-            next[item.id] = Planned(item: item, key: reads, copied: isCopied, opened: isOpened, proposals: shown, plan: plan)
+            next[item.id] = Planned(item: item, key: reads, keyNumber: readsNumber, copied: isCopied, opened: isOpened, proposals: shown, plan: plan)
             if plan.size.height > 0 { plans.append(plan) }
         }
         cache.replace(with: next)
@@ -154,6 +182,8 @@ actor ChatPlanner {
                 for (proposal, shown) in zip(row.item.proposalIds, row.proposals) { proposals[proposal] = shown }
                 var next = row
                 next.key = key
+                // Planned at a key `plans` hasn't numbered: told by the key itself.
+                next.keyNumber = 0
                 next.plan = Self.plan(row.item, key: key, copied: row.copied, opened: row.opened, syntax: syntax, proposals: proposals)
                 cache.adopt(next, replacing: row, id: id)
                 planned[id] = next
@@ -179,7 +209,7 @@ actor ChatPlanner {
         }
         guard !item.pieces.isEmpty else { return ChatRowPlan(id: item.id, size: CGSize(width: width, height: 0), items: []) }
         typealias M = MessageLayout.Metrics
-        let text = HappyReferences.plain(item.text, view: key.references.view)
+        let text = HappyReferences.plain(item.text, instanceId: key.references.instanceId, view: key.references.view)
         switch item.role {
         case .agent:
             return Self.body(item, key: key, syntax: syntax, proposals: proposals, revealable: true) {
@@ -292,7 +322,7 @@ actor ChatPlanner {
     /// and the live browsers it linked.
     static func body(_ item: ChatItem, key: Key, syntax: CodeSyntaxService, proposals: [String: ProposalShown], revealable: Bool = false, layout: ([MessageLayout.Part]) -> MessageLayout) -> ChatRowPlan {
         let environment = key.environment
-        let text = HappyReferences.plain(item.text, view: key.references.view)
+        let text = HappyReferences.plain(item.text, instanceId: key.references.instanceId, view: key.references.view)
         var parts: [MessageLayout.Part] = []
         enum Draft {
             case markdown(MarkdownPiece)
@@ -310,8 +340,13 @@ actor ChatPlanner {
         for piece in item.pieces {
             switch piece {
             case .text(let text):
-                let resolved = HappyReferences.markdown(text, view: key.references.view)
-                let markdown = MarkdownPiece(Markdown.joiningSoftBreaks(resolved), color: Palette.text, diagrams: ChatMermaidHeights(row: item.id), syntax: syntax, in: environment, body: ChatTextStyles.text, header: ChatTextStyles.header)
+                let resolved = HappyReferences.markdown(text, instanceId: key.references.instanceId, files: key.references.opens, view: key.references.view)
+                let server = key.server
+                let references = key.references
+                let markdown = MarkdownPiece(
+                    Markdown.joiningSoftBreaks(resolved), color: Palette.text, diagrams: ChatMermaidHeights(row: item.id), syntax: syntax, in: environment,
+                    body: ChatTextStyles.text, header: ChatTextStyles.header, opens: { ChatLinks.opens($0, server: server) && (ChatLinks.file($0).map(references.opens) ?? true) }
+                )
                 drafts.append(.markdown(markdown))
                 parts.append(.markdown(markdown.blocks))
             case .gallery(let media, let columns):
@@ -454,7 +489,7 @@ actor ChatPlanner {
         }
         var pieces: [MarkdownPiece] = [piece("**\(Strings.failure)**", Palette.statusError), piece(failure.reason, Palette.text, selectable: true)]
         pieces += failure.steps.map { piece($0, Palette.textSecondary) }
-        let action = Self.action(failure, target: key.switchTarget)
+        let action = key.actionable ? Self.action(failure, target: key.switchTarget) : nil
         let actionText: String? = switch action {
         case .retry?: Strings.retry
         case .switchTo(let target)?: Strings.switchAndContinue(target.label)
@@ -500,14 +535,14 @@ actor ChatPlanner {
         default: name
         }
         // Desktop names a bare ID in the line by its agent's title.
-        let line = explanation.map { HappyReferences.plain($0, view: key.references.view).replacingOccurrences(of: agentId, with: name) }
+        let line = explanation.map { HappyReferences.plain($0, instanceId: key.references.instanceId, view: key.references.view).replacingOccurrences(of: agentId, with: name) }
             ?? Strings.agentMessageFrom(name)
         let body = item.text
         let opens = !body.isEmpty
         let verbText = verb.map { ChatTextStyles.activityVerb.string($0, color: Palette.textSecondary, lineBreakMode: .byTruncatingTail, in: environment) }
         let lineText = ChatTextStyles.activityText.string(line, color: Palette.text, lineBreakMode: .byTruncatingTail, in: environment)
         let markdown = opened && opens ? MarkdownPiece(
-            Markdown.joiningSoftBreaks(HappyReferences.markdown(body, view: key.references.view)), color: Palette.textSecondary,
+            Markdown.joiningSoftBreaks(HappyReferences.markdown(body, instanceId: key.references.instanceId, files: key.references.opens, view: key.references.view)), color: Palette.textSecondary,
             diagrams: ChatMermaidHeights(row: item.id), syntax: syntax, in: environment,
             body: ChatTextStyles.activityBody, header: ChatTextStyles.activityHeader
         ) : nil
@@ -531,7 +566,7 @@ actor ChatPlanner {
         }
         // The whole line opens and closes it, a finger's room above and below.
         if opens { hits.insert(ChatHit(frame: layout.header.insetBy(dx: 0, dy: -AgentMessageLayout.Metrics.paddingV), action: .toggleTool(item.id)), at: 0) }
-        let spoken = [verb, line].compactMap { $0 }.joined(separator: " ") + (opened && opens ? "\n\n" + HappyReferences.plain(body, view: key.references.view) : "")
+        let spoken = [verb, line].compactMap { $0 }.joined(separator: " ") + (opened && opens ? "\n\n" + HappyReferences.plain(body, instanceId: key.references.instanceId, view: key.references.view) : "")
         return ChatRowPlan(id: item.id, size: layout.size, items: items, hits: hits, accessibilityLabel: spoken)
     }
 

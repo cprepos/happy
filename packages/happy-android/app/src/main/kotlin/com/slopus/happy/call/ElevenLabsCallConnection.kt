@@ -7,7 +7,11 @@ import io.elevenlabs.ConversationConfig
 import io.elevenlabs.ConversationSession
 import io.elevenlabs.Language
 import io.elevenlabs.Overrides
+import io.elevenlabs.PromptOverrides
+import io.elevenlabs.models.ConversationEvent
 import io.elevenlabs.models.ConversationMode
+import io.elevenlabs.models.DisconnectionDetails
+import io.elevenlabs.network.ConversationEventParser
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -17,15 +21,17 @@ import kotlinx.coroutines.withContext
 
 /**
  * The hosted call agent over the official SDK (iOS `ElevenLabsCallConnection`).
- * Apart from the relay's `ElevenLabsTransport` on purpose: no prompt,
- * greeting or relay tools are sent; the hosted agent has its own, and its
- * one variable is `initialConversationContext`. Tool calls are answered one
- * at a time, by their provider ID, and an ID seen before is never run again.
- * Everything the SDK reports comes back on [scope]'s thread.
+ * Apart from the relay's `ElevenLabsTransport` on purpose: the call's own
+ * prompt goes as the agent's prompt override, with its one variable,
+ * `initialConversationContext`; no greeting or relay tools are sent. Tool
+ * calls are answered one at a time, by their provider ID, and an ID seen
+ * before is never run again. Everything the SDK reports comes back on
+ * [scope]'s thread.
  */
 class ElevenLabsCallConnection private constructor(
     private val session: ConversationSession,
     private val scope: CoroutineScope,
+    private val events: CallEvents,
 ) : CallConnection {
     private val handled = HashSet<String>()
     private val tools = HashMap<String, Job>()
@@ -44,10 +50,23 @@ class ElevenLabsCallConnection private constructor(
         session.sendContextualUpdate(context)
     }
 
-    /** The person's turn typed rather than spoken: the device check's synthetic input, never the app's. */
+    /**
+     * A user message the prompt reads as the app's ([CallCue.MARK]): the one
+     * event that has the agent take a turn; a contextual update never does.
+     */
+    override fun cue(facts: String) {
+        if (com.slopus.happy.BuildConfig.DEBUG) CallProbe.sent("cue", facts)
+        session.sendUserMessage(CallCue.MARK + facts)
+    }
+
+    /**
+     * The person's turn typed rather than spoken: the device check's synthetic
+     * input, never the app's. Kept as theirs, as a transcript would be.
+     */
     fun type(text: String) {
         if (com.slopus.happy.BuildConfig.DEBUG) CallProbe.sent("typed", text)
         session.sendUserMessage(text)
+        events.heard(text)
     }
 
     private fun answer(call: CallToolCall, events: CallEvents) {
@@ -97,18 +116,27 @@ class ElevenLabsCallConnection private constructor(
     }
 
     companion object {
+        /** Whether [message], a raw event, is the response to the agent's end_call: it hung up. */
+        internal fun hangsUp(message: String): Boolean =
+            "end_call" in message && (ConversationEventParser.parseIncomingEvent(message) as? ConversationEvent.AgentToolResponse)?.toolName == "end_call"
+
         suspend fun connect(context: Context, scope: CoroutineScope, grant: CallGrant, request: CallStart, events: CallEvents): ElevenLabsCallConnection {
             val tracker = Tracker(scope, events.activity)
             var connection: ElevenLabsCallConnection? = null
             // Calls that come before the session is handed back wait for it.
             val early = ArrayList<CallToolCall>()
+            // The SDK ends the call itself for the agent's end_call, as the person's own end; the agent
+            // leaving the room can be heard first, so the tool's response is what says it hung up.
+            // Its raw event, in order with the agent leaving: the parsed one comes off a queue, later.
+            val agentEnded = java.util.concurrent.atomic.AtomicBoolean(false)
             val config = ConversationConfig(
                 // A minted token when a Happy service grants one; a public agent by its ID otherwise.
                 agentId = grant.agentId.takeIf { grant.conversationToken == null },
                 conversationToken = grant.conversationToken,
                 userId = grant.userId,
                 dynamicVariables = mapOf("initialConversationContext" to request.context),
-                overrides = request.language?.let(Language::fromCode)?.let { Overrides(agent = AgentOverrides(language = it)) },
+                // The hosted agent must allow the prompt override (its Security settings), or the call is refused.
+                overrides = Overrides(agent = AgentOverrides(prompt = PromptOverrides(request.prompt), language = request.language?.let(Language::fromCode))),
                 onUnhandledClientToolCall = { call ->
                     val parameters = call.parameters.toJson() as? kotlinx.serialization.json.JsonObject ?: kotlinx.serialization.json.JsonObject(emptyMap())
                     val request = CallToolCall(call.toolCallId, call.toolName, parameters, call.expectsResponse)
@@ -117,16 +145,32 @@ class ElevenLabsCallConnection private constructor(
                 onModeChange = { mode -> scope.launch { tracker.agentSpeaking(mode == ConversationMode.SPEAKING) } },
                 onVadScore = { score -> scope.launch { tracker.vad(score) } },
                 onAudioLevelChanged = { level -> scope.launch { tracker.level(level) } },
-                onUserTranscript = { text -> if (com.slopus.happy.BuildConfig.DEBUG) scope.launch { CallProbe.line("user", text) } },
-                onAgentResponse = { text -> if (com.slopus.happy.BuildConfig.DEBUG) scope.launch { CallProbe.line("agent", text) } },
-                onDisconnect = { scope.launch { events.disconnected() } },
+                // What was said aloud, final only, for the call's history: never a cue, which comes back as none of these.
+                onUserTranscriptEvent = { text, _ ->
+                    scope.launch {
+                        if (com.slopus.happy.BuildConfig.DEBUG) CallProbe.line("user", text)
+                        events.heard(text)
+                    }
+                },
+                onAgentResponseEvent = { text, event ->
+                    scope.launch {
+                        if (com.slopus.happy.BuildConfig.DEBUG) CallProbe.line("agent", text)
+                        events.said(text, event ?: -1)
+                    }
+                },
+                onAgentResponseCorrectionEvent = { text, event -> scope.launch { events.corrected(text, event ?: -1) } },
+                onMessage = { _, message -> if (hangsUp(message)) agentEnded.set(true) },
+                onDisconnect = { details ->
+                    val hungUp = details is DisconnectionDetails.User || agentEnded.get()
+                    scope.launch { if (hungUp) events.hungUp() else events.disconnected() }
+                },
                 onError = { _, _ -> scope.launch { events.disconnected() } },
             )
             var opened: ConversationSession? = null
             try {
                 val session = ConversationClient.startSession(config, context)
                 opened = session
-                return ElevenLabsCallConnection(session, scope).also { made ->
+                return ElevenLabsCallConnection(session, scope, events).also { made ->
                     connection = made
                     early.forEach { made.answer(it, events) }
                     early.clear()

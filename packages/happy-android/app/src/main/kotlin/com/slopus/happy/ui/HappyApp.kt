@@ -60,6 +60,7 @@ import com.slopus.happy.ui.connection.LocalHappyLinks
 import com.slopus.happy.ui.connection.rememberHappyLinks
 import com.slopus.happy.ui.connection.signInToServer
 import com.slopus.happy.ui.connection.signInToServerAgain
+import com.slopus.happy.ui.connection.SessionEndedEffect
 import com.slopus.happy.connection.ServerInvite
 import com.slopus.happy.ui.connection.LocalCloudConnect
 import com.slopus.happy.ui.connection.rememberCloudConnect
@@ -187,6 +188,8 @@ fun HappyApp(graph: AppGraph, onNavigationReady: (NavHostController) -> Unit = {
                                 onOpenArtifact = { go.open(null) { nav.openArtifact(account.id, it) } },
                                 onOpenFeed = { go.open(MainPanelKey.FEED) { nav.navigate(AgentFeedRoute(account.id)) } },
                                 onOpenVaultItem = { surfaceId, itemId, folder, name ->
+                                    // The vault opens on the item and takes its place in the list, as desktop's `onVaultItemOpen` opens it.
+                                    graph.agentSessions.session(account.id)?.let { session -> if (session.surfaces.value.loaded) session.joinSurface(surfaceId) }
                                     go.open(null) {
                                         nav.navigate(
                                             if (folder) com.slopus.happy.ui.vaults.VaultFolderRoute(account.id, surfaceId, itemId, name)
@@ -195,6 +198,7 @@ fun HappyApp(graph: AppGraph, onNavigationReady: (NavHostController) -> Unit = {
                                     }
                                 },
                                 onSignIn = { server -> go.open(null) { nav.signInToServerAgain(graph, server, replacing = account.id) } },
+                                onOpenPerson = { userId -> go.open(null) { nav.navigate(com.slopus.happy.ui.connection.MemberProfileRoute(account.id, userId)) } },
                             )
                             is OpenAccount.Happy -> LegacyHome(graph, nav, onOpenSession = openSession, onTroubleshoot = troubleshoot, go = go)
                             OpenAccount.None -> Unit
@@ -205,6 +209,7 @@ fun HappyApp(graph: AppGraph, onNavigationReady: (NavHostController) -> Unit = {
                 TabletShell(graph, nav, hasHome = open != OpenAccount.None, sidebar = home) {
                     // Inside the shell: on the split, what the call opens is the main panel's new root.
                     CallScreenEffect(graph.calls, nav, agent)
+                    SessionEndedEffect(graph, nav, agent)
                     val start: Any = if (open == OpenAccount.None) StartRoute else HomeRoute
                     val motion = rememberNavMotion()
                     RetainedNavHost(nav, start, motion, modifier = Modifier.backdrop(nav)) {
@@ -286,7 +291,11 @@ private fun rememberLinks(graph: AppGraph, nav: NavHostController, agent: String
     // A Happy URL in the connection's screens opens in the app (LocalHappyLinks, provided just above).
     val happy = LocalHappyLinks.current
     return remember(nav, agent, computer, happy) {
-        LinkOpener.agent(context, computer, app = { url -> happy?.open(url, agent) == true }) { url -> nav.navigate(BrowserRoute(agent, url)) }
+        LinkOpener.agent(
+            context, computer,
+            app = { url -> happy?.open(url, agent) == true },
+            opens = { url -> !com.slopus.happy.agent.HappyUrls.owns(url) || happy?.opens(url, agent) == true },
+        ) { url -> nav.navigate(BrowserRoute(agent, url)) }
     }
 }
 

@@ -108,7 +108,9 @@ final class HostedSendFlightTests: XCTestCase {
     private func legacyChat() async throws -> (Screen, AccountController) {
         // The fixture chats outlive a test: the last test's send would reply
         // into this one, between the row it watches and the row it flies.
-        let sessionId = FixtureScenarios.prefix + FixtureScenario.long.rawValue
+        // A previous send's delayed reply must not stream into this test.
+        let sessionId = FixtureScenarios.prefix + FixtureScenario.long.rawValue + "/" + UUID().uuidString
+        XCTAssertEqual(FixtureScenarios.scenario(for: sessionId), .long)
         await FixtureChatWorld.shared.reset(sessionId)
         let controller = AccountController(
             serverConfig: ServerConfig(storage: InMemoryKeyValueStore()), clientID: "ios/test",
@@ -131,6 +133,7 @@ final class HostedSendFlightTests: XCTestCase {
             window.isHidden = true
             hostWindow?.makeKey()
             await controller.signOut()
+            await FixtureChatWorld.shared.reset(sessionId)
         }
         window.layoutIfNeeded()
         let constructed = try await until { chat.contentInstalled }
@@ -455,9 +458,6 @@ final class HostedSendFlightTests: XCTestCase {
         try await flySend(screen, "legacy")
     }
 
-    /// Flaky on iOS 27.0 (about one run in three on a Mac's simulator; the
-    /// rows above move by more than the new row, or no flight arms), never
-    /// on iOS 26.5. No commit of ours found to blame yet.
     func testTheLegacyChatFliesASendInOverTheKeyboard() async throws {
         let (screen, _) = try await legacyChat()
         try await keyboardUp(screen)

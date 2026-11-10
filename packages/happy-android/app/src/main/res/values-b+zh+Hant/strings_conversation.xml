@@ -6,8 +6,6 @@
 <resources>
     <string name="conversation_details">聊天詳細資料</string>
     <string name="conversation_offline">離線</string>
-    <string name="conversation_revoked">此裝置已被移除</string>
-    <string name="conversation_update_required">需要更新</string>
     <string name="conversation_unavailable">此裝置上無法使用此代理程式連線。</string>
     <string name="conversation_empty">還沒有訊息。</string>
     <string name="conversation_read_only">此對話由另一個代理程式驅動，無法接收訊息。</string>
@@ -94,6 +92,8 @@
     <string name="conversation_problem_refused">代理拒絕了此操作（%1$d）。</string>
     <string name="conversation_problem_unknown">發生了問題。</string>
     <string name="conversation_problem_pictures">無法讀取要傳送的圖片。</string>
+    <string name="conversation_problem_files_unavailable">此伺服器尚不支援附加檔案。</string>
+    <string name="conversation_problem_file_too_large">%1$s 超過 25 MB，無法在此傳送。</string>
     <string name="conversation_failure_signin_missing">%1$s 未登入。請執行 `%2$s`，然後重試。</string>
     <string name="conversation_failure_cannot_authenticate">%1$s 無法完成身分驗證。請檢查其登入設定，然後重試。</string>
     <string name="conversation_failure_usage_limit">已達到 %1$s 的使用上限。</string>
@@ -106,4 +106,6 @@
     <string name="conversation_failure_internal">發生了問題：%1$s</string>
     <string name="conversation_editor_expand">展開</string>
     <string name="conversation_editor_collapse">收合</string>
+    <string name="problem_forbidden">你沒有執行此操作的權限。</string>
+    <string name="conversation_role_read_only">你可以閱讀此對話，但你的角色無法傳送訊息。</string>
 </resources>

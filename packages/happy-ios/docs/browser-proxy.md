@@ -83,11 +83,46 @@ append a second HTTP error response to its bytes.
   resources use the artifact source's workspace (or host fallback) over CONNECT.
   A bundled artifact can still serve its own files/API without a workspace,
   but external requests then fail closed.
-- Older HTTP `live.url` artifacts preserve the target origin: `/api/*` gets the
-  artifact capability; everything else goes through the workspace. Ordinary
-  HTTP requests close after one response to classify every request separately,
-  and the response says `Connection: close` to WebKit whatever the server sent;
-  WebSocket upgrades remain duplex.
+- A live artifact (`live.url`, made with `create_artifact` and `url`) opens
+  the URL of the version shown, a pinned version its own, http or https.
+  Every tunnel its page opens, to its own origin or any other host, is
+  `CONNECT /v0/artifacts/:id/proxy` then nested `CONNECT host:port`
+  (`BrowserNetwork.artifact`). That route reaches the network the artifact
+  was made on (`live.networkId`, say the creating agent's own container), and
+  the daemon checks every destination against the artifact's current URL;
+  the phone names no network and no allowlist. No workspace is looked up for
+  it, and nothing falls back to a workspace, the network or another proxy. The
+  page gets no data bridge: its `/api/*` is the site's own and reaches the site
+  with no daemon credential. HTTPS stays end to end, as for any link. Its
+  store is the page's own nonpersistent one. A refusal of the artifact route
+  itself (404: the artifact is gone or not live, or its network isn't served;
+  501; 503) is `BrowserError.liveUnavailable`, shown as "This Page's Computer
+  Isn't Available"; a destination refused inside the open tunnel (the
+  daemon's 403, or a dev server that isn't running) stays what it was.
+  Over Tailcat the route is CONNECT to the daemon; over HTTPS it is the
+  route's WebSocket twin (`/v0/artifacts/:id/proxy/websocket`) when health
+  offers twins, through the same `proxyTunnel` as every other route.
+- The phone's own loopback is never a page's. WebKit connects to it directly,
+  proxy or not (measured for `127.0.0.1` and `[::1]` on an iPhone 12, iOS
+  26.1, and for `localhost` there too), so a link or a page to `127.0.0.1`,
+  `[::1]` or `localhost` opens on an alias, `ipv4`, `ipv6` or
+  `name.happy-loopback.invalid` at the same port and scheme
+  (`BrowserPolicy.Loopback`). The page starts there, and a main-frame
+  navigation or redirect to the loopback reloads there. The proxy tunnels
+  the alias as `CONNECT` to the loopback it stands for, so the daemon sees
+  exactly what it did before. Each plain HTTP request's `Host`, plus an
+  `Origin` or `Referer` on the alias, names the loopback again, so dev
+  servers that check them (Vite, Next) answer. TLS passes untouched: its
+  name is the alias. Every page also has a content blocker for anything
+  else it loads (frames, scripts, fetches, WebSockets) from a host that is,
+  as WebKit canonicalizes it: any `127.x.y.z` (so `127.1`, `2130706433`,
+  `0x7f.1`; not a name like `127.example.com`),
+  `localhost`, `*.localhost` (each with or without a trailing dot),
+  `0.0.0.0`, `[::]`, `[::1]`, `[::ffff:127.*]`, `[::ffff:7f…]` or
+  `[::ffff:0:0]`, with or without userinfo. That includes a subresource on
+  the exact loopback, which fails, not reloads. A main-frame form POST to
+  the loopback reloads on the alias as a GET.
+  The address bar, errors and Share show the address as the link gave it.
 
 ## Security rules
 
@@ -136,7 +171,8 @@ page's, with its host as the subtitle. Embedded in an artifact, the buttons go
 in the artifact's header and its title stays. The page runs the full height,
 under the header and the home indicator, and WebKit insets its content by the
 safe area, so nothing moves when the header appears. Until it paints, the
-screen's surface shows through (`isOpaque = false`). Pull to refresh reloads.
+screen's surface shows through (`isOpaque = false`). Pull to refresh
+reloads (this fork keeps it; upstream has only the header's button).
 
 The back swipe is the page's while it has history (`TakesBackSwipe`): the
 shell's pop doesn't begin, and WebKit's own swipe goes back a page. On the
@@ -159,8 +195,9 @@ address that failed, not the last one that worked (`BrowserProblem`):
 | Cause | Shown as |
 | --- | --- |
 | No network path (`LinkState.waitingForNetwork`) | You're Offline |
-| The agent connection offline, or the proxy's tunnel to the computer failed (`browser_proxy_upstream_transport`) | Can't Reach <computer>; retried by itself when the link is back |
+| The proxy's tunnel to the computer failed (`browser_proxy_upstream_transport`) | Can't Reach <computer>; retried by itself when the link is back |
 | No session or route (`BrowserError.unavailable`) | Can't Open This Page |
+| A live artifact's own proxy refused (`BrowserError.liveUnavailable`, `browser_proxy_live_unavailable`) | This Page's Computer Isn't Available |
 | The computer refused the target (502/503/504 on CONNECT), connection refused or lost | Server Isn't Responding, naming host:port |
 | The proxy's own 502/503/504 response (`X-Happy-Proxy-Error`), whatever its body | Server Isn't Responding |
 | An error status with no body | Page Error <status>; one with a body shows as the page |
@@ -173,29 +210,6 @@ refusal per host (`BrowserRefusals`) and the screen reads it. Cancelled and
 replaced loads (`NSURLErrorCancelled`, WebKit's 102 and 204) never show an
 error. Hosted tests (`HostedBrowserStatesTests`) drive each case through real
 WebKit and the proxy, and assert the bar's whole run and the buttons.
-
-## The computer's localhost
-
-On a device, WebKit connects a loopback host (`localhost`, `127.x.x.x`, `::1`)
-itself and never asks its configured proxy, so a page on the computer's
-`localhost` (a dev server, the live browser at `localhost:6090`) went to the
-phone's own loopback and failed with nothing sent. The simulator proxies
-loopback, so hosted tests never saw it. A workspace page therefore loads a
-loopback `http`/`ws` address under an alias, `localhost.happy-loopback.invalid`
-(`127-0-0-1.…`, `ip6-1.…`; `BrowserLoopback`), which WebKit does proxy. The
-proxy tunnels an alias CONNECT to the real authority in the same workspace and
-rewrites each request's `Host`, and an alias `Origin` and `Referer`, back to the
-real address, closing after the response (or upgrading), so the server sees
-what a browser on the computer would send: Vite's host check and noVNC's
-same-origin check pass. The response WebKit gets always says
-`Connection: close` (`BrowserRelay.exchange`): websockify closes as asked but
-answers HTTP/1.1 with only a length, and WebKit then reused the tunnel for its
-next request, which went out unrewritten to a closed server. noVNC's first
-load, ~50 ES modules, lost some that way and its page stayed dead until a
-refresh served them from the cache. Main-frame navigations and redirects to a
-loopback host are reloaded under the alias, and the header, history, Copy Link and Open in
-Safari show the real address. `https` loopback stays as it was: its
-certificate would not match the alias.
 
 ## Live browser card
 
@@ -241,11 +255,10 @@ content). Nothing but the request is sent, with no cookies or cache.
 
 ## Contract gaps and limits
 
-The inspected current happy-agent API and artifact schema no longer contain a
-URL artifact type or `live.url`. iOS keeps the older decoded field and supports
-HTTP instances without inventing a daemon API. HTTPS live artifacts are refused:
-intercepting their `/api` path would require TLS interception. Ordinary HTTPS
-browser links still use an end-to-end encrypted tunnel.
+Live artifacts follow happy-agent API.md, "Live URLs" and
+`CONNECT /v0/artifacts/:artifactId/proxy`. The route has no version selector:
+the daemon checks a pinned version's URL against the artifact's current one, so
+a pinned version whose URL has since changed is refused inside the tunnel.
 
 The daemon exposes no unscoped host CONNECT endpoint, so host fallback needs a
 local host workspace. A Happy CLI chat's links reach a computer only through
@@ -253,8 +266,9 @@ that fallback, on the computer `LegacyLinkRoute` picks (Routing above), never
 through the relay. No device-local localhost or public fallback occurs.
 
 Hosted tests use real WebKit and the loopback listener against a byte-level fake
-daemon: artifact PUT and live SSE, relative JavaScript and WebSocket, live URL
-artifact API separation, chat workspace selection, and
+daemon: artifact PUT and live SSE, relative JavaScript and WebSocket, a live
+artifact through its own proxy with no API bridge (and its pinned version's
+URL, and its unavailable page), chat workspace selection, and
 public pages/resources on fake-only domains that cannot resolve on the phone.
 They assert no failover/domain exclusions and no view when no connection exists.
 Core tests cover framing, errors, credential boundaries and streaming; pure

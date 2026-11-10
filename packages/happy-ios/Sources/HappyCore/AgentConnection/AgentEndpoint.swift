@@ -142,7 +142,7 @@ actor AgentEndpointTransport: AgentTransport {
     func bearer(_ credential: String) async throws -> String { try await current().0.bearer(credential) }
     func reset() async { await selected?.0.reset() }
     func reset(_ category: RequestCategory) async { await selected?.0.reset(category) }
-    func networkChanged() async { await selected?.0.networkChanged() }
+    func resumed() async { await selected?.0.resumed() }
     func close() async {
         closed = true
         await endpoint.removeObserver(id)

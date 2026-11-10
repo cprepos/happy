@@ -30,6 +30,9 @@ typealias AgentRequest = suspend (method: String, path: String, body: JsonElemen
 /** [AgentRequest] with a JSON body already made as bytes: a workspace file's upload, built once ([WorkspaceUploads.body]). */
 typealias AgentBytesRequest = suspend (method: String, path: String, body: ByteArray, category: RequestCategory) -> TransportResponse
 
+/** A file's own bytes as the body, sent as [contentType]: a Happy Cloud attachment's upload. */
+typealias AgentFileRequest = suspend (method: String, path: String, body: ByteArray, contentType: String) -> TransportResponse
+
 /**
  * The client-chosen ids of new work made on first send (`POST /v0/tasks` or
  * `/v0/bots`); the same ids again are the same task or bot.
@@ -65,7 +68,14 @@ data class UnsentWork(val task: NewTask, val choice: WorkChoice, val draft: Stri
  * [AgentConnectionException.Reason.Revoked]; any other non-2xx is a
  * [ConversationApiException].
  */
-open class ConversationApi(private val bytesRequest: AgentBytesRequest?, private val request: AgentRequest) {
+open class ConversationApi(
+    private val bytesRequest: AgentBytesRequest?,
+    private val request: AgentRequest,
+    /** A Happy Cloud server's: its models run on connections ([catalog]). */
+    private val cloud: Boolean = false,
+    /** Sends [uploadAttachment]'s bytes; without it they go as [request] can't, and the upload fails. */
+    private val fileRequest: AgentFileRequest? = null,
+) {
     constructor(request: AgentRequest) : this(null, request)
 
     private suspend fun call(method: String, path: String, body: JsonElement? = null, category: RequestCategory = RequestCategory.Query): JsonObject =
@@ -117,22 +127,44 @@ open class ConversationApi(private val bytesRequest: AgentBytesRequest?, private
     }
 
     /** The models a message can run with, and the mode new work is sent with when nothing was picked. */
-    open suspend fun catalog(): ModeCatalog = ModeCatalog.parse(call("GET", "/v0/config"))
+    open suspend fun catalog(): ModeCatalog {
+        val catalog = ModeCatalog.parse(call("GET", "/v0/config"))
+        if (!cloud) return catalog
+        val connections = call("GET", "/v0/cloud/providers")["providers"].arr.orEmpty().mapNotNull { it.obj }.mapNotNull(com.slopus.happy.agent.CloudConnection::parse)
+        return ModeCatalog.withConnections(catalog, connections)
+    }
 
     /**
      * Sends [text] (and pictures) under the client's [id]: the same id again
      * is the same message. Always steering, as desktop sends: mid-turn it is
      * taken at the next boundary; idle, it starts a run.
      */
-    open suspend fun send(agentId: String, id: String, text: String, images: List<Block.Image>, mode: Mode, toolRequest: ToolRequest? = null): Message? {
+    open suspend fun send(
+        agentId: String,
+        id: String,
+        text: String,
+        images: List<Block.Image>,
+        mode: Mode,
+        toolRequest: ToolRequest? = null,
+        attachments: List<SentAttachment> = emptyList(),
+    ): Message? {
         val body = buildJsonObject {
             put("id", id)
-            // The API requires top-level text; a picture alone goes with a short caption.
-            put("text", if (text.isEmpty() && images.isNotEmpty()) (if (images.size == 1) "Attached image." else "Attached images.") else text)
+            // The API requires top-level text; a picture or a file alone goes with a short caption.
+            put(
+                "text",
+                when {
+                    text.isNotEmpty() -> text
+                    images.isNotEmpty() && attachments.isEmpty() -> if (images.size == 1) "Attached image." else "Attached images."
+                    attachments.isNotEmpty() -> if (images.size + attachments.size == 1) "Attached file." else "Attached files."
+                    else -> text
+                },
+            )
             put("delivery", "steer")
             put("clientMetadata", buildJsonObject { put("composer", "mobile") })
-            if (images.isNotEmpty() || toolRequest != null) put("content", buildJsonArray {
+            if (images.isNotEmpty() || attachments.isNotEmpty() || toolRequest != null) put("content", buildJsonArray {
                 images.forEach { add(buildJsonObject { put("type", "image"); put("mimeType", it.mimeType); put("data", it.data) }) }
+                attachments.forEach { add(buildJsonObject { put("type", "file"); put("attachment", it.id); put("name", it.name) }) }
                 // A tool request rides the words (desktop aa8a2529); the words go once, as `text`.
                 toolRequest?.let { request ->
                     add(
@@ -149,6 +181,22 @@ open class ConversationApi(private val bytesRequest: AgentBytesRequest?, private
         // Pictures make it a file's size: a file's client and deadline.
         val category = if (images.isEmpty()) RequestCategory.Query else RequestCategory.File
         return Message.parse(call("POST", "/v0/agents/${escape(agentId)}/send", body, category)["message"])
+    }
+
+    /**
+     * Uploads [file] as an attachment of [agentId] (Happy Cloud, `PUT
+     * …/attachments?name=`): its own bytes, as its type. The answer's id is
+     * the bytes' digest, so a retry whose answer was lost gets the same one.
+     * The disk is read on [io].
+     */
+    open suspend fun uploadAttachment(agentId: String, file: OutgoingFile, io: kotlin.coroutines.CoroutineContext = kotlinx.coroutines.Dispatchers.IO): String {
+        val send = fileRequest ?: throw ConversationApiException(501, "unsupported", null)
+        val bytes = kotlinx.coroutines.withContext(io) { file.file.readBytes() }
+        val path = "/v0/agents/${escape(agentId)}/attachments?name=${escape(file.name)}"
+        val response = kotlinx.coroutines.withContext(com.slopus.happy.connection.BodyProgress { _, _ -> }) {
+            send("PUT", path, bytes, file.mimeType.ifBlank { "application/octet-stream" })
+        }
+        return decode(response)["attachment"].obj?.get("id").str ?: throw invalid()
     }
 
     /**
@@ -209,6 +257,37 @@ open class ConversationApi(private val bytesRequest: AgentBytesRequest?, private
         }
         val answer = call("POST", "/v0/agents/${escape(agentId)}/slash-commands/${escape(name)}", body)
         return CommandInvoked(AgentInfo.parse(answer["agent"]), SlashCommand.parseAll(answer["slashCommands"]))
+    }
+
+    /**
+     * The computer's global skills a new chat offers before it has an agent
+     * (API.md `GET /v0/skills`), as skill commands: only the enabled, ready
+     * ones, in the catalog's order, each name once (two folders may share
+     * one; an agent offers it once). Read 100 a page; a catalog that changed
+     * between pages (`409`) is read again from the start. `404` or `501` is
+     * a computer without skills: none.
+     */
+    open suspend fun skills(): List<SlashCommand> {
+        repeat(SKILL_READS) {
+            val skills = ArrayList<SlashCommand>()
+            var cursor: String? = null
+            try {
+                do {
+                    val query = "limit=100" + (cursor?.let { "&pageCursor=${escape(it)}" } ?: "")
+                    val page = call("GET", "/v0/skills?$query")
+                    page["skills"].arr.orEmpty().mapNotNullTo(skills, SlashCommand::globalSkill)
+                    cursor = page["nextPageCursor"].str
+                } while (cursor != null)
+                return skills.distinctBy { it.name }
+            } catch (e: ConversationApiException) {
+                when (e.status) {
+                    404, 501 -> return emptyList()
+                    409 -> Unit
+                    else -> throw e
+                }
+            }
+        }
+        throw ConversationApiException(409, "conflict", null)
     }
 
     open suspend fun abort(agentId: String) {
@@ -303,6 +382,8 @@ open class ConversationApi(private val bytesRequest: AgentBytesRequest?, private
         private val json = Json { ignoreUnknownKeys = true }
         private val random = SecureRandom()
         private const val ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789"
+        /** Reads of the skills catalog before one that keeps changing under its pages is given up. */
+        private const val SKILL_READS = 3
 
         fun escape(component: String): String = URLEncoder.encode(component, "UTF-8").replace("+", "%20")
 

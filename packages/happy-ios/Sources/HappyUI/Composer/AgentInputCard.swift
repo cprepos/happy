@@ -416,6 +416,48 @@ public final class AgentInputCardView: UIView {
     private var menuPresenter: ComposerMenuPresenter?
     private let primaryHost = PassthroughView()
     private let primaryButton = ComposerPrimaryButton()
+    /// The microphone in send's place while there is nothing to send
+    /// (`.record`): the owner's `RecordButton`, the one home's toolbar has
+    /// too. It is only a glyph, over send's own fill, so send's arrow and
+    /// it morph into each other in place.
+    var recordButton: RecordButton? {
+        didSet {
+            guard recordButton !== oldValue else { return }
+            oldValue?.removeFromSuperview()
+            if let recordButton {
+                primaryHost.addSubview(recordButton)
+                recordButton.bounds = primaryHost.bounds
+                recordButton.center = CGPoint(x: primaryHost.bounds.midX, y: primaryHost.bounds.midY)
+            }
+            showsRecord = nil
+            updateRecord(animated: false)
+        }
+    }
+    private var showsRecord: Bool?
+
+    /// The action row, add to the microphone, in the card's space: the
+    /// recording bar stretches out of the microphone across it, under the
+    /// text, which stays in sight.
+    var actionRowFrame: CGRect {
+        desktopLayout(width: bounds.width)?.actionRow ?? layout(width: bounds.width).actionRow
+    }
+
+    /// The recording is over: send takes the microphone's place if the
+    /// words it left are to be sent, as typing them would have.
+    func recordEnded() {
+        updateRecord(animated: window != nil)
+    }
+
+    /// Dictation writes into the text while the recording circle stands
+    /// over send: the text wraps clear of it (`AgentInputCardLayout`'s
+    /// `recording`).
+    var isDictating = false {
+        didSet {
+            guard isDictating != oldValue else { return }
+            reportHeightChange(animated: window != nil)
+            setNeedsLayout()
+        }
+    }
     private var installedDesktopControls: AgentInputDesktopControlsView?
     /// A phone's compact card never mounts the hidden desktop button tree.
     /// Keep it after the first wide layout so resizing preserves its controls.
@@ -458,6 +500,9 @@ public final class AgentInputCardView: UIView {
     /// A text set not to animate its height, until its own measurement
     /// lands or the person edits it.
     private var quietGrowth: ComposerTextHeights.QuietGrowth?
+    /// Where dictation's dimmed tail starts, while there is one
+    /// (`setDictatedText`).
+    private var dimmedFrom: Int?
     /// The height a `premeasure`d text brought, for `textChanged` to file
     /// under its revision.
     private var premeasured: PremeasuredText?
@@ -710,6 +755,61 @@ public final class AgentInputCardView: UIView {
 
     public var selectedRange: NSRange { textView.selectedRange }
 
+    /// The words being dictated, as the recognizer revises them
+    /// (`RecordButton.onTranscript`), the way the keyboard's dictation
+    /// writes them: only what differs from the text already there is
+    /// replaced, so the words before it never redraw, and the last
+    /// `volatileLength` UTF-16 units, which the recognizer may still change,
+    /// are drawn dimmed. A caret at the end stays at the end, the newest
+    /// words in view; anywhere else it stays where it is.
+    func setDictatedText(_ text: String, volatileLength: Int) {
+        let storage = textView.textStorage
+        let units = text as NSString
+        let oldLength = storage.length
+        let changed = !storage.mutableString.isEqual(to: text)
+        let selection = textView.selectedRange
+        let followsEnd = NSMaxRange(selection) == oldLength
+        let shared = changed ? Self.sharedPrefix(storage.mutableString, units) : units.length
+        let dimFrom = units.length - min(max(volatileLength, 0), units.length)
+        let restyleFrom = min(shared, dimmedFrom ?? shared, dimFrom)
+        storage.beginEditing()
+        if changed {
+            storage.replaceCharacters(in: NSRange(location: shared, length: oldLength - shared), with: units.substring(from: shared))
+        }
+        let restyled = NSRange(location: restyleFrom, length: units.length - restyleFrom)
+        storage.setAttributes(inputStyle.attributes(color: UIColor(Palette.inputText)), range: restyled)
+        if dimFrom < units.length {
+            storage.addAttribute(.foregroundColor, value: UIColor(Palette.inputText).withAlphaComponent(Self.dictatedTailAlpha),
+                                 range: NSRange(location: dimFrom, length: units.length - dimFrom))
+        }
+        storage.endEditing()
+        dimmedFrom = dimFrom < units.length ? dimFrom : nil
+        textView.typingAttributes = inputStyle.attributes(color: UIColor(Palette.inputText))
+        let location = followsEnd ? units.length : min(selection.location, units.length)
+        textView.selectedRange = NSRange(location: location, length: followsEnd ? 0 : min(selection.length, units.length - location))
+        guard changed else { return }
+        // The edit went under the text view's own: its undo steps would
+        // point into text that is no longer there.
+        textView.undoManager?.removeAllActions()
+        quietGrowth = nil
+        textChanged()
+        if followsEnd, textView.isScrollEnabled { textView.scrollRangeToVisible(NSRange(location: units.length, length: 0)) }
+    }
+
+    /// The words the recognizer may still revise: the text's colour, fainter.
+    static let dictatedTailAlpha: CGFloat = 0.5
+
+    /// The UTF-16 length `a` and `b` start with in common, never ending
+    /// inside a composed character (an emoji, a letter and its accent).
+    private static func sharedPrefix(_ a: NSString, _ b: NSString) -> Int {
+        let limit = min(a.length, b.length)
+        var shared = 0
+        while shared < limit, a.character(at: shared) == b.character(at: shared) { shared += 1 }
+        if shared > 0, shared < b.length { shared = min(shared, b.rangeOfComposedCharacterSequence(at: shared).location) }
+        if shared > 0, shared < a.length { shared = min(shared, a.rangeOfComposedCharacterSequence(at: shared).location) }
+        return shared
+    }
+
     /// Replaces the text and moves the caret (`setTextAndSelection`).
     /// Reports the change to the delegate, as a keystroke would.
     /// `animatesHeight: false` reports the new height, then and when it is
@@ -719,6 +819,7 @@ public final class AgentInputCardView: UIView {
         // `textChanged` moves the revision to this text's.
         quietGrowth = animatesHeight ? nil : .init(generation: textGeneration, revision: textRevision + 1)
         textView.attributedText = inputStyle.attributedString(text, color: UIColor(Palette.inputText))
+        dimmedFrom = nil
         textView.typingAttributes = inputStyle.attributes(color: UIColor(Palette.inputText))
         let length = (text as NSString).length
         let location = min(max(0, selection.location), length)
@@ -1180,7 +1281,8 @@ public final class AgentInputCardView: UIView {
             separator: config.effort == nil || !measuresChips ? .zero : separator.sizeThatFits(.zero),
             zenMode: config.zenMode,
             offersExpand: config.showsExpand,
-            compact: compact
+            compact: compact,
+            recording: isDictating
         )
     }
 
@@ -1256,6 +1358,9 @@ public final class AgentInputCardView: UIView {
         primaryHost.bounds = CGRect(origin: .zero, size: primary.size)
         primaryHost.center = CGPoint(x: primary.midX, y: primary.midY)
         primaryButton.frame = primaryHost.bounds
+        // Bounds and centre, not frame: the microphone may be mid-scale.
+        recordButton?.bounds = primaryHost.bounds
+        recordButton?.center = CGPoint(x: primaryHost.bounds.midX, y: primaryHost.bounds.midY)
     }
 
     /// The flat panel: the strip and text where `AgentInputDesktopLayout`
@@ -1378,6 +1483,7 @@ public final class AgentInputCardView: UIView {
             busy: config.isPrimaryBusy,
             accessibilityLabel: config.primaryAccessibilityLabel
         )
+        updateRecord(animated: previous != nil && window != nil)
         if let desktop = config.desktop {
             desktopControls.configure(
                 desktop,
@@ -1410,6 +1516,38 @@ public final class AgentInputCardView: UIView {
             reportHeightChange(animated: picturesOnly && window != nil)
             setNeedsLayout()
         }
+    }
+
+    /// The row under the recording bar: add and the chips fade as the bar
+    /// stretches over them, as Telegram's attach button does under its
+    /// recording panel, and come back as it shrinks away.
+    private func fadeRow(recording: Bool) {
+        let row: [UIView?] = [addButton, middle, optionsButton, installedDesktopControls]
+        UIView.animate(withDuration: recording ? 0.15 : 0.25, delay: recording ? 0 : 0.1, options: [.beginFromCurrentState, .allowUserInteraction]) {
+            for view in row { view?.alpha = recording ? 0 : 1 }
+        }
+    }
+
+    /// Send or the microphone (`ChatTextInputPanelNode`'s swap), in place:
+    /// send's arrow fades out, then the microphone fades in over the same
+    /// fill (`AgentInputPrimaryGlyphMotion`), and back. Only empty to not
+    /// and back changes it, so typing doesn't; a change caught halfway
+    /// turns back from where it is. A recording under way keeps the
+    /// microphone.
+    private func updateRecord(animated: Bool) {
+        guard let recordButton else { return }
+        let shows = configuration.primaryAction == .record || recordButton.isRecording
+        guard shows != showsRecord else { return }
+        let first = showsRecord == nil
+        showsRecord = shows
+        primaryButton.isUserInteractionEnabled = !shows
+        recordButton.isUserInteractionEnabled = shows
+        guard animated, !first else {
+            recordButton.layer.removeAllAnimations()
+            recordButton.alpha = shows ? 1 : 0
+            return
+        }
+        AgentInputPrimaryGlyphMotion.fade(recordButton, in: shows)
     }
 
     /// What of the flat panel moves its frames: whether it is there, the
@@ -1517,6 +1655,21 @@ public final class AgentInputCardView: UIView {
 
     @objc private func expandTapped() {
         delegate?.agentInputCardDidPressExpand(self)
+    }
+}
+
+extension AgentInputCardView: RecordButtonHosting {
+    func recordButton(_ button: RecordButton, isRecording: Bool) {
+        fadeRow(recording: isRecording)
+        // The microphone's fill is send's: it goes with the microphone's
+        // glyph as the bar grows out of the button, and comes back with it.
+        UIView.animate(
+            withDuration: isRecording ? RecordMotion.Metrics.appearFade : RecordMotion.Metrics.disappearDuration,
+            delay: 0,
+            options: [.beginFromCurrentState, .allowUserInteraction]
+        ) {
+            self.primaryButton.alpha = isRecording ? 0 : 1
+        }
     }
 }
 
@@ -1881,17 +2034,20 @@ final class ComposerPrimaryButton: ComposerPressableButton {
     }
 
     func configure(action: AgentInputPrimaryAction, style: AgentInputPrimaryStyle, busy: Bool, accessibilityLabel: String?) {
-        // Send to stop and back is the one button changing its glyph, so
-        // the glyph changes in place: the old one shrinks away as the new
-        // one grows in.
-        let wasStop = self.action == .stop
-        let glyphChanges = configured && !busy && !self.busy && wasStop != (action == .stop)
+        // Send to stop, or to the microphone, and back is the one button
+        // changing its glyph, so the glyph changes in place: the old one
+        // fades out, then the new one fades in.
+        let old = configured ? glyph : nil
+        let wasBusy = self.busy
+        let wasConfigured = configured
         configured = true
         self.action = action
         self.style = style
         self.busy = busy
         switch action {
-        case .stop:
+        case .stop, .record:
+            // Stop draws its square; the microphone over the button its
+            // own glyph. Send's arrow is left to fade away.
             break
         case .blocked:
             iconView.icon = .ionicons("lock-closed")
@@ -1913,46 +2069,64 @@ final class ComposerPrimaryButton: ComposerPressableButton {
             spinner.stopAnimating()
         }
         self.accessibilityLabel = accessibilityLabel ?? (action == .stop ? Strings.Composer.stop : Strings.Composer.send)
-        if glyphChanges, window != nil {
-            showGlyph(from: wasStop ? stopView : iconView)
-        } else {
-            showGlyph(from: nil)
+        if wasConfigured, glyph === old, busy == wasBusy {
+            // The same glyph (a keystroke more to send): one still fading
+            // in keeps fading.
             applyColors()
+        } else {
+            showGlyph(from: old, animated: wasConfigured && !busy && !wasBusy && window != nil)
         }
     }
 
-    /// The icon, or stop's square: whichever the action draws. `from`, the
-    /// glyph going away, shrinks and fades out as the new one grows in,
-    /// and the fill changes with them.
-    private func showGlyph(from old: UIView?) {
-        let new: UIView = action == .stop ? stopView : iconView
-        guard let old, old !== new else {
-            for glyph in [iconView, stopView] {
-                glyph.layer.removeAllAnimations()
-                glyph.alpha = 1
-                glyph.transform = .identity
-                glyph.isHidden = busy || glyph !== new
+    /// What the action draws: the icon, stop's square, or nothing under
+    /// the chat's microphone (`.record`), which draws its own glyph on
+    /// this fill.
+    private var glyph: UIView? {
+        switch action {
+        case .stop: stopView
+        case .record: nil
+        default: iconView
+        }
+    }
+
+    /// The glyph the action draws, in place. `old`, the one going away,
+    /// fades out, and only then the new one fades in, so the two never
+    /// overlap; the fill changes across both. A glyph caught on its way
+    /// out turns back from where it is, so typing and deleting fast never
+    /// jumps.
+    private func showGlyph(from old: UIView?, animated: Bool) {
+        let new = glyph
+        guard animated, old !== new else {
+            for view in [iconView, stopView] as [UIView] {
+                view.layer.removeAllAnimations()
+                view.alpha = 1
+                view.isHidden = busy || view !== new
             }
+            applyColors()
             return
         }
-        let motion = AgentInputPrimaryGlyphMotion.self
-        let shrunk = UIAccessibility.isReduceMotionEnabled ? .identity : CGAffineTransform(scaleX: motion.scale, y: motion.scale)
-        new.isHidden = false
-        new.alpha = 0
-        new.transform = shrunk
-        UIView.animate(withDuration: motion.duration, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction, .curveEaseInOut]) {
-            new.alpha = 1
-            new.transform = .identity
-            old.alpha = 0
-            old.transform = shrunk
-            self.applyColors()
-        } completion: { _ in
-            // A later change may have made the old glyph the shown one again.
-            guard old !== (self.action == .stop ? self.stopView : self.iconView) else { return }
-            old.isHidden = true
-            old.alpha = 1
-            old.transform = .identity
+        if let new {
+            let fresh = new.isHidden
+            if fresh {
+                new.isHidden = false
+                new.alpha = 0
+            }
+            AgentInputPrimaryGlyphMotion.fade(new, in: true, fromCurrentState: !fresh)
         }
+        if let old {
+            AgentInputPrimaryGlyphMotion.fade(old, in: false) {
+                // A later change may have made the old glyph the shown one again.
+                guard old !== self.glyph else { return }
+                old.isHidden = true
+                old.alpha = 1
+            }
+        }
+        UIView.animate(
+            withDuration: AgentInputPrimaryGlyphMotion.fadeOut + AgentInputPrimaryGlyphMotion.fadeIn,
+            delay: 0,
+            options: [.beginFromCurrentState, .allowUserInteraction],
+            animations: applyColors
+        )
     }
 
     private func applyColors() {
@@ -1980,7 +2154,7 @@ final class ComposerPrimaryButton: ComposerPressableButton {
             layer.borderWidth = 1
             layer.borderColor = UIColor(Palette.legacyDivider).resolvedColor(with: traitCollection).cgColor
             iconView.tintColor = UIColor(Palette.textSecondary)
-        case .send, .voice:
+        case .send, .voice, .record:
             backgroundColor = UIColor(Palette.surfaceHighest)
             iconView.tintColor = UIColor(Palette.text)
         case .idle:
@@ -2006,6 +2180,25 @@ final class ComposerPrimaryButton: ComposerPressableButton {
             glyph.center = center
         }
         spinner.center = center
+    }
+}
+
+extension AgentInputPrimaryGlyphMotion {
+    /// `view` fading out at once, or in once the glyph it replaces is gone,
+    /// from wherever an earlier change left it. A glyph just unhidden at
+    /// zero fades from zero: its layer on screen still has the alpha it
+    /// was hidden with.
+    @MainActor
+    static func fade(_ view: UIView, in shows: Bool, fromCurrentState: Bool = true, completion: (() -> Void)? = nil) {
+        var options: UIView.AnimationOptions = [.allowUserInteraction, shows ? .curveEaseOut : .curveEaseIn]
+        if fromCurrentState { options.insert(.beginFromCurrentState) }
+        UIView.animate(
+            withDuration: shows ? fadeIn : fadeOut,
+            delay: shows ? fadeOut : 0,
+            options: options,
+            animations: { view.alpha = shows ? 1 : 0 },
+            completion: { _ in completion?() }
+        )
     }
 }
 

@@ -2,8 +2,42 @@
 @testable import HappyCore
 @testable import HappyUI
 import UIKit
+import Network
 import WebKit
 import XCTest
+
+/// A listener on the phone's own loopback that records whatever reaches it.
+actor PhoneLoopback {
+    private(set) var lines: [String] = []
+    private func record(_ data: Data) { lines.append(String(decoding: data, as: UTF8.self).components(separatedBy: "\r\n").first ?? "") }
+
+    func listen(ipv6: Bool, port: Int) async throws -> NWListener {
+        let parameters = NWParameters.tcp
+        parameters.requiredLocalEndpoint = .hostPort(host: ipv6 ? .ipv6(.loopback) : .ipv4(.loopback), port: NWEndpoint.Port(rawValue: UInt16(port))!)
+        parameters.allowLocalEndpointReuse = true
+        let listener = try NWListener(using: parameters)
+        listener.newConnectionHandler = { connection in
+            connection.start(queue: .global())
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, _, _ in
+                Task { await self.record(data ?? Data()) }
+                let body = "<p id='result'>the phone's own loopback</p>"
+                connection.send(content: Data("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)".utf8),
+                                completion: .contentProcessed { _ in connection.cancel() })
+            }
+        }
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            listener.stateUpdateHandler = { state in
+                switch state {
+                case .ready: listener.stateUpdateHandler = nil; continuation.resume()
+                case .failed(let error): listener.stateUpdateHandler = nil; continuation.resume(throwing: error)
+                default: break
+                }
+            }
+            listener.start(queue: .global())
+        }
+        return listener
+    }
+}
 
 /// A fake computer behind the real proxy, whose pages, delays and failures
 /// a test sets: WebKit still speaks real HTTP through our loopback listener.
@@ -25,6 +59,8 @@ actor BrowserStateDaemon: AgentTransport {
     /// Artifact files whose upstream read fails, so the proxy answers 502.
     var failing: Set<String> = []
     private(set) var requests: [String] = []
+    /// The Host each request inside a tunnel named.
+    private(set) var hosts: [String] = []
 
     func set(_ path: String, _ page: Page) { pages[path] = page }
     func setDown(_ value: Bool) { down = value }
@@ -37,8 +73,11 @@ actor BrowserStateDaemon: AgentTransport {
         return Socket(self)
     }
     func close() async {}
+    /// API answers by path; everything else is `{}`.
+    var responses: [String: String] = ["/v0/config": #"{"config":{"node":{"name":"Studio Mac"}}}"#]
+    func respond(_ path: String, _ json: String) { responses[path] = json }
     func request(method: String, path: String, credential: String, body: Data?, headers: [String: String]) async throws -> HTTP1Response {
-        HTTP1Response(status: 200, body: Data("{}".utf8))
+        HTTP1Response(status: 200, body: Data((responses[path] ?? "{}").utf8))
     }
 
     enum Answer {
@@ -49,13 +88,14 @@ actor BrowserStateDaemon: AgentTransport {
 
     func answer(_ head: BrowserHTTPHead) -> Answer {
         requests.append(head.line)
+        if !head.line.hasPrefix("CONNECT "), let host = head.value("Host") { hosts.append(host) }
         let parts = head.line.split(separator: " ")
         let target = parts.count > 1 ? String(parts[1]) : "/"
         if head.line.hasPrefix("CONNECT ") {
-            if target.hasPrefix("/v0/") { return .established(tls: false) }
             if let status = refused[target] {
                 return .respond(head: Data("HTTP/1.1 \(status) Refused\r\nContent-Length: 0\r\n\r\n".utf8), body: Data(), delay: .zero, gap: .zero)
             }
+            if target.hasPrefix("/v0/") { return .established(tls: false) }
             return .established(tls: target.hasSuffix(":8443"))
         }
         let path = target.components(separatedBy: "/files").last ?? target
@@ -310,7 +350,7 @@ final class HostedBrowserStatesTests: XCTestCase {
         try await shots(window, "browser-error-computer-unreachable")
 
         await daemon.setDown(false)
-        browser.linkChanged(.offline)
+        browser.linkChanged(.connecting)
         browser.linkChanged(.online)
         try await until("the page after the computer came back") { await text(browser.web) == "ready" }
         XCTAssertNil(browser.problem)
@@ -343,6 +383,109 @@ final class HostedBrowserStatesTests: XCTestCase {
         browser.failureView.retry.sendActions(for: .primaryActionTriggered)
         try await until("the page after Try Again") { await text(browser.web) == "ready" }
         XCTAssertTrue(browser.failureView.isHidden)
+    }
+
+    func testALiveArtifactWhoseComputerIsGoneSaysSoAndOpensWhenItIsBack() async throws {
+        let daemon = BrowserStateDaemon()
+        await daemon.refuse("/v0/artifacts/art1/proxy", 404)
+        let page = try await BrowserPage.live(client: AgentClient(transport: daemon, token: "native-secret"), url: XCTUnwrap(URL(string: "http://127.0.0.1:4191/")), artifactID: "art1")
+        let browser = BrowserViewController(url: page.url, artifactID: "art1", page: page)
+        let window = try await show(browser)
+        defer { window.isHidden = true }
+        try await failed(browser, .liveUnavailable)
+        XCTAssertEqual(browser.failureView.shownTitle, "This Page’s Computer Isn’t Available")
+        try await shots(window, "browser-error-live-unavailable")
+        let requests = await daemon.requests
+        XCTAssertFalse(requests.contains { $0.contains("/v0/workspaces/") }, "Never another network")
+
+        await daemon.refuse("/v0/artifacts/art1/proxy", nil)
+        browser.failureView.retry.sendActions(for: .primaryActionTriggered)
+        try await until("the page after Try Again") { await text(browser.web) == "ready" }
+        let again = await daemon.requests
+        XCTAssertTrue(again.contains("CONNECT 127.0.0.1:4191 HTTP/1.1"))
+    }
+
+    func testTheLoopbackOpensOnTheComputerAndNothingReachesThePhones() async throws {
+        for (index, host) in ["127.0.0.1", "[::1]", "localhost"].enumerated() {
+            let port = 4191 + index
+            // What answers on the phone's own loopback, should anything get there.
+            let phone = PhoneLoopback()
+            var listeners: [NWListener] = []
+            if host != "[::1]" { listeners.append(try await phone.listen(ipv6: false, port: port)) }
+            if host != "127.0.0.1" { listeners.append(try await phone.listen(ipv6: true, port: port)) }
+            defer { listeners.forEach { $0.cancel() } }
+            let daemon = BrowserStateDaemon()
+            let page = try await BrowserPage.live(client: AgentClient(transport: daemon, token: "native-secret"), url: XCTUnwrap(URL(string: "http://\(host):\(port)/")), artifactID: "art1")
+            let browser = BrowserViewController(url: page.url, artifactID: "art1", page: page)
+            let window = try await show(browser)
+            defer { window.isHidden = true }
+            try await until("the computer's page on \(host)") { await text(browser.web) == "ready" }
+
+            // A link back to the loopback opens there too; a fetch there is blocked.
+            let web = try XCTUnwrap(browser.web)
+            _ = try? await web.evaluateJavaScript("location.href = 'http://\(host):\(port)/second'")
+            try await until("the second page on \(host)") { await daemon.gets("/second") > 0 }
+            try await loaded(browser)
+            XCTAssertEqual(browser.navigationItem.subtitle, host.trimmingCharacters(in: CharacterSet(charactersIn: "[]")), "The address as the link gave it")
+            func fetch(_ address: String, _ path: String) async throws -> String? {
+                try await web.callAsyncJavaScript("try { await fetch('http://\(address)\(path)', {mode: 'no-cors'}); return 'fetched' } catch { return 'blocked' }", arguments: [:], in: nil, contentWorld: .page) as? String
+            }
+            for address in ["\(host):\(port)", "localhost.:\(port)", "a.localhost:\(port)", "a.localhost.:\(port)", "127.0.0.2:\(port)", "0.0.0.0:\(port)",
+                            "[::]:\(port)", "[::ffff:127.0.0.1]:\(port)", "[::ffff:0.0.0.0]:\(port)"] {
+                let fetched = try await fetch(address, "/fetched")
+                XCTAssertEqual(fetched, "blocked", address)
+            }
+            // A host that only starts like a loopback address is the computer's to reach.
+            let named = try await fetch("127.example.com", "/named")
+            XCTAssertEqual(named, "fetched")
+
+            let requests = await daemon.requests, hosts = await daemon.hosts, reached = await phone.lines, fetches = await daemon.gets("/fetched")
+            XCTAssertEqual(reached, [], "Nothing connects to the phone's \(host)")
+            XCTAssertTrue(requests.contains("CONNECT \(host):\(port) HTTP/1.1"), "\(requests)")
+            XCTAssertTrue(requests.contains("CONNECT 127.example.com:80 HTTP/1.1"), "\(requests)")
+            XCTAssertFalse(requests.contains { $0.contains("happy-loopback") }, "\(requests)")
+            XCTAssertEqual(Set(hosts), ["\(host):\(port)", "127.example.com"], "The dev server is asked for its own name")
+            XCTAssertEqual(fetches, 0)
+        }
+    }
+
+    func testALiveArtifactOpensTheURLOfTheVersionShown() async throws {
+        func version(_ number: Int, _ url: String) -> String {
+            #"{"version":{"artifactId":"art1","number":\#(number),"title":"Preview \#(number)","entry":{"path":"index.html","mimeType":"text/html","size":1},"files":[{"path":"index.html","mimeType":"text/html","size":1}],"live":{"url":"\#(url)","networkId":"c-agent1"}}}"#
+        }
+        let daemon = BrowserStateDaemon()
+        await daemon.respond("/v0/artifacts/art1/versions/1", version(1, "http://localhost:4100/"))
+        await daemon.respond("/v0/artifacts/art1/versions/latest", version(2, "http://localhost:4200/"))
+        let account = AccountController(serverConfig: ServerConfig(storage: InMemoryKeyValueStore()), clientID: "live-artifact-test", credentialStore: InMemoryCredentialStore(), storeDirectory: nil, agentTransport: { _ in daemon })
+        await account.agentConnections.setForeground(false)
+        let connection = try await account.agentConnections.add(JSONDecoder().decode(AgentConnectionCredentials.self,
+            from: Data(#"{"address":"live-artifact-test","port":1,"deviceID":"\#(UUID().uuidString)","deviceToken":"native-secret"}"#.utf8)), name: "Studio Mac")
+        defer { Session.forget(connection.id); Task { try? await account.agentConnections.remove(connection.id) } }
+        let session = try XCTUnwrap(Session.session(for: connection.id, context: AppContext(account: account, variant: .preview, version: "test")))
+
+        // Pinned to version 1: its own URL, not the latest's.
+        var pinned = Artifact(id: "art1", version: 1, type: "html", title: "Preview", followsLatest: false)
+        pinned.pinned = true
+        let navigation = UINavigationController(rootViewController: UIViewController())
+        let window = hostedKeyWindow(in: try await hostedActiveScene(), root: navigation)
+        defer { window.isHidden = true }
+        navigation.pushViewController(ArtifactViewController(session: session, artifact: pinned), animated: false)
+        try await until("the pinned version's page") {
+            let tunneled = await daemon.requests.contains("CONNECT localhost:4100 HTTP/1.1")
+            let loaded = await daemon.gets("/")
+            return tunneled && loaded > 0
+        }
+        var requests = await daemon.requests
+        XCTAssertTrue(requests.contains("CONNECT /v0/artifacts/art1/proxy HTTP/1.1"))
+        XCTAssertFalse(requests.contains { $0.contains("localhost:4200") })
+        XCTAssertFalse(requests.contains { $0.contains("/v0/workspaces/") })
+        try await shots(window, "live-artifact-pinned")
+
+        // Following the latest: the latest version's URL.
+        navigation.pushViewController(ArtifactViewController(session: session, artifact: Artifact(id: "art1", version: 2, type: "html", title: "Preview", followsLatest: true)), animated: false)
+        try await until("the latest version's page") { await daemon.requests.contains("CONNECT localhost:4200 HTTP/1.1") }
+        requests = await daemon.requests
+        XCTAssertFalse(requests.contains { $0.contains("/v0/workspaces/") })
     }
 
     func testProxyGatewayErrorIsFlaggedEvenWithABody() async throws {

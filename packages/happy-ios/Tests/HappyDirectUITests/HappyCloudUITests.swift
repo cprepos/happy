@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 
 /// Happy Cloud end to end on a phone, against the live cloud: Connect to
 /// Happy Cloud, Sign in with Apple (a person at the phone finishes Apple's
@@ -36,6 +37,588 @@ final class HappyCloudUITests: XCTestCase {
     }
 
     /// The first of `candidates` to show within `timeout`.
+    /// From home or Start, through Connect to Happy Cloud, the ten taps and
+    /// the test account's form, to its servers. The password is pasted,
+    /// never typed: XCTest's log keeps whatever is typed.
+    private func signInWithTestAccount(login: String, password: String) {
+        let switcher = element("account-switcher")
+        let start = element("start-more")
+        guard let entry = first([switcher, start], timeout: 30) else { return require(false, "neither home nor Start") }
+        capture("01-before")
+        entry.tap()
+        let cloud = first([app.buttons["Connect to Happy Cloud"], app.buttons["account-cloud"]], timeout: 5)
+        require(cloud != nil, "no Connect to Happy Cloud")
+        cloud?.tap()
+
+        let logo = element("cloud-logo")
+        require(logo.waitForExistence(timeout: 10), "no welcome")
+        capture("02-welcome")
+        let form = element("cloud-test-login")
+        // One quick burst: a phone's taps one by one can outlast the four seconds.
+        logo.tap(withNumberOfTaps: 10, numberOfTouches: 1)
+        if !form.waitForExistence(timeout: 2) { for _ in 0..<10 where !form.exists { logo.tap() } }
+        require(form.waitForExistence(timeout: 3), "ten taps on the logo opened nothing")
+        capture("03-test-sign-in")
+        form.tap()
+        form.typeText(login)
+        let secret = element("cloud-test-password")
+        // A phone lets only the app in front write the pasteboard: the
+        // runner comes forward to write it, and again to empty it.
+        onPasteboard(password)
+        defer { onPasteboard("") }
+        secret.tap()
+        Thread.sleep(forTimeInterval: 0.5)
+        secret.tap()
+        let paste = app.menuItems["Paste"]
+        if !paste.waitForExistence(timeout: 2) { secret.press(forDuration: 1.2) }
+        require(paste.waitForExistence(timeout: 5), "no Paste in the password's menu")
+        paste.tap()
+        let allow = first([app.buttons["Allow Paste"], XCUIApplication(bundleIdentifier: "com.apple.springboard").buttons["Allow Paste"]], timeout: 3)
+        allow?.tap()
+        capture("04-filled")
+        // Back in front after the pasteboard, a phone can call the button
+        // not hittable for a moment: its place is tapped.
+        let submit = element("cloud-test-submit")
+        if submit.isHittable {
+            submit.tap()
+        } else {
+            // Return in the password's field signs in as the button does.
+            secret.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.5)).tap()
+            Thread.sleep(forTimeInterval: 0.8)
+            app.typeText("\n")
+        }
+        Thread.sleep(forTimeInterval: 1)
+    }
+
+    /// Writes the pasteboard from the runner, brought in front for it, then
+    /// puts the app back in front.
+    private func onPasteboard(_ text: String) {
+        if let id = Bundle.main.bundleIdentifier {
+            let runner = XCUIApplication(bundleIdentifier: id)
+            runner.activate()
+            _ = runner.wait(for: .runningForeground, timeout: 5)
+        }
+        UIPasteboard.general.string = text
+        app.activate()
+        _ = app.wait(for: .runningForeground, timeout: 5)
+    }
+
+    /// A Happy Cloud server's controls follow the person's role: as
+    /// `TEST_RUNNER_ROLE` (`owner` or `viewer`) on `TEST_RUNNER_ROLE_SERVER`,
+    /// which holds the vaults Locked (owners only), Shared (read-only for
+    /// the rest) and Policy, and the todo list Groceries, each joined. The
+    /// owner runs first and starts a task the viewer then opens; each run
+    /// signs out of the server at its end. Pictures of every screen.
+    func testARolesControlsFollowItsPermissions() throws {
+        guard let login = env["QA_LOGIN"], let password = env["QA_PASSWORD"], let server = env["ROLE_SERVER"], let role = env["ROLE"] else { throw XCTSkip("no role run") }
+        let owner = role == "owner"
+        app.launch()
+        signInWithTestAccount(login: login, password: password)
+        let card = element("cloud-server-\(server)")
+        require(card.waitForExistence(timeout: 30), "@\(server) isn't among \(login)'s servers")
+        capture("05-servers")
+        card.tap()
+        let switcher = element("account-switcher")
+        require(switcher.waitForExistence(timeout: 90), "no home of @\(server)")
+        Thread.sleep(forTimeInterval: 6)
+        capture("10-\(role)-home")
+        tree("10-\(role)-home", app)
+        let compose = element("compose")
+        XCTAssertEqual(compose.exists, owner, "compose for the \(role)")
+
+        // A conversation: the owner starts it, the viewer only reads it.
+        let words = "Roles check from the owner."
+        if owner {
+            compose.tap()
+            let composer = app.textViews["composer"]
+            require(composer.waitForExistence(timeout: 15), "no composer")
+            composer.tap()
+            composer.typeText(words)
+            app.buttons["Send"].tap()
+            Thread.sleep(forTimeInterval: 8)
+        } else {
+            let row = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] 'roles check'")).firstMatch
+            require(row.waitForExistence(timeout: 30), "the owner's task isn't on the viewer's home")
+            row.tap()
+            require(element("read-only-note").waitForExistence(timeout: 15), "no read-only line in the composer's place")
+            XCTAssertFalse(app.textViews["composer"].exists && app.textViews["composer"].isHittable, "the viewer has a composer")
+            XCTAssertFalse(app.buttons["compose"].exists, "the viewer's chat offers a new task")
+            XCTAssertFalse(app.staticTexts["Retry"].exists, "the viewer's chat offers Retry")
+        }
+        capture("11-\(role)-task")
+        tree("11-\(role)-task", app)
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        require(switcher.waitForExistence(timeout: 10), "no home after the task")
+
+        // Groceries: the viewer gets no add row.
+        open("Groceries")
+        require(element("todo-list").waitForExistence(timeout: 10), "Groceries didn't open")
+        Thread.sleep(forTimeInterval: 2)
+        XCTAssertEqual(app.descendants(matching: .any)["Add a todo"].exists, owner, "the add row for the \(role)")
+        capture("12-\(role)-todos")
+        goBack(switcher)
+
+        // Locked: owners only.
+        open("Locked")
+        if owner {
+            require(element("vault").waitForExistence(timeout: 10), "Locked didn't open for the owner")
+            XCTAssertTrue(element("vault-add").waitForExistence(timeout: 5), "no + for the owner")
+        } else {
+            require(element("vault-locked").waitForExistence(timeout: 10), "Locked isn't locked for the viewer")
+        }
+        capture("13-\(role)-locked")
+        goBack(switcher)
+
+        // Shared: everyone reads, only the owner writes.
+        open("Shared")
+        require(element("vault").waitForExistence(timeout: 10), "Shared didn't open")
+        Thread.sleep(forTimeInterval: 2)
+        XCTAssertEqual(element("vault-add").exists, owner, "+ in Shared for the \(role)")
+        capture("14-\(role)-shared")
+        goBack(switcher)
+
+        // Policy: the owner opens it, its Global folder fixed; locked for the viewer.
+        open("Policy")
+        if owner {
+            require(element("vault").waitForExistence(timeout: 10), "Policy didn't open for the owner")
+            let global = app.buttons["Global"].firstMatch
+            require(global.waitForExistence(timeout: 10), "no Global in Policy")
+            global.press(forDuration: 1.0)
+            Thread.sleep(forTimeInterval: 1)
+            capture("15-owner-policy-menu")
+            XCTAssertFalse(app.buttons["Rename"].exists || app.menuItems["Rename"].exists, "Global can be renamed")
+            XCTAssertFalse(app.buttons["Delete"].exists || app.menuItems["Delete"].exists, "Global can be deleted")
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.08)).tap()
+        } else {
+            require(element("vault-locked").waitForExistence(timeout: 10), "Policy isn't locked for the viewer")
+            capture("15-viewer-policy")
+        }
+        goBack(switcher)
+
+        // Out of the server, so the other role can connect to it here.
+        let gear = app.buttons["settings"].firstMatch
+        require(gear.waitForExistence(timeout: 5), "no settings on the home")
+        gear.tap()
+        Thread.sleep(forTimeInterval: 1.5)
+        let rowOut = element("settings:disconnect")
+        for _ in 0..<4 where !rowOut.isHittable { app.swipeUp() }
+        require(rowOut.waitForExistence(timeout: 5), "no Sign Out on the server's settings")
+        rowOut.tap()
+        let confirm = app.alerts.buttons["Sign Out"]
+        require(confirm.waitForExistence(timeout: 5), "no confirmation")
+        confirm.tap()
+        Thread.sleep(forTimeInterval: 2)
+        capture("16-\(role)-signed-out")
+    }
+
+    /// "Edit name" on the server's picture renames the server
+    /// (`TEST_RUNNER_RENAME_SERVER`), then puts its name back; a viewer
+    /// (`TEST_RUNNER_ROLE` `viewer`) isn't offered it.
+    /// AI providers on a live server (`PROVIDERS_SERVER`): the list, the
+    /// chooser offering what the server runs, and a refused key answered
+    /// with the server's words. The key is a made-up one.
+    func testGProvidersAreListedAndARefusedKeySaysWhy() throws {
+        guard let login = env["QA_LOGIN"], let password = env["QA_PASSWORD"], let server = env["PROVIDERS_SERVER"] else { throw XCTSkip("no providers run") }
+        app.launch()
+        signInWithTestAccount(login: login, password: password)
+        let card = element("cloud-server-\(server)")
+        require(card.waitForExistence(timeout: 30), "@\(server) isn't among \(login)'s servers")
+        card.tap()
+        let switcher = element("account-switcher")
+        require(switcher.waitForExistence(timeout: 120), "no home of @\(server)")
+        Thread.sleep(forTimeInterval: 4)
+        let gear = app.buttons["settings"].firstMatch
+        require(gear.waitForExistence(timeout: 5), "no settings on the home")
+        gear.tap()
+        let row = app.descendants(matching: .any).matching(NSPredicate(format: "label == 'AI providers'")).firstMatch
+        for _ in 0..<4 where !row.isHittable { app.swipeUp() }
+        require(row.waitForExistence(timeout: 10), "no AI providers in Settings")
+        capture("40-settings")
+        row.tap()
+        let free = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH 'Happy (free)'")).firstMatch
+        require(free.waitForExistence(timeout: 20), "no Happy (free) connection")
+        Thread.sleep(forTimeInterval: 1)
+        capture("41-providers")
+        app.descendants(matching: .any).matching(NSPredicate(format: "label == 'Add a provider'")).firstMatch.tap()
+        let key = app.buttons["Add API key · OpenAI"]
+        require(key.waitForExistence(timeout: 10), "no chooser")
+        XCTAssertTrue(app.buttons["Add API key · Grok"].exists, "no Grok key form in the chooser")
+        Thread.sleep(forTimeInterval: 1)
+        capture("42-chooser")
+        key.tap()
+        let mine = app.buttons["My account"]
+        if mine.waitForExistence(timeout: 5) {
+            capture("43-save-to")
+            mine.tap()
+        }
+        let field = app.secureTextFields["provider-secret"]
+        require(field.waitForExistence(timeout: 10), "no key field")
+        field.tap()
+        field.typeText("sk-not-a-real-key")
+        capture("44-key")
+        app.alerts.buttons["Connect"].tap()
+        let refused = app.alerts["Couldn’t add the key"]
+        require(refused.waitForExistence(timeout: 40), "no refusal")
+        Thread.sleep(forTimeInterval: 1)
+        capture("45-refused")
+        refused.buttons["Cancel"].tap()
+
+        // ChatGPT's device sign-in, on the server: a code to enter at
+        // OpenAI, then cancelled. No token ever reaches the phone.
+        let add = app.descendants(matching: .any).matching(NSPredicate(format: "label == 'Add a provider'")).firstMatch
+        require(add.waitForExistence(timeout: 10), "no Add after the refusal")
+        add.tap()
+        let chatGPT = app.buttons["Sign in with ChatGPT"]
+        require(chatGPT.waitForExistence(timeout: 10), "the server's ChatGPT sign-in isn't offered")
+        chatGPT.tap()
+        if mine.waitForExistence(timeout: 5) { mine.tap() }
+        let code = app.staticTexts["provider-device-code"]
+        require(code.waitForExistence(timeout: 20), "no device screen")
+        let shown = NSPredicate(format: "label MATCHES '[A-Z0-9]{3,}-[A-Z0-9]{3,}'")
+        require(XCTWaiter.wait(for: [expectation(for: shown, evaluatedWith: code)], timeout: 120) == .completed, "no code from OpenAI: \(code.label)")
+        XCTAssertTrue(app.buttons["provider-device-open"].isEnabled, "Open OpenAI is off")
+        capture("46-device-code")
+        app.buttons["provider-device-cancel"].tap()
+        require(add.waitForExistence(timeout: 10), "cancel didn't come back to the list")
+
+        // Claude's: a setup token only, with no page to open and no code to paste.
+        add.tap()
+        let claude = app.buttons["Use a Claude setup token"]
+        require(claude.waitForExistence(timeout: 10), "the server's Claude setup token isn't offered")
+        claude.tap()
+        if mine.waitForExistence(timeout: 5) { mine.tap() }
+        let token = app.buttons["provider-claude-token"]
+        require(token.waitForExistence(timeout: 20), "no Claude screen")
+        XCTAssertFalse(app.buttons["provider-claude-open"].exists, "no Claude page to open")
+        XCTAssertFalse(app.textFields["provider-claude-code"].exists, "no code field")
+        capture("47-claude")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        require(add.waitForExistence(timeout: 10), "back didn't come to the list")
+    }
+
+    func testEServerIsRenamedFromItsSettings() throws {
+        guard let login = env["QA_LOGIN"], let password = env["QA_PASSWORD"], let server = env["RENAME_SERVER"] else { throw XCTSkip("no rename run") }
+        let owner = env["ROLE"] != "viewer"
+        app.launch()
+        signInWithTestAccount(login: login, password: password)
+        let card = element("cloud-server-\(server)")
+        require(card.waitForExistence(timeout: 30), "@\(server) isn't among \(login)'s servers")
+        card.tap()
+        let switcher = element("account-switcher")
+        require(switcher.waitForExistence(timeout: 90), "no home of @\(server)")
+        Thread.sleep(forTimeInterval: 4)
+        let gear = app.buttons["settings"].firstMatch
+        require(gear.waitForExistence(timeout: 5), "no settings on the home")
+        gear.tap()
+        let picture = element("settings-agent-menu")
+        let editName = app.buttons["Edit name"].firstMatch
+        let avatar = app.buttons["Change avatar"].firstMatch
+        if picture.waitForExistence(timeout: 10) {
+            picture.tap()
+            require(avatar.waitForExistence(timeout: 5), "no menu")
+            if !owner { XCTAssertFalse(editName.exists, "the viewer is offered Edit name") }
+        } else {
+            // A viewer may have no menu on the picture at all.
+            require(!owner && element("settings-avatar").exists, "no menu on the server's picture")
+        }
+        capture("20-\(owner ? "owner" : "viewer")-menu")
+        // Renamed, then given its own name back: shown as Settings shows it.
+        var shown = ""
+        for to in owner ? ["Probe Links Renamed", server] : [] {
+            if !editName.exists {
+                picture.tap()
+                require(editName.waitForExistence(timeout: 5), "no Edit name")
+            }
+            editName.tap()
+            let alert = app.alerts["Server Name"]
+            require(alert.waitForExistence(timeout: 5), "Edit name didn't ask for the server's name")
+            let field = alert.textFields.firstMatch
+            let from = field.value as? String ?? ""
+            XCTAssertTrue(app.staticTexts[from].exists, "the prompt holds \(from), not the name Settings shows")
+            if shown.isEmpty { shown = from }
+            field.tap()
+            field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: from.count + 2) + to)
+            Thread.sleep(forTimeInterval: 1)
+            capture("21-rename-to-\(to == server ? "back" : "new")")
+            alert.buttons["Save"].tap()
+            require(waitGone(alert, 5), "Save didn't close the prompt")
+            XCTAssertFalse(app.alerts["Could not rename the server"].waitForExistence(timeout: 4), "the server refused the name")
+            let expected = to == server ? shown : to
+            require(app.staticTexts[expected].waitForExistence(timeout: 20), "Settings doesn't show \(expected)")
+            capture("22-renamed-\(to == server ? "back" : "new")")
+        }
+        if app.buttons["Change avatar"].exists { app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95)).tap() }
+
+        // Out of the server, so the other role can connect to it here.
+        let rowOut = element("settings:disconnect")
+        for _ in 0..<4 where !rowOut.isHittable { app.swipeUp() }
+        require(rowOut.waitForExistence(timeout: 5), "no Sign Out on the server's settings")
+        rowOut.tap()
+        let confirm = app.alerts.buttons["Sign Out"]
+        require(confirm.waitForExistence(timeout: 5), "no confirmation")
+        confirm.tap()
+        Thread.sleep(forTimeInterval: 2)
+    }
+
+    /// The settings links and buttons an agent wrote on a cloud server
+    /// (`.context/links-task.py` makes the task): each opens where
+    /// `SettingsLinkPlace` says, the web fallback in Safari.
+    func testBSettingsLinksOpenWhereTheySay() throws {
+        guard let login = env["QA_LOGIN"], let password = env["QA_PASSWORD"], let server = env["LINKS_SERVER"] else { throw XCTSkip("no links run") }
+        app.launch()
+        signInWithTestAccount(login: login, password: password)
+        let card = element("cloud-server-\(server)")
+        require(card.waitForExistence(timeout: 30), "@\(server) isn't among \(login)'s servers")
+        card.tap()
+        let switcher = element("account-switcher")
+        require(switcher.waitForExistence(timeout: 90), "no home of @\(server)")
+        Thread.sleep(forTimeInterval: 4)
+        let row = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Settings links check'")).firstMatch
+        for _ in 0..<3 where !row.isHittable { app.swipeUp() }
+        require(row.waitForExistence(timeout: 30), "no Settings links check on home")
+        row.tap()
+        func button(_ label: String) -> XCUIElement { app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", label)).firstMatch }
+        let general = button("General settings")
+        require(general.waitForExistence(timeout: 20), "no General settings button")
+        Thread.sleep(forTimeInterval: 2)
+        capture("20-links-task")
+        tree("20-links-task", app)
+        let chat = app.navigationBars.buttons.element(boundBy: 0)
+
+        general.tap()
+        let settingsRow = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'settings:'")).firstMatch
+        require(settingsRow.waitForExistence(timeout: 10), "General settings didn't open Settings")
+        capture("21-general")
+        chat.tap()
+        require(general.waitForExistence(timeout: 10), "not back in the task")
+
+        button("Your servers").tap()
+        let close = element("cloud-close")
+        require(close.waitForExistence(timeout: 10), "Your servers didn't open Happy Cloud")
+        Thread.sleep(forTimeInterval: 1.5)
+        capture("22-servers")
+        close.tap()
+        require(general.waitForExistence(timeout: 10), "not back in the task after Happy Cloud")
+
+        let safari = XCUIApplication(bundleIdentifier: "com.apple.mobilesafari")
+        button("Usage on the web").tap()
+        require(safari.wait(for: .runningForeground, timeout: 15), "Usage on the web didn't open Safari")
+        Thread.sleep(forTimeInterval: 4)
+        capture("23-usage-web")
+        tree("23-usage-web", safari)
+        app.activate()
+        require(general.waitForExistence(timeout: 15), "not back in the task after Safari")
+
+        // The inline link, the line under the last button: its word.
+        let usage = button("Usage on the web")
+        usage.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 1)).withOffset(CGVector(dx: 30, dy: 22)).tap()
+        require(safari.wait(for: .runningForeground, timeout: 15), "the Providers link didn't open Safari")
+        Thread.sleep(forTimeInterval: 4)
+        capture("24-providers-web")
+        tree("24-providers-web", safari)
+        app.activate()
+        require(general.waitForExistence(timeout: 15), "not back in the task after Safari")
+        goBack(switcher)
+
+        let gear = app.buttons["settings"].firstMatch
+        require(gear.waitForExistence(timeout: 5), "no settings on the home")
+        gear.tap()
+        Thread.sleep(forTimeInterval: 1.5)
+        let rowOut = element("settings:disconnect")
+        for _ in 0..<4 where !rowOut.isHittable { app.swipeUp() }
+        require(rowOut.waitForExistence(timeout: 5), "no Sign Out on the server's settings")
+        rowOut.tap()
+        let confirm = app.alerts.buttons["Sign Out"]
+        require(confirm.waitForExistence(timeout: 5), "no confirmation")
+        confirm.tap()
+        Thread.sleep(forTimeInterval: 2)
+    }
+
+    /// A task's reply with a Happy link of every kind (`.context/entity-links.py`):
+    /// a task, an artifact and a Surface open their screens under their live
+    /// names; a file link this server can't open yet (501) turns into its
+    /// words; the rest read as words.
+    func testDEntityLinksOpenWhereTheAppHasAScreen() throws {
+        guard let login = env["QA_LOGIN"], let password = env["QA_PASSWORD"], let server = env["ENTITY_SERVER"] else { throw XCTSkip("no entity links run") }
+        app.launch()
+        signInWithTestAccount(login: login, password: password)
+        let card = element("cloud-server-\(server)")
+        require(card.waitForExistence(timeout: 30), "@\(server) isn't among \(login)'s servers")
+        card.tap()
+        let switcher = element("account-switcher")
+        require(switcher.waitForExistence(timeout: 90), "no home of @\(server)")
+        Thread.sleep(forTimeInterval: 4)
+        let row = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Entity links check'")).firstMatch
+        for _ in 0..<3 where !row.isHittable { app.swipeUp() }
+        require(row.waitForExistence(timeout: 30), "no Entity links check on home")
+        row.tap()
+        func button(_ label: String) -> XCUIElement { app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", label)).firstMatch }
+        // The live names, not the written labels.
+        let task = button("Link target")
+        require(task.waitForExistence(timeout: 20), "the agent button isn't named Link target")
+        let report = button("Q3 summary")
+        require(report.waitForExistence(timeout: 20), "the artifact button isn't named Q3 summary")
+        let list = button("Groceries")
+        require(list.waitForExistence(timeout: 10), "the Surface button isn't named Groceries")
+        Thread.sleep(forTimeInterval: 2)
+        capture("30-entity-links")
+        tree("30-entity-links", app)
+        let back = app.navigationBars.buttons.element(boundBy: 0)
+
+        task.tap()
+        require(app.navigationBars.staticTexts["Link target"].waitForExistence(timeout: 10) || button("Link target").waitForExistence(timeout: 1), "the agent link didn't open its conversation")
+        Thread.sleep(forTimeInterval: 1.5)
+        capture("31-agent")
+        back.tap()
+        require(report.waitForExistence(timeout: 10), "not back in the task")
+
+        report.tap()
+        let markdown = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS 'Revenue is up'")).firstMatch
+        require(markdown.waitForExistence(timeout: 20), "the artifact link didn't open the artifact")
+        capture("32-artifact")
+        back.tap()
+        require(list.waitForExistence(timeout: 10), "not back in the task after the artifact")
+
+        list.tap()
+        require(button("Milk").waitForExistence(timeout: 15), "the Surface link didn't open Groceries")
+        capture("33-surface")
+        back.tap()
+        require(list.waitForExistence(timeout: 10), "not back in the task after the Surface")
+
+        // No workspace files on this server yet: the button becomes its words, with no alert.
+        let file = app.buttons.matching(NSPredicate(format: "label == 'notes.md'")).firstMatch
+        require(file.waitForExistence(timeout: 5), "no notes.md button")
+        file.tap()
+        Thread.sleep(forTimeInterval: 4)
+        require(app.alerts.count == 0, "the file link showed an alert")
+        require(!app.buttons.matching(NSPredicate(format: "label == 'notes.md'")).firstMatch.exists, "the file button is still a button")
+        capture("34-file-words")
+        tree("34-file-words", app)
+        goBack(switcher)
+
+        let gear = app.buttons["settings"].firstMatch
+        require(gear.waitForExistence(timeout: 5), "no settings on the home")
+        gear.tap()
+        Thread.sleep(forTimeInterval: 1.5)
+        let rowOut = element("settings:disconnect")
+        for _ in 0..<4 where !rowOut.isHittable { app.swipeUp() }
+        require(rowOut.waitForExistence(timeout: 5), "no Sign Out on the server's settings")
+        rowOut.tap()
+        let confirm = app.alerts.buttons["Sign Out"]
+        require(confirm.waitForExistence(timeout: 5), "no confirmation")
+        confirm.tap()
+        Thread.sleep(forTimeInterval: 2)
+    }
+
+    /// A fresh cloud server's Chief of Staff: its greeting is on home as an
+    /// ordinary bot conversation, nothing opens it on its own, and its
+    /// providers button opens the server's web settings. A viewer reads it
+    /// and can't write to it.
+    func testCChiefOfStaffGreetsAndOffersProviders() throws {
+        guard let login = env["QA_LOGIN"], let password = env["QA_PASSWORD"], let server = env["COS_SERVER"] else { throw XCTSkip("no Chief of Staff run") }
+        let owner = env["ROLE"] != "viewer"
+        app.launch()
+        signInWithTestAccount(login: login, password: password)
+        let card = element("cloud-server-\(server)")
+        require(card.waitForExistence(timeout: 30), "@\(server) isn't among \(login)'s servers")
+        card.tap()
+        let switcher = element("account-switcher")
+        require(switcher.waitForExistence(timeout: 90), "no home of @\(server)")
+        Thread.sleep(forTimeInterval: 5)
+        // Home, not the conversation: nothing navigates to it on its own.
+        XCTAssertFalse(app.navigationBars.buttons.element(boundBy: 0).exists && !switcher.isHittable, "the app left home on its own")
+        capture("30-cos-home")
+        tree("30-cos-home", app)
+        let row = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Chief of Staff'")).firstMatch
+        for _ in 0..<3 where !row.isHittable { app.swipeUp() }
+        require(row.waitForExistence(timeout: 30), "no Chief of Staff on home")
+        row.tap()
+        let greeting = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS 'What would you like to call me'")).firstMatch
+        require(greeting.waitForExistence(timeout: 20), "no greeting in the Chief of Staff's conversation")
+        let providers = app.descendants(matching: .any).matching(NSPredicate(format: "label == 'Add provider credentials'")).firstMatch
+        require(providers.waitForExistence(timeout: 10), "no providers button")
+        Thread.sleep(forTimeInterval: 1.5)
+        capture("31-\(owner ? "owner" : "viewer")-cos")
+        tree("31-cos", app)
+        if owner {
+            XCTAssertTrue(app.textViews["composer"].exists, "the owner can't write to the Chief of Staff")
+        } else {
+            require(element("read-only-note").waitForExistence(timeout: 10), "the viewer can write to the Chief of Staff")
+        }
+        let safari = XCUIApplication(bundleIdentifier: "com.apple.mobilesafari")
+        providers.tap()
+        require(safari.wait(for: .runningForeground, timeout: 15), "the providers button didn't open Safari")
+        Thread.sleep(forTimeInterval: 4)
+        capture("32-providers-web")
+        tree("32-providers-web", safari)
+        app.activate()
+        require(providers.waitForExistence(timeout: 15), "not back in the Chief of Staff after Safari")
+        goBack(switcher)
+
+        let gear = app.buttons["settings"].firstMatch
+        require(gear.waitForExistence(timeout: 5), "no settings on the home")
+        gear.tap()
+        Thread.sleep(forTimeInterval: 1.5)
+        let rowOut = element("settings:disconnect")
+        for _ in 0..<4 where !rowOut.isHittable { app.swipeUp() }
+        require(rowOut.waitForExistence(timeout: 5), "no Sign Out on the server's settings")
+        rowOut.tap()
+        let confirm = app.alerts.buttons["Sign Out"]
+        require(confirm.waitForExistence(timeout: 5), "no confirmation")
+        confirm.tap()
+        Thread.sleep(forTimeInterval: 2)
+    }
+
+    /// A home row by its name, scrolled to if it must be.
+    private func open(_ name: String) {
+        let row = app.buttons["row:space:\(name)"].firstMatch
+        for _ in 0..<3 where !row.isHittable { app.swipeUp() }
+        require(row.waitForExistence(timeout: 15), "no \(name) on home")
+        row.tap()
+    }
+
+    private func goBack(_ home: XCUIElement) {
+        for _ in 0..<3 where !home.isHittable {
+            let back = app.navigationBars.buttons.element(boundBy: 0)
+            if back.exists { back.tap() } else { break }
+            Thread.sleep(forTimeInterval: 1)
+        }
+        require(home.waitForExistence(timeout: 10), "no home")
+    }
+
+    private func waitGone(_ element: XCUIElement, _ seconds: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline, element.exists { Thread.sleep(forTimeInterval: 0.2) }
+        return !element.exists
+    }
+
+    /// Signs in to the accounts service as the test account, the way the
+    /// app does, and deletes its servers with these names.
+    private nonisolated static func deleteServers(named names: Set<String>, login: String, password: String) async {
+        let accounts = "https://auth.happy.engineering"
+        func send(_ method: String, _ path: String, token: String? = nil, body: [String: String]? = nil) async -> (Int, Data) {
+            var request = URLRequest(url: URL(string: accounts + path)!)
+            request.httpMethod = method
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            if let token { request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization") }
+            if let body {
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.httpBody = try? JSONEncoder().encode(body)
+            }
+            guard let (data, response) = try? await URLSession.shared.data(for: request) else { return (0, Data()) }
+            return ((response as? HTTPURLResponse)?.statusCode ?? 0, data)
+        }
+        struct Pass: Decodable { let access_token: String }
+        struct Servers: Decodable { struct Server: Decodable { let id: String; let name: String }; let servers: [Server] }
+        let (_, passData) = await send("POST", "/v1/auth/password", body: ["login": login, "password": password])
+        guard let token = (try? JSONDecoder().decode(Pass.self, from: passData))?.access_token else { return print("cleanup: no pass") }
+        let (_, list) = await send("GET", "/v1/servers", token: token)
+        for server in (try? JSONDecoder().decode(Servers.self, from: list))?.servers ?? [] where names.contains(server.name) {
+            let (status, _) = await send("DELETE", "/v1/servers/\(server.id)", token: token)
+            print("cleanup: deleted @\(server.name): \(status)")
+        }
+    }
+
     private func first(_ candidates: [XCUIElement], timeout: TimeInterval) -> XCUIElement? {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
@@ -98,5 +681,317 @@ final class HappyCloudUITests: XCTestCase {
         app.launch()
         Thread.sleep(forTimeInterval: 10)
         capture("12-relaunch")
+    }
+
+    /// The whole flow with a test account, no person needed: ten taps on
+    /// the logo, its login and password, a new server, its home, a task
+    /// and a message (with no provider set up, the answer is a card
+    /// saying so), another server, and signing out. Runs only
+    /// with `TEST_RUNNER_QA_LOGIN` and `TEST_RUNNER_QA_PASSWORD`; the
+    /// password is pasted, never typed or written down.
+    func testATestAccountRunsTheWholeFlow() throws {
+        guard let login = env["QA_LOGIN"], let password = env["QA_PASSWORD"] else { throw XCTSkip("no test account") }
+        app.launch()
+        let switcher = element("account-switcher")
+        signInWithTestAccount(login: login, password: password)
+
+        let create = element("cloud-create")
+        require(create.waitForExistence(timeout: 30), "no servers after the test account's sign-in")
+        Thread.sleep(forTimeInterval: 2)
+        capture("05-servers")
+        create.tap()
+        let name = element("cloud-create-name")
+        require(name.waitForExistence(timeout: 10), "no name field")
+        name.tap()
+        let server = "qa-ios-\(Int(Date().timeIntervalSince1970) % 1_000_000)"
+        // Whatever happens, the servers this run made go (owner DELETE; the
+        // accounts service keeps them seven days before purging).
+        addTeardownBlock { await Self.deleteServers(named: [server, server + "-b"], login: login, password: password) }
+        name.typeText(server)
+        Thread.sleep(forTimeInterval: 1.5)
+        capture("06-name")
+        element("cloud-create-save").tap()
+
+        require(switcher.waitForExistence(timeout: 90), "no home after creating \(server)")
+        Thread.sleep(forTimeInterval: 5)
+        capture("07-home")
+        tree("07-home", app)
+
+        let compose = element("compose")
+        require(compose.waitForExistence(timeout: 20), "no compose")
+        compose.tap()
+        let composer = app.textViews["composer"]
+        require(composer.waitForExistence(timeout: 15), "no composer")
+        capture("08-new-task")
+        composer.tap()
+        composer.typeText("Hello from the iOS test account.")
+        app.buttons["Send"].tap()
+        Thread.sleep(forTimeInterval: 20)
+        capture("09-sent")
+        tree("09-sent", app)
+
+        let back = app.navigationBars.buttons.element(boundBy: 0)
+        if back.exists { back.tap() }
+        require(switcher.waitForExistence(timeout: 10), "no home after the task")
+
+        // A second server: one the account already has, or a new one.
+        switcher.tap()
+        let more = element("account-cloud")
+        require(more.waitForExistence(timeout: 5), "no Connect to Happy Cloud in the switcher")
+        more.tap()
+        require(element("cloud-servers").waitForExistence(timeout: 15), "the pass didn't open Your Servers")
+        Thread.sleep(forTimeInterval: 2)
+        capture("10-servers-again")
+        let cards = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'cloud-server-' AND identifier != %@", "cloud-server-\(server)"))
+        let second: String
+        if cards.count > 0 {
+            let card = cards.element(boundBy: 0)
+            second = String(card.identifier.dropFirst("cloud-server-".count))
+            card.tap()
+        } else {
+            second = server + "-b"
+            element("cloud-create").tap()
+            require(name.waitForExistence(timeout: 10), "no name field")
+            name.tap()
+            name.typeText(second)
+            Thread.sleep(forTimeInterval: 1.5)
+            element("cloud-create-save").tap()
+        }
+        require(switcher.waitForExistence(timeout: 90), "no home of @\(second)")
+        Thread.sleep(forTimeInterval: 3)
+        capture("11-second-home")
+
+        // Back to the first, from the switcher.
+        switcher.tap()
+        Thread.sleep(forTimeInterval: 1)
+        capture("12-switcher")
+        tree("12-switcher", app)
+        let accounts = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'account-' AND NOT (identifier IN %@)", ["account-add", "account-cloud", "account-cloud-sign-out"]))
+        require(accounts.count >= 2, "the switcher has \(accounts.count) accounts, not both servers")
+        // The switcher names a server from its handle: qa-ios-123456 is "Qa Ios 123456".
+        let number = String(server.split(separator: "-").last ?? "")
+        // Exactly: its "-b" sibling is "Qa Ios 123456 B".
+        let title = "Qa Ios \(number)"
+        let first = (0..<accounts.count).map { accounts.element(boundBy: $0) }.first { $0.label.hasPrefix(title + ",") }
+        require(first != nil, "@\(server) isn't in the switcher")
+        first?.tap()
+        Thread.sleep(forTimeInterval: 4)
+        capture("13-switched")
+        let current = switcher.value as? String ?? ""
+        require(current == title, "switching opened \(current), not @\(server)")
+
+        // Sign out of Happy Cloud: the pass goes, the servers stay.
+        switcher.tap()
+        let signOut = element("account-cloud-sign-out")
+        require(signOut.waitForExistence(timeout: 5), "no Sign Out of Happy Cloud while the pass lasts")
+        capture("14-sign-out-menu")
+        signOut.tap()
+        Thread.sleep(forTimeInterval: 1)
+        switcher.tap()
+        Thread.sleep(forTimeInterval: 1)
+        capture("15-signed-out")
+        XCTAssertFalse(element("account-cloud-sign-out").exists, "still signed in to Happy Cloud")
+        XCTAssertGreaterThanOrEqual(accounts.count, 2, "signing out of Happy Cloud took a server away")
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.6)).tap()
+
+        // And out of this server, from its settings.
+        let gear = app.buttons["settings"].firstMatch
+        require(gear.waitForExistence(timeout: 5), "no settings on the home")
+        gear.tap()
+        Thread.sleep(forTimeInterval: 1.5)
+        let rowOut = element("settings:disconnect")
+        for _ in 0..<4 where !rowOut.isHittable { app.swipeUp() }
+        require(rowOut.waitForExistence(timeout: 5), "no Sign Out on the server's settings")
+        rowOut.tap()
+        let confirm = app.alerts.buttons["Sign Out"]
+        require(confirm.waitForExistence(timeout: 5), "no confirmation")
+        capture("16-sign-out-server")
+        confirm.tap()
+        // Settings stays, on the next account; this server's row is gone.
+        let row = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'settings:account:' AND (label == %@ OR label BEGINSWITH %@)", title, title + ",")).firstMatch
+        require(waitGone(row, 10), "@\(server) is still in settings after signing out")
+        capture("17-after-sign-out")
+        app.buttons["BackButton"].firstMatch.tap()
+        require(switcher.waitForExistence(timeout: 10), "no home after signing out of the server")
+        Thread.sleep(forTimeInterval: 2)
+        XCTAssertNotEqual(switcher.value as? String, title, "the home is still @\(server)")
+        capture("18-home-after")
+    }
+
+    // MARK: The link in the headers
+
+    /// Settings › Developer › Network Link Conditioner: `profile` on, or
+    /// off for nil, then the app in front again. The runner talks to the
+    /// phone over its cable, so it is never cut off itself.
+    private func condition(_ profile: String?) {
+        let settings = XCUIApplication(bundleIdentifier: "com.apple.Preferences")
+        settings.terminate()
+        settings.launch()
+        let enable = settings.switches["Enable"].firstMatch
+        if !enable.waitForExistence(timeout: 2) {
+            let developer = settings.staticTexts["Developer"].firstMatch
+            for _ in 0..<14 where !developer.isHittable { settings.swipeUp() }
+            require(developer.isHittable, "no Developer in Settings")
+            developer.tap()
+            let conditioner = settings.staticTexts["Network Link Conditioner"].firstMatch
+            for _ in 0..<6 where !conditioner.isHittable { settings.swipeUp() }
+            require(conditioner.waitForExistence(timeout: 5), "no Network Link Conditioner")
+            conditioner.tap()
+            require(enable.waitForExistence(timeout: 5), "no Enable on the conditioner")
+        }
+        if let profile {
+            let row = settings.staticTexts[profile].firstMatch
+            for _ in 0..<6 where !row.isHittable { settings.swipeUp() }
+            require(row.waitForExistence(timeout: 5), "no \(profile) profile")
+            row.tap()
+            for _ in 0..<6 where !enable.isHittable { settings.swipeDown() }
+        }
+        if (enable.value as? String == "1") != (profile != nil) { enable.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap() }
+        Thread.sleep(forTimeInterval: 0.5)
+        let shot = XCTAttachment(screenshot: settings.screenshot())
+        shot.name = "conditioner-\(profile ?? "off")"
+        shot.lifetime = .keepAlways
+        add(shot)
+        app.activate()
+        _ = app.wait(for: .runningForeground, timeout: 5)
+    }
+
+    /// Pictures every 0.6 s for `seconds`, each named for what `of` says
+    /// then, and whether `words` was seen.
+    private func watch(_ name: String, _ of: XCUIElement, for seconds: TimeInterval, until words: String? = nil, read: (XCUIElement) -> String) -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        var index = 0, seen = false
+        while Date() < deadline {
+            let said = of.exists ? read(of) : ""
+            let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            attachment.name = "\(name)-\(String(format: "%02d", index))-\(said)"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+            index += 1
+            if let words, said.contains(words) { seen = true; break }
+            Thread.sleep(forTimeInterval: 0.6)
+        }
+        return seen
+    }
+
+    /// A real Happy Cloud server (`TEST_RUNNER_LINK_SERVER`, holding the
+    /// task `TEST_RUNNER_LINK_TASK`) on a phone, its link cut and slowed with
+    /// the Network Link Conditioner: home's title and the chat's subtitle
+    /// say "Connecting…" while the server doesn't answer, for as long as it
+    /// doesn't (never offline with a notice, as a computer that didn't
+    /// answer is), and "Updating…" while it catches up after.
+    func testFLinkSaysConnectingAndUpdatingOnARealServer() throws {
+        guard let login = env["QA_LOGIN"], let password = env["QA_PASSWORD"], let server = env["LINK_SERVER"] else { throw XCTSkip("no link run") }
+        let taskName = env["LINK_TASK"] ?? "Link check"
+        condition(nil)
+        app.launch()
+        signInWithTestAccount(login: login, password: password)
+        let card = element("cloud-server-\(server)")
+        require(card.waitForExistence(timeout: 30), "@\(server) isn't among \(login)'s servers")
+        card.tap()
+        let switcher = element("account-switcher")
+        require(switcher.waitForExistence(timeout: 90), "no home of @\(server)")
+        let title = { (element: XCUIElement) in element.value as? String ?? "" }
+        let task = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", taskName)).firstMatch
+        require(task.waitForExistence(timeout: 60), "no \(taskName) on home")
+        Thread.sleep(forTimeInterval: 5)
+        capture("30-real-home-online")
+        tree("30-real-home-online", app)
+
+        // Cut off while the phone keeps its network: connecting, and still
+        // connecting once every try meanwhile has failed.
+        condition("100% Loss")
+        let connecting = watch("31-real-home", switcher, for: 20, until: "Connecting", read: title)
+        require(connecting, "home never said Connecting…")
+        Thread.sleep(forTimeInterval: 75)
+        XCTAssertTrue(title(switcher).contains("Connecting"), "home's title after 75 s: \(title(switcher))")
+        XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "label CONTAINS[c] 'didn’t answer' OR label CONTAINS[c] \"didn't answer\"")).firstMatch.exists, "a notice says the server didn't answer")
+        capture("32-real-home-connecting-75s")
+        task.tap()
+        let status = element("chat-status")
+        let chatConnecting = watch("33-real-chat", status, for: 10, until: "connecting", read: { $0.label })
+        require(chatConnecting, "the chat never said connecting…")
+        capture("34-real-chat-connecting")
+
+        // Back, slowly: the chat catches up, "updating…".
+        condition("Very Bad Network")
+        let chatUpdating = watch("35-real-chat", status, for: 40, until: "updating", read: { $0.label })
+        capture("36-real-chat-after")
+        XCTAssertTrue(chatUpdating, "the chat never said updating…")
+        goBack(switcher)
+        // Again from home: Settings and back starts the link over.
+        condition("Very Bad Network")
+        let homeUpdating = watch("37-real-home", switcher, for: 40, until: "Updating", read: title)
+        capture("38-real-home-after")
+        XCTAssertTrue(homeUpdating, "home never said Updating…")
+        condition(nil)
+        _ = watch("39-real-home-back", switcher, for: 6, read: title)
+    }
+
+    /// Waits for the host script's `phase` file under `TEST_RUNNER_LINK_PHASES`
+    /// (a simulator shares the Mac's files), then says `done` there.
+    private func phase(_ name: String, timeout: TimeInterval = 120) {
+        guard let folder = env["LINK_PHASES"] else { return }
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline, !FileManager.default.fileExists(atPath: folder + "/" + name) { Thread.sleep(forTimeInterval: 0.3) }
+        require(FileManager.default.fileExists(atPath: folder + "/" + name), "the host never reached \(name)")
+    }
+
+    private func said(_ name: String) {
+        guard let folder = env["LINK_PHASES"] else { return }
+        FileManager.default.createFile(atPath: folder + "/" + name, contents: Data())
+    }
+
+    /// The same real server in the simulator, the Mac's pf cutting it off
+    /// and then slowing it, step by step with the host script
+    /// (`TEST_RUNNER_LINK_PHASES`): "Connecting…" while it doesn't answer,
+    /// "Updating…" while a cold start catches up slowly.
+    func testGLinkOnARealServerInTheSimulator() throws {
+        guard let login = env["QA_LOGIN"], let password = env["QA_PASSWORD"], let server = env["LINK_SERVER"], env["LINK_PHASES"] != nil else { throw XCTSkip("no simulator link run") }
+        let taskName = env["LINK_TASK"] ?? "Link check"
+        app.launch()
+        signInWithTestAccount(login: login, password: password)
+        let card = element("cloud-server-\(server)")
+        require(card.waitForExistence(timeout: 30), "@\(server) isn't among \(login)'s servers")
+        card.tap()
+        let switcher = element("account-switcher")
+        require(switcher.waitForExistence(timeout: 90), "no home of @\(server)")
+        let title = { (element: XCUIElement) in element.value as? String ?? "" }
+        let task = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", taskName)).firstMatch
+        require(task.waitForExistence(timeout: 60), "no \(taskName) on home")
+        Thread.sleep(forTimeInterval: 5)
+        capture("40-sim-home-online")
+        said("ready")
+
+        // The host blocks the server; the Mac keeps its network.
+        phase("blocked")
+        let connecting = watch("41-sim-home", switcher, for: 75, until: "Connecting", read: title)
+        require(connecting, "home never said Connecting…")
+        Thread.sleep(forTimeInterval: 30)
+        XCTAssertTrue(title(switcher).contains("Connecting"), "home's title after 30 s more: \(title(switcher))")
+        capture("42-sim-home-connecting-30s")
+        tree("42-sim-home-connecting-30s", app)
+        task.tap()
+        let status = element("chat-status")
+        let chatConnecting = watch("43-sim-chat", status, for: 15, until: "connecting", read: { $0.label })
+        capture("44-sim-chat-connecting")
+        XCTAssertTrue(chatConnecting, "the chat never said connecting…")
+        said("cut-done")
+
+        // The host lets it through, slowly: the open chat comes back and
+        // catches up, then a cold start catches up from home.
+        phase("slow")
+        let chatUpdating = watch("45-sim-chat", status, for: 75, until: "updating", read: { $0.label })
+        capture("46-sim-chat-after")
+        XCTAssertTrue(chatUpdating, "the chat never said updating…")
+        app.terminate()
+        app.launch()
+        require(switcher.waitForExistence(timeout: 30), "no home after the relaunch")
+        let homeUpdating = watch("47-sim-home", switcher, for: 60, until: "Updating", read: title)
+        capture("48-sim-home-after")
+        XCTAssertTrue(homeUpdating, "home never said Updating…")
+        said("slow-done")
+        phase("clear")
+        _ = watch("49-sim-home-back", switcher, for: 15, read: title)
     }
 }

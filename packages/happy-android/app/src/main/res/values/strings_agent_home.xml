@@ -7,8 +7,6 @@
     <string name="agent_home_working">Working…</string>
     <string name="agent_home_empty_title">No conversations yet</string>
     <string name="agent_home_empty_body">Start a chat with this agent and it shows here.</string>
-    <string name="agent_home_offline_title">Can\'t reach %1$s</string>
-    <string name="agent_home_offline_body">Check that the agent is running and online. Happy reconnects by itself.</string>
     <string name="agent_home_revoked">This phone was removed in Happy Agent. Connect the agent again to use it.</string>
     <string name="agent_home_update_required">This agent needs a newer Happy. Update the app to use it.</string>
 
@@ -36,6 +34,16 @@
     <string name="agent_search_kind_image_series">Image series</string>
     <string name="agent_search_kind_video">Video</string>
     <string name="agent_search_kind_artifact">Artifact</string>
+    <string name="agent_search_kind_shared">Shared</string>
+    <!-- A message in a found result's line: an agent wrote it, not the person. -->
+    <string name="agent_search_by_agent">Agent</string>
+    <!-- A found Surface's line: one the person isn't in (desktop's "not joined"), and a list's open todos ("Todo list · 5 open"). -->
+    <string name="agent_search_task_not_joined">Task you have not joined</string>
+    <string name="agent_search_not_joined">not joined</string>
+    <plurals name="agent_search_open_todos">
+        <item quantity="one">%d open</item>
+        <item quantity="other">%d open</item>
+    </plurals>
 
     <string name="agent_settings_edit_name">Change agent name</string>
     <string name="agent_settings_edit_avatar">Change agent avatar</string>
@@ -44,7 +52,6 @@
     <string name="agent_settings_edit_avatar_prefix">"Change your avatar to "</string>
     <string name="agent_settings_connected">Connected</string>
     <string name="agent_settings_connecting">Connecting</string>
-    <string name="agent_settings_offline">Offline</string>
     <string name="agent_settings_revoked">Removed from Happy Agent</string>
     <string name="agent_settings_update">Update required</string>
     <string name="agent_settings_remove_message">Happy forgets this agent on this phone. Happy Agent keeps listing the phone until you remove it there too.</string>

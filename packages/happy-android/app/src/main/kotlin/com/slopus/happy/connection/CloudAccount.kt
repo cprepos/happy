@@ -29,7 +29,8 @@ data class CloudServer(
     val id: String,
     val name: String,
     val url: String,
-    val role: String,
+    /** The account's role there; the accounts service no longer lists it since roles moved to the server (`GET /v0/permissions`). */
+    val role: String? = null,
     val createdAt: String? = null,
     /** The server's own name for itself (its node name); [name] until it has one. */
     val displayName: String? = null,
@@ -45,18 +46,25 @@ data class CloudServer(
 @Serializable
 data class CloudServerImage(val thumbhash: String? = null, val width: Int? = null, val height: Int? = null, val url: String)
 
-/** Someone on a server (`GET /v1/servers/:id/members`). */
-@Serializable
-data class CloudMember(val accountId: String, val name: String? = null, val role: String, val joinedAt: String? = null) {
-    val owner: Boolean get() = role == "owner"
-}
-
 /** What `GET /v1/servers/availability` says of a name. */
 enum class CloudName { Available, Taken, Reserved, Invalid }
 
 /** Why an accounts API call failed, from its `code` where it gave one. */
 class CloudException(val reason: Reason) : Exception(reason.name) {
-    enum class Reason { Taken, Invalid, NotFound, LastOwner, SignInRequired, Unreachable, Failed }
+    enum class Reason { Taken, Invalid, NotFound, SignInRequired, Unreachable, Failed }
+}
+
+/** How a test account's password sign-in went ([CloudAccount.signInWithPassword]). */
+sealed interface PasswordSignIn {
+    data object SignedIn : PasswordSignIn
+
+    /** A wrong login or password, or a disabled account: the service says the same for all three. */
+    data object Wrong : PasswordSignIn
+
+    /** Too many wrong tries; it opens again in [minutes]. */
+    data class Locked(val minutes: Long) : PasswordSignIn
+
+    data class Failed(val reason: CloudException.Reason) : PasswordSignIn
 }
 
 /** Where the Happy Cloud account stands. */
@@ -145,6 +153,35 @@ class CloudAccount(
         }
     }
 
+    /**
+     * Signs in with a test account's [login] and [password] (`POST
+     * /v1/auth/password`, no browser), for the same hour's pass as the
+     * browser's sign-in. Test accounts exist only when an operator makes one.
+     * The password goes to [origin] in this one request and is kept nowhere.
+     */
+    suspend fun signInWithPassword(login: String, password: String): PasswordSignIn {
+        val (status, body) = try {
+            send("POST", "/v1/auth/password", JsonObject(mapOf("login" to JsonPrimitive(login), "password" to JsonPrimitive(password))), token = null)
+        } catch (e: CloudException) {
+            return PasswordSignIn.Failed(e.reason)
+        }
+        fun field(key: String) = (body?.get(key) as? JsonPrimitive)?.contentOrNull
+        return when {
+            status == 200 -> {
+                val token = field("access_token")?.takeIf { it.isNotEmpty() } ?: return PasswordSignIn.Failed(CloudException.Reason.Failed)
+                val life = field("expires_in")?.toLongOrNull()?.takeIf { it > 0 }?.let { it * 1000 } ?: PASS_MILLIS
+                access = AccessToken(token, now() + life)
+                pending = null
+                mutableState.value = CloudAccountState.SignedIn
+                PasswordSignIn.SignedIn
+            }
+            status == 429 -> PasswordSignIn.Locked(((field("retryAfter")?.toLongOrNull() ?: LOCKOUT_SECONDS) + 59) / 60)
+            status == 401 || status == 400 -> PasswordSignIn.Wrong
+            status >= 500 -> PasswordSignIn.Failed(CloudException.Reason.Unreachable)
+            else -> PasswordSignIn.Failed(CloudException.Reason.Failed)
+        }
+    }
+
     /** After a failure, or the page closed: back to signed out, to sign in again. */
     fun reset() {
         pending = null
@@ -227,19 +264,6 @@ class CloudAccount(
             OAuthCredential(methodId = method.id, clientId = method.clientId, refreshUrl = method.tokenUrl, refreshToken = refresh, resource = "${origin.value}/")
     }
 
-    /** Who is on server [id]: the account must be a member. */
-    suspend fun members(id: String): List<CloudMember> =
-        json.decodeFromJsonElement(MemberList.serializer(), call("GET", "/v1/servers/${segment(id)}/members").second).members
-
-    /** Leaves server [id]; its only owner can't (LastOwner). The server's sessions for this account are revoked by the service. */
-    suspend fun leave(id: String) {
-        call("POST", "/v1/servers/${segment(id)}/leave", JsonObject(emptyMap()))
-    }
-
-    /** The account's server at [origin], by the servers it lists; NotFound when it isn't one of them. */
-    suspend fun serverAt(origin: String): CloudServer =
-        servers().firstOrNull { it.origin == origin } ?: throw CloudException(CloudException.Reason.NotFound)
-
     /**
      * Revokes a cloud server's session (RFC 7009 `POST /revoke`, the refresh
      * token and `client_id`, no account token) as the person removes it from
@@ -310,16 +334,15 @@ class CloudAccount(
                 "taken" -> CloudException.Reason.Taken
                 "invalid" -> CloudException.Reason.Invalid
                 "not_found" -> CloudException.Reason.NotFound
-                "last_owner" -> CloudException.Reason.LastOwner
                 else -> if (status >= 500) CloudException.Reason.Unreachable else CloudException.Reason.Failed
             },
         )
     }
 
-    private suspend fun send(verb: String, path: String, body: JsonObject?, token: String): Pair<Int, JsonObject?> = withContext(Dispatchers.IO) {
+    private suspend fun send(verb: String, path: String, body: JsonObject?, token: String?): Pair<Int, JsonObject?> = withContext(Dispatchers.IO) {
         val request = Request.Builder().url("${origin.value}$path")
             .header("Accept", "application/json")
-            .header("Authorization", "Bearer $token")
+            .apply { if (token != null) header("Authorization", "Bearer $token") }
             .method(verb, body?.let { json.encodeToString(JsonObject.serializer(), it).toRequestBody("application/json".toMediaType()) })
             .build()
         try {
@@ -341,7 +364,6 @@ class CloudAccount(
 
     @Serializable private class ServerList(val servers: List<CloudServer>)
 
-    @Serializable private class MemberList(val members: List<CloudMember>)
 
     companion object {
         private const val MAX_BODY = 1024L * 1024
@@ -349,6 +371,8 @@ class CloudAccount(
         private const val EXPIRY_MARGIN_MILLIS = 120_000L
         /** The pass's life when the token endpoint doesn't say (contract v4: an hour). */
         private const val PASS_MILLIS = 3_600_000L
+        /** A lockout's length when a 429 doesn't say (test accounts: 15 minutes). */
+        private const val LOCKOUT_SECONDS = 900L
         private val json = Json { ignoreUnknownKeys = true }
     }
 }

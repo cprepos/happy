@@ -99,6 +99,84 @@ final class BrowserTests: XCTestCase {
         XCTAssertTrue(closed)
     }
 
+    func testLiveArtifactTunnelsThroughItsOwnProxyForHTTPAndHTTPS() async throws {
+        for (url, target) in [("http://127.0.0.1:4191/", "127.0.0.1:4191"), ("https://preview.example.com/app", "preview.example.com:443")] {
+            let bytes = Bytes([Data("HTTP/1.1 200 OK\r\n\r\n".utf8), Data("HTTP/1.1 200 OK\r\n\r\n".utf8)])
+            let client = AgentClient(transport: Transport(bytes), token: "native-token")
+            let stream = try await client.browserTunnel(.artifact("art1"), target: XCTUnwrap(BrowserPolicy.Authority(url: XCTUnwrap(URL(string: url)))))
+            await stream.close()
+            let written = await bytes.writes.map { String(decoding: $0, as: UTF8.self) }
+            XCTAssertTrue(written[0].hasPrefix("CONNECT /v0/artifacts/art1/proxy HTTP/1.1\r\n"), url)
+            XCTAssertTrue(written[0].contains("Authorization: Bearer native-token"))
+            XCTAssertTrue(written[1].hasPrefix("CONNECT \(target) HTTP/1.1\r\n"), url)
+            XCTAssertFalse(written[1].contains("native-token"))
+            XCTAssertFalse(written.contains { $0.contains("/v0/workspaces/") || $0.contains("/api/") })
+        }
+        XCTAssertNil(BrowserNetwork.artifact("../agents").path)
+    }
+
+    func testTheLoopbackOpensOnAnAliasForTheComputersOwnLoopback() throws {
+        let link = try XCTUnwrap(URL(string: "http://localhost:5173/app?x=1"))
+        let alias = try XCTUnwrap(BrowserPolicy.Loopback.alias(link))
+        XCTAssertEqual(alias.absoluteString, "http://name.happy-loopback.invalid:5173/app?x=1")
+        XCTAssertEqual(BrowserPolicy.Loopback.shown(alias), link)
+        for (url, target) in [("http://127.0.0.1:4191/", "127.0.0.1:4191"), ("http://127.1:4191/", "127.0.0.1:4191"), ("ws://[::1]:24678/", "[::1]:24678"), ("https://LOCALHOST.:8443/", "localhost:8443")] {
+            let alias = try XCTUnwrap(BrowserPolicy.Loopback.alias(XCTUnwrap(URL(string: url))), url)
+            XCTAssertTrue(alias.host?.hasSuffix(".happy-loopback.invalid") == true, url)
+            XCTAssertEqual(BrowserPolicy.Loopback.target(try XCTUnwrap(BrowserPolicy.Authority(url: alias)))?.text, target, url)
+        }
+        XCTAssertEqual(BrowserPolicy.Loopback.shown(try XCTUnwrap(URL(string: "http://ipv6.happy-loopback.invalid:4191/"))).absoluteString, "http://[::1]:4191/")
+        for url in ["http://127.0.0.2/", "http://example.com/", "http://a.localhost/", "http://name.happy-loopback.invalid/", "mailto:a@b.c"] {
+            XCTAssertNil(BrowserPolicy.Loopback.alias(try XCTUnwrap(URL(string: url))), url)
+        }
+        XCTAssertNil(BrowserPolicy.Loopback.target(try XCTUnwrap(BrowserPolicy.Authority(url: XCTUnwrap(URL(string: "http://localhost:80"))))))
+    }
+
+    func testALoopbackAliasNamesTheLoopbackInEachRequestAndPassesTheRest() async throws {
+        let alias = "name.happy-loopback.invalid"
+        let local = Bytes([
+            Data("POST /api HTTP/1.1\r\nHost: \(alias):5173\r\nOrigin: http://\(alias):5173\r\nContent-Length: 5\r\n\r\nhel".utf8),
+            Data("loGET /next HTTP/1.1\r\nHost: \(alias):5173\r\nReferer: http://\(alias):5173/app\r\n\r\n".utf8),
+            Data("GET /hmr HTTP/1.1\r\nHost: \(alias):5173\r\nOrigin: http://\(alias).example.com\r\nUpgrade: websocket\r\n\r\nframe ".utf8),
+            Data("Host: \(alias):5173".utf8),
+        ])
+        let remote = Bytes([], holds: true)
+        try await BrowserRelay.loopback(local, remote, initial: Data(), alias: alias, host: "localhost")
+        let sent = String(decoding: await remote.writes.reduce(Data(), +), as: UTF8.self)
+        XCTAssertEqual(sent, "POST /api HTTP/1.1\r\nHost: localhost:5173\r\nOrigin: http://localhost:5173\r\nContent-Length: 5\r\n\r\nhello"
+            + "GET /next HTTP/1.1\r\nHost: localhost:5173\r\nReferer: http://localhost:5173/app\r\n\r\n"
+            // Another site's Origin stays; after the upgrade nothing is read as HTTP.
+            + "GET /hmr HTTP/1.1\r\nHost: localhost:5173\r\nOrigin: http://\(alias).example.com\r\nUpgrade: websocket\r\n\r\nframe Host: \(alias):5173")
+
+        // TLS carries its own name: its bytes pass as they are.
+        let hello = Data([0x16, 0x03, 0x01]) + Data(alias.utf8)
+        let secure = Bytes([], holds: true)
+        try await BrowserRelay.loopback(Bytes([]), secure, initial: hello, alias: alias, host: "localhost")
+        let passed = await secure.writes.reduce(Data(), +)
+        XCTAssertEqual(passed, hello)
+    }
+
+    func testLiveArtifactProxyRefusalsMeanItsComputerIsUnavailable() async throws {
+        let target = try XCTUnwrap(BrowserPolicy.Authority(url: XCTUnwrap(URL(string: "http://localhost:4191"))))
+        for status in [404, 501, 503] {
+            let client = AgentClient(transport: Transport(Bytes([Data("HTTP/1.1 \(status) Refused\r\n\r\n".utf8)])), token: "token")
+            do { _ = try await client.browserTunnel(.artifact("gone1"), target: target); XCTFail() }
+            catch { XCTAssertEqual(error as? BrowserError, .liveUnavailable, "\(status)") }
+        }
+        // The same refusal from a workspace's proxy says only its status.
+        let workspace = AgentClient(transport: Transport(Bytes([Data("HTTP/1.1 404 Not Found\r\n\r\n".utf8)])), token: "token")
+        do { _ = try await workspace.browserTunnel(.workspace("work1"), target: target); XCTFail() }
+        catch { XCTAssertEqual(error as? BrowserError, .upstream(404)) }
+        // A destination the daemon's policy refuses, or a dev server that isn't
+        // running, is answered inside the open tunnel: not the computer's absence.
+        let inner = AgentClient(transport: Transport(Bytes([Data("HTTP/1.1 200 OK\r\n\r\n".utf8), Data("HTTP/1.1 403 Forbidden\r\n\r\n".utf8)])), token: "token")
+        do { _ = try await inner.browserTunnel(.artifact("art1"), target: target); XCTFail() }
+        catch { XCTAssertEqual(error as? BrowserError, .upstream(403)) }
+        let failure = BrowserFailure(BrowserError.liveUnavailable)
+        XCTAssertEqual(failure.code, "browser_proxy_live_unavailable")
+        XCTAssertEqual(BrowserProxyRefusal(status: failure.status, code: failure.code).problem, .liveUnavailable)
+    }
+
     func testPublicAuthoritySurvivesMeteringForConnectAndArtifactUpgrade() async throws {
         let bytes = Bytes([Data("HTTP/1.1 200 OK\r\n\r\n".utf8), Data("HTTP/1.1 200 OK\r\n\r\n".utf8)], authority: "agent.example.com:8443")
         let metered = MeteredStream(bytes, metrics: ConnectionMetrics(), channel: .browser)
@@ -251,8 +329,13 @@ final class BrowserTests: XCTestCase {
         var pending: [Data]
         var writes: [Data] = []
         var closed = false
-        init(_ pending: [Data], authority: String = "server.tailcat") { self.pending = pending; self.authority = authority }
-        func read(maximumBytes: Int) async throws -> Data { pending.isEmpty ? Data() : pending.removeFirst() }
+        /// Once its bytes are read, waits like a server with nothing to say.
+        let holds: Bool
+        init(_ pending: [Data], authority: String = "server.tailcat", holds: Bool = false) { self.pending = pending; self.authority = authority; self.holds = holds }
+        func read(maximumBytes: Int) async throws -> Data {
+            if pending.isEmpty, holds { try await Task.sleep(for: .seconds(60)) }
+            return pending.isEmpty ? Data() : pending.removeFirst()
+        }
         func write(_ data: Data) async throws { writes.append(data) }
         func close() async { closed = true }
     }

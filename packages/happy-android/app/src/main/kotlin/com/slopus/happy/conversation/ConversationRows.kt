@@ -28,7 +28,7 @@ data class MediaRef(val toolCallId: String, val index: Int, val item: MediaItem)
 
 /**
  * A tool call as its line reads it (iOS `ChatItem.Tool`): its name, where it
- * stands (`running`, `completed` or `failed`) and what it presented.
+ * stands (`running`, `completed` or `failed`), its short label and what it presented.
  */
 @Immutable
 data class ToolUse(
@@ -41,6 +41,8 @@ data class ToolUse(
     val id: String? = null,
     /** What its arguments say for its line where no presentation does (a plan's progress, a page's address). */
     val hint: ToolHint? = null,
+    /** Short builtin label, projected before raw arguments leave the row state; never MCP input. */
+    val summary: String? = null,
 ) {
     val running: Boolean get() = status == "running"
     val failed: Boolean get() = status == "failed"
@@ -53,7 +55,7 @@ data class ToolUse(
  * One row of a conversation as the phone draws it. A message becomes one
  * row per block it shows, keyed by message and block, so a streaming block
  * recomposes alone. Tool data is never shown: a tool call is the one line
- * its name, status and presentation give.
+ * its bounded label, name, status and presentation give.
  */
 @Immutable
 sealed interface ConversationRow {
@@ -70,6 +72,8 @@ sealed interface ConversationRow {
         val createdAt: Long = 0,
         /** Shown whole: a long one is cut at its first lines until tapped open ([com.slopus.happy.ui.conversation.UserFold]). */
         val opened: Boolean = false,
+        /** On a team's computer, the member who wrote it, by user ID; null for one still on its way and outside a team. */
+        val author: String? = null,
     ) : ConversationRow
 
     /**
@@ -172,6 +176,8 @@ sealed interface ConversationRow {
         val tools: Int,
         val copyText: String?,
         val afterStep: Boolean = false,
+        /** When the run ended (ms); null where it isn't known. */
+        val endedAt: Long? = null,
     ) : ConversationRow {
         /** A steered, stopped or failed turn says so and offers no copy. */
         val complete: Boolean get() = reason == "completed" || reason == "compaction"
@@ -219,6 +225,9 @@ class ConversationRowBuilder(
      */
     var references: References? = null
 
+    /** Which settings pages the conversation's connection has: a link to any other is its words. Null leaves every link. */
+    var hasPage: ((String) -> Boolean)? = null
+
     /** Told the words of each message built that may name references, so their titles and names are read. */
     var named: ((String) -> Unit)? = null
 
@@ -236,7 +245,7 @@ class ConversationRowBuilder(
     fun rows(message: Message, agentId: String, parentAgentId: String?, streaming: Boolean): List<ConversationRow> {
         val references = references
         cache[message.id]?.let { if (!streaming && !it.streaming && it.message == message && (!it.names || it.references === references)) return it.rows }
-        val rows = build(message, agentId, parentAgentId, streaming, if (streaming) ::live else null, references)
+        val rows = build(message, agentId, parentAgentId, streaming, if (streaming) ::live else null, references, hasPage)
         val shown = message.content.mapNotNull { block -> (block as? Block.ToolCall)?.presentation?.let(::inlineCandidate) }
         val names = shown.isNotEmpty() || message.content.any { it is Block.Text && References.mayHold(it.text) }
         if (names) named?.let { tell -> message.content.forEach { if (it is Block.Text) tell(it.text) } }
@@ -255,7 +264,7 @@ class ConversationRowBuilder(
     private fun live(key: String, text: String, markdown: Boolean): LiveText {
         val live = lives.getOrPut(key) {
             val prepare = typesetter?.let { t -> { content: LiveText.Content, md: Boolean -> t.live(key, content, md) } }
-            LiveText(text, if (markdown) parseMarkdown(text) else emptyList(), now, prepare).also { created ->
+            LiveText(text, if (markdown) parseMarkdown(text, hasPage) else emptyList(), now, prepare, hasPage).also { created ->
                 // Its first words, too, are laid out before a row reads them.
                 prepare?.invoke(created.content.value, markdown)
             }
@@ -302,6 +311,8 @@ class ConversationRowBuilder(
             live: ((key: String, text: String, markdown: Boolean) -> LiveText)? = null,
             /** Tags read as their names: links in what agents say, words in what the person said; null leaves them as written. */
             references: References? = null,
+            /** [ConversationRowBuilder.hasPage]. */
+            hasPage: ((String) -> Boolean)? = null,
         ): List<ConversationRow> {
             val id = message.id
             if (message.role == "service") {
@@ -318,7 +329,7 @@ class ConversationRowBuilder(
             val sender = message.senderAgentId
             if (sender != null && sender != agentId && sender != parentAgentId) {
                 val text = inboundText(message.text, sender).trim()
-                return listOf(ConversationRow.Collaborator("$id:from", sender, plain(text, references), parseMarkdown(resolved(text, references, false))))
+                return listOf(ConversationRow.Collaborator("$id:from", sender, plain(text, references), parseMarkdown(resolved(text, references, false), hasPage)))
             }
             // The agent that manages this one gives it its work: it reads as the person's lane.
             val fromManager = message.role == "agent" && sender != null && sender != agentId
@@ -326,10 +337,12 @@ class ConversationRowBuilder(
                 val text = message.content.filterIsInstance<Block.Text>().joinToString("\n") { it.text }
                     .let { if (fromManager && sender != null) inboundText(it, sender) else it }.trim()
                     .let { plain(it, references) }
+                    // Its Happy Cloud files read as a computer's uploads do: listed under its words.
+                    .let { WorkspaceUploads.listed(it, message.content.filterIsInstance<Block.File>().map(Block.File::name)) }
                 val pictures = message.content.filterIsInstance<Block.Image>()
                 if (text.isEmpty() && pictures.isEmpty()) return emptyList()
                 val delivery = if (message.status == "pending") Delivery.Pending else Delivery.Sent
-                return listOf(ConversationRow.User("$id:user", id, text, parseMarkdown(text), pictures, delivery, message.createdAt))
+                return listOf(ConversationRow.User("$id:user", id, text, parseMarkdown(text, hasPage), pictures, delivery, message.createdAt, author = message.userId))
             }
             val rows = ArrayList<ConversationRow>()
             message.content.forEachIndexed { index, block ->
@@ -340,14 +353,14 @@ class ConversationRowBuilder(
                     is Block.Text -> block.text.trim().takeIf { it.isNotEmpty() }?.let { text ->
                         val shown = resolved(text, references, growing != null)
                         val holder = growing?.invoke(key, shown, true)
-                        rows += ConversationRow.Text(key, plain(text, references), holder?.content?.value?.blocks ?: parseMarkdown(shown), holder)
+                        rows += ConversationRow.Text(key, plain(text, references), holder?.content?.value?.blocks ?: parseMarkdown(shown, hasPage), holder)
                     }
                     is Block.Reasoning -> block.text.trim().takeIf { it.isNotEmpty() }?.let {
                         rows += ConversationRow.Reasoning(key, it, streaming && index == message.content.lastIndex, growing?.invoke(key, it, false))
                     }
                     is Block.Image -> rows += ConversationRow.Picture(key, block)
                     is Block.ToolCall -> rows += toolRows(key, block, references)
-                    is Block.Compaction, is Block.Unknown -> Unit
+                    is Block.Compaction, is Block.File, is Block.Unknown -> Unit
                 }
             }
             return rows
@@ -370,7 +383,7 @@ class ConversationRowBuilder(
                 if (answered != null) return listOf(ConversationRow.Ask(askKey(call.id), answered, AskPhase.Answered))
             }
             val skill = if (call.name == Conversation.READ_SKILL) (call.arguments as? JsonObject)?.get("name").str else null
-            val tool = ToolUse(call.name, call.status, call.presentation, skill, call.id, ToolHint.of(call))
+            val tool = ToolUse(call.name, call.status, call.presentation, skill, call.id, ToolHint.of(call), ToolSummary.of(call.name, call.arguments))
             return when (val p = call.presentation) {
                 is Presentation.Media -> if (call.id == null || p.items.isEmpty()) {
                     listOf(ConversationRow.Tool(key, call.id, tool))

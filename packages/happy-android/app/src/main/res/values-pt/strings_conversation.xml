@@ -6,8 +6,6 @@
 <resources>
     <string name="conversation_details">Detalhes do chat</string>
     <string name="conversation_offline">Offline</string>
-    <string name="conversation_revoked">Este dispositivo foi removido</string>
-    <string name="conversation_update_required">Atualização necessária</string>
     <string name="conversation_unavailable">Esta conexão de agente não está disponível neste dispositivo.</string>
     <string name="conversation_empty">Nenhuma mensagem ainda.</string>
     <string name="conversation_read_only">Esta conversa é conduzida por outro agente e não aceita mensagens.</string>
@@ -94,6 +92,8 @@
     <string name="conversation_problem_refused">O agente recusou (%1$d).</string>
     <string name="conversation_problem_unknown">Algo deu errado.</string>
     <string name="conversation_problem_pictures">Não foi possível ler as imagens para enviar.</string>
+    <string name="conversation_problem_files_unavailable">Anexos de arquivos ainda não estão disponíveis neste servidor.</string>
+    <string name="conversation_problem_file_too_large">%1$s tem mais de 25 MB e não pode ser enviado aqui.</string>
     <string name="conversation_failure_signin_missing">%1$s não está conectado. Execute `%2$s` e tente de novo.</string>
     <string name="conversation_failure_cannot_authenticate">%1$s não conseguiu se autenticar. Verifique as configurações de login e tente de novo.</string>
     <string name="conversation_failure_usage_limit">Limite de uso do %1$s atingido.</string>
@@ -106,4 +106,6 @@
     <string name="conversation_failure_internal">Algo deu errado: %1$s</string>
     <string name="conversation_editor_expand">Expandir</string>
     <string name="conversation_editor_collapse">Recolher</string>
+    <string name="problem_forbidden">Você não tem permissão para fazer isso.</string>
+    <string name="conversation_role_read_only">Você pode ler esta conversa, mas sua função não pode enviar mensagens.</string>
 </resources>

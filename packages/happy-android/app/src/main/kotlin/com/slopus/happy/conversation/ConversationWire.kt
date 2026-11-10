@@ -305,6 +305,8 @@ sealed interface Block {
         val running: Boolean get() = status == "running"
         val failed: Boolean get() = status == "failed"
     }
+    /** A Happy Cloud attachment a message carries (`file`): its id, name, and what the server adds. */
+    data class File(val attachment: String, val name: String, val mimeType: String? = null, val size: Long? = null) : Block
     /** One context compaction, inside a service message: `running`, then `completed` or `failed`. */
     data class Compaction(val status: String) : Block
     data class Unknown(val type: String) : Block
@@ -337,6 +339,11 @@ sealed interface Block {
                         cut = arguments?.cut == true || result?.cut == true,
                     )
                 }
+                "file" -> {
+                    val attachment = o["attachment"].str
+                    val name = o["name"].str
+                    if (attachment != null && name != null) File(attachment, name, o["mimeType"].str, o["size"].num?.toLong()) else Unknown(type)
+                }
                 "compaction" -> Compaction(o["status"].str ?: "running")
                 else -> Unknown(type)
             }
@@ -354,6 +361,8 @@ data class Message(
     val status: String? = null,
     val runId: String? = null,
     val senderAgentId: String? = null,
+    /** On a team's computer, the member who wrote a person's message (`metadata.userId`, named by `GET /v0/users`). */
+    val userId: String? = null,
     /** An error service message's typed failure, kept as sent. */
     val failure: JsonObject? = null,
     val error: JsonObject? = null,
@@ -371,6 +380,7 @@ data class Message(
                 status = o["status"].str,
                 runId = o["runId"].str,
                 senderAgentId = o["metadata"].obj?.get("senderAgentId").str,
+                userId = o["metadata"].obj?.get("userId").str,
                 failure = o["failure"].obj,
                 error = o["error"].obj,
             )

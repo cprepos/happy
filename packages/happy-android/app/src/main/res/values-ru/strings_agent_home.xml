@@ -7,8 +7,6 @@
     <string name="agent_home_working">Работает…</string>
     <string name="agent_home_empty_title">Пока нет разговоров</string>
     <string name="agent_home_empty_body">Начните чат с этим агентом, и он появится здесь.</string>
-    <string name="agent_home_offline_title">Не удаётся связаться с %1$s</string>
-    <string name="agent_home_offline_body">Проверьте, что агент запущен и в сети. Happy переподключится сам.</string>
     <string name="agent_home_revoked">Этот телефон удалён в Happy Agent. Подключите агента снова, чтобы им пользоваться.</string>
     <string name="agent_home_update_required">Этому агенту нужна более новая версия Happy. Обновите приложение, чтобы им пользоваться.</string>
     <string name="agent_artifacts_untitled">Без названия</string>
@@ -32,13 +30,22 @@
     <string name="agent_search_kind_image_series">Серия изображений</string>
     <string name="agent_search_kind_video">Видео</string>
     <string name="agent_search_kind_artifact">Артефакт</string>
+    <string name="agent_search_kind_shared">Общее</string>
+    <string name="agent_search_by_agent">Агент</string>
+    <string name="agent_search_task_not_joined">Задача, в которой вы не участвуете</string>
+    <string name="agent_search_not_joined">вы не участник</string>
+    <plurals name="agent_search_open_todos">
+        <item quantity="one">%d открыта</item>
+        <item quantity="few">%d открыты</item>
+        <item quantity="many">%d открыто</item>
+        <item quantity="other">%d открыто</item>
+    </plurals>
     <string name="agent_settings_edit_name">Изменить имя агента</string>
     <string name="agent_settings_edit_avatar">Изменить аватар агента</string>
     <string name="agent_settings_edit_name_prefix">"Смени своё имя на "</string>
     <string name="agent_settings_edit_avatar_prefix">"Смени свой аватар на "</string>
     <string name="agent_settings_connected">Подключено</string>
     <string name="agent_settings_connecting">Подключение</string>
-    <string name="agent_settings_offline">Не в сети</string>
     <string name="agent_settings_revoked">Удалён из Happy Agent</string>
     <string name="agent_settings_update">Требуется обновление</string>
     <string name="agent_settings_remove_message">Happy забудет этого агента на этом телефоне. Happy Agent будет показывать телефон, пока вы не удалите его и там.</string>

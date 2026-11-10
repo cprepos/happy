@@ -67,6 +67,10 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         coordinator.start()
         #if DEBUG || HAPPY_FIXTURES
         GymFrameMeter.installIfAsked(in: window)
+        ScreenFilm.startIfAsked()
+        #endif
+        #if DEBUG
+        DictationTrial.startIfAsked()
         #endif
         PushNotifications.shared.attach(context: coordinator.context, coordinator: coordinator)
         if let response = connectionOptions.notificationResponse {

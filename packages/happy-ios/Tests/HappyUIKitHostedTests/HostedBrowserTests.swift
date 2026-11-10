@@ -378,7 +378,7 @@ final class HostedBrowserTests: XCTestCase {
         XCTAssertTrue(requests.contains { $0.hasPrefix("CONNECT /v0/workspaces/work1/proxy") })
         // A device's WebKit never proxies loopback: the page loads under the
         // alias, and the computer's server still sees its own localhost.
-        XCTAssertEqual(web.url?.host, "localhost.happy-loopback.invalid")
+        XCTAssertEqual(web.url?.host, "name.happy-loopback.invalid")
         XCTAssertEqual(browser.navigationItem.title.map { $0 == "localhost" || $0 == "Remote preview" }, true)
         XCTAssertTrue(requests.contains { $0.hasPrefix("CONNECT localhost:5173 ") })
         XCTAssertFalse(requests.contains { $0.contains("happy-loopback") })
@@ -413,7 +413,7 @@ final class HostedBrowserTests: XCTestCase {
             throw error
         }
 
-        XCTAssertEqual(web.url?.host, "localhost.happy-loopback.invalid")
+        XCTAssertEqual(web.url?.host, "name.happy-loopback.invalid")
         XCTAssertEqual(web.url?.port, 6080)
         XCTAssertEqual(web.url?.query, "autoconnect=true&resize=remote")
         XCTAssertEqual(web.url?.fragment, "password=s3cr%2Bt")
@@ -443,20 +443,27 @@ final class HostedBrowserTests: XCTestCase {
         throw BrowserError.timeout
     }
 
-    func testURLArtifactGetsItsAPIWhileItsFilesUseWorkspace() async throws {
+    func testLiveArtifactOpensThroughItsOwnProxyWithNoAPIBridge() async throws {
         let daemon = BrowserDaemon()
-        let page = try await BrowserPage.workspace(client: AgentClient(transport: daemon, token: "native-secret"), url: URL(string: "http://localhost:5173")!, workspaceID: "runner1", artifactID: "art1")
+        let page = try await BrowserPage.live(client: AgentClient(transport: daemon, token: "native-secret"), url: URL(string: "http://localhost:5173")!, artifactID: "art1")
         let browser = BrowserViewController(url: page.url, artifactID: "art1", page: page)
         let window = hostedKeyWindow(in: try await hostedActiveScene(), root: UINavigationController(rootViewController: browser))
         defer { window.isHidden = true }
         let web = try await waitForWeb(browser)
         try await waitForText("ws-live", web: web)
-        _ = try await web.evaluateJavaScript("fetch('/api/v1/kv/entry?key=count',{method:'PUT',headers:{'Content-Type':'application/json'},body:'{\"value\":42}'}).then(()=>{const events=new EventSource('/api/v1/kv/events');events.onmessage=e=>document.querySelector('#result').textContent=e.data;});void 0;")
-        try await waitForText("shared-update", web: web)
+        _ = try await web.evaluateJavaScript("fetch('/api/v1/kv/entry?key=count',{method:'PUT',headers:{'Content-Type':'application/json'},body:'{\"value\":42}'}).then(r=>r.json()).then(j=>document.querySelector('#result').textContent=j.value);void 0;")
+        try await waitForText("saved", web: web)
         let requests = await daemon.requests
-        XCTAssertTrue(requests.contains { $0.hasPrefix("PUT /v0/artifacts/art1/api/v1/kv/entry") })
-        XCTAssertTrue(requests.contains { $0.hasPrefix("GET /v0/artifacts/art1/api/v1/kv/events") })
-        XCTAssertTrue(requests.contains { $0.hasPrefix("CONNECT /v0/workspaces/runner1/proxy") })
+        let targets = await daemon.targetCredentials
+        // Every tunnel, the page's and its public script's, is the artifact's own.
+        XCTAssertTrue(requests.contains("CONNECT /v0/artifacts/art1/proxy HTTP/1.1"))
+        XCTAssertTrue(requests.contains("CONNECT localhost:5173 HTTP/1.1"))
+        XCTAssertTrue(requests.contains("CONNECT assets.example.invalid:80 HTTP/1.1"))
+        XCTAssertFalse(requests.contains { $0.contains("/v0/workspaces/") }, "No workspace is guessed for a live artifact")
+        // Its /api is the site's own, sent to the site without the daemon's credential.
+        XCTAssertTrue(requests.contains("PUT /api/v1/kv/entry?key=count HTTP/1.1"))
+        XCTAssertFalse(requests.contains { $0.contains("/v0/artifacts/art1/api") || $0.contains("/versions/") })
+        XCTAssertTrue(targets.allSatisfy { $0 == "none" })
     }
 
     private func waitForWeb(_ browser: BrowserViewController) async throws -> WKWebView {

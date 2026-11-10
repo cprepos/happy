@@ -31,19 +31,51 @@ extension TailcatHTTPTransport {
     }
 }
 
+/// Where a page's tunnels open. A workspace's network is the one its
+/// workspace resolves to now. A live artifact's is the one it was made on
+/// (`live.networkId`), through `CONNECT /v0/artifacts/:id/proxy`, where the
+/// daemon checks every destination against the artifact's URL.
+public enum BrowserNetwork: Equatable, Sendable {
+    case workspace(String)
+    case artifact(String)
+
+    /// The outer CONNECT's route; nil for an ID that isn't one.
+    public var path: String? {
+        switch self {
+        case .workspace(let id): BrowserPolicy.validID(id) ? "/v0/workspaces/\(id)/proxy" : nil
+        case .artifact(let id): BrowserPolicy.validID(id) ? "/v0/artifacts/\(id)/proxy" : nil
+        }
+    }
+
+    /// The artifact route's refusals that mean its page can't open: the
+    /// artifact is missing or not live, or its network isn't served (404);
+    /// the network's machine opens no connections (501) or is away (503).
+    public static let unavailable: Set<Int> = [404, 501, 503]
+}
+
 extension AgentClient {
     /// The computer's recorder, when the client's transport counts.
     var metrics: ConnectionMetrics? { (transport as? MeteredAgentTransport)?.metrics ?? (transport as? AgentEndpointTransport)?.metrics }
 
     /// Authentication is injected here and never returned to the web process.
     public func browserTunnel(workspaceID: String, target: BrowserPolicy.Authority) async throws -> any BrowserStream {
-        guard BrowserPolicy.validID(workspaceID) else { throw BrowserError.forbidden }
+        try await browserTunnel(.workspace(workspaceID), target: target)
+    }
+
+    /// A tunnel to `target` opened in `network`. A live artifact's route
+    /// refusing to open (`BrowserNetwork.unavailable`) is
+    /// `BrowserError.liveUnavailable`; nothing falls back to another network.
+    public func browserTunnel(_ network: BrowserNetwork, target: BrowserPolicy.Authority) async throws -> any BrowserStream {
+        guard let path = network.path else { throw BrowserError.forbidden }
         let start = ConnectionMetrics.uptime()
         let stream: any BrowserStream
-        do { stream = try await transport.proxyTunnel("/v0/workspaces/\(workspaceID)/proxy", credential: token) } catch {
+        do { stream = try await transport.proxyTunnel(path, credential: token) } catch {
             if !(error is CancellationError) {
                 let status: Int? = if case BrowserError.upstream(let code) = error { code } else { nil }
                 metrics?.request(.browser, status: status, duration: ConnectionMetrics.uptime() - start)
+            }
+            if case .artifact = network, case BrowserError.upstream(let status) = error, BrowserNetwork.unavailable.contains(status) {
+                throw BrowserError.liveUnavailable
             }
             // No way to the computer at all is the link failing (502), as
             // a failure inside the tunnel is, not the proxy's own (500).
@@ -210,9 +242,48 @@ public enum BrowserRelay {
     }
 
     public static func duplex(_ first: any BrowserStream, _ second: any BrowserStream) async throws {
+        try await duplex(first, second) { try await pipe(first, to: second) }
+    }
+
+    /// A page on a loopback alias, tunnelled to the computer's loopback:
+    /// each request names `host` where it named `alias`. Bodies, responses,
+    /// TLS and upgraded streams pass byte for byte.
+    public static func loopback(_ local: any BrowserStream, _ remote: any BrowserStream, initial: Data, alias: String, host: String) async throws {
+        try await duplex(local, remote) {
+            var buffer = initial.isEmpty ? try await local.read(maximumBytes: 65536) : initial
+            // A TLS handshake is never HTTP: its Host is sealed inside.
+            guard buffer.first != 0x16 else { try await remote.write(buffer); try await pipe(local, to: remote); return }
+            while true {
+                var parsed = try BrowserHTTPHead.parse(buffer)
+                while parsed == nil {
+                    let bytes = try await local.read(maximumBytes: 65536)
+                    if bytes.isEmpty { return }
+                    buffer.append(bytes)
+                    parsed = try BrowserHTTPHead.parse(buffer)
+                }
+                guard let (head, rest) = parsed else { return }
+                try await remote.write(head.loopbackRequest(alias: alias, host: host).data)
+                if head.value("upgrade") != nil {
+                    if !rest.isEmpty { try await remote.write(rest) }
+                    try await pipe(local, to: remote); return
+                }
+                var body = try BrowserResponseBody(request: head)
+                var bytes = rest
+                while true {
+                    let used = try body.consume(bytes)
+                    if used > 0 { try await remote.write(bytes.prefix(used)) }
+                    if body.finished { buffer = Data(bytes.dropFirst(used)); break }
+                    bytes = try await local.read(maximumBytes: 65536)
+                    if bytes.isEmpty { return }
+                }
+            }
+        }
+    }
+
+    private static func duplex(_ first: any BrowserStream, _ second: any BrowserStream, outgoing: @escaping @Sendable () async throws -> Void) async throws {
         try await withTaskCancellationHandler {
             try await withThrowingTaskGroup(of: Void.self) { group in
-                group.addTask { try await pipe(first, to: second) }
+                group.addTask { try await outgoing() }
                 group.addTask { try await pipe(second, to: first) }
                 defer { group.cancelAll() }
                 do { _ = try await group.next() }

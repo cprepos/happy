@@ -49,12 +49,12 @@ import java.util.concurrent.atomic.AtomicInteger
  * workspace CONNECT or an artifact's own route, never in what a page sees.
  */
 class BrowserProxy(parent: CoroutineScope) {
-    /** What a page may reach, besides the web through its workspace. */
+    /** What a page may reach, besides the web through its [BrowserNetwork]. */
     sealed interface Scope {
         val client: AgentClient
 
         /**
-         * A bundled artifact on its synthetic origin: its files, its API, and the web through its source's workspace if it has one.
+         * A bundled artifact on its synthetic origin: its files, its API, and the web through its source's network if it has one.
          * A vault's artifact entry gives [vault], its entry route: its files come from there, and it has no API.
          */
         class Artifact(
@@ -63,14 +63,20 @@ class BrowserProxy(parent: CoroutineScope) {
             val version: Int,
             val authority: BrowserPolicy.Authority,
             val vault: String? = null,
-            val workspace: (suspend () -> String)?,
+            val network: (suspend () -> BrowserNetwork)?,
         ) : Scope
 
-        /** An older artifact running at an http URL: its own origin, `/api/…` to the artifact, the rest through the workspace. */
-        class Live(override val client: AgentClient, val id: String, val workspaceId: String, val authority: BrowserPolicy.Authority) : Scope
+        /**
+         * A live artifact at its URL ([authority] is the page's own origin, http or https): everything it asks for,
+         * there or anywhere, goes through the artifact's own proxy ([BrowserNetwork.artifact]), whose daemon decides
+         * what it may reach. Its `/api/…` is the site's own; nothing bridges it to the daemon.
+         */
+        class Live(override val client: AgentClient, val id: String, val authority: BrowserPolicy.Authority) : Scope {
+            val network = BrowserNetwork.artifact(id)
+        }
 
-        /** A web page: the web through the workspace, and no daemon or artifact API. */
-        class Workspace(override val client: AgentClient, val workspace: suspend () -> String) : Scope
+        /** A web page: the web through [network], and no daemon or artifact API. */
+        class Web(override val client: AgentClient, val network: suspend () -> BrowserNetwork) : Scope
     }
 
     /**
@@ -86,19 +92,19 @@ class BrowserProxy(parent: CoroutineScope) {
         internal val authorization = basic(username, password)
         /** Why tunnels to each host were refused, for the screen to say. */
         val refusals = BrowserRefusals()
-        private var resolved: Deferred<String>? = null
+        private var resolved: Deferred<BrowserNetwork>? = null
 
         /** Keep-alive connections for this page's artifact API, closed with the page. */
         internal val pool = BrowserConnectionPool({ scope.client.socket() })
 
-        /** The workspace the page reaches the web through, asked once; asked again after a failure. */
-        internal suspend fun workspace(): String {
+        /** The network the page reaches the web through, asked once; asked again after a failure. */
+        internal suspend fun network(): BrowserNetwork {
             val running = synchronized(this) {
                 resolved?.takeUnless { it.isCompleted && it.getCompletionExceptionOrNull() != null } ?: scopeJob.async {
                     when (scope) {
-                        is Scope.Artifact -> scope.workspace?.invoke() ?: throw BrowserException(BrowserException.Kind.Unavailable)
-                        is Scope.Live -> scope.workspaceId
-                        is Scope.Workspace -> scope.workspace()
+                        is Scope.Artifact -> scope.network?.invoke() ?: throw BrowserException(BrowserException.Kind.Unavailable)
+                        is Scope.Live -> scope.network
+                        is Scope.Web -> scope.network()
                     }
                 }.also { resolved = it }
             }
@@ -218,7 +224,7 @@ class BrowserProxy(parent: CoroutineScope) {
             when (val scope = page.scope) {
                 is Scope.Artifact -> scope.authority == authority
                 is Scope.Live -> scope.authority == authority
-                is Scope.Workspace -> false
+                is Scope.Web -> false
             }
         } ?: fallback
     }
@@ -248,21 +254,9 @@ class BrowserProxy(parent: CoroutineScope) {
                         BrowserPolicy.checkArtifactOrigin(inner, authority)
                         artifact(local, owner.pool, scope.id, scope.version, inner, body, scope.vault) { started = true }
                     }
-                    is Scope.Live if scope.authority == authority -> {
-                        local.write(ESTABLISHED)
-                        if (rest.isNotEmpty()) throw BrowserException(BrowserException.Kind.Malformed)
-                        val (inner, body) = BrowserRelay.head(local)
-                        val target = inner.line.split(' ').getOrNull(1).orEmpty()
-                        if (target.startsWith("/api/")) {
-                            BrowserPolicy.checkArtifactOrigin(inner, authority)
-                            artifact(local, owner.pool, scope.id, 1, inner, body) { started = true }
-                        } else {
-                            forward(local, scope.client, scope.workspaceId, authority, inner, body) { started = true }
-                        }
-                    }
                     else -> {
-                        val workspace = owner.workspace()
-                        val remote = upstream { BrowserTunnel.open(owner.scope.client, workspace, authority) }
+                        val network = owner.network()
+                        val remote = upstream { BrowserTunnel.open(owner.scope.client, network, authority) }
                         try {
                             local.write(ESTABLISHED)
                             started = true
@@ -287,11 +281,7 @@ class BrowserProxy(parent: CoroutineScope) {
                     BrowserPolicy.checkArtifactOrigin(inner, authority)
                     artifact(local, owner.pool, scope.id, scope.version, inner, rest, scope.vault) { started = true }
                 }
-                is Scope.Live if scope.authority == authority && target.startsWith("/api/") -> {
-                    BrowserPolicy.checkArtifactOrigin(inner, authority)
-                    artifact(local, owner.pool, scope.id, 1, inner, rest) { started = true }
-                }
-                else -> forward(local, owner.scope.client, owner.workspace(), authority, inner, rest) { started = true }
+                else -> forward(local, owner.scope.client, owner.network(), authority, inner, rest) { started = true }
             }
         } catch (e: CancellationException) {
             throw e
@@ -441,20 +431,20 @@ class BrowserProxy(parent: CoroutineScope) {
     }
 
     /**
-     * A plain-http request through the workspace: sent to the target in
+     * A plain-http request through [network]: sent to the target in
      * origin form, closed after its answer, the answer relayed unchanged
      * but for its connection fields.
      */
     private suspend fun forward(
         local: TransportSocket,
         client: AgentClient,
-        workspaceId: String,
+        network: BrowserNetwork,
         authority: BrowserPolicy.Authority,
         head: HttpHead,
         initial: ByteArray,
         onStarted: () -> Unit,
     ) {
-        val remote = upstream { BrowserTunnel.open(client, workspaceId, authority) }
+        val remote = upstream { BrowserTunnel.open(client, network, authority) }
         try {
             val upgrade = head.value("upgrade") != null
             val request = head.without("connection", "keep-alive", "proxy-connection", "proxy-authorization", "x-happy-proxy-route")
@@ -542,6 +532,7 @@ data class BrowserFailure(val status: Int, val reason: String, val code: String)
                 val cause = error.cause
                 return when {
                     cause is BrowserException && cause.kind == BrowserException.Kind.Timeout -> failure(504, "Gateway Timeout", "upstream_timeout")
+                    cause is BrowserException && cause.kind == BrowserException.Kind.LiveUnavailable -> failure(503, "Service Unavailable", "live_unavailable")
                     cause is BrowserException && (cause.kind == BrowserException.Kind.Malformed || cause.kind == BrowserException.Kind.TooLarge) ->
                         failure(502, "Bad Gateway", "upstream_response_invalid")
                     cause is BrowserException && cause.kind == BrowserException.Kind.Upstream && cause.status in 400..599 ->
@@ -557,6 +548,7 @@ data class BrowserFailure(val status: Int, val reason: String, val code: String)
                     BrowserException.Kind.Malformed -> failure(400, "Bad Request", "request_invalid")
                     BrowserException.Kind.TooLarge -> failure(413, "Content Too Large", "request_too_large")
                     BrowserException.Kind.Unavailable -> failure(503, "Service Unavailable", "route_unavailable")
+                    BrowserException.Kind.LiveUnavailable -> failure(503, "Service Unavailable", "live_unavailable")
                     BrowserException.Kind.Timeout -> failure(408, "Request Timeout", "request_timeout")
                     BrowserException.Kind.Upstream ->
                         if (error.status in 400..599) failure(error.status, "Upstream Refused", "upstream_refused") else failure(502, "Bad Gateway", "upstream_transport")

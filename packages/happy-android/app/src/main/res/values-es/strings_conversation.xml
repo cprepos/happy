@@ -6,8 +6,6 @@
 <resources>
     <string name="conversation_details">Detalles del chat</string>
     <string name="conversation_offline">Sin conexión</string>
-    <string name="conversation_revoked">Este dispositivo se eliminó</string>
-    <string name="conversation_update_required">Requiere actualización</string>
     <string name="conversation_unavailable">Esta conexión de agente no está disponible en este dispositivo.</string>
     <string name="conversation_empty">Aún no hay mensajes.</string>
     <string name="conversation_read_only">Esta conversación la dirige otro agente y no admite mensajes.</string>
@@ -94,6 +92,8 @@
     <string name="conversation_problem_refused">El agente lo rechazó (%1$d).</string>
     <string name="conversation_problem_unknown">Algo salió mal.</string>
     <string name="conversation_problem_pictures">No se pudieron leer las imágenes para enviar.</string>
+    <string name="conversation_problem_files_unavailable">Los archivos adjuntos aún no están disponibles en este servidor.</string>
+    <string name="conversation_problem_file_too_large">%1$s supera los 25 MB y no se puede enviar aquí.</string>
     <string name="conversation_failure_signin_missing">%1$s no ha iniciado sesión. Ejecuta `%2$s` y vuelve a intentarlo.</string>
     <string name="conversation_failure_cannot_authenticate">%1$s no pudo autenticarse. Revisa su configuración de inicio de sesión y vuelve a intentarlo.</string>
     <string name="conversation_failure_usage_limit">Se alcanzó el límite de uso de %1$s.</string>
@@ -106,4 +106,6 @@
     <string name="conversation_failure_internal">Algo salió mal: %1$s</string>
     <string name="conversation_editor_expand">Expandir</string>
     <string name="conversation_editor_collapse">Contraer</string>
+    <string name="problem_forbidden">No tienes permiso para hacer eso.</string>
+    <string name="conversation_role_read_only">Puedes leer esta conversación, pero tu rol no puede enviar mensajes.</string>
 </resources>

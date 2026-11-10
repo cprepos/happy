@@ -19,7 +19,6 @@ import com.slopus.happy.ui.settings.AccountRoute
 import com.slopus.happy.ui.settings.AgentsRoute
 import com.slopus.happy.ui.settings.AppearanceRoute
 import com.slopus.happy.ui.settings.ChangelogRoute
-import com.slopus.happy.ui.settings.ConnectClaudeRoute
 import com.slopus.happy.ui.settings.LanguageRoute
 import com.slopus.happy.ui.voice.VoiceSettingsRoute
 import com.slopus.happy.ui.voice.VoiceLanguageRoute
@@ -96,6 +95,9 @@ class DeepLinksTest {
             DeepLink.Instance(instance, com.slopus.happy.agent.HappyLink.File(com.slopus.happy.agent.HappyLink.Target.Agent("a1"), "src/Foo.tsx", 42..50)),
             parseDeepLink("happy://$instance/agents/a1/files/src/Foo.tsx#L42-L50"),
         )
+        // A settings link opens from outside in its instance form; unlocked, `happy://settings/…` is still happy-app's path.
+        assertEquals(DeepLink.Instance(instance, com.slopus.happy.agent.HappyLink.Settings("providers")), parseDeepLink("happy://$instance/settings/providers"))
+        assertNull(parseDeepLink("happy://$instance/settings/billing"))
         // Internal links, malformed ones and happy-file:// never open from outside, nor fall back to Home.
         listOf(
             "happy://artifacts/abc123",
@@ -145,7 +147,6 @@ class DeepLinksTest {
             "happy://settings/language" to screen(LanguageRoute()),
             "happy://settings/voice" to screen(VoiceSettingsRoute()),
             "happy://settings/voice/language" to screen(VoiceLanguageRoute),
-            "https://app.happy.engineering/settings/connect/claude" to screen(ConnectClaudeRoute),
             "happy://server" to signedOut(ServerRoute),
             "happy://restore" to signedOut(RestoreRoute),
             "happy://restore/manual" to signedOut(RestoreManualRoute),
@@ -153,6 +154,8 @@ class DeepLinksTest {
             "happy://changelog" to signedOut(ChangelogRoute),
             "happy://onboarding/settings" to signedOut(OnboardingSettingsRoute),
         ).forEach { (link, route) -> assertEquals(link, route, parseDeepLink(link)) }
+        // The old Connect Claude page is gone; its link opens Home.
+        assertEquals(DeepLink.Home, parseDeepLink("https://app.happy.engineering/settings/connect/claude"))
     }
 
     @Test

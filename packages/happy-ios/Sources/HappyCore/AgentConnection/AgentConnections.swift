@@ -24,12 +24,21 @@ public final class AgentConnections {
     private var networkInterface: NetworkPathDetails.Interface = .other
     private var loaded = false
     private var engines: [String: SyncEngine] = [:]
+    /// Engines kept through the last suspension whose tunnels haven't
+    /// looked for the computer again since (`resume`).
+    private var suspended: Set<String> = []
     private var selecting: Task<Void, Never>?
     /// Agents disconnected whose cleanup a kill interrupted: never listed
     /// again, while `finishRemoval` forgets them.
     var hidden: Set<String> = []
     let makeTransport: @Sendable (AgentConnectionCredentials) -> any AgentTransport
-    var refreshInterval: Duration = .seconds(60)
+    /// How often each pairing's name, avatar and health are read again while
+    /// in the foreground. Coming back to the foreground reads them at once,
+    /// and an open account's own stream says whether its computer is there.
+    var refreshInterval: Duration = .seconds(600)
+    /// How long coming back waits for an engine's tunnels to wake before
+    /// it starts the engine and the pairings' checks anyway (`resume`).
+    var wakeLimit: Duration = .seconds(5)
 
     public init(credentials: any AgentConnectionCredentialStore, directory: URL?, makeTransport: @escaping @Sendable (AgentConnectionCredentials) -> any AgentTransport = { AgentHTTPTransport(address: $0.address, port: $0.port, publicUrl: $0.publicUrl, tailcatAvailable: $0.tailcatAvailable != false) }) {
         storage = AgentConnectionStorage(credentials: credentials, directory: directory)
@@ -76,11 +85,49 @@ public final class AgentConnections {
         // A grant from before the audience check: the server it was
         // signed in to, which never changes.
         if grant.audience == nil, let server = credential.publicUrl.flatMap({ try? AgentOrigin($0) }) { grant.audience = OAuthAudience(origin: server).server }
-        let value = ServerAuthorization(grant: grant, access: access, tokens: tokens) { [weak self] grant in
+        // Told at once, not through an observer added later: a session can
+        // end before anything else gets to look.
+        let value = ServerAuthorization(grant: grant, access: access, tokens: tokens, ended: { [weak self] in
+            Task { @MainActor in await self?.sessionEnded(id, told: true) }
+        }) { [weak self] grant in
             try await self?.saveGrant(grant, for: id)
         }
         authorizations[id] = value
         return value
+    }
+
+    /// Whether `id` is a signed-in server whose session ended: nothing of it
+    /// is kept or shown but the way to sign in again.
+    public func signedOut(_ id: String) -> Bool {
+        credentials[id]?.signIn != nil && accounts.first { $0.id == id }?.revoked == true
+    }
+
+    /// A signed-in server's session ended for good (the authorization
+    /// server refused its refresh, or the server asked to sign in again):
+    /// its tokens, its engine and everything kept of it on this phone go,
+    /// and only its name, address and who signed in stay, so signing in
+    /// again finds the same account and syncs it from scratch. Other
+    /// servers are untouched.
+    func sessionEnded(_ id: String, told: Bool = false) async {
+        // Told by its authorization: unless a sign-in came since.
+        if told { guard let current = authorizations[id], await current.state == .needsSignIn else { return } }
+        guard var value = credentials[id], value.signIn != nil, !hidden.contains(id) else { return }
+        // Shown at once; what ran on it is stopped after.
+        value.signIn?.grant.refreshToken = nil
+        credentials[id] = value
+        let engine = engines.removeValue(forKey: id)
+        if let index = accounts.firstIndex(where: { $0.id == id }) {
+            accounts[index].revoked = true
+            accounts[index].status = .revoked
+        }
+        // The folder's gate shuts first: nothing still running writes there again.
+        OfflineFile.remove(id)
+        onChange?()
+        try? await storage.updateCredentials(value, id: id)
+        if let account = accounts.first(where: { $0.id == id }) { try? await storage.update(account) }
+        await stop(id)
+        await engine?.stop()
+        OfflineFile.remove(id)
     }
 
     /// A rotated refresh token, saved over the old one.
@@ -117,6 +164,8 @@ public final class AgentConnections {
     /// A stable account lifetime, shared by Home, Settings and conversations.
     /// Construction performs no I/O; the actor opens SQLite off-main on start.
     public func syncEngine(for id: String) -> SyncEngine? {
+        // Signed out: nothing is read or kept until it signs in again.
+        if signedOut(id) { return nil }
         if let engine = engines[id] { return engine }
         guard let client = agentClient(for: id) else { return nil }
         let engine = SyncEngine(client: client, directory: OfflineFile.directory(for: id))
@@ -134,6 +183,10 @@ public final class AgentConnections {
         guard !loaded else { return }
         let saved = try await storage.load(hiding: hidden)
         accounts = saved.accounts; activeID = saved.activeID; credentials = saved.credentials; loaded = true
+        // A session an earlier build saw end kept its tokens and data.
+        for account in accounts where account.revoked && credentials[account.id]?.signIn?.grant.refreshToken != nil {
+            await sessionEnded(account.id)
+        }
         onChange?(); startConnections()
     }
 
@@ -197,7 +250,7 @@ public final class AgentConnections {
         try await storage.select(id)
         activeID = id; onChange?()
         for (accountID, engine) in engines {
-            if foreground && accountID == id { await engine.start() }
+            if foreground && accountID == id { await resume(accountID, engine) }
             else { await engine.pause() }
         }
     }
@@ -222,7 +275,7 @@ public final class AgentConnections {
         await stop(id)
         // Looked up after the wait: the list may have changed meanwhile.
         guard let index = accounts.firstIndex(where: { $0.id == id }) else { return }
-        accounts[index].name = name
+        accounts[index].name = AgentName.friendly(name)
         onChange?()
         try? await storage.update(accounts[index])
         startConnections()
@@ -309,7 +362,7 @@ public final class AgentConnections {
             try? await self.storage.select(id)
             guard self.activeID == id else { return }
             for (accountID, engine) in self.engines {
-                if self.foreground && accountID == id { await engine.start() }
+                if self.foreground && accountID == id { await self.resume(accountID, engine) }
                 else { await engine.pause() }
             }
         }
@@ -319,10 +372,10 @@ public final class AgentConnections {
     /// cellular, or back), or the app came back: what was learned
     /// about proxy tunnels is forgotten, and each computer's held Tailcat
     /// clients look for their paths again, without waiting on them.
-    public func networkChanged() {
+    private func networkMoved() {
         TunnelSupport.shared.forget()
-        let transports = engines.values.map { $0.client.transport }
-        Task { for transport in transports { await transport.networkChanged() } }
+        let clients = engines.values.map(\.client)
+        Task { await withTaskGroup(of: Void.self) { group in for client in clients { group.addTask { await client.resumed() } } } }
     }
 
     private func watchNetwork() {
@@ -339,29 +392,49 @@ public final class AgentConnections {
                 let moved = path.satisfied && self.networkSatisfied && path.interface != self.networkInterface
                 self.networkSatisfied = path.satisfied
                 self.networkInterface = path.interface
-                if back || moved { self.networkChanged() }
+                if back || moved { self.networkMoved() }
             }
         }
     }
 
     public func setForeground(_ active: Bool) async {
         foreground = active; generation &+= 1
-        if active { watchNetwork(); networkChanged() }
+        if active { watchNetwork(); TunnelSupport.shared.forget() }
+        if !active { suspended = Set(engines.keys) }
         let pending = jobs; jobs.removeAll()
         pending.values.forEach { $0.cancel() }
         for job in pending.values { await job.value }
         guard foreground == active else { return }
-        for (id, engine) in engines {
+        // Back: every pairing's check starts at once, the open one's first,
+        // and the open engine is resumed before any other is paused. None
+        // of them waits on the open engine's wake, nor it on them.
+        if active { startConnections() }
+        let open = active ? activeID.flatMap { id in engines[id].map { (id, $0) } } : nil
+        if case let (id, engine)? = open { await resume(id, engine) }
+        for (id, engine) in engines where id != open?.0 {
             guard foreground == active else { return }
-            if active && id == activeID { await engine.start() }
-            else { await engine.pause() }
+            await engine.pause()
         }
         guard foreground == active else { return }
-        if active { startConnections() }
-        else {
+        if !active {
             for index in accounts.indices where !accounts[index].revoked { accounts[index].status = .paused }
             onChange?()
         }
+    }
+
+    /// Starts `id`'s engine. One kept through a suspension holds tunnels
+    /// that may have gone stale with nothing to say so; first they look for
+    /// every way to the computer again, as after a network change on
+    /// screen, before the stream asks them for anything. Waited for only
+    /// `wakeLimit`: a tunnel whose relay iOS reclaimed wakes only once a
+    /// new one is up, over a network that may still be coming back, and
+    /// until then neither the stream nor the pairings' checks started, so
+    /// home said "connecting…" for as long as the slowest wake took. The
+    /// wake goes on; what the stream sends meanwhile waits in Tailcat for
+    /// the rekey. The pairings' checks don't wait for it (`setForeground`).
+    private func resume(_ id: String, _ engine: SyncEngine) async {
+        if suspended.remove(id) != nil { await waitAtMost(wakeLimit) { await engine.client.resumed() } }
+        await engine.start()
     }
 
     private func stop(_ id: String) async {
@@ -388,7 +461,9 @@ public final class AgentConnections {
 
     private func startConnections() {
         guard foreground else { return }
-        for account in accounts where jobs[account.id] == nil && !account.revoked {
+        // The open account's check is started first.
+        let ordered = accounts.filter { $0.id == activeID } + accounts.filter { $0.id != activeID }
+        for account in ordered where jobs[account.id] == nil && !account.revoked {
             guard let credential = credentials[account.id] else { continue }
             let make = maker(credential, for: account.id), meter = meter(account.id), endpoint = endpoint(credential, for: account.id); let generation = generation; let interval = refreshInterval
             jobs[account.id] = Task.detached { [weak self] in
@@ -399,32 +474,35 @@ public final class AgentConnections {
                 var picture: AvatarFetch?
                 defer { picture?.cancel() }
                 while !Task.isCancelled {
-                    let transport = AgentEndpointTransport(endpoint: endpoint, metrics: meter, make: make)
                     do {
                         current.status = attempt == 0 ? .connecting : .retrying
                         await self?.apply(current, generation: generation)
                         while !Task.isCancelled {
-                            current = try await AgentIdentity.refresh(current, transport: transport, token: credential.deviceToken, within: AgentIdentity.deadline)
+                            // A transport per check, closed after it: its tunnels
+                            // don't idle on the radio until the next one.
+                            let transport = AgentEndpointTransport(endpoint: endpoint, metrics: meter, make: make)
+                            do { current = try await AgentIdentity.refresh(current, transport: transport, token: credential.deviceToken, within: AgentIdentity.deadline) }
+                            catch { await transport.close(); throw error }
+                            await transport.close()
                             try Task.checkCancellation()
                             await self?.apply(current, generation: generation)
                             attempt = 0
                             if let thumbhash = current.thumbhash, !(picture?.running ?? false), let owner = self {
-                                picture = AvatarFetch(id: account.id, thumbhash: thumbhash, transport: transport, token: credential.deviceToken, generation: generation, owner: owner)
+                                // The picture gets a transport of its own, closed when it lands.
+                                picture = AvatarFetch(id: account.id, thumbhash: thumbhash, transport: AgentEndpointTransport(endpoint: endpoint, metrics: meter, make: make), token: credential.deviceToken, generation: generation, owner: owner)
                             }
-                            try await Task.sleep(for: interval)
+                            // In its last tenth, with traffic already moving.
+                            try await RadioWake.shared.next(after: interval * 9 / 10, by: interval)
                         }
                     } catch PairingError.revoked {
                         current.revoked = true; current.status = .revoked
                         if !Task.isCancelled { await self?.apply(current, generation: generation, issue: PairingError.revoked) }
                         picture?.cancel(); picture = nil
-                        await transport.close()
                         return
                     } catch {
                         issue = error
                     }
-                    // The picture goes with the transport it was asked on.
                     picture?.cancel(); picture = nil
-                    await transport.close()
                     if Task.isCancelled { return }
                     current.status = .retrying
                     await self?.apply(current, generation: generation, issue: issue)
@@ -475,10 +553,11 @@ public final class AgentConnections {
 }
 
 /// One fire-and-forget read of a computer's picture, after its identity
-/// loop has said `.connected`. It runs over the loop's transport on a
-/// `.file` client, so a picture that is slow to come (its slot has a
-/// 15 minute deadline) never holds the status back; the loop starts
-/// another only once this one is over.
+/// loop has said `.connected`. It runs over a transport of its own (the
+/// loop's is closed after each check), on a `.file` client, so a picture
+/// that is slow to come (its slot has a 15 minute deadline) never holds the
+/// status back; the transport is closed when the read ends or is
+/// cancelled, and the loop starts another only once this one is over.
 private final class AvatarFetch: @unchecked Sendable {
     /// How long one read may take before the next refresh may try again.
     static let limit: Duration = .seconds(120)
@@ -489,17 +568,23 @@ private final class AvatarFetch: @unchecked Sendable {
 
     var running: Bool { lock.withLock { isRunning } }
 
-    init(id: String, thumbhash: String, transport: any AgentTransport, token: String, generation: UInt64, owner: AgentConnections) {
+    init(id: String, thumbhash: String, transport: AgentEndpointTransport, token: String, generation: UInt64, owner: AgentConnections) {
         let task = Task { [weak self, weak owner] in
-            defer { self?.finish() }
-            guard !Task.isCancelled, let owner else { return }
-            let etag = await owner.avatarETag(id)
-            guard !Task.isCancelled,
-                  let answer = try? await LiveBrowserFeed.within(AvatarFetch.limit, { try await AgentIdentity.avatar(etag: etag, transport: transport, token: token) }),
-                  !Task.isCancelled else { return }
-            await owner.applyAvatar(answer, id: id, thumbhash: thumbhash, generation: generation)
+            await Self.read(id: id, thumbhash: thumbhash, transport: transport, token: token, generation: generation, owner: owner)
+            // Its own transport: no tunnel of it idles on the radio after.
+            await transport.close()
+            self?.finish()
         }
         lock.withLock { self.task = task }
+    }
+
+    private static func read(id: String, thumbhash: String, transport: AgentEndpointTransport, token: String, generation: UInt64, owner: AgentConnections?) async {
+        guard !Task.isCancelled, let owner else { return }
+        let etag = await owner.avatarETag(id)
+        guard !Task.isCancelled,
+              let answer = try? await LiveBrowserFeed.within(AvatarFetch.limit, { try await AgentIdentity.avatar(etag: etag, transport: transport, token: token) }),
+              !Task.isCancelled else { return }
+        await owner.applyAvatar(answer, id: id, thumbhash: thumbhash, generation: generation)
     }
 
     private func finish() { lock.withLock { isRunning = false } }

@@ -252,6 +252,8 @@ final class BrailleView: UIView {
 
     @objc private func animate() {
         for dot in dots { dot.removeAnimation(forKey: "wave") }
+        // It holds still with Reduce Motion only. In Low Power Mode it keeps
+        // moving, unlike a shimmer: it is the sign that work runs.
         guard running, window != nil, !backgrounded, !UIAccessibility.isReduceMotionEnabled else { return }
         let start = CACurrentMediaTime()
         let cycle = Braille.cycle / 1000

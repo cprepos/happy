@@ -31,6 +31,9 @@ final class AppConfigurationTests: XCTestCase {
                 info["NSCameraUsageDescription"] as? String,
                 "Allow \(variant.displayName) to access your camera to scan QR codes and share photos with AI."
             )
+            // The microphone's dictation (`RecordButton`) asks for both.
+            XCTAssertNotNil(info["NSMicrophoneUsageDescription"] as? String)
+            XCTAssertNotNil(info["NSSpeechRecognitionUsageDescription"] as? String)
             let ats = try XCTUnwrap(info["NSAppTransportSecurity"] as? [String: Bool])
             XCTAssertEqual(ats["NSAllowsLocalNetworking"], true)
             // Plain HTTP to any host only in dev and preview, as in app.config.js.
@@ -53,14 +56,17 @@ final class AppConfigurationTests: XCTestCase {
         XCTAssertEqual(try shared(plist(.preview)), development)
         XCTAssertEqual(try shared(plist(.production)), development)
         let info = try plist(.development)
-        XCTAssertEqual(info["CFBundleShortVersionString"] as? String, "2.0.0")
+        // CalVer YYYY.M.C (month unpadded, counter from 1), written by
+        // scripts/native-version.cjs: see AGENTS.md, "Versioning".
+        let version = try XCTUnwrap(info["CFBundleShortVersionString"] as? String)
+        XCTAssertNotNil(version.wholeMatch(of: /[1-9][0-9]{3}\.([1-9]|1[0-2])\.[1-9][0-9]*/), version)
         let schemes = (info["CFBundleURLTypes"] as? [[String: Any]])?.first?["CFBundleURLSchemes"] as? [String]
         // `happy` also carries the server sign-in's redirect (`OAuthRedirect`).
         XCTAssertEqual(schemes, ["happy"])
         XCTAssertEqual(schemes?.contains(OAuthRedirect.scheme), true)
     }
 
-    /// One semver for every variant: the plists' version (kept equal by
+    /// One version for every variant: the plists' version (kept equal by
     /// `testSharedKeysMatch`) is the projects' only `MARKETING_VERSION`.
     func testEveryVariantSharesTheProjectVersion() throws {
         let packageDirectory = appDirectory.deletingLastPathComponent()
@@ -71,7 +77,7 @@ final class AppConfigurationTests: XCTestCase {
             XCTAssertEqual(settings.map { $0.trimmingCharacters(in: .whitespaces) }, ["MARKETING_VERSION: \"\(version)\""], spec)
         }
         for variant in AppVariant.allCases {
-            XCTAssertEqual(try plist(variant)["CFBundleVersion"] as? String, variant == .production ? "157" : "1")
+            XCTAssertEqual(try plist(variant)["CFBundleVersion"] as? String, variant == .production ? "158" : "1")
         }
     }
 

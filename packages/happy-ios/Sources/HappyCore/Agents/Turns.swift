@@ -49,12 +49,15 @@ extension ChatItem {
         /// It follows a step of the turn, which it keeps 4 more from
         /// (`happy-turn-status--after-trace`); `TurnFold` says.
         public var afterStep = false
+        /// When the run ended, in ms; nil where it isn't known.
+        public var endedAt: Double?
 
-        public init(reason: String, durationMs: Double?, tools: Int, copyText: String?) {
+        public init(reason: String, durationMs: Double?, tools: Int, copyText: String?, endedAt: Double? = nil) {
             self.reason = reason
             self.durationMs = durationMs
             self.tools = tools
             self.copyText = copyText
+            self.endedAt = endedAt
         }
 
         /// Desktop's `TurnSummary` status: a steered turn, one that failed
@@ -173,8 +176,12 @@ public enum TurnFold {
         // How a turn ended keeps 4 more from a step right above it.
         for index in result.indices.dropFirst() {
             guard case .turnEnd(var ended) = result[index].role else { continue }
-            ended.afterStep = isStep(result[index - 1])
-            result[index].role = .turnEnd(ended)
+            let afterStep = isStep(result[index - 1])
+            guard ended.afterStep != afterStep else { continue }
+            ended.afterStep = afterStep
+            // Read from nothing but whether a step is above it: the same
+            // turn's end so placed again is the same making (`ChatItem.revision`).
+            result[index] = result[index].derived(afterStep ? 1 : 2) { $0.role = .turnEnd(ended) }
         }
         return MediaRuns.join(result)
     }

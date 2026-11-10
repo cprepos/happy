@@ -103,6 +103,21 @@ public final class LocalSettings: Sendable {
         set { storage.set(newValue ? "true" : nil, forKey: Keys.zenMode) }
     }
 
+    /// Settings › Agents › Open task after dictating: a task started from
+    /// home's microphone opens (the default), or starts while home stays.
+    public var dictationOpensTask: Bool {
+        get { storage.string(forKey: Keys.dictationStaysHome) != "true" }
+        set { storage.set(newValue ? nil : "true", forKey: Keys.dictationStaysHome) }
+    }
+
+    /// Settings › Agents › Multilingual dictation: a recording listens in
+    /// the person's two most likely languages and keeps the one spoken
+    /// (the default), or only in the most likely one.
+    public var multilingualDictation: Bool {
+        get { storage.string(forKey: Keys.dictationOneLanguage) != "true" }
+        set { storage.set(newValue ? nil : "true", forKey: Keys.dictationOneLanguage) }
+    }
+
     /// The projects showing every worktree on the grouped home list
     /// (localSettings.ts `expandedProjects`, keyed by project id).
     public var expandedProjects: Set<String> {
@@ -173,7 +188,7 @@ public final class LocalSettings: Sendable {
     }
 
     public func clear() {
-        for key in [Keys.linkComputerChecklist, Keys.themePreference, Keys.devModeEnabled, Keys.markdownCopyV2, Keys.expandedProjects, Keys.acknowledgedCliVersions, Keys.registeredPushToken, Keys.zenMode, Keys.voiceMessageCount, Keys.legacyLinkComputers, NewSessionDraft.storageKey] {
+        for key in [Keys.linkComputerChecklist, Keys.themePreference, Keys.devModeEnabled, Keys.markdownCopyV2, Keys.expandedProjects, Keys.acknowledgedCliVersions, Keys.registeredPushToken, Keys.zenMode, Keys.voiceMessageCount, Keys.legacyLinkComputers, Keys.dictationStaysHome, NewSessionDraft.storageKey] {
             storage.set(nil, forKey: key)
         }
     }
@@ -201,5 +216,7 @@ public final class LocalSettings: Sendable {
         static let zenMode = "zenMode"
         static let voiceMessageCount = "voice-message-count"
         static let legacyLinkComputers = "relayLinkComputers"
+        static let dictationStaysHome = "dictationStaysHome"
+        static let dictationOneLanguage = "dictationOneLanguage"
     }
 }

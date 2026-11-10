@@ -26,11 +26,20 @@ sealed interface Problem {
     /** The pictures picked to send couldn't be read on the phone. */
     data object PicturesUnreadable : Problem
 
+    /** Files sent to a server that takes none yet (Happy Cloud). */
+    data object FilesUnavailable : Problem
+
+    /** File [name] is past what the server takes ([WorkspaceUploads.CLOUD_MAX_BYTES]). */
+    data class FileTooLarge(val name: String) : Problem
+
     /** Slash command [name] is no longer offered (404): unknown, or just removed. */
     data class CommandGone(val name: String) : Problem
 
     /** Slash command [name] can't run in the agent's current state (409). */
     data class CommandBusy(val name: String) : Problem
+
+    /** The person's role on the team doesn't allow it (a team server's `403 forbidden`). */
+    data object Forbidden : Problem
 
     /** Nothing says why. */
     data object Unknown : Problem

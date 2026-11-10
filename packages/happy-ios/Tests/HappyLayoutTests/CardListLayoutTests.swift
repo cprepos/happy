@@ -102,5 +102,37 @@ final class CardListLayoutTests: XCTestCase {
         let note = CardNoteLayout(width: 390, text: .fixed(width: 200, height: 20))
         XCTAssertEqual(note.size, CGSize(width: 390, height: 68))
         XCTAssertEqual(note.text, CGRect(x: 95, y: 24, width: 200, height: 20))
+        XCTAssertNil(note.art)
+    }
+
+    /// A scene stands centred over the words, which move down by it and
+    /// its gap; the note grows by as much.
+    func testANotesSceneStandsOverItsWords() {
+        let note = CardNoteLayout(width: 390, text: .fixed(width: 200, height: 20), art: 128)
+        XCTAssertEqual(note.art, CGRect(x: 131, y: 24, width: 128, height: 128))
+        XCTAssertEqual(note.text, CGRect(x: 95, y: 168, width: 200, height: 20))
+        XCTAssertEqual(note.size, CGSize(width: 390, height: 212))
+        let wide = CardNoteLayout(width: 1024, maxWidth: 800, text: .fixed(width: 300, height: 40), padding: 32, art: 128)
+        XCTAssertEqual(wide.art, CGRect(x: 448, y: 32, width: 128, height: 128))
+        XCTAssertEqual(wide.text, CGRect(x: 362, y: 176, width: 300, height: 40))
+        XCTAssertEqual(wide.size, CGSize(width: 1024, height: 248))
+    }
+
+    /// In place of a whole list the note is as tall as what the list
+    /// shows, its scene and words in the middle; too tall for that, it
+    /// keeps its own height.
+    func testANoteInPlaceOfTheListStandsInItsMiddle() {
+        let note = CardNoteLayout(width: 390, text: .fixed(width: 200, height: 20), art: 128, fill: 700)
+        XCTAssertEqual(note.size, CGSize(width: 390, height: 700))
+        // 212 of its own: (700 - 212) / 2 = 244 above, then the padding.
+        XCTAssertEqual(note.art, CGRect(x: 131, y: 268, width: 128, height: 128))
+        XCTAssertEqual(note.text, CGRect(x: 95, y: 412, width: 200, height: 20))
+        XCTAssertEqual(note.art!.minY - 24, 700 - (note.text.maxY + 24), "as much room above as below")
+        let odd = CardNoteLayout(width: 390, text: .fixed(width: 200, height: 20), fill: 69)
+        XCTAssertEqual(odd.text, CGRect(x: 95, y: 24, width: 200, height: 20), "the odd half point goes below")
+        XCTAssertEqual(odd.size.height, 69)
+        let short = CardNoteLayout(width: 390, text: .fixed(width: 200, height: 20), art: 128, fill: 100)
+        XCTAssertEqual(short.size.height, 212)
+        XCTAssertEqual(short.art?.minY, 24)
     }
 }

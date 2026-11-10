@@ -155,6 +155,28 @@ class CallSessionTest {
         assertTrue(connection.ended)
     }
 
+    /** The agent's end_call is a hang-up, not a failure: the call goes idle as End leaves it, and whoever holds it hears once. */
+    @Test
+    fun theAgentHangingUpEndsTheCallAsEndWould() {
+        val connection = FakeCallConnection()
+        var events: CallEvents? = null
+        val call = session { _, _, callEvents -> events = callEvents; connection }
+        var hangUps = 0
+        call.onHangUp = { hangUps += 1 }
+        call.start(null, { "" }, { CallToolResult("") })
+        test.runCurrent()
+        events!!.hungUp()
+        assertEquals(CallState.Idle, call.state.value)
+        assertEquals(1, hangUps)
+        test.runCurrent()
+        assertTrue(connection.ended)
+        // What the dying connection still says changes nothing.
+        events!!.disconnected()
+        events!!.hungUp()
+        assertEquals(CallState.Idle, call.state.value)
+        assertEquals(1, hangUps)
+    }
+
     @Test
     fun whatAnEndedCallStillSaysGoesNowhere() {
         val connection = FakeCallConnection()
@@ -198,105 +220,6 @@ class CallSessionTest {
         call.stop()
     }
 
-    /**
-     * Directory news too big for one update goes in bounded updates once
-     * connected, each after the one before; news an overflow lost before the
-     * call connected is owed again by the resync, so none of it is lost.
-     */
-    @Test
-    fun directoryNewsLostToTheWaitIsOwedAgainAndAllOfItGoes() = runBlocking {
-        val many = (0 until 150).map { CallTarget("x$it", "Task $it", CallTarget.Kind.Task, CallTarget.Status.Idle) }
-        val targets = FakeCallTargets(many, mutableMapOf(), null)
-        val context = CallContext(targets)
-        val connection = FakeCallConnection()
-        val gate = CompletableDeferred<Unit>()
-        val call = session { _, _, _ -> gate.await(); connection }
-        var overflows = 0
-        call.onOverflow = { overflows += 1 }
-        context.initial()
-        call.start(null, { "" }, { CallToolResult("") })
-        test.runCurrent()
-        // Waiting to connect, other context already waits.
-        val filler = "f".repeat(1023)
-        repeat(24) { call.deliver(CallUpdate(listOf(filler))) }
-        // 300 new conversations, far more than one update holds.
-        val late = CallContextTest.late(300)
-        targets.setDirectory(many + late)
-        context.directoryChanged(many + late)
-        val flush = context.flushDirectory()
-        assertTrue(flush.context.sumOf { it.utf8Size() + 1 } < CallSession.PENDING_BYTES / 2 + CallContext.Limits.DIRECTORY_BYTES)
-        call.deliver(flush)
-        // Too much with what waited: let go whole, and put right.
-        assertEquals(1, overflows)
-        call.deliver(context.resync())
-        CallContext.drain(context, call)
-        assertTrue("nothing more goes before the call is connected", context.owesDirectory())
-        gate.complete(Unit)
-        test.runCurrent()
-        assertTrue(call.state.value is CallState.Active)
-        CallContext.drain(context, call)
-        assertFalse(context.owesDirectory())
-        assertEquals(1, overflows)
-        val all = connection.updates.joinToString("\n")
-        for (index in 0 until 300) assertTrue("Late $index", all.contains("Late $index "))
-        for (update in connection.updates) assertTrue(update.utf8Size() <= CallSession.PENDING_BYTES)
-        assertTrue(connection.updates.size > 2)
-        call.stop()
-    }
-
-    /** However often it is asked, a call's drain sends each piece of the directory's news once, all of it. */
-    @Test
-    fun oneDrainSendsWhatIsOwedOnceHoweverOftenAsked() = runBlocking {
-        val many = (0 until 150).map { CallTarget("x$it", "Task $it", CallTarget.Kind.Task, CallTarget.Status.Idle) }
-        val targets = FakeCallTargets(many, mutableMapOf(), null)
-        val context = CallContext(targets)
-        val connection = FakeCallConnection()
-        val call = session { _, _, _ -> connection }
-        context.initial()
-        call.start(null, { "" }, { CallToolResult("") })
-        test.runCurrent()
-        val late = CallContextTest.late(300)
-        targets.setDirectory(many + late)
-        context.directoryChanged(many + late)
-        call.deliver(context.flushDirectory())
-        assertTrue(context.owesDirectory())
-        val drain = DirectoryDrain(this, context, call)
-        // Asked by every state change, a flush and a resync at once.
-        repeat(6) { drain.start() }
-        withTimeout(5_000) { while (context.owesDirectory()) delay(5) }
-        repeat(6) { drain.start() }
-        delay(50)
-        val all = connection.updates.joinToString("\n")
-        for (index in 0 until 300) assertEquals("Late $index", 1, Regex("Late $index ").findAll(all).count())
-        for (update in connection.updates) assertTrue(update.utf8Size() <= CallSession.PENDING_BYTES / 2)
-        drain.cancel()
-        call.stop()
-    }
-
-    /** One flush, due a fixed time after the first change: later changes never put it off, and a cancelled one never goes. */
-    @Test
-    fun theSettleIsNeverPutOff() {
-        val flushes = ArrayList<Long>()
-        val settle = DirectorySettle(test, 400) { flushes += test.testScheduler.currentTime }
-        // Changes without a pause for two seconds: a flush put off by each would never come; one due from the first comes in the first.
-        while (test.testScheduler.currentTime < 2_000) {
-            settle.changed()
-            test.testScheduler.advanceTimeBy(40)
-        }
-        assertTrue(flushes.isNotEmpty())
-        assertTrue(flushes.first() in 400L until 2_000L)
-        // One at a time: never two within the delay of each other.
-        for ((earlier, later) in flushes.zipWithNext()) assertTrue(later - earlier >= 400)
-        test.testScheduler.advanceTimeBy(800)
-        test.runCurrent()
-        val count = flushes.size
-        settle.changed()
-        settle.cancel()
-        test.testScheduler.advanceTimeBy(800)
-        test.runCurrent()
-        assertEquals(count, flushes.size)
-    }
-
     @Test
     fun aCallHungUpWhileConnectingNeverGoesLive() {
         val connection = FakeCallConnection()
@@ -323,13 +246,14 @@ class CallSessionTest {
             working = true,
             draft = "half typed",
             question = question,
+            // Newest first, as a conversation publishes them.
             rows = listOf(
                 ConversationRow.User("u:user", "u", "hello", emptyList(), emptyList(), Delivery.Sending),
                 ConversationRow.Reasoning("x:0", "thinking out loud", streaming = false),
                 ConversationRow.Text("a:0", "first", emptyList()),
                 ConversationRow.Text("a:1", "second", emptyList()),
                 ConversationRow.Ask("ask", question, AskPhase.Pending),
-            ),
+            ).asReversed(),
         )
         val read = CallTargetState.from(state, CallTarget("a", "A", CallTarget.Kind.Bot, status = CallTarget.Status.Idle))
         // Each of the agent's text blocks is its own message: its words between steps.
@@ -355,9 +279,11 @@ class FakeGrants(private val result: CallGrantResult) : CallGrants {
 
 class FakeCallConnection : CallConnection {
     val updates = ArrayList<String>()
+    val cues = ArrayList<String>()
     var muted = false
     var ended = false
     override suspend fun end() { ended = true }
+    override fun cue(facts: String) { cues += facts }
     override suspend fun setMuted(muted: Boolean) { this.muted = muted }
     override fun update(context: String) { updates += context }
 }

@@ -22,7 +22,8 @@ import UIKit
 /// Support us, About, then Disconnect or Sign out. A Happy account's
 /// picture is only that. A computer's page: the agent's picture, whose menu
 /// asks it to change its picture or name (`AgentEditButton`,
-/// `ChiefOfStaffAsk`; nothing renamed here); the person's own Profile
+/// `ChiefOfStaffAsk`; nothing renamed here, but a Happy Cloud server,
+/// `ServerRename`); the person's own Profile
 /// there (`ProfileViewController`); Appearance (the theme, which
 /// each profile keeps on this phone, and Hide projects). A Happy
 /// account's, in the same places: Account and Backup & Restore where the
@@ -41,6 +42,9 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
         guard let navigation = controller.navigationController, navigation.topViewController === controller else { return }
         let asks = [SettingsIndex.changeAgentName.id: ChatPrefill.agentName, SettingsIndex.changeAgentAvatar.id: ChatPrefill.agentAvatar]
         if let ask = reveal.flatMap({ asks[$0] }), let computer, let session = Session.session(for: computer, context: context) {
+            if ask == .agentName, ServerRename.renames(session) {
+                return ServerRename.ask(computer, context: context, on: controller)
+            }
             return ChiefOfStaffAsk.open(ask, session: session, from: controller)
         }
         let settings = SettingsViewController(context: context, computer: computer)
@@ -101,6 +105,7 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
     /// followed while its page shows, for New Sessions.
     private var modelPreferences = ModelPreferences()
     private var modelsWatch: Watch?
+    private var accessWatch: Watch?
     /// The person's own profile on the computer shown, for its row.
     private var profileWatch: (id: String, watch: Watch)?
     private var profileName = ""
@@ -371,6 +376,8 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
         modelPreferences = ModelPreferences()
         modelsWatch?.invalidate()
         modelsWatch = nil
+        accessWatch?.invalidate()
+        accessWatch = nil
         prioritizingWatch?.invalidate()
         prioritizingWatch = nil
         prioritizing = nil
@@ -388,6 +395,7 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
             return
         }
         guard let session = Session.session(for: profile.id, context: context) else { return }
+        accessWatch = session.watchAccess { [weak self] in self?.rebuild() }
         connectionSettingsWatch = Task { [weak self, engine = session.engine] in
             for await snapshot in await engine.snapshots() {
                 guard !Task.isCancelled, let self else { return }
@@ -486,15 +494,23 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
             let removal: [[SettingsRow]] = [[
                 Row(id: "disconnect", title: server == nil ? Strings.disconnect : Strings.ServerSignIn.signOut, accessory: .none, destructive: true, action: { [weak self] in self?.remove(id, direct: true) }),
             ]]
+            let computeRows: [[SettingsRow]]
+            if let session = Session.session(for: id, context: context), ComputeViewController.offered(session) {
+                computeRows = [[Row(Index.computes, action: { [weak self] in
+                    guard let self, ComputeViewController.offered(session) else { return }
+                    navigationController?.pushViewController(ComputeViewController(session: session), animated: true)
+                })]]
+            } else { computeRows = [] }
             return [
                 accountRows(),
-            ] + serverRows + [
+            ] + serverRows + computeRows + [
                 [Row(Index.profile, image: profilePhoto, value: profileName.isEmpty ? nil : profileName, action: { [weak self] in self?.openProfile() })],
                 [supportRow()],
                 [
                     Row(Index.appearance, action: { [weak self] in self?.open(.appearance) }),
                     Row(Index.agentVoice, value: voiceValue(), action: { [weak self] in self?.open(.agentVoice) }),
                     Row(Index.agents, action: { [weak self] in self?.open(.agents) }),
+                ] + providersRows(id) + [
                     Row(Index.dataStorage, action: { [weak self] in self?.open(.dataStorage) }),
                 ],
                 [analyticsRow()],
@@ -597,6 +613,17 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
         return Page.allCases.first { page in has(page, profile) && rows(page).joined().contains { $0.id == id } }
     }
 
+    /// The agent's asks go to the Chief of Staff: a cloud role must be
+    /// able to write to it (`RoleGate`).
+    private func mayAsk(_ id: String) -> Bool {
+        Session.session(for: id, context: context)?.gate.allowsSending(toChiefOfStaff: true) ?? true
+    }
+
+    /// Whether the picture's menu has "Edit name" (`ServerRename`).
+    private func nameable(_ id: String) -> Bool {
+        Session.session(for: id, context: context).map(ServerRename.offered) ?? true
+    }
+
     private func open(_ page: Page, reveal: String? = nil) {
         guard isTop, let controller = make(page) else { return }
         controller.reveal = reveal
@@ -604,9 +631,10 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
         navigationController?.pushViewController(controller, animated: true)
     }
 
-    /// A computer's look on this phone: the theme, and whether home shows
+    /// A computer's look on this phone: the theme, whether home shows
     /// projects (desktop's account setting, which home follows; there is
-    /// deliberately no renderer or layout choice here).
+    /// deliberately no renderer or layout choice here), and whether a
+    /// shimmer runs in Low Power Mode (the phone's own, for every profile).
     private func appearanceRows() -> [[SettingsRow]] {
         typealias Row = SettingsRow
         guard let id = shown?.id else { return [] }
@@ -616,11 +644,15 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
             themes.map { theme in
                 Row(id: "theme-\(theme)", title: Self.themeName(theme), value: theme == current ? "✓" : nil, accessory: .none, action: { [weak self] in self?.setTheme(theme) })
             },
-            [Row(SettingsIndex.hideProjects, accessory: .toggle, isOn: projectsHidden, toggled: { [weak self] on in
-                guard let self, let engine = context.account.agentConnections.syncEngine(for: id) else { return }
+            HappyCloud.isCloud(context.account.agentConnections.server(for: id)) ? [] : [Row(SettingsIndex.hideProjects, accessory: .toggle, isOn: projectsHidden, toggled: { [weak self] on in
+                guard let self, shown?.id == id, !HappyCloud.isCloud(context.account.agentConnections.server(for: id)),
+                      let engine = context.account.agentConnections.syncEngine(for: id) else { return }
                 projectsHidden = on
                 Task { try? await engine.setProjectsHidden(on) }
             })],
+            [Row(SettingsIndex.shimmerInLowPower, accessory: .toggle, isOn: ShimmerClock.shared.shimmersInLowPower, toggled: { on in
+                ShimmerClock.shared.shimmersInLowPower = on
+            })].withFooter(Strings.LowPowerShimmer.description),
         ]
     }
 
@@ -674,6 +706,14 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
             [start].withFooter(Text.startFooter(preferences.start)),
             [defaultModel, effort].withFooter(Text.modelFooter(preferences.start)),
             [permission].withFooter(Text.accessFooter),
+            // This phone's, not the computer's: where a task started from
+            // home's microphone leaves the person.
+            [Row(SettingsIndex.dictationOpensTask, accessory: .toggle, isOn: context.account.localSettings.dictationOpensTask, toggled: { [weak self] on in
+                self?.context.account.localSettings.dictationOpensTask = on
+            })].withFooter(Strings.Record.opensTaskFooter),
+            [Row(SettingsIndex.multilingualDictation, accessory: .toggle, isOn: context.account.localSettings.multilingualDictation, toggled: { [weak self] on in
+                self?.context.account.localSettings.multilingualDictation = on
+            })].withFooter(Strings.Record.multilingualFooter),
         ]
     }
 
@@ -724,7 +764,23 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
             Row(Index.terms, action: { [weak self] in self?.openBrowser(Strings.Links.terms) }),
             Row(Index.eula, action: { [weak self] in self?.openBrowser(Strings.Links.eula) }),
             Row(Index.version, value: SettingsIndexModel.versionDetail(version: context.version, variant: context.variant), accessory: .none, action: { [weak self] in self?.versionTapped() }),
-        ].withFooter(Strings.Settings.aboutFooter)
+        ].withFooter(aboutFooter)
+    }
+
+    /// A Happy Cloud server's AI providers: the connections its chats run on.
+    private func providersRows(_ id: String) -> [SettingsRow] {
+        guard let session = Session.session(for: id, context: context), session.isCloud else { return [] }
+        return [SettingsRow(SettingsIndex.providers, action: { [weak self] in
+            guard let self else { return }
+            ProvidersViewController.open(.providers, session: session, from: self)
+        })]
+    }
+
+    /// The relay app's words, about keys kept on this phone, aren't true
+    /// of a Happy Cloud server, whose agents and data are on the server.
+    private var aboutFooter: String {
+        let cloud = shown.flatMap { Session.session(for: $0.id, context: context) }?.isCloud == true
+        return cloud ? Strings.HappyCloud.aboutFooter : Strings.Settings.aboutFooter
     }
 
     /// What search looks through: the page's rows and the profiles.
@@ -736,8 +792,9 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
             }))
         }
         // The agent's two asks live in its picture's menu; found here, they run.
-        if let profile = shown, profile.isAgentConnection {
-            for (entry, ask) in [(SettingsIndex.changeAgentName, ChatPrefill.agentName), (SettingsIndex.changeAgentAvatar, ChatPrefill.agentAvatar)] where entry.title.localizedCaseInsensitiveContains(query) {
+        if let profile = shown, profile.isAgentConnection, mayAsk(profile.id) {
+            let asks = [(SettingsIndex.changeAgentName, ChatPrefill.agentName), (SettingsIndex.changeAgentAvatar, ChatPrefill.agentAvatar)].filter { $0.1 != .agentName || nameable(profile.id) }
+            for (entry, ask) in asks where entry.title.localizedCaseInsensitiveContains(query) {
                 found.append(SettingsRow(entry, accessory: .none, action: { [weak self] in
                     self?.endSearch()
                     self?.ask(ask)
@@ -783,7 +840,8 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
         // The profile's picture over its name, the one the accounts card
         // shows; only a connection's has the pencil and the agent's menu.
         agentButton.isHidden = searching
-        agentButton.editable = profile.isAgentConnection
+        agentButton.editable = profile.isAgentConnection && mayAsk(profile.id)
+        agentButton.nameable = nameable(profile.id)
         agentButton.picture = images[profile.id]
         agentButton.liveSeed = liveSeeds[profile.id]
         empty.isHidden = !(searching && !(query ?? "").isEmpty && rows.isEmpty)
@@ -874,9 +932,14 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
 
     /// "Change agent name" and "Change agent avatar" change nothing here:
     /// they open Happy's conversation on the computer shown with the ask
-    /// typed in, unsent, for the person to finish (`ChiefOfStaffAsk`).
+    /// typed in, unsent, for the person to finish (`ChiefOfStaffAsk`). A
+    /// Happy Cloud server's name is the server's: renamed here
+    /// (`ServerRename`).
     private func ask(_ prefill: ChatPrefill) {
         guard isTop, let profile = shown, profile.isAgentConnection, let session = Session.session(for: profile.id, context: context) else { return }
+        if prefill == .agentName, ServerRename.renames(session) {
+            return ServerRename.ask(profile.id, context: context, on: self)
+        }
         ChiefOfStaffAsk.open(prefill, session: session, from: self)
     }
 

@@ -2,10 +2,10 @@ name: happy-android
 
 on:
   pull_request:
-    paths: ['packages/happy-android/**', 'packages/happy-i18n/**', '.github/workflows/happy-android.yml']
+    paths: ['packages/happy-android/**', 'packages/happy-i18n/**', 'scripts/native-version*', '.github/workflows/happy-android.yml']
   push:
     branches: [main]
-    paths: ['packages/happy-android/**', 'packages/happy-i18n/**', '.github/workflows/happy-android.yml']
+    paths: ['packages/happy-android/**', 'packages/happy-i18n/**', 'scripts/native-version*', '.github/workflows/happy-android.yml']
   workflow_dispatch:
 
 permissions:
@@ -32,8 +32,16 @@ jobs:
           distribution: temurin
           java-version: '21'
       - uses: gradle/actions/setup-gradle@v4
+      # The CalVer helper both native apps' releases use (scripts/native-version.cjs).
+      - name: Native version helper
+        working-directory: .
+        run: node --test scripts/native-version.test.cjs
       # No signing secrets: release builds unsigned, preview debug-signed.
+      # No voice agent either: a store build needs HAPPY_CALL_AGENT_V3_ID, and
+      # CI's release build, which ships nowhere, says it goes without.
       - name: Build and test
+        env:
+          HAPPY_RELEASE_WITHOUT_CALL_AGENT: '1'
         run: ./gradlew --console=plain assembleDebug assembleRelease testDebugUnitTest :crypto:test
       - name: Upload test reports
         if: failure()

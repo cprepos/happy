@@ -128,14 +128,14 @@ class BrowserChromeTest {
     @Test fun theLinkComingBackOpensWhatFailedForWantOfIt() {
         val state = BrowserState()
         state.fail(BrowserProblem.ComputerUnreachable, "https://example.com/a")
-        state.linkChanged(com.slopus.happy.browser.BrowserLink.Offline)
+        state.linkChanged(null)
         assertEquals(BrowserProblem.ComputerUnreachable, state.problem)
         state.linkChanged(com.slopus.happy.browser.BrowserLink.Online)
         assertNull(state.problem)
         assertEquals(1, state.attempt)
         // A page error isn't the link's: it stays.
         state.fail(BrowserProblem.Http(500), "https://example.com/a")
-        state.linkChanged(com.slopus.happy.browser.BrowserLink.Offline)
+        state.linkChanged(null)
         state.linkChanged(com.slopus.happy.browser.BrowserLink.Online)
         assertEquals(BrowserProblem.Http(500), state.problem)
     }
@@ -251,7 +251,7 @@ class BrowserChromeTest {
     @Test fun theHeaderIsThePagesTitleOverItsHost() {
         val state = BrowserState()
         assertEquals("example.com" to null, browserHeader(state, "example.com"))
-        state.page = BrowserPage("https://docs.example.com:8443/guide", BrowserProxy.Scope.Workspace(client) { "ws" })
+        state.page = BrowserPage("https://docs.example.com:8443/guide", BrowserProxy.Scope.Web(client) { com.slopus.happy.browser.BrowserNetwork.workspace("ws") })
         assertEquals("docs.example.com" to null, browserHeader(state, "fallback"))
         state.title("The Guide")
         assertEquals("The Guide" to "docs.example.com", browserHeader(state, "fallback"))

@@ -1,5 +1,11 @@
 package com.slopus.happy.ui.connection
 
+import com.slopus.happy.ui.conversation.refusalText
+import androidx.compose.ui.platform.LocalResources
+import com.slopus.happy.ui.call.voiceTouch
+import com.slopus.happy.ui.call.rememberVoiceTouchSource
+import com.slopus.happy.call.CallControl
+import androidx.compose.material3.FloatingActionButtonDefaults
 import com.slopus.happy.BuildConfig
 import androidx.compose.ui.platform.LocalContext
 import com.slopus.happy.ui.voice.rememberMicrophonePermission
@@ -79,6 +85,13 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.slopus.happy.AppGraph
 import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.map
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.navigation.NavHostController
+import androidx.navigation.NavDestination.Companion.hasRoute
+import com.slopus.happy.connection.AgentConnection
+import com.slopus.happy.ui.HomeRoute
 import java.util.WeakHashMap
 import java.util.concurrent.ConcurrentHashMap
 import com.slopus.happy.R
@@ -91,6 +104,7 @@ import com.slopus.happy.ui.conversation.ConversationRowActions
 import com.slopus.happy.ui.chat.userMessageBubblePalette
 import com.slopus.happy.ui.chat.MessageCallbacks
 import com.slopus.happy.agent.AgentSession
+import com.slopus.happy.agent.decode
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.DisposableEffect
@@ -99,6 +113,7 @@ import androidx.compose.ui.platform.LocalDensity
 import com.slopus.happy.agent.AgentFeed
 import com.slopus.happy.agent.AgentFeedRow
 import com.slopus.happy.agent.AgentLinkStatus
+import com.slopus.happy.agent.TeamUser
 import com.slopus.happy.connection.LinkState
 import com.slopus.happy.ui.chat.rememberShownLinkState
 import com.slopus.happy.ui.conversation.linkState
@@ -127,6 +142,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonObject
 
 /** Everything an agent connection's home asks of the app. */
 @Immutable
@@ -162,6 +178,15 @@ class AgentHomeActions(
     val onVoice: (() -> Unit)? = null,
     /** Opens a vault's folder ([folder]) or file that search found. */
     val onOpenVaultItem: (surfaceId: String, itemId: String, folder: Boolean, name: String) -> Unit = { _, _, _, _ -> },
+    /** The person's role starts work: compose, its picture and the voice call show; a viewer's home has none of them. */
+    val canCompose: Boolean = true,
+    /** The person's role writes to the Chief of Staff, so settings' asks of it are found by search. */
+    val canAskChief: Boolean = true,
+    /** Projects belong to self-hosted connections, never Cloud. */
+    val projectsAvailable: Boolean = true,
+    val notificationsAvailable: Boolean = false,
+    /** Opens a team member's profile; null where there are none (any server but Happy Cloud's), and search finds no people. */
+    val onOpenPerson: ((userId: String) -> Unit)? = null,
 )
 
 /** The colours of every bar on an agent connection's screens: the page's own [container], scrolled or not. */
@@ -248,10 +273,16 @@ fun AgentHomeScreen(
     preview: (@Composable (AgentFeedRow.Conversation) -> Unit)? = null,
     /** Home's list; [AgentHome] keeps its place across the tablet's breakpoint and the sidebar's hiding ([rememberAgentHomeListState]). */
     listState: LazyListState = rememberLazyListState(),
-    /** What search finds beyond home's rows, read while it is open ([AgentSearchSources.read]). */
-    searchSources: suspend () -> AgentSearchSources = { AgentSearchSources.None },
+    /** What search finds beyond home's rows, read while it is open ([AgentSearchSources.read]), with what [searchReads] read. */
+    searchSources: suspend (read: Map<String, JsonObject>) -> AgentSearchSources = { AgentSearchSources.None },
+    /** What search reads from the computer as it opens that the phone hasn't kept ([AgentSearchSources.reads]). */
+    searchReads: suspend () -> Map<String, JsonObject> = { emptyMap() },
     /** Search's daemon half for a query ([AgentSession.search]); null, or answering null, searches the phone alone. */
     search: (suspend (String) -> SearchAnswer?)? = null,
+    /** The team members read so far ([com.slopus.happy.agent.TeamDirectory]), whose pictures search's People wear. */
+    people: Map<String, TeamUser> = emptyMap(),
+    /** Reads the members search found that [people] lacks. */
+    wantPeople: (Collection<String>) -> Unit = {},
 ) {
     val colors = HappyTheme.colors
     val reduceMotion = rememberReduceMotion()
@@ -293,9 +324,12 @@ fun AgentHomeScreen(
     val feedTitle = stringResource(R.string.feed_title)
     val todos = stringResource(R.string.agent_search_todos)
     val words = rememberAgentSearchWords()
-    // Read as search opens, and again as home changes under it.
-    val sources by produceState(AgentSearchSources.None, searching, feed) {
-        if (searching) value = searchSources()
+    // What the phone hasn't kept, read once as search opens; then the sources, again as home changes under it.
+    val read by produceState(emptyMap<String, JsonObject>(), searching) {
+        value = if (searching) searchReads() else emptyMap()
+    }
+    val sources by produceState(AgentSearchSources.None, searching, feed, read) {
+        if (searching) value = searchSources(read)
     }
     // The daemon's half, asked a moment after the typing stops; a new query cancels the one in flight.
     val remote by produceState<SearchAnswer?>(null, searching, query, search) {
@@ -328,15 +362,21 @@ fun AgentHomeScreen(
         }
         // Only the answer to what is typed now joins in; an earlier query's would bring in what no longer answers.
         val answer = remote?.takeIf { it.query == query.trim().take(SearchClient.MAX_QUERY) }
-        agentSearchResults(feed, query, label, words, searchEntries.first, searchEntries.second, sources, answer)
+        agentSearchResults(feed, query, label, words, searchEntries.first, searchEntries.second, sources, answer, people = actions.onOpenPerson != null)
+    }
+    LaunchedEffect(results) {
+        val found = results.mapNotNull { (it as? AgentSearchResult.Person)?.userId }
+        if (found.isNotEmpty()) wantPeople(found)
     }
 
     // One ground under the bar and the page, the chat's own (surface), light and dark; the cards sit on it, as on iOS.
     // The bar is glass over the page: the cards scroll on under it, softened.
     val ground = colors.surface
     val phase = when {
-        !feed.loaded && status == AgentLinkStatus.Connecting -> HomePhase.Loading
-        !feed.loaded -> HomePhase.Offline
+        // Nothing read yet: it loads while the link is on its way, which it always is unless something
+        // other than the network keeps it away (a pairing to redo, an update, a sign-in), which says so.
+        !feed.loaded && !status.needsAction -> HomePhase.Loading
+        !feed.loaded -> HomePhase.Unavailable
         // Fixed places alone are no home yet: the first chat is.
         feed.rows.all { it is AgentFeedRow.Section || it == AgentFeedRow.Artifacts || it is AgentFeedRow.Feed || it == AgentFeedRow.Todos } -> HomePhase.Empty
         else -> HomePhase.List
@@ -390,16 +430,12 @@ fun AgentHomeScreen(
                 Crossfade(phase, label = "agentHome") { shown ->
                     when (shown) {
                         HomePhase.Loading -> LoadingIndicator(Modifier.padding(top = barFoot).testTag(AgentHomeTags.SPINNER))
-                        // Offline and removed keep a plain glyph, as desktop's errors do.
-                        HomePhase.Offline -> StatePage(
-                            tag = AgentHomeTags.OFFLINE,
-                            icon = if (status == AgentLinkStatus.Offline) Ionicon.CloudOfflineOutline else Ionicon.AlertCircleOutline,
-                            title = when (status) {
-                                AgentLinkStatus.Revoked -> null
-                                AgentLinkStatus.UpdateRequired -> null
-                                else -> stringResource(R.string.agent_home_offline_title, name)
-                            },
-                            body = statusMessage(status, profileRequired) ?: stringResource(R.string.agent_home_offline_body),
+                        // Removed keeps a plain glyph, as desktop's errors do.
+                        HomePhase.Unavailable -> StatePage(
+                            tag = AgentHomeTags.UNAVAILABLE,
+                            icon = Ionicon.AlertCircleOutline,
+                            title = null,
+                            body = statusMessage(status, profileRequired),
                             action = signInAction(status, actions, profileRequired),
                             modifier = Modifier.padding(top = barFoot),
                         )
@@ -409,7 +445,7 @@ fun AgentHomeScreen(
                             art = if (statusMessage(status, profileRequired) == null) StateArt.Make else null,
                             title = stringResource(R.string.agent_home_empty_title),
                             body = statusMessage(status, profileRequired) ?: stringResource(R.string.agent_home_empty_body),
-                            action = signInAction(status, actions, profileRequired) ?: (stringResource(R.string.session_new_chat) to actions.onCompose),
+                            action = signInAction(status, actions, profileRequired) ?: (stringResource(R.string.session_new_chat) to actions.onCompose).takeIf { actions.canCompose },
                             modifier = Modifier.padding(top = barFoot),
                         )
                         HomePhase.List -> AgentHomeList(
@@ -459,7 +495,7 @@ fun AgentHomeScreen(
                         )
                     }
                 }
-                if (sidebar == null && feed.loaded && !searching) {
+                if (sidebar == null && feed.loaded && !searching && actions.canCompose) {
                     ComposeFab(actions.onCompose, AgentHomeTags.COMPOSE, stringResource(R.string.agent_search_new_task), onVoice = actions.onVoice)
                 }
                 // While search is open the sidebar's field holds still at its rest, Cancel beside it, whatever the list did.
@@ -509,6 +545,11 @@ fun AgentHomeScreen(
                             actions.onOpenArtifact(artifact)
                         },
                         onOpenHit = { hit -> openHit(hit, actions)?.let { open -> { focus.clearFocus(); open() } } },
+                        people = people,
+                        onOpenPerson = { userId ->
+                            focus.clearFocus()
+                            actions.onOpenPerson?.invoke(userId)
+                        },
                         onPull = { focus.clearFocus() },
                         onClose = closeSearch,
                         selected = sidebar?.selected,
@@ -517,19 +558,20 @@ fun AgentHomeScreen(
                 }
                 // The sidebar's foot stands over home and search's results alike.
                 if (sidebar != null) {
-                    SidebarFootBar(if (feed.loaded) stringResource(R.string.agent_search_new_task) else null, actions.onSettings, compose, onVoice = actions.onVoice)
+                    SidebarFootBar(if (feed.loaded && actions.canCompose) stringResource(R.string.agent_search_new_task) else null, actions.onSettings, compose, onVoice = actions.onVoice)
                 }
             }
         }
         // Over the bar too: the whole screen blurs under a held row's preview.
         if (preview != null) ChatPreviewOverlay(chatPreview, actions.onOpenConversation, preview)
     }
+    val refusals = LocalResources.current
     LeaveSurfaceDialogs(
         confirming = confirmingLeave,
         refused = leaveRefused,
         onConfirm = { surface ->
             actions.onLeaveSurface?.let { leave ->
-                scope.launch { leave(surface)?.let { reason -> leaveRefused = surface.name to reason } }
+                scope.launch { leave(surface)?.let { reason -> leaveRefused = surface.name to refusals.refusalText(reason) } }
             }
         },
         onDismissConfirm = { confirmingLeave = null },
@@ -580,7 +622,7 @@ private fun LeaveSurfaceDialogs(
 }
 
 /** What home's page shows under the bar. */
-private enum class HomePhase { Loading, Offline, Empty, List }
+private enum class HomePhase { Loading, Unavailable, Empty, List }
 
 /** How long the typing rests before the daemon is asked (the design's ~120 ms). */
 private const val SEARCH_DEBOUNCE_MS = 120L
@@ -601,6 +643,7 @@ private fun openHit(hit: SearchHit, actions: AgentHomeActions): (() -> Unit)? = 
     is SearchHit.Artifact -> { { actions.onOpenArtifact(ArtifactRef(hit.artifactId, 1, hit.artifactType, hit.title, followsLatest = true)) } }
     is SearchHit.VaultFile -> { { actions.onOpenVaultItem(hit.surfaceId, hit.fileId, false, hit.name) } }
     is SearchHit.VaultFolder -> { { actions.onOpenVaultItem(hit.surfaceId, hit.folderId, true, hit.name) } }
+    is SearchHit.User -> actions.onOpenPerson?.let { open -> { open(hit.userId) } }
     is SearchHit.Project, is SearchHit.Workspace -> null
 }
 
@@ -615,6 +658,17 @@ private fun rememberAgentSearchWords(): AgentSearchWords {
             settings = resources.getString(R.string.settings_title),
             surfaceType = { type -> resources.getString(surfaceTypeName(type)) },
             artifactType = { type -> resources.getString(artifactTypeName(type)) },
+            task = resources.getString(R.string.new_work_task),
+            subtask = resources.getString(R.string.agent_page_subtask),
+            bot = resources.getString(R.string.new_work_bot),
+            chat = resources.getString(R.string.agent_search_kind_chat),
+            shared = resources.getString(R.string.agent_search_kind_shared),
+            done = resources.getString(R.string.todo_done),
+            agent = resources.getString(R.string.agent_search_by_agent),
+            people = resources.getString(R.string.agent_search_people),
+            notJoined = resources.getString(R.string.agent_search_not_joined),
+            taskNotJoined = resources.getString(R.string.agent_search_task_not_joined),
+            openTodos = { count -> resources.getQuantityString(R.plurals.agent_search_open_todos, count, count) },
         )
     }
 }
@@ -653,18 +707,18 @@ private fun rememberSearchEntries(actions: AgentHomeActions, endSearch: () -> Un
     val connect = stringResource(R.string.agent_search_connect_agent)
     val scan = stringResource(R.string.onboarding_scan_button)
     val openSettings = stringResource(R.string.agent_search_open_settings)
-    val index = agentSettingsIndex()
+    val index = agentSettingsIndex(projectsAvailable = actions.projectsAvailable, notificationsAvailable = actions.notificationsAvailable)
     return remember(actions, newTask, newTaskPicture, connect, scan, openSettings, index) {
         // happy-ios HomeViewController.quickActions (7a605f6ce). Connect and Scan both open the
         // scanner here: Android's one Add scanner takes a computer's, a terminal's or an agent's code.
-        listOf(
+        listOfNotNull(
             // New work takes the screen, so the search gives it back first.
-            AgentSearchEntry("new-work", newTask, Ionicon.CreateOutline) { end(); actions.onCompose() },
-            AgentSearchEntry("new-work-picture", newTaskPicture, Ionicon.ImageOutline) { end(); actions.onComposeWithPicture() },
+            AgentSearchEntry("new-work", newTask, Ionicon.CreateOutline) { end(); actions.onCompose() }.takeIf { actions.canCompose },
+            AgentSearchEntry("new-work-picture", newTaskPicture, Ionicon.ImageOutline) { end(); actions.onComposeWithPicture() }.takeIf { actions.canCompose },
             AgentSearchEntry("connect-agent", connect, Ionicon.LaptopOutline, actions.onAdd),
             AgentSearchEntry("scan", scan, Ionicon.QrCodeOutline, actions.onAdd),
             AgentSearchEntry("settings", openSettings, Ionicon.SettingsOutline, actions.onSettings),
-        ) to index.map { row -> AgentSearchEntry(row.id, row.title, row.icon) { actions.onSettingsRow(row) } }
+        ) to index.filter { it.place != AgentSettingsPlace.Ask || actions.canAskChief }.map { row -> AgentSearchEntry(row.id, row.title, row.icon) { actions.onSettingsRow(row) } }
     }
 }
 
@@ -692,8 +746,13 @@ internal fun BoxScope.ComposeFab(onClick: () -> Unit, tag: String, label: String
                     VoiceGlyph(24.dp, LocalContentColor.current)
                 }
             }
-            FloatingActionButton(onClick = onClick, modifier = Modifier.testTag(tag)) {
-                Icon(Ionicon.CreateOutline, 24.dp, LocalContentColor.current, contentDescription = label)
+            // The call's press of compose ([VoiceTouch]): its light inside the button, and the button's own press.
+            val voice = rememberVoiceTouchSource()
+            val shape = FloatingActionButtonDefaults.shape
+            FloatingActionButton(onClick = onClick, modifier = Modifier.testTag(tag), shape = shape, interactionSource = voice) {
+                Box(Modifier.size(56.dp).voiceTouch(CallControl.Compose, shape, voice), contentAlignment = Alignment.Center) {
+                    Icon(Ionicon.CreateOutline, 24.dp, LocalContentColor.current, contentDescription = label)
+                }
             }
         }
     }
@@ -708,15 +767,18 @@ private fun statusMessage(status: AgentLinkStatus, profileRequired: Boolean = fa
 }
 
 /**
- * The notice heading home's list: why the agent can't be reached for good,
- * the computer's refusal of something done here (iOS SyncEngine's
- * `notice`), or "The computer did not answer." while it doesn't (iOS's
- * `Strings.unanswered`); the title keeps the name meanwhile ([BarTitle]).
+ * The notice heading home's list: why the agent can't be reached until
+ * something is done, or the computer's refusal of something done here (iOS
+ * SyncEngine's `notice`). A link that is only on its way says so in the
+ * title alone ([BarTitle]).
  */
 @Composable
 private fun noticeMessage(status: AgentLinkStatus, profileRequired: Boolean, refusal: String?): String? =
-    statusMessage(status, profileRequired) ?: refusal?.takeIf { it.isNotBlank() }
-        ?: if (status == AgentLinkStatus.Offline) stringResource(R.string.agent_home_unanswered) else null
+    statusMessage(status, profileRequired) ?: refusal?.takeIf { it.isNotBlank() }?.let { LocalResources.current.refusalText(it) }
+
+/** Kept away by something other than the network, which [statusMessage] says: the link waits on the person. */
+private val AgentLinkStatus.needsAction: Boolean
+    get() = this == AgentLinkStatus.Revoked || this == AgentLinkStatus.UpdateRequired || this == AgentLinkStatus.SignInRequired
 
 /** The notice row's motion, the rows' own ([agentHomeRows]). */
 private val BANNER_FADE_IN = tween<Float>(180)
@@ -774,9 +836,105 @@ fun AgentHome(
     onSignIn: (server: String) -> Unit = {},
     onOpenTodos: () -> Unit = {},
     onOpenVaultItem: (surfaceId: String, itemId: String, folder: Boolean, name: String) -> Unit = { _, _, _, _ -> },
+    /** Opens a team member's profile, which only a Happy Cloud server has. */
+    onOpenPerson: (userId: String) -> Unit = {},
+) {
+    val agents by graph.agentConnections.accounts.collectAsStateWithLifecycle()
+    val connection = agents.firstOrNull { it.id == id } ?: return
+    // A team server whose session ended shows its Sign in and nothing else; signed in again, a new session opens.
+    if (connection.sessionEnded) {
+        val add = LocalAddFlow.current
+        AgentSignedOutHome(
+            name = connection.name.takeIf { it.isNotBlank() } ?: stringResource(R.string.account_kind_agent),
+            accounts = rememberAccountMenu(graph),
+            onSwitchAccount = rememberHomeAccountSwitch(graph),
+            onAdd = { add?.scan() },
+            onSignIn = { connection.server?.let(onSignIn) },
+        )
+        return
+    }
+    SignedInAgentHome(graph, id, agents, onOpenConversation, onCompose, onSettings, onSettingsRow, onComposeWithPicture, onOpenArtifacts, onOpenSurface, onOpenArtifact, onOpenFeed, onSignIn, onOpenTodos, onOpenVaultItem, onOpenPerson)
+}
+
+/**
+ * Home for a team server whose session ended ([AgentConnection.sessionEnded]):
+ * the account menu to go elsewhere, the server's name, and Sign in again.
+ * Nothing of the server shows, as nothing of it is kept.
+ */
+@Composable
+fun AgentSignedOutHome(
+    name: String,
+    accounts: AccountMenu,
+    onSwitchAccount: (String) -> Unit,
+    onAdd: () -> Unit,
+    onSignIn: () -> Unit,
+) {
+    val ground = HappyTheme.colors.surface
+    GlassBarLayout(
+        modifier = Modifier.fillMaxSize().background(ground),
+        ground = ground,
+        feathered = false,
+        bar = {
+            AgentTopBar(
+                tag = AgentHomeTags.BAR,
+                container = ground,
+                navigationIcon = { AccountMenuButton(accounts, onSwitchAccount, onAdd) },
+                title = { Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.testTag(AgentHomeTags.TITLE)) },
+                inset = HomeCardSpec.inset,
+            )
+        },
+    ) { top ->
+        StatePage(
+            tag = AgentHomeTags.SIGNED_OUT,
+            icon = Ionicon.LogIn,
+            title = null,
+            body = stringResource(R.string.team_server_error_sign_in_required),
+            action = stringResource(R.string.team_server_sign_in_again) to onSignIn,
+            modifier = Modifier.padding(top = top - GlassSpec.feather),
+        )
+    }
+}
+
+/**
+ * Back to home when the open connection [connectionId]'s team server
+ * session ends with a page of it over home: none stays up, as nothing of
+ * it is kept. Only on the change, so a sign-in under way stays.
+ */
+@Composable
+internal fun SessionEndedEffect(graph: AppGraph, nav: NavHostController, connectionId: String?) {
+    if (connectionId == null) return
+    LaunchedEffect(graph, nav, connectionId) {
+        graph.agentConnections.accounts
+            .map { list -> list.firstOrNull { it.id == connectionId }?.sessionEnded == true }
+            .distinctUntilChanged()
+            .drop(1)
+            .collect { ended ->
+                if (ended && nav.currentBackStackEntry?.destination?.hasRoute<HomeRoute>() == false) nav.popBackStack<HomeRoute>(inclusive = false)
+            }
+    }
+}
+
+@Composable
+private fun SignedInAgentHome(
+    graph: AppGraph,
+    id: String,
+    agents: List<AgentConnection>,
+    onOpenConversation: (agentId: String) -> Unit,
+    onCompose: () -> Unit,
+    onSettings: () -> Unit,
+    onSettingsRow: (AgentSettingsRow) -> Unit,
+    onComposeWithPicture: () -> Unit,
+    onOpenArtifacts: () -> Unit,
+    onOpenSurface: (AgentFeedRow.Surface) -> Unit,
+    onOpenArtifact: (ArtifactRef) -> Unit,
+    onOpenFeed: () -> Unit,
+    onSignIn: (server: String) -> Unit,
+    onOpenTodos: () -> Unit,
+    onOpenVaultItem: (surfaceId: String, itemId: String, folder: Boolean, name: String) -> Unit,
+    onOpenPerson: (userId: String) -> Unit,
 ) {
     val session = remember(id) { graph.agentSessions.session(id) } ?: return
-    val agents by graph.agentConnections.accounts.collectAsStateWithLifecycle()
+    val people by session.team.users.collectAsStateWithLifecycle()
     val feed by session.feed.collectAsStateWithLifecycle()
     val status by session.status.collectAsStateWithLifecycle()
     val syncing by session.isSyncing.collectAsStateWithLifecycle()
@@ -790,7 +948,10 @@ fun AgentHome(
     val microphone = rememberMicrophonePermission()
     val voice = remember(graph, id, microphone) { { graph.calls.start(id) { microphone.request().granted } } }
     if (BuildConfig.DEBUG) CallLaunchHooks(graph, voice)
-    val actions = remember(graph, session, onOpenConversation, onCompose, onComposeWithPicture, onSettings, onSettingsRow, onOpenArtifacts, onOpenSurface, onOpenArtifact, onOpenFeed, add, switchAccount, onSignIn, onOpenTodos, voice, onOpenVaultItem) {
+    val permissions by session.permissions.collectAsStateWithLifecycle()
+    val canCompose = permissions.canWrite
+    val canAskChief = permissions.allows(com.slopus.happy.agent.Permission.BOTS_MANAGE)
+    val actions = remember(graph, session, onOpenConversation, onCompose, onComposeWithPicture, onSettings, onSettingsRow, onOpenArtifacts, onOpenSurface, onOpenArtifact, onOpenFeed, add, switchAccount, onSignIn, onOpenTodos, voice, onOpenVaultItem, onOpenPerson, canCompose, canAskChief) {
         AgentHomeActions(
             onOpenConversation = onOpenConversation,
             onCompose = onCompose,
@@ -806,8 +967,13 @@ fun AgentHome(
             onOpenFeed = onOpenFeed,
             onLeaveSurface = { session.leaveSurface(it.id) },
             onSignIn = { graph.agentConnections.accounts.value.firstOrNull { it.id == id }?.server?.let(onSignIn) },
-            onVoice = voice,
+            onVoice = voice.takeIf { canCompose },
             onOpenVaultItem = onOpenVaultItem,
+            canCompose = canCompose,
+            canAskChief = canAskChief,
+            projectsAvailable = !session.client.cloud,
+            notificationsAvailable = session.client.cloud,
+            onOpenPerson = onOpenPerson.takeIf { session.client.cloud },
         )
     }
     CompositionLocalProvider(LocalAgentPictures provides session.pictures) {
@@ -823,9 +989,14 @@ fun AgentHome(
             preview = { row -> ConversationPreview(session, row, settings.userMessageBubbleColor) },
             listState = rememberAgentHomeListState(graph, id),
             searchSources = remember(session) {
-                { withContext(Dispatchers.IO) { AgentSearchSources.read(session.catalog.value, session.feed.value, session::cachedResource, session.intents.pending.value) } }
+                { read -> withContext(Dispatchers.IO) { AgentSearchSources.read(session.catalog.value, session.feed.value, { key -> session.cachedResource(key) ?: read[key] }, session.intents.pending.value) } }
+            },
+            searchReads = remember(session) {
+                { withContext(Dispatchers.IO) { AgentSearchSources.reads(session.feed.value, session::cachedResource) { path -> session.client.decode<JsonObject>("GET", path) } } }
             },
             search = remember(session) { { query -> session.search(query) } },
+            people = people,
+            wantPeople = remember(session) { { ids -> session.team.want(ids) } },
         )
     }
 }

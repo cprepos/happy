@@ -214,7 +214,7 @@ final class HostedNewSessionStartTests: XCTestCase {
         let page = try XCTUnwrap(navigation.topViewController as? SettingsPageViewController)
         try await wait { page.shownRow("agents-model")?.value == "GPT Sol" }
         XCTAssertEqual(page.title, "Agents")
-        XCTAssertEqual(page.shownRowIDs, [["agents-start"], ["agents-model", "agents-effort"], ["agents-access"]])
+        XCTAssertEqual(page.shownRowIDs, [["agents-start"], ["agents-model", "agents-effort"], ["agents-access"], ["dictation-opens-task"], ["multilingual-dictation"]])
         XCTAssertEqual(page.shownRow("agents-start")?.title, "New Sessions Start On")
         XCTAssertEqual(page.shownRow("agents-start")?.value, "Last Session")
         XCTAssertEqual(page.shownRow("agents-effort")?.value, "Extra High")
@@ -227,7 +227,11 @@ final class HostedNewSessionStartTests: XCTestCase {
             "The model and effort of the last session you started.",
             "Follows the last session you started, on the account you last picked.",
             "What a new session may do without asking. Saved to your account, so they follow you across devices.",
+            "Hold the microphone on home and let go to start a task with what you said. When this is off, you stay on home and the task starts in the background.",
+            "Detect which of your two languages you’re speaking. When this is off, dictation uses your most likely language.",
         ])
+        XCTAssertEqual(page.shownRow("dictation-opens-task")?.isOn, true)
+        XCTAssertEqual(page.shownRow("multilingual-dictation")?.isOn, true)
         try await keep("settings-agents")
 
         // Default Model, and read only: written to the computer, and the page follows.

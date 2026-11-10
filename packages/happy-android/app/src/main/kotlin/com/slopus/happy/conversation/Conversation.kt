@@ -170,6 +170,14 @@ class Conversation(
     private val read: (suspend (String) -> Unit)? = null,
     /** What the Happy references in its messages read as ([AgentSession.references][com.slopus.happy.agent.AgentSession.references]); null leaves the tags as written. */
     private val references: com.slopus.happy.references.ReferenceReader? = null,
+    /** Which settings pages its connection has: a link to any other reads as its words. Null leaves every link. */
+    private val hasSettingsPage: ((String) -> Boolean)? = null,
+    /**
+     * Its server is Happy Cloud's, which has no folders: files go as the
+     * agent's attachments, and one without that route says it takes none
+     * yet.
+     */
+    private val cloudFiles: Boolean = false,
     /** The person's model preferences: a new chat opens on their start ([ModelPreferences.startMode]); null, on the catalog's default. */
     private val preferences: StateFlow<ModelPreferences>? = null,
     /** A new chat's first message went with this mode: it is the session's start. */
@@ -193,7 +201,9 @@ class Conversation(
         var images: List<Block.Image>,
         var files: List<OutgoingFile> = emptyList(),
         /** A tool the agent runs before it reads this (a skill's `read_skill`). */
-        val toolRequest: ToolRequest? = null,
+        var toolRequest: ToolRequest? = null,
+        /** New work's first words as one of the computer's skills: it asks for that skill once the agent made offers it ([skillRequested]). */
+        var skill: String? = null,
         /** A voice call's words ([sendAs]). */
         val voice: Boolean = false,
         var accepted: Boolean = false,
@@ -206,7 +216,6 @@ class Conversation(
          */
         waiting: List<PendingPicture>? = null,
     ) {
-        val wire: String get() = WorkspaceUploads.text(text, files)
         var waiting: List<PendingPicture>? = waiting
             set(value) {
                 field = value
@@ -238,6 +247,7 @@ class Conversation(
         references = this@Conversation.references?.references?.value
         named = this@Conversation.references?.let { reader -> reader::read }
         pages = this@Conversation.references?.let { reader -> reader::readArtifacts }
+        hasPage = hasSettingsPage
     }
     private val runs = ArrayList<Pair<String, MutableList<String>>>()
     /** Each run's status, start and end as last read, so it is kept as it came. */
@@ -309,11 +319,15 @@ class Conversation(
             }
             // Preferences changed on another device: an unpicked new chat follows them.
             preferences?.let { flow -> launch { flow.collect { if (adoptStartMode()) publish() } } }
-            if (created) reload()
+            if (created) reload() else readSkills()
             signals.collect { signal ->
                 // The computer's models changed, or may have while away: the pickers read them again.
                 if (signal == ConversationSignal.Resync || (signal as? ConversationSignal.Event)?.type == "config.updated") rereadCatalog()
-                if (!created) return@collect
+                if (!created) {
+                    // A new chat offers the computer's skills: changed, or maybe while away, they are read again.
+                    if (signal == ConversationSignal.Resync || (signal as? ConversationSignal.Event)?.type == SKILLS_UPDATED) readSkills()
+                    return@collect
+                }
                 when (signal) {
                     ConversationSignal.Resync -> reload()
                     is ConversationSignal.Event -> held?.add(signal) ?: receive(signal)
@@ -340,6 +354,7 @@ class Conversation(
                 olderReading?.cancel()
                 questionReading?.cancel()
                 reconciling?.cancel()
+                skillsReading?.cancel()
                 held = null
                 publish { it.copy(syncing = false, loadingOlder = false) }
             }
@@ -367,6 +382,7 @@ class Conversation(
             olderReading?.cancel()
             questionReading?.cancel()
             reconciling?.cancel()
+            skillsReading?.cancel()
         }
     }
 
@@ -784,15 +800,21 @@ class Conversation(
     /**
      * Draws the message at once and delivers it; false when there is nothing
      * to send. A new chat's messages go once its task or bot is made
-     * ([ensureCreated], in [pump]); the first fixes what it will be.
+     * ([ensureCreated], in [pump]); the first fixes what it will be. A new
+     * chat's first words that are `/skill args`, one of the computer's
+     * skills it offers, go as a skill does in a chat ([runCommand]): `/name
+     * args`, asking for `read_skill` once the agent made offers it
+     * ([skillRequested]).
      */
     fun send(text: String, images: List<Block.Image> = emptyList()): Boolean {
         val trimmed = text.trim()
         if (trimmed.isEmpty() && images.isEmpty()) return false
         val id = ConversationApi.clientId()
         scope.launch(lane) {
+            val skill = if (!created && outgoing.isEmpty() && images.isEmpty()) SlashCommands.invocation(trimmed, snapshot.commands) else null
+            val words = skill?.let { skillText(it.command.name, it.arguments) } ?: trimmed
             if (!created) locked = true
-            queue(Outgoing(id, trimmed, images, sentAt = now()))
+            queue(Outgoing(id, words, images, skill = skill?.command?.name, sentAt = now()))
             setDraftNow("")
             publish()
             pump()
@@ -803,12 +825,14 @@ class Conversation(
     /**
      * A voice call's send (iOS's `send(id:text:)`): [text] exactly as given,
      * under the caller's [id], delivered in order with the composer's. The
-     * composer's draft is left as it is. False on a chat not made yet, and
-     * for an [id] this conversation already has, which goes only once.
+     * composer's draft is left as it is. A new chat's first message makes its
+     * task or bot, as the composer's does. False for an [id] this
+     * conversation already has, which goes only once.
      */
     suspend fun sendAs(id: String, text: String): Boolean = withContext(lane) {
-        if (!created || closed || text.isBlank()) return@withContext false
+        if (closed || text.isBlank()) return@withContext false
         if (outgoing.any { it.id == id } || id in messages) return@withContext false
+        if (!created) locked = true
         queue(Outgoing(id, text, emptyList(), voice = true, sentAt = now()))
         publish()
         pump()
@@ -936,8 +960,7 @@ class Conversation(
             val given = arguments?.trim()?.takeIf { it.isNotEmpty() && command.hasArguments }
             setDraftNow("")
             if (command.isSkill) {
-                val text = if (given == null) "/$name" else "/$name $given"
-                queue(Outgoing(ConversationApi.clientId(), text, emptyList(), toolRequest = ToolRequest(READ_SKILL, mapOf("name" to name)), sentAt = now()))
+                queue(Outgoing(ConversationApi.clientId(), skillText(name, given), emptyList(), toolRequest = skillRequest(name), sentAt = now()))
                 publish()
                 pump()
                 return@launch
@@ -1042,8 +1065,9 @@ class Conversation(
                     ensureCreated()
                     made = true
                     val mode = sendingMode() ?: throw IllegalStateException("No model is set up on this computer.")
-                    upload(next.files)
+                    val attachments = upload(next.files)
                     val images = next.images
+                    skillRequested(next)
                     val message = withRetries {
                         // The bytes of each picture's base64 written say how far it is.
                         var ranges: UploadRanges? = null
@@ -1053,7 +1077,7 @@ class Conversation(
                                 uploads.set(UploadBoard.pictureKey(next.id, index), if (share >= 1f) UploadPhase.Done else UploadPhase.Uploading(share))
                             }
                         }
-                        withContext(progress) { api.send(agentId, next.id, next.wire, images, mode, next.toolRequest) }
+                        withContext(progress) { api.send(agentId, next.id, wire(next), images, mode, next.toolRequest, attachments) }
                     }
                     // All there, whatever the transport told on the way; the echo clears them.
                     images.indices.forEach { uploads.set(UploadBoard.pictureKey(next.id, it), UploadPhase.Done) }
@@ -1076,6 +1100,8 @@ class Conversation(
                 } catch (e: Exception) {
                     uploads.clear(next.id)
                     next.failure = describe(e)
+                    // The failed bubble has only a delivery mark; explain a file refusal as well.
+                    if (e is FilesUnavailable || e is FileTooLarge) publish { it.copy(alert = next.failure) }
                     if (made) errorShown(ErrorArea.MessageSend, AnalyticsReasons.error(e))
                 } finally {
                     writing = null
@@ -1121,8 +1147,9 @@ class Conversation(
      * Writes a send's [files] into the agent's workspace, each once: a retry
      * skips what went up, and the same bytes again count as written.
      */
-    private suspend fun upload(files: List<OutgoingFile>) {
-        if (files.all { it.uploaded }) return
+    private suspend fun upload(files: List<OutgoingFile>): List<SentAttachment> {
+        if (cloudFiles) return attach(files)
+        if (files.all { it.uploaded }) return emptyList()
         val workspaceId = agent?.workspaceId
             ?: withRetries { api.bootstrap(agentId) }.agent.workspaceId
             ?: throw IllegalStateException("This chat has no folder on the computer to put files in.")
@@ -1131,6 +1158,48 @@ class Conversation(
             withRetries { api.uploadFile(workspaceId, file.path, file.file, io) }
             file.uploaded = true
         }
+        return emptyList()
+    }
+
+    /**
+     * [files] as the agent's Happy Cloud attachments, each uploaded once: a
+     * file past what the server takes fails before any is read, and a
+     * server without the route says it takes none yet.
+     */
+    private suspend fun attach(files: List<OutgoingFile>): List<SentAttachment> {
+        files.firstOrNull { it.size > WorkspaceUploads.CLOUD_MAX_BYTES }?.let { throw FileTooLarge(it.name) }
+        for (file in files) {
+            if (file.attachmentId != null) continue
+            file.attachmentId = try {
+                withRetries { api.uploadAttachment(agentId, file, io) }
+            } catch (e: ConversationApiException) {
+                if (e.status == 404 || e.status == 405 || e.status == 501) throw FilesUnavailable()
+                if (e.status == 413) throw FileTooLarge(file.name)
+                throw e
+            }
+        }
+        return files.map { SentAttachment(it.attachmentId!!, it.name) }
+    }
+
+    /** What [send] says: on Happy Cloud its words, its files going beside them; else with the paths it wrote them to. */
+    private fun wire(send: Outgoing): String = if (cloudFiles) send.text else WorkspaceUploads.text(send.text, send.files)
+
+    /** [send] as its bubble reads until the agent has it: its files listed by name on Happy Cloud, else by path. */
+    private fun shown(send: Outgoing): String =
+        if (cloudFiles) WorkspaceUploads.listed(send.text, send.files.map { it.name }) else wire(send)
+
+    /**
+     * New work's first `/skill args` ([Outgoing.skill]) asks for the skill
+     * only once the agent just made offers it (its bootstrap's catalog);
+     * otherwise, a project skill of another name or one switched off
+     * meanwhile, the words go as they are, so nothing typed is lost.
+     * Decided once: a retry sends the same message.
+     */
+    private suspend fun skillRequested(send: Outgoing) {
+        val name = send.skill ?: return
+        val offered = withRetries { api.bootstrap(agentId) }.slashCommands.orEmpty().any { it.name == name && it.isSkill }
+        if (offered) send.toolRequest = skillRequest(name)
+        send.skill = null
     }
 
     /** The task or bot a new chat lives in, made once: a retry repeats the same ids, which is the same one. */
@@ -1149,7 +1218,8 @@ class Conversation(
             newTask = null
             onTaskCreated(made)
             (made["task"] ?: made["bot"]).obj?.get("agent")?.let(AgentInfo::parse)?.let { agent = it }
-            publish { it.copy(created = true) }
+            // The computer's skills were the new chat's; the agent's own catalog comes with its history.
+            publish { it.copy(created = true, commands = emptyList()) }
             // Typed while it was made: that goes up now under the real agent.
             if (!draftSynced) saveDraftSoon(0)
             reload()
@@ -1261,6 +1331,28 @@ class Conversation(
                 adoptStartMode()
                 publish()
             }
+        }
+    }
+
+    private var skillsReading: Job? = null
+
+    /**
+     * A new chat's commands before it has an agent: the computer's global
+     * skills ([ConversationApi.skills]), so its first message can be one. A
+     * failed read offers what was there; the made agent's own catalog
+     * replaces them.
+     */
+    private fun readSkills() {
+        skillsReading?.cancel()
+        skillsReading = scope.launch(lane) {
+            val skills = try {
+                api.skills()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                return@launch
+            }
+            if (!created && skills != snapshot.commands) publish { it.copy(commands = skills) }
         }
     }
 
@@ -1537,6 +1629,7 @@ class Conversation(
                     durationMs = info.startedAt?.let { maxOf(0, endedAt - it) },
                     tools = tools,
                     copyText = answer,
+                    endedAt = endedAt,
                 )
                 // Its copy is how the turn ended, as desktop's: the answer keeps no button of its own.
                 if (ended.complete && answer != null) turn[at] = (turn[at] as ConversationRow.Text).copy(copies = false)
@@ -1557,7 +1650,8 @@ class Conversation(
         for (send in outgoing) {
             val delivery = send.failure?.let(Delivery::Failed) ?: if (send.accepted) Delivery.Pending else Delivery.Sending
             val time = shownAt.getOrPut(send.id) { send.sentAt }
-            rows += ConversationRow.User("${send.id}:user", send.id, send.wire, com.slopus.happy.chat.markdown.parseMarkdown(send.wire), send.images + send.thumbnails, delivery, time)
+            val text = shown(send)
+            rows += ConversationRow.User("${send.id}:user", send.id, text, com.slopus.happy.chat.markdown.parseMarkdown(text, hasSettingsPage), send.images + send.thumbnails, delivery, time)
         }
         if (opened.isNotEmpty()) rows.replaceAll { if (it is ConversationRow.User && it.key in opened) it.copy(opened = true) else it }
         builder.forget(messages.keys)
@@ -1592,6 +1686,16 @@ class Conversation(
         /** The tool a skill's invocation asks the agent to run first. */
         const val READ_SKILL = "read_skill"
 
+        /** A skill's message: `/name`, then its arguments after one space. */
+        fun skillText(name: String, arguments: String?): String =
+            arguments?.trim()?.takeIf { it.isNotEmpty() }?.let { "/$name $it" } ?: "/$name"
+
+        /** The `read_skill` request a skill's message carries (desktop aa8a2529). */
+        fun skillRequest(name: String) = ToolRequest(READ_SKILL, mapOf("name" to name))
+
+        /** The computer's skills changed (API.md "Live synchronization"). */
+        const val SKILLS_UPDATED = "skills.updated"
+
         /** Pages of catch-up read after the kept history before reading the newest page whole instead. */
         const val MAX_CATCH_UP_PAGES = 4
 
@@ -1603,7 +1707,16 @@ class Conversation(
         }
 
         /** Why [e] happened, for the person: the agent's own words where it gave some. */
-        fun describe(e: Exception): Problem = when (e) {
+        fun describe(e: Exception): Problem = when {
+            // Plain words of the phone's own, never the server's "This needs the … permission."
+            e is ConversationApiException && com.slopus.happy.agent.Permission.refused(e.status, e.code, e.message) -> Problem.Forbidden
+            e is com.slopus.happy.agent.AgentApiException && com.slopus.happy.agent.Permission.refused(e.status, e.code, e.message) -> Problem.Forbidden
+            else -> describeOther(e)
+        }
+
+        private fun describeOther(e: Exception): Problem = when (e) {
+            is FilesUnavailable -> Problem.FilesUnavailable
+            is FileTooLarge -> Problem.FileTooLarge(e.name)
             is AgentConnectionException -> Problem.Link(e.reason)
             is ConversationApiException -> e.message?.takeIf { it.isNotBlank() }?.let(Problem::Said) ?: Problem.Refused(e.status)
             else -> e.message?.takeIf { it.isNotBlank() }?.let(Problem::Said) ?: Problem.Unknown
@@ -1636,3 +1749,9 @@ class Conversation(
         }
     }
 }
+
+/** A send's files, on a server that takes none yet. */
+private class FilesUnavailable : Exception("File attachments aren't available on this server yet.")
+
+/** A send's file [name], past what the server takes. */
+private class FileTooLarge(val name: String) : Exception("$name is too large to send.")

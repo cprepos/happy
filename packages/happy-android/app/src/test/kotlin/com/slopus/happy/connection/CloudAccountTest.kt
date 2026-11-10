@@ -114,6 +114,46 @@ class CloudAccountTest {
     }
 
     @Test
+    fun aTestAccountSignsInWithItsPasswordForTheSameHour() = runBlocking {
+        val account = account()
+        val access = jwt(audience, tag = "p1")
+        server.enqueue(token(access))
+        assertEquals(PasswordSignIn.SignedIn, account.signInWithPassword("qa-android", "s3cret pass"))
+        assertEquals(CloudAccountState.SignedIn, account.state.value)
+        val request = server.takeRequest()
+        assertEquals("POST", request.method)
+        assertEquals("/v1/auth/password", request.target)
+        assertEquals(null, request.headers["Authorization"])
+        assertEquals("""{"login":"qa-android","password":"s3cret pass"}""", request.body?.utf8())
+        // From here it is the browser's pass: servers with it, and signed out at its hour.
+        server.enqueue(json("""{"servers":[]}"""))
+        assertEquals(emptyList<CloudServer>(), account.servers())
+        assertEquals("Bearer $access", server.takeRequest().headers["Authorization"])
+        now += 3_600_000L - 119_000L
+        assertEquals(false, account.signedIn())
+        assertEquals(CloudAccountState.SignedOut(expired = true), account.state.value)
+    }
+
+    @Test
+    fun aWrongPasswordOrALockoutLeavesItSignedOut() = runBlocking {
+        val account = account()
+        server.enqueue(json("""{"code":"invalid_credentials"}""", code = 401))
+        assertEquals(PasswordSignIn.Wrong, account.signInWithPassword("qa-android", "nope"))
+        server.enqueue(json("""{"code":"locked","retryAfter":61}""", code = 429))
+        assertEquals(PasswordSignIn.Locked(2), account.signInWithPassword("qa-android", "nope"))
+        server.enqueue(json("""{"code":"locked"}""", code = 429))
+        assertEquals(PasswordSignIn.Locked(15), account.signInWithPassword("qa-android", "nope"))
+        server.enqueue(json("""{"code":"internal"}""", code = 503))
+        assertEquals(PasswordSignIn.Failed(CloudException.Reason.Unreachable), account.signInWithPassword("qa-android", "pw"))
+        server.enqueue(json("""{"code":"not_found"}""", code = 404))
+        assertEquals(PasswordSignIn.Failed(CloudException.Reason.Failed), account.signInWithPassword("qa-android", "pw"))
+        server.enqueue(json("""{"token_type":"Bearer"}"""))
+        assertEquals(PasswordSignIn.Failed(CloudException.Reason.Failed), account.signInWithPassword("qa-android", "pw"))
+        assertEquals(CloudAccountState.SignedOut(), account.state.value)
+        assertEquals(false, account.signedIn())
+    }
+
+    @Test
     fun listsServersWithTheAccountToken() = runBlocking {
         val access = jwt(audience, tag = "a1")
         val account = account()
@@ -247,26 +287,14 @@ class CloudAccountTest {
     }
 
     @Test
-    fun membersAndLeavingReadTheContractsAnswers() = runBlocking {
+    fun serversListedWithoutARoleStillRead() = runBlocking {
+        // Since the roles cutover the accounts service lists no role: the server holds it.
         val account = account()
         signIn(account, jwt(audience, tag = "a1"))
-        server.enqueue(json("""{"servers":[{"id":"s1","name":"acme","url":"https://acme.happy.computer/","role":"member"}]}"""))
-        assertEquals("s1", account.serverAt("https://acme.happy.computer").id)
-        server.enqueue(json("""{"servers":[]}"""))
-        assertFails(CloudException.Reason.NotFound) { account.serverAt("https://acme.happy.computer") }
-        server.enqueue(json("""{"members":[{"accountId":"a1","name":"Ada","role":"owner","joinedAt":"2026-11-06T00:00:00Z"},{"accountId":"a2","name":null,"role":"member"}]}"""))
-        assertEquals(
-            listOf(CloudMember("a1", "Ada", "owner", "2026-11-06T00:00:00Z"), CloudMember("a2", null, "member")),
-            account.members("s1"),
-        )
-        server.enqueue(json("""{"ok":true}"""))
-        account.leave("s1")
-        server.enqueue(json("""{"code":"last_owner","error":"The last owner can't leave."}""", 409))
-        assertFails(CloudException.Reason.LastOwner) { account.leave("s1") }
-        // The two server lists asked for by serverAt.
-        repeat(2) { server.takeRequest() }
-        assertEquals("GET /v1/servers/s1/members", server.takeRequest().let { "${it.method} ${it.target}" })
-        assertEquals("POST /v1/servers/s1/leave", server.takeRequest().let { "${it.method} ${it.target}" })
+        server.enqueue(json("""{"servers":[{"createdAt":"2026-11-07T14:07:45Z","displayName":"probe","id":"s1","image":null,"name":"probe","url":"https://probe.happy.computer/","webUrl":"https://probe.happybases.com/"}]}"""))
+        val listed = account.servers().single()
+        assertEquals("s1", listed.id)
+        assertEquals(null, listed.role)
     }
 
     @Test

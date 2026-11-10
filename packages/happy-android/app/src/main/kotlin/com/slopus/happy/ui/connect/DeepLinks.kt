@@ -22,7 +22,6 @@ import com.slopus.happy.ui.settings.AccountRoute
 import com.slopus.happy.ui.settings.AgentsRoute
 import com.slopus.happy.ui.settings.AppearanceRoute
 import com.slopus.happy.ui.settings.ChangelogRoute
-import com.slopus.happy.ui.settings.ConnectClaudeRoute
 import com.slopus.happy.ui.settings.LanguageRoute
 import com.slopus.happy.ui.voice.VoiceSettingsRoute
 import com.slopus.happy.ui.voice.VoiceLanguageRoute
@@ -70,8 +69,9 @@ sealed interface DeepLink {
     /**
      * `happy://<instanceId>/…` (edge SSO contract §7): [link] on the
      * connection whose installation is [instanceId], and on no other.
+     * [pushUserId] additionally pins a Cloud notification to its exact server member.
      */
-    data class Instance(val instanceId: String, val link: HappyLink) : DeepLink
+    data class Instance(val instanceId: String, val link: HappyLink, val pushUserId: String? = null) : DeepLink
 
     /** [link] on [connectionId], taken by that connection's back stack once it is open (an [Instance] link's, after switching to it). */
     data class OnConnection(val connectionId: String, val link: HappyLink) : DeepLink
@@ -103,7 +103,8 @@ sealed interface DeepLink {
 fun parseDeepLink(link: String): DeepLink? {
     if (HappyCode.isAgentPairing(link)) return DeepLink.AgentPairing(link.trim())
     GuestInvitation.parse(link)?.let { return DeepLink.GuestInvite(it.url) }
-    if (HappyUrls.owns(link.trim())) {
+    // happy-app's own `happy://settings/…` paths keep their screens: from outside, a settings link opens only in its instance form.
+    if (HappyUrls.owns(link.trim()) && !APP_SETTINGS.containsMatchIn(link.trim())) {
         val url = HappyUrls.parse(link.trim()) ?: return null
         return url.instanceId?.let { DeepLink.Instance(it, url.link) }
     }
@@ -119,6 +120,9 @@ fun parseDeepLink(link: String): DeepLink? {
     }.filter { it.isNotEmpty() }.map(::decode)
     return route(segments, uri.rawQuery) ?: DeepLink.Home
 }
+
+/** An unlocked `happy://settings…`, which is happy-app's path before it is a Happy settings link. */
+private val APP_SETTINGS = Regex("^happy://settings(?:[/?#]|$)", RegexOption.IGNORE_CASE)
 
 /** app/(app)'s file routes. Static segments win over `[id]`, as in expo-router (`session/recent`). */
 private fun route(segments: List<String>, rawQuery: String?): DeepLink? {
@@ -136,7 +140,6 @@ private fun route(segments: List<String>, rawQuery: String?): DeepLink? {
         listOf("settings", "language") -> screen(LanguageRoute())
         listOf("settings", "voice") -> screen(VoiceSettingsRoute())
         listOf("settings", "voice", "language") -> screen(VoiceLanguageRoute)
-        listOf("settings", "connect", "claude") -> screen(ConnectClaudeRoute)
         listOf("server") -> signedOut(ServerRoute)
         listOf("restore") -> signedOut(RestoreRoute)
         listOf("restore", "manual") -> signedOut(RestoreManualRoute)
@@ -214,6 +217,11 @@ object DeepLinks {
     /** Takes a VIEW intent's link or a notification tap's session. True if it was one the app handles. */
     fun offer(intent: Intent?): Boolean {
         if (intent?.action == ACTION_OPEN_PUSH) {
+            if (intent.hasExtra(com.slopus.happy.push.EXTRA_PUSH_CLOUD)) {
+                val notice = com.slopus.happy.push.CloudPushNotification.parse(intent.getStringExtra(com.slopus.happy.push.EXTRA_PUSH_CLOUD)) ?: return false
+                offer(DeepLink.Instance(notice.instanceId, HappyLink.Reference(com.slopus.happy.agent.HappyReferenceKind.Agent, notice.agentId), notice.userId))
+                return true
+            }
             val sessionId = intent.getStringExtra(EXTRA_PUSH_SESSION_ID) ?: return false
             offer(DeepLink.Session(sessionId))
             return true

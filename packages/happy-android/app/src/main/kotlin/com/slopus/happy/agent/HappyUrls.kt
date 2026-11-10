@@ -10,8 +10,8 @@ import java.nio.charset.CodingErrorAction
  * Happy URLs, as `@slopus/happy-agent-client`'s happyLinks.ts reads and
  * writes them, so the phone agrees with the daemon and every other client
  * on what a link names: `happy://artifacts/<id>?version=2`,
- * `happy://workspaces/<w>/services/<s>`, `happy://agents/<a>/files/<path>#L3-L9`
- * and the API's `happy-file://agents/<a>/<path>`.
+ * `happy://workspaces/<w>/services/<s>`, `happy://agents/<a>/files/<path>#L3-L9`,
+ * `happy://settings/providers` and the API's `happy-file://agents/<a>/<path>`.
  *
  * External links (edge SSO contract §7) are locked to one installation:
  * `happy://<instanceId>/<remainder>`, the remainder exactly an internal
@@ -43,12 +43,29 @@ sealed interface HappyLink {
         data class Agent(val agentId: String) : Target
         data class Workspace(val workspaceId: String) : Target
     }
+
+    /**
+     * A page of the client's own settings, one of [HappyUrls.SETTINGS_PAGES];
+     * it names no entity. [query] holds only what [HappyUrls.SETTINGS_QUERY]
+     * allows (an add flow's `vendor` and `to`), never a credential.
+     */
+    data class Settings(val page: String, val query: Map<String, String> = emptyMap()) : HappyLink
 }
 
 /** A parsed Happy URL: [link], and the installation it is locked to when it came in external form. */
 data class HappyUrl(val link: HappyLink, val instanceId: String? = null)
 
 object HappyUrls {
+    /** The settings pages a settings link may name, a closed list (API.md, "Settings links"). */
+    val SETTINGS_PAGES = listOf(
+        "general", "account", "sharing", "servers", "instructions", "secrets", "providers", "providers/import",
+        "providers/add", "providers/add/openai", "providers/add/anthropic", "providers/add/api-key",
+        "usage", "voice", "mobile-access", "members", "roles", "policy", "mcp", "computes",
+    )
+
+    /** What a settings link's query may carry, and each key's values: navigation only, never a secret. */
+    val SETTINGS_QUERY = mapOf("vendor" to setOf("openai", "anthropic"), "to" to setOf("private", "team"))
+
     /** The longest URL, in characters. */
     const val MAX_LENGTH = 4096
 
@@ -65,10 +82,11 @@ object HappyUrls {
     private val SERVICE = Regex("happy://workspaces/($ID)/services/($ID)")
     private val FILE = Regex("happy://(agents|workspaces)/($ID)/files/($ENCODED_PATH)(?:$LINES)?")
     private val HAPPY_FILE = Regex("happy-file://(agents|workspaces)/($ID)/($ENCODED_PATH)(?:$LINES)?")
+    private val SETTINGS = Regex("happy://settings/(.+)")
     private val EXTERNAL = Regex("happy://([a-z][a-z0-9]{23})/(.+)")
 
     /** A host that is this grammar's, well-formed or not: the entity hosts, or anything shaped like an instance id. */
-    private val OWNED = Regex("happy://(artifacts|agents|workspaces|projects|services|surfaces|users|[a-z][a-z0-9]{23})(?:[/?#].*)?", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+    private val OWNED = Regex("happy://(artifacts|agents|workspaces|projects|services|surfaces|users|settings|[a-z][a-z0-9]{23})(?:[/?#].*)?", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
 
     /** Whether [instanceId] is an installation's id as health reports it. */
     fun isInstanceId(instanceId: String): Boolean = INSTANCE_ID.matches(instanceId)
@@ -91,6 +109,19 @@ object HappyUrls {
     }
 
     private fun parseInternal(url: String): HappyLink? {
+        SETTINGS.matchEntire(url)?.let { settings ->
+            val (page, query) = settings.groupValues[1].split('?', limit = 2).let { it[0] to it.getOrNull(1) }
+            if (page !in SETTINGS_PAGES) return null
+            if (query == null) return HappyLink.Settings(page)
+            // Only an add flow takes a query, and only keys and values it knows: anything else isn't a settings link.
+            if (!page.startsWith("providers/add")) return null
+            val values = query.split('&').map { pair ->
+                val (key, value) = pair.split('=', limit = 2).takeIf { it.size == 2 } ?: return null
+                if (value !in SETTINGS_QUERY[key].orEmpty()) return null
+                key to value
+            }.toMap()
+            return HappyLink.Settings(page, values)
+        }
         ENTITY.matchEntire(url)?.let { entity ->
             val (host, id, version) = entity.destructured
             val kind = HappyReferenceKind.entries.first { it.host == host }
@@ -119,6 +150,11 @@ object HappyUrls {
         val internal = when (link) {
             is HappyLink.Reference -> reference(link)
             is HappyLink.File -> file(link, fileScheme = false)
+            is HappyLink.Settings -> {
+                require(link.page in SETTINGS_PAGES) { "The settings page is unknown." }
+                val query = SETTINGS_QUERY.keys.mapNotNull { key -> link.query[key]?.takeIf { it in SETTINGS_QUERY.getValue(key) }?.let { "$key=$it" } }
+                "happy://settings/${link.page}" + if (query.isEmpty()) "" else query.joinToString("&", prefix = "?")
+            }
         }
         return if (instanceId == null) internal else "happy://$instanceId/${internal.removePrefix("happy://")}"
     }

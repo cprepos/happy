@@ -39,7 +39,11 @@ class AgentApiException(val status: Int, val code: String?, override val message
  * the connector's socket"). The transport is reached lazily: the
  * credentials are read on the first request.
  */
-class AgentClient private constructor(private val link: suspend () -> Link) {
+class AgentClient private constructor(
+    private val link: suspend () -> Link,
+    /** To a Happy Cloud server: no folders, and the web through an agent's network ([com.slopus.happy.browser.browserNetwork]). */
+    val cloud: Boolean = false,
+) {
     /**
      * The transport and the bearer it is authorized with. A team server
      * signed in with OAuth has [renew]: a 401 asks it once for a newer
@@ -56,10 +60,10 @@ class AgentClient private constructor(private val link: suspend () -> Link) {
         val oauth: Boolean get() = renew != null
     }
 
-    constructor(transport: Transport, token: String) : this(Link(transport, token).let { fixed -> { fixed } })
+    constructor(transport: Transport, token: String, cloud: Boolean = false) : this(Link(transport, token).let { fixed -> { fixed } }, cloud)
 
     companion object {
-        internal fun lazy(link: suspend () -> Link) = AgentClient(link)
+        internal fun lazy(cloud: Boolean = false, link: suspend () -> Link) = AgentClient(link, cloud)
 
         /** How every agent answer is read: unknown keys are skipped, as the wire grows. */
         val json = Json {
@@ -118,6 +122,7 @@ class AgentClient private constructor(private val link: suspend () -> Link) {
         val link = link()
         val response = authorized(link) { token -> link.transport.request(method, path, token, null, headers, category) }
         if (link.oauth && SignInRule.requiresSignIn(response)) signInRequired(link)
+        if (link.oauth && SignInRule.requiresProfile(response)) signInRequired(link, profileRequired = true)
         response
     }
 
@@ -277,6 +282,7 @@ class AgentClient private constructor(private val link: suspend () -> Link) {
 
     private suspend fun check(link: Link, response: TransportResponse): TransportResponse {
         if (link.oauth && SignInRule.requiresSignIn(response)) signInRequired(link)
+        if (link.oauth && SignInRule.requiresProfile(response)) signInRequired(link, profileRequired = true)
         if (!link.oauth && response.status == 401) throw AgentConnectionException(AgentConnectionException.Reason.Revoked)
         if (response.status in 200..299 || response.status == 304) return response
         val failure = try {

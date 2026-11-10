@@ -11,6 +11,18 @@ import org.junit.Test
 /** Surfaces as the wire describes them, and the catalog of every one on the computer. */
 class SurfacesTest {
     @Test
+    fun policyVaultLockIsIndependentOfAccessAndNeverInferredFromTheName() {
+        for (access in listOf("none", "read", "write")) {
+            val wire = Wire.surface("v1", "Renamed", "vault").with("access", access).with("policyVault", true)
+            assertTrue(Surface.parse(wire)!!.showsLock)
+        }
+        assertFalse(Surface.parse(Wire.surface("v2", "Policy", "vault"))!!.showsLock)
+        assertFalse(Surface.parse(Wire.surface("v3", "Ordinary", "vault").with("policyVault", false))!!.showsLock)
+        assertFalse(Surface.parse(Wire.surface("d1", "Policy", "document").with("policyVault", true))!!.showsLock)
+        assertTrue(Surface.parse(Wire.surface("v4", "Private", "vault").with("access", "none"))!!.showsLock)
+    }
+
+    @Test
     fun aSingleUserAgentUsesNullForItsPersonsMembership() {
         val wire = Wire.surface("s1", "Plan", "document", mapOf("u1" to "1"))
         val original = AgentCatalog(surfaces = mapOf("s1" to wire), userId = null)
@@ -72,5 +84,17 @@ class SurfacesTest {
         val left = joined.withoutSurface("s2")
         assertFalse(SurfaceCatalog.of(left).let { it.joined(it["s2"]!!) })
         assertEquals(listOf("u2"), SurfaceCatalog.of(left)["s2"]!!.members.map { it.userId })
+    }
+
+    @Test
+    fun aVaultSaysWhatThePersonMayDoInItAndAnOlderServerAllowsWriting() {
+        val vault = Wire.surface("v1", "Policy", "vault")
+        assertEquals(VaultAccess.Write, Surface.parse(vault)!!.access)
+        assertFalse(Surface.parse(vault)!!.policyVault)
+        val policy = Surface.parse(vault.with("access", "read").with("policyVault", true))!!
+        assertEquals(VaultAccess.Read, policy.access)
+        assertTrue(policy.policyVault)
+        assertEquals(VaultAccess.None, Surface.parse(vault.with("access", "none"))!!.access)
+        assertEquals(VaultAccess.Write, Surface.parse(vault.with("access", "write"))!!.access)
     }
 }

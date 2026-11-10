@@ -6,8 +6,6 @@
 <resources>
     <string name="conversation_details">Chat details</string>
     <string name="conversation_offline">Offline</string>
-    <string name="conversation_revoked">This device was removed</string>
-    <string name="conversation_update_required">Update required</string>
     <string name="conversation_unavailable">This agent connection is not available on this device.</string>
     <string name="conversation_empty">No messages yet.</string>
     <string name="conversation_read_only">This conversation is driven by another agent and can\'t take messages.</string>
@@ -97,6 +95,8 @@
     <string name="conversation_problem_refused">The agent refused this (%1$d).</string>
     <string name="conversation_problem_unknown">Something went wrong.</string>
     <string name="conversation_problem_pictures">Couldn\'t read the pictures to send.</string>
+    <string name="conversation_problem_files_unavailable">File attachments aren\'t available on this server yet.</string>
+    <string name="conversation_problem_file_too_large">%1$s is over 25 MB, too large to send here.</string>
     <!-- A failed turn, as desktop's failure card (conversationFailureMessage) words it. -->
     <string name="conversation_failure_signin_missing">%1$s isn\'t signed in. Run `%2$s`, then retry.</string>
     <string name="conversation_failure_cannot_authenticate">%1$s couldn\'t authenticate. Check its sign-in settings, then retry.</string>
@@ -110,4 +110,6 @@
     <string name="conversation_failure_internal">Something went wrong: %1$s</string>
     <string name="conversation_editor_expand">Expand</string>
     <string name="conversation_editor_collapse">Collapse</string>
+    <string name="problem_forbidden">You don\'t have permission to do that.</string>
+    <string name="conversation_role_read_only">You can read this conversation, but your role can\'t send messages.</string>
 </resources>

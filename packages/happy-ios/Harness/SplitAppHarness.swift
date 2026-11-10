@@ -41,10 +41,15 @@ private actor DemoComputer: AgentTransport {
     /// sent, or for Release notes a failure.
     private let rounds: Int
     private let live: Bool
-    init(rounds: Int = 0, live: Bool = false) {
+    /// `working`: these agents think, their last turn still running.
+    private let working: Set<String>
+    init(rounds: Int = 0, live: Bool = false, working: Set<String> = []) {
         self.rounds = rounds
         self.live = live
+        self.working = working
     }
+
+    private func status(_ agentId: String) -> String { working.contains(agentId) ? "thinking" : "idle" }
 
     private var streams: [AsyncThrowingStream<Data, Error>.Continuation] = []
     private var eventId = 0
@@ -73,7 +78,12 @@ private actor DemoComputer: AgentTransport {
     ]
 
     private func history(_ agentId: String) -> [JSONValue] {
-        (live ? Self.liveRuns : [run]) + (sent[agentId] ?? [])
+        guard working.contains(agentId) else { return (live ? Self.liveRuns : [run]) + (sent[agentId] ?? []) }
+        guard case .object(var running) = run else { return [run] }
+        running["status"] = .string("running")
+        running["endedAt"] = nil
+        running["reason"] = nil
+        return [.object(running)]
     }
 
     private var run: JSONValue {
@@ -108,7 +118,11 @@ private actor DemoComputer: AgentTransport {
     func request(method: String, path: String, credential: String, body: Data?, headers: [String: String]) throws -> HTTP1Response {
         var value: JSONValue
         if path == "/v0/bootstrap/desktop" {
-            value = try JSONDecoder().decode(JSONValue.self, from: Data(Self.home.utf8))
+            var home = Self.home
+            for agentId in working {
+                home = home.replacingOccurrences(of: #""id":"\#(agentId)","workspaceId":"w","status":"idle""#, with: #""id":"\#(agentId)","workspaceId":"w","status":"thinking""#)
+            }
+            value = try JSONDecoder().decode(JSONValue.self, from: Data(home.utf8))
             if live, case .object(var home) = value, case .array(var tasks)? = home["tasks"], case .array(var memberships)? = home["taskMemberships"] {
                 for n in 1...60 {
                     tasks.append(.object(["id": .string("fixture\(n)"), "name": .string("Fixture task \(n)"),
@@ -134,7 +148,7 @@ private actor DemoComputer: AgentTransport {
             value = .object(["hasMore": .bool(false), "runs": .array(history(String(path.split(separator: "/")[2])))])
         } else if path.hasSuffix("/bootstrap"), path.hasPrefix("/v0/agents/") {
             let id = String(path.split(separator: "/")[2])
-            value = .object(["agent": .object(["id": .string(id), "workspaceId": .string("w"), "status": .string("idle")]), "pending": .array([]),
+            value = .object(["agent": .object(["id": .string(id), "workspaceId": .string("w"), "status": .string(status(id))]), "pending": .array([]),
                              "mode": .object(["providerId": .string("claude"), "modelId": .string("anthropic/sonnet-5"), "effort": .string("medium"),
                                               "permissionMode": .string("auto")])])
         } else if method == "PUT", path.hasSuffix("/file"), let body,
@@ -295,6 +309,12 @@ private struct SplitComposeMachine: HomeOps, HomeSessionOps {
 /// rounds, `-composeMachine` lets compose's first send make a session on
 /// the seeded computer (`SplitComposeMachine`), `-callLive <directory>`
 /// talks to the build's hosted voice agent from files (`CallLiveCheck`).
+/// `-working` has iPad split view, Ship the cache and Research Assistant
+/// think, `-lowPower` stands in for Low Power Mode with Shimmer in Low
+/// Power Mode off (on with `-shimmerInLowPower`; `ShimmerClock`), `-shimmerAfter <seconds>` turns that
+/// on as its Settings row does, and `-lowPowerTour` shows home, finds
+/// Shimmer in Low Power Mode in Settings' search, flips its switch and
+/// goes home again, a pause between each.
 @MainActor
 final class SplitAppHarness {
     private var coordinator: AppCoordinator?
@@ -317,7 +337,12 @@ final class SplitAppHarness {
         }
         #endif
         if arguments.contains("-composeMachine") { SplitComposeMachine.install() }
-        let computer = DemoComputer(rounds: arguments.contains("-long") ? 60 : 0, live: option("-callLive") != nil)
+        let computer = DemoComputer(rounds: arguments.contains("-long") ? 60 : 0, live: option("-callLive") != nil || arguments.contains("-voiceTouch"),
+                                    working: arguments.contains("-working") ? ["ipad-agent", "cache-agent", "research-agent"] : [])
+        if arguments.contains("-lowPower") {
+            ShimmerClock.shared.lowPowerOverride = true
+            ShimmerClock.shared.shimmersInLowPower = arguments.contains("-shimmerInLowPower")
+        }
         let controller = AccountController(
             serverConfig: ServerConfig(storage: InMemoryKeyValueStore()), clientID: "ios/split-harness",
             credentialStore: InMemoryCredentialStore(), storeDirectory: nil,
@@ -357,6 +382,13 @@ final class SplitAppHarness {
                 window.windowScene?.requestGeometryUpdate(.iOS(interfaceOrientations: .landscapeRight)) { error in print("split harness: \(error)") }
                 try? await Task.sleep(for: .seconds(1))
             }
+            if let seconds = option("-shimmerAfter").flatMap(Double.init) {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(seconds))
+                    ShimmerClock.shared.shimmersInLowPower = true
+                    print("[low-power] shimmer on")
+                }
+            }
             if arguments.contains("-settings") {
                 if agent {
                     SettingsViewController.open(context: context, computer: controller.agentConnections.activeID, from: home)
@@ -387,6 +419,7 @@ final class SplitAppHarness {
                 shell.setSidebarHidden(true)
             }
             if arguments.contains("-resizeLoop") { await Self.resizeLoop(window) }
+            if arguments.contains("-lowPowerTour") { await Self.lowPowerTour(window: window, home: home, context: context) }
             #if DEBUG
             if arguments.contains("-callTour") { await Self.callTour(shell: shell, home: home, context: context, agent: agent) }
             // The call's opens one after another, then from Settings: each logs the stack it left (`[call] stack`).
@@ -398,6 +431,87 @@ final class SplitAppHarness {
                 try? await Task.sleep(for: .seconds(1.5))
                 _ = await targets.open("inbox-agent")
                 _ = await targets.open("cache-agent")
+                targets.close()
+            }
+            // The call's new work off screen by message, and navigate's destinations, through its own context, with no provider:
+            // each logs its result and the stack it left (`[call-nav]`), a pause between for screenshots.
+            if arguments.contains("-callNav"), let id = context.account.agentConnections.activeID, let session = Session.session(for: id, context: context) {
+                try? await Task.sleep(for: .seconds(2))
+                let targets = SessionCallTargets(session: session, shell: shell)
+                let call = CallContext(targets: targets)
+                var revision = 0
+                @MainActor func step(_ name: String, _ json: String) async -> [String: Any] {
+                    let result = await call.handle(CallToolCall(id: UUID().uuidString, name: name, parameters: Data(json.utf8)))
+                    let value = (try? JSONSerialization.jsonObject(with: Data(result.text.utf8))) as? [String: Any] ?? [:]
+                    if let next = value["focusRevision"] as? Int { revision = next }
+                    print("[call-nav] \(name) \(result.isError ? "refused" : "ok") \(result.text)")
+                    print("[call-nav] stack \(shell.stack.map { ($0 as? ChatViewController)?.shownAgentId ?? String(describing: type(of: $0)) })")
+                    try? await Task.sleep(for: .seconds(2.5))
+                    return value
+                }
+                let initial = await call.initial()
+                print("[call-nav] initial\n\(initial)")
+                _ = await step("navigate", "{\"to\":\"happy://conversation/s1\",\"focusRevision\":\(revision)}")
+                // No such place: it says which there are.
+                _ = await step("navigate", "{\"to\":\"happy://settings\",\"focusRevision\":\(revision)}")
+                // Started off screen with its first message: what is in front stays.
+                let task = await step("message", "{\"to\":\"new-task\",\"text\":\"Draft the release notes\"}")
+                let made = (task["ref"] as? String) ?? ""
+                _ = await step("readConversation", "{\"ref\":\"\(made)\"}")
+                _ = await step("listConversations", "{}")
+                _ = await step("navigate", "{\"to\":\"happy://conversation/\(made)\",\"focusRevision\":\(revision)}")
+                // No to: the conversation on screen.
+                _ = await step("message", "{\"text\":\"And the changelog\"}")
+                _ = await step("navigate", "{\"to\":\"happy://back\",\"focusRevision\":\(revision)}")
+                _ = await step("navigate", "{\"to\":\"happy://home\",\"focusRevision\":\(revision)}")
+                _ = await step("navigate", "{\"to\":\"happy://back\",\"focusRevision\":\(revision)}")
+                // Nothing on screen: the agent is told to ask which.
+                _ = await step("message", "{\"text\":\"Anyone?\"}")
+                _ = await step("readConversation", "{\"ref\":\"s1\"}")
+                print("[call-nav] done")
+                await call.close()
+                targets.close()
+            }
+            // What the call presses, as the person would (`VoiceTouch`): compose for new work, a row off
+            // screen and one on it, back, a sheet's close and home, each logged with when it began and
+            // ended (`[voice-touch]`), a pause between for the recording.
+            if arguments.contains("-voiceTouch"), let id = context.account.agentConnections.activeID, let session = Session.session(for: id, context: context) {
+                // Less motion, as the system's setting asks for it.
+                if arguments.contains("-reduceMotion") { ShimmerClock.shared.reduceMotionOverride = true }
+                try? await Task.sleep(for: .seconds(3))
+                let targets = SessionCallTargets(session: session, shell: shell)
+                let call = CallContext(targets: targets)
+                var revision = 0
+                let began = Date()
+                @MainActor func step(_ name: String, _ json: String) async -> [String: Any] {
+                    print("[voice-touch] \(String(format: "%.2f", Date().timeIntervalSince(began))) start \(name) \(json)")
+                    let result = await call.handle(CallToolCall(id: UUID().uuidString, name: name, parameters: Data(json.utf8)))
+                    let value = (try? JSONSerialization.jsonObject(with: Data(result.text.utf8))) as? [String: Any] ?? [:]
+                    if let next = value["focusRevision"] as? Int { revision = next }
+                    print("[voice-touch] \(String(format: "%.2f", Date().timeIntervalSince(began))) end \(name) \(result.isError ? "refused" : "ok") \(result.text.prefix(200))")
+                    try? await Task.sleep(for: .seconds(2))
+                    return value
+                }
+                _ = await call.initial()
+                let listed = await step("listConversations", "{}")
+                let conversations = listed["conversations"] as? [[String: Any]] ?? []
+                func ref(_ title: String) -> String { (conversations.first { $0["title"] as? String == title }?["ref"] as? String) ?? "" }
+                let far = (conversations.last { ($0["title"] as? String)?.hasPrefix("Fixture task") == true }?["title"] as? String) ?? ""
+                _ = await step("message", "{\"to\":\"new-task\",\"text\":\"Draft the release notes\"}")
+                _ = await step("navigate", "{\"to\":\"happy://conversation/\(ref(far))\",\"focusRevision\":\(revision)}")
+                _ = await step("navigate", "{\"to\":\"happy://back\",\"focusRevision\":\(revision)}")
+                _ = await step("navigate", "{\"to\":\"happy://conversation/\(ref("Research Assistant"))\",\"focusRevision\":\(revision)}")
+                _ = await step("navigate", "{\"to\":\"happy://home\",\"focusRevision\":\(revision)}")
+                // A sheet with its close at the leading end, as the app's sheets have it.
+                let settings = SettingsViewController(context: context, computer: id)
+                let sheet = UINavigationController(rootViewController: settings)
+                settings.navigationItem.leftBarButtonItem = UIBarButtonItem(systemItem: .close, primaryAction: UIAction { [weak sheet] _ in sheet?.dismiss(animated: true) })
+                AppCoordinator.applyAppearance(to: sheet.navigationBar)
+                shell.present(sheet, animated: true)
+                try? await Task.sleep(for: .seconds(2))
+                _ = await step("navigate", "{\"to\":\"happy://back\",\"focusRevision\":\(revision)}")
+                print("[voice-touch] done")
+                await call.close()
                 targets.close()
             }
             // A sheet of the app's over home, left up, for the UI test that reads the bar through it.
@@ -496,6 +610,40 @@ final class SplitAppHarness {
     #endif
 
     /// What tapping the row does: a chat from the sidebar.
+    /// Home in Low Power Mode, the setting's switch found in Settings and
+    /// flipped as a finger would, and home again: each step logged (`[low-power]`).
+    private static func lowPowerTour(window: UIWindow, home: UIViewController, context: AppContext) async {
+        print("[low-power] home, shimmer \(ShimmerClock.shared.shimmersInLowPower ? "on" : "off")")
+        try? await Task.sleep(for: .seconds(4))
+        SettingsViewController.open(context: context, computer: context.account.agentConnections.activeID, from: home)
+        try? await Task.sleep(for: .seconds(1.5))
+        // Settings' own search, typed into as a finger would: Appearance's
+        // switch comes up in place.
+        if let settings = home.navigationController?.topViewController as? SettingsViewController, let search = settings.navigationItem.searchController {
+            search.isActive = true
+            try? await Task.sleep(for: .seconds(0.5))
+            search.searchBar.text = "Low Power"
+            settings.updateSearchResults(for: search)
+        }
+        print("[low-power] settings search")
+        try? await Task.sleep(for: .seconds(2.5))
+        func find(_ view: UIView) -> UISwitch? {
+            if let toggle = view as? UISwitch, view.accessibilityIdentifier == "settings-toggle:\(SettingsIndex.shimmerInLowPower.id)" { return toggle }
+            return view.subviews.lazy.compactMap(find).first
+        }
+        if let toggle = find(window) {
+            toggle.setOn(!toggle.isOn, animated: true)
+            toggle.sendActions(for: .valueChanged)
+        }
+        print("[low-power] switch flipped, shimmer \(ShimmerClock.shared.shimmersInLowPower ? "on" : "off")")
+        try? await Task.sleep(for: .seconds(2))
+        let navigation = home.navigationController
+        navigation?.topViewController?.navigationItem.searchController?.isActive = false
+        try? await Task.sleep(for: .seconds(1.5))
+        navigation?.popToRootViewController(animated: true)
+        print("[low-power] home again")
+    }
+
     private static func open(_ id: String, from home: UIViewController, context: AppContext, agent: Bool, animated: Bool = false) {
         if agent {
             guard let session = context.account.agentConnections.activeID.flatMap({ Session.session(for: $0, context: context) }),

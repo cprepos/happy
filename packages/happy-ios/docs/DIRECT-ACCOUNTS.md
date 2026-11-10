@@ -43,11 +43,25 @@ entries after metadata corruption; Keychain access errors preserve them.
 The legacy registry and RN-compatible shared item keep their current format.
 
 `DirectAccounts` connects each stored instance independently on launch and
-foreground. It checks health and refreshes `config.node` every minute, using
-`GET /v0/node/avatar` with `If-None-Match` even when ThumbHash is unchanged.
+foreground. It checks health and refreshes `config.node` then and every ten
+minutes after (in the last minute of the ten, with traffic already moving:
+`RadioWake`), using `GET /v0/node/avatar` with `If-None-Match` even when
+ThumbHash is unchanged. Each check has a transport of its own, closed after
+it, so its Tailcat clients don't sit on the radio between checks; an open
+account's own event stream says whether its computer is there.
 Transient failures reconnect with 1–30 second backoff. Background cancels and
 awaits the loops; 401/403 marks the device revoked and prevents retries across
-relaunch. Disconnecting takes the agent off the list and out of the open
+relaunch. An engine kept through a suspension is resumed before its stream
+asks for anything (`AgentTransport.resumed`): each Tailcat client is woken
+(`TailcatClient.wake`), which checks rather than assumes anything broke. The
+relay is pinged and replaced only if it doesn't answer within two seconds,
+every direct path is probed and one that stopped answering dropped, a dead
+socket rebound, and a session past WireGuard's 180 seconds rekeyed at once
+instead of at the next 30-second idle mark. The clients wake together, and
+the engine waits for them five seconds at most: a client whose relay iOS
+reclaimed wakes only once a new relay connection is up. Every pairing's
+identity check starts at once on coming back, the open account's first, and
+the open engine is resumed before any other is paused. Disconnecting takes the agent off the list and out of the open
 slot at once (`AgentConnections.forget`): its identity loop and engine can
 no longer publish or save anything of it, so nothing waits for them.
 `finishRemoval` then erases the credentials and cached identity, gives the

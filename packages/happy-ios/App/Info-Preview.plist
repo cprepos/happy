@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>HappyCallAgentID</key>
-	<string>$(HAPPY_CALL_AGENT_ID)</string>
+	<string>$(HAPPY_CALL_AGENT_V3_ID)</string>
 	<key>HappyRevenueCatAppleKey</key>
 	<string>$(HAPPY_REVENUE_CAT_APPLE_KEY)</string>
 	<key>HappyGuestPreviewInvites</key>
@@ -13,7 +13,7 @@
 	<key>CFBundleDisplayName</key>
 	<string>Happy (preview)</string>
 	<key>CFBundleShortVersionString</key>
-	<string>2.0.0</string>
+	<string>2026.11.1</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -53,7 +53,9 @@
 	<key>NSCameraUsageDescription</key>
 	<string>Allow Happy (preview) to access your camera to scan QR codes and share photos with AI.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Allow Happy to use your microphone to talk with your coding agents.</string>
+	<string>Allow Happy to use your microphone to talk with your coding agents and to dictate messages.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Allow Happy to turn what you say into text on this iPhone, so you can dictate messages to your agents.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Allow Happy (preview) to find and connect to local devices on your network.</string>
 	<key>UIApplicationSceneManifest</key>

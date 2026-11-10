@@ -363,6 +363,35 @@ final class SignInRequiredTests: XCTestCase {
         XCTAssertEqual(second.record.userId, "u1")
     }
 
+    /// A cloud member with no profile yet (`userId` null) is asked their
+    /// name, offered the one the server suggests while it's unsaved, and
+    /// is a member once it's saved. Nothing is saved for them.
+    func testANamelessCloudMemberIsOfferedTheSuggestionAndSavesTheirName() async throws {
+        let server = HappyCloud.server(named: "acme")
+        let http = ScriptedHTTP()
+        let saved = NSLock()
+        nonisolated(unsafe) var asked = 0
+        http.on(server + "/v0/authentication") { _ in
+            let userId = saved.withLock { asked += 1; return asked > 1 ? #""u1""# : "null" }
+            return HTTPResponse(status: 200, body: Data(#"{"authenticated":true,"userId":\#(userId),"methods":[]}"#.utf8), headers: ["Content-Type": "application/json"])
+        }
+        let daemon = Daemon()
+        await daemon.answer("/v0/health", HTTP1Response(status: 200, body: Data(#"{"ready":true}"#.utf8)))
+        await daemon.answer("/v0/profile", HTTP1Response(status: 200, body: Data(#"{"profile":{"name":" Steve K ","email":"s@example.com","updatedAt":0,"version":"v0"}}"#.utf8)))
+        let flow = try ServerSignInFlow.cloud(server, http: http, makeTransport: { _ in daemon })
+        let grant = OAuthGrant(refreshToken: "sr1", refreshUrl: HappyCloud.accounts + "/token", clientId: "happy", resource: server + "/", audience: server + "/")
+        let signedIn = try await flow.signedIn(access: OAuthAccess(token: jwt("srv", aud: server + "/"), expiresAt: nil), grant: grant, installation: .recorded)
+        XCTAssertTrue(signedIn.needsProfile)
+        let suggested = await flow.suggestedName(for: signedIn)
+        XCTAssertEqual(suggested, "Steve K")
+        let member = try await flow.saveProfile("Steve", for: signedIn)
+        XCTAssertFalse(member.needsProfile)
+        XCTAssertEqual(member.record.userId, "u1")
+        await daemon.answer("/v0/profile", HTTP1Response(status: 200, body: Data(#"{"profile":{"name":null,"updatedAt":0,"version":"v0"}}"#.utf8)))
+        let none = await flow.suggestedName(for: signedIn)
+        XCTAssertNil(none, "no suggestion, an empty field")
+    }
+
     func testHappyCloudServersAreNamedUnderTheBase() throws {
         let acme = HappyCloud.server(named: "acme")
         XCTAssertEqual(acme, "https://acme.\(HappyCloud.base)")
@@ -409,6 +438,11 @@ final class SignInRequiredTests: XCTestCase {
         http.json(accounts + "/v1/servers", #"{"servers":[{"id":"s1","name":"acme","url":"https://acme.example/","role":"owner","createdAt":1}]}"#)
         let servers = try await account.servers()
         XCTAssertEqual(servers, [CloudServer(id: "s1", name: "acme", url: "https://acme.example/", role: .owner)])
+
+        // A viewer, an admin and a team's own role read as theirs; none loses the server.
+        http.json(accounts + "/v1/servers", #"{"servers":[{"id":"s1","name":"acme","url":"","role":"viewer"},{"id":"s2","name":"beta","url":"","role":"admin"},{"id":"s3","name":"gamma","url":"","role":"reviewers"}]}"#)
+        let roles = try await account.servers().map(\.role)
+        XCTAssertEqual(roles, [.viewer, .admin, .other("reviewers")])
         XCTAssertEqual(http.requests.last?.headers["Authorization"], "Bearer \(pass)")
 
         http.json(accounts + "/v1/servers/join", status: 404, #"{"code":"not_found","error":"No such server."}"#)
@@ -496,6 +530,33 @@ final class SignInRequiredTests: XCTestCase {
         XCTAssertNil(keychain.stored(item))
     }
 
+    /// A test account signs in with its login and password and gets the
+    /// same one-hour pass; a wrong password and a lockout say which.
+    func testHappyCloudTestAccountSignsInWithAPassword() async throws {
+        let accounts = HappyCloud.accounts
+        let http = ScriptedHTTP()
+        let pass = jwt("acc-qa", aud: accounts + "/")
+        http.on(accounts + "/v1/auth/password") { request in
+            XCTAssertEqual(request.method, "POST")
+            XCTAssertNil(request.headers["Authorization"])
+            let body = try JSONSerialization.jsonObject(with: request.body ?? Data()) as? [String: String]
+            XCTAssertEqual(body, ["login": "qa-ios", "password": "pw"])
+            return HTTPResponse(status: 200, body: Data(#"{"access_token":"\#(pass)","token_type":"Bearer","expires_in":3600}"#.utf8))
+        }
+        let account = try await CloudAccount.signIn(login: "qa-ios", password: "pw", http: http)
+        XCTAssertTrue(account.isLive())
+        XCTAssertEqual(account.expiresAt.timeIntervalSinceNow, 3600, accuracy: 5)
+
+        http.json(accounts + "/v1/auth/password", status: 401, #"{"code":"invalid_credentials"}"#)
+        await XCTAssertThrowsAsync(try await CloudAccount.signIn(login: "qa-ios", password: "no", http: http)) {
+            XCTAssertEqual($0 as? CloudAccountError, .refused(status: 401, code: "invalid_credentials", message: nil))
+        }
+        http.json(accounts + "/v1/auth/password", status: 429, #"{"code":"locked","retryAfter":840}"#)
+        await XCTAssertThrowsAsync(try await CloudAccount.signIn(login: "qa-ios", password: "no", http: http)) {
+            XCTAssertEqual($0 as? CloudAccountError, .locked(retryAfter: 840))
+        }
+    }
+
     /// Removing a cloud server revokes its refresh token's family at the
     /// accounts service; a grant without one sends nothing.
     func testHappyCloudRevokesARemovedServersSession() async throws {
@@ -577,8 +638,8 @@ private actor Who {
 final class SignedInTransportTests: XCTestCase {
     private let who = Who()
 
-    private func signed(_ base: any AgentTransport, _ authorization: ServerAuthorization) -> SignedInTransport {
-        SignedInTransport(base: base, authorization: authorization) { [who] in await who.discover($0) }
+    private func signed(_ base: any AgentTransport, _ authorization: ServerAuthorization, cloud: Bool = false) -> SignedInTransport {
+        SignedInTransport(base: base, authorization: authorization, cloud: cloud) { [who] in await who.discover($0) }
     }
 
     private func authorization(_ http: ScriptedHTTP, access: OAuthAccess? = OAuthAccess(token: "a1", expiresAt: nil), saved: SavedGrants = SavedGrants()) -> ServerAuthorization {
@@ -620,14 +681,77 @@ final class SignedInTransportTests: XCTestCase {
         let credentials = await daemon.credentials
         XCTAssertEqual(credentials, ["a1", "a1"])
         XCTAssertTrue(http.requests.isEmpty, "nothing was refreshed")
-        // No user yet: the profile gate, past which only signing in (with its name) goes.
+        // No profile yet (a cluster before `profile_required`): the name
+        // step, never a sign-out. Callers see Happy's 403 profile_required.
         await daemon.answer("/v0/config", gate)
         await who.set(AuthenticationDiscovery(authenticated: true, userId: nil, methods: []))
         let gated = try await transport.request(method: "GET", path: "/v0/config", credential: "", body: nil, headers: [:])
-        XCTAssertEqual(gated.status, 401)
+        XCTAssertEqual(gated.status, 403)
+        XCTAssertTrue(String(decoding: gated.body, as: UTF8.self).contains(#""code":"profile_required""#))
         let state = await auth.state
-        XCTAssertEqual(state, .needsSignIn)
+        XCTAssertEqual(state, .signedIn, "a member with no profile was signed out")
         XCTAssertTrue(http.requests.isEmpty)
+    }
+
+    /// The cluster's own answer for a member with no profile passes through.
+    func testProfileRequiredIsAnOrdinaryRefusal() async throws {
+        let http = ScriptedHTTP()
+        let daemon = Daemon()
+        await daemon.answer("/v0/bots", HTTP1Response(status: 403, headers: json, body: Data(#"{"error":"Name needed","code":"profile_required"}"#.utf8)))
+        let auth = authorization(http)
+        for cloud in [false, true] {
+            let response = try await signed(daemon, auth, cloud: cloud).request(method: "GET", path: "/v0/bots", credential: "", body: nil, headers: [:])
+            XCTAssertEqual(response.status, 403)
+        }
+        let state = await auth.state
+        XCTAssertEqual(state, .signedIn)
+    }
+
+    /// Happy Cloud's edge enforces no SSO: its odd answer is a deploy or the
+    /// network. Refreshed and repeated once; still odd, unavailable, never
+    /// a sign-out.
+    func testOnHappyCloudTheEdgeNeverSignsOut() async throws {
+        for edge in [HTTP1Response(status: 302, headers: ["location": "https://elsewhere.example"]),
+                     HTTP1Response(status: 401, headers: ["content-type": "text/html"], body: Data("<html>".utf8)),
+                     HTTP1Response(status: 403, headers: ["content-type": "text/plain"], body: Data("denied".utf8))] {
+            let http = ScriptedHTTP()
+            http.json(acme.refreshUrl!, #"{"access_token":"\#(a2)","token_type":"Bearer","refresh_token":"r2"}"#)
+            let daemon = Daemon()
+            await daemon.answer("/v0/bots", edge, HTTP1Response(status: 200, body: Data("{}".utf8)))
+            let auth = authorization(http)
+            let transport = signed(daemon, auth, cloud: true)
+            let recovered = try await transport.request(method: "GET", path: "/v0/bots", credential: "", body: nil, headers: [:])
+            XCTAssertEqual(recovered.status, 200, "\(edge.status)")
+            XCTAssertEqual(http.requests.count, 1, "refreshed once")
+            await daemon.answer("/v0/bots", edge)
+            let gaveUp = try await transport.request(method: "GET", path: "/v0/bots", credential: "", body: nil, headers: [:])
+            XCTAssertEqual(gaveUp.status, 503, "\(edge.status)")
+            let state = await auth.state
+            XCTAssertEqual(state, .signedIn, "the edge's \(edge.status) signed out of Happy Cloud")
+        }
+    }
+
+    /// On Happy Cloud only the accounts service refusing the refresh signs
+    /// out; a member the daemon keeps refusing is unavailable for now.
+    func testOnHappyCloudOnlyARefusedRefreshSignsOut() async throws {
+        let unauthorized = HTTP1Response(status: 401, headers: json, body: Data(#"{"error":"Unauthorized","code":"unauthorized"}"#.utf8))
+        let http = ScriptedHTTP()
+        let daemon = Daemon()
+        await daemon.answer("/v0/bots", unauthorized)
+        await who.set(AuthenticationDiscovery(authenticated: true, userId: "steve", methods: []))
+        let auth = authorization(http)
+        let transport = signed(daemon, auth, cloud: true)
+        let response = try await transport.request(method: "GET", path: "/v0/bots", credential: "", body: nil, headers: [:])
+        XCTAssertEqual(response.status, 503)
+        var state = await auth.state
+        XCTAssertEqual(state, .signedIn)
+        // Not authenticated, and the accounts service refuses the refresh.
+        await who.set(AuthenticationDiscovery(authenticated: false, userId: nil, methods: []))
+        http.json(acme.refreshUrl!, status: 400, #"{"error":"invalid_grant"}"#)
+        let ended = try await transport.request(method: "GET", path: "/v0/bots", credential: "", body: nil, headers: [:])
+        XCTAssertEqual(ended.status, 401)
+        state = await auth.state
+        XCTAssertEqual(state, .needsSignIn)
     }
 
     func testTheEdges401NeedsSigningInWithoutAsking() async throws {

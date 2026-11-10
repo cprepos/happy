@@ -1,0 +1,270 @@
+import XCTest
+@testable import HappyCore
+
+final class DictationLanguageTests: XCTestCase {
+    private let supported = ["en-US", "en-GB", "ru-RU", "de-DE"]
+
+    func testKeyboardWinsOverEnglishSystemAndPreviousSuccess() {
+        XCTAssertEqual(rank(keyboard: "ru", successful: "de-DE"), ["ru-RU", "de-DE", "en-US"])
+    }
+
+    func testSuccessWinsWithoutKeyboard() {
+        XCTAssertEqual(rank(successful: "ru-RU"), ["ru-RU", "en-US"])
+    }
+
+    func testUnsupportedKeyboardFallsThroughToSystemOrder() {
+        XCTAssertEqual(rank(keyboard: "xx", preferred: ["de-DE", "ru-RU"]), ["de-DE", "ru-RU", "en-US"])
+    }
+
+    func testBareKeyboardUsesPreferredRegion() {
+        XCTAssertEqual(rank(keyboard: "en", preferred: ["en-GB"]), ["en-GB", "en-US"])
+    }
+
+    func testInstalledKeyboardsAndEmoji() {
+        XCTAssertEqual(rank(keyboard: "emoji", installed: ["emoji", "ru-RU", "de-DE"]), ["en-US", "ru-RU", "de-DE"])
+    }
+
+    func testCanonicalIdentifiersDeduplicate() {
+        XCTAssertEqual(rank(keyboard: "ru_RU", successful: "ru-RU", preferred: ["ru"]), ["ru-RU", "en-US"])
+    }
+
+    func testNoArbitraryUnsupportedFallback() {
+        XCTAssertEqual(DictationLanguage.ranked(keyboard: "ru", successful: nil, preferred: [], installed: [], supported: ["de-DE"]), [])
+    }
+
+    func testExplicitChineseScriptsDoNotCross() {
+        XCTAssertEqual(DictationLanguage.ranked(keyboard: "zh-Hant", successful: nil, preferred: [], installed: [], supported: ["zh-Hans-CN", "zh-Hant-TW"]), ["zh-Hant-TW"])
+    }
+
+    func testProbesTakeTheNextDifferentLanguage() {
+        XCTAssertEqual(DictationLanguage.probes(["en-GB", "en-US", "ru-RU", "de-DE"]), ["en-GB", "ru-RU"])
+        XCTAssertEqual(DictationLanguage.probes(["ru_RU", "en_US"]), ["ru_RU", "en_US"])
+        XCTAssertEqual(DictationLanguage.probes(["en-US", "en-GB"]), ["en-US"])
+        XCTAssertEqual(DictationLanguage.probes([]), [])
+    }
+
+    /// Readings measured on macOS 27 from `say` clips (Milena, Samantha).
+    func testChooseFollowsTheSpokenLanguage() {
+        let russian = [reading("en-US", "Previous pagoda", 0.29), reading("ru-RU", "Привет как дела сегодня хорошая погода", 0.98)]
+        XCTAssertEqual(DictationLanguage.choose(russian)?.locale, "ru-RU")
+        let english = [reading("ru-RU", "Hello how are you to where is nice today", 0.40), reading("en-US", "Hello, how are you? The weather is nice today.", 0.98)]
+        XCTAssertEqual(DictationLanguage.choose(english)?.locale, "en-US")
+    }
+
+    func testChooseKeepsThePreferredLanguageWhenClose() {
+        XCTAssertEqual(DictationLanguage.choose([reading("ru-RU", "да", 0.70), reading("en-US", "da", 0.80)])?.locale, "ru-RU")
+    }
+
+    func testChooseIgnoresEmptyReadings() {
+        XCTAssertEqual(DictationLanguage.choose([reading("ru-RU", " ", 0.99), reading("en-US", "hi", 0.30)])?.locale, "en-US")
+        XCTAssertNil(DictationLanguage.choose([reading("ru-RU", "", 0)]))
+        XCTAssertNil(DictationLanguage.choose([]))
+    }
+
+    /// Settled stretches as DictationTranscriber gave them for the Russian
+    /// clip, read as Russian (0) and English (1).
+    func testProbeChoosesOnceBothHaveSettledEnough() {
+        var probe = DictationLanguage.Probe(locales: ["ru-RU", "en-US"])
+        XCTAssertEqual(probe.shown, 0)
+        XCTAssertNil(probe.settle(1, confidence: 0.09, characters: 26))
+        XCTAssertNil(probe.winner, "Russian hasn't settled anything yet")
+        XCTAssertEqual(probe.settle(0, confidence: 0.90, characters: 62), 0)
+        XCTAssertEqual(probe.shown, 0)
+        XCTAssertFalse(probe.listens(to: 1))
+        XCTAssertNil(probe.settle(1, confidence: 0.99, characters: 100), "a decided probe stays decided")
+        XCTAssertEqual(probe.finish(texts: ["а", "b"]), 0)
+    }
+
+    func testProbeSwitchesToTheSecondLanguage() {
+        var probe = DictationLanguage.Probe(locales: ["de-DE", "en-US"])
+        XCTAssertNil(probe.settle(0, confidence: 0.37, characters: 51))
+        XCTAssertEqual(probe.settle(1, confidence: 0.97, characters: 67), 1)
+        XCTAssertEqual(probe.shown, 1)
+        XCTAssertTrue(probe.listens(to: 1))
+        XCTAssertFalse(probe.listens(to: 0))
+    }
+
+    func testProbeWaitsOnACloseCallAndTooLittle() {
+        var probe = DictationLanguage.Probe(locales: ["de-DE", "en-US"])
+        XCTAssertNil(probe.settle(0, confidence: 0.83, characters: 72))
+        XCTAssertNil(probe.settle(1, confidence: 0.93, characters: 68), "0.10 apart is not clear")
+        var short = DictationLanguage.Probe(locales: ["ru-RU", "en-US"])
+        XCTAssertNil(short.settle(0, confidence: 0.2, characters: 3))
+        XCTAssertNil(short.settle(1, confidence: 0.9, characters: 5))
+        XCTAssertEqual(short.finish(texts: ["да", "Yes."]), 1, "at the end a clear lead still wins")
+    }
+
+    func testProbeMeansAreWeightedByCharacters() {
+        var probe = DictationLanguage.Probe(locales: ["ru-RU", "en-US"])
+        _ = probe.settle(0, confidence: 1.0, characters: 30)
+        _ = probe.settle(0, confidence: 0.4, characters: 10)
+        XCTAssertEqual(probe.confidence(of: 0), 0.85, accuracy: 0.0001)
+        XCTAssertEqual(probe.confidence(of: 1), 0)
+    }
+
+    func testProbeFinishTakesTheMoreConfidentHoweverClose() {
+        var close = DictationLanguage.Probe(locales: ["de-DE", "en-US"])
+        _ = close.settle(0, confidence: 0.83, characters: 72)
+        _ = close.settle(1, confidence: 0.93, characters: 68)
+        XCTAssertEqual(close.finish(texts: ["Please open", "Please open"]), 1)
+        var tie = DictationLanguage.Probe(locales: ["de-DE", "en-US"])
+        _ = tie.settle(0, confidence: 0.5, characters: 20)
+        _ = tie.settle(1, confidence: 0.5, characters: 20)
+        XCTAssertEqual(tie.finish(texts: ["Bitte", "Please"]), 0, "a tie keeps the best ranked")
+        var silent = DictationLanguage.Probe(locales: ["ru-RU", "en-US"])
+        XCTAssertEqual(silent.finish(texts: ["", ""]), 0)
+        var onlySecond = DictationLanguage.Probe(locales: ["ru-RU", "en-US"])
+        XCTAssertEqual(onlySecond.finish(texts: ["", "Hi"]), 1)
+    }
+
+    /// The first pause of the Russian `say` recording, read as English (1)
+    /// and Russian (0): English heard only "At grand".
+    func testProbeLeaderNeedsEnoughTheOtherOnlyToHaveSettled() {
+        var probe = DictationLanguage.Probe(locales: ["ru-RU", "en-US"])
+        XCTAssertNil(probe.settle(1, confidence: 0.03, characters: 8))
+        XCTAssertEqual(probe.settle(0, confidence: 0.73, characters: 55), 0)
+        var silent = DictationLanguage.Probe(locales: ["ru-RU", "en-US"])
+        XCTAssertNil(silent.settle(1, confidence: 0, characters: 0))
+        XCTAssertEqual(silent.settle(0, confidence: 0.73, characters: 55), 0)
+    }
+
+    /// The iPhone 12, English keyboard in use, a short Russian command
+    /// let go of as it ended: no pause, and both readings poor.
+    func testProbeFinishKeepsAShortRussianCommandFullOfEnglishWords() {
+        var probe = DictationLanguage.Probe(locales: ["en-US", "ru-RU"])
+        XCTAssertNil(probe.settle(1, confidence: 0.39, characters: 25))
+        XCTAssertNil(probe.settle(0, confidence: 0.28, characters: 23), "0.11 apart is not clear mid-recording")
+        XCTAssertEqual(probe.finish(texts: ["Is Julie commit is mean", "Сделай комменты замуж man"]), 1)
+    }
+
+    /// The iPhone 12's microphone, a Russian sentence without a pause:
+    /// English settled one confident word.
+    func testProbeFinishPrefersTheOneThatHeardEnough() {
+        var probe = DictationLanguage.Probe(locales: ["en-US", "ru-RU"])
+        XCTAssertNil(probe.settle(0, confidence: 0.89, characters: 5))
+        XCTAssertNil(probe.settle(1, confidence: 0.61, characters: 55))
+        XCTAssertEqual(probe.finish(texts: ["Sushi", "Слушай я хочу чтобы ты открыл настройки потом проверила"]), 1)
+    }
+
+    /// The iPhone 12's microphone hearing Russian: English settled nothing
+    /// at either pause, so only the pause tells it heard nothing.
+    func testPauseDecidesAgainstALanguageThatHeardNothing() {
+        var probe = DictationLanguage.Probe(locales: ["en-US", "ru-RU"])
+        XCTAssertNil(probe.settle(1, confidence: 0.90, characters: 39))
+        XCTAssertNil(probe.winner, "English might only be late")
+        XCTAssertEqual(probe.pauseSettled(), 1)
+        XCTAssertEqual(probe.shown, 1)
+        var unsure = DictationLanguage.Probe(locales: ["en-US", "ru-RU"])
+        XCTAssertNil(unsure.settle(1, confidence: 0.38, characters: 39))
+        XCTAssertNil(unsure.pauseSettled(), "too unsure to win alone")
+        var short = DictationLanguage.Probe(locales: ["en-US", "ru-RU"])
+        XCTAssertNil(short.settle(1, confidence: 0.95, characters: 6))
+        XCTAssertNil(short.pauseSettled(), "too little to win")
+    }
+
+    /// The wrong language's reading came, the right one's is late: wrong
+    /// readings scored at most 0.49 on the iPhone, short of `alone`.
+    func testPauseNeverPicksTheWrongLanguageAgainstALateReading() {
+        var probe = DictationLanguage.Probe(locales: ["en-US", "ru-RU"])
+        XCTAssertNil(probe.settle(0, confidence: 0.49, characters: 37))
+        XCTAssertNil(probe.pauseSettled())
+        XCTAssertNil(probe.settle(0, confidence: 0.48, characters: 30), "Russian still hasn't settled")
+        XCTAssertEqual(probe.settle(1, confidence: 0.99, characters: 66), 1)
+        XCTAssertNil(probe.pauseSettled(), "a decided probe stays decided")
+    }
+
+    func testPauseWithEveryReadingDecidesAsSettlingDoes() {
+        var probe = DictationLanguage.Probe(locales: ["ru-RU", "en-US"])
+        XCTAssertNil(probe.settle(0, confidence: 0.83, characters: 72))
+        XCTAssertNil(probe.settle(1, confidence: 0.93, characters: 68))
+        XCTAssertNil(probe.pauseSettled(), "0.10 apart is not clear")
+    }
+
+    func testProbeWaitsForEveryCandidateToSettle() {
+        var probe = DictationLanguage.Probe(locales: ["en-US", "ru-RU"])
+        XCTAssertNil(probe.settle(0, confidence: 0.22, characters: 42), "the right one's reading hasn't come")
+        XCTAssertEqual(probe.settle(1, confidence: 0.93, characters: 70), 1)
+    }
+
+    func testPausesSettleALittleIntoTheFirstLongQuiet() {
+        var pauses = DictationLanguage.Pauses()
+        var found: [Double] = []
+        func hear(_ level: Float, seconds: Double) {
+            for _ in 0..<Int((seconds / 0.05).rounded()) {
+                if let time = pauses.hear(level: level, duration: 0.05) { found.append(time) }
+            }
+        }
+        hear(0.001, seconds: 0.5)   // the room before speaking: no pause
+        hear(0.2, seconds: 0.6)
+        hear(0.002, seconds: 0.5)   // too little speech yet
+        hear(0.2, seconds: 0.6)
+        hear(0.002, seconds: 0.2)   // a gap between words
+        hear(0.15, seconds: 0.5)
+        XCTAssertEqual(found, [])
+        hear(0.002, seconds: 1.0)
+        XCTAssertEqual(found.count, 1, "once per pause")
+        XCTAssertEqual(found[0], 2.9 + 0.1, accuracy: 0.001)
+        hear(0.1, seconds: 0.3)
+        hear(0.005, seconds: 0.4)    // quiet relative to the speech
+        XCTAssertEqual(found.count, 2)
+        XCTAssertEqual(found[1], 4.2 + 0.1, accuracy: 0.001)
+    }
+
+    // MARK: How many languages a recording listens in
+
+    func testMultilingualOffListensInTheFirstOnly() {
+        XCTAssertEqual(listen(keyboard: "ru", installed: ["ru-RU", "en-US"], multilingual: false), ["ru-RU"])
+    }
+
+    func testOneLanguageListensInIt() {
+        // One Russian keyboard and Russian system: the English fallback is
+        // not a second language of theirs.
+        XCTAssertEqual(listen(keyboard: "ru-RU", preferred: ["ru-RU"], installed: ["ru-RU"]), ["ru-RU"])
+        XCTAssertEqual(listen(preferred: ["en-US"], installed: ["en-US", "emoji"]), ["en-US"])
+        // Two regions of one language are one language.
+        XCTAssertEqual(listen(preferred: ["en-GB"], installed: ["en-US"]), ["en-GB"])
+        // A second language that doesn't run here doesn't count.
+        XCTAssertEqual(listen(keyboard: "ru", preferred: ["ru-RU"], installed: ["xx-XX"]), ["ru-RU"])
+        // Nothing of theirs runs here: English alone.
+        XCTAssertEqual(listen(preferred: ["xx-XX"]), ["en-US"])
+    }
+
+    func testTwoLanguagesListenInBoth() {
+        XCTAssertEqual(listen(keyboard: "en-US", preferred: ["ru-RU"], installed: ["ru-RU", "en-US"]), ["en-US", "ru-RU"])
+        XCTAssertEqual(listen(successful: "ru-RU", preferred: ["en-US"]), ["ru-RU", "en-US"])
+    }
+
+    func testThreeOrMoreListenInTheTopTwo() {
+        XCTAssertEqual(listen(keyboard: "de", preferred: ["ru-RU", "en-US"], installed: ["en-GB"]), ["de-DE", "ru-RU"])
+        XCTAssertEqual(DictationLanguage.probes(["en-US", "ru-RU", "de-DE"], limit: 3), ["en-US", "ru-RU"], "never more than two")
+        XCTAssertEqual(DictationLanguage.maximumListening, 2)
+    }
+
+    func testMultilingualIsOnUntilTurnedOff() {
+        let storage = InMemoryKeyValueStore()
+        let settings = LocalSettings(storage: storage)
+        XCTAssertTrue(settings.multilingualDictation)
+        settings.multilingualDictation = false
+        XCTAssertFalse(LocalSettings(storage: storage).multilingualDictation)
+        settings.multilingualDictation = true
+        XCTAssertTrue(LocalSettings(storage: storage).multilingualDictation)
+    }
+
+    private func listen(keyboard: String? = nil, successful: String? = nil, preferred: [String] = [], installed: [String] = [], multilingual: Bool = true) -> [String] {
+        DictationLanguage.listening(keyboard: keyboard, successful: successful, preferred: preferred, installed: installed, supported: supported, multilingual: multilingual)
+    }
+
+    func testProbeOfOneHasItsWinner() {
+        let probe = DictationLanguage.Probe(locales: ["en-US"])
+        XCTAssertEqual(probe.winner, 0)
+        XCTAssertTrue(probe.listens(to: 0))
+    }
+
+    private func reading(_ locale: String, _ text: String, _ confidence: Double) -> DictationLanguage.Reading {
+        .init(locale: locale, text: text, confidence: confidence)
+    }
+
+    private func rank(keyboard: String? = nil, successful: String? = nil, preferred: [String] = ["en-US"], installed: [String] = []) -> [String] {
+        DictationLanguage.ranked(keyboard: keyboard, successful: successful, preferred: preferred, installed: installed, supported: supported)
+    }
+}

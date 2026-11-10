@@ -7,8 +7,8 @@ import UIKit
 /// list running under it with iOS 26's soft scroll edge as the bar's shade.
 /// At the left, alone, the account switcher (`AccountSwitcher`): the active
 /// account's picture and name, the name giving way to the link's status
-/// while the computer isn't live. Settings stays at the right. Search and compose are in UIKit's
-/// bottom toolbar; what search finds
+/// while the computer isn't live. Settings stays at the right. Search, the
+/// call, compose and the microphone are in UIKit's bottom toolbar; what search finds
 /// shows over home, which stays where it was.
 ///
 /// As the iPad's sidebar (`SidebarColumnTrait`) the header keeps the
@@ -32,17 +32,80 @@ final class AgentHomeViewController: UIViewController, ComposeHosting {
         item.sharesBackground = false
         return item
     }()
-    /// A voice call with this connection's agents, just left of compose
-    /// (`CallController`).
-    private lazy var voiceItem: UIBarButtonItem = {
-        let item = UIBarButtonItem(image: .voiceIcon(), primaryAction: UIAction { [weak self] _ in self?.startCall() })
-        item.accessibilityLabel = Strings.Call.start
-        item.accessibilityIdentifier = "voice-call"
+    /// A voice call with this connection's agents, before Settings in the
+    /// header (`CallController`).
+    private lazy var callItem = HeaderBar.callItem { [weak self] in self?.startCall() }
+    /// Telegram's microphone, between search and compose: hold to say
+    /// what a new task should do, and it starts with those words; stopped
+    /// while locked, its composer opens with them as a draft.
+    private lazy var record: RecordButton = {
+        let button = RecordButton(style: .toolbar)
+        // The toolbar becomes the bar: search's glass morphs into one item
+        // the clock is written over, and back when the recording ends
+        // (`RecordToolbarLayout`).
+        button.bar = { [weak self] in
+            guard let self, let toolbar = navigationController?.toolbar, let layout = recordingLayout(in: toolbar) else { return nil }
+            return RecordBar(frame: toolbar.convert(layout.bar, to: nil), cornerRadius: layout.bar.height / 2, ground: .host)
+        }
+        button.onRecording = { [weak self] recording in self?.morphToolbar(recording: recording) }
+        button.multilingual = { [weak self] in self?.context.account.localSettings.multilingualDictation ?? true }
+        // A cancel's bin stands in for search's magnifier, as Telegram's
+        // stands in for the attach button: the dot is right over it.
+        button.binSpot = { [weak self] in
+            guard let bar = self?.navigationItem.searchController?.searchBar,
+                  let magnifier = (bar.searchTextField.leftView as? UIImageView)?.image
+            else { return nil }
+            // The magnifier, clear: the placeholder keeps its place.
+            let clear = magnifier.withTintColor(.clear, renderingMode: .alwaysOriginal)
+            return RecordBinSpot(hide: { hidden in
+                bar.setImage(hidden ? clear : nil, for: .search, state: .normal)
+            })
+        }
+        button.onResult = { [weak self] result in
+            guard let self else { return }
+            endSearch()
+            switch result {
+            case .send(let words): v2.startWork(saying: words)
+            case .draft(let words): v2.makeNewWork(draft: words)
+            }
+        }
+        return button
+    }()
+    private lazy var recordItem: UIBarButtonItem = {
+        let item = UIBarButtonItem(customView: record)
         item.sharesBackground = false
         return item
     }()
+    /// The toolbar's bar while the microphone records: room for the clock,
+    /// in glass search's field morphs into.
+    private let recordBarSpace = RecordBarSpace()
+    private lazy var recordBarItem: UIBarButtonItem = {
+        let item = UIBarButtonItem(customView: recordBarSpace)
+        item.sharesBackground = false
+        item.identifier = Self.searchIdentifier
+        return item
+    }()
+    /// Compose's room while the microphone records, so it doesn't move.
+    private let composeRoom = UIBarButtonItem.fixedSpace(RecordToolbarLayout.buttonRoom)
+    private static let searchIdentifier = "home-search"
+    /// The toolbar's frames while the microphone records; nil at rest.
+    private var recordingToolbar: RecordToolbarLayout?
     private var switcher: AccountSwitcher?
     private var headerWatch: Watch?
+    private var accessWatch: Watch?
+    private var onboardingWatch: Watch?
+    private var accountsWatch: AccountsObservation?
+    /// The server's session ended: only the way to sign in again shows
+    /// (`ServerSignedOutView`).
+    private var signedOutView: ServerSignedOutView?
+    var showsSignedOut: Bool { signedOutView != nil }
+    /// "What's your name?" was offered on this screen: once a launch, so
+    /// "Not Now" holds until the next.
+    private var askedName = false
+    /// The person's role may start work here (`RoleGate`): else no compose,
+    /// microphone or call. A computer always may.
+    private var mayWrite: Bool { Session.session(for: id, context: context)?.gate.allows(.contentWrite) ?? true }
+    private var shownMayWrite: Bool?
     /// The list's room under the bar and above the toolbar, as home last
     /// stood with it.
     private var room: HomeListRoom?
@@ -105,8 +168,83 @@ final class AgentHomeViewController: UIViewController, ComposeHosting {
         switcher = AccountSwitcher(context: context, controller: self)
         switcher?.onRefresh = { [weak self] in self?.v2.refresh() }
         headerWatch = Session.session(for: id, context: context)?.watchHeader { [weak self] in self?.headerState = $0 }
+        accessWatch = Session.session(for: id, context: context)?.watchAccess { [weak self] in
+            guard let self, shownMayWrite != mayWrite else { return }
+            applyChrome()
+        }
+        onboardingWatch = Session.session(for: id, context: context)?.watchOnboarding { [weak self] _ in self?.askNameIfNeeded() }
         updateTitle()
         applyChrome()
+        accountsWatch = context.account.observeAccounts { [weak self] _ in self?.followSignIn() }
+    }
+
+    /// A server whose session ended shows nothing but the way back in: its
+    /// lists, chats, search and composer go, and what was kept of it on
+    /// this phone (`Session.forget`). Signed in again, home starts afresh.
+    private func followSignIn() {
+        let out = context.account.agentConnections.signedOut(id)
+        guard out != showsSignedOut else { return }
+        guard out else { return restart() }
+        Session.forget(id)
+        headerWatch = nil; accessWatch = nil; onboardingWatch = nil
+        search.end()
+        sidebarSearch.end()
+        presentedViewController?.dismiss(animated: false)
+        if let navigation = navigationController, navigation.viewControllers.contains(self), navigation.topViewController !== self {
+            navigation.popToViewController(self, animated: false)
+        }
+        let name = context.account.agentConnections.accounts.first { $0.id == id }.flatMap { account in
+            HappyCloud.handle(server: account.server) ?? account.name
+        } ?? Strings.agentConnection
+        let signedOut = ServerSignedOutView(server: name) { [weak self] in self?.signIn() }
+        signedOut.frame = view.bounds
+        signedOut.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        view.addSubview(signedOut)
+        signedOutView = signedOut
+        v2.view.isHidden = true
+        applyChrome()
+    }
+
+    private func signIn() {
+        guard let server = context.account.agentConnections.server(for: id) else { return }
+        if HappyCloud.isCloud(server) { return AccountAdding.connectToCloud(context: context, from: self) }
+        let instanceId = context.account.agentConnections.accounts.first { $0.id == id }?.instanceId
+        AccountAdding.signInToServer(context: context, from: self, server: server, instanceId: instanceId)
+    }
+
+    /// Signed in again: a new home, synced from scratch, in this one's place.
+    private func restart() {
+        guard let navigation = navigationController, let index = navigation.viewControllers.firstIndex(of: self) else { return }
+        var stack = navigation.viewControllers
+        stack[index] = AgentHomeViewController(context: context, id: id)
+        navigation.setViewControllers(stack, animated: false)
+    }
+
+    /// A Happy Cloud member whose profile onboarding says isn't saved
+    /// (`Onboarding.needsName`) is asked their name over home, with the
+    /// name Apple gave this sign-in offered, else the server's suggestion;
+    /// saved as the profile's name (`PATCH /v0/profile`).
+    private func askNameIfNeeded() {
+        guard !askedName, let session = Session.session(for: id, context: context), session.isCloud,
+              let onboarding = session.onboarding, view.window != nil, presentedViewController == nil else { return }
+        guard onboarding.needsName == true else { return }
+        askedName = true
+        let client = session.client
+        Task { [weak self] in
+            // Apple's name from this sign-in, else the server's suggestion.
+            let suggested = (try? await client.profile())?.name
+            guard let self else { return }
+            guard view.window != nil, presentedViewController == nil else { askedName = false; return }
+            guard let name = await NamePrompt.ask(on: self, message: Strings.ServerSignIn.nameCloudMessage, prefill: CloudScreens.appleName ?? suggested, cancel: Strings.ServerSignIn.nameLater) else { return }
+            do {
+                let profile = try await client.profile()
+                _ = try await client.renameProfile(name, version: profile.version)
+                CloudScreens.appleName = nil
+            } catch {
+                askedName = false
+                Alerts.show(Strings.Common.error, Store.describe(error), on: self)
+            }
+        }
     }
 
     private func searched(_ query: String) {
@@ -126,20 +264,71 @@ final class AgentHomeViewController: UIViewController, ComposeHosting {
         let sidebar = traitCollection.isSidebarColumn
         search.end()
         sidebarSearch.end()
+        if showsSignedOut {
+            sidebarSearch.isHidden = true
+            bottomBar.isHidden = true
+            navigationItem.searchController = nil
+            toolbarItems = nil
+            updateBar()
+            navigationController?.setToolbarHidden(true, animated: false)
+            return
+        }
         sidebarSearch.isHidden = !sidebar
         bottomBar.isHidden = !sidebar
+        let mayWrite = mayWrite
+        shownMayWrite = mayWrite
+        bottomBar.showsCompose = mayWrite
         if sidebar {
             navigationItem.searchController = nil
             toolbarItems = nil
             bottomBar.follow(v2.list)
         } else {
             search.install()
-            toolbarItems = [navigationItem.searchBarPlacementBarButtonItem, .flexibleSpace(), voiceItem, composeItem]
+            toolbarItems = recordingToolbar == nil ? restingToolbarItems : recordingToolbarItems
             bottomBar.follow(nil)
         }
         updateBar()
         if navigationController?.topViewController === self { HomeToolbar.show(for: self, animated: false) }
         view.setNeedsLayout()
+    }
+
+    /// Search, then the microphone and compose, if this person may start
+    /// work.
+    private var restingToolbarItems: [UIBarButtonItem] {
+        let search = navigationItem.searchBarPlacementBarButtonItem
+        search.identifier = Self.searchIdentifier
+        return [search, .flexibleSpace()] + (mayWrite ? [recordItem, composeItem] : [])
+    }
+
+    /// The bar's room, the microphone, and compose's room.
+    private var recordingToolbarItems: [UIBarButtonItem] { [recordBarItem, .flexibleSpace(), recordItem, composeRoom] }
+
+    /// The toolbar morphs into the recording bar and back
+    /// (`setToolbarItems(_:animated:)`): the bar's glass grows from
+    /// search's field, the microphone stays, compose goes.
+    private func morphToolbar(recording: Bool) {
+        guard let toolbar = navigationController?.toolbar else { return }
+        if recording {
+            guard let layout = recordingLayout(in: toolbar) else { return }
+            recordingToolbar = layout
+            recordBarSpace.size = layout.barView
+        } else {
+            guard recordingToolbar != nil else { return }
+            recordingToolbar = nil
+        }
+        // The recording screen's animations reach the screen first: the
+        // toolbar's morph lays its bar out in a transaction of its own, so
+        // the circles never wait on it.
+        CATransaction.flush()
+        setToolbarItems(recording ? recordingToolbarItems : restingToolbarItems, animated: true)
+    }
+
+
+    /// The toolbar's frames while the microphone records; nil as the
+    /// iPad's sidebar, whose toolbar has no microphone.
+    private func recordingLayout(in toolbar: UIToolbar) -> RecordToolbarLayout? {
+        guard !traitCollection.isSidebarColumn, record.window != nil else { return nil }
+        return RecordToolbarLayout(width: toolbar.bounds.width, microphone: record.convert(record.bounds, to: toolbar), after: 1)
     }
 
     private func applyGround() {
@@ -158,8 +347,9 @@ final class AgentHomeViewController: UIViewController, ComposeHosting {
         guard let switcher else { return }
         navigationItem.leftBarButtonItem = switcher.barItem
         navigationItem.rightBarButtonItems = traitCollection.isSidebarColumn ? [] : HeaderBar.trailing([
+            .call: mayWrite ? callItem : nil,
             .settings: settingsItem,
-        ])
+        ].compactMapValues { $0 })
     }
 
     private lazy var settingsItem = HeaderBar.settingsItem { [weak self] in self?.openSettings() }
@@ -212,6 +402,7 @@ final class AgentHomeViewController: UIViewController, ComposeHosting {
         launchCall()
         #endif
         standing = true
+        askNameIfNeeded()
         // The bar and the toolbar are where home rests: the list's room is
         // read from them again (`HomeListRoom`).
         view.setNeedsLayout()
@@ -275,6 +466,7 @@ final class AgentHomeViewController: UIViewController, ComposeHosting {
 
     /// The bar's compose: new work, over home.
     func compose() {
+        guard mayWrite else { return }
         endSearch()
         v2.compose()
     }
@@ -290,6 +482,63 @@ final class AgentHomeViewController: UIViewController, ComposeHosting {
     private func openSettings() {
         SettingsViewController.open(context: context, computer: id, from: self)
     }
+}
+
+// MARK: Voice touch
+
+extension AgentHomeViewController {
+    /// Home as the person sees it now: on screen, its list in the window.
+    var isInSight: Bool {
+        guard let window = view.window, !view.isHidden else { return false }
+        let list = v2.homeList
+        return !list.isHidden && list.window != nil && list.convert(list.bounds, to: window).intersects(window.bounds)
+    }
+
+    /// The row of home's list that opens `agentId` (`VoiceTouch`), scrolled
+    /// to the middle first if it isn't wholly on screen: gliding 0.3 to
+    /// 0.6 s by the distance, at once if asked for less motion.
+    func voiceTouchRow(_ agentId: String) async -> VoiceTouch.Mark? {
+        guard isInSight, !isSearching else { return nil }
+        return await v2.homeList.reveal(agentId: agentId, glides: !VoiceTouch.reducesMotion)?.view.voiceTouch
+    }
+
+    /// Compose as home shows it: the sidebar's foot on an iPad, else the
+    /// toolbar's last glass button.
+    func voiceTouchCompose() -> VoiceTouch.Mark? {
+        guard isInSight else { return nil }
+        if traitCollection.isSidebarColumn {
+            let button = bottomBar.compose
+            guard button.window != nil, !button.isHidden else { return nil }
+            return VoiceTouch.glassMark(button)
+        }
+        guard let bar = navigationController?.view else { return nil }
+        let bottom = VoiceTouch.glassButtons(in: bar).filter { VoiceTouch.inFloatingBar($0) }
+        let leftToRight = view.effectiveUserInterfaceLayoutDirection == .leftToRight
+        let last = leftToRight ? bottom.max { $0.convert($0.bounds, to: nil).midX < $1.convert($1.bounds, to: nil).midX }
+            : bottom.min { $0.convert($0.bounds, to: nil).midX < $1.convert($1.bounds, to: nil).midX }
+        return last.map(VoiceTouch.glassMark)
+    }
+}
+
+/// The recording bar's item: empty, its glass is the bar.
+private final class RecordBarSpace: UIView {
+    var size: CGSize = .zero {
+        didSet {
+            frame.size = size
+            invalidateIntrinsicContentSize()
+        }
+    }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        isAccessibilityElement = false
+    }
+
+    @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
+
+    override var intrinsicContentSize: CGSize { size }
+    override func sizeThatFits(_ size: CGSize) -> CGSize { self.size }
 }
 
 extension AgentHomeViewController: MainPanelFollowing {

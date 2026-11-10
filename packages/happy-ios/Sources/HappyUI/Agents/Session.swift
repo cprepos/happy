@@ -17,6 +17,30 @@ final class Session {
     /// Happy names (`happy://<instanceId>/…`). Nil for an older daemon,
     /// which gets no such link.
     private(set) var instanceId: String?
+    /// A Happy Cloud server's: its Chief of Staff can be renamed but never
+    /// archived, and it reads onboarding, the person's permissions and
+    /// what each vault lets them do (`followCloud`).
+    let isCloud: Bool
+    /// The team server's origin; nil for a paired computer.
+    let server: String?
+    /// What it set up for, kept so a screen inside a conversation can
+    /// open Settings.
+    private(set) weak var context: AppContext?
+    /// What the server still wants of the person (`GET /v0/onboarding`),
+    /// read on a cloud server only, and again on the events it names; nil
+    /// until read.
+    private(set) var onboarding: Onboarding?
+    private var onboardingWatchers: [UUID: (Onboarding?) -> Void] = [:]
+    private var cloudFollowing: Task<Void, Never>?
+    /// What the person's role lets them do on a cloud server; nil until
+    /// read, and kept nil if the read fails, so `gate` shows nothing it
+    /// would refuse.
+    private(set) var permissions: Permissions?
+    /// What each vault lets the person do, by Surface ID (cloud only).
+    private(set) var vaultAccesses: [String: VaultAccess] = [:]
+    private var accessWatchers: [UUID: () -> Void] = [:]
+    /// What the controls a role decides follow: a computer gates nothing.
+    var gate: RoleGate { isCloud ? .cloud(permissions) : .open }
     let engine: SyncEngine
     let client: AgentClient
     let store: Store
@@ -87,7 +111,11 @@ final class Session {
 
     /// The session for a paired computer, made once and kept while the app runs.
     static func session(for accountID: String, context: AppContext) -> Session? {
-        guard let engine = context.account.agentConnections.syncEngine(for: accountID) else { return nil }
+        guard let engine = context.account.agentConnections.syncEngine(for: accountID) else {
+            // A server signed out of: what was kept of it goes too.
+            if sessions[accountID] != nil, context.account.agentConnections.signedOut(accountID) { forget(accountID) }
+            return nil
+        }
         if let existing = sessions[accountID] {
             if existing.engine === engine { return existing }
             // The same computer on a new engine. The old session's engine
@@ -97,6 +125,7 @@ final class Session {
             existing.stop()
         }
         let session = Session(accountID: accountID, engine: engine, account: context.account)
+        session.context = context
         sessions[accountID] = session
         return session
     }
@@ -129,6 +158,8 @@ final class Session {
     func stop() {
         following?.cancel()
         following = nil
+        cloudFollowing?.cancel()
+        cloudFollowing = nil
         connectionFollowing?.cancel()
         connectionFollowing = nil
         connectionObservation?.cancel()
@@ -145,6 +176,8 @@ final class Session {
         computerName = account.agentConnections.accounts.first { $0.id == accountID }?.name ?? Strings.agentConnection
         instanceId = account.agentConnections.accounts.first { $0.id == accountID }?.instanceId
         placeholderSeed = account.agentConnections.placeholderSeed(for: accountID) ?? accountID
+        server = account.agentConnections.server(for: accountID)
+        isCloud = HappyCloud.isCloud(server)
         self.engine = engine
         self.localSettings = account.localSettings
         let client = engine.client
@@ -155,7 +188,9 @@ final class Session {
         store = engine.spaces
         images = Images(client: client, offline: offline)
         warm = WarmChats(client: client, store: store, syntax: syntax, persistence: engine)
-        models = ModelState(client: client, offline: offline, store: store)
+        warm.server = server
+        warm.instanceId = instanceId
+        models = ModelState(client: client, offline: offline, store: store, cloud: isCloud)
         drafts = Drafts(offline: offline)
         models.load()
         let updates = store.updates
@@ -163,7 +198,7 @@ final class Session {
             for await snapshot in updates {
                 guard let self else { return }
                 // Back after a gap: the pictures it couldn't read then.
-                if snapshot.live, !self.snapshot.live { images.retryFailed() }
+                if snapshot.live, !self.snapshot.live { images.retryFailed(); reconnected() }
                 self.snapshot = snapshot
                 for watcher in self.watchers.values { watcher(snapshot) }
             }
@@ -182,6 +217,7 @@ final class Session {
             guard let self, let account else { return }
             computerName = account.agentConnections.accounts.first { $0.id == accountID }?.name ?? computerName
             instanceId = account.agentConnections.accounts.first { $0.id == accountID }?.instanceId
+            warm.instanceId = instanceId
             receive(status: account.agentConnections.accounts.first { $0.id == accountID }?.status ?? .paused)
         }
         connectionFollowing = Task { [weak self, engine] in
@@ -190,6 +226,7 @@ final class Session {
                 receive(home: snapshot)
             }
         }
+        if isCloud { followCloud() }
         // AgentConnections owns foreground/background and account switching.
         // Opening an offscreen account's settings never starts another stream.
     }
@@ -221,6 +258,126 @@ final class Session {
         }
     }
 
+    /// What a cloud server says of the person, read at once and again on
+    /// each event that may change it: onboarding (`Onboarding.refreshEvents`),
+    /// permissions (`role.*`), and the vaults' access (`surface.*`,
+    /// `vault.settings.updated`); everything on a resync. A role changed at
+    /// the accounts service lands with the next token, so a reconnect
+    /// reads the permissions again too (`reconnected`).
+    private func followCloud() {
+        let store = store
+        cloudFollowing = Task { [weak self] in
+            let events = await store.events(matching: Onboarding.refreshEvents + Permissions.refreshEvents + ["surface.", "vault.settings.updated"])
+            self?.read([.onboarding, .permissions, .vaults])
+            for await event in events {
+                guard !Task.isCancelled, let self else { return }
+                guard case .event(let envelope) = event, let type = envelope["type"]?.stringValue else {
+                    read([.onboarding, .permissions, .vaults])
+                    continue
+                }
+                var parts: Set<CloudPart> = []
+                if Onboarding.refreshEvents.contains(where: { type == $0 || ($0.hasSuffix(".") && type.hasPrefix($0)) }) { parts.insert(.onboarding) }
+                if Permissions.refreshEvents.contains(where: { type == $0 || ($0.hasSuffix(".") && type.hasPrefix($0)) }) { parts.insert(.permissions) }
+                if type.hasPrefix("surface.") || type == "vault.settings.updated" { parts.insert(.vaults) }
+                read(parts)
+            }
+        }
+    }
+
+    private enum CloudPart { case onboarding, permissions, vaults }
+    /// A protected settings page gaining focus checks current grants.
+    func refreshPermissions() {
+        guard isCloud else { return }
+        read([.permissions])
+    }
+    /// One read of each part at a time; asked again meanwhile, it reads
+    /// once more when that lands.
+    private var reading: Set<CloudPart> = []
+    private var readAgain: Set<CloudPart> = []
+
+    private func reconnected() {
+        guard isCloud else { return }
+        read([.permissions, .vaults])
+    }
+
+    private func read(_ parts: Set<CloudPart>) {
+        let client = client
+        for part in parts {
+            guard !reading.contains(part) else { readAgain.insert(part); continue }
+            reading.insert(part)
+            Task { [weak self] in
+                switch part {
+                case .onboarding:
+                    let read = try? await client.onboarding()
+                    if let read, read != self?.onboarding { self?.adopt(read) }
+                case .permissions:
+                    // A failed read keeps what was read: a dropped link
+                    // isn't a role taken away, and nothing is shown it
+                    // never had.
+                    if let read = try? await client.permissions(), read != self?.permissions { self?.adopt(read) }
+                case .vaults:
+                    if let surfaces = (try? await client.surfaces()) ?? nil { self?.adopt(vaults: surfaces) }
+                }
+                guard let self else { return }
+                reading.remove(part)
+                if readAgain.remove(part) != nil { read([part]) }
+            }
+        }
+    }
+
+    /// The team's role names by ID (`GET /v0/roles`, cloud only), read
+    /// once, as desktop and Android read them; a read that fails is nil
+    /// and asked again next time.
+    private var roleNames: [String: String]?
+
+    func teamRoleNames() async -> [String: String]? {
+        if let roleNames { return roleNames }
+        guard isCloud, let roles = try? await client.teamRoles() else { return nil }
+        let names = Dictionary(roles.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+        roleNames = names
+        return names
+    }
+
+    private func adopt(_ onboarding: Onboarding) {
+        self.onboarding = onboarding
+        for watcher in onboardingWatchers.values { watcher(onboarding) }
+    }
+
+    private func adopt(_ permissions: Permissions) {
+        self.permissions = permissions
+        for watcher in accessWatchers.values { watcher() }
+    }
+
+    private func adopt(vaults surfaces: [AgentWire.Surface]) {
+        let next = Dictionary(surfaces.filter { $0.type == "vault" }.map { ($0.id, $0.vaultAccess) }, uniquingKeysWith: { first, _ in first })
+        guard next != vaultAccesses else { return }
+        vaultAccesses = next
+        for watcher in accessWatchers.values { watcher() }
+    }
+
+    /// What `surfaceId`'s vault lets the person do. On a cloud server, one
+    /// not yet read is read-only, never locked: it opens, and offers no
+    /// change it may be refused.
+    func vaultAccess(_ surfaceId: String) -> VaultAccess {
+        guard isCloud else { return VaultAccess() }
+        return vaultAccesses[surfaceId] ?? VaultAccess(level: .read)
+    }
+
+    /// Calls `watch` whenever the permissions or a vault's access change.
+    func watchAccess(_ watch: @escaping () -> Void) -> Watch {
+        let id = UUID()
+        accessWatchers[id] = watch
+        return Watch { [weak self] in self?.accessWatchers.removeValue(forKey: id) }
+    }
+
+    /// Calls `watch` with onboarding as it is and as it changes.
+    func watchOnboarding(_ watch: @escaping (Onboarding?) -> Void) -> Watch {
+        let id = UUID()
+        onboardingWatchers[id] = watch
+        watch(onboarding)
+        return Watch { [weak self] in self?.onboardingWatchers.removeValue(forKey: id) }
+    }
+
     /// Calls `watch` with every snapshot from now on, starting with the current one.
     func watch(_ watch: @escaping (Snapshot) -> Void) -> Watch {
         let id = UUID()
@@ -229,20 +386,20 @@ final class Session {
         return Watch { [weak self] in self?.watchers.removeValue(forKey: id) }
     }
 
+    /// No link is ever offline: one not connected is asked again with
+    /// backoff for as long as it is there, so it is connecting, whatever
+    /// kept it away. What is not the network's to fix (a pairing to redo, a
+    /// sign-in that ended) home's notice says, in its own words.
     static func headerState(status: ConnectionStatus, snapshot: HomeSnapshot, network: Bool = true) -> Strings.HeaderStatus.State {
         // No way out at all: nothing to connect to yet, whatever was last heard.
-        if !network, status != .revoked { return .waitingForNetwork }
-        if status == .revoked { return .offline }
+        if !network { return .waitingForNetwork }
         // The stream is open: it is the truth, whatever the pairing's own
         // check (which retries on its own backoff) last said.
         if snapshot.live { return snapshot.loaded && !snapshot.syncing ? .online : .syncing }
-        // The computer did not answer: home's notice says so, in its words.
-        if snapshot.error != nil { return .offline }
-        switch status {
-        case .paused, .revoked: return .offline
-        case .retrying, .connecting: return .connecting
-        case .connected: return .syncing
-        }
+        // The pairing answered and the stream isn't open yet: catching up,
+        // unless the stream is on its way back or stopped for a reason.
+        if status == .connected, !snapshot.reconnecting, snapshot.error == nil { return .syncing }
+        return .connecting
     }
 
     private func updateHeaderState() {
@@ -269,7 +426,7 @@ final class Session {
 
     /// A snapshot from the engine (or a test standing in for it).
     func receive(home snapshot: HomeSnapshot) {
-        if snapshot.live, !home.live { images.retryFailed() }
+        if snapshot.live, !home.live { images.retryFailed(); reconnected() }
         home = snapshot
         madeProfile?.placeholderSeed = personSeed
         updateHeaderState()

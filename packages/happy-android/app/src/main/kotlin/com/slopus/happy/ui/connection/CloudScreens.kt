@@ -53,6 +53,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import kotlinx.coroutines.launch
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
@@ -78,6 +85,7 @@ import com.slopus.happy.connection.CloudAccountState
 import com.slopus.happy.connection.CloudException
 import com.slopus.happy.connection.CloudName
 import com.slopus.happy.connection.CloudServer
+import com.slopus.happy.connection.PasswordSignIn
 import com.slopus.happy.connection.ServerAuthException
 import com.slopus.happy.ui.components.HappyTextField
 import com.slopus.happy.ui.components.Icon
@@ -107,7 +115,10 @@ object CloudTags {
     const val MENU = "cloud.menu"
     const val MEMBERS = "cloud.members"
     const val LEAVE = "cloud.leave"
+    const val LOGIN = "cloud.login"
+    const val PASSWORD = "cloud.password"
     fun server(name: String) = "cloud.server.$name"
+    fun member(accountId: String) = "cloud.member.$accountId"
 }
 
 /** Sizes of the Happy Cloud screens, on the first screen's gradient and type ([com.slopus.happy.ui.start.StartScreen]). */
@@ -144,6 +155,8 @@ private fun CloudFrame(
     onBack: () -> Unit,
     body: String? = null,
     @RawRes art: Int? = null,
+    /** Every press on [art], with its time: the welcome counts them. */
+    onArtPress: ((Long) -> Unit)? = null,
     primary: CloudAction? = null,
     secondary: CloudAction? = null,
     /** The bar's ⋮: what is done rarely, out of the way of the one action. */
@@ -174,7 +187,16 @@ private fun CloudFrame(
                     // The keyboard up: the scene gives its room to the field and the action, which must stay in view.
                     if (art != null && !WindowInsets.isImeVisible) {
                         var plays by rememberSaveable { mutableIntStateOf(1) }
-                        SceneAnimation(art, plays, { plays = it + 1 }, size = CloudSpec.art)
+                        SceneAnimation(
+                            art,
+                            plays,
+                            { plays = it + 1 },
+                            // Watched before the replay's own click sees it, and never consumed: the scene still replays, and nothing new is announced.
+                            modifier = if (onArtPress == null) Modifier else Modifier.pointerInput(onArtPress) {
+                                awaitEachGesture { onArtPress(awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial).uptimeMillis) }
+                            },
+                            size = CloudSpec.art,
+                        )
                         Spacer(Modifier.height(CloudSpec.artGap - CloudSpec.gap))
                     }
                     Text(
@@ -270,6 +292,8 @@ fun CloudScreen(
     /** A server picture's bytes, fetched with the account token. */
     image: suspend (String) -> ByteArray?,
     onOpenBrowser: () -> Unit,
+    /** A test account's sign-in, for the welcome's hidden form. */
+    signInWithPassword: suspend (login: String, password: String) -> PasswordSignIn,
     onRetrySignIn: () -> Unit,
     onReload: () -> Unit,
     onPick: (CloudServer) -> Unit,
@@ -279,13 +303,7 @@ fun CloudScreen(
     onBack: () -> Unit,
 ) {
     when (state) {
-        is CloudAccountState.SignedOut -> CloudFrame(
-            title = stringResource(R.string.cloud_title),
-            body = stringResource(if (state.expired) R.string.cloud_session_expired else R.string.cloud_connect_message),
-            art = R.raw.state_sparkles,
-            primary = CloudAction(stringResource(R.string.cloud_connect_confirm), onOpenBrowser),
-            onBack = onBack,
-        )
+        is CloudAccountState.SignedOut -> CloudWelcome(state.expired, onOpenBrowser, signInWithPassword, onBack)
         CloudAccountState.InBrowser -> CloudFrame(
             title = stringResource(R.string.team_server_waiting),
             art = R.raw.state_sparkles,
@@ -323,6 +341,84 @@ fun CloudScreen(
     }
 }
 
+/**
+ * Signed out: the welcome, whose Connect opens the account's sign-in in the
+ * browser. Its sparkles pressed [UNLOCK_TAPS] times within [UNLOCK_MILLIS]
+ * reveal a test account's sign-in, login and password, for people and
+ * agents testing without Apple or GitHub. Until then nothing of it is
+ * composed, so nothing hints at it. The password lives only in this
+ * composition: not saved with the screen, and gone once it leaves.
+ */
+@Composable
+private fun CloudWelcome(
+    expired: Boolean,
+    onOpenBrowser: () -> Unit,
+    signInWithPassword: suspend (login: String, password: String) -> PasswordSignIn,
+    onBack: () -> Unit,
+) {
+    var unlocked by remember { mutableStateOf(false) }
+    val presses = remember { ArrayDeque<Long>() }
+    val connect = CloudAction(stringResource(R.string.cloud_connect_confirm), onOpenBrowser)
+    val body = stringResource(if (expired) R.string.cloud_session_expired else R.string.cloud_connect_message)
+    if (!unlocked) {
+        CloudFrame(
+            title = stringResource(R.string.cloud_title),
+            body = body,
+            art = R.raw.state_sparkles,
+            onArtPress = remember {
+                { at: Long ->
+                    presses.addLast(at)
+                    if (presses.size > UNLOCK_TAPS) presses.removeFirst()
+                    if (presses.size == UNLOCK_TAPS && at - presses.first() <= UNLOCK_MILLIS) unlocked = true
+                }
+            },
+            primary = connect,
+            onBack = onBack,
+        )
+        return
+    }
+    var login by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var outcome by remember { mutableStateOf<PasswordSignIn?>(null) }
+    val scope = rememberCoroutineScope()
+    CloudFrame(
+        title = stringResource(R.string.cloud_title),
+        body = stringResource(R.string.cloud_test_title),
+        art = R.raw.state_sparkles,
+        primary = CloudAction(
+            stringResource(R.string.cloud_test_sign_in),
+            {
+                busy = true
+                outcome = null
+                scope.launch {
+                    try {
+                        outcome = signInWithPassword(login.trim(), password)
+                    } finally {
+                        busy = false
+                    }
+                }
+            },
+            enabled = login.isNotBlank() && password.isNotEmpty() && !busy,
+            loading = busy,
+        ),
+        secondary = connect,
+        onBack = onBack,
+    ) {
+        CloudField(login, { login = it; outcome = null }, stringResource(R.string.cloud_test_login), CloudTags.LOGIN, !busy, KeyboardType.Ascii, ImeAction.Next)
+        CloudField(password, { password = it; outcome = null }, stringResource(R.string.cloud_test_password), CloudTags.PASSWORD, !busy, KeyboardType.Password, ImeAction.Done, PasswordVisualTransformation())
+        when (val failed = outcome) {
+            PasswordSignIn.Wrong -> NotePill(stringResource(R.string.cloud_test_wrong), HappyTheme.colors.textDestructive)
+            is PasswordSignIn.Locked -> NotePill(stringResource(R.string.cloud_test_locked, failed.minutes), HappyTheme.colors.textDestructive)
+            is PasswordSignIn.Failed -> NotePill(stringResource(cloudFailureText(failed.reason)), HappyTheme.colors.textDestructive)
+            PasswordSignIn.SignedIn, null -> Unit
+        }
+    }
+}
+
+private const val UNLOCK_TAPS = 10
+private const val UNLOCK_MILLIS = 4_000L
+
 /** A server on the gradient: its picture, display name, `@name`, the person's role, and a check when it is on the phone already. */
 @Composable
 private fun ServerCard(server: CloudServer, onPhone: Boolean, image: suspend (String) -> ByteArray?, onClick: () -> Unit) {
@@ -343,7 +439,15 @@ private fun ServerCard(server: CloudServer, onPhone: Boolean, image: suspend (St
             Text(server.title, style = happyTextStyle(fontSize = 18, lineHeight = 24, weight = FontWeight.SemiBold), color = colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text("@${server.name}", style = happyTextStyle(fontSize = 15, lineHeight = 20), color = colors.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        Text(stringResource(if (server.owner) R.string.cloud_role_owner else R.string.cloud_role_member), style = happyTextStyle(fontSize = 14, lineHeight = 18), color = colors.textSecondary)
+        // Roles are the server's since the roles cutover: an accounts service that still lists one shows it.
+        val role = when (server.role) {
+            null -> null
+            "owner" -> R.string.cloud_role_owner
+            "admin" -> R.string.cloud_role_admin
+            "viewer" -> R.string.cloud_role_viewer
+            else -> R.string.cloud_role_member
+        }
+        if (role != null) Text(stringResource(role), style = happyTextStyle(fontSize = 14, lineHeight = 18), color = colors.textSecondary)
         if (onPhone) Icon(Ionicon.CheckmarkCircle, 22.dp, colors.success)
     }
 }
@@ -458,6 +562,36 @@ fun CloudConnectingScreen(handle: String, failed: ServerAuthException.Reason?, i
     ) { Spinner() }
 }
 
+/**
+ * A new member's name on a Happy Cloud server, on the gradient as the
+ * screens before it (the team server sign-in's name step, restyled): the
+ * server has no profile for them until it is named (`userId: null`), and
+ * nothing is filled in for them.
+ */
+@Composable
+fun CloudNameScreen(handle: String, saving: Boolean, failed: Boolean, onSubmit: (String) -> Unit, onBack: () -> Unit) {
+    var name by rememberSaveable { mutableStateOf("") }
+    CloudFrame(
+        title = stringResource(R.string.team_server_name_title),
+        body = stringResource(R.string.team_server_name_detail, handle),
+        art = R.raw.state_sparkles,
+        primary = CloudAction(stringResource(R.string.common_continue), { onSubmit(name) }, enabled = name.isNotBlank() && !saving, loading = saving),
+        onBack = onBack,
+    ) {
+        CloudField(
+            name,
+            { name = it },
+            stringResource(R.string.team_server_name_placeholder),
+            ServerSignInTags.NAME,
+            !saving,
+            KeyboardType.Text,
+            ImeAction.Done,
+            capitalization = KeyboardCapitalization.Words,
+        )
+        if (failed) NotePill(stringResource(R.string.team_server_name_failed), HappyTheme.colors.textDestructive)
+    }
+}
+
 /** A large field on the gradient: the theme's surface, a little see-through, 18 type. */
 @Composable
 private fun CloudField(
@@ -469,6 +603,7 @@ private fun CloudField(
     keyboard: KeyboardType,
     ime: ImeAction,
     transformation: VisualTransformation = VisualTransformation.None,
+    capitalization: KeyboardCapitalization = KeyboardCapitalization.None,
 ) {
     Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(CloudSpec.fieldRadius)).background(HappyTheme.colors.surface.copy(alpha = CloudSpec.SURFACE_ALPHA))) {
         HappyTextField(
@@ -481,7 +616,7 @@ private fun CloudField(
             cornerRadius = CloudSpec.fieldRadius,
             singleLine = true,
             enabled = enabled,
-            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false, keyboardType = keyboard, imeAction = ime),
+            keyboardOptions = KeyboardOptions(capitalization = capitalization, autoCorrectEnabled = false, keyboardType = keyboard, imeAction = ime),
             visualTransformation = transformation,
             modifier = Modifier.testTag(tag),
         )
@@ -516,7 +651,6 @@ internal fun cloudFailureText(reason: CloudException.Reason): Int = when (reason
     CloudException.Reason.Taken -> R.string.cloud_failed
     CloudException.Reason.Invalid -> R.string.cloud_name_rules
     CloudException.Reason.NotFound -> R.string.cloud_join_not_found
-    CloudException.Reason.LastOwner -> R.string.cloud_leave_last_owner
     CloudException.Reason.SignInRequired -> R.string.team_server_error_sign_in_required
     CloudException.Reason.Unreachable -> R.string.team_server_error_unreachable
     CloudException.Reason.Failed -> R.string.cloud_failed

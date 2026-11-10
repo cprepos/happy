@@ -90,9 +90,11 @@ accounts and servers v1, with v4's token lifetimes.
 
 - **Where.** "Connect to Happy Cloud" in the account switcher's menu (the
   list of accounts and servers, under Add) and in the scanner's and first
-  screen's ⋯ (`AccountAdding.connectToCloud`). Development and preview
-  builds only (`HappyCloud.isOffered`, from `AppVariant`): production shows
-  neither entry and `connectToCloud` does nothing there.
+  screen's ⋯ (`AccountAdding.connectToCloud`). The first screen also has
+  "Use Happy Cloud" above Start, with the same width and emphasis.
+  Development and preview builds only (`HappyCloud.isOffered`, from
+  `AppVariant`): production shows
+  none of these entries and `connectToCloud` does nothing there.
 - **Screens.** Every Happy Cloud step is a full-screen page in the
   onboarding's look (`CloudStageViewController`: the grain gradient, large
   title, one primary button at the bottom, no tables or alerts): Welcome,
@@ -120,6 +122,15 @@ accounts and servers v1, with v4's token lifetimes.
     `ASWebAuthenticationSession` with
     `prefersEphemeralWebBrowserSession = false`. A refresh token, if one
     came, is dropped.
+  - *A test account* (`CloudTestSignIn`), for testing every surface without
+    Apple or GitHub: ten taps on Welcome's logo within four seconds make a
+    login and password form, which isn't there before. `POST
+    /v1/auth/password` with `{ login, password }` answers the same pass;
+    401 `invalid_credentials` and 429 `locked` (`retryAfter` seconds) are
+    said under it. The password is only in its secure field and that
+    request, cleared once signed in. Development and preview builds only,
+    as Happy Cloud is. Operators make these accounts; see the cloud's
+    TESTAUTH.md.
   - The pass is held in memory only, with its expiry, and never refreshed.
     Opening the flow after it ends, a minute early, or a 401 from any
     accounts call goes straight back to Welcome, with no retry. Earlier
@@ -145,6 +156,18 @@ accounts and servers v1, with v4's token lifetimes.
   sign-in, the server is asked who signed in, its installation is
   recorded, and the connection is added. The account token goes only to
   the accounts service.
+- **Your name.** A member the server has no profile for yet
+  (`GET /v0/authentication` with `userId: null`) is asked "What's your
+  name?" before the connection is added. The field is prefilled with the
+  name Apple gave this sign-in (only on an Apple ID's first authorization;
+  in memory only), else the server's suggestion, which is
+  `GET /v0/profile`'s `name` while the profile is unsaved. What they give
+  is saved with `PATCH /v0/profile`. If they cancel, the screen says the
+  server needs a name and offers Try Again. The app never makes a name
+  up. A connected cloud server whose onboarding still says the member's
+  `profile` step isn't done (`Onboarding.needsName`) asks the same over
+  home, once a launch, with Not Now. A name in the profile alone decides
+  nothing.
 - **Sign-in methods.** Apple natively and GitHub on the browser page
   (Other Ways); no Google or email anywhere in the app.
 - **Sign Out of Happy Cloud**, in the account switcher's menu while the
@@ -164,6 +187,41 @@ accounts and servers v1, with v4's token lifetimes.
   none still signs in. "Sign In Again" then checks the one kept, as for
   any server.
 - The connection is named after the server until `/v0/config` names it.
+- **The Chief of Staff.** There is no provider step after creating or
+  joining: the server's Chief of Staff writes first, as a bot's unread
+  message (it asks what to call it and offers provider setup), and the
+  app opens nothing for it. It is known by `systemKey: "chief_of_staff"`
+  alone, never its name. On a cloud server it can be renamed (its
+  detail's pencil), and it is never archivable (`Row.canArchive`), even if
+  the server says otherwise; its detail has an Agents row, Settings'
+  Agents. The server's `409 system_bot_protected` and `409
+  last_admin_bot` read plainly (`Strings.botRefusal`). A cloud session
+  reads `GET /v0/onboarding` (`Onboarding`: `server`, `member`,
+  `steps.chiefOfStaff`) and reads it again on `config.updated`,
+  `provider.*` and `profile.*` (`Session.watchOnboarding`). A computer's
+  Happy bot is as before: not renamed here, and onboarding not read.
+- **Roles.** A cloud session reads `GET /v0/permissions` (`Permissions`)
+  at once, on `role.*`, on a resync and on every reconnect (a role
+  changed at the accounts service lands with the next token). Only
+  `granted` decides: `Session.gate` (`RoleGate`) is `.open` on a computer
+  and, on a cloud server, allows nothing until read and keeps what was
+  read if a read fails, so no control is shown only to be refused.
+  Without `content.write`: no composer (a line says why), compose,
+  microphone, call, new work, rename, Todo or document edits, new lists,
+  or proposal answers. The Chief of Staff's composer, its rename and the
+  agent's asks also need `bots.manage`. The role table's `403 forbidden`
+  ("This needs the <id> permission.") reads "You don’t have permission to
+  do that." (`Strings.refusal`); a computer's own `403` keeps its words.
+- **Vault access.** A cloud session reads the vaults' `access` and
+  `policyVault` from `GET /v0/surfaces`, again on `surface.*` and
+  `vault.settings.updated` (`Session.vaultAccess`, `VaultAccess`); a vault
+  not yet read is read-only. `none`: a lock on its row, and opening it
+  says so with nothing asked of the server. Writing needs `write` and
+  `content.write`; else no add, rename, move, delete, new version,
+  restore, pin or retention. The Policy vault's root `Global` and
+  `Security` and their `AGENTS.md` and `SECURITY.md` are never renamed,
+  moved or deleted, and its retention isn't offered. The phone never
+  reads or edits `accessPolicy` or roles.
 - **Display.** A cloud server's address is never shown: it reads like a
   username, `@acme` (`HappyCloud.handle`), in the picker, the create field
   (an `@` in front, no domain), the availability and join messages, the
@@ -282,27 +340,49 @@ sign-in:
 
 ### "Sign in again"
 
-`SignInRequired.check` decides, and `SignedInTransport` applies it to every
-response, stream head, tunnel refusal and WebSocket upgrade:
+This should almost never happen. `SignInRequired.check` decides, and
+`SignedInTransport` applies it to every response, stream head, tunnel
+refusal and WebSocket upgrade:
 
-- any redirect (`3xx` other than `304 Not Modified`), any `401`, or a `403` that isn't Happy's JSON (`Content-Type:
-  application/json` plus an object whose `error` and `code` are strings);
 - a `401` with Happy's JSON first asks `GET /v0/authentication` with the
   same token (contract v2):
   - not authenticated: refresh once and repeat;
   - authenticated as a known user: transient, repeat once;
-  - authenticated with `userId: null`: the team profile gate. Signing in
-    again gets past it, because the sign-in screen asks for the name and
-    saves it with `PATCH /v0/profile`;
-- a `401` that isn't Happy's JSON came from the edge and needs signing in
-  at once, without discovery or refresh;
+  - authenticated with `userId: null`: the team profile gate. It is not a
+    sign-out: callers see `403 {"code":"profile_required"}`, the server's
+    own answer for it, and home asks the name (`Onboarding.needsName`);
+- a `403 {"code":"profile_required"}` is an ordinary refusal: the account
+  stays connected (`AgentIdentity`) and home asks the name;
+- any redirect (`3xx` other than `304 Not Modified`), a `401` or a `403`
+  that isn't Happy's JSON (`Content-Type: application/json` plus an object
+  whose `error` and `code` are strings) came from the edge. On a
+  self-hosted server it needs signing in at once. On Happy Cloud the edge
+  never signs out: the token is refreshed once and the request repeated,
+  and if the edge still answers, callers see `503 {"code":"unavailable"}`;
+- on Happy Cloud, a second Happy `401` after a refresh is also
+  `unavailable`. Only the authorization server refusing the refresh token
+  ends a Happy Cloud session;
 - the rest, or a refresh the authorization server refuses, sets
-  `ServerAuthorization.state = .needsSignIn`. From then on nothing is sent
-  to the server or the token endpoint, and callers see a plain 401: the
-  account shows "Sign in again" in Settings, and its chat says the sign-in
-  has ended. A refresh that fails only on the network keeps the grant.
+  `ServerAuthorization.state = .needsSignIn`. A refresh that fails only on
+  the network keeps the grant.
 
 A 403 with Happy's JSON is an ordinary permission error.
+
+When a session ends (`AgentConnections.sessionEnded`), nothing of that
+server is kept or shown:
+
+- its refresh token is dropped from the Keychain, its engine stopped, and
+  its folder (`OfflineFile`: the database, drafts, downloads and
+  attachments) removed; `syncEngine(for:)` gives none until it signs in
+  again. Other servers are untouched. A launch that finds a session an
+  earlier build saw end erases it the same way;
+- home (`AgentHomeViewController.followSignIn`) closes whatever was open on
+  it and shows only "Signed out of …" with a Sign In button
+  (`ServerSignedOutView`): no list, search, composer or toolbar. Signing in
+  again replaces the home, which syncs from scratch.
+
+`HostedSignedOutTests` and `AgentConnectionsTests.testAnEndedSessionErasesThatServerOnly`
+check both.
 
 ## Tunnels without CONNECT
 
@@ -351,7 +431,48 @@ ported from happy-agent-client's `happyLinks.ts`.
   belongs to a Happy server you're not connected to." and never falls back
   to another server. A link naming no installation isn't opened from
   outside. The app's own `happy://` routes (`direct`, `terminal`, `oauth`,
-  and the server code) aren't instance links.
+  and the server code) aren't instance links. An instance link to a
+  settings page opens that page as below.
+- **Settings links** (`happy://settings/<page>`, API.md "Settings
+  links"): a closed list of pages (`HappyLink.SettingsPage`). In an
+  agent's message one is drawn as a link and opens where
+  `SettingsLinkPlace` says: `general` Settings, `account` Profile, `voice`
+  the computer's Voice row, `servers` Happy Cloud's servers (Settings off
+  Happy Cloud). `providers` opens the native AI providers list on Cloud.
+  Its `add` chooser offers the server's ChatGPT sign-in, a Claude setup
+  token when enabled (Claude's only way in: no browser sign-in, whatever
+  the server says), and OpenAI, Anthropic and Grok API keys.
+  `providers/add/api-key?vendor=openai|anthropic|grok` opens the
+  secure key form. Every add link accepts `to=private|team`, subject to
+  the member's permissions. Bedrock setup remains on desktop.
+  Every other page opens
+  `https://<name>.happybases.com/#/settings/<page>` in the system browser
+  on a Happy Cloud server, and nothing elsewhere. Opening one only
+  navigates. A malformed or blank-labelled settings link is its words.
+- **Buttons.** A well-formed Happy link titled exactly `button` is lifted
+  out of its paragraph, header or list item into `MarkdownBlock.buttons`
+  under it, drawn as full-width normal RoundButtons, 8 apart. One whose
+  link opens nothing here is its label as words; a malformed one asking
+  to be a button is too. The Markdown parser reads a link's title apart
+  from its destination (`LegacyMarkdown.link`).
+- **Entity links in a conversation** (`[label](happy://agents/…)`, found
+  by `HappyMarkdownLinks` as happy-agent-client's `parseHappyLinks` finds
+  them) read as desktop's `messageReferencesResolve`: the live name wins,
+  and the written label stands in while it is read and for what this
+  phone can't look up. `HappyReferences.markdown` turns each into the
+  same reference link a `<happy-KIND/>` tag becomes. An agent or
+  workspace the bots and tasks hold opens its conversation, an artifact
+  its viewer, and a Surface its screen (`SurfaceScreens`). A person is a
+  mention, and a project or service is words. A link naming another
+  installation is its label as words. The bots, tasks and Surfaces come
+  from the account's bootstrap (`SyncEngine` → `Store.externalDirectory`).
+- **File links** (`happy://agents/<id>/files/<path>#L<n>`) are read when
+  tapped (`AgentClient.linkedFile`: the agent's workspace, then
+  `GET /v0/workspaces/:id/file`), then shown read-only by
+  `WorkspaceFileViewController` at the line. A 403 says politely that the
+  person has no access. A file that isn't there, or a server without
+  workspace files yet (404, 501), turns the link into its label as words
+  for as long as the conversation is open.
 - Copy Link, in the bar of an artifact and of a conversation's detail,
   writes the instance form, and isn't offered when the daemon reports no
   `instanceId`.

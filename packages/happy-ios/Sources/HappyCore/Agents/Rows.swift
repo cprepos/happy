@@ -132,6 +132,8 @@ public struct Row: Equatable, Sendable, Identifiable {
     /// minute): what search's recent conversations are ordered by.
     public var activityTime: Double?
     public var lineChanges: GitLineChanges?
+    /// A muted bot's, or under one: drawn with no status or dot.
+    public var muted = false
     /// A count at the row's end, as iOS's lists show one (the Feed's unread
     /// entries); nil for none.
     public var count: Int?
@@ -271,8 +273,9 @@ public enum Rows {
         row.hasShownSessions = node.children.contains { spaces[$0.id] == nil && places.agent($0.id) != nil }
         if space.target.kind == "surface" { row.surfaceType = places.surface(space.target.id)?.type }
         row.activityTime = conversation?.activityAt.map(minute)
-        // A bot can always be archived; a task only where the daemon says so.
-        row.canArchive = space.target.kind == "bot" || places.task(space.target.id)?.canArchive == true
+        // A bot can be archived, but never the Chief of Staff; a task only
+        // where the daemon says so.
+        row.canArchive = (space.target.kind == "bot" && !places.isHappy(space)) || places.task(space.target.id)?.canArchive == true
         return [row] + children
     }
 
@@ -348,15 +351,20 @@ public enum Rows {
         }
         if space.title == nil { return .seedling(seed: space.id) }
         switch space.target.kind {
-        case "surface": return .glyph(surfaceGlyph(places.surface(space.target.id)?.type))
+        case "surface":
+            let surface = places.surface(space.target.id)
+            return .glyph(surfaceGlyph(surface?.type, access: surface?.access, policyVault: surface?.policyVault))
         case "task", "bot", "agent": return .placeholder(seed: space.target.id)
         default: return .glyph("agents")
         }
     }
 
-    /// The glyph desktop's Create menu gives each kind of Surface.
-    public static func surfaceGlyph(_ type: String?) -> String {
-        switch type {
+    /// The glyph desktop's Create menu gives each kind of Surface; a vault
+    /// the person's role may not open, or the server's Policy vault, wears
+    /// a lock. The mark says nothing about whether its documents can be edited.
+    public static func surfaceGlyph(_ type: String?, access: String? = nil, policyVault: Bool? = nil) -> String {
+        if type == "vault", access == VaultAccess.Level.none.rawValue || policyVault == true { return lockGlyph }
+        return switch type {
         case "todo": "tasks"
         case "calendar": "calendar"
         case "system_monitor": "pulse"
@@ -365,6 +373,8 @@ public enum Rows {
         default: "doc"
         }
     }
+
+    public static let lockGlyph = "lock-closed-outline"
 
     /// A row's conversation is live: its agent's own events end its work the
     /// moment a turn settles. The space's `working` is the daemon's reading

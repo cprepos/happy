@@ -7,7 +7,7 @@
 	<key>CFBundleDisplayName</key>
 	<string>Happy (dev)</string>
 	<key>CFBundleShortVersionString</key>
-	<string>2.0.0</string>
+	<string>2026.11.1</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -24,7 +24,7 @@
 	<key>HappyAppVariant</key>
 	<string>development</string>
 	<key>HappyCallAgentID</key>
-	<string>$(HAPPY_CALL_AGENT_ID)</string>
+	<string>$(HAPPY_CALL_AGENT_V3_ID)</string>
 	<key>HappyPostHogKey</key>
 	<string>$(HAPPY_POSTHOG_API_KEY)</string>
 	<key>HappyRevenueCatAppleKey</key>
@@ -43,7 +43,9 @@
 		<true/>
 	</dict>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Allow Happy to use your microphone to talk with your coding agents.</string>
+	<string>Allow Happy to use your microphone to talk with your coding agents and to dictate messages.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Allow Happy to turn what you say into text on this iPhone, so you can dictate messages to your agents.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Allow Happy to show your photos and videos so you can share them in chats.</string>
 	<key>PHPhotoLibraryPreventAutomaticLimitedAccessAlert</key>

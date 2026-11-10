@@ -34,6 +34,8 @@ public final class AgentClient: Sendable {
     }
 
     public func close() async { await transport.close() }
+    /// Back from the background: see `AgentTransport.resumed`.
+    public func resumed() async { await transport.resumed() }
 
     // MARK: Requests
 
@@ -63,15 +65,21 @@ public final class AgentClient: Sendable {
         }
         if response.status == 401 { throw AgentClientError.revoked }
         guard (200..<300).contains(response.status) || response.status == 304 || response.status == 206 else {
-            struct Failure: Decodable { let error: String?; let code: String? }
-            let failure = try? JSONDecoder().decode(Failure.self, from: response.body)
-            throw AgentClientError.status(response.status, code: failure?.code, message: failure?.error)
+            // Flat (`{error, code}`) or nested (`{error: {code, message}}`).
+            let failure = try? JSONValue.decode(response.body)
+            let nested = failure?["error"]?.objectValue
+            throw AgentClientError.status(response.status, code: failure?["code"]?.stringValue ?? nested?["code"]?.stringValue,
+                                          message: failure?["error"]?.stringValue ?? nested?["message"]?.stringValue)
         }
         return response
     }
 
     func decode<T: Decodable>(_ type: T.Type, _ method: String, _ path: String, json: JSONValue? = nil) async throws -> T {
         let response = try await send(method, path, json: json)
+        if T.self == JSONValue.self {
+            guard let value = try? JSONValue.decode(response.body) as? T else { throw AgentClientError.invalidResponse }
+            return value
+        }
         do { return try JSONDecoder().decode(T.self, from: response.body) }
         catch { throw AgentClientError.invalidResponse }
     }
@@ -244,6 +252,11 @@ public final class AgentClient: Sendable {
 
     // MARK: Surfaces
 
+    /// Puts a Surface in the reader's sidebar, at its end; one already there stays where it is.
+    public func joinSurface(_ surfaceId: String, mutationId: String = ClientID.make()) async throws {
+        _ = try await send("POST", "/v0/surfaces/\(Self.escape(surfaceId))/join", json: .object(["mutationId": .string(mutationId)]))
+    }
+
     /// Takes a Surface out of the reader's sidebar; its content stays for everyone.
     public func leaveSurface(_ surfaceId: String, mutationId: String = ClientID.make()) async throws {
         _ = try await send("POST", "/v0/surfaces/\(Self.escape(surfaceId))/leave", json: .object(["mutationId": .string(mutationId)]))
@@ -395,6 +408,33 @@ public final class AgentClient: Sendable {
         if let arguments { body["arguments"] = .string(arguments) }
         let answer = try await decode(JSONValue.self, "POST", "/v0/agents/\(Self.escape(agentId))/slash-commands/\(Self.escape(name))", json: .object(body))
         return AgentWire.SlashCommand.catalog(answer["slashCommands"])
+    }
+
+    /// The connection's global skills new work's `/` offers before it has
+    /// an agent (`GET /v0/skills`, every page; a page cursor a change made
+    /// stale starts the list again), as `SlashCommands.globalSkills` keeps
+    /// them. Nil from a computer without skill management (404, 501).
+    public func globalSkills() async throws -> [AgentWire.SlashCommand]? {
+        var summaries: [JSONValue] = []
+        var page: String?
+        var restarts = 0
+        while true {
+            let answer: JSONValue
+            do {
+                answer = try await decode(JSONValue.self, "GET", "/v0/skills?limit=100" + (page.map { "&pageCursor=\(Self.escape($0))" } ?? ""))
+            } catch AgentClientError.status(let status, _, _) where status == 404 || status == 501 {
+                return nil
+            } catch AgentClientError.status(409, _, _) where page != nil && restarts < 3 {
+                summaries = []
+                page = nil
+                restarts += 1
+                continue
+            }
+            summaries += answer["skills"]?.arrayValue ?? []
+            guard let next = answer["nextPageCursor"]?.stringValue else { break }
+            page = next
+        }
+        return SlashCommands.globalSkills(summaries)
     }
 
     /// The composer's draft as the computer keeps it for this person.
@@ -578,12 +618,13 @@ public final class AgentClient: Sendable {
         return AsyncThrowingStream { continuation in
             let reader = Task {
                 var parser = ServerSentEventParser()
-                var watchdog = Self.watch(continuation, transport: transport)
+                let heard = Heard()
+                let watchdog = Self.watch(continuation, transport: transport, heard: heard)
                 defer { watchdog.cancel() }
                 do {
                     for try await bytes in body {
-                        watchdog.cancel()
-                        watchdog = Self.watch(continuation, transport: transport)
+                        heard.now()
+                        RadioWake.shared.noted()
                         for frame in parser.append(bytes) { continuation.yield(frame) }
                     }
                     continuation.finish()
@@ -598,9 +639,24 @@ public final class AgentClient: Sendable {
     /// so this long without a byte means it is gone, and so is the tunnel.
     static let silence: Duration = .seconds(40)
 
-    private static func watch(_ continuation: AsyncThrowingStream<ServerSentEvent, Error>.Continuation, transport: any AgentTransport) -> Task<Void, Never> {
+    /// When the stream last brought bytes.
+    private final class Heard: @unchecked Sendable {
+        private let lock = NSLock()
+        private var last = ContinuousClock.now
+        func now() { lock.withLock { last = .now } }
+        var lastHeard: ContinuousClock.Instant { lock.withLock { last } }
+    }
+
+    /// One sleeper for the stream's life, woken at the silence deadline and
+    /// put back to sleep if bytes came meanwhile: not a task made and
+    /// cancelled for every chunk.
+    private static func watch(_ continuation: AsyncThrowingStream<ServerSentEvent, Error>.Continuation, transport: any AgentTransport, heard: Heard) -> Task<Void, Never> {
         Task {
-            guard (try? await Task.sleep(for: silence)) != nil else { return }
+            while true {
+                let due = heard.lastHeard + silence
+                guard (try? await Task.sleep(until: due, clock: .continuous)) != nil else { return }
+                if ContinuousClock.now >= heard.lastHeard + silence { break }
+            }
             await transport.reset(.realtime)
             continuation.finish(throwing: PairingError.unavailable)
         }

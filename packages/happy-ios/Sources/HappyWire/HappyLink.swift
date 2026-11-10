@@ -1,8 +1,9 @@
 import Foundation
 
-/// What a Happy URL names: an entity (`happy://artifacts/<id>`) or a file
+/// What a Happy URL names: an entity (`happy://artifacts/<id>`), a file
 /// (`happy://agents/<id>/files/Foo.tsx#L42`, or the API's
-/// `happy-file://agents/<id>/Foo.tsx#L42`). A port of
+/// `happy-file://agents/<id>/Foo.tsx#L42`), or a page of the client's own
+/// settings (`happy://settings/providers`). A port of
 /// `@slopus/happy-agent-client`'s `happyLinks.ts`, so the two agree on
 /// exactly what a link names.
 ///
@@ -45,17 +46,45 @@ public struct HappyLink: Equatable, Sendable {
         }
     }
 
+    /// A page of the client's settings (API.md, "Settings links"): a
+    /// closed list, naming no entity.
+    public enum SettingsPage: String, CaseIterable, Sendable {
+        case general, account, sharing, servers, instructions, secrets, providers
+        case providersImport = "providers/import"
+        /// Adding a provider: the chooser, ChatGPT's device sign-in,
+        /// Claude's sign-in, an API key form (`?vendor=`). Each may name
+        /// where it goes (`to=private|team`); nothing else rides along.
+        case providersAdd = "providers/add"
+        case providersAddOpenAI = "providers/add/openai"
+        case providersAddAnthropic = "providers/add/anthropic"
+        case providersAddAPIKey = "providers/add/api-key"
+        case usage, voice
+        case mobileAccess = "mobile-access"
+        case members, roles, policy, mcp, computes
+    }
+
     public enum Target: Equatable, Sendable {
         case reference(Reference)
         case file(File)
+        case settings(SettingsPage)
     }
 
     public var target: Target
     /// Present only on an instance link: the installation it names.
     public var instanceId: String?
+    /// An add-provider page's choices: navigation only, never a secret.
+    public var providerOptions = ProviderOptions()
 
-    public init(_ target: Target, instanceId: String? = nil) {
-        self.target = target; self.instanceId = instanceId
+    public struct ProviderOptions: Equatable, Sendable {
+        /// `openai` or `anthropic`, on the API key form.
+        public var vendor: String?
+        /// `private` or `team`.
+        public var destination: String?
+        public init(vendor: String? = nil, destination: String? = nil) { self.vendor = vendor; self.destination = destination }
+    }
+
+    public init(_ target: Target, instanceId: String? = nil, providerOptions: ProviderOptions = ProviderOptions()) {
+        self.target = target; self.instanceId = instanceId; self.providerOptions = providerOptions
     }
 
     public static let maxLength = 4096
@@ -73,6 +102,15 @@ public struct HappyLink: Equatable, Sendable {
         return lower.hasPrefix("happy:") || lower.hasPrefix("happy-file:")
     }
 
+    /// Whether `text` is under one of the hosts Happy links use, or an
+    /// instance ID, or `happy-file:`, well-formed or not: one asking to be
+    /// a button that is malformed shows its words. The app's own routes
+    /// (`direct`, `terminal`, `oauth`) aren't.
+    public static func owns(_ text: String) -> Bool {
+        if text.lowercased().hasPrefix("happy-file:") { return true }
+        return groups(owned, text) != nil
+    }
+
     /// The link `text` is exactly, or nil.
     public init?(_ text: String) {
         guard text.utf16.count <= Self.maxLength else { return nil }
@@ -86,8 +124,36 @@ public struct HappyLink: Equatable, Sendable {
                 return
             }
         }
+        if let (page, options) = Self.addProvider(text) {
+            self.init(.settings(page), providerOptions: options)
+            return
+        }
         guard let target = Self.parse(text) else { return nil }
         self.init(target)
+    }
+
+    /// An add-provider link with its query: `to` on any of them, `vendor`
+    /// (required) only on the key form; any other key, value or repeat
+    /// isn't a link.
+    private static func addProvider(_ text: String) -> (SettingsPage, ProviderOptions)? {
+        guard let parts = groups(settings, text), let rest = parts[1] else { return nil }
+        let split = rest.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
+        guard let page = SettingsPage(rawValue: String(split[0])),
+              [.providersAdd, .providersAddOpenAI, .providersAddAnthropic, .providersAddAPIKey].contains(page) else { return nil }
+        var options = ProviderOptions()
+        if split.count == 2 {
+            for pair in split[1].split(separator: "&", omittingEmptySubsequences: false) {
+                let kv = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+                guard kv.count == 2 else { return nil }
+                let value = String(kv[1])
+                switch kv[0] {
+                case "to" where options.destination == nil && ["private", "team"].contains(value): options.destination = value
+                case "vendor" where page == .providersAddAPIKey && options.vendor == nil && ["openai", "anthropic", "grok"].contains(value): options.vendor = value
+                default: return nil
+                }
+            }
+        }
+        return (page, options)
     }
 
     /// The canonical URL; nil for a link the grammar can't express.
@@ -96,6 +162,9 @@ public struct HappyLink: Equatable, Sendable {
         switch target {
         case .reference(let reference): inner = Self.format(reference)
         case .file(let file): inner = Self.format(file)
+        case .settings(let page):
+            let query = [providerOptions.vendor.map { "vendor=\($0)" }, providerOptions.destination.map { "to=\($0)" }].compactMap { $0 }
+            inner = "happy://settings/\(page.rawValue)" + (query.isEmpty ? "" : "?" + query.joined(separator: "&"))
         }
         guard let inner else { return nil }
         guard let instanceId else { return inner }
@@ -113,6 +182,11 @@ public struct HappyLink: Equatable, Sendable {
     private static let entity = try! NSRegularExpression(pattern: "^happy://(artifacts|agents|workspaces|projects|surfaces|users)/(\(id))(?:\\?version=(\(number)))?$")
     private static let service = try! NSRegularExpression(pattern: "^happy://workspaces/(\(id))/services/(\(id))$")
     private static let file = try! NSRegularExpression(pattern: "^happy://(agents|workspaces)/(\(id))/files/(\(encodedPath))(?:\(lines))?$")
+    private static let settings = try! NSRegularExpression(pattern: "^happy://settings/(.+)$")
+    private static let owned = try! NSRegularExpression(
+        pattern: "^happy://(artifacts|agents|workspaces|projects|services|surfaces|users|settings|[a-z][a-z0-9]{23})(?:[/?#].*)?$",
+        options: [.caseInsensitive, .dotMatchesLineSeparators]
+    )
     private static let happyFile = try! NSRegularExpression(pattern: "^happy-file://(agents|workspaces)/(\(id))/(\(encodedPath))(?:\(lines))?$")
 
     private static func groups(_ regex: NSRegularExpression, _ text: String) -> [String?]? {
@@ -125,6 +199,9 @@ public struct HappyLink: Equatable, Sendable {
     }
 
     private static func parse(_ text: String) -> Target? {
+        if let parts = groups(settings, text), let page = parts[1] {
+            return SettingsPage(rawValue: page).map(Target.settings)
+        }
         if let parts = groups(entity, text), let host = parts[1], let id = parts[2] {
             guard let kind = Kind.allCases.first(where: { $0.host == host }) else { return nil }
             let version = parts[3].flatMap { Int($0) }
