@@ -213,10 +213,14 @@ final class HostedLiveBrowserTests: XCTestCase {
         let (host, window) = try await makeHost(daemon)
         defer { window.isHidden = true; host.dock.update(link: nil) }
         let (navigation, noVNC) = try await takeOver(host, daemon)
-        // Control at the far right with the native viewer's toggle beside
-        // it, Minimize at the left, no back button that would leave control
-        // held: nothing pushes Release into the overflow menu.
-        XCTAssertEqual(noVNC.navigationItem.rightBarButtonItems?.map(\.accessibilityIdentifier), ["live-browser-control", "live-browser-native-viewer"])
+        // Control alone at the far right, Minimize at the left, no back
+        // button that would leave control held: nothing pushes Release
+        // into the overflow menu. The native viewer is in the More menu
+        // of the bar under the header.
+        XCTAssertEqual(noVNC.navigationItem.rightBarButtonItems?.map(\.accessibilityIdentifier), ["live-browser-control"])
+        let viewerActions = noVNC.viewerMenu.menu?.children.compactMap { ($0 as? UIAction)?.identifier.rawValue }
+        XCTAssertEqual(viewerActions, ["live-browser-native-viewer"])
+        XCTAssertTrue(noVNC.viewerMenu.isDescendant(of: noVNC.view))
         XCTAssertEqual(noVNC.navigationItem.rightBarButtonItems?.first, noVNC.control)
         XCTAssertTrue(noVNC.navigationItem.hidesBackButton)
         XCTAssertEqual(noVNC.control.title, Strings.LiveBrowser.releaseControl)
@@ -345,10 +349,10 @@ final class HostedLiveBrowserTests: XCTestCase {
         let (host, window) = try await makeHost(daemon)
         defer { window.isHidden = true; host.dock.update(link: nil) }
         let (navigation, noVNC) = try await takeOver(host, daemon)
-        // Minimize and End browser at the left; Release control at the
-        // right, with the native viewer's toggle beside it.
+        // Minimize and End browser at the left; Release control alone at
+        // the right.
         XCTAssertEqual(noVNC.navigationItem.leftBarButtonItems?.map(\.accessibilityIdentifier), ["live-browser-minimize", "live-browser-end", "live-browser-sleep"])
-        XCTAssertEqual(noVNC.navigationItem.rightBarButtonItems?.map(\.accessibilityIdentifier), ["live-browser-control", "live-browser-native-viewer"])
+        XCTAssertEqual(noVNC.navigationItem.rightBarButtonItems?.map(\.accessibilityIdentifier), ["live-browser-control"])
         XCTAssertEqual(noVNC.navigationItem.rightBarButtonItems?.first, noVNC.control)
         XCTAssertTrue(noVNC.endItem.isEnabled)
         let frame = try XCTUnwrap(navigation.viewControllers.first as? LiveBrowserFullScreenItems)

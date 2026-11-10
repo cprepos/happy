@@ -996,17 +996,12 @@ final class LiveBrowserFullScreenItems: UIViewController {
         control.accessibilityIdentifier = "live-browser-control"
         // Control alone at the right, or with reload on the frame view: the
         // browser's back, forward and share pushed it into the header's
-        // overflow menu on a phone, out of sight under noVNC.
-        if viewer != nil {
+        // overflow menu on a phone, out of sight under noVNC. So did the
+        // viewer switch beside it, with Minimize, End and Sleep at the
+        // left: on noVNC's page it is in the More menu of the bar under
+        // the header, as Use the web viewer is in the native viewer's.
+        if viewer != nil || isNoVNC {
             navigationItem.rightBarButtonItems = [control]
-        } else if isNoVNC {
-            // noVNC's page, the fallback: the native viewer a tap away.
-            let native = UIBarButtonItem(image: UIImage(systemName: "rectangle.on.rectangle"), primaryAction: UIAction { [weak self] _ in
-                self?.dock?.switchViewer(native: true)
-            })
-            native.accessibilityLabel = Strings.LiveBrowser.Viewer.nativeViewer
-            native.accessibilityIdentifier = "live-browser-native-viewer"
-            navigationItem.rightBarButtonItems = [control, native]
         } else {
             navigationItem.rightBarButtonItems = [control, browser.reloadItem]
         }
@@ -1092,6 +1087,10 @@ final class LiveBrowserFullScreenItems: UIViewController {
     let address = UITextField()
     private let spinner = UIActivityIndicatorView(style: .medium)
     private let navMessage = UILabel()
+    /// More, at the end of the bar: Use the native viewer, a tap away
+    /// from the fallback page, kept off the header where it crowded
+    /// Release control into the overflow menu.
+    let viewerMenu = UIButton(type: .system)
     /// Calls in flight.
     private(set) var navigating = 0
     private var messageClear: Task<Void, Never>?
@@ -1124,12 +1123,24 @@ final class LiveBrowserFullScreenItems: UIViewController {
         address.setContentHuggingPriority(.defaultLow, for: .horizontal)
         spinner.hidesWhenStopped = true
         spinner.accessibilityIdentifier = "live-browser-nav-spinner"
+        viewerMenu.setImage(UIImage(systemName: "ellipsis.circle"), for: .normal)
+        viewerMenu.accessibilityLabel = Strings.LiveBrowser.Viewer.more
+        viewerMenu.accessibilityIdentifier = "live-browser-viewer-menu"
+        viewerMenu.showsMenuAsPrimaryAction = true
+        viewerMenu.menu = UIMenu(children: [
+            UIAction(title: Strings.LiveBrowser.Viewer.nativeViewer, image: UIImage(systemName: "rectangle.on.rectangle"),
+                     identifier: UIAction.Identifier("live-browser-native-viewer")) { [weak self] _ in
+                self?.dock?.switchViewer(native: true)
+            },
+        ])
+        viewerMenu.widthAnchor.constraint(equalToConstant: 36).isActive = true
         let row = UIStackView(arrangedSubviews: [
             button("chevron.backward", Strings.LiveBrowser.back, "live-browser-back", .back),
             button("chevron.forward", Strings.LiveBrowser.forward, "live-browser-forward", .forward),
             button("arrow.clockwise", Strings.LiveBrowser.reload, "live-browser-reload", .reload),
             address,
             spinner,
+            viewerMenu,
         ])
         row.axis = .horizontal
         row.spacing = 6
