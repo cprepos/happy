@@ -1,7 +1,7 @@
 // End to end against a bridge running with BRIDGE_PODS=1 (`make browser-pod-smoke`): two chats get
 // two pods with their own sessions, links, ports and noVNC passwords; every listener is on
-// 127.0.0.1 and no abstract X11 socket is visible; each pod's browser window is locked to the screen; a pod left
-// idle stops by itself (run the bridge with a short BRIDGE_POD_IDLE_MIN, e.g. 0.3) and a login
+// 127.0.0.1 and no abstract X11 socket is visible; each pod's browser window is locked to the screen;
+// a screen shot of an https page shows the scheme in the address bar; a pod left idle stops by itself (run the bridge with a short BRIDGE_POD_IDLE_MIN, e.g. 0.3) and a login
 // cookie set before the stop is there after it wakes.
 // Never prints a token, password or noVNC URL: passwords are compared, not shown.
 import { spawnSync } from 'node:child_process';
@@ -24,6 +24,8 @@ const PROJECT = process.env.BROWSER_PROJECT || 'happy-browser';
 const IDLE_WAIT_S = Number(process.env.SMOKE_IDLE_WAIT_S || 120);
 // A page that sets a cookie from its query (Set-Cookie, no script) and one that shows the cookies.
 const COOKIE_BASE = (process.env.SMOKE_COOKIE_BASE || 'https://httpbin.org').replace(/\/+$/, '');
+// An https page for the address bar check.
+const SCHEME_URL = process.env.SMOKE_SCHEME_URL || 'https://example.com/';
 const bridgeToken = readFileSync(join(HOME, 'secrets/bridge-token'), 'utf8').trim();
 const apiToken = readFileSync(join(HOME, 'secrets/api-token'), 'utf8').trim();
 
@@ -91,6 +93,15 @@ try {
         try { g = JSON.parse(r.stdout.trim().split('\n').pop()); } catch { g = { error: `exit ${r.status}` }; }
         check(!g.error && g.kiosk === WANT_KIOSK && windowShaped(g.page, WANT_KIOSK) && windowShaped(g.popup, WANT_KIOSK),
             `slot ${p.slot}: page and popup fill the screen, ${WANT_KIOSK ? 'no browser UI (kiosk)' : 'maximized with the browser UI'}`);
+    }
+
+    // The address bar shows the full URL, scheme included (kiosk/policy.json's ShowFullUrlsInAddressBar):
+    // a screen shot of an https page says OCR read "https://" in it. Not checked in kiosk mode (no address bar).
+    if (!WANT_KIOSK) {
+        await tool(pb.mcp_url, 'browser.execute_action', { session_id: pb.session_id, action: { action: 'navigate', url: SCHEME_URL, reason: 'pod smoke' } });
+        const shot = await bapi('/api/screen', { chat_key: B, label: 'smoke-scheme' });
+        check(shot.status === 200 && shot.body?.address_bar_scheme === true,
+            `a screen shot of ${SCHEME_URL} shows https:// in the address bar (address_bar_scheme ${JSON.stringify(shot.body?.address_bar_scheme ?? shot.body?.error ?? shot.status)})`);
     }
 
     // A login cookie survives the idle stop.
