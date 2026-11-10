@@ -16,28 +16,22 @@ import WebKit
 /// Embedded in another screen (an artifact), the buttons go in that
 /// screen's header and its title stays.
 ///
-/// An app (`ArtifactPageMode`, in `AppPageViewController`) has no header,
-/// loading bar or pull to refresh: its page fills the view, never scrolls,
+/// There is no pull to refresh; the header's button reloads.
+///
+/// An app (`ArtifactPageMode`, in `AppPageViewController`) has no header
+/// or loading bar: its page fills the view, never scrolls,
 /// bounces or zooms, and runs with `AppPageScripts`.
 final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, TakesBackSwipe {
     let originalURL: URL
     private let session: Session?
     private let agentID: String?
     private let artifactID: String?
-    /// Finds the workspace the page opens in, when the screen that opened
-    /// it knows (a Happy CLI chat's, by its folder); else `agentID`'s or
-    /// `artifactID`'s, or the computer's first host workspace.
-    private let workspace: (@Sendable () async throws -> String)?
-    private var page: BrowserPage?
-    /// Buttons a caller adds at the header's right, before the browser's own
-    /// (a live browser's Done).
-    let extraItems: [UIBarButtonItem]
+    var page: BrowserPage?
     private(set) var web: WKWebView?
     private var loading: Task<Void, Never>?
     private var observations: [NSKeyValueObservation] = []
     private let progressView = BrowserProgressView()
     let failureView = BrowserFailureView()
-    private let refresh = UIRefreshControl()
     private(set) var progress = BrowserProgress()
     private var trickling: Task<Void, Never>?
     /// Why the error page shows, while it does.
@@ -63,6 +57,13 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
     var appClosed: (() -> Void)?
     /// Every value the loading bar takes, in order (tests).
     var progressChanged: ((BrowserProgress) -> Void)?
+    /// Finds the workspace the page opens in, when the screen that opened
+    /// it knows (a Happy CLI chat's, by its folder); else `agentID`'s or
+    /// `artifactID`'s, or the computer's first host workspace.
+    let workspace: (@Sendable () async throws -> String)?
+    /// Buttons a caller adds at the header's right, before the browser's own
+    /// (a live browser's Done).
+    let extraItems: [UIBarButtonItem]
     /// Called with the page's configuration before its web view is made:
     /// a caller's scripts and message handlers (noVNC's watch).
     var configure: ((WKWebViewConfiguration) -> Void)?
@@ -109,7 +110,6 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
         failureView.isHidden = true
         failureView.retried = { [weak self] in self?.retry() }
         progressView.faded = { [weak self] in self?.setProgress { $0.hide() } }
-        refresh.addAction(UIAction { [weak self] _ in self?.pulled() }, for: .valueChanged)
         backItem.accessibilityLabel = Strings.Browser.back
         backItem.accessibilityIdentifier = "browser-back"
         forwardItem.accessibilityLabel = Strings.Browser.forward
@@ -132,13 +132,11 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
     }
 
     /// Back and forward, then reload and share, at the header's right in
-    /// two glass groups, any `extraItems` outermost; the system back button
-    /// keeps the left.
+    /// two glass groups; the system back button keeps the left.
     private func installHeader() {
         guard !isApp else { return }
         let item = header.navigationItem
-        let extra: [UIBarButtonItem] = extraItems.isEmpty ? [] : extraItems + [.fixedSpace(0)]
-        item.rightBarButtonItems = extra + [shareItem, reloadItem, .fixedSpace(0), forwardItem, backItem]
+        item.rightBarButtonItems = withExtraItems([shareItem, reloadItem, .fixedSpace(0), forwardItem, backItem])
         updateHeader()
     }
 
@@ -159,9 +157,7 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
                     // A live artifact opens where it was made, never in a workspace guessed for it.
                     page = try await BrowserPage.live(client: session.client, url: originalURL, artifactID: artifactID)
                 } else {
-                    let workspace: String
-                    if let find = self.workspace { workspace = try await find() }
-                    else { workspace = try await session.client.browserWorkspace(agentID: agentID) }
+                    let workspace = try await findWorkspace(session.client, agentID: agentID)
                     try Task.checkCancellation()
                     page = try await BrowserPage.workspace(client: session.client, url: originalURL, workspaceID: workspace)
                 }
@@ -201,17 +197,13 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
     }
 
     private func makePage(_ web: WKWebView) {
-        web.allowsBackForwardNavigationGestures = !isRemoteScreen
+        web.allowsBackForwardNavigationGestures = true
         // Until the page paints, the screen's own surface shows through:
         // no white flash in dark mode.
         web.isOpaque = false
         web.backgroundColor = UIColor(Palette.surface)
         web.scrollView.backgroundColor = UIColor(Palette.surface)
-        if isRemoteScreen {
-            lockRemoteScreen(web)
-        } else {
-            web.scrollView.refreshControl = refresh
-        }
+        pageMade(web)
         HeaderBar.edge(web.scrollView, in: header)
     }
 
@@ -246,7 +238,7 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
         scrollView.pinchGestureRecognizer?.isEnabled = !app
     }
 
-    private func load(_ url: URL, in web: WKWebView) {
+    func load(_ url: URL, in web: WKWebView) {
         setProgress { $0.begin() }
         pendingURL = url
         web.load(URLRequest(url: url))
@@ -255,7 +247,7 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
     private func loadingChanged(_ isLoading: Bool) {
         updateHeader()
         if isLoading { setProgress { $0.begin() }; return }
-        refresh.endRefreshing()
+        endRefreshing()
         // A failure says so in its own callback, which may come just after:
         // only a load that ended without one fills the bar.
         DispatchQueue.main.async { [weak self] in
@@ -264,7 +256,7 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
         }
     }
 
-    private func setProgress(_ change: (inout BrowserProgress) -> Void) {
+    func setProgress(_ change: (inout BrowserProgress) -> Void) {
         var next = progress
         change(&next)
         guard next != progress else { return }
@@ -291,9 +283,8 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
         failedURL = url ?? failedURL ?? originalURL
         failedBeforeCommit = beforeCommit
         setProgress { $0.hide() }
-        refresh.endRefreshing()
         failureView.show(problem, computer: computerName, host: failedURL.flatMap(Self.address))
-        onFailure?(problem)
+        failureShown(problem)
         if failureView.isHidden {
             failureView.alpha = 0
             failureView.isHidden = false
@@ -366,16 +357,10 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
         if problem != nil { retry(); return }
         if web.isLoading {
             web.stopLoading()
-            refresh.endRefreshing()
+            endRefreshing()
             setProgress { $0.hide() }
             return
         }
-        if web.url == nil { load(failedURL ?? page?.url ?? originalURL, in: web) } else { setProgress { $0.begin() }; web.reload() }
-    }
-
-    /// Pull to refresh: always loads again, never stops.
-    private func pulled() {
-        guard let web, problem == nil else { retry(); return }
         if web.url == nil { load(failedURL ?? page?.url ?? originalURL, in: web) } else { setProgress { $0.begin() }; web.reload() }
     }
 
@@ -433,22 +418,6 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
         if isRemoteScreen, let web { lockRemoteScreen(web) }
     }
 
-    /// A remote screen neither scrolls, bounces nor zooms. WebKit sets the
-    /// zoom range again from the page's viewport whenever the view's size
-    /// or page changes, so this is applied again after each.
-    private func lockRemoteScreen(_ web: WKWebView) {
-        let scroll = web.scrollView
-        scroll.isScrollEnabled = false
-        scroll.bounces = false
-        scroll.alwaysBounceVertical = false
-        scroll.alwaysBounceHorizontal = false
-        scroll.bouncesZoom = false
-        scroll.minimumZoomScale = 1
-        scroll.maximumZoomScale = 1
-        scroll.pinchGestureRecognizer?.isEnabled = false
-        scroll.panGestureRecognizer.isEnabled = false
-    }
-
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         if isMovingFromParent || isBeingDismissed || navigationController?.isBeingDismissed == true || parent?.isMovingFromParent == true || parent?.isBeingDismissed == true {
@@ -470,11 +439,7 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
         if isApp, !webView.scrollView.isScrollEnabled { webView.scrollView.pinchGestureRecognizer?.isEnabled = false }
         if isApp { appLoaded?() }
         updateHeader()
-        // A remote screen's canvas has the focus without a tap first.
-        if isRemoteScreen {
-            lockRemoteScreen(webView)
-            webView.evaluateJavaScript("window.liveBrowserFocusCanvas && window.liveBrowserFocusCanvas()")
-        }
+        remoteScreenLoaded(webView)
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
@@ -588,12 +553,7 @@ extension UIViewController {
     func openBrowser(_ url: URL, session: Session? = nil, agentID: String? = nil, workspace: (@Sendable () async throws -> String)? = nil) {
         guard BrowserPolicy.route(url) != .system else { UIApplication.shared.open(url); return }
         // A workspace finder belongs to the session it was made for.
-        presentBrowser(BrowserViewController(url: url, session: session ?? browserConnection(), agentID: agentID, workspace: session == nil ? nil : workspace))
-    }
-
-    /// Pushes `browser` on this screen's stack, or presents it in a stack
-    /// of its own with a close button.
-    func presentBrowser(_ browser: BrowserViewController) {
+        let browser = BrowserViewController(url: url, session: session ?? browserConnection(), agentID: agentID, workspace: session == nil ? nil : workspace)
         if let navigationController { navigationController.pushViewController(browser, animated: true) }
         else {
             let navigation = UINavigationController(rootViewController: browser)
