@@ -3,6 +3,7 @@
 @testable import HappyUI
 import HappyLayout
 import UIKit
+import WebKit
 import XCTest
 
 /// One chat's live browser, as `LiveBrowserDock` shows it: the red line on
@@ -102,14 +103,17 @@ final class HostedLiveBrowserTests: XCTestCase {
         // The player: at the bottom right, 8 over the line, its right edge the card's.
         let player = try XCTUnwrap(dock.player)
         let expected = LiveBrowserDockLayout(.init(
-            size: host.view.bounds.size, safeArea: LayoutInsets(host.view.safeAreaInsets), card: host.cardFrame, anchor: line.frame.minY
+            size: host.view.bounds.size, safeArea: LayoutInsets(host.view.safeAreaInsets), card: host.cardFrame, anchor: line.frame.minY,
+            phone: dock.isPhone
         ))
         XCTAssertEqual(player.frame, expected.frame)
         XCTAssertEqual(player.frame.maxX, host.cardFrame.maxX)
         XCTAssertEqual(player.frame.maxY, line.frame.minY - 8)
         if host.view.bounds.size == CGSize(width: 402, height: 874) {
             XCTAssertEqual(host.cardFrame, CGRect(x: 8, y: 784, width: 386, height: 56))
-            XCTAssertEqual(player.frame, CGRect(x: 282, y: 612, width: 112, height: 144))
+            // A phone's one size is the large player.
+            XCTAssertEqual(player.frame, CGRect(x: 162, y: 537, width: 232, height: 219))
+            XCTAssertNil(player.subviews.first { $0.accessibilityIdentifier == "live-browser-player-resize" && !$0.isHidden })
         }
         // Its buttons stand on the bar, none on the picture, each a 44-point target.
         let picture = try XCTUnwrap(player.subviews.first { $0.accessibilityIdentifier == "live-browser-picture" })
@@ -138,7 +142,9 @@ final class HostedLiveBrowserTests: XCTestCase {
         try await until { (host.presentedViewController as? UINavigationController)?.viewControllers.count == 2 }
         let navigation = try XCTUnwrap(host.presentedViewController as? UINavigationController)
         let noVNC = try XCTUnwrap(navigation.viewControllers.last as? LiveBrowserFullScreenItems)
-        XCTAssertEqual(noVNC.browser.originalURL.absoluteString, BrowserDaemon.chatNoVNC)
+        // noVNC's page scales the remote screen on a phone, never resizes it.
+        let scaled = BrowserDaemon.chatNoVNC.replacingOccurrences(of: "resize=remote", with: "resize=scale")
+        XCTAssertEqual(noVNC.browser.originalURL.absoluteString, dock.isPhone ? scaled : BrowserDaemon.chatNoVNC)
         try await until { dock.indicator.text == Strings.LiveBrowser.indicator(Strings.LiveBrowser.youHaveControl) }
         try await until { navigation.transitionCoordinator == nil && noVNC.isViewLoaded }
         let control = try XCTUnwrap(noVNC.navigationItem.rightBarButtonItems?.first)
@@ -301,8 +307,9 @@ final class HostedLiveBrowserTests: XCTestCase {
         host.view.layoutIfNeeded()
         var player = try XCTUnwrap(dock.player)
         // Behind the menu on the bar's left, beside close, away from Take
-        // over; a phone's narrow player has it once it is made larger.
-        if player.menuButton.isHidden {
+        // over; an iPad's or a Mac's narrow player has it once it is made
+        // larger, a phone's player is the large one already.
+        if !dock.isPhone, player.menuButton.isHidden {
             try XCTUnwrap(player.subviews.first { $0.accessibilityIdentifier == "live-browser-player-resize" } as? UIButton)
                 .sendActions(for: .touchUpInside)
             host.view.layoutIfNeeded()
@@ -520,6 +527,181 @@ final class HostedLiveBrowserTests: XCTestCase {
         try screenshot(window, name: "voice-strip-player")
         host.dismiss(animated: false)
         try await until { host.presentedViewController == nil }
+    }
+
+    // MARK: A phone turned sideways
+
+    /// The scene turned as the person turns the phone (the test asks; the
+    /// app never does), and the window laid out at the new size.
+    private func turn(_ window: UIWindow, to mask: UIInterfaceOrientationMask) async throws {
+        let scene = try XCTUnwrap(window.windowScene)
+        scene.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { error in XCTFail("\(error)") }
+        let wide = mask != .portrait
+        try await until { (window.bounds.width > window.bounds.height) == wide }
+        window.layoutIfNeeded()
+    }
+
+    private func turnUpright() {
+        addTeardownBlock { @MainActor in
+            guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene, scene.interfaceOrientation != .portrait else { return }
+            scene.requestGeometryUpdate(.iOS(interfaceOrientations: .portrait))
+            let deadline = ContinuousClock.now + .seconds(5)
+            while scene.interfaceOrientation != .portrait, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        }
+    }
+
+    /// The views with `id` showing in `root`, nothing above them hidden.
+    private func showing(_ id: String, in root: UIView) -> [UIView] {
+        func walk(_ view: UIView) -> [UIView] {
+            guard !view.isHidden, view.alpha > 0.01 else { return [] }
+            return (view.accessibilityIdentifier == id ? [view] : []) + view.subviews.flatMap(walk)
+        }
+        return walk(root)
+    }
+
+    /// Upright: the header with its controls, no strip, the page's picture
+    /// edge to edge under the header at the frame's aspect.
+    private func assertUpright(_ page: LiveBrowserFullScreenItems, _ navigation: UINavigationController, dock: LiveBrowserDock,
+                               file: StaticString = #filePath, line: UInt = #line) async throws {
+        try await until { !page.stripShown && !navigation.isNavigationBarHidden && page.view.bounds.width < page.view.bounds.height }
+        page.view.layoutIfNeeded()
+        XCTAssertTrue(page.strip.isHidden, file: file, line: line)
+        XCTAssertNotNil(page.navigationItem.leftBarButtonItems?.first { $0.accessibilityIdentifier == "live-browser-sleep" }, file: file, line: line)
+        XCTAssertEqual(page.navigationItem.rightBarButtonItems?.first, page.control, file: file, line: line)
+        let picture = try XCTUnwrap(page.browser?.view.frame, file: file, line: line)
+        let width = page.view.bounds.width
+        XCTAssertEqual(picture.minX, 0, file: file, line: line)
+        XCTAssertEqual(picture.width, width, "edge to edge", file: file, line: line)
+        XCTAssertGreaterThanOrEqual(picture.minY, page.view.safeAreaInsets.top, "under the header", file: file, line: line)
+        XCTAssertEqual(picture.height, (width / (dock.frameAspect ?? 1.6)).rounded(), accuracy: 1, file: file, line: line)
+    }
+
+    /// Sideways: the header hidden, its controls once each in the strip at
+    /// the trailing edge, the picture the whole height beside it.
+    private func assertSideways(_ page: LiveBrowserFullScreenItems, _ navigation: UINavigationController, ids: [String],
+                                file: StaticString = #filePath, line: UInt = #line) async throws {
+        try await until { page.stripShown && navigation.isNavigationBarHidden && page.view.bounds.width > page.view.bounds.height }
+        page.view.layoutIfNeeded()
+        XCTAssertFalse(page.strip.isHidden, file: file, line: line)
+        let bounds = page.view.bounds
+        let strip = page.strip.frame
+        XCTAssertEqual(strip.maxX, bounds.width - page.view.safeAreaInsets.right, accuracy: 0.5, "at the trailing safe edge", file: file, line: line)
+        let picture = try XCTUnwrap(page.browser?.view.frame, file: file, line: line)
+        XCTAssertEqual(picture.height, bounds.height, "the picture has the height", file: file, line: line)
+        XCTAssertLessThanOrEqual(picture.maxX, strip.minX, file: file, line: line)
+        for id in ids {
+            let found = showing(id, in: page.view)
+            XCTAssertEqual(found.count, 1, "\(id) once", file: file, line: line)
+            XCTAssertTrue(found.first?.isDescendant(of: page.strip) ?? false, "\(id) in the strip", file: file, line: line)
+        }
+    }
+
+    func testOnAPhoneTheFrameViewTurnsWithTheDeviceToTheStrip() async throws {
+        let daemon = BrowserDaemon()
+        let (host, window) = try await makeHost(daemon)
+        defer { window.isHidden = true; host.dock.update(link: nil) }
+        let dock = host.dock!
+        try XCTSkipUnless(dock.isPhone, "an iPhone's full screen; an iPad's and the Mac's are as they were")
+        turnUpright()
+        dock.update(link: LiveBrowserLink(id: id))
+        try await until { dock.player != nil && dock.feed?.phase.state != nil }
+        dock.presentFullScreen(taking: false)
+        try await until { (host.presentedViewController as? UINavigationController)?.transitionCoordinator == nil }
+        let navigation = try XCTUnwrap(host.presentedViewController as? UINavigationController)
+        let frame = try XCTUnwrap(navigation.viewControllers.first as? LiveBrowserFullScreenItems)
+        try await until { frame.isViewLoaded }
+        XCTAssertFalse(frame.isNoVNC)
+        // Nothing asks for a side: it turns as the phone does.
+        XCTAssertTrue(navigation.supportedInterfaceOrientations.contains(.landscape))
+        XCTAssertTrue(frame.supportedInterfaceOrientations.contains(.landscape))
+        try await assertUpright(frame, navigation, dock: dock)
+        try screenshot(window, name: "live-browser-phone-upright")
+
+        try await turn(window, to: .landscapeRight)
+        try await assertSideways(frame, navigation, ids: ["live-browser-minimize", "live-browser-end", "live-browser-sleep", "browser-reload", "live-browser-control"])
+        let control = try XCTUnwrap(showing("live-browser-control", in: frame.strip).first)
+        XCTAssertEqual(control.accessibilityLabel, Strings.LiveBrowser.takeControl)
+        try screenshot(window, name: "live-browser-phone-sideways")
+
+        try await turn(window, to: .portrait)
+        try await assertUpright(frame, navigation, dock: dock)
+        dock.minimize()
+        try await until { host.presentedViewController == nil }
+    }
+
+    func testOnAPhoneTakeControlTurnsWithTheDeviceToTheStrip() async throws {
+        let daemon = BrowserDaemon()
+        let (host, window) = try await makeHost(daemon)
+        defer { window.isHidden = true; host.dock.update(link: nil) }
+        let dock = host.dock!
+        try XCTSkipUnless(dock.isPhone, "an iPhone's full screen; an iPad's and the Mac's are as they were")
+        turnUpright()
+        let (navigation, noVNC) = try await takeOver(host, daemon)
+        XCTAssertTrue(noVNC.supportedInterfaceOrientations.contains(.landscape))
+        try await assertUpright(noVNC, navigation, dock: dock)
+        let back = showing("live-browser-back", in: noVNC.view)
+        XCTAssertEqual(back.count, 1, "back on noVNC's own row")
+        XCTAssertFalse(back.first?.isDescendant(of: noVNC.strip) ?? true)
+
+        try await turn(window, to: .landscapeLeft)
+        try await assertSideways(noVNC, navigation, ids: [
+            "live-browser-minimize", "live-browser-end", "live-browser-sleep", "live-browser-back", "live-browser-forward",
+            "live-browser-reload", "live-browser-viewer-menu", "live-browser-control",
+        ])
+        let release = try XCTUnwrap(showing("live-browser-control", in: noVNC.strip).first as? UIButton)
+        XCTAssertEqual(release.accessibilityLabel, Strings.LiveBrowser.releaseControl)
+        XCTAssertTrue(release.isEnabled)
+        // noVNC still has every touch on its side.
+        XCTAssertTrue(noVNC.holdsGestures)
+        XCTAssertTrue(navigation.isModalInPresentation)
+        try screenshot(window, name: "live-browser-phone-novnc-sideways")
+
+        // Upright again: the header and noVNC's row are back.
+        try await turn(window, to: .portrait)
+        try await assertUpright(noVNC, navigation, dock: dock)
+        XCTAssertEqual(showing("live-browser-back", in: noVNC.view).count, 1)
+
+        // Release from the strip, sideways: back to the frame view, which
+        // keeps the strip.
+        try await turn(window, to: .landscapeRight)
+        try await until { noVNC.stripShown }
+        release.sendActions(for: .touchUpInside)
+        try await until { await daemon.requests.contains { $0.hasPrefix("POST /live/\(self.id)/release HTTP/1.1") } }
+        try await until { navigation.viewControllers.count == 1 && navigation.transitionCoordinator == nil }
+        let frame = try XCTUnwrap(navigation.viewControllers.first as? LiveBrowserFullScreenItems)
+        try await assertSideways(frame, navigation, ids: ["live-browser-control"])
+        try await turn(window, to: .portrait)
+        dock.minimize()
+        try await until { host.presentedViewController == nil }
+    }
+
+    /// A phone's live page is its picture: the footer's Take control,
+    /// Release and Sleep are the header's and the strip's, once each.
+    func testOnAPhoneTheLivePageIsItsPictureAlone() async throws {
+        let configuration = WKWebViewConfiguration()
+        LiveBrowserDock.pictureOnly(in: configuration)
+        let web = WKWebView(frame: CGRect(x: 0, y: 0, width: 402, height: 251), configuration: configuration)
+        let window = hostedKeyWindow(in: try await hostedActiveScene())
+        defer { window.isHidden = true }
+        window.addSubview(web)
+        web.loadHTMLString("""
+            <!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">
+            <style>body{margin:0;display:flex;flex-direction:column;min-height:100dvh} footer{display:flex}
+            main{padding:12px} #box{width:100%;aspect-ratio:1.6;max-height:calc(100dvh - 170px);border:1px solid;border-radius:10px}</style>
+            <header>Title</header><main><div id="box"></div></main>
+            <footer><a id="take">Take control</a><button id="sleep">Sleep</button></footer>
+            """, baseURL: nil)
+        try await until { web.isLoading == false && web.url != nil }
+        var result: [String]?
+        try await until {
+            result = try? await web.evaluateJavaScript("""
+                [getComputedStyle(document.querySelector('footer')).display,
+                 getComputedStyle(document.querySelector('header')).display,
+                 String(Math.round(document.querySelector('#box').getBoundingClientRect().height))]
+                """) as? [String]
+            return result?.first == "none"
+        }
+        XCTAssertEqual(result, ["none", "none", "251"])
     }
 
     // MARK: Helpers
