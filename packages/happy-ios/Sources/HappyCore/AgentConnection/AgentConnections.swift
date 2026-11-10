@@ -15,15 +15,12 @@ public final class AgentConnections {
     private var authorizations: [String: ServerAuthorization] = [:]
     /// What the token endpoint is reached through; tests replace it.
     var tokens = OAuthTokenClient()
-    private var jobs: [String: Task<Void, Never>] = [:]
+    var jobs: [String: Task<Void, Never>] = [:]
     var generation: UInt64 = 0
-    private var foreground = true
-    /// The phone's way out as last heard (`watchNetwork`).
-    private var networkWatch: NetworkPathWatch?
-    private var networkSatisfied = true
-    private var networkInterface: NetworkPathDetails.Interface = .other
+    var foreground = true
+    var network = AgentNetworkWatch()
     private var loaded = false
-    private var engines: [String: SyncEngine] = [:]
+    var engines: [String: SyncEngine] = [:]
     /// Engines kept through the last suspension whose tunnels haven't
     /// looked for the computer again since (`resume`).
     private var suspended: Set<String> = []
@@ -368,38 +365,9 @@ public final class AgentConnections {
         }
     }
 
-    /// The phone's network came back, moved between interfaces (Wi-Fi to
-    /// cellular, or back), or the app came back: what was learned
-    /// about proxy tunnels is forgotten, and each computer's held Tailcat
-    /// clients look for their paths again, without waiting on them.
-    private func networkMoved() {
-        TunnelSupport.shared.forget()
-        let clients = engines.values.map(\.client)
-        Task { await withTaskGroup(of: Void.self) { group in for client in clients { group.addTask { await client.resumed() } } } }
-    }
-
-    private func watchNetwork() {
-        guard networkWatch == nil else { return }
-        let current = NetworkPath.shared.details
-        networkSatisfied = current.satisfied
-        networkInterface = current.interface
-        networkWatch = NetworkPath.shared.watchDetails { [weak self] path in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                let back = path.satisfied && !self.networkSatisfied
-                // Wi-Fi to cellular (or back) leaves direct paths on the
-                // old interface, dead while the phone still has a way out.
-                let moved = path.satisfied && self.networkSatisfied && path.interface != self.networkInterface
-                self.networkSatisfied = path.satisfied
-                self.networkInterface = path.interface
-                if back || moved { self.networkMoved() }
-            }
-        }
-    }
-
     public func setForeground(_ active: Bool) async {
         foreground = active; generation &+= 1
-        if active { watchNetwork(); TunnelSupport.shared.forget() }
+        if active { networkForegrounded() }
         if !active { suspended = Set(engines.keys) }
         let pending = jobs; jobs.removeAll()
         pending.values.forEach { $0.cancel() }
@@ -437,29 +405,12 @@ public final class AgentConnections {
         await engine.start()
     }
 
-    private func stop(_ id: String) async {
+    func stop(_ id: String) async {
         let job = jobs.removeValue(forKey: id)
         job?.cancel(); await job?.value
     }
 
-    /// Pull to refresh: asks `id`'s computer again now, over a new
-    /// transport, instead of when the retry backoff says. A revoked
-    /// computer is left alone, and so is every computer while the app is
-    /// in the background (`.paused`).
-    public func restartConnection(_ id: String) async {
-        func eligible() -> Bool {
-            guard foreground, let account = accounts.first(where: { $0.id == id }) else { return false }
-            return !account.revoked && account.status != .revoked && account.status != .paused
-        }
-        guard eligible() else { return }
-        await stop(id)
-        // The app may have gone to the background, or the computer been
-        // removed or revoked, while the old job wound down.
-        guard eligible(), jobs[id] == nil else { return }
-        startConnections()
-    }
-
-    private func startConnections() {
+    func startConnections() {
         guard foreground else { return }
         // The open account's check is started first.
         let ordered = accounts.filter { $0.id == activeID } + accounts.filter { $0.id != activeID }
