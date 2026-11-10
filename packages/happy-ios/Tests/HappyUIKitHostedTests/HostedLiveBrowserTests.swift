@@ -356,6 +356,7 @@ final class HostedLiveBrowserTests: XCTestCase {
         XCTAssertEqual(noVNC.navigationItem.rightBarButtonItems?.first, noVNC.control)
         XCTAssertTrue(noVNC.endItem.isEnabled)
         let frame = try XCTUnwrap(navigation.viewControllers.first as? LiveBrowserFullScreenItems)
+        frame.loadViewIfNeeded()
         // End at the left with Sleep beside it.
         XCTAssertEqual(frame.navigationItem.leftBarButtonItems?.suffix(2).map { $0 }, [frame.endItem, frame.sleepItem])
         XCTAssertFalse(frame.navigationItem.rightBarButtonItems?.contains(frame.endItem) ?? true)
