@@ -378,7 +378,7 @@ test('shutdown: SIGTERM to a real bridge process releases held links and exits c
     writeFileSync(join(home, 'bridge/links.json'), JSON.stringify({ links: [{ id, sessionId: 's', createdAt: t0, lastSeenAt: t0, status: 'takeover', reason: 'Sign in', url: null, title: 'T' }], expired: [] }));
     const port = 20000 + Math.floor(Math.random() * 20000);
     const child = spawn(process.execPath, [fileURLToPath(new URL('../server.mjs', import.meta.url))], {
-        env: { ...process.env, HAPPY_BROWSER_HOME: home, BRIDGE_PORT: String(port), BRIDGE_PODS: '0', AUTO_BROWSER_URL: 'http://127.0.0.1:1' }, stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, BROWSER_STACK_HOME: home, HAPPY_BROWSER_HOME: home, BRIDGE_PORT: String(port), BRIDGE_PODS: '0', AUTO_BROWSER_URL: 'http://127.0.0.1:1' }, stdio: ['ignore', 'pipe', 'pipe'],
     });
     let out = '';
     child.stdout.on('data', (d) => { out += d; });
