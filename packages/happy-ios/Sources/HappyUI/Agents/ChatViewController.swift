@@ -25,8 +25,8 @@ import UniformTypeIdentifiers
 final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed {
     typealias Intro = IntroView.Mark
 
-    private let session: Session
-    private let conversation: Conversation
+    let session: Session
+    let conversation: Conversation
     /// A conversation read ahead (`WarmChats`), held while this
     /// screen shows it; nil for new work, which has its own.
     private let warm: (chat: WarmChats.Chat, token: UUID)?
@@ -57,7 +57,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
     /// Set right after init, before the screen shows.
     var happySession: String?
     /// The chat's live browser: its red line over the card, its player.
-    private lazy var liveDock: LiveBrowserDock = {
+    lazy var liveDock: LiveBrowserDock = {
         let dock = LiveBrowserDock(host: self, chatKey: "agent.\(media.agentId)")
         dock.onLayoutChange = { [weak self] in self?.view.setNeedsLayout() }
         return dock
@@ -68,19 +68,21 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
     private let previewTitle = UILabel()
     private var intro: Intro?
     private let planner: ChatPlanner
-    private let media: MediaLoader
+    let media: MediaLoader
     let pictures: ComposerImagePicker
     private var acceptingSend = false
 
     /// The transcript, on UltraList: the rows the library keeps near the
     /// screen, each drawn from its plan. A preview reads it too, from the
     /// start of the newest message.
-    private let ultra = AgentChatUltraList()
+    let ultra = AgentChatUltraList()
     private lazy var transcriptHeaderScrim = HeaderScrimView()
     private let introView = IntroView()
     /// The read failed with nothing to show: the session chat's Retry, in
     /// the transcript's place.
-    private lazy var loadFailure = ChatPlaceholderView()
+    lazy var loadFailure = ChatPlaceholderView()
+    /// Older pages on their way; a pull waits for none.
+    var olderLoads = 0
     /// New work's Task or Bot and name, until its first message shows.
     private let newWorkPanel: NewWorkPanel?
     /// The panel has gone, or is going, for good.
@@ -193,7 +195,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
     private let readOnlyNote = UILabel()
     /// Whether the composer shows: nil until the gate is first read.
     private var mayWrite: Bool?
-    private var headerState: Strings.HeaderStatus.State = .connecting
+    var headerState: Strings.HeaderStatus.State = .connecting
     private var copied: (id: String, until: Task<Void, Never>)?
     /// The newest row is in view: what arrives keeps it there.
     private var followsNewest = true {
@@ -296,21 +298,9 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         ultra.host = self
         ultra.onReachedOldest = { [weak self] in self?.loadOlder() }
         ultra.onRowShown = { [weak self] id in self?.reportFailure(id) }
-        if !previewing {
-            let pull = PullToRefresh(list: ultra.list) { [weak self] in
-                await self?.refreshChat() ?? .offline
-            }
-            // Only at the oldest message with no older page on its way, so
-            // the pull and the paging never fight over the top.
-            pull.isEnabled = { [weak self] in self?.olderLoads == 0 }
-            ultra.pull = pull
-        }
+        installPullToRefresh()
         view.addSubview(ultra)
-        loadFailure.traitOverrides.followsTextSize = true
-        loadFailure.isHidden = true
-        loadFailure.accessibilityIdentifier = "load-failed"
-        loadFailure.onAction = { [weak self] in self?.retryLoad() }
-        view.addSubview(loadFailure)
+        installLoadFailure()
         if !previewing {
             // The header's own edge: the ground at the top, easing out
             // through the bar's foot (`HeaderScrim`).
@@ -386,11 +376,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         view.addSubview(slash.list)
         meter.isHidden = true
         view.addSubview(meter)
-        // While the status says the link is down a tap refreshes instead.
-        header.onOpen = { [weak self] in
-            guard let self else { return }
-            if headerState != .online, !previewing { refresh() } else { openDetail() }
-        }
+        header.onOpen = { [weak self] in self?.headerTapped() }
 
         keyboardTracker.isHidden = true
         keyboardTracker.isUserInteractionEnabled = false
@@ -495,12 +481,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         updateBar(animated: animated)
         let conversation = conversation
         Task { await conversation.setVisible(true) }
-        // The bridge keys the browser by the agent's Happy session when it
-        // has one, else by the agent; the dock finds which.
-        if !previewing, !media.agentId.isEmpty {
-            liveDock.route(liveBrowserIdentity, through: .client(session.client, happy: session.happyAccount?.session))
-        }
-        liveDock.setOnScreen(true)
+        liveDockWillAppear()
         // The model chip warns as its account runs low, so the readings are
         // followed while the composer shows.
         if usageWatch == nil { usageWatch = session.models.followUsage() }
@@ -571,9 +552,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         #endif
         let conversation = conversation
         Task { await conversation.setVisible(false) }
-        if !previewing { liveDock.setOnScreen(false) }
-        // Closed, not covered: control taken here goes back.
-        if !previewing, isMovingFromParent || isBeingDismissed || navigationController?.isBeingDismissed == true { liveDock.hostClosed() }
+        liveDockDidDisappear()
         usageWatch?.invalidate()
         usageWatch = nil
         // Covered or gone: the keyboard isn't this screen's to follow, and
@@ -611,14 +590,10 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
 
     /// The conversation shown: empty for new work until the daemon made it.
     var shownAgentId: String { media.agentId }
-    /// The chat, as its live browser knows it.
-    var liveBrowserIdentity: LiveBrowserChatIdentity { .agent(id: media.agentId, happySession: happySession) }
-    /// The key the bridge is asked by first for this chat's browser.
-    var liveBrowserKey: String { liveBrowserIdentity.keys()[0] }
 
     /// The conversation's detail, over it: its numbers, its family and its
     /// activity, and its rename. New work has none until the daemon made it.
-    private func openDetail() {
+    func openDetail() {
         guard !previewing, !creating, !media.agentId.isEmpty else { return }
         let agentId = media.agentId
         card.blur()
@@ -668,12 +643,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         let duration = (note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? NSNumber)?.doubleValue ?? 0.25
         let curve = (note.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? NSNumber)?.uintValue ?? 7
         let local = view.convert(end, from: screen.coordinateSpace)
-        // What the list's keyboard reads too (`KeyboardCover`): a keyboard
-        // along the bottom, an iPad's minimized bar floating over the edge
-        // included; one dragged up the screen covers nothing, as the
-        // layout guide reads it with `followsUndockedKeyboard` off.
-        let cover = KeyboardCover(bounds: view.bounds, safeBottom: view.safeAreaInsets.bottom, frame: local)
-        keyboardTop = cover?.top ?? .greatestFiniteMagnitude
+        keyboardTop = coveredTop(local)
         fingerOnKeyboard = false
         guard duration > 0 else {
             updateBar(animated: false)
@@ -726,10 +696,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
     }
 
     /// What rides the keyboard: placed from its top, so carried with it.
-    private var keyboardRiders: [UIView] {
-        [card, meter, jump, composerScrim, slash.list] + (newWorkPanel.map { [$0] } ?? [])
-            + (previewing ? [] : [liveDock.indicator] + liveDock.riders)
-    }
+    private var keyboardRiders: [UIView] { [card, meter, jump, composerScrim, slash.list] + (newWorkPanel.map { [$0] } ?? []) + liveDockRiders }
 
     /// The list's keyboard moved: the screen takes its new layout at once,
     /// the list's inset moving on `change`, and what rides the keyboard is
@@ -1010,28 +977,11 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         introView.isHidden = intro == nil || reading(chat) || failed || (!chat.items.isEmpty && !planShown)
     }
 
-    /// The read failed and there is nothing to show instead.
-    private var failed: Bool { chat.error != nil && chat.items.isEmpty && newTask == nil && !previewing }
-
-    private func updateLoadFailure() {
-        if failed { loadFailure.show(.loadFailed) }
-        if loadFailure.isHidden == failed {
-            loadFailure.isHidden = !failed
-            view.setNeedsLayout()
-        }
-    }
-
-    /// Retry: the conversation is read again.
-    private func retryLoad() {
-        let conversation = conversation
-        Task { await conversation.retryLoad() }
-    }
-
     /// A task its first message makes, which hasn't been sent yet: it has
     /// no detail to open.
     private var creating = false
     /// The task this conversation's first message makes, when it is one.
-    private let newTask: NewTask?
+    let newTask: NewTask?
     /// Words said into home's microphone for new work, sent as it opens.
     private var saying: String?
     /// The microphone in the composer (`RecordButton`).
@@ -1559,9 +1509,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         ) { [card] width in card.height(fitting: width) }
         transcriptHeaderScrim.setLayoutFrame(screen.headerScrim)
         card.setLayoutFrame(screen.card)
-        if !loadFailure.isHidden {
-            loadFailure.setLayoutFrame(CGRect(x: screen.list.minX, y: screen.listTop, width: screen.list.width, height: screen.viewport))
-        }
+        layoutLoadFailure(screen)
         if !readOnlyNote.isHidden {
             let inset = screen.card.insetBy(dx: 24, dy: 0)
             let height = readOnlyNote.sizeThatFits(CGSize(width: inset.width, height: .greatestFiniteMagnitude)).height
@@ -1572,10 +1520,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         if let frame = screen.meter { meter.setLayoutFrame(frame) }
         layoutNewWorkPanel(above: screen.card)
         picker?.follow()
-        // The red live-browser line stands on the card, its dot at the
-        // card's right edge; the list and the jump button keep above it.
-        let line = ChatStatusLineLayout(above: screen.card, voice: nil, browser: liveDock.indicator.textSize)
-        liveDock.indicator.place(line?.browser)
+        let line = placeLiveLine(above: screen.card)
         let foot = ChatFootLayout(size: view.bounds.size, card: line.map { screen.card.union($0.frame) } ?? screen.card)
         composerScrim.setLayoutFrame(foot.scrim)
         jump.setLayoutFrame(foot.jump)
@@ -2103,7 +2048,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         navigationController?.pushViewController(chat, animated: true)
     }
 
-    private func loadOlder() {
+    func loadOlder() {
         guard chat.hasMore else { return }
         let conversation = conversation
         olderLoads += 1
@@ -2112,33 +2057,6 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
             self?.olderLoads -= 1
         }
     }
-
-    /// Older pages on their way; a pull waits for none.
-    private var olderLoads = 0
-
-    /// Pull-to-refresh's work: the computer's connection and this chat
-    /// asked again, and a live browser read again.
-    private func refreshChat() async -> RefreshOutcome {
-        if let dock = liveBrowserDock, dock.feed != nil { dock.retryBrowser() }
-        let outcome = await session.refresh(conversation: conversation)
-        // An older page that failed while the link was down: at the top,
-        // ask again now that the link is back.
-        if outcome == .refreshed, chat.hasMore, ultra.list.reachedTop { loadOlder() }
-        return outcome
-    }
-
-    /// The pull's refresh without the pull: Command-R, or the header's
-    /// status tapped while it is not online.
-    func refresh() {
-        ultra.pull?.refresh()
-    }
-
-    override var keyCommands: [UIKeyCommand]? {
-        guard !previewing else { return super.keyCommands }
-        return [RefreshShortcut.command(action: #selector(refreshFromKeyboard))] + (super.keyCommands ?? [])
-    }
-
-    @objc private func refreshFromKeyboard() { refresh() }
 
     /// A link in a row: the reference it names, else the web.
     private func open(link: String) {
@@ -2375,14 +2293,9 @@ extension ChatViewController: ChatMediaProviding {
     var chatMedia: ChatMediaSource? { media }
 }
 
-extension ChatViewController: LiveBrowserDockHosting {
-    var liveBrowserDock: LiveBrowserDock? { previewing ? nil : liveDock }
-}
-
 extension ChatViewController: PageHosting {
     var pageClient: AgentClient { session.client }
     func page(open url: URL) { openBrowser(url, session: session, agentID: media.agentId) }
-    var pageAgentID: String? { media.agentId }
 
     func page(_ artifactId: String, measured height: CGFloat) {
         let height = min(max(1, height.rounded(.up)), 4000)
