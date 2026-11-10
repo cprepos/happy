@@ -160,7 +160,7 @@ export function createPodClient({ baseUrl, token, fetchImpl = fetch, timeoutMs =
         // The whole-screen capture's controller steps (controller-patch/happy_live_frames.py):
         // the session's tab to the front -> {token, url, title}; then the captured PNG checked,
         // OCR-scrubbed and filed as an artifact -> {url, title, screenshot_path, screenshot_url,
-        // width, height, png, pii_scrubbed, redaction, chrome_strip, screenshot_pii_scrub?}.
+        // width, height, png, pii_scrubbed, redaction, chrome_strip, address_bar_scheme?, screenshot_pii_scrub?}.
         // redact false (the explicit opt-in) files it unscrubbed; the controller refuses that under
         // PII_SCRUB_SCREENSHOT_STRICT.
         screenFront: (sid, { activate = true, redact = true } = {}) =>
@@ -921,7 +921,7 @@ export function createPodManager({
      * OCR-scrubs the image and files it as the session's artifact. A page that navigated in between
      * is captured again, once. Never starts or wakes a pod. -> {mime, width, height, data (base64
      * PNG, scrubbed), session_id, url, title, captured_at, screenshot_path, screenshot_url,
-     * pii_scrubbed, screenshot_pii_scrub?}
+     * pii_scrubbed, redaction, chrome_strip?, address_bar_scheme?, screenshot_pii_scrub?}
      */
     // The result fields both shots share (controller reply -> bridge reply).
     function shotReply(p, out, capturedAt) {
@@ -939,6 +939,8 @@ export function createPodManager({
             pii_scrubbed: out.pii_scrubbed === true,
             redaction: typeof out.redaction === 'string' ? out.redaction : (out.pii_scrubbed === true ? 'on' : 'unknown'),
             ...(out.chrome_strip ? { chrome_strip: out.chrome_strip } : {}),
+            // An https page's screen shot: whether OCR saw "https://" in the address bar (true, false, "unknown").
+            ...([true, false, 'unknown'].includes(out.address_bar_scheme) ? { address_bar_scheme: out.address_bar_scheme } : {}),
             ...(out.screenshot_pii_scrub ? { screenshot_pii_scrub: out.screenshot_pii_scrub } : {}),
         };
     }

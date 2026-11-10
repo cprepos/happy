@@ -685,6 +685,7 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
                 screenshot_url: shot.screenshot_url,
                 pii_scrubbed: shot.pii_scrubbed === true,
                 redaction: typeof shot.redaction === 'string' ? shot.redaction : (shot.pii_scrubbed === true ? 'on' : 'unknown'),
+                ...([true, false, 'unknown'].includes(shot.address_bar_scheme) ? { address_bar_scheme: shot.address_bar_scheme } : {}),
                 ...(shot.screenshot_pii_scrub ? { screenshot_pii_scrub: shot.screenshot_pii_scrub } : {}),
             };
             let out = {

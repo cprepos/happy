@@ -338,6 +338,11 @@ secret.
     result is a JSON text part with `scope`, `session_id`, `url`, `title`, `captured_at`,
     `width`, `height`, `screenshot_path`, `screenshot_url`, `pii_scrubbed` (and
     `screenshot_pii_scrub` when the scrub could not run), then the PNG as an image part.
+    For a page on an `https://` URL a screen shot also has `address_bar_scheme`: `true` when
+    OCR read `https://` in the address bar, `false` when it did not (the controller logs a
+    warning; the shot is still filed), `"unknown"` when OCR is off or could not run. The
+    address bar shows the full URL, scheme included, because `kiosk/policy.json` (the managed
+    Chrome policy of the shared node and every pod) sets `ShowFullUrlsInAddressBar`.
     How a screen shot is taken (`POST /api/screen` -> `pods.screenShot`):
     1. the pod's controller brings the chat's session tab to the front
        (`/happy/sessions/<id>/screen/front`; skipped while the user holds control, and then
