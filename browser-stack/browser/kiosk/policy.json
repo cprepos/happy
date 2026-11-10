@@ -16,5 +16,6 @@
   "NewTabPageLocation": "about:blank",
   "HomepageLocation": "about:blank",
   "URLBlocklist": ["chrome://*", "chrome-untrusted://*", "devtools://*", "file://*"],
-  "URLAllowlist": ["chrome://newtab", "chrome://new-tab-page"]
+  "URLAllowlist": ["chrome://newtab", "chrome://new-tab-page"],
+  "ShowFullUrlsInAddressBar": true
 }
