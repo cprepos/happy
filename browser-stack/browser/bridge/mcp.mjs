@@ -916,22 +916,31 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
             return { result: pending.original };
         }
         const aid = pending.approvalId;
+        // Browser yolo is on for this chat: the bridge approved it at once, nothing to wait for.
+        const yolo = reg?.auto_approved === true;
         let st;
-        try {
-            st = await waitApproval(reg.id, aid, reg.url, approvalWait, signal, progress);
-        } catch (err) {
-            if (signal.aborted) return { final: null };
-            throw err;
+        if (yolo) {
+            st = 'approved';
+            log(`browser yolo: approval ${aid} auto-approved, running the action again`);
+        } else {
+            try {
+                st = await waitApproval(reg.id, aid, reg.url, approvalWait, signal, progress);
+            } catch (err) {
+                if (signal.aborted) return { final: null };
+                throw err;
+            }
         }
         if (st === 'approved') {
+            const who = yolo ? 'browser yolo auto-approved the action' : 'the user approved the action';
             let r;
             try { r = await again({ ...args, approval_id: aid }); } catch (err) {
                 if (signal.aborted) return { final: null };
-                return { final: toolResult(`Error: the user approved the action, but running it failed: ${err.message}`, true) };
+                return { final: toolResult(`Error: ${who}, but running it failed: ${err.message}`, true) };
             }
-            if (r?.error) return { final: toolResult(`Error: the user approved the action, but running it failed: ${r.error.message ?? 'unknown error'}`, true) };
+            if (r?.error) return { final: toolResult(`Error: ${who}, but running it failed: ${r.error.message ?? 'unknown error'}`, true) };
             const out = r?.result;
-            if (out && Array.isArray(out.content)) return { result: { ...out, content: [{ type: 'text', text: 'The user approved this action in the live view, and it ran.' }, ...out.content] } };
+            const said = yolo ? 'Browser yolo is on for this chat: this action was auto-approved, and it ran.' : 'The user approved this action in the live view, and it ran.';
+            if (out && Array.isArray(out.content)) return { result: { ...out, content: [{ type: 'text', text: said }, ...out.content] } };
             return { result: out };
         }
         if (st === 'denied') return { final: toolResult({ status: 'denied', approval_id: aid, link: reg.url, note: APPROVAL_DENIED }, true) };

@@ -23,6 +23,12 @@
 //   POST /live/<id>/approve    {approval_id} the user approves the action the agent is waiting on
 //   POST /live/<id>/deny       {approval_id} the user denies it. Both only for the link's own pending
 //                              approval (state.approval; else 409 no_pending_approval), and only its id.
+//   POST /live/<id>/auto       {on: true|false} browser yolo for this link's chat: while on, an action
+//                              held for approval is approved at once (note "Auto-approved (browser
+//                              yolo)"), never shown or waited on. -> {auto_approve}. Kept on the link
+//                              (one per chat), saved with it; turning it on also approves the
+//                              approval pending right then. /state carries auto_approve (default
+//                              false) and auto_approved: [{id, summary, at}], the last 5, newest first
 //   POST /live/<id>/end        the user ends the browser: the session closes, the link is done
 //                              (reason user_ended) and waiters wake. With pods, the login is kept
 //                              and the next browser starts on a new page
@@ -49,7 +55,9 @@
 //                       nobody holds, records it as last_action.
 //   POST /api/approval  {session_id|chat_key, approval_id}
 //                       -> {id, url, approval}: an auto-browser approval of this link's own session,
-//                       still pending, is shown to the user (state.approval, scrubbed) until decided
+//                       still pending, is shown to the user (state.approval, scrubbed) until decided.
+//                       With browser yolo on for the link, approved at once instead:
+//                       -> {id, url, approval: null, auto_approved: true, approval_status: approved}
 //   POST /api/approval/wait {id, approval_id, wait_s}
 //                       -> {approval_status: pending|approved|denied|gone, ...state}, once decided or wait_s passes
 //   /api/links, /api/takeover and /api/state also take {chat_key} instead of session_id.
@@ -85,7 +93,7 @@ import { connect as netConnect } from 'node:net';
 import { renderPage, renderGone } from './page.mjs';
 import { APPROVAL_ID, approvalSummary } from './approval.mjs';
 
-const LIVE_ROUTE = /^\/live\/([^/]+)(\/frame\.jpg|\/screen\.png|\/state|\/done|\/take|\/release|\/end|\/sleep|\/nav|\/approve|\/deny)?\/?$/;
+const LIVE_ROUTE = /^\/live\/([^/]+)(\/frame\.jpg|\/screen\.png|\/state|\/done|\/take|\/release|\/end|\/sleep|\/nav|\/approve|\/deny|\/auto)?\/?$/;
 const CHAT_ROUTE = /^\/live\/chat\/([0-9a-f]{32})\/?$/;
 const CHAT_KEY = /^[0-9a-f]{32}$/;
 // noVNC through the bridge. Matched on the raw request path, before any URL normalising, so
@@ -165,8 +173,15 @@ export function stateOf(rec) {
     return {
         status: rec.status, reason: rec.reason ?? null, url: rec.url ?? null, title: rec.title ?? null, last_action: rec.lastAction ?? null,
         approval: pendingApproval(rec),
+        auto_approve: rec.autoApprove === true,
+        auto_approved: Array.isArray(rec.autoApproved) ? rec.autoApproved.slice(0, AUTO_APPROVED_KEPT) : [],
     };
 }
+
+// Browser yolo: the note on an approval the bridge gives on the user's behalf, and how many of
+// those a link remembers for its state.
+export const AUTO_APPROVE_NOTE = 'Auto-approved (browser yolo)';
+export const AUTO_APPROVED_KEPT = 5;
 
 // auto-browser's approval status as the bridge names it.
 const APPROVAL_STATUS = { pending: 'pending', approved: 'approved', executed: 'approved', rejected: 'denied' };
@@ -373,6 +388,41 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         settleApproval(rec, approve ? 'approved' : 'denied');
         log(`approval /live/${rec.id.slice(0, 6)}… ${approve ? 'approved' : 'denied'}`);
         return send(res, 200, { ok: true, approval_status: approvalStatusOf(rec, a.id), ...stateOf(rec), ...podField(rec) });
+    }
+
+    // ── Browser yolo ───────────────────────────────────────────────────────
+    // Approves `aid` on the controller for this link's own session, as decide() does, and
+    // records it on the link. Returns null when approved, else the error.
+    async function yoloApprove(rec, c, aid, summary) {
+        try {
+            const record = await c.approve(aid, AUTO_APPROVE_NOTE);
+            if (record?.session_id && record.session_id !== rec.sessionId) throw Object.assign(new Error('wrong session'), { status: 409 });
+        } catch (err) {
+            return err;
+        }
+        const entry = { id: aid, summary: summary || 'An action that needed approval.', at: now() };
+        const before = Array.isArray(rec.autoApproved) ? rec.autoApproved : [];
+        store.update(rec, { autoApproved: [entry, ...before.filter((e) => e.id !== aid)].slice(0, AUTO_APPROVED_KEPT) });
+        log(`browser yolo /live/${rec.id.slice(0, 6)}… auto-approved ${aid}`);
+        return null;
+    }
+
+    // POST /live/<id>/auto {on}: browser yolo on or off for this link's chat only.
+    async function setAuto(req, res, rec) {
+        let body;
+        try { body = await readJson(req); } catch (err) { return send(res, err.status || 400, { error: err.message }); }
+        if (typeof body?.on !== 'boolean') return send(res, 400, { error: 'on must be true or false' });
+        store.update(rec, { autoApprove: body.on });
+        log(`browser yolo /live/${rec.id.slice(0, 6)}… ${body.on ? 'on' : 'off'}`);
+        // An approval already waiting when yolo goes on is approved too; its waiter wakes.
+        const a = body.on ? pendingApproval(rec) : null;
+        const c = a ? clientOf(rec) : null;
+        if (a && c) {
+            const err = await yoloApprove(rec, c, a.id, a.summary);
+            if (!err) settleApproval(rec, 'approved');
+            else if (err.status === 409 || err.status === 404) await syncApproval(rec);
+        }
+        return send(res, 200, { auto_approve: rec.autoApprove === true });
     }
 
     async function shareToken(rec, { fresh = false } = {}) {
@@ -656,6 +706,18 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
             if (record.status !== 'pending') {
                 return send(res, 409, { error: 'not_pending', approval_status: APPROVAL_STATUS[record.status] ?? 'gone' });
             }
+            // Browser yolo: approved at once, never shown or waited on. Should that fail for any
+            // reason but a decision made meanwhile, the user is asked as usual.
+            if (rec.autoApprove === true) {
+                const err = await yoloApprove(rec, c, aid, approvalSummary(record, rec.url).summary);
+                if (!err) return send(res, 200, { id: rec.id, url: linkUrl(rec), approval: null, auto_approved: true, approval_status: 'approved' });
+                if (err.status === 409 || err.status === 404) {
+                    let current = null;
+                    try { current = await c.getApproval(aid); } catch {}
+                    return send(res, 409, { error: 'not_pending', approval_status: APPROVAL_STATUS[current?.status] ?? 'gone' });
+                }
+                log(`browser yolo /live/${rec.id.slice(0, 6)}… could not auto-approve ${aid}; asking the user`);
+            }
             if (rec.approval?.id !== aid || rec.approval.status !== 'pending') {
                 store.update(rec, { approval: { id: aid, sessionId: rec.sessionId, ...approvalSummary(record, rec.url), askedAt: now(), status: 'pending', decidedAt: null } });
             }
@@ -848,6 +910,10 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         if (sub === '/approve' || sub === '/deny') {
             if (req.method !== 'POST') return send(res, 405, { error: 'method_not_allowed' }, { Allow: 'POST' });
             return decide(req, res, rec, sub === '/approve');
+        }
+        if (sub === '/auto') {
+            if (req.method !== 'POST') return send(res, 405, { error: 'method_not_allowed' }, { Allow: 'POST' });
+            return setAuto(req, res, rec);
         }
         if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: 'method_not_allowed' }, { Allow: 'GET' });
 

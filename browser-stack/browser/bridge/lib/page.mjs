@@ -58,6 +58,12 @@ header { position: sticky; top: 0; z-index: 1; width: 100%; background: var(--su
 #approval .row { display: flex; gap: 10px; }
 #approval .btn.deny { color: var(--err-fg); }
 #approval-msg { margin-top: 8px; font-size: 13px; }
+#yolo-row { margin: 8px var(--gutter-r) 0 var(--gutter-l); display: flex; align-items: center; gap: 8px;
+  font-size: 13px; color: var(--muted); }
+#yolo-row label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+#yolo-row input { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); }
+#yolo-row.on label { color: var(--need-fg); font-weight: 600; }
+#yolo-msg { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 main { flex: 1; width: 100%; min-width: 0; padding: 12px var(--gutter-r) 12px var(--gutter-l); }
 #box { position: relative; width: 100%; max-width: ${frameWidth}px; margin: 0 auto; aspect-ratio: var(--frame-ar);
   max-height: calc(100vh - 170px); max-height: calc(100dvh - 170px); min-height: 200px;
@@ -166,6 +172,7 @@ const SCRIPT = `
     $('sleep').hidden = stopped || state.status === 'done' || !(state.pod === 'running' || state.pod === 'starting');
     $('take').classList.toggle('primary', needs);
     renderApproval();
+    renderYolo();
     document.title = (needs || state.approval ? '⚠ ' : '') + (state.title || 'Live browser');
   }
 
@@ -211,6 +218,35 @@ const SCRIPT = `
       $('approve').disabled = $('deny').disabled = false;
     } finally { deciding = false; }
   }
+  // Browser yolo: approvals for this chat are given at once. The bridge keeps the switch.
+  let yoloBusy = false;
+  function renderYolo() {
+    const on = state.auto_approve === true;
+    if (!yoloBusy) $('yolo').checked = on;
+    $('yolo-row').classList.toggle('on', on);
+    const last = Array.isArray(state.auto_approved) ? state.auto_approved[0] : null;
+    if (!yoloBusy) $('yolo-msg').textContent = on && last ? 'Last: ' + (last.summary || 'an action') : '';
+  }
+  $('yolo').addEventListener('change', async () => {
+    const want = $('yolo').checked;
+    yoloBusy = true;
+    $('yolo').disabled = true;
+    $('yolo-msg').textContent = '';
+    try {
+      const r = await fetch(base + '/auto', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ on: want }) });
+      const body = r.ok ? await r.json().catch(() => null) : null;
+      if (body && typeof body.auto_approve === 'boolean') state = Object.assign({}, state, { auto_approve: body.auto_approve });
+      else $('yolo-msg').textContent = 'That did not go through.';
+    } catch (e) {
+      $('yolo-msg').textContent = 'No connection.';
+    } finally {
+      yoloBusy = false;
+      $('yolo').disabled = false;
+      $('yolo').checked = state.auto_approve === true;
+      $('yolo-row').classList.toggle('on', state.auto_approve === true);
+    }
+  });
+
   $('approve').addEventListener('click', () => decide(true));
   $('deny').addEventListener('click', () => decide(false));
 
@@ -391,6 +427,10 @@ export function renderPage({ id, state, takeoverUrl, nonce, frameWidth = 1920, f
   <div id="url">${esc(state.url || '')}</div>
 </header>
 <div id="reason" hidden></div>
+<div id="yolo-row">
+  <label title="Approve this chat's browser actions without asking"><input id="yolo" type="checkbox"${state.auto_approve === true ? ' checked' : ''}> Browser yolo</label>
+  <span id="yolo-msg" role="status"></span>
+</div>
 <section id="approval" role="alertdialog" aria-labelledby="approval-title" hidden>
   <h2 id="approval-title">Allow this browser action?</h2>
   <p id="approval-summary"></p>

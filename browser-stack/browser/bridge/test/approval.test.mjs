@@ -7,7 +7,7 @@ import { createServer, request as httpRequest } from 'node:http';
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createBridge } from '../lib/app.mjs';
+import { createBridge, AUTO_APPROVE_NOTE } from '../lib/app.mjs';
 import { LinkStore } from '../lib/store.mjs';
 import { approvalSummary, scrubReason, placeOf } from '../lib/approval.mjs';
 import { createMcpServer, APPROVAL_DENIED, APPROVAL_PENDING } from '../mcp.mjs';
@@ -341,4 +341,95 @@ test('mcp: denied comes back as a do-not-retry error; no answer comes back as ap
     assert.equal(out.status, 'approved');
     assert.equal(out.approval_id, 'apM');
     assert.match(out.note, /approval_id: "apM"/);
+});
+
+// ── Browser yolo (auto-approve) ───────────────────────────────────────────
+test('yolo: POST /live/<id>/auto sets this chat\'s flag only, shows in state, survives a restart', async () => {
+    const one = await link('sess1');
+    const two = await link('sess2');
+    const s0 = await state(one.id);
+    assert.equal(s0.auto_approve, false, 'off by default');
+    assert.deepEqual(s0.auto_approved, []);
+    assert.equal((await fetch(`${base}/live/${one.id}/auto`)).status, 405);
+    assert.equal((await post(`/live/${one.id}/auto`, {})).status, 400, 'on is required');
+    assert.equal((await post(`/live/${one.id}/auto`, { on: 'yes' })).status, 400);
+    assert.equal((await post('/live/0123456789abcdef0123456789abcdef/auto', { on: true })).status, 404);
+    const r = await post(`/live/${one.id}/auto`, { on: true });
+    assert.equal(r.status, 200);
+    assert.deepEqual(await r.json(), { auto_approve: true });
+    assert.equal((await state(one.id)).auto_approve, true);
+    assert.equal((await state(two.id)).auto_approve, false, 'never another chat\'s');
+    assert.ok(logs.some((l) => /browser yolo .* on/.test(l)));
+    const page = await (await fetch(`${base}/live/${one.id}`)).text();
+    assert.match(page, /id="yolo"[^>]* checked/);
+    assert.match(page, /Browser yolo/);
+
+    store.flush();
+    const again = new LinkStore({ path: join(dir, 'links.json') });
+    assert.equal(again.lookup(one.id).rec.autoApprove, true);
+    assert.equal(again.lookup(two.id).rec.autoApprove, undefined);
+
+    assert.deepEqual(await (await post(`/live/${one.id}/auto`, { on: false })).json(), { auto_approve: false });
+    assert.equal((await state(one.id)).auto_approve, false);
+});
+
+test('yolo: an approval is approved at once with the yolo note, recorded (last 5, scrubbed), never shown', async () => {
+    const one = await link('sess1');
+    const two = await link('sess2');
+    await post(`/live/${one.id}/auto`, { on: true });
+    for (let i = 1; i <= 6; i++) {
+        client.approvals.set(`y${i}`, approvalRecord(`y${i}`, 'sess1'));
+        const reg = await (await api('/api/approval', { session_id: 'sess1', approval_id: `y${i}` })).json();
+        assert.equal(reg.auto_approved, true);
+        assert.equal(reg.approval_status, 'approved');
+        assert.equal(reg.approval, null);
+    }
+    assert.deepEqual(client.calls.approve.map((c) => c.comment), Array(6).fill(AUTO_APPROVE_NOTE));
+    assert.equal(AUTO_APPROVE_NOTE, 'Auto-approved (browser yolo)');
+    const s = await state(one.id);
+    assert.equal(s.approval, null, 'never shown');
+    assert.deepEqual(s.auto_approved.map((e) => e.id), ['y6', 'y5', 'y4', 'y3', 'y2']);
+    assert.deepEqual(Object.keys(s.auto_approved[0]).sort(), ['at', 'id', 'summary']);
+    assert.equal(s.auto_approved[0].summary, 'The agent wants to change account settings.');
+    assert.ok(!JSON.stringify(s).includes(SECRET_TEXT));
+    assert.ok(logs.some((l) => /auto-approved y6/.test(l)));
+
+    // The other chat still asks, and cannot borrow this chat's yolo.
+    client.approvals.set('z1', approvalRecord('z1', 'sess2'));
+    const reg2 = await (await api('/api/approval', { session_id: 'sess2', approval_id: 'z1' })).json();
+    assert.equal(reg2.auto_approved, undefined);
+    assert.equal((await state(two.id)).approval.id, 'z1');
+    assert.deepEqual((await state(two.id)).auto_approved, []);
+    client.approvals.set('z2', approvalRecord('z2', 'sess2'));
+    assert.equal((await api('/api/approval', { session_id: 'sess1', approval_id: 'z2' })).status, 403);
+    assert.equal(client.approvals.get('z2').status, 'pending');
+});
+
+test('yolo: turning it on approves the approval already waiting, and its waiter wakes', async () => {
+    const { id } = await link();
+    client.approvals.set('w1', approvalRecord('w1', 'sess1'));
+    await api('/api/approval', { session_id: 'sess1', approval_id: 'w1' });
+    const waiting = api('/api/approval/wait', { id, approval_id: 'w1', wait_s: 10 }).then((r) => r.json());
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal((await post(`/live/${id}/auto`, { on: true })).status, 200);
+    assert.equal((await waiting).approval_status, 'approved');
+    assert.deepEqual(client.calls.approve, [{ id: 'w1', comment: AUTO_APPROVE_NOTE }]);
+    assert.equal((await state(id)).auto_approved[0].id, 'w1');
+});
+
+test('mcp: with yolo on, the held action runs again at once without waiting for the user', async () => {
+    const { id } = await link();
+    await post(`/live/${id}/auto`, { on: true });
+    const h = mcpHarness({ approvalWaitS: 1 });
+    const res = await h.call(1, 'browser_execute_action', ACT);
+    assert.equal(res.result.isError, false);
+    const texts = res.result.content.map((c) => c.text).join('\n');
+    assert.match(texts, /Browser yolo is on/);
+    assert.match(texts, /acted type/);
+    const acts = h.upstream.calls.filter((c) => c.name === 'browser.execute_action');
+    assert.equal(acts.length, 2);
+    assert.equal(acts[1].args.approval_id, 'apM');
+    assert.deepEqual(client.calls.approve, [{ id: 'apM', comment: AUTO_APPROVE_NOTE }]);
+    assert.ok(!h.out.some((m) => m.method === 'notifications/progress' && /approve or deny/.test(m.params.message)), 'never waits');
+    assert.equal((await state(id)).auto_approved[0].id, 'apM');
 });

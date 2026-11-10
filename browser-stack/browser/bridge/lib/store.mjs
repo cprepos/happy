@@ -50,10 +50,13 @@ export class LinkStore {
         mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
         const tmp = `${this.path}.tmp`;
         // Only persistable fields: no share tokens, no frames.
-        const links = [...this.links.values()].map(({ id, sessionId, chatKey, createdAt, lastSeenAt, status, reason, url, title, lastAction, approval }) =>
+        const links = [...this.links.values()].map(({ id, sessionId, chatKey, createdAt, lastSeenAt, status, reason, url, title, lastAction, approval, autoApprove, autoApproved }) =>
             ({ id, sessionId, ...(chatKey ? { chatKey } : {}), createdAt, lastSeenAt, status, reason, url, title, lastAction: lastAction ?? null,
                 // The pending approval is already scrubbed: a summary, never the action's text.
-                ...(approval ? { approval } : {}) }));
+                ...(approval ? { approval } : {}),
+                // Browser yolo for this chat, and its recent auto-approvals (scrubbed summaries).
+                ...(autoApprove === true ? { autoApprove } : {}),
+                ...(Array.isArray(autoApproved) && autoApproved.length ? { autoApproved } : {}) }));
         writeFileSync(tmp, JSON.stringify({ links, expired: [...this.expired] }), { mode: 0o600 });
         renameSync(tmp, this.path);
     }
