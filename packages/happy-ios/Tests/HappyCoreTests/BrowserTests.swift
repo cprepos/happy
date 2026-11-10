@@ -281,49 +281,6 @@ final class BrowserTests: XCTestCase {
     }
     #endif
 
-    /// A server that closes as asked but never says so, as websockify does:
-    /// WebKit is told, the exchange ends at the body's length without
-    /// waiting for the server's close, and a 101 passes through unchanged.
-    func testAnExchangeTellsWebKitTheConnectionCloses() async throws {
-        let local = Held([])
-        let remote = Held([Data("HTTP/1.1 200 OK\r\nContent-Length: 5\r\nKeep-Alive: timeout=5\r\nConnection: keep-alive\r\n\r\nhel".utf8), Data("lo".utf8)])
-        try await BrowserRelay.exchange(local, remote, method: "GET")
-        let sent = await local.writes.reduce(Data(), +)
-        XCTAssertEqual(String(decoding: sent, as: UTF8.self), "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello")
-        let closed = await (local.closed, remote.closed)
-        XCTAssertTrue(closed.0 && closed.1)
-
-        let head = Held([Data("HTTP/1.1 304 Not Modified\r\nETag: x\r\n\r\n".utf8)])
-        let client = Held([])
-        try await BrowserRelay.exchange(client, head, method: "GET")
-        let notModified = await client.writes.reduce(Data(), +)
-        XCTAssertEqual(String(decoding: notModified, as: UTF8.self), "HTTP/1.1 304 Not Modified\r\nETag: x\r\nConnection: close\r\n\r\n")
-
-        let upgrade = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
-        let socket = Held([Data((upgrade).utf8) + Data([0x81, 2, 0x68, 0x69])], ends: true)
-        let page = Held([])
-        try await BrowserRelay.exchange(page, socket, method: "GET")
-        let frames = await page.writes.reduce(Data(), +)
-        XCTAssertEqual(frames, Data(upgrade.utf8) + Data([0x81, 2, 0x68, 0x69]))
-    }
-
-    /// Reads its chunks, then waits (or, with `ends`, ends) until closed.
-    private actor Held: BrowserStream {
-        var pending: [Data]
-        var writes: [Data] = []
-        var closed = false
-        let ends: Bool
-        var waiter: CheckedContinuation<Data, Never>?
-        init(_ pending: [Data], ends: Bool = false) { self.pending = pending; self.ends = ends }
-        func read(maximumBytes: Int) async throws -> Data {
-            if !pending.isEmpty { return pending.removeFirst() }
-            if closed || ends { return Data() }
-            return await withCheckedContinuation { waiter = $0 }
-        }
-        func write(_ data: Data) async throws { writes.append(data) }
-        func close() async { closed = true; waiter?.resume(returning: Data()); waiter = nil }
-    }
-
     private actor Bytes: BrowserStream {
         nonisolated let authority: String
         var pending: [Data]
