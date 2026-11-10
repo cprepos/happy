@@ -783,6 +783,36 @@ public final class LiveBrowserFeed {
         if let state = try? JSONDecoder().decode(LiveBrowserState.self, from: data) { phase = .live(state) }
     }
 
+    /// Turns the browser's yolo mode on or off (`POST /auto`, `{"on": bool}`):
+    /// while on, the bridge approves what the agent asks for by itself.
+    /// The bridge's answer (`{"auto_approve": bool}`) is what the state
+    /// says from now on; nothing is kept here. A bridge from before it
+    /// answers 404 (`BrowserError.upstream`).
+    @discardableResult
+    public func setAutoApprove(_ on: Bool) async throws -> Bool {
+        let body = (try? JSONSerialization.data(withJSONObject: ["on": on], options: [.sortedKeys])) ?? Data()
+        let data = try await post({ $0.autoURL }, body: body)
+        let answer = try JSONDecoder().decode(AutoAnswer.self, from: data)
+        let now = answer.autoApprove ?? on
+        // A read sent before the switch says what was true before it.
+        controlAnswers += 1
+        if var state = try? JSONDecoder().decode(LiveBrowserState.self, from: data) {
+            state.autoApprove = now
+            phase = .live(state)
+        } else if case .live(var state) = phase {
+            state.autoApprove = now
+            // Turned on, the bridge approved what waited at that moment.
+            if now { state.approval = nil }
+            phase = .live(state)
+        }
+        return now
+    }
+
+    private struct AutoAnswer: Decodable {
+        var autoApprove: Bool?
+        private enum CodingKeys: String, CodingKey { case autoApprove = "auto_approve" }
+    }
+
     /// Over its own transport, which a paused feed may not have, at the
     /// active origin. One the bridge never got (`missesOrigin`, but not a
     /// timeout or a hang-up before the head, which it may have got and acted

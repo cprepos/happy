@@ -77,6 +77,10 @@ public struct LiveBrowserLink: Equatable, Sendable {
     public var approveURL: URL { url.appendingPathComponent("approve") }
     /// POSTed the same way to deny it.
     public var denyURL: URL { url.appendingPathComponent("deny") }
+    /// POSTed with `{"on": bool}` to turn the browser's yolo mode on or
+    /// off: while on, the bridge approves what the agent asks for by
+    /// itself. Answers `{"auto_approve": bool}`.
+    public var autoURL: URL { url.appendingPathComponent("auto") }
 
     /// The newest live browser among `texts`, read from the last: a chat's
     /// one live view. Code and a link still arriving are no links (`split`).
@@ -322,6 +326,31 @@ public struct LiveBrowserState: Equatable, Sendable, Decodable {
         }
     }
 
+    /// An action the bridge approved by itself while yolo mode was on
+    /// (`auto_approved`, newest first, a few at most). Only its scrubbed summary, as an approval's.
+    public struct AutoApproved: Equatable, Sendable, Decodable {
+        public var id: String
+        public var summary: String
+        /// When, in ms since 1970 (as an approval's `asked_at`).
+        public var at: Double?
+
+        public init(id: String, summary: String, at: Double? = nil) {
+            self.id = id; self.summary = summary; self.at = at
+        }
+
+        private enum CodingKeys: String, CodingKey { case id, summary, at }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(String.self, forKey: .id)
+            guard !id.isEmpty, id.count <= 64 else {
+                throw DecodingError.dataCorruptedError(forKey: .id, in: container, debugDescription: "bad auto-approved id")
+            }
+            summary = (try? container.decodeIfPresent(String.self, forKey: .summary)) ?? ""
+            at = try? container.decodeIfPresent(Double.self, forKey: .at)
+        }
+    }
+
     /// Where the chat's own browser is, when the bridge runs one per chat
     /// (no `pod` field otherwise). A value a newer bridge adds is nil.
     public enum Pod: String, Equatable, Sendable {
@@ -363,10 +392,18 @@ public struct LiveBrowserState: Equatable, Sendable, Decodable {
     /// so the native viewer brings up the keyboard. Nil when not held, when
     /// the bridge couldn't tell, and from a bridge before it.
     public var editableFocused: Bool?
+    /// The browser's yolo mode: the bridge approves what the agent asks for
+    /// by itself. The bridge's word, never kept here. False from a bridge
+    /// before it.
+    public var autoApprove: Bool
+    /// What it approved by itself lately, newest first. Empty from a bridge
+    /// before it.
+    public var autoApproved: [AutoApproved]
 
-    public init(status: Status, reason: String? = nil, url: String? = nil, title: String? = nil, lastAction: Action? = nil, pod: Pod? = nil, live: Bool? = nil, liveReason: String? = nil, approval: Approval? = nil, editableFocused: Bool? = nil) {
+    public init(status: Status, reason: String? = nil, url: String? = nil, title: String? = nil, lastAction: Action? = nil, pod: Pod? = nil, live: Bool? = nil, liveReason: String? = nil, approval: Approval? = nil, editableFocused: Bool? = nil, autoApprove: Bool = false, autoApproved: [AutoApproved] = []) {
         self.status = status; self.reason = reason; self.url = url; self.title = title; self.lastAction = lastAction; self.pod = pod
         self.live = live; self.liveReason = liveReason; self.approval = approval; self.editableFocused = editableFocused
+        self.autoApprove = autoApprove; self.autoApproved = autoApproved
     }
 
     /// The approval the person is asked for now: none once the link is done.
@@ -393,7 +430,7 @@ public struct LiveBrowserState: Equatable, Sendable, Decodable {
     /// The browser's session closed; nothing more will come.
     public var ended: Bool { status == .done }
 
-    private enum CodingKeys: String, CodingKey { case status, reason, url, title, lastAction = "last_action", pod, live, liveReason = "live_reason", approval, editableFocused = "editable_focused" }
+    private enum CodingKeys: String, CodingKey { case status, reason, url, title, lastAction = "last_action", pod, live, liveReason = "live_reason", approval, editableFocused = "editable_focused", autoApprove = "auto_approve", autoApproved = "auto_approved" }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -410,6 +447,15 @@ public struct LiveBrowserState: Equatable, Sendable, Decodable {
         // A malformed approval is no approval: never a reason to drop the state.
         approval = (try? container.decodeIfPresent(Approval.self, forKey: .approval)) ?? nil
         editableFocused = (try? container.decodeIfPresent(Bool.self, forKey: .editableFocused)) ?? nil
+        autoApprove = ((try? container.decodeIfPresent(Bool.self, forKey: .autoApprove)) ?? nil) ?? false
+        // One malformed entry costs only itself.
+        autoApproved = (((try? container.decodeIfPresent([Lossy<AutoApproved>].self, forKey: .autoApproved)) ?? nil) ?? []).compactMap(\.value)
+    }
+
+    /// One element of a list, nil when it doesn't decode.
+    private struct Lossy<Value: Decodable>: Decodable {
+        var value: Value?
+        init(from decoder: Decoder) throws { value = try? Value(from: decoder) }
     }
 }
 
