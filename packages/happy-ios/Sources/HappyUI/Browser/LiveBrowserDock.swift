@@ -89,6 +89,12 @@ final class LiveBrowserDock: NSObject {
     private var corner: LiveBrowserDockLayout.Corner
     /// Big, across the chat's top; else small, at `corner`.
     private var big: Bool
+    /// The picture width a grip was dragged to; nil is the preset.
+    private var width: CGFloat?
+    /// A grip's drag: the player's width as it began.
+    private var gripStart: CGFloat?
+    /// The limit the last width asked for was held at: its tick plays once.
+    private var atLimit: CGFloat?
     private var placed: (card: CGRect, anchor: CGFloat)?
     private weak var fullScreen: UINavigationController?
     private var busy = false
@@ -112,6 +118,7 @@ final class LiveBrowserDock: NSObject {
         let kept = Self.kept(chatKey, phone: Self.isPhone)
         corner = kept.corner
         big = kept.big
+        width = kept.width
         super.init()
         indicator.isHidden = true
         indicator.addAction(UIAction { [weak self] _ in self?.openPlayer() }, for: .touchUpInside)
@@ -274,7 +281,8 @@ final class LiveBrowserDock: NSObject {
         let strip = VoiceCoordinator.shared.sheetTop(in: view)
         return LiveBrowserDockLayout(.init(
             size: view.bounds.size, safeArea: LayoutInsets(view.safeAreaInsets), card: card,
-            anchor: LiveBrowserDockLayout.anchor(anchor, strip), corner: corner, big: big, idiom: isPhone ? .phone : .pad
+            anchor: LiveBrowserDockLayout.anchor(anchor, strip), corner: corner, big: big, idiom: isPhone ? .phone : .pad,
+            width: width
         ))
     }
 
@@ -417,6 +425,8 @@ final class LiveBrowserDock: NSObject {
         player.onSleep = { [weak self] in self?.sleep() }
         player.onTap = { [weak self] in self?.tappedPicture() }
         player.onDrop = { [weak self] center in self?.drop(at: center) }
+        player.onGrip = { [weak self] corner, state, translation in self?.grip(corner, state, translation) }
+        player.onGripStep = { [weak self] step in self?.step(step) }
         feed.attach(player, visible: isOnScreen, frames: true, fast: true) { [weak player] feed in player?.show(feed) }
         // Shown again after X: a poll that stalled starts over.
         freshen(feed)
@@ -465,8 +475,11 @@ final class LiveBrowserDock: NSObject {
         }
     }
 
+    /// ⇲ and the picture's tap snap to the other preset, the dragged size
+    /// dropped.
     private func resize() {
         big.toggle()
+        width = nil
         keep()
         player?.big = big
         if let player { feed?.set(player, fast: true) }
@@ -476,6 +489,56 @@ final class LiveBrowserDock: NSObject {
         }
         // The big player moves the chat's content under it.
         onLayoutChange?()
+    }
+
+    /// A grip dragged: the size follows the hand along the frame's
+    /// aspect, held to the limits (a tick on reaching one), laid out as it
+    /// goes with the chat following big's height. The feed is left alone;
+    /// the size is kept for the chat when the hand lets go.
+    private func grip(_ grip: LiveBrowserDockLayout.Corner, _ state: UIGestureRecognizer.State, _ translation: CGPoint) {
+        guard let player, let placed, let view = host?.viewIfLoaded else { return }
+        let layout = playerLayout(in: view, card: placed.card, anchor: placed.anchor)
+        switch state {
+        case .began:
+            gripStart = layout.frame.width
+            atLimit = nil
+            Haptics.prepare(.limit)
+            player.isResizing = true
+        case .changed:
+            guard let start = gripStart else { return }
+            resize(to: layout.width(dragging: grip, from: start, by: translation), in: layout)
+        case .ended, .cancelled, .failed:
+            guard gripStart != nil else { return }
+            gripStart = nil
+            player.isResizing = false
+            keep()
+            layoutPlayer(card: placed.card, anchor: placed.anchor)
+        default: break
+        }
+    }
+
+    /// VoiceOver's increment or decrement of the grip: a step wider or
+    /// narrower, kept at once.
+    private func step(_ step: Int) {
+        guard player != nil, let placed, let view = host?.viewIfLoaded else { return }
+        let layout = playerLayout(in: view, card: placed.card, anchor: placed.anchor)
+        atLimit = nil
+        resize(to: layout.frame.width + CGFloat(step) * LiveBrowserDockLayout.Metrics.resizeStep, in: layout)
+        keep()
+    }
+
+    private func resize(to wanted: CGFloat, in layout: LiveBrowserDockLayout) {
+        guard let placed else { return }
+        let limited = layout.clamp(wanted)
+        let limits = layout.limits
+        let hit: CGFloat? = wanted <= limits.lowerBound ? limits.lowerBound : wanted >= limits.upperBound ? limits.upperBound : nil
+        if let hit, hit != atLimit { Haptics.play(.limit) }
+        atLimit = hit
+        guard limited.rounded() != layout.frame.width else { return }
+        width = limited.rounded()
+        UIView.performWithoutAnimation { layoutPlayer(card: placed.card, anchor: placed.anchor) }
+        // Big's height moves the chat's content under it.
+        if big { onLayoutChange?() }
     }
 
     private func drop(at center: CGPoint) {
@@ -986,17 +1049,17 @@ final class LiveBrowserDock: NSObject {
 
     private static func key(_ chat: String) -> String { "liveBrowserDock.\(chat)" }
 
-    /// The corner and small or big, per chat. An older "large" was a
-    /// phone's big, so reads as big there; on an iPad or a Mac it was the
-    /// bigger corner player, now small.
-    static func kept(_ chat: String, phone: Bool = isPhone) -> (corner: LiveBrowserDockLayout.Corner, big: Bool) {
-        let parts = (UserDefaults.standard.string(forKey: key(chat)) ?? "").split(separator: "|")
-        let corner = parts.first.flatMap { LiveBrowserDockLayout.Corner(rawValue: String($0)) } ?? .bottomRight
-        return (corner, parts.count > 1 && (parts[1] == "big" || (phone && parts[1] == "large")))
+    /// The corner, small or big, and a dragged width, per chat
+    /// (`LiveBrowserDockLayout.Kept`: an older "large" was a phone's big,
+    /// so reads as big there; on an iPad or a Mac it was the bigger corner
+    /// player, now small).
+    static func kept(_ chat: String, phone: Bool = isPhone) -> LiveBrowserDockLayout.Kept {
+        LiveBrowserDockLayout.Kept(stored: UserDefaults.standard.string(forKey: key(chat)), phone: phone)
     }
 
     private func keep() {
-        UserDefaults.standard.set("\(corner.rawValue)|\(big ? "big" : "small")", forKey: Self.key(chatKey))
+        let kept = LiveBrowserDockLayout.Kept(corner: corner, big: big, width: width)
+        UserDefaults.standard.set(kept.stored, forKey: Self.key(chatKey))
     }
 }
 
@@ -1681,8 +1744,8 @@ final class LiveBrowserIndicatorView: UIControl {
 
 /// The floating picture: ✕, full screen and bigger or smaller over it, the
 /// status and Take over or Release under it. Dragged, it lands in the
-/// nearest corner.
-final class LiveBrowserPlayerView: UIView {
+/// nearest corner; its grip, on the corner facing the chat, resizes it.
+final class LiveBrowserPlayerView: UIView, UIGestureRecognizerDelegate {
     var onClose: (() -> Void)?
     var onFullScreen: (() -> Void)?
     var onResize: (() -> Void)?
@@ -1693,6 +1756,13 @@ final class LiveBrowserPlayerView: UIView {
     var onSleep: (() -> Void)?
     var onTap: (() -> Void)?
     var onDrop: ((CGPoint) -> Void)?
+    /// A grip's pan: the grip's corner, the pan's state and how far it
+    /// went, in the superview's points.
+    var onGrip: ((LiveBrowserDockLayout.Corner, UIGestureRecognizer.State, CGPoint) -> Void)?
+    /// VoiceOver's increment (+1) or decrement (-1) of the grip.
+    var onGripStep: ((Int) -> Void)?
+    /// A grip is being dragged: the size shows over the picture.
+    var isResizing = false { didSet { if isResizing != oldValue { setNeedsLayout() } } }
     /// Whether Release is what's offered: the dock's word, which knows
     /// this app took control under the agent's asking (`takeover`).
     var holdsControl: (() -> Bool)?
@@ -1722,6 +1792,10 @@ final class LiveBrowserPlayerView: UIView {
     private let pill = UILabel()
     private let action = UIButton(type: .system)
     private let spinner = UIActivityIndicatorView(style: .medium)
+    /// The grips, one per corner `layout.grips` names; the unused hidden.
+    private(set) var gripViews: [LiveBrowserResizeGrip] = []
+    /// The picture's size while a grip is dragged.
+    private let badge = UILabel()
     private var layout: LiveBrowserDockLayout?
     /// The browser ended: nothing left to end.
     private var isOver = false
@@ -1787,10 +1861,20 @@ final class LiveBrowserPlayerView: UIView {
         spinner.bounds = CGRect(x: 0, y: 0, width: 36, height: 36)
         spinner.layer.cornerRadius = 18
         spinner.accessibilityIdentifier = "live-browser-player-spinner"
-        for view in [bar, picture, message, footer, close, full, resize, menuButton, spinner] as [UIView] { addSubview(view) }
+        badge.font = Fonts.ui(.semiBold, size: 12)
+        badge.textColor = .white
+        badge.textAlignment = .center
+        badge.backgroundColor = UIColor.black.withAlphaComponent(0.6)
+        badge.layer.cornerRadius = 8
+        badge.layer.masksToBounds = true
+        badge.isHidden = true
+        badge.accessibilityIdentifier = "live-browser-player-size"
+        for view in [bar, picture, message, footer, close, full, resize, menuButton, spinner, badge] as [UIView] { addSubview(view) }
         for view in [pillDot, pill, action] as [UIView] { footer.addSubview(view) }
         picture.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tapped)))
-        addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(panned(_:))))
+        let move = UIPanGestureRecognizer(target: self, action: #selector(panned(_:)))
+        move.delegate = self
+        addGestureRecognizer(move)
         big = false
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: Self, _) in
             self.layer.borderColor = UIColor(Palette.divider).cgColor
@@ -1854,6 +1938,51 @@ final class LiveBrowserPlayerView: UIView {
         bar.layer.cornerRadius = layout.radius
         layer.borderWidth = layout.isBig ? 0 : 1
         layer.shadowPath = UIBezierPath(roundedRect: bounds, cornerRadius: layout.radius).cgPath
+        layoutGrips(layout)
+    }
+
+    /// A grip per corner the layout names, the first one VoiceOver's; and
+    /// the size over the picture while one is dragged.
+    private func layoutGrips(_ layout: LiveBrowserDockLayout) {
+        while gripViews.count < layout.grips.count {
+            let grip = LiveBrowserResizeGrip()
+            grip.onPan = { [weak self, weak grip] state, translation in
+                guard let self, let grip else { return }
+                self.onGrip?(grip.corner, state, translation)
+            }
+            grip.onStep = { [weak self] step in self?.onGripStep?(step) }
+            gripViews.append(grip)
+            addSubview(grip)
+        }
+        let picture = layout.picture.size
+        let value = Strings.LiveBrowser.sizeValue(width: Int(picture.width), height: Int(picture.height))
+        for (index, grip) in gripViews.enumerated() {
+            let place = index < layout.grips.count ? layout.grips[index] : nil
+            grip.isHidden = place == nil
+            grip.isAccessibilityElement = index == 0 && place != nil
+            guard let place else { continue }
+            grip.corner = place.corner
+            grip.frame = place.frame
+            grip.accessibilityValue = value
+            bringSubviewToFront(grip)
+        }
+        badge.isHidden = !isResizing
+        if isResizing {
+            badge.text = Strings.LiveBrowser.size(width: Int(picture.width), height: Int(picture.height))
+            badge.frame = layout.badge(badge.sizeThatFits(CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)))
+            bringSubviewToFront(badge)
+        }
+    }
+
+    /// The grips stand out of the player's corner: a touch on them is the
+    /// player's.
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        super.point(inside: point, with: event) || gripViews.contains { !$0.isHidden && $0.frame.contains(point) }
+    }
+
+    /// The move pan leaves a grip's touch to the grip.
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        !(touch.view is LiveBrowserResizeGrip)
     }
 
     /// The feed as it is now: the latest picture, the status, the button.
@@ -1959,6 +2088,63 @@ final class LiveBrowserPlayerView: UIView {
         default: break
         }
     }
+}
+
+/// A resize grip: a small tab out of the player's corner that faces the
+/// chat, a diagonal arrow on it. A pan on it resizes the player; for
+/// VoiceOver it is adjustable, a step wider or narrower each swipe.
+final class LiveBrowserResizeGrip: UIView {
+    var corner: LiveBrowserDockLayout.Corner = .topLeft { didSet { if corner != oldValue { render() } } }
+    var onPan: ((UIGestureRecognizer.State, CGPoint) -> Void)?
+    var onStep: ((Int) -> Void)?
+    private let tab = UIView()
+    private let glyph = UIImageView()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        accessibilityIdentifier = "live-browser-player-grip"
+        accessibilityLabel = Strings.LiveBrowser.resizePlayer
+        accessibilityHint = Strings.LiveBrowser.resizeHint
+        accessibilityTraits = .adjustable
+        tab.backgroundColor = UIColor(Palette.cardFill)
+        tab.layer.borderWidth = 1
+        tab.layer.borderColor = UIColor(Palette.divider).cgColor
+        tab.isUserInteractionEnabled = false
+        glyph.tintColor = UIColor(Palette.cardDetail)
+        glyph.contentMode = .center
+        addSubview(tab)
+        tab.addSubview(glyph)
+        addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(panned(_:))))
+        render()
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: Self, _) in
+            self.tab.layer.borderColor = UIColor(Palette.divider).cgColor
+        }
+    }
+    @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
+
+    /// The arrow points along the diagonal the grip moves on; the tab's
+    /// rounded side is the one away from the player.
+    private func render() {
+        let symbol = corner == .topLeft || corner == .bottomRight ? "arrow.up.left.and.arrow.down.right" : "arrow.up.right.and.arrow.down.left"
+        glyph.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 10, weight: .bold))
+        tab.layer.cornerRadius = 8
+        tab.layer.maskedCorners = corner.isTop
+            ? [.layerMinXMinYCorner, .layerMaxXMinYCorner]
+            : [.layerMinXMaxYCorner, .layerMaxXMaxYCorner]
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        tab.frame = bounds
+        glyph.frame = tab.bounds
+    }
+
+    @objc private func panned(_ pan: UIPanGestureRecognizer) {
+        onPan?(pan.state, pan.translation(in: superview?.superview))
+    }
+
+    override func accessibilityIncrement() { onStep?(1) }
+    override func accessibilityDecrement() { onStep?(-1) }
 }
 
 // MARK: The transcript's chip
