@@ -126,7 +126,8 @@ export function createApp({ checkToken, checkVaultToken = () => false, getPolicy
             switch (url.pathname) {
                 case '/v1/scrub': {
                     // Every tainted session's values are scrubbed, whichever session the payload came from.
-                    const dropImages = taint.anyDropImages();
+                    // Images are withheld only for the chat that typed a username or TOTP (any chat's, without a chat id).
+                    const dropImages = taint.dropImagesForChat(chat);
                     return send(res, 200, { payload: scrubber.size ? scrubber.scrub(body.payload, { dropImages }) : body.payload });
                 }
                 case '/v1/session': {
@@ -134,7 +135,7 @@ export function createApp({ checkToken, checkVaultToken = () => false, getPolicy
                     const c = controllers(body.controller_port ?? null);
                     if (!c) return send(res, 403, { error: 'that browser controller is not one the filler may use' });
                     const s = sid ? taint.get(`${c.port}/${sid}`) : null;
-                    return send(res, 200, { tainted: !!s, any_tainted: taint.anyTainted(), drop_images: s ? !!s.drop_images : taint.anyDropImages() });
+                    return send(res, 200, { tainted: !!s, any_tainted: taint.anyTainted(), drop_images: s ? !!s.drop_images : taint.dropImagesForChat(chat) });
                 }
                 case '/v1/list': case '/v1/fill': case '/v1/login': {
                     if (!chat) return send(res, 400, { error: 'X-Client-Chat is required' });

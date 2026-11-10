@@ -84,6 +84,14 @@ test('fill, session and scrub over HTTP; no value is ever in a response, the aud
         assert.equal(l.json.status, 'totp_submitted');
         const sc2 = await call(app.port, 'POST', '/v1/scrub', { payload: leak });
         assert.equal(sc2.json.payload.content[1].type, 'text', 'username/TOTP taint withholds images');
+        const other = await call(app.port, 'POST', '/v1/scrub', { payload: leak }, { 'X-Happy-Chat': 'chat-globex' });
+        assert.equal(other.json.payload.content[1].type, 'image', "another chat's images are not withheld");
+        assert.match(other.json.payload.content[0].text, /\[secret:github\.password\]/, 'text is still scrubbed for every chat');
+        assert.equal((await call(app.port, 'POST', '/v1/session', {}, { 'X-Happy-Chat': 'chat-globex' })).json.drop_images, false);
+        for (const h of [{ 'X-Happy-Chat': '' }, { 'X-Happy-Chat': 'none' }]) {
+            const nochat = await call(app.port, 'POST', '/v1/scrub', { payload: leak }, h);
+            assert.equal(nochat.json.payload.content[1].type, 'text', 'no chat id: any chat\'s taint withholds images');
+        }
         for (const r of [f, bad, s, l]) assert.ok(!r.text.includes(pw) && !r.text.includes('acme-bot@example.com'));
         const audit = readdirSync(join(t.dir, 'audit')).map((x) => readFileSync(join(t.dir, 'audit', x), 'utf8')).join('');
         const state = readFileSync(join(t.dir, 'state', 'taint.json'), 'utf8');

@@ -9,6 +9,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { isLive } from './controller.mjs';
+import { NO_CHAT } from './policy.mjs';
 
 export function createTaint({ statePath = null, scrubber, controllers = null, now = () => Date.now(), graceMs = 10 * 60_000, log = () => {} }) {
     /** "<port>/<session id>" -> {chat, client, port, session, drop_images, since, closed_at} */
@@ -49,6 +50,14 @@ export function createTaint({ statePath = null, scrubber, controllers = null, no
         get: (session) => sessions.get(session) || null,
         anyTainted: () => sessions.size > 0,
         anyDropImages: () => [...sessions.values()].some((s) => s.drop_images),
+        /**
+         * Whether a chat's images must be withheld: a session it typed a username or TOTP into.
+         * With no chat id (or the shared "none") any chat's such session counts: fail closed.
+         */
+        dropImagesForChat(chat) {
+            if (!chat || chat === NO_CHAT) return [...sessions.values()].some((s) => s.drop_images);
+            return [...sessions.values()].some((s) => s.drop_images && s.chat === chat);
+        },
         list: () => [...sessions.keys()],
         /** Check every tainted session; forget closed ones after the grace period. */
         async sweep() {
