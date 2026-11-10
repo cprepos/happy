@@ -9,10 +9,10 @@ import UIKit
 /// CLIs it found, its recent sessions, the machine's details and Delete.
 /// The pencil in the header renames it (metadata `displayName`).
 final class MachineViewController: UIViewController {
-    private let context: AppContext
-    private let session: AccountSession
-    private let machineId: String
-    private let list = GroupedListView()
+    let context: AppContext
+    let session: AccountSession
+    let machineId: String
+    let list = GroupedListView()
     /// What the screen shows, worked out off the main thread by the
     /// account's machine feed; nil until the first one.
     private var content: MachineScreenContent?
@@ -46,15 +46,8 @@ final class MachineViewController: UIViewController {
         followsTextSize()
         // Screens pushed from here go back with the chevron alone.
         minimalBackButton()
-        // The account's link and its computers asked again.
-        attachRefresh(to: list) { [session] in await session.refresh(scope: .machines) }
+        installRefresh()
     }
-
-    override var keyCommands: [UIKeyCommand]? {
-        [RefreshShortcut.command(action: #selector(refreshFromKeyboard))] + (super.keyCommands ?? [])
-    }
-
-    @objc private func refreshFromKeyboard() { runRefresh(on: list) }
 
     /// The machine and its recent sessions, read only while this screen is
     /// on screen.
@@ -93,7 +86,7 @@ final class MachineViewController: UIViewController {
 
     // MARK: Building
 
-    private func rebuild() {
+    func rebuild() {
         guard let content else { return }
         guard let model = content.model else {
             setPlainHeaderTitle("")
@@ -193,10 +186,8 @@ final class MachineViewController: UIViewController {
             row.trailingView = DetailTrailingText(installed ? S.cliInstalled : S.cliNotFound, color: installed ? SecondaryPalette.green : Palette.textSecondary)
             return row
         }
-        var rows = [row("Claude", cli.claude)]
-        if let desktop = cli.claudeDesktop { rows.append(row(Strings.Harnesses.claudeDesktop, desktop)) }
-        rows += [row("Codex", cli.codex), row("Gemini", cli.gemini), row("OpenClaw", cli.openclaw)]
-        if let opencode = cli.opencode { rows.append(row(Strings.Harnesses.opencode, opencode)) }
+        var rows = [row("Claude", cli.claude), row("Codex", cli.codex), row("Gemini", cli.gemini), row("OpenClaw", cli.openclaw)]
+        addForkHarnesses(to: &rows, cli, row: row)
         if let rig = cli.rig { rows.append(row("Rig", rig)) }
         let detected = ItemRowView(title: S.lastDetected, subtitle: SessionDetails.localeDateTime(cli.detectedAt))
         detected.showsChevron = false
@@ -235,23 +226,6 @@ final class MachineViewController: UIViewController {
         rows.append(info(S.lastSeen, subtitle: model.lastSeen.map { SessionDetails.localeDateTime($0) } ?? S.never))
         rows.append(info(S.metadataVersion, subtitle: String(model.metadataVersion)))
         return ItemGroupView(title: S.machineGroup, rows: rows)
-    }
-
-    /// The paired computer this machine's chats open links through, when
-    /// one was picked (`LegacyLinkRoute`). Tapping it (Ask Next Time)
-    /// forgets the pick, so the next link asks again.
-    private func linksGroup() -> ItemGroupView? {
-        let computers = Self.legacyLinkComputers(context.account)
-        guard let computer = LegacyLinkRoute.remembered(for: machineId, computers: computers, settings: session.localSettings) else { return nil }
-        let row = ItemRowView(title: Strings.Browser.linksOpenThrough(computer.name)) { [weak self] in self?.forgetLinks() }
-        row.showsChevron = false
-        row.trailingView = DetailTrailingText(Strings.Browser.askNextTime, color: Palette.textSecondary)
-        return ItemGroupView(rows: [row])
-    }
-
-    private func forgetLinks() {
-        session.localSettings.legacyLinkComputers[machineId] = nil
-        rebuild()
     }
 
     private func dangerZone() -> (group: ItemGroupView, tint: () -> Void) {
