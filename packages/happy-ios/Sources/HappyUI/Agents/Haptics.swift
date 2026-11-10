@@ -28,6 +28,8 @@ enum Haptics {
         case pick
         /// A section folded or unfolded.
         case fold
+        /// A drag reached its least or most (the live player's size).
+        case limit
     }
 
     enum Feedback: Equatable {
@@ -41,6 +43,7 @@ enum Haptics {
         case .lift: .impact(.medium)
         case .slot, .pick: .selection
         case .hold, .drop, .renamed, .send, .newWork, .fold: .impact(.light)
+        case .limit: .impact(.rigid)
         case .putAway: .notification(.success)
         }
     }

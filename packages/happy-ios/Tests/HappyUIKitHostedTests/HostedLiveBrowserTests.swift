@@ -604,6 +604,133 @@ final class HostedLiveBrowserTests: XCTestCase {
         try await until { host.presentedViewController == nil }
     }
 
+    /// Records what the haptics played.
+    private final class HapticsRecorder: Haptics.Player {
+        var played: [Haptics.Feedback] = []
+        func prepare(_ feedback: Haptics.Feedback) {}
+        func play(_ feedback: Haptics.Feedback) { played.append(feedback) }
+    }
+
+    /// The grip on the corner facing the chat resizes the player as a pan
+    /// goes, at the frame's aspect, its docked corner held; a tick at each
+    /// limit; the size kept for the chat; VoiceOver steps it; ⤢ snaps to
+    /// big and drops it; big's two grips grow it from its middle, the
+    /// chat's content following.
+    func testDraggingTheGripResizesThePlayerAndKeepsTheSize() async throws {
+        let daemon = BrowserDaemon()
+        let chat = UUID().uuidString
+        let (host, window) = try await makeHost(daemon, chat: chat)
+        let haptics = Haptics.player
+        let recorder = HapticsRecorder()
+        Haptics.player = recorder
+        defer {
+            Haptics.player = haptics
+            window.isHidden = true; host.dock.update(link: nil); UserDefaults.standard.removeObject(forKey: "liveBrowserDock.\(chat)")
+        }
+        let dock = host.dock!
+        turnUpright()
+        dock.update(link: LiveBrowserLink(id: id))
+        try await until { dock.player != nil && dock.feed?.phase.state != nil }
+        try await until { dock.player?.layer.animationKeys()?.isEmpty ?? true }
+        host.view.layoutIfNeeded()
+        let player = try XCTUnwrap(dock.player)
+        let feed = try XCTUnwrap(dock.feed)
+
+        // Small at the bottom right: one grip, at its top left.
+        let grips = player.gripViews.filter { !$0.isHidden }
+        XCTAssertEqual(grips.count, 1)
+        let grip = try XCTUnwrap(grips.first)
+        XCTAssertEqual(grip.corner, .topLeft)
+        XCTAssertEqual(grip.accessibilityIdentifier, "live-browser-player-grip")
+        XCTAssertEqual(grip.accessibilityLabel, Strings.LiveBrowser.resizePlayer)
+        XCTAssertTrue(grip.accessibilityTraits.contains(.adjustable))
+        XCTAssertTrue(grip.isAccessibilityElement)
+        XCTAssertTrue(player.point(inside: grip.center, with: nil), "a touch on the grip is the player's")
+        let start = player.frame
+        XCTAssertEqual(grip.frame.minX, 0)
+        XCTAssertLessThan(grip.frame.minY, 0, "out of the corner, toward the chat")
+
+        // Up and left along the aspect: 40 wider, the bottom right held.
+        player.onGrip?(.topLeft, .began, .zero)
+        XCTAssertTrue(player.isResizing)
+        player.onGrip?(.topLeft, .changed, CGPoint(x: -40, y: -25))
+        XCTAssertEqual(player.frame.width, start.width + 40)
+        XCTAssertEqual(player.frame.maxX, start.maxX)
+        XCTAssertEqual(player.frame.maxY, start.maxY)
+        let picture = try XCTUnwrap(player.subviews.first { $0.accessibilityIdentifier == "live-browser-picture" })
+        XCTAssertEqual(picture.frame.height, (player.frame.width / 1.6).rounded())
+        let size = try XCTUnwrap(player.subviews.first { $0.accessibilityIdentifier == "live-browser-player-size" } as? UILabel)
+        XCTAssertFalse(size.isHidden, "the size shows as it goes")
+        XCTAssertEqual(size.text, Strings.LiveBrowser.size(width: Int(picture.frame.width), height: Int(picture.frame.height)))
+        XCTAssertTrue(recorder.played.isEmpty)
+        XCTAssertTrue(feed.frame == nil || player.shownImage != nil, "the picture stays")
+
+        // Past the most: held at the card's width, one tick however far.
+        player.onGrip?(.topLeft, .changed, CGPoint(x: -1000, y: -625))
+        let most = player.frame.width
+        XCTAssertLessThanOrEqual(most, host.cardFrame.width)
+        XCTAssertEqual(player.frame.maxX, start.maxX)
+        XCTAssertGreaterThanOrEqual(player.frame.minY, host.view.safeAreaInsets.top)
+        player.onGrip?(.topLeft, .changed, CGPoint(x: -1200, y: -750))
+        XCTAssertEqual(player.frame.width, most)
+        XCTAssertEqual(recorder.played, [.impact(.rigid)])
+        // Past the least: the old mini player's, a second tick.
+        player.onGrip?(.topLeft, .changed, CGPoint(x: 1000, y: 625))
+        XCTAssertEqual(player.frame.width, dock.isPhone ? 112 : 176)
+        XCTAssertEqual(recorder.played, [.impact(.rigid), .impact(.rigid)])
+        player.onGrip?(.topLeft, .changed, CGPoint(x: -40, y: -25))
+        player.onGrip?(.topLeft, .ended, CGPoint(x: -40, y: -25))
+        XCTAssertFalse(player.isResizing)
+        XCTAssertTrue(size.isHidden)
+        let dragged = player.frame.width
+        XCTAssertEqual(dragged, start.width + 40)
+        XCTAssertEqual(LiveBrowserDock.kept(chat).width, dragged, "kept for the chat")
+        XCTAssertFalse(LiveBrowserDock.kept(chat).big)
+        // Laid out again, it stays.
+        host.view.setNeedsLayout()
+        host.view.layoutIfNeeded()
+        XCTAssertEqual(player.frame.width, dragged)
+
+        // VoiceOver's decrement: a step narrower, kept.
+        grip.accessibilityDecrement()
+        XCTAssertEqual(player.frame.width, dragged - 40)
+        XCTAssertEqual(LiveBrowserDock.kept(chat).width, dragged - 40)
+        grip.accessibilityIncrement()
+        XCTAssertEqual(player.frame.width, dragged)
+
+        // ⤢: big, its preset; the dragged size gone.
+        player.onTap?()
+        try await until { player.layer.animationKeys()?.isEmpty ?? true }
+        host.view.layoutIfNeeded()
+        XCTAssertTrue(LiveBrowserDock.kept(chat).big)
+        XCTAssertNil(LiveBrowserDock.kept(chat).width)
+        let big = player.frame
+        XCTAssertEqual(big.midX, host.view.bounds.midX, accuracy: 0.5)
+
+        // Big's grips: both bottom corners. The right one 20 in and up:
+        // 40 narrower, still centred, the chat's content under it.
+        let bigGrips = player.gripViews.filter { !$0.isHidden }
+        XCTAssertEqual(bigGrips.map(\.corner), [.bottomLeft, .bottomRight])
+        XCTAssertEqual(bigGrips.filter(\.isAccessibilityElement).count, 1, "one for VoiceOver")
+        player.onGrip?(.bottomRight, .began, .zero)
+        player.onGrip?(.bottomRight, .changed, CGPoint(x: -20, y: -25))
+        host.view.layoutIfNeeded()
+        XCTAssertEqual(player.frame.width, big.width - 40)
+        XCTAssertEqual(player.frame.midX, host.view.bounds.midX, accuracy: 0.5)
+        XCTAssertEqual(player.frame.minY, big.minY)
+        XCTAssertEqual(dock.topInset(in: host.view), player.frame.height + 8, "the chat follows the live height")
+        player.onGrip?(.bottomRight, .ended, CGPoint(x: -20, y: -25))
+        XCTAssertEqual(LiveBrowserDock.kept(chat).width, big.width - 40)
+        XCTAssertTrue(LiveBrowserDock.kept(chat).big)
+
+        // ⤢ again: small's preset.
+        player.onTap?()
+        try await until { player.layer.animationKeys()?.isEmpty ?? true }
+        host.view.layoutIfNeeded()
+        XCTAssertEqual(player.frame, start)
+        XCTAssertNil(LiveBrowserDock.kept(chat).width)
+    }
+
     // MARK: A phone turned sideways
 
     /// The scene turned as the person turns the phone (the test asks; the

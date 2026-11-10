@@ -369,6 +369,155 @@ final class LiveBrowserLayoutTests: XCTestCase {
         }
     }
 
+    // MARK: Dragged sizes
+
+    /// The phone's chat at rest: the card at 776, the red line at 756.
+    private func phone(corner: LiveBrowserDockLayout.Corner = .bottomRight, big: Bool = false, width: CGFloat?) -> LiveBrowserDockLayout {
+        LiveBrowserDockLayout(.init(size: size, safeArea: safe, card: rect(8, 776, 386, 56), anchor: 756,
+                                    corner: corner, big: big, idiom: .phone, width: width))
+    }
+
+    /// An iPad's chat, as `pad(big:)`, a dragged width asked for.
+    private func pad(width: CGFloat = 820, height: CGFloat = 1180, big: Bool, dragged: CGFloat?) -> LiveBrowserDockLayout {
+        let card = CGRect(x: 16, y: height - 20 - 76, width: width - 32, height: 56)
+        return LiveBrowserDockLayout(.init(size: CGSize(width: width, height: height), safeArea: LayoutInsets(top: 74, bottom: 20),
+                                           card: card, anchor: card.minY - 20, big: big, idiom: .pad, width: dragged))
+    }
+
+    func testADraggedWidthIsHeldBetweenTheMiniPlayerAndTheCard() {
+        // A phone's floating player: 112 (the old mini) to the card's 386.
+        XCTAssertEqual(phone(width: nil).limits, 112...386)
+        XCTAssertEqual(phone(width: 50).frame.width, 112)
+        XCTAssertEqual(phone(width: 1000).frame.width, 386)
+        let dragged = phone(width: 300)
+        assertFrame(dragged.frame, rect(94, 486, 300, 262))
+        assertFrame(dragged.picture, rect(0, 44, 300, 188))
+        XCTAssertEqual(dragged.clamp(20), 112)
+        XCTAssertEqual(dragged.clamp(999), 386)
+        XCTAssertEqual(dragged.clamp(250), 250)
+        // A width in between is rounded to a point.
+        XCTAssertEqual(phone(width: 250.4).frame.width, 250)
+        assertControlsClearThePicture(phone(width: 112))
+
+        // An iPad's: 176 to its card's 788, leaving the chat 120.
+        XCTAssertEqual(pad(big: false, dragged: nil).limits, 176...788)
+        XCTAssertEqual(pad(big: false, dragged: 100).frame.width, 176)
+        XCTAssertEqual(pad(big: false, dragged: 2000).frame.width, 788)
+        // Squeezed between the bars, never taller than the room.
+        let tight = LiveBrowserDockLayout(.init(size: size, safeArea: safe, card: rect(8, 776, 386, 56), anchor: 200, width: 300))
+        XCTAssertEqual(tight.limits, 76...76)
+        XCTAssertEqual(tight.frame.width, 76)
+    }
+
+    func testAFloatingPlayerKeepsItsCornerAndGrowsTowardTheChat() {
+        for width in [150, 232, 300, 386] as [CGFloat] {
+            let right = phone(width: width)
+            XCTAssertEqual(right.frame.maxX, 394, "on the card's right edge")
+            XCTAssertEqual(right.frame.maxY, 748, "8 over the red line")
+            let left = phone(corner: .topLeft, width: width)
+            XCTAssertEqual(left.frame.minX, 8)
+            XCTAssertEqual(left.frame.minY, 70, "8 under the safe area")
+            XCTAssertEqual(left.frame.size, right.frame.size)
+        }
+        // The grip stands out of the corner facing the chat.
+        let right = phone(width: 300)
+        XCTAssertEqual(right.grips, [.init(corner: .topLeft, frame: rect(0, -24, 44, 30))])
+        let left = phone(corner: .topLeft, width: 300)
+        XCTAssertEqual(left.grips, [.init(corner: .bottomRight, frame: rect(256, 256, 44, 30))])
+        XCTAssertEqual(phone(corner: .topRight, width: 300).grips.map(\.corner), [.bottomLeft])
+        XCTAssertEqual(phone(corner: .bottomLeft, width: 300).grips.map(\.corner), [.topRight])
+        for layout in [right, left] {
+            for grip in layout.grips {
+                let bounds = CGRect(origin: .zero, size: layout.frame.size)
+                XCTAssertFalse(grip.frame.intersects(layout.picture), "the grip never covers the page")
+                XCTAssertEqual(grip.frame.intersection(bounds).height, 6, "it overlaps the player by 6")
+            }
+        }
+    }
+
+    func testADraggedBigStaysCentredUnderTheHeader() {
+        // A phone's: 112 to the whole width, centred, the chat under it.
+        XCTAssertEqual(phone(big: true, width: nil).limits, 112...402)
+        let big = phone(big: true, width: 300)
+        assertFrame(big.frame, rect(51, 62, 300, 262))
+        XCTAssertTrue(big.isBig)
+        XCTAssertEqual(big.topInset, 270, "the chat follows its height")
+        XCTAssertEqual(big.grips, [.init(corner: .bottomLeft, frame: rect(0, 256, 44, 30)),
+                                   .init(corner: .bottomRight, frame: rect(256, 256, 44, 30))])
+        XCTAssertEqual(phone(big: true, width: 1000).frame, phone(big: true, width: nil).frame)
+        // Its corner doesn't move it.
+        XCTAssertEqual(phone(corner: .topLeft, big: true, width: 300).frame, big.frame)
+
+        // An iPad's: past its 75% up to the pane's width.
+        XCTAssertEqual(pad(big: true, dragged: nil).limits, 176...820)
+        let wider = pad(big: true, dragged: 700)
+        assertFrame(wider.frame, rect(60, 74, 700, 512))
+        XCTAssertEqual(wider.topInset, 520)
+        assertFrame(pad(big: true, dragged: 900).frame, rect(0, 74, 820, 587))
+        XCTAssertEqual(pad(big: true, dragged: 10).frame.width, 176)
+        // Sideways no wider than leaves the chat 120 under it: its preset.
+        let sideways = pad(width: 1180, height: 820, big: true, dragged: 900)
+        XCTAssertEqual(sideways.limits, 176...684)
+        assertFrame(sideways.frame, rect(248, 74, 684, 502))
+        XCTAssertGreaterThanOrEqual(696 - sideways.frame.maxY, 120)
+    }
+
+    func testAGripDragIsReadAlongItsDiagonal() {
+        // The floating player's top-left grip, up and left at its aspect:
+        // exactly as much wider as the hand went across.
+        let floating = phone(width: nil)
+        XCTAssertEqual(floating.width(dragging: .topLeft, from: 232, by: CGPoint(x: -40, y: -25)), 272, accuracy: 0.001)
+        XCTAssertEqual(floating.width(dragging: .topLeft, from: 232, by: CGPoint(x: 40, y: 25)), 192, accuracy: 0.001)
+        XCTAssertEqual(phone(corner: .topLeft, width: nil).width(dragging: .bottomRight, from: 232, by: CGPoint(x: 40, y: 25)), 272, accuracy: 0.001)
+        // Off the diagonal it still moves, smoothly.
+        let across = floating.width(dragging: .topLeft, from: 232, by: CGPoint(x: -40, y: 0))
+        XCTAssertGreaterThan(across, 232)
+        XCTAssertLessThan(across, 272)
+        // Big grows from its middle: a grip 20 out is 40 wider.
+        let big = phone(big: true, width: 300)
+        XCTAssertEqual(big.width(dragging: .bottomRight, from: 300, by: CGPoint(x: 20, y: 25)), 340, accuracy: 0.001)
+        XCTAssertEqual(big.width(dragging: .bottomLeft, from: 300, by: CGPoint(x: -20, y: 25)), 340, accuracy: 0.001)
+        XCTAssertEqual(big.width(dragging: .bottomLeft, from: 300, by: CGPoint(x: 20, y: -25)), 260, accuracy: 0.001)
+    }
+
+    func testTheSizeShowsOverThePicturesMiddle() {
+        let small = phone(width: nil)
+        assertFrame(small.badge(CGSize(width: 60, height: 14)), rect(76, 105, 80, 24))
+        // Never wider than the picture, less 8 a side.
+        XCTAssertEqual(phone(width: 112).badge(CGSize(width: 400, height: 14)).width, 96)
+    }
+
+    // MARK: Where it was left
+
+    func testWhereThePlayerWasLeftReadsOldAndNewValues() {
+        typealias Kept = LiveBrowserDockLayout.Kept
+        XCTAssertEqual(Kept(stored: nil, phone: true), Kept())
+        XCTAssertEqual(Kept(stored: "", phone: false), Kept(corner: .bottomRight, big: false))
+        XCTAssertEqual(Kept(stored: "topLeft|small", phone: true), Kept(corner: .topLeft, big: false))
+        XCTAssertEqual(Kept(stored: "topRight|big", phone: false), Kept(corner: .topRight, big: true))
+        // An older "large" was a phone's big, an iPad's bigger small.
+        XCTAssertEqual(Kept(stored: "topLeft|large", phone: true), Kept(corner: .topLeft, big: true))
+        XCTAssertEqual(Kept(stored: "topLeft|large", phone: false), Kept(corner: .topLeft, big: false))
+        XCTAssertEqual(Kept(stored: "bottomLeft", phone: true), Kept(corner: .bottomLeft))
+        XCTAssertEqual(Kept(stored: "nowhere|big", phone: true), Kept(corner: .bottomRight, big: true))
+        // A dragged width after them.
+        XCTAssertEqual(Kept(stored: "bottomLeft|big|480", phone: true), Kept(corner: .bottomLeft, big: true, width: 480))
+        XCTAssertEqual(Kept(stored: "topRight|small|300.5", phone: false), Kept(corner: .topRight, big: false, width: 300.5))
+        for bad in ["topRight|small|", "topRight|small|wide", "topRight|small|-5", "topRight|small|0", "topRight|small|inf", "topRight|small|nan"] {
+            XCTAssertNil(Kept(stored: bad, phone: true).width, bad)
+        }
+
+        XCTAssertEqual(Kept().stored, "bottomRight|small")
+        XCTAssertEqual(Kept(corner: .topLeft, big: true).stored, "topLeft|big")
+        XCTAssertEqual(Kept(corner: .topLeft, big: true, width: 480.4).stored, "topLeft|big|480")
+        for kept in [Kept(), Kept(corner: .topRight, big: true), Kept(corner: .bottomLeft, big: false, width: 300)] {
+            XCTAssertEqual(Kept(stored: kept.stored, phone: true), kept, "read back as kept")
+            XCTAssertEqual(Kept(stored: kept.stored, phone: false), kept)
+        }
+        // What an older reader takes: the corner and small or big.
+        XCTAssertEqual(Kept(corner: .topLeft, big: true, width: 480).stored.split(separator: "|").prefix(2), ["topLeft", "big"])
+    }
+
     func testADragLandsInTheNearestCorner() {
         XCTAssertEqual(LiveBrowserDockLayout.corner(nearest: CGPoint(x: 50, y: 100), in: size), .topLeft)
         XCTAssertEqual(LiveBrowserDockLayout.corner(nearest: CGPoint(x: 300, y: 100), in: size), .topRight)

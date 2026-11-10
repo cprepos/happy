@@ -216,6 +216,13 @@ extension Strings {
         static let close = "Close"
         static let bigger = "Bigger"
         static let smaller = "Smaller"
+        /// The player's resize grip.
+        static let resizePlayer = "Resize player"
+        static let resizeHint = "Drag diagonally to resize."
+        /// The picture's size in points, shown while the grip is dragged.
+        static func size(width: Int, height: Int) -> String { "\(width) × \(height)" }
+        /// The grip's value for VoiceOver.
+        static func sizeValue(width: Int, height: Int) -> String { "\(width) by \(height) points" }
         /// What the agent did last, under the full screen's title.
         static func lastAction(_ action: LiveBrowserState.Action) -> String {
             let verb = switch action.kind {

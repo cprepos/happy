@@ -40,6 +40,7 @@ final class HapticsTests: XCTestCase {
             (.newWork, .impact(.light)),
             (.pick, .selection),
             (.fold, .impact(.light)),
+            (.limit, .impact(.rigid)),
         ]
         XCTAssertEqual(expected.count, Haptics.Moment.allCases.count, "a moment without an expectation")
         for (moment, _) in expected { Haptics.play(moment) }
