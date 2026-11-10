@@ -243,36 +243,46 @@ final class LiveBrowserLayoutTests: XCTestCase {
         assertControlsClearThePicture(small)
     }
 
-    func testAnIPadsBigStopsAtHalfTheChatsHeightCentred() {
-        // Upright: the pane's whole width would be 587 tall, over half of
-        // the 982 between the header and the composer, so 491 tall and
-        // 667 wide, centred.
+    func testAnIPadsBigIsThreeQuartersOfThePaneCentred() {
+        // Upright: 75% of the 820 pane, 615 wide and 384 tall at the
+        // frame's aspect, centred under the header.
         let big = pad(big: true)
-        assertFrame(big.frame, rect(77, 74, 667, 491))
-        assertFrame(big.picture, rect(0, 44, 667, 417))
-        assertFrame(big.fullScreen, rect(579, 0, 44, 44))
-        assertFrame(big.resize, rect(623, 0, 44, 44))
+        assertFrame(big.frame, rect(103, 74, 615, 458))
+        assertFrame(big.picture, rect(0, 44, 615, 384))
+        assertFrame(big.fullScreen, rect(527, 0, 44, 44))
+        assertFrame(big.resize, rect(571, 0, 44, 44))
         XCTAssertTrue(big.isBig)
         XCTAssertEqual(big.radius, 0)
-        XCTAssertEqual(big.topInset, 499)
+        XCTAssertEqual(big.topInset, 466)
+        XCTAssertGreaterThan(big.frame.width, pad(big: false).frame.width)
         assertControlsClearThePicture(big)
     }
 
-    func testAnIPadsBigBesideTheSidebarIsThePanesWholeWidth() {
-        // A 500-wide chat pane beside the sidebar: its whole width, 387
-        // tall, under half the height.
+    func testAnIPadsBigBesideTheSidebarIsThreeQuartersOfThePane() {
+        // A 500-wide chat pane beside the sidebar: 375 wide, centred.
         let big = pad(width: 500, big: true)
-        assertFrame(big.frame, rect(0, 74, 500, 387))
-        assertFrame(big.picture, rect(0, 44, 500, 313))
-        XCTAssertEqual(big.topInset, 395)
+        assertFrame(big.frame, rect(63, 74, 375, 308))
+        assertFrame(big.picture, rect(0, 44, 375, 234))
+        XCTAssertEqual(big.topInset, 316)
     }
 
-    func testAnIPadsBigTurnedSidewaysIsNeverSmallerThanSmall() {
-        // Sideways, half the room would make big 379 wide, under small's
-        // 420: it keeps small's size, centred under the header.
+    func testAnIPadsBigTurnedSidewaysLeavesTheChatRoom() {
+        // Sideways, 75% (885) would be taller than the 622 between the
+        // header and the composer less 120 for the chat: 684 wide,
+        // centred, at its aspect.
         let big = pad(width: 1180, height: 820, big: true)
+        assertFrame(big.frame, rect(248, 74, 684, 502))
+        assertFrame(big.picture, rect(0, 44, 684, 428))
+        XCTAssertEqual(big.topInset, 510)
+        XCTAssertGreaterThanOrEqual(696 - big.frame.maxY, 120)
+    }
+
+    func testAnIPadsBigInATightWindowIsNeverSmallerThanSmall() {
+        // 402 of room: leaving the chat 120 would make big 332 wide, under
+        // small's 420, so it keeps small's size, centred under the header.
+        let big = pad(width: 1180, height: 600, big: true)
         assertFrame(big.frame, rect(380, 74, 420, 337))
-        XCTAssertEqual(pad(width: 1180, height: 820, big: false).frame.size, big.frame.size)
+        XCTAssertEqual(pad(width: 1180, height: 600, big: false).frame.size, big.frame.size)
         XCTAssertEqual(big.topInset, 345)
     }
 

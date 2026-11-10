@@ -94,7 +94,8 @@ public struct ChatStatusLineLayout: Equatable, Sendable {
 /// (`topInset`). ⇲ and a tap on the picture go between the two. Where the
 /// whole width would make big too tall, it is as wide as its height
 /// allows, centred: a phone's up to the room above the composer (turned
-/// sideways), an iPad's or a Mac's up to half of it but never narrower
+/// sideways). An iPad's or a Mac's is 75% of the pane's width, centred,
+/// shrunk only to leave the chat 120 points under it, and never smaller
 /// than small (`Idiom`).
 ///
 /// A bottom corner keeps its right or left edge on the composer card's and
@@ -114,10 +115,13 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
         /// Small's width, of the card's.
         public static let smallShare: CGFloat = 0.6
         public static let smallMaxWidth: CGFloat = 420
-        /// An iPad's or a Mac's big is at most this share of the room
-        /// between the header and the composer, chrome included, unless
-        /// that would make it narrower than small.
-        public static let bigShareOfRoom: CGFloat = 0.5
+        /// An iPad's or a Mac's big: this share of the chat pane's width,
+        /// centred.
+        public static let bigShareOfWidth: CGFloat = 0.75
+        /// The least of the chat an iPad's or a Mac's big leaves between
+        /// itself and the composer, unless that would make it smaller than
+        /// small.
+        public static let padChatRoom: CGFloat = 120
         /// The picture's width over its height.
         public static let aspect: CGFloat = 1.6
         public static let footerHeight: CGFloat = 30
@@ -132,8 +136,9 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
         public static let footerPadding: CGFloat = 6
     }
 
-    /// Where big's height stops: a phone's at the room above the
-    /// composer, an iPad's or a Mac's (Designed for iPad) at half of it.
+    /// Big's width: a phone's the whole pane, up to the room above the
+    /// composer; an iPad's or a Mac's (Designed for iPad) 75% of the pane,
+    /// leaving the chat some room.
     public enum Idiom: Sendable { case phone, pad }
 
     public struct Input: Equatable, Sendable {
@@ -200,14 +205,15 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
             // the composer (a phone turned sideways: big stays the
             // windowed player there, landscape is full screen's), as wide
             // as the room's height allows, centred. An iPad's or a Mac's
-            // stops at half the room, but never narrower than small, so ⇲
-            // never shrinks it.
+            // is 75% of the pane, shrunk to leave the chat 120 under it,
+            // but never smaller than small, so ⇲ never shrinks it.
             let room = max(0, bottom - input.safeArea.top)
             let fitting = { (height: CGFloat) in max(0, (height - chrome) * M.aspect).rounded(.down) }
             width = min(input.size.width, fitting(room))
             if input.idiom == .pad {
-                let half = fitting((room * M.bigShareOfRoom).rounded(.down))
-                width = min(width, max(half, Self.smallWidth(card: input.card, size: input.size)))
+                let share = (input.size.width * M.bigShareOfWidth).rounded(.down)
+                let fit = min(share, fitting(room - M.padChatRoom))
+                width = min(width, max(fit, Self.smallWidth(card: input.card, size: input.size)))
             }
             pictureHeight = (width / M.aspect).rounded()
         } else {

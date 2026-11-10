@@ -295,7 +295,7 @@ final class HostedSessionLiveBrowserTests: XCTestCase {
             let noVNC = try XCTUnwrap(navigation.viewControllers.last as? LiveBrowserFullScreenItems)
             XCTAssertTrue(noVNC.isNoVNC)
             // A phone's asks noVNC to scale, never to resize the remote screen.
-            let expected = LiveBrowserDock.isPhone(noVNC.traitCollection) ? bridgeNoVNC.replacingOccurrences(of: "resize=remote", with: "resize=scale") : bridgeNoVNC
+            let expected = LiveBrowserDock.isPhone ? bridgeNoVNC.replacingOccurrences(of: "resize=remote", with: "resize=scale") : bridgeNoVNC
             XCTAssertEqual(noVNC.browser.originalURL.absoluteString, expected, "the address the bridge answered, port and all")
             try await waitFor("the noVNC page (\(flavor))") { await daemon.pageHeads.contains { $0.line.contains("/live/\(self.linkId)/vnc/vnc.html") } }
             let tunnelled = await daemon.tunnelledWorkspaces

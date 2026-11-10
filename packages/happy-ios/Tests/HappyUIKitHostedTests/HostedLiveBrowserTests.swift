@@ -528,7 +528,7 @@ final class HostedLiveBrowserTests: XCTestCase {
 
     /// Every idiom: ⇲ and the picture go between small and big, the full
     /// screen button alone opens full screen. A phone's big is the whole
-    /// width; an iPad's or a Mac's stops at half the chat's height.
+    /// width; an iPad's or a Mac's is 75% of it, centred.
     func testExpandMakesTheWholeWidthPlayerInTheChatAndShrinkPutsItBack() async throws {
         let daemon = BrowserDaemon()
         let chat = UUID().uuidString
@@ -555,11 +555,12 @@ final class HostedLiveBrowserTests: XCTestCase {
         try await until { player.layer.animationKeys()?.isEmpty ?? true }
         host.view.layoutIfNeeded()
         let width = player.frame.width
+        XCTAssertEqual(dock.isPhone, UIDevice.current.userInterfaceIdiom == .phone && !ProcessInfo.processInfo.isiOSAppOnMac)
         if dock.isPhone {
             XCTAssertEqual(player.frame.minX, 0)
-            XCTAssertEqual(width, host.view.bounds.width)
+            XCTAssertEqual(width, host.view.bounds.width, "a phone's big is the chat's whole width")
         } else {
-            XCTAssertLessThanOrEqual(width, host.view.bounds.width)
+            XCTAssertEqual(width, (host.view.bounds.width * 0.75).rounded(.down), "upright, an iPad's big is 75% of the pane")
             XCTAssertGreaterThan(width, small.width)
             XCTAssertEqual(player.frame.midX, host.view.bounds.midX, accuracy: 0.5)
         }
@@ -668,6 +669,22 @@ final class HostedLiveBrowserTests: XCTestCase {
             XCTAssertEqual(found.count, 1, "\(id) once", file: file, line: line)
             XCTAssertTrue(found.first?.isDescendant(of: page.strip) ?? false, "\(id) in the strip", file: file, line: line)
         }
+    }
+
+    /// The idiom is the device's, before the chat is in a window too, and
+    /// an older "large" is a phone's big but an iPad's small.
+    func testTheIdiomIsTheDevicesAndAnOlderLargeIsAPhonesBig() {
+        let phone = UIDevice.current.userInterfaceIdiom == .phone && !ProcessInfo.processInfo.isiOSAppOnMac
+        let host = UIViewController()
+        let chat = UUID().uuidString
+        defer { UserDefaults.standard.removeObject(forKey: "liveBrowserDock.\(chat)") }
+        UserDefaults.standard.set("topLeft|large", forKey: "liveBrowserDock.\(chat)")
+        let dock = LiveBrowserDock(host: host, chatKey: chat) { nil }
+        XCTAssertNil(host.viewIfLoaded?.window)
+        XCTAssertEqual(dock.isPhone, phone)
+        XCTAssertEqual(LiveBrowserDock.kept(chat, phone: true).big, true)
+        XCTAssertEqual(LiveBrowserDock.kept(chat, phone: false).big, false)
+        XCTAssertEqual(LiveBrowserDock.kept(chat).corner, .topLeft)
     }
 
     func testOnAPhoneTheFrameViewTurnsWithTheDeviceToTheStrip() async throws {

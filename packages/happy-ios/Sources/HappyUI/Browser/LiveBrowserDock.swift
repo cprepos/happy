@@ -109,7 +109,7 @@ final class LiveBrowserDock: NSObject {
         self.host = host
         self.chatKey = chatKey
         self.connect = connect
-        let kept = Self.kept(chatKey)
+        let kept = Self.kept(chatKey, phone: Self.isPhone)
         corner = kept.corner
         big = kept.big
         super.init()
@@ -279,12 +279,14 @@ final class LiveBrowserDock: NSObject {
     }
 
     /// An iPhone, not an iPad and not the app on a Mac: full screen's
-    /// strip and picture-only page, and big up to the whole room.
-    static func isPhone(_ traits: UITraitCollection) -> Bool {
-        traits.userInterfaceIdiom == .phone && !ProcessInfo.processInfo.isiOSAppOnMac
+    /// strip and picture-only page, and big the whole width. Read from
+    /// the device, never a view's traits: those are unspecified until the
+    /// view is in a window, which read as an iPad's.
+    static var isPhone: Bool {
+        UIDevice.current.userInterfaceIdiom == .phone && !ProcessInfo.processInfo.isiOSAppOnMac
     }
 
-    var isPhone: Bool { Self.isPhone(host?.traitCollection ?? UITraitCollection.current) }
+    var isPhone: Bool { Self.isPhone }
 
     /// The live picture's width over its height, read from the newest
     /// frame's header; nil before the first.
@@ -452,14 +454,22 @@ final class LiveBrowserDock: NSObject {
     }
 
     /// The picture tapped: as ⇲ (small to big in the chat, big back to
-    /// small), the full-screen button being the one way to full screen.
-    private func tappedPicture() { resize() }
+    /// small). A player too narrow to show the full-screen button opens
+    /// full screen instead.
+    private func tappedPicture() {
+        if player != nil, let placed, let view = host?.viewIfLoaded,
+           playerLayout(in: view, card: placed.card, anchor: placed.anchor).fullScreen == nil {
+            presentFullScreen(taking: false)
+        } else {
+            resize()
+        }
+    }
 
     private func resize() {
         big.toggle()
         keep()
         player?.big = big
-        if let player { feed?.set(player, fast: big) }
+        if let player { feed?.set(player, fast: true) }
         UIView.animate(withDuration: 0.3, delay: 0, usingSpringWithDamping: 0.9, initialSpringVelocity: 0) {
             if let placed = self.placed { self.layoutPlayer(card: placed.card, anchor: placed.anchor) }
             self.player?.layoutIfNeeded()
@@ -976,13 +986,13 @@ final class LiveBrowserDock: NSObject {
 
     private static func key(_ chat: String) -> String { "liveBrowserDock.\(chat)" }
 
-    /// The corner and small or big, per chat. An older "large" (a phone's
-    /// big, but an iPad's bigger corner player, now its small) reads as
-    /// small.
-    static func kept(_ chat: String) -> (corner: LiveBrowserDockLayout.Corner, big: Bool) {
+    /// The corner and small or big, per chat. An older "large" was a
+    /// phone's big, so reads as big there; on an iPad or a Mac it was the
+    /// bigger corner player, now small.
+    static func kept(_ chat: String, phone: Bool = isPhone) -> (corner: LiveBrowserDockLayout.Corner, big: Bool) {
         let parts = (UserDefaults.standard.string(forKey: key(chat)) ?? "").split(separator: "|")
         let corner = parts.first.flatMap { LiveBrowserDockLayout.Corner(rawValue: String($0)) } ?? .bottomRight
-        return (corner, parts.count > 1 && parts[1] == "big")
+        return (corner, parts.count > 1 && (parts[1] == "big" || (phone && parts[1] == "large")))
     }
 
     private func keep() {
@@ -1125,7 +1135,7 @@ final class LiveBrowserFullScreenItems: UIViewController {
     // MARK: A phone turned sideways
 
     /// An iPhone (not an iPad, not the app on a Mac).
-    private var isPhone: Bool { LiveBrowserDock.isPhone(traitCollection) }
+    private var isPhone: Bool { LiveBrowserDock.isPhone }
     /// The content's constraints where it has them, off while the strip shows.
     private var constrained: [NSLayoutConstraint] = []
     /// The header's controls in a column at the trailing edge, on a phone
