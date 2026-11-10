@@ -14,35 +14,20 @@ actor BrowserDaemon: AgentTransport {
     var bodies: [Data] = []
     var credentials: [String] = []
     var targetCredentials: [String] = []
-    /// Each page request's `Host`, `Origin` and request line, as the server saw them.
-    var pageHeads: [(line: String, host: String?, origin: String?)] = []
     let artifactHTML: String?
     let keepAlive: Bool
     var connections = 0
-    /// What the live browser (`/live/<id>/state`) says it is; `/done` makes it watching.
-    var liveStatus = "takeover"
-    /// The browser's pod, as a bridge with one per chat says it (nil: no pods).
-    /// Asleep, its frame is 503.
-    var livePod: String?
-    /// The link `/live/chat/<key>` answers with; nil is 404 `no_link`.
-    var chatLink: String?
-    /// `/take`s answered 202 (waking) before the 200.
-    var wakingTakes = 0
-    /// `frame.jpg` reads that are never answered, as a stalled tunnel's.
-    var stalledFrames = 0
-    /// `GET /v0/workspaces`, `/v0/config`'s node name, and the noVNC
-    /// address `POST /take` answers with.
-    var workspaces = #"{"workspaces":[{"id":"host1","status":"active","compute":{"type":"host","path":"/Users/me"}}]}"#
-    var nodeName = "Studio Mac"
-    var takeNoVNC = BrowserDaemon.chatNoVNC
+    /// Our fake's live browser and noVNC (HostedBrowserForkTests.swift).
+    var forkState = BrowserDaemon.ForkState()
     init(artifactHTML: String? = nil, keepAlive: Bool = false) { self.artifactHTML = artifactHTML; self.keepAlive = keepAlive }
 
     func browserConnection() async throws -> any BrowserStream { connections += 1; return Socket(self) }
     func close() async {}
     func request(method: String, path: String, credential: String, body: Data?, headers: [String: String]) async throws -> HTTP1Response {
+        if let text = forkRequest(path) { return HTTP1Response(status: 200, body: Data(text.utf8)) }
         let text: String
-        if path == "/v0/config" { text = #"{"config":{"node":{"name":"\#(nodeName)"}}}"# }
-        else if path == "/v0/workspaces" { text = workspaces }
+        if path == "/v0/config" { text = #"{"config":{"node":{"name":"Studio Mac"}}}"# }
+        else if path == "/v0/workspaces" { text = #"{"workspaces":[{"id":"host1","status":"active","compute":{"type":"host"}}]}"# }
         else if path.hasPrefix("/v0/agents/") { text = #"{"agent":{"id":"agent1","workspaceId":"work1","status":"idle"}}"# }
         else if path.hasPrefix("/v0/artifacts/") { text = #"{"artifact":{"updatedSource":{"kind":"workspace","workspaceId":"work1"}}}"# }
         else { text = "{}" }
@@ -61,12 +46,7 @@ actor BrowserDaemon: AgentTransport {
             bytes.append(contentsOf: [0x81, 7]); bytes.append(Data("ws-live".utf8))
             return (bytes, true)
         }
-        if head.line.contains("/frame.jpg "), stalledFrames > 0 {
-            stalledFrames -= 1
-            return (Data(), true)
-        }
-        if let live = liveAnswer(head) { return (live, false) }
-        if let novnc = novncAnswer(head) { return (novnc, false) }
+        if let fork = forkAnswer(head) { return fork }
         if head.line.contains("/api/v1/kv/events") {
             let event = "data: shared-update\n\n"
             return (Data("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nTransfer-Encoding: chunked\r\n\r\n\(String(event.utf8.count, radix: 16))\r\n\(event)\r\n".utf8), true)
@@ -89,112 +69,13 @@ actor BrowserDaemon: AgentTransport {
         return (Data("HTTP/1.1 200 OK\r\nContent-Type: \(type); charset=utf-8\r\nContent-Length: \(content.utf8.count)\r\nConnection: \(reuse ? "keep-alive" : "close")\r\n\r\n\(content)".utf8), reuse)
     }
 
-    /// The live browser's frame, state and hand-back; a page under it is
-    /// the ordinary preview.
-    private func liveAnswer(_ head: BrowserHTTPHead) -> Data? {
-        guard head.line.contains(" /live/") else { return nil }
-        func reply(_ status: String, _ type: String, _ body: Data) -> Data {
-            Data("HTTP/1.1 \(status)\r\nContent-Type: \(type)\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8) + body
-        }
-        let pod = livePod.map { #","pod":"\#($0)""# } ?? ""
-        if head.line.contains(" /live/chat/") {
-            guard let chatLink else { return reply("404 Not Found", "application/json", Data(#"{"error":"no_link"}"#.utf8)) }
-            let live = liveStatus != "done" && (livePod == nil || livePod == "running" || livePod == "starting")
-            return reply("200 OK", "application/json", Data(#"{"id":"\#(chatLink)","live":\#(live),"status":"\#(liveStatus)","url":"https://example.com/login","title":"Log in to Example"\#(pod)}"#.utf8))
-        }
-        if head.line.contains("/live/0e0e0e0e") { return reply("410 Gone", "application/json", Data(#"{"error":"expired"}"#.utf8)) }
-        if head.line.hasPrefix("POST ") && head.line.contains("/take ") && wakingTakes > 0 {
-            wakingTakes -= 1
-            livePod = "starting"
-            return reply("202 Accepted", "application/json", Data(#"{"status":"\#(liveStatus)","url":"https://example.com/login","title":"Log in to Example","pod":"starting"}"#.utf8))
-        }
-        if head.line.hasPrefix("POST ") && head.line.contains("/take ") {
-            liveStatus = "user"
-            if livePod != nil { livePod = "running" }
-            // A container per chat: its noVNC is wherever the bridge says.
-            return reply("200 OK", "application/json", Data(#"{"status":"user","reason":"Sign in","url":"https://example.com/login","title":"Log in to Example","novnc_url":"\#(takeNoVNC)"}"#.utf8))
-        }
-        if head.line.hasPrefix("POST ") && head.line.contains("/release ") {
-            liveStatus = "watching"
-            return reply("200 OK", "application/json", Data(#"{"status":"watching","url":"https://example.com/login","title":"Log in to Example"}"#.utf8))
-        }
-        if head.line.hasPrefix("POST ") && head.line.contains("/end ") {
-            liveStatus = "done"
-            return reply("200 OK", "application/json", Data(#"{"status":"done","reason":"user_ended","url":"https://example.com/login","title":"Log in to Example"}"#.utf8))
-        }
-        if head.line.hasPrefix("POST ") && head.line.contains("/done ") {
-            liveStatus = "watching"
-            return reply("200 OK", "application/json", Data(#"{"ok":true}"#.utf8))
-        }
-        if head.line.contains("/state ") {
-            return reply("200 OK", "application/json", Data(#"{"status":"\#(liveStatus)","reason":"Sign in","url":"https://example.com/login","title":"Log in to Example","viewers":1\#(pod)}"#.utf8))
-        }
-        if head.line.contains("/frame.jpg ") && livePod == "asleep" { return reply("503 Service Unavailable", "application/json", Data(#"{"error":"asleep"}"#.utf8)) }
-        if head.line.contains("/frame.jpg ") { return reply("200 OK", "image/png", Self.frame) }
-        return nil
-    }
-
-    /// noVNC as websockify serves it: HTTP/1.1 with a length and no
-    /// `Connection` field, then the socket closes because the request asked
-    /// it to. Its page is an ES module graph of `novncModules` files.
-    private func novncAnswer(_ head: BrowserHTTPHead) -> Data? {
-        func reply(_ type: String, _ body: String, close: Bool) -> Data {
-            Data("HTTP/1.1 200 OK\r\nContent-Type: \(type)\r\nContent-Length: \(body.utf8.count)\r\n\(close ? "Connection: close\r\n" : "")\r\n\(body)".utf8)
-        }
-        let path = head.line.split(separator: " ").dropFirst().first.map(String.init) ?? ""
-        if path.hasPrefix("/vnc.html") {
-            return reply("text/html", "<!doctype html><meta name='viewport' content='width=device-width'><title>noVNC</title><p id='result'>Loading modules</p><script type='module' src='/app/ui.js'></script>", close: false)
-        }
-        if path == "/app/ui.js" {
-            let imports = (0..<Self.novncModules).map { "import { v\($0) } from './m\($0).js';" }.joined(separator: "\n")
-            let sum = (0..<Self.novncModules).map { "v\($0)" }.joined(separator: "+")
-            let script = imports + """
-
-            const count = \(sum);
-            const ws = new WebSocket('ws://' + location.host + '/websockify');
-            ws.onmessage = e => { document.querySelector('#result').textContent = 'modules ' + count + ' ' + location.hash + ' ' + e.data; };
-            ws.onerror = () => { document.querySelector('#result').textContent = 'socket failed'; };
-            """
-            return reply("text/javascript", script, close: false)
-        }
-        if path.hasPrefix("/app/m"), let n = Int(path.dropFirst(6).dropLast(3)) {
-            return reply("text/javascript", "export const v\(n) = 1;", close: false)
-        }
-        return nil
-    }
-
-    nonisolated static let novncModules = 48
-    /// One chat's container's noVNC, as `POST /take` answers it.
-    nonisolated static let chatNoVNC = "http://localhost:6123/vnc.html?autoconnect=true&resize=remote"
-    func setLiveStatus(_ status: String) { liveStatus = status }
-    func setWorkspaces(_ json: String) { workspaces = json }
-    func setNodeName(_ name: String) { nodeName = name }
-    func setTakeNoVNC(_ url: String) { takeNoVNC = url }
-    /// Every workspace the computer was asked to tunnel through.
-    var tunnelledWorkspaces: Set<String> {
-        Set(requests.compactMap { line in
-            guard line.hasPrefix("CONNECT /v0/workspaces/") else { return nil }
-            return line.dropFirst("CONNECT /v0/workspaces/".count).split(separator: "/").first.map(String.init)
-        })
-    }
-    func setLivePod(_ pod: String?) { livePod = pod }
-    func setChatLink(_ id: String?) { chatLink = id }
-    func setWakingTakes(_ count: Int) { wakingTakes = count }
-    func setStalledFrames(_ count: Int) { stalledFrames = count }
-    var frameReads: Int { requests.filter { $0.contains("/frame.jpg ") }.count }
-
-    /// The bridge serves `frame.jpg` as a PNG; the card reads it by its bytes.
-    nonisolated static let frame: Data = UIGraphicsImageRenderer(size: CGSize(width: 64, height: 40)).image { context in
-        UIColor.systemTeal.setFill(); context.fill(CGRect(x: 0, y: 0, width: 64, height: 40))
-    }.pngData() ?? Data()
-
     nonisolated static let html = """
     <!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Shared counter</title></head>
     <body style="font:20px -apple-system;padding:24px;background:#edf4ee;color:#183c27"><h1>Shared counter</h1><p id="result">Saving…</p>
     <script>fetch('/api/v1/kv/entry?key=count',{method:'PUT',headers:{'Content-Type':'application/json','If-Match':'version1'},body:JSON.stringify({value:42})}).then(r=>r.json()).then(()=>{let events=new EventSource('/api/v1/kv/events');events.onmessage=e=>document.querySelector('#result').textContent=e.data;}).catch(e=>document.querySelector('#result').textContent='error:'+e);</script></body></html>
     """
 
-    private actor Socket: BrowserStream {
+    actor Socket: BrowserStream {
         let daemon: BrowserDaemon
         var buffer = Data()
         var pending = Data()
@@ -220,16 +101,8 @@ actor BrowserDaemon: AgentTransport {
             if serverClosed { return }
             let (response, staysOpen) = await daemon.answer(head, body: body)
             websocket = head.value("upgrade") != nil
-            pending.append(response)
-            if !staysOpen {
-                serverClosed = true
-                Task { try? await Task.sleep(for: .milliseconds(150)); self.end() }
-            }
+            pending.append(response); if !staysOpen { closeSoon() }
             if let reader { self.reader = nil; let bytes = pending; pending = Data(); reader.resume(returning: bytes) }
-        }
-        private func end() {
-            ended = true
-            if let reader, pending.isEmpty { self.reader = nil; reader.resume(returning: Data()) }
         }
         func close() async { ended = true; reader?.resume(returning: Data()); reader = nil }
     }
@@ -366,30 +239,12 @@ final class HostedBrowserTests: XCTestCase {
         XCTAssertNil(browser.view.subviews.first { $0.accessibilityIdentifier == "browser-route" }, "No “via <computer>” line")
         let requests = await daemon.requests
         XCTAssertTrue(requests.contains { $0.hasPrefix("CONNECT /v0/workspaces/work1/proxy") })
-        // A device's WebKit never proxies loopback: the page loads under the
-        // alias, and the computer's server still sees its own localhost.
-        XCTAssertEqual(web.url?.host, "name.happy-loopback.invalid")
-        XCTAssertEqual(browser.navigationItem.title.map { $0 == "localhost" || $0 == "Remote preview" }, true)
-        XCTAssertTrue(requests.contains { $0.hasPrefix("CONNECT localhost:5173 ") })
-        XCTAssertFalse(requests.contains { $0.contains("happy-loopback") })
-        let heads = await daemon.pageHeads.filter { $0.host?.hasPrefix("assets.") != true }
-        XCTAssertTrue(heads.contains { $0.line.hasPrefix("GET / ") })
-        XCTAssertTrue(heads.contains { $0.line.hasPrefix("GET /socket ") && $0.origin == "http://localhost:5173" }, "the WebSocket's Origin is the real one")
-        XCTAssertEqual(Set(heads.compactMap(\.host)), ["localhost:5173"])
+        await assertLoopbackAlias(browser, web: web, daemon: daemon, requests: requests)
         window.overrideUserInterfaceStyle = .light
         try screenshot(window, name: "browser-chat-light")
         window.overrideUserInterfaceStyle = .dark
         try await Task.sleep(for: .milliseconds(150))
         try screenshot(window, name: "browser-chat-dark")
-    }
-
-    private func until(_ condition: () async -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
-        for _ in 0..<100 {
-            if await condition() { return }
-            try await Task.sleep(for: .milliseconds(100))
-        }
-        XCTFail("timed out", file: file, line: line)
-        throw BrowserError.timeout
     }
 
     func testLiveArtifactOpensThroughItsOwnProxyWithNoAPIBridge() async throws {
