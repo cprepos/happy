@@ -190,6 +190,19 @@ extension Strings {
         static let approvalFailed = "Couldn’t Send Your Answer"
         /// `/approve` or `/deny` answered 409: decided elsewhere, or the browser closed.
         static let approvalGone = "This request is no longer waiting."
+        /// The bar that asks, under the picture or over the composer.
+        static func approvalBar(_ summary: String) -> String { "\(approvalTitle) \(summary)" }
+        /// The browser's own yolo mode (`POST /auto`): while on, the bridge
+        /// approves what the agent asks for by itself.
+        static let yoloMenu = "Browser yolo"
+        static let yoloBadge = "Yolo"
+        static let yoloOn = "Browser yolo is on"
+        static let yoloOff = "Browser yolo is off"
+        static let yoloHint = "Approves the agent’s browser actions without asking."
+        static func yoloApproved(_ summary: String) -> String { "Yolo approved: \(summary)" }
+        static let yoloFailed = "Couldn’t Change Browser Yolo"
+        /// `/auto` answered 404: a bridge from before it.
+        static let yoloUnsupported = "This browser doesn’t offer yolo mode yet."
         /// The take-control screen's own navigation (`POST /nav`).
         static let back = "Back"
         static let forward = "Forward"

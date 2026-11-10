@@ -81,11 +81,23 @@ final class LiveBrowserDock: NSObject {
     private(set) var isOnScreen = false
     private var shownStatus: String?
     private var lastStatus: LiveBrowserState.Status?
-    /// The approval the alert last came up for, so each comes up on its own once.
+    /// The approval the haptic last played for, so each plays once.
     private var askedApproval: String?
-    /// The approval alert while it shows: it goes once the approval does.
+    /// The approval alert while it shows (the Review button where no bar
+    /// can show): it goes once the approval does.
     private weak var approvalAlert: UIAlertController?
     private var approvalShown: String?
+    /// The approval bar over the composer: the action the agent waits on,
+    /// never a modal.
+    let approvalBar = LiveBrowserApprovalBar()
+    /// The bar's top while it shows over the composer: a bottom-corner
+    /// player keeps above it.
+    private var approvalBarTop: CGFloat?
+    /// The approval a decision is on its way for: the bars hide it.
+    private var deciding: String?
+    /// What yolo mode approved by itself that this dock has seen; nil
+    /// before the first state, whose list is history and never shown.
+    private var seenAutoApproved: Set<String>?
     private var corner: LiveBrowserDockLayout.Corner
     /// Big, across the chat's top; else small, at `corner`.
     private var big: Bool
@@ -122,6 +134,7 @@ final class LiveBrowserDock: NSObject {
         super.init()
         indicator.isHidden = true
         indicator.addAction(UIAction { [weak self] _ in self?.openPlayer() }, for: .touchUpInside)
+        approvalBar.onDecide = { [weak self] approval, approve in self?.decide(approval, approve: approve) }
         NotificationCenter.default.addObserver(self, selector: #selector(voiceSheetChanged), name: .voiceSheetChanged, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(appBackgrounded), name: UIApplication.didEnterBackgroundNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(appForegrounded), name: UIApplication.willEnterForegroundNotification, object: nil)
@@ -226,6 +239,8 @@ final class LiveBrowserDock: NSObject {
         dismissFullScreen(animated: false)
         lastStatus = nil
         askedApproval = nil
+        deciding = nil
+        seenAutoApproved = nil
         dismissApproval()
         controlTaken = false
         if let link {
@@ -250,8 +265,9 @@ final class LiveBrowserDock: NSObject {
     /// What rides the keyboard with the composer: the small player, at a
     /// bottom corner.
     var riders: [UIView] {
-        guard let player, !corner.isTop, !big else { return [] }
-        return [player]
+        let bar: [UIView] = approvalBarTop != nil ? [approvalBar] : []
+        guard let player, !corner.isTop, !big else { return bar }
+        return bar + [player]
     }
 
     /// How far the chat's content starts below the safe area's top: the
@@ -270,6 +286,7 @@ final class LiveBrowserDock: NSObject {
     /// The voice strip's top is added here.
     func layoutPlayer(card: CGRect, anchor: CGFloat) {
         placed = (card, anchor)
+        layoutApprovalBar(card: card, anchor: anchor)
         guard let player, let view = host?.viewIfLoaded, !player.isDragging else { return }
         if player.superview !== view { view.addSubview(player) }
         view.bringSubviewToFront(player)
@@ -277,11 +294,27 @@ final class LiveBrowserDock: NSObject {
         player.apply(layout)
     }
 
+    /// The approval bar over the composer, on the status line (and the
+    /// voice strip), while an approval waits or yolo's words show.
+    private func layoutApprovalBar(card: CGRect, anchor: CGFloat) {
+        guard let view = host?.viewIfLoaded else { return }
+        guard approvalBar.hasContent else {
+            approvalBarTop = nil
+            return
+        }
+        if approvalBar.superview !== view { view.addSubview(approvalBar) }
+        let strip = VoiceCoordinator.shared.sheetTop(in: view)
+        let layout = LiveBrowserApprovalBarLayout(size: view.bounds.size, safeArea: LayoutInsets(view.safeAreaInsets),
+                                                  place: .chat(card: card, anchor: LiveBrowserDockLayout.anchor(anchor, strip)))
+        approvalBar.place(layout)
+        approvalBarTop = layout.anchor(height: approvalBar.bounds.height)
+    }
+
     private func playerLayout(in view: UIView, card: CGRect, anchor: CGFloat) -> LiveBrowserDockLayout {
         let strip = VoiceCoordinator.shared.sheetTop(in: view)
         return LiveBrowserDockLayout(.init(
             size: view.bounds.size, safeArea: LayoutInsets(view.safeAreaInsets), card: card,
-            anchor: LiveBrowserDockLayout.anchor(anchor, strip), corner: corner, big: big, idiom: isPhone ? .phone : .pad,
+            anchor: LiveBrowserDockLayout.anchor(anchor, strip, approvalBarTop), corner: corner, big: big, idiom: isPhone ? .phone : .pad,
             width: width
         ))
     }
@@ -331,15 +364,16 @@ final class LiveBrowserDock: NSObject {
         // Asked for: the player comes up on its own, once each time.
         if status == .takeover, lastStatus != .takeover, isOnScreen { openPlayer() }
         lastStatus = status
-        // An action waits on the person's yes: the player, and the question, once each.
+        // An action waits on the person's yes: the bar asks, with no
+        // modal and no player opened; a light tap, once each.
         let approval = feed.phase.state?.pendingApproval
         if approval?.id != approvalShown { dismissApproval() }
-        if let approval, approval.id != askedApproval, isOnScreen {
+        if approval?.id != deciding { deciding = nil }
+        if let approval, approval.id != askedApproval, isOnScreen || fullScreen != nil {
             askedApproval = approval.id
-            openPlayer()
-            // The full screen is the live page, which asks for itself.
-            if fullScreen == nil { askApproval(approval) }
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
         }
+        if let state = feed.phase.state { noticeAutoApproved(state) }
         // The bridge let the person go (the agent took it back, or the link
         // ended): a noVNC page still up is driving nothing.
         // A read sent before `/take` can still answer watching: not for a
@@ -390,6 +424,9 @@ final class LiveBrowserDock: NSObject {
         indicator.isHidden = status == nil
         if let feed { player?.show(feed) }
         if status == nil, feed?.phase.isOver == true, player != nil, feed?.phase != .unavailable { closePlayer(animated: true) }
+        let barShowed = approvalBar.hasContent
+        approvalBar.show(barApproval)
+        if approvalBar.hasContent != barShowed { changedBar() }
         for controller in fullScreen?.viewControllers ?? [] { (controller as? LiveBrowserFullScreenItems)?.update(feed?.phase.state, held: holdsControl) }
         NotificationCenter.default.post(name: Self.didChange, object: self)
         if changed { onLayoutChange?() }
@@ -423,6 +460,11 @@ final class LiveBrowserDock: NSObject {
         player.holdsControl = { [weak self] in self?.holdsControl ?? false }
         player.onEnd = { [weak self, weak player] in self?.confirmEnd(from: player?.menuButton) }
         player.onSleep = { [weak self] in self?.sleep() }
+        player.yoloOn = { [weak self] in self?.yoloOn ?? false }
+        player.onYolo = { [weak self] in
+            guard let self else { return }
+            self.setYolo(!self.yoloOn)
+        }
         player.onTap = { [weak self] in self?.tappedPicture() }
         player.onDrop = { [weak self] center in self?.drop(at: center) }
         player.onGrip = { [weak self] corner, state, translation in self?.grip(corner, state, translation) }
@@ -555,7 +597,11 @@ final class LiveBrowserDock: NSObject {
     /// The footer's button: Release while the person has the browser,
     /// else Take over, which takes it and opens it full screen.
     private func playerAction() {
-        if let approval = feed?.phase.state?.pendingApproval { askApproval(approval) }
+        if let approval = feed?.phase.state?.pendingApproval {
+            // The bar over the composer asks; where none shows, the alert.
+            if approvalBar.window != nil, approvalBarTop != nil, approval == approvalBar.approval { approvalBar.pulse() }
+            else { askApproval(approval) }
+        }
         else if feed?.phase.isResting == true { retryBrowser() }
         else if holdsControl { release() }
         else { presentFullScreen(taking: true) }
@@ -816,7 +862,10 @@ final class LiveBrowserDock: NSObject {
     /// The live page as its picture alone, edge to edge: no header, no
     /// footer, no margins. Set through the CSS object model, which the
     /// page's nonce-only `style-src` leaves alone (a `<style>` added here
-    /// would be refused). Approvals and the page's notes still show.
+    /// would be refused). The page's own approval card and its "needs
+    /// you" note go too: the native bar asks, under the picture, and the
+    /// header says the status; in the page they pushed the picture out of
+    /// sight.
     nonisolated static let pictureOnlySource = """
     (function () {
       var set = function (selector, styles) {
@@ -829,6 +878,8 @@ final class LiveBrowserDock: NSObject {
       set('main', { padding: '0' });
       set('#box', { border: '0', 'border-radius': '0', 'max-width': 'none', 'min-height': '0',
                     'max-height': '100dvh' });
+      set('#approval', { display: 'none' });
+      set('#reason', { display: 'none' });
     })();
     """
 
@@ -838,12 +889,15 @@ final class LiveBrowserDock: NSObject {
     }
 
     /// The live page without its footer (Take control, Release, Sleep),
-    /// which the full screen's header has; the rest as the page lays it
-    /// out. Set as `pictureOnlySource` sets it.
+    /// which the full screen's header has, nor its approval card and
+    /// "needs you" note (the native bar asks); the rest as the page lays
+    /// it out. Set as `pictureOnlySource` sets it.
     nonisolated static let withoutFooterSource = """
     (function () {
-      var element = document.querySelector('footer');
-      if (element) { element.style.setProperty('display', 'none', 'important'); }
+      ['footer', '#approval', '#reason'].forEach(function (selector) {
+        var element = document.querySelector(selector);
+        if (element) { element.style.setProperty('display', 'none', 'important'); }
+      });
     })();
     """
 
@@ -1022,18 +1076,86 @@ final class LiveBrowserDock: NSObject {
         if alert.presentingViewController != nil, !alert.isBeingDismissed { alert.dismiss(animated: true) }
     }
 
-    private func decide(_ approval: LiveBrowserState.Approval, approve: Bool) {
+    /// The approval the bars show: the pending one, not while its
+    /// decision is on its way.
+    var barApproval: LiveBrowserState.Approval? {
+        guard let approval = feed?.phase.state?.pendingApproval, approval.id != deciding else { return nil }
+        return approval
+    }
+
+    /// The chat's bar came or went: the host lays out again, the player
+    /// above it.
+    private func changedBar() {
+        if let placed { layoutPlayer(card: placed.card, anchor: placed.anchor) }
+        onLayoutChange?()
+    }
+
+    func decide(_ approval: LiveBrowserState.Approval, approve: Bool) {
+        if let alert = approvalAlert, alert.presentingViewController != nil, !alert.isBeingDismissed { alert.dismiss(animated: true) }
         approvalAlert = nil
         approvalShown = nil
         guard let feed else { return }
+        deciding = approval.id
+        refresh()
         Task { [weak self] in
             do {
                 try await feed.decide(approval, approve: approve)
             } catch BrowserError.upstream(409) {
                 self?.alert(Strings.LiveBrowser.approvalFailed, Strings.LiveBrowser.approvalGone)
             } catch {
-                self?.alert(Strings.LiveBrowser.approvalFailed, Strings.LiveBrowser.unreachable)
+                guard let self else { return }
+                // Not sent: the bar asks again.
+                if self.deciding == approval.id { self.deciding = nil }
+                self.refresh()
+                self.alert(Strings.LiveBrowser.approvalFailed, Strings.LiveBrowser.unreachable)
             }
+        }
+    }
+
+    /// Yolo approved something since the last state: its words for a
+    /// moment, where the bar goes. What it approved before this dock
+    /// first read the state is history, never shown.
+    private func noticeAutoApproved(_ state: LiveBrowserState) {
+        let ids = Set(state.autoApproved.map(\.id))
+        guard let seen = seenAutoApproved else {
+            seenAutoApproved = ids
+            return
+        }
+        let fresh = state.autoApproved.filter { !seen.contains($0.id) }
+        seenAutoApproved = seen.union(ids)
+        // Newest first, as the bridge lists them.
+        guard let newest = fresh.first, isOnScreen || fullScreen != nil else { return }
+        let summary = newest.summary.isEmpty ? Strings.LiveBrowser.needsApproval : newest.summary
+        let text = Strings.LiveBrowser.yoloApproved(summary)
+        let barShowed = approvalBar.hasContent
+        approvalBar.flash(text)
+        if approvalBar.hasContent != barShowed { changedBar() }
+        for controller in fullScreen?.viewControllers ?? [] { (controller as? LiveBrowserFullScreenItems)?.approvalBar.flash(text) }
+    }
+
+    // MARK: Yolo
+
+    /// The browser's yolo mode, as the bridge says it: never kept here.
+    var yoloOn: Bool { feed?.phase.state?.autoApprove ?? false }
+
+    /// Whether yolo can be switched now: a live state to switch it on.
+    var yoloAvailable: Bool { feed?.phase.state.map { !$0.ended } ?? false }
+
+    /// Turns the browser's yolo mode on or off (`POST /auto`).
+    func setYolo(_ on: Bool) {
+        guard let feed, yoloAvailable else { return }
+        Task { [weak self] in
+            do {
+                try await feed.setAutoApprove(on)
+                // Turned on, it approves what waits now: the next state
+                // says so, and the bar goes.
+                feed.pollNow()
+            } catch BrowserError.upstream(404) {
+                self?.alert(Strings.LiveBrowser.yoloFailed, Strings.LiveBrowser.yoloUnsupported)
+            } catch {
+                self?.alert(Strings.LiveBrowser.yoloFailed, Strings.LiveBrowser.unreachable)
+            }
+            self?.refresh()
         }
     }
 
@@ -1082,6 +1204,13 @@ final class LiveBrowserFullScreenItems: UIViewController {
     let endItem = UIBarButtonItem()
     /// Sleep browser: beside End, not destructive.
     let sleepItem = UIBarButtonItem()
+    /// The browser's yolo switch, and its "Yolo" while on.
+    let yoloButton = LiveBrowserFullScreenItems.makeYoloButton()
+    private(set) lazy var yoloItem = UIBarButtonItem(customView: yoloButton)
+    /// The action the agent waits on: under a phone's upright picture,
+    /// else over the bottom, compact. Never over the header, never moves
+    /// the picture.
+    let approvalBar = LiveBrowserApprovalBar()
     private var state: LiveBrowserState?
     private var held = false
 
@@ -1178,7 +1307,12 @@ final class LiveBrowserFullScreenItems: UIViewController {
         sleepItem.primaryAction = UIAction(title: Strings.LiveBrowser.sleepBrowser, image: UIImage(systemName: "moon.zzz")) { [weak self] _ in
             self?.dock?.sleep()
         }
-        navigationItem.leftBarButtonItems = [minimize, endItem, sleepItem]
+        yoloButton.addAction(UIAction { [weak self] _ in
+            guard let dock = self?.dock else { return }
+            dock.setYolo(!dock.yoloOn)
+        }, for: .touchUpInside)
+        yoloItem.accessibilityIdentifier = "live-browser-yolo"
+        navigationItem.leftBarButtonItems = [minimize, endItem, sleepItem, yoloItem]
         control.style = .prominent
         control.accessibilityIdentifier = "live-browser-control"
         // Control alone at the right, or with reload on the frame view: the
@@ -1193,7 +1327,62 @@ final class LiveBrowserFullScreenItems: UIViewController {
             navigationItem.rightBarButtonItems = [control, browser.reloadItem]
         }
         if isPhone { buildStrip() }
+        approvalBar.onDecide = { [weak self] approval, approve in self?.dock?.decide(approval, approve: approve) }
+        view.addSubview(approvalBar)
         update(state, held: held)
+    }
+
+    /// The yolo switch: a shield with a bolt, filled and saying "Yolo"
+    /// while on.
+    private static func makeYoloButton() -> UIButton {
+        var configuration = UIButton.Configuration.plain()
+        configuration.image = UIImage(systemName: "bolt.shield")
+        configuration.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: 15, weight: .medium)
+        configuration.imagePadding = 3
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 6, bottom: 0, trailing: 6)
+        let font = Fonts.ui(.semiBold, size: 12)
+        configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
+            var attributes = attributes
+            attributes.font = font
+            return attributes
+        }
+        let button = UIButton(configuration: configuration)
+        button.accessibilityIdentifier = "live-browser-yolo"
+        button.accessibilityLabel = Strings.LiveBrowser.yoloMenu
+        button.accessibilityHint = Strings.LiveBrowser.yoloHint
+        button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+        button.widthAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+        return button
+    }
+
+    /// The switch as the bridge says it: off, the outline; on, filled and
+    /// orange with its word.
+    private func showYolo(_ button: UIButton, on: Bool, enabled: Bool, word: Bool) {
+        let size: CGFloat = word ? 15 : 17
+        button.configuration?.image = UIImage(systemName: on ? "bolt.shield.fill" : "bolt.shield",
+                                              withConfiguration: UIImage.SymbolConfiguration(pointSize: size, weight: .medium))
+        button.configuration?.title = on && word ? Strings.LiveBrowser.yoloBadge : nil
+        button.configuration?.baseForegroundColor = on ? .systemOrange : UIColor(Palette.headerTint)
+        button.isEnabled = enabled
+        button.isSelected = on
+        button.accessibilityValue = on ? Strings.LiveBrowser.yoloOn : Strings.LiveBrowser.yoloOff
+        button.accessibilityTraits.insert(.button)
+    }
+
+    /// The yolo switch as a menu item: checked while on.
+    private func yoloMenuItem() -> UIMenuElement {
+        UIDeferredMenuElement.uncached { [weak self] completion in
+            let on = self?.dock?.yoloOn ?? false
+            let item = UIAction(title: Strings.LiveBrowser.yoloMenu, subtitle: Strings.LiveBrowser.yoloHint,
+                                image: UIImage(systemName: on ? "bolt.shield.fill" : "bolt.shield"),
+                                identifier: UIAction.Identifier("live-browser-yolo-menu"),
+                                attributes: self?.dock?.yoloAvailable == true ? [] : .disabled,
+                                state: on ? .on : .off) { [weak self] _ in
+                guard let dock = self?.dock else { return }
+                dock.setYolo(!dock.yoloOn)
+            }
+            completion([item])
+        }
     }
 
     // MARK: A phone turned sideways
@@ -1209,6 +1398,7 @@ final class LiveBrowserFullScreenItems: UIViewController {
     private let stripControl = UIButton(configuration: .prominentGlass())
     private let stripEnd = LiveBrowserFullScreenItems.stripButton("xmark.octagon", Strings.LiveBrowser.endBrowser, "live-browser-end")
     private let stripSleep = LiveBrowserFullScreenItems.stripButton("moon.zzz", Strings.LiveBrowser.sleepBrowser, "live-browser-sleep")
+    private let stripYolo = LiveBrowserFullScreenItems.stripButton("bolt.shield", Strings.LiveBrowser.yoloMenu, "live-browser-strip-yolo")
 
     /// The web pages (the frame view, and noVNC's on a phone) are placed
     /// by `LiveBrowserFullScreenLayout` always; the native viewer, which
@@ -1272,8 +1462,15 @@ final class LiveBrowserFullScreenItems: UIViewController {
         } else if viewer == nil, let browser {
             let reload = Self.stripButton("arrow.clockwise", Strings.Browser.reload, "browser-reload")
             reload.addAction(UIAction { [weak browser] _ in browser?.reloadOrStop() }, for: .touchUpInside)
-            page = [reload]
+            page = [reload, stripYolo]
+        } else {
+            page = [stripYolo]
         }
+        // noVNC's page has yolo in its More menu: the column is full.
+        stripYolo.addAction(UIAction { [weak self] _ in
+            guard let dock = self?.dock else { return }
+            dock.setYolo(!dock.yoloOn)
+        }, for: .touchUpInside)
         stripControl.accessibilityIdentifier = "live-browser-control"
         stripControl.addAction(UIAction { [weak self] _ in
             guard let self, let dock = self.dock else { return }
@@ -1323,6 +1520,18 @@ final class LiveBrowserFullScreenItems: UIViewController {
         let layout = fullScreenLayout()
         if let frame = layout.strip { strip.frame = frame }
         if stripShown || placesByLayout { content.view.frame = layout.content }
+        layoutApprovalBar(layout)
+    }
+
+    /// The bar under a phone's upright picture, else over the bottom; the
+    /// picture's frame as placed, never changed for it.
+    private func layoutApprovalBar(_ layout: LiveBrowserFullScreenLayout) {
+        guard approvalBar.hasContent else { return }
+        let picture = stripShown || placesByLayout ? layout.content : content.view.frame
+        let bar = LiveBrowserApprovalBarLayout(size: view.bounds.size, safeArea: LayoutInsets(view.safeAreaInsets),
+                                               place: .fullScreen(picture: picture, phone: isPhone, held: isNoVNC,
+                                                                  strip: stripShown ? layout.strip : nil))
+        approvalBar.place(bar)
     }
 
     /// Sideways on a phone, the strip; upright, the header. Follows the
@@ -1482,6 +1691,7 @@ final class LiveBrowserFullScreenItems: UIViewController {
                      identifier: UIAction.Identifier("live-browser-native-viewer")) { [weak self] _ in
                 self?.dock?.switchViewer(native: true)
             },
+            yoloMenuItem(),
         ])
         viewerMenu.widthAnchor.constraint(equalToConstant: 36).isActive = true
         let row = UIStackView(arrangedSubviews: [
@@ -1562,6 +1772,12 @@ final class LiveBrowserFullScreenItems: UIViewController {
         stripControl.isEnabled = control.isEnabled
         stripEnd.isEnabled = endItem.isEnabled
         stripSleep.isEnabled = sleepItem.isEnabled
+        let yolo = state?.autoApprove ?? false
+        let yoloEnabled = state.map { !$0.ended } ?? false
+        showYolo(yoloButton, on: yolo, enabled: yoloEnabled, word: true)
+        showYolo(stripYolo, on: yolo, enabled: yoloEnabled, word: false)
+        approvalBar.show(dock?.barApproval)
+        view.setNeedsLayout()
         // The picture's height follows the frame's aspect once one came.
         if isPhone, viewer == nil { view.setNeedsLayout() }
         viewer?.pageFocusChanged(held ? state?.editableFocused : nil)
@@ -1756,6 +1972,9 @@ final class LiveBrowserPlayerView: UIView, UIGestureRecognizerDelegate {
     var onEnd: (() -> Void)?
     /// The menu's Sleep browser.
     var onSleep: (() -> Void)?
+    /// The menu's Browser yolo: whether it is on, and turning it over.
+    var yoloOn: (() -> Bool)?
+    var onYolo: (() -> Void)?
     var onTap: (() -> Void)?
     var onDrop: ((CGPoint) -> Void)?
     /// A grip's pan: the grip's corner, the pan's state and how far it
@@ -1789,6 +2008,9 @@ final class LiveBrowserPlayerView: UIView, UIGestureRecognizerDelegate {
     /// End browser, away from Take over and Release: behind a menu, and
     /// asked about again before anything ends.
     let menuButton = LiveBrowserPlayerView.overlayButton("ellipsis")
+    /// "Yolo" over the picture's corner while the bridge approves by
+    /// itself.
+    let yoloBadge = UILabel()
     private let footer = UIView()
     private let pillDot = UIView()
     private let pill = UILabel()
@@ -1859,6 +2081,13 @@ final class LiveBrowserPlayerView: UIView, UIGestureRecognizerDelegate {
         menuButton.showsMenuAsPrimaryAction = true
         menuButton.menu = UIMenu(children: [
             UIAction(title: Strings.LiveBrowser.sleepBrowser, image: UIImage(systemName: "moon.zzz")) { [weak self] _ in self?.onSleep?() },
+            UIDeferredMenuElement.uncached { [weak self] completion in
+                let on = self?.yoloOn?() ?? false
+                completion([UIAction(title: Strings.LiveBrowser.yoloMenu, subtitle: Strings.LiveBrowser.yoloHint,
+                                     image: UIImage(systemName: on ? "bolt.shield.fill" : "bolt.shield"),
+                                     identifier: UIAction.Identifier("live-browser-player-yolo"),
+                                     state: on ? .on : .off) { [weak self] _ in self?.onYolo?() }])
+            },
             UIAction(title: Strings.LiveBrowser.endBrowser, image: UIImage(systemName: "xmark.octagon"), attributes: .destructive) { [weak self] _ in self?.onEnd?() },
         ])
         spinner.color = .white
@@ -1877,7 +2106,16 @@ final class LiveBrowserPlayerView: UIView, UIGestureRecognizerDelegate {
         badge.layer.masksToBounds = true
         badge.isHidden = true
         badge.accessibilityIdentifier = "live-browser-player-size"
-        for view in [bar, picture, message, footer, close, full, resize, menuButton, action, spinner, badge] as [UIView] { addSubview(view) }
+        yoloBadge.text = Strings.LiveBrowser.yoloBadge
+        yoloBadge.font = Fonts.ui(.semiBold, size: 10)
+        yoloBadge.textColor = .white
+        yoloBadge.textAlignment = .center
+        yoloBadge.backgroundColor = UIColor.systemOrange
+        yoloBadge.layer.cornerRadius = 8
+        yoloBadge.layer.masksToBounds = true
+        yoloBadge.isHidden = true
+        yoloBadge.accessibilityIdentifier = "live-browser-player-yolo-badge"
+        for view in [bar, picture, message, footer, close, full, resize, menuButton, action, spinner, badge, yoloBadge] as [UIView] { addSubview(view) }
         for view in [pillDot, pill] as [UIView] { footer.addSubview(view) }
         picture.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tapped)))
         let move = UIPanGestureRecognizer(target: self, action: #selector(panned(_:)))
@@ -1926,6 +2164,8 @@ final class LiveBrowserPlayerView: UIView, UIGestureRecognizerDelegate {
         resize.isHidden = layout.resize == nil
         menuButton.frame = layout.menu ?? .zero
         menuButton.isHidden = layout.menu == nil || isOver
+        let yoloWidth = ceil(yoloBadge.sizeThatFits(CGSize(width: 200, height: 16)).width) + 12
+        yoloBadge.frame = CGRect(x: layout.picture.maxX - yoloWidth - 6, y: layout.picture.minY + 6, width: yoloWidth, height: 16)
         // Over the picture's middle; above the words when there are some.
         spinner.center = CGPoint(x: layout.picture.midX, y: layout.picture.midY - (message.isHidden ? 0 : 34))
         footer.frame = layout.footer
@@ -2040,6 +2280,7 @@ final class LiveBrowserPlayerView: UIView, UIGestureRecognizerDelegate {
         action.isEnabled = !feed.phase.isOver
         isOver = feed.phase.isOver
         menuButton.isHidden = layout?.menu == nil || isOver
+        yoloBadge.isHidden = isOver || state?.autoApprove != true
         accessibilityLabel = [Strings.LiveBrowser.title, status].joined(separator: ", ")
         accessibilityValue = state?.status.rawValue ?? "\(feed.phase)"
         setNeedsLayout()

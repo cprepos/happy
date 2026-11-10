@@ -30,6 +30,13 @@ extension BrowserDaemon {
         var workspaces = #"{"workspaces":[{"id":"host1","status":"active","compute":{"type":"host","path":"/Users/me"}}]}"#
         var nodeName = "Studio Mac"
         var takeNoVNC = BrowserDaemon.chatNoVNC
+        /// The approval `/state` says waits (its id); `/approve`, `/deny`
+        /// and yolo turned on clear it.
+        var liveApproval: String?
+        /// The browser's yolo mode (`POST /auto`), and what it approved by
+        /// itself, a JSON array, newest first.
+        var liveAuto = false
+        var liveAutoApproved = "[]"
     }
 
     var pageHeads: [(line: String, host: String?, origin: String?)] {
@@ -43,6 +50,9 @@ extension BrowserDaemon {
     var workspaces: String { get { forkState.workspaces } set { forkState.workspaces = newValue } }
     var nodeName: String { get { forkState.nodeName } set { forkState.nodeName = newValue } }
     var takeNoVNC: String { get { forkState.takeNoVNC } set { forkState.takeNoVNC = newValue } }
+    func setLiveApproval(_ id: String?) { forkState.liveApproval = id }
+    func setLiveAutoApproved(_ json: String) { forkState.liveAutoApproved = json }
+    var liveAuto: Bool { forkState.liveAuto }
 
     /// `/v0/config` and `/v0/workspaces` as our fake answers them.
     func forkRequest(_ path: String) -> String? {
@@ -70,6 +80,23 @@ extension BrowserDaemon {
             Data("HTTP/1.1 \(status)\r\nContent-Type: \(type)\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8) + body
         }
         let pod = livePod.map { #","pod":"\#($0)""# } ?? ""
+        func approvalAndYolo() -> String {
+            let approval = forkState.liveApproval.map {
+                #","approval":{"id":"\#($0)","kind":"submit","summary":"Submit the order form","details":["Total: $42.00"],"asked_at":1}"#
+            } ?? ""
+            return #"\#(approval),"auto_approve":\#(forkState.liveAuto),"auto_approved":\#(forkState.liveAutoApproved)"#
+        }
+        if head.line.hasPrefix("POST ") && head.line.contains("/auto ") {
+            let body = (try? JSONSerialization.jsonObject(with: bodies.last ?? Data())) as? [String: Any]
+            guard let on = body?["on"] as? Bool else { return reply("400 Bad Request", "application/json", Data(#"{"error":"bad_body"}"#.utf8)) }
+            forkState.liveAuto = on
+            if on { forkState.liveApproval = nil }
+            return reply("200 OK", "application/json", Data(#"{"auto_approve":\#(on)}"#.utf8))
+        }
+        if head.line.hasPrefix("POST ") && (head.line.contains("/approve ") || head.line.contains("/deny ")) {
+            forkState.liveApproval = nil
+            return reply("200 OK", "application/json", Data(#"{"status":"\#(liveStatus)","url":"https://example.com/login","title":"Log in to Example"\#(approvalAndYolo())}"#.utf8))
+        }
         if head.line.contains(" /live/chat/") {
             guard let chatLink else { return reply("404 Not Found", "application/json", Data(#"{"error":"no_link"}"#.utf8)) }
             let live = liveStatus != "done" && (livePod == nil || livePod == "running" || livePod == "starting")
@@ -100,7 +127,7 @@ extension BrowserDaemon {
             return reply("200 OK", "application/json", Data(#"{"ok":true}"#.utf8))
         }
         if head.line.contains("/state ") {
-            return reply("200 OK", "application/json", Data(#"{"status":"\#(liveStatus)","reason":"Sign in","url":"https://example.com/login","title":"Log in to Example","viewers":1\#(pod)}"#.utf8))
+            return reply("200 OK", "application/json", Data(#"{"status":"\#(liveStatus)","reason":"Sign in","url":"https://example.com/login","title":"Log in to Example","viewers":1\#(pod)\#(approvalAndYolo())}"#.utf8))
         }
         if head.line.contains("/frame.jpg ") && livePod == "asleep" { return reply("503 Service Unavailable", "application/json", Data(#"{"error":"asleep"}"#.utf8)) }
         if head.line.contains("/frame.jpg ") { return reply("200 OK", "image/png", Self.frame) }

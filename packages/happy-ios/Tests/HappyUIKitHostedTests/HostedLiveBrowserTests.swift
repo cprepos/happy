@@ -353,14 +353,14 @@ final class HostedLiveBrowserTests: XCTestCase {
         let (navigation, noVNC) = try await takeOver(host, daemon)
         // Minimize and End browser at the left; Release control alone at
         // the right.
-        XCTAssertEqual(noVNC.navigationItem.leftBarButtonItems?.map(\.accessibilityIdentifier), ["live-browser-minimize", "live-browser-end", "live-browser-sleep"])
+        XCTAssertEqual(noVNC.navigationItem.leftBarButtonItems?.map(\.accessibilityIdentifier), ["live-browser-minimize", "live-browser-end", "live-browser-sleep", "live-browser-yolo"])
         XCTAssertEqual(noVNC.navigationItem.rightBarButtonItems?.map(\.accessibilityIdentifier), ["live-browser-control"])
         XCTAssertEqual(noVNC.navigationItem.rightBarButtonItems?.first, noVNC.control)
         XCTAssertTrue(noVNC.endItem.isEnabled)
         let frame = try XCTUnwrap(navigation.viewControllers.first as? LiveBrowserFullScreenItems)
         frame.loadViewIfNeeded()
-        // End at the left with Sleep beside it.
-        XCTAssertEqual(frame.navigationItem.leftBarButtonItems?.suffix(2).map { $0 }, [frame.endItem, frame.sleepItem])
+        // End at the left with Sleep beside it, then yolo.
+        XCTAssertEqual(frame.navigationItem.leftBarButtonItems?.suffix(3).map { $0 }, [frame.endItem, frame.sleepItem, frame.yoloItem])
         XCTAssertFalse(frame.navigationItem.rightBarButtonItems?.contains(frame.endItem) ?? true)
 
         noVNC.endItem.primaryAction?.performWithSender(nil, target: nil)
@@ -848,7 +848,7 @@ final class HostedLiveBrowserTests: XCTestCase {
         try screenshot(window, name: "live-browser-phone-upright")
 
         try await turn(window, to: .landscapeRight)
-        try await assertSideways(frame, navigation, ids: ["live-browser-minimize", "live-browser-end", "live-browser-sleep", "browser-reload", "live-browser-control"])
+        try await assertSideways(frame, navigation, ids: ["live-browser-minimize", "live-browser-end", "live-browser-sleep", "browser-reload", "live-browser-strip-yolo", "live-browser-control"])
         let control = try XCTUnwrap(showing("live-browser-control", in: frame.strip).first)
         XCTAssertEqual(control.accessibilityLabel, Strings.LiveBrowser.takeControl)
         try screenshot(window, name: "live-browser-phone-sideways")
@@ -964,6 +964,90 @@ final class HostedLiveBrowserTests: XCTestCase {
             return result?.first == "none"
         }
         XCTAssertEqual(result, ["none", "flex", "12px"])
+    }
+
+    // MARK: Approvals and yolo
+
+    /// An approval waits: the bar asks over the composer, with no alert
+    /// and no player opened; Approve posts it, and the bar goes. In full
+    /// screen the bar asks there too, the picture where it was.
+    func testAnApprovalAsksInTheBarNotAnAlert() async throws {
+        let daemon = BrowserDaemon()
+        await daemon.setLiveStatus("watching")
+        await daemon.setLiveApproval("a1")
+        let (host, window) = try await makeHost(daemon)
+        defer { window.isHidden = true; host.dock.update(link: nil) }
+        let dock = host.dock!
+        dock.update(link: LiveBrowserLink(id: id))
+        try await until { dock.approvalBar.approval?.id == "a1" }
+        host.view.layoutIfNeeded()
+        let bar = dock.approvalBar
+        XCTAssertNil(dock.player, "no player opened for it")
+        XCTAssertNil(host.presentedViewController, "no alert")
+        XCTAssertTrue(bar.isDescendant(of: host.view))
+        XCTAssertFalse(bar.isHidden)
+        XCTAssertEqual(bar.frame.minX, host.cardFrame.minX)
+        XCTAssertEqual(bar.frame.width, host.cardFrame.width)
+        XCTAssertLessThanOrEqual(bar.frame.maxY, host.line?.frame.minY ?? host.cardFrame.minY)
+        XCTAssertFalse(bar.approve.isHidden)
+        try screenshot(window, name: "live-browser-approval-bar-chat")
+
+        // Full screen: the bar there too, clear of the picture upright on
+        // a phone.
+        dock.presentFullScreen(taking: false)
+        try await until { (host.presentedViewController as? UINavigationController)?.viewControllers.first is LiveBrowserFullScreenItems }
+        let navigation = try XCTUnwrap(host.presentedViewController as? UINavigationController)
+        let items = try XCTUnwrap(navigation.viewControllers.first as? LiveBrowserFullScreenItems)
+        try await until { navigation.transitionCoordinator == nil && items.isViewLoaded && items.approvalBar.approval?.id == "a1" }
+        items.view.layoutIfNeeded()
+        XCTAssertFalse(items.approvalBar.isHidden)
+        XCTAssertTrue(items.approvalBar.isDescendant(of: items.view))
+        XCTAssertLessThanOrEqual(items.approvalBar.frame.maxY, items.view.bounds.height - items.view.safeAreaInsets.bottom)
+        try screenshot(window, name: "live-browser-approval-bar-full-screen")
+
+        items.approvalBar.approve.sendActions(for: .touchUpInside)
+        try await until { await daemon.requests.contains { $0.hasPrefix("POST /live/\(self.id)/approve HTTP/1.1") } }
+        let body = await daemon.bodies.last { !$0.isEmpty && String(decoding: $0, as: UTF8.self).contains("approval_id") }
+        XCTAssertEqual(body.map { String(decoding: $0, as: UTF8.self) }, #"{"approval_id":"a1"}"#)
+        try await until { items.approvalBar.approval == nil && dock.approvalBar.approval == nil }
+        navigation.dismiss(animated: false)
+    }
+
+    /// Yolo: the player's menu turns it on (`POST /auto`), the bridge's
+    /// word is what shows ("Yolo" over the picture), and what it approves
+    /// by itself is said for a moment in the bar.
+    func testBrowserYoloIsTheBridgesAndSaysWhatItApproved() async throws {
+        let daemon = BrowserDaemon()
+        let (host, window) = try await makeHost(daemon)
+        defer { window.isHidden = true; host.dock.update(link: nil) }
+        let dock = host.dock!
+        dock.update(link: LiveBrowserLink(id: id))
+        try await until { dock.player != nil && dock.feed?.phase.state != nil }
+        host.view.layoutIfNeeded()
+        let player = try XCTUnwrap(dock.player)
+        XCTAssertFalse(dock.yoloOn, "off by default")
+        XCTAssertTrue(player.yoloBadge.isHidden)
+
+        await daemon.setLiveApproval("a2")
+        try await until { dock.approvalBar.approval?.id == "a2" }
+        dock.setYolo(true)
+        try await until { await daemon.requests.contains { $0.hasPrefix("POST /live/\(self.id)/auto HTTP/1.1") } }
+        let body = await daemon.bodies.last { String(decoding: $0, as: UTF8.self).contains("\"on\"") }
+        XCTAssertEqual(body.map { String(decoding: $0, as: UTF8.self) }, #"{"on":true}"#)
+        let on = await daemon.liveAuto
+        XCTAssertTrue(on)
+        // On approves what waited: the bar goes; the badge shows.
+        try await until { dock.yoloOn && dock.approvalBar.approval == nil && !player.yoloBadge.isHidden }
+        XCTAssertEqual(player.yoloBadge.text, Strings.LiveBrowser.yoloBadge)
+
+        await daemon.setLiveAutoApproved(#"[{"id":"a3","summary":"Click Save","at":2}]"#)
+        try await until { dock.approvalBar.notice == Strings.LiveBrowser.yoloApproved("Click Save") }
+        try screenshot(window, name: "live-browser-yolo-approved")
+
+        dock.setYolo(false)
+        try await until { !dock.yoloOn && player.yoloBadge.isHidden }
+        let off = await daemon.liveAuto
+        XCTAssertFalse(off)
     }
 
     // MARK: Helpers
