@@ -124,6 +124,25 @@ final class HostedLiveBrowserPodTests: XCTestCase {
         try screenshot(window, name: "live-browser-dock-asleep")
     }
 
+    /// The chat's lookup answers at the LAN bridge while the transcript's
+    /// chip names localhost: a tap on the chip still opens the player.
+    func testAChipAtTheOtherOriginOpensThePlayer() async throws {
+        let daemon = BrowserDaemon()
+        await daemon.setLiveStatus("watching")
+        await daemon.setLivePod("asleep")
+        let (host, window) = try await makeHost(daemon)
+        defer { window.isHidden = true; host.dock.update(link: nil) }
+        let dock = host.dock!
+        dock.update(link: LiveBrowserLink(id: id, origin: LiveBrowserLink.lanOrigin))
+        try await until { dock.feed?.phase.state?.asleep == true }
+
+        dock.open(try XCTUnwrap(LiveBrowserLink(id: "0123456789abcdef0123456789abcdef")))
+        XCTAssertNil(dock.player, "another browser's chip opens nothing")
+
+        dock.open(try XCTUnwrap(LiveBrowserLink(id: id, origin: LiveBrowserLink.localOrigin)))
+        XCTAssertNotNil(dock.player, "the same browser at another origin opens")
+    }
+
     func testTakeControlWaitsForTheBrowserToWake() async throws {
         let daemon = BrowserDaemon()
         await daemon.setLiveStatus("watching")
