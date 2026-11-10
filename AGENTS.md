@@ -1,5 +1,7 @@
 # Agent Workflow
 
+**This fork overrides parts of this file: read AGENTS.fork.md first. In particular, never push to `origin`; pushes go to `fork`.**
+
 ## Releasing anything
 
 Every release goes through the `release` skill: `.agents/skills/release/SKILL.md`.
@@ -32,5 +34,3 @@ When the user says `sync to main` or `synt to main`, they mean:
    `git push origin HEAD:main`
 
 Do not force push for this workflow.
-
-Fork-specific rules for this checkout are in AGENTS.fork.md; where they differ from this file, they win.

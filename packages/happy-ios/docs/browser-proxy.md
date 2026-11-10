@@ -1,5 +1,7 @@
 # Remote-only browser and artifact proxy
 
+**This fork overrides parts of this file: read browser-proxy.fork.md first.**
+
 Every HTTP(S) request and WebSocket from the in-app browser goes through the
 agent connection, including public sites and CDN resources. There is no direct
 phone-network path or fallback.
@@ -261,5 +263,3 @@ proxy, replacing only the remote encrypted link with a byte-transparent local
 TCP-to-Unix adapter. Tailcat's own paired-IPStack regression separately covers
 1,300 short HTTP requests alongside SSE, bounded closing-state eviction and
 late FIN handling; closed flows must not consume its live 256/1,024 budgets.
-
-Fork-specific notes for this checkout are in browser-proxy.fork.md; where they differ from this file, they win.

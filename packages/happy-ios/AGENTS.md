@@ -1,5 +1,7 @@
 # happy-ios
 
+**This fork overrides parts of this file: read AGENTS.fork.md first.**
+
 Native iOS client for Happy, written in Swift with UIKit.
 
 The React Native app has been removed. References below to its implementation
@@ -833,5 +835,3 @@ To keep parallel work from colliding:
 - Accounts import: the real-device MMKV path and decoding still need an
   in-place upgrade check. Encoding, size metadata, CRC and confirmation gates
   are verified on Linux with reproduced MMKV fixtures.
-
-Fork-specific rules for this checkout are in AGENTS.fork.md; where they differ from this file, they win.
