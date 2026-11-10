@@ -51,7 +51,7 @@ public final class LocalSettings: Sendable {
         "happy-ios.local-settings.\(accountID)"
     }
 
-    private let storage: KeyValueStore
+    let storage: KeyValueStore
 
     public init(storage: KeyValueStore) {
         self.storage = storage
@@ -151,23 +151,6 @@ public final class LocalSettings: Sendable {
         }
     }
 
-    /// The paired computer each Happy CLI machine's links open through, by
-    /// relay machine id to agent connection id (`LegacyLinkRoute`). This
-    /// app's own; happy-app has no such setting.
-    public var legacyLinkComputers: [String: String] {
-        get {
-            guard let json = storage.string(forKey: Keys.legacyLinkComputers),
-                  let value = try? JSONDecoder().decode([String: String].self, from: Data(json.utf8)) else {
-                return [:]
-            }
-            return value
-        }
-        set {
-            let data = (try? JSONEncoder().encode(newValue)) ?? Data()
-            storage.set(newValue.isEmpty ? nil : String(decoding: data, as: UTF8.self), forKey: Keys.legacyLinkComputers)
-        }
-    }
-
     /// The new-session draft (persistence.ts `new-session-draft-v1`), nil
     /// until one is saved.
     public var newSessionDraft: NewSessionDraft? {
@@ -179,18 +162,11 @@ public final class LocalSettings: Sendable {
         set { storage.set(newValue?.json, forKey: NewSessionDraft.storageKey) }
     }
 
-    /// How many messages the user has sent with voice, across calls
-    /// (persistence.ts `voice-message-count`). The voice prompt's onboarding
-    /// phases go by it, so a new call can't start back at zero.
-    public var voiceMessageCount: Int {
-        get { storage.string(forKey: Keys.voiceMessageCount).flatMap(Int.init) ?? 0 }
-        set { storage.set(String(newValue), forKey: Keys.voiceMessageCount) }
-    }
-
     public func clear() {
-        for key in [Keys.linkComputerChecklist, Keys.themePreference, Keys.devModeEnabled, Keys.markdownCopyV2, Keys.expandedProjects, Keys.acknowledgedCliVersions, Keys.registeredPushToken, Keys.zenMode, Keys.voiceMessageCount, Keys.legacyLinkComputers, Keys.dictationStaysHome, NewSessionDraft.storageKey] {
+        for key in [Keys.linkComputerChecklist, Keys.themePreference, Keys.devModeEnabled, Keys.markdownCopyV2, Keys.expandedProjects, Keys.acknowledgedCliVersions, Keys.registeredPushToken, Keys.zenMode, Keys.dictationStaysHome, NewSessionDraft.storageKey] {
             storage.set(nil, forKey: key)
         }
+        clearForkKeys()
     }
 
     /// persistence.registered-push-token-v1, scoped to this account's local-settings suite.
@@ -214,8 +190,6 @@ public final class LocalSettings: Sendable {
         static let acknowledgedCliVersions = "acknowledgedCliVersions"
         static let registeredPushToken = "registered-push-token-v1"
         static let zenMode = "zenMode"
-        static let voiceMessageCount = "voice-message-count"
-        static let legacyLinkComputers = "relayLinkComputers"
         static let dictationStaysHome = "dictationStaysHome"
         static let dictationOneLanguage = "dictationOneLanguage"
     }
