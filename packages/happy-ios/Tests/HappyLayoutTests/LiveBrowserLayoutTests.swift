@@ -150,56 +150,49 @@ final class LiveBrowserLayoutTests: XCTestCase {
 
     // MARK: The player
 
-    private func dock(_ screen: ChatScreenLayout, voice: CGSize?, corner: LiveBrowserDockLayout.Corner = .bottomRight, large: Bool = false, strip: CGFloat? = nil) throws -> LiveBrowserDockLayout {
+    private func dock(_ screen: ChatScreenLayout, voice: CGSize?, corner: LiveBrowserDockLayout.Corner = .bottomRight, big: Bool = false, strip: CGFloat? = nil) throws -> LiveBrowserDockLayout {
         let line = try XCTUnwrap(ChatStatusLineLayout(above: screen.card, voice: voice, browser: browser))
         return LiveBrowserDockLayout(.init(size: size, safeArea: safe, card: screen.card,
-                                           anchor: LiveBrowserDockLayout.anchor(line.frame.minY, strip), corner: corner, large: large))
+                                           anchor: LiveBrowserDockLayout.anchor(line.frame.minY, strip), corner: corner, big: big))
     }
 
     func testThePlayerSitsOverTheRedLineOnTheRight() throws {
         for voice in [voice, nil] as [CGSize?] {
+            // Small: 60% of the card, ⤢ full screen and ⇲ big on its bar.
             let down = try dock(agentScreen(keyboardTop: 874), voice: voice)
-            assertFrame(down.frame, rect(282, 604, 112, 144))
-            assertFrame(down.bar, rect(0, 0, 112, 44))
-            assertFrame(down.picture, rect(0, 44, 112, 70))
-            assertFrame(down.footer, rect(0, 114, 112, 30))
-            // Narrow: close and the size on the bar; the picture opens
-            // full screen, which has End browser.
+            assertFrame(down.frame, rect(162, 529, 232, 219))
+            assertFrame(down.bar, rect(0, 0, 232, 44))
+            assertFrame(down.picture, rect(0, 44, 232, 145))
+            assertFrame(down.footer, rect(0, 189, 232, 30))
             assertFrame(down.close, rect(0, 0, 44, 44))
-            assertFrame(down.resize, rect(68, 0, 44, 44))
-            XCTAssertNil(down.fullScreen)
-            XCTAssertNil(down.menu)
-            XCTAssertFalse(down.showsPill)
+            assertFrame(down.menu, rect(44, 0, 44, 44))
+            assertFrame(down.fullScreen, rect(144, 0, 44, 44))
+            assertFrame(down.resize, rect(188, 0, 44, 44))
+            XCTAssertTrue(down.showsPill)
+            XCTAssertFalse(down.isBig)
+            XCTAssertEqual(down.radius, LiveBrowserDockLayout.Metrics.radius)
+            XCTAssertEqual(down.topInset, 0)
             assertControlsClearThePicture(down)
 
             // The keyboard up: 336 tall.
             let up = try dock(agentScreen(keyboardTop: 538), voice: voice)
-            assertFrame(up.frame, rect(282, 302, 112, 144))
+            assertFrame(up.frame, rect(162, 227, 232, 219))
         }
     }
 
     func testTheVoiceStripPushesThePlayerUp() throws {
         let over = try dock(agentScreen(keyboardTop: 874), voice: voice, strip: 874 - 120)
-        assertFrame(over.frame, rect(282, 602, 112, 144))
+        assertFrame(over.frame, rect(162, 527, 232, 219))
     }
 
-    func testCornersAndTheLargeSize() throws {
+    func testCornersAndATightRoom() throws {
         let screen = agentScreen(keyboardTop: 874)
-        let large = try dock(screen, voice: nil, large: true)
-        assertFrame(large.frame, rect(162, 529, 232, 219))
-        assertFrame(large.picture, rect(0, 44, 232, 145))
-        assertFrame(large.close, rect(0, 0, 44, 44))
-        assertFrame(large.menu, rect(44, 0, 44, 44))
-        assertFrame(large.fullScreen, rect(144, 0, 44, 44))
-        assertFrame(large.resize, rect(188, 0, 44, 44))
-        XCTAssertTrue(large.showsPill)
-        assertControlsClearThePicture(large)
-        assertFrame(try dock(screen, voice: nil, corner: .topLeft).frame, rect(8, 70, 112, 144))
-        assertFrame(try dock(screen, voice: nil, corner: .topRight).frame, rect(282, 70, 112, 144))
-        assertFrame(try dock(screen, voice: nil, corner: .bottomLeft).frame, rect(8, 604, 112, 144))
-        // With little room the large player shrinks to fit between the
-        // bars, and keeps only the buttons that fit.
-        let tight = LiveBrowserDockLayout(.init(size: size, safeArea: safe, card: screen.card, anchor: 200, large: true))
+        assertFrame(try dock(screen, voice: nil, corner: .topLeft).frame, rect(8, 70, 232, 219))
+        assertFrame(try dock(screen, voice: nil, corner: .topRight).frame, rect(162, 70, 232, 219))
+        assertFrame(try dock(screen, voice: nil, corner: .bottomLeft).frame, rect(8, 529, 232, 219))
+        // Squeezed between the bars, small shrinks to fit and keeps only
+        // the buttons that fit.
+        let tight = LiveBrowserDockLayout(.init(size: size, safeArea: safe, card: screen.card, anchor: 200))
         assertFrame(tight.frame, rect(318, 70, 76, 122))
         assertFrame(tight.close, rect(0, 0, 44, 44))
         XCTAssertNil(tight.resize)
@@ -208,27 +201,14 @@ final class LiveBrowserLayoutTests: XCTestCase {
         assertControlsClearThePicture(tight)
     }
 
-    func testAPhonesSmallIsTheLargeSizeAndBigIsTheWholeWidthAtTheTop() throws {
+    func testAPhonesBigIsTheWholeWidthAtTheTop() throws {
         let screen = agentScreen(keyboardTop: 874)
         let line = try XCTUnwrap(ChatStatusLineLayout(above: screen.card, voice: nil, browser: browser))
         let anchor = LiveBrowserDockLayout.anchor(line.frame.minY, nil)
-        // Small: the large size at its corner, ⤢ full screen and ⇲ big.
-        let small = LiveBrowserDockLayout(.init(size: size, safeArea: safe, card: screen.card, anchor: anchor, phone: true))
-        assertFrame(small.frame, rect(162, 529, 232, 219))
-        assertFrame(small.picture, rect(0, 44, 232, 145))
-        assertFrame(small.close, rect(0, 0, 44, 44))
-        assertFrame(small.menu, rect(44, 0, 44, 44))
-        assertFrame(small.fullScreen, rect(144, 0, 44, 44))
-        assertFrame(small.resize, rect(188, 0, 44, 44))
-        XCTAssertFalse(small.isBig)
-        XCTAssertEqual(small.radius, LiveBrowserDockLayout.Metrics.radius)
-        XCTAssertEqual(small.topInset, 0)
-        assertControlsClearThePicture(small)
-
         // Big: edge to edge under the header, the picture 402 / 1.6 tall;
         // the chat's content starts 8 under it. Its corner doesn't move it.
         for corner in LiveBrowserDockLayout.Corner.allCases {
-            let big = LiveBrowserDockLayout(.init(size: size, safeArea: safe, card: screen.card, anchor: anchor, corner: corner, large: true, phone: true))
+            let big = LiveBrowserDockLayout(.init(size: size, safeArea: safe, card: screen.card, anchor: anchor, corner: corner, big: true, idiom: .phone))
             assertFrame(big.frame, rect(0, 62, 402, 325))
             assertFrame(big.picture, rect(0, 44, 402, 251))
             assertFrame(big.close, rect(0, 0, 44, 44))
@@ -240,14 +220,60 @@ final class LiveBrowserLayoutTests: XCTestCase {
             XCTAssertEqual(big.topInset, 333)
             assertControlsClearThePicture(big)
         }
+    }
 
-        // Squeezed between the bars, small keeps only what fits.
-        let tight = LiveBrowserDockLayout(.init(size: size, safeArea: safe, card: screen.card, anchor: 200, phone: true))
-        assertFrame(tight.frame, rect(318, 70, 76, 122))
-        assertFrame(tight.close, rect(0, 0, 44, 44))
-        XCTAssertNil(tight.resize)
-        XCTAssertNil(tight.fullScreen)
-        XCTAssertNil(tight.menu)
+    // MARK: An iPad's (and the Mac's) player
+
+    /// An iPad Air's 820×1180 chat, its header 74 tall, the card 16 in.
+    private func pad(width: CGFloat = 820, height: CGFloat = 1180, big: Bool) -> LiveBrowserDockLayout {
+        let card = CGRect(x: 16, y: height - 20 - 76, width: width - 32, height: 56)
+        return LiveBrowserDockLayout(.init(size: CGSize(width: width, height: height), safeArea: LayoutInsets(top: 74, bottom: 20),
+                                           card: card, anchor: card.minY - 20, big: big, idiom: .pad))
+    }
+
+    func testAnIPadsSmallIsItsOldLargeSize() {
+        let small = pad(big: false)
+        // 60% of the 788 card, at most 420, over the line at the right.
+        assertFrame(small.frame, rect(384, 719, 420, 337))
+        assertFrame(small.picture, rect(0, 44, 420, 263))
+        assertFrame(small.fullScreen, rect(332, 0, 44, 44))
+        assertFrame(small.resize, rect(376, 0, 44, 44))
+        XCTAssertFalse(small.isBig)
+        XCTAssertEqual(small.topInset, 0)
+        assertControlsClearThePicture(small)
+    }
+
+    func testAnIPadsBigStopsAtHalfTheChatsHeightCentred() {
+        // Upright: the pane's whole width would be 587 tall, over half of
+        // the 982 between the header and the composer, so 491 tall and
+        // 667 wide, centred.
+        let big = pad(big: true)
+        assertFrame(big.frame, rect(77, 74, 667, 491))
+        assertFrame(big.picture, rect(0, 44, 667, 417))
+        assertFrame(big.fullScreen, rect(579, 0, 44, 44))
+        assertFrame(big.resize, rect(623, 0, 44, 44))
+        XCTAssertTrue(big.isBig)
+        XCTAssertEqual(big.radius, 0)
+        XCTAssertEqual(big.topInset, 499)
+        assertControlsClearThePicture(big)
+    }
+
+    func testAnIPadsBigBesideTheSidebarIsThePanesWholeWidth() {
+        // A 500-wide chat pane beside the sidebar: its whole width, 387
+        // tall, under half the height.
+        let big = pad(width: 500, big: true)
+        assertFrame(big.frame, rect(0, 74, 500, 387))
+        assertFrame(big.picture, rect(0, 44, 500, 313))
+        XCTAssertEqual(big.topInset, 395)
+    }
+
+    func testAnIPadsBigTurnedSidewaysIsNeverSmallerThanSmall() {
+        // Sideways, half the room would make big 379 wide, under small's
+        // 420: it keeps small's size, centred under the header.
+        let big = pad(width: 1180, height: 820, big: true)
+        assertFrame(big.frame, rect(380, 74, 420, 337))
+        XCTAssertEqual(pad(width: 1180, height: 820, big: false).frame.size, big.frame.size)
+        XCTAssertEqual(big.topInset, 345)
     }
 
     func testSidewaysBigStaysTheWindowedPlayerAtItsAspect() {
@@ -256,7 +282,7 @@ final class LiveBrowserLayoutTests: XCTestCase {
         let sideways = CGSize(width: 874, height: 402)
         let insets = LayoutInsets(top: 32, left: 62, bottom: 21, right: 62)
         let card = CGRect(x: 62, y: 320, width: 750, height: 56)
-        let big = LiveBrowserDockLayout(.init(size: sideways, safeArea: insets, card: card, anchor: 300, large: true, phone: true))
+        let big = LiveBrowserDockLayout(.init(size: sideways, safeArea: insets, card: card, anchor: 300, big: true, idiom: .phone))
         assertFrame(big.frame, rect(289, 32, 297, 260))
         assertFrame(big.picture, rect(0, 44, 297, 186))
         XCTAssertTrue(big.isBig)

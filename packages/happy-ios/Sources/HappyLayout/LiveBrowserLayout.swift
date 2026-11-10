@@ -75,22 +75,27 @@ public struct ChatStatusLineLayout: Equatable, Sendable {
     }
 }
 
-/// The chat's floating live browser: the picture at the corner it was left
-/// in, small or large, its buttons on a bar over it and a footer under it.
-/// Nothing stands on the picture, so the page and its title read whole.
+/// The chat's floating live browser: small at the corner it was left in,
+/// or big across the chat's top, its buttons on a bar over it and a footer
+/// under it. Nothing stands on the picture, so the page and its title read
+/// whole.
 ///
 ///     ┌ bar ───────────────────┐   ✕ close and ••• (End browser) on the
-///     │ ✕  •••          ⤢  ⇲   │   left, ⤢ full screen and ⇲ bigger or
-///     ├ picture ───────────────┤   smaller on the right, each a 44-point
+///     │ ✕  •••          ⤢  ⇲   │   left, ⤢ full screen and ⇲ big or
+///     ├ picture ───────────────┤   small on the right, each a 44-point
 ///     │                        │   target; a narrow player keeps ✕ and
-///     │                        │   ⇲ (the picture opens full screen, and
-///     ├ footer ────────────────┤   full screen has End browser)
-///     └────────────────────────┘   pill (large only) · Take over / Release
+///     │                        │   ⇲, and too narrow for both, ✕ alone
+///     ├ footer ────────────────┤
+///     └────────────────────────┘   pill · Take over / Release
 ///
-/// A phone (`Input.phone`): small is the large size at a corner; big
-/// (`large`) is the screen's whole width under the header, square
-/// cornered, the picture at the frame's aspect, and the chat's content
-/// starts under it (`topInset`). ⇲ goes between the two.
+/// Every idiom: small is 60% of the card (at most 420) at a corner; big
+/// is the chat pane's whole width under the header, square cornered, the
+/// picture at the frame's aspect, and the chat's content starts under it
+/// (`topInset`). ⇲ and a tap on the picture go between the two. Where the
+/// whole width would make big too tall, it is as wide as its height
+/// allows, centred: a phone's up to the room above the composer (turned
+/// sideways), an iPad's or a Mac's up to half of it but never narrower
+/// than small (`Idiom`).
 ///
 /// A bottom corner keeps its right or left edge on the composer card's and
 /// its bottom 8 over `anchor`: the status line's top, the voice strip's or
@@ -104,11 +109,15 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
     }
 
     public enum Metrics {
-        public static let smallWidth: CGFloat = 112
-        public static let smallWidthWide: CGFloat = 176
-        /// Of the card's width.
-        public static let largeShare: CGFloat = 0.6
-        public static let largeMaxWidth: CGFloat = 420
+        public static let minWidth: CGFloat = 112
+        public static let minWidthWide: CGFloat = 176
+        /// Small's width, of the card's.
+        public static let smallShare: CGFloat = 0.6
+        public static let smallMaxWidth: CGFloat = 420
+        /// An iPad's or a Mac's big is at most this share of the room
+        /// between the header and the composer, chrome included, unless
+        /// that would make it narrower than small.
+        public static let bigShareOfRoom: CGFloat = 0.5
         /// The picture's width over its height.
         public static let aspect: CGFloat = 1.6
         public static let footerHeight: CGFloat = 30
@@ -123,7 +132,12 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
         public static let footerPadding: CGFloat = 6
     }
 
+    /// Where big's height stops: a phone's at the room above the
+    /// composer, an iPad's or a Mac's (Designed for iPad) at half of it.
+    public enum Idiom: Sendable { case phone, pad }
+
     public struct Input: Equatable, Sendable {
+        /// The chat pane's size: big runs its whole width.
         public var size: CGSize
         public var safeArea: LayoutInsets
         /// The composer card's frame: the sides the player lines up with.
@@ -131,13 +145,12 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
         /// The highest thing a bottom corner keeps above.
         public var anchor: CGFloat
         public var corner: Corner
-        public var large: Bool
-        /// An iPhone: small is the large width at a corner; `large` is
-        /// big, the screen's whole width docked at the chat's top.
-        public var phone: Bool
+        /// Big, docked at the chat's top; else small, at `corner`.
+        public var big: Bool
+        public var idiom: Idiom
 
-        public init(size: CGSize, safeArea: LayoutInsets, card: CGRect, anchor: CGFloat, corner: Corner = .bottomRight, large: Bool = false, phone: Bool = false) {
-            self.size = size; self.safeArea = safeArea; self.card = card; self.anchor = anchor; self.corner = corner; self.large = large; self.phone = phone
+        public init(size: CGSize, safeArea: LayoutInsets, card: CGRect, anchor: CGFloat, corner: Corner = .bottomRight, big: Bool = false, idiom: Idiom = .phone) {
+            self.size = size; self.safeArea = safeArea; self.card = card; self.anchor = anchor; self.corner = corner; self.big = big; self.idiom = idiom
         }
     }
 
@@ -147,26 +160,26 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
     public var bar: CGRect
     public var picture: CGRect
     public var close: CGRect
-    /// Nil on a player too narrow for four buttons: the picture opens it.
+    /// Nil on a player too narrow for four buttons.
     public var fullScreen: CGRect?
     /// Nil on a player too narrow for two buttons.
     public var resize: CGRect?
     /// The menu (End browser), beside close; nil where full screen is.
     public var menu: CGRect?
     public var footer: CGRect
-    /// The status pill shows in the footer when there is room: large only.
+    /// The status pill shows in the footer when there is room.
     public var showsPill: Bool
-    /// A phone's big player: edge to edge at the chat's top, square
-    /// cornered, not dragged; the chat's content starts under it.
+    /// The big player: edge to edge at the chat's top, square cornered,
+    /// not dragged; the chat's content starts under it.
     public var isBig: Bool
     public var radius: CGFloat
 
-    public static func width(card: CGRect, size: CGSize, large: Bool) -> CGFloat {
+    /// Small's width: 60% of the card, at most 420 and at least 112
+    /// (176 on a wide screen), never wider than the card.
+    public static func smallWidth(card: CGRect, size: CGSize) -> CGFloat {
         typealias M = Metrics
-        let wide = AgentInputLayout.isWide(screenWidth: size.width)
-        let small = wide ? M.smallWidthWide : M.smallWidth
-        guard large else { return min(small, card.width) }
-        return min(card.width, max(small, min(M.largeMaxWidth, (card.width * M.largeShare).rounded())))
+        let least = AgentInputLayout.isWide(screenWidth: size.width) ? M.minWidthWide : M.minWidth
+        return min(card.width, max(least, min(M.smallMaxWidth, (card.width * M.smallShare).rounded())))
     }
 
     public init(_ input: Input) {
@@ -176,22 +189,29 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
         // Never taller than the room between the bars.
         let room = max(0, bottom - top)
         let chrome = M.barHeight + M.footerHeight
-        let big = input.phone && input.large
+        let big = input.big
         isBig = big
         radius = big ? 0 : M.radius
         var width: CGFloat
         let pictureHeight: CGFloat
         if big {
             // The whole width, under the header, the picture as tall as
-            // the frame's aspect. Where that is taller than the room (the
-            // phone turned sideways: big stays the windowed player there,
-            // landscape is full screen's), as wide as the room's height
-            // allows, centred.
+            // the frame's aspect. Where that is taller than the room above
+            // the composer (a phone turned sideways: big stays the
+            // windowed player there, landscape is full screen's), as wide
+            // as the room's height allows, centred. An iPad's or a Mac's
+            // stops at half the room, but never narrower than small, so ⇲
+            // never shrinks it.
             let room = max(0, bottom - input.safeArea.top)
-            width = min(input.size.width, max(0, (room - chrome) * M.aspect).rounded(.down))
+            let fitting = { (height: CGFloat) in max(0, (height - chrome) * M.aspect).rounded(.down) }
+            width = min(input.size.width, fitting(room))
+            if input.idiom == .pad {
+                let half = fitting((room * M.bigShareOfRoom).rounded(.down))
+                width = min(width, max(half, Self.smallWidth(card: input.card, size: input.size)))
+            }
             pictureHeight = (width / M.aspect).rounded()
         } else {
-            width = Self.width(card: input.card, size: input.size, large: input.large || input.phone)
+            width = Self.smallWidth(card: input.card, size: input.size)
             if width / M.aspect + chrome > room { width = max(0, (room - chrome) * M.aspect).rounded(.down) }
             pictureHeight = (width / M.aspect).rounded()
         }
@@ -227,7 +247,7 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
         }
     }
 
-    /// How far a phone's big player pushes the chat's content down from
+    /// How far the big player pushes the chat's content down from
     /// the safe area's top: its height, and a gap; nothing otherwise.
     public var topInset: CGFloat { isBig ? frame.height + Metrics.gap : 0 }
 

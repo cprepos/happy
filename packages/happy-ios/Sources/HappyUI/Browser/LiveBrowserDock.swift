@@ -87,7 +87,8 @@ final class LiveBrowserDock: NSObject {
     private weak var approvalAlert: UIAlertController?
     private var approvalShown: String?
     private var corner: LiveBrowserDockLayout.Corner
-    private var large: Bool
+    /// Big, across the chat's top; else small, at `corner`.
+    private var big: Bool
     private var placed: (card: CGRect, anchor: CGFloat)?
     private weak var fullScreen: UINavigationController?
     private var busy = false
@@ -110,7 +111,7 @@ final class LiveBrowserDock: NSObject {
         self.connect = connect
         let kept = Self.kept(chatKey)
         corner = kept.corner
-        large = kept.large
+        big = kept.big
         super.init()
         indicator.isHidden = true
         indicator.addAction(UIAction { [weak self] _ in self?.openPlayer() }, for: .touchUpInside)
@@ -239,17 +240,17 @@ final class LiveBrowserDock: NSObject {
         if let player { feed?.set(player, visible: onScreen) }
     }
 
-    /// What rides the keyboard with the composer: the player, at a bottom
-    /// corner.
+    /// What rides the keyboard with the composer: the small player, at a
+    /// bottom corner.
     var riders: [UIView] {
-        guard let player, !corner.isTop, !(isPhone && large) else { return [] }
+        guard let player, !corner.isTop, !big else { return [] }
         return [player]
     }
 
-    /// How far the chat's content starts below the safe area's top: a
-    /// phone's big player's height and a gap while it shows, else 0.
+    /// How far the chat's content starts below the safe area's top: the
+    /// big player's height and a gap while it shows, else 0.
     func topInset(in view: UIView) -> CGFloat {
-        guard player != nil, isPhone, large else { return 0 }
+        guard player != nil, big else { return 0 }
         let placed = placed ?? (view.bounds, view.bounds.height)
         return playerLayout(in: view, card: placed.card, anchor: placed.anchor).topInset
     }
@@ -273,20 +274,17 @@ final class LiveBrowserDock: NSObject {
         let strip = VoiceCoordinator.shared.sheetTop(in: view)
         return LiveBrowserDockLayout(.init(
             size: view.bounds.size, safeArea: LayoutInsets(view.safeAreaInsets), card: card,
-            anchor: LiveBrowserDockLayout.anchor(anchor, strip), corner: corner, large: large, phone: isPhone
+            anchor: LiveBrowserDockLayout.anchor(anchor, strip), corner: corner, big: big, idiom: isPhone ? .phone : .pad
         ))
     }
 
-    /// An iPhone, not an iPad and not the app on a Mac: one player size
-    /// (the large one), and full screen is the bigger view.
+    /// An iPhone, not an iPad and not the app on a Mac: full screen's
+    /// strip and picture-only page, and big up to the whole room.
     static func isPhone(_ traits: UITraitCollection) -> Bool {
         traits.userInterfaceIdiom == .phone && !ProcessInfo.processInfo.isiOSAppOnMac
     }
 
     var isPhone: Bool { Self.isPhone(host?.traitCollection ?? UITraitCollection.current) }
-
-    /// The player's size: a phone's small is the large width.
-    private var showsLarge: Bool { isPhone || large }
 
     /// The live picture's width over its height, read from the newest
     /// frame's header; nil before the first.
@@ -407,8 +405,7 @@ final class LiveBrowserDock: NSObject {
         }
         let player = LiveBrowserPlayerView()
         self.player = player
-        player.large = large
-        if isPhone { player.usePhoneFullScreenSymbol() }
+        player.big = big
         player.onClose = { [weak self] in self?.closePlayer(animated: true) }
         player.onFullScreen = { [weak self] in self?.presentFullScreen(taking: false) }
         player.onResize = { [weak self] in self?.resize() }
@@ -418,7 +415,7 @@ final class LiveBrowserDock: NSObject {
         player.onSleep = { [weak self] in self?.sleep() }
         player.onTap = { [weak self] in self?.tappedPicture() }
         player.onDrop = { [weak self] center in self?.drop(at: center) }
-        feed.attach(player, visible: isOnScreen, frames: true, fast: showsLarge) { [weak player] feed in player?.show(feed) }
+        feed.attach(player, visible: isOnScreen, frames: true, fast: true) { [weak player] feed in player?.show(feed) }
         // Shown again after X: a poll that stalled starts over.
         freshen(feed)
         player.show(feed)
@@ -454,24 +451,21 @@ final class LiveBrowserDock: NSObject {
         openPlayer()
     }
 
-    /// The picture tapped: on a phone, as ⤢ (small to big in the chat,
-    /// big back to small), the full-screen button being the one way to
-    /// full screen; every other player's opens full screen.
-    private func tappedPicture() {
-        if isPhone { resize() } else { presentFullScreen(taking: false) }
-    }
+    /// The picture tapped: as ⇲ (small to big in the chat, big back to
+    /// small), the full-screen button being the one way to full screen.
+    private func tappedPicture() { resize() }
 
     private func resize() {
-        large.toggle()
+        big.toggle()
         keep()
-        player?.large = large
-        if let player { feed?.set(player, fast: large) }
+        player?.big = big
+        if let player { feed?.set(player, fast: big) }
         UIView.animate(withDuration: 0.3, delay: 0, usingSpringWithDamping: 0.9, initialSpringVelocity: 0) {
             if let placed = self.placed { self.layoutPlayer(card: placed.card, anchor: placed.anchor) }
             self.player?.layoutIfNeeded()
         }
-        // A phone's big player moves the chat's content under it.
-        if isPhone { onLayoutChange?() }
+        // The big player moves the chat's content under it.
+        onLayoutChange?()
     }
 
     private func drop(at center: CGPoint) {
@@ -982,14 +976,17 @@ final class LiveBrowserDock: NSObject {
 
     private static func key(_ chat: String) -> String { "liveBrowserDock.\(chat)" }
 
-    static func kept(_ chat: String) -> (corner: LiveBrowserDockLayout.Corner, large: Bool) {
+    /// The corner and small or big, per chat. An older "large" (a phone's
+    /// big, but an iPad's bigger corner player, now its small) reads as
+    /// small.
+    static func kept(_ chat: String) -> (corner: LiveBrowserDockLayout.Corner, big: Bool) {
         let parts = (UserDefaults.standard.string(forKey: key(chat)) ?? "").split(separator: "|")
         let corner = parts.first.flatMap { LiveBrowserDockLayout.Corner(rawValue: String($0)) } ?? .bottomRight
-        return (corner, parts.count > 1 && parts[1] == "large")
+        return (corner, parts.count > 1 && parts[1] == "big")
     }
 
     private func keep() {
-        UserDefaults.standard.set("\(corner.rawValue)|\(large ? "large" : "small")", forKey: Self.key(chatKey))
+        UserDefaults.standard.set("\(corner.rawValue)|\(big ? "big" : "small")", forKey: Self.key(chatKey))
     }
 }
 
@@ -1689,11 +1686,11 @@ final class LiveBrowserPlayerView: UIView {
     /// Whether Release is what's offered: the dock's word, which knows
     /// this app took control under the agent's asking (`takeover`).
     var holdsControl: (() -> Bool)?
-    var large = false { didSet { resize.setImage(UIImage(systemName: large ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right"), for: .normal); resize.accessibilityLabel = large ? Strings.LiveBrowser.smaller : Strings.LiveBrowser.bigger } }
+    var big = false { didSet { resize.setImage(UIImage(systemName: big ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right"), for: .normal); resize.accessibilityLabel = big ? Strings.LiveBrowser.smaller : Strings.LiveBrowser.bigger } }
     /// Taking or giving back control, ending: the spinner shows.
     var isBusy = false { didSet { updateSpinner() } }
     /// The feed waits for a frame (none yet, or the bridge slow to make
-    /// the next): the spinner shows over the last one, small or large.
+    /// the next): the spinner shows over the last one, small or big.
     private(set) var isWaiting = false { didSet { if isWaiting != oldValue { updateSpinner() } } }
     /// The spinner is showing (tests).
     var isSpinning: Bool { !spinner.isHidden }
@@ -1703,7 +1700,9 @@ final class LiveBrowserPlayerView: UIView {
     private let picture = UIImageView()
     private let message = UILabel()
     private let close = LiveBrowserPlayerView.overlayButton("xmark")
-    private let full = LiveBrowserPlayerView.overlayButton("arrow.up.left.and.arrow.down.right.rectangle")
+    /// A square with arrows out, apart at a glance from ⇲ beside it,
+    /// which only makes the player big or small in the chat.
+    private let full = LiveBrowserPlayerView.overlayButton("arrow.up.backward.and.arrow.down.forward.square", pointSize: 15)
     private let resize = LiveBrowserPlayerView.overlayButton("arrow.up.left.and.arrow.down.right")
     /// End browser, away from Take over and Release: behind a menu, and
     /// asked about again before anything ends.
@@ -1782,7 +1781,7 @@ final class LiveBrowserPlayerView: UIView {
         for view in [pillDot, pill, action] as [UIView] { footer.addSubview(view) }
         picture.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tapped)))
         addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(panned(_:))))
-        large = false
+        big = false
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: Self, _) in
             self.layer.borderColor = UIColor(Palette.divider).cgColor
         }
@@ -1791,19 +1790,12 @@ final class LiveBrowserPlayerView: UIView {
 
     /// A button on the bar over the picture: the glyph alone, in the
     /// card's colours, on a 44-point target.
-    private static func overlayButton(_ symbol: String) -> UIButton {
+    private static func overlayButton(_ symbol: String, pointSize: CGFloat = 13) -> UIButton {
         var configuration = UIButton.Configuration.plain()
-        configuration.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
+        configuration.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: pointSize, weight: .semibold))
         configuration.baseForegroundColor = UIColor(Palette.cardTitle)
         configuration.contentInsets = .zero
         return UIButton(configuration: configuration)
-    }
-
-    /// A phone's full-screen glyph: a square with arrows out, apart at a
-    /// glance from ⤢ beside it, which only grows the player in the chat.
-    func usePhoneFullScreenSymbol() {
-        full.configuration?.image = UIImage(systemName: "arrow.up.backward.and.arrow.down.forward.square",
-                                            withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold))
     }
 
     /// Whether the menu (End browser) is on the bar: not on a narrow
@@ -1847,7 +1839,7 @@ final class LiveBrowserPlayerView: UIView {
         } else {
             action.frame = CGRect(x: pad, y: 0, width: layout.footer.width - 2 * pad, height: height)
         }
-        // A phone's big player runs edge to edge: square, no side border.
+        // The big player runs edge to edge: square, no side border.
         layer.cornerRadius = layout.radius
         bar.layer.cornerRadius = layout.radius
         layer.borderWidth = layout.isBig ? 0 : 1
