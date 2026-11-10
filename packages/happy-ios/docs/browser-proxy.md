@@ -43,32 +43,6 @@ append a second HTTP error response to its bytes.
   workspace explicitly marked local `compute.type: host`, never an arbitrary
   runner. Without a usable connection or route, loading fails with retry and
   **never creates a direct WebKit view**.
-- A Happy CLI (relay) chat has no workspace on any agent connection, so its
-  links go through a paired computer's host fallback workspace, chosen by
-  `LegacyLinkRoute` when the link opens. The chat's machine is its
-  `metadata.machineId` in the account's machines, named as home names it
-  (`SessionList.hostName` over `MachineName`: `displayName`, else
-  `happyAgent.nodeName`, else `host`, else the session's own
-  `metadata.host`). In order:
-  1. The paired computer whose node name equals the machine's
-     `metadata.happyAgent.nodeName` (compared as in 3). happy-cli's daemon
-     publishes it from the Happy Agent sharing its `~/.happy`, so it is the
-     same computer whatever either is called. Older daemons omit it.
-  2. A computer the person picked for that machine before, while it is still
-     paired. One no longer paired is dropped from local settings
-     (`relayLinkComputers`, relay machine id to agent connection id) and the
-     rest decides again.
-  3. The one paired computer whose name matches the machine's, trimmed and in
-     any case, both read through `AgentName.friendly` as computers are shown
-     (a relay `prep-pro`, `Prep Pro` or `prep-pro.local` matches the node
-     `prep-pro`).
-  4. Otherwise, with at least one paired computer (no match, or several), the
-     person is asked before anything loads: "Open links from <machine>
-     through", one button per paired computer by name, and Cancel. The pick is
-     kept for the machine; the Machine screen shows "Links open through
-     <computer>", and tapping that row (Ask Next Time) forgets it.
-  5. No paired computer (revoked ones and hidden ones don't count): the
-     unavailable state, as above. There is no default computer.
 - Each target opens authenticated `CONNECT /v0/workspaces/:id/proxy`, then
   nested `CONNECT host:port`. The daemon chooses the workspace's runner. Its
   CONNECT contract permits arbitrary valid host:port targets, including public
@@ -171,8 +145,8 @@ page's, with its host as the subtitle. Embedded in an artifact, the buttons go
 in the artifact's header and its title stays. The page runs the full height,
 under the header and the home indicator, and WebKit insets its content by the
 safe area, so nothing moves when the header appears. Until it paints, the
-screen's surface shows through (`isOpaque = false`). Pull to refresh
-reloads (this fork keeps it; upstream has only the header's button).
+screen's surface shows through (`isOpaque = false`). There is no pull to
+refresh (Steve, for both apps); the header's button reloads.
 
 The back swipe is the page's while it has history (`TakesBackSwipe`): the
 shell's pop doesn't begin, and WebKit's own swipe goes back a page. On the
@@ -211,23 +185,6 @@ replaced loads (`NSURLErrorCancelled`, WebKit's 102 and 204) never show an
 error. Hosted tests (`HostedBrowserStatesTests`) drive each case through real
 WebKit and the proxy, and assert the bar's whole run and the buttons.
 
-## Live browser card
-
-An agent's text that links `http://localhost:6090/live/<id>`, or the bridge's
-LAN listener `http://192.168.2.72:6090/live/<id>` for a chat on another computer
-(the id 32 lowercase hex digits; `LiveBrowserLink`, whose `origins` are the one
-list of both) gets a card in the transcript
-(`LiveBrowserCardView`) in place of the link: bare, `<link>` or `[words](link)`,
-never in code, once per id. The card polls `GET /live/<id>/state` and
-`GET /live/<id>/frame.jpg` (read by its bytes; the bridge serves PNG) every
-1.5 s through `BrowserFetcher`, in the chat's workspace, only while it is on
-screen. It stops when the bridge says `done` (`session_closed` among them),
-`404` (ended) or `410` (expired), or the workspace refuses CONNECT with `501` (a
-container workspace: the browser runs on the host). While the state is
-`takeover` the card says why; a tap opens the live page in the browser screen,
-whose header then has a Done that POSTs `/live/<id>/done` the same way and
-closes the screen.
-
 ## Native artifact viewer
 
 Markdown, image, image series and video artifacts are drawn natively
@@ -261,9 +218,9 @@ the daemon checks a pinned version's URL against the artifact's current one, so
 a pinned version whose URL has since changed is refused inside the tunnel.
 
 The daemon exposes no unscoped host CONNECT endpoint, so host fallback needs a
-local host workspace. A Happy CLI chat's links reach a computer only through
-that fallback, on the computer `LegacyLinkRoute` picks (Routing above), never
-through the relay. No device-local localhost or public fallback occurs.
+local host workspace. Legacy relay chats have no workspace-to-agent-connection
+mapping: the active agent connection can supply a host fallback, or the browser
+shows the unavailable state. No device-local localhost or public fallback occurs.
 
 Hosted tests use real WebKit and the loopback listener against a byte-level fake
 daemon: artifact PUT and live SSE, relative JavaScript and WebSocket, a live
@@ -304,3 +261,5 @@ proxy, replacing only the remote encrypted link with a byte-transparent local
 TCP-to-Unix adapter. Tailcat's own paired-IPStack regression separately covers
 1,300 short HTTP requests alongside SSE, bounded closing-state eviction and
 late FIN handling; closed flows must not consume its live 256/1,024 budgets.
+
+Fork-specific notes for this checkout are in browser-proxy.fork.md; where they differ from this file, they win.
