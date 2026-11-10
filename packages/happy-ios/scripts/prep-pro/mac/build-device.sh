@@ -52,6 +52,9 @@ seed_packages $DD
 gen_project $P $HF/xcodegen-cache-$KIND > $L/xcodegen.log 2>&1 || { cat $L/xcodegen.log; finish 2; }
 resolve_packages $P $DD Happy || finish 2
 
+# Our self-hosted builds ship without the ElevenLabs call agent: say so,
+# or project.yml's post-build check fails every Preview and Release build.
+if [[ $CONFIG == (Preview|Release) ]]; then export HAPPY_RELEASE_WITHOUT_CALL_AGENT=1; fi
 t0=$SECONDS
 xcodebuild build -project $P/Happy.xcodeproj -scheme Happy -configuration $CONFIG \
   -destination "$XDEST" -derivedDataPath $DD -skipPackageUpdates \

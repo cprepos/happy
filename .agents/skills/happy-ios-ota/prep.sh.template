@@ -7,6 +7,9 @@
 # If you do use it, check `pgrep -fl xcodebuild` on prep-pro first and do not
 # start it while ~/happy-fast/lock exists.
 export PATH=/opt/homebrew/bin:$PATH
+# This Preview build ships without the ElevenLabs call agent: say so, or
+# project.yml's post-build check fails it.
+export HAPPY_RELEASE_WITHOUT_CALL_AGENT=1
 set -e
 B=~/happy-phone-build/__TS__
 cd $B/src/packages/happy-ios
