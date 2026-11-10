@@ -103,8 +103,10 @@ public struct ChatStatusLineLayout: Equatable, Sendable {
 /// the keyboard's, whichever is highest. A top corner keeps 8 under the
 /// safe area.
 ///
-/// Between and beyond the presets the size is continuous: a grip on the
-/// corner that faces the chat (`grips`) drags the picture's width, its
+/// Between and beyond the presets the size is continuous: a grip flush
+/// inside the player's bottom corner (`grips`: a phone's at the bottom
+/// right whatever its corner, an iPad's or a Mac's one at each bottom
+/// corner) drags the picture's width, its
 /// height following at the frame's aspect, and the width asked for
 /// (`Input.width`) is held to `limits`: no narrower than the old mini
 /// player, no wider than the pane (a floating player's card), and short
@@ -112,25 +114,16 @@ public struct ChatStatusLineLayout: Equatable, Sendable {
 /// player's docked corner stays where it is and it grows toward the chat;
 /// big stays centred under the header and grows from its middle.
 ///
-///     floating, bottom right        big, at the top
-///      ◸┌──────────┐                ┌──────────────┐
-///       │          │                │              │
+///     a phone's                     an iPad's or a Mac's
+///       ┌──────────┐                ┌──────────────┐
+///       │  ◂ Take ▸│                │ ◂   Take   ▸ │
+///       │         ◢│                │◣            ◢│
 ///       └──────────┘                └──────────────┘
-///                                   ◺              ◿
 public struct LiveBrowserDockLayout: Equatable, Sendable {
     public enum Corner: String, CaseIterable, Sendable {
         case topLeft, topRight, bottomLeft, bottomRight
         public var isTop: Bool { self == .topLeft || self == .topRight }
         public var isLeft: Bool { self == .topLeft || self == .bottomLeft }
-        /// Across the player: where its grip stands, toward the chat.
-        public var opposite: Corner {
-            switch self {
-            case .topLeft: .bottomRight
-            case .topRight: .bottomLeft
-            case .bottomLeft: .topRight
-            case .bottomRight: .topLeft
-            }
-        }
     }
 
     /// Where a chat's player was left: its corner, small or big, and a
@@ -189,11 +182,8 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
         /// The least of the chat a dragged size leaves beside the player:
         /// what an iPad's big leaves (`padChatRoom`).
         public static var chatRoom: CGFloat { padChatRoom }
-        /// The grip's tab, standing out of the player's corner toward the
-        /// chat; it overlaps the player by `gripOverlap`.
-        public static let gripWidth: CGFloat = 44
-        public static let gripHeight: CGFloat = 30
-        public static let gripOverlap: CGFloat = 6
+        /// A grip's touch target, flush in the player's bottom corner.
+        public static let grip: CGFloat = 44
         /// VoiceOver's increment or decrement of the grip: this much width.
         public static let resizeStep: CGFloat = 40
         /// The size shown while a grip is dragged: its text inside this
@@ -202,8 +192,8 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
         public static let badgePaddingV: CGFloat = 5
     }
 
-    /// A resize grip: the player's corner it stands on, in the player's
-    /// bounds (it stands out of them).
+    /// A resize grip: the player's corner it sits in, in the player's
+    /// bounds (flush inside them).
     public struct Grip: Equatable, Sendable {
         public var corner: Corner
         public var frame: CGRect
@@ -258,9 +248,15 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
     /// The widths a drag can reach here: from the old mini player's to the
     /// pane's (a floating player's card), leaving the chat some room.
     public var limits: ClosedRange<CGFloat>
-    /// The resize grips, on the corners facing the chat: the one opposite
-    /// a floating player's corner, both bottom ones under big.
+    /// The resize grips, flush inside the bottom corners: a phone's one at
+    /// the bottom right, an iPad's or a Mac's one at each bottom corner,
+    /// whatever corner the player is in, small or big.
     public var grips: [Grip]
+    /// The room on the bar between the buttons at its sides, centred on
+    /// it: Take control (or Release, Review, Retry) stands in its middle.
+    /// Nil where the bar has no room left for a 44-point button; the
+    /// footer has it then.
+    public var control: CGRect?
 
     /// Small's width: 60% of the card, at most 420 and at least 112
     /// (176 on a wide screen), never wider than the card.
@@ -332,12 +328,14 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
         fullScreen = four ? CGRect(x: width - 2 * b, y: 0, width: b, height: b) : nil
         footer = CGRect(x: 0, y: M.barHeight + pictureHeight, width: width, height: M.footerHeight)
         showsPill = width >= 200
-        let corners: [Corner] = if big { [.bottomLeft, .bottomRight] } else { [input.corner.opposite] }
+        // Each side keeps as much as the wider: the middle is the bar's.
+        let side = four ? 2 * b : b
+        control = width - 2 * side >= b ? CGRect(x: side, y: 0, width: width - 2 * side, height: b) : nil
+        let corners: [Corner] = input.idiom == .pad ? [.bottomLeft, .bottomRight] : [.bottomRight]
         grips = corners.map { corner in
             Grip(corner: corner, frame: CGRect(
-                x: corner.isLeft ? 0 : width - M.gripWidth,
-                y: corner.isTop ? M.gripOverlap - M.gripHeight : height - M.gripOverlap,
-                width: M.gripWidth, height: M.gripHeight
+                x: corner.isLeft ? 0 : width - M.grip, y: height - M.grip,
+                width: M.grip, height: M.grip
             ))
         }
     }
@@ -350,10 +348,12 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
     public func clamp(_ width: CGFloat) -> CGFloat { Self.clamp(width, to: limits) }
 
     /// The width a grip at `corner`, dragged by `translation` from a player
-    /// `start` wide, asks for (before `clamp`). The grip moves out by the
-    /// width it adds (half of it under big, which grows from its middle)
-    /// and down or up by the height, at the frame's aspect; the drag is
-    /// read along that diagonal, so a hand off it still resizes smoothly.
+    /// `start` wide, asks for (before `clamp`). Down grows it and up
+    /// shrinks it, out to the grip's side grows it and in shrinks it, by
+    /// the width it adds (half of it under big, which grows from its
+    /// middle) across and the height down, at the frame's aspect; the drag
+    /// is read along that diagonal, so a hand off it still resizes
+    /// smoothly. The player's docked corner stays where it is.
     public func width(dragging corner: Corner, from start: CGFloat, by translation: CGPoint) -> CGFloat {
         let across: CGFloat = (isBig ? 0.5 : 1) * (corner.isLeft ? -1 : 1)
         let down: CGFloat = (corner.isTop ? -1 : 1) / Metrics.aspect

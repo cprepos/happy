@@ -1742,9 +1742,11 @@ final class LiveBrowserIndicatorView: UIControl {
 
 // MARK: The player
 
-/// The floating picture: ✕, full screen and bigger or smaller over it, the
-/// status and Take over or Release under it. Dragged, it lands in the
-/// nearest corner; its grip, on the corner facing the chat, resizes it.
+/// The floating picture: ✕ and the menu at the bar's left, full screen and
+/// bigger or smaller at its right, Take over or Release in its middle, the
+/// status under the picture. Dragged, it lands in the nearest corner; a
+/// grip flush in a bottom corner (a phone's at the right, an iPad's or a
+/// Mac's at both) resizes it.
 final class LiveBrowserPlayerView: UIView, UIGestureRecognizerDelegate {
     var onClose: (() -> Void)?
     var onFullScreen: (() -> Void)?
@@ -1791,6 +1793,12 @@ final class LiveBrowserPlayerView: UIView, UIGestureRecognizerDelegate {
     private let pillDot = UIView()
     private let pill = UILabel()
     private let action = UIButton(type: .system)
+    /// What the action says (Take control, Release, Review, …), and its
+    /// glyph on a bar too narrow for the words.
+    private var actionTitle = ""
+    private var actionSymbol = "hand.tap"
+    /// Whether the glyph shows now; nil, not laid out since it changed.
+    private var actionCompact: Bool?
     private let spinner = UIActivityIndicatorView(style: .medium)
     /// The grips, one per corner `layout.grips` names; the unused hidden.
     private(set) var gripViews: [LiveBrowserResizeGrip] = []
@@ -1869,8 +1877,8 @@ final class LiveBrowserPlayerView: UIView, UIGestureRecognizerDelegate {
         badge.layer.masksToBounds = true
         badge.isHidden = true
         badge.accessibilityIdentifier = "live-browser-player-size"
-        for view in [bar, picture, message, footer, close, full, resize, menuButton, spinner, badge] as [UIView] { addSubview(view) }
-        for view in [pillDot, pill, action] as [UIView] { footer.addSubview(view) }
+        for view in [bar, picture, message, footer, close, full, resize, menuButton, action, spinner, badge] as [UIView] { addSubview(view) }
+        for view in [pillDot, pill] as [UIView] { footer.addSubview(view) }
         picture.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tapped)))
         let move = UIPanGestureRecognizer(target: self, action: #selector(panned(_:)))
         move.delegate = self
@@ -1923,16 +1931,28 @@ final class LiveBrowserPlayerView: UIView, UIGestureRecognizerDelegate {
         footer.frame = layout.footer
         let pad = M.footerPadding
         let height = layout.footer.height
-        let actionWidth = min(layout.footer.width - 2 * pad, action.sizeThatFits(CGSize(width: CGFloat.greatestFiniteMagnitude, height: height)).width + 8)
-        pill.isHidden = !layout.showsPill
-        pillDot.isHidden = !layout.showsPill
-        if layout.showsPill {
-            action.frame = CGRect(x: layout.footer.width - pad - actionWidth, y: 0, width: actionWidth, height: height)
-            pillDot.frame = CGRect(x: pad + 2, y: (height - 6) / 2, width: 6, height: 6)
-            pill.frame = CGRect(x: pillDot.frame.maxX + 6, y: 0, width: max(0, action.frame.minX - pillDot.frame.maxX - 12), height: height)
+        // Take control in the bar's middle, its words where they fit, else
+        // its glyph; on a bar too narrow for it, the footer's middle.
+        let font = action.titleLabel?.font ?? Fonts.ui(.semiBold, size: 12)
+        let textWidth = ceil((actionTitle as NSString).size(withAttributes: [.font: font]).width) + 16
+        if let slot = layout.control {
+            let fits = textWidth <= slot.width
+            showAction(compact: !fits)
+            let width = fits ? textWidth : M.button
+            action.frame = CGRect(x: (slot.midX - width / 2).rounded(), y: slot.minY, width: width, height: slot.height)
         } else {
-            action.frame = CGRect(x: pad, y: 0, width: layout.footer.width - 2 * pad, height: height)
+            showAction(compact: false)
+            let width = min(layout.footer.width - 2 * pad, textWidth)
+            action.frame = CGRect(x: (layout.footer.midX - width / 2).rounded(), y: layout.footer.minY, width: width, height: height)
         }
+        // The status at the footer's left, clear of the grips in its
+        // corners.
+        let pill = layout.showsPill && layout.control != nil
+        self.pill.isHidden = !pill
+        pillDot.isHidden = !pill
+        let leading = layout.grips.contains { $0.corner.isLeft } ? M.grip : pad + 2
+        pillDot.frame = CGRect(x: leading, y: (height - 6) / 2, width: 6, height: 6)
+        self.pill.frame = CGRect(x: pillDot.frame.maxX + 6, y: 0, width: max(0, layout.footer.width - M.grip - pillDot.frame.maxX - 6), height: height)
         // The big player runs edge to edge: square, no side border.
         layer.cornerRadius = layout.radius
         bar.layer.cornerRadius = layout.radius
@@ -1974,12 +1994,6 @@ final class LiveBrowserPlayerView: UIView, UIGestureRecognizerDelegate {
         }
     }
 
-    /// The grips stand out of the player's corner: a touch on them is the
-    /// player's.
-    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        super.point(inside: point, with: event) || gripViews.contains { !$0.isHidden && $0.frame.contains(point) }
-    }
-
     /// The move pan leaves a grip's touch to the grip.
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
         !(touch.view is LiveBrowserResizeGrip)
@@ -2016,13 +2030,28 @@ final class LiveBrowserPlayerView: UIView, UIGestureRecognizerDelegate {
         case .notResponding: Strings.LiveBrowser.retry
         default: state?.pendingApproval != nil ? Strings.LiveBrowser.review : held ? Strings.LiveBrowser.release : Strings.LiveBrowser.takeOver
         }
-        action.setTitle(title, for: .normal)
+        actionTitle = title
+        actionSymbol = switch feed.phase {
+        case .dormant, .notResponding: "arrow.clockwise"
+        default: state?.pendingApproval != nil ? "checkmark.shield" : held ? "hand.raised.slash" : "hand.tap"
+        }
+        actionCompact = nil
+        action.accessibilityLabel = title
         action.isEnabled = !feed.phase.isOver
         isOver = feed.phase.isOver
         menuButton.isHidden = layout?.menu == nil || isOver
         accessibilityLabel = [Strings.LiveBrowser.title, status].joined(separator: ", ")
         accessibilityValue = state?.status.rawValue ?? "\(feed.phase)"
         setNeedsLayout()
+    }
+
+    /// Take control's words, or its glyph where the bar has no room for
+    /// them; the words are its VoiceOver label either way.
+    private func showAction(compact: Bool) {
+        guard compact != actionCompact else { return }
+        actionCompact = compact
+        action.setTitle(compact ? nil : actionTitle, for: .normal)
+        action.setImage(compact ? UIImage(systemName: actionSymbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold)) : nil, for: .normal)
     }
 
     private func updateSpinner() {
@@ -2090,15 +2119,16 @@ final class LiveBrowserPlayerView: UIView, UIGestureRecognizerDelegate {
     }
 }
 
-/// A resize grip: a small tab out of the player's corner that faces the
-/// chat, a diagonal arrow on it. A pan on it resizes the player; for
-/// VoiceOver it is adjustable, a step wider or narrower each swipe.
+/// A resize grip: a window's corner grip, flush inside the player's
+/// bottom corner, three short diagonal lines in the label's secondary
+/// colour on no chip, apart at a glance from ⤢'s arrows. A pan on it
+/// resizes the player; for VoiceOver it is adjustable, a step wider or
+/// narrower each swipe.
 final class LiveBrowserResizeGrip: UIView {
-    var corner: LiveBrowserDockLayout.Corner = .topLeft { didSet { if corner != oldValue { render() } } }
+    var corner: LiveBrowserDockLayout.Corner = .bottomRight { didSet { if corner != oldValue { setNeedsLayout() } } }
     var onPan: ((UIGestureRecognizer.State, CGPoint) -> Void)?
     var onStep: ((Int) -> Void)?
-    private let tab = UIView()
-    private let glyph = UIImageView()
+    private let lines = CAShapeLayer()
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -2106,37 +2136,35 @@ final class LiveBrowserResizeGrip: UIView {
         accessibilityLabel = Strings.LiveBrowser.resizePlayer
         accessibilityHint = Strings.LiveBrowser.resizeHint
         accessibilityTraits = .adjustable
-        tab.backgroundColor = UIColor(Palette.cardFill)
-        tab.layer.borderWidth = 1
-        tab.layer.borderColor = UIColor(Palette.divider).cgColor
-        tab.isUserInteractionEnabled = false
-        glyph.tintColor = UIColor(Palette.cardDetail)
-        glyph.contentMode = .center
-        addSubview(tab)
-        tab.addSubview(glyph)
+        lines.fillColor = nil
+        lines.lineWidth = 1.5
+        lines.lineCap = .round
+        layer.addSublayer(lines)
         addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(panned(_:))))
-        render()
-        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: Self, _) in
-            self.tab.layer.borderColor = UIColor(Palette.divider).cgColor
-        }
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: Self, _) in self.colour() }
+        colour()
     }
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
 
-    /// The arrow points along the diagonal the grip moves on; the tab's
-    /// rounded side is the one away from the player.
-    private func render() {
-        let symbol = corner == .topLeft || corner == .bottomRight ? "arrow.up.left.and.arrow.down.right" : "arrow.up.right.and.arrow.down.left"
-        glyph.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 10, weight: .bold))
-        tab.layer.cornerRadius = 8
-        tab.layer.maskedCorners = corner.isTop
-            ? [.layerMinXMinYCorner, .layerMaxXMinYCorner]
-            : [.layerMinXMaxYCorner, .layerMaxXMaxYCorner]
+    private func colour() {
+        lines.strokeColor = UIColor.secondaryLabel.resolvedColor(with: traitCollection).cgColor
     }
 
+    /// The lines run across the corner, 5 in from its edges, clear of a
+    /// floating player's rounded corner, mirrored at the left.
     override func layoutSubviews() {
         super.layoutSubviews()
-        tab.frame = bounds
-        glyph.frame = tab.bounds
+        lines.frame = bounds
+        let inset: CGFloat = 5
+        let y = bounds.maxY - inset
+        let x = corner.isLeft ? bounds.minX + inset : bounds.maxX - inset
+        let out: CGFloat = corner.isLeft ? 1 : -1
+        let path = UIBezierPath()
+        for length in [4, 8, 12] as [CGFloat] {
+            path.move(to: CGPoint(x: x + out * length, y: y))
+            path.addLine(to: CGPoint(x: x, y: y - length))
+        }
+        lines.path = path.cgPath
     }
 
     @objc private func panned(_ pan: UIPanGestureRecognizer) {
