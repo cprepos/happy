@@ -961,7 +961,9 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
             keyboardMovesInset: ultraKeyboard != nil
         ))
         list.setLayoutFrame(screen.list)
-        list.setEdgeInsets(newest: screen.newestEdgeInset, oldest: screen.oldestEdgeInset, keyboard: keyboard)
+        // A phone's big live-browser player docks under the bar: the
+        // oldest end clears it too.
+        list.setEdgeInsets(newest: screen.newestEdgeInset, oldest: screen.oldestEdgeInset + liveDock.topInset(in: view), keyboard: keyboard)
         headerScrim.setLayoutFrame(screen.headerScrim)
         if let frame = screen.headerAccessory, !tabStrip.isHidden {
             tabStrip.maxWidth = ContentWidth.headerMaxWidth

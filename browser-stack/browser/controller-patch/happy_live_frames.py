@@ -399,7 +399,9 @@ async def editable_focused(page: Any) -> bool | None:
 #      The image is written outside the artifact tree, OCR-scrubbed through the controller's own
 #      redaction, and only then moved into the session's artifact directory as
 #      <stamp>Z-screen-<label>.png. -> {url, title, screenshot_path, screenshot_url, width, height,
-#      png, pii_scrubbed, redaction, chrome_strip, screenshot_pii_scrub?}. With PII_SCRUB_SCREENSHOT
+#      png, pii_scrubbed, redaction, chrome_strip, address_bar_scheme?, screenshot_pii_scrub?}
+#      (address_bar_scheme, for an https page: whether OCR saw "https://" in the address bar; see
+#      ADDRESS_BAR_SCHEME). With PII_SCRUB_SCREENSHOT
 #      off the image is stored as captured, as page screenshots are; PII_SCRUB_SCREENSHOT_STRICT
 #      withholds an unscrubbable one (SCREENSHOT_WITHHELD, 503) as it does those.
 #
@@ -525,6 +527,86 @@ def outside_strip(ocr: Any, strip: dict[str, Any]) -> Any:
         if isinstance(ocr.get(key), list):
             out[key] = [b for b in ocr[key] if not _in_strip(b, strip)]
     return out
+
+
+# The address bar's scheme, a check on the evidence, never a reason to refuse it. kiosk/policy.json sets
+# ShowFullUrlsInAddressBar, so an https page's address bar reads "https://host/..."; without it Chrome
+# shows the host alone. For a session on an https URL the result says whether OCR saw the scheme in the
+# toolbar row of the UI strip (address_bar_scheme true/false), or "unknown" when OCR is off or could not
+# run. The whole-image OCR the scrub already ran is read first; when it did not run or did not see the
+# scheme, the strip alone is read again, enlarged (small UI text reads better so). OCR may misread
+# "https:" as "https;" or drop a slash; those still count.
+ADDRESS_BAR_SCHEME = re.compile(r"\bhttps\s?[:;.,]?\s?/{1,2}", re.IGNORECASE)
+# The tab strip is the top of the UI strip, the toolbar (with the address bar) below it: only words whose
+# middle lies below this fraction of the strip's height count, so a tab title cannot answer for the URL.
+ADDRESS_BAR_TOP_FRACTION = 0.4
+ADDRESS_BAR_OCR_SCALE = 2
+
+
+def scheme_seen(ocr: Any, strip: dict[str, Any]) -> bool | None:
+    """Whether OCR read an https scheme in the strip's toolbar row; None when OCR did not run."""
+    if not isinstance(ocr, dict) or ocr.get("available", True) is False:
+        return None
+    blocks = ocr.get("redaction_blocks")
+    if not isinstance(blocks, list):
+        blocks = ocr.get("blocks") if isinstance(ocr.get("blocks"), list) else []
+    top = strip["y"] + strip["height"] * ADDRESS_BAR_TOP_FRACTION
+    for block in blocks:
+        if not isinstance(block, dict) or not _in_strip(block, strip):
+            continue
+        try:
+            middle = int(block["bbox"]["y"]) + int(block["bbox"]["height"]) / 2
+        except (KeyError, TypeError, ValueError):
+            continue
+        if middle >= top and ADDRESS_BAR_SCHEME.search(str(block.get("text") or "")):
+            return True
+    return False
+
+
+async def _strip_ocr(manager: Any, png: bytes, strip: dict[str, Any], scratch: Path) -> tuple[Any, dict[str, Any]]:
+    """OCR of the UI strip alone, enlarged: (ocr, the strip in the crop's own pixels)."""
+    import io
+
+    from PIL import Image
+
+    scale = ADDRESS_BAR_OCR_SCALE
+
+    def crop() -> None:
+        with Image.open(io.BytesIO(png)) as image:
+            box = (strip["x"], strip["y"], strip["x"] + strip["width"], strip["y"] + strip["height"])
+            part = image.crop(box).convert("L")
+            part.resize((part.width * scale, part.height * scale), Image.LANCZOS).save(scratch, format="PNG")
+
+    try:
+        await asyncio.to_thread(crop)
+        ocr = await manager.ocr.extract_from_image(str(scratch))
+    finally:
+        await asyncio.to_thread(scratch.unlink, True)
+    return ocr, {"x": 0, "y": 0, "width": strip["width"] * scale, "height": strip["height"] * scale}
+
+
+async def address_bar_scheme(
+    manager: Any, *, url: str, png: bytes, strip: dict[str, Any], ocr: Any, scratch: Path
+) -> bool | str | None:
+    """The result's address_bar_scheme for a session on an https URL (None, left out, for any other)."""
+    if not url.lower().startswith("https://"):
+        return None
+    seen = scheme_seen(ocr, strip)
+    if seen is not True:
+        try:
+            again = scheme_seen(*await _strip_ocr(manager, png, strip, scratch))
+        except Exception as exc:
+            logger.info("address bar scheme: the strip could not be read: %s", type(exc).__name__)
+            again = None
+        seen = again if again is not None else seen
+    if seen is None:
+        return "unknown"
+    if seen is False:
+        logger.warning(
+            "address bar scheme: OCR did not see https:// in the address bar of a screen shot of an https page "
+            "(is ShowFullUrlsInAddressBar in the browser's managed policy?)"
+        )
+    return seen
 
 
 def _redaction(redact: bool, scrubbing: bool, shot: dict[str, Any]) -> str:
@@ -683,12 +765,16 @@ async def screen_scrub(
         await asyncio.to_thread(pending.write_bytes, png)
         shot: dict[str, Any] = {"path": str(pending), "url": target["url"]}
         scrubbing = redact and getattr(manager.pii_scrubber, "screenshot_enabled", False) is True
+        ocr: Any = None
         if scrubbing:
             # The controller's own redaction, as _capture_screenshot_redacted runs it for a page
             # screenshot, minus the words in the browser's UI strip. Strict mode deletes the image and
             # raises SCREENSHOT_WITHHELD.
-            ocr = outside_strip(await manager.ocr.extract_from_image(str(pending)), strip)
-            await manager.observation._scrub_screenshot_if_needed(session, shot, ocr)
+            ocr = await manager.ocr.extract_from_image(str(pending))
+            await manager.observation._scrub_screenshot_if_needed(session, shot, outside_strip(ocr, strip))
+        scheme = await address_bar_scheme(
+            manager, url=url, png=png, strip=strip, ocr=ocr, scratch=pending_dir / (final.stem + "-strip.png")
+        )
         if read.moved():
             raise _moved()
         redaction = _redaction(redact, scrubbing, shot)
@@ -708,6 +794,7 @@ async def screen_scrub(
             "pii_scrubbed": scrubbing and "pii_scrub_skipped" not in shot,
             "redaction": redaction,
             "chrome_strip": strip,
+            **({} if scheme is None else {"address_bar_scheme": scheme}),
             **_scrub_disclosure(shot),
         }
     finally:

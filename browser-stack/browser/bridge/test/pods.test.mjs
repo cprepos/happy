@@ -76,7 +76,7 @@ function harness({ maxPods = 2, warm = 0, ensureMs = 0, readyAfter = 0, createFa
                 const e = c.screenQueue.shift();
                 if (e) throw e;
                 const raw = redact === false && !c.ignoresRedact;
-                return { url: 'https://example.com/', title: 'Example', screenshot_path: `/data/artifacts/${sid}/x-screen-${label}.png`, screenshot_url: `/artifacts/${sid}/x-screen-${label}.png`, width: 1920, height: 1200, png: raw ? 'UkFX' : 'U0NSVUJCRUQ=', pii_scrubbed: !raw, redaction: raw ? 'off_by_request' : 'on', chrome_strip: { x: 0, y: 0, width: 1920, height: 120, source: 'window' } };
+                return { url: 'https://example.com/', title: 'Example', screenshot_path: `/data/artifacts/${sid}/x-screen-${label}.png`, screenshot_url: `/artifacts/${sid}/x-screen-${label}.png`, width: 1920, height: 1200, png: raw ? 'UkFX' : 'U0NSVUJCRUQ=', pii_scrubbed: !raw, redaction: raw ? 'off_by_request' : 'on', chrome_strip: { x: 0, y: 0, width: 1920, height: 120, source: 'window' }, address_bar_scheme: true };
             },
             async pageShot(sid, { label, redact }) {
                 calls.push(`ctl.pageShot:${slot}:${sid}:${label}:${redact}`);
@@ -778,6 +778,7 @@ test('screenShot: the chat\'s own tab forward, its own pod\'s screen, scrubbed b
     assert.equal(shot.pii_scrubbed, true);
     assert.equal(shot.redaction, 'on');
     assert.deepEqual(shot.chrome_strip, { x: 0, y: 0, width: 1920, height: 120, source: 'window' });
+    assert.equal(shot.address_bar_scheme, true);
     assert.equal(shot.screenshot_url, '/artifacts/s2/x-screen-evidence.png');
     assert.match(shot.captured_at, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
     // Held by the user: their tab is not changed.

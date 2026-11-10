@@ -824,6 +824,19 @@ test('router: a screen shot while the user holds the browser leaves their tab al
     assert.deepEqual(h.seen.bridge.filter((b) => b.path === '/api/screen').map((b) => b.body.activate), [false]);
 });
 
+test('router: browser_screenshot passes address_bar_scheme through, and only its three values', async () => {
+    for (const [given, want] of [[true, true], [false, false], ['unknown', 'unknown'], ['yes', undefined], [1, undefined], [undefined, undefined]]) {
+        const h = mcpHarness({ screenReply: () => ({ mime: 'image/png', width: 1, height: 1, data: 'x', session_id: 'pod0', captured_at: 't', screenshot_url: '/a', pii_scrubbed: true, redaction: 'on', address_bar_scheme: given }) });
+        await h.list();
+        const r = await h.call('browser_screenshot', {});
+        assert.equal(r.result.isError, false, 'a missing scheme never fails the shot');
+        assert.equal(r.result.structuredContent.address_bar_scheme, want, String(given));
+        assert.equal('address_bar_scheme' in r.result.structuredContent, want !== undefined);
+        const info = JSON.parse(r.result.content.find((c) => c.type === 'text' && c.text.startsWith('{"scope"')).text);
+        assert.equal(info.address_bar_scheme, want);
+    }
+});
+
 test('router: a screen reply without the scrubbed capture\'s fields, or for another session, is never passed on', async () => {
     const old = mcpHarness({ screenReply: () => ({ mime: 'image/png', width: 1920, height: 1200, data: 'raw' }) });
     await old.list();

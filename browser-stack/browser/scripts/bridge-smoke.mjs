@@ -109,15 +109,25 @@ try {
     const state = await (await fetch(`${live}/state`)).json();
     check(state.status === 'watching', `state ${JSON.stringify(state)}`);
 
+    const tf = Date.now();
     const f = await fetch(`${live}/frame.jpg`);
     const body = Buffer.from(await f.arrayBuffer());
+    const firstMs = Date.now() - tf;
     const sig = body.subarray(0, 4).toString('hex');
     const ct = f.headers.get('content-type');
     check(f.ok && ((ct === 'image/png' && sig === '89504e47') || (ct === 'image/jpeg' && sig.startsWith('ffd8'))), `frame.jpg -> ${f.status} ${ct} ${body.length} bytes`);
 
+    // The bridge dates a frame from when its capture was asked for (lib/app.mjs captureFrame), so
+    // a capture that took longer than the cache window (frameCacheMs, 1 s) is already past it when
+    // it arrives: the next read starts a capture, and with the earlier frame in hand answers by
+    // frameWaitMs (1.5 s) at the latest. A capture this slow (1.4 s typical, 2 s+ on a fresh page)
+    // is normal, so only a quick first capture means the repeat must come from the cache.
     const t0 = Date.now();
-    await fetch(`${live}/frame.jpg`).then((r) => r.arrayBuffer());
-    check(Date.now() - t0 < 300, `second frame within the cache window took ${Date.now() - t0}ms`);
+    const again = await fetch(`${live}/frame.jpg`);
+    await again.arrayBuffer();
+    const secondMs = Date.now() - t0;
+    if (firstMs < 600) check(again.ok && secondMs < 300, `second frame within the cache window took ${secondMs}ms (first ${firstMs}ms)`);
+    else check(again.ok && secondMs < 1500 + 400, `second frame right after a ${firstMs}ms capture took ${secondMs}ms (earlier frame by frameWaitMs 1500ms)`);
 
     const after = await (await fetch(`${live}/state`)).json();
     const leaked = [apiToken, bridgeToken, vncPassword].some((s) => JSON.stringify(after).includes(s));

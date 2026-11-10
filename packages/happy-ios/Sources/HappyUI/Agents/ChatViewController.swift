@@ -1528,7 +1528,9 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         // it; its foot is the composer's edge.
         if ultra.frame != view.bounds { ultra.frame = view.bounds }
         ultra.followBudget = ChatFollow.budget(body: ChatTextStyles.text, scale: traitCollection.textEnvironment?.scale ?? .standard)
-        ultra.setViewport(frame: screen.list, insets: UIEdgeInsets(top: view.safeAreaInsets.top, left: 0, bottom: screen.listBottom + (line?.frame.height ?? 0), right: 0),
+        // A phone's big live-browser player docks under the bar: the
+        // transcript starts under it.
+        ultra.setViewport(frame: screen.list, insets: UIEdgeInsets(top: view.safeAreaInsets.top + liveDock.topInset(in: view), left: 0, bottom: screen.listBottom + (line?.frame.height ?? 0), right: 0),
                           keyboard: insetMotion)
         layoutTranscript()
         liveDock.layoutPlayer(card: screen.card, anchor: line?.frame.minY ?? screen.card.minY)

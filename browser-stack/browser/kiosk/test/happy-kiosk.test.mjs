@@ -123,3 +123,10 @@ test('watch sends a page that commits view-source: to about:blank, on commit and
     assert.deepEqual(cdp.sent.map(([sid]) => sid), ['S-a']);
     w.stop();
 });
+
+test('policy.json (mounted as a managed policy on the shared node and every pod) shows full URLs, scheme included', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const policy = JSON.parse(await readFile(new URL('../policy.json', import.meta.url), 'utf8'));
+    // Screenshots are compliance evidence: the address bar must show "https://", not just the host.
+    assert.equal(policy.ShowFullUrlsInAddressBar, true);
+});

@@ -30,6 +30,8 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
     private(set) var web: WKWebView?
     private var loading: Task<Void, Never>?
     private var observations: [NSKeyValueObservation] = []
+    /// Inside `lockRemoteScreen` (BrowserViewController+Fork).
+    var locking = false
     private let progressView = BrowserProgressView()
     let failureView = BrowserFailureView()
     private(set) var progress = BrowserProgress()
@@ -192,6 +194,7 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
             web.observe(\.title) { [weak self] _, _ in MainActor.assumeIsolated { self?.updateHeader() } },
             web.observe(\.url) { [weak self] _, _ in MainActor.assumeIsolated { self?.updateHeader() } },
         ]
+        observations += remoteScreenObservations(web)
         view.setNeedsLayout()
         return web
     }

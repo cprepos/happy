@@ -391,7 +391,7 @@ def png(width: int = 1920, height: int = 1200, tail: bytes = b"") -> bytes:
     return hlf.PNG_SIGNATURE + struct.pack(">I", 13) + b"IHDR" + struct.pack(">II", width, height) + b"\x08\x02\x00\x00\x00" + tail
 
 
-class ScreenTests(Base):
+class ScreenBase(Base):
     def setUp(self) -> None:
         super().setUp()
         m = self.service.manager
@@ -428,6 +428,8 @@ class ScreenTests(Base):
     def word(text: str, x: int, y: int, w: int = 80, h: int = 14) -> dict:
         return {"text": text, "bbox": {"x": x, "y": y, "width": w, "height": h}, "line": [1, 1, 1]}
 
+
+class ScreenTests(ScreenBase):
     async def test_the_address_bar_is_never_redacted_and_the_page_is(self) -> None:
         url_word = self.word("user@example.com", 300, 60)  # in the address bar
         tab_word = self.word("Inbox", 40, 10)  # in the tab strip
@@ -743,6 +745,105 @@ class ScreenTests(Base):
         self.assertEqual((refused.status_code, refused.json()["code"]), (403, "page_refused"))
         refused = client.post("/happy/sessions/s1/page-shot", json={})
         self.assertEqual((refused.status_code, refused.json()["code"]), (403, "page_refused"))
+
+
+def real_png(width: int = 1920, height: int = 1200) -> bytes:
+    """A decodable PNG (the strip re-read crops it), unlike png()'s header-only one."""
+    import io
+
+    from PIL import Image
+
+    out = io.BytesIO()
+    Image.new("RGB", (width, height), "white").save(out, format="PNG")
+    return out.getvalue()
+
+
+class AddressBarSchemeTests(ScreenBase):
+    """address_bar_scheme: a check on the evidence (ShowFullUrlsInAddressBar), never a refusal."""
+
+    # The default window has 120 px of browser UI: the tab strip above y 48, the toolbar below.
+    def ocr_by_image(self, whole: dict, strip: dict | None = None) -> list[str]:
+        seen: list[str] = []
+
+        def ocr(path: str) -> dict:
+            seen.append(path)
+            return strip if (strip is not None and path.endswith("-strip.png")) else whole
+
+        self.service.manager.ocr.extract_from_image.side_effect = ocr
+        return seen
+
+    async def shoot_png(self, data: bytes, redact: bool = True) -> dict:
+        front = await hlf.screen_front(self.service.manager, "s1", redact=redact)
+        return await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], png=data, redact=redact)
+
+    def test_scheme_seen_reads_only_the_toolbar_row_of_the_strip(self) -> None:
+        strip = {"x": 0, "y": 0, "width": 1920, "height": 120}
+        url = self.word("https://example.com/one", 300, 70)
+        self.assertIs(hlf.scheme_seen({"available": True, "redaction_blocks": [url]}, strip), True)
+        for text in ("https:/example.com", "HTTPS;//example.com", "https//example.com"):
+            self.assertIs(hlf.scheme_seen({"redaction_blocks": [self.word(text, 300, 70)]}, strip), True, text)
+        host_only = self.word("example.com/one", 300, 70)
+        self.assertIs(hlf.scheme_seen({"available": True, "redaction_blocks": [host_only]}, strip), False)
+        tab = self.word("https://example.com", 40, 10)  # a tab title cannot answer for the URL
+        self.assertIs(hlf.scheme_seen({"available": True, "redaction_blocks": [tab]}, strip), False)
+        in_page = self.word("https://example.com", 300, 400)
+        self.assertIs(hlf.scheme_seen({"available": True, "redaction_blocks": [in_page]}, strip), False)
+        self.assertIs(hlf.scheme_seen({"available": True, "blocks": [url]}, strip), True)
+        self.assertIsNone(hlf.scheme_seen({"available": False, "error": "tesseract_not_found"}, strip))
+        self.assertIsNone(hlf.scheme_seen(None, strip))
+
+    async def test_the_scrub_ocr_that_saw_the_scheme_is_enough(self) -> None:
+        url = self.word("https://example.com/one", 300, 70)
+        seen = self.ocr_by_image({"available": True, "redaction_blocks": [url]})
+        out = await self.shoot()
+        self.assertIs(out["address_bar_scheme"], True)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(self.scrubbed_blocks, [])  # the URL is still never redacted
+
+    async def test_the_strip_is_read_again_when_the_whole_image_ocr_missed_it(self) -> None:
+        url = self.word("https://example.com/one", 600, 140)  # in the enlarged crop's pixels
+        seen = self.ocr_by_image({"available": True, "redaction_blocks": []}, {"available": True, "redaction_blocks": [url]})
+        out = await self.shoot_png(real_png())
+        self.assertIs(out["address_bar_scheme"], True)
+        self.assertEqual(len(seen), 2)
+        self.assertFalse(Path(seen[1]).is_relative_to(self.session.artifact_dir))
+        self.assertFalse(Path(seen[1]).exists())
+        self.assertEqual(list(hlf._pending_dir(self.session).iterdir()), [])
+
+    async def test_no_scheme_warns_and_still_files_the_shot(self) -> None:
+        host = self.word("example.com/one", 300, 70)
+        self.ocr_by_image({"available": True, "redaction_blocks": [host]}, {"available": True, "redaction_blocks": []})
+        with self.assertLogs("happy_live_frames", "WARNING") as logs:
+            out = await self.shoot_png(real_png())
+        self.assertIs(out["address_bar_scheme"], False)
+        self.assertIn("ShowFullUrlsInAddressBar", "\n".join(logs.output))
+        self.assertTrue(Path(out["screenshot_path"]).exists())
+        self.assertEqual(out["redaction"], "on")
+
+    async def test_ocr_off_or_failing_is_unknown(self) -> None:
+        off = {"available": False, "enabled": False, "redaction_blocks": []}
+        self.ocr_by_image(off, off)
+        out = await self.shoot_png(real_png())
+        self.assertEqual(out["address_bar_scheme"], "unknown")
+        self.service.manager.ocr.extract_from_image.side_effect = RuntimeError("tesseract crashed")
+        self.scrubber.screenshot_enabled = False
+        out = await self.shoot_png(real_png())
+        self.assertEqual(out["address_bar_scheme"], "unknown")
+        self.assertTrue(Path(out["screenshot_path"]).exists())
+
+    async def test_an_unredacted_shot_is_checked_from_the_strip_alone(self) -> None:
+        url = self.word("https://example.com/one", 600, 140)
+        seen = self.ocr_by_image({"available": True, "redaction_blocks": []}, {"available": True, "redaction_blocks": [url]})
+        data = real_png()
+        out = await self.shoot_png(data, redact=False)
+        self.assertEqual((out["redaction"], out["address_bar_scheme"]), ("off_by_request", True))
+        self.assertEqual([p.endswith("-strip.png") for p in seen], [True])
+        self.assertEqual(Path(out["screenshot_path"]).read_bytes(), data)
+
+    async def test_a_page_not_on_https_has_no_field(self) -> None:
+        self.page.url = "http://example.com/one"
+        out = await self.shoot_png(real_png())
+        self.assertNotIn("address_bar_scheme", out)
 
 
 if __name__ == "__main__":

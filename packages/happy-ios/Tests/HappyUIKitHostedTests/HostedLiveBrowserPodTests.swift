@@ -140,7 +140,8 @@ final class HostedLiveBrowserPodTests: XCTestCase {
         XCTAssertEqual(takes.count, 3, "two 202s while it woke, then the 200")
         let navigation = try XCTUnwrap(host.presentedViewController as? UINavigationController)
         let noVNC = try XCTUnwrap(navigation.viewControllers.last as? LiveBrowserFullScreenItems)
-        XCTAssertEqual(noVNC.browser.originalURL.absoluteString, BrowserDaemon.chatNoVNC)
+        let scaled = BrowserDaemon.chatNoVNC.replacingOccurrences(of: "resize=remote", with: "resize=scale")
+        XCTAssertEqual(noVNC.browser.originalURL.absoluteString, dock.isPhone ? scaled : BrowserDaemon.chatNoVNC)
         try await until { dock.indicator.text == Strings.LiveBrowser.indicator(Strings.LiveBrowser.youHaveControl) }
         dock.minimize()
         try await until { host.presentedViewController == nil }
