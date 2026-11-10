@@ -54,7 +54,8 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
     private let previewing: Bool
     /// The Happy session the agent is mirrored to, when the app knows it:
     /// the bridge keys the agent's browser by it (`LiveBrowserLink.chatKey`).
-    let happySession: String?
+    /// Set right after init, before the screen shows.
+    var happySession: String?
     /// The chat's live browser: its red line over the card, its player.
     private lazy var liveDock: LiveBrowserDock = {
         let dock = LiveBrowserDock(host: self, chatKey: "agent.\(media.agentId)")
@@ -229,9 +230,8 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
     private let header = ChatHeaderView()
     private var titleView: ChatTitleView { header.titleView }
 
-    init(session: Session, agentId: String, title: String, spaceId: String?, intro: Intro?, newTask: NewTask? = nil, prefill: ChatPrefill? = nil, saying: String? = nil, previewing: Bool = false, happySession: String? = nil) {
+    init(session: Session, agentId: String, title: String, spaceId: String?, intro: Intro?, newTask: NewTask? = nil, prefill: ChatPrefill? = nil, saying: String? = nil, previewing: Bool = false) {
         self.session = session
-        self.happySession = happySession
         self.saying = previewing ? nil : saying
         self.spaceId = spaceId
         self.intro = intro

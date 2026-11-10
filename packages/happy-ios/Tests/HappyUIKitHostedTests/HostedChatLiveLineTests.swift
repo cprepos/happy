@@ -112,7 +112,8 @@ final class HostedChatLiveLineTests: XCTestCase {
 
     private func open(_ session: Session, happySession: String? = nil) async throws -> (ChatViewController, UIWindow) {
         UserDefaults.standard.removeObject(forKey: "liveBrowserDock.agent.a")
-        let chat = ChatViewController(session: session, agentId: "a", title: "Chief of Staff", spaceId: nil, intro: nil, happySession: happySession)
+        let chat = ChatViewController(session: session, agentId: "a", title: "Chief of Staff", spaceId: nil, intro: nil)
+        chat.happySession = happySession
         let scene = try await hostedActiveScene()
         let window = hostedKeyWindow(in: scene, root: UINavigationController(rootViewController: chat))
         window.layoutIfNeeded()
