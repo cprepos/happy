@@ -678,7 +678,11 @@ final class HostedLiveBrowserTests: XCTestCase {
         dock.update(link: LiveBrowserLink(id: id))
         try await until { dock.player != nil && dock.feed?.phase.state != nil }
         dock.presentFullScreen(taking: false)
-        try await until { (host.presentedViewController as? UINavigationController)?.transitionCoordinator == nil }
+        // It opens once the page is found: presented, then settled.
+        try await until {
+            guard let navigation = host.presentedViewController as? UINavigationController else { return false }
+            return navigation.transitionCoordinator == nil
+        }
         let navigation = try XCTUnwrap(host.presentedViewController as? UINavigationController)
         let frame = try XCTUnwrap(navigation.viewControllers.first as? LiveBrowserFullScreenItems)
         try await until { frame.isViewLoaded }
@@ -752,9 +756,11 @@ final class HostedLiveBrowserTests: XCTestCase {
     func testOnAPhoneTheLivePageIsItsPictureAlone() async throws {
         let configuration = WKWebViewConfiguration()
         LiveBrowserDock.pictureOnly(in: configuration)
-        let web = WKWebView(frame: CGRect(x: 0, y: 0, width: 402, height: 251), configuration: configuration)
         let window = hostedKeyWindow(in: try await hostedActiveScene())
         defer { window.isHidden = true }
+        // Under the header, as full screen places it: clear of the safe
+        // area's top, which would otherwise come off the page's 100dvh.
+        let web = WKWebView(frame: CGRect(x: 0, y: window.safeAreaInsets.top, width: 402, height: 251), configuration: configuration)
         window.addSubview(web)
         web.loadHTMLString("""
             <!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">

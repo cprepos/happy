@@ -35,6 +35,8 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
     private(set) var web: WKWebView?
     private var loading: Task<Void, Never>?
     private var observations: [NSKeyValueObservation] = []
+    /// Inside `lockRemoteScreen`.
+    private var locking = false
     private let progressView = BrowserProgressView()
     let failureView = BrowserFailureView()
     private let refresh = UIRefreshControl()
@@ -192,6 +194,22 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
             web.observe(\.title) { [weak self] _, _ in MainActor.assumeIsolated { self?.updateHeader() } },
             web.observe(\.url) { [weak self] _, _ in MainActor.assumeIsolated { self?.updateHeader() } },
         ]
+        if isRemoteScreen {
+            // WebKit sets the zoom range from the page's viewport after a
+            // resize it is told about late (a phone's full screen places
+            // the page by frame, after the page has loaded): set back as
+            // soon as it does, not only on the next layout or load.
+            for path in [\UIScrollView.minimumZoomScale, \UIScrollView.maximumZoomScale] {
+                observations.append(web.scrollView.observe(path) { [weak self, weak web] scroll, _ in
+                    MainActor.assumeIsolated {
+                        guard let self, let web, self.isRemoteScreen, !self.locking,
+                              scroll.minimumZoomScale != 1 || scroll.maximumZoomScale != 1 || scroll.pinchGestureRecognizer?.isEnabled == true
+                        else { return }
+                        self.lockRemoteScreen(web)
+                    }
+                })
+            }
+        }
         view.setNeedsLayout()
         return web
     }
@@ -432,6 +450,10 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
     /// zoom range again from the page's viewport whenever the view's size
     /// or page changes, so this is applied again after each.
     private func lockRemoteScreen(_ web: WKWebView) {
+        // The zoom observer hears the sets below: not again from inside.
+        guard !locking else { return }
+        locking = true
+        defer { locking = false }
         let scroll = web.scrollView
         scroll.isScrollEnabled = false
         scroll.bounces = false
