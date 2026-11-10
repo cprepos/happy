@@ -153,26 +153,14 @@ and fixtures remain. Preserve credential and push compatibility on upgrades.
   - artifacts and the recent-sessions screen, which have no entry point;
   - web and desktop-only UI (command palette, shortcut hints, sidebar
     navigator, web tab bar), purchases and analytics.
-- **Voice mode is included by the current product request, on two backends.**
-  `GET /v1/voice/config` says which the account's server offers (a 404 is an
-  older server, treated as ElevenLabs only; any other failure fails the call),
-  and the synced `voiceBackend` setting chooses; null follows the server's
-  default. See the repo's `docs/voice-architecture.md`.
-  - **`stream`.** `VoiceStreamClient` speaks the server's `/v1/voice/stream`,
-    the protocol happy-app uses, and `StreamVoiceConnection` joins it to
-    `VoiceAudioEngine`, on `AVAudioEngine`. LiveKit stays behind the server, so
-    this needs no SDK.
-  - **`elevenlabs`.** The official ElevenLabs Swift SDK provides WebRTC
-    microphone and speaker transport. Happy's authenticated backend alone
-    grants its free or subscribed allowance; a missing client RevenueCat
-    configuration never prevents a valid grant. A user's own agent needs no
-    grant.
-
-  On both, voice stops on background, account switch/sign-out, audio
-  interruption or headphone removal, and client tools use the existing outbox
-  and permission RPCs.
-  In this fork `LegacyVoice.isEnabled` defaults to on, so the relay voice
-  above stays reachable; upstream ships it off.
+- **Voice in a Happy account's sessions is off** (`LegacyVoice`, user
+  request): the relay's ElevenLabs voice (`HappyUI/Voice`, `HappyCore/Voice`)
+  stays in the tree, out of reach. The session composer shows no microphone,
+  `VoiceCoordinator.start` says so before any context, status screen,
+  microphone, grant or provider, and Settings' Voice Assistant says so with
+  no usage request or Upgrade (`HostedLegacyVoiceGateTests`). Don't delete
+  the engine, or turn it back on, without the user. DEBUG runs can
+  (`HAPPY_RELAY_VOICE=1`) to look into it.
 - **An agent connection's voice call** (`HappyCore/Call`, `HappyUI/Call`) is
   apart from that relay voice: home's three-bar button beside compose starts
   it, and Telegram's in-call bar (`CallBarLayout`, `CallWaves`, adapted with
@@ -365,10 +353,7 @@ and fixtures remain. Preserve credential and push compatibility on upgrades.
   - **Signing.** All three variants have `aps-environment` "development"
     and the `remote-notification` background mode, as the RN app's
     expo-notifications plugin writes them. Distribution signing swaps in
-    the profile's "production". A self-host build (see Build and test) has
-    neither, and `SelfHostBuild.pushDisabled` keeps it from asking for
-    permission or a token: without that it prompts, then APNs refuses the
-    token on every foreground.
+    the profile's "production".
 - **Onboarding follows happy-app step by step.** Signed in, home decides
   from the stored machines (`HomeState`, after happy-app's
   `shouldShowFirstRunInstall` and `resolveHomeEmptyState`):
@@ -531,13 +516,10 @@ and fixtures remain. Preserve credential and push compatibility on upgrades.
   emoji sits on a tile like every other row's glyph, the tile's size (30)
   where the tile goes and orange for the boba, at the row's top when the
   row grows (`SettingsLayout`'s art row, `SupportBobaArt`).
-- **Pull to refresh** is upstream's "none, anywhere" (Steve, d79ca825c),
-  except where this fork keeps its own: every `attachRefresh` screen
-  (session lists, session details and info, files, changes, document and
-  todo history, the Machine screen), `PullToRefresh` on home, the sidebar
-  and chats, and the in-app browser's refresh control. Don't remove
-  those; a list still stays current through its feed (events, a resync
-  after a gap, a read when it opens or the stream reconnects) without them.
+- **No pull to refresh** (Steve, for both apps), on any list or page. A
+  list stays current through its feed (events, a resync after a gap, a
+  read when it opens or the stream reconnects); a page reloads from its
+  header's button.
 
 ## Record kinds: current vs retired
 
@@ -562,10 +544,8 @@ invisible, as in happy-app. Gemini ACP and `role: 'agent'` events are current.
 | Session `file` | Current | `happy-app/sources/sync/sync.ts:818`, `happy-cli/src/api/apiSession.ts:487`; completed `file` tool with optional image metadata. |
 | Session `turn-start` | Current | `happy-cli/src/claude/utils/sessionProtocolMapper.ts:405`, `happy-cli/src/agent/acp/AcpSessionManager.ts:84`; invisible lifecycle. |
 | Session `turn-end` | Current | `happy-cli/src/claude/utils/sessionProtocolMapper.ts:460`, `happy-cli/src/agent/acp/AcpSessionManager.ts:99`; invisible ready event. |
-| Session `start` | Current | `happy-cli/src/claude/utils/sessionProtocolMapper.ts:354`, `happy-cli/src/codex/utils/sessionProtocolMapper.ts:108`; subagent lifecycle: no row, folded into the activity bar's panel (`SubagentFold`). |
-| Session `stop` | Current | `happy-cli/src/claude/utils/sessionProtocolMapper.ts:372`, `happy-cli/src/codex/utils/sessionProtocolMapper.ts:125`; subagent lifecycle: no row, folded into the activity bar's panel (`SubagentFold`). |
-| Session `progress` | Current | `happy-app/sources/sync/typesRaw.ts`, `happy-app/sources/sync/storage.ts`; a running subagent's numbers: no row, folded the same way. |
-| Session `agents` | Current | `happy-app/sources/sync/typesRaw.ts`; decoded, no row, and nothing folds it, as in happy-app. |
+| Session `start` | Current | `happy-cli/src/claude/utils/sessionProtocolMapper.ts:354`, `happy-cli/src/codex/utils/sessionProtocolMapper.ts:108`; invisible subagent lifecycle. |
+| Session `stop` | Current | `happy-cli/src/claude/utils/sessionProtocolMapper.ts:372`, `happy-cli/src/codex/utils/sessionProtocolMapper.ts:125`; invisible subagent lifecycle. |
 | Session `user-message-accepted` / `user-message-rejected` | Current, external daemon, not in repo | Consumer evidence: `happy-app/sources/sync/rig.ts:188`, `happy-app/sources/sync/storageTypes.ts:115`, `happy-app/sources/sync/typesRaw.ts:111` and `:118`; settle original user row, never render receipts. |
 | Agent `event` / `switch` | Current | `happy-cli/src/claude/runClaude.ts:949`, transport `happy-cli/src/api/apiSession.ts:866`; mode event. |
 | Agent `event` / `message` | Current | `happy-cli/src/gemini/runGemini.ts:1161`, `happy-cli/src/codex/runCodex.ts:922`; centered event, reset/compaction handled. |
@@ -690,46 +670,6 @@ identical and checks the variant keys:
 Every variant asks for push (`aps-environment`). Production adds associated
 domains; development and preview add Sign in with Apple for Happy Cloud.
 
-### Self-host build
-
-For a personal Apple team, which can't sign push or associated domains. It is
-opt-in: `project.yml`, `xtool.yml` and `App/Info-*.plist` don't mention it, and
-without its keys the app behaves as before (`SelfHostBuildTests`).
-
-```sh
-APPLE_TEAM_ID=ABCDE12345 APP_BUNDLE_ID_PREFIX=com.example.happy \
-SELFHOST_SERVER_URL=https://happy.example.com scripts/selfhost-project.sh
-open HappySelfHost.xcodeproj
-```
-
-Installing on a device is in `.agents/skills/happy-ios-ota/SKILL.md`.
-`scripts/selfhost-project.sh` validates the values, derives
-`.selfhost/Info-*.plist` from `App/` and generates the project from
-`project.selfhost.yml`, an overlay of `project.yml`. Both outputs are
-git-ignored and the team id only ever comes from the environment.
-
-| | Normal | Self-host |
-| --- | --- | --- |
-| Bundle id | the RN app's | `$APP_BUNDLE_ID_PREFIX` + `.dev`, `.preview` or nothing |
-| Name | Happy v2 | `$APP_DISPLAY_NAME`, default Happy |
-| Entitlements | push, associated domain | none (`App/Happy-SelfHost.entitlements`) |
-| Default server | `ServerConfig.defaultServerURL` | `HappyServerURL` in the plist |
-| Push | on | off: `HappyPushDisabled`, no `remote-notification` mode, no Settings rows |
-
-A self-host build resolves its server as the stored choice, then the baked URL.
-The hosted server stays reachable by typing it. `isCustomServer` compares to the
-baked URL, so the server form is empty on it and reset returns to it, and
-`isHostedServer` is what asks "is this the hosted one?". The RN importer defaults
-to the baked URL too: a build over a self-hosted RN app shares its Keychain token
-but has no `server-config`, and must not send that token to the hosted server.
-
-ATS is not relaxed. Release keeps only local networking and web content, so a
-remote server must be https there; the script refuses a plain-http remote with
-`APP_ENV=production`. http still works to an IP address, an undotted host or a
-`.local` name. Debug and Preview allow arbitrary loads already.
-
-xtool doesn't use any of this: `xtool.yml` stays on the dev variant.
-
 ### Versioning
 
 The version is CalVer `YYYY.M.C`: the UTC year, the month without a
@@ -789,36 +729,6 @@ and preview ship the same number on their own listings.
   - swift-crypto, Linux only;
   - swift-asn1, which swift-crypto pulls in.
 
-## Adding a harness
-
-There used to be a drift test against happy-app's `harnessCatalog.ts`. Upstream
-deleted happy-app, so nothing flags a harness added upstream any more: after a
-pull, check upstream's harness list by hand. Gemini and OpenClaw are excluded:
-an existing session shows its name, and neither can be started.
-
-Follow OpenCode. A harness upstream doesn't have goes in files of its own, and
-upstream's files get one-liners or a `case`. There is no shared harness table on
-purpose: one would conflict on every pull.
-
-1. `HappyCore/Harness/<Name>Harness.swift`: key, name, order, availability,
-   defaults, resume field. `HarnessCatalog.names` gets its product name.
-2. `HappyCore/Composer/<Name>Modes.swift`: a port of the Expo modes file and
-   its tests, when the harness has modes of its own.
-3. `HappyUI/Strings/Harnesses.swift` and the icon.
-4. The hooks:
-   - `MachineChoice.agentOrder` and `agentAvailable`. A niche harness counts only
-     when its machine reports it (`EXPLICIT_REPORT_HARNESSES`).
-   - `NewSessionDraft.Agent` and `AgentDefaults.Agent`.
-   - The labels.
-5. Read the daemon before trusting a spawn option. `spawnModeArgs.ts` drops modes
-   for everything but Claude and Codex, so the first message must carry them.
-6. Resume: `SessionDetails.resumeCommand`, `resumeAvailability` and
-   `SessionQuickActions.Resume` each check the harness's id field.
-7. Tool names the harness has for interactive calls go in `ChatToolDisplay`,
-   `ChatToolPresentation` and `ChatRows`.
-
-An unknown flavor must stay itself: it never borrows Claude's catalogs.
-
 ## Workstreams
 
 The port is built by parallel workers, each on its own branch, merged into
@@ -828,10 +738,10 @@ change a file another workstream owns, ask the coordinator.
 | Workstream | Owns |
 | --- | --- |
 | Icons | `Sources/HappyIcons`, `scripts/generate-icons.*`, `Sources/HappyUI/Theme/IconImages.swift`, `ItemIcon`'s icon source, swapping SF Symbols for happy-app's icons in onboarding and troubleshoot, light/dark theme application |
-| Home | `Screens/HomeScreens.swift`, `Screens/SessionListScreens.swift`, `Screens/HomeUltraListView.swift`, `Screens/HomeRowDrawing.swift`, `Components/NoSessionsViews.swift`, home header, the empty chat's `NewWorkPanel` and `Chat/LegacyComposeStart.swift`, new session screen, `Core/Home/` (including the new-session draft store and `SessionStarter`) |
+| Home | `Screens/HomeScreens.swift`, `Screens/SessionListScreens.swift`, `Screens/HomeUltraListView.swift`, `Screens/HomeRowDrawing.swift`, `Components/NoSessionsViews.swift`, home header and dock, new session screen, `Core/Home/` (including the new-session draft store and `SessionStarter`) |
 | Settings | `Screens/SettingsScreens.swift` and every settings screen, the account switcher UI, `Core/Settings/` |
 | Chat | `Sources/HappyUI/Chat/`, `Sources/HappyLayout/Chat/`, the session screen, `docs/telegram-notes.md` |
-| Composer | `Sources/HappyUI/Composer/`, `Sources/HappyLayout/Composer/`, `Sources/HappyCore/Composer/` (model, permission and effort options; `useComposerModes`). The AgentInput card is shared: the empty chat compose opens uses it, as every chat does. The phone's new session screen draws its own glass composer (`new/index.tsx` `mobileInputBox`), not the card |
+| Composer | `Sources/HappyUI/Composer/`, `Sources/HappyLayout/Composer/`, `Sources/HappyCore/Composer/` (model, permission and effort options; `useComposerModes`). The AgentInput card is shared: Home embeds it in the dock. The phone's new session screen draws its own glass composer (`new/index.tsx` `mobileInputBox`), not the card |
 | Secondary | session info, files, changes, machine screens |
 | Accounts | `Core/Accounts/`, `AccountController`, `AccountSession` lifecycle, `CompositionRoot`, `Auth/` |
 | Sending | `Core/Chat/` sending and attachments, the outbox in `SyncEngine` and `LocalStore`, `HappyStore` schema |
@@ -923,3 +833,5 @@ To keep parallel work from colliding:
 - Accounts import: the real-device MMKV path and decoding still need an
   in-place upgrade check. Encoding, size metadata, CRC and confirmation gates
   are verified on Linux with reproduced MMKV fixtures.
+
+Fork-specific rules for this checkout are in AGENTS.fork.md; where they differ from this file, they win.
