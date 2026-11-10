@@ -51,7 +51,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
     private var prefilled = false
     /// A new task on its way to the screen from this one's compose.
     private var composing = false
-    private let previewing: Bool
+    let previewing: Bool
     /// The Happy session the agent is mirrored to, when the app knows it:
     /// the bridge keys the agent's browser by it (`LiveBrowserLink.chatKey`).
     /// Set right after init, before the screen shows.
@@ -69,7 +69,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
     private var intro: Intro?
     private let planner: ChatPlanner
     private let media: MediaLoader
-    private let pictures: ComposerImagePicker
+    let pictures: ComposerImagePicker
     private var acceptingSend = false
 
     /// The transcript, on UltraList: the rows the library keeps near the
@@ -124,7 +124,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
     /// what rides it follow. None in a preview.
     private(set) var ultraKeyboard: ChatUltraKeyboard?
 
-    private var chat = ChatSnapshot()
+    var chat = ChatSnapshot()
     /// The tool calls opened from here (`AgentToolViewController`).
     private let toolScreens = NSHashTable<AgentToolViewController>.weakObjects()
     private var following: Task<Void, Never>?
@@ -1756,13 +1756,8 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
     // MARK: Acts
 
     private func updatePrimary() {
-        card.configuration.primaryAction = primaryAction(text: card.text)
-    }
-
-    /// The round button for this text with the pictures picked now.
-    private func primaryAction(text: String) -> AgentInputPrimaryAction {
-        let hasContent = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pictures.images.isEmpty
-        return AgentInputPrimaryAction.resolve(
+        let hasContent = !card.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pictures.images.isEmpty
+        card.configuration.primaryAction = AgentInputPrimaryAction.resolve(
             hasComposerContent: hasContent, isSendBlocked: false, isSendDisabled: false, showAbortButton: chat.working, canAbort: true,
             canRecord: !previewing
         )
@@ -2297,11 +2292,7 @@ extension ChatViewController: AgentInputCardDelegate {
             keyboardTop: keyboardTop < view.bounds.maxY ? view.convert(CGPoint(x: 0, y: keyboardTop), to: nil).y : nil
         )
         editor.onChange = { [weak self] text in self?.draftEdited(text) }
-        editor.canSend = { [weak self] text in
-            guard let self else { return false }
-            return SendShortcut.allows(primary: self.primaryAction(text: text), busy: self.card.configuration.isPrimaryBusy)
-        }
-        editor.onSend = { [weak self] in self?.card.sendShortcut(nil) }
+        wireSendShortcut(editor)
         editor.onClose = { [weak self] text, selection, focused in
             guard let self else { return }
             self.showingDraft = true
