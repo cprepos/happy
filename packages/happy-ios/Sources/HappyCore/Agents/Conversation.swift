@@ -1,8 +1,5 @@
 import Foundation
 import HappyWire
-#if canImport(OSLog)
-import OSLog
-#endif
 
 /// One entry in a V2 conversation as the phone shows it: what a
 /// person wrote, what the agent said, and the steps of its turns.
@@ -401,26 +398,26 @@ public actor Conversation {
         /// started on; absent in what was kept before it was told apart.
         var modePicked: Bool?
     }
-    private var agentId: String { didSet { itemContext += 1 } }
+    var agentId: String { didSet { itemContext += 1 } }
     private let continuation: AsyncStream<ChatSnapshot>.Continuation
     public nonisolated let updates: AsyncStream<ChatSnapshot>
 
-    private var snapshot = ChatSnapshot()
-    private var following: Task<Void, Never>?
+    var snapshot = ChatSnapshot()
+    var following: Task<Void, Never>?
     /// The agents this one spawns or retitles while it is open.
     private var children: Task<Void, Never>?
-    private var reading: Task<Void, Never>?
+    var reading: Task<Void, Never>?
     /// Which `reload` `reading` is, so one that ends after a newer began
     /// leaves the newer's in place.
     private var readingId = UUID()
     /// `start` is past its guard and not yet following: a second call, or
     /// a retry, waits for it rather than starting again.
-    private var starting = false
+    var starting = false
     /// `follow` has asked for history: a retry reads again from there.
-    private var followed = false
-    private var stopped = false
+    var followed = false
+    var stopped = false
     /// Stands in for the checkpoint claim, for a test.
-    private var claimOverride: (@Sendable (String) async throws -> Void)?
+    var claimOverride: (@Sendable (String) async throws -> Void)?
     private var reloadSoon: Task<Void, Never>?
     /// History reads finished, read or failed.
     private var reads = 0
@@ -439,7 +436,7 @@ public actor Conversation {
 
     /// The runs, their messages, the pending ones and the runs' times,
     /// found by key (`Transcript`).
-    private var transcript = Transcript()
+    var transcript = Transcript()
     /// When each run began and ended, and why it ended (`run.*` metadata).
     struct RunTime: Codable, Equatable, Sendable {
         var startedAt: Double?
@@ -464,7 +461,7 @@ public actor Conversation {
     /// Sends the daemon has not echoed yet, oldest first. One it accepted
     /// stays here until history or an event carries it, so no read that
     /// began before the send can take it off the screen.
-    private var outgoing: [(id: String, text: String, pictures: [(mimeType: String, data: Data)], accepted: Bool, failure: String?)] = []
+    var outgoing: [(id: String, text: String, pictures: [(mimeType: String, data: Data)], accepted: Bool, failure: String?)] = []
     private var outgoingFiles: [String: [QueuedFile]] = [:]
     private var outgoingTools: [String: AgentWire.ToolCallRequest] = [:]
     /// When each send was made, in ms, for its bubble's time.
@@ -503,7 +500,7 @@ public actor Conversation {
     private var activeRun: (id: String?, startedAt: Double?)?
     /// A task its first message makes (`NewTask`): until then nothing of it
     /// is on the computer, and everything that goes there waits for it.
-    private var creation: NewTask?
+    var creation: NewTask?
     /// The mode its first message made it with went to the person's
     /// preferences, once.
     private var startRecorded = false
@@ -593,58 +590,6 @@ public actor Conversation {
             await self.follow()
         }
     }
-
-    /// Reads again a conversation whose read failed, or that never
-    /// finished reading with nothing reading it now: a screen opening it,
-    /// or the phone coming back to it. A start that failed is started
-    /// again. Does nothing while a start or a read is underway, once read
-    /// without an error, for new work, or after `stop`; so it may be
-    /// called as often as it likes.
-    public func retryLoad() async {
-        guard !stopped, !starting, creation == nil else { return }
-        if following == nil {
-            Self.note("retrying start for \(agentId)")
-            if snapshot.error != nil { snapshot.error = nil; publish() }
-            await start()
-            return
-        }
-        guard followed, reading == nil, snapshot.error != nil || !snapshot.loaded else { return }
-        Self.note("retrying read for \(agentId)")
-        snapshot.error = nil
-        // Nothing to show meanwhile: back to reading, not an empty conversation.
-        if transcript.runs.isEmpty, transcript.pending.isEmpty { snapshot.loaded = false }
-        publish()
-        reload()
-    }
-
-    /// Pull to refresh: the conversation read whole again now, whether or
-    /// not the last read failed, and unsent messages offered again, as
-    /// after the stream's resync. One whose start failed is started again.
-    /// Returns once that read has ended (a read retried after a cancel
-    /// underneath it included). Nothing for new work, or after `stop`.
-    public func refresh() async {
-        guard !stopped, !starting, creation == nil else { return }
-        guard following != nil else {
-            if snapshot.error != nil { snapshot.error = nil; publish() }
-            await start()
-            return
-        }
-        // Still restoring what was kept: its first read is on its way.
-        guard followed else { return }
-        if snapshot.error != nil { snapshot.error = nil; publish() }
-        reload()
-        for send in outgoing where !send.accepted && send.failure == nil { deliver(send.id) }
-        while let current = reading {
-            await current.value
-            if reading == current { break }
-        }
-    }
-
-    /// Whether a start or a read is underway, for a test.
-    var loadInFlight: Bool { starting || reading != nil }
-
-    /// Makes the checkpoint claim `claim`, for a test.
-    func overrideClaim(_ claim: @escaping @Sendable (String) async throws -> Void) { claimOverride = claim }
 
     public func stop() async {
         stopped = true
@@ -779,7 +724,7 @@ public actor Conversation {
 
     /// The newest runs and what is pending, read whole; events that arrive
     /// meanwhile are applied after.
-    private func reload(attempt: Int = 0) {
+    func reload(attempt: Int = 0) {
         reading?.cancel()
         if heldEvents == nil { heldEvents = [] }
         let client = client
@@ -796,22 +741,7 @@ public actor Conversation {
                 adopt(start, history)
             } catch {
                 if Task.isCancelled { return }
-                // Cancelled underneath this read, not by it (a connect
-                // another caller gave up on): no answer, so no failure to
-                // keep. Read again shortly; past that, left unread for a
-                // reopen or the phone's return to read again.
-                if Self.cancelledUnderneath(error) {
-                    guard attempt < Self.transientRetries else {
-                        Self.note("read of \(agentId) cancelled underneath \(attempt + 1) times; left unread")
-                        return
-                    }
-                    Self.note("read of \(agentId) cancelled underneath; reading again")
-                    try? await Task.sleep(for: Self.transientBackoff(attempt))
-                    if Task.isCancelled { return }
-                    reload(attempt: attempt + 1)
-                    return
-                }
-                Self.note("read of \(agentId) failed")
+                if await readAgainIfCancelledUnderneath(error, agentId: agentId, attempt: attempt) { return }
                 reads += 1
                 snapshot.error = Store.describe(error)
                 Happenings.errorShown(.conversationLoad, error)
@@ -822,24 +752,6 @@ public actor Conversation {
                 publish()
             }
         }
-    }
-
-    /// Reads again after a read cancelled underneath it, before leaving it unread.
-    static let transientRetries = 3
-    static func transientBackoff(_ attempt: Int) -> Duration { .milliseconds(250 << min(attempt, 4)) }
-
-    /// A cancellation that is not the read's own: the caller checks that.
-    static func cancelledUnderneath(_ error: Error) -> Bool {
-        error is CancellationError || (error as? URLError)?.code == .cancelled
-    }
-
-    #if canImport(OSLog)
-    private static let logger = Logger(subsystem: "app.happy", category: "Conversation")
-    #endif
-    private static func note(_ message: String) {
-        #if canImport(OSLog)
-        logger.notice("\(message, privacy: .public)")
-        #endif
     }
 
     private func adopt(_ start: AgentWire.Bootstrap, _ history: AgentWire.MessagesResponse) {
@@ -1310,7 +1222,7 @@ public actor Conversation {
         if persistence == nil, send.failure == nil { deliver(id) }
     }
 
-    private func deliver(_ id: String) {
+    func deliver(_ id: String) {
         guard delivering[id] == nil, !admitting.contains(id), held[id] == nil else { return }
         let client = client
         delivering[id] = Task {
@@ -2188,7 +2100,7 @@ public actor Conversation {
                    subagentsRunning: subagentsRunning, title: snapshot.title, run: activeRun?.id, startedAt: activeRun?.startedAt)
     }
 
-    private func publish() {
+    func publish() {
         publishing?.cancel(); publishing = nil
         keepConversation()
         var items: [ChatItem] = []
