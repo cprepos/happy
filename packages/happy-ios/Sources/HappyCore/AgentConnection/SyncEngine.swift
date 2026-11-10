@@ -95,7 +95,7 @@ public actor SyncEngine {
     /// verified: back on that process with nothing stale, the stream picks
     /// up from there and nothing is read again.
     private var streamCursor: String?
-    private var verifiedDaemon: String?
+    var verifiedDaemon: String?
     private var intentsFollowing: Task<Void, Never>?
     private var noticeClearing: Task<Void, Never>?
     private let url: URL?
@@ -113,11 +113,11 @@ public actor SyncEngine {
     /// only its agent's row.
     private var agentRows: [String: Int] = [:]
     private var shownRows: [String: Int] = [:]
-    private var snapshot = HomeSnapshot()
+    var snapshot = HomeSnapshot()
     private var listeners: [UUID: AsyncStream<HomeSnapshot>.Continuation] = [:]
     private var runner: Task<Void, Never>?
     /// Paused on purpose (or not started yet): `reconnect` leaves it be.
-    private var held = true
+    var held = true
     private var refresh: Task<Void, Never>?
     private var delivery: Task<Void, Never>?
     private var messageDelivery: Task<Void, Never>?
@@ -131,7 +131,7 @@ public actor SyncEngine {
     private var deliveringMessage: String?
     private var holding: Set<String> = []
     private var generation = 0
-    private var stopped = false
+    var stopped = false
     private var cursor: String?
     private var dirty = false
     private var sidebarSyncing = false
@@ -273,33 +273,6 @@ public actor SyncEngine {
         start()
     }
 
-    /// Pull to refresh: drop the realtime and query clients (never the file
-    /// client, so a download in flight goes on), start the run again even
-    /// when it is live, read home whole once rather than resuming the
-    /// stream, and wait until it is live and caught up. False when that
-    /// takes longer than `timeout`, or the engine is paused or stopped.
-    public func resync(timeout: Duration) async -> Bool {
-        guard !stopped, !held else { return false }
-        await client.transport.reset(.realtime)
-        await client.transport.reset(.query)
-        guard !stopped, !held else { return false }
-        snapshot.error = nil
-        await pause()
-        // Not resuming: the next stream opens after a full read. Cleared
-        // once the old run has ended, so it cannot set it again.
-        verifiedDaemon = nil
-        start()
-        let updates = snapshots()
-        do {
-            return try await LiveBrowserFeed.within(timeout) {
-                for await snapshot in updates where snapshot.live && !snapshot.syncing { return true }
-                return false
-            }
-        } catch {
-            return false
-        }
-    }
-
     public func stop() async {
         stopped = true
         await pause()
@@ -333,15 +306,37 @@ public actor SyncEngine {
         return opened
     }
 
-    /// How long the run's setup, and taking in one hello, may take before
-    /// the try counts as failed: a step stuck on a dead connection or a
-    /// slow disk shows as an error instead of "connecting…" for good.
-    static let setupDeadline: Duration = .seconds(30)
-    static let helloDeadline: Duration = .seconds(30)
-
     private func run(_ generation: Int) async {
         do {
-            guard try await LiveBrowserFeed.within(Self.setupDeadline, { try await self.setUp(generation) }) else { return }
+            // Given up after `setupDeadline`: a step stuck on a dead
+            // connection or a slow disk shows as an error. The body keeps
+            // its indentation from before it moved into this task.
+            let setUp = Task { () async throws -> Void in
+            let database = try database()
+            if desktop == nil, let cached = try await database.checkpoint("desktop") {
+                desktop = try JSONDecoder().decode(DesktopSnapshot.self, from: JSONEncoder().encode(cached.value))
+                agentIndex = nil
+                cursor = cached.cursor
+            }
+            if users.isEmpty, let kept = try await database.checkpoint("users"),
+               let list = try? JSONDecoder().decode([Lossy<TeamUser>].self, from: JSONEncoder().encode(kept.value)) {
+                users = Dictionary(list.compactMap(\.value).map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+            }
+            snapshot.settings = try await database.settings()
+            // What the person did last time, over what was kept, from the
+            // first frame: nothing flickers back while it waits.
+            waiting = await intents.pending()
+            overlay = IntentOverlay(settling.map(\.intent) + waiting)
+            followIntents()
+            derive()
+            deriveDirectory()
+            await followFeed()
+            await followDirectory()
+            guard current(generation) else { return }
+            await spaces.startExternal()
+            await artifacts.start()
+            }
+            try await Self.wait(for: setUp, upTo: Self.setupDeadline)
         } catch {
             guard current(generation) else { return }
             // What this phone keeps could not be read: nothing to do with the link.
@@ -349,41 +344,6 @@ public actor SyncEngine {
             publish()
             return
         }
-        await follow(generation)
-    }
-
-    /// What is kept, laid out before the first read. False when this run
-    /// was replaced meanwhile.
-    private func setUp(_ generation: Int) async throws -> Bool {
-        let database = try database()
-        if desktop == nil, let cached = try await database.checkpoint("desktop") {
-            desktop = try JSONDecoder().decode(DesktopSnapshot.self, from: JSONEncoder().encode(cached.value))
-            agentIndex = nil
-            cursor = cached.cursor
-        }
-        if users.isEmpty, let kept = try await database.checkpoint("users"),
-           let list = try? JSONDecoder().decode([Lossy<TeamUser>].self, from: JSONEncoder().encode(kept.value)) {
-            users = Dictionary(list.compactMap(\.value).map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
-        }
-        snapshot.settings = try await database.settings()
-        // What the person did last time, over what was kept, from the
-        // first frame: nothing flickers back while it waits.
-        waiting = await intents.pending()
-        overlay = IntentOverlay(settling.map(\.intent) + waiting)
-        followIntents()
-        derive()
-        deriveDirectory()
-        await followFeed()
-        await followDirectory()
-        guard current(generation) else { return false }
-        await spaces.startExternal()
-        await artifacts.start()
-        return current(generation)
-    }
-
-    /// Reads home and follows the event stream until the run is replaced,
-    /// coming back after each drop.
-    private func follow(_ generation: Int) async {
         var attempt = 0
         while current(generation) {
             do {
@@ -412,9 +372,47 @@ public actor SyncEngine {
                         attempt = 0
                         // Given up after `helloDeadline` like a dropped stream:
                         // a read stuck on a dead connection comes back round.
-                        try await LiveBrowserFeed.within(Self.helloDeadline) {
-                            try await self.greet(frame, resuming: resuming, generation)
+                        let greet = Task { () async throws -> Void in
+                        guard current(generation) else { throw CancellationError() }
+                        sidebarSyncing = true
+                        snapshot.syncing = true
+                        snapshot.live = true; snapshot.error = nil; snapshot.reconnecting = false
+                        watchGit()
+                        publish()
+                        // The bootstrap cursor precedes its reads. Opening from
+                        // it is safe even after a crash, replay or daemon replacement.
+                        let hello = try JSONValue.decode(Data(frame.data.utf8))
+                        let gap = hello["gap"] == .bool(true)
+                        let daemon = hello["daemonId"]?.stringValue
+                        // Everything since the cursor follows, from the same process.
+                        let continued = resuming && !gap && hello["resumed"] == .bool(true) && daemon != nil && daemon == verifiedDaemon
+                        if resuming {
+                            // Something was missed, or another process answered:
+                            // it is read, and its owner checked, before anything
+                            // is delivered.
+                            if continued { verified = true } else { verified = false; try await reconcile(generation) }
+                            beginDelivery(generation)
+                            beginMessageDelivery(generation)
+                            await intents.setOnline(deliveryAllowed)
                         }
+                        verifiedDaemon = verified ? daemon : nil
+                        if gap || hello["resumed"] != .bool(true) { streamCursor = hello["cursor"]?.stringValue ?? streamCursor }
+                        await documents.opened(hello)
+                        // Resuming, the read above already came after the gap.
+                        if gap, !resuming { scheduleReconcile(generation) }
+                        profileChanged()
+                        // Reads the newest page each time, so a gap loses nothing.
+                        await feed.connected()
+                        await lookups.connected(gap: gap)
+                        await wantReferences()
+                        // Faces may have changed while away; picked up where
+                        // it left off, their `profile.updated` follows instead.
+                        usersMissing = []
+                        if !continued { readAuthors(generation, again: Set(users.keys)) }
+                        // Conversations and lists read again only for what they missed.
+                        try await resyncSidebar(generation, resync: !continued)
+                        }
+                        try await Self.wait(for: greet, upTo: Self.helloDeadline)
                         continue
                     }
                     if DocumentStreams.isDocumentFrame(frame.event) {
@@ -486,49 +484,6 @@ public actor SyncEngine {
             do { try await Task.sleep(for: delay) } catch { return }
             attempt += 1
         }
-    }
-
-    /// Takes in the stream's hello: live, then what was missed read and
-    /// the sidebar caught up.
-    private func greet(_ frame: ServerSentEvent, resuming: Bool, _ generation: Int) async throws {
-        guard current(generation) else { throw CancellationError() }
-        sidebarSyncing = true
-        snapshot.syncing = true
-        snapshot.live = true; snapshot.error = nil; snapshot.reconnecting = false
-        watchGit()
-        publish()
-        // The bootstrap cursor precedes its reads. Opening from
-        // it is safe even after a crash, replay or daemon replacement.
-        let hello = try JSONValue.decode(Data(frame.data.utf8))
-        let gap = hello["gap"] == .bool(true)
-        let daemon = hello["daemonId"]?.stringValue
-        // Everything since the cursor follows, from the same process.
-        let continued = resuming && !gap && hello["resumed"] == .bool(true) && daemon != nil && daemon == verifiedDaemon
-        if resuming {
-            // Something was missed, or another process answered:
-            // it is read, and its owner checked, before anything
-            // is delivered.
-            if continued { verified = true } else { verified = false; try await reconcile(generation) }
-            beginDelivery(generation)
-            beginMessageDelivery(generation)
-            await intents.setOnline(deliveryAllowed)
-        }
-        verifiedDaemon = verified ? daemon : nil
-        if gap || hello["resumed"] != .bool(true) { streamCursor = hello["cursor"]?.stringValue ?? streamCursor }
-        await documents.opened(hello)
-        // Resuming, the read above already came after the gap.
-        if gap, !resuming { scheduleReconcile(generation) }
-        profileChanged()
-        // Reads the newest page each time, so a gap loses nothing.
-        await feed.connected()
-        await lookups.connected(gap: gap)
-        await wantReferences()
-        // Faces may have changed while away; picked up where
-        // it left off, their `profile.updated` follows instead.
-        usersMissing = []
-        if !continued { readAuthors(generation, again: Set(users.keys)) }
-        // Conversations and lists read again only for what they missed.
-        try await resyncSidebar(generation, resync: !continued)
     }
 
     private func current(_ generation: Int) -> Bool { !stopped && !Task.isCancelled && self.generation == generation }
