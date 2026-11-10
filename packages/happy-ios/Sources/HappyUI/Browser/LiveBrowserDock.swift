@@ -1223,6 +1223,13 @@ final class LiveBrowserFullScreenItems: UIViewController {
         applyMode()
     }
 
+    /// The header shown again after a turn moves the safe area's top
+    /// once this pass has placed the page: place it again under it.
+    override func viewSafeAreaInsetsDidChange() {
+        super.viewSafeAreaInsetsDidChange()
+        if stripShown || placesByLayout { view.setNeedsLayout() }
+    }
+
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         let layout = fullScreenLayout()

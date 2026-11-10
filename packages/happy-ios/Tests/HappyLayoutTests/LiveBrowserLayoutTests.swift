@@ -275,9 +275,10 @@ final class LiveBrowserLayoutTests: XCTestCase {
         // The frame's own aspect when one came.
         let wide = LiveBrowserFullScreenLayout(size: size, safeArea: safe, top: 116, phone: true, aspect: 16.0 / 9.0)
         assertFrame(wide.content, rect(0, 116, 402, 226))
-        // No room under the header: no taller than what is left.
-        let short = LiveBrowserFullScreenLayout(size: CGSize(width: 402, height: 300), safeArea: safe, top: 116, phone: true, aspect: nil)
-        assertFrame(short.content, rect(0, 116, 402, 184))
+        // No room under a tall header: no taller than what is left.
+        let short = LiveBrowserFullScreenLayout(size: CGSize(width: 402, height: 500), safeArea: safe, top: 300, phone: true, aspect: nil)
+        XCTAssertNil(short.strip)
+        assertFrame(short.content, rect(0, 300, 402, 200))
     }
 
     func testSidewaysOnAPhoneTheStripTakesTheTrailingEdge() throws {
