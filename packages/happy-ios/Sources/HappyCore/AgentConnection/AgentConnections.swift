@@ -20,7 +20,7 @@ public final class AgentConnections {
     var foreground = true
     var network = AgentNetworkWatch()
     private var loaded = false
-    var engines: [String: SyncEngine] = [:]
+    private var engines: [String: SyncEngine] = [:]
     /// Engines kept through the last suspension whose tunnels haven't
     /// looked for the computer again since (`resume`).
     private var suspended: Set<String> = []

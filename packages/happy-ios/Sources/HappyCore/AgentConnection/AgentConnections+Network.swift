@@ -17,14 +17,11 @@ extension AgentConnections {
         watchNetwork(); TunnelSupport.shared.forget()
     }
 
-    /// The phone's network came back, moved between interfaces (Wi-Fi to
-    /// cellular, or back), or the app came back: what was learned
-    /// about proxy tunnels is forgotten, and each computer's held Tailcat
-    /// clients look for their paths again, without waiting on them.
+    /// The phone's network came back, or moved between interfaces (Wi-Fi
+    /// to cellular, or back): what was learned about proxy tunnels is
+    /// forgotten. Tailcat's own path monitor wakes the tunnels.
     func networkMoved() {
         TunnelSupport.shared.forget()
-        let clients = engines.values.map(\.client)
-        Task { await withTaskGroup(of: Void.self) { group in for client in clients { group.addTask { await client.resumed() } } } }
     }
 
     func watchNetwork() {
