@@ -533,10 +533,12 @@ final class LiveBrowserDock: NSObject {
                 self.player?.isBusy = false
                 guard self.feed === feed else { return }
                 let browser = BrowserViewController(url: link.url, page: page, extraItems: [])
-                // A phone: the page's own footer (Take control, Release,
-                // Sleep) and header go, the header and the strip have
-                // them, and the picture has the page.
+                // The page's own footer (Take control, Release, Sleep)
+                // goes everywhere: the header has them. A phone's page
+                // header goes too, and the picture has the page; an iPad's
+                // and the Mac's keep it, the page's title and address.
                 if self.isPhone { browser.configure = { Self.pictureOnly(in: $0) } }
+                else { browser.configure = { Self.withoutFooter(in: $0) } }
                 let live = LiveBrowserFullScreenItems(dock: self, browser: browser, noVNC: false)
                 self.present(live.browser, items: live)
                 if taking { self.take(connection: connection, workspace: workspace) }
@@ -765,6 +767,21 @@ final class LiveBrowserDock: NSObject {
     static func pictureOnly(in configuration: WKWebViewConfiguration) {
         configuration.userContentController.addUserScript(
             WKUserScript(source: pictureOnlySource, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+    }
+
+    /// The live page without its footer (Take control, Release, Sleep),
+    /// which the full screen's header has; the rest as the page lays it
+    /// out. Set as `pictureOnlySource` sets it.
+    nonisolated static let withoutFooterSource = """
+    (function () {
+      var element = document.querySelector('footer');
+      if (element) { element.style.setProperty('display', 'none', 'important'); }
+    })();
+    """
+
+    static func withoutFooter(in configuration: WKWebViewConfiguration) {
+        configuration.userContentController.addUserScript(
+            WKUserScript(source: withoutFooterSource, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
     }
 
     /// noVNC's page scaling the remote screen to fit, never asking it to

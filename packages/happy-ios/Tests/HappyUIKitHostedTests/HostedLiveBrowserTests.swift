@@ -782,6 +782,36 @@ final class HostedLiveBrowserTests: XCTestCase {
         XCTAssertEqual(result, ["none", "none", "251"])
     }
 
+    /// An iPad's and the Mac's live page loses only its footer: Take
+    /// control, Release and Sleep are the header's. The page's header,
+    /// its title and address, stays.
+    func testOnAnIPadTheLivePageLosesOnlyItsFooter() async throws {
+        let configuration = WKWebViewConfiguration()
+        LiveBrowserDock.withoutFooter(in: configuration)
+        let window = hostedKeyWindow(in: try await hostedActiveScene())
+        defer { window.isHidden = true }
+        let web = WKWebView(frame: CGRect(x: 0, y: window.safeAreaInsets.top, width: 820, height: 600), configuration: configuration)
+        window.addSubview(web)
+        web.loadHTMLString("""
+            <!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">
+            <style>body{margin:0;display:flex;flex-direction:column;min-height:100dvh} header{display:flex} footer{display:flex}
+            main{padding:12px} #box{width:100%;aspect-ratio:1.6;border:1px solid}</style>
+            <header>Title</header><main><div id="box"></div></main>
+            <footer><a id="take">Take control</a><button id="sleep">Sleep</button></footer>
+            """, baseURL: nil)
+        try await until { web.isLoading == false && web.url != nil }
+        var result: [String]?
+        try await until {
+            result = try? await web.evaluateJavaScript("""
+                [getComputedStyle(document.querySelector('footer')).display,
+                 getComputedStyle(document.querySelector('header')).display,
+                 getComputedStyle(document.querySelector('main')).paddingTop]
+                """) as? [String]
+            return result?.first == "none"
+        }
+        XCTAssertEqual(result, ["none", "flex", "12px"])
+    }
+
     // MARK: Helpers
 
     private func until(_ condition: () async -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
