@@ -611,8 +611,7 @@ final class HostedLiveBrowserTests: XCTestCase {
         func play(_ feedback: Haptics.Feedback) { played.append(feedback) }
     }
 
-    /// The grip flush in the bottom-right corner (an iPad's and a Mac's at
-    /// the bottom left too) resizes the player as a pan goes, at the
+    /// A grip flush in each bottom corner resizes the player as a pan goes, at the
     /// frame's aspect, its docked corner held; a tick at each limit; the
     /// size kept for the chat; VoiceOver steps it; ⤢ snaps to big and drops
     /// it; big grows from its middle, the chat's content following. Take
@@ -642,9 +641,8 @@ final class HostedLiveBrowserTests: XCTestCase {
         XCTAssertEqual(action.frame.midX, player.bounds.midX, accuracy: 0.5)
         XCTAssertEqual(action.frame.minY, 0)
 
-        // Small at the bottom right: a phone's one grip, flush in its
-        // bottom right; an iPad's or a Mac's in both bottom corners.
-        let corners: [LiveBrowserDockLayout.Corner] = dock.isPhone ? [.bottomRight] : [.bottomLeft, .bottomRight]
+        // Small at the bottom right: a grip flush in each bottom corner.
+        let corners: [LiveBrowserDockLayout.Corner] = [.bottomLeft, .bottomRight]
         let grips = player.gripViews.filter { !$0.isHidden }
         XCTAssertEqual(grips.map(\.corner), corners)
         XCTAssertEqual(grips.filter(\.isAccessibilityElement).count, 1, "one for VoiceOver")

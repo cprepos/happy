@@ -1745,8 +1745,7 @@ final class LiveBrowserIndicatorView: UIControl {
 /// The floating picture: ✕ and the menu at the bar's left, full screen and
 /// bigger or smaller at its right, Take over or Release in its middle, the
 /// status under the picture. Dragged, it lands in the nearest corner; a
-/// grip flush in a bottom corner (a phone's at the right, an iPad's or a
-/// Mac's at both) resizes it.
+/// grip flush in either bottom corner resizes it.
 final class LiveBrowserPlayerView: UIView, UIGestureRecognizerDelegate {
     var onClose: (() -> Void)?
     var onFullScreen: (() -> Void)?
@@ -2119,8 +2118,8 @@ final class LiveBrowserPlayerView: UIView, UIGestureRecognizerDelegate {
     }
 }
 
-/// A resize grip: a window's corner grip, flush inside the player's
-/// bottom corner, three short diagonal lines in the label's secondary
+/// A resize grip: a window's corner grip, flush inside one of the
+/// player's bottom corners, three short diagonal lines in the label's secondary
 /// colour on no chip, apart at a glance from ⤢'s arrows. A pan on it
 /// resizes the player; for VoiceOver it is adjustable, a step wider or
 /// narrower each swipe.

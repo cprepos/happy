@@ -430,13 +430,14 @@ final class LiveBrowserLayoutTests: XCTestCase {
             XCTAssertEqual(left.frame.minY, 70, "8 under the safe area")
             XCTAssertEqual(left.frame.size, right.frame.size)
         }
-        // A phone's one grip: flush in the bottom right, whatever corner.
+        // A phone's grips: flush in both bottom corners, whatever corner.
         for corner in LiveBrowserDockLayout.Corner.allCases {
             for big in [false, true] {
                 let layout = phone(corner: corner, big: big, width: 300)
                 let bounds = CGRect(origin: .zero, size: layout.frame.size)
-                XCTAssertEqual(layout.grips, [.init(corner: .bottomRight, frame: rect(256, bounds.height - 44, 44, 44))])
-                XCTAssertTrue(bounds.contains(layout.grips[0].frame), "inside the box")
+                XCTAssertEqual(layout.grips, [.init(corner: .bottomLeft, frame: rect(0, bounds.height - 44, 44, 44)),
+                                              .init(corner: .bottomRight, frame: rect(256, bounds.height - 44, 44, 44))])
+                for grip in layout.grips { XCTAssertTrue(bounds.contains(grip.frame), "inside the box") }
             }
         }
         // An iPad's or a Mac's: one in each bottom corner, inside the box.
@@ -455,7 +456,8 @@ final class LiveBrowserLayoutTests: XCTestCase {
         assertFrame(big.frame, rect(51, 62, 300, 262))
         XCTAssertTrue(big.isBig)
         XCTAssertEqual(big.topInset, 270, "the chat follows its height")
-        XCTAssertEqual(big.grips, [.init(corner: .bottomRight, frame: rect(256, 218, 44, 44))])
+        XCTAssertEqual(big.grips, [.init(corner: .bottomLeft, frame: rect(0, 218, 44, 44)),
+                                   .init(corner: .bottomRight, frame: rect(256, 218, 44, 44))])
         XCTAssertEqual(phone(big: true, width: 1000).frame, phone(big: true, width: nil).frame)
         // Its corner doesn't move it.
         XCTAssertEqual(phone(corner: .topLeft, big: true, width: 300).frame, big.frame)
@@ -485,7 +487,8 @@ final class LiveBrowserLayoutTests: XCTestCase {
         XCTAssertGreaterThan(down, 232)
         XCTAssertLessThan(down, 272)
         XCTAssertLessThan(floating.width(dragging: .bottomRight, from: 232, by: CGPoint(x: 0, y: -25)), 232)
-        // An iPad's bottom-left grip grows out to the left.
+        // The bottom-left grip grows out to the left, a phone's as an iPad's.
+        XCTAssertEqual(floating.width(dragging: .bottomLeft, from: 232, by: CGPoint(x: -40, y: 25)), 272, accuracy: 0.001)
         XCTAssertEqual(pad(big: false, dragged: nil).width(dragging: .bottomLeft, from: 420, by: CGPoint(x: -40, y: 25)), 460, accuracy: 0.001)
         // Big grows from its middle: a grip 20 out is 40 wider.
         let big = phone(big: true, width: 300)

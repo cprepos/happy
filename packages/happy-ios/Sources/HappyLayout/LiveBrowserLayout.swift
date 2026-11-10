@@ -104,9 +104,8 @@ public struct ChatStatusLineLayout: Equatable, Sendable {
 /// safe area.
 ///
 /// Between and beyond the presets the size is continuous: a grip flush
-/// inside the player's bottom corner (`grips`: a phone's at the bottom
-/// right whatever its corner, an iPad's or a Mac's one at each bottom
-/// corner) drags the picture's width, its
+/// inside each of the player's bottom corners (`grips`), whatever corner
+/// it is in, drags the picture's width, its
 /// height following at the frame's aspect, and the width asked for
 /// (`Input.width`) is held to `limits`: no narrower than the old mini
 /// player, no wider than the pane (a floating player's card), and short
@@ -114,10 +113,10 @@ public struct ChatStatusLineLayout: Equatable, Sendable {
 /// player's docked corner stays where it is and it grows toward the chat;
 /// big stays centred under the header and grows from its middle.
 ///
-///     a phone's                     an iPad's or a Mac's
+///     floating                      big
 ///       ┌──────────┐                ┌──────────────┐
 ///       │  ◂ Take ▸│                │ ◂   Take   ▸ │
-///       │         ◢│                │◣            ◢│
+///       │◣        ◢│                │◣            ◢│
 ///       └──────────┘                └──────────────┘
 public struct LiveBrowserDockLayout: Equatable, Sendable {
     public enum Corner: String, CaseIterable, Sendable {
@@ -248,9 +247,8 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
     /// The widths a drag can reach here: from the old mini player's to the
     /// pane's (a floating player's card), leaving the chat some room.
     public var limits: ClosedRange<CGFloat>
-    /// The resize grips, flush inside the bottom corners: a phone's one at
-    /// the bottom right, an iPad's or a Mac's one at each bottom corner,
-    /// whatever corner the player is in, small or big.
+    /// The resize grips, flush inside both bottom corners, whatever corner
+    /// the player is in, small or big, on every idiom.
     public var grips: [Grip]
     /// The room on the bar between the buttons at its sides, centred on
     /// it: Take control (or Release, Review, Retry) stands in its middle.
@@ -331,7 +329,7 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
         // Each side keeps as much as the wider: the middle is the bar's.
         let side = four ? 2 * b : b
         control = width - 2 * side >= b ? CGRect(x: side, y: 0, width: width - 2 * side, height: b) : nil
-        let corners: [Corner] = input.idiom == .pad ? [.bottomLeft, .bottomRight] : [.bottomRight]
+        let corners: [Corner] = [.bottomLeft, .bottomRight]
         grips = corners.map { corner in
             Grip(corner: corner, frame: CGRect(
                 x: corner.isLeft ? 0 : width - M.grip, y: height - M.grip,
