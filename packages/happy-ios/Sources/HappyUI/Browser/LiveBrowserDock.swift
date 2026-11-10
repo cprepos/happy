@@ -2,6 +2,7 @@
 import HappyCore
 import HappyLayout
 import HappyStore
+import ImageIO
 import UIKit
 import WebKit
 
@@ -264,9 +265,36 @@ final class LiveBrowserDock: NSObject {
         let strip = VoiceCoordinator.shared.sheetTop(in: view)
         return LiveBrowserDockLayout(.init(
             size: view.bounds.size, safeArea: LayoutInsets(view.safeAreaInsets), card: card,
-            anchor: LiveBrowserDockLayout.anchor(anchor, strip), corner: corner, large: large
+            anchor: LiveBrowserDockLayout.anchor(anchor, strip), corner: corner, large: large, phone: isPhone
         ))
     }
+
+    /// An iPhone, not an iPad and not the app on a Mac: one player size
+    /// (the large one), and full screen is the bigger view.
+    static func isPhone(_ traits: UITraitCollection) -> Bool {
+        traits.userInterfaceIdiom == .phone && !ProcessInfo.processInfo.isiOSAppOnMac
+    }
+
+    var isPhone: Bool { Self.isPhone(host?.traitCollection ?? UITraitCollection.current) }
+
+    /// The player's size: a phone's is always large, whatever was kept.
+    private var showsLarge: Bool { isPhone || large }
+
+    /// The live picture's width over its height, read from the newest
+    /// frame's header; nil before the first.
+    var frameAspect: CGFloat? {
+        guard let bytes = feed?.frame else { return nil }
+        if let aspectOf, aspectOf.count == bytes.count, aspectOf.prefix == bytes.prefix(64) { return aspectOf.aspect }
+        guard let source = CGImageSourceCreateWithData(bytes as CFData, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.doubleValue,
+              let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.doubleValue,
+              width > 0, height > 0 else { return nil }
+        let aspect = CGFloat(width / height)
+        aspectOf = (bytes.count, bytes.prefix(64), aspect)
+        return aspect
+    }
+    private var aspectOf: (count: Int, prefix: Data, aspect: CGFloat)?
 
     // MARK: The feed
 
@@ -371,7 +399,7 @@ final class LiveBrowserDock: NSObject {
         }
         let player = LiveBrowserPlayerView()
         self.player = player
-        player.large = large
+        player.large = showsLarge
         player.onClose = { [weak self] in self?.closePlayer(animated: true) }
         player.onFullScreen = { [weak self] in self?.presentFullScreen(taking: false) }
         player.onResize = { [weak self] in self?.resize() }
@@ -381,7 +409,7 @@ final class LiveBrowserDock: NSObject {
         player.onSleep = { [weak self] in self?.sleep() }
         player.onTap = { [weak self] in self?.presentFullScreen(taking: false) }
         player.onDrop = { [weak self] center in self?.drop(at: center) }
-        feed.attach(player, visible: isOnScreen, frames: true, fast: large) { [weak player] feed in player?.show(feed) }
+        feed.attach(player, visible: isOnScreen, frames: true, fast: showsLarge) { [weak player] feed in player?.show(feed) }
         // Shown again after X: a poll that stalled starts over.
         freshen(feed)
         player.show(feed)
@@ -418,6 +446,8 @@ final class LiveBrowserDock: NSObject {
     }
 
     private func resize() {
+        // A phone's player has one size: full screen is the bigger one.
+        guard !isPhone else { return }
         large.toggle()
         keep()
         player?.large = large
@@ -486,7 +516,12 @@ final class LiveBrowserDock: NSObject {
                 self.busy = false
                 self.player?.isBusy = false
                 guard self.feed === feed else { return }
-                let live = LiveBrowserFullScreenItems(dock: self, browser: BrowserViewController(url: link.url, page: page, extraItems: []), noVNC: false)
+                let browser = BrowserViewController(url: link.url, page: page, extraItems: [])
+                // A phone: the page's own footer (Take control, Release,
+                // Sleep) and header go, the header and the strip have
+                // them, and the picture has the page.
+                if self.isPhone { browser.configure = { Self.pictureOnly(in: $0) } }
+                let live = LiveBrowserFullScreenItems(dock: self, browser: browser, noVNC: false)
                 self.present(live.browser, items: live)
                 if taking { self.take(connection: connection, workspace: workspace) }
             } catch {
@@ -681,14 +716,50 @@ final class LiveBrowserDock: NSObject {
             }
             return LiveBrowserFullScreenItems(dock: self, viewer: viewer)
         }
-        let page = try await BrowserPage.workspace(client: place.client, url: place.url, workspaceID: place.workspaceID)
-        let browser = BrowserViewController(url: place.url, page: page, extraItems: [])
+        let url = isPhone ? Self.scaledNoVNC(place.url) : place.url
+        let page = try await BrowserPage.workspace(client: place.client, url: url, workspaceID: place.workspaceID)
+        let browser = BrowserViewController(url: url, page: page, extraItems: [])
         browser.isRemoteScreen = true
         let watch = LiveBrowserNoVNCWatch()
         watch.disconnected = { [weak self] in self?.dropNoVNC() }
         browser.configure = { watch.install(in: $0) }
         browser.onFailure = { [weak self] _ in self?.dropNoVNC() }
         return LiveBrowserFullScreenItems(dock: self, browser: browser, noVNC: true)
+    }
+
+    /// The live page as its picture alone, edge to edge: no header, no
+    /// footer, no margins. Set through the CSS object model, which the
+    /// page's nonce-only `style-src` leaves alone (a `<style>` added here
+    /// would be refused). Approvals and the page's notes still show.
+    nonisolated static let pictureOnlySource = """
+    (function () {
+      var set = function (selector, styles) {
+        var element = document.querySelector(selector);
+        if (!element) { return; }
+        for (var name in styles) { element.style.setProperty(name, styles[name], 'important'); }
+      };
+      set('header', { display: 'none' });
+      set('footer', { display: 'none' });
+      set('main', { padding: '0' });
+      set('#box', { border: '0', 'border-radius': '0', 'max-width': 'none', 'min-height': '0',
+                    'max-height': '100dvh' });
+    })();
+    """
+
+    static func pictureOnly(in configuration: WKWebViewConfiguration) {
+        configuration.userContentController.addUserScript(
+            WKUserScript(source: pictureOnlySource, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+    }
+
+    /// noVNC's page scaling the remote screen to fit, never asking it to
+    /// take the phone's size: `resize=remote` becomes `resize=scale`. The
+    /// bridge already sends `scale`; an older pod's `remote` would leave
+    /// x11vnc's fixed 1920x1200 unscaled and cut off.
+    static func scaledNoVNC(_ url: URL) -> URL {
+        guard var parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let items = parts.queryItems, items.contains(where: { $0.name == "resize" && $0.value == "remote" }) else { return url }
+        parts.queryItems = items.map { $0.name == "resize" ? URLQueryItem(name: "resize", value: "scale") : $0 }
+        return parts.url ?? url
     }
 
     /// The other viewer in place of the one showing, control kept: the
@@ -937,18 +1008,19 @@ final class LiveBrowserFullScreenItems: UIViewController {
         let content = self.content
         addChild(content)
         view.addSubview(content.view)
+        var placed: [NSLayoutConstraint] = []
         if viewer != nil {
             // The native viewer: no bar of ours under the header. The
             // picture is Chrome's window, address bar and all, so it
             // has the whole page below the header.
             content.view.translatesAutoresizingMaskIntoConstraints = false
             view.backgroundColor = .systemBackground
-            NSLayoutConstraint.activate([
+            placed = [
                 content.view.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
                 content.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
                 content.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
                 content.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            ])
+            ]
         } else if isNoVNC {
             // The bar under the header, clear of the keyboard pill at the
             // bottom and of Minimize: noVNC below it.
@@ -961,14 +1033,25 @@ final class LiveBrowserFullScreenItems: UIViewController {
                 bar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
                 bar.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
                 bar.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+            ])
+            placed = [
                 content.view.topAnchor.constraint(equalTo: bar.bottomAnchor),
                 content.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
                 content.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
                 content.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            ])
+            ]
         } else {
+            // The live frame view: placed by `LiveBrowserFullScreenLayout`
+            // (the whole screen, or a phone's picture edge to edge).
             content.view.frame = view.bounds
-            content.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            if isPhone { view.backgroundColor = UIColor(Palette.surface) }
+        }
+        if placesByLayout {
+            // noVNC's page on a phone: placed by the layout, as the frame view.
+            content.view.translatesAutoresizingMaskIntoConstraints = true
+        } else {
+            NSLayoutConstraint.activate(placed)
+            constrained = placed
         }
         content.didMove(toParent: self)
         let minimize = UIBarButtonItem(image: UIImage(systemName: "chevron.down"), primaryAction: UIAction { [weak self] _ in self?.dock?.minimize() })
@@ -1005,7 +1088,160 @@ final class LiveBrowserFullScreenItems: UIViewController {
         } else {
             navigationItem.rightBarButtonItems = [control, browser.reloadItem]
         }
+        if isPhone { buildStrip() }
         update(state, held: held)
+    }
+
+    // MARK: A phone turned sideways
+
+    /// An iPhone (not an iPad, not the app on a Mac).
+    private var isPhone: Bool { LiveBrowserDock.isPhone(traitCollection) }
+    /// The content's constraints where it has them, off while the strip shows.
+    private var constrained: [NSLayoutConstraint] = []
+    /// The header's controls in a column at the trailing edge, on a phone
+    /// turned sideways; the header and noVNC's address row hide meanwhile.
+    let strip = UIView()
+    private(set) var stripShown = false
+    private let stripControl = UIButton(configuration: .prominentGlass())
+    private let stripEnd = LiveBrowserFullScreenItems.stripButton("xmark.octagon", Strings.LiveBrowser.endBrowser, "live-browser-end")
+    private let stripSleep = LiveBrowserFullScreenItems.stripButton("moon.zzz", Strings.LiveBrowser.sleepBrowser, "live-browser-sleep")
+
+    /// The web pages (the frame view, and noVNC's on a phone) are placed
+    /// by `LiveBrowserFullScreenLayout` always; the native viewer, which
+    /// fits the picture itself over its own bar and the keyboard, only
+    /// while the strip shows.
+    private var placesByLayout: Bool { viewer == nil && (!isNoVNC || isPhone) }
+
+    private func fullScreenLayout() -> LiveBrowserFullScreenLayout {
+        // Under the header, and under noVNC's address row while it shows.
+        let top = isNoVNC && viewer == nil && !navBar.isHidden ? navBar.frame.maxY : view.safeAreaInsets.top
+        return LiveBrowserFullScreenLayout(size: view.bounds.size, safeArea: LayoutInsets(view.safeAreaInsets),
+                                           top: top, phone: isPhone, aspect: dock?.frameAspect)
+    }
+
+    /// A button in the column: the glyph alone on a 44-point target, in
+    /// the header's tint.
+    private static func stripButton(_ symbol: String, _ label: String, _ id: String) -> UIButton {
+        var configuration = UIButton.Configuration.plain()
+        configuration.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .medium))
+        configuration.baseForegroundColor = UIColor(Palette.headerTint)
+        configuration.contentInsets = .zero
+        let button = UIButton(configuration: configuration)
+        button.accessibilityLabel = label
+        button.accessibilityIdentifier = id
+        typealias M = LiveBrowserFullScreenLayout.Metrics
+        NSLayoutConstraint.activate([
+            button.widthAnchor.constraint(equalToConstant: M.button),
+            button.heightAnchor.constraint(equalToConstant: M.button),
+        ])
+        return button
+    }
+
+    /// Minimize, End and Sleep at the top; the page's own (back, forward,
+    /// reload, More) in the middle; Take or Release control at the bottom.
+    private func buildStrip() {
+        typealias M = LiveBrowserFullScreenLayout.Metrics
+        let minimize = Self.stripButton("chevron.down", Strings.LiveBrowser.minimize, "live-browser-minimize")
+        minimize.addAction(UIAction { [weak self] _ in self?.dock?.minimize() }, for: .touchUpInside)
+        stripEnd.configuration?.baseForegroundColor = .systemRed
+        stripEnd.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.dock?.confirmEnd(from: self.stripEnd)
+        }, for: .touchUpInside)
+        stripSleep.addAction(UIAction { [weak self] _ in self?.dock?.sleep() }, for: .touchUpInside)
+        var page: [UIView] = []
+        if viewer == nil, isNoVNC {
+            func nav(_ symbol: String, _ label: String, _ id: String, _ action: LiveBrowserNavigation) -> UIButton {
+                let button = Self.stripButton(symbol, label, id)
+                button.addAction(UIAction { [weak self] _ in self?.navigate(action) }, for: .touchUpInside)
+                return button
+            }
+            let more = Self.stripButton("ellipsis.circle", Strings.LiveBrowser.Viewer.more, "live-browser-viewer-menu")
+            more.showsMenuAsPrimaryAction = true
+            more.menu = viewerMenu.menu
+            page = [
+                nav("chevron.backward", Strings.LiveBrowser.back, "live-browser-back", .back),
+                nav("chevron.forward", Strings.LiveBrowser.forward, "live-browser-forward", .forward),
+                nav("arrow.clockwise", Strings.LiveBrowser.reload, "live-browser-reload", .reload),
+                more,
+            ]
+        } else if viewer == nil, let browser {
+            let reload = Self.stripButton("arrow.clockwise", Strings.Browser.reload, "browser-reload")
+            reload.addAction(UIAction { [weak browser] _ in browser?.reloadOrStop() }, for: .touchUpInside)
+            page = [reload]
+        }
+        stripControl.accessibilityIdentifier = "live-browser-control"
+        stripControl.addAction(UIAction { [weak self] _ in
+            guard let self, let dock = self.dock else { return }
+            if self.held { dock.release() } else { dock.take() }
+        }, for: .touchUpInside)
+        NSLayoutConstraint.activate([
+            stripControl.widthAnchor.constraint(equalToConstant: M.button),
+            stripControl.heightAnchor.constraint(equalToConstant: M.button),
+        ])
+        func group(_ views: [UIView]) -> UIStackView {
+            let stack = UIStackView(arrangedSubviews: views)
+            stack.axis = .vertical
+            stack.alignment = .center
+            return stack
+        }
+        let column = UIStackView(arrangedSubviews: [group([minimize, stripEnd, stripSleep]), group(page), group([stripControl])])
+        column.axis = .vertical
+        column.alignment = .center
+        column.distribution = .equalSpacing
+        column.translatesAutoresizingMaskIntoConstraints = false
+        strip.addSubview(column)
+        NSLayoutConstraint.activate([
+            column.topAnchor.constraint(equalTo: strip.topAnchor),
+            column.bottomAnchor.constraint(equalTo: strip.bottomAnchor),
+            column.centerXAnchor.constraint(equalTo: strip.centerXAnchor),
+        ])
+        strip.backgroundColor = UIColor(Palette.surface)
+        strip.accessibilityIdentifier = "live-browser-strip"
+        strip.isHidden = true
+        view.addSubview(strip)
+    }
+
+    override func viewWillLayoutSubviews() {
+        super.viewWillLayoutSubviews()
+        applyMode()
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        let layout = fullScreenLayout()
+        if let frame = layout.strip { strip.frame = frame }
+        if stripShown || placesByLayout { content.view.frame = layout.content }
+    }
+
+    /// Sideways on a phone, the strip; upright, the header. Follows the
+    /// device's own turn: nothing here asks for an orientation.
+    private func applyMode() {
+        let wants = LiveBrowserFullScreenLayout.usesStrip(phone: isPhone, size: view.bounds.size)
+        if wants != stripShown {
+            stripShown = wants
+            strip.isHidden = !wants
+            if wants {
+                NSLayoutConstraint.deactivate(constrained)
+                content.view.translatesAutoresizingMaskIntoConstraints = true
+            } else if !constrained.isEmpty {
+                content.view.translatesAutoresizingMaskIntoConstraints = false
+                NSLayoutConstraint.activate(constrained)
+            }
+            showNavRow()
+            view.bringSubviewToFront(strip)
+        }
+        if let navigation = navigationController, navigation.topViewController === self, navigation.isNavigationBarHidden != wants {
+            navigation.setNavigationBarHidden(wants, animated: false)
+        }
+    }
+
+    /// noVNC's address row hides with the header; a failure's words
+    /// still show.
+    private func showNavRow() {
+        guard isNoVNC, viewer == nil else { return }
+        navRow?.isHidden = stripShown
+        navBar.isHidden = stripShown && navMessage.isHidden
     }
 
     /// The gestures around noVNC that would take its touches, off while
@@ -1017,6 +1253,7 @@ final class LiveBrowserFullScreenItems: UIViewController {
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         if isNoVNC { holdGestures() }
+        applyMode()
     }
 
     /// Going for good (popped, or its full screen dismissed), not covered
@@ -1094,6 +1331,8 @@ final class LiveBrowserFullScreenItems: UIViewController {
     /// Calls in flight.
     private(set) var navigating = 0
     private var messageClear: Task<Void, Never>?
+    /// Back, Forward, Reload, the address and More: hidden while the strip has them.
+    private var navRow: UIView?
 
     private lazy var navBar: UIView = {
         func button(_ symbol: String, _ label: String, _ id: String, _ action: LiveBrowserNavigation) -> UIButton {
@@ -1145,6 +1384,7 @@ final class LiveBrowserFullScreenItems: UIViewController {
         row.axis = .horizontal
         row.spacing = 6
         row.alignment = .center
+        navRow = row
         navMessage.font = .preferredFont(forTextStyle: .footnote)
         navMessage.textColor = .systemRed
         navMessage.numberOfLines = 2
@@ -1183,6 +1423,7 @@ final class LiveBrowserFullScreenItems: UIViewController {
         messageClear?.cancel()
         navMessage.text = text
         navMessage.isHidden = text == nil
+        showNavRow()
         guard text != nil else { return }
         messageClear = Task { [weak self] in
             try? await Task.sleep(for: .seconds(4))
@@ -1204,6 +1445,14 @@ final class LiveBrowserFullScreenItems: UIViewController {
         control.isEnabled = state.map { !$0.ended } ?? false
         endItem.isEnabled = state.map { !$0.ended } ?? false
         sleepItem.isEnabled = state.map { !$0.ended && !$0.asleep } ?? false
+        let controlTitle = held ? Strings.LiveBrowser.releaseControl : Strings.LiveBrowser.takeControl
+        stripControl.configuration?.image = UIImage(systemName: held ? "hand.raised.slash" : "hand.tap")
+        stripControl.accessibilityLabel = controlTitle
+        stripControl.isEnabled = control.isEnabled
+        stripEnd.isEnabled = endItem.isEnabled
+        stripSleep.isEnabled = sleepItem.isEnabled
+        // The picture's height follows the frame's aspect once one came.
+        if isPhone, viewer == nil { view.setNeedsLayout() }
         viewer?.pageFocusChanged(held ? state?.editableFocused : nil)
         if isNoVNC, viewer == nil, !address.isEditing, navigating == 0, let url = state?.url, !url.isEmpty { address.text = url }
         navigationItem.subtitle = state.flatMap { $0.asleep ? Strings.LiveBrowser.asleep : $0.starting ? Strings.LiveBrowser.startingBrowser : nil }

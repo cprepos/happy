@@ -87,6 +87,13 @@ public struct ChatStatusLineLayout: Equatable, Sendable {
 ///     ├ footer ────────────────┤   full screen has End browser)
 ///     └────────────────────────┘   pill (large only) · Take over / Release
 ///
+/// A phone (`Input.phone`) has one size, the large one: no ⇲, and ⤢
+/// stands where ⇲ would.
+///
+///     ┌ bar ───────────────────┐
+///     │ ✕  •••             ⤢   │
+///     ├ picture ───────────────┤
+///
 /// A bottom corner keeps its right or left edge on the composer card's and
 /// its bottom 8 over `anchor`: the status line's top, the voice strip's or
 /// the keyboard's, whichever is highest. A top corner keeps 8 under the
@@ -127,9 +134,12 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
         public var anchor: CGFloat
         public var corner: Corner
         public var large: Bool
+        /// An iPhone: always the large width, with no small or large
+        /// toggle; full screen is the bigger view.
+        public var phone: Bool
 
-        public init(size: CGSize, safeArea: LayoutInsets, card: CGRect, anchor: CGFloat, corner: Corner = .bottomRight, large: Bool = false) {
-            self.size = size; self.safeArea = safeArea; self.card = card; self.anchor = anchor; self.corner = corner; self.large = large
+        public init(size: CGSize, safeArea: LayoutInsets, card: CGRect, anchor: CGFloat, corner: Corner = .bottomRight, large: Bool = false, phone: Bool = false) {
+            self.size = size; self.safeArea = safeArea; self.card = card; self.anchor = anchor; self.corner = corner; self.large = large; self.phone = phone
         }
     }
 
@@ -141,7 +151,7 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
     public var close: CGRect
     /// Nil on a player too narrow for four buttons: the picture opens it.
     public var fullScreen: CGRect?
-    /// Nil on a player too narrow for two buttons.
+    /// Nil on a player too narrow for two buttons, and on a phone.
     public var resize: CGRect?
     /// The menu (End browser), beside close; nil where full screen is.
     public var menu: CGRect?
@@ -164,7 +174,7 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
         // Never taller than the room between the bars.
         let room = max(0, bottom - top)
         let chrome = M.barHeight + M.footerHeight
-        var width = Self.width(card: input.card, size: input.size, large: input.large)
+        var width = Self.width(card: input.card, size: input.size, large: input.large || input.phone)
         if width / M.aspect + chrome > room { width = max(0, (room - chrome) * M.aspect).rounded(.down) }
         let pictureHeight = (width / M.aspect).rounded()
         let height = M.barHeight + pictureHeight + M.footerHeight
@@ -175,10 +185,17 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
         picture = CGRect(x: 0, y: M.barHeight, width: width, height: pictureHeight)
         let b = M.button
         close = CGRect(x: 0, y: 0, width: b, height: b)
-        resize = width >= 2 * b ? CGRect(x: width - b, y: 0, width: b, height: b) : nil
-        let four = width >= 4 * b
-        menu = four ? CGRect(x: b, y: 0, width: b, height: b) : nil
-        fullScreen = four ? CGRect(x: width - 2 * b, y: 0, width: b, height: b) : nil
+        if input.phone {
+            // No size toggle: full screen takes its place.
+            resize = nil
+            fullScreen = width >= 2 * b ? CGRect(x: width - b, y: 0, width: b, height: b) : nil
+            menu = width >= 3 * b ? CGRect(x: b, y: 0, width: b, height: b) : nil
+        } else {
+            resize = width >= 2 * b ? CGRect(x: width - b, y: 0, width: b, height: b) : nil
+            let four = width >= 4 * b
+            menu = four ? CGRect(x: b, y: 0, width: b, height: b) : nil
+            fullScreen = four ? CGRect(x: width - 2 * b, y: 0, width: b, height: b) : nil
+        }
         footer = CGRect(x: 0, y: M.barHeight + pictureHeight, width: width, height: M.footerHeight)
         showsPill = width >= 200
     }
@@ -198,5 +215,60 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
     /// The highest of what a bottom corner keeps above; nils are ignored.
     public static func anchor(_ tops: CGFloat?...) -> CGFloat {
         tops.compactMap { $0 }.min() ?? 0
+    }
+}
+
+/// The full screen's live page on a phone. Upright, the picture runs
+/// edge to edge under the header, as tall as the frame's aspect makes it,
+/// the controls in the header above it. Turned sideways (the device's
+/// own turn, never forced), the header goes and its controls stand in a
+/// column at the trailing edge, inside the safe area, so the page has the
+/// whole height:
+///
+///     upright                    sideways
+///     ┌ header ─────────┐        ┌─────────────────────────┬──┐
+///     ├ picture ────────┤        │ page                    │⌄ │
+///     │                 │        │                         │⊗ │
+///     ├─────────────────┤        │                         │… │
+///     │                 │        │                         │✋│
+///     └─────────────────┘        └─────────────────────────┴──┘
+///
+/// Elsewhere (iPad, Mac) the page fills the screen as it always has.
+public struct LiveBrowserFullScreenLayout: Equatable, Sendable {
+    public enum Metrics {
+        /// The column's width: a 44-point target and 4 either side.
+        public static let stripWidth: CGFloat = 52
+        public static let button: CGFloat = 44
+        /// When no frame has said otherwise: the bridge's 1920x1200.
+        public static let aspect: CGFloat = 1.6
+    }
+
+    /// The page's frame.
+    public var content: CGRect
+    /// The column of controls; nil where the header has them.
+    public var strip: CGRect?
+
+    /// Sideways: a phone whose height is the short side.
+    public static func usesStrip(phone: Bool, size: CGSize) -> Bool {
+        phone && size.width > size.height
+    }
+
+    /// `top` is where the header ends (the safe area's top, header
+    /// included); `aspect` the frame's width over its height.
+    public init(size: CGSize, safeArea: LayoutInsets, top: CGFloat, phone: Bool, aspect: CGFloat?) {
+        typealias M = Metrics
+        if Self.usesStrip(phone: phone, size: size) {
+            let strip = CGRect(x: size.width - safeArea.right - M.stripWidth, y: safeArea.top,
+                               width: M.stripWidth, height: max(0, size.height - safeArea.top - safeArea.bottom))
+            self.strip = strip
+            content = CGRect(x: safeArea.left, y: 0, width: max(0, strip.minX - safeArea.left), height: size.height)
+        } else if phone {
+            let ratio = aspect.flatMap { $0 > 0 ? $0 : nil } ?? M.aspect
+            strip = nil
+            content = CGRect(x: 0, y: top, width: size.width, height: min(max(0, size.height - top), (size.width / ratio).rounded()))
+        } else {
+            strip = nil
+            content = CGRect(origin: .zero, size: size)
+        }
     }
 }
