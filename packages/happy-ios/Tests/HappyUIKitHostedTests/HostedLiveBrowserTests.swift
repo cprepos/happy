@@ -111,9 +111,11 @@ final class HostedLiveBrowserTests: XCTestCase {
         XCTAssertEqual(player.frame.maxY, line.frame.minY - 8)
         if host.view.bounds.size == CGSize(width: 402, height: 874) {
             XCTAssertEqual(host.cardFrame, CGRect(x: 8, y: 784, width: 386, height: 56))
-            // A phone's one size is the large player.
+            // A phone's small is the large size, ⤢ and full screen both on its bar.
             XCTAssertEqual(player.frame, CGRect(x: 162, y: 537, width: 232, height: 219))
-            XCTAssertNil(player.subviews.first { $0.accessibilityIdentifier == "live-browser-player-resize" && !$0.isHidden })
+            for id in ["live-browser-player-resize", "live-browser-player-full-screen", "live-browser-player-menu", "live-browser-player-close"] {
+                XCTAssertNotNil(player.subviews.first { $0.accessibilityIdentifier == id && !$0.isHidden }, id)
+            }
         }
         // Its buttons stand on the bar, none on the picture, each a 44-point target.
         let picture = try XCTUnwrap(player.subviews.first { $0.accessibilityIdentifier == "live-browser-picture" })
@@ -526,6 +528,76 @@ final class HostedLiveBrowserTests: XCTestCase {
         XCTAssertEqual(player.frame.maxY, min(strip, host.line?.frame.minY ?? .greatestFiniteMagnitude) - 8, accuracy: 0.5)
         try screenshot(window, name: "voice-strip-player")
         host.dismiss(animated: false)
+        try await until { host.presentedViewController == nil }
+    }
+
+    // MARK: A phone's big player
+
+    func testOnAPhoneExpandMakesTheWholeWidthPlayerInTheChatAndShrinkPutsItBack() async throws {
+        let daemon = BrowserDaemon()
+        let chat = UUID().uuidString
+        let (host, window) = try await makeHost(daemon, chat: chat)
+        defer { window.isHidden = true; host.dock.update(link: nil); UserDefaults.standard.removeObject(forKey: "liveBrowserDock.\(chat)") }
+        let dock = host.dock!
+        try XCTSkipUnless(dock.isPhone, "an iPhone's player; an iPad's and the Mac's are as they were")
+        turnUpright()
+        dock.update(link: LiveBrowserLink(id: id))
+        try await until { dock.player != nil && dock.feed?.phase.state != nil }
+        host.view.layoutIfNeeded()
+        let player = try XCTUnwrap(dock.player)
+        func button(_ id: String) throws -> UIButton {
+            try XCTUnwrap(player.subviews.first { $0.accessibilityIdentifier == id && !$0.isHidden } as? UIButton, id)
+        }
+        let small = player.frame
+        XCTAssertLessThan(small.width, host.view.bounds.width)
+        XCTAssertEqual(dock.topInset(in: host.view), 0)
+        XCTAssertEqual(try button("live-browser-player-resize").accessibilityLabel, Strings.LiveBrowser.bigger)
+
+        // ⤢: big, edge to edge under the header at the frame's aspect,
+        // the chat's content under it; kept for the chat. No full screen.
+        try button("live-browser-player-resize").sendActions(for: .touchUpInside)
+        try await until { player.layer.animationKeys()?.isEmpty ?? true }
+        host.view.layoutIfNeeded()
+        let width = host.view.bounds.width
+        XCTAssertEqual(player.frame.minX, 0)
+        XCTAssertEqual(player.frame.width, width)
+        XCTAssertEqual(player.frame.minY, host.view.safeAreaInsets.top)
+        let picture = try XCTUnwrap(player.subviews.first { $0.accessibilityIdentifier == "live-browser-picture" })
+        XCTAssertEqual(picture.frame.width, width)
+        XCTAssertEqual(picture.frame.height, (width / 1.6).rounded())
+        XCTAssertEqual(dock.topInset(in: host.view), player.frame.height + 8)
+        XCTAssertTrue(dock.riders.isEmpty, "big stays at the top over the keyboard")
+        XCTAssertNil(host.presentedViewController)
+        XCTAssertTrue(LiveBrowserDock.kept(chat).large)
+        XCTAssertEqual(try button("live-browser-player-resize").accessibilityLabel, Strings.LiveBrowser.smaller)
+        for id in ["live-browser-player-close", "live-browser-player-menu", "live-browser-player-full-screen"] { _ = try button(id) }
+        try screenshot(window, name: "live-browser-phone-big")
+
+        // Turned sideways, big stays the windowed player, at its aspect.
+        try await turn(window, to: .landscapeRight)
+        host.view.layoutIfNeeded()
+        XCTAssertNil(host.presentedViewController, "landscape is full screen's, asked for only by its button")
+        XCTAssertEqual(picture.frame.width / picture.frame.height, 1.6, accuracy: 0.02)
+        XCTAssertEqual(player.frame.minY, host.view.safeAreaInsets.top)
+        try await turn(window, to: .portrait)
+        host.view.layoutIfNeeded()
+        XCTAssertEqual(player.frame.width, host.view.bounds.width)
+
+        // The picture tapped: as ⤢, back to small where it was.
+        player.onTap?()
+        try await until { player.layer.animationKeys()?.isEmpty ?? true }
+        host.view.layoutIfNeeded()
+        XCTAssertEqual(player.frame, small)
+        XCTAssertEqual(dock.topInset(in: host.view), 0)
+        XCTAssertFalse(LiveBrowserDock.kept(chat).large)
+        XCTAssertNil(host.presentedViewController, "the picture never opens full screen on a phone")
+        player.onTap?()
+        try await until { dock.topInset(in: host.view) > 0 }
+
+        // Full screen: its own button, from big.
+        try button("live-browser-player-full-screen").sendActions(for: .touchUpInside)
+        try await until { (host.presentedViewController as? UINavigationController)?.transitionCoordinator == nil && host.presentedViewController != nil }
+        dock.minimize()
         try await until { host.presentedViewController == nil }
     }
 

@@ -87,12 +87,10 @@ public struct ChatStatusLineLayout: Equatable, Sendable {
 ///     ├ footer ────────────────┤   full screen has End browser)
 ///     └────────────────────────┘   pill (large only) · Take over / Release
 ///
-/// A phone (`Input.phone`) has one size, the large one: no ⇲, and ⤢
-/// stands where ⇲ would.
-///
-///     ┌ bar ───────────────────┐
-///     │ ✕  •••             ⤢   │
-///     ├ picture ───────────────┤
+/// A phone (`Input.phone`): small is the large size at a corner; big
+/// (`large`) is the screen's whole width under the header, square
+/// cornered, the picture at the frame's aspect, and the chat's content
+/// starts under it (`topInset`). ⇲ goes between the two.
 ///
 /// A bottom corner keeps its right or left edge on the composer card's and
 /// its bottom 8 over `anchor`: the status line's top, the voice strip's or
@@ -134,8 +132,8 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
         public var anchor: CGFloat
         public var corner: Corner
         public var large: Bool
-        /// An iPhone: always the large width, with no small or large
-        /// toggle; full screen is the bigger view.
+        /// An iPhone: small is the large width at a corner; `large` is
+        /// big, the screen's whole width docked at the chat's top.
         public var phone: Bool
 
         public init(size: CGSize, safeArea: LayoutInsets, card: CGRect, anchor: CGFloat, corner: Corner = .bottomRight, large: Bool = false, phone: Bool = false) {
@@ -151,13 +149,17 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
     public var close: CGRect
     /// Nil on a player too narrow for four buttons: the picture opens it.
     public var fullScreen: CGRect?
-    /// Nil on a player too narrow for two buttons, and on a phone.
+    /// Nil on a player too narrow for two buttons.
     public var resize: CGRect?
     /// The menu (End browser), beside close; nil where full screen is.
     public var menu: CGRect?
     public var footer: CGRect
     /// The status pill shows in the footer when there is room: large only.
     public var showsPill: Bool
+    /// A phone's big player: edge to edge at the chat's top, square
+    /// cornered, not dragged; the chat's content starts under it.
+    public var isBig: Bool
+    public var radius: CGFloat
 
     public static func width(card: CGRect, size: CGSize, large: Bool) -> CGFloat {
         typealias M = Metrics
@@ -174,28 +176,41 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
         // Never taller than the room between the bars.
         let room = max(0, bottom - top)
         let chrome = M.barHeight + M.footerHeight
-        var width = Self.width(card: input.card, size: input.size, large: input.large || input.phone)
-        if width / M.aspect + chrome > room { width = max(0, (room - chrome) * M.aspect).rounded(.down) }
-        let pictureHeight = (width / M.aspect).rounded()
+        let big = input.phone && input.large
+        isBig = big
+        radius = big ? 0 : M.radius
+        var width: CGFloat
+        let pictureHeight: CGFloat
+        if big {
+            // The whole width, under the header, the picture as tall as
+            // the frame's aspect. Where that is taller than the room (the
+            // phone turned sideways: big stays the windowed player there,
+            // landscape is full screen's), as wide as the room's height
+            // allows, centred.
+            let room = max(0, bottom - input.safeArea.top)
+            width = min(input.size.width, max(0, (room - chrome) * M.aspect).rounded(.down))
+            pictureHeight = (width / M.aspect).rounded()
+        } else {
+            width = Self.width(card: input.card, size: input.size, large: input.large || input.phone)
+            if width / M.aspect + chrome > room { width = max(0, (room - chrome) * M.aspect).rounded(.down) }
+            pictureHeight = (width / M.aspect).rounded()
+        }
         let height = M.barHeight + pictureHeight + M.footerHeight
-        let x = input.corner.isLeft ? input.card.minX : input.card.maxX - width
-        let y = input.corner.isTop ? top : bottom - height
-        frame = CGRect(x: x, y: y, width: width, height: height)
+        if big {
+            frame = CGRect(x: ((input.size.width - width) / 2).rounded(), y: input.safeArea.top, width: width, height: height)
+        } else {
+            let x = input.corner.isLeft ? input.card.minX : input.card.maxX - width
+            let y = input.corner.isTop ? top : bottom - height
+            frame = CGRect(x: x, y: y, width: width, height: height)
+        }
         bar = CGRect(x: 0, y: 0, width: width, height: M.barHeight)
         picture = CGRect(x: 0, y: M.barHeight, width: width, height: pictureHeight)
         let b = M.button
         close = CGRect(x: 0, y: 0, width: b, height: b)
-        if input.phone {
-            // No size toggle: full screen takes its place.
-            resize = nil
-            fullScreen = width >= 2 * b ? CGRect(x: width - b, y: 0, width: b, height: b) : nil
-            menu = width >= 3 * b ? CGRect(x: b, y: 0, width: b, height: b) : nil
-        } else {
-            resize = width >= 2 * b ? CGRect(x: width - b, y: 0, width: b, height: b) : nil
-            let four = width >= 4 * b
-            menu = four ? CGRect(x: b, y: 0, width: b, height: b) : nil
-            fullScreen = four ? CGRect(x: width - 2 * b, y: 0, width: b, height: b) : nil
-        }
+        resize = width >= 2 * b ? CGRect(x: width - b, y: 0, width: b, height: b) : nil
+        let four = width >= 4 * b
+        menu = four ? CGRect(x: b, y: 0, width: b, height: b) : nil
+        fullScreen = four ? CGRect(x: width - 2 * b, y: 0, width: b, height: b) : nil
         footer = CGRect(x: 0, y: M.barHeight + pictureHeight, width: width, height: M.footerHeight)
         showsPill = width >= 200
     }
@@ -211,6 +226,10 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
         case (false, false): return .bottomRight
         }
     }
+
+    /// How far a phone's big player pushes the chat's content down from
+    /// the safe area's top: its height, and a gap; nothing otherwise.
+    public var topInset: CGFloat { isBig ? frame.height + Metrics.gap : 0 }
 
     /// The highest of what a bottom corner keeps above; nils are ignored.
     public static func anchor(_ tops: CGFloat?...) -> CGFloat {

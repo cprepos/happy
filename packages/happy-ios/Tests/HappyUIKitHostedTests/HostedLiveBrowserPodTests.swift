@@ -273,8 +273,6 @@ final class HostedLiveBrowserPodTests: XCTestCase {
         defer { window.isHidden = true; host.dock.update(link: nil) }
         let dock = host.dock!
         let player = try XCTUnwrap(dock.player)
-        host.view.layoutIfNeeded()
-        let width = player.bounds.width
         for round in 0..<3 {
             player.onResize?()
             try await Task.sleep(for: .milliseconds(80))
@@ -285,12 +283,6 @@ final class HostedLiveBrowserPodTests: XCTestCase {
             try await assertPictureComing(daemon, dock, "round \(round)")
             XCTAssertGreaterThan(player.bounds.width, 0)
             XCTAssertNotNil(player.window)
-            // A phone's player has one size, the large one: a resize
-            // (which it has no button for) leaves it be.
-            if dock.isPhone {
-                XCTAssertTrue(player.large, "round \(round)")
-                XCTAssertEqual(player.bounds.width, width, "round \(round)")
-            }
         }
         player.onResize?()
         try await assertPictureComing(daemon, dock, "back to where it was")

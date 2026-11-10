@@ -242,8 +242,16 @@ final class LiveBrowserDock: NSObject {
     /// What rides the keyboard with the composer: the player, at a bottom
     /// corner.
     var riders: [UIView] {
-        guard let player, !corner.isTop else { return [] }
+        guard let player, !corner.isTop, !(isPhone && large) else { return [] }
         return [player]
+    }
+
+    /// How far the chat's content starts below the safe area's top: a
+    /// phone's big player's height and a gap while it shows, else 0.
+    func topInset(in view: UIView) -> CGFloat {
+        guard player != nil, isPhone, large else { return 0 }
+        let placed = placed ?? (view.bounds, view.bounds.height)
+        return playerLayout(in: view, card: placed.card, anchor: placed.anchor).topInset
     }
 
     /// The line's words for the status row, nil while it doesn't show.
@@ -277,7 +285,7 @@ final class LiveBrowserDock: NSObject {
 
     var isPhone: Bool { Self.isPhone(host?.traitCollection ?? UITraitCollection.current) }
 
-    /// The player's size: a phone's is always large, whatever was kept.
+    /// The player's size: a phone's small is the large width.
     private var showsLarge: Bool { isPhone || large }
 
     /// The live picture's width over its height, read from the newest
@@ -399,7 +407,8 @@ final class LiveBrowserDock: NSObject {
         }
         let player = LiveBrowserPlayerView()
         self.player = player
-        player.large = showsLarge
+        player.large = large
+        if isPhone { player.usePhoneFullScreenSymbol() }
         player.onClose = { [weak self] in self?.closePlayer(animated: true) }
         player.onFullScreen = { [weak self] in self?.presentFullScreen(taking: false) }
         player.onResize = { [weak self] in self?.resize() }
@@ -407,7 +416,7 @@ final class LiveBrowserDock: NSObject {
         player.holdsControl = { [weak self] in self?.holdsControl ?? false }
         player.onEnd = { [weak self, weak player] in self?.confirmEnd(from: player?.menuButton) }
         player.onSleep = { [weak self] in self?.sleep() }
-        player.onTap = { [weak self] in self?.presentFullScreen(taking: false) }
+        player.onTap = { [weak self] in self?.tappedPicture() }
         player.onDrop = { [weak self] center in self?.drop(at: center) }
         feed.attach(player, visible: isOnScreen, frames: true, fast: showsLarge) { [weak player] feed in player?.show(feed) }
         // Shown again after X: a poll that stalled starts over.
@@ -445,9 +454,14 @@ final class LiveBrowserDock: NSObject {
         openPlayer()
     }
 
+    /// The picture tapped: on a phone, as ⤢ (small to big in the chat,
+    /// big back to small), the full-screen button being the one way to
+    /// full screen; every other player's opens full screen.
+    private func tappedPicture() {
+        if isPhone { resize() } else { presentFullScreen(taking: false) }
+    }
+
     private func resize() {
-        // A phone's player has one size: full screen is the bigger one.
-        guard !isPhone else { return }
         large.toggle()
         keep()
         player?.large = large
@@ -456,6 +470,8 @@ final class LiveBrowserDock: NSObject {
             if let placed = self.placed { self.layoutPlayer(card: placed.card, anchor: placed.anchor) }
             self.player?.layoutIfNeeded()
         }
+        // A phone's big player moves the chat's content under it.
+        if isPhone { onLayoutChange?() }
     }
 
     private func drop(at center: CGPoint) {
@@ -1759,6 +1775,13 @@ final class LiveBrowserPlayerView: UIView {
         return UIButton(configuration: configuration)
     }
 
+    /// A phone's full-screen glyph: a square with arrows out, apart at a
+    /// glance from ⤢ beside it, which only grows the player in the chat.
+    func usePhoneFullScreenSymbol() {
+        full.configuration?.image = UIImage(systemName: "arrow.up.backward.and.arrow.down.forward.square",
+                                            withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold))
+    }
+
     /// Whether the menu (End browser) is on the bar: not on a narrow
     /// player, where full screen has it.
     var showsMenu: Bool { !menuButton.isHidden }
@@ -1800,7 +1823,11 @@ final class LiveBrowserPlayerView: UIView {
         } else {
             action.frame = CGRect(x: pad, y: 0, width: layout.footer.width - 2 * pad, height: height)
         }
-        layer.shadowPath = UIBezierPath(roundedRect: bounds, cornerRadius: M.radius).cgPath
+        // A phone's big player runs edge to edge: square, no side border.
+        layer.cornerRadius = layout.radius
+        bar.layer.cornerRadius = layout.radius
+        layer.borderWidth = layout.isBig ? 0 : 1
+        layer.shadowPath = UIBezierPath(roundedRect: bounds, cornerRadius: layout.radius).cgPath
     }
 
     /// The feed as it is now: the latest picture, the status, the button.
@@ -1888,6 +1915,8 @@ final class LiveBrowserPlayerView: UIView {
 
     @objc private func panned(_ pan: UIPanGestureRecognizer) {
         guard let superview else { return }
+        // Big stays at the top: no corner to drag it to.
+        if layout?.isBig == true, !isDragging { return }
         switch pan.state {
         case .began:
             isDragging = true

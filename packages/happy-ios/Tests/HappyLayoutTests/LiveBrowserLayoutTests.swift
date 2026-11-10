@@ -208,28 +208,60 @@ final class LiveBrowserLayoutTests: XCTestCase {
         assertControlsClearThePicture(tight)
     }
 
-    func testAPhoneHasOneSizeAndFullScreenWhereResizeWas() throws {
+    func testAPhonesSmallIsTheLargeSizeAndBigIsTheWholeWidthAtTheTop() throws {
         let screen = agentScreen(keyboardTop: 874)
         let line = try XCTUnwrap(ChatStatusLineLayout(above: screen.card, voice: nil, browser: browser))
         let anchor = LiveBrowserDockLayout.anchor(line.frame.minY, nil)
-        // Small kept or not, a phone's player is the large one.
-        for large in [false, true] {
-            let phone = LiveBrowserDockLayout(.init(size: size, safeArea: safe, card: screen.card, anchor: anchor, large: large, phone: true))
-            assertFrame(phone.frame, rect(162, 529, 232, 219))
-            assertFrame(phone.picture, rect(0, 44, 232, 145))
-            assertFrame(phone.close, rect(0, 0, 44, 44))
-            assertFrame(phone.menu, rect(44, 0, 44, 44))
-            assertFrame(phone.fullScreen, rect(188, 0, 44, 44))
-            XCTAssertNil(phone.resize)
-            assertControlsClearThePicture(phone)
+        // Small: the large size at its corner, ⤢ full screen and ⇲ big.
+        let small = LiveBrowserDockLayout(.init(size: size, safeArea: safe, card: screen.card, anchor: anchor, phone: true))
+        assertFrame(small.frame, rect(162, 529, 232, 219))
+        assertFrame(small.picture, rect(0, 44, 232, 145))
+        assertFrame(small.close, rect(0, 0, 44, 44))
+        assertFrame(small.menu, rect(44, 0, 44, 44))
+        assertFrame(small.fullScreen, rect(144, 0, 44, 44))
+        assertFrame(small.resize, rect(188, 0, 44, 44))
+        XCTAssertFalse(small.isBig)
+        XCTAssertEqual(small.radius, LiveBrowserDockLayout.Metrics.radius)
+        XCTAssertEqual(small.topInset, 0)
+        assertControlsClearThePicture(small)
+
+        // Big: edge to edge under the header, the picture 402 / 1.6 tall;
+        // the chat's content starts 8 under it. Its corner doesn't move it.
+        for corner in LiveBrowserDockLayout.Corner.allCases {
+            let big = LiveBrowserDockLayout(.init(size: size, safeArea: safe, card: screen.card, anchor: anchor, corner: corner, large: true, phone: true))
+            assertFrame(big.frame, rect(0, 62, 402, 325))
+            assertFrame(big.picture, rect(0, 44, 402, 251))
+            assertFrame(big.close, rect(0, 0, 44, 44))
+            assertFrame(big.menu, rect(44, 0, 44, 44))
+            assertFrame(big.fullScreen, rect(314, 0, 44, 44))
+            assertFrame(big.resize, rect(358, 0, 44, 44))
+            XCTAssertTrue(big.isBig)
+            XCTAssertEqual(big.radius, 0)
+            XCTAssertEqual(big.topInset, 333)
+            assertControlsClearThePicture(big)
         }
-        // Squeezed between the bars, full screen goes before close.
+
+        // Squeezed between the bars, small keeps only what fits.
         let tight = LiveBrowserDockLayout(.init(size: size, safeArea: safe, card: screen.card, anchor: 200, phone: true))
         assertFrame(tight.frame, rect(318, 70, 76, 122))
         assertFrame(tight.close, rect(0, 0, 44, 44))
         XCTAssertNil(tight.resize)
         XCTAssertNil(tight.fullScreen)
         XCTAssertNil(tight.menu)
+    }
+
+    func testSidewaysBigStaysTheWindowedPlayerAtItsAspect() {
+        // Turned: the header 32 tall, the composer's line at 300. Big
+        // keeps its aspect in the room, centred, under the header.
+        let sideways = CGSize(width: 874, height: 402)
+        let insets = LayoutInsets(top: 32, left: 62, bottom: 21, right: 62)
+        let card = CGRect(x: 62, y: 320, width: 750, height: 56)
+        let big = LiveBrowserDockLayout(.init(size: sideways, safeArea: insets, card: card, anchor: 300, large: true, phone: true))
+        assertFrame(big.frame, rect(289, 32, 297, 260))
+        assertFrame(big.picture, rect(0, 44, 297, 186))
+        XCTAssertTrue(big.isBig)
+        XCTAssertEqual(big.topInset, 268)
+        assertControlsClearThePicture(big)
     }
 
     // MARK: Full screen
