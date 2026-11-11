@@ -26,7 +26,7 @@ The vault (compose project `happy-vault`: Vaultwarden and the filler) and the br
 | `/etc/sudoers.d/happy-svc` | root 0440 | prep may run the wrapper as happy-svc, password-free verbs only |
 | `/opt/happy-svc/releases/<sha>`, `current` | root 0755 | `selfhost/svc`, `selfhost/vault`, `browser-stack` of one commit |
 | `/opt/happy-svc/src.git` | root 0700 | hash-checked objects of deployed commits |
-| `/etc/happy-svc/{vault,browser}.env` | root 0644 | allowlisted settings (`make svc-settings`, `--settings`) |
+| `/etc/happy-svc/{vault,browser}.env` | root 0644 | allowlisted settings (`make svc-settings`, `--settings`; see Settings) |
 | `/var/lib/happy-svc` | happy-svc 0700 | home: Docker data, `data/browser` (the browser home), `backups/`, `imported/` |
 | `/var/lib/happy-svc-drop/in` | happy-svc:prep 3770 | where prep drops tarballs for `import` |
 | `~happy-svc/.config/systemd/user/` | happy-svc | `docker.service` (rootless dockerd), `happy-svc-ports.service`, `happy-svc-backup.{service,timer}` |
@@ -39,7 +39,7 @@ The daemon runs slirp4netns, sandboxed and seccomp-filtered, with the builtin po
 
 | make | wrapper | password |
 |---|---|---|
-| `svc-up [P=vault\|browser]` | `up [P]`: compose up --build --wait (vault, then browser), then publish ports | no |
+| `svc-up [P=vault\|browser]` | `up [P]`: compose up --build --wait (vault, then browser), then publish ports; with `BROWSER_NODE_CHROME=1`, first builds the Chrome node image in happy-svc's daemon (below) | no |
 | `svc-down [P=..]` | `down [P]`: browser, then vault; volumes kept | no |
 | `svc-restart P=.. [S=..]` | `restart P [svc]`: the service must be in that project | no |
 | `svc-status` | `status`: daemon, containers, ports loopback-only check | no |
@@ -54,9 +54,23 @@ The daemon runs slirp4netns, sandboxed and seccomp-filtered, with the builtin po
 | `svc-setup-print`, `svc-deploy` | print the root commands; they run nothing | n/a |
 | `svc-test` | the tests below; no root, no Docker | n/a |
 
+## Settings
+
+`make svc-settings` copies the accepted keys from `selfhost/vault/.env` and `browser-stack/browser/.env.browser` into `selfhost/svc/.settings/` (gitignored), then runs `deploy-root.sh --check-settings` on them, the same check `deploy-root.sh --settings` runs as root. Every line is `KEY=value` with a plain value, and only these keys are accepted:
+
+- vault: `VAULT_DOMAIN`, `VAULT_AGENT_EMAIL`, `VAULT_OWNER_EMAIL`;
+- browser: `BROWSER_WIDTH`, `BROWSER_HEIGHT`, `BROWSER_KIOSK`, `BROWSER_VIEWPORT_HEIGHT`, `MAX_SESSIONS`, `MCP_TOOL_PROFILE`, `LOG_LEVEL`, `REQUEST_RATE_LIMIT_REQUESTS`, `PII_SCRUB_SCREENSHOT`, `BRIDGE_PODS`, `BRIDGE_MAX_PODS`, `BRIDGE_POD_WARM`, `BRIDGE_POD_IDLE_MIN`, `BRIDGE_LINK_IDLE_HOURS`, and, with fixed values:
+  - `BROWSER_NODE_CHROME`: `0` or `1`;
+  - `SCREENSHOT_TIME_MODE`: `desktop` or `tab`;
+  - `EVIDENCE_TZ`: a zone name of the host's tzdata (letters, digits, `_ + -`, at most three `/` parts, no dots), a TZif file under `/usr/share/zoneinfo` once links are followed, not a `posix/` or `right/` copy. When `.env.browser` has none, `svc-settings` writes the host's `/etc/timezone`, as `browser.mk` defaults it.
+
+There is no `BROWSER_NODE_IMAGE` key, and the wrapper sets `BROWSER_NODE_IMAGE` itself on every browser compose call (empty, or the image id below), which wins over the env files.
+
+**Google Chrome in the browser node.** With `BROWSER_NODE_CHROME=1`, `up` (browser) first runs `docker build -t happy-browser-node-chrome:<chrome>-<revision> <release>/browser-stack/browser/node-chrome` in happy-svc's daemon: the root-owned release's Dockerfile, with its digest-pinned base image and its SHA256-checked Chrome and font downloads; the tag comes from the Dockerfile's `CHROME_VERSION` and `IMAGE_REVISION`, as `browser.mk` tags it. A rebuild with nothing changed is a cached no-op. No image is imported from the operator's Docker. The wrapper then reads the tag's local image id (`sha256:<64 hex>`, checked) and passes it as `BROWSER_NODE_IMAGE`, so compose runs it for `browser-node` and hands it to the launcher (`LAUNCHER_NODE_IMAGE`) and the docker-proxy (`PROXY_NODE_IMAGE`). Both accept a local image id as a pin, and both resolve it in happy-svc's daemon, where it was built. The other verbs use the id of the image already built, and never build. With `BROWSER_NODE_CHROME=0`, the stack runs the upstream image with its Chrome for Testing.
+
 ## What the compose files must provide (V2.1)
 
-The wrapper runs the compose files of the release unchanged, adding only `compose.rootless.vault.yml` and `compose.rootless.browser.yml` from this directory. It sets this environment for every compose call: `DOCKER_HOST` and `HAPPY_DOCKER_SOCKET=/run/user/<uid>/docker.sock` (the docker-proxy's upstream), `DOCKER_SOCKET_GID=0` (the socket's group inside the namespace), `HAPPY_BROWSER_HOME=/var/lib/happy-svc/data/browser`, `HAPPY_BROWSER_DIR=<release>/browser-stack/browser`, `BROWSER_PROJECT=happy-browser`, and empty `BRIDGE_LAN_*`. It sets no service uid: the browser services keep their compose defaults (bridge 1992, controller and launcher 1993, browser-node 1994, docker-proxy 1995), which map through happy-svc's subuid range. In return, the compose files must:
+The wrapper runs the compose files of the release unchanged, adding only `compose.rootless.vault.yml` and `compose.rootless.browser.yml` from this directory. It sets this environment for every compose call: `BROWSER_NODE_IMAGE` (empty, or the Chrome node image's id; see Settings), `DOCKER_HOST` and `HAPPY_DOCKER_SOCKET=/run/user/<uid>/docker.sock` (the docker-proxy's upstream), `DOCKER_SOCKET_GID=0` (the socket's group inside the namespace), `HAPPY_BROWSER_HOME=/var/lib/happy-svc/data/browser`, `HAPPY_BROWSER_DIR=<release>/browser-stack/browser`, `BROWSER_PROJECT=happy-browser`, and empty `BRIDGE_LAN_*`. It sets no service uid: the browser services keep their compose defaults (bridge 1992, controller and launcher 1993, browser-node 1994, docker-proxy 1995), which map through happy-svc's subuid range. In return, the compose files must:
 
 1. **Name the volumes explicitly.** They should be external volumes with `name:` set, matching `volumes.list`: `happy-vault-data`, `happy-vault-config`, `happy-vault-backups` and `happy-filler`. vault-init.sh creates them. Everything else lives under `HAPPY_BROWSER_HOME`.
 2. **Take the Docker socket from a variable.** Only the docker-proxy mounts it, as `${HAPPY_DOCKER_SOCKET:-/var/run/docker.sock}`, with `group_add: ["${DOCKER_SOCKET_GID:-0}"]`. Under happy-svc a fixed `/var/run/docker.sock` would be the rootful daemon, which nothing here may reach.
@@ -109,13 +123,15 @@ Later releases: `make svc-deploy` prints `sudo bash .../deploy-root.sh <sha> [--
 `make svc-test` needs neither root nor Docker. It runs:
 - shellcheck on every script;
 - `visudo -cf` on the sudoers template and on the rendered file, and checks that it is runas happy-svc only, with no password-free `admin-tty` or `import`;
-- the wrapper in its test mode against a fake docker and curl: the refusals, the argument validation, the commands each verb runs, the cleared environment, loopback-only ports, the tokens-export checks, import's no-overwrite rule and the journal content;
+- the wrapper in its test mode against a fake docker and curl: the refusals, the argument validation, the commands each verb runs, the cleared environment, loopback-only ports, the tokens-export checks, import's no-overwrite rule, the Chrome node image build and its image id, and the journal content;
+- the settings check (`deploy-root.sh --check-settings`): the accepted keys and the values of `BROWSER_NODE_CHROME`, `SCREENSHOT_TIME_MODE` and `EVIDENCE_TZ` (zone names, traversal, non-zone files), and `make svc-settings` against a sample `.env.browser`;
 - the root scripts' refusals without root.
 
 Test mode exists only when the wrapper runs from somewhere other than its installed path, with `HAPPY_SVC_CTL_TEST=1` and not under sudo. The installed copy ignores every `HAPPY_SVC_CTL_*` variable.
 
 ## Open risks
 
+- **The Chrome node image builds under the rootless daemon.** `up` with `BROWSER_NODE_CHROME=1` downloads from dl.google.com and snapshot.debian.org through slirp4netns; it has not run there yet.
 - **Not run live.** Nothing here has run on prep-ml yet. `uidmap` (newuidmap) is missing, so a rootless daemon could not be started for a test. The rootlesskit port API calls (`/v1/ports`) follow rootlesskit 2.3's API but are untested against it.
 - **cgroup v1.** prep-ml uses cgroup v1, so the rootless daemon cannot apply `pids_limit`, memory or cpu limits; the compose files' limits are ignored.
 - **Chromium's sandbox.** It needs nested user namespaces inside the rootless one (`kernel.unprivileged_userns_clone=1`, and a seccomp profile that allows `clone`/`unshare`). AppArmor profiles are not applied rootless. Verify the browser node and the pods start with the sandbox on.
