@@ -140,6 +140,7 @@ check "ports: an existing one is not added again (68)" test "$(grep -c 'X POST' 
 echo '[]' >"$T/log/rk-ports"
 
 tok=$(printf 'a%.0s' $(seq 1 40))
+idok="sha256:$(printf 'ab%.0s' $(seq 1 32))"
 printf 'bridge-client-token %s\napi-token %s\n' "$tok" "$tok" >"$T/log/run.out"
 runs tokens-export && grep -qx "bridge-client-token $tok" "$T/log/out" && ok "tokens-export: valid tokens printed" || bad "tokens-export"
 printf 'api-token a$(id)aaaaaaaaaaaaaaaa\n' >"$T/log/run.out"
@@ -169,6 +170,40 @@ if [[ $EUID -ne 0 ]]; then
     done
     check "deploy-root.sh: refuses without root" bash -c "bash '$SVC/deploy-root.sh' $(printf '0%.0s' $(seq 1 40)) --dry-run 2>&1 | grep -q 'run with sudo'"
 fi
+# Settings: the keys and the values deploy-root.sh accepts (--check-settings, no root).
+S="$T/settings"; mkdir -p "$S"
+printf 'VAULT_DOMAIN=https://vault.example\n' >"$S/vault.env"
+settings_ok() { printf '%s\n' "$@" >"$S/browser.env"; bash "$SVC/deploy-root.sh" --check-settings "$S" >/dev/null 2>&1; }
+settings_check() { local n=$1 want=$2; shift 2
+    if settings_ok "$@"; then [[ $want == ok ]] && ok "$n" || bad "$n (accepted)"; else [[ $want == no ]] && ok "$n" || bad "$n (refused)"; fi; }
+settings_check "settings: chrome, zone and mode accepted" ok BROWSER_NODE_CHROME=1 EVIDENCE_TZ=America/Toronto SCREENSHOT_TIME_MODE=tab BRIDGE_PODS=1
+settings_check "settings: BROWSER_NODE_CHROME=0" ok BROWSER_NODE_CHROME=0
+settings_check "settings: EVIDENCE_TZ=Etc/GMT+5" ok EVIDENCE_TZ=Etc/GMT+5
+settings_check "settings: EVIDENCE_TZ=UTC" ok EVIDENCE_TZ=UTC
+settings_check "settings: EVIDENCE_TZ through a tzdata link (US/Eastern)" ok EVIDENCE_TZ=US/Eastern
+settings_check "settings: BROWSER_NODE_CHROME=2 refused" no BROWSER_NODE_CHROME=2
+settings_check "settings: BROWSER_NODE_CHROME=yes refused" no BROWSER_NODE_CHROME=yes
+settings_check "settings: BROWSER_NODE_CHROME empty refused" no BROWSER_NODE_CHROME=
+settings_check "settings: SCREENSHOT_TIME_MODE=window refused" no SCREENSHOT_TIME_MODE=window
+settings_check "settings: EVIDENCE_TZ not a zone" no EVIDENCE_TZ=Mars/Olympus
+settings_check "settings: EVIDENCE_TZ path traversal" no EVIDENCE_TZ=../../../etc/passwd
+settings_check "settings: EVIDENCE_TZ traversal inside a name" no EVIDENCE_TZ=America/../../../etc/passwd
+settings_check "settings: EVIDENCE_TZ absolute" no EVIDENCE_TZ=/etc/localtime
+settings_check "settings: EVIDENCE_TZ a directory" no EVIDENCE_TZ=America
+settings_check "settings: EVIDENCE_TZ a non-TZif file" no EVIDENCE_TZ=zone.tab
+settings_check "settings: EVIDENCE_TZ posix/ copy refused" no EVIDENCE_TZ=posix/America/Toronto
+settings_check "settings: EVIDENCE_TZ empty refused" no EVIDENCE_TZ=
+settings_check "settings: no BROWSER_NODE_IMAGE" no "BROWSER_NODE_IMAGE=$idok"
+check "deploy-root.sh: bad settings refused before the root check" bash -c "printf 'BROWSER_NODE_CHROME=2\n' >'$S/browser.env'; bash '$SVC/deploy-root.sh' $(printf '0%.0s' $(seq 1 40)) --settings '$S' 2>&1 | grep -q 'BROWSER_NODE_CHROME is 0 or 1'"
+# make svc-settings: the new keys copied, EVIDENCE_TZ defaulted, a BROWSER_NODE_IMAGE dropped.
+mkdir -p "$T/repo/selfhost/vault" "$T/repo/browser-stack/browser"
+printf 'VAULT_DOMAIN=https://vault.example\n' >"$T/repo/selfhost/vault/.env"
+printf 'BROWSER_NODE_CHROME=1\nSCREENSHOT_TIME_MODE=desktop\nBROWSER_NODE_IMAGE=evil:latest\nBRIDGE_LAN_BIND=192.168.0.2\n' >"$T/repo/browser-stack/browser/.env.browser"
+make -s -f "$SVC/svc.mk" svc-settings SVC_REPO="$T/repo" SVC_SETTINGS="$T/svc-settings" >"$T/log/settings.out" 2>&1
+check "svc-settings: BROWSER_NODE_CHROME and SCREENSHOT_TIME_MODE kept" bash -c "grep -qx BROWSER_NODE_CHROME=1 '$T/svc-settings/browser.env' && grep -qx SCREENSHOT_TIME_MODE=desktop '$T/svc-settings/browser.env'"
+check "svc-settings: EVIDENCE_TZ defaulted to a zone" bash -c "grep -Eqx 'EVIDENCE_TZ=[A-Za-z][A-Za-z0-9_/+-]*' '$T/svc-settings/browser.env'"
+check "svc-settings: BROWSER_NODE_IMAGE and the LAN listener dropped" bash -c "! grep -Eq '^(BROWSER_NODE_IMAGE|BRIDGE_LAN_BIND)=' '$T/svc-settings/browser.env'"
+check "svc-settings: the result passes deploy-root's check" grep -q 'accepted' "$T/log/settings.out"
 check "deploy-root.sh: refuses a short sha" bash -c "bash '$SVC/deploy-root.sh' abc123 2>&1 | grep -q usage"
 check "setup-root.sh: refuses a short sha" bash -c "bash '$SVC/setup-root.sh' --commit abc 2>&1 | grep -q '40-hex'"
 

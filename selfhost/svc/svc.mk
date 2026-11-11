@@ -29,9 +29,13 @@ SVC_BROWSER_HOME := $(or $(BROWSER_STACK_HOME),$(HAPPY_BROWSER_HOME),$(HOME)/.lo
 SVC_VAULT_MCP_HOME := $(or $(BROWSER_VAULT_MCP_HOME),$(HAPPY_VAULT_MCP_HOME),$(HOME)/.local/share/happy-vault-mcp)
 SVC_HELPER_IMAGE := node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
 SVC_MIGRATE_VOLUMES := happy-vault-data happy-vault-config happy-vault-backups happy-filler
-# The keys deploy-root.sh accepts (it checks them again).
+# The keys deploy-root.sh accepts (it checks them again, and the values of BROWSER_NODE_CHROME,
+# EVIDENCE_TZ and SCREENSHOT_TIME_MODE; svc-settings runs that check). No BROWSER_NODE_IMAGE:
+# with BROWSER_NODE_CHROME=1, happy-svc-ctl builds the node image in happy-svc's daemon itself.
 SVC_VAULT_KEYS := VAULT_DOMAIN|VAULT_AGENT_EMAIL|VAULT_OWNER_EMAIL
-SVC_BROWSER_KEYS := BROWSER_WIDTH|BROWSER_HEIGHT|BROWSER_KIOSK|BROWSER_VIEWPORT_HEIGHT|MAX_SESSIONS|MCP_TOOL_PROFILE|LOG_LEVEL|REQUEST_RATE_LIMIT_REQUESTS|PII_SCRUB_SCREENSHOT|BRIDGE_PODS|BRIDGE_MAX_PODS|BRIDGE_POD_WARM|BRIDGE_POD_IDLE_MIN|BRIDGE_LINK_IDLE_HOURS
+SVC_BROWSER_KEYS := BROWSER_WIDTH|BROWSER_HEIGHT|BROWSER_KIOSK|BROWSER_VIEWPORT_HEIGHT|MAX_SESSIONS|MCP_TOOL_PROFILE|LOG_LEVEL|REQUEST_RATE_LIMIT_REQUESTS|PII_SCRUB_SCREENSHOT|BRIDGE_PODS|BRIDGE_MAX_PODS|BRIDGE_POD_WARM|BRIDGE_POD_IDLE_MIN|BRIDGE_LINK_IDLE_HOURS|BROWSER_NODE_CHROME|EVIDENCE_TZ|SCREENSHOT_TIME_MODE
+# browser.mk's EVIDENCE_TZ default when .env.browser has none: this host's zone.
+SVC_EVIDENCE_TZ := $(or $(shell head -n 1 /etc/timezone 2>/dev/null | tr -d '[:space:]'),America/Toronto)
 P ?=
 S ?=
 A ?=
@@ -55,16 +59,19 @@ svc-deploy:
 	echo "Roll out $$(git -C $(SVC_REPO) log -1 --format='%h %s' $$sha) (run yourself, then make svc-up):"; echo; \
 	echo "  sudo bash $(SVC_DIR)/deploy-root.sh $$sha$(if $(wildcard $(SVC_SETTINGS)/vault.env),$(if $(wildcard $(SVC_SETTINGS)/browser.env), --settings $(SVC_SETTINGS)))"
 
-# Only the accepted keys, copied from selfhost/vault/.env and browser-stack/browser/.env.browser.
+# Only the accepted keys, copied from selfhost/vault/.env and browser-stack/browser/.env.browser
+# (plus EVIDENCE_TZ as browser.mk defaults it), then checked as deploy-root.sh will check them.
 svc-settings:
 	@install -d -m 0700 $(SVC_SETTINGS)
 	@ts=$$(date -u +%Y%m%dT%H%M%SZ); \
 	for pair in "vault.env:$(SVC_REPO)/selfhost/vault/.env:$(SVC_VAULT_KEYS)" "browser.env:$(SVC_REPO)/browser-stack/browser/.env.browser:$(SVC_BROWSER_KEYS)"; do \
 		name=$${pair%%:*}; rest=$${pair#*:}; src=$${rest%%:*}; keys=$${rest#*:}; dst=$(SVC_SETTINGS)/$$name; \
 		tmp=$$dst.new-$$ts; (umask 077; grep -E "^($$keys)=[A-Za-z0-9@._:,/+-]*$$" "$$src" 2>/dev/null >"$$tmp" || true); \
+		if [ "$$name" = browser.env ] && ! grep -q '^EVIDENCE_TZ=' "$$tmp"; then echo "EVIDENCE_TZ=$(SVC_EVIDENCE_TZ)" >>"$$tmp"; fi; \
 		if [ -e "$$dst" ] && ! cmp -s "$$tmp" "$$dst"; then install -d -m 0700 $(SVC_SETTINGS)/old-$$ts; mv "$$dst" $(SVC_SETTINGS)/old-$$ts/; fi; \
 		mv -T "$$tmp" "$$dst"; echo "$$dst: $$(cut -d= -f1 "$$dst" | tr '\n' ' ')"; \
-	done; echo "Check them, then: make svc-deploy (or svc-setup-print)"
+	done; bash $(SVC_DIR)/deploy-root.sh --check-settings $(SVC_SETTINGS); \
+	echo "Check them, then: make svc-deploy (or svc-setup-print)"
 
 svc-up:
 	$(SVC_CTL) up $(P)
