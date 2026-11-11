@@ -384,7 +384,7 @@ final class HostedLiveBrowserTests: XCTestCase {
         defer { window.isHidden = true; host.dock.update(link: nil) }
         let dock = host.dock!
         dock.update(link: LiveBrowserLink(id: id))
-        try await until { dock.indicator.text == Strings.LiveBrowser.indicator(Strings.LiveBrowser.watching) }
+        try await until { dock.indicator.text == Strings.LiveBrowser.indicator(Strings.LiveBrowser.clickToWatch) }
         try await Task.sleep(for: .milliseconds(600))
         XCTAssertNil(dock.player, "watching: the line only")
         await daemon.setLiveStatus("takeover")

@@ -50,6 +50,8 @@ public final class LiveBrowserChatWatch {
         didSet { if answer != oldValue { onChange?(answer) } }
     }
     public var onChange: (@MainActor (Answer) -> Void)?
+    /// Every answer, changed or not: the dock checks its line against it.
+    public var onAnswer: (@MainActor (Answer) -> Void)?
     /// Lookups made (tests).
     public private(set) var polls = 0
     public var isPolling: Bool { polling != nil }
@@ -140,6 +142,7 @@ public final class LiveBrowserChatWatch {
     public func close() {
         isVisible = false
         onChange = nil
+        onAnswer = nil
         pause()
     }
 
@@ -193,6 +196,7 @@ public final class LiveBrowserChatWatch {
             backingOff = false
             found = true
             answer = .link(chat)
+            onAnswer?(answer)
             return true
         } catch {
             guard !Task.isCancelled, !(error is CancellationError) else { return false }
@@ -214,6 +218,7 @@ public final class LiveBrowserChatWatch {
                 } else {
                     answer = .noLink
                 }
+                onAnswer?(answer)
                 return true
             // Not this origin's doing: asked again later, not given up on
             // (it once stopped here for good, and the chat never found its

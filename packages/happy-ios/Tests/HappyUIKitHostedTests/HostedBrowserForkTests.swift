@@ -25,6 +25,8 @@ extension BrowserDaemon {
         var wakingTakes = 0
         /// `frame.jpg` reads that are never answered, as a stalled tunnel's.
         var stalledFrames = 0
+        /// `/live/<id>/state` answers 404, as a proxy that lost its way does.
+        var stateMissing = false
         /// `GET /v0/workspaces`, `/v0/config`'s node name, and the noVNC
         /// address `POST /take` answers with.
         var workspaces = #"{"workspaces":[{"id":"host1","status":"active","compute":{"type":"host","path":"/Users/me"}}]}"#
@@ -126,6 +128,9 @@ extension BrowserDaemon {
             liveStatus = "watching"
             return reply("200 OK", "application/json", Data(#"{"ok":true}"#.utf8))
         }
+        if head.line.contains("/state ") && forkState.stateMissing {
+            return reply("404 Not Found", "application/json", Data(#"{"error":"not_found"}"#.utf8))
+        }
         if head.line.contains("/state ") {
             return reply("200 OK", "application/json", Data(#"{"status":"\#(liveStatus)","reason":"Sign in","url":"https://example.com/login","title":"Log in to Example","viewers":1\#(pod)\#(approvalAndYolo())}"#.utf8))
         }
@@ -181,6 +186,7 @@ extension BrowserDaemon {
     func setChatLink(_ id: String?) { chatLink = id }
     func setWakingTakes(_ count: Int) { wakingTakes = count }
     func setStalledFrames(_ count: Int) { stalledFrames = count }
+    func setStateMissing(_ missing: Bool) { forkState.stateMissing = missing }
     var frameReads: Int { requests.filter { $0.contains("/frame.jpg ") }.count }
 
     /// The bridge serves `frame.jpg` as a PNG; the card reads it by its bytes.

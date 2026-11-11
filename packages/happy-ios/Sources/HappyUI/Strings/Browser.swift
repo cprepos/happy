@@ -76,6 +76,7 @@ extension Strings {
     enum LiveBrowser {
         static let title = "Live Browser"
         static let watching = "Watching"
+        static let clickToWatch = "Click to watch"
         static let needsYou = "Needs you"
         static let done = "Done"
         static let youHaveControl = "You have control"

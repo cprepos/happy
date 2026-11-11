@@ -59,6 +59,10 @@ final class LiveBrowserDock: NSObject {
     /// What `route` was last asked for, and its work while it decides.
     var routedFor: String?
     var routing: Task<Void, Never>?
+    /// The last routing found no computer or no keys: decided again.
+    var routedEmpty = false
+    /// Since when the bridge has answered no link for the chat.
+    var noLinkSince: ContinuousClock.Instant?
     /// Made to decide its own computer (`route(_:through:)`): no link is
     /// shown before it has.
     private(set) var routesItself = false
@@ -178,15 +182,41 @@ final class LiveBrowserDock: NSObject {
         chatWatch?.close()
         chatWatch = keys.isEmpty ? nil : LiveBrowserChatWatch(keys: keys) { [weak self] in self?.lookupTransport() }
         chatWatch?.onChange = { [weak self] _ in self?.lookupChanged() }
+        chatWatch?.onAnswer = { [weak self] _ in self?.checkInStep() }
         chatWatch?.eager = player != nil
         chatWatch?.setVisible(isOnScreen)
         lookupChanged()
     }
 
     private func lookupChanged() {
+        if chatWatch?.answer == .noLink { noLinkSince = noLinkSince ?? .now } else { noLinkSince = nil }
         follow()
         reconsiderFeed()
         refresh()
+    }
+
+    /// The bridge's answers in a row that disagreed with the line.
+    private var outOfStep = 0
+
+    /// After each answer: the bridge says a browser runs and the line
+    /// doesn't show (or the other way round), twice in a row, so the
+    /// feed reads again, or is made anew when it gave up on its link.
+    private func checkInStep() {
+        guard let feed, let chat = chatWatch?.answer.chat, chat.link == feed.link,
+              chat.running != browserRuns else {
+            outOfStep = 0
+            return
+        }
+        outOfStep += 1
+        guard outOfStep >= 2 else { return }
+        outOfStep = 0
+        LiveBrowserLog.info("live browser: indicator out of step, re-reading")
+        if chat.running, !feed.phase.isResting, !holdsControl,
+           feed.phase.isOver || feed.phase.state != nil {
+            rebuildFeed(feed.link)
+        } else {
+            retryBrowser()
+        }
     }
 
     /// The bridge's word on the feed's link wins over what the feed read:
@@ -203,6 +233,10 @@ final class LiveBrowserDock: NSObject {
             if !holdsControl { feed.rest(state) }
         } else if feed.phase.isResting {
             feed.retry()
+        } else if feed.phase.isOver, !holdsControl {
+            // Done, then revived under the same id (a controller came
+            // back): a feed that gave up on it never reads again.
+            rebuildFeed(feed.link)
         }
     }
 
@@ -235,6 +269,13 @@ final class LiveBrowserDock: NSObject {
     /// A new link replaces the old one's feed, player and full screen.
     private func show(link: LiveBrowserLink?) {
         guard link != self.link else { return }
+        rebuildFeed(link)
+    }
+
+    /// A fresh feed for `link`, the same one or not: the player, full
+    /// screen and approvals go with the old feed.
+    private func rebuildFeed(_ link: LiveBrowserLink?) {
+        outOfStep = 0
         if let feed { releaseHeld(feed) }
         feed?.close()
         closePlayer(animated: false)
@@ -431,8 +472,18 @@ final class LiveBrowserDock: NSObject {
         !lookupSaysIdle && feed?.phase.isRunning == true
     }
 
+    /// The line's status: Watching only while the picture shows (the
+    /// player or full screen), else Click to watch.
+    private func lineStatus(_ phase: LiveBrowserFeed.Phase) -> String? {
+        let status = Self.status(phase)
+        // A full screen pulled down is gone before `fullScreen` lets go.
+        let fullScreenShows = fullScreen.map { $0.presentingViewController != nil || $0.isBeingPresented } ?? false
+        guard status == Strings.LiveBrowser.watching, player == nil, !fullScreenShows else { return status }
+        return Strings.LiveBrowser.clickToWatch
+    }
+
     private func refresh() {
-        let status = lineShows ? feed.flatMap { Self.status($0.phase) } : nil
+        let status = lineShows ? feed.flatMap { lineStatus($0.phase) } : nil
         let changed = status != shownStatus
         shownStatus = status
         indicator.text = indicatorText
@@ -492,7 +543,7 @@ final class LiveBrowserDock: NSObject {
         if let placed { layoutPlayer(card: placed.card, anchor: placed.anchor) }
         player.appear()
         onLayoutChange?()
-        NotificationCenter.default.post(name: Self.didChange, object: self)
+        refresh()
     }
 
     /// The player opened, or was asked for again: the bridge is asked for
@@ -512,6 +563,7 @@ final class LiveBrowserDock: NSObject {
         feed?.detach(player)
         player.disappear(animated: animated)
         onLayoutChange?()
+        refresh()
     }
 
     /// A chip's tap: its link's player, if it is still the chat's.
@@ -700,6 +752,7 @@ final class LiveBrowserDock: NSObject {
         while let next = presenter.presentedViewController, !next.isBeingDismissed { presenter = next }
         presenter.present(navigation, animated: true)
         items.update(feed?.phase.state, held: holdsControl)
+        refresh()
     }
 
     private func dismissFullScreen(animated: Bool) {
@@ -714,6 +767,13 @@ final class LiveBrowserDock: NSObject {
         // appearance, which a zoom back to the player can leave unsaid,
         // and the player's reading with it.
         fullScreen.dismiss(animated: animated) { [weak self] in self?.hostShows() }
+        refresh()
+    }
+
+    /// The full screen went, however it went (pulled down, pinched
+    /// closed): the line says Click to watch again.
+    func fullScreenLeft() {
+        DispatchQueue.main.async { [weak self] in self?.refresh() }
     }
 
     /// The chat is on screen when its view is in a window again.
@@ -791,6 +851,12 @@ final class LiveBrowserDock: NSObject {
     @objc private func appForegrounded() {
         backgroundRelease?.cancel()
         backgroundRelease = nil
+        // Back from the background: the bridge is asked now, and a feed
+        // that gave up while it says running reads again.
+        chatWatch?.checkNow()
+        guard let feed, let chat = chatWatch?.answer.chat, chat.link == feed.link, chat.running, !holdsControl else { return }
+        if feed.phase.isOver { rebuildFeed(feed.link) }
+        else if feed.phase == .notResponding { feed.retry() }
     }
 
     /// Take control (`POST /take`), then drive the browser in noVNC, at
@@ -1608,8 +1674,9 @@ final class LiveBrowserFullScreenItems: UIViewController {
     /// Whatever the will-disappear missed: gone from its full screen.
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
-        guard isNoVNC else { return }
         let gone = parent == nil || navigationController?.presentingViewController == nil
+        if gone { dock?.fullScreenLeft() }
+        guard isNoVNC else { return }
         // The native viewer's socket goes with its page, however it went.
         if gone { viewer?.stop() }
         guard !swappedOut else { return }

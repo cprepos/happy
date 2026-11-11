@@ -22,7 +22,9 @@ extension LiveBrowserDock {
     /// Decides the chat's computer, workspace and keys from `identity`
     /// alone, once for each chat and machine, then asks the bridge by
     /// those keys, the Happy session's first. Called again (its record
-    /// read, its link changed), it decides nothing new. Nil stops asking.
+    /// read, its link changed), it decides nothing new, unless the last
+    /// try found no computer or keys, or the bridge has said no link for
+    /// `routeAgainAfterNoLink`. Nil stops asking.
     func route(_ identity: LiveBrowserChatIdentity?, through computer: LiveBrowserComputer) {
         guard let identity else {
             routing?.cancel()
@@ -30,10 +32,17 @@ extension LiveBrowserDock {
             routedFor = nil
             routedConnection = nil
             routedKeys = []
+            routedEmpty = false
+            noLinkSince = nil
             lookUp(keys: [])
             return
         }
         let routeKey = Self.routeKey(identity)
+        if routeKey == routedFor, routing == nil, routedEmpty || noLinkSince.map({ ContinuousClock.now - $0 >= Self.routeAgainAfterNoLink }) == true {
+            // Came up empty: the computer and keys are worked out again.
+            routedFor = nil
+            if noLinkSince != nil { noLinkSince = .now }
+        }
         if routeKey == routedFor {
             if routing == nil { chatWatch?.reconsider() }
             return
@@ -46,6 +55,7 @@ extension LiveBrowserDock {
             // A chat whose computer isn't certain reads nothing: it says
             // unavailable rather than look through another computer.
             guard let client else {
+                self.routedEmpty = true
                 self.routedConnection = nil
                 self.routedKeys = []
                 self.routing = nil
@@ -57,6 +67,7 @@ extension LiveBrowserDock {
             let keys = await Self.keys(for: identity, client: client, computer: computer, within: Self.keysTimeout)
             guard !Task.isCancelled, self.routedFor == routeKey else { return }
             self.routedKeys = keys
+            self.routedEmpty = keys.isEmpty
             self.routing = nil
             Self.log(identity, keys: keys)
             self.lookUp(keys: keys)
@@ -68,6 +79,10 @@ extension LiveBrowserDock {
     /// computer that never answered held the lookup back for good: no
     /// `/live/chat` was ever asked, and the chat showed no browser.
     static let keysTimeout: Duration = .seconds(6)
+
+    /// How long the bridge may answer no link before the chat's computer
+    /// and keys are worked out again (a test makes it shorter).
+    static var routeAgainAfterNoLink: Duration = .seconds(60)
 
     /// `keys(for:client:computer:)`, or `identity.keys()` once `limit` passes.
     private static func keys(for identity: LiveBrowserChatIdentity, client: AgentClient, computer: LiveBrowserComputer, within limit: Duration) async -> [String] {
