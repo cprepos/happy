@@ -13,7 +13,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 os.environ.setdefault("HAPPY_LIVE_FRAMES_NO_AUTOLOAD", "1")
 
@@ -391,21 +391,36 @@ def png(width: int = 1920, height: int = 1200, tail: bytes = b"") -> bytes:
     return hlf.PNG_SIGNATURE + struct.pack(">I", 13) + b"IHDR" + struct.pack(">II", width, height) + b"\x08\x02\x00\x00\x00" + tail
 
 
-# The stamp these screen tests see: their PNGs are headers only, so the real one (and its own tests)
-# is in test_happy_evidence_stamp; here the file is left as it is.
-FAKE_STAMP = {"bar_px": 67, "captured_at": "2026-01-01T00:00:00.000Z", "tz": "UTC",
-              "text": "2026-01-01 00:00:00 UTC (UTC+00:00)", "stamped": True}
+def sha(data: bytes) -> str:
+    import hashlib
+
+    return hashlib.sha256(data).hexdigest()
+
+
+def cap(data: bytes | None = None, rect: dict | None = None, panel: int = 0, at: str | None = None) -> dict:
+    """screen_scrub's capture arguments as the launcher hands them over: the PNG, its sha256 and the
+    capture's meta. Default: the whole 1920x1200 screen (desktop view); panel 0, as the fake window
+    fills the screen."""
+    from datetime import UTC, datetime
+
+    rect = rect or {"x": 0, "y": 0, "width": 1920, "height": 1200}
+    data = png(rect["width"], rect["height"]) if data is None else data
+    return {
+        "png": data,
+        "raw_sha256": sha(data),
+        "capture": {
+            "captured_at": at or hlf.iso(datetime.now(UTC)),
+            "tz": "America/Toronto",
+            "screen": {"width": 1920, "height": 1200},
+            "capture_rect": rect,
+            "panel_px": panel,
+        },
+    }
 
 
 class ScreenBase(Base):
-    REAL_STAMP = False
-
     def setUp(self) -> None:
         super().setUp()
-        if not self.REAL_STAMP:
-            stub = patch.object(hlf.evidence, "stamp_evidence", AsyncMock(return_value=dict(FAKE_STAMP)))
-            self.stamp_stub = stub.start()
-            self.addCleanup(stub.stop)
         m = self.service.manager
         m.observation = self.service
         m._shown_url = lambda page: page.url
@@ -430,7 +445,8 @@ class ScreenBase(Base):
     async def shoot(self, redact: bool = True, **kw: object) -> dict:
         front = await hlf.screen_front(self.service.manager, "s1", redact=redact, **kw)
         return await hlf.screen_scrub(
-            self.service.manager, "s1", token=front["token"], png=png(), label="evidence 1", redact=redact
+            self.service.manager, "s1", token=front["token"], **cap(rect=front["capture_rect"]), label="evidence 1",
+            redact=redact,
         )
 
     def audits(self) -> list[dict]:
@@ -493,7 +509,7 @@ class ScreenTests(ScreenBase):
         self.page.geometry = {"screenX": 0, "screenY": 0, "outerWidth": 1920, "outerHeight": 1200,
                               "innerWidth": 1920, "innerHeight": 1000, "dpr": 1}
         with self.assertRaises(hlf.ScreenRefused) as cm:
-            await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], png=png())
+            await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], **cap())
         self.assertEqual(cm.exception.code, "moved")
         self.assertEqual(self.artifact_pngs(), [])
 
@@ -519,7 +535,7 @@ class ScreenTests(ScreenBase):
         self.scrubber.screenshot_strict = True
         for call in (
             lambda: hlf.screen_front(self.service.manager, "s1", redact=False),
-            lambda: hlf.screen_scrub(self.service.manager, "s1", token=front["token"], png=png(), redact=False),
+            lambda: hlf.screen_scrub(self.service.manager, "s1", token=front["token"], **cap(), redact=False),
         ):
             with self.assertRaises(hlf.ScreenRefused) as cm:
                 await call()
@@ -631,7 +647,7 @@ class ScreenTests(ScreenBase):
         front = await hlf.screen_front(self.service.manager, "s1")
         self.page.url = "https://example.com/two"
         with self.assertRaises(hlf.ScreenRefused) as cm:
-            await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], png=png())
+            await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], **cap())
         self.assertEqual(cm.exception.code, "moved")
         self.assertEqual(self.artifact_pngs(), [])
 
@@ -639,14 +655,14 @@ class ScreenTests(ScreenBase):
         front = await hlf.screen_front(self.service.manager, "s1")
         self.session.page = FakePage(self.session.artifact_dir)
         with self.assertRaises(PermissionError):
-            await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], png=png())
+            await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], **cap())
         self.assertEqual(self.artifact_pngs(), [])
 
     async def test_a_page_refused_meanwhile_is_refused(self) -> None:
         front = await hlf.screen_front(self.service.manager, "s1")
         self.service.manager._page_refused.return_value = True
         with self.assertRaises(PermissionError):
-            await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], png=png())
+            await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], **cap())
         self.assertEqual(self.artifact_pngs(), [])
 
     async def test_a_page_refused_while_it_is_scrubbed_is_refused_and_the_image_deleted(self) -> None:
@@ -658,7 +674,7 @@ class ScreenTests(ScreenBase):
 
         self.service.manager.ocr.extract_from_image.side_effect = ocr
         with self.assertRaises(PermissionError):
-            await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], png=png())
+            await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], **cap())
         self.assertEqual(self.artifact_pngs(), [])
         self.assertEqual(list(hlf._pending_dir(self.session).iterdir()), [])
         self.assertFalse(self.session.lock.locked())
@@ -671,14 +687,14 @@ class ScreenTests(ScreenBase):
 
     async def test_a_token_is_used_once_and_expires(self) -> None:
         front = await hlf.screen_front(self.service.manager, "s1")
-        await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], png=png())
+        await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], **cap())
         with self.assertRaises(hlf.ScreenRefused) as cm:
-            await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], png=png())
+            await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], **cap())
         self.assertEqual(cm.exception.code, "stale")
         front = await hlf.screen_front(self.service.manager, "s1")
         getattr(self.session, hlf.SCREEN_TOKEN_ATTR)[front["token"]]["at"] -= hlf.SCREEN_TOKEN_SECONDS + 1
         with self.assertRaises(hlf.ScreenRefused) as cm:
-            await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], png=png())
+            await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], **cap())
         self.assertEqual(cm.exception.code, "stale")
 
     async def test_not_a_png_is_refused(self) -> None:
@@ -722,26 +738,33 @@ class ScreenTests(ScreenBase):
         token = front.json()["token"]
         bad = client.post("/happy/sessions/s1/screen/scrub", json={"token": token, "png": "%%%"})
         self.assertEqual((bad.status_code, bad.json()["code"]), (400, "bad_request"))
-        ok = client.post(
-            "/happy/sessions/s1/screen/scrub",
-            json={"token": token, "png": base64.b64encode(png()).decode(), "label": "x"},
-        )
+        def body(**kw: object) -> dict:
+            c = cap()
+            return {"png": base64.b64encode(c["png"]).decode(), "raw_sha256": c["raw_sha256"], "capture": c["capture"], **kw}
+
+        # The capture's hash and meta are required.
+        bare = client.post("/happy/sessions/s1/screen/scrub", json={"token": token, "png": body()["png"]})
+        self.assertEqual((bare.status_code, bare.json()["code"]), (400, "bad_request"))
+        forged = client.post("/happy/sessions/s1/screen/scrub", json=body(token=token, raw_sha256="0" * 64))
+        self.assertEqual((forged.status_code, forged.json()["code"]), (400, "raw_hash_mismatch"))
+        front = client.post("/happy/sessions/s1/screen/front", json={"activate": True})
+        token = front.json()["token"]
+        ok = client.post("/happy/sessions/s1/screen/scrub", json=body(token=token, label="x"))
         self.assertEqual(ok.status_code, 200)
         self.assertEqual(ok.json()["url"], "https://example.com/one")
-        again = client.post(
-            "/happy/sessions/s1/screen/scrub", json={"token": token, "png": base64.b64encode(png()).decode()}
-        )
+        again = client.post("/happy/sessions/s1/screen/scrub", json=body(token=token))
         self.assertEqual((again.status_code, again.json()["code"]), (409, "stale"))
         self.page.visibility = "hidden"
         held = client.post("/happy/sessions/s1/screen/front", json={"activate": False})
         self.assertEqual((held.status_code, held.json()["code"]), (409, "not_in_front"))
         self.page.visibility = "visible"
         front = client.post("/happy/sessions/s1/screen/front", json={"redact": False}).json()
-        raw = client.post(
-            "/happy/sessions/s1/screen/scrub",
-            json={"token": front["token"], "png": base64.b64encode(png()).decode(), "redact": False},
-        )
+        raw = client.post("/happy/sessions/s1/screen/scrub", json=body(token=front["token"], redact=False))
         self.assertEqual(raw.json()["redaction"], "off_by_request")
+        tab = client.post("/happy/sessions/s1/screen/front", json={"view": "tab"}).json()
+        self.assertEqual((tab["view"], tab["capture_rect"]), ("tab", {"x": 0, "y": 0, "width": 1920, "height": 1200}))
+        bad = client.post("/happy/sessions/s1/screen/front", json={"view": "window"})
+        self.assertEqual((bad.status_code, bad.json()["code"]), (400, "bad_view"))
         bad = client.post("/happy/sessions/s1/screen/scrub", json={"token": "t", "png": "", "redact": "no"})
         self.assertEqual((bad.status_code, bad.json()["code"]), (400, "bad_request"))
         self.scrubber.screenshot_strict = True
@@ -757,6 +780,215 @@ class ScreenTests(ScreenBase):
         self.assertEqual((refused.status_code, refused.json()["code"]), (403, "page_refused"))
         refused = client.post("/happy/sessions/s1/page-shot", json={})
         self.assertEqual((refused.status_code, refused.json()["code"]), (403, "page_refused"))
+
+
+PANEL_GEOMETRY = {"screenX": 0, "screenY": 28, "outerWidth": 1920, "outerHeight": 1172,
+                  "innerWidth": 1920, "innerHeight": 1085, "dpr": 1}
+TAB_RECT = {"x": 0, "y": 28, "width": 1920, "height": 1172}
+
+
+class ViewTests(ScreenBase):
+    """The desktop and tab views: real pixels, a checked capture, and the evidence fields."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        # The window mode's node: the panel's 28 px on top, the maximized window below it.
+        self.page.geometry = dict(PANEL_GEOMETRY)
+
+    async def test_desktop_keeps_the_panel_and_never_redacts_it(self) -> None:
+        clock = self.word("Wed 11 Nov 2026 10:00:00", 1700, 6)  # in the panel
+        button = self.word("jane@example.com - Inbox", 4, 6)  # the window's button, in the panel
+        page_word = self.word("jane@example.com", 300, 400)
+        self.service.manager.ocr.extract_from_image.return_value = {
+            "available": True, "redaction_blocks": [clock, button, page_word]
+        }
+        front = await hlf.screen_front(self.service.manager, "s1", view="desktop")
+        self.assertEqual((front["view"], front["capture_rect"]), ("desktop", None))
+        out = await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], **cap(panel=28))
+        self.assertEqual(self.scrubbed_blocks, [[page_word]])
+        self.assertEqual(out["chrome_strip"], {"x": 0, "y": 28, "width": 1920, "height": 87, "source": "window"})
+        self.assertEqual((out["view"], out["panel_px"], out["evidence_bar_px"]), ("desktop", 28, 28))
+        self.assertEqual(out["capture_rect"], {"x": 0, "y": 0, "width": 1920, "height": 1200})
+        self.assertEqual((out["width"], out["height"]), (1920, 1200))
+        self.assertNotIn("stamp_text", out)
+
+    async def test_tab_is_the_window_rectangle_with_no_panel(self) -> None:
+        panel_word = self.word("Wed 11 Nov 2026", 1700, 6)
+        self.service.manager.ocr.extract_from_image.return_value = {"available": True, "redaction_blocks": [panel_word]}
+        front = await hlf.screen_front(self.service.manager, "s1", view="tab")
+        self.assertEqual((front["view"], front["capture_rect"]), ("tab", TAB_RECT))
+        out = await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], **cap(rect=TAB_RECT, panel=28))
+        # The strip is in the image's own pixels: the window's top is the image's top.
+        self.assertEqual(out["chrome_strip"], {"x": 0, "y": 0, "width": 1920, "height": 87, "source": "window"})
+        self.assertEqual((out["width"], out["height"]), (1920, 1172))
+        self.assertEqual((out["view"], out["evidence_bar_px"], out["panel_px"]), ("tab", 0, 28))
+        self.assertEqual(out["capture_rect"], TAB_RECT)
+        # No panel in a tab view, so nothing at the top is exempt beyond the browser strip: here,
+        # the word lies in the strip and is kept; words below it would be redacted.
+        self.assertEqual(self.scrubbed_blocks, [])
+
+    async def test_the_view_defaults_to_screenshot_time_mode(self) -> None:
+        old = os.environ.get(hlf.VIEW_ENV)
+        self.addCleanup(lambda: os.environ.__setitem__(hlf.VIEW_ENV, old) if old is not None else os.environ.pop(hlf.VIEW_ENV, None))
+        os.environ.pop(hlf.VIEW_ENV, None)
+        self.assertEqual((await hlf.screen_front(self.service.manager, "s1"))["view"], "desktop")
+        os.environ[hlf.VIEW_ENV] = "tab"
+        self.assertEqual((await hlf.screen_front(self.service.manager, "s1"))["view"], "tab")
+        os.environ[hlf.VIEW_ENV] = "window"
+        with self.assertRaises(hlf.PatchMismatch):
+            hlf.verify()
+        os.environ.pop(hlf.VIEW_ENV)
+
+    async def test_a_bad_view_and_an_unreadable_window_are_refused(self) -> None:
+        with self.assertRaises(hlf.ScreenRefused) as cm:
+            await hlf.screen_front(self.service.manager, "s1", view="window")
+        self.assertEqual((cm.exception.status, cm.exception.code), (400, "bad_view"))
+        self.page.geometry = {**PANEL_GEOMETRY, "dpr": None}
+        with self.assertRaises(hlf.ScreenRefused) as cm:
+            await hlf.screen_front(self.service.manager, "s1", view="tab")
+        self.assertEqual((cm.exception.status, cm.exception.code), (409, "no_window"))
+        # The desktop view does not need the window's position.
+        await hlf.screen_front(self.service.manager, "s1", view="desktop")
+
+    async def test_an_image_that_is_not_the_capture_is_refused(self) -> None:
+        front = await hlf.screen_front(self.service.manager, "s1")
+        c = cap(panel=28)
+        c["png"] = png(tail=b"edited")
+        with self.assertRaises(hlf.ScreenRefused) as cm:
+            await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], **c)
+        self.assertEqual((cm.exception.status, cm.exception.code), (400, "raw_hash_mismatch"))
+        front = await hlf.screen_front(self.service.manager, "s1")
+        c = cap(panel=28)
+        del c["raw_sha256"]
+        with self.assertRaises(hlf.ScreenRefused) as cm:
+            await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], **c)
+        self.assertEqual(cm.exception.code, "raw_hash_mismatch")
+        self.assertEqual(self.artifact_pngs(), [])
+
+    async def test_a_capture_of_the_wrong_rectangle_is_refused(self) -> None:
+        cases = [
+            ("desktop", cap(rect=TAB_RECT, panel=28)),  # a desktop view is the whole screen
+            ("tab", cap(panel=28)),  # a tab view is the window's rectangle
+            ("tab", cap(rect={**TAB_RECT, "y": 0}, panel=28)),
+            ("desktop", {**cap(panel=28), "png": png(1920, 1100), "raw_sha256": sha(png(1920, 1100))}),  # size
+            ("desktop", {**cap(panel=28), "capture": None}),
+            ("desktop", {**cap(at="yesterday")}),
+            ("desktop", {**cap(), "capture": {**cap()["capture"], "panel_px": "28"}}),
+            ("desktop", {**cap(), "capture": {**cap()["capture"], "capture_rect": {"x": 0, "y": 0, "width": 4000, "height": 1200}}}),
+        ]
+        for view, c in cases:
+            front = await hlf.screen_front(self.service.manager, "s1", view=view)
+            with self.assertRaises(hlf.ScreenRefused, msg=view) as cm:
+                await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], **c)
+            self.assertEqual((cm.exception.status, cm.exception.code), (400, "bad_capture"))
+        self.assertEqual(self.artifact_pngs(), [])
+
+    async def test_the_audit_records_the_evidence(self) -> None:
+        front = await hlf.screen_front(self.service.manager, "s1", view="tab", redact=False)
+        c = cap(rect=TAB_RECT, panel=28)
+        out = await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], **c, redact=False)
+        front = await hlf.screen_front(self.service.manager, "s1", view="desktop")
+        c2 = cap(panel=28)
+        out2 = await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], **c2)
+        unredacted, redacted = (a["details"] for a in self.audits())
+        # Unredacted: filed as captured, so the two hashes agree.
+        self.assertEqual(unredacted["raw_sha256"], c["raw_sha256"])
+        self.assertEqual(unredacted["filed_sha256"], c["raw_sha256"])
+        self.assertEqual((unredacted["view"], unredacted["capture_rect"], unredacted["panel_px"]), ("tab", TAB_RECT, 28))
+        self.assertEqual(unredacted["tz"], "America/Toronto")
+        # Redacted: the filed image is the scrubbed one, and only its hash says what the raw one was.
+        self.assertEqual(redacted["raw_sha256"], c2["raw_sha256"])
+        self.assertEqual(redacted["filed_sha256"], sha(Path(out2["screenshot_path"]).read_bytes()))
+        self.assertNotEqual(redacted["filed_sha256"], redacted["raw_sha256"])
+        self.assertEqual((redacted["view"], redacted["panel_px"], redacted["evidence_bar_px"]), ("desktop", 28, 28))
+        for details, result in ((unredacted, out), (redacted, out2)):
+            self.assertNotIn("stamp_text", details)
+            self.assertNotIn("sha256", details)
+            for k in ("captured_at", "tz", "raw_sha256", "filed_sha256", "view", "panel_px", "capture_rect"):
+                self.assertEqual(details[k], result[k], k)
+        # The raw capture is kept nowhere when it was redacted.
+        self.assertEqual([p for p in self.artifact_pngs() if sha(p.read_bytes()) == c2["raw_sha256"]], [])
+        self.assertEqual(list(hlf._pending_dir(self.session).iterdir()), [])
+
+    async def test_captured_at_is_held_between_the_front_and_now(self) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        before = datetime.now(UTC)
+        front = await hlf.screen_front(self.service.manager, "s1")
+        out = await hlf.screen_scrub(
+            self.service.manager, "s1", token=front["token"], **cap(at="2001-01-01T00:00:00Z")
+        )
+        self.assertGreaterEqual(hlf.parse_iso(out["captured_at"]), before.replace(microsecond=before.microsecond // 1000 * 1000))
+        front = await hlf.screen_front(self.service.manager, "s1")
+        future = hlf.iso(datetime.now(UTC) + timedelta(hours=1))
+        out = await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], **cap(at=future))
+        self.assertLess(hlf.parse_iso(out["captured_at"]), datetime.now(UTC) + timedelta(seconds=1))
+        self.assertRegex(out["captured_at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$")
+
+    async def test_page_shot_audits_its_evidence(self) -> None:
+        async def raw(session, label):
+            path = Path(session.artifact_dir) / f"20261111T150000123456Z-{label}.png"
+            path.write_bytes(png(1280, 800))
+            return {"path": str(path), "url": f"/artifacts/s1/{path.name}"}
+
+        self.service.manager._capture_screenshot = AsyncMock(side_effect=raw)
+        out = await hlf.page_shot(self.service.manager, "s1", label="p", redact=False)
+        self.assertEqual((out["captured_at"], out["evidence_bar_px"]), ("2026-11-11T15:00:00.123Z", 0))
+        await hlf.page_shot(self.service.manager, "s1", label="q")
+        unredacted, redacted = (a["details"] for a in self.audits())
+        self.assertEqual(unredacted["raw_sha256"], sha(png(1280, 800)))
+        self.assertEqual(unredacted["filed_sha256"], unredacted["raw_sha256"])
+        self.assertNotIn("raw_sha256", redacted)
+        self.assertIn("filed_sha256", redacted)
+        self.assertEqual(redacted["tz"], hlf.tz_name())
+        self.assertNotIn("stamp_text", out)
+
+
+class TimeTests(unittest.TestCase):
+    def test_the_zone(self) -> None:
+        old = os.environ.get(hlf.TZ_ENV)
+        self.addCleanup(lambda: os.environ.__setitem__(hlf.TZ_ENV, old) if old is not None else os.environ.pop(hlf.TZ_ENV, None))
+        os.environ.pop(hlf.TZ_ENV, None)
+        self.assertEqual(hlf.check_tz(), "America/Toronto")
+        os.environ[hlf.TZ_ENV] = "Europe/Paris"
+        self.assertEqual(hlf.check_tz(), "Europe/Paris")
+        for bad in ("Mars/Olympus", "../etc/passwd"):
+            os.environ[hlf.TZ_ENV] = bad
+            with self.assertRaises(hlf.InvalidTimeZone):
+                hlf.check_tz()
+            with self.assertRaises(hlf.InvalidTimeZone):
+                hlf.verify()
+
+    def test_times(self) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        at = datetime(2026, 11, 11, 15, 0, 0, 123456, tzinfo=UTC)
+        self.assertEqual(hlf.iso(at), "2026-11-11T15:00:00.123Z")
+        self.assertEqual(hlf.parse_iso("2026-11-11T15:00:00.123Z"), at.replace(microsecond=123000))
+        for bad in (None, 5, "", "2026-11-11T15:00:00", "x" * 65, "yesterday"):
+            self.assertIsNone(hlf.parse_iso(bad), bad)
+        self.assertEqual(hlf.captured_at_from_name("/a/20261111T150000123456Z-screen-x.png"), at)
+        self.assertIsNone(hlf.captured_at_from_name("/a/screen.png"))
+        lo, hi = at, at + timedelta(seconds=5)
+        self.assertEqual(hlf.clamp(None, lo, hi), lo)
+        self.assertEqual(hlf.clamp(at - timedelta(days=1), lo, hi), lo)
+        self.assertEqual(hlf.clamp(at + timedelta(days=1), lo, hi), hi)
+        self.assertEqual(hlf.clamp(at + timedelta(seconds=2), lo, hi), at + timedelta(seconds=2))
+
+    def test_the_window_rect_and_the_strip_offset(self) -> None:
+        g = hlf._geometry({**PANEL_GEOMETRY, "dpr": 2})
+        self.assertEqual(hlf.window_rect(g), {"x": 0, "y": 56, "width": 3840, "height": 2344})
+        self.assertIsNone(hlf.window_rect(None))
+        self.assertIsNone(hlf.window_rect(hlf._geometry({**PANEL_GEOMETRY, "screenX": -8})))
+        g = hlf._geometry(PANEL_GEOMETRY)
+        self.assertEqual(
+            hlf.chrome_strip(g, 1920, 1172, origin=(0, 28)),
+            {"x": 0, "y": 0, "width": 1920, "height": 87, "source": "window"},
+        )
+        self.assertEqual(
+            hlf.chrome_strip(None, 1920, 1200, top=28),
+            {"x": 0, "y": 28, "width": 1920, "height": hlf.CHROME_STRIP_FALLBACK_PX, "source": "fallback"},
+        )
 
 
 def real_png(width: int = 1920, height: int = 1200) -> bytes:
@@ -786,7 +1018,7 @@ class AddressBarSchemeTests(ScreenBase):
 
     async def shoot_png(self, data: bytes, redact: bool = True) -> dict:
         front = await hlf.screen_front(self.service.manager, "s1", redact=redact)
-        return await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], png=data, redact=redact)
+        return await hlf.screen_scrub(self.service.manager, "s1", token=front["token"], **cap(data), redact=redact)
 
     def test_scheme_seen_reads_only_the_toolbar_row_of_the_strip(self) -> None:
         strip = {"x": 0, "y": 0, "width": 1920, "height": 120}

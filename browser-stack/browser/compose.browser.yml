@@ -74,6 +74,8 @@ services:
       # 0 (default): a normal Chromium window, maximized, with its tab strip and address bar.
       # 1: the kiosk, one page and no browser UI. README, "Settings worth knowing".
       BROWSER_KIOSK: ${BROWSER_KIOSK:-0}
+      # The zone the desktop panel's clock shows (and evidence screenshots with it).
+      TZ: ${EVIDENCE_TZ:-America/Toronto}
       BROWSER_URL: about:blank
       BROWSER_WS_ENDPOINT_FILE: /data/profile/browser-ws-endpoint.txt
       # Host network: the Playwright server binds loopback and the controller
@@ -96,7 +98,8 @@ services:
       - ./scripts/browser-node-entrypoint.sh:/happy/browser-node-entrypoint.sh:ro
       # The window lock (kiosk/): happy-kiosk.mjs holds every Chromium window
       # maximized (or fullscreen with BROWSER_KIOSK=1), a managed policy, and
-      # fluxbox with no bindings, menu or toolbar on a plain dark desktop.
+      # fluxbox with no bindings or menu on a plain dark desktop, with a desktop
+      # panel across the top (the window's button and a clock) unless BROWSER_KIOSK=1.
       - ./kiosk/happy-kiosk.mjs:/opt/browser-node/happy-kiosk.mjs:ro
       - ./kiosk/policy.json:/etc/chromium/policies/managed/happy-kiosk.json:ro
       - ./kiosk/policy.json:/etc/opt/chrome_for_testing/policies/managed/happy-kiosk.json:ro
@@ -166,18 +169,20 @@ services:
       MAX_SESSIONS: ${MAX_SESSIONS:-3}
       MCP_TOOL_PROFILE: ${MCP_TOOL_PROFILE:-curated}
       DEFAULT_VIEWPORT_WIDTH: ${BROWSER_WIDTH:-1920}
-      # The screen less Chromium's tab strip and toolbar (the whole screen with BROWSER_KIOSK=1),
-      # so the page fills the maximized window exactly. browser.mk works it out.
+      # The screen less the desktop panel and Chromium's tab strip and toolbar (the whole screen
+      # with BROWSER_KIOSK=1), so the page fills the maximized window exactly. browser.mk works it out.
       DEFAULT_VIEWPORT_HEIGHT: ${BROWSER_VIEWPORT_HEIGHT:?run through browser-stack/browser.mk}
       # Rate limits are per bearer token, which the agents and the bridge's
       # one-frame-a-second polling share; 120/min (upstream) is too tight.
       REQUEST_RATE_LIMIT_REQUESTS: ${REQUEST_RATE_LIMIT_REQUESTS:-1200}
       REQUEST_RATE_LIMIT_WINDOW_SECONDS: "60"
       PII_SCRUB_SCREENSHOT: ${PII_SCRUB_SCREENSHOT:-true}
-      # The zone of the date/time bar stamped across the top of every screenshot (the evidence
-      # stamp, controller-patch/happy_evidence_stamp.py); browser.mk sets it from the host. The
-      # container's own TZ is left alone.
-      EVIDENCE_TZ: ${EVIDENCE_TZ:-UTC}
+      # The zone browser_screenshot's audit records (the node's panel clock shows the same one);
+      # browser.mk sets it from the host. The container's own TZ is left alone.
+      EVIDENCE_TZ: ${EVIDENCE_TZ:-America/Toronto}
+      # browser_screenshot's default view: desktop (the whole screen, the panel's clock in it) or
+      # tab (the browser window alone). A call can ask for either.
+      SCREENSHOT_TIME_MODE: ${SCREENSHOT_TIME_MODE:-desktop}
       # Secrets typed by the secret filler (browser-stack/browser/filler) must not
       # be written anywhere. A trace records each keystroke's params and DOM
       # snapshots; the network inspector keeps request bodies, and a login
@@ -191,7 +196,6 @@ services:
     volumes:
       - ${HAPPY_BROWSER_HOME:?}/data:/data
       - ./controller-patch/happy_live_frames.py:/happy/controller-patch/happy_live_frames.py:ro
-      - ./controller-patch/happy_evidence_stamp.py:/happy/controller-patch/happy_evidence_stamp.py:ro
 
   # The live bridge (browser-stack/browser/bridge): the phone page /live/<id>, its
   # frames and state, and the takeover hand-back the MCP tool waits on. Plain
@@ -333,11 +337,13 @@ services:
       BROWSER_HEIGHT: ${BROWSER_HEIGHT:-1200}
       BROWSER_KIOSK: ${BROWSER_KIOSK:-0}
       BROWSER_VIEWPORT_HEIGHT: ${BROWSER_VIEWPORT_HEIGHT:?run through browser-stack/browser.mk}
+      BROWSER_PANEL_HEIGHT: ${BROWSER_PANEL_HEIGHT:-0}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       MCP_TOOL_PROFILE: ${MCP_TOOL_PROFILE:-curated}
       REQUEST_RATE_LIMIT_REQUESTS: ${REQUEST_RATE_LIMIT_REQUESTS:-1200}
       PII_SCRUB_SCREENSHOT: ${PII_SCRUB_SCREENSHOT:-true}
-      EVIDENCE_TZ: ${EVIDENCE_TZ:-UTC}
+      EVIDENCE_TZ: ${EVIDENCE_TZ:-America/Toronto}
+      SCREENSHOT_TIME_MODE: ${SCREENSHOT_TIME_MODE:-desktop}
     healthcheck:
       test: ["CMD", "test", "-S", "/launcher-run/launcher.sock"]
       interval: 10s
