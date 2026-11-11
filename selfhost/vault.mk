@@ -20,8 +20,8 @@
 #   make stack-up / stack-down  the vault and the browser stack together (selfhost/Makefile)
 #   make vault-up / vault-down / vault-logs
 #   make vault-status         containers, 127.0.0.1-only binds, /alive, Caddy site, filler unlocked, last backup
-#   make vault-admin-on       (sudo) set an admin password (asked on the terminal; only its hash is kept)
-#   make vault-admin-off      (sudo) remove it, which disables /admin
+#   make vault-admin-on       set an admin password (asked on the terminal; only its hash is kept)
+#   make vault-admin-off      remove it, which disables /admin
 #   make vault-caddy-apply    add $(VAULT_DOMAIN) to the host's Caddy (backup, validate, reload)
 #   make vault-backup         versioned tarball in the happy-vault-backups volume (newest 30 kept there),
 #                             then copied to every mirror (VAULT_BACKUP_MIRRORS) + a ZFS snapshot
@@ -125,10 +125,10 @@ vault-status:
 	@$(MAKE) --no-print-directory filler-status
 
 vault-admin-on:
-	sudo bash $(VAULT_DIR)/scripts/vault-admin.sh on
+	@bash $(VAULT_DIR)/scripts/vault-admin.sh on
 
 vault-admin-off:
-	sudo bash $(VAULT_DIR)/scripts/vault-admin.sh off
+	@bash $(VAULT_DIR)/scripts/vault-admin.sh off
 
 vault-caddy-apply:
 	@bash $(VAULT_DIR)/scripts/vault-caddy-apply.sh
