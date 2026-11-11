@@ -15,6 +15,7 @@
 #   make browser-pod-bench     pod start times, cold and warm (test project only)
 #   make browser-pod-smoke     per-chat pods end to end (bridge with BRIDGE_PODS=1)
 #   make browser-pods-reap     remove pods no chat is using (asks first; DRY_RUN=1 lists only, FORCE=1 removes all)
+#   make browser-node-chrome   build the browser node with Google Chrome (node-chrome/; used when BROWSER_NODE_CHROME=1)
 
 BROWSER_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))/browser
 # BROWSER_STACK_HOME is the name to use; HAPPY_BROWSER_HOME is still read, and is exported
@@ -32,7 +33,18 @@ export HAPPY_BROWSER_DIR := $(BROWSER_DIR)
 export HAPPY_DOCKER_SOCKET ?= /var/run/docker.sock
 export DOCKER_SOCKET_GID ?= $(shell stat -c %g $(HAPPY_DOCKER_SOCKET) 2>/dev/null)
 BROWSER_LOCAL_ENV := $(BROWSER_DIR)/.env.browser
-BROWSER_COMPOSE := docker compose -p $(BROWSER_PROJECT) -f $(BROWSER_DIR)/compose.browser.yml \
+# The browser node's browser (BROWSER_NODE_CHROME in .env.browser): 0, the default, the upstream
+# image's bundled Chrome for Testing; 1, Google Chrome stable, from the image node-chrome/Dockerfile
+# builds locally (make browser-node-chrome; browser-up builds it first). compose runs it for
+# browser-node and every pod as BROWSER_NODE_IMAGE, named by its local image id, read when each
+# compose command runs, after the build. Never push that image: Google Chrome may not be
+# redistributed. A different node image can be given as BROWSER_NODE_IMAGE in .env.browser.
+BROWSER_NODE_CHROME ?= $(or $(shell sed -nE 's/^BROWSER_NODE_CHROME=([^[:space:]]*)[[:space:]]*$$/\1/p' $(BROWSER_LOCAL_ENV) 2>/dev/null | tail -1),0)
+NODE_CHROME_DIR := $(BROWSER_DIR)/node-chrome
+NODE_CHROME_VERSION := $(shell sed -nE 's/^ARG CHROME_VERSION=([0-9.]+-[0-9]+)$$/\1/p' $(NODE_CHROME_DIR)/Dockerfile)
+NODE_CHROME_TAG := happy-browser-node-chrome:$(NODE_CHROME_VERSION)
+BROWSER_NODE_IMAGE_ENV := $(if $(filter 1,$(BROWSER_NODE_CHROME)),BROWSER_NODE_IMAGE="$$(docker image inspect -f '{{.Id}}' $(NODE_CHROME_TAG) 2>/dev/null || echo not-built:run-make-browser-node-chrome)")
+BROWSER_COMPOSE := $(BROWSER_NODE_IMAGE_ENV) docker compose -p $(BROWSER_PROJECT) -f $(BROWSER_DIR)/compose.browser.yml \
 	--env-file $(BROWSER_SECRETS)/browser.env $(if $(wildcard $(BROWSER_LOCAL_ENV)),--env-file $(BROWSER_LOCAL_ENV))
 comma := ,
 BROWSER_SVC ?=
@@ -64,19 +76,29 @@ export BROWSER_KIOSK BROWSER_HEIGHT BROWSER_PANEL_HEIGHT BROWSER_VIEWPORT_HEIGHT
 EVIDENCE_TZ ?= $(or $(shell cat /etc/timezone 2>/dev/null | head -1 | tr -d '[:space:]'),America/Toronto)
 export EVIDENCE_TZ
 BROWSER_BIND_OK = ^127\.0\.0\.1:$(if $(BRIDGE_LAN_BIND),|^$(subst .,\.,$(BRIDGE_LAN_BIND)):$(BRIDGE_LAN_PORT)$$)
-BROWSER_IMAGES = $(shell sed -nE 's/^x-(browser-node|controller)-image: &[a-z_]+ (.+)$$/\2/p' $(BROWSER_DIR)/compose.browser.yml) \
+# Each anchor's pinned default (the node's is written $${BROWSER_NODE_IMAGE:-<image>}).
+COMPOSE_IMAGE = $(shell sed -nE 's/^x-$(1)-image: &[a-z_]+ (\$$\{[A-Z_]+:-)?([^}[:space:]]+)\}?[[:space:]]*$$/\2/p' $(BROWSER_DIR)/compose.browser.yml)
+BROWSER_IMAGES = $(call COMPOSE_IMAGE,browser-node) $(call COMPOSE_IMAGE,controller) \
 	$(shell sed -nE 's/^    image: (node:.+)$$/\1/p' $(BROWSER_DIR)/compose.browser.yml | sort -u)
 POD_FILTER = --filter label=happy-browser.pod=1 --filter label=happy-browser.project=$(BROWSER_PROJECT)
 
 .PHONY: browser-init browser-up browser-down browser-status browser-logs browser-verify browser-bridge-test browser-bridge-smoke browser-bridge-restart \
 	browser-pull browser-pods-status browser-pods-reap browser-entrypoint-check \
-	browser-pod-bench browser-pod-smoke browser-controller-patch-test
+	browser-pod-bench browser-pod-smoke browser-controller-patch-test browser-node-chrome
 
 browser-init:
 	@HAPPY_BROWSER_HOME="$(HAPPY_BROWSER_HOME)" bash $(BROWSER_DIR)/scripts/browser-init.sh
 
-browser-up: browser-init
+browser-up: browser-init $(if $(filter 1,$(BROWSER_NODE_CHROME)),browser-node-chrome)
 	$(BROWSER_COMPOSE) up -d --wait
+
+# The browser node with Google Chrome (node-chrome/Dockerfile), on top of the pinned upstream node
+# image: one exact Chrome version, its .deb checked against a pinned SHA256, no update path left in
+# the image. Local only (no push). Cached: a rebuild with nothing changed is a no-op.
+browser-node-chrome:
+	@test -n "$(NODE_CHROME_VERSION)" || { echo "node-chrome/Dockerfile has no ARG CHROME_VERSION" >&2; exit 1; }
+	docker build -t $(NODE_CHROME_TAG) $(NODE_CHROME_DIR)
+	@echo "$(NODE_CHROME_TAG): $$(docker image inspect -f '{{.Id}}' $(NODE_CHROME_TAG)); $$(docker run --rm --network none --entrypoint /opt/google/chrome/chrome $(NODE_CHROME_TAG) --version 2>/dev/null)"
 
 browser-down:
 	$(BROWSER_COMPOSE) down
@@ -106,7 +128,7 @@ browser-bridge-test:
 
 # The controller patch (controller-patch/happy_live_frames.py) in a throwaway container of the
 # pinned controller image, no network: its pin check against the image's files, then its tests.
-CONTROLLER_IMAGE = $(shell sed -nE 's/^x-controller-image: &[a-z_]+ (.+)$$/\1/p' $(BROWSER_DIR)/compose.browser.yml)
+CONTROLLER_IMAGE = $(call COMPOSE_IMAGE,controller)
 browser-controller-patch-test:
 	docker run --rm --name happy-controller-patch-test-$$$$ --network none --entrypoint python \
 		-e PYTHONPATH=/happy/controller-patch -e HAPPY_LIVE_FRAMES_NO_AUTOLOAD=1 -w /app \
@@ -138,7 +160,7 @@ browser-pods-reap:
 # pattern must match exactly once (scripts/browser-node-entrypoint.sh refuses to start otherwise).
 browser-entrypoint-check:
 	@set -e; t=$$(mktemp -d); trap 'rm -rf "$$t"' EXIT; \
-	docker run --rm --network none --entrypoint cat $$(sed -nE 's/^x-browser-node-image: &[a-z_]+ (.+)$$/\1/p' $(BROWSER_DIR)/compose.browser.yml) /entrypoint.sh >"$$t/entrypoint.sh"; \
+	docker run --rm --network none --entrypoint cat $(call COMPOSE_IMAGE,browser-node) /entrypoint.sh >"$$t/entrypoint.sh"; \
 	for k in 0 1; do \
 		BROWSER_KIOSK=$$k BROWSER_NODE_ENTRYPOINT_SRC="$$t/entrypoint.sh" BROWSER_NODE_ENTRYPOINT_OUT="$$t/out.sh" BROWSER_NODE_ENTRYPOINT_DRY_RUN=1 \
 			PLAYWRIGHT_SERVER_HOST=127.0.0.1 NOVNC_PORT=6100 bash $(BROWSER_DIR)/scripts/browser-node-entrypoint.sh; \
