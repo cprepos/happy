@@ -101,15 +101,16 @@ FILLER_VOLUME=happy-filler
 HELPER_IMAGE=node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
 
 # Every child: a cleared environment, the daemon's socket, the fixed data paths, LAN listener off.
-# BRIDGE_UID=0: the bridge runs as the owner of the browser home, as it did as prep under the
-# operator's Docker; container root here is happy-svc on the host, not root.
+# The browser services keep their own non-root uids (compose defaults, mapped through the subuid
+# range). HAPPY_DOCKER_SOCKET is the docker-proxy's upstream: this daemon's socket, whose group
+# inside the namespace is 0 (DOCKER_SOCKET_GID).
 denv() {
     env -i PATH="$PATH" HOME="$HOME_DIR" LANG=C.UTF-8 \
         XDG_RUNTIME_DIR="$RUNDIR" DOCKER_HOST="unix://$SOCK" DOCKER_CONFIG="$HOME_DIR/.docker" \
         HAPPY_DOCKER_SOCKET="$SOCK" \
         HAPPY_BROWSER_HOME="$BROWSER_HOME" HAPPY_BROWSER_DIR="$REL/browser-stack/browser" \
         BROWSER_PROJECT=happy-browser \
-        BRIDGE_UID=0 BRIDGE_GID=0 \
+        DOCKER_SOCKET_GID=0 \
         BRIDGE_LAN_BIND= BRIDGE_LAN_ALLOW= BRIDGE_LAN_PUBLIC_BASE= \
         "$@"
 }
@@ -370,10 +371,12 @@ import)
         tgt=$v
     fi
     helper -v "$tgt:/dst" "$HELPER_IMAGE" tar -C /dst -xpf - --numeric-owner <"$src"
-    # The browser home was the operator's (uid and gid 1000 under the operator's Docker); here
-    # its owner is happy-svc, container uid 0. Other owners (browser-node's 10001) are kept.
+    # The operator's part of the browser home (secrets/, uid and gid 1000 under the operator's
+    # Docker) becomes happy-svc's, container uid 0; the services' own uids (199x) are kept, and
+    # browser-init.sh then sets every service directory's owner as the compose file expects.
     if [ "$v" = browser-home ]; then
         helper -v "$tgt:/dst" "$HELPER_IMAGE" sh -c 'find /dst -user 1000 -exec chown -h 0 {} + && find /dst -group 1000 -exec chgrp -h 0 {} +'
+        denv bash "$REL/browser-stack/browser/scripts/browser-init.sh"
     fi
     # The tarball holds secrets: out of the drop, into $SVC_USER's own space (never deleted).
     ts=$(date -u +%Y%m%dT%H%M%SZ)

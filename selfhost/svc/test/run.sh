@@ -118,6 +118,9 @@ check "ports: only on 127.0.0.1" bash -c "! grep 'X POST' '$T/log/curl.calls' | 
 check "environment cleared (no SECRET_PROBE)" bash -c "! grep -q SECRET_PROBE '$T/log/docker.env'"
 check "environment: DOCKER_HOST is happy-svc's socket" grep -qx "DOCKER_HOST=unix://$T/run/docker.sock" "$T/log/docker.env"
 check "environment: LAN listener off" grep -qx "BRIDGE_LAN_BIND=" "$T/log/docker.env"
+check "environment: docker-proxy upstream is happy-svc's socket" grep -qx "HAPPY_DOCKER_SOCKET=$T/run/docker.sock" "$T/log/docker.env"
+check "environment: socket group 0 under rootless" grep -qx "DOCKER_SOCKET_GID=0" "$T/log/docker.env"
+check "environment: service uids left to the compose defaults" bash -c "! grep -Eq '^(BRIDGE|CONTROLLER|BROWSER_NODE|DOCKER_PROXY)_[UG]ID=' '$T/log/docker.env'"
 
 runs up && grep -n 'up -d' "$T/log/docker.calls" | head -1 | grep -q happy-vault && grep 'up -d' "$T/log/docker.calls" | tail -1 | grep -q happy-browser \
     && ok "up: vault, then browser" || bad "up: order"
