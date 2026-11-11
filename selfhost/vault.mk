@@ -26,8 +26,15 @@
 #
 # The filler's enrollment and tokens are filler targets: make filler-enroll, filler-token-issue,
 # filler-token-take (browser-stack/filler.mk).
-# Backups are not made here: the host's own cron backs up the Docker volumes and /srv
-# (see selfhost/vault/README.md, Backups).
+#
+# Backups (vault/scripts/vault-backup.sh; selfhost/vault/README.md, Backups), from prep's cron:
+#   make vault-backup         vault and filler tarballs into /girth/backup/vault (ZFS snapshot
+#                             after each run), then the mirror /mnt/ai-data/backups/happy-vault
+#   make vault-backup-check   restore the newest tarballs into throwaway containers and count
+#   make vault-backup-status  newest tarball per location and its age (STALE past 26 h)
+#   make vault-restore TARBALL=vault-<ts>.tar.gz|/path/to/it   stops Vaultwarden while it runs
+#   make vault-backup-cron    add the nightly backup and the weekly check to prep's crontab,
+#                             each line only if it is missing
 
 VAULT_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))/vault
 # Host settings: plain KEY=value lines, read here (and by browser-stack/filler.mk through the exports).
@@ -47,7 +54,8 @@ VAULT_OWNER_EMAIL ?=
 export VAULT_OWNER_EMAIL
 VAULTWARDEN := bash $(VAULT_DIR)/scripts/vaultwarden.sh
 
-.PHONY: vault-up vault-down vault-logs vault-status vault-admin-on vault-admin-off vault-caddy-apply
+.PHONY: vault-up vault-down vault-logs vault-status vault-admin-on vault-admin-off vault-caddy-apply \
+	vault-backup vault-backup-check vault-backup-status vault-restore vault-backup-cron
 
 VAULT_NEED_ENV = @test -f $(VAULT_DIR)/.env || { echo "$@: no $(VAULT_DIR)/.env; cp $(VAULT_DIR)/.env.example $(VAULT_DIR)/.env and fill it in" >&2; exit 1; }
 
@@ -81,3 +89,37 @@ vault-admin-off:
 
 vault-caddy-apply:
 	@bash $(VAULT_DIR)/scripts/vault-caddy-apply.sh
+
+VAULT_BACKUP := bash $(VAULT_DIR)/scripts/vault-backup.sh
+VAULT_CRON_BACKUP := 15 4 * * *  make -C /home/prep/happy/selfhost vault-backup >> ~/.local/state/happy/vault-backup.log 2>&1
+VAULT_CRON_CHECK := 45 4 * * 0  make -C /home/prep/happy/selfhost vault-backup-check >> ~/.local/state/happy/vault-backup.log 2>&1
+
+vault-backup:
+	@echo "== vault-backup $$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+	@$(VAULT_BACKUP) backup
+
+vault-backup-check:
+	@echo "== vault-backup-check $$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+	@$(VAULT_BACKUP) check
+
+vault-backup-status:
+	@$(VAULT_BACKUP) status
+
+vault-restore:
+	@test -n "$(TARBALL)" || { echo "usage: make vault-restore TARBALL=vault-<ts>.tar.gz|/path/to/vault-<ts>.tar.gz" >&2; exit 2; }
+	@$(VAULT_BACKUP) restore '$(TARBALL)'
+
+# Adds each line only if prep's crontab lacks it; every other line stays as it is. The crontab
+# as it was goes to ~/.local/state/happy/crontab-before-<ts> first.
+vault-backup-cron:
+	@mkdir -p $(HOME)/.local/state/happy
+	@cur="$$(crontab -l 2>/dev/null || true)"; add=""; \
+	for l in '$(VAULT_CRON_BACKUP)' '$(VAULT_CRON_CHECK)'; do \
+		if grep -qxF -- "$$l" <<<"$$cur"; then echo "vault-backup-cron: present: $$l"; \
+		else add="$$add$$l"$$'\n'; echo "vault-backup-cron: adding: $$l"; fi; \
+	done; \
+	if [ -n "$$add" ]; then \
+		ts=$$(date -u +%Y%m%dT%H%M%SZ); printf '%s\n' "$$cur" > $(HOME)/.local/state/happy/crontab-before-$$ts; \
+		{ printf '%s\n' "$$cur"; printf '%s' "$$add"; } | crontab - && echo "vault-backup-cron: installed (previous crontab in ~/.local/state/happy/crontab-before-$$ts)"; \
+	fi
+

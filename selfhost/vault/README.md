@@ -47,7 +47,8 @@ make vault-admin-on                                     # choose an admin passwo
    login, Authenticator app. The vault is reachable from the internet through
    Caddy, so do not skip this.
 4. `make vault-admin-off`. This turns the admin panel off.
-5. Make sure the host's backups cover the vault (see Backups).
+5. `make vault-backup-cron` (once), then `make vault-backup` and `make
+   vault-backup-check` (see Backups).
 
 The agent account for the secret filler (no organization: its logins sit in
 its own vault) and the filler's own setup (`make filler-account-setup`, then
@@ -89,27 +90,77 @@ The server URL is the same everywhere: `https://vault.girthbass.duckdns.org`.
 make vault-status         # health, 127.0.0.1-only bind, public /alive, public /admin = 404, env keys set/unset
 make vault-up | vault-down | vault-logs   # vault-up on a running container does nothing
 make vault-admin-on | vault-admin-off     # edits vaultwarden.env, then restarts the container
+make vault-backup | vault-backup-check | vault-backup-status | vault-restore TARBALL=...   # see Backups
 ```
 
 `make status` (the main health check) runs `vault-status` too.
 
 ## Backups
 
-Nothing in this repo makes backups any more: the host's own cron does. What
-has to be in them:
+`scripts/vault-backup.sh`, through make, from prep's cron. No sudo: each step
+runs in prep's Docker as the data's own uid, with no network, a read-only root
+and no capabilities. Nothing is ever deleted and nothing lands under
+`/home/prep`.
 
-- the Docker volumes `vaultwarden-data` (the database, attachments, keys) and
-  `vaultwarden-config` (`vaultwarden.env` and `env-backups/`);
-- `/srv/happy-filler`: the filler's `policy.json`, `policy-backups/`,
-  `secrets/`, `state/`, `audit/` and its releases.
+**What is covered.**
 
-The filler's `secrets/` are the agent account's vault credentials: keep their
-copies where only root (or uid 1990) can read them, not next to the vault's.
+- `vault-<ts>.tar.gz`: an online SQLite snapshot of the running container
+  (`vaultwarden backup`) as `db.sqlite3`, with `attachments/`, `sends/`,
+  `config.json` and `rsa_key*` from `vaultwarden-data`, and `vaultwarden.env`
+  and `env-backups/` from `vaultwarden-config`. Written as uid 1991.
+- `filler/filler-<ts>.tar.gz`: the filler's `secrets/`, `state/`,
+  `policy.json`, `policy-backups/`, `audit/` and `trash/` from
+  `/srv/happy-filler` (not `releases/`, `current`, `pipe-bin/`, `inbox/` or
+  `outbox/`), read through a read-only bind as uid 1990 and written as 1990,
+  so Vaultwarden's uid never reads the filler's credentials.
 
-The nightly user timer `happy-vault-backup.timer` and `make vault-backup` /
-`vault-restore*` are retired (they backed up the old compose volumes and had
-been failing on missing mirror directories); the unit files and
-`scripts/vault-backup.sh` are in the repo's `trash/*_vault-backup-timer/`.
+Each tarball has a `.sha256` next to it, checked after every copy.
+
+**Where it goes.**
+
+| location | | |
+|---|---|---|
+| `/girth/backup/vault` | primary, ZFS `girth/backup/vault` | a snapshot `girth/backup/vault@vault-<ts>` after every backup |
+| `/mnt/ai-data/backups/happy-vault` | mirror, ext4 | missing tarballs copied from the primary |
+
+Both are 1991:1991 0711, with `filler/` as 1990:1990 0700. In each the newest
+30 (`VAULT_BACKUP_KEEP`) of each kind stay; older ones move to `retired/`. A
+missing or unwritable location, a hash mismatch or a refused snapshot fails
+loudly and the run exits non-zero.
+
+**Targets** (from `selfhost/`):
+
+```
+make vault-backup          # tarballs, snapshot, mirror
+make vault-backup-check    # restore the newest tarball of each location into a throwaway
+                           # container: integrity, users, organizations, ciphers, rsa_key, same
+                           # sha256 everywhere; the filler tarball's sha256 and secrets/
+make vault-backup-status   # newest tarball per location and its age (STALE past 26 h), newest snapshot
+make vault-restore TARBALL=vault-<ts>.tar.gz           # from the primary (or its retired/)
+make vault-restore TARBALL=/path/to/vault-<ts>.tar.gz  # a mirror's or a snapshot's copy
+make vault-backup-cron     # add the two cron lines below, each only if missing
+```
+
+**Restore.** `vault-restore` checks the tarball's sha256 first (a bad one
+changes nothing), stops the container `vaultwarden`, moves the current contents
+of `vaultwarden-data` into `/girth/backup/vault/before-restore-<ts>/` (kept),
+unpacks the tarball into the volume (`vaultwarden.env` and `env-backups/` are
+left out; `vaultwarden-config` is not touched), starts the container and waits
+for `/alive`. Logins made after the tarball's time are lost from the live vault
+(they stay in `before-restore-<ts>/`). The filler is restored by hand: as
+happy-filler, `make filler-lock`, unpack the files you need from its tarball
+into `/srv/happy-filler`, then `make filler-up`.
+
+**Cron** (prep's crontab; output in `~/.local/state/happy/vault-backup.log`):
+
+```
+15 4 * * *  make -C /home/prep/happy/selfhost vault-backup >> ~/.local/state/happy/vault-backup.log 2>&1
+45 4 * * 0  make -C /home/prep/happy/selfhost vault-backup-check >> ~/.local/state/happy/vault-backup.log 2>&1
+```
+
+The old nightly user timer `happy-vault-backup.timer`, which backed up the
+compose volumes, is retired; its units are in the repo's
+`trash/*_vault-backup-timer/`.
 
 Until November 11, 2026 Vaultwarden and the filler ran as the compose project
 `happy-vault`; its compose file and the `vault-init` / `vault-migrate` scripts
