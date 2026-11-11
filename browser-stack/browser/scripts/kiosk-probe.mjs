@@ -17,6 +17,8 @@ const browser = await chromium.connect(readFileSync(file, "utf8").trim(), { time
 const geometry = () => ({
   innerWidth, innerHeight, outerWidth, outerHeight, screenX, screenY,
   screenWidth: screen.width, screenHeight: screen.height,
+  // The screen less the desktop panel (_NET_WORKAREA), where a maximized window goes.
+  availLeft: screen.availLeft, availTop: screen.availTop, availWidth: screen.availWidth, availHeight: screen.availHeight,
 });
 const out = { kiosk: process.env.BROWSER_KIOSK === "1" };
 try {

@@ -12,12 +12,15 @@
 #     runs with -ac) and could clash with a host X server on :99, or with
 #     another browser pod's :99. The path socket /tmp/.X11-unix/X99 stays,
 #     private to this container's /tmp.
-#   - fluxbox runs with a read-only config from /happy/fluxbox: no toolbar,
-#     one workspace, no key or mouse bindings, no menu, every window
-#     undecorated and maximized. BROWSER_KIOSK=0 (the default) uses
-#     init.window: a plain dark desktop behind a normal maximized Chromium
-#     window with its tab strip and address bar. BROWSER_KIOSK=1 uses init:
-#     every window fullscreen too.
+#   - fluxbox runs with a read-only config from /happy/fluxbox: one
+#     workspace, no key or mouse bindings, no menu, no remote actions, every
+#     window undecorated and maximized. BROWSER_KIOSK=0 (the default) uses
+#     init.window: a plain dark desktop with a desktop panel across the top
+#     (fluxbox's toolbar: the window's button on the left, a clock with the
+#     date and year in TZ on the right; it reserves its strip, so a
+#     maximized window sits below it) and a normal maximized Chromium window
+#     with its tab strip and address bar. BROWSER_KIOSK=1 uses init: no
+#     panel, every window fullscreen too.
 #   - x11vnc gets -noremote -norc -nowf -nonap and a clip to the screen, so a
 #     viewer cannot drive x11vnc itself or see past the screen.
 #   - Chromium is launched through /opt/browser-node/happy-kiosk.mjs, which adds

@@ -1,3 +1,24 @@
 background: solid
 background.color: #1e1e1e
 background.colorTo: #1e1e1e
+toolbar: flat solid
+toolbar.color: #2b2b2b
+toolbar.borderWidth: 0
+toolbar.bevelWidth: 0
+toolbar.clock: flat solid
+toolbar.clock.color: #2b2b2b
+toolbar.clock.textColor: #e6e6e6
+toolbar.clock.font: DejaVu Sans-10
+toolbar.clock.justify: center
+toolbar.iconbar.empty: flat solid
+toolbar.iconbar.empty.color: #2b2b2b
+toolbar.iconbar.focused: flat solid
+toolbar.iconbar.focused.color: #454545
+toolbar.iconbar.focused.textColor: #ffffff
+toolbar.iconbar.focused.font: DejaVu Sans-9
+toolbar.iconbar.focused.justify: left
+toolbar.iconbar.unfocused: flat solid
+toolbar.iconbar.unfocused.color: #2b2b2b
+toolbar.iconbar.unfocused.textColor: #cfcfcf
+toolbar.iconbar.unfocused.font: DejaVu Sans-9
+toolbar.iconbar.unfocused.justify: left

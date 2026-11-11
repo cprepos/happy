@@ -1,4 +1,16 @@
-session.screen0.toolbar.visible: false
+session.screen0.toolbar.visible: true
+session.screen0.toolbar.placement: TopCenter
+session.screen0.toolbar.widthPercent: 100
+session.screen0.toolbar.height: 28
+session.screen0.toolbar.maxOver: false
+session.screen0.toolbar.autoHide: false
+session.screen0.toolbar.layer: Dock
+session.screen0.toolbar.tools: iconbar, clock
+session.screen0.iconbar.mode: {static groups} (workspace)
+session.screen0.iconbar.alignment: Left
+session.screen0.iconbar.iconWidth: 400
+session.screen0.iconbar.usePixmap: false
+session.screen0.strftimeFormat: %a %d %b %Y  %H:%M:%S
 session.screen0.slit.autoHide: true
 session.screen0.workspaces: 1
 session.screen0.defaultDeco: NONE

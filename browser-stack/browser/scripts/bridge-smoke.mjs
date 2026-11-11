@@ -48,17 +48,20 @@ function mcp(ident = null) {
     return { request, notes, close: () => child.stdin.end() };
 }
 
-// The browser fills the screen and nothing else shows: a maximized Chromium window with its tab
-// strip and address bar (BROWSER_KIOSK=0, the default), or with BROWSER_KIOSK=1 the kiosk (no
+// The browser fills the screen and nothing else shows: a Chromium window with its tab strip and
+// address bar, maximized below the desktop panel (BROWSER_KIOSK=0, the default), or with BROWSER_KIOSK=1 the kiosk (no
 // tab strip, no address bar, no window frame); a window.open popup the same. Measured from inside
 // the browser-node by scripts/kiosk-probe.mjs. And Xvfb must not listen on the abstract socket
 // @/tmp/.X11-unix/X99: with host networking it would be in the host's namespace, a display
 // anything on this machine could open.
-// The window rule kiosk-probe.mjs measures against: at 0,0 and the full screen, and either no
-// browser UI at all (kiosk) or some (a normal window: tab strip, address bar).
-const windowShaped = (w, kiosk) => !!w && w.screenX === 0 && w.screenY === 0
-    && w.outerWidth === w.screenWidth && w.outerHeight === w.screenHeight && w.innerWidth === w.screenWidth
-    && (kiosk ? w.innerHeight === w.screenHeight : w.innerHeight < w.outerHeight);
+// The window rule kiosk-probe.mjs measures against: the kiosk at 0,0 and the full screen with no
+// browser UI at all; a normal window maximized to the screen less the desktop panel across the top
+// (screen.availTop, the panel's height, at least 1 px), with some browser UI (tab strip, address bar).
+const windowShaped = (w, kiosk) => !!w && w.screenX === 0 && w.outerWidth === w.screenWidth && w.innerWidth === w.screenWidth
+    && (kiosk
+        ? w.screenY === 0 && w.outerHeight === w.screenHeight && w.innerHeight === w.screenHeight
+        : w.availTop > 0 && w.screenY === w.availTop && w.outerHeight === w.availHeight
+            && w.availTop + w.availHeight === w.screenHeight && w.innerHeight < w.outerHeight);
 const WANT_KIOSK = process.env.BROWSER_KIOSK === '1';
 function kiosk() {
     const probe = spawnSync('docker', ['exec', '-i', '-w', '/opt/browser-node', '-u', 'browser', NODE_CONTAINER, 'node', '--input-type=module', '-'], {
@@ -68,7 +71,7 @@ function kiosk() {
     try { g = JSON.parse(probe.stdout.trim().split('\n').pop()); } catch { g = { error: `probe exited ${probe.status}` }; }
     check(!g.error, `kiosk probe ran in ${NODE_CONTAINER}${g.error ? `: ${g.error}` : ''}`);
     check(g.kiosk === WANT_KIOSK, `browser-node runs with BROWSER_KIOSK=${WANT_KIOSK ? 1 : 0}`);
-    const how = WANT_KIOSK ? 'with no browser UI' : 'maximized, with its tab strip and address bar';
+    const how = WANT_KIOSK ? 'with no browser UI' : 'maximized below the desktop panel, with its tab strip and address bar';
     check(windowShaped(g.page, WANT_KIOSK), `page fills the screen ${how}: ${JSON.stringify(g.page)}`);
     check(windowShaped(g.popup, WANT_KIOSK), `window.open popup fills the screen too: ${JSON.stringify(g.popup)}`);
     const ss = spawnSync('ss', ['-xlH'], { encoding: 'utf8' });

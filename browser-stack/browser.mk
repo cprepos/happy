@@ -47,16 +47,20 @@ BRIDGE_LAN_BIND ?= $(shell sed -nE 's/^BRIDGE_LAN_BIND=([0-9.]+)[[:space:]]*$$/\
 BRIDGE_LAN_PORT ?= $(or $(shell sed -nE 's/^BRIDGE_PORT=([0-9]+)[[:space:]]*$$/\1/p' $(BROWSER_LOCAL_ENV) 2>/dev/null | tail -1),6090)
 # The browser's window (BROWSER_KIOSK in .env.browser): 0, the default, a normal Chromium window
 # maximized to the screen, with its tab strip and address bar; 1, the kiosk (one page, no browser
-# UI). The page's height follows: the whole screen in kiosk mode, the screen less Chromium's tab
-# strip and toolbar (CHROME_UI_HEIGHT, measured on the pinned image) otherwise. Exported, so
-# compose (and through it the launcher, for every pod) uses these over .env.browser's.
+# UI). The page's height follows: the whole screen in kiosk mode, otherwise the screen less the
+# desktop panel (BROWSER_PANEL_HEIGHT: the toolbar.height of kiosk/fluxbox/init.window, when its
+# toolbar is visible) and Chromium's tab strip and toolbar (CHROME_UI_HEIGHT, measured on the
+# pinned image). Exported, so compose (and through it the launcher, for every pod) uses these over
+# .env.browser's.
 BROWSER_KIOSK ?= $(or $(shell sed -nE 's/^BROWSER_KIOSK=([^[:space:]]*)[[:space:]]*$$/\1/p' $(BROWSER_LOCAL_ENV) 2>/dev/null | tail -1),0)
 BROWSER_HEIGHT ?= $(or $(shell sed -nE 's/^BROWSER_HEIGHT=([0-9]+)[[:space:]]*$$/\1/p' $(BROWSER_LOCAL_ENV) 2>/dev/null | tail -1),1200)
 CHROME_UI_HEIGHT := 87
-BROWSER_VIEWPORT_HEIGHT ?= $(if $(filter 1,$(BROWSER_KIOSK)),$(BROWSER_HEIGHT),$(shell expr $(BROWSER_HEIGHT) - $(CHROME_UI_HEIGHT)))
-export BROWSER_KIOSK BROWSER_HEIGHT BROWSER_VIEWPORT_HEIGHT
-# The zone of the date/time bar stamped across the top of every screenshot (an IANA name): the
-# host's own (/etc/timezone), else America/Toronto. The controller refuses to start on a bad one.
+FLUXBOX_WINDOW_INIT = $(BROWSER_DIR)/kiosk/fluxbox/init.window
+BROWSER_PANEL_HEIGHT := $(if $(filter 1,$(BROWSER_KIOSK)),0,$(if $(shell grep -qE '^session\.screen0\.toolbar\.visible:[[:space:]]*true[[:space:]]*$$' $(FLUXBOX_WINDOW_INIT) && echo y),$(or $(shell sed -nE 's/^session\.screen0\.toolbar\.height:[[:space:]]*([0-9]+)[[:space:]]*$$/\1/p' $(FLUXBOX_WINDOW_INIT) | tail -1),0),0))
+BROWSER_VIEWPORT_HEIGHT ?= $(if $(filter 1,$(BROWSER_KIOSK)),$(BROWSER_HEIGHT),$(shell expr $(BROWSER_HEIGHT) - $(BROWSER_PANEL_HEIGHT) - $(CHROME_UI_HEIGHT)))
+export BROWSER_KIOSK BROWSER_HEIGHT BROWSER_PANEL_HEIGHT BROWSER_VIEWPORT_HEIGHT
+# The zone of the desktop panel's clock (the browser node's TZ) and of the screenshot audit (an
+# IANA name): the host's own (/etc/timezone), else America/Toronto. The controller refuses a bad one.
 EVIDENCE_TZ ?= $(or $(shell cat /etc/timezone 2>/dev/null | head -1 | tr -d '[:space:]'),America/Toronto)
 export EVIDENCE_TZ
 BROWSER_BIND_OK = ^127\.0\.0\.1:$(if $(BRIDGE_LAN_BIND),|^$(subst .,\.,$(BRIDGE_LAN_BIND)):$(BRIDGE_LAN_PORT)$$)
@@ -100,14 +104,14 @@ browser-bridge-test:
 	cd $(BROWSER_DIR)/docker-proxy && node --test test/*.test.mjs
 	cd $(BROWSER_DIR)/kiosk && node --test test/*.test.mjs
 
-# The controller patch (controller-patch/: the live frames and the evidence stamp) in a throwaway container of the
+# The controller patch (controller-patch/happy_live_frames.py) in a throwaway container of the
 # pinned controller image, no network: its pin check against the image's files, then its tests.
 CONTROLLER_IMAGE = $(shell sed -nE 's/^x-controller-image: &[a-z_]+ (.+)$$/\1/p' $(BROWSER_DIR)/compose.browser.yml)
 browser-controller-patch-test:
 	docker run --rm --name happy-controller-patch-test-$$$$ --network none --entrypoint python \
 		-e PYTHONPATH=/happy/controller-patch -e HAPPY_LIVE_FRAMES_NO_AUTOLOAD=1 -w /app \
 		-v $(BROWSER_DIR)/controller-patch:/happy/controller-patch:ro $(CONTROLLER_IMAGE) \
-		-m unittest -v test_happy_live_frames test_happy_evidence_stamp
+		-m unittest -v test_happy_live_frames
 
 # Every image the stack and its pods run, by digest, so a pod never waits on a pull.
 browser-pull:
