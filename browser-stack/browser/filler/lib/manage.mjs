@@ -266,6 +266,9 @@ export function createManager({ getPolicy, vault = null, vaults = null, audit, n
             ev.item_id = id;
             await item(ctx, id);
             await ctx.vault.trashLogin(id).catch((e) => { throw vaultErr(e); });
+            // A backend whose removal the API cannot undo (capabilities.restore
+            // 'manual', 1Password's archive) must not promise vault_restore.
+            if (ctx.vault.capabilities?.restore === 'manual') return { id, trashed: true, note: 'archived in the vault; a person must unarchive it in the vault app before vault_restore can bring it back' };
             return { id, trashed: true, note: 'moved to the vault trash; vault_restore brings it back' };
         }),
 

@@ -74,12 +74,12 @@ export const TOOLS = [
     },
     {
         name: 'vault_remove',
-        description: 'Move a login to the vault trash (a soft delete). It stays recoverable with vault_restore; nothing is ever purged.',
+        description: 'Move a login to the vault trash (a soft delete); nothing is ever purged. On most vaults vault_restore brings it back. On an archive-only vault (1Password) the login is archived instead, and a person must unarchive it in the vault app before vault_restore can finish; the result\'s note says which.',
         inputSchema: obj({ id: ID }, ['id']),
     },
     {
         name: 'vault_restore',
-        description: 'Bring a login back from the vault trash. Find its id with vault_list include_trash: true.',
+        description: 'Bring a login back from the vault trash. Find its id with vault_list include_trash: true. On an archive-only vault (1Password) this is refused until a person has unarchived the login in the vault app.',
         inputSchema: obj({ id: ID }, ['id']),
     },
     {
@@ -110,7 +110,8 @@ export const INSTRUCTIONS =
     'CLI, the Vaultwarden API, the filler\'s files or docker, and never ask the user to paste a password in chat. New ' +
     'passwords are always generated inside the filler; you never see one. To sign in on a web page use the browser ' +
     'tools (browser_login, browser_fill_secret), which fill vault logins by name. vault_remove only moves a login to the ' +
-    'trash, and vault_restore brings it back.';
+    'trash (on an archive-only vault, it archives it), and vault_restore brings it back (after a person unarchives it, ' +
+    'on an archive-only vault).';
 
 /** A small JSON-schema check of exactly what TOOLS uses. Returns an error message or null. */
 export function checkArgs(schema, v, at = 'arguments') {
