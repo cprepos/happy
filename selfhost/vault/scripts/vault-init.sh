@@ -21,6 +21,7 @@
 #     audit/               1990:1990 2750  (files 0640; the operator container reads them)
 #     outbox/              1990:1990 2770  client tokens for make vault-tokens
 #     inbox/               1990:1990 3730  the controller token from make vault-tokens
+#   happy-filler-backups/  1990 0700  make vault-backup's filler tarballs
 # The filler's policy.json is written by make vault-init's next step, inside
 # the filler container.
 set -euo pipefail
@@ -35,7 +36,7 @@ for v in "$VUID" "$FUID" "$FGID"; do [[ "$v" =~ ^[1-9][0-9]{2,5}$ ]] || { echo "
 IMAGE="$(awk '/^ *image: vaultwarden\/server:/{print $2; exit}' "$HERE/compose.vault.yml")"
 ONE_SHOT=(docker run --rm --network none --read-only --security-opt no-new-privileges:true --cap-drop ALL --entrypoint sh)
 
-for vol in happy-vault-data happy-vault-backups happy-vault-config happy-filler; do
+for vol in happy-vault-data happy-vault-backups happy-vault-config happy-filler happy-filler-backups; do
   if ! docker volume inspect "$vol" >/dev/null 2>&1; then
     docker volume create --label org.happy.vault=1 "$vol" >/dev/null
     echo "vault-init: created volume $vol"
@@ -45,11 +46,11 @@ done
 # A new volume's top directory is root's: chmod (as its owner) then chown to
 # the service uid. One already handed over (not root's) is left alone.
 "${ONE_SHOT[@]}" --user 0:0 --cap-add CHOWN \
-  -v happy-vault-data:/v/data -v happy-vault-backups:/v/backups -v happy-vault-config:/v/config -v happy-filler:/v/filler \
+  -v happy-vault-data:/v/data -v happy-vault-backups:/v/backups -v happy-vault-config:/v/config -v happy-filler:/v/filler -v happy-filler-backups:/v/filler-backups \
   -e VUID="$VUID" -e FUID="$FUID" -e FGID="$FGID" "$IMAGE" -c '
     set -eu
     own() { if [ "$(stat -c %u "$1")" = 0 ]; then chmod 0700 "$1"; chown "$2" "$1"; fi; }
-    own /v/data "$VUID:$VUID"; own /v/backups "$VUID:$VUID"; own /v/config "$VUID:$VUID"; own /v/filler "$FUID:$FGID"'
+    own /v/data "$VUID:$VUID"; own /v/backups "$VUID:$VUID"; own /v/config "$VUID:$VUID"; own /v/filler "$FUID:$FGID"; own /v/filler-backups "$FUID:$FGID"'
 # vault-init.sh volumes: only the above (make vault-migrate-volumes fills them from /srv).
 [[ "${1:-}" != volumes ]] || exit 0
 

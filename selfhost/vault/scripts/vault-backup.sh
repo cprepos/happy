@@ -1,35 +1,57 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016  # the single-quoted scripts run inside the containers
 # vault-backup.sh backup   one versioned tarball of the running vault:
 #     vault-<UTC ts>.tar.gz in the volume happy-vault-backups, holding an online SQLite
-#     snapshot (vaultwarden backup) as db.sqlite3, plus attachments/, rsa_key*
-#     and config.json when present, with vault-<ts>.tar.gz.sha256 next to it.
-#     Done as uid 1991 inside containers, so it needs docker, not sudo. The
-#     newest 30 (VAULT_BACKUP_KEEP) stay in the volume; older ones move to its
-#     retired/ and are never deleted. Then runs the mirror step below.
-# vault-backup.sh mirror   copy every tarball in the volume and its retired/
+#     snapshot (vaultwarden backup) as db.sqlite3, plus attachments/, rsa_key*,
+#     config.json, and vaultwarden.env and env-backups/ from happy-vault-config,
+#     when present, with vault-<ts>.tar.gz.sha256 next to it. Done as uid 1991
+#     inside containers, so it needs docker, not sudo. Then the filler's
+#     policy.json, policy-backups/, audit/, state/ and secrets/ go into
+#     filler-<ts>.tar.gz in the volume happy-filler-backups, as uid 1990: the
+#     filler's credentials never land where uid 1991 (Vaultwarden) can read
+#     them. In each volume the newest 30 (VAULT_BACKUP_KEEP) stay; older ones
+#     move to its retired/ and are never deleted. Then runs the mirror step.
+# vault-backup.sh mirror   copy every tarball in the volumes and their retired/
 #     that a mirror does not have yet into each mirror (VAULT_BACKUP_MIRRORS,
-#     space-separated; default /girth/backup/vault /mnt/ai-data/backups/happy-vault),
-#     as uid 1991, 0600, with a .sha256 that is checked after the copy. Mirrors
-#     are flat and never pruned. A mirror on ZFS gets a snapshot
-#     <dataset>@vault-<ts> after each run that copied something. A missing or
+#     space-separated; default /girth/backup/vault /mnt/ai-data/backups/happy-vault):
+#     vault-* as uid 1991 into <mirror>/, filler-* as uid 1990 into
+#     <mirror>/filler/ (1990 0700; <mirror> is 1991 0711 so 1990 can pass
+#     through it without listing it), 0600, with a .sha256 that is checked
+#     after the copy. Mirrors are flat and never pruned. A mirror on ZFS gets a
+#     snapshot <dataset>@vault-<ts> (or @filler-<ts>) after a run that copied something. A missing or
 #     unwritable mirror, a hash mismatch or a refused snapshot is reported
 #     loudly; the other mirrors still run and the exit status is non-zero.
 # vault-backup.sh check    restore the newest tarball of the primary and of
 #     every mirror into a throwaway container (tmpfs, no network), count users,
 #     organizations, ciphers, and check that the newest tarball and its sha256
-#     are the same in every location.
+#     are the same in every location; the newest filler tarball likewise (its
+#     sha256, that it lists secrets/, the same in every location), as uid 1990.
+# vault-backup.sh restore <vault-ts.tar.gz | /abs/path/vault-ts.tar.gz>
+#     check the tarball against its .sha256, stop Vaultwarden, move the
+#     current data into happy-vault-backups/before-restore-<ts>/ (kept, never
+#     deleted), unpack the tarball into happy-vault-data (vaultwarden.env and
+#     env-backups/ are left out; happy-vault-config is not touched), start
+#     Vaultwarden. A bare name is looked up in happy-vault-backups and its
+#     retired/; a path is a mirror's (or a ZFS snapshot's) copy.
 # vault-backup.sh status   newest tarball per location and its age; flags a
 #     location older than VAULT_BACKUP_STALE_HOURS (26) or missing.
-# Nothing is ever written under /home/prep: rsa_key.pem signs login tokens.
+# Nothing is ever written under /home/prep: rsa_key.pem signs login tokens and
+# the filler tarball holds the agent's vault credentials.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 VUID="${VAULT_UID:-1991}"
+FUID="${FILLER_UID:-1990}"
+FGID="${FILLER_GID:-1990}"
 DATA_VOLUME=happy-vault-data
+CONFIG_VOLUME=happy-vault-config
+FILLER_VOLUME=happy-filler
 # A volume name, or an absolute host directory.
 BACKUPS="${VAULT_BACKUP_DIR:-happy-vault-backups}"
+FILLER_BACKUPS="${FILLER_BACKUP_DIR:-happy-filler-backups}"
 read -r -a MIRRORS <<<"${VAULT_BACKUP_MIRRORS-/girth/backup/vault /mnt/ai-data/backups/happy-vault}"
 IMAGE="$(awk '/^ *image: vaultwarden\/server:/{print $2; exit}' "$HERE/compose.vault.yml")"
+RUN=(docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges:true)
 NODE_IMAGE="node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914"
 
 # loc_mount <location> <dst> [readonly]: the --mount for a backup location
@@ -49,15 +71,14 @@ loud() {
   } >&2
 }
 
-# Copies missing tarballs into one mirror (inside the container: /src = primary
-# backups, read-only; /m = the mirror). Prints copied=<n> last.
-# shellcheck disable=SC2016  # expands inside the container, not here
+# Copies missing $PFX-* tarballs into one mirror (inside the container: /src =
+# primary backups, read-only; /m = the mirror). Prints copied=<n> last.
 MIRROR_SH='
   set -u
   umask 077
-  if [ ! -w /m ] || [ ! -x /m ]; then echo "not writable by uid 1991 (make vault-backup-setup)"; exit 3; fi
+  if [ ! -w /m ] || [ ! -x /m ]; then echo "not writable by uid $(id -u) (make vault-backup-setup)"; exit 3; fi
   copied=0; bad=0
-  for f in /src/vault-*.tar.gz /src/retired/vault-*.tar.gz; do
+  for f in /src/"$PFX"-*.tar.gz /src/retired/"$PFX"-*.tar.gz; do
     [ -f "$f" ] || continue
     b="${f##*/}"
     [ -e "/m/$b" ] && continue
@@ -76,14 +97,33 @@ MIRROR_SH='
   echo "copied=$copied"
   [ "$bad" -eq 0 ]'
 
-# mirror_one <dir> <ts>: returns non-zero (after a loud message) on any failure.
+# Every tarball gets a .sha256 (older ones too, once); the newest $KEEP $PFX-*
+# stay in /backups, older ones move to /backups/retired/, never deleted (the
+# data is small; clear retired/ by hand if ever needed).
+RETIRE_SH='
+  mkdir -p -m 700 /backups/retired
+  for f in /backups/"$PFX"-*.tar.gz /backups/retired/"$PFX"-*.tar.gz; do
+    if [ -f "$f" ] && [ ! -e "$f.sha256" ]; then (cd "${f%/*}" && sha256sum "${f##*/}" >"${f##*/}.sha256"); fi
+  done
+  n=0
+  for f in $(ls -1 /backups/"$PFX"-*.tar.gz | sort -r); do
+    n=$((n + 1))
+    if [ "$n" -gt "$KEEP" ]; then
+      mv "$f" /backups/retired/
+      if [ -e "$f.sha256" ]; then mv "$f.sha256" /backups/retired/; fi
+    fi
+  done
+  true'
+
+# mirror_one <dir> <ts> <uid> <primary> <prefix>: returns non-zero (after a
+# loud message) on any failure.
 mirror_one() {
-  local dst="$1" ts="$2" out rc=0 copied fstype ds
+  local dst="$1" ts="$2" uid="$3" src="$4" pfx="$5" out rc=0 copied fstype ds
   if [[ ! -d "$dst" ]]; then
     loud "$dst does not exist (one-time setup: make vault-backup-setup)"; return 1
   fi
-  out="$(docker run --rm --network none -u "$VUID:$VUID" \
-    --mount "$(loc_mount "$BACKUPS" /src ro)" --mount "$(loc_mount "$dst" /m)" \
+  out="$("${RUN[@]}" -u "$uid:$uid" -e PFX="$pfx" \
+    --mount "$(loc_mount "$src" /src ro)" --mount "$(loc_mount "$dst" /m)" \
     --entrypoint sh "$IMAGE" -c "$MIRROR_SH" 2>&1)" || rc=$?
   copied="$(sed -n 's/^copied=//p' <<<"$out" | tail -n1)"
   if [[ $rc -ne 0 ]]; then
@@ -94,17 +134,20 @@ mirror_one() {
   fstype="$(findmnt -no FSTYPE -T "$dst" 2>/dev/null || true)"
   [[ "$fstype" == zfs ]] || return 0
   ds="$(findmnt -no SOURCE -T "$dst")"
-  if out="$(zfs snapshot "$ds@vault-$ts" 2>&1)"; then
-    echo "vault-backup: snapshot $ds@vault-$ts"
+  if out="$(zfs snapshot "$ds@$pfx-$ts" 2>&1)"; then
+    echo "vault-backup: snapshot $ds@$pfx-$ts"
   else
-    loud "$dst: zfs snapshot $ds@vault-$ts refused: $out (one-time: sudo zfs allow -u $(id -un) snapshot,mount girth/backup)"
+    loud "$dst: zfs snapshot $ds@$pfx-$ts refused: $out (one-time: sudo zfs allow -u $(id -un) snapshot,mount girth/backup)"
     return 1
   fi
 }
 
 mirror_all() {
   local ts="$1" failed=() d
-  for d in "${MIRRORS[@]}"; do mirror_one "$d" "$ts" || failed+=("$d"); done
+  for d in "${MIRRORS[@]}"; do
+    mirror_one "$d" "$ts" "$VUID" "$BACKUPS" vault || failed+=("$d")
+    if loc_exists "$FILLER_BACKUPS"; then mirror_one "$d/filler" "$ts" "$FUID" "$FILLER_BACKUPS" filler || failed+=("$d/filler"); fi
+  done
   if [[ ${#failed[@]} -gt 0 ]]; then
     echo "vault-backup: ${#failed[@]} mirror(s) FAILED: ${failed[*]}" >&2; return 1
   fi
@@ -118,8 +161,11 @@ case "${1:-}" in
     [[ -n "$CONTAINER" ]] || { echo "vault-backup: vaultwarden is not running (make vault-up)" >&2; exit 1; }
     ts="$(date -u +%Y%m%dT%H%M%SZ)"
     docker exec "$CONTAINER" /vaultwarden backup >/dev/null
+    keep="${VAULT_BACKUP_KEEP:-30}"
     docker run --rm --network none -u "$VUID:$VUID" \
-      --mount "$(loc_mount "$DATA_VOLUME" /data)" --mount "$(loc_mount "$BACKUPS" /backups)" -e TS="$ts" -e KEEP="${VAULT_BACKUP_KEEP:-30}" --entrypoint sh "$IMAGE" -c '
+      --mount "$(loc_mount "$DATA_VOLUME" /data)" --mount "$(loc_mount "$BACKUPS" /backups)" \
+      --mount "type=volume,src=$CONFIG_VOLUME,dst=/config,readonly" \
+      -e TS="$ts" -e KEEP="$keep" -e PFX=vault --entrypoint sh "$IMAGE" -c '
         set -eu
         snap="$(ls -1t /data/db_*.sqlite3 | head -n1)"
         stage="/backups/.stage-$TS"; mkdir -m 700 "$stage"
@@ -128,27 +174,33 @@ case "${1:-}" in
         for f in attachments sends config.json rsa_key.pem rsa_key.pub.pem rsa_key.der rsa_key.pub.der; do
           [ -e "/data/$f" ] && cp -a "/data/$f" "$stage/" && set -- "$@" "$f"
         done
+        for f in vaultwarden.env env-backups; do
+          [ -e "/config/$f" ] && cp -a "/config/$f" "$stage/" && set -- "$@" "$f"
+        done
         umask 077
         tar czf "/backups/vault-$TS.tar.gz" -C "$stage" "$@"
         rm -rf "$stage"
         echo "vault-backup: vault-$TS.tar.gz ($*)"
-        # Every tarball gets a .sha256 (older ones too, once); mirrors check against it.
-        mkdir -p -m 700 /backups/retired
-        for f in /backups/vault-*.tar.gz /backups/retired/vault-*.tar.gz; do
-          if [ -f "$f" ] && [ ! -e "$f.sha256" ]; then (cd "${f%/*}" && sha256sum "${f##*/}" >"${f##*/}.sha256"); fi
-        done
-        # Keep the newest $KEEP in backups/; older ones move to backups/retired/,
-        # never deleted (the vault is small; clear retired/ by hand if ever needed).
-        n=0
-        for f in $(ls -1 /backups/vault-*.tar.gz | sort -r); do
-          n=$((n + 1))
-          if [ "$n" -gt "$KEEP" ]; then
-            mv "$f" /backups/retired/
-            if [ -e "$f.sha256" ]; then mv "$f.sha256" /backups/retired/; fi
-          fi
-        done
-        true'
+'"$RETIRE_SH"
+    if loc_exists "$FILLER_VOLUME"; then
+      if ! loc_exists "$FILLER_BACKUPS"; then
+        echo "vault-backup: no $FILLER_BACKUPS for the filler tarball (make vault-init); filler skipped" >&2; filler_rc=1
+      else
+        "${RUN[@]}" -u "$FUID:$FGID" --mount "type=volume,src=$FILLER_VOLUME,dst=/f,readonly" \
+          --mount "$(loc_mount "$FILLER_BACKUPS" /backups)" -e TS="$ts" -e KEEP="$keep" -e PFX=filler --entrypoint sh "$IMAGE" -c '
+            set -eu
+            umask 077
+            cd /f
+            set --
+            for p in policy.json policy-backups audit state secrets; do [ -e "$p" ] && set -- "$@" "$p"; done
+            tar czf "/backups/.part-filler-$TS.tar.gz" "$@"
+            mv "/backups/.part-filler-$TS.tar.gz" "/backups/filler-$TS.tar.gz"
+            echo "vault-backup: filler-$TS.tar.gz ($*)"
+'"$RETIRE_SH" || filler_rc=1
+      fi
+    fi
     mirror_all "$ts"
+    exit "${filler_rc:-0}"
     ;;
   mirror)
     mirror_all "$(date -u +%Y%m%dT%H%M%SZ)"
@@ -202,20 +254,79 @@ case "${1:-}" in
           if (same) console.log(`vault-restore-check: newest ${p.latest} is identical in ${seen.length} locations (sha256 ${p.sha.slice(0, 12)}...)`);
         }
         process.exit(failed ? 1 : 0);' || rc=$?
+    # The filler tarballs, as uid 1990: <mirror>/filler/ is not readable by 1991.
+    if loc_exists "$FILLER_BACKUPS"; then
+      mounts=() names=() i=0
+      for d in "$FILLER_BACKUPS" "${MIRRORS[@]/%//filler}"; do
+        if loc_exists "$d"; then mounts+=(--mount "$(loc_mount "$d" "/loc/$i" ro)"); names+=("$i=$d")
+        else echo "vault-restore-check: FAIL $d: does not exist (make vault-backup-setup)"; missing=1; fi
+        i=$((i + 1))
+      done
+      "${RUN[@]}" -u "$FUID:$FGID" "${mounts[@]}" -e LOCS="${names[*]}" --entrypoint sh "$IMAGE" -c '
+        bad=0 first=""
+        for l in $LOCS; do
+          id="${l%%=*}" path="${l#*=}" dir="/loc/${l%%=*}"
+          latest="$(ls -1 "$dir" | grep -E "^filler-[0-9]{8}T[0-9]{6}Z\.tar\.gz$" | sort | tail -n1)"
+          if [ -z "$latest" ]; then echo "vault-restore-check: FAIL $path: no filler backups yet"; bad=1; continue; fi
+          sha="$(sha256sum "$dir/$latest" | cut -d" " -f1)"
+          side="no .sha256"
+          if [ -e "$dir/$latest.sha256" ]; then
+            if [ "$(cut -d" " -f1 "$dir/$latest.sha256")" = "$sha" ]; then side="sha256 ok"; else side="SHA256 MISMATCH"; bad=1; fi
+          fi
+          n="$(tar tzf "$dir/$latest" 2>/dev/null | grep -c "^secrets/." || true)"
+          [ "$n" -gt 0 ] || bad=1
+          echo "vault-restore-check: $path/$latest: $side, secrets/ entries $n"
+          if [ -z "$first" ]; then first="$latest $sha"
+          elif [ "$first" != "$latest $sha" ]; then echo "vault-restore-check: FAIL $path: newest filler tarball differs from the primary"; bad=1; fi
+        done
+        exit "$bad"' || rc=1
+    fi
     [[ $missing -eq 0 && $rc -eq 0 ]]
     ;;
   status)
     stale_h="${VAULT_BACKUP_STALE_HOURS:-26}" now="$(date -u +%s)"
-    for d in "$BACKUPS" "${MIRRORS[@]}"; do
-      if ! loc_exists "$d"; then printf '  %-40s MISSING (make vault-backup-setup)\n' "$d"; continue; fi
-      newest="$(docker run --rm --network none -u "$VUID:$VUID" --mount "$(loc_mount "$d" /b ro)" --entrypoint sh "$IMAGE" \
-        -c 'ls -1 /b 2>/dev/null | grep -E "^vault-[0-9]{8}T[0-9]{6}Z\.tar\.gz$" | sort | tail -n1' 2>/dev/null || true)"
-      if [[ -z "$newest" ]]; then printf '  %-40s none (or not readable by uid 1991)  STALE\n' "$d"; continue; fi
-      t="${newest#vault-}"; t="${t%Z.tar.gz}"
+    # status_loc <location> <uid> <prefix>
+    status_loc() {
+      local d="$1" uid="$2" pfx="$3" newest t age_h flag
+      if ! loc_exists "$d"; then printf '  %-40s MISSING (make vault-backup-setup)\n' "$d"; return; fi
+      newest="$(docker run --rm --network none -u "$uid:$uid" --mount "$(loc_mount "$d" /b ro)" -e PFX="$pfx" --entrypoint sh "$IMAGE" \
+        -c 'ls -1 /b 2>/dev/null | grep -E "^$PFX-[0-9]{8}T[0-9]{6}Z\.tar\.gz$" | sort | tail -n1' 2>/dev/null || true)"
+      if [[ -z "$newest" ]]; then printf '  %-40s none (or not readable by uid %s)  STALE\n' "$d" "$uid"; return; fi
+      t="${newest#"$pfx"-}"; t="${t%Z.tar.gz}"
       age_h=$(( (now - $(date -u -d "${t:0:8} ${t:9:2}:${t:11:2}:${t:13:2}" +%s)) / 3600 ))
       flag=""; [[ $age_h -ge $stale_h ]] && flag="  STALE (older than ${stale_h}h)"
       printf '  %-40s %s (%sh ago)%s\n' "$d" "$newest" "$age_h" "$flag"
-    done
+    }
+    for d in "$BACKUPS" "${MIRRORS[@]}"; do status_loc "$d" "$VUID" vault; done
+    if loc_exists "$FILLER_VOLUME"; then
+      for d in "$FILLER_BACKUPS" "${MIRRORS[@]/%//filler}"; do status_loc "$d" "$FUID" filler; done
+    fi
     ;;
-  *) echo "usage: vault-backup.sh backup|mirror|check|status" >&2; exit 2 ;;
+  restore)
+    t="${2:-}"
+    [[ "$t" =~ (^|/)vault-[0-9]{8}T[0-9]{6}Z\.tar\.gz$ ]] || { echo "usage: vault-backup.sh restore vault-<ts>.tar.gz | /path/to/vault-<ts>.tar.gz" >&2; exit 2; }
+    if [[ "$t" == /* ]]; then src=(--mount "type=bind,src=$(dirname "$t"),dst=/t,readonly"); else src=(); fi
+    ts="$(date -u +%Y%m%dT%H%M%SZ)"
+    compose=(docker compose -p happy-vault -f "$HERE/compose.vault.yml")
+    # Checked before anything stops: a bad or missing tarball changes nothing.
+    "${RUN[@]}" -u "$VUID:$VUID" --mount "$(loc_mount "$BACKUPS" /b ro)" "${src[@]}" -e NAME="${t##*/}" -e ABS="${t%%[!/]*}" \
+      --entrypoint sh "$IMAGE" -c '
+        set -eu
+        if [ -n "$ABS" ]; then d=/t; elif [ -f "/b/$NAME" ]; then d=/b; else d=/b/retired; fi
+        cd "$d"; sha256sum -c "$NAME.sha256" >/dev/null
+        tar tzf "$NAME" | grep -qx db.sqlite3
+        echo "vault-restore: $d/$NAME: sha256 ok"'
+    echo "vault-restore: stopping Vaultwarden"
+    "${compose[@]}" stop vaultwarden
+    "${RUN[@]}" -u "$VUID:$VUID" --mount "$(loc_mount "$BACKUPS" /b)" -v "$DATA_VOLUME:/vd" "${src[@]}" \
+      -e NAME="${t##*/}" -e ABS="${t%%[!/]*}" -e TS="$ts" --entrypoint sh "$IMAGE" -c '
+        set -eu
+        if [ -n "$ABS" ]; then d=/t; elif [ -f "/b/$NAME" ]; then d=/b; else d=/b/retired; fi
+        aside="/b/before-restore-$TS"; mkdir -m 700 "$aside"
+        for e in $(ls -A /vd); do mv "/vd/$e" "$aside/"; done
+        tar xzf "$d/$NAME" -C /vd --exclude vaultwarden.env --exclude env-backups
+        echo "vault-restore: $NAME unpacked; the data it replaced is in happy-vault-backups/before-restore-$TS/"'
+    "${compose[@]}" up -d --no-deps --wait vaultwarden
+    ;;
+  *) echo "usage: vault-backup.sh backup|mirror|check|status|restore <tarball>" >&2; exit 2 ;;
 esac
