@@ -111,7 +111,7 @@ public final class LegacyHomeViewController: UIViewController, ComposeHosting {
         observation = pipeline.observation
         // The link as home's title says it, and as this account's chats do.
         linkWatch = LegacyLink.link(for: session).watch { [weak self] in self?.headerState = $0 }
-        networkWatch = NetworkPath.shared.watchDetails { [weak self] path in
+        networkWatch = NetworkPathChanges.shared.watch { [weak self] path in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 let back = path.satisfied && !self.networkPath

@@ -29,7 +29,7 @@ extension AgentConnections {
         let current = NetworkPath.shared.details
         network.satisfied = current.satisfied
         network.interface = current.interface
-        network.watch = NetworkPath.shared.watchDetails { [weak self] path in
+        network.watch = NetworkPathChanges.shared.watch { [weak self] path in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 let back = path.satisfied && !self.network.satisfied
