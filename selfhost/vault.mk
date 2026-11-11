@@ -1,13 +1,15 @@
 # The vault: Vaultwarden, the self-hosted Bitwarden server for every device
 # (phone, laptops, browser extensions), and the browser agent's secret filler,
 # both in one compose project (happy-vault, vault/compose.vault.yml). No
-# browser-* target touches it. Host settings (domain, agent email, /srv paths,
-# uids, LAN addresses) are in vault/.env (copy vault/.env.example).
+# browser-* target touches it. Its data is in named Docker volumes
+# (happy-vault-data, -config, -backups, happy-filler); nothing here needs sudo.
+# Host settings (domain, agent email, uids, LAN addresses) are in vault/.env
+# (copy vault/.env.example).
 # Included from selfhost/Makefile via `-include vault.mk`. See selfhost/vault/README.md.
 #
 # A fresh install, in order:
-#   make vault-init           (sudo, once) /srv/happy-vault, its env file, the /srv/happy-filler tree,
-#                             then the filler's empty policy; VAULT_OWNER_EMAIL=<your vault email>
+#   make vault-init           (once) the volumes, the env file, the filler's tree and its empty
+#                             policy; VAULT_OWNER_EMAIL=<your vault email>
 #   make vault-up             Vaultwarden and the filler (builds the filler image)
 #   make vault-tokens         client tokens for vault-mcp and the bridge, and the browser controller
 #                             token for the filler (each only once; ROTATE=1 NAME=bridge-client|vault-client
@@ -21,7 +23,7 @@
 #   make vault-admin-on       (sudo) set an admin password (asked on the terminal; only its hash is kept)
 #   make vault-admin-off      (sudo) remove it, which disables /admin
 #   make vault-caddy-apply    add $(VAULT_DOMAIN) to the host's Caddy (backup, validate, reload)
-#   make vault-backup         versioned tarball in /srv/happy-vault/backups (newest 30 kept there),
+#   make vault-backup         versioned tarball in the happy-vault-backups volume (newest 30 kept there),
 #                             then copied to every mirror (VAULT_BACKUP_MIRRORS) + a ZFS snapshot
 #   make vault-backup-mirror  copy any tarball a mirror is missing (no new backup)
 #   make vault-restore-check  restore the newest backup of every location in a throwaway container,
@@ -58,13 +60,13 @@ VAULT_NEED_ENV = @test -f $(VAULT_DIR)/.env || { echo "$@: no $(VAULT_DIR)/.env;
 
 vault-init:
 	$(VAULT_NEED_ENV)
-	sudo VAULT_OWNER_EMAIL="$(VAULT_OWNER_EMAIL)" $(foreach v,$(VAULT_ENV_VARS),$(v)="$($(v))") bash $(VAULT_DIR)/scripts/vault-init.sh
+	VAULT_OWNER_EMAIL="$(VAULT_OWNER_EMAIL)" bash $(VAULT_DIR)/scripts/vault-init.sh
 	@$(MAKE) --no-print-directory filler-build
 	$(FILLER_ADMIN_RUN) -T filler-admin init
 
 vault-up:
 	$(VAULT_NEED_ENV)
-	@test -f $(VAULT_ROOT)/vaultwarden.env || { echo "run make vault-init first"; exit 1; }
+	@docker volume inspect happy-vault-config happy-filler >/dev/null 2>&1 || { echo "$@: no vault volumes; run make vault-init first" >&2; exit 1; }
 	$(FILLER_PORT_GUARD)
 	$(VAULT_COMPOSE) up -d --build --wait
 
@@ -109,7 +111,7 @@ vault-status:
 	@# Vaultwarden loads the env file into its own process (ENV_FILE), so
 	@# docker exec printenv never shows these; read key names from the mount.
 	@printf "env file      : "; docker exec happy-vault-vaultwarden-1 sh -c \
-		'f=/etc/vaultwarden.env; test -r $$f || { echo "not readable in the container"; exit 0; }; \
+		'f=/etc/vaultwarden/vaultwarden.env; test -r $$f || { echo "not readable in the container"; exit 0; }; \
 		for k in ORG_CREATION_USERS ADMIN_TOKEN; do grep -qE "^$$k=.+" $$f && printf "%s set  " $$k || printf "%s unset  " $$k; done; echo' \
 		2>/dev/null || echo "container not running"
 	@printf "backup timer  : "; systemctl --user is-active happy-vault-backup.timer 2>/dev/null || true

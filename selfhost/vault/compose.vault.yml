@@ -5,7 +5,7 @@
 # vault-init, vault-up, vault-status, or make stack-up for this and the browser
 # stack together. See ./README.md.
 #
-# Host-specific values (domain, agent email, /srv paths, uids) come from
+# Host-specific values (domain, agent email, uids) come from
 # ./.env (copy .env.example), which compose reads from this directory.
 #
 # Vaultwarden listens on 127.0.0.1:8222 only. The phone and desktop Bitwarden
@@ -14,13 +14,14 @@
 # The admin panel is only ever at http://127.0.0.1:8222/admin, and only while
 # ADMIN_TOKEN is set.
 #
-# Vaultwarden's files live under ${VAULT_ROOT} (/srv/happy-vault; root-made, outside /home/prep):
-#   data/              uid 1991, 0700: db.sqlite3, rsa_key.pem, attachments
-#   backups/           uid 1991, 0700: make vault-backup tarballs
-#   vaultwarden.env    root:1991 0640: ORG_CREATION_USERS and, during setup
-#                      only, ADMIN_TOKEN (an Argon2id PHC string). Mounted and
-#                      read by Vaultwarden itself (ENV_FILE), never by compose,
-#                      so the invoking user never needs to read it.
+# Vaultwarden's files are in named Docker volumes (made by make vault-init,
+# no sudo; external, so compose never creates or removes them):
+#   happy-vault-data     uid 1991, 0700: db.sqlite3, rsa_key.pem, attachments
+#   happy-vault-config   uid 1991, 0700: vaultwarden.env (0600; ORG_CREATION_USERS
+#                        and, during setup only, ADMIN_TOKEN, an Argon2id PHC
+#                        string) and env-backups/. Read by Vaultwarden itself
+#                        (ENV_FILE), never by compose; mounted read-only.
+#   happy-vault-backups  uid 1991, 0700: make vault-backup tarballs (not mounted here)
 #
 # 1.37.5-alpine, pinned by its index digest (checked with
 # docker buildx imagetools inspect on 2026-11-04).
@@ -44,7 +45,7 @@ services:
       retries: 8
       start_period: 10s
     environment:
-      ENV_FILE: /etc/vaultwarden.env
+      ENV_FILE: /etc/vaultwarden/vaultwarden.env
       DOMAIN: https://${VAULT_DOMAIN:?set VAULT_DOMAIN in selfhost/vault/.env}
       ROCKET_PORT: "8222"
       DATA_FOLDER: /data
@@ -65,17 +66,18 @@ services:
       ADMIN_RATELIMIT_MAX_BURST: "3"
       LOG_LEVEL: warn
     volumes:
-      - ${VAULT_ROOT:-/srv/happy-vault}/data:/data
-      - ${VAULT_ROOT:-/srv/happy-vault}/vaultwarden.env:/etc/vaultwarden.env:ro
+      - vault-data:/data
+      - vault-config:/etc/vaultwarden:ro
 
   # The secret filler (browser-stack/browser/filler/Dockerfile), in place of
   # the happy-filler systemd user unit it replaces. Host network, because it
   # binds 127.0.0.1:6091 itself and reaches Vaultwarden on 127.0.0.1:8222 and
   # the browser controllers on 127.0.0.1:8010 and 8100-8131. Its data is the
-  # same ${FILLER_ROOT} (/srv/happy-filler) the unit used, owned by uid 1990:
-  # mounted read-only as a whole (secrets/, policy.json: a directory mount, so
-  # a policy swapped in by rename is seen and reloaded), with only state/ and
-  # audit/ writable. No other host path, and no Docker socket.
+  # named volume happy-filler, owned by uid 1990 (one volume, because the admin
+  # commands move files between its directories by rename): mounted read-only
+  # as a whole (secrets/, policy.json: a directory mount, so a policy swapped
+  # in by rename is seen and reloaded), with only state/ and audit/ writable
+  # (volume subpaths). No host path, and no Docker socket.
   filler:
     build: ../../browser-stack/browser/filler
     image: happy-filler:local
@@ -106,14 +108,14 @@ services:
       retries: 6
       start_period: 10s
     volumes:
-      - ${FILLER_ROOT:-/srv/happy-filler}:/filler:ro
-      - ${FILLER_ROOT:-/srv/happy-filler}/state:/filler/state
-      - ${FILLER_ROOT:-/srv/happy-filler}/audit:/filler/audit
+      - filler:/filler:ro
+      - { type: volume, source: filler, target: /filler/state, volume: { subpath: state } }
+      - { type: volume, source: filler, target: /filler/audit, volume: { subpath: audit } }
 
   # The filler's setup commands (scripts/admin.mjs: init, token-issue,
   # controller-token-take, enroll, items, seed-policy, policy-edit, ...), run
   # once each by the vault-* and filler-* make targets with
-  # `--profile admin run --rm`. Same image and uid, ${FILLER_ROOT} writable,
+  # `--profile admin run --rm`. Same image and uid, the whole volume writable,
   # no network beyond the host's loopback use for enroll and items.
   filler-admin:
     profiles: [admin]
@@ -132,4 +134,35 @@ services:
       FILLER_AGENT_EMAIL: ${VAULT_AGENT_EMAIL:-}
       NODE_OPTIONS: ""
     volumes:
-      - ${FILLER_ROOT:-/srv/happy-filler}:/filler
+      - filler:/filler
+
+  # The operator's side of the token handoffs and the audit (make
+  # filler-token-take, filler-controller-token-give, filler-audit,
+  # filler-status), in place of prep reading /srv/happy-filler directly. Its own
+  # uid (FILLER_OPERATOR_UID, 1989) in the filler's group: it reads outbox/
+  # (2770) and audit/ (2750) and drops into inbox/ (3730), and sees nothing
+  # else of the volume. A token it takes goes to its stdout, which make
+  # redirects into a 0600 file of prep's; the filler, uid 1990, accepts only an
+  # inbox file someone else owns.
+  filler-operator:
+    profiles: [admin]
+    image: happy-filler:local
+    user: "${FILLER_OPERATOR_UID:-1989}:${FILLER_GID:-1990}"
+    network_mode: none
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    ulimits: { core: 0 }
+    entrypoint: ["sh", "-euc"]
+    environment:
+      NODE_OPTIONS: ""
+    volumes:
+      - { type: volume, source: filler, target: /handoff/outbox, read_only: true, volume: { subpath: outbox } }
+      - { type: volume, source: filler, target: /handoff/inbox, volume: { subpath: inbox } }
+      - { type: volume, source: filler, target: /handoff/audit, read_only: true, volume: { subpath: audit } }
+
+volumes:
+  vault-data: { external: true, name: happy-vault-data }
+  vault-config: { external: true, name: happy-vault-config }
+  filler: { external: true, name: happy-filler }

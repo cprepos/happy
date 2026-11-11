@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # vault-backup.sh backup   one versioned tarball of the running vault:
-#     /srv/happy-vault/backups/vault-<UTC ts>.tar.gz holding an online SQLite
+#     vault-<UTC ts>.tar.gz in the volume happy-vault-backups, holding an online SQLite
 #     snapshot (vaultwarden backup) as db.sqlite3, plus attachments/, rsa_key*
 #     and config.json when present, with vault-<ts>.tar.gz.sha256 next to it.
 #     Done as uid 1991 inside containers, so it needs docker, not sudo. The
-#     newest 30 (VAULT_BACKUP_KEEP) stay in backups/; older ones move to
-#     backups/retired/ and are never deleted. Then runs the mirror step below.
-# vault-backup.sh mirror   copy every tarball in backups/ and backups/retired/
+#     newest 30 (VAULT_BACKUP_KEEP) stay in the volume; older ones move to its
+#     retired/ and are never deleted. Then runs the mirror step below.
+# vault-backup.sh mirror   copy every tarball in the volume and its retired/
 #     that a mirror does not have yet into each mirror (VAULT_BACKUP_MIRRORS,
 #     space-separated; default /girth/backup/vault /mnt/ai-data/backups/happy-vault),
 #     as uid 1991, 0600, with a .sha256 that is checked after the copy. Mirrors
@@ -24,12 +24,22 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-ROOT="${VAULT_ROOT:-/srv/happy-vault}"
 VUID="${VAULT_UID:-1991}"
-BACKUPS="${VAULT_BACKUP_DIR:-$ROOT/backups}"
+DATA_VOLUME=happy-vault-data
+# A volume name, or an absolute host directory.
+BACKUPS="${VAULT_BACKUP_DIR:-happy-vault-backups}"
 read -r -a MIRRORS <<<"${VAULT_BACKUP_MIRRORS-/girth/backup/vault /mnt/ai-data/backups/happy-vault}"
 IMAGE="$(awk '/^ *image: vaultwarden\/server:/{print $2; exit}' "$HERE/compose.vault.yml")"
 NODE_IMAGE="node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914"
+
+# loc_mount <location> <dst> [readonly]: the --mount for a backup location
+# (an absolute path is a host directory, anything else a volume). --mount (not
+# -v) so docker never creates a missing source directory as root.
+loc_mount() {
+  local t=volume; [[ "$1" == /* ]] && t=bind
+  echo "type=$t,src=$1,dst=$2${3:+,readonly}"
+}
+loc_exists() { if [[ "$1" == /* ]]; then [[ -d "$1" ]]; else docker volume inspect "$1" >/dev/null 2>&1; fi; }
 
 loud() {
   {
@@ -72,9 +82,8 @@ mirror_one() {
   if [[ ! -d "$dst" ]]; then
     loud "$dst does not exist (one-time setup: make vault-backup-setup)"; return 1
   fi
-  # --mount (not -v) so docker never creates a missing source directory as root.
   out="$(docker run --rm --network none -u "$VUID:$VUID" \
-    --mount "type=bind,src=$BACKUPS,dst=/src,readonly" --mount "type=bind,src=$dst,dst=/m" \
+    --mount "$(loc_mount "$BACKUPS" /src ro)" --mount "$(loc_mount "$dst" /m)" \
     --entrypoint sh "$IMAGE" -c "$MIRROR_SH" 2>&1)" || rc=$?
   copied="$(sed -n 's/^copied=//p' <<<"$out" | tail -n1)"
   if [[ $rc -ne 0 ]]; then
@@ -104,13 +113,13 @@ mirror_all() {
 case "${1:-}" in
   backup)
     # Before make vault-init there is nothing to back up; the timer stays quiet.
-    [[ -d "$ROOT/data" ]] || { echo "vault-backup: $ROOT not set up yet (make vault-init); skipped"; exit 0; }
+    loc_exists "$DATA_VOLUME" || { echo "vault-backup: no $DATA_VOLUME volume yet (make vault-init); skipped"; exit 0; }
     CONTAINER="$(docker compose -p happy-vault -f "$HERE/compose.vault.yml" ps -q vaultwarden 2>/dev/null || true)"
     [[ -n "$CONTAINER" ]] || { echo "vault-backup: vaultwarden is not running (make vault-up)" >&2; exit 1; }
     ts="$(date -u +%Y%m%dT%H%M%SZ)"
     docker exec "$CONTAINER" /vaultwarden backup >/dev/null
     docker run --rm --network none -u "$VUID:$VUID" \
-      -v "$ROOT/data:/data" -v "$BACKUPS:/backups" -e TS="$ts" -e KEEP="${VAULT_BACKUP_KEEP:-30}" --entrypoint sh "$IMAGE" -c '
+      --mount "$(loc_mount "$DATA_VOLUME" /data)" --mount "$(loc_mount "$BACKUPS" /backups)" -e TS="$ts" -e KEEP="${VAULT_BACKUP_KEEP:-30}" --entrypoint sh "$IMAGE" -c '
         set -eu
         snap="$(ls -1t /data/db_*.sqlite3 | head -n1)"
         stage="/backups/.stage-$TS"; mkdir -m 700 "$stage"
@@ -122,7 +131,7 @@ case "${1:-}" in
         umask 077
         tar czf "/backups/vault-$TS.tar.gz" -C "$stage" "$@"
         rm -rf "$stage"
-        echo "vault-backup: /srv/happy-vault/backups/vault-$TS.tar.gz ($*)"
+        echo "vault-backup: vault-$TS.tar.gz ($*)"
         # Every tarball gets a .sha256 (older ones too, once); mirrors check against it.
         mkdir -p -m 700 /backups/retired
         for f in /backups/vault-*.tar.gz /backups/retired/vault-*.tar.gz; do
@@ -148,8 +157,8 @@ case "${1:-}" in
     # Every location that exists is mounted read-only at /loc/<i>; missing ones fail.
     mounts=() names=() missing=0 i=0
     for d in "$BACKUPS" "${MIRRORS[@]}"; do
-      if [[ -d "$d" ]]; then
-        mounts+=(--mount "type=bind,src=$d,dst=/loc/$i,readonly"); names+=("$i=$d")
+      if loc_exists "$d"; then
+        mounts+=(--mount "$(loc_mount "$d" "/loc/$i" ro)"); names+=("$i=$d")
       else
         echo "vault-restore-check: FAIL $d: does not exist (make vault-backup-setup)"; missing=1
       fi
@@ -198,8 +207,8 @@ case "${1:-}" in
   status)
     stale_h="${VAULT_BACKUP_STALE_HOURS:-26}" now="$(date -u +%s)"
     for d in "$BACKUPS" "${MIRRORS[@]}"; do
-      if [[ ! -d "$d" ]]; then printf '  %-40s MISSING (make vault-backup-setup)\n' "$d"; continue; fi
-      newest="$(docker run --rm --network none -u "$VUID:$VUID" --mount "type=bind,src=$d,dst=/b,readonly" --entrypoint sh "$IMAGE" \
+      if ! loc_exists "$d"; then printf '  %-40s MISSING (make vault-backup-setup)\n' "$d"; continue; fi
+      newest="$(docker run --rm --network none -u "$VUID:$VUID" --mount "$(loc_mount "$d" /b ro)" --entrypoint sh "$IMAGE" \
         -c 'ls -1 /b 2>/dev/null | grep -E "^vault-[0-9]{8}T[0-9]{6}Z\.tar\.gz$" | sort | tail -n1' 2>/dev/null || true)"
       if [[ -z "$newest" ]]; then printf '  %-40s none (or not readable by uid 1991)  STALE\n' "$d"; continue; fi
       t="${newest#vault-}"; t="${t%Z.tar.gz}"

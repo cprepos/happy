@@ -1,9 +1,11 @@
 # The secret filler (browser-stack/browser/filler): types vault secrets into the
 # agent's browser by name, so the agent never sees a value. It runs in Docker,
 # as the service filler of the vault's compose project (happy-vault,
-# selfhost/vault/compose.vault.yml), uid 1990, with its data in
-# /srv/happy-filler. Its admin commands run once each in the same image
-# (service filler-admin, scripts/admin.mjs); none needs a separate account or su.
+# selfhost/vault/compose.vault.yml), uid 1990, with its data in the named
+# volume happy-filler. Its admin commands run once each in the same image
+# (service filler-admin, scripts/admin.mjs), and the operator's side of the
+# token handoffs and the audit in service filler-operator (uid 1989, the
+# filler's group); none needs a separate account, su or sudo.
 # Included from browser-stack/Makefile and selfhost/Makefile.
 # See browser-stack/browser/filler/README.md.
 #
@@ -23,24 +25,27 @@
 #   make filler-policy-edit      (terminal) back up, edit a copy (vi), validate, swap it in
 #   make filler-policy-upgrade   once: an older policy (no pipe_targets) gets manage + pipe_targets
 #   make filler-items            the agent account's logins: name, item id, https hosts (no values)
-#   make filler-outbox-clear     move tokens nobody has taken to /srv/happy-filler/trash
+#   make filler-outbox-clear     move tokens nobody has taken to trash/ in the volume
 #
 # The operator's side (prep):
 #   make filler-status           container, 127.0.0.1-only bind on 6091, /healthz (unlocked), tokens
 #   make filler-audit            the newest audit lines (FILLER_AUDIT_LINES=50)
 #   make filler-token-take       outbox tokens -> prep's secrets dirs (0600)
-#   make filler-controller-token-give   the browser controller token -> /srv/happy-filler/inbox
+#   make filler-controller-token-give   the browser controller token -> inbox/ in the volume
 #   make filler-test             unit tests (node:test)
 #   make filler-smoke            canary end-to-end: a separate filler + fake vault + fake page, leak sweep
 #   make vault-mcp-test          unit tests of the vault tools' MCP server (browser-stack/vault-mcp)
 
 FILLER_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))/browser/filler
 FILLER_REPO := $(abspath $(FILLER_DIR)/../../..)
+# The old systemd unit's tree, until make vault-filler-cutover (selfhost/vault.mk).
 FILLER_ROOT ?= /srv/happy-filler
 FILLER_UID ?= 1990
 # The filler's compose project (it is the vault's) and its one-off admin runs.
 FILLER_COMPOSE := docker compose -p happy-vault -f $(FILLER_REPO)/selfhost/vault/compose.vault.yml
 FILLER_ADMIN_RUN := $(FILLER_COMPOSE) --profile admin run --rm --no-deps
+# The operator's window into the volume: outbox/ and audit/ read-only, inbox/ writable, nothing else.
+FILLER_OPERATOR_RUN := $(FILLER_ADMIN_RUN) -T filler-operator
 FILLER_CONTAINER := happy-vault-filler-1
 FILLER_URL ?= http://127.0.0.1:6091
 FILLER_AUDIT_LINES ?= 50
@@ -126,44 +131,46 @@ filler-status:
 	@printf "healthz: "; curl -fs --max-time 5 $(FILLER_URL)/healthz || printf "unreachable"; echo
 	@printf "bridge client token: "; test -s $(FILLER_HOME_DIR)/secrets/filler-client-token && echo present || echo "absent (bridge secret tools off)"
 	@printf "vault-mcp token: "; test -s $(VAULT_MCP_HOME_DIR)/secrets/vault-client-token && echo present || echo "absent (vault tools off)"
-	@if [ -r $(FILLER_ROOT)/outbox ] && ls -A $(FILLER_ROOT)/outbox 2>/dev/null | grep -qvE '^\.'; then \
-		echo "tokens waiting in $(FILLER_ROOT)/outbox: $$(ls $(FILLER_ROOT)/outbox | tr '\n' ' ')(make filler-token-take)"; fi
+	@w="$$($(FILLER_OPERATOR_RUN) 'ls /handoff/outbox' 2>/dev/null | tr '\n' ' ')"; \
+		if [ -n "$$w" ]; then echo "tokens waiting in outbox/: $$w(make filler-token-take)"; fi
 
 filler-audit:
-	@ls -1 $(FILLER_ROOT)/audit/*.jsonl >/dev/null 2>&1 || { echo "no audit yet"; exit 0; }
-	@tail -q -n $(FILLER_AUDIT_LINES) $$(ls -1 $(FILLER_ROOT)/audit/*.jsonl | sort | tail -n 2) | tail -n $(FILLER_AUDIT_LINES)
+	@$(FILLER_OPERATOR_RUN) 'cd /handoff/audit; set -- $$(ls -1 | grep -E "\.jsonl$$" | sort | tail -n 2); \
+		if [ $$# -eq 0 ]; then echo "no audit yet"; else tail -q -n "$$0" "$$@" | tail -n "$$0"; fi' $(FILLER_AUDIT_LINES)
 
 # prep's side of a client-token handoff. filler-token-issue leaves each new
-# token in outbox/ (1990:prep 2770, the file uid 1990's own, 0640).
-# A file prep does not own cannot be chmod-ed by prep, so the token is copied
-# into a new file of prep's (0600; an old different one goes to old-<ts>/),
-# and the outbox file itself is moved to $(FILLER_HOME_DIR)/trash/<ts>-filler-outbox/.
+# token in outbox/ (the file uid 1990's, 0640, group 1990). The operator
+# container (uid 1989, group 1990) checks it with scripts/handoff-copy.mjs (a
+# regular file, one link, not its own, token-shaped) and prints it into a new
+# 0600 file of prep's (an old different one goes to old-<ts>/); the outbox file
+# then moves to trash/<ts>-taken/ in the volume.
 filler-token-take:
 	$(FILLER_AS_OPERATOR)
-	@test -d $(FILLER_ROOT)/outbox || { echo "$@: no $(FILLER_ROOT)/outbox; run make vault-init first" >&2; exit 1; }
 	@set -e; ts=$$(date -u +%Y%m%dT%H%M%SZ); n=0; \
+	waiting="$$($(FILLER_OPERATOR_RUN) 'ls /handoff/outbox')" || { echo "$@: cannot read outbox/; run make vault-init first" >&2; exit 1; }; \
 	for pair in bridge-client-token:$(FILLER_HOME_DIR)/secrets/filler-client-token vault-client-token:$(VAULT_MCP_HOME_DIR)/secrets/vault-client-token; do \
-		name=$${pair%%:*}; dst=$${pair#*:}; dir=$${dst%/*}; src=$(FILLER_ROOT)/outbox/$$name; \
-		[ -e "$$src" ] || [ -L "$$src" ] || continue; \
+		name=$${pair%%:*}; dst=$${pair#*:}; dir=$${dst%/*}; \
+		printf '%s\n' $$waiting | grep -qxF "$$name" || continue; \
 		install -d -m 0700 "$$dir"; tmp="$$dir/.$$name.take-$$ts"; \
-		node $(FILLER_DIR)/scripts/handoff-copy.mjs "$$src" "$$tmp" --mode 0600; \
+		if ! (umask 077; $(FILLER_OPERATOR_RUN) 'node scripts/handoff-copy.mjs "/handoff/outbox/$$0" /tmp/t --mode 0600 && cat /tmp/t' "$$name" >"$$tmp"); then \
+			install -d -m 0700 $(FILLER_HOME_DIR)/trash/$$ts-filler-take-failed; mv "$$tmp" $(FILLER_HOME_DIR)/trash/$$ts-filler-take-failed/; \
+			echo "$@: $$name refused (see above)" >&2; exit 1; fi; \
 		if [ -e "$$dst" ] && ! cmp -s "$$tmp" "$$dst"; then install -d -m 0700 "$$dir/old-$$ts"; mv "$$dst" "$$dir/old-$$ts/"; fi; \
 		mv -T "$$tmp" "$$dst"; \
-		install -d -m 0700 $(FILLER_HOME_DIR)/trash $(FILLER_HOME_DIR)/trash/$$ts-filler-outbox; \
-		mv -T "$$src" $(FILLER_HOME_DIR)/trash/$$ts-filler-outbox/$$name; \
+		$(FILLER_ADMIN_RUN) -T --entrypoint sh filler-admin -euc 'mkdir -p -m 0700 "/filler/trash/$$1-taken"; mv "/filler/outbox/$$0" "/filler/trash/$$1-taken/"' "$$name" "$$ts"; \
 		echo "$@: $$name -> $$dst"; n=$$((n+1)); \
 	done; \
-	if [ $$n -eq 0 ]; then echo "$@: nothing waiting in $(FILLER_ROOT)/outbox"; \
+	if [ $$n -eq 0 ]; then echo "$@: nothing waiting in outbox/"; \
 	else echo "$@: restart the bridge to use a new bridge token (the vault tools read theirs on every call)"; fi
 
-# prep's side the other way: the filler's copy of the browser controller token.
-# inbox/ is 1990:prep 3730 (prep may add, not list); filler-controller-token-take takes it.
+# prep's side the other way: the filler's copy of the browser controller token,
+# through stdin into inbox/ (1990:1990 3730: the operator container may add, not
+# list), as a file of uid 1989's; filler-controller-token-take (uid 1990) takes it.
 filler-controller-token-give:
 	$(FILLER_AS_OPERATOR)
 	@test -s $(FILLER_HOME_DIR)/secrets/api-token || { echo "$@: $(FILLER_HOME_DIR)/secrets/api-token missing; run make browser-init first" >&2; exit 1; }
-	@test -d $(FILLER_ROOT)/inbox || { echo "$@: no $(FILLER_ROOT)/inbox; run make vault-init first" >&2; exit 1; }
-	@t=$$(mktemp $(FILLER_ROOT)/inbox/.controller-token.XXXXXX) && cp $(FILLER_HOME_DIR)/secrets/api-token $$t \
-		&& chmod 0644 $$t && mv -T $$t $(FILLER_ROOT)/inbox/controller-token
+	@$(FILLER_OPERATOR_RUN) 'umask 022; t=$$(mktemp /handoff/inbox/.controller-token.XXXXXX); cat >"$$t"; chmod 0640 "$$t"; mv "$$t" /handoff/inbox/controller-token' \
+		<$(FILLER_HOME_DIR)/secrets/api-token
 	@echo "$@: dropped; make filler-controller-token-take takes it (make vault-tokens does both)"
 
 filler-test:

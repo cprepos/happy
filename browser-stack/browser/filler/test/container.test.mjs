@@ -39,14 +39,20 @@ test('compose: the filler is loopback only, read-only, no capabilities, only sta
     assert.doesNotMatch(s, /FILLER_TEST|FILLER_POLICY|docker\.sock|privileged|cap_add|^ {4}ports:/m);
     const vols = [...s.matchAll(/^ {6}- (.+)$/gm)].map((m) => m[1]);
     assert.deepEqual(vols, [
-        '${FILLER_ROOT:-/srv/happy-filler}:/filler:ro',
-        '${FILLER_ROOT:-/srv/happy-filler}/state:/filler/state',
-        '${FILLER_ROOT:-/srv/happy-filler}/audit:/filler/audit',
+        'filler:/filler:ro',
+        '{ type: volume, source: filler, target: /filler/state, volume: { subpath: state } }',
+        '{ type: volume, source: filler, target: /filler/audit, volume: { subpath: audit } }',
     ]);
     const a = service('filler-admin');
     assert.match(a, /^ {4}profiles: \[admin\]$/m, 'the admin service only runs on request');
     assert.match(a, /^ {4}cap_drop: \[ALL\]$/m);
     assert.doesNotMatch(a, /docker\.sock|privileged|cap_add|FILLER_TEST/);
+    const o = service('filler-operator');
+    assert.match(o, /^ {4}profiles: \[admin\]$/m);
+    for (const want of [/^ {4}network_mode: none$/m, /^ {4}read_only: true$/m, /^ {4}cap_drop: \[ALL\]$/m, /no-new-privileges:true/]) assert.match(o, want);
+    assert.doesNotMatch(o, /docker\.sock|privileged|cap_add|subpath: secrets|filler:\/filler/, 'the operator container never sees secrets/');
+    const vols2 = [...o.matchAll(/^ {6}- (.+)$/gm)].map((m) => m[1]);
+    assert.deepEqual(vols2.map((v) => v.match(/subpath: (\w+)/)[1]), ['outbox', 'inbox', 'audit']);
 });
 
 test('image: pinned node 22, uid 1990, the code-generation flag', () => {
