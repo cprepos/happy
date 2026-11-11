@@ -305,6 +305,35 @@ final class LiveBrowserLayoutTests: XCTestCase {
         assertControlsClearThePicture(big)
     }
 
+    func testA1920x1085FrameInADockKeptAt16x10ShowsWholeAndReFits() {
+        // The bridge's frames went from 1920x1200 to 1920x1085. An iPad's
+        // player kept 420 wide was 420x263 for them; it keeps its width
+        // and takes the new frame's aspect, so the picture is the frame's
+        // shape and an aspect-fit image fills it with nothing cropped.
+        let frame: CGFloat = 1920.0 / 1085.0
+        let card = CGRect(x: 16, y: 1180 - 20 - 76, width: 820 - 32, height: 56)
+        func pad(_ aspect: CGFloat?) -> LiveBrowserDockLayout {
+            LiveBrowserDockLayout(.init(size: CGSize(width: 820, height: 1180), safeArea: LayoutInsets(top: 74, bottom: 20),
+                                        card: card, anchor: card.minY - 20, idiom: .pad, width: 420, aspect: aspect))
+        }
+        assertFrame(pad(nil).picture, rect(0, 44, 420, 263))
+        let fitted = pad(frame)
+        XCTAssertEqual(fitted.aspect, frame)
+        assertFrame(fitted.picture, rect(0, 44, 420, 237))
+        XCTAssertEqual(fitted.picture.width / fitted.picture.height, frame, accuracy: 0.01)
+        XCTAssertEqual(fitted.frame.maxY, pad(nil).frame.maxY, "the corner stays")
+        XCTAssertEqual(fitted.frame.height, 44 + 237 + 30)
+        // A phone's small preset, and its grip, follow the frame too.
+        let phone = LiveBrowserDockLayout(.init(size: size, safeArea: safe, card: rect(8, 776, 386, 56), anchor: 756, aspect: frame))
+        assertFrame(phone.picture, rect(0, 44, 232, 131))
+        XCTAssertEqual(phone.width(dragging: .bottomRight, from: 232, by: CGPoint(x: 40, y: 40 / frame)), 272, accuracy: 0.001)
+        // Nonsense from a header reads as no frame yet.
+        XCTAssertEqual(pad(0).picture, pad(nil).picture)
+        // A phone's full-screen picture, edge to edge at the frame's shape.
+        let page = LiveBrowserFullScreenLayout(size: size, safeArea: safe, top: 116, phone: true, aspect: frame)
+        assertFrame(page.content, rect(0, 116, 402, 227))
+    }
+
     // MARK: Full screen
 
     func testUprightOnAPhoneThePictureIsEdgeToEdgeAtItsAspect() {

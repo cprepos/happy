@@ -104,7 +104,7 @@ final class HostedLiveBrowserTests: XCTestCase {
         let player = try XCTUnwrap(dock.player)
         let expected = LiveBrowserDockLayout(.init(
             size: host.view.bounds.size, safeArea: LayoutInsets(host.view.safeAreaInsets), card: host.cardFrame, anchor: line.frame.minY,
-            idiom: dock.isPhone ? .phone : .pad
+            idiom: dock.isPhone ? .phone : .pad, aspect: dock.frameAspect
         ))
         XCTAssertEqual(player.frame, expected.frame)
         XCTAssertEqual(player.frame.maxX, host.cardFrame.maxX)

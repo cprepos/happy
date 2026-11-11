@@ -108,6 +108,8 @@ final class LiveBrowserDock: NSObject {
     /// The limit the last width asked for was held at: its tick plays once.
     private var atLimit: CGFloat?
     private var placed: (card: CGRect, anchor: CGFloat)?
+    /// The frame's aspect the player and full screen were last fitted to.
+    private var fittedAspect: CGFloat?
     private weak var fullScreen: UINavigationController?
     private var busy = false
     /// This app took control (`POST /take`) and hasn't handed it back:
@@ -315,7 +317,7 @@ final class LiveBrowserDock: NSObject {
         return LiveBrowserDockLayout(.init(
             size: view.bounds.size, safeArea: LayoutInsets(view.safeAreaInsets), card: card,
             anchor: LiveBrowserDockLayout.anchor(anchor, strip, approvalBarTop), corner: corner, big: big, idiom: isPhone ? .phone : .pad,
-            width: width
+            width: width, aspect: frameAspect
         ))
     }
 
@@ -386,6 +388,19 @@ final class LiveBrowserDock: NSObject {
         // Connecting too long: the bridge is asked whether it sleeps.
         if feed.phase == .notResponding { chatWatch?.checkNow() }
         refresh()
+        refit()
+    }
+
+    /// A frame of another shape (the bridge's geometry changed): the
+    /// player, kept size and all, and a phone's full-screen picture
+    /// re-fit to it, so the picture shows whole with no bars.
+    private func refit() {
+        guard let aspect = frameAspect, aspect != fittedAspect else { return }
+        fittedAspect = aspect
+        if let placed { layoutPlayer(card: placed.card, anchor: placed.anchor) }
+        // Big's height moves the chat's content under it.
+        if player != nil, big { onLayoutChange?() }
+        fullScreen?.viewControllers.forEach { $0.viewIfLoaded?.setNeedsLayout() }
     }
 
     /// The line's status, nil while it hides: the link ended or expired.
@@ -2049,7 +2064,9 @@ final class LiveBrowserPlayerView: UIView, UIGestureRecognizerDelegate {
         layer.shadowOpacity = 0.25
         layer.shadowRadius = 10
         layer.shadowOffset = CGSize(width: 0, height: 4)
-        picture.contentMode = .scaleAspectFill
+        // The whole frame, never cropped: the layout fits the picture to
+        // the frame's aspect, so no bars show once a frame came.
+        picture.contentMode = .scaleAspectFit
         picture.clipsToBounds = true
         picture.backgroundColor = UIColor(Palette.surfaceHigh)
         picture.isUserInteractionEnabled = true
