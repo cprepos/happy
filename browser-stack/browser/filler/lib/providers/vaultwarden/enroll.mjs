@@ -1,5 +1,5 @@
 // One-time enrollment of the filler with the agent's vault account. Run by
-// `make vault-enroll BACKEND=shared` inside the filler container (uid 1990),
+// filler-admin enroll [BACKEND=<name>] (make filler-enroll) as happy-filler,
 // on the terminal. Reads, from the terminal only:
 //   the agent account's email (default $FILLER_AGENT_EMAIL, VAULT_AGENT_EMAIL
 //   in selfhost/vault/.env) and
@@ -10,7 +10,9 @@
 // does). If that fails (the account has two-step login, say), it asks for the
 // API key's client_id and client_secret instead. Then, as before: logs in with
 // the API key, decrypts the account's user key and checks it opens the
-// account's private key. Writes, 0400, under $FILLER_HOME/secrets:
+// account's private key. Writes, 0400, under $FILLER_ENROLL_DIR (filler-admin
+// sets it: secrets/ for the shared backend, secrets/<name>/ for another), else
+// $FILLER_HOME/secrets:
 //   vault-email, vault-client-id, vault-client-secret, vault-user-key,
 //   vault-device-id. The master password and its hash are never written anywhere.
 // Earlier files are moved to secrets/old-<ts>/ first.
@@ -211,7 +213,7 @@ function ask(prompt, { hidden = false } = {}) {
 
 async function main() {
     const home = process.env.FILLER_HOME || '/filler';
-    const dir = join(home, 'secrets');
+    const dir = process.env.FILLER_ENROLL_DIR || join(home, 'secrets');
     const vaultUrl = process.env.VAULT_URL || 'http://127.0.0.1:8222';
     const prev = existsSync(join(dir, 'vault-device-id')) ? readFileSync(join(dir, 'vault-device-id'), 'utf8').trim() : null;
     const deviceId = prev || randomUUID();

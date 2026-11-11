@@ -99,7 +99,7 @@ export function createVaults({ getPolicy, build, logFn = log }) {
         if (hit?.provider) { try { hit.provider.lock(); } catch {} }
         let provider = null; let error = null;
         try { provider = build(name, cfg) || null; if (!provider) error = 'not enrolled'; } catch (err) { error = err?.message || 'failed'; }
-        if (error && hit?.error !== error) logFn(`backend ${name}: ${error === 'not enrolled' ? 'not enrolled (make vault-enroll)' : `not usable: ${error}`}`);
+        if (error && hit?.error !== error) logFn(`backend ${name}: ${error === 'not enrolled' ? 'not enrolled (make filler-enroll)' : `not usable: ${error}`}`);
         cache.set(name, { key, provider, error });
         return provider;
     }

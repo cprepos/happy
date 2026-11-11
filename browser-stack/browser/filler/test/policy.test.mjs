@@ -160,7 +160,7 @@ test('policy file owner: the filler\'s own uid or root, nobody else', () => {
         assert.throws(() => checkPolicyFile(f, { uid: me + 1 }), /owned by the filler's own account \(uid \d+\) or root/);
         assert.throws(() => loadPolicy(f, { uid: me + 1 }), PolicyError);
     }
-    // Owned by root (the docker filler's root:1990 policy, during the cutover): still accepted.
+    // Owned by root (an earlier docker filler's root:1990 policy): still accepted.
     const rootOwned = ['/etc/hostname', '/etc/passwd'].find((p) => { try { const st = lstatSync(p); return st.isFile() && st.uid === 0 && !(st.mode & 0o022); } catch { return false; } });
     if (rootOwned) assert.doesNotThrow(() => checkPolicyFile(rootOwned, { uid: me + 1 }));
 });

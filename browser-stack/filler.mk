@@ -1,129 +1,145 @@
 # The secret filler (browser-stack/browser/filler): types vault secrets into the
-# agent's browser by name, so the agent never sees a value. It runs in Docker,
-# as the service filler of the vault's compose project (happy-vault,
-# selfhost/vault/compose.vault.yml), uid 1990, with its data in the named
-# volume happy-filler. Its admin commands run once each in the same image
-# (service filler-admin, scripts/admin.mjs), and the operator's side of the
-# token handoffs and the audit in service filler-operator (uid 1989, the
-# filler's group); none needs a separate account, su or sudo.
+# agent's browser by name, so the agent never sees a value. It runs on bare
+# metal as its own account, happy-filler (uid 1990), as a systemd user unit of
+# that account (systemd/happy-filler.service), from a reviewed release under
+# /srv/happy-filler/current, on 127.0.0.1:6091. Vaultwarden is the standalone
+# container on 127.0.0.1:8222 (selfhost/vault.mk).
 # Included from browser-stack/Makefile and selfhost/Makefile.
 # See browser-stack/browser/filler/README.md.
 #
-# The setup in one place is selfhost/vault.mk: make vault-init, vault-up,
-# vault-tokens, vault-enroll BACKEND=shared, vault-status.
+# Once, as prep, with sudo (the only filler target that ever needs root):
+#   make filler-account-setup COMMIT=<sha>   create happy-filler (asks for your sudo password, then
+#                                            happy-filler's new password twice), enable linger, stop
+#                                            an old docker filler, chown /srv/happy-filler to it and
+#                                            make outbox/ and inbox/. It installs and starts nothing.
 #
-#   make filler-build / filler-up / filler-down / filler-restart / filler-lock / filler-logs
-#                                filler-down and filler-lock stop the container (its keys leave
-#                                memory); it stays stopped across reboots until filler-up
+# Admin targets: as happy-filler, no sudo. `su - happy-filler`, then
+# `make -C /home/prep/happy/selfhost filler-<command>` (or `filler-admin <command>`;
+# both run the installed release's scripts/filler-admin.sh, and filler-install
+# runs scripts/filler-install.sh as it is in COMMIT). As any other account they
+# print the su command and fail.
+#   make filler-install COMMIT=  deploy a reviewed commit to /srv/happy-filler/releases/<sha>
+#                                (npm ci from the lockfile), switch current, upgrade and check
+#                                the policy, install and enable the unit, link ~/bin/filler-admin,
+#                                restart and wait for /healthz
+#   make filler-up / filler-down / filler-restart / filler-lock / filler-logs
+#                                filler-down and filler-lock stop the unit (its keys leave memory)
+#                                and disable it at boot until filler-up
 #   make filler-token-issue NAME=bridge-client|vault-client [FILLER_ROTATE=1]
 #                                a new client token: hash kept, plaintext once to outbox/<NAME>-token
-#                                (make vault-tokens does this and the take below)
 #   make filler-controller-token-take   inbox/controller-token -> secrets/controller-token (0400)
-#   make filler-init             directories and an empty policy (fresh install; make vault-init runs it)
-#   make filler-enroll           (terminal) enroll with the agent's vault account (= make vault-enroll)
+#   make filler-init             directories and an empty policy (fresh install)
+#   make filler-enroll [BACKEND=shared] [VAULT_URL=...]
+#                                (terminal) enroll with the agent's vault account; shared writes
+#                                secrets/, another backend secrets/<name>/
 #   make filler-seed-policy      seed an empty policy with default_client "agent"
-#   make filler-policy-edit      (terminal) back up, edit a copy (vi), validate, swap it in
-#   make filler-policy-upgrade   once: an older policy (no pipe_targets) gets manage + pipe_targets
+#   make filler-policy-edit      (terminal) back up, edit a copy, validate, swap it in
+#   make filler-policy-upgrade   once per step: an older policy gets pipe_targets + manage, backends
+#   make filler-check-policy     validate policy.json with the installed release
 #   make filler-items            the agent account's logins: name, item id, https hosts (no values)
-#   make filler-outbox-clear     move tokens nobody has taken to trash/ in the volume
+#   make filler-setup COMMIT=    a fresh install in one go: init, install, tokens, seed-policy, enroll, restart
+#   make filler-outbox-clear     move tokens prep has not taken to /srv/happy-filler/trash
 #
-# The operator's side (prep):
-#   make filler-status           container, 127.0.0.1-only bind on 6091, /healthz (unlocked), tokens
+# As prep (read-only, or prep's side of a token handoff):
+#   make filler-status           release, unit process, 127.0.0.1-only bind on 6091, /healthz, tokens
 #   make filler-audit            the newest audit lines (FILLER_AUDIT_LINES=50)
 #   make filler-token-take       outbox tokens -> prep's secrets dirs (0600)
-#   make filler-controller-token-give   the browser controller token -> inbox/ in the volume
+#   make filler-controller-token-give   the browser controller token -> /srv/happy-filler/inbox
 #   make filler-test             unit tests (node:test)
 #   make filler-smoke            canary end-to-end: a separate filler + fake vault + fake page, leak sweep
 #   make vault-mcp-test          unit tests of the vault tools' MCP server (browser-stack/vault-mcp)
 
 FILLER_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))/browser/filler
 FILLER_REPO := $(abspath $(FILLER_DIR)/../../..)
-# The old systemd unit's tree, until make vault-filler-cutover (selfhost/vault.mk).
 FILLER_ROOT ?= /srv/happy-filler
+FILLER_ACCOUNT := happy-filler
 FILLER_UID ?= 1990
-# The filler's compose project (it is the vault's) and its one-off admin runs.
-FILLER_COMPOSE := docker compose -p happy-vault -f $(FILLER_REPO)/selfhost/vault/compose.vault.yml
-FILLER_ADMIN_RUN := $(FILLER_COMPOSE) --profile admin run --rm --no-deps
-# The operator's window into the volume: outbox/ and audit/ read-only, inbox/ writable, nothing else.
-FILLER_OPERATOR_RUN := $(FILLER_ADMIN_RUN) -T filler-operator
-FILLER_CONTAINER := happy-vault-filler-1
+FILLER_ADMIN := $(FILLER_ROOT)/current/app/scripts/filler-admin.sh
 FILLER_URL ?= http://127.0.0.1:6091
 FILLER_AUDIT_LINES ?= 50
 FILLER_HOME_DIR := $(or $(BROWSER_STACK_HOME),$(HAPPY_BROWSER_HOME),$(HOME)/.local/share/happy-browser)
 # Where vault-mcp (browser-stack/vault-mcp) finds its token for the filler's /v1/vault/* routes.
 VAULT_MCP_HOME_DIR := $(or $(BROWSER_VAULT_MCP_HOME),$(HAPPY_VAULT_MCP_HOME),$(HOME)/.local/share/happy-vault-mcp)
 VAULT_MCP_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))/vault-mcp
+# The filler's earlier containers; filler-status warns if one still runs.
+FILLER_OLD_CONTAINERS := happy-filler-filler-1 happy-vault-filler-1
+COMMIT ?=
 NAME ?=
+BACKEND ?=
 
-# Something else on 6091 (the old happy-filler systemd user unit) blocks the container: say how to stop it.
-FILLER_PORT_GUARD = @if [ "$$(docker container inspect -f '{{.State.Running}}' $(FILLER_CONTAINER) 2>/dev/null)" != true ] \
-	&& ss -ltnH | awk '{print $$4}' | grep -qE ':6091$$'; then \
-	echo "$@: 127.0.0.1:6091 is taken by something other than the filler container (the old systemd unit?)." >&2; \
-	echo "  stop it first: sudo -u happy-filler XDG_RUNTIME_DIR=/run/user/1990 systemctl --user disable --now happy-filler.service" >&2; \
+# First line of every admin recipe: only happy-filler gets past it.
+FILLER_AS_ACCOUNT = @if [ "$$(id -un)" != "$(FILLER_ACCOUNT)" ]; then \
+	echo "$@: run as $(FILLER_ACCOUNT), not $$(id -un) (no sudo):" >&2; \
+	echo "  su - $(FILLER_ACCOUNT)" >&2; \
+	echo "  make -C $(FILLER_REPO)/selfhost $@$(if $(COMMIT), COMMIT=$(COMMIT))$(if $(NAME), NAME=$(NAME))$(if $(BACKEND), BACKEND=$(BACKEND))" >&2; \
 	exit 1; fi
-# Operator-side targets work on prep's own files; not as root, not as the filler's uid.
-FILLER_AS_OPERATOR = @if [ "$$(id -u)" = 0 ] || [ "$$(id -u)" = "$(FILLER_UID)" ]; then echo "$@: run as your own account (prep)" >&2; exit 1; fi
+FILLER_NEED_ADMIN = @test -f $(FILLER_ADMIN) || { echo "$@: the installed release has no scripts/filler-admin.sh; first: make filler-install COMMIT=<sha>" >&2; exit 1; }
+# Prep-side targets refuse happy-filler and root (they work on prep's own files).
+FILLER_AS_OPERATOR = @if [ "$$(id -un)" = "$(FILLER_ACCOUNT)" ] || [ "$$(id -u)" = 0 ]; then echo "$@: run as your own account (prep), not $$(id -un)" >&2; exit 1; fi
 
-FILLER_ADMIN_TARGETS := filler-init filler-enroll filler-seed-policy filler-policy-edit filler-items filler-outbox-clear \
-	filler-policy-upgrade filler-token-issue filler-controller-token-take
-FILLER_SERVICE_TARGETS := filler-build filler-up filler-down filler-restart filler-lock filler-logs filler-wait
+FILLER_ADMIN_TARGETS := filler-install filler-setup filler-init filler-enroll filler-seed-policy filler-policy-edit \
+	filler-policy-upgrade filler-check-policy filler-up filler-down filler-restart filler-lock filler-logs \
+	filler-items filler-outbox-clear filler-token-issue filler-controller-token-take
 
-.PHONY: filler-account-setup filler-install filler-setup $(FILLER_ADMIN_TARGETS) $(FILLER_SERVICE_TARGETS) \
-	filler-status filler-audit filler-token-take filler-controller-token-give filler-test filler-smoke vault-mcp-test
+.PHONY: filler-account-setup $(FILLER_ADMIN_TARGETS) filler-status filler-audit filler-token-take \
+	filler-controller-token-give filler-test filler-smoke vault-mcp-test
 
-filler-build:
-	$(FILLER_COMPOSE) build filler
+filler-account-setup:
+	$(FILLER_AS_OPERATOR)
+	@test -n "$(COMMIT)" || { echo "usage: make filler-account-setup COMMIT=<sha> (the commit you reviewed)" >&2; exit 1; }
+	@echo "== filler-account-setup: the one filler step that needs root. It asks for your sudo password,"
+	@echo "   then for a new password for $(FILLER_ACCOUNT), twice. It runs the script as it is in $(COMMIT)."
+	@install -d -m 0700 $(FILLER_HOME_DIR) $(FILLER_HOME_DIR)/trash
+	@s=$$(mktemp $(FILLER_HOME_DIR)/trash/account-setup.XXXXXX.sh) \
+		&& git -C $(FILLER_REPO) cat-file blob "$(COMMIT):browser-stack/browser/filler/scripts/filler-account-setup.sh" >$$s \
+		&& sudo FILLER_REPO="$(FILLER_REPO)" FILLER_NEW_PASSWORD="$(FILLER_NEW_PASSWORD)" bash $$s
 
-filler-up:
-	$(FILLER_PORT_GUARD)
-	$(FILLER_COMPOSE) up -d --build --wait filler
-	@$(MAKE) --no-print-directory filler-wait
+# The install script (or, for filler-setup, the admin script) of COMMIT itself,
+# taken from happy-filler's own mirror of the repo (a fetch re-hashes every
+# object, so it is the reviewed blob): the first install has no installed copy to run.
+filler-install filler-setup:
+	$(FILLER_AS_ACCOUNT)
+	@test -n "$(COMMIT)" || { echo "usage: make $@ COMMIT=<sha> (the commit you reviewed)" >&2; exit 1; }
+	@set -e; m=$$HOME/src.git; [ -d $$m ] || git init -q --bare $$m; \
+	for d in "$(FILLER_REPO)" "$(FILLER_REPO)/.git"; do \
+		git config --global --get-all safe.directory 2>/dev/null | grep -qxF "$$d" || git config --global --add safe.directory "$$d"; done; \
+	git --no-pager -c "safe.directory=$(FILLER_REPO)" -c "safe.directory=$(FILLER_REPO)/.git" --git-dir=$$m fetch -q --no-tags "file://$(FILLER_REPO)" '+refs/heads/*:refs/prep/*'; \
+	install -d -m 0700 $$HOME/trash; s=$$(mktemp $$HOME/trash/$@.XXXXXX.sh); \
+	f=$(if $(filter filler-install,$@),filler-install.sh,filler-admin.sh); \
+	git --no-pager --git-dir=$$m cat-file blob "$(COMMIT):browser-stack/browser/filler/scripts/$$f" >$$s 2>/dev/null \
+		|| { echo "$@: $(COMMIT) has no browser-stack/browser/filler/scripts/$$f" >&2; exit 1; }; \
+	if [ $@ = filler-install ]; then FILLER_REPO="$(FILLER_REPO)" bash $$s COMMIT="$(COMMIT)"; \
+	else FILLER_REPO="$(FILLER_REPO)" bash $$s setup COMMIT="$(COMMIT)" $(if $(VAULT_AGENT_EMAIL),FILLER_AGENT_EMAIL="$(VAULT_AGENT_EMAIL)"); fi
 
-filler-down filler-lock:
-	$(FILLER_COMPOSE) stop filler
-	@echo "$@: stopped (its keys left memory); it stays stopped until make filler-up"
+filler-init filler-policy-edit filler-policy-upgrade filler-check-policy filler-up filler-down filler-restart filler-lock filler-logs filler-items filler-outbox-clear filler-controller-token-take:
+	$(FILLER_AS_ACCOUNT)
+	$(FILLER_NEED_ADMIN)
+	@bash $(FILLER_ADMIN) $(patsubst filler-%,%,$@)
 
-filler-restart:
-	$(FILLER_COMPOSE) restart filler
-	@$(MAKE) --no-print-directory filler-wait
-
-filler-logs:
-	$(FILLER_COMPOSE) logs -f --tail=200 filler
-
-# Up to 20 s for /healthz, then whether the vault is unlocked.
-filler-wait:
-	@for i in $$(seq 1 40); do out="$$(curl -fs --max-time 2 $(FILLER_URL)/healthz 2>/dev/null)" && { echo "healthz: $$out"; exit 0; }; sleep 0.5; done; \
-	echo "healthz: unreachable after 20 s; see make filler-logs" >&2; exit 1
-
-# Admin commands, inside the image (scripts/admin.mjs). -T: no terminal needed.
-filler-init filler-items filler-outbox-clear filler-controller-token-take:
-	$(FILLER_ADMIN_RUN) -T filler-admin $(patsubst filler-%,%,$@)
-
-# Once, for a policy from before pipe_targets; the filler reloads it on change.
-filler-policy-upgrade:
-	$(FILLER_ADMIN_RUN) -T filler-admin policy-upgrade
-
-filler-enroll filler-policy-edit:
-	$(FILLER_ADMIN_RUN) filler-admin $(patsubst filler-%,%,$@)
+filler-enroll:
+	$(FILLER_AS_ACCOUNT)
+	$(FILLER_NEED_ADMIN)
+	@bash $(FILLER_ADMIN) enroll $(if $(BACKEND),BACKEND="$(BACKEND)") $(if $(VAULT_URL),VAULT_URL="$(VAULT_URL)") \
+		$(if $(VAULT_AGENT_EMAIL),FILLER_AGENT_EMAIL="$(VAULT_AGENT_EMAIL)")
 
 filler-seed-policy:
-	$(FILLER_ADMIN_RUN) -T filler-admin seed-policy CLIENT="$(or $(FILLER_DEFAULT_CLIENT),agent)"
+	$(FILLER_AS_ACCOUNT)
+	$(FILLER_NEED_ADMIN)
+	@bash $(FILLER_ADMIN) seed-policy FILLER_DEFAULT_CLIENT="$(or $(FILLER_DEFAULT_CLIENT),agent)"
 
 filler-token-issue:
-	$(FILLER_ADMIN_RUN) -T filler-admin token-issue NAME="$(NAME)" $(if $(FILLER_ROTATE),ROTATE="$(FILLER_ROTATE)")
-
-# The happy-filler account, its systemd unit and the reviewed-release installs
-# are gone: the filler is a container built from this tree.
-filler-account-setup filler-install filler-setup:
-	@echo "$@: no longer used; the filler runs in Docker now. Set up with (in selfhost/):" >&2
-	@echo "  make vault-init, make vault-up, make vault-tokens, make filler-seed-policy, make vault-enroll BACKEND=shared" >&2
-	@exit 1
+	$(FILLER_AS_ACCOUNT)
+	$(FILLER_NEED_ADMIN)
+	@bash $(FILLER_ADMIN) token-issue NAME="$(NAME)" $(if $(FILLER_ROTATE),FILLER_ROTATE="$(FILLER_ROTATE)")
 
 filler-status:
-	@echo "== secret filler ($(FILLER_CONTAINER))"
-	@printf "container: "; docker container inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}} since {{.State.StartedAt}} image {{.Image}}' $(FILLER_CONTAINER) 2>/dev/null | cut -c1-110 || echo "none (make vault-up)"
-	@printf "process (uid $(FILLER_UID)): "; ps -o uid=,pid=,etime= -C node 2>/dev/null | awk '$$1=="$(FILLER_UID)"{print $$2, $$3; f=1} END{if(!f) print "not running"}'
-	@if ps -o uid=,args= -C node 2>/dev/null | grep -qE '^ *$(FILLER_UID) .*$(FILLER_ROOT)/current/'; then echo "note: the old happy-filler systemd unit is running (it holds 6091; the container cannot start)"; fi
+	@echo "== secret filler ($(FILLER_ACCOUNT), systemd user unit happy-filler.service)"
+	@if [ -e $(FILLER_ROOT)/current/COMMIT ]; then echo "release: $$(cat $(FILLER_ROOT)/current/COMMIT) ($$(readlink $(FILLER_ROOT)/current))"; else echo "release: none installed"; fi
+	@if [ -e $(FILLER_ROOT)/current/app/scripts/filler-admin.sh ]; then :; elif [ -e $(FILLER_ROOT)/current/app ]; then \
+		echo "note: this release has no scripts/filler-admin.sh; as $(FILLER_ACCOUNT): make -C $(FILLER_REPO)/selfhost filler-install COMMIT=<sha>"; fi
+	@printf "process: "; ps -o uid=,pid=,etime=,args= -C node 2>/dev/null | awk '$$1=="$(FILLER_UID)"{print "$(FILLER_ACCOUNT)", $$2, "up", $$3; f=1} END{if(!f) print "not running"}'
+	@for c in $(FILLER_OLD_CONTAINERS); do \
+		if [ "$$(docker container inspect -f '{{.State.Running}}' $$c 2>/dev/null)" = true ]; then echo "note: the old docker filler $$c is running"; fi; done
 	@echo "listening on 6091 (expect 127.0.0.1 only):"
 	@ss -ltnH | awk '{print $$4}' | grep -E ':6091$$' | sort -u || echo "  (none)"
 	@if ss -ltnH | awk '{print $$4}' | grep -E ':6091$$' | grep -qvE '^127\.0\.0\.1:'; then \
@@ -131,47 +147,46 @@ filler-status:
 	@printf "healthz: "; curl -fs --max-time 5 $(FILLER_URL)/healthz || printf "unreachable"; echo
 	@printf "bridge client token: "; test -s $(FILLER_HOME_DIR)/secrets/filler-client-token && echo present || echo "absent (bridge secret tools off)"
 	@printf "vault-mcp token: "; test -s $(VAULT_MCP_HOME_DIR)/secrets/vault-client-token && echo present || echo "absent (vault tools off)"
-	@w="$$($(FILLER_OPERATOR_RUN) 'ls /handoff/outbox' 2>/dev/null | tr '\n' ' ')"; \
-		if [ -n "$$w" ]; then echo "tokens waiting in outbox/: $$w(make filler-token-take)"; fi
+	@if [ -r $(FILLER_ROOT)/outbox ] && ls -A $(FILLER_ROOT)/outbox 2>/dev/null | grep -qvE '^\.'; then \
+		echo "tokens waiting in $(FILLER_ROOT)/outbox: $$(ls $(FILLER_ROOT)/outbox | tr '\n' ' ')(make filler-token-take)"; fi
 
 filler-audit:
-	@$(FILLER_OPERATOR_RUN) 'cd /handoff/audit; set -- $$(ls -1 | grep -E "\.jsonl$$" | sort | tail -n 2); \
-		if [ $$# -eq 0 ]; then echo "no audit yet"; else tail -q -n "$$0" "$$@" | tail -n "$$0"; fi' $(FILLER_AUDIT_LINES)
+	@ls -1 $(FILLER_ROOT)/audit/*.jsonl >/dev/null 2>&1 || { echo "no audit yet"; exit 0; }
+	@tail -q -n $(FILLER_AUDIT_LINES) $$(ls -1 $(FILLER_ROOT)/audit/*.jsonl | sort | tail -n 2) | tail -n $(FILLER_AUDIT_LINES)
 
 # prep's side of a client-token handoff. filler-token-issue leaves each new
-# token in outbox/ (the file uid 1990's, 0640, group 1990). The operator
-# container (uid 1989, group 1990) checks it with scripts/handoff-copy.mjs (a
-# regular file, one link, not its own, token-shaped) and prints it into a new
-# 0600 file of prep's (an old different one goes to old-<ts>/); the outbox file
-# then moves to trash/<ts>-taken/ in the volume.
+# token in outbox/ (happy-filler:prep 2770, the file happy-filler's own, 0640).
+# A file prep does not own cannot be chmod-ed by prep, so the token is copied
+# (scripts/handoff-copy.mjs: a regular file, one link, token-shaped) into a new
+# file of prep's (0600; an old different one goes to old-<ts>/), and the outbox
+# file itself is moved to $(FILLER_HOME_DIR)/trash/<ts>-filler-outbox/.
 filler-token-take:
 	$(FILLER_AS_OPERATOR)
+	@test -d $(FILLER_ROOT)/outbox || { echo "$@: no $(FILLER_ROOT)/outbox; run make filler-account-setup COMMIT=<sha> first" >&2; exit 1; }
 	@set -e; ts=$$(date -u +%Y%m%dT%H%M%SZ); n=0; \
-	waiting="$$($(FILLER_OPERATOR_RUN) 'ls /handoff/outbox')" || { echo "$@: cannot read outbox/; run make vault-init first" >&2; exit 1; }; \
 	for pair in bridge-client-token:$(FILLER_HOME_DIR)/secrets/filler-client-token vault-client-token:$(VAULT_MCP_HOME_DIR)/secrets/vault-client-token; do \
-		name=$${pair%%:*}; dst=$${pair#*:}; dir=$${dst%/*}; \
-		printf '%s\n' $$waiting | grep -qxF "$$name" || continue; \
+		name=$${pair%%:*}; dst=$${pair#*:}; dir=$${dst%/*}; src=$(FILLER_ROOT)/outbox/$$name; \
+		[ -e "$$src" ] || [ -L "$$src" ] || continue; \
 		install -d -m 0700 "$$dir"; tmp="$$dir/.$$name.take-$$ts"; \
-		if ! (umask 077; $(FILLER_OPERATOR_RUN) 'node scripts/handoff-copy.mjs "/handoff/outbox/$$0" /tmp/t --mode 0600 && cat /tmp/t' "$$name" >"$$tmp"); then \
-			install -d -m 0700 $(FILLER_HOME_DIR)/trash/$$ts-filler-take-failed; mv "$$tmp" $(FILLER_HOME_DIR)/trash/$$ts-filler-take-failed/; \
-			echo "$@: $$name refused (see above)" >&2; exit 1; fi; \
+		node $(FILLER_DIR)/scripts/handoff-copy.mjs "$$src" "$$tmp" --mode 0600; \
 		if [ -e "$$dst" ] && ! cmp -s "$$tmp" "$$dst"; then install -d -m 0700 "$$dir/old-$$ts"; mv "$$dst" "$$dir/old-$$ts/"; fi; \
 		mv -T "$$tmp" "$$dst"; \
-		$(FILLER_ADMIN_RUN) -T --entrypoint sh filler-admin -euc 'mkdir -p -m 0700 "/filler/trash/$$1-taken"; mv "/filler/outbox/$$0" "/filler/trash/$$1-taken/"' "$$name" "$$ts"; \
+		install -d -m 0700 $(FILLER_HOME_DIR)/trash $(FILLER_HOME_DIR)/trash/$$ts-filler-outbox; \
+		mv -T "$$src" $(FILLER_HOME_DIR)/trash/$$ts-filler-outbox/$$name; \
 		echo "$@: $$name -> $$dst"; n=$$((n+1)); \
 	done; \
-	if [ $$n -eq 0 ]; then echo "$@: nothing waiting in outbox/"; \
+	if [ $$n -eq 0 ]; then echo "$@: nothing waiting in $(FILLER_ROOT)/outbox"; \
 	else echo "$@: restart the bridge to use a new bridge token (the vault tools read theirs on every call)"; fi
 
-# prep's side the other way: the filler's copy of the browser controller token,
-# through stdin into inbox/ (1990:1990 3730: the operator container may add, not
-# list), as a file of uid 1989's; filler-controller-token-take (uid 1990) takes it.
+# prep's side the other way: the filler's copy of the browser controller token.
+# inbox/ is happy-filler:prep 3730 (prep may add, not list); filler-controller-token-take takes it.
 filler-controller-token-give:
 	$(FILLER_AS_OPERATOR)
 	@test -s $(FILLER_HOME_DIR)/secrets/api-token || { echo "$@: $(FILLER_HOME_DIR)/secrets/api-token missing; run make browser-init first" >&2; exit 1; }
-	@$(FILLER_OPERATOR_RUN) 'umask 022; t=$$(mktemp /handoff/inbox/.controller-token.XXXXXX); cat >"$$t"; chmod 0640 "$$t"; mv "$$t" /handoff/inbox/controller-token' \
-		<$(FILLER_HOME_DIR)/secrets/api-token
-	@echo "$@: dropped; make filler-controller-token-take takes it (make vault-tokens does both)"
+	@test -d $(FILLER_ROOT)/inbox || { echo "$@: no $(FILLER_ROOT)/inbox; run make filler-account-setup COMMIT=<sha> first" >&2; exit 1; }
+	@t=$$(mktemp $(FILLER_ROOT)/inbox/.controller-token.XXXXXX) && cp $(FILLER_HOME_DIR)/secrets/api-token $$t \
+		&& chmod 0644 $$t && mv -T $$t $(FILLER_ROOT)/inbox/controller-token
+	@echo "$@: dropped; now su - $(FILLER_ACCOUNT), make -C $(FILLER_REPO)/selfhost filler-controller-token-take, then filler-restart"
 
 filler-test:
 	cd $(FILLER_DIR) && node --test --test-timeout=30000 test/*.test.mjs

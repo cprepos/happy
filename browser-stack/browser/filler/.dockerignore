@@ -1,7 +1,0 @@
-# Only package.json (+ its lockfile), server.mjs, lib/ and scripts/ go into the image.
-*
-!package.json
-!package-lock.json
-!server.mjs
-!lib/
-!scripts/

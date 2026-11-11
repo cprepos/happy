@@ -195,8 +195,8 @@ function parseManage(slug, m, allItems, targets) {
 /**
  * The policy file must be a regular file that is not group- or world-writable,
  * owned by the filler's own account (uid, by default process.getuid(): the
- * happy-filler account) or by root (back-compat: the docker filler's policy
- * was root:1990). requireOwner: false (tests and the smoke run only) skips the
+ * happy-filler account) or by root (back-compat: an earlier docker filler's
+ * policy was root:1990). requireOwner: false (tests and the smoke run only) skips the
  * owner check, never the mode check.
  */
 export function checkPolicyFile(path, { requireOwner = true, uid = process.getuid() } = {}) {
