@@ -33,13 +33,13 @@ class CallContextTest {
     private val fixTarget = CallTarget("c", "Fix cache race", CallTarget.Kind.Subtask, CallTarget.Status.Running,
         listOf(CallTarget.Parent("task:t", "Release notes", "task", "t")))
 
-    /** Backend: three finished turns, one that only steered, and a message no turn has answered yet. */
+    /** Backend: three finished turns, the third steered on its way, and a message no turn has answered yet. */
     private fun backend(focus: String? = "a"): FakeCallTargets {
         val turns = listOf(
             CallTurn("r1", "first ask", "first answer"),
             CallTurn("r2", "second ask", "second answer"),
-            CallTurn("r3", "steer", ended = "steering"),
-            CallTurn("r4", "third ask", "third answer"),
+            CallTurn("r3", "third ask", "Looking.", ended = "steering"),
+            CallTurn("r4", "and the tests", "third answer"),
         )
         val messages = listOf(
             CallMessage("u1", CallMessage.Role.User, "first ask"), CallMessage("x1", CallMessage.Role.Assistant, "first answer"),
@@ -70,8 +70,8 @@ class CallContextTest {
         val utc = java.time.ZoneOffset.UTC
         val context = CallContext(backend(), now = { 1_700_000_000_000 }, zone = utc)
         val text = context.initial()
-        // Plain lines, as Happy Agent's own tools write them: the focus, its turns (four finished and the message
-        // waiting: five), the directory once.
+        // Plain lines, as Happy Agent's own tools write them: the focus, its turns (three finished, the steered one
+        // whole, and the message waiting), the directory once.
         assertEquals(
             """
             |Now: 2023-11-14T22:13:00Z (the person's local time)
@@ -84,9 +84,7 @@ class CallContextTest {
             |   Agent: first answer
             |2. The person: second ask
             |   Agent: second answer
-            |3. The person: steer
-            |   Ended: steering
-            |4. The person: third ask
+            |3. The person: third ask
             |   Agent: third answer
             |Waiting for an answer, from the person:
             |   still waiting
@@ -159,7 +157,7 @@ class CallContextTest {
         val context = CallContext(backend(focus = null))
         context.initial()
         val read = obj(context.tool("readConversation", """{"ref":"s1"}""").text)
-        assertEquals(listOf("first answer", "second answer", null, "third answer"), read.turns().map { it.str("assistant") })
+        assertEquals(listOf("first answer", "second answer", "third answer"), read.turns().map { it.str("assistant") })
         assertEquals("still waiting", read["pendingUserMessage"]!!.jsonObject.str("text"))
         assertFalse(read["working"]!!.jsonPrimitive.boolean)
         assertFalse(read["needsInput"]!!.jsonPrimitive.boolean)
@@ -171,8 +169,8 @@ class CallContextTest {
 
     /**
      * Five in all: five finished turns with nothing waiting, four with a
-     * message waiting; an answer with no message of the person's is half a
-     * pair; a read within [CallContext.Limits.READ_BYTES] on the wire, the
+     * message waiting; the agent's own run after a turn is part of it, its
+     * words the turn's answer; a read within [CallContext.Limits.READ_BYTES] on the wire, the
      * oldest first to go and the newest whole.
      */
     @Test
@@ -182,8 +180,8 @@ class CallContextTest {
         val context = CallContext(targets)
         context.initial()
         var read = obj(context.tool("readConversation", """{"ref":"s1"}""").text)
-        assertEquals(listOf("answer 4", "answer 5", "answer 6", "answer 7", "done on its own"), read.turns().map { it.str("assistant") })
-        assertNull(read.turns().last()["user"])
+        assertEquals(listOf("answer 3", "answer 4", "answer 5", "answer 6", "done on its own"), read.turns().map { it.str("assistant") })
+        assertEquals("ask 7", read.turns().last().str("user"))
         assertTrue(read["olderTurns"]!!.jsonPrimitive.boolean)
         targets.states["a"] = CallTargetState(backendTarget, turns = turns, unanswered = CallMessage("p", CallMessage.Role.User, "and now?"))
         read = obj(context.tool("readConversation", """{"ref":"s1"}""").text)
@@ -192,26 +190,26 @@ class CallContextTest {
         // Each reply within its own limit, but escaped six bytes a character on the wire.
         val heavy = "<<<< ".repeat(1600)
         targets.states["a"] = CallTargetState(backendTarget, turns = (0 until 6).map { CallTurn("l$it", "ask $it", heavy) })
-        val big = context.tool("readConversation", """{"ref":"s1"}""")
+        val big = context.tool("readConversation", """{"ref":"s1","words":5000}""")
         assertTrue(CallContext.escapedSize(big.text) <= CallContext.Limits.READ_BYTES)
         val shown = obj(big.text).turns()
         assertEquals(listOf("ask 5"), shown.map { it.str("user") })
         assertEquals(heavy, shown.single().str("assistant"))
-        assertNull(shown.single()["truncated"])
+        assertNull(shown.single()["cut"])
     }
 
-    /** About a thousand words of the agent's come back whole: in a read, five turns of them, and told as they come. */
+    /** About a thousand words of the agent's come back whole: in a read asking for a thousand words a message, five turns of them, and told as they come. */
     @Test
     fun aThousandWordReplyComesBackWhole() = runBlocking {
         assertEquals(1000, thousandWords.split(" ").size)
         val turns = (1..5).map { CallTurn("r$it", "ask $it", thousandWords) }
         val context = CallContext(FakeCallTargets(listOf(backendTarget), mutableMapOf("a" to CallTargetState(backendTarget, turns = turns)), null))
         context.initial()
-        val read = context.tool("readConversation", """{"ref":"s1"}""")
+        val read = context.tool("readConversation", """{"ref":"s1","words":1000}""")
         assertTrue(CallContext.escapedSize(read.text) <= CallContext.Limits.READ_BYTES)
         val shown = obj(read.text).turns()
         assertEquals(List(5) { thousandWords }, shown.map { it.str("assistant") })
-        assertTrue(shown.all { it["truncated"] == null })
+        assertTrue(shown.all { it["cut"] == null })
         val live = CallContext(backend())
         live.initial()
         live.targetChanged(CallTargetState(backendTarget))
@@ -502,7 +500,7 @@ class CallContextTest {
     // Tools
 
     @Test
-    fun messageQueuesTheExactTextOnceAndHearsNothingMore() = runBlocking {
+    fun messageQueuesTheExactTextOnceAndHearsItsReply() = runBlocking {
         val targets = backend()
         val context = CallContext(targets)
         context.initial()
@@ -514,11 +512,219 @@ class CallContextTest {
         assertEquals(first, context.handle(send))
         assertEquals(listOf("  run the checks "), targets.sends.map { it.text })
         assertEquals(listOf("b"), targets.sends.map { it.agentId })
-        // Sending neither opens it nor adds it to what the call hears.
-        assertEquals(listOf("a"), context.followed())
+        // Sending doesn't open it, but the call hears from it from then on.
+        assertEquals(listOf("b", "a"), context.followed())
         assertTrue(targets.opened.isEmpty())
-        assertTrue(targets.follows.isEmpty())
-        assertTrue(context.targetChanged(CallTargetState(docsTarget, listOf(CallMessage("r", CallMessage.Role.Assistant, "Done")))).isEmpty)
+        // What is there when it is first seen is had; its reply, once complete, goes.
+        assertTrue(context.targetChanged(CallTargetState(docsTarget, working = true)).isEmpty)
+        val reply = events(context.targetChanged(CallTargetState(docsTarget, listOf(CallMessage("r", CallMessage.Role.Assistant, "Done")))))
+        assertEquals(listOf("Done"), reply.map { it.str("text") })
+    }
+
+    /** Messaged conversations count among the four, but the one on screen never drops out while it is in front. */
+    @Test
+    fun messagedConversationsAreAmongTheFourButNeverPushOutTheScreen() = runBlocking {
+        val list = (1..5).map { CallTarget("v$it", "V$it", CallTarget.Kind.Task, CallTarget.Status.Idle) }
+        val targets = FakeCallTargets(list, list.associateTo(HashMap()) { it.agentId to CallTargetState(it) }, "v1")
+        val context = CallContext(targets)
+        context.initial()
+        context.focusChanged("v1")
+        for (ref in listOf("s2", "s3", "s4", "s5")) context.tool("message", """{"to":"$ref","text":"go"}""")
+        assertEquals(listOf("v5", "v4", "v3", "v1"), context.followed())
+    }
+
+    // Reading current state
+
+    /** Each [CallReading] the context hands on, in order. */
+    private suspend fun readings(context: CallContext): MutableList<CallReading> {
+        val all = java.util.Collections.synchronizedList(ArrayList<CallReading>())
+        context.onReading { all += it }
+        return all
+    }
+
+    private suspend fun waitFor(condition: () -> Boolean) = withTimeout(5_000) { while (!condition()) delay(5) }
+
+    private fun cue(reading: CallReading?): JsonObject = obj((reading as CallReading.Update).cue.text)
+    private fun line(reading: CallReading?): JsonObject = obj((reading as CallReading.Context).line)
+
+    /** Backend as this phone kept it, not current: last read 29 minutes ago. */
+    private fun kept(targets: FakeCallTargets) {
+        targets.states["a"] = targets.states["a"]!!.copy(fresh = false, checkedAt = 1_700_000_000_000 - 29 * 60_000)
+    }
+
+    /** A conversation that is current answers at once, as it is: no marker, no refresh, no wait, and nothing follows. */
+    @Test
+    fun aCurrentConversationIsReadAtOnce() = runBlocking {
+        val targets = backend(focus = null)
+        targets.refresh["a"] = FakeCallTargets.Refresh.After(5_000)
+        val context = CallContext(targets)
+        val all = readings(context)
+        context.initial()
+        val started = System.nanoTime()
+        val read = obj(context.tool("readConversation", """{"ref":"s1"}""").text)
+        assertTrue((System.nanoTime() - started) / 1_000_000 < 200)
+        assertNull(read["refreshing"])
+        assertNull(read["checked"])
+        assertEquals(3, read.turns().size)
+        delay(100)
+        assertTrue(all.isEmpty())
+        assertTrue(targets.refreshes.isEmpty())
+    }
+
+    /** One that isn't current answers at once too, with what the phone has, marked `refreshing` with when it was last current; the refresh goes on behind it. */
+    @Test
+    fun aConversationNotCurrentIsReadAtOnceMarkedRefreshing() = runBlocking {
+        val targets = backend(focus = null)
+        kept(targets)
+        targets.refresh["a"] = FakeCallTargets.Refresh.After(5_000)
+        val context = CallContext(targets, now = { 1_700_000_000_000 })
+        val all = readings(context)
+        context.initial()
+        val started = System.nanoTime()
+        val result = context.tool("readConversation", """{"ref":"s1"}""")
+        assertTrue((System.nanoTime() - started) / 1_000_000 < 200)
+        assertFalse(result.isError)
+        val read = obj(result.text)
+        assertEquals(true, read["refreshing"]!!.jsonPrimitive.boolean)
+        assertEquals("29 minutes ago", read["checked"]!!.jsonObject.str("ago"))
+        assertEquals("Backend", read.str("title"))
+        assertEquals(3, read.turns().size)
+        assertEquals(CallContext.REFRESHING_NOTE, read.str("note"))
+        assertNull(read["status"])
+        waitFor { all.size == 1 }
+        assertEquals(listOf<CallReading>(CallReading.Refreshing), all.toList())
+        context.close()
+    }
+
+    /** The refresh finds more: one `conversation_update` cue, with the turns new or changed since the read (the waiting message answered), as a read gives them. */
+    @Test
+    fun whatTheRefreshFindsNewComesAsOneCue() = runBlocking {
+        val targets = backend(focus = null)
+        kept(targets)
+        targets.refresh["a"] = FakeCallTargets.Refresh.After(150)
+        val context = CallContext(targets, refreshMillis = 2_000)
+        val all = readings(context)
+        context.initial()
+        context.tool("readConversation", """{"ref":"s1"}""")
+        // Meanwhile on the computer: the waiting message is answered.
+        val kept = targets.states["a"]!!
+        targets.states["a"] = kept.copy(turns = kept.turns + CallTurn("r5", "still waiting", "Done: the cache is fixed."), unanswered = null)
+        waitFor { all.size == 2 }
+        delay(50)
+        assertEquals(2, all.size)
+        val cue = cue(all.last())
+        assertEquals("conversation_update", cue.str("event"))
+        assertEquals("s1", cue.str("ref"))
+        assertEquals("Backend", cue.str("title"))
+        assertEquals(listOf("Done: the cache is fixed."), cue.turns().map { it.str("assistant") })
+        assertEquals("t:r5", cue.turns().first().str("ref"))
+        assertNull(cue["pendingUserMessage"])
+        assertNull(cue["refreshing"])
+        assertEquals("t:r3", cue.str("continueFrom"))
+        assertEquals(false, cue["working"]!!.jsonPrimitive.boolean)
+    }
+
+    /** The refresh finds nothing new: no cue, only a line of context. */
+    @Test
+    fun aRefreshThatFindsNothingNewSaysSoSilently() = runBlocking {
+        val targets = backend(focus = null)
+        kept(targets)
+        targets.refresh["a"] = FakeCallTargets.Refresh.After(100)
+        val context = CallContext(targets, refreshMillis = 2_000)
+        val all = readings(context)
+        context.initial()
+        context.tool("readConversation", """{"ref":"s1"}""")
+        waitFor { all.size == 2 }
+        val line = line(all.last())
+        assertEquals("conversation_current", line.str("event"))
+        assertEquals("s1", line.str("ref"))
+        assertNull(line["turns"])
+    }
+
+    /** One the computer doesn't make current in time: no cue, a line of context that it may be out of date, with when it was last current. */
+    @Test
+    fun aRefreshThatTimesOutIsASilentUnconfirmedLine() = runBlocking {
+        val targets = backend(focus = null)
+        kept(targets)
+        targets.refresh["a"] = FakeCallTargets.Refresh.Never
+        val context = CallContext(targets, now = { 1_700_000_000_000 }, refreshMillis = 150)
+        val all = readings(context)
+        context.initial()
+        context.tool("readConversation", """{"ref":"s1"}""")
+        waitFor { all.size == 2 }
+        val line = line(all.last())
+        assertEquals("conversation_unconfirmed", line.str("event"))
+        assertEquals("29 minutes ago", line["checked"]!!.jsonObject.str("ago"))
+    }
+
+    /** Asked again while the first refresh is on its way, the read joins it: both answered at once, one refresh, one update. */
+    @Test
+    fun readsOfOneConversationOnTheirWayAreOne() = runBlocking {
+        val targets = backend(focus = null)
+        kept(targets)
+        targets.refresh["a"] = FakeCallTargets.Refresh.After(200)
+        val context = CallContext(targets, refreshMillis = 2_000)
+        val all = readings(context)
+        context.initial()
+        assertEquals(true, obj(context.tool("readConversation", """{"ref":"s1"}""").text)["refreshing"]!!.jsonPrimitive.boolean)
+        assertEquals(true, obj(context.tool("readConversation", """{"ref":"s1","from":1}""").text)["refreshing"]!!.jsonPrimitive.boolean)
+        targets.states["a"] = targets.states["a"]!!.copy(working = true)
+        waitFor { all.any { it is CallReading.Update } }
+        delay(100)
+        assertEquals(1, all.count { it is CallReading.Update })
+        assertEquals(2, all.count { it == CallReading.Refreshing })
+        val cue = cue(all.last())
+        assertEquals(true, cue["working"]!!.jsonPrimitive.boolean)
+        assertEquals(0, cue.turns().size)
+        assertEquals(listOf("a"), targets.refreshes.toList())
+    }
+
+    /** One the phone keeps nothing of yet answers at once all the same, as the directory has it with no turns, marked `refreshing`; its turns come with the update, the newest five. */
+    @Test
+    fun aConversationThePhoneHasNothingOfAnswersAtOnceAndItsTurnsFollow() = runBlocking {
+        val targets = backend(focus = null)
+        targets.stateDelay = 3_000
+        targets.refresh["a"] = FakeCallTargets.Refresh.After(800)
+        val context = CallContext(targets, refreshMillis = 2_000)
+        val all = readings(context)
+        context.initial()
+        targets.stateDelay = 3_000
+        val started = System.nanoTime()
+        val read = obj(context.tool("readConversation", """{"ref":"s1"}""").text)
+        assertTrue((System.nanoTime() - started) / 1_000_000 < 800)
+        assertEquals(true, read["refreshing"]!!.jsonPrimitive.boolean)
+        assertEquals("Backend", read.str("title"))
+        assertNull(read["turns"])
+        assertNull(read["olderTurns"])
+        assertEquals(CallContext.REFRESHING_EMPTY_NOTE, read.str("note"))
+        waitFor { all.size == 2 }
+        val cue = cue(all.last())
+        assertEquals(3, cue.turns().size)
+        assertEquals("still waiting", cue["pendingUserMessage"]!!.jsonObject.str("text"))
+        // Read again, the phone still slow: what that refresh found, marked, and nothing new after.
+        targets.refresh["a"] = FakeCallTargets.Refresh.After(100)
+        val again = obj(context.tool("readConversation", """{"ref":"s1"}""").text)
+        assertEquals(true, again["refreshing"]!!.jsonPrimitive.boolean)
+        assertEquals(3, again.turns().size)
+        assertTrue(again["checked"] != null)
+        waitFor { all.size == 4 }
+        assertEquals("conversation_current", line(all.last()).str("event"))
+        context.close()
+    }
+
+    /** What a refresh finds after the call ended is told to nobody. */
+    @Test
+    fun aRefreshThatEndsAfterTheCallSaysNothing() = runBlocking {
+        val targets = backend(focus = null)
+        kept(targets)
+        targets.refresh["a"] = FakeCallTargets.Refresh.After(300)
+        val context = CallContext(targets, refreshMillis = 2_000)
+        val all = readings(context)
+        context.initial()
+        context.tool("readConversation", """{"ref":"s1"}""")
+        context.close()
+        delay(600)
+        assertEquals(listOf<CallReading>(CallReading.Refreshing), all.toList())
     }
 
     @Test
@@ -1448,9 +1654,27 @@ class FakeCallTargets(
     fun setDirectory(entries: List<CallTarget>) { this.entries = entries }
 
     override suspend fun directory() = entries
+    /** How long [state] takes: the phone reading a conversation it doesn't hold. */
+    @Volatile var stateDelay = 0L
     override suspend fun state(agentId: String): CallTargetState? {
         onRead?.let { onRead = null; it() }
+        if (stateDelay > 0) delay(stateDelay)
         return lock.withLock { states[agentId] }
+    }
+    /** How [refreshed] goes for a conversation: at once as it is (absent, the default), current after a wait, or never current within its limit. */
+    sealed interface Refresh {
+        data class After(val millis: Long) : Refresh
+        data object Never : Refresh
+    }
+    val refresh = java.util.concurrent.ConcurrentHashMap<String, Refresh>()
+    val refreshes = java.util.Collections.synchronizedList(ArrayList<String>())
+    override suspend fun refreshed(agentId: String, limitMillis: Long): CallTargetState? {
+        refreshes += agentId
+        return when (val how = refresh[agentId]) {
+            null -> state(agentId)
+            is Refresh.After -> { delay(how.millis); lock.withLock { states[agentId] }?.copy(fresh = true) }
+            Refresh.Never -> { delay(limitMillis); lock.withLock { states[agentId] }?.copy(fresh = false) }
+        }
     }
     override suspend fun focused() = focus
     override suspend fun open(agentId: String): Boolean { opened += agentId; return states[agentId] != null }

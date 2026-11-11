@@ -15,10 +15,21 @@ public struct CallUpdate: Equatable, Sendable {
     public var isEmpty: Bool { context.isEmpty }
 }
 
+/// How a `readConversation` of a conversation that wasn't current goes on
+/// (`CallContext.onReading`): the agent answered from what the phone had
+/// and was told it is refreshing; then what is new since, as a cue to tell
+/// once the moment is right, or, nothing new or no answer in time, a line
+/// of context it reads without answering.
+public enum CallReading: Equatable, Sendable {
+    case refreshing
+    case update(CallCue)
+    case context(String)
+}
+
 /// Lives only during one call, bound to one account. It owns the opaque
 /// references the hosted agent knows conversations by, the focus, and the
-/// last four conversations the person visited during the call, which are
-/// the ones it hears from; it runs the tools one at a time. A visited
+/// last four conversations visited or messaged during the call, which are
+/// the ones it hears from; it runs the tools one at a time. A followed
 /// conversation says only what its agent writes from then on, each piece
 /// once it is complete and whole, and an error that stopped it: never its
 /// words as they stream, its tools, its state or the person's messages.
@@ -42,14 +53,15 @@ public actor CallContext {
         /// A read (`readConversation`), as it goes on the wire
         /// (`escapedSize`): one escaped string in a data channel message,
         /// which LiveKit takes up to 64,000 bytes, its envelope beside it.
-        /// Five turns of a whole reply each fit as prose does.
+        /// A read pages and cuts its messages by words (`CallRead`) within it.
         public static let readBytes = 56 * 1024
-        /// Turns a read shows, the person's message still waiting for an answer
-        /// counted as one: each the person's message and the agent's last
-        /// words, or as much of the pair as there is.
+        /// Turns the first context shows, the person's message still waiting
+        /// for an answer counted as one: each the person's message and the
+        /// agent's last words, or as much of the pair as there is.
         public static let turns = 5
-        /// One of the agent's messages: a thousand words of technical prose,
-        /// Markdown and all (6.3 to 7.3 bytes a word in this repository's docs).
+        /// One of the agent's messages in the first context and in updates: a
+        /// thousand words of technical prose, Markdown and all (6.3 to 7.3
+        /// bytes a word in this repository's docs).
         public static let replyBytes = 8 * 1024
         /// One of the person's own, a third of that.
         public static let userBytes = 2 * 1024
@@ -64,12 +76,21 @@ public actor CallContext {
         /// first: "New Task" and the name it gets a moment later go as one.
         public static let settle: Duration = .seconds(1)
         public static let page = 50
-        /// Conversations the call hears from: the last ones visited, the one on screen included.
+        /// Conversations the call hears from: the last ones visited or
+        /// messaged, the one on screen included.
         public static let visited = 4
         /// The agent's messages looked at per change, newest last.
         public static let messages = 20
         public static let textBytes = 8 * 1024
         public static let toolDeadline: Duration = .seconds(8)
+        /// How long a read of a conversation that isn't current goes on
+        /// making it current, after its answer, before it is let go as
+        /// unconfirmed.
+        public static let refresh: Duration = .seconds(8)
+        /// How long a read waits for what the phone keeps of a conversation
+        /// it doesn't hold now (read from its store); past that it goes as
+        /// the directory has it, with no turns, and the refresh tells them.
+        public static let keptWait: Duration = .milliseconds(500)
         /// Models a read or a refusal lists.
         public static let models = 30
         /// What earlier calls said, in the first context (`CallHistory`),
@@ -134,6 +155,16 @@ public actor CallContext {
     private var tail: Task<Void, Never>?
     private var closed = false
     private var restart: (@Sendable () async -> CallToolResult)?
+    private let refreshLimit: Duration
+    /// Conversations read while they weren't current, being made current:
+    /// the refresh, what the agent was last given of it, and the most
+    /// words a message of it was read with. Another read of one joins its
+    /// refresh.
+    private var reading: [String: (refresh: Task<CallTargetState?, Never>, given: CallTargetState, words: Int)] = [:]
+    /// Each conversation as its last refresh in this call found it, current
+    /// then: what a read gives when the phone can't read it in time again.
+    private var refreshedLast: [String: CallTargetState] = [:]
+    private var onReading: (@Sendable (CallReading) -> Void)?
 
     /// What the agent has of one visited conversation: its agent's complete
     /// messages, those there when it was first seen counted as had, and the
@@ -166,19 +197,31 @@ public actor CallContext {
     }
 
     public init(targets: any CallTargets, now: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 },
-                timeZone: TimeZone = .current, toolDeadline: Duration = Limits.toolDeadline) {
+                timeZone: TimeZone = .current, toolDeadline: Duration = Limits.toolDeadline,
+                refresh: Duration = Limits.refresh) {
         self.targets = targets
         self.now = now
         self.timeZone = timeZone
         self.toolDeadline = toolDeadline
+        self.refreshLimit = refresh
     }
 
-    /// The conversations the call hears from now, the latest visited first.
+    /// The conversations the call hears from now, the latest visited or messaged first.
     public var followed: [String] { visited }
 
     public func close() {
         closed = true
         for task in results.values { task.cancel() }
+        for read in reading.values { read.refresh.cancel() }
+        reading.removeAll()
+    }
+
+    /// Where a read of a conversation that wasn't current goes on: that it
+    /// went out `refreshing`, then what the refresh found
+    /// (`conversation_update`, `conversation_current`,
+    /// `conversation_unconfirmed`). Nothing once the call has ended.
+    public func onReading(_ handler: @escaping @Sendable (CallReading) -> Void) {
+        onReading = handler
     }
 
     /// What `navigate` to `restartURL` does: the call's to say.
@@ -196,8 +239,9 @@ public actor CallContext {
     /// `Limits.totalBytes`: the older turns give way first, then the
     /// directory's tail, then the recap's older lines (nothing else has
     /// them), and the newest turn only after that. A new conversation's:
-    /// the agent has no reference yet.
-    public func initial(previous: [CallSlot] = []) async -> String {
+    /// the agent has no reference yet. In a team, `person` names who it
+    /// talks to (`personText`).
+    public func initial(previous: [CallSlot] = [], person: String? = nil) async -> String {
         told.removeAll()
         see(await targets.directory())
         listed = entries.map(Listing.init)
@@ -214,6 +258,7 @@ public actor CallContext {
             }
         }
         let header = "Now: \(Self.local(now(), in: timeZone)) (the person's local time)\nfocusRevision: \(focusRevision)"
+            + (person.map { "\n" + Self.personText($0) } ?? "")
         var turns = focused.map(Self.recent) ?? []
         var budget = Limits.directoryBytes
         var recapBudget = Limits.recapBytes
@@ -228,6 +273,11 @@ public actor CallContext {
         while text().utf8.count > Limits.totalBytes, !turns.isEmpty { turns.removeFirst() }
         if let focus { told.insert(focus) }
         return text(telling: true)
+    }
+
+    /// Who the call talks to, in a team.
+    static func personText(_ name: String) -> String {
+        "The person: \(name), a member of this team. They mostly ask about their own work; look across the team only when they ask about the team or others' work."
     }
 
     /// How the first context starts new work, as `message` takes it.
@@ -282,7 +332,7 @@ public actor CallContext {
         if let last = state.messages.last(where: { $0.role == .user && ($0.time ?? 0) > 0 }), let at = last.time {
             lines.append("Last message from \(last.by ?? "the person"): \(said(at))")
         }
-        if let at = state.turns.filter({ $0.reply?.isEmpty == false }).compactMap(\.endedAt).filter({ $0 > 0 }).max() {
+        if let at = state.exchanges.filter({ $0.reply?.isEmpty == false }).compactMap(\.endedAt).filter({ $0 > 0 }).max() {
             lines.append("Last reply: \(said(at))")
         }
         if !target.workspace.isEmpty { lines.append("Workspace: \(target.workspace.joined(separator: " / "))") }
@@ -718,17 +768,44 @@ public actor CallContext {
         case .readConversation:
             if let unmade = Self.unmade(arguments["ref"]) { return unmade }
             guard let id = await resolve(arguments["ref"]) else { return .refused("No such conversation.") }
-            guard let state = await targets.state(of: id) else { return .refused("That conversation can't be read now.") }
-            // Within the snapshot's budget too: the oldest turns give way.
-            // Asked for by its reference, it is named by its title alone.
-            let name: [String: Any] = ["title": state.target.title, "parents": state.target.parents.map(\.title)]
-            var turns = Self.recent(state)
-            var value = body(state, turns: turns, as: name, options: true)
-            // The older turns give way first; the newest stays whole.
-            while Self.escapedSize(Self.data(value)) > Limits.readBytes, turns.count > 1 {
-                turns.removeFirst()
-                value = body(state, turns: turns, as: name, options: true)
+            let asked = CallRead.request(arguments)
+            guard let request = asked.request else { return .refused(asked.refusal ?? "") }
+            // What the phone has, at once: current, it is the read; not, it
+            // goes as it is, marked, and is made current behind it, as
+            // opening it would, what that finds told after.
+            let targets = targets
+            let kept = Task { await targets.state(of: id) }
+            let state: CallTargetState
+            if let found = await Self.within(Limits.keptWait, kept) {
+                guard let found else { return .refused("That conversation can't be read now.") }
+                state = found
+            } else if var last = refreshedLast[id] {
+                last.fresh = false
+                state = last
+            } else if let entry = directory[id] ?? drafts[id] {
+                state = CallTargetState(target: entry, working: entry.status == .running, needsInput: entry.status == .needsInput, fresh: false)
+            } else {
+                return .refused("That conversation can't be read now.")
             }
+            let value = read(state, request)
+            guard value["ok"] as? Bool != false else { return .json(value, isError: true) }
+            guard !state.fresh else { return .json(value) }
+            guard !closed else { return .refused("The call has ended.") }
+            if var pending = reading[id] {
+                // One on its way already: this read joins it.
+                pending.given = state
+                pending.words = max(pending.words, request.words)
+                reading[id] = pending
+            } else {
+                let limit = refreshLimit
+                let refresh = Task { await targets.refreshed(id, within: limit) }
+                reading[id] = (refresh, state, request.words)
+                Task { [weak self] in
+                    let state = await refresh.value
+                    await self?.refreshed(id, state)
+                }
+            }
+            onReading?(.refreshing)
             return .json(value)
 
         case .message:
@@ -779,6 +856,137 @@ public actor CallContext {
                 }
             }
         }
+    }
+
+    /// A read as `readConversation` gives it, `adding` what goes with it
+    /// (a cue's event and ref): its name, state and the turns `request`
+    /// asks for (`CallRead`), each message cut in the middle past its
+    /// words, within `Limits.readBytes` on the wire: the older turns give
+    /// way first, then the newest's words. One that isn't current says so
+    /// (`refreshing`), with when this phone last read it from the computer
+    /// (`checked`). A reference that fits no turn, or several, is refused
+    /// (`ok` false).
+    private func read(_ state: CallTargetState, _ request: CallRead.Request = .init(), adding extra: [String: Any] = [:]) -> [String: Any] {
+        // Asked for by its reference, it is named by its title alone.
+        var name: [String: Any] = ["title": state.target.title, "parents": state.target.parents.map(\.title)]
+        name.merge(extra) { _, new in new }
+        let items = CallRead.items(state)
+        let references = CallRead.references(items.map(\.id))
+        let range: ClosedRange<Int>?
+        switch CallRead.range(request, in: items, references: references, older: state.hasMore) {
+        case .success(let found): range = found
+        case .failure(let refusal): return extra.merging(["ok": false, "reason": refusal.reason]) { _, new in new }
+        }
+        if !state.fresh {
+            name["refreshing"] = true
+            if let at = state.checkedAt, at > 0 { name["checked"] = when(at) }
+            name["note"] = items.isEmpty ? Self.refreshingEmptyNote : Self.refreshingNote
+        }
+        let shown: Range<Int> = range.map { $0.lowerBound..<($0.upperBound + 1) } ?? 0..<0
+        var value = within(state, items: items, references: references, shown: shown, words: request.words, as: name)
+        // None of its turns on this phone: no empty list to take for an empty conversation.
+        if !state.fresh, items.isEmpty { value["turns"] = nil; value["olderTurns"] = nil }
+        return value
+    }
+
+    /// `shown` of `items` within `Limits.readBytes` on the wire: the older
+    /// turns give way first, then the newest's words.
+    private func within(_ state: CallTargetState, items: [CallRead.Item], references: [String], shown: Range<Int>, words: Int,
+                        as name: [String: Any]) -> [String: Any] {
+        var shown = shown, words = words
+        var value = body(state, items: items, references: references, shown: shown, words: words, as: name)
+        while Self.escapedSize(Self.data(value)) > Limits.readBytes {
+            if shown.count > 1 { shown = shown.dropFirst() }
+            else if words > CallRead.minWords { words = max(CallRead.minWords, words / 2) }
+            else { break }
+            value = body(state, items: items, references: references, shown: shown, words: words, as: name)
+        }
+        return value
+    }
+
+    /// A conversation read while it wasn't current, made current or let
+    /// go: what is new since the agent was given it goes as a cue (its
+    /// turns new or changed since, from the oldest of them to the newest,
+    /// the newest five at most, paged and cut as a read); nothing new, or
+    /// not current in time, a
+    /// line of context. Nothing once the call has ended.
+    private func refreshed(_ id: String, _ state: CallTargetState?) {
+        guard let pending = reading.removeValue(forKey: id), !closed else { return }
+        var event: [String: Any] = ["ref": ref(id)]
+        if let title = directory[id]?.title ?? drafts[id]?.title { event["title"] = title }
+        if let state, state.fresh {
+            var kept = state
+            kept.checkedAt = now() * 1000
+            refreshedLast[id] = kept
+        }
+        guard let state, state.fresh else {
+            event["event"] = "conversation_unconfirmed"
+            if let at = (state ?? pending.given).checkedAt, at > 0 { event["checked"] = when(at) }
+            event["note"] = Self.unconfirmedNote
+            onReading?(.context(Self.string(event)))
+            return
+        }
+        guard let update = update(from: pending.given, to: state, words: pending.words, as: event) else {
+            event["event"] = "conversation_current"
+            event["note"] = Self.currentNote
+            onReading?(.context(Self.string(event)))
+            return
+        }
+        onReading?(.update(.conversationUpdate(Self.string(update))))
+    }
+
+    static let refreshingNote = "What this phone had: answer from it, and say you're checking the computer for anything newer, which comes as an [app] conversation_update."
+    static let refreshingEmptyNote = "This phone has none of its turns yet, so this says nothing of what is in it: say you're checking; its turns come as an [app] conversation_update."
+    static let unconfirmedNote = "The computer didn't answer in time: what you read may be out of date. Nothing to say unless asked."
+    static let currentNote = "Checked: nothing new since you read it. Nothing to say unless asked."
+
+    /// What is new in `state` since `given`, as a `conversation_update`:
+    /// the turns from the oldest new or changed one (the person's message,
+    /// the agent's words, how it ended, a waiting message's delivery) to
+    /// the newest, `working`, `needsInput` and when each side last wrote;
+    /// nil if no turn changed and it works and needs the person as it did.
+    private func update(from given: CallTargetState, to state: CallTargetState, words: Int, as event: [String: Any]) -> [String: Any]? {
+        let before = Dictionary(CallRead.items(given).map { ($0.id, Self.said($0)) }, uniquingKeysWith: { _, last in last })
+        let items = CallRead.items(state)
+        let changed = items.indices.first { before[items[$0].id] != Self.said(items[$0]) }
+        guard changed != nil || given.working != state.working || given.needsInput != state.needsInput else { return nil }
+        var name: [String: Any] = event
+        name["event"] = "conversation_update"
+        let references = CallRead.references(items.map(\.id))
+        // The newest five at most; continueFrom reads back from there.
+        let oldest = max(changed ?? items.count, items.count - CallRead.turns)
+        return within(state, items: items, references: references, shown: oldest..<items.count, words: words, as: name)
+    }
+
+    /// `task`'s value if it comes within `limit`, else nil, leaving it to go on.
+    static func within<T: Sendable>(_ limit: Duration, _ task: Task<T, Never>) async -> T? {
+        let first = First<T?>()
+        return await withCheckedContinuation { continuation in
+            Task { first.resume(continuation, with: await task.value) }
+            Task {
+                try? await Task.sleep(for: limit)
+                first.resume(continuation, with: nil)
+            }
+        }
+    }
+
+    private final class First<T: Sendable>: @unchecked Sendable {
+        private let lock = NSLock()
+        private var done = false
+
+        func resume(_ continuation: CheckedContinuation<T, Never>, with value: T) {
+            lock.lock()
+            let first = !done
+            done = true
+            lock.unlock()
+            if first { continuation.resume(returning: value) }
+        }
+    }
+
+    /// What a turn says, as a read tells it.
+    private static func said(_ item: CallRead.Item) -> [String?] {
+        if let turn = item.turn { return [turn.user, turn.userBy, turn.reply, turn.ended, turn.error] }
+        return [item.pending?.text, item.pending?.by, item.pending?.delivery?.rawValue]
     }
 
     /// The conversation on screen as the app has it now, known to the
@@ -836,6 +1044,8 @@ public actor CallContext {
         settling[call] = key
         switch await targets.send(id, text: text, id: messageId, change: asked.change) {
         case .queued:
+            // Heard from from now on, as a visited one is: its reply comes as it is written.
+            visit(id)
             var value: [String: Any] = ["status": "queued", "ref": ref(id), "delivery": Self.queued]
             // Sent to what was on screen: named, so the agent can say where it went.
             if target.isEmpty { value["title"] = state.target.title }
@@ -1073,13 +1283,15 @@ public actor CallContext {
         return directory[id] == nil && drafts[id] == nil ? nil : id
     }
 
-    /// `agentId` becomes the latest visited; the oldest past the limit is
-    /// forgotten, so visiting it again starts from what is there then.
+    /// `agentId` becomes the latest visited or messaged; the oldest past
+    /// the limit is forgotten, so following it again starts from what is
+    /// there then. The one on screen never drops out while it is in front.
     private func visit(_ agentId: String) {
         visited.removeAll { $0 == agentId }
         visited.insert(agentId, at: 0)
-        for dropped in visited.dropFirst(Limits.visited) { heard[dropped] = nil }
-        visited = Array(visited.prefix(Limits.visited))
+        while visited.count > Limits.visited, let oldest = visited.lastIndex(where: { $0 != focus }) {
+            heard[visited.remove(at: oldest)] = nil
+        }
     }
 
     /// What is there when the call first sees a conversation is had: the
@@ -1103,23 +1315,27 @@ public actor CallContext {
         return value
     }
 
-    /// The last finished turns a read shows: five with the person's message
-    /// still waiting for an answer, which is the fifth.
+    /// The last finished turns the first context shows: five with the
+    /// person's message still waiting for an answer, which is the fifth.
     static func recent(_ state: CallTargetState) -> [CallTurn] {
         Array(answering(state).suffix(state.unanswered == nil ? Limits.turns : Limits.turns - 1))
     }
 
-    /// Finished turns with something to say: the person's message, the
+    /// Finished exchanges with something to say: the person's message, the
     /// agent's last words, an error, or as much of that as there is. Never
-    /// the agent's words between its steps.
+    /// the agent's words between its steps, nor a run steering cut short.
     private static func answering(_ state: CallTargetState) -> [CallTurn] {
-        state.turns.filter { $0.user?.isEmpty == false || $0.reply?.isEmpty == false || $0.ended == "error" }
+        state.exchanges.filter { $0.user?.isEmpty == false || $0.reply?.isEmpty == false || $0.ended == "error" }
     }
 
     /// A conversation as read: `name`, then whether it works or waits for
-    /// the person, and its turns. Never its kind, status or reference
-    /// beyond what `name` holds: the directory has those.
-    private func body(_ state: CallTargetState, turns: [CallTurn], as name: [String: Any], options: Bool) -> [String: Any] {
+    /// the person, and the turns `shown` of `items`, each with its
+    /// reference, oldest first, the one waiting for an answer apart; where
+    /// to read on back from (`continueFrom`) when older ones are here.
+    /// Never its kind, status or reference beyond what `name` holds: the
+    /// directory has those.
+    private func body(_ state: CallTargetState, items: [CallRead.Item], references: [String], shown: Range<Int>, words: Int,
+                      as name: [String: Any]) -> [String: Any] {
         var value = name
         value["working"] = state.working
         value["needsInput"] = state.needsInput
@@ -1128,38 +1344,51 @@ public actor CallContext {
             if let by = last.by { said["by"] = by }
             value["lastUserMessage"] = said
         }
-        if let at = state.turns.filter({ $0.reply?.isEmpty == false }).compactMap(\.endedAt).filter({ $0 > 0 }).max() { value["lastAgentReply"] = when(at) }
+        if let at = state.exchanges.filter({ $0.reply?.isEmpty == false }).compactMap(\.endedAt).filter({ $0 > 0 }).max() { value["lastAgentReply"] = when(at) }
         if !state.target.workspace.isEmpty { value["workspace"] = state.target.workspace.joined(separator: " / ") }
         if let mode = state.mode { value["model"] = ["id": mode.modelId, "name": mode.model, "effort": mode.effort] }
-        if options, !state.models.isEmpty { value["models"] = Self.models(state.models) }
-        value["turns"] = turns.map(Self.turn)
-        value["olderTurns"] = state.hasMore || Self.answering(state).count > turns.count
-        if let pending = state.unanswered {
-            let text = Self.clipped(pending.text, bytes: Limits.userBytes)
-            var message: [String: Any] = ["text": text]
-            if text != pending.text { message["truncated"] = true }
-            if let delivery = pending.delivery { message["delivery"] = delivery.rawValue }
-            if let by = pending.by { message["by"] = by }
-            value["pendingUserMessage"] = message
+        if !state.models.isEmpty { value["models"] = Self.models(state.models) }
+        var turns: [[String: Any]] = []
+        for index in shown {
+            if let turn = items[index].turn { turns.append(Self.turn(turn, ref: references[index], words: words)) }
+            if let pending = items[index].pending {
+                var message: [String: Any] = ["ref": references[index]]
+                var cuts: [String: Any] = [:]
+                message["text"] = Self.cut(pending.text, words: words, as: "text", into: &cuts)
+                if let cut = cuts["text"] { message["cut"] = cut }
+                if let delivery = pending.delivery { message["delivery"] = delivery.rawValue }
+                if let by = pending.by { message["by"] = by }
+                value["pendingUserMessage"] = message
+            }
         }
+        value["turns"] = turns
+        value["olderTurns"] = shown.lowerBound > 0 || state.hasMore
+        if shown.lowerBound > 0 { value["continueFrom"] = references[shown.lowerBound - 1] }
         return value
     }
 
-    static func turn(_ turn: CallTurn) -> [String: Any] {
-        var value: [String: Any] = ["ended": turn.ended]
-        var cut = false
-        func text(_ words: String?, as key: String, bytes: Int) {
-            guard let words, !words.isEmpty else { return }
-            let kept = clipped(words, bytes: bytes)
-            value[key] = kept
-            if kept != words { cut = true }
+    /// One turn as a read gives it: its reference, the person's message and
+    /// the agent's last words, each cut in the middle past `words` with
+    /// its whole size in `cut`, and how it ended.
+    static func turn(_ turn: CallTurn, ref: String, words: Int) -> [String: Any] {
+        var value: [String: Any] = ["ref": ref, "ended": turn.ended]
+        var cuts: [String: Any] = [:]
+        if let user = turn.user, !user.isEmpty {
+            value["user"] = cut(user, words: words, as: "user", into: &cuts)
+            if let by = turn.userBy { value["userBy"] = by }
         }
-        text(turn.user, as: "user", bytes: Limits.userBytes)
-        if turn.user?.isEmpty == false, let by = turn.userBy { value["userBy"] = by }
-        text(turn.reply, as: "assistant", bytes: Limits.replyBytes)
+        if let reply = turn.reply, !reply.isEmpty { value["assistant"] = cut(reply, words: words, as: "assistant", into: &cuts) }
         if turn.ended == "error", let reason = turn.error, !reason.isEmpty { value["error"] = truncated(reason, bytes: Limits.errorBytes) }
-        if cut { value["truncated"] = true }
+        if !cuts.isEmpty { value["cut"] = cuts }
         return value
+    }
+
+    /// `text` within `words` (`CallRead.cut`), its whole size and what was
+    /// left out put in `cuts` under `key` when it was cut.
+    private static func cut(_ text: String, words: Int, as key: String, into cuts: inout [String: Any]) -> String {
+        guard let cut = CallRead.cut(text, words: words) else { return text }
+        cuts[key] = ["words": cut.words, "leftOut": cut.leftOut]
+        return cut.text
     }
 
     /// `text` within `bytes` of UTF-8, cut after a whole word and saying

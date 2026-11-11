@@ -481,7 +481,10 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
         if profile.isAgentConnection {
             let server = context.account.agentConnections.server(for: id)
             let revoked = context.account.agentConnections.accounts.first { $0.id == id }?.revoked == true
-            let serverRows: [[SettingsRow]] = server.map { origin in
+            // A Happy Cloud server signs in through the Cloud account, and an
+            // ended session signs in again from home's signed-out page: no
+            // Server or Sign In Again rows here.
+            let serverRows: [[SettingsRow]] = server.flatMap { HappyCloud.isCloud($0) ? nil : $0 }.map { origin in
                 [[
                     Row(id: "server", title: Strings.ServerSignIn.server, value: HappyCloud.handle(server: origin) ?? URLComponents(string: origin)?.host ?? origin, accessory: .none),
                     Row(id: "server-sign-in", title: revoked ? Strings.ServerSignIn.needsSignIn : Strings.ServerSignIn.signInAgain, accessory: .none, action: { [weak self] in
@@ -494,16 +497,17 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
             let removal: [[SettingsRow]] = [[
                 Row(id: "disconnect", title: server == nil ? Strings.disconnect : Strings.ServerSignIn.signOut, accessory: .none, destructive: true, action: { [weak self] in self?.remove(id, direct: true) }),
             ]]
-            let computeRows: [[SettingsRow]]
+            // Compute closes Data and Storage's card.
+            let computeRows: [SettingsRow]
             if let session = Session.session(for: id, context: context), ComputeViewController.offered(session) {
-                computeRows = [[Row(Index.computes, action: { [weak self] in
+                computeRows = [Row(Index.computes, action: { [weak self] in
                     guard let self, ComputeViewController.offered(session) else { return }
                     navigationController?.pushViewController(ComputeViewController(session: session), animated: true)
-                })]]
+                })]
             } else { computeRows = [] }
             return [
                 accountRows(),
-            ] + serverRows + computeRows + [
+            ] + serverRows + [
                 [Row(Index.profile, image: profilePhoto, value: profileName.isEmpty ? nil : profileName, action: { [weak self] in self?.openProfile() })],
                 [supportRow()],
                 [
@@ -512,8 +516,8 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
                     Row(Index.agents, action: { [weak self] in self?.open(.agents) }),
                 ] + providersRows(id) + [
                     Row(Index.dataStorage, action: { [weak self] in self?.open(.dataStorage) }),
-                ],
-                [analyticsRow()],
+                ] + computeRows,
+                [Row(Index.privacySettings, action: { [weak self] in self?.open(.privacy) })],
                 aboutRows(),
             ] + removal
         }
@@ -535,7 +539,7 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
                 Row(Index.enterTerminal, accessory: .none, action: { [weak self] in self?.connectTerminal(scanning: false) }),
             ],
             [Row(Index.supportUs, action: { [weak self] in self?.open(.supportUs) })],
-            [analyticsRow()],
+            [Row(Index.privacySettings, action: { [weak self] in self?.open(.privacy) })],
             aboutRows(),
             [Row(id: "sign-out", title: Strings.signOut, accessory: .none, destructive: true, action: { [weak self] in self?.remove(id, direct: false) })],
         ]
@@ -569,7 +573,7 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
 
     /// The pages a row opens in settings' cards.
     enum Page: CaseIterable {
-        case appearance, agents, supportUs, account, backup, voice, language, dataStorage, agentVoice
+        case appearance, agents, supportUs, account, backup, voice, language, dataStorage, agentVoice, privacy
     }
 
     /// Whether `profile`'s page has `page`: a computer's look, or a Happy
@@ -577,6 +581,7 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
     private func has(_ page: Page, _ profile: Profile) -> Bool {
         switch page {
         case .appearance, .agents, .agentVoice: profile.isAgentConnection
+        case .privacy: true
         // An agent connection's is Support Happy, the boba row.
         case .supportUs: !profile.isAgentConnection
         case .dataStorage: profile.isAgentConnection || activeSession != nil
@@ -588,6 +593,7 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
         switch page {
         case .appearance: SettingsPageViewController(title: SettingsIndex.appearance.title) { [weak self] in self?.appearanceRows() ?? [] }
         case .agents: SettingsPageViewController(title: SettingsIndex.agents.title) { [weak self] in self?.agentRows() ?? [] }
+        case .privacy: SettingsPageViewController(title: SettingsIndex.privacySettings.title) { [weak self] in self.map { [[$0.analyticsRow()]] } ?? [] }
         case .supportUs: SupportUsViewController()
         case .account: activeSession.map { AccountSettingsViewController(context: context, session: $0) }
         case .backup: activeSession.map { BackupSettingsViewController(context: context, session: $0) }
@@ -738,9 +744,9 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
         Task { try? await engine.updateModelPreferences(change) }
     }
 
-    /// This phone's own analytics switch, whatever is signed in: a phone
-    /// with only agent connections has no account setting to turn off.
-    /// Off deletes what was waiting to be sent.
+    /// This phone's own analytics switch, whatever is signed in, on the
+    /// Privacy page: a phone with only agent connections has no account
+    /// setting to turn off. Off deletes what was waiting to be sent.
     private func analyticsRow() -> SettingsRow {
         let entry = SettingsIndex.analytics
         return SettingsRow(id: entry.id, title: entry.title, icon: (entry.glyph, entry.tile), accessory: .toggle,
@@ -748,7 +754,7 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
             let kept = Analytics.shared.setDeviceOptOut(!on)
             self?.rebuild()
             if !kept, !on, let self {
-                Alerts.show(Strings.Common.error, Strings.SettingsAccount.analyticsNotSaved, on: self)
+                Alerts.show(Strings.Common.error, Strings.SettingsAccount.analyticsNotSaved, on: self.page ?? self)
             }
         }, footer: Strings.SettingsAccount.privacyDescription)
     }

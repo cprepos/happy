@@ -36,6 +36,8 @@ data class KeptConversation(
     val mode: Mode?,
     /** The agent's slash commands as last read; null when none were. */
     val slashCommands: List<SlashCommand>? = null,
+    /** When the computer's history was last read in full (ms since 1970); null if never, or kept before it was. */
+    val syncedAt: Long? = null,
 ) {
     fun json(): JsonObject = buildJsonObject {
         put("version", VERSION)
@@ -45,6 +47,7 @@ data class KeptConversation(
         agent?.let { put("agent", agentJson(it)) }
         mode?.let { put("mode", it.json()) }
         slashCommands?.let { put("slashCommands", SlashCommand.json(it)) }
+        syncedAt?.let { put("syncedAt", it) }
     }
 
     companion object {
@@ -62,6 +65,7 @@ data class KeptConversation(
                 agent = AgentInfo.parse(o["agent"]),
                 mode = Mode.parse(o["mode"]),
                 slashCommands = SlashCommand.parseAll(o["slashCommands"]),
+                syncedAt = (o["syncedAt"] as? JsonPrimitive)?.content?.toLongOrNull(),
             )
         }
 
@@ -71,6 +75,7 @@ data class KeptConversation(
             run.startedAt?.let { put("startedAt", it) }
             run.endedAt?.let { put("endedAt", it) }
             run.reason?.let { put("reason", it) }
+            if (run.standalone) put("kind", "standalone")
             put("messages", JsonArray(run.messages.map(::messageJson)))
         }
 
@@ -87,6 +92,7 @@ data class KeptConversation(
             }
             message.failure?.let { put("failure", it) }
             message.error?.let { put("error", it) }
+            message.quickReply?.let { put("quickReply", it.json()) }
         }
 
         private fun blockJson(block: Block): JsonObject = when (block) {
@@ -122,6 +128,9 @@ data class KeptConversation(
                 block.elevated?.let { put("elevated", it) }
             }
             is Block.Compaction -> buildJsonObject { put("type", "compaction"); put("status", block.status) }
+            is Block.Ui -> block.raw
+            is Block.Action -> block.raw
+            is Block.QuickReplies -> block.raw
             is Block.Unknown -> buildJsonObject { put("type", block.type) }
         }
 
@@ -233,6 +242,8 @@ data class KeptConversation(
                 put("input", presentation.input)
                 presentation.command?.let { put("command", it) }
             }
+            is Presentation.Ui -> presentation.raw
+            is Presentation.QuickReplies -> presentation.raw
         }
 
         private fun hunkJson(hunk: Presentation.FileDiff.Hunk): JsonObject = buildJsonObject {

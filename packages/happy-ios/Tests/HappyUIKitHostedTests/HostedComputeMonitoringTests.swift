@@ -96,6 +96,8 @@ final class HostedComputeMonitoringTests: XCTestCase {
         let settings = SettingsViewController(context: context, computer: session.accountID)
         let navigation = try await host(settings)
         XCTAssertNotNil(settings.shownRow("computes"))
+        // The last row of Data and Storage's card, not a card of its own.
+        XCTAssertEqual(settings.shownRowIDs.first { $0.contains("data-storage") }?.last, "computes", "\(settings.shownRowIDs)")
         SettingsLinks.open(.computes, session: session, from: settings)
         try await until { navigation.topViewController is ComputeViewController && navigation.transitionCoordinator == nil }
         let page = try XCTUnwrap(navigation.topViewController as? ComputeViewController)
@@ -167,7 +169,7 @@ final class HostedComputeMonitoringTests: XCTestCase {
         navigation.setViewControllers([home], animated: false)
         home.loadViewIfNeeded()
         home.beginSearch()
-        home.search("Compute pools")
+        home.search("Compute")
         let results = try XCTUnwrap(home.view.subviews.compactMap { $0 as? HomeSearchResultsView }.first)
         XCTAssertTrue(results.list.shownRows.contains { $0.id == "search:settings:computes" })
         await transport.setPermissions(["compute.use"])

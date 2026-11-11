@@ -33,7 +33,8 @@ Preserve credential and push compatibility on upgrades.
   hosted ElevenLabs agent, its system prompt sent from the phone
   (`CallPrompt`) and v3's four client tools (`CallTool`), no permission
   or question tool, hearing only new words and stopping errors from the last
-  four conversations visited. Home's three-bar button sits immediately left of compose
+  four conversations visited or messaged, and a read brings one up to date
+  first or says it may be stale. Home's three-bar button sits immediately left of compose
   (`ComposeFab(onVoice)`); the call's bar (`CallFrame`, after Telegram-iOS's
   in-call status bar) slides down over the status bar and pushes the whole
   window, the top app bar first, down by its height, taking the top inset.
@@ -257,15 +258,22 @@ win:
   added. Deliberately not iOS's:
   Paper's Grain Gradient (AGSL port, Apache-2.0, attribution in
   `GrainGradient.kt`) behind everything, edge to edge; the logotype
-  centred; one centred "Start" that scans, 48 above the bottom inset. The code is routed
+  centred on the top row, Get help (a ? opening `GetHelpAlert`, iOS's four
+  links) where a ⋮ would be, and no ⋮ (Steve); one centred "Start" that opens
+  the next screen, which scans, 48 above the bottom inset; where the build
+  offers Happy Cloud, "Use Happy Cloud" under it, the quiet text action, as
+  wide, 12 under Start with 24 kept above the bottom inset, Start rising to
+  make room (iOS StartLayout). The code is routed
   (`ConnectKind.Add`): `happy://terminal?` creates a Happy account and
   approves that terminal in one step (`AuthRepository.createAccount`'s
   `prepare`; a failed approval keeps no account), `happy:///account?`
   says it needs a signed-in phone, `happy://direct?` pairs an agent. The
-  ⋮ drop-down holds Enter link manually (same routing), Restore Happy CLI
-  account and Happy CLI server, and nothing else: no "Get help", and no
-  "Create account" because a Happy account is only ever made by a
-  terminal code. A pasted link routes exactly as the scanned code does
+  other ways in are the self-hosted flow's: the next screen's ⋮
+  (`StartMenu`) and the scanner's (`ScannerWay`) hold Enter link manually
+  (same routing), Restore Happy CLI account, Happy CLI server and Get help,
+  and nothing else: no Happy Cloud (its ways in are Start's button and the
+  account menu's row), and no "Create account" because a Happy account is
+  only ever made by a terminal code. A pasted link routes exactly as the scanned code does
   (`ConnectFlow.connectWithUrl` through `route`); only a link of no known
   kind reads differently, as "Invalid authentication URL". Dialogs are Material 3
   (`HappyAlert`, `PromptModal`), not happy-app's iOS-style card, and only
@@ -273,7 +281,7 @@ win:
   (`Screen(avoidKeyboard = true)`); the first screen never does. Palette: blue and violet
   over near-black (dark) or their tints over lavender white (light), no
   green or orange, text AA or better. The shader runs on Android 13+
-  (`RuntimeShader`), about 15 frames a second while resumed, still with
+  (`RuntimeShader`), at the display's rate (120 on the Fold) while resumed, still with
   animations removed; older Android draws a still gradient in the same
   colours.
 - **Compose:** from home it opens an empty new chat; from a chat it
@@ -906,6 +914,8 @@ ANDROID_SERIAL=<device> ./gradlew :benchmark:connectedBenchmarkBenchAndroidTest 
 - A signed release or preview build without an explicit versionCode fails in
   `pre<Variant>Build`, before R8, rather than at the Play console.
 - Shipping goes through the `release` skill like every other release.
+- Release and preview bundles request native debug symbols at `FULL`; inspect
+  their `BUNDLE-METADATA` before upload and follow the release skill's "Debug symbols" rules.
 - CI: `.github/workflows/happy-android.yml` runs `assembleDebug
   assembleRelease testDebugUnitTest :crypto:test` on changes under
   `packages/happy-android/` and shared mobile resources. It has no signing
@@ -1134,25 +1144,40 @@ change its wire behaviour on Android alone.
   Only `debug` and `preview` builds offer it (`HappyCloud.offeredIn`, by
   `BuildConfig.BUILD_TYPE`); `release` and `bench` have no way in at all.
   The account menu's last row, a + reading "Connect to Happy Cloud" (with no
-  account yet, the first screen's ⋮ and Add's scanner ⋮, `ScannerWay.Cloud`),
-  opens a full-screen welcome (no dialog); its Connect opens the
-  **account** sign-in in a Custom Tab: PKCE against the accounts origin's
-  `/authorize` and `/token`, `client_id` `happy`, `resource` the accounts
-  origin, nothing discovered (the page offers Apple for now). The account
+  account yet, the first screen's "Use Happy Cloud"), opens a full-screen
+  welcome (no dialog), desktop's (CloudConnectScreen.tsx at dca9b205): its
+  CLOUD_SLIDES (`CloudSlides`, the logo then robot, closed-lock, sparkles and
+  open-hands, desktop's Lottie files minified, and its words) as the first
+  screen's `StartGallery`, with desktop's scenes drifting down the sides
+  (`CloudDrift`), then Sign in with Apple where Start is and Sign in with
+  GitHub under it where Use Happy Cloud is (iOS's). Each opens the
+  **account** sign-in in an Auth Tab (androidx.browser, ephemeral; a Custom
+  Tab where there is none): PKCE against the accounts origin's `/authorize`
+  and `/token`, `client_id` `happy`, `resource` the accounts origin, nothing
+  discovered, and `provider=apple` or `github` (`CloudProvider`), which skips
+  the page's chooser. Both are web sign-ins: Apple has no native one on
+  Android, and the service refuses Google. The account
   token is a pass of about an hour with no refresh (token lifetimes v4): held
   in memory only, never stored, never refreshed, and only ever sent to the
   accounts API. Past its hour (two minutes' margin), or on any 401 from the
   accounts API, the account is signed out with nothing retried, and the +
   opens on the welcome saying the hour is up (`CloudAccountState.SignedOut`
-  `expired`). Signed in, the + skips the welcome and shows the picker: "Your servers" (`GET /v1/servers`, the ones on
-  the phone checked; each titled by its `displayName` over `@name`, with its
-  picture: the ThumbHash painted first, then the bytes from its `url`, which
-  `CloudAccount.image` fetches with the account token only from the accounts
-  origin; no picture, the generated avatar its connection will have), "Create a new server" (a name typed after an `@`,
-  checked with `GET /v1/servers/availability` as the person pauses, then
-  `POST /v1/servers`) and "Join a server" (name and invite code, `POST
-  /v1/servers/join`). Picking, creating or joining one signs in to it with no
-  browser: `POST /v1/servers/:id/token` with the account token
+  `expired`). Signed in, the + skips the welcome and shows "Join a server"
+  (`GET /v1/servers`): each server titled by its `displayName` over `@name`,
+  with its picture (the ThumbHash painted first, then the bytes from its
+  `url`, which `CloudAccount.image` fetches with the account token only from
+  the accounts origin; no picture, the placeholder its bare name picks, as
+  desktop's rail and iOS's list) and Join, which signs in there without
+  leaving the list (one at a time; a name or a failure goes to the sign-in
+  screen) and reads Joined once it is on the phone. Continue appears once one
+  is, and opens the last joined. Under them, "Bootstrap a new one" (a name
+  typed after an `@`, checked with `GET /v1/servers/availability` as the
+  person pauses, then `POST /v1/servers`) and "Join with an invite" (name and
+  invite code, `POST /v1/servers/join`), each going straight into its server.
+  An account with no servers opens on Bootstrap (`CloudCreateRoute(first)`).
+  Back on Join a server, or on that first Bootstrap, signs the account out,
+  so Continue can use another (desktop's); not while a join runs. Joining,
+  creating or joining with an invite signs in with no browser: `POST /v1/servers/:id/token` with the account token
   (`CloudAccount.serverToken`, `ServerSignInFlow.startWith`) gives the server's
   access and refresh tokens, its `aud` checked as any; then as the sign-in
   below (checked with the server, a name if new, kept). That server token is
@@ -1163,13 +1188,12 @@ change its wire behaviour on Android alone.
   out of it, the server's own browser sign-in opens by itself. Each server is its own connection; one already here
   just opens. The addresses are the app's own, never typed or pasted, so no
   code and no `instanceId` check them.
-  Every Happy Cloud screen (welcome, Your servers, Create, Join, and the
+  Every Happy Cloud screen (welcome, Join a server, Bootstrap, the invite, and the
   server sign-in, which reads "Connecting to @name…") is full screen on the
   first screen's Grain Gradient (`StartSpec` palettes, onboarding's 28/34
   title, a scene above it) with one primary action at the bottom
   (`CloudScreens.kt`, `CloudFrame`); servers are cards on it.
-  Sign-in methods are the accounts page's (Apple and GitHub now); the app
-  shows none of its own, but one hidden: the welcome's sparkles pressed ten
+  Besides Apple and GitHub, one sign-in is hidden: the welcome's slide art pressed ten
   times within four seconds (`CloudWelcome`) reveal a test account's login
   and password, for people and agents testing without Apple or GitHub.
   Nothing of it is composed before then. It posts `POST /v1/auth/password`
@@ -1177,7 +1201,7 @@ change its wire behaviour on Android alone.
   as after the browser; a wrong login or password, or a lockout, shows under
   the fields. The password stays in that composition only: never saved with
   the screen, stored or logged. Test accounts exist only when an operator
-  creates one. Your servers' ⋮ has "Sign out of Happy Cloud", which
+  creates one. Join a server's ⋮ has "Sign out of Happy Cloud", which
   forgets the pass; servers on the phone stay signed in. Removing a cloud
   server (`removeAgentConnection`) first revokes its session at the accounts
   service (`POST /revoke`, its refresh token and `client_id`, no account
@@ -1686,6 +1710,79 @@ secretbox has checked the MAC, and a sent picture is kept at upload, so the
 sender never downloads it. A legacy download is one request with progress
 from the body; it can't pause.
 
+### Chat UI
+
+An agent shows typed components in a conversation and suggests quick
+replies (happy-agent protocol 35). Every request to an agent connection
+says `Happy-Protocol: 35` (`TailcatHttp.requestHead`); without it the
+daemon sends fallback text and leaves attempt records out.
+
+The contract is happy-agent's client package, vendored into
+`app/src/test/resources/ui/` by `tools/chat-ui/vendor.sh <happy-agent
+checkout> <commit>`: `ui.schema.json` (the catalog, secret fields marked
+`x-happy-secret`), `actions.fixtures.json` (its conformance vectors) and
+`vendored.json` (the commit and each file's SHA-256, which
+`UiContractTest` checks). Never edit them by hand; run the script again
+when the catalog changes. Tests read them through `UiContract`. A vector
+section no test reads is not depended on: today `result` (no action this
+build sends has one) and `mediaLayout`'s desktop row height.
+
+- **Wire** (`conversation/ui/UiWire.kt`, `QuickReplies.kt`): a `ui` block
+  of an agent message, the `ui` presentation of a `show_ui` call (its
+  `items` are media items a `media` component names by index), the
+  `action` block of an attempt record, and `quick_replies` as a block or a
+  `suggest_replies` call's presentation. A block that doesn't decode is
+  skipped, never its message. Each is kept on the phone as it came (`raw`).
+- **A component is drawn whole or not at all.** `UiComponent` reads the
+  types this build draws strictly, as their schemas say; any other type, a
+  known one whose props don't fit, and a `media` naming an item its call
+  doesn't have, is its `fallback` line. `provider_sign_in` is a fallback
+  line. Adding a type: its class and strict parse in `UiWire.kt`, its row
+  in `ConversationRowBuilder.uiRows`, its view, and tests of all three
+  against the schema.
+- **Rows.** A component is a `ConversationRow.Ui`; a `media` component is a
+  `ConversationRow.UiMedia`, a row of its own kind rather than a flag on
+  `Media`, because it lays files out among the pictures by the shared rule
+  (`UiMediaLayout`, a port of `layoutMedia` checked against the vectors)
+  and labels each item. What `show_ui` or `suggest_replies` showed stands
+  in its call's place, with no tool line.
+- **A press** is `Conversation.press(offer, action)`: one
+  `POST /v0/agents/:id/actions`, no bubble. `UiPresses` holds how presses
+  stand: one of an offer at a time; the attempt ID kept across the
+  request's retries and, when no answer came, for the same press again;
+  only the action's redacted form while it goes. `UiActions` is the
+  catalog of what this build sends: the fields kept (never one marked
+  secret; an action it doesn't know keeps no payload) and the permission
+  needed, both held to the schema by `UiActionsTest`. Nothing of a payload
+  is logged or stored.
+- **Attempt records** show on their component as `UiWork`, never as a row:
+  busy while a press goes or the newest attempt is pending; a refusal only
+  while it is news (learned while the chat is open, until the offer is
+  pressed again, a later attempt goes through, or the component's live
+  state is read again after it). They live in standalone runs
+  (`Run.standalone`, `kind: "standalone"`), which never change whether
+  the agent is working and draw no end of a turn.
+- **Results.** No action this build sends answers with a result, so
+  `ConversationApi.act` reads none. One that does keeps its result in the
+  conversation, by offer, and publishes it with the row: never in a row's
+  `remember`, which a lazy list drops as it scrolls away.
+- **Live components** draw from the server's state, not their props:
+  `default_model` from `ConversationState.catalog`, read again on
+  `config.updated`.
+- **Views** (`ui/conversation/UiComponentViews.kt`, `UiDefaultModelView.kt`,
+  `UiMediaViews.kt`, `QuickReplyViews.kt`) act through one object,
+  `ConversationRowActions.ui` (`UiRowActions`); where it is null the rows
+  are only read. No link a server sends is opened; if one ever is, only
+  `https`.
+- **Quick replies.** `QuickReplyPlacement` puts each stack under all the
+  agent wrote in its turn before a person's message; `QuickReplyRows.mark`
+  sets the option sent from the message's `quickReply` and lets only the
+  newest stack take a tap, until someone writes. A tap is
+  `Conversation.sendReply`: an ordinary send of the option with
+  `quickReply { messageId, toolCallId?, index }`. The optional `ui` list
+  is ignored.
+- Words are in `strings_chat_ui.xml`.
+
 ### Context meter and usage ring
 
 Under an agent connection's composer, `ui/conversation/ContextMeter` draws
@@ -1823,7 +1920,8 @@ picture, its accounts card, settings search and the account menu's button
 move only for an account without a picture or thumbhash of its own
 (`AvatarPlaceholder.liveSeed`); the menu's rows stay still. Seeds follow
 happy-ios: an agent connection is
-`agent:<address>`, a bot or task its own id, a project its id. Agent
+`agent:<address>`, a Happy Cloud server its bare name (`acme`,
+`HappyCloud.serverName`), a bot or task its own id, a project its id. Agent
 home's project folders read the wire's `avatar`: `kind: "image"` is
 `/v0/projects/:id/avatar` over its thumbhash, `"home"` the home glyph,
 anything else the placeholder (happy-ios still looks for a `url` the wire
@@ -1887,7 +1985,13 @@ is `packages/happy-ios`. The wire keeps its own names
   dropped, and an expired session rekeys; clients, requests under way and
   live sessions stay. tailcat-kotlin watches no network itself, so a network
   that returns gets the same check on every kept client
-  (`Transport.networkChanged`, from `AgentSession.networkReturned`). It uses
+  (`Transport.networkChanged`, from `AgentSession.networkReturned`). A
+  default network that moves to another one with no loss between (Wi-Fi to
+  cellular, `NetworkChange.Moved` from `defaultNetwork().changes()`, iOS's
+  4760daf0c) is different: what was open went out the old way and can hang
+  there silently, so a running link resets its realtime and query clients,
+  says connecting and starts over from its cursor at once
+  (`AgentSession.networkMoved`); the rest get the check. It uses
   tailcat-kotlin's default DERP map (`https://tailcat.dev/derpmap.json`),
   cached in `noBackupFilesDir/tailcat/derpmap.json` (`FileDerpMapCache`):
   with no network and no cached map, connecting fails.

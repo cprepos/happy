@@ -59,6 +59,38 @@ private actor SyncFixture: AgentTransport {
     /// The process every hello names; nil as an older daemon's.
     var daemonId: String?
     var nextHelloGap = false
+    /// The next bootstrap read waits, deaf to cancellation, until `release`.
+    var holdNextRead = false
+    var held: CheckedContinuation<Void, Never>?
+    func holdNextBootstrap() { holdNextRead = true }
+    func isHolding() -> Bool { held != nil }
+    func streamsOpened() -> Int { streamHeaders.count }
+    func release() { held?.resume(); held = nil }
+    var resets: [RequestCategory] = []
+    var wakes = 0
+    /// The stream's tunnel let go of: it ends, as a closed tunnel's does.
+    /// The next stream's hello waits until `releaseHello`.
+    var holdHello = false
+    var heldHello: AsyncThrowingStream<Data, Error>.Continuation?
+    func holdNextHello() { holdHello = true }
+    func releaseHello() {
+        let process = daemonId.map { ",\"daemonId\":\"\($0)\"" } ?? ""
+        heldHello?.yield(Data("event: hello\ndata: {\"cursor\":\"cursor-1\",\"resumed\":true,\"gap\":false\(process)}\n\n".utf8))
+        heldHello = nil
+    }
+    /// The next reset waits, as a tunnel slow to close, until `releaseReset`.
+    var holdReset = false
+    var heldReset: CheckedContinuation<Void, Never>?
+    func holdNextReset() { holdReset = true }
+    func isHoldingReset() -> Bool { heldReset != nil }
+    func releaseReset() { heldReset?.resume(); heldReset = nil }
+    func reset(_ category: RequestCategory) async {
+        if holdReset { holdReset = false; await withCheckedContinuation { heldReset = $0 } }
+        resets.append(category); if category == .realtime { drop() }
+    }
+    func resumed() { wakes += 1 }
+    func heardResets() -> [RequestCategory] { resets }
+    func heardWakes() -> Int { wakes }
     func setDaemon(_ id: String?) { daemonId = id }
     func gapNextHello() { nextHelloGap = true }
     func bootstrapReads() -> Int { requested.filter { $0 == "/v0/bootstrap/desktop" }.count }
@@ -115,6 +147,10 @@ private actor SyncFixture: AgentTransport {
         requested.append(path)
         if path == "/v0/bootstrap/desktop" {
             if bootstrapFailures > 0 { bootstrapFailures -= 1; throw URLError(.timedOut) }
+            if holdNextRead {
+                holdNextRead = false
+                await withCheckedContinuation { held = $0 }
+            }
             let read = try JSONEncoder().encode(value)
             if newsDuringReads > 0 {
                 newsDuringReads -= 1
@@ -172,15 +208,12 @@ private actor SyncFixture: AgentTransport {
         let process = daemonId.map { ",\"daemonId\":\"\($0)\"" } ?? ""
         let gap = nextHelloGap ? "true" : "false"
         nextHelloGap = false
+        if holdHello { holdHello = false; heldHello = continuation; return .init(status: 200, body: body) }
         continuation.yield(Data("event: hello\ndata: {\"cursor\":\"cursor-1\",\"resumed\":true,\"gap\":\(gap)\(process)}\n\n".utf8))
         return .init(status: 200, body: body)
     }
     func close() { continuations.forEach { $0.finish() }; continuations.removeAll() }
-    /// Each `reset(_:)` heard, by category.
-    var resets: [RequestCategory] = []
-    func reset(_ category: RequestCategory) { resets.append(category) }
     func resetCount(_ category: RequestCategory) -> Int { resets.filter { $0 == category }.count }
-    func streamsOpened() -> Int { streamHeaders.count }
 }
 
 final class SyncEngineTests: XCTestCase {
@@ -309,6 +342,81 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertEqual(resets, [])
         let opened = await transport.streamsOpened()
         XCTAssertEqual(opened, 0)
+        await engine.stop()
+    }
+
+    /// A pause whose tasks wind down slowly, overtaken by a start that
+    /// comes back live, leaves the outbox to that start: what the person
+    /// does next still goes out.
+    func testALatePauseDoesNotTakeALiveEngineOffline() async throws {
+        let transport = SyncFixture()
+        let engine = SyncEngine(client: AgentClient(transport: transport, token: "test"), directory: nil)
+        await engine.start()
+        _ = try await wait(engine) { $0.live && !$0.syncing }
+        await transport.holdNextBootstrap()
+        await transport.emit(.object(["type": .string("workspace.updated"), "payload": .object(["workspaceId": .string("work")])]))
+        try await eventually { await transport.isHolding() }
+
+        // The pause waits on that read; a start gets in once it let go of the run.
+        let pausing = Task { await engine.pause() }
+        try await eventually {
+            await engine.start()
+            return await transport.streamsOpened() == 2
+        }
+        await transport.release()
+        await pausing.value
+
+        await engine.markRead("last-agent")
+        try await eventually { await transport.heardActs().contains("read:last-agent") }
+        await engine.stop()
+    }
+
+    /// Wi-Fi to cellular: the stream, live over the old way, is opened
+    /// again at once on a new tunnel, every tunnel woken, and home says it
+    /// is reconnecting until the stream answers, then picks up where it was.
+    func testAMoveOpensTheStreamAgainAtOnce() async throws {
+        let transport = SyncFixture()
+        await transport.setDaemon("d1")
+        let engine = SyncEngine(client: AgentClient(transport: transport, token: "test"), directory: nil)
+        await engine.start()
+        _ = try await wait(engine) { $0.live && !$0.syncing }
+        let reads = await transport.bootstrapReads()
+        // The new stream's hello waits, so the step between is seen.
+        await transport.holdNextHello()
+
+        await engine.moved()
+        let between = try await wait(engine) { !$0.live && $0.reconnecting }
+        XCTAssertNil(between.error, "the header's \"connecting…\" (`Session.headerState`)")
+        try await eventually { await transport.streamsOpened() == 2 }
+        await transport.releaseHello()
+        _ = try await wait(engine) { $0.live && !$0.syncing }
+        let resets = await transport.heardResets()
+        XCTAssertEqual(resets, [.realtime])
+        try await eventually { await transport.heardWakes() == 1 }
+        let after = await transport.bootstrapReads()
+        XCTAssertEqual(after, reads, "the same process with nothing missed: no read")
+        await engine.stop()
+    }
+
+    /// The app goes to the background while a move closes the old tunnel:
+    /// the move doesn't start the engine again behind the pause.
+    func testAMoveDoesNotUndoAPauseThatCameMeanwhile() async throws {
+        let transport = SyncFixture()
+        let engine = SyncEngine(client: AgentClient(transport: transport, token: "test"), directory: nil)
+        await engine.start()
+        _ = try await wait(engine) { $0.live && !$0.syncing }
+        await transport.holdNextReset()
+        let moving = Task { await engine.moved() }
+        try await eventually { await transport.isHoldingReset() }
+
+        await engine.pause()
+        await transport.releaseReset()
+        await moving.value
+        try await Task.sleep(for: .milliseconds(200))
+        let streams = await transport.streamsOpened()
+        XCTAssertEqual(streams, 1, "the paused engine opened its stream again")
+        let delivering = await engine.deliveryAllowed
+        XCTAssertFalse(delivering)
         await engine.stop()
     }
 

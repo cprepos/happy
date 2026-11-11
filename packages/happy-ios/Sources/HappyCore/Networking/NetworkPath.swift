@@ -7,8 +7,9 @@ import Network
 /// (`NWPathMonitor`): with none, headers say "Waiting for network…" rather
 /// than "Connecting…", as Telegram's do. One monitor for the app; watchers
 /// hear on the main queue, whenever the way out changes: it coming or
-/// going, and also a move between Wi-Fi and cellular, which leaves the old
-/// socket dead while the phone still has a way out.
+/// going, a change of interface, cost or Low Data Mode, and a move to
+/// another interface (`moves`), which leaves the old socket dead while the
+/// phone still has a way out.
 public final class NetworkPath: @unchecked Sendable {
     public static let shared = NetworkPath()
 
@@ -18,6 +19,10 @@ public final class NetworkPath: @unchecked Sendable {
     private let lock = NSLock()
     private var satisfied = true
     private var latest = NetworkPathDetails(satisfied: true)
+    /// The interface the system last sent on ("en0", "pdp_ip0"), kept
+    /// while there is none: coming back on another one is a move too.
+    private var route: String?
+    private var moved = 0
     private var watchers: [UUID: @Sendable (NetworkPathDetails) -> Void] = [:]
     #if DEBUG
     /// Tests: what the path is said to be, whatever it is.
@@ -27,7 +32,7 @@ public final class NetworkPath: @unchecked Sendable {
     private init() {
         #if canImport(Network)
         monitor.pathUpdateHandler = { [weak self] path in
-            self?.update(NetworkPath.describe(path))
+            self?.update(NetworkPath.describe(path), route: path.status == .satisfied ? path.availableInterfaces.first?.name : nil)
         }
         monitor.start(queue: DispatchQueue(label: "engineering.happy.network-path", qos: .utility))
         #endif
@@ -40,6 +45,15 @@ public final class NetworkPath: @unchecked Sendable {
         if let forced { return forced }
         #endif
         return satisfied
+    }
+
+    /// How many times the way out moved to another interface (Wi-Fi to
+    /// cellular and back): what was open went out the old way, and may
+    /// hang there with nothing said. One Wi-Fi to another keeps "en0",
+    /// and a VPN's tunnel hides what is under it: neither is a move here.
+    public var moves: Int {
+        lock.lock(); defer { lock.unlock() }
+        return moved
     }
 
     /// The way out as the system last described it: the interface, and
@@ -62,12 +76,16 @@ public final class NetworkPath: @unchecked Sendable {
     }
     #endif
 
-    /// Any change to the path is told: its coming or going, and a change
-    /// of interface, cost or Low Data Mode while it stays up. The system
-    /// repeats an unchanged path at times; that is not told.
-    func update(_ value: NetworkPathDetails) {
+    /// Any change to the path is told: its coming or going, a move to
+    /// another interface, and a change of interface, cost or Low Data Mode
+    /// while it stays up. The system repeats an unchanged path at times;
+    /// that is not told.
+    func update(_ value: NetworkPathDetails, route: String? = nil) {
         lock.lock()
-        let changed = latest != value
+        let moves = Self.moves(from: self.route, to: route)
+        if moves { moved += 1 }
+        if let route { self.route = route }
+        let changed = latest != value || moves
         latest = value
         satisfied = value.satisfied
         let shown = shownLocked()
@@ -75,6 +93,13 @@ public final class NetworkPath: @unchecked Sendable {
         lock.unlock()
         guard changed else { return }
         DispatchQueue.main.async { for watch in watchers { watch(shown) } }
+    }
+
+    /// Whether going out on `new` after `old` is a move: another interface,
+    /// not the first one heard nor none at all.
+    static func moves(from old: String?, to new: String?) -> Bool {
+        guard let old, let new else { return false }
+        return old != new
     }
 
     /// The details as watchers are told them; the lock is held.
@@ -86,9 +111,10 @@ public final class NetworkPath: @unchecked Sendable {
         return value
     }
 
-    /// Calls `watch` on the main queue whenever the path changes, with
-    /// whether there is a way out; stops when the returned token is
-    /// cancelled. A change of interface is told too, with `true` again.
+    /// Calls `watch` on the main queue whenever the path comes, goes or
+    /// moves, with whether there is a way out; stops when the returned
+    /// token is cancelled. A change of interface is told too, with `true`
+    /// again.
     public func watch(_ watch: @escaping @Sendable (Bool) -> Void) -> NetworkPathWatch {
         watchDetails { watch($0.satisfied) }
     }
@@ -113,6 +139,16 @@ public final class NetworkPath: @unchecked Sendable {
     public func force(_ value: Bool?) {
         lock.lock()
         forced = value
+        let shown = shownLocked()
+        let watchers = Array(watchers.values)
+        lock.unlock()
+        DispatchQueue.main.async { for watch in watchers { watch(shown) } }
+    }
+
+    /// Tests: the path moved to another interface, told to watchers.
+    public func forceMove() {
+        lock.lock()
+        moved += 1
         let shown = shownLocked()
         let watchers = Array(watchers.values)
         lock.unlock()

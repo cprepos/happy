@@ -8,13 +8,17 @@ import com.slopus.happy.analytics.VoiceError
 import android.content.Context
 import android.os.SystemClock
 import com.slopus.happy.BuildConfig
+import com.slopus.happy.agent.AgentSession
 import com.slopus.happy.agent.AgentSessions
+import com.slopus.happy.agent.WireProfileResponse
+import com.slopus.happy.agent.decode
 import com.slopus.happy.payments.OfferResult
 import com.slopus.happy.payments.OfferSheet
 import com.slopus.happy.payments.Offers
 import com.slopus.happy.payments.Subscription
 import com.slopus.happy.ui.conversation.Typesetter
 import com.slopus.happy.ui.conversation.failureText
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -155,9 +159,43 @@ class CallController(
         }.launchIn(calling)
         focus = targets.focusedNow
         calling.launch { context.onRestart { withContext(Dispatchers.Main) { call.requestRestart() } } }
+        // A read of a conversation that wasn't current: the agent answers from it first, then what is new comes as a
+        // cue, or a line of context when nothing is.
+        calling.launch {
+            context.onReading { reading ->
+                calling.launch {
+                    if (session !== call) return@launch
+                    when (reading) {
+                        CallReading.Refreshing -> call.refreshing()
+                        is CallReading.Update -> call.later(reading.cue)
+                        is CallReading.Context -> call.deliver(CallUpdate(listOf(reading.line)))
+                    }
+                }
+            }
+        }
         call.start(language = null, context = {
-            context.initial(history.slots).also { hold(context.followed(), targets) }
-        }, tool = { context.handle(it) })
+            context.initial(history.slots, person(account)).also { hold(context.followed(), targets) }
+        }, tool = {
+            context.handle(it).also {
+                // A message makes where it went one the call hears from.
+                withContext(Dispatchers.Main.immediate) { if (session === call) hold(context.followed(), targets) }
+            }
+        })
+    }
+
+    /** Who the call talks to, in a team: the person's name on this computer; null outside one, or while it can't be read. */
+    private suspend fun person(account: AgentSession): String? {
+        if (account.catalog.value.userId == null) return null
+        val name = account.profile.state.value.name.ifBlank {
+            try {
+                account.client.decode<WireProfileResponse>("GET", "/v0/profile").profile.name.orEmpty()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                ""
+            }
+        }
+        return name.trim().ifEmpty { null }
     }
 
     /** Exactly the conversations the call hears from stay read: one that dropped out of the last visited is let go. */

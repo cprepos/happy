@@ -15,6 +15,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -45,6 +46,13 @@ data class CloudServer(
 /** A server's picture: its ThumbHash to paint first, and its bytes at [url] on the accounts origin, with the account token. */
 @Serializable
 data class CloudServerImage(val thumbhash: String? = null, val width: Int? = null, val height: Int? = null, val url: String)
+
+/**
+ * A way to sign in to the account, by the accounts service's `provider`
+ * hint. Both are web sign-ins on Android: Apple has no native sign-in here,
+ * and the service refuses Google (`unsupported_provider`).
+ */
+enum class CloudProvider(val id: String) { Apple("apple"), GitHub("github") }
 
 /** What `GET /v1/servers/availability` says of a name. */
 enum class CloudName { Available, Taken, Reserved, Invalid }
@@ -123,12 +131,17 @@ class CloudAccount(
         resource = "${origin.value}/",
     )
 
-    /** The page the browser opens, starting a fresh sign-in each time. */
-    fun browserUrl(): String {
+    /**
+     * [provider]'s sign-in, starting a fresh one each time: the PKCE request
+     * with `provider=apple` or `github`, which makes the accounts service skip
+     * its chooser and redirect straight to Apple or GitHub (an unknown
+     * provider shows the chooser; Google is refused, 400).
+     */
+    fun browserUrl(provider: CloudProvider): String {
         val next = auth.begin(origin, method, ServerSignInFlow.REDIRECT_URI)
         pending = next
         mutableState.value = CloudAccountState.InBrowser
-        return next.authorizeUrl
+        return next.authorizeUrl.toHttpUrl().newBuilder().addQueryParameter("provider", provider.id).build().toString()
     }
 
     /** The browser came back to the redirect URI with [uri]; one that isn't this sign-in's is ignored. */

@@ -178,7 +178,8 @@ and fixtures remain. Preserve credential and push compatibility on upgrades.
   v2 ("Happy Agent v2public" and its sendMessage, listSessions,
   getSessionContext and openSession) is what the shipped App Store build
   calls: frozen, never edited.
-  The call hears from the last four conversations visited (`CallContext`):
+  The call hears from the last four conversations visited or messaged
+  (`CallContext`):
   only their agents' new words, each piece once and whole when complete
   (the agent went on past it in its run, or the run is no longer the
   newest or working; never on a pause, never as it streams, never because
@@ -194,6 +195,11 @@ and fixtures remain. Preserve credential and push compatibility on upgrades.
   finger on its row reaches (`WarmChats.intent`), and both a read and a send
   wait for its first page: one never opened on this phone takes a message
   by voice, and a read or send after it finds it kept, not started over.
+  A read answers at once with what the phone has; one not current is
+  marked `refreshing` and made current behind it for up to eight seconds
+  (`SessionCallTargets.refreshed`), what is new then told as a
+  `conversation_update` cue (a silent line if nothing is, or it doesn't
+  come current).
   It ends on background, interruption, lost route, account change and when
   the relay's voice starts. For launch it connects to a public agent by its
   ID (`PublicAgentCallGrants`): a connection mechanism, not authentication.

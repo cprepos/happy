@@ -110,6 +110,19 @@ final class CallController {
                 await MainActor.run { call?.requestRestart() } ?? CallToolResult(text: #"{"ok":false,"reason":"The call has ended."}"#, isError: true)
             }
         }
+        // A read of a conversation that wasn't current: the agent answers from it first, then
+        // what is new comes as a cue, or a line of context when nothing is.
+        Task { [weak call] in
+            await context.onReading { reading in
+                Task { @MainActor in
+                    switch reading {
+                    case .refreshing: call?.refreshing()
+                    case .update(let cue): call?.later(cue)
+                    case .context(let line): call?.deliver(CallUpdate(context: [line]))
+                    }
+                }
+            }
+        }
         self.targets = targets
         self.context = context
         session = call
@@ -161,10 +174,15 @@ final class CallController {
         }
         focus = targets.focusedNow
         call.start(language: nil, context: {
-            let initial = await context.initial(previous: history.slots)
+            let initial = await context.initial(previous: history.slots, person: await Self.person(account))
             await Self.hold(await context.followed, in: targets)
             return initial
-        }, tool: { call in await context.handle(call) })
+        }, tool: { call in
+            let result = await context.handle(call)
+            // A message makes where it went one the call hears from.
+            await Self.hold(await context.followed, in: targets)
+            return result
+        })
         // A call that can't start says so in the bar; one that can starts connecting there.
         show(call.state)
     }
@@ -183,6 +201,16 @@ final class CallController {
             deliver(update)
             await Self.hold(await context.followed, in: targets)
         }
+    }
+
+    /// Who the call talks to, in a team: the person's name on this
+    /// computer; nil outside one, or while it can't be read.
+    private static func person(_ account: Session) async -> String? {
+        guard account.home.userId != nil else { return nil }
+        var name = account.profile.state.name
+        if name.isEmpty { name = (try? await account.client.profile())?.name ?? "" }
+        name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? nil : name
     }
 
     /// Exactly the conversations the call hears from stay read: one that

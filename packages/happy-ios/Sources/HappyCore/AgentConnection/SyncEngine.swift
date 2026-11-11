@@ -227,7 +227,10 @@ public actor SyncEngine {
         }
     }
 
-    public func pause() async {
+    /// Whether this pause still owns the engine when done: no other pause
+    /// or start came while it wound down.
+    @discardableResult
+    public func pause() async -> Bool {
         held = true
         generation += 1
         verified = false
@@ -240,18 +243,20 @@ public actor SyncEngine {
         runner = nil; refresh = nil; delivery = nil; messageDelivery = nil; usersRead = nil
         deriving?.cancel(); deriving = nil
         tasks.forEach { $0.cancel() }
-        // Said before anything else can run, so it lands ahead of what a
-        // run started meanwhile says once it has read and verified.
-        await intents.setOnline(false)
         await feed.disconnected()
         await lookups.disconnected()
         for task in tasks { await task.value }
-        guard generation == pausedGeneration else { return }
+        // A start while the tasks wound down owns the outbox now: taking it
+        // offline here held every intent back while home said live.
+        guard generation == pausedGeneration else { return false }
+        await intents.setOnline(false)
+        guard generation == pausedGeneration else { return false }
         await documents.closed()
         await spaces.pause()
-        guard generation == pausedGeneration else { return }
+        guard generation == pausedGeneration else { return false }
         snapshot.live = false
         publish()
+        return true
     }
 
     /// The phone has a way out again: try now, not when the backoff says.
@@ -269,8 +274,26 @@ public actor SyncEngine {
         // computer: the header says "connecting…" until this try answers.
         // Cleared in the same turn as the pause, which publishes it.
         snapshot.error = nil
-        await pause()
-        start()
+        // Started again only if nothing paused it meanwhile (the app went to
+        // the background, another account opened) or restarted it first.
+        if await pause() { start() }
+    }
+
+    /// The phone's way out moved (Wi-Fi to cellular): the stream went out
+    /// the old way, where it can hang with nothing said until its
+    /// 40-second silence while home says online. It is opened again at
+    /// once on a new tunnel, every other tunnel woken (`resumed`), and the
+    /// header says "connecting…" until the stream answers. Does nothing
+    /// while the engine is paused, or once it was paused meanwhile.
+    public func moved() async {
+        guard !stopped, runner != nil else { return }
+        await client.transport.reset(.realtime)
+        guard !stopped, runner != nil else { return }
+        snapshot.error = nil
+        snapshot.reconnecting = true
+        let client = client
+        Task { await client.resumed() }
+        if await pause() { start() }
     }
 
     public func stop() async {
@@ -307,6 +330,9 @@ public actor SyncEngine {
     }
 
     private func run(_ generation: Int) async {
+        // Nothing goes out before this run has read the computer, even when
+        // the pause before it was overtaken and left the outbox as it was.
+        await intents.setOnline(false)
         do {
             // Given up after `setupDeadline`: a step stuck on a dead
             // connection or a slow disk shows as an error. The body keeps

@@ -147,6 +147,8 @@ class ConversationRowActions(
     val videos: VideoOpening? = null,
     /** HTML artifacts shown inline under their cards; null where none are. */
     val pages: InlinePages? = null,
+    /** What chat UI and suggested replies act with; null where the rows are only read, and nothing of theirs takes a tap. */
+    val ui: UiRowActions? = null,
 )
 
 /** Plays the recording [ref] whose tile is [key]: in the viewer, once it can ([VideoOpening]). */
@@ -242,6 +244,9 @@ fun ConversationRowView(row: ConversationRow, bubble: BubblePalette, actions: Co
                     }
                 }
             }
+            is ConversationRow.Ui -> UiComponentRow(row, actions.ui, content)
+            is ConversationRow.UiMedia -> UiMediaRow(row, actions, content)
+            is ConversationRow.Replies -> QuickRepliesRow(row, bubble, actions.ui, content)
             is ConversationRow.Collaborator -> CollaboratorProse(row, actions.legacy, content)
             is ConversationRow.Failure -> FailureRow(row, actions, content)
             is ConversationRow.Ask -> AskRow(row, actions.asks, content)
@@ -328,21 +333,24 @@ private fun UserRow(row: ConversationRow.User, bubble: BubblePalette, actions: C
     val cut = remember(prose) { prose?.cut(UserFold.FOLD_LINES) }
     val toggle = stringResource(if (row.opened) R.string.machine_launcher_show_less else R.string.conversation_show_full)
     if (row.text.isNotEmpty() || failed) {
-        UserMessage(
-            ChatRow.User(message, UserDisplay.Text(row.text, row.blocks), delivery = delivery, time = row.createdAt),
-            bubble,
-            actions.legacy,
-            modifier.fillMaxWidth(),
-            statusLine = false,
-            onRetry = if (failed) ({ actions.legacy.onRetry(row.messageId) }) else null,
-            onDiscard = if (failed) ({ actions.legacy.onDiscard(row.messageId) }) else null,
-            attachments = if (row.pictures.isEmpty()) null else {
-                { Box(Modifier.padding(top = ConversationRowSpec.photosGap)) { photos(row, actions) } }
-            },
-            onTap = if (cut != null) ({ actions.onToggleMessage(row.key) }) else null,
-            tapLabel = toggle,
-            body = if (prose != null) { _ -> UserProse(row, prose, cut, actions.legacy) } else null,
-        )
+        Column(modifier.fillMaxWidth()) {
+            UserMessage(
+                ChatRow.User(message, UserDisplay.Text(row.text, row.blocks), delivery = delivery, time = row.createdAt),
+                bubble,
+                actions.legacy,
+                Modifier.fillMaxWidth(),
+                statusLine = false,
+                onRetry = if (failed) ({ actions.legacy.onRetry(row.messageId) }) else null,
+                onDiscard = if (failed) ({ actions.legacy.onDiscard(row.messageId) }) else null,
+                attachments = if (row.pictures.isEmpty()) null else {
+                    { Box(Modifier.padding(top = ConversationRowSpec.photosGap)) { photos(row, actions) } }
+                },
+                onTap = if (cut != null) ({ actions.onToggleMessage(row.key) }) else null,
+                tapLabel = toggle,
+                body = if (prose != null) { _ -> UserProse(row, prose, cut, actions.legacy) } else null,
+            )
+            if (row.suggested) SuggestedLine()
+        }
     } else if (row.pictures.isNotEmpty()) {
         Box(
             modifier
@@ -432,51 +440,7 @@ private fun MediaRow(row: ConversationRow.Media, actions: ConversationRowActions
                 columns = row.columns,
                 limits = MediaFlow.tool,
                 modifier = Modifier.padding(horizontal = ConversationRowSpec.marginHorizontal),
-            ) { index ->
-                val ref = visual[index]
-                val key = ConversationViewing.presentedKey(ref)
-                val thumbhash = rememberThumbHash(ref.item.thumbhash)
-                val kept = actions.kept
-                if (ref.item.kind == "video") {
-                    val poster = posters[index]
-                    val frame = poster?.frame
-                    val still = remember(frame) { frame?.asImageBitmap() }
-                    val duration = poster?.seconds?.let(::formatDuration)
-                    Box {
-                        MediaTile(
-                            bytes = null,
-                            cacheKey = key,
-                            contentDescription = ref.item.name.ifEmpty { stringResource(R.string.artifact_video) },
-                            failed = false,
-                            onClick = { if (kept != null) actions.play(key, ref) else actions.onOpenPicture(key) },
-                            placeholder = still ?: thumbhash,
-                            video = true,
-                            // Kept, the ring is the play button and the badge says the length.
-                            duration = if (kept == null) duration else null,
-                            playButton = kept == null,
-                            modifier = Modifier.fillMaxSize(),
-                        )
-                        if (kept != null) DownloadStatus(ref, kept, video = true, duration = duration, starting = actions.videos?.isStarting(key) == true, onPlay = { actions.play(key, ref) })
-                    }
-                } else {
-                    val load = loads[index]
-                    val bytes = load?.getOrNull()?.bytes
-                    // Waiting for a tap, the ring says so; the tile isn't a failure.
-                    val waiting = load?.exceptionOrNull() is NotKept || (kept != null && kept.phase(ref)?.let { !it.isComplete } == true)
-                    Box {
-                        MediaTile(
-                            bytes = bytes,
-                            cacheKey = key,
-                            contentDescription = ref.item.name.ifEmpty { stringResource(R.string.conversation_picture) },
-                            failed = load?.isFailure == true && !waiting,
-                            onClick = bytes?.let { { actions.onOpenPicture(key) } },
-                            placeholder = thumbhash,
-                            modifier = Modifier.fillMaxSize(),
-                        )
-                        if (kept != null) DownloadStatus(ref, kept, video = false)
-                    }
-                }
-            }
+            ) { index -> PresentedTile(visual[index], loads[index], posters[index], actions) }
         }
         other.forEach { ref ->
             val opening = actions.mediaOpening(ref)
@@ -505,9 +469,68 @@ private fun MediaRow(row: ConversationRow.Media, actions: ConversationRowActions
     }
 }
 
+/**
+ * One picture or recording a tool presented, at the box its flow gives it:
+ * its bytes as [load] has them, a recording's first frame and length from
+ * [poster]. [crop] fills a box that is not the picture's own shape; [label]
+ * names it where its own name doesn't.
+ */
+@Composable
+internal fun PresentedTile(
+    ref: MediaRef,
+    load: Result<MediaBytes>?,
+    poster: VideoPoster?,
+    actions: ConversationRowActions,
+    crop: Boolean = false,
+    label: String? = null,
+) {
+    val key = ConversationViewing.presentedKey(ref)
+    val thumbhash = rememberThumbHash(ref.item.thumbhash)
+    val kept = actions.kept
+    if (ref.item.kind == "video") {
+        val frame = poster?.frame
+        val still = remember(frame) { frame?.asImageBitmap() }
+        val duration = poster?.seconds?.let(::formatDuration)
+        Box {
+            MediaTile(
+                bytes = null,
+                cacheKey = key,
+                contentDescription = label ?: ref.item.name.ifEmpty { stringResource(R.string.artifact_video) },
+                failed = false,
+                onClick = { if (kept != null) actions.play(key, ref) else actions.onOpenPicture(key) },
+                placeholder = still ?: thumbhash,
+                video = true,
+                // Kept, the ring is the play button and the badge says the length.
+                duration = if (kept == null) duration else null,
+                playButton = kept == null,
+                crop = crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+            if (kept != null) DownloadStatus(ref, kept, video = true, duration = duration, starting = actions.videos?.isStarting(key) == true, onPlay = { actions.play(key, ref) })
+        }
+    } else {
+        val bytes = load?.getOrNull()?.bytes
+        // Waiting for a tap, the ring says so; the tile isn't a failure.
+        val waiting = load?.exceptionOrNull() is NotKept || (kept != null && kept.phase(ref)?.let { !it.isComplete } == true)
+        Box {
+            MediaTile(
+                bytes = bytes,
+                cacheKey = key,
+                contentDescription = label ?: ref.item.name.ifEmpty { stringResource(R.string.conversation_picture) },
+                failed = load?.isFailure == true && !waiting,
+                onClick = bytes?.let { { actions.onOpenPicture(key) } },
+                placeholder = thumbhash,
+                crop = crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+            if (kept != null) DownloadStatus(ref, kept, video = false)
+        }
+    }
+}
+
 /** A presented recording's first frame and length, read once per item while it is shown; null until they come or when they can't. */
 @Composable
-private fun rememberVideoPoster(ref: MediaRef, load: suspend (MediaRef) -> VideoPoster?): VideoPoster? {
+internal fun rememberVideoPoster(ref: MediaRef, load: suspend (MediaRef) -> VideoPoster?): VideoPoster? {
     val poster by produceState<VideoPoster?>(null, ref.key) {
         value = try {
             load(ref)
@@ -521,11 +544,11 @@ private fun rememberVideoPoster(ref: MediaRef, load: suspend (MediaRef) -> Video
 }
 
 /** A presented picture's bytes and the size its header gives. */
-private class MediaBytes(val bytes: ByteArray, val size: MediaFlow.Image)
+internal class MediaBytes(val bytes: ByteArray, val size: MediaFlow.Image)
 
 /** A presented picture's bytes, read once per item while it is shown; null until they come. */
 @Composable
-private fun rememberMediaBytes(ref: MediaRef, load: suspend (MediaRef) -> ByteArray, here: Boolean = false): Result<MediaBytes>? {
+internal fun rememberMediaBytes(ref: MediaRef, load: suspend (MediaRef) -> ByteArray, here: Boolean = false): Result<MediaBytes>? {
     val bytes by produceState<Result<MediaBytes>?>(null, ref.key, here) {
         // What was read stays while it is read again.
         if (here && value?.isSuccess == true) return@produceState
