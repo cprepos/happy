@@ -194,13 +194,13 @@ extension Strings {
         static func approvalBar(_ summary: String) -> String { "\(approvalTitle) \(summary)" }
         /// The browser's own yolo mode (`POST /auto`): while on, the bridge
         /// approves what the agent asks for by itself.
-        static let yoloMenu = "Browser yolo"
+        static let yoloMenu = "Yolo mode"
         static let yoloBadge = "Yolo"
-        static let yoloOn = "Browser yolo is on"
-        static let yoloOff = "Browser yolo is off"
+        static let yoloOn = "Yolo mode is on"
+        static let yoloOff = "Yolo mode is off"
         static let yoloHint = "Approves the agent’s browser actions without asking."
         static func yoloApproved(_ summary: String) -> String { "Yolo approved: \(summary)" }
-        static let yoloFailed = "Couldn’t Change Browser Yolo"
+        static let yoloFailed = "Couldn’t Change Yolo Mode"
         /// `/auto` answered 404: a bridge from before it.
         static let yoloUnsupported = "This browser doesn’t offer yolo mode yet."
         /// The take-control screen's own navigation (`POST /nav`).

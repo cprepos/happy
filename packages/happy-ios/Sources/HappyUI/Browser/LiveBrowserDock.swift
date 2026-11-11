@@ -1974,7 +1974,7 @@ final class LiveBrowserPlayerView: UIView, UIGestureRecognizerDelegate {
     var onEnd: (() -> Void)?
     /// The menu's Sleep browser.
     var onSleep: (() -> Void)?
-    /// The menu's Browser yolo: whether it is on, and turning it over.
+    /// The menu's Yolo mode: whether it is on, and turning it over.
     var yoloOn: (() -> Bool)?
     var onYolo: (() -> Void)?
     var onTap: (() -> Void)?

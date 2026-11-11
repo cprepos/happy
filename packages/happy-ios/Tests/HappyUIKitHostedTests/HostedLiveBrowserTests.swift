@@ -1029,6 +1029,10 @@ final class HostedLiveBrowserTests: XCTestCase {
         let player = try XCTUnwrap(dock.player)
         XCTAssertFalse(dock.yoloOn, "off by default")
         XCTAssertTrue(player.yoloBadge.isHidden)
+        XCTAssertEqual(Strings.LiveBrowser.yoloMenu, "Yolo mode")
+        XCTAssertEqual(Strings.LiveBrowser.yoloOn, "Yolo mode is on")
+        XCTAssertEqual(Strings.LiveBrowser.yoloOff, "Yolo mode is off")
+        XCTAssertEqual(Strings.LiveBrowser.yoloBadge, "Yolo")
 
         await daemon.setLiveApproval("a2")
         try await until { dock.approvalBar.approval?.id == "a2" }
