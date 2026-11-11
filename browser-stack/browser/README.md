@@ -221,17 +221,27 @@ Tunables, such as screen size, ports and `MAX_SESSIONS`, go in
 - **Screen:** Xvfb is 1920x1200. This is a desktop screen, so sites serve their desktop
   layouts, at device scale factor 1 with no mobile user agent or device emulation. 16:10 is
   the shape of the iOS mini player, so the live frame fills it. Set `BROWSER_WIDTH`/
-  `BROWSER_HEIGHT` in `.env.browser` to change it. The page is the screen less Chrome's
-  87 px of tab strip and address bar (1920x1113): `browser.mk` works out
-  `BROWSER_VIEWPORT_HEIGHT` from `BROWSER_KIOSK` and hands it to the controller, the bridge
-  frame and the launcher, so Playwright's viewport matches the maximized window exactly.
+  `BROWSER_HEIGHT` in `.env.browser` to change it. The page is the screen less the desktop
+  panel (28 px, `session.screen0.toolbar.height` in `kiosk/fluxbox/init.window`) and Chrome's
+  87 px of tab strip and address bar (1920x1085): `browser.mk` works out
+  `BROWSER_PANEL_HEIGHT` and `BROWSER_VIEWPORT_HEIGHT` from `BROWSER_KIOSK` and the fluxbox
+  config, and hands them to the controller, the bridge frame and the launcher, so Playwright's
+  viewport matches the maximized window exactly. The kiosk has no panel (1920x1200).
 - **A normal browser window, maximized (`BROWSER_KIOSK=0`, the default):** `kiosk/` is
   mounted into browser-node. `happy-kiosk.mjs` runs in place of the image's `server.mjs` and
-  holds every Chromium window (a `window.open` popup too) maximized at 1920x1200 with its tab
-  strip and address bar showing, re-checking every 2 s over CDP: a window someone makes
+  holds every Chromium window (a `window.open` popup too) maximized below the desktop panel
+  (1920x1172 at y 28) with its tab strip and address bar showing, re-checking every 2 s over CDP: a window someone makes
   fullscreen, minimizes or drags smaller comes back within a sweep. `kiosk/fluxbox/init.window`
-  gives fluxbox a plain dark desktop (`kiosk/fluxbox/style`, solid #1e1e1e) with no toolbar,
-  slit, menu, icons or key bindings, and `apps.window` maximizes every window with no frame.
+  gives fluxbox a plain dark desktop (`kiosk/fluxbox/style`, solid #1e1e1e) with one panel,
+  the fluxbox toolbar across the top: a flat grey bar (#2b2b2b, DejaVu Sans) with the window's
+  button on the left and a clock on the right showing `%a %d %b %Y  %H:%M:%S` in the node's
+  `TZ` (`EVIDENCE_TZ`, default `America/Toronto`, set on the shared node in compose and on
+  every pod's node by the launcher). The panel is always shown and `maxOver: false` reserves
+  its strip (`_NET_WORKAREA`), so a maximized Chromium never covers it. The window's button
+  shows the window's own title, `<page title> - Google Chrome for Testing`: Chromium's
+  `--window-name` does not reach the windows Playwright opens over CDP, and fluxbox 1.3.7 has
+  no way to set a button's text without remote actions or key bindings, both of which stay off.
+  No slit, menu, icons or key bindings, and `apps.window` maximizes every window with no frame.
   **The trade-off:** anyone in control of the live view (a takeover, or the noVNC page) can
   now type a URL into the address bar, open tabs and use the back button; the kiosk took that
   away. Agent actions are unchanged: they still go through the bridge and its approval rules,
@@ -427,32 +437,35 @@ secret.
     both steps (`chrome_strip` in the result; `source: "fallback"` if the geometry could not
     be read, then the top `CHROME_STRIP_FALLBACK_PX` of the screen). OCR words wholly inside
     it are left out of the redaction; the page and any other window are scrubbed.
-  - Evidence bar: every screenshot the controller hands out (`browser_screenshot` of either
-    scope, `browser_observe`, and the vision and resource paths that use the same capture)
-    has a date/time bar across its top, like a desktop menu bar: B px tall, B =
-    `max(24, round(width * 0.035))` (67 at 1920 wide), with the capture time at its right
-    end, e.g. `2026-11-11 14:32:07 EST (UTC-05:00)`, in `EVIDENCE_TZ` (an IANA zone;
-    `browser.mk` sets it from the host's `/etc/timezone`, else `America/Toronto`; the
-    controller refuses to start on an invalid one). It is drawn by
-    `controller-patch/happy_evidence_stamp.py` after OCR, redaction and the moved check, onto
-    a canvas B px taller with the page pasted unchanged below it, so the image is the page
-    height + B and every coordinate in a result (bbox, x/y, chrome_strip, redaction boxes)
-    stays a page coordinate: page y = image y - B. The time is the capture's: a page shot's
-    from its artifact file name, a screen shot's from the bridge's `capturedAt`, clamped
-    between the controller's token time and now. Screen and page-shot results add
-    `evidence_bar_px` and `stamp_text`, `captured_at` is the stamped time, and the audit
-    entry records the `sha256` of the final stamped PNG and `stamp_text`. The PNG carries a
-    tEXt chunk `happy-evidence-stamp` = `{"bar_px", "captured_at", "tz"}`; stamping is
-    idempotent by it and the screenshot diff crops the bar off by it. The live view (share
-    frames, the live-frame copy) and `screen.png` have no bar. Cutover: shots taken before
-    this was deployed have no bar and no chunk.
+  - `browser_screenshot` also gets `view`, for scope `"screen"`: `"desktop"` (the default,
+    `SCREENSHOT_TIME_MODE` in compose) is the whole X screen, the desktop panel and its clock
+    included; `"tab"` is the browser window alone, its rectangle (from the window's geometry,
+    in screen pixels: `capture_rect`) read by `XGetImage` directly, never cropped afterwards,
+    with no panel and no clock. Nothing is drawn on either: the clock in a desktop shot is the
+    one the screen showed, so it is the node's own time in its `TZ`, and since it ticks once a
+    second it can trail `captured_at` by up to about a second. The only change made to the
+    captured pixels is the OCR PII redaction, and the result and the audit say whether it ran.
+    `scripts/screen-capture.py` reads the time (`captured_at`, UTC, just before `XGetImage`),
+    the screen size, the rectangle and the panel's height (`panel_px`, measured from
+    `_NET_WORKAREA`, never assumed) and prints them on stderr; the launcher checks the PNG is
+    that rectangle and adds `raw_sha256`, the PNG's sha256 as it came out of the capture; the
+    controller refuses an image whose sha256 is not `raw_sha256` (`raw_hash_mismatch`) or that
+    is not the rectangle the view needs (`bad_capture`), holds `captured_at` between its token
+    time and now, and never redacts the panel. Screen results add `view`, `capture_rect`,
+    `panel_px`, `evidence_bar_px` (the panel's height at the image's top: `panel_px` for
+    desktop, 0 for tab), `captured_at`, `tz`, `raw_sha256` and `filed_sha256` (the image as
+    filed: the same as `raw_sha256` unless it was redacted). The audit entry
+    (`evidence_screenshot`) records the same fields; a redacted capture's raw image is not kept
+    anywhere. A page shot records `filed_sha256`, `captured_at` (from its artifact name), `tz`,
+    and `raw_sha256` only when it is unredacted. Cutover: the date/time bar the controller used
+    to draw on screenshots (`happy_evidence_stamp.py`) is retired; shots taken before have it.
   - `browser_screenshot` also gets `redact` (boolean, default `true`). `false` is the explicit
     opt-in for full-fidelity evidence: the image is filed exactly as it was on screen, and the
     result says `pii_scrubbed: false, redaction: "off_by_request"` (a redacted one says
     `redaction: "on"`, or `"off_by_policy"` / `"unavailable"` when the deployment's scrubbing
     is off or OCR could not run). Every screen shot, and every unredacted page shot, is
-    written to the controller's audit log as `evidence_screenshot` with `redacted` and
-    `redaction`; an unredacted image that cannot be recorded there is not kept.
+    written to the controller's audit log as `evidence_screenshot` with `redacted`,
+    `redaction` and the evidence fields above; an unredacted image that cannot be recorded there is not kept.
     `redact: false` works for both scopes with a pod of the chat's own: `"page"` then goes
     through the bridge (`POST /api/page-shot` -> the controller's
     `/happy/sessions/<id>/page-shot`) instead of upstream's tool; a redacted `"page"` is
