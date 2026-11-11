@@ -8,7 +8,7 @@ any copy of it that turns up in a later tool result is replaced with
 `[secret:github.password]`.
 
 - Runs in Docker as uid 1990 (the service `filler` of `selfhost/vault/compose.vault.yml`), with its data
-  in `/srv/happy-filler`, and listens only on `127.0.0.1:6091`.
+  in the named volume `happy-filler` (uid 1990), and listens only on `127.0.0.1:6091`.
 - Logs in to the vault with the agent account's API key and user key. It never
   holds the master password (enrollment uses it once to read the API key and
   derive the user key).
@@ -25,7 +25,7 @@ any copy of it that turns up in a later tool result is replaced with
   passwords it generates itself, compare a value against a hash, and pipe a
   value into an allowlisted command's stdin. No route returns a value to the
   model.
-- Audit log: `/srv/happy-filler/audit/YYYY-MM.jsonl` records names, hosts and
+- Audit log: `audit/YYYY-MM.jsonl` in the volume records names, hosts and
   outcomes. It never records values. Read it with `make filler-audit`.
 
 The design and its limits are in `selfhost/vault/docs/plan.md`.
@@ -35,17 +35,19 @@ The design and its limits are in `selfhost/vault/docs/plan.md`.
 The filler is a container: the service `filler` of the vault's compose
 project (`happy-vault`, `selfhost/vault/compose.vault.yml`), built from
 `Dockerfile` here (node 22, pinned by digest; the app files root-owned and
-read-only). It runs as uid 1990, the owner of `/srv/happy-filler`, with
+read-only). It runs as uid 1990, the owner of the volume `happy-filler`, with
 `--disallow-code-generation-from-strings`, a read-only root filesystem, every
 capability dropped and `no-new-privileges`. It uses the host network so it can
 bind `127.0.0.1:6091` itself and reach Vaultwarden on `127.0.0.1:8222` and the
-browser controllers on `127.0.0.1:8010` and 8100-8131. `/srv/happy-filler`
-is mounted read-only at `/filler`, with only `state/` and `audit/` writable.
+browser controllers on `127.0.0.1:8010` and 8100-8131. The volume is mounted
+read-only at `/filler`, with only its `state/` and `audit/` subpaths writable.
+It is one volume rather than one per directory because the admin commands
+need the whole tree, and the handoff directories must sit beside it.
 `restart: unless-stopped`: it comes back after a crash or reboot and unlocks
 itself from its key files; `make filler-lock` stops it until `make filler-up`.
 
 Its admin commands (`scripts/admin.mjs`) run once each in the same image, as
-the compose service `filler-admin` (profile `admin`, `/srv/happy-filler`
+the compose service `filler-admin` (profile `admin`, the volume
 writable), through make. Agents give you these commands to type; they do not
 run them.
 
@@ -57,25 +59,40 @@ Token handoff, no root involved (`make vault-tokens` does all four):
 
 | target | does |
 |---|---|
-| `make filler-token-issue NAME=bridge-client` (or `vault-client`) | in the container: a new token, its SHA-256 to `secrets/`, the plaintext once to `/srv/happy-filler/outbox/<NAME>-token` (0640, group prep). Refuses if one exists, unless `FILLER_ROTATE=1` |
-| `make filler-token-take` | as prep: each outbox token into prep's secrets dir (0600): `bridge-client-token` to `~/.local/share/happy-browser/secrets/filler-client-token`, `vault-client-token` to `~/.local/share/happy-vault-mcp/secrets/vault-client-token`; the outbox file moves to prep's trash |
-| `make filler-controller-token-give` | as prep: copies `~/.local/share/happy-browser/secrets/api-token` into `/srv/happy-filler/inbox/` |
+| `make filler-token-issue NAME=bridge-client` (or `vault-client`) | in the container: a new token, its SHA-256 to `secrets/`, the plaintext once to `outbox/<NAME>-token` in the volume (0640, group 1990). Refuses if one exists, unless `FILLER_ROTATE=1` |
+| `make filler-token-take` | the operator container reads each outbox token, and make writes it as prep into prep's secrets dir (0600): `bridge-client-token` to `~/.local/share/happy-browser/secrets/filler-client-token`, `vault-client-token` to `~/.local/share/happy-vault-mcp/secrets/vault-client-token`; the outbox file moves to prep's trash |
+| `make filler-controller-token-give` | as prep: the operator container drops `~/.local/share/happy-browser/secrets/api-token` into the volume's `inbox/` |
 | `make filler-controller-token-take` | in the container: that file into `secrets/controller-token` (0400); the inbox file moves to trash |
 
-`outbox/` is 1990:prep 2770 (prep may move files out); `inbox/` is 1990:prep
-3730 (prep may drop a file in, but not list it). A token is read without
+prep never opens the volume. The handoffs go through the compose service
+`filler-operator` (profile `admin`): its own uid, 1989 (`FILLER_OPERATOR_UID`),
+in the filler's group 1990, no network, no capabilities, read-only root. It
+mounts only `outbox/` (2770, read), `inbox/` (3730, may drop a file in but
+not list it) and `audit/` (2750, read); a token it reads goes to its stdout,
+which make writes into a 0600 file of prep's. A token is read without
 following a symlink and only from a regular, singly linked file of the other
 uid's that holds nothing but a token (`scripts/handoff-copy.mjs`).
 
 Before November 2026 the filler ran as a systemd user unit of its own account,
-`happy-filler`. That unit is stopped and disabled; it, `filler-admin.sh` and
-`filler-account-setup.sh` are in the repo's `trash/*_filler-systemd/`. The
-data in `/srv/happy-filler` is the same.
+`happy-filler`, with its data in `/srv/happy-filler`; `filler-admin.sh` and
+`filler-account-setup.sh` are in the repo's `trash/*_filler-systemd/`. To move
+such an install (see "Moving an install from /srv into the volumes" in
+`selfhost/vault/README.md`): `make vault-migrate-volumes` copies the data into
+the volume while the old unit keeps serving; then stop the unit (sudo, by you)
+and run the cutover, which copies whatever changed since and starts the
+container:
+
+```
+sudo -u happy-filler XDG_RUNTIME_DIR=/run/user/1990 systemctl --user disable --now happy-filler.service
+make -C selfhost vault-filler-cutover
+```
+
+`/srv/happy-filler` is never changed, so it stays as the rollback.
 
 ## Setup (once)
 
 From `selfhost/`, after `cp vault/.env.example vault/.env` and filling it in
-(domain, agent email, `/srv` paths, uids):
+(domain, agent email, uids):
 
 1. **Register the agent account.** The agent account's email
    (`VAULT_AGENT_EMAIL`) is invited on the server (sign-ups are closed, so only
@@ -87,9 +104,9 @@ From `selfhost/`, after `cp vault/.env.example vault/.env` and filling it in
    web vault) and add each login agents may use, with its https URL and,
    if wanted, its TOTP seed (Authenticator key). Nothing else goes in this
    vault. You can add more at any time.
-3. `make vault-init` (sudo, once): `/srv/happy-vault`, the `/srv/happy-filler`
-   tree (uid 1990; `audit/`, `outbox/`, `inbox/` shared with your group), then
-   in the container an empty policy.
+3. `make vault-init` (no sudo): the volumes, the filler's tree in
+   `happy-filler` (uid 1990; `audit/`, `outbox/`, `inbox/` shared with the
+   operator uid 1989 through group 1990), then in the container an empty policy.
 4. `make browser-init` if the browser stack is new (the controller token).
 5. `make vault-tokens`: both client tokens and the controller token.
 6. `make filler-seed-policy`:
@@ -106,7 +123,7 @@ From `selfhost/`, after `cp vault/.env.example vault/.env` and filling it in
    name, item id and https hosts, never a username or password), restart the
    bridge, and `make vault-status`.
 
-## Policy: `/srv/happy-filler/policy.json` (uid 1990, 0640)
+## Policy: `policy.json` in the volume `happy-filler` (uid 1990, 0640)
 
 The filler refuses a policy file that is group- or world-writable, a
 symlink, or owned by anyone but its own uid (or root). Edit it with
@@ -297,7 +314,7 @@ and the pipe's output is scrubbed to `[secret:<name>]`.
   `browser_fill_secret` (field `password`) on the change-password form, after
   `vault_update` with `rotate_password`.
 - There is no purge or hard delete anywhere. Vaultwarden empties its trash
-  only if `TRASH_AUTO_DELETE_DAYS` is set in `/srv/happy-vault/vaultwarden.env`.
+  only if `TRASH_AUTO_DELETE_DAYS` is set in `vaultwarden.env` (the volume `happy-vault-config`).
 - Writes go only to the agent account's personal logins that the chat's
   client reaches (its listed item ids, or for an `all_items` client the
   personal logins no client lists). `create` requires `all_items`: a login
@@ -396,7 +413,7 @@ every call). A new browser controller token goes over with `make vault-tokens`.
 
 - **Known limit: the `docker` group.** prep is in the `docker` group, and
   any account in it (or in `sudo`) is root in effect: it can start a
-  container that mounts `/srv/happy-filler` or reads the filler's memory, and
+  container that mounts the volume `happy-filler` or reads the filler's memory, and
   it runs the filler's admin commands. The filler protects secrets fully only
   from agents with no docker or sudo access (a follow-up: run agents as such a
   user).
