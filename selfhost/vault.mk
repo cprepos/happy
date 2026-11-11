@@ -1,14 +1,26 @@
-# Vaultwarden, the self-hosted Bitwarden server for every device (phone,
-# laptops, browser extensions) and for the browser agent's secret filler.
-# Its own compose project (happy-vault): no browser-* target touches it.
+# The vault: Vaultwarden, the self-hosted Bitwarden server for every device
+# (phone, laptops, browser extensions), and the browser agent's secret filler,
+# both in one compose project (happy-vault, vault/compose.vault.yml). No
+# browser-* target touches it. Host settings (domain, agent email, /srv paths,
+# uids, LAN addresses) are in vault/.env (copy vault/.env.example).
 # Included from selfhost/Makefile via `-include vault.mk`. See selfhost/vault/README.md.
 #
-#   make vault-init           (sudo, once) /srv/happy-vault, its env file; VAULT_OWNER_EMAIL=<your vault email>
+# A fresh install, in order:
+#   make vault-init           (sudo, once) /srv/happy-vault, its env file, the /srv/happy-filler tree,
+#                             then the filler's empty policy; VAULT_OWNER_EMAIL=<your vault email>
+#   make vault-up             Vaultwarden and the filler (builds the filler image)
+#   make vault-tokens         client tokens for vault-mcp and the bridge, and the browser controller
+#                             token for the filler (each only once; ROTATE=1 NAME=bridge-client|vault-client
+#                             replaces one), then restarts the filler
+#   make filler-seed-policy   a default policy (or make filler-policy-edit)
+#   make vault-enroll BACKEND=shared   (terminal) enroll the filler with the agent's vault account
+#
+#   make stack-up / stack-down  the vault and the browser stack together (selfhost/Makefile)
 #   make vault-up / vault-down / vault-logs
-#   make vault-status         container health, 127.0.0.1-only bind, /alive, Caddy site, last backup
+#   make vault-status         containers, 127.0.0.1-only binds, /alive, Caddy site, filler unlocked, last backup
 #   make vault-admin-on       (sudo) set an admin password (asked on the terminal; only its hash is kept)
 #   make vault-admin-off      (sudo) remove it, which disables /admin
-#   make vault-caddy-apply    add vault.girthbass.duckdns.org to Caddy (backup, validate, reload)
+#   make vault-caddy-apply    add $(VAULT_DOMAIN) to the host's Caddy (backup, validate, reload)
 #   make vault-backup         versioned tarball in /srv/happy-vault/backups (newest 30 kept there),
 #                             then copied to every mirror (VAULT_BACKUP_MIRRORS) + a ZFS snapshot
 #   make vault-backup-mirror  copy any tarball a mirror is missing (no new backup)
@@ -19,23 +31,64 @@
 #                             delegation, the root timer for the filler state + env file backup
 
 VAULT_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))/vault
+# Host settings: plain KEY=value lines, read by compose (from vault/) and here.
+-include $(VAULT_DIR)/.env
+VAULT_ENV_VARS := VAULT_DOMAIN CADDY_AFTER_SITE CADDYFILE VAULT_AGENT_EMAIL VAULT_ROOT FILLER_ROOT VAULT_UID FILLER_UID FILLER_GID
+export $(VAULT_ENV_VARS)
+# The LAN addresses, for the agent gateway and MCP registration (browser-stack/gateway, scripts/mcp-register.py).
+ifneq ($(LAN_IP),)
+export BROWSER_STACK_LAN_BIND ?= $(LAN_IP)
+endif
+ifneq ($(LAN_CLIENTS),)
+export BROWSER_STACK_MACS ?= $(LAN_CLIENTS)
+endif
 VAULT_COMPOSE := docker compose -p happy-vault -f $(VAULT_DIR)/compose.vault.yml
 VAULT_URL ?= http://127.0.0.1:8222
-VAULT_SITE ?= vault.girthbass.duckdns.org
+VAULT_SITE ?= $(VAULT_DOMAIN)
+BACKEND ?= shared
 VAULT_OWNER_EMAIL ?=
 VAULT_SYSTEMD := $(HOME)/.config/systemd/user
 VAULT_BACKUP_MIRRORS ?= /girth/backup/vault /mnt/ai-data/backups/happy-vault
 export VAULT_BACKUP_MIRRORS
 
-.PHONY: vault-init vault-up vault-down vault-logs vault-status vault-admin-on vault-admin-off \
+.PHONY: vault-init vault-up vault-down vault-logs vault-status vault-enroll vault-tokens vault-admin-on vault-admin-off \
 	vault-caddy-apply vault-backup vault-backup-mirror vault-restore-check vault-backup-timer vault-backup-setup
 
+VAULT_NEED_ENV = @test -f $(VAULT_DIR)/.env || { echo "$@: no $(VAULT_DIR)/.env; cp $(VAULT_DIR)/.env.example $(VAULT_DIR)/.env and fill it in" >&2; exit 1; }
+
 vault-init:
-	sudo VAULT_OWNER_EMAIL="$(VAULT_OWNER_EMAIL)" bash $(VAULT_DIR)/scripts/vault-init.sh
+	$(VAULT_NEED_ENV)
+	sudo VAULT_OWNER_EMAIL="$(VAULT_OWNER_EMAIL)" $(foreach v,$(VAULT_ENV_VARS),$(v)="$($(v))") bash $(VAULT_DIR)/scripts/vault-init.sh
+	@$(MAKE) --no-print-directory filler-build
+	$(FILLER_ADMIN_RUN) -T filler-admin init
 
 vault-up:
-	@test -f /srv/happy-vault/vaultwarden.env || { echo "run make vault-init first"; exit 1; }
-	$(VAULT_COMPOSE) up -d --wait
+	$(VAULT_NEED_ENV)
+	@test -f $(VAULT_ROOT)/vaultwarden.env || { echo "run make vault-init first"; exit 1; }
+	$(FILLER_PORT_GUARD)
+	$(VAULT_COMPOSE) up -d --build --wait
+
+# One backend for now: the shared Vaultwarden (more come with the policy's backends section).
+vault-enroll:
+	@test "$(BACKEND)" = shared || { echo "$@: BACKEND=shared is the only backend so far" >&2; exit 1; }
+	$(FILLER_ADMIN_RUN) filler-admin enroll
+	$(VAULT_COMPOSE) restart filler
+
+# The tokens, both ways, with no account line to hand them across: the filler
+# (in its container) writes each client token it issues to outbox/, and
+# filler-token-take copies it into prep's secrets dirs (0600); the browser
+# controller token goes the other way through inbox/. A token that exists is
+# kept; ROTATE=1 NAME=bridge-client|vault-client issues that one again.
+vault-tokens:
+	$(FILLER_AS_OPERATOR)
+	@set -e; names="$$($(FILLER_ADMIN_RUN) -T filler-admin tokens-missing)"; \
+	if [ "$(ROTATE)" = 1 ]; then names="$(NAME)"; test -n "$$names" || { echo "$@: ROTATE=1 needs NAME=bridge-client|vault-client" >&2; exit 1; }; fi; \
+	for n in $$names; do $(FILLER_ADMIN_RUN) -T filler-admin token-issue NAME=$$n $(if $(filter 1,$(ROTATE)),ROTATE=1); done
+	@$(MAKE) --no-print-directory filler-token-take
+	@$(MAKE) --no-print-directory filler-controller-token-give
+	$(FILLER_ADMIN_RUN) -T filler-admin controller-token-take
+	@if [ "$$(docker container inspect -f '{{.State.Running}}' happy-vault-filler-1 2>/dev/null)" = true ]; then \
+		$(VAULT_COMPOSE) restart filler && $(MAKE) --no-print-directory filler-wait; fi
 
 vault-down:
 	$(VAULT_COMPOSE) down
@@ -45,7 +98,7 @@ vault-logs:
 
 vault-status:
 	@echo "== vault (happy-vault)"
-	@$(VAULT_COMPOSE) ps --format 'table {{.Service}}\t{{.Status}}\t{{.Ports}}'
+	@$(VAULT_COMPOSE) ps -a --format 'table {{.Service}}\t{{.Status}}\t{{.Ports}}'
 	@echo "listening on 8222 (expect 127.0.0.1 only):"
 	@ss -ltnH | awk '{print $$4}' | grep -E ':8222$$' | sort -u || echo "  (none)"
 	@if ss -ltnH | awk '{print $$4}' | grep -E ':8222$$' | grep -qvE '^127\.0\.0\.1:'; then \
@@ -67,6 +120,7 @@ vault-status:
 			"$$(systemctl show happy-vault-secrets-backup.service -p ExecMainExitTimestamp --value)" \
 			"$$(systemctl show happy-vault-secrets-backup.service -p Result --value)"; \
 	else echo "secrets timer : not installed (make vault-backup-setup)"; fi
+	@$(MAKE) --no-print-directory filler-status
 
 vault-admin-on:
 	sudo bash $(VAULT_DIR)/scripts/vault-admin.sh on

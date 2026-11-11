@@ -16,7 +16,7 @@ set -euo pipefail
 [[ $EUID -eq 0 ]] || { echo "vault-admin: run as root (make vault-admin-on/off use sudo)" >&2; exit 1; }
 MODE="${1:-}"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-ROOT=/srv/happy-vault
+ROOT="${VAULT_ROOT:-/srv/happy-vault}"
 ENV="$ROOT/vaultwarden.env"
 IMAGE="$(awk '/^ *image: vaultwarden\/server:/{print $2; exit}' "$HERE/compose.vault.yml")"
 [[ -f "$ENV" ]] || { echo "vault-admin: $ENV missing; run make vault-init first" >&2; exit 1; }

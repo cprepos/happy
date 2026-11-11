@@ -24,7 +24,8 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-ROOT=/srv/happy-vault
+ROOT="${VAULT_ROOT:-/srv/happy-vault}"
+VUID="${VAULT_UID:-1991}"
 BACKUPS="${VAULT_BACKUP_DIR:-$ROOT/backups}"
 read -r -a MIRRORS <<<"${VAULT_BACKUP_MIRRORS-/girth/backup/vault /mnt/ai-data/backups/happy-vault}"
 IMAGE="$(awk '/^ *image: vaultwarden\/server:/{print $2; exit}' "$HERE/compose.vault.yml")"
@@ -72,7 +73,7 @@ mirror_one() {
     loud "$dst does not exist (one-time setup: make vault-backup-setup)"; return 1
   fi
   # --mount (not -v) so docker never creates a missing source directory as root.
-  out="$(docker run --rm --network none -u 1991:1991 \
+  out="$(docker run --rm --network none -u "$VUID:$VUID" \
     --mount "type=bind,src=$BACKUPS,dst=/src,readonly" --mount "type=bind,src=$dst,dst=/m" \
     --entrypoint sh "$IMAGE" -c "$MIRROR_SH" 2>&1)" || rc=$?
   copied="$(sed -n 's/^copied=//p' <<<"$out" | tail -n1)"
@@ -108,7 +109,7 @@ case "${1:-}" in
     [[ -n "$CONTAINER" ]] || { echo "vault-backup: vaultwarden is not running (make vault-up)" >&2; exit 1; }
     ts="$(date -u +%Y%m%dT%H%M%SZ)"
     docker exec "$CONTAINER" /vaultwarden backup >/dev/null
-    docker run --rm --network none -u 1991:1991 \
+    docker run --rm --network none -u "$VUID:$VUID" \
       -v "$ROOT/data:/data" -v "$BACKUPS:/backups" -e TS="$ts" -e KEEP="${VAULT_BACKUP_KEEP:-30}" --entrypoint sh "$IMAGE" -c '
         set -eu
         snap="$(ls -1t /data/db_*.sqlite3 | head -n1)"
@@ -155,7 +156,7 @@ case "${1:-}" in
       i=$((i + 1))
     done
     rc=0
-    docker run --rm --network none -u 1991:1991 --read-only --tmpfs /restore:uid=1991,gid=1991,mode=0700 \
+    docker run --rm --network none -u "$VUID:$VUID" --read-only --tmpfs "/restore:uid=$VUID,gid=$VUID,mode=0700" \
       "${mounts[@]}" -e LOCS="${names[*]}" --entrypoint node "$NODE_IMAGE" --no-warnings -e '
         const fs = require("node:fs"), crypto = require("node:crypto"), { execFileSync } = require("node:child_process");
         const { DatabaseSync } = require("node:sqlite");
@@ -198,7 +199,7 @@ case "${1:-}" in
     stale_h="${VAULT_BACKUP_STALE_HOURS:-26}" now="$(date -u +%s)"
     for d in "$BACKUPS" "${MIRRORS[@]}"; do
       if [[ ! -d "$d" ]]; then printf '  %-40s MISSING (make vault-backup-setup)\n' "$d"; continue; fi
-      newest="$(docker run --rm --network none -u 1991:1991 --mount "type=bind,src=$d,dst=/b,readonly" --entrypoint sh "$IMAGE" \
+      newest="$(docker run --rm --network none -u "$VUID:$VUID" --mount "type=bind,src=$d,dst=/b,readonly" --entrypoint sh "$IMAGE" \
         -c 'ls -1 /b 2>/dev/null | grep -E "^vault-[0-9]{8}T[0-9]{6}Z\.tar\.gz$" | sort | tail -n1' 2>/dev/null || true)"
       if [[ -z "$newest" ]]; then printf '  %-40s none (or not readable by uid 1991)  STALE\n' "$d"; continue; fi
       t="${newest#vault-}"; t="${t%Z.tar.gz}"

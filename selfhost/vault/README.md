@@ -6,7 +6,10 @@ secret filler (`browser-stack/browser/filler`) also reads it, through its own
 restricted account. Design: [docs/plan.md](docs/plan.md).
 
 - Its own compose project, `happy-vault` (`compose.vault.yml`), with
-  `restart: unless-stopped`. Docker is enabled at boot, so the vault comes back
+  `restart: unless-stopped`. The same project runs the secret filler
+  (service `filler`, 127.0.0.1:6091, data in `/srv/happy-filler`); see
+  `browser-stack/browser/filler/README.md`. `make stack-up` / `make
+  stack-down` (in `selfhost/`) run the vault and then the browser stack. Docker is enabled at boot, so the vault comes back
   after a reboot. No `browser-*` target touches it.
 - It listens on `127.0.0.1:8222` only. From outside, the only way in is the
   existing Caddy :443 site **`https://vault.girthbass.duckdns.org`**. Caddy
@@ -15,9 +18,15 @@ restricted account. Design: [docs/plan.md](docs/plan.md).
 
 ## Server setup (once, in order)
 
+This host's settings (domain, agent email, LAN addresses, `/srv` paths, uids)
+are in `vault/.env`, which is not committed; start from `.env.example`.
+Caddy is a host service: `vault-caddy-apply` fills `caddy-vault.conf` with
+`VAULT_DOMAIN` and adds it to `CADDYFILE`.
+
 ```
-make vault-init VAULT_OWNER_EMAIL=<your vault email>   # sudo: /srv/happy-vault + env file
-make vault-up
+cp vault/.env.example vault/.env                       # then edit it
+make vault-init VAULT_OWNER_EMAIL=<your vault email>   # sudo: /srv/happy-vault, /srv/happy-filler + env file
+make vault-up                                           # vaultwarden + filler
 make vault-caddy-apply                                  # already applied on 2026-11-04
 make vault-admin-on                                     # sudo: choose an admin password
 ```

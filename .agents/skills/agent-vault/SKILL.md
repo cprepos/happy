@@ -51,10 +51,11 @@ like chat `none`, the session was started outside Happy (no `HAPPY_SESSION_ID`).
   agents. Its own (personal) vault holds the logins; there is **no organization**. Only the user
   knows its master password. The user's own vault account is separate and is never used by
   agents.
-- **Secret filler:** on prep-ml, runs as its own Linux account `happy-filler`, as that account's
-  systemd user unit `happy-filler.service`, 127.0.0.1:6091 only, installed under
-  `/srv/happy-filler/` (owned by happy-filler; `current` -> `releases/<sha>`). prep cannot change
-  it. It is enrolled with the agent account's API key and holds the unlocked key in memory. It
+- **Secret filler:** on prep-ml, a Docker container (`happy-vault-filler-1`, service `filler` of
+  the vault's compose project `happy-vault`, `selfhost/vault/compose.vault.yml`), uid 1990,
+  read-only, no capabilities, 127.0.0.1:6091 only. Its data is `/srv/happy-filler/` (owned by
+  uid 1990). Until November 2026 it was the systemd user unit of an account `happy-filler`; that
+  unit is retired. It is enrolled with the agent account's API key and holds the unlocked key in memory. It
   types logins (bridge token) and, through the vault tools' own token, creates, changes, trashes
   and restores them. It never purges anything.
 
@@ -93,11 +94,10 @@ the filler's files, `docker exec`, or the token file directly, on any machine.
 - `vault_compare {id, field, algo: sha256|sha512|bcrypt|argon2, digest, salt?}` returns
   `{match}`. It is rate limited (20 per login per 10 minutes).
 - `vault_pipe {id, field, target, args?}` feeds the value to the stdin of a command from the
-  root-owned policy's `pipe_targets` (for example docker-login or gh-token), **on prep-ml**, and
+  filler policy's `pipe_targets` (for example docker-login or gh-token), **on prep-ml**, and
   returns its exit code and scrubbed output.
 - Permissions come from the policy, `clients.<c>.manage`. A refusal names the missing
-  `manage.*` key; the user changes it with `make filler-policy-edit` (on prep-ml, as
-  happy-filler).
+  `manage.*` key; the user changes it with `make filler-policy-edit` (on prep-ml).
 - The vault tools' client token lives in prep's secrets folder on prep-ml and is read by the
   server itself. Never read or print it. The servers are registered with every harness on all
   three machines by `make mcp-register` (run on prep-ml).
@@ -137,20 +137,21 @@ On a Mac none of these exist locally. Run the safe ones only when they help the 
   `make mcp-check`, and prep's halves of a token handoff: `make filler-token-take` (outbox tokens
   into prep's secrets, 0600), `make filler-controller-token-give` (the browser controller token
   into the filler's inbox).
-- **Admin targets run only as `happy-filler` on prep-ml. Agents cannot run them** (no account,
-  no password, and they refuse any other account); give the user the commands to type on
-  prep-ml: `su - happy-filler`, then `make -C /home/prep/happy/selfhost <target>` (or
-  `filler-admin <command>`). They are: `filler-install COMMIT=<sha>` then `filler-restart`
-  (deploy a reviewed commit), `filler-up`, `filler-down`, `filler-restart`, `filler-lock`,
-  `filler-logs`, `filler-items` (names, item ids, hosts; no values), `filler-enroll`,
-  `filler-policy-edit`, `filler-seed-policy`, `filler-init`, `filler-setup COMMIT=<sha>` (first
-  install), `filler-token-issue NAME=bridge-client|vault-client [FILLER_ROTATE=1]`,
-  `filler-controller-token-take`, `filler-outbox-clear`.
-- **No sudo for anything filler-related**, except the one-time `make filler-account-setup
-  COMMIT=<sha>`, already done. Never suggest it again unless the happy-filler account is missing.
+- **Admin targets are the user's to type on prep-ml** (`make -C /home/prep/happy/selfhost
+  <target>`); they run once each in the filler image (compose service `filler-admin`). Give the
+  user the command; do not run them yourself unless the user asks for that one by name. They
+  are: `vault-up` / `filler-up` (build from this tree and start), `filler-down`, `filler-restart`,
+  `filler-lock`, `filler-logs`, `filler-items` (names, item ids, hosts; no values),
+  `vault-enroll BACKEND=shared` (= `filler-enroll`, needs a terminal), `filler-policy-edit`
+  (terminal), `filler-policy-upgrade`, `filler-seed-policy`, `vault-init`, `vault-tokens
+  [ROTATE=1 NAME=bridge-client|vault-client]` (issue, take and controller-token handoff in one),
+  `filler-token-issue NAME=... [FILLER_ROTATE=1]`, `filler-controller-token-take`,
+  `filler-outbox-clear`.
+- **No sudo for anything filler-related**, except `make vault-init` on a fresh install (creates
+  `/srv/happy-vault` and `/srv/happy-filler`).
 - Filler code lives in `browser-stack/browser/filler`, bridge side in
-  `secrets.mjs` under `browser-stack/browser/bridge/lib`. Changes go through a commit pushed to `fork`, then a
-  `filler-install` of that SHA.
+  `secrets.mjs` under `browser-stack/browser/bridge/lib`. Changes go through a commit pushed to
+  `fork`, then `make filler-up` from that commit (it rebuilds the image).
 - The bridge's and the vault's MCP processes are per chat (on a Mac, the LAN gateway starts
   one per server per session). Happy Agent's single process on prep-ml is a child of the `happy-agent` container's
   `happy-agent-linux-x64 run`; killing it respawns it with fresh code (do this only when no
@@ -161,9 +162,9 @@ On a Mac none of these exist locally. Run the safe ones only when they help the 
 - Never print secrets: the filler's key files, the client tokens, the API key, the master
   password, `docker exec ... env` values, policy item values. `filler-items`,
   `browser_list_secrets` and `vault_list` are safe.
-- Never `docker exec`, `su`, `sudo` or a container to act as happy-filler or read
+- Never `docker exec`, `su`, `sudo` or a container to act as the filler (uid 1990) or read
   `/srv/happy-filler/secrets`; admin targets are the user's to type.
-- Never ask the user for happy-filler's password, and never put it in a command.
+- Never ask the user for a password, and never put one in a command.
 - Sign-up on the vault is closed (no signups, no admin token, no organization), so new accounts
   need an invitation.
 - Known limit: on prep-ml, accounts in the docker or sudo groups (including `prep`) can

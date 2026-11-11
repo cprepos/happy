@@ -1,14 +1,20 @@
-# Vaultwarden (github.com/dani-garcia/vaultwarden, AGPL-3.0): a self-hosted
-# Bitwarden-compatible server, for the secrets the browser agent may type
-# through the secret filler (browser-stack/browser/filler). Run it through make
-# (selfhost/vault.mk): vault-init, vault-up, vault-status. See ./README.md.
+# The vault: Vaultwarden (github.com/dani-garcia/vaultwarden, AGPL-3.0), a
+# self-hosted Bitwarden-compatible server, and the secret filler
+# (browser-stack/browser/filler), which types its secrets into the agent's
+# browser and serves the vault tools. Run it through make (selfhost/vault.mk):
+# vault-init, vault-up, vault-status, or make stack-up for this and the browser
+# stack together. See ./README.md.
 #
-# It listens on 127.0.0.1:8222 only. The phone and desktop Bitwarden apps
-# reach it through the existing Caddy :443 site vault.girthbass.duckdns.org,
-# which answers /admin with 404. The admin panel is only ever at
-# http://127.0.0.1:8222/admin, and only while ADMIN_TOKEN is set.
+# Host-specific values (domain, agent email, /srv paths, uids) come from
+# ./.env (copy .env.example), which compose reads from this directory.
 #
-# Everything lives under /srv/happy-vault (root-made, outside /home/prep):
+# Vaultwarden listens on 127.0.0.1:8222 only. The phone and desktop Bitwarden
+# apps reach it through the host's Caddy :443 site https://${VAULT_DOMAIN}
+# (caddy-vault.conf, make vault-caddy-apply), which answers /admin with 404.
+# The admin panel is only ever at http://127.0.0.1:8222/admin, and only while
+# ADMIN_TOKEN is set.
+#
+# Vaultwarden's files live under ${VAULT_ROOT} (/srv/happy-vault; root-made, outside /home/prep):
 #   data/              uid 1991, 0700: db.sqlite3, rsa_key.pem, attachments
 #   backups/           uid 1991, 0700: make vault-backup tarballs
 #   vaultwarden.env    root:1991 0640: ORG_CREATION_USERS and, during setup
@@ -23,7 +29,7 @@ name: happy-vault
 services:
   vaultwarden:
     image: vaultwarden/server:1.37.5-alpine@sha256:bbe684a02d6b0db54256ff88eac9754f4519284a7b26314afc241fd7d0918191
-    user: "1991:1991"
+    user: "${VAULT_UID:-1991}:${VAULT_UID:-1991}"
     restart: unless-stopped
     read_only: true
     tmpfs: [/tmp]
@@ -39,7 +45,7 @@ services:
       start_period: 10s
     environment:
       ENV_FILE: /etc/vaultwarden.env
-      DOMAIN: https://vault.girthbass.duckdns.org
+      DOMAIN: https://${VAULT_DOMAIN:?set VAULT_DOMAIN in selfhost/vault/.env}
       ROCKET_PORT: "8222"
       DATA_FOLDER: /data
       SIGNUPS_ALLOWED: "false"
@@ -59,5 +65,71 @@ services:
       ADMIN_RATELIMIT_MAX_BURST: "3"
       LOG_LEVEL: warn
     volumes:
-      - /srv/happy-vault/data:/data
-      - /srv/happy-vault/vaultwarden.env:/etc/vaultwarden.env:ro
+      - ${VAULT_ROOT:-/srv/happy-vault}/data:/data
+      - ${VAULT_ROOT:-/srv/happy-vault}/vaultwarden.env:/etc/vaultwarden.env:ro
+
+  # The secret filler (browser-stack/browser/filler/Dockerfile), in place of
+  # the happy-filler systemd user unit it replaces. Host network, because it
+  # binds 127.0.0.1:6091 itself and reaches Vaultwarden on 127.0.0.1:8222 and
+  # the browser controllers on 127.0.0.1:8010 and 8100-8131. Its data is the
+  # same ${FILLER_ROOT} (/srv/happy-filler) the unit used, owned by uid 1990:
+  # mounted read-only as a whole (secrets/, policy.json: a directory mount, so
+  # a policy swapped in by rename is seen and reloaded), with only state/ and
+  # audit/ writable. No other host path, and no Docker socket.
+  filler:
+    build: ../../browser-stack/browser/filler
+    image: happy-filler:local
+    user: "${FILLER_UID:-1990}:${FILLER_GID:-1990}"
+    restart: unless-stopped
+    network_mode: host
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    ulimits: { core: 0 }
+    stop_grace_period: 10s
+    depends_on:
+      vaultwarden:
+        condition: service_healthy
+    environment:
+      FILLER_HOST: 127.0.0.1
+      FILLER_PORT: "6091"
+      VAULT_URL: http://127.0.0.1:8222
+      FILLER_CONTROLLER_PORT: "8010"
+      FILLER_CONTROLLER_PORTS: 8010,8100-8131
+      FILLER_HOME: /filler
+      NODE_OPTIONS: ""
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:6091/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    volumes:
+      - ${FILLER_ROOT:-/srv/happy-filler}:/filler:ro
+      - ${FILLER_ROOT:-/srv/happy-filler}/state:/filler/state
+      - ${FILLER_ROOT:-/srv/happy-filler}/audit:/filler/audit
+
+  # The filler's setup commands (scripts/admin.mjs: init, token-issue,
+  # controller-token-take, enroll, items, seed-policy, policy-edit, ...), run
+  # once each by the vault-* and filler-* make targets with
+  # `--profile admin run --rm`. Same image and uid, ${FILLER_ROOT} writable,
+  # no network beyond the host's loopback use for enroll and items.
+  filler-admin:
+    profiles: [admin]
+    image: happy-filler:local
+    user: "${FILLER_UID:-1990}:${FILLER_GID:-1990}"
+    network_mode: host
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    ulimits: { core: 0 }
+    entrypoint: ["node", "--disallow-code-generation-from-strings", "scripts/admin.mjs"]
+    environment:
+      VAULT_URL: http://127.0.0.1:8222
+      FILLER_HOME: /filler
+      FILLER_AGENT_EMAIL: ${VAULT_AGENT_EMAIL:-}
+      NODE_OPTIONS: ""
+    volumes:
+      - ${FILLER_ROOT:-/srv/happy-filler}:/filler
