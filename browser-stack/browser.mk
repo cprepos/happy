@@ -29,8 +29,8 @@ BROWSER_SECRETS := $(HAPPY_BROWSER_HOME)/secrets
 export BROWSER_PROJECT ?= happy-browser
 # The launcher mounts the repo at its host path, so compose needs it as a variable.
 export HAPPY_BROWSER_DIR := $(BROWSER_DIR)
-# The Docker daemon's socket, which only the docker-proxy container mounts, and its group, which
-# that container is given (0 under a rootless daemon, whose socket belongs to container root).
+# The Docker daemon's socket (prep's rootful daemon), which only the docker-proxy container
+# mounts, and its group, which that container is given; compose.browser.yml requires it.
 export HAPPY_DOCKER_SOCKET ?= /var/run/docker.sock
 export DOCKER_SOCKET_GID ?= $(shell stat -c %g $(HAPPY_DOCKER_SOCKET) 2>/dev/null)
 BROWSER_LOCAL_ENV := $(BROWSER_DIR)/.env.browser

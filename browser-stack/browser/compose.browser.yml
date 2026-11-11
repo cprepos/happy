@@ -18,8 +18,8 @@
 # (none added), no-new-privileges and a read-only root where the image allows it: browser-node
 # 1994, controller and launcher 1993 (the owner of data/, and of each pod's slot), bridge 1992,
 # docker-proxy 1995. LAUNCHER_SOCKET_GID (1996) is the group of the launcher's socket, given only
-# to the launcher and the bridge. All are below 65536, so they map through a rootless daemon's
-# subuid range unchanged. browser-init.sh (make browser-init, run by browser-up) sets the owners
+# to the launcher and the bridge. All are below 65536 and none is 0. The stack runs in prep's own
+# (rootful) Docker daemon. browser-init.sh (make browser-init, run by browser-up) sets the owners
 # of HAPPY_BROWSER_HOME's directories to match from a one-shot container, and copies each
 # service's secret files into its own directory, owned by it and 0400.
 #
@@ -276,8 +276,7 @@ services:
     restart: unless-stopped
     network_mode: none
     user: "${DOCKER_PROXY_UID:-1995}:${DOCKER_PROXY_UID:-1995}"
-    # The socket's group: browser.mk reads it from HAPPY_DOCKER_SOCKET; 0 under a rootless daemon,
-    # whose socket belongs to its user (container root).
+    # The socket's group: browser.mk reads it from HAPPY_DOCKER_SOCKET (the docker group).
     group_add: ["${DOCKER_SOCKET_GID:-0}"]
     read_only: true
     cap_drop: [ALL]

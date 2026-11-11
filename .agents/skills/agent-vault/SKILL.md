@@ -44,18 +44,18 @@ like chat `none`, the session was started outside Happy (no `HAPPY_SESSION_ID`).
 
 ## What it is
 
-- **Vaultwarden** on prep-ml, container `happy-vault-vaultwarden-1`, behind Caddy at
-  https://vault.girthbass.duckdns.org (on prep-ml: http://127.0.0.1:8222). Data and env file on
-  prep-ml under `/srv/happy-vault/`. Nightly backup timer `happy-vault-backup.timer`.
+- **Vaultwarden** on prep-ml, the standalone container `vaultwarden` (`make vault-up`,
+  `selfhost/vault/scripts/vaultwarden.sh`), behind Caddy at https://vault.girthbass.duckdns.org
+  (on prep-ml: http://127.0.0.1:8222). Data and env file in the Docker volumes
+  `vaultwarden-data` and `vaultwarden-config`.
 - **Agent account:** `agent@vault.girthbass.duckdns.org`. This is the password manager for all
   agents. Its own (personal) vault holds the logins; there is **no organization**. Only the user
   knows its master password. The user's own vault account is separate and is never used by
   agents.
-- **Secret filler:** on prep-ml, a Docker container (`happy-vault-filler-1`, service `filler` of
-  the vault's compose project `happy-vault`, `selfhost/vault/compose.vault.yml`), uid 1990,
-  read-only, no capabilities, 127.0.0.1:6091 only. Its data is `/srv/happy-filler/` (owned by
-  uid 1990). Until November 2026 it was the systemd user unit of an account `happy-filler`; that
-  unit is retired. It is enrolled with the agent account's API key and holds the unlocked key in memory. It
+- **Secret filler:** on prep-ml, the systemd user unit `happy-filler.service` of its own account
+  `happy-filler` (uid 1990), on the host, 127.0.0.1:6091 only, running a reviewed commit from
+  `/srv/happy-filler/current`. Its data is `/srv/happy-filler/` (owned by happy-filler). It is
+  not a container. It is enrolled with the agent account's API key and holds the unlocked key in memory. It
   types logins (bridge token) and, through the vault tools' own token, creates, changes, trashes
   and restores them. It never purges anything.
 
@@ -137,21 +137,22 @@ On a Mac none of these exist locally. Run the safe ones only when they help the 
   `make mcp-check`, and prep's halves of a token handoff: `make filler-token-take` (outbox tokens
   into prep's secrets, 0600), `make filler-controller-token-give` (the browser controller token
   into the filler's inbox).
-- **Admin targets are the user's to type on prep-ml** (`make -C /home/prep/happy/selfhost
-  <target>`); they run once each in the filler image (compose service `filler-admin`). Give the
-  user the command; do not run them yourself unless the user asks for that one by name. They
-  are: `vault-up` / `filler-up` (build from this tree and start), `filler-down`, `filler-restart`,
-  `filler-lock`, `filler-logs`, `filler-items` (names, item ids, hosts; no values),
-  `vault-enroll BACKEND=shared` (= `filler-enroll`, needs a terminal), `filler-policy-edit`
-  (terminal), `filler-policy-upgrade`, `filler-seed-policy`, `vault-init`, `vault-tokens
-  [ROTATE=1 NAME=bridge-client|vault-client]` (issue, take and controller-token handoff in one),
-  `filler-token-issue NAME=... [FILLER_ROTATE=1]`, `filler-controller-token-take`,
-  `filler-outbox-clear`.
-- **No sudo for anything filler-related**, except `make vault-init` on a fresh install (creates
-  `/srv/happy-vault` and `/srv/happy-filler`).
+- **Filler admin targets are the user's to type on prep-ml, as happy-filler** (`su -
+  happy-filler`, then `make -C /home/prep/happy/selfhost <target>` or `filler-admin <command>`;
+  as any other account they print the `su` line and fail). An agent cannot run them: give the
+  user the command. They are: `filler-install COMMIT=<sha>` (deploy a reviewed commit; restarts
+  the filler), `filler-up`, `filler-down`, `filler-restart`, `filler-lock`, `filler-logs`,
+  `filler-items` (names, item ids, hosts; no values), `filler-enroll [BACKEND=<name>]` (needs a
+  terminal), `filler-policy-edit` (terminal), `filler-policy-upgrade`, `filler-check-policy`,
+  `filler-seed-policy`, `filler-token-issue NAME=bridge-client|vault-client [FILLER_ROTATE=1]`,
+  `filler-controller-token-take`, `filler-outbox-clear`.
+- **Vault container targets** (as prep, the user's to run): `vault-up` (a no-op while it runs),
+  `vault-down`, `vault-admin-on` / `vault-admin-off` (restart Vaultwarden).
+- **sudo is used once only**, by `make filler-account-setup COMMIT=<sha>` (as prep), which
+  creates the happy-filler account.
 - Filler code lives in `browser-stack/browser/filler`, bridge side in
-  `secrets.mjs` under `browser-stack/browser/bridge/lib`. Changes go through a commit pushed to
-  `fork`, then `make filler-up` from that commit (it rebuilds the image).
+  `secrets.mjs` under `browser-stack/browser/bridge/lib`. Changes go through a commit, then
+  `make filler-install COMMIT=<sha>` as happy-filler.
 - The bridge's and the vault's MCP processes are per chat (on a Mac, the LAN gateway starts
   one per server per session). Happy Agent's single process on prep-ml is a child of the `happy-agent` container's
   `happy-agent-linux-x64 run`; killing it respawns it with fresh code (do this only when no
