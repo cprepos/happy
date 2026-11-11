@@ -1,0 +1,11 @@
+# Ports happy-svc-ctl publishes from the happy-svc daemon's network namespace to the host,
+# always on 127.0.0.1 (the wrapper has no way to name another address). One port or a range
+# of at most 64 per line, 1024-65535, then an optional word. Host clients that use them:
+# vault-mcp, the bridge's stdio MCP, Caddy, agentgateway, the Happy workspace proxy.
+8222        vaultwarden
+6091        filler
+6090        bridge
+8010        controller
+6080        novnc
+8100-8131   pod-controllers
+6100-6131   pod-novnc

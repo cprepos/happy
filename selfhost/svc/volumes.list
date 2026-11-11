@@ -1,0 +1,9 @@
+# The data happy-svc-ctl may import and backs up: Docker volume names, exactly as the
+# compose files name them (vault-init.sh creates them; compose declares them external with
+# an explicit `name:`), one per line. browser-home is not a volume: it is
+# ~happy-svc/data/browser, the browser stack's HAPPY_BROWSER_HOME.
+happy-vault-data
+happy-vault-config
+happy-vault-backups
+happy-filler
+browser-home
