@@ -2,7 +2,7 @@
 # Verifies that no public path reaches LiveKit and that the internal paths still do.
 # Read-only (HTTP requests and `docker exec ... curl`). Exit 0 when every check passes.
 #
-#   bash selfhost/cutover/check-no-public-livekit.sh [--lan 192.168.2.72]
+#   bash selfhost/scripts/check-no-public-livekit.sh [--lan 192.168.2.72]
 #
 # LiveKit fingerprints: GET / answers "OK"; /rtc/validate answers "no permissions to access the room".
 set -uo pipefail

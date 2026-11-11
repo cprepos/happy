@@ -277,7 +277,7 @@ services:
     network_mode: none
     user: "${DOCKER_PROXY_UID:-1995}:${DOCKER_PROXY_UID:-1995}"
     # The socket's group: browser.mk reads it from HAPPY_DOCKER_SOCKET (the docker group).
-    group_add: ["${DOCKER_SOCKET_GID:-0}"]
+    group_add: ["${DOCKER_SOCKET_GID:?run through browser-stack/browser.mk}"]
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]

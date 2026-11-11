@@ -96,3 +96,7 @@ selfhost/.env.voice
 # Per-segment TTS WAVs the voice agent writes when LK_DUMP_TTS is set (diagnostic captures)
 /selfhost/lk_dump/
 .node/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
