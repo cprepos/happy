@@ -417,6 +417,18 @@ test('yolo: turning it on approves the approval already waiting, and its waiter 
     assert.equal((await state(id)).auto_approved[0].id, 'w1');
 });
 
+test('yolo: a waiter on an approval yolo already approved reads approved, not gone', async () => {
+    const { id } = await link();
+    await post(`/live/${id}/auto`, { on: true });
+    client.approvals.set('yw1', approvalRecord('yw1', 'sess1'));
+    const reg = await (await api('/api/approval', { session_id: 'sess1', approval_id: 'yw1' })).json();
+    assert.equal(reg.auto_approved, true);
+    const w = await (await api('/api/approval/wait', { id, approval_id: 'yw1', wait_s: 0 })).json();
+    assert.equal(w.approval_status, 'approved');
+    const other = await (await api('/api/approval/wait', { id, approval_id: 'yw2', wait_s: 0 })).json();
+    assert.equal(other.approval_status, 'gone');
+});
+
 test('mcp: with yolo on, the held action runs again at once without waiting for the user', async () => {
     const { id } = await link();
     await post(`/live/${id}/auto`, { on: true });

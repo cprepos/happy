@@ -360,8 +360,13 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         if (status !== 'pending') settleApproval(rec, status);
     }
 
-    // What became of approval `aid` on this link.
-    const approvalStatusOf = (rec, aid) => (rec.approval?.id === aid && rec.approval.sessionId === rec.sessionId ? rec.approval.status : 'gone');
+    // What became of approval `aid` on this link. A yolo-approved one is never stored in
+    // rec.approval, only in rec.autoApproved, so it reads as approved from there.
+    const approvalStatusOf = (rec, aid) => {
+        if (rec.approval?.id === aid && rec.approval.sessionId === rec.sessionId) return rec.approval.status;
+        if (Array.isArray(rec.autoApproved) && rec.autoApproved.some((e) => e?.id === aid)) return 'approved';
+        return 'gone';
+    };
 
     // POST /live/<id>/approve|deny: the user's decision on the link's own pending approval.
     async function decide(req, res, rec, approve) {
