@@ -180,7 +180,7 @@ export function stateOf(rec) {
 
 // Browser yolo: the note on an approval the bridge gives on the user's behalf, and how many of
 // those a link remembers for its state.
-export const AUTO_APPROVE_NOTE = 'Auto-approved (browser yolo)';
+export const AUTO_APPROVE_NOTE = 'Auto-approved (yolo mode)';
 export const AUTO_APPROVED_KEPT = 5;
 
 // auto-browser's approval status as the bridge names it.
@@ -403,7 +403,7 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         const entry = { id: aid, summary: summary || 'An action that needed approval.', at: now() };
         const before = Array.isArray(rec.autoApproved) ? rec.autoApproved : [];
         store.update(rec, { autoApproved: [entry, ...before.filter((e) => e.id !== aid)].slice(0, AUTO_APPROVED_KEPT) });
-        log(`browser yolo /live/${rec.id.slice(0, 6)}… auto-approved ${aid}`);
+        log(`yolo mode /live/${rec.id.slice(0, 6)}… auto-approved ${aid}`);
         return null;
     }
 
@@ -413,7 +413,7 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         try { body = await readJson(req); } catch (err) { return send(res, err.status || 400, { error: err.message }); }
         if (typeof body?.on !== 'boolean') return send(res, 400, { error: 'on must be true or false' });
         store.update(rec, { autoApprove: body.on });
-        log(`browser yolo /live/${rec.id.slice(0, 6)}… ${body.on ? 'on' : 'off'}`);
+        log(`yolo mode /live/${rec.id.slice(0, 6)}… ${body.on ? 'on' : 'off'}`);
         // An approval already waiting when yolo goes on is approved too; its waiter wakes.
         const a = body.on ? pendingApproval(rec) : null;
         const c = a ? clientOf(rec) : null;
@@ -716,7 +716,7 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
                     try { current = await c.getApproval(aid); } catch {}
                     return send(res, 409, { error: 'not_pending', approval_status: APPROVAL_STATUS[current?.status] ?? 'gone' });
                 }
-                log(`browser yolo /live/${rec.id.slice(0, 6)}… could not auto-approve ${aid}; asking the user`);
+                log(`yolo mode /live/${rec.id.slice(0, 6)}… could not auto-approve ${aid}; asking the user`);
             }
             if (rec.approval?.id !== aid || rec.approval.status !== 'pending') {
                 store.update(rec, { approval: { id: aid, sessionId: rec.sessionId, ...approvalSummary(record, rec.url), askedAt: now(), status: 'pending', decidedAt: null } });

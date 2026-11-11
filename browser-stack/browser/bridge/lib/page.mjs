@@ -218,7 +218,7 @@ const SCRIPT = `
       $('approve').disabled = $('deny').disabled = false;
     } finally { deciding = false; }
   }
-  // Browser yolo: approvals for this chat are given at once. The bridge keeps the switch.
+  // Yolo mode: approvals for this chat are given at once. The bridge keeps the switch.
   let yoloBusy = false;
   function renderYolo() {
     const on = state.auto_approve === true;
@@ -428,7 +428,7 @@ export function renderPage({ id, state, takeoverUrl, nonce, frameWidth = 1920, f
 </header>
 <div id="reason" hidden></div>
 <div id="yolo-row">
-  <label title="Approve this chat's browser actions without asking"><input id="yolo" type="checkbox"${state.auto_approve === true ? ' checked' : ''}> Browser yolo</label>
+  <label title="Approve this chat's browser actions without asking"><input id="yolo" type="checkbox"${state.auto_approve === true ? ' checked' : ''}> Yolo mode</label>
   <span id="yolo-msg" role="status"></span>
 </div>
 <section id="approval" role="alertdialog" aria-labelledby="approval-title" hidden>

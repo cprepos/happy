@@ -359,10 +359,10 @@ test('yolo: POST /live/<id>/auto sets this chat\'s flag only, shows in state, su
     assert.deepEqual(await r.json(), { auto_approve: true });
     assert.equal((await state(one.id)).auto_approve, true);
     assert.equal((await state(two.id)).auto_approve, false, 'never another chat\'s');
-    assert.ok(logs.some((l) => /browser yolo .* on/.test(l)));
+    assert.ok(logs.some((l) => /yolo mode .* on/.test(l)));
     const page = await (await fetch(`${base}/live/${one.id}`)).text();
     assert.match(page, /id="yolo"[^>]* checked/);
-    assert.match(page, /Browser yolo/);
+    assert.match(page, /Yolo mode/);
 
     store.flush();
     const again = new LinkStore({ path: join(dir, 'links.json') });
@@ -385,7 +385,7 @@ test('yolo: an approval is approved at once with the yolo note, recorded (last 5
         assert.equal(reg.approval, null);
     }
     assert.deepEqual(client.calls.approve.map((c) => c.comment), Array(6).fill(AUTO_APPROVE_NOTE));
-    assert.equal(AUTO_APPROVE_NOTE, 'Auto-approved (browser yolo)');
+    assert.equal(AUTO_APPROVE_NOTE, 'Auto-approved (yolo mode)');
     const s = await state(one.id);
     assert.equal(s.approval, null, 'never shown');
     assert.deepEqual(s.auto_approved.map((e) => e.id), ['y6', 'y5', 'y4', 'y3', 'y2']);
@@ -424,7 +424,7 @@ test('mcp: with yolo on, the held action runs again at once without waiting for 
     const res = await h.call(1, 'browser_execute_action', ACT);
     assert.equal(res.result.isError, false);
     const texts = res.result.content.map((c) => c.text).join('\n');
-    assert.match(texts, /Browser yolo is on/);
+    assert.match(texts, /Yolo mode is on/);
     assert.match(texts, /acted type/);
     const acts = h.upstream.calls.filter((c) => c.name === 'browser.execute_action');
     assert.equal(acts.length, 2);

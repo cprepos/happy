@@ -921,7 +921,7 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
         let st;
         if (yolo) {
             st = 'approved';
-            log(`browser yolo: approval ${aid} auto-approved, running the action again`);
+            log(`yolo mode: approval ${aid} auto-approved, running the action again`);
         } else {
             try {
                 st = await waitApproval(reg.id, aid, reg.url, approvalWait, signal, progress);
@@ -931,7 +931,7 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
             }
         }
         if (st === 'approved') {
-            const who = yolo ? 'browser yolo auto-approved the action' : 'the user approved the action';
+            const who = yolo ? 'yolo mode auto-approved the action' : 'the user approved the action';
             let r;
             try { r = await again({ ...args, approval_id: aid }); } catch (err) {
                 if (signal.aborted) return { final: null };
@@ -939,7 +939,7 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
             }
             if (r?.error) return { final: toolResult(`Error: ${who}, but running it failed: ${r.error.message ?? 'unknown error'}`, true) };
             const out = r?.result;
-            const said = yolo ? 'Browser yolo is on for this chat: this action was auto-approved, and it ran.' : 'The user approved this action in the live view, and it ran.';
+            const said = yolo ? 'Yolo mode is on for this chat: this action was auto-approved, and it ran.' : 'The user approved this action in the live view, and it ran.';
             if (out && Array.isArray(out.content)) return { result: { ...out, content: [{ type: 'text', text: said }, ...out.content] } };
             return { result: out };
         }
