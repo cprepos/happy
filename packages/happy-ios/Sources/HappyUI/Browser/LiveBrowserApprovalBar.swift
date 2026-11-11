@@ -1,3 +1,4 @@
+#if canImport(UIKit)
 import HappyCore
 import HappyLayout
 import UIKit
@@ -220,3 +221,4 @@ final class LiveBrowserApprovalBar: UIView {
         }
     }
 }
+#endif
