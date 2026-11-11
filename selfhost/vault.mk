@@ -20,25 +20,18 @@
 #
 #   make stack-up / stack-down  the vault and the browser stack together (selfhost/Makefile)
 #   make vault-up / vault-down / vault-logs
-#   make vault-status         containers, 127.0.0.1-only binds, /alive, Caddy site, filler unlocked, last backup
+#   make vault-status         containers, 127.0.0.1-only binds, /alive, Caddy site, filler unlocked
 #   make vault-admin-on       set an admin password (asked on the terminal; only its hash is kept)
 #   make vault-admin-off      remove it, which disables /admin
 #   make vault-caddy-apply    add $(VAULT_DOMAIN) to the host's Caddy (backup, validate, reload)
-#   make vault-backup         versioned tarballs: the vault (uid 1991, happy-vault-backups) and the filler
-#                             (uid 1990, happy-filler-backups), newest 30 kept in each, then copied to every
-#                             mirror (VAULT_BACKUP_MIRRORS; filler ones into <mirror>/filler/) + a ZFS snapshot
-#   make vault-backup-mirror  copy any tarball a mirror is missing (no new backup)
-#   make vault-restore-check  restore the newest backup of every location in a throwaway container,
-#                             count what is in it, check the sha256 matches across locations
-#   make vault-restore TARBALL=vault-<ts>.tar.gz   (or a mirror's absolute path) check its sha256,
-#                             stop Vaultwarden, set the current data aside in happy-vault-backups, unpack, start
-#   make vault-backup-timer   install + enable the nightly systemd user timer that runs vault-backup
 #   make vault-migrate-volumes  (once, an install from before the volumes) copy /srv/happy-filler and
 #                             /srv/happy-vault into the volumes; Vaultwarden stops for the copy, the old
 #                             filler unit keeps serving 6091 from /srv; /srv is left as the rollback
 #   make vault-filler-cutover (after stopping the old filler unit) copy again what is newer in /srv,
 #                             then start the filler container
-#   make vault-backup-setup   print (never run) the one-time sudo commands: mirror dirs, ZFS delegation
+#
+# Backups are not made here: the host's own cron backs up the Docker volumes and /srv
+# (see selfhost/vault/README.md, Backups).
 
 VAULT_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))/vault
 # Host settings: plain KEY=value lines, read by compose (from vault/) and here.
@@ -57,12 +50,9 @@ VAULT_URL ?= http://127.0.0.1:8222
 VAULT_SITE ?= $(VAULT_DOMAIN)
 BACKEND ?= shared
 VAULT_OWNER_EMAIL ?=
-VAULT_SYSTEMD := $(HOME)/.config/systemd/user
-VAULT_BACKUP_MIRRORS ?= /girth/backup/vault /mnt/ai-data/backups/happy-vault
-export VAULT_BACKUP_MIRRORS
 
 .PHONY: vault-init vault-up vault-down vault-logs vault-status vault-enroll vault-tokens vault-admin-on vault-admin-off \
-	vault-caddy-apply vault-backup vault-backup-mirror vault-restore-check vault-restore vault-backup-timer vault-backup-setup \
+	vault-caddy-apply \
 	vault-migrate-volumes vault-filler-cutover
 
 VAULT_NEED_ENV = @test -f $(VAULT_DIR)/.env || { echo "$@: no $(VAULT_DIR)/.env; cp $(VAULT_DIR)/.env.example $(VAULT_DIR)/.env and fill it in" >&2; exit 1; }
@@ -132,9 +122,6 @@ vault-status:
 		'f=/etc/vaultwarden/vaultwarden.env; test -r $$f || { echo "not readable in the container"; exit 0; }; \
 		for k in ORG_CREATION_USERS ADMIN_TOKEN; do grep -qE "^$$k=.+" $$f && printf "%s set  " $$k || printf "%s unset  " $$k; done; echo' \
 		2>/dev/null || echo "container not running"
-	@printf "backup timer  : "; systemctl --user is-active happy-vault-backup.timer 2>/dev/null || true
-	@echo "newest backup per location (STALE = older than 26h):"
-	@bash $(VAULT_DIR)/scripts/vault-backup.sh status || echo "  unknown"
 	@$(MAKE) --no-print-directory filler-status
 
 vault-admin-on:
@@ -159,38 +146,3 @@ vault-filler-cutover:
 
 vault-caddy-apply:
 	@bash $(VAULT_DIR)/scripts/vault-caddy-apply.sh
-
-vault-backup:
-	@bash $(VAULT_DIR)/scripts/vault-backup.sh backup
-
-vault-backup-mirror:
-	@bash $(VAULT_DIR)/scripts/vault-backup.sh mirror
-
-vault-restore-check:
-	@bash $(VAULT_DIR)/scripts/vault-backup.sh check
-
-vault-restore:
-	@test -n "$(TARBALL)" || { echo "$@: TARBALL=vault-<ts>.tar.gz (in happy-vault-backups) or an absolute path" >&2; exit 1; }
-	@bash $(VAULT_DIR)/scripts/vault-backup.sh restore "$(TARBALL)"
-
-vault-backup-timer:
-	@mkdir -p $(VAULT_SYSTEMD)
-	@for u in happy-vault-backup.service happy-vault-backup.timer; do \
-		if [ -e $(VAULT_SYSTEMD)/$$u ] && ! cmp -s $(VAULT_DIR)/systemd/$$u $(VAULT_SYSTEMD)/$$u; then \
-			d=$(VAULT_SYSTEMD)/trash/$$(date +%Y%m%d_%H%M%S)_$$u; mkdir -p $$d && mv $(VAULT_SYSTEMD)/$$u $$d/; fi; \
-		cp $(VAULT_DIR)/systemd/$$u $(VAULT_SYSTEMD)/$$u; done
-	systemctl --user daemon-reload
-	systemctl --user enable --now happy-vault-backup.timer
-	@systemctl --user list-timers happy-vault-backup.timer --no-pager
-
-# Prints the one-time root setup; nothing here runs sudo. <mirror> is uid
-# 1991's with mode 0711 so uid 1990 can reach <mirror>/filler/ (its own, 0700)
-# without listing the vault tarballs; 1991 cannot read the filler's.
-vault-backup-setup:
-	@echo "# mirror dirs and ZFS snapshot delegation"
-	@echo "sudo zfs create -p -o compression=lz4 girth/backup/vault"
-	@echo "sudo mkdir -p /mnt/ai-data/backups/happy-vault"
-	@for m in $(VAULT_BACKUP_MIRRORS); do \
-		echo "sudo chown $(or $(VAULT_UID),1991):$(or $(VAULT_UID),1991) $$m && sudo chmod 0711 $$m"; \
-		echo "sudo install -d -o $(or $(FILLER_UID),1990) -g $(or $(FILLER_GID),1990) -m 0700 $$m/filler"; done
-	@echo "sudo zfs allow -u $(USER) snapshot,mount girth/backup"

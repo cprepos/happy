@@ -45,7 +45,7 @@ make vault-admin-on                                     # choose an admin passwo
    login, Authenticator app. The vault is reachable from the internet through
    Caddy, so do not skip this.
 4. `make vault-admin-off`. This turns the admin panel off.
-5. `make vault-backup-timer`. This starts the nightly backup.
+5. Make sure the host's backups cover the vault (see Backups).
 
 The agent account for the secret filler (no organization: its logins sit in
 its own vault) is in `browser-stack/browser/filler/README.md`.
@@ -83,142 +83,31 @@ The server URL is the same everywhere: `https://vault.girthbass.duckdns.org`.
 ## Make targets (from `selfhost/`)
 
 ```
-make vault-status         # health, 127.0.0.1-only bind, public /alive, public /admin = 404, env keys set/unset, timer, newest backup
+make vault-status         # health, 127.0.0.1-only bind, public /alive, public /admin = 404, env keys set/unset
 make vault-up | vault-down | vault-logs
-make vault-backup         # the vault and filler tarballs now, then copied to every mirror (+ ZFS snapshot)
-make vault-backup-mirror  # copy whatever a mirror is missing, without a new backup
-make vault-restore-check  # restore the newest tarball of every location in a throwaway container; counts, sha256 across locations
-make vault-backup-timer   # install + enable the nightly systemd user timer
-make vault-restore TARBALL=vault-<ts>.tar.gz   # put a backup back (see Restoring)
-make vault-backup-setup   # print (never run) the one-time sudo commands for the mirror dirs and snapshots
 make vault-admin-on | vault-admin-off
 make vault-migrate-volumes | vault-filler-cutover   # once, an install from before the volumes (see below)
 ```
 
 `make status` (the main health check) runs `vault-status` too.
 
-## Backup and restore
+## Backups
 
-### What runs every night
+Nothing in this repo makes backups any more: the host's own cron does. What
+has to be in them:
 
-The user timer `happy-vault-backup.timer` (04:15, plus up to 10 minutes)
-runs `make vault-backup`. It catches up after downtime (`Persistent=true`).
-Nothing ever deletes a backup or a snapshot.
+- the Docker volumes `vaultwarden-data` (the database, attachments, keys) and
+  `vaultwarden-config` (`vaultwarden.env` and `env-backups/`);
+- `/srv/happy-filler`: the filler's `policy.json`, `policy-backups/`,
+  `secrets/`, `state/`, `audit/` and its releases.
 
-**Vault tarball.** An online SQLite snapshot (`vaultwarden backup`) goes into
-`vault-<UTC timestamp>.tar.gz` with a `.sha256`, in the volume
-`happy-vault-backups`, written as uid 1991. It holds `db.sqlite3`,
-`attachments/`, `rsa_key*` and `config.json`. From `happy-vault-config` it
-also takes `vaultwarden.env` and `env-backups/`.
+The filler's `secrets/` are the agent account's vault credentials: keep their
+copies where only root (or uid 1990) can read them, not next to the vault's.
 
-**Filler tarball.** `filler-<ts>.tar.gz` with a `.sha256`, in the volume
-`happy-filler-backups`, written as uid 1990. It holds the filler's
-`policy.json`, `policy-backups/`, `audit/`, `state/` and `secrets/`. It never
-goes where uid 1991 can read it. Those are the agent's vault credentials,
-and a compromised Vaultwarden must not get them.
-
-In each volume the newest 30 stay. Older tarballs (and their `.sha256`)
-move to `retired/` and are never deleted. Both volumes are on the OS disk.
-
-**Mirrors.** Right after that, every tarball a mirror does not have yet is
-copied into it, `retired/` included, so a mirror that was offline catches up
-on its next run. Mirrors are flat (no `retired/`) and never pruned. Defaults
-(`VAULT_BACKUP_MIRRORS`, space-separated):
-
-- `/girth/backup/vault`: ZFS dataset `girth/backup/vault` on the raidz pool.
-- `/mnt/ai-data/backups/happy-vault`: the separate 4 TB SSD.
-
-Vault tarballs go into `<mirror>/` as uid 1991, filler tarballs into
-`<mirror>/filler/` as uid 1990, all in containers (no sudo), files 0600.
-`<mirror>` is 1991's with mode 0711, so 1990 can pass through to its own
-`filler/` (0700) without listing the vault tarballs. 1991 cannot open
-`filler/`. Each copy is hashed and compared with the primary's `.sha256`
-before it gets its own `.sha256` and its final name (until then it is
-`.part-<name>`). After a run that copied something to a mirror on ZFS, the
-script takes `girth/backup/vault@vault-<ts>` (and `@filler-<ts>`); snapshots
-are never destroyed.
-
-If a mirror is missing or not writable, a hash does not match, or a snapshot
-is refused, the script prints a `MIRROR FAILED` banner naming the target,
-still does the other mirrors, and exits non-zero, so the unit shows failed
-(`systemctl --user status happy-vault-backup.service`). The primary tarballs
-are written first and kept either way.
-
-### One-time setup (sudo, by you)
-
-`make vault-backup-setup` prints these; nothing runs them automatically.
-
-```
-sudo zfs create -p -o compression=lz4 girth/backup/vault
-sudo mkdir -p /mnt/ai-data/backups/happy-vault
-sudo chown 1991:1991 /girth/backup/vault && sudo chmod 0711 /girth/backup/vault
-sudo install -d -o 1990 -g 1990 -m 0700 /girth/backup/vault/filler
-sudo chown 1991:1991 /mnt/ai-data/backups/happy-vault && sudo chmod 0711 /mnt/ai-data/backups/happy-vault
-sudo install -d -o 1990 -g 1990 -m 0700 /mnt/ai-data/backups/happy-vault/filler
-sudo zfs allow -u prep snapshot,mount girth/backup
-```
-
-`zfs allow` lets prep take snapshots under `girth/backup` (on Linux ZFS
-documents `snapshot` as needing `mount` too); it does not allow destroying
-anything. Then fill the mirrors with what is already in the volumes:
-
-```
-make vault-backup-mirror
-make vault-restore-check
-```
-
-### Checking
-
-```
-make vault-restore-check   # safe at any time
-make vault-status          # newest tarball per location, flagged STALE past 26h
-```
-
-`vault-restore-check` restores the newest vault tarball of each location
-(the volume and every mirror) into a throwaway container (tmpfs, no network).
-It runs `PRAGMA integrity_check`, counts users, organizations and ciphers,
-and checks each file against its `.sha256`. It fails unless every location's
-newest tarball is the same file with the same hash. Then, as uid 1990, it
-does the same for the newest filler tarball: its `.sha256`, that it holds
-`secrets/`, and that it is the same everywhere. A missing mirror fails the
-check.
-
-### Restoring
-
-The vault tarball is the same in every location; pick the one you trust:
-
-| Location | `TARBALL=` |
-|----------|---------|
-| the volume | `vault-<ts>.tar.gz` (also finds it in `retired/`) |
-| ZFS mirror | `/girth/backup/vault/vault-<ts>.tar.gz` |
-| ZFS snapshot | `/girth/backup/vault/.zfs/snapshot/vault-<ts>/vault-<ts>.tar.gz` (`zfs list -t snapshot girth/backup/vault`) |
-| SSD mirror | `/mnt/ai-data/backups/happy-vault/vault-<ts>.tar.gz` |
-
-```
-make vault-restore TARBALL=...
-```
-
-It checks the tarball against its `.sha256` before stopping anything. It then
-stops Vaultwarden and moves the current data into
-`happy-vault-backups/before-restore-<ts>/`, which is kept. It unpacks the
-tarball into `happy-vault-data` and starts Vaultwarden. `vaultwarden.env`
-and `env-backups/` in the tarball are left out, and `happy-vault-config` is
-not touched. If the volumes themselves are gone (a dead OS disk), run
-`make vault-init` first, then restore from a mirror path.
-
-To put back a single file of the env or the filler, look into the tarball
-first, as the owning uid. For example, the filler's `policy.json` from the
-ZFS mirror (the current one goes to `trash/` in the volume first):
-
-```
-IMG=$(awk '/^ *image: vaultwarden\/server:/{print $2; exit}' vault/compose.vault.yml)
-docker run --rm --network none -u 1990:1990 -v happy-filler:/f \
-  --mount type=bind,src=/girth/backup/vault/filler,dst=/t,readonly --entrypoint sh "$IMG" -c '
-  tar tzf /t/filler-<ts>.tar.gz | head
-  d=/f/trash/$(date -u +%Y%m%dT%H%M%SZ)-restore; mkdir -p $d; mv /f/policy.json $d/
-  tar xzf /t/filler-<ts>.tar.gz -C /f policy.json'
-make filler-restart
-```
+The nightly user timer `happy-vault-backup.timer` and `make vault-backup` /
+`vault-restore*` are retired (they backed up the old compose volumes and had
+been failing on missing mirror directories); the unit files and
+`scripts/vault-backup.sh` are in the repo's `trash/*_vault-backup-timer/`.
 
 ### Moving an install from /srv into the volumes
 
