@@ -32,7 +32,8 @@
 //
 // Every reply is {"id":..,"ok":true,"result":..} or {"id":..,"ok":false,"error":".."}. Nothing
 // else is accepted: no image, mount, port, env or command comes from a caller. Image digests are
-// read from compose.browser.yml, so a pod runs exactly what the shared stack runs.
+// read from compose.browser.yml (the node's from LAUNCHER_NODE_IMAGE, which compose sets to
+// browser-node's own), so a pod runs exactly what the shared stack runs.
 //
 // Paths: LAUNCHER_BROWSER_DIR (this repo's browser-stack/browser) and LAUNCHER_HOME (the host's
 // HAPPY_BROWSER_HOME) are host paths, mounted at the same paths in this container, because the
@@ -132,14 +133,22 @@ export function kioskFlag(v) {
 // Chromium's own UI otherwise.
 export const viewportHeight = ({ kiosk, height, panelHeight = 0 }) => (kiosk ? height : height - panelHeight - CHROME_UI_HEIGHT);
 
-// The two image references in compose.browser.yml (x-browser-node-image, x-controller-image).
-export function composeImages(composeText) {
+// A pinned image reference: a registry digest (name@sha256:<64 hex>), or a local image id
+// (sha256:<64 hex>, the BROWSER_NODE_CHROME=1 build, which has no registry digest).
+export const PINNED_IMAGE_RE = /^(\S+@sha256:[0-9a-f]{64}|sha256:[0-9a-f]{64})$/;
+
+// The two image references in compose.browser.yml (x-browser-node-image, x-controller-image). The
+// node's may be written ${BROWSER_NODE_IMAGE:-<default>}; compose hands the launcher the resolved
+// one as LAUNCHER_NODE_IMAGE, which then wins, so a pod runs what browser-node runs.
+export function composeImages(composeText, env = {}) {
     const pick = (key) => {
-        const m = composeText.match(new RegExp(`^x-${key}-image: &\\w+ (\\S+@sha256:[0-9a-f]{64})\\s*$`, 'm'));
+        const m = composeText.match(new RegExp(`^x-${key}-image: &\\w+ (?:\\$\\{[A-Z_]+:-(\\S+@sha256:[0-9a-f]{64})\\}|(\\S+@sha256:[0-9a-f]{64}))\\s*$`, 'm'));
         if (!m) throw new Error(`compose.browser.yml has no pinned x-${key}-image`);
-        return m[1];
+        return m[1] || m[2];
     };
-    return { node: pick('browser-node'), controller: pick('controller') };
+    const node = env.LAUNCHER_NODE_IMAGE || pick('browser-node');
+    if (!PINNED_IMAGE_RE.test(node)) throw new Error('LAUNCHER_NODE_IMAGE must be a pinned image (name@sha256:<digest> or sha256:<image id>)');
+    return { node, controller: pick('controller') };
 }
 
 export function ports(cfg, slot) {
@@ -250,6 +259,7 @@ export function nodeSpec(cfg, { slot, podId, vncPassword, image, seccomp }) {
                 `${b}/kiosk/happy-kiosk.mjs:/opt/browser-node/happy-kiosk.mjs:ro`,
                 `${b}/kiosk/policy.json:/etc/chromium/policies/managed/happy-kiosk.json:ro`,
                 `${b}/kiosk/policy.json:/etc/opt/chrome_for_testing/policies/managed/happy-kiosk.json:ro`,
+                `${b}/kiosk/policy.json:/etc/opt/chrome/policies/managed/happy-kiosk.json:ro`,
                 `${b}/kiosk/fluxbox:/happy/fluxbox:ro`,
             ],
         },
@@ -648,13 +658,13 @@ export function serve(launcher, socketPath, { gid, log = console } = {}) {
 async function main() {
     if (typeof process.getuid === 'function' && process.getuid() === 0) throw new Error('refusing to run as root');
     const cfg = launcherConfig();
-    const images = composeImages(readFileSync(join(cfg.browserDir, 'compose.browser.yml'), 'utf8'));
+    const images = composeImages(readFileSync(join(cfg.browserDir, 'compose.browser.yml'), 'utf8'), process.env);
     // The Engine API takes the profile's content, not a path (as `docker run --security-opt seccomp=FILE` does).
     const seccomp = JSON.stringify(JSON.parse(readFileSync(join(cfg.browserDir, 'seccomp', 'chromium-sandbox.json'), 'utf8')));
     const secrets = readSecrets(cfg.secretsDir);
     const engine = createEngine(cfg.dockerSocket);
     for (const ref of Object.values(images)) {
-        await engine.image(ref).catch(() => { throw new Error(`image ${ref.split('@')[0]} is not pulled; run make browser-pull`); });
+        await engine.image(ref).catch(() => { throw new Error(`image ${ref.split('@')[0]} is not present; run make browser-pull${ref.startsWith('sha256:') ? ' and make browser-node-chrome' : ''}`); });
     }
     mkdirSync(cfg.podsDir, { recursive: true });
     mkdirSync(cfg.chatsDir, { recursive: true, mode: 0o700 });

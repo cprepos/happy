@@ -95,9 +95,35 @@ test('images are the digests pinned in compose.browser.yml', () => {
     const images = composeImages(COMPOSE);
     assert.match(images.node, /^ghcr\.io\/lvcidpsyche\/auto-browser-browser-node:[\d.]+@sha256:[0-9a-f]{64}$/);
     assert.match(images.controller, /^ghcr\.io\/lvcidpsyche\/auto-browser-controller:[\d.]+@sha256:[0-9a-f]{64}$/);
-    assert.ok(COMPOSE.includes(`&browser_node_image ${images.node}\n`));
+    // The node's image can be replaced (BROWSER_NODE_IMAGE); its default is the upstream image.
+    assert.ok(COMPOSE.includes(`&browser_node_image \${BROWSER_NODE_IMAGE:-${images.node}}\n`));
     assert.ok(COMPOSE.includes(`&controller_image ${images.controller}\n`));
     assert.throws(() => composeImages('x-browser-node-image: &a ghcr.io/x:1\n'), /pinned/);
+    assert.throws(() => composeImages('x-browser-node-image: &a ${X:-ghcr.io/x:1}\n'), /pinned/);
+});
+
+test('node image: LAUNCHER_NODE_IMAGE (compose sets it to browser-node\'s) wins, and must be pinned', () => {
+    const localId = `sha256:${'cd'.repeat(32)}`;
+    const images = composeImages(COMPOSE, { LAUNCHER_NODE_IMAGE: localId });
+    assert.equal(images.node, localId);
+    assert.equal(images.controller, composeImages(COMPOSE).controller);
+    assert.equal(composeImages(COMPOSE, { LAUNCHER_NODE_IMAGE: '' }).node, composeImages(COMPOSE).node);
+    for (const bad of ['happy-browser-node-chrome:157', 'cd'.repeat(32), 'sha256:cd', `${localId} x`]) {
+        assert.throws(() => composeImages(COMPOSE, { LAUNCHER_NODE_IMAGE: bad }), /pinned/, bad);
+    }
+    // compose hands the launcher and the socket proxy the same anchor browser-node runs.
+    const block = (name) => COMPOSE.split(new RegExp(`^  ${name}:$`, 'm'))[1].split(/^  \S/m)[0];
+    assert.match(block('browser-node'), /^    image: \*browser_node_image$/m);
+    assert.match(block('launcher'), /^      LAUNCHER_NODE_IMAGE: \*browser_node_image$/m);
+    assert.match(block('docker-proxy'), /^      PROXY_NODE_IMAGE: \*browser_node_image$/m);
+});
+
+test('managed policy: kiosk/policy.json at the Chromium, Chrome for Testing and Google Chrome paths, on every pod', () => {
+    const { cfg } = setup();
+    const node = nodeSpec(cfg, { slot: 0, podId: POD, vncPassword: 'Abcd1234', image: 'x', seccomp: SECCOMP });
+    for (const dir of ['/etc/chromium', '/etc/opt/chrome_for_testing', '/etc/opt/chrome']) {
+        assert.ok(node.HostConfig.Binds.includes(`${BROWSER_DIR}/kiosk/policy.json:${dir}/policies/managed/happy-kiosk.json:ro`), dir);
+    }
 });
 
 test('pod templates: host network, loopback ports per slot, no published ports, no docker socket, private shm', () => {

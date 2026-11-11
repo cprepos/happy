@@ -51,7 +51,8 @@ export function proxyConfig(env = process.env) {
         execUser: String(uid('PROXY_NODE_UID', 1994)),
     };
     if (!/^[a-z0-9][a-z0-9_-]*$/.test(cfg.project)) throw new Error('PROXY_PROJECT must be a compose project name');
-    if (!cfg.images.length || !cfg.images.every((i) => /@sha256:[0-9a-f]{64}$/.test(i))) throw new Error('PROXY_IMAGES must list pinned images');
+    // Pinned: a registry digest, or a local image id (sha256:<64 hex>; BROWSER_NODE_CHROME=1's build).
+    if (!cfg.images.length || !cfg.images.every((i) => /^(\S+@sha256:[0-9a-f]{64}|sha256:[0-9a-f]{64})$/.test(i))) throw new Error('PROXY_IMAGES must list pinned images');
     for (const k of ['podsDir', 'roDir']) {
         if (!cfg[k].startsWith('/') || normalize(cfg[k]) !== cfg[k] || cfg[k] === '/') throw new Error(`PROXY_${k === 'podsDir' ? 'PODS' : 'RO'}_DIR must be an absolute, normal path`);
     }

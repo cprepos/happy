@@ -44,6 +44,12 @@ test('config: pinned images, absolute dirs, no root uids', () => {
     assert.equal(proxyConfig(base).execUser, '1994');
     assert.equal(proxyConfig(base).controllerUser, '1993:1993');
     assert.throws(() => proxyConfig({ ...base, PROXY_IMAGES: 'node:22' }), /pinned/);
+    // A local build (BROWSER_NODE_CHROME=1) is pinned by its image id; a bare or short id is not.
+    const localId = `sha256:${'ab'.repeat(32)}`;
+    assert.ok(proxyConfig({ ...base, PROXY_NODE_IMAGE: localId }).images.includes(localId));
+    assert.throws(() => proxyConfig({ ...base, PROXY_IMAGES: 'ab'.repeat(32) }), /pinned/);
+    assert.throws(() => proxyConfig({ ...base, PROXY_IMAGES: 'sha256:abc' }), /pinned/);
+    assert.throws(() => proxyConfig({ ...base, PROXY_IMAGES: `x sha256:${'ab'.repeat(32)}` }), /pinned/);
     assert.throws(() => proxyConfig({ ...base, PROXY_PODS_DIR: 'rel' }), /absolute/);
     assert.throws(() => proxyConfig({ ...base, PROXY_RO_DIR: '/r/../etc' }), /absolute/);
     assert.throws(() => proxyConfig({ ...base, PROXY_NODE_UID: '0' }), /never root/);
