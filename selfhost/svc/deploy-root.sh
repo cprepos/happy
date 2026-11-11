@@ -11,7 +11,9 @@
 # root): the commit, the trees down to RELEASE_PATHS and everything under them, no history.
 # They are unpacked into a root-owned object store (/opt/happy-svc/src.git), where git checks
 # every object's hash. So whatever the checkout holds, the tree that lands is exactly that commit's, or
-# nothing. Root runs git only in its own repository with no system or global config.
+# nothing. Root runs git only in its own repository with no system or global config. The
+# release's selfhost/svc/happy-svc-ctl is then installed as /usr/local/libexec/happy-svc-ctl
+# (the previous copy kept in /opt/happy-svc/old-ctl/<ts>/).
 #
 # Only the paths the stack needs are copied (RELEASE_PATHS). Old releases are kept, never
 # removed; rolling back is deploying an older sha again (it is already there; the switch is
@@ -21,8 +23,10 @@
 # /etc/happy-svc/{vault,browser}.env. Only the keys listed below are accepted; paths, ports,
 # uids and the LAN listener are fixed by happy-svc-ctl and cannot be set this way. Some keys
 # take only certain values (check_value): BROWSER_NODE_CHROME 0 or 1, SCREENSHOT_TIME_MODE
-# desktop or tab, EVIDENCE_TZ a zone in /usr/share/zoneinfo. There is no BROWSER_NODE_IMAGE:
-# with BROWSER_NODE_CHROME=1, happy-svc-ctl builds the node image from the release's
+# desktop or tab, EVIDENCE_TZ a zone in /usr/share/zoneinfo, BROWSER_KIOSK 0 or 1, the sizes
+# whole numbers (BROWSER_VIEWPORT_HEIGHT is accepted but not used: happy-svc-ctl works it out,
+# with BROWSER_PANEL_HEIGHT, by browser-stack/browser/scripts/browser-geometry.sh). There is no
+# BROWSER_NODE_IMAGE: with BROWSER_NODE_CHROME=1, happy-svc-ctl builds the node image from the release's
 # node-chrome/Dockerfile in happy-svc's daemon and names it by its image id itself.
 set -euo pipefail
 
@@ -53,6 +57,8 @@ check_value() {   # key, value
         BROWSER_NODE_CHROME) [[ $2 == 0 || $2 == 1 ]] ;;
         SCREENSHOT_TIME_MODE) [[ $2 == desktop || $2 == tab ]] ;;
         EVIDENCE_TZ) valid_tz "$2" ;;
+        BROWSER_KIOSK) [[ $2 == 0 || $2 == 1 ]] ;;
+        BROWSER_WIDTH|BROWSER_HEIGHT|BROWSER_VIEWPORT_HEIGHT) [[ $2 =~ ^[1-9][0-9]{1,3}$ ]] ;;
     esac
 }
 value_rule() {
@@ -60,6 +66,8 @@ value_rule() {
         BROWSER_NODE_CHROME) echo "0 or 1" ;;
         SCREENSHOT_TIME_MODE) echo "desktop or tab" ;;
         EVIDENCE_TZ) echo "a zone in $ZONEINFO" ;;
+        BROWSER_KIOSK) echo "0 or 1" ;;
+        BROWSER_WIDTH|BROWSER_HEIGHT|BROWSER_VIEWPORT_HEIGHT) echo "a whole number of pixels (10..9999; happy-svc-ctl checks the range)" ;;
     esac
 }
 check_env() {   # file, allowed keys
@@ -153,6 +161,28 @@ prev=$(readlink "$OPT/current" 2>/dev/null || true)
 run ln -sfn "releases/$SHA" "$OPT/.current.new"
 run mv -T "$OPT/.current.new" "$OPT/current"
 echo "   current: ${prev:-none} -> releases/$SHA"
+
+# --- the wrapper: the release's own copy, so a fix to happy-svc-ctl rolls out with its release
+# (setup-root.sh installs it the first time). The copy it replaces is kept under $OPT/old-ctl/.
+CTL=/usr/local/libexec/happy-svc-ctl
+NEWCTL=$OPT/releases/$SHA/selfhost/svc/happy-svc-ctl
+if [[ $DRY == 1 ]]; then
+    echo "  would: install $NEWCTL as $CTL (root:root 0755) if it differs"
+elif [[ -e $CTL ]] && cmp -s "$NEWCTL" "$CTL"; then
+    echo "   wrapper: $CTL unchanged"
+else
+    [[ -f $NEWCTL && ! -L $NEWCTL ]] || die "the release has no selfhost/svc/happy-svc-ctl"
+    if [[ -e $CTL ]]; then
+        ts=$(date -u +%Y%m%dT%H%M%SZ)
+        install -d -o root -g root -m 0700 "$OPT/old-ctl" "$OPT/old-ctl/$ts"
+        cp -p "$CTL" "$OPT/old-ctl/$ts/happy-svc-ctl"
+        echo "   wrapper: previous copy kept in $OPT/old-ctl/$ts"
+    fi
+    install -d -o root -g root -m 0755 /usr/local/libexec
+    install -o root -g root -m 0755 "$NEWCTL" "$CTL.new"
+    mv -T "$CTL.new" "$CTL"
+    echo "   wrapper: $CTL from releases/$SHA"
+fi
 
 # --- settings (checked before anything is changed, above)
 if [[ -n $SETTINGS ]]; then
