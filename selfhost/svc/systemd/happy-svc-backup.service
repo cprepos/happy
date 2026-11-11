@@ -1,8 +1,0 @@
-[Unit]
-Description=happy-svc: back up the stack's data volumes
-After=docker.service
-Requires=docker.service
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/libexec/happy-svc-ctl backup

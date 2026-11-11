@@ -72,7 +72,7 @@ BROWSER_KIOSK ?= $(or $(shell sed -nE 's/^BROWSER_KIOSK=([^[:space:]]*)[[:space:
 BROWSER_HEIGHT ?= $(or $(shell sed -nE 's/^BROWSER_HEIGHT=([0-9]+)[[:space:]]*$$/\1/p' $(BROWSER_LOCAL_ENV) 2>/dev/null | tail -1),1200)
 BROWSER_WIDTH ?= $(or $(shell sed -nE 's/^BROWSER_WIDTH=([0-9]+)[[:space:]]*$$/\1/p' $(BROWSER_LOCAL_ENV) 2>/dev/null | tail -1),1920)
 FLUXBOX_WINDOW_INIT = $(BROWSER_DIR)/kiosk/fluxbox/init.window
-# scripts/browser-geometry.sh works the numbers out (and checks them), as happy-svc-ctl does too;
+# scripts/browser-geometry.sh works the numbers out (and checks them);
 # on a bad value it says why and BROWSER_VIEWPORT_HEIGHT is left empty, so compose refuses to start.
 BROWSER_GEOMETRY := $(shell BROWSER_KIOSK='$(BROWSER_KIOSK)' BROWSER_HEIGHT='$(BROWSER_HEIGHT)' BROWSER_WIDTH='$(BROWSER_WIDTH)' \
 	sh $(BROWSER_DIR)/scripts/browser-geometry.sh $(FLUXBOX_WINDOW_INIT))

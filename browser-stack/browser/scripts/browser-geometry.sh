@@ -1,5 +1,5 @@
 #!/bin/sh
-# The browser's geometry, worked out one way for browser.mk and for selfhost/svc/happy-svc-ctl:
+# The browser's geometry, worked out for browser.mk:
 #
 #   BROWSER_KIOSK=0|1 BROWSER_HEIGHT=<px> BROWSER_WIDTH=<px> sh browser-geometry.sh <fluxbox init.window>
 #

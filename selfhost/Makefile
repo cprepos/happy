@@ -70,4 +70,3 @@ stack-down:
 -include $(BROWSER_STACK_DIR)/filler.mk
 -include $(BROWSER_STACK_DIR)/register.mk
 -include $(BROWSER_STACK_DIR)/gateway.mk
--include svc/svc.mk

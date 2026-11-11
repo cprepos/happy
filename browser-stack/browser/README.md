@@ -226,8 +226,7 @@ Tunables, such as screen size, ports and `MAX_SESSIONS`, go in
   panel (28 px, `session.screen0.toolbar.height` in `kiosk/fluxbox/init.window`) and Chrome's
   87 px of tab strip and address bar (1920x1085): `scripts/browser-geometry.sh` works out
   `BROWSER_PANEL_HEIGHT` and `BROWSER_VIEWPORT_HEIGHT` from `BROWSER_KIOSK` and the fluxbox
-  config (and checks every value as an integer in range); `browser.mk`, and under happy-svc
-  `selfhost/svc/happy-svc-ctl`, run it and hand them to the controller, the bridge frame and the launcher, so Playwright's
+  config (and checks every value as an integer in range); `browser.mk` runs it and hands them to the controller, the bridge frame and the launcher, so Playwright's
   viewport matches the maximized window exactly. The kiosk has no panel (1920x1200).
 - **A normal browser window, maximized (`BROWSER_KIOSK=0`, the default):** `kiosk/` is
   mounted into browser-node. `happy-kiosk.mjs` runs in place of the image's `server.mjs` and
