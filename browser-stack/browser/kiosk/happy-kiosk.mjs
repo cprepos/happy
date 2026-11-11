@@ -26,6 +26,12 @@
 // Mounted read-only beside server.mjs (so "playwright" and ./server.mjs resolve) and run in its
 // place by browser-node-entrypoint.sh. No --disable-features here: Chromium keeps only the last
 // one, and server.mjs passes its own list (storage partitioning stays on).
+//
+// BROWSER_EXECUTABLE_PATH, when the image sets it (node-chrome/Dockerfile: Google Chrome at
+// /opt/google/chrome/chrome), is the browser launched, through Playwright's executablePath;
+// unset (the upstream image), Playwright's bundled Chrome for Testing runs as before. Playwright
+// launches it with its own temporary --user-data-dir and --remote-debugging-pipe, which branded
+// Chrome 136+ accepts (it refuses remote debugging only on the default profile directory).
 import { chromium } from "playwright";
 
 const COMMON_ARGS = [
@@ -57,6 +63,20 @@ export function stepsTo(current, wanted) {
 
 /** A URL the warden sends to about:blank as soon as a page commits it. */
 export const forbiddenUrl = (url) => /^\s*view-source:/i.test(String(url || ""));
+
+/**
+ * The launch options server.mjs asked for, with this file's window flags added and, when
+ * BROWSER_EXECUTABLE_PATH is set, the browser binary it names (an absolute path, or refused).
+ */
+export function launchOptions(options = {}, { kiosk = kioskMode(), env = process.env } = {}) {
+  const out = { ...options, args: [...(options.args || []), ...argsFor(kiosk)] };
+  const exe = String(env.BROWSER_EXECUTABLE_PATH ?? "");
+  if (exe) {
+    if (!exe.startsWith("/") || /\s/.test(exe)) throw new Error("BROWSER_EXECUTABLE_PATH must be an absolute path");
+    out.executablePath = exe;
+  }
+  return out;
+}
 
 const WARDEN_INTERVAL_MS = Number(process.env.KIOSK_WARDEN_INTERVAL_MS || 2000);
 const short = (err) => String(err?.message || err).split("\n")[0];
@@ -130,7 +150,9 @@ if (process.env.HAPPY_KIOSK_NO_AUTOLOAD !== "1") {
   const kiosk = kioskMode();
   const launch = chromium.launchServer.bind(chromium);
   chromium.launchServer = async (options = {}) => {
-    const server = await launch({ ...options, args: [...(options.args || []), ...argsFor(kiosk)] });
+    const opts = launchOptions(options, { kiosk });
+    if (opts.executablePath) console.log(`happy-kiosk: browser ${opts.executablePath}`);
+    const server = await launch(opts);
     startWarden(server, { kiosk }).catch((err) => console.error(`kiosk warden did not start: ${short(err)}`));
     return server;
   };
