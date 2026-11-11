@@ -17,6 +17,8 @@ export function loadConfig(env = process.env) {
         // per-chat pod's controller (127.0.0.1 only).
         controllerPort: Number(env.FILLER_CONTROLLER_PORT || 8010),
         controllerPorts: env.FILLER_CONTROLLER_PORTS || '8010,8100-8131',
+        // The shared backend's secrets are here; another backend's in secrets/<name>/.
+        secretsDir: secrets,
         policyPath: env.FILLER_POLICY || join(home, 'policy.json'),
         statePath: join(home, 'state', 'taint.json'),
         auditDir: join(home, 'audit'),

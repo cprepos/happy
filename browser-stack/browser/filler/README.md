@@ -230,6 +230,10 @@ one it uses in `"backend"`:
   `vaultwarden`: `url` (default `VAULT_URL`). Secrets stay files: `shared`
   keeps today's `secrets/vault-*`; another backend reads its own from
   `secrets/<name>/`.
+- Each backend's provider is built on first use. One that is not enrolled or
+  fails to start answers 503 to its own chats only; `/healthz` shows each
+  backend under `backends` (`unlocked` at the top level is the default
+  client's backend, normally `shared`).
 - A policy without `backends` keeps working: it reads as `{"shared":
   {"type": "vaultwarden"}}` with every client on it, and its clients may
   not name another backend. With `backends`, every client must name one.

@@ -12,7 +12,14 @@
 // controller_port picks the browser: omitted, the shared stack's controller
 // (8010); otherwise a per-chat pod's, from FILLER_CONTROLLER_PORTS.
 //   POST /v1/scrub    {payload}                          -> {payload}
-//   GET  /healthz                                        -> {ok, unlocked, sync_age_s}
+//   GET  /healthz                                        -> {ok, unlocked, sync_age_s, backends}
+//
+// The policy's backends each get their own provider, built on first use
+// (createVaults); a chat reaches only its client's backend. /healthz's
+// unlocked and sync_age_s are the shared backend's (the default client's
+// backend when the policy has one), and backends has {name: {type, unlocked,
+// sync_age_s}} for every backend, so one that fails to start shows there
+// without taking the others down.
 //
 // The vault tools (browser-stack/vault-mcp) use their own token, the
 // vault-client-token, whose SHA-256 is secrets/vault-client-token.sha256. It
@@ -28,15 +35,16 @@
 import { createServer as createHttpServer } from 'node:http';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { realpathSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig, readSecret, readSecretOrNull } from './lib/config.mjs';
-import { loadPolicy, PolicyError } from './lib/policy.mjs';
+import { loadPolicy, PolicyError, BACKEND_NAME, DEFAULT_BACKEND } from './lib/policy.mjs';
 import { createScrubber } from './lib/scrub.mjs';
 import { createTaint } from './lib/taint.mjs';
 import { createAudit } from './lib/audit.mjs';
 import { controllerSet, parsePorts } from './lib/controller.mjs';
 import { create as createProvider } from './lib/providers/builtin.mjs';
-import { createFiller, FillError } from './lib/fill.mjs';
+import { createFiller, FillError, backendVaults } from './lib/fill.mjs';
 import { createManager, ACTIONS } from './lib/manage.mjs';
 
 const MAX_BODY = 32 * 1024 * 1024;
@@ -73,13 +81,68 @@ export function tokenChecker(sha256Hex) {
 }
 
 /**
- * The request handler, with every dependency injected (tests build it
- * directly). vault is a vault provider (lib/providers/index.mjs), or null:
- * not enrolled, list/fill/login answer 503.
+ * One provider per policy backend, built on first use by build(name, config)
+ * (a provider, or null when that backend is not enrolled) and rebuilt when
+ * the backend's config in the policy changes (the old one is locked). A
+ * backend that fails to build is retried on its next use and never affects
+ * another. get(name) -> provider or null; status() -> {name: {type, unlocked,
+ * sync_age_s}} for the current policy's backends.
  */
-export function createApp({ checkToken, checkVaultToken = () => false, getPolicy, vault, controllers, scrubber, taint, audit, allowLoopbackHttp = false, sleep, totpOpts, now }) {
-    const filler = vault ? createFiller({ getPolicy, vault, controllers, taint, audit, allowLoopbackHttp, sleep, totpOpts }) : null;
-    const manager = vault ? createManager({ getPolicy, vault, audit, ...(now ? { now } : {}) }) : null;
+export function createVaults({ getPolicy, build, logFn = log }) {
+    const cache = new Map(); // name -> {key, provider, error}
+    function get(name) {
+        const cfg = getPolicy().backend(name);
+        if (!cfg) return null;
+        const key = JSON.stringify(cfg);
+        const hit = cache.get(name);
+        if (hit && hit.key === key && hit.provider) return hit.provider;
+        if (hit?.provider) { try { hit.provider.lock(); } catch {} }
+        let provider = null; let error = null;
+        try { provider = build(name, cfg) || null; if (!provider) error = 'not enrolled'; } catch (err) { error = err?.message || 'failed'; }
+        if (error && hit?.error !== error) logFn(`backend ${name}: ${error === 'not enrolled' ? 'not enrolled (make vault-enroll)' : `not usable: ${error}`}`);
+        cache.set(name, { key, provider, error });
+        return provider;
+    }
+    function status() {
+        let policy;
+        try { policy = getPolicy(); } catch { return {}; }
+        const out = {};
+        for (const name of policy.backends()) {
+            const p = get(name);
+            const st = p ? p.status() : null;
+            out[name] = { type: policy.backend(name).type, unlocked: !!p, sync_age_s: st ? st.sync_age_s : null };
+        }
+        return out;
+    }
+    const lock = () => { for (const { provider } of cache.values()) { try { provider?.lock(); } catch {} } };
+    return { get, status, lock };
+}
+
+/**
+ * The request handler, with every dependency injected (tests build it
+ * directly). vaults is createVaults(...) (one provider per policy backend);
+ * vault, a lone provider (lib/providers/index.mjs) or null, is the older form:
+ * it serves the shared backend only. A chat whose backend has no provider (not
+ * enrolled) gets 503 from list/fill/login and the vault routes.
+ */
+export function createApp({ checkToken, checkVaultToken = () => false, getPolicy, vault = null, vaults = null, controllers, scrubber, taint, audit, allowLoopbackHttp = false, sleep, totpOpts, now }) {
+    const getVault = vaults ? vaults.get : (name) => (name === DEFAULT_BACKEND ? vault : null);
+    const vaultOf = backendVaults({ vaults: getVault });
+    const filler = createFiller({ getPolicy, vaults: getVault, controllers, taint, audit, allowLoopbackHttp, sleep, totpOpts });
+    const manager = createManager({ getPolicy, vaults: getVault, audit, ...(now ? { now } : {}) });
+    // Before a vault or fill route reads its body: 503 when the chat's backend has no provider.
+    const needVault = (chat) => {
+        const policy = getPolicy();
+        const sc = policy.scopeOf(chat);
+        if (sc) vaultOf(policy.backendOf(sc.client));
+    };
+    function health() {
+        const backends = vaults ? vaults.status() : { [DEFAULT_BACKEND]: { type: vault?.type ?? 'vaultwarden', unlocked: !!vault, sync_age_s: vault ? vault.status().sync_age_s : null } };
+        let main = DEFAULT_BACKEND;
+        try { const p = getPolicy(); const d = p.defaultClient(); if (d) main = p.backendOf(d); } catch {}
+        const m = backends[main];
+        return { ok: true, unlocked: !!m?.unlocked, sync_age_s: m ? m.sync_age_s : null, backends };
+    }
 
     const send = (res, status, obj) => {
         const body = JSON.stringify(obj);
@@ -104,7 +167,7 @@ export function createApp({ checkToken, checkVaultToken = () => false, getPolicy
             if (host !== '127.0.0.1' && host !== 'localhost') return send(res, 421, { error: 'misdirected request' });
             const url = new URL(req.url, 'http://127.0.0.1');
             if (req.method === 'GET' && url.pathname === '/healthz') {
-                return send(res, 200, { ok: true, unlocked: !!vault, sync_age_s: vault ? vault.status().sync_age_s : null });
+                return send(res, 200, health());
             }
             // Two tokens, two route sets: the vault token only for /v1/vault/*, the bridge's for the rest.
             const vaultRoute = url.pathname.startsWith('/v1/vault/');
@@ -121,7 +184,7 @@ export function createApp({ checkToken, checkVaultToken = () => false, getPolicy
                 const fn = url.pathname.slice('/v1/vault/'.length);
                 if (!ACTIONS.includes(fn)) return send(res, 404, { error: 'not found' });
                 if (!chat) return send(res, 400, { error: 'X-Client-Chat is required' });
-                if (!manager) return send(res, 503, { error: 'the filler is not enrolled with the vault (make filler-enroll)' });
+                needVault(chat);
                 return send(res, 200, await manager[fn]({ ...body, chat }));
             }
             switch (url.pathname) {
@@ -140,7 +203,7 @@ export function createApp({ checkToken, checkVaultToken = () => false, getPolicy
                 }
                 case '/v1/list': case '/v1/fill': case '/v1/login': {
                     if (!chat) return send(res, 400, { error: 'X-Client-Chat is required' });
-                    if (!filler) return send(res, 503, { error: 'the filler is not enrolled with the vault (make filler-enroll)' });
+                    needVault(chat);
                     const fn = url.pathname.slice(4);
                     const out = await filler[fn]({ ...body, chat });
                     return send(res, 200, out);
@@ -156,15 +219,33 @@ export function createApp({ checkToken, checkVaultToken = () => false, getPolicy
     };
 }
 
-// The one backend: the Vaultwarden provider, from the enrollment's key files.
-function buildVaultFromFiles(cfg) {
-    const f = cfg.files;
-    const userKeyB64 = readSecretOrNull(f.vaultUserKey);
-    const clientId = readSecretOrNull(f.vaultClientId);
-    const clientSecret = readSecretOrNull(f.vaultClientSecret);
-    const deviceId = readSecretOrNull(f.vaultDeviceId);
-    if (!userKeyB64 || !clientId || !clientSecret || !deviceId) return null;
-    return createProvider('vaultwarden', { id: 'shared', url: cfg.vaultUrl, clientId, clientSecret, userKey: Buffer.from(userKeyB64, 'base64'), deviceId });
+/** A backend's secrets directory: secrets/ itself for shared (today's layout), else secrets/<name>/. */
+export function backendSecretsDir(cfg, name) {
+    if (!BACKEND_NAME.test(String(name ?? ''))) throw new Error('bad backend name');
+    return name === DEFAULT_BACKEND ? cfg.secretsDir : join(cfg.secretsDir, name);
+}
+
+/**
+ * Build one backend's provider from the policy's config and its secret files,
+ * or null when it is not enrolled. vaultwarden: the enrollment's key files
+ * (vault-client-id, vault-client-secret, vault-user-key, vault-device-id) in
+ * its secrets dir, and url from the policy or else VAULT_URL.
+ */
+export function buildBackend(cfg, name, bcfg, { createFn = createProvider } = {}) {
+    const dir = backendSecretsDir(cfg, name);
+    if (bcfg.type === 'vaultwarden') {
+        const extra = Object.keys(bcfg).filter((k) => !['type', 'url'].includes(k));
+        if (extra.length) throw new Error(`unknown vaultwarden setting ${extra[0]}`);
+        const rd = (f) => readSecretOrNull(join(dir, f));
+        const userKeyB64 = rd('vault-user-key');
+        const clientId = rd('vault-client-id');
+        const clientSecret = rd('vault-client-secret');
+        const deviceId = rd('vault-device-id');
+        if (!userKeyB64 || !clientId || !clientSecret || !deviceId) return null;
+        return createFn('vaultwarden', { id: name, url: typeof bcfg.url === 'string' ? bcfg.url : cfg.vaultUrl, clientId, clientSecret, userKey: Buffer.from(userKeyB64, 'base64'), deviceId });
+    }
+    // Other provider types read their own files from secretsDir.
+    return createFn(bcfg.type, { ...bcfg, id: name, secretsDir: dir });
 }
 
 async function main(argv) {
@@ -175,7 +256,7 @@ async function main(argv) {
             const p = loadPolicy(path, { requireOwner: !cfg.testLoopback });
             const n = p.clients().reduce((a, c) => a + p.entries(c).length, 0);
             const d = p.defaultClient();
-            process.stdout.write(`policy ok: ${p.clients().length} client(s), ${n} fillable name(s), ${d ? `default_client ${d} (every chat without its own entry uses it)` : 'no default_client'}${p.clients().filter((c) => p.allItems(c)).map((c) => `, ${c} uses all_items (every vault login, on its own URIs' hosts${p.equivalentDomains(c) ? ' and their equivalent domains' : ' only: equivalent_domains is off'})`).join('')}\n`);
+            process.stdout.write(`policy ok: ${p.backends().length} backend(s) (${p.backends().map((b) => `${b}: ${p.backend(b).type}`).join(', ')}), ${p.clients().length} client(s), ${n} fillable name(s), ${d ? `default_client ${d} (every chat without its own entry uses it)` : 'no default_client'}${p.clients().filter((c) => p.allItems(c)).map((c) => `, ${c} uses all_items (every vault login, on its own URIs' hosts${p.equivalentDomains(c) ? ' and their equivalent domains' : ' only: equivalent_domains is off'})`).join('')}\n`);
             for (const c of p.clients()) {
                 const m = p.manage(c);
                 if (!m) continue;
@@ -202,16 +283,15 @@ async function main(argv) {
     const audit = createAudit(cfg.auditDir);
     const getPolicy = policyLoader(cfg.policyPath, { requireOwner: !cfg.testLoopback });
     try { getPolicy(); } catch (err) { log(err.message); }
-    let vault = null;
-    try { vault = buildVaultFromFiles(cfg); } catch (err) { log(`vault not usable: ${err.message}`); }
-    if (!vault) log('not enrolled: list, fill and login answer 503 until make filler-enroll');
-    const handle = createApp({ checkToken, checkVaultToken, getPolicy, vault, controllers, scrubber, taint, audit, allowLoopbackHttp: cfg.testLoopback });
+    const vaults = createVaults({ getPolicy, build: (name, bcfg) => buildBackend(cfg, name, bcfg) });
+    try { vaults.status(); } catch {}
+    const handle = createApp({ checkToken, checkVaultToken, getPolicy, vaults, controllers, scrubber, taint, audit, allowLoopbackHttp: cfg.testLoopback });
     const server = createHttpServer(handle);
     server.requestTimeout = 120_000;
     await new Promise((r, j) => { server.once('error', j); server.listen(cfg.port, cfg.host, r); });
     log(`listening on ${cfg.host}:${server.address().port}${cfg.testLoopback ? ' (TEST: loopback http fills allowed)' : ''}`);
     const sweep = setInterval(() => { taint.sweep().catch(() => {}); }, 30_000);
-    const stop = () => { clearInterval(sweep); vault?.lock(); server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 3000).unref(); };
+    const stop = () => { clearInterval(sweep); vaults.lock(); server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 3000).unref(); };
     process.on('SIGTERM', stop); process.on('SIGINT', stop);
     return null;
 }
