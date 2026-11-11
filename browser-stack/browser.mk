@@ -41,8 +41,11 @@ BROWSER_LOCAL_ENV := $(BROWSER_DIR)/.env.browser
 # redistributed. A different node image can be given as BROWSER_NODE_IMAGE in .env.browser.
 BROWSER_NODE_CHROME ?= $(or $(shell sed -nE 's/^BROWSER_NODE_CHROME=([^[:space:]]*)[[:space:]]*$$/\1/p' $(BROWSER_LOCAL_ENV) 2>/dev/null | tail -1),0)
 NODE_CHROME_DIR := $(BROWSER_DIR)/node-chrome
-NODE_CHROME_VERSION := $(shell sed -nE 's/^ARG CHROME_VERSION=([0-9.]+-[0-9]+)$$/\1/p' $(NODE_CHROME_DIR)/Dockerfile)
-NODE_CHROME_TAG := happy-browser-node-chrome:$(NODE_CHROME_VERSION)
+# The tag: Chrome's version (without the .deb revision) and the Dockerfile's IMAGE_REVISION, e.g.
+# 157.0.8103.50-2; the revision goes up for a change to the image that keeps the same Chrome.
+NODE_CHROME_VERSION := $(shell sed -nE 's/^ARG CHROME_VERSION=([0-9.]+)-[0-9]+$$/\1/p' $(NODE_CHROME_DIR)/Dockerfile)
+NODE_CHROME_REVISION := $(shell sed -nE 's/^ARG IMAGE_REVISION=([0-9]+)$$/\1/p' $(NODE_CHROME_DIR)/Dockerfile)
+NODE_CHROME_TAG := happy-browser-node-chrome:$(NODE_CHROME_VERSION)-$(NODE_CHROME_REVISION)
 BROWSER_NODE_IMAGE_ENV := $(if $(filter 1,$(BROWSER_NODE_CHROME)),BROWSER_NODE_IMAGE="$$(docker image inspect -f '{{.Id}}' $(NODE_CHROME_TAG) 2>/dev/null || echo not-built:run-make-browser-node-chrome)")
 BROWSER_COMPOSE := $(BROWSER_NODE_IMAGE_ENV) docker compose -p $(BROWSER_PROJECT) -f $(BROWSER_DIR)/compose.browser.yml \
 	--env-file $(BROWSER_SECRETS)/browser.env $(if $(wildcard $(BROWSER_LOCAL_ENV)),--env-file $(BROWSER_LOCAL_ENV))
@@ -97,6 +100,7 @@ browser-up: browser-init $(if $(filter 1,$(BROWSER_NODE_CHROME)),browser-node-ch
 # the image. Local only (no push). Cached: a rebuild with nothing changed is a no-op.
 browser-node-chrome:
 	@test -n "$(NODE_CHROME_VERSION)" || { echo "node-chrome/Dockerfile has no ARG CHROME_VERSION" >&2; exit 1; }
+	@test -n "$(NODE_CHROME_REVISION)" || { echo "node-chrome/Dockerfile has no ARG IMAGE_REVISION" >&2; exit 1; }
 	docker build -t $(NODE_CHROME_TAG) $(NODE_CHROME_DIR)
 	@echo "$(NODE_CHROME_TAG): $$(docker image inspect -f '{{.Id}}' $(NODE_CHROME_TAG)); $$(docker run --rm --network none --entrypoint /opt/google/chrome/chrome $(NODE_CHROME_TAG) --version 2>/dev/null)"
 
