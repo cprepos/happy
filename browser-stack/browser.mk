@@ -69,10 +69,16 @@ BRIDGE_LAN_PORT ?= $(or $(shell sed -nE 's/^BRIDGE_PORT=([0-9]+)[[:space:]]*$$/\
 # .env.browser's.
 BROWSER_KIOSK ?= $(or $(shell sed -nE 's/^BROWSER_KIOSK=([^[:space:]]*)[[:space:]]*$$/\1/p' $(BROWSER_LOCAL_ENV) 2>/dev/null | tail -1),0)
 BROWSER_HEIGHT ?= $(or $(shell sed -nE 's/^BROWSER_HEIGHT=([0-9]+)[[:space:]]*$$/\1/p' $(BROWSER_LOCAL_ENV) 2>/dev/null | tail -1),1200)
-CHROME_UI_HEIGHT := 87
+BROWSER_WIDTH ?= $(or $(shell sed -nE 's/^BROWSER_WIDTH=([0-9]+)[[:space:]]*$$/\1/p' $(BROWSER_LOCAL_ENV) 2>/dev/null | tail -1),1920)
 FLUXBOX_WINDOW_INIT = $(BROWSER_DIR)/kiosk/fluxbox/init.window
-BROWSER_PANEL_HEIGHT := $(if $(filter 1,$(BROWSER_KIOSK)),0,$(if $(shell grep -qE '^session\.screen0\.toolbar\.visible:[[:space:]]*true[[:space:]]*$$' $(FLUXBOX_WINDOW_INIT) && echo y),$(or $(shell sed -nE 's/^session\.screen0\.toolbar\.height:[[:space:]]*([0-9]+)[[:space:]]*$$/\1/p' $(FLUXBOX_WINDOW_INIT) | tail -1),0),0))
-BROWSER_VIEWPORT_HEIGHT ?= $(if $(filter 1,$(BROWSER_KIOSK)),$(BROWSER_HEIGHT),$(shell expr $(BROWSER_HEIGHT) - $(BROWSER_PANEL_HEIGHT) - $(CHROME_UI_HEIGHT)))
+# scripts/browser-geometry.sh works the numbers out (and checks them), as happy-svc-ctl does too;
+# on a bad value it says why and BROWSER_VIEWPORT_HEIGHT is left empty, so compose refuses to start.
+BROWSER_GEOMETRY := $(shell BROWSER_KIOSK='$(BROWSER_KIOSK)' BROWSER_HEIGHT='$(BROWSER_HEIGHT)' BROWSER_WIDTH='$(BROWSER_WIDTH)' \
+	sh $(BROWSER_DIR)/scripts/browser-geometry.sh $(FLUXBOX_WINDOW_INIT))
+browser_geometry = $(patsubst $(1)=%,%,$(filter $(1)=%,$(BROWSER_GEOMETRY)))
+CHROME_UI_HEIGHT := $(call browser_geometry,CHROME_UI_HEIGHT)
+BROWSER_PANEL_HEIGHT := $(call browser_geometry,BROWSER_PANEL_HEIGHT)
+BROWSER_VIEWPORT_HEIGHT ?= $(call browser_geometry,BROWSER_VIEWPORT_HEIGHT)
 export BROWSER_KIOSK BROWSER_HEIGHT BROWSER_PANEL_HEIGHT BROWSER_VIEWPORT_HEIGHT
 # The zone of the desktop panel's clock (the browser node's TZ) and of the screenshot audit (an
 # IANA name): the host's own (/etc/timezone), else America/Toronto. The controller refuses a bad one.
