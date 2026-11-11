@@ -136,6 +136,32 @@ services:
     volumes:
       - filler:/filler
 
+  # make vault-enroll BACKEND=<name> for a Vaultwarden backend other than
+  # shared: the same enroll command, with FILLER_HOME=/enroll whose secrets/
+  # is that backend's secrets/<name>/ in the volume (state/ and audit/ only
+  # because the command checks they exist; read-only). FILLER_BACKEND is set
+  # by make; shared enrolls through filler-admin.
+  filler-enroll:
+    profiles: [admin]
+    image: happy-filler:local
+    user: "${FILLER_UID:-1990}:${FILLER_GID:-1990}"
+    network_mode: host
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    ulimits: { core: 0 }
+    entrypoint: ["node", "--disallow-code-generation-from-strings", "scripts/admin.mjs"]
+    environment:
+      VAULT_URL: ${FILLER_ENROLL_VAULT_URL:-http://127.0.0.1:8222}
+      FILLER_HOME: /enroll
+      FILLER_AGENT_EMAIL: ${VAULT_AGENT_EMAIL:-}
+      NODE_OPTIONS: ""
+    volumes:
+      - { type: volume, source: filler, target: /enroll/secrets, volume: { subpath: "secrets/${FILLER_BACKEND:-shared}" } }
+      - { type: volume, source: filler, target: /enroll/state, read_only: true, volume: { subpath: state } }
+      - { type: volume, source: filler, target: /enroll/audit, read_only: true, volume: { subpath: audit } }
+
   # The operator's side of the token handoffs and the audit (make
   # filler-token-take, filler-controller-token-give, filler-audit,
   # filler-status), in place of prep reading /srv/happy-filler directly. Its own

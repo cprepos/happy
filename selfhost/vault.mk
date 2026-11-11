@@ -15,7 +15,8 @@
 #                             token for the filler (each only once; ROTATE=1 NAME=bridge-client|vault-client
 #                             replaces one), then restarts the filler
 #   make filler-seed-policy   a default policy (or make filler-policy-edit)
-#   make vault-enroll BACKEND=shared   (terminal) enroll the filler with the agent's vault account
+#   make vault-enroll BACKEND=shared   (terminal) enroll the filler with the agent's vault account;
+#                             BACKEND=<name> enrolls another Vaultwarden backend into secrets/<name>/
 #
 #   make stack-up / stack-down  the vault and the browser stack together (selfhost/Makefile)
 #   make vault-up / vault-down / vault-logs
@@ -70,10 +71,19 @@ vault-up:
 	$(FILLER_PORT_GUARD)
 	$(VAULT_COMPOSE) up -d --build --wait
 
-# One backend for now: the shared Vaultwarden (more come with the policy's backends section).
+# BACKEND=shared (the default) enrolls into secrets/ itself; any other
+# Vaultwarden backend of the policy into secrets/<BACKEND>/ (made 0500 on first
+# use), against VAULT_URL (that backend's url in the policy, if it has one).
+VAULT_BACKEND_NAME := ^[a-z][a-z0-9_-]{0,31}$$
 vault-enroll:
-	@test "$(BACKEND)" = shared || { echo "$@: BACKEND=shared is the only backend so far" >&2; exit 1; }
+	@printf '%s\n' "$(BACKEND)" | grep -qxE '$(VAULT_BACKEND_NAME)' || { echo "$@: bad BACKEND=$(BACKEND) (1..32 of a-z 0-9 _ -, starting with a letter)" >&2; exit 1; }
+ifeq ($(BACKEND),shared)
 	$(FILLER_ADMIN_RUN) filler-admin enroll
+else
+	$(FILLER_ADMIN_RUN) -T --entrypoint sh filler-admin -euc \
+		'd=/filler/secrets/$$0; [ -d "$$d" ] && exit 0; chmod 0700 /filler/secrets; mkdir -m 0500 "$$d" || r=$$?; chmod 0500 /filler/secrets; exit $${r:-0}' "$(BACKEND)"
+	FILLER_BACKEND="$(BACKEND)" FILLER_ENROLL_VAULT_URL="$(VAULT_URL)" $(FILLER_ADMIN_RUN) filler-enroll enroll
+endif
 	$(VAULT_COMPOSE) restart filler
 
 # The tokens, both ways, with no account line to hand them across: the filler
