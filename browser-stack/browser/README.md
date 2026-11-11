@@ -144,9 +144,74 @@ old ssh tunnels are retired; see "Chats on the Macs" for where their files are).
   - `share-token-secret`;
   - `browser.env`: the compose env-file, rebuilt from the files above;
   - `happy-agent.env`: `AUTO_BROWSER_TOKEN=…`, for an MCP client that connects to `/mcp` directly. Happy Agent does not use it: it goes through the bridge's pass-through.
-- `bridge/links.json` (600): live links (id, session, status, url, title, timestamps). No tokens.
-- `data/`: the controller's `/data`, holding artifacts, audit, sessions and auth.
-  - `data/browser-profile` and `data/downloads` belong to browser-node's uid 10001 and must stay mode 755.
+- `secrets-bridge/` (uid 1992, 500; files 400): the bridge's copies of `api-token`,
+  `vnc-password`, `bridge-token` and `filler-client-token`.
+- `secrets-launcher/` (uid 1993, 500; files 400): the launcher's copies of `api-token`,
+  `auth-state-key` and `share-token-secret`.
+- `bridge/` (uid 1992, 700): the bridge's stores. `bridge/links.json` (600) holds live links
+  (id, session, status, url, title, timestamps), no tokens.
+- `data/` (uid 1993, 700): the controller's `/data`, holding artifacts, audit, sessions and
+  auth, plus `pods/slot-N/` per pod. `browser-profile` and `downloads` (the shared stack's and
+  each slot's) are 1993:1994, mode 775, and their contents belong to the node (1994).
+- `run/` (1993:1996, 750): the launcher's socket, `launcher.sock` (660, group 1996).
+- `run-docker/` (uid 1995, 750): the docker proxy's socket, `docker.sock` (660).
+
+`secrets/` stays the operator's (`prep`, 600), so host tools (the stdio MCP server,
+`make vault-tokens`, Happy Agent) keep reading it as before. `browser-init` copies what each
+service needs into that service's own directory; nothing is group-readable. A copy is replaced
+when the source changes, but a file removed from `secrets/` stays in the copies until moved
+to trash by hand.
+
+### Users and privileges
+
+| uid / gid | Service |
+|---|---|
+| 1992 | `bridge` (also in group 1996, to reach the launcher's socket) |
+| 1993 | `controller`, `launcher`, and each pod's controller; owns `data/` |
+| 1994 | `browser-node` and each pod's node (Chromium) |
+| 1995 | `docker-proxy` (also in the docker socket's group, `DOCKER_SOCKET_GID`) |
+| 1996 | `LAUNCHER_SOCKET_GID`, the launcher socket's group |
+
+Every service and every pod runs as its uid, with `cap_drop: ALL`, no capabilities added,
+`no-new-privileges`, and a read-only root with a tmpfs `/tmp` (`HOME=/tmp`). Chromium keeps
+its sandbox: its `/tmp` tmpfs allows exec, `shm_size` is 2g, and the node's seccomp profile
+lets it make the user namespaces its renderers run in. Controllers get a `noexec` `/tmp`.
+All uids are below 65536, so they map through a rootless daemon's subuid range. Override
+them with `BRIDGE_UID`, `CONTROLLER_UID`, `BROWSER_NODE_UID`, `DOCKER_PROXY_UID` and
+`LAUNCHER_SOCKET_GID` (none may be 0).
+
+`browser-init` (run by `browser-up`) sets the owners and modes above and copies the secrets in
+a one-shot container (`scripts/browser-perms.sh`) that runs as root with only `CHOWN`,
+`DAC_OVERRIDE` and `FOWNER`, no network, and a read-only root. It changes only what differs,
+so a second run reports 0 changes.
+
+**Docker socket proxy.** The launcher never sees the docker socket. `docker-proxy/` (node, no
+dependencies) listens on `run-docker/docker.sock` and forwards to
+`${HAPPY_DOCKER_SOCKET:-/var/run/docker.sock}`, passing only what the launcher does:
+
+- list, create, start, stop, inspect and remove the project's pod containers
+  (`<project>-pod-<n>-{node,controller}`, matched by name and labels);
+- exec `python3` in a pod's node as uid 1994 (no stdin), and start or inspect that exec;
+- inspect or delete the two pinned images.
+
+A create body must match the launcher's templates: host network, read-only root,
+`CapDrop: ALL` and no `CapAdd`, `no-new-privileges`, the role's uid, a tmpfs only at `/tmp`,
+and binds only under that slot's `data/pods/slot-N/` or read-only under the browser
+directory, never the docker socket. Anything else gets a 403 and never reaches the engine.
+Under rootless docker set `HAPPY_DOCKER_SOCKET` to the user's socket and
+`DOCKER_SOCKET_GID=0`.
+
+**Host network.** `browser-node`, `controller`, `bridge` and the pods stay on the host
+network: the controllers and Chromium talk over the host's `127.0.0.1`, and the bridge
+reaches auto-browser, the filler (6091) and each pod on their loopback ports. Publishing
+ports from a bridge network would need each pod's ports mapped and the filler reachable
+from inside, so it is not done. Every listener binds `127.0.0.1` only (the bridge also binds the LAN address when
+`BRIDGE_LAN_BIND` is set). `docker-proxy` and `launcher` have no network at all; they talk
+over unix sockets.
+
+**Caveat:** `browser-pod-bench` connects to `run/launcher.sock` from the host, which the
+operator can no longer open (it is 1993:1996, 660). Run it as a member of group 1996, or
+from inside the bridge container.
 
 Tunables, such as screen size, ports and `MAX_SESSIONS`, go in
 `browser-stack/browser/.env.browser` (gitignored). Start from `.env.browser.example`.
@@ -223,8 +288,9 @@ Tunables, such as screen size, ports and `MAX_SESSIONS`, go in
 
 `bridge/` is a small Node service (no dependencies, node 20+) plus a stdio MCP
 server. It runs as the `bridge` compose service: `node:22-alpine` pinned by
-digest, host networking so it binds `127.0.0.1:6090` itself, uid 1000 so it can
-read the 600 secrets, read-only root and source, all capabilities dropped.
+digest, host networking so it binds `127.0.0.1:6090` itself, uid 1992 reading its own
+copies of the secrets in `secrets-bridge/`, read-only root and source, all capabilities
+dropped.
 Compose rather than a systemd user unit, so `browser-up`, `browser-status`,
 `browser-logs` and `browser-down` cover all three pieces.
 
@@ -348,8 +414,8 @@ secret.
        (`/happy/sessions/<id>/screen/front`; skipped while the user holds control, and then
        refused unless the session's tab is already in front) and hands back a one-use token
        tied to that tab and URL;
-    2. the launcher execs `scripts/screen-capture.py` in that pod's node as the `browser`
-       user (the pod id is checked, so a chat can only ever capture its own pod's screen);
+    2. the launcher execs `scripts/screen-capture.py` in that pod's node as the
+       node's uid (1994) (the pod id is checked, so a chat can only ever capture its own pod's screen);
     3. the controller (`/happy/sessions/<id>/screen/scrub`) checks the tab did not move or
        navigate, the window did not move, and the tab is still in front; OCRs the whole image
        and redacts PII as for page screenshots (strict mode withholds an image it cannot

@@ -13,6 +13,11 @@ Any harness can use it, on prep-ml or on a Mac, and any app can embed its live v
 | `gateway/` | `gateway-config.py`, which writes this stack's blocks into the host agentgateway config, and a small test MCP server |
 | `scripts/` | `mcp-register.py`, which registers the MCP servers with every harness |
 
+Every container runs as its own non-root uid (bridge 1992, controller and launcher 1993,
+browser node 1994, docker proxy 1995; the filler 1990, Vaultwarden 1991) with all
+capabilities dropped and a read-only root. The launcher reaches docker only through an
+allowlisting socket proxy. See "Users and privileges" in `browser/README.md`.
+
 The old `selfhost/browser` and `selfhost/vault-mcp` paths are symlinks to the folders here.
 Harness configs that name them keep working. `selfhost/Makefile` includes the make fragments
 from this folder, so `make -C selfhost <target>` and `make -C browser-stack <target>` do the
