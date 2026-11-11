@@ -4,10 +4,11 @@
 SHELL := /bin/bash
 COMPOSE := docker compose --project-directory $(CURDIR) -f $(CURDIR)/docker-compose.yml --env-file $(CURDIR)/.env
 
-.PHONY: help env build up down status logs migrate webapp-dir
+.PHONY: help env build up down status logs migrate webapp-dir stack-up stack-down
 
 help:
 	@echo "Targets: env build up down status logs migrate"
+	@echo "Stack:   stack-up stack-down (the vault with its filler, then the browser stack)"
 
 # Create .env with random secrets if it does not exist yet (never overwrites).
 env:
@@ -48,6 +49,19 @@ BROWSER_STACK_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../browser-st
 # Apply pending Prisma migrations (also done automatically on server start).
 migrate: env
 	$(COMPOSE) run --rm happy-server pnpm exec prisma migrate deploy --schema=prisma/schema.prisma
+
+# The vault (Vaultwarden + the filler, compose project happy-vault) and the browser stack
+# (project happy-browser) together. Two projects, run in order: the browser's containers,
+# env files and pod labels are keyed to its own project name, so it is not merged in with
+# compose include:. Host processes (agents, vault-mcp, the bridge's stdio MCP,
+# agentgateway) are not touched.
+stack-up:
+	$(MAKE) --no-print-directory vault-up
+	$(MAKE) --no-print-directory browser-up
+
+stack-down:
+	$(MAKE) --no-print-directory browser-down
+	$(MAKE) --no-print-directory vault-down
 
 -include voice.mk
 -include cli.mk
