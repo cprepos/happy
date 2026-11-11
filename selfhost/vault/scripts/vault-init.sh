@@ -5,8 +5,9 @@
 # no capabilities, except the first step, which runs as root with only
 # CAP_CHOWN to hand a new, empty volume's top directory to its uid.
 # Idempotent: existing volumes, directories and the env file are left as they
-# are. Prints no secrets (there are none yet: ADMIN_TOKEN is added later by
-# make vault-admin-on).
+# are. `vault-init.sh volumes` stops after creating the volumes. Prints no
+# secrets (there are none yet: ADMIN_TOKEN is added later by make
+# vault-admin-on).
 #
 #   happy-vault-data/      1991 0700  Vaultwarden DATA_FOLDER
 #   happy-vault-backups/   1991 0700  make vault-backup
@@ -49,6 +50,8 @@ done
     set -eu
     own() { if [ "$(stat -c %u "$1")" = 0 ]; then chmod 0700 "$1"; chown "$2" "$1"; fi; }
     own /v/data "$VUID:$VUID"; own /v/backups "$VUID:$VUID"; own /v/config "$VUID:$VUID"; own /v/filler "$FUID:$FGID"'
+# vault-init.sh volumes: only the above (make vault-migrate-volumes fills them from /srv).
+[[ "${1:-}" != volumes ]] || exit 0
 
 "${ONE_SHOT[@]}" --user "$VUID:$VUID" -v happy-vault-config:/config -e OWNER_EMAIL="$OWNER_EMAIL" -e VUID="$VUID" "$IMAGE" -c '
     set -eu

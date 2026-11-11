@@ -30,6 +30,11 @@
 #   make vault-restore-check  restore the newest backup of every location in a throwaway container,
 #                             count what is in it, check the sha256 matches across locations
 #   make vault-backup-timer   install + enable the nightly systemd user timer that runs vault-backup
+#   make vault-migrate-volumes  (once, an install from before the volumes) copy /srv/happy-filler and
+#                             /srv/happy-vault into the volumes; Vaultwarden stops for the copy, the old
+#                             filler unit keeps serving 6091 from /srv; /srv is left as the rollback
+#   make vault-filler-cutover (after stopping the old filler unit) copy again what is newer in /srv,
+#                             then start the filler container
 #   make vault-backup-setup   print (never run) the one-time sudo commands: mirror dirs, ZFS
 #                             delegation, the root timer for the filler state + env file backup
 
@@ -55,7 +60,8 @@ VAULT_BACKUP_MIRRORS ?= /girth/backup/vault /mnt/ai-data/backups/happy-vault
 export VAULT_BACKUP_MIRRORS
 
 .PHONY: vault-init vault-up vault-down vault-logs vault-status vault-enroll vault-tokens vault-admin-on vault-admin-off \
-	vault-caddy-apply vault-backup vault-backup-mirror vault-restore-check vault-backup-timer vault-backup-setup
+	vault-caddy-apply vault-backup vault-backup-mirror vault-restore-check vault-backup-timer vault-backup-setup \
+	vault-migrate-volumes vault-filler-cutover
 
 VAULT_NEED_ENV = @test -f $(VAULT_DIR)/.env || { echo "$@: no $(VAULT_DIR)/.env; cp $(VAULT_DIR)/.env.example $(VAULT_DIR)/.env and fill it in" >&2; exit 1; }
 
@@ -139,6 +145,20 @@ vault-admin-on:
 
 vault-admin-off:
 	@bash $(VAULT_DIR)/scripts/vault-admin.sh off
+
+vault-migrate-volumes:
+	$(VAULT_NEED_ENV)
+	@bash $(VAULT_DIR)/scripts/vault-migrate.sh filler
+	@bash $(VAULT_DIR)/scripts/vault-migrate.sh vaultwarden
+	@printf "local /alive : "; curl -fs --max-time 5 -o /dev/null -w '%{http_code}\n' $(VAULT_URL)/alive
+	@printf "filler 6091  : "; curl -fs --max-time 5 http://127.0.0.1:6091/healthz; echo
+	@echo "$@: done. Secrets or policy changed before the cutover need make vault-filler-cutover to come across."
+
+vault-filler-cutover:
+	$(VAULT_NEED_ENV)
+	$(FILLER_PORT_GUARD)
+	@bash $(VAULT_DIR)/scripts/vault-migrate.sh filler-cutover
+	@$(MAKE) --no-print-directory filler-up
 
 vault-caddy-apply:
 	@bash $(VAULT_DIR)/scripts/vault-caddy-apply.sh
