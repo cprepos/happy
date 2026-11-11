@@ -10,27 +10,21 @@
 #   secrets/bridge-token  bearer token the bridge's MCP client uses on /api/*
 #   data/                 auto-browser controller /data (profile, artifacts, audit)
 #   bridge/               bridge link store
+#
+# Then, from a one-shot container (scripts/browser-perms.sh), every directory gets the owner its
+# service's own uid needs, and the bridge's and launcher's secret files are copied into
+# secrets-bridge/ and secrets-launcher/, owned by those uids, 0400. secrets/ stays the operator's.
 set -euo pipefail
 
 ROOT="${HAPPY_BROWSER_HOME:-$HOME/.local/share/happy-browser}"
 SECRETS="$ROOT/secrets"
 umask 077
 
-mkdir -p "$ROOT" "$SECRETS" "$ROOT/bridge" "$ROOT/data" "$ROOT/data/pods" "$ROOT/data/chats" "$ROOT/run"
-chmod 700 "$ROOT" "$SECRETS" "$ROOT/run"
+mkdir -p "$ROOT" "$SECRETS"
+chmod 700 "$ROOT" "$SECRETS"
 # data/pods/slot-N (one per running pod) and data/chats/<hash>/auth (a chat's saved logins)
-# are made by the pod launcher; run/ holds its socket, which only the bridge mounts.
-# browser-node chowns these to its own uid (10001) on start and keeps their
-# mode; the controller (uid of data/) must still read the endpoint file in
-# browser-profile, so they are made 755, never 700. ROOT stays 700.
-FIX_IMAGE="node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914"
-for d in "$ROOT/data/browser-profile" "$ROOT/data/downloads"; do
-  [[ -d "$d" ]] || (umask 022 && mkdir -p "$d")
-  # Already chowned to 10001 with a tighter mode: fix it in place from a container.
-  if [[ "$(stat -c %a "$d")" != 755 ]]; then
-    docker run --rm --network none -v "$d:/d" "$FIX_IMAGE" chmod 755 /d
-  fi
-done
+# are made by the pod launcher; run/ holds its socket, which only the bridge mounts. The service
+# directories (data/, bridge/, run/ and the rest) are made, and owned, by browser-perms.sh below.
 
 rand_hex() { openssl rand -hex "$1"; }
 # Eight characters: VNC authentication ignores anything past the eighth.
@@ -73,6 +67,18 @@ tmp="$SECRETS/happy-agent.env.tmp"
 printf 'AUTO_BROWSER_TOKEN=%s\n' "$(cat "$SECRETS/api-token")" >"$tmp"
 mv "$tmp" "$SECRETS/happy-agent.env"
 chmod 600 "$SECRETS/happy-agent.env"
+
+# Owners and the services' secret copies (compose.browser.yml names the uids). Root in a container
+# with only CHOWN, DAC_OVERRIDE and FOWNER, no network: HAPPY_BROWSER_HOME is the operator's own
+# tree, so this hands parts of it to the services' uids and nothing else.
+HERE="$(cd "$(dirname "$0")" && pwd)"
+PERMS_IMAGE="node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914"
+docker run --rm --network none --read-only --security-opt no-new-privileges:true -u 0:0 \
+  --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
+  -e CONTROLLER_UID="${CONTROLLER_UID:-1993}" -e BROWSER_NODE_UID="${BROWSER_NODE_UID:-1994}" \
+  -e BRIDGE_UID="${BRIDGE_UID:-1992}" -e DOCKER_PROXY_UID="${DOCKER_PROXY_UID:-1995}" \
+  -e LAUNCHER_SOCKET_GID="${LAUNCHER_SOCKET_GID:-1996}" \
+  -v "$ROOT:/h" -v "$HERE/browser-perms.sh:/browser-perms.sh:ro" --entrypoint sh "$PERMS_IMAGE" /browser-perms.sh
 
 if ((${#made[@]})); then
   echo "browser-init: generated ${made[*]} in $SECRETS (mode 600)"

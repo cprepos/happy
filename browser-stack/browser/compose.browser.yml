@@ -14,6 +14,15 @@
 # clients. The phone reaches these ports through the Happy Agent workspace
 # proxy, which dials localhost on this machine.
 #
+# Every container runs as its own non-root uid, from the start, with every capability dropped
+# (none added), no-new-privileges and a read-only root where the image allows it: browser-node
+# 1994, controller and launcher 1993 (the owner of data/, and of each pod's slot), bridge 1992,
+# docker-proxy 1995. LAUNCHER_SOCKET_GID (1996) is the group of the launcher's socket, given only
+# to the launcher and the bridge. All are below 65536, so they map through a rootless daemon's
+# subuid range unchanged. browser-init.sh (make browser-init, run by browser-up) sets the owners
+# of HAPPY_BROWSER_HOME's directories to match from a one-shot container, and copies each
+# service's secret files into its own directory, owned by it and 0400.
+#
 # Images are the project's published GHCR images for v1.14.0 (git commit
 # 38377f1f04660446feb3e000b8134635f384dac5, as their OCI revision label says),
 # pinned by digest so a re-tag upstream cannot change what runs here.
@@ -31,9 +40,13 @@ services:
     entrypoint: ["/happy/browser-node-entrypoint.sh"]
     shm_size: 2gb
     restart: unless-stopped
-    # As upstream: root only until setpriv drops to the browser user.
+    # Its own uid from the start: the image's root-only setup (chown, setpriv) is skipped, and
+    # data/browser-profile and data/downloads are writable through their group (browser-init.sh).
+    user: "${BROWSER_NODE_UID:-1994}:${BROWSER_NODE_UID:-1994}"
     cap_drop: [ALL]
-    cap_add: [CHOWN, DAC_OVERRIDE, KILL, SETGID, SETUID]
+    read_only: true
+    # exec: the entrypoint writes its patched script here and runs it.
+    tmpfs: ["/tmp:rw,exec,nosuid,nodev,size=512m,mode=1777"]
     # Chromium's own sandbox needs moby's default seccomp plus chroot, clone and
     # unshare. Vendored unchanged from auto-browser 38377f1f
     # (controller/app/browser/seccomp/chromium-sandbox.json).
@@ -76,6 +89,7 @@ services:
       # The takeover URL uses localhost, a loopback name noVNC already admits.
       NOVNC_ALLOWED_HOSTS: ""
       NOVNC_ALLOWED_ORIGINS: ""
+      HOME: /tmp
     volumes:
       - ${HAPPY_BROWSER_HOME:?}/data/browser-profile:/data/profile
       - ${HAPPY_BROWSER_HOME:?}/data/downloads:/data/downloads
@@ -98,6 +112,11 @@ services:
     # controller but the 1.14.0 it was written against. Rollback: app.main:app here.
     command: ["uvicorn", "happy_live_frames:app", "--host", "127.0.0.1", "--port", "${API_PORT:-8010}"]
     restart: unless-stopped
+    # The owner of data/ (browser-init.sh); the image's entrypoint runs a non-root start as is.
+    user: "${CONTROLLER_UID:-1993}:${CONTROLLER_UID:-1993}"
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,nodev,size=256m,mode=1777"]
     security_opt: ["no-new-privileges:true"]
     stop_grace_period: 60s
     depends_on:
@@ -168,6 +187,7 @@ services:
       # No model provider keys: the controller's own agent loop is unused; the
       # calling agent (Claude Code, Happy Agent) drives the browser over MCP.
       PYTHONPATH: /happy/controller-patch
+      HOME: /tmp
     volumes:
       - ${HAPPY_BROWSER_HOME:?}/data:/data
       - ./controller-patch/happy_live_frames.py:/happy/controller-patch/happy_live_frames.py:ro
@@ -176,13 +196,15 @@ services:
   # The live bridge (browser-stack/browser/bridge): the phone page /live/<id>, its
   # frames and state, and the takeover hand-back the MCP tool waits on. Plain
   # node, no dependencies, the source mounted read-only. Host networking so it
-  # binds 127.0.0.1:6090 itself and reaches the controller on 127.0.0.1:8010;
-  # it runs as the host user so it can read the 600 secret files.
+  # binds 127.0.0.1:6090 itself and reaches the controller on 127.0.0.1:8010 (and every pod's on
+  # 127.0.0.1), which a published port could not. Its own uid; its secrets are its own copies
+  # (secrets-bridge/, 0400), and it reaches the launcher's socket through LAUNCHER_SOCKET_GID.
   bridge:
     image: node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
     restart: unless-stopped
     network_mode: host
-    user: "${BRIDGE_UID:-1000}:${BRIDGE_GID:-1000}"
+    user: "${BRIDGE_UID:-1992}:${BRIDGE_GID:-1992}"
+    group_add: ["${LAUNCHER_SOCKET_GID:-1996}"]
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
@@ -225,27 +247,71 @@ services:
       start_period: 5s
     volumes:
       - ./bridge:/app:ro
-      - ${HAPPY_BROWSER_HOME:?}/secrets:/happy-browser/secrets:ro
+      - ${HAPPY_BROWSER_HOME:?}/secrets-bridge:/happy-browser/secrets:ro
       - ${HAPPY_BROWSER_HOME:?}/bridge:/happy-browser/bridge
       # The launcher's socket. Only the bridge mounts it; no pod ever does.
       - ${HAPPY_BROWSER_HOME:?}/run:/happy-browser/run
 
+  # The Docker socket proxy (docker-proxy/): the only container with the Docker socket, and the
+  # launcher's only way to it. It forwards just the calls the launcher makes, each checked against
+  # the pod templates (pinned images, the pods' own uids, no capabilities, binds of one slot and
+  # the read-only repo; see docker-proxy.mjs), on a unix socket in run-docker/, which only the
+  # launcher mounts, never on TCP: Chromium shares the host network. No network at all itself.
+  docker-proxy:
+    image: node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
+    restart: unless-stopped
+    network_mode: none
+    user: "${DOCKER_PROXY_UID:-1995}:${DOCKER_PROXY_UID:-1995}"
+    # The socket's group: browser.mk reads it from HAPPY_DOCKER_SOCKET; 0 under a rootless daemon,
+    # whose socket belongs to its user (container root).
+    group_add: ["${DOCKER_SOCKET_GID:-0}"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    command: ["node", "/app/docker-proxy.mjs"]
+    environment:
+      PROXY_LISTEN: /proxy/docker.sock
+      PROXY_UPSTREAM: /var/run/docker.sock
+      PROXY_PROJECT: ${BROWSER_PROJECT:-happy-browser}
+      PROXY_NODE_IMAGE: *browser_node_image
+      PROXY_CONTROLLER_IMAGE: *controller_image
+      PROXY_PODS_DIR: ${HAPPY_BROWSER_HOME:?}/data/pods
+      PROXY_RO_DIR: ${HAPPY_BROWSER_DIR:?run through browser-stack/browser.mk}
+      PROXY_NODE_UID: ${BROWSER_NODE_UID:-1994}
+      PROXY_NODE_GID: ${BROWSER_NODE_UID:-1994}
+      PROXY_CONTROLLER_UID: ${CONTROLLER_UID:-1993}
+      PROXY_CONTROLLER_GID: ${CONTROLLER_UID:-1993}
+    healthcheck:
+      test: ["CMD", "test", "-S", "/proxy/docker.sock"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 5s
+    volumes:
+      - ${HAPPY_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+      - ./docker-proxy:/app:ro
+      - ${HAPPY_BROWSER_HOME:?}/run-docker:/proxy
+
   # The pod launcher (browser-stack/browser/launcher): starts and stops each chat's browser pod (a
   # browser-node and its own controller, both host network, all listeners on 127.0.0.1) from
-  # fixed templates. It is the only container with the Docker socket, so it has no network at
-  # all and answers only on a unix socket in run/, which only the bridge mounts. Root, for the
-  # socket and to wipe slot directories the browser user owns, with every capability dropped
-  # but those. The repo and data/pods, data/chats are mounted at their host paths, because the
-  # bind sources it hands Docker are host paths.
+  # fixed templates, through the socket proxy above. No network at all; it answers only on a unix
+  # socket in run/ (0660, LAUNCHER_SOCKET_GID), which only the bridge mounts. It runs as the
+  # controller's uid, which owns data/pods and data/chats, with no capabilities: group_add gives
+  # it the node's group (for the slots' browser-profile and downloads), the proxy's (for its
+  # socket) and the launcher socket's. The repo and data/pods, data/chats are mounted at their
+  # host paths, because the bind sources it hands Docker are host paths.
   launcher:
     image: node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
     restart: unless-stopped
     network_mode: none
-    user: "0:0"
+    user: "${CONTROLLER_UID:-1993}:${CONTROLLER_UID:-1993}"
+    group_add: ["${BROWSER_NODE_UID:-1994}", "${DOCKER_PROXY_UID:-1995}", "${LAUNCHER_SOCKET_GID:-1996}"]
     read_only: true
     cap_drop: [ALL]
-    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
     security_opt: ["no-new-privileges:true"]
+    depends_on:
+      docker-proxy:
+        condition: service_healthy
     command: ["node", "${HAPPY_BROWSER_DIR:?run through browser-stack/browser.mk}/launcher/launcher.mjs"]
     environment:
       LAUNCHER_BROWSER_DIR: ${HAPPY_BROWSER_DIR:?run through browser-stack/browser.mk}
@@ -253,10 +319,12 @@ services:
       LAUNCHER_SECRETS_DIR: /secrets
       LAUNCHER_SOCKET: /launcher-run/launcher.sock
       LAUNCHER_PROJECT: ${BROWSER_PROJECT:-happy-browser}
-      LAUNCHER_SOCKET_UID: ${BRIDGE_UID:-1000}
-      LAUNCHER_SOCKET_GID: ${BRIDGE_GID:-1000}
-      POD_DATA_UID: ${BRIDGE_UID:-1000}
-      POD_DATA_GID: ${BRIDGE_GID:-1000}
+      LAUNCHER_SOCKET_GID: ${LAUNCHER_SOCKET_GID:-1996}
+      DOCKER_HOST: unix:///proxy/docker.sock
+      POD_DATA_UID: ${CONTROLLER_UID:-1993}
+      POD_DATA_GID: ${CONTROLLER_UID:-1993}
+      POD_NODE_UID: ${BROWSER_NODE_UID:-1994}
+      POD_NODE_GID: ${BROWSER_NODE_UID:-1994}
       MAX_PODS: ${BRIDGE_MAX_PODS:-8}
       POD_NOVNC_BASE: ${POD_NOVNC_BASE:-6100}
       POD_API_BASE: ${POD_API_BASE:-8100}
@@ -277,9 +345,10 @@ services:
       retries: 6
       start_period: 5s
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
       - ${HAPPY_BROWSER_DIR:?}:${HAPPY_BROWSER_DIR:?}:ro
       - ${HAPPY_BROWSER_HOME:?}/data/pods:${HAPPY_BROWSER_HOME:?}/data/pods
       - ${HAPPY_BROWSER_HOME:?}/data/chats:${HAPPY_BROWSER_HOME:?}/data/chats
-      - ${HAPPY_BROWSER_HOME:?}/secrets:/secrets:ro
+      - ${HAPPY_BROWSER_HOME:?}/secrets-launcher:/secrets:ro
       - ${HAPPY_BROWSER_HOME:?}/run:/launcher-run
+      # The proxy's socket (read-only mount: connecting needs no write to the directory).
+      - ${HAPPY_BROWSER_HOME:?}/run-docker:/proxy:ro

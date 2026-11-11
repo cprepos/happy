@@ -27,6 +27,10 @@ BROWSER_SECRETS := $(HAPPY_BROWSER_HOME)/secrets
 export BROWSER_PROJECT ?= happy-browser
 # The launcher mounts the repo at its host path, so compose needs it as a variable.
 export HAPPY_BROWSER_DIR := $(BROWSER_DIR)
+# The Docker daemon's socket, which only the docker-proxy container mounts, and its group, which
+# that container is given (0 under a rootless daemon, whose socket belongs to container root).
+export HAPPY_DOCKER_SOCKET ?= /var/run/docker.sock
+export DOCKER_SOCKET_GID ?= $(shell stat -c %g $(HAPPY_DOCKER_SOCKET) 2>/dev/null)
 BROWSER_LOCAL_ENV := $(BROWSER_DIR)/.env.browser
 BROWSER_COMPOSE := docker compose -p $(BROWSER_PROJECT) -f $(BROWSER_DIR)/compose.browser.yml \
 	--env-file $(BROWSER_SECRETS)/browser.env $(if $(wildcard $(BROWSER_LOCAL_ENV)),--env-file $(BROWSER_LOCAL_ENV))
@@ -93,6 +97,7 @@ browser-verify:
 browser-bridge-test:
 	cd $(BROWSER_DIR)/bridge && node --test test/*.test.mjs
 	cd $(BROWSER_DIR)/launcher && node --test test/*.test.mjs
+	cd $(BROWSER_DIR)/docker-proxy && node --test test/*.test.mjs
 	cd $(BROWSER_DIR)/kiosk && node --test test/*.test.mjs
 
 # The controller patch (controller-patch/: the live frames and the evidence stamp) in a throwaway container of the
@@ -161,7 +166,8 @@ browser-pod-smoke:
 # changed .env.browser setting such as BRIDGE_LAN_BIND takes effect; a plain restart keeps the
 # container's old environment.
 browser-bridge-restart:
-	@HAPPY_BROWSER_HOME="$(HAPPY_BROWSER_HOME)" node $(BROWSER_DIR)/scripts/bridge-restart-check.mjs
+	@docker exec -i $(BROWSER_PROJECT)-bridge-1 node --input-type=module - <$(BROWSER_DIR)/scripts/bridge-restart-check.mjs \
+		|| echo "(the bridge is not running: no link is held)"
 	$(if $(filter 1,$(BRIDGE_ENV)),$(BROWSER_COMPOSE) up -d --no-deps --force-recreate --timeout 20 bridge,docker restart -t 20 $(BROWSER_PROJECT)-bridge-1)
 	@for i in $$(seq 1 30); do curl -fsS --max-time 2 $(BROWSER_BRIDGE)/healthz >/dev/null 2>&1 && break; sleep 1; done
 	@printf "bridge /healthz: "; curl -fsS --max-time 5 $(BROWSER_BRIDGE)/healthz || { echo unreachable; exit 1; }; echo
