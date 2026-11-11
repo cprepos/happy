@@ -161,7 +161,7 @@ export function actionOf(name, args) {
 // What the bridge appends to a few auto-browser tool descriptions, so an agent
 // that only reads those still finds the live view.
 const HINTS = {
-    browser_create_session: ' Then call browser_live_link with the new session id and post the link in chat.',
+    browser_create_session: ' Each chat has one browser: when this chat already has one, this returns that session as it is, without opening start_url or applying name; use browser_observe and browser_execute_action on it instead. Then call browser_live_link with the session id and post the link in chat.',
     browser_observe: ' If this created a new session, call browser_live_link for it and post the link in chat.',
     browser_request_human_takeover: ' Prefer browser_wait_for_human, which also shows "Needs you" on the live view and waits for the user.',
 };
@@ -543,17 +543,31 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
         return { via, args: routed };
     }
 
-    // browser_create_session with pods: the chat's session already exists (the pod made it,
-    // signed in with the chat's saved login). Answer with it, opening start_url if given.
+    // browser_create_session with pods: get-or-create. Each chat has one browser, and the pod
+    // made its session (signed in with the chat's saved login). start_url is opened only when this
+    // very call started the chat's first browser (the bridge says new_session); a session the chat
+    // already had is answered as it is, never navigated, so a second create cannot clobber a page
+    // the user signed in on. name is never applied (the pod names the session).
     async function createInPod(via, args, meta, signal) {
-        if (typeof args.start_url === 'string' && args.start_url) {
+        const startUrl = typeof args.start_url === 'string' && args.start_url ? args.start_url : null;
+        const name = typeof args.name === 'string' && args.name ? args.name : null;
+        const fresh = via.new_session === true;
+        if (startUrl && fresh) {
             const nav = await via.upstream.callTool(mapped.byLocal.get('browser_execute_action') || 'browser.execute_action',
-                { session_id: via.session_id, action: { action: 'navigate', url: args.start_url, reason: 'open start_url' } }, meta, { signal });
+                { session_id: via.session_id, action: { action: 'navigate', url: startUrl, reason: 'open start_url' } }, meta, { signal });
             if (nav.error || nav.result?.isError) return nav;
         }
         const r = await via.upstream.callTool(mapped.byLocal.get('browser_get_session') || 'browser.get_session', { session_id: via.session_id }, meta, { signal });
         if (r.result && !r.result.isError) {
-            r.result = { ...r.result, content: [{ type: 'text', text: `This chat's browser session is ${via.session_id} (one per chat, kept signed in across restarts).` }, ...(r.result.content || [])] };
+            const notApplied = [name ? `name "${name}"` : null, startUrl && !fresh ? `start_url ${startUrl}` : null].filter(Boolean);
+            const text = fresh
+                ? `This chat's browser session is ${via.session_id} (one per chat, kept signed in across restarts).${name ? ' The name was not applied: the session keeps its own name.' : ''}`
+                : `This chat already has its browser: session ${via.session_id} (one per chat, kept signed in across restarts). ` +
+                  'No new session was made and it was returned as it is: its page was not changed' +
+                  (notApplied.length ? `, and the ${notApplied.join(' and ')} ${notApplied.length > 1 ? 'were' : 'was'} not applied` : '') + '. ' +
+                  `Use browser_observe on session ${via.session_id} to see the page it is on` +
+                  (startUrl ? ', and browser_execute_action with a navigate action if you need another page (the user may be signed in on the current one).' : '.');
+            r.result = { ...r.result, content: [{ type: 'text', text }, ...(r.result.content || [])] };
         }
         return r;
     }

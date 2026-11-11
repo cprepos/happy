@@ -156,7 +156,7 @@ The key is `chatHash = sha256(source+':'+id).slice(0,32)`.
 - Keep a `Map(mcp_url → createUpstreamMcp)`, because the Mcp-Session-Id is per controller.
 - If a call fails with ECONNREFUSED *before* the request was sent, call `/api/pod` again and retry once.
 - Inject or overwrite `args.session_id` with the chat's current session, which remaps stale ids after a restart.
-- `browser_create_session` is idempotent: it returns the existing session, navigating if `start_url` is given.
+- `browser_create_session` is idempotent: it returns the existing session. It opens `start_url` only when that call started the chat's first browser (the bridge's `new_session`); a session the chat already had is never navigated.
 - `browser_close_session` goes to `/api/pod/close`.
 - `browser_fork_session` is refused ("one browser per chat").
 - `browser_live_link`'s `session_id` becomes optional.

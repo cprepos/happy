@@ -535,12 +535,13 @@ function mcpHarness({ chat = { key: KEY_A, source: 'happy' }, podsOn = true, ref
         if (path === '/api/pod') {
             const key = body.chat_key;
             if (capped && body.check) return json(503, { error: "this chat's browser died 2 times in 5 minutes; not restarting it again yet", code: 'recovery_limit' });
-            if (!podFor.has(key) || body.verify) podFor.set(key, { slot: n, sid: `pod${n++}` });
+            const made = !podFor.has(key);
+            if (made || body.verify) podFor.set(key, { slot: n, sid: `pod${n++}` });
             const p = podFor.get(key);
             let recovered;
             if (recoverOnce && body.check) { recovered = recoverOnce; recoverOnce = null; p.sid = `pod${n++}`; }
             if (recovered) return json(200, { chat_key: key, session_id: p.sid, recovered, mcp_url: `http://127.0.0.1:${8100 + p.slot}/mcp`, api_url: `http://127.0.0.1:${8100 + p.slot}`, link_id: `L${p.slot}`, url: `http://localhost/live/L${p.slot}` });
-            return json(200, { chat_key: key, session_id: p.sid, mcp_url: `http://127.0.0.1:${8100 + p.slot}/mcp`, api_url: `http://127.0.0.1:${8100 + p.slot}`, link_id: `L${p.slot}`, url: `http://localhost/live/L${p.slot}` });
+            return json(200, { chat_key: key, session_id: p.sid, ...(made ? { new_session: true } : {}), mcp_url: `http://127.0.0.1:${8100 + p.slot}/mcp`, api_url: `http://127.0.0.1:${8100 + p.slot}`, link_id: `L${p.slot}`, url: `http://localhost/live/L${p.slot}` });
         }
         if (path === '/api/pod/close') return json(200, { closed: true });
         if (path === '/api/state') return json(200, { status: linkStatus });
@@ -584,6 +585,37 @@ test('router: create_session returns the chat\'s session; fork is refused; close
     assert.equal(x.result.isError, false);
     assert.ok(h.seen.bridge.some((b) => b.path === '/api/pod/close' && b.body.chat_key === KEY_A));
     assert.equal(h.seen.calls.filter((y) => y.name === 'browser.close_session').length, 0);
+});
+
+test('router: create_session on a chat that already has its browser returns it and never navigates it', async () => {
+    const h = mcpHarness();
+    await h.call('browser_observe', {});
+    h.seen.calls.length = 0;
+    const c = await h.call('browser_create_session', { name: 'battery-test', start_url: 'https://en.wikipedia.org/wiki/Web_browser' });
+    assert.notEqual(c.result.isError, true);
+    assert.deepEqual(h.seen.calls.map((x) => [x.name, x.args.session_id]), [['browser.get_session', 'pod0']], 'no navigate, no second session');
+    const text = c.result.content.map((p) => p.text || '').join('\n');
+    assert.match(text, /already has its browser: session pod0/);
+    assert.match(text, /page was not changed/);
+    assert.match(text, /name "battery-test" and start_url https:\/\/en\.wikipedia\.org\/wiki\/Web_browser were not applied/);
+    assert.match(text, /browser_observe/);
+});
+
+test('router: create_session with no browser yet starts one and opens start_url', async () => {
+    const h = mcpHarness();
+    const c = await h.call('browser_create_session', { start_url: 'https://example.com/' });
+    assert.notEqual(c.result.isError, true);
+    assert.ok(h.seen.bridge.some((b) => b.path === '/api/pod' && b.body.chat_key === KEY_A));
+    assert.deepEqual(h.seen.calls.map((x) => [x.name, x.args.session_id, x.args.action?.url ?? null]), [['browser.execute_action', 'pod0', 'https://example.com/'], ['browser.get_session', 'pod0', null]]);
+    const text = c.result.content.map((p) => p.text || '').join('\n');
+    assert.match(text, /This chat's browser session is pod0/);
+    assert.doesNotMatch(text, /already has/);
+});
+
+test('create_session\'s description says a chat keeps its one browser', async () => {
+    const h = mcpHarness();
+    const t = (await h.list()).result.tools.find((x) => x.name === 'browser_create_session');
+    assert.match(t.description, /one browser.*without opening start_url/);
 });
 
 test('router: a refused connection asks the bridge to verify the pod and retries once', async () => {
