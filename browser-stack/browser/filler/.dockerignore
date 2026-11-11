@@ -1,0 +1,6 @@
+# Only package.json, server.mjs, lib/ and scripts/ go into the image.
+*
+!package.json
+!server.mjs
+!lib/
+!scripts/

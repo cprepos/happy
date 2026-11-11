@@ -1,7 +1,8 @@
 // One-time enrollment of the filler with the agent's vault account. Run by
-// `filler-admin enroll` (make filler-enroll) as the happy-filler account
-// (uid 1990), on the terminal. Reads, from the terminal only:
-//   the agent account's email (default agent@vault.girthbass.duckdns.org) and
+// `make vault-enroll BACKEND=shared` inside the filler container (uid 1990),
+// on the terminal. Reads, from the terminal only:
+//   the agent account's email (default $FILLER_AGENT_EMAIL, VAULT_AGENT_EMAIL
+//   in selfhost/vault/.env) and
 //   its master password (hidden, never echoed).
 // Derives the master key (PBKDF2-SHA256; other KDFs are refused), logs in with
 // the password grant using the master password hash, and reads the account's
@@ -33,7 +34,7 @@ export class ApiKeyError extends EnrollError {
     constructor(message, reason) { super(message); this.reason = reason; }
 }
 
-export const DEFAULT_EMAIL = 'agent@vault.girthbass.duckdns.org';
+export const DEFAULT_EMAIL = 'agent@vault.example.org';
 const DEVICE = { deviceType: '14', deviceName: 'happy-secret-filler' };
 
 export const FILES = ['vault-email', 'vault-client-id', 'vault-client-secret', 'vault-user-key', 'vault-device-id'];
