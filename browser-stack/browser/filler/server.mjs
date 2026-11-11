@@ -35,7 +35,7 @@ import { createScrubber } from './lib/scrub.mjs';
 import { createTaint } from './lib/taint.mjs';
 import { createAudit } from './lib/audit.mjs';
 import { controllerSet, parsePorts } from './lib/controller.mjs';
-import { createVault } from './lib/vault.mjs';
+import { createVault } from './lib/providers/vaultwarden/vault.mjs';
 import { createFiller, FillError } from './lib/fill.mjs';
 import { createManager, ACTIONS } from './lib/manage.mjs';
 

@@ -12,8 +12,8 @@
 // Only all_items logins use this (fill.mjs), only for URIs with the default
 // match detection, and only on https pages. A policy secret with its own hosts
 // stays exact.
-import { normalizeHost } from './hosts.mjs';
-import { SUFFIXES, WILDCARD_TLDS } from './psl.mjs';
+import { normalizeHost } from '../../hosts.mjs';
+import { SUFFIXES, WILDCARD_TLDS } from '../../psl.mjs';
 
 const IPV4 = /^\d{1,3}(?:\.\d{1,3}){3}$/;
 

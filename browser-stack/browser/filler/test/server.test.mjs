@@ -6,7 +6,7 @@ import { mkdtempSync, readdirSync, readFileSync, statSync, utimesSync, writeFile
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createApp, policyLoader, tokenChecker } from '../server.mjs';
-import { enrollCore, writeEnrollment, FILES } from '../enroll.mjs';
+import { enrollCore, writeEnrollment, FILES } from '../lib/providers/vaultwarden/enroll.mjs';
 import { loginPages } from './fake-controller.mjs';
 import { startFakeVaultwarden } from './fake-vaultwarden.mjs';
 import { policyFor, setup } from './helpers.mjs';

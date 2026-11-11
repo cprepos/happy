@@ -20,9 +20,9 @@
 // delete here, by design. Every write drops the cached sync.
 import { createHash, randomBytes } from 'node:crypto';
 import { decryptKey, decryptSym, decryptSymText, encryptSym, VaultCryptoError } from './vaultcrypto.mjs';
-import { httpsHost } from './hosts.mjs';
+import { httpsHost } from '../../hosts.mjs';
 import { buildEquivalence, equivalentsFor } from './domains.mjs';
-import { CUSTOM_FIELD_NAME } from './policy.mjs';
+import { CUSTOM_FIELD_NAME } from '../../policy.mjs';
 
 // Bitwarden custom field types: 0 text, 1 hidden, 2 boolean, 3 linked (a
 // pointer to the login's own username or password, with no value of its own).

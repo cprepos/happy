@@ -23,7 +23,7 @@
 // 404 and is recorded in calls.refusedWrites.
 import { createServer } from 'node:http';
 import { generateKeyPairSync, randomBytes, randomUUID } from 'node:crypto';
-import { encryptRsa, encryptSym, masterKey, masterPasswordHash, stretchMasterKey } from '../lib/vaultcrypto.mjs';
+import { encryptRsa, encryptSym, masterKey, masterPasswordHash, stretchMasterKey } from '../lib/providers/vaultwarden/vaultcrypto.mjs';
 
 export const TOTP_SECRET = 'JBSWY3DPEHPK3PXP';
 

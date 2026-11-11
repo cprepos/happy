@@ -21,7 +21,7 @@ test('policy-upgrade runs through a symlinked release', () => {
     assert.match(out, /"pipe_targets"/);
 });
 
-for (const entry of ['server.mjs', 'enroll.mjs', 'scripts/handoff-copy.mjs']) {
+for (const entry of ['server.mjs', 'lib/providers/vaultwarden/enroll.mjs', 'scripts/handoff-copy.mjs']) {
     test(`${entry} does not exit silently through a symlinked release`, () => {
         const r = spawnSync(process.execPath, [join(link, entry), '--no-such-flag'], {
             encoding: 'utf8', timeout: 5000, env: { PATH: process.env.PATH, FILLER_HOME: join(dir, 'nohome') },

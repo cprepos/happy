@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildEquivalence, describeEquivalents, equivalentsFor, registrableDomain } from '../lib/domains.mjs';
+import { buildEquivalence, describeEquivalents, equivalentsFor, registrableDomain } from '../lib/providers/vaultwarden/domains.mjs';
 import { matchAllowed } from '../lib/hosts.mjs';
 
 test('registrable domains follow the public suffix list', () => {

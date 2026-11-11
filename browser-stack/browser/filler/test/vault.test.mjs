@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createVault, checkVaultUrl } from '../lib/vault.mjs';
+import { createVault, checkVaultUrl } from '../lib/providers/vaultwarden/vault.mjs';
 import { startFakeVaultwarden } from './fake-vaultwarden.mjs';
 
 async function setup() {

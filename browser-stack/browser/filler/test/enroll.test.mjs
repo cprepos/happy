@@ -4,8 +4,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { enrollCore, fetchApiKey, formatItems, obtainApiKey, DEFAULT_EMAIL } from '../enroll.mjs';
-import { createVault } from '../lib/vault.mjs';
+import { enrollCore, fetchApiKey, formatItems, obtainApiKey, DEFAULT_EMAIL } from '../lib/providers/vaultwarden/enroll.mjs';
+import { createVault } from '../lib/providers/vaultwarden/vault.mjs';
 import { startFakeVaultwarden, TOTP_SECRET } from './fake-vaultwarden.mjs';
 
 const never = async () => { throw new Error('the fallback must not be asked'); };

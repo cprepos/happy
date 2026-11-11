@@ -24,7 +24,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createApp, tokenChecker } from '../server.mjs';
 import { parsePolicy } from '../lib/policy.mjs';
-import { createVault } from '../lib/vault.mjs';
+import { createVault } from '../lib/providers/vaultwarden/vault.mjs';
 import { controllerSet } from '../lib/controller.mjs';
 import { createScrubber, variantsOf } from '../lib/scrub.mjs';
 import { createTaint } from '../lib/taint.mjs';
@@ -32,7 +32,7 @@ import { createAudit } from '../lib/audit.mjs';
 import { startFakeVaultwarden } from './fake-vaultwarden.mjs';
 import { startFakeController, loginPages } from './fake-controller.mjs';
 import { managePolicy } from './helpers.mjs';
-import { decryptKey, decryptSymText } from '../lib/vaultcrypto.mjs';
+import { decryptKey, decryptSymText } from '../lib/providers/vaultwarden/vaultcrypto.mjs';
 import { createMcpServer } from '../../bridge/mcp.mjs';
 import { createSecretGate } from '../../bridge/lib/secrets.mjs';
 

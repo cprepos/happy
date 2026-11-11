@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 import { createApp, tokenChecker } from '../../browser/filler/server.mjs';
 import { parsePolicy } from '../../browser/filler/lib/policy.mjs';
-import { createVault } from '../../browser/filler/lib/vault.mjs';
+import { createVault } from '../../browser/filler/lib/providers/vaultwarden/vault.mjs';
 import { controllerSet } from '../../browser/filler/lib/controller.mjs';
 import { createScrubber } from '../../browser/filler/lib/scrub.mjs';
 import { createTaint } from '../../browser/filler/lib/taint.mjs';

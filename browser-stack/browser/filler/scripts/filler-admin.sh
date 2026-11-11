@@ -277,7 +277,7 @@ do_enroll() {
   need_layout; need_release
   [[ -t 0 ]] || die "needs a terminal"
   open_secrets
-  FILLER_HOME="$ROOT" VAULT_URL="$VAULT_URL" "$NODE" "$ROOT/current/app/enroll.mjs"
+  FILLER_HOME="$ROOT" VAULT_URL="$VAULT_URL" "$NODE" "$ROOT/current/app/lib/providers/vaultwarden/enroll.mjs"
   echo "filler-admin enroll: restart the filler to use the new keys: filler-admin restart"
 }
 
@@ -324,7 +324,7 @@ do_policy_edit() {
 
 do_items() {
   need_layout; need_release
-  FILLER_HOME="$ROOT" VAULT_URL="$VAULT_URL" "$NODE" "$ROOT/current/app/enroll.mjs" --items
+  FILLER_HOME="$ROOT" VAULT_URL="$VAULT_URL" "$NODE" "$ROOT/current/app/lib/providers/vaultwarden/enroll.mjs" --items
 }
 
 do_outbox_clear() {

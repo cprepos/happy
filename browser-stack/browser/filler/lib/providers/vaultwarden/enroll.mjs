@@ -21,10 +21,10 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFil
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { KDF_PBKDF2, decryptSym, decryptUserKey, masterKey, masterPasswordHash, stretchMasterKey } from './lib/vaultcrypto.mjs';
-import { checkVaultUrl, createVault, VaultError } from './lib/vault.mjs';
-import { loadConfig, readSecret } from './lib/config.mjs';
-import { describeEquivalents } from './lib/domains.mjs';
+import { KDF_PBKDF2, decryptSym, decryptUserKey, masterKey, masterPasswordHash, stretchMasterKey } from './vaultcrypto.mjs';
+import { checkVaultUrl, createVault, VaultError } from './vault.mjs';
+import { loadConfig, readSecret } from '../../config.mjs';
+import { describeEquivalents } from './domains.mjs';
 
 export class EnrollError extends Error {}
 

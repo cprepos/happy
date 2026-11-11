@@ -24,7 +24,7 @@
 //   6. type with sensitive:true, response discarded;
 //   7. the page is checked again: a host change is an error and is audited.
 import { allowedHosts, httpsHost, matchAllowed } from './hosts.mjs';
-import { describeEquivalents } from './domains.mjs';
+import { describeEquivalents } from './providers/vaultwarden/domains.mjs';
 import { currentTotp } from './totp.mjs';
 import { pageUrl, isLive } from './controller.mjs';
 import { FIELDS, itemSlug, NO_CHAT } from './policy.mjs';

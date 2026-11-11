@@ -4,7 +4,7 @@
 // https port only. The one widening is equivalent domains (domains.mjs), which
 // only all_items logins get: matchAllowed takes an equiv map from fill.mjs.
 import { domainToASCII } from 'node:url';
-import { registrableDomain } from './domains.mjs';
+import { registrableDomain } from './providers/vaultwarden/domains.mjs';
 
 /** Normalize a policy host entry ("github.com", "Bücher.de") or null. */
 export function normalizeHost(h) {

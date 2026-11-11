@@ -4,7 +4,7 @@ import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import {
     decryptKey, decryptRsa, decryptSym, decryptSymText, decryptUserKey, encryptRsa, encryptSym,
     hkdfExpand, masterKey, parseEncString, stretchMasterKey, VaultCryptoError,
-} from '../lib/vaultcrypto.mjs';
+} from '../lib/providers/vaultwarden/vaultcrypto.mjs';
 
 test('type 2 round trip, unicode included', () => {
     const k = randomBytes(64);

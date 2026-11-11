@@ -9,7 +9,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createManager } from '../lib/manage.mjs';
 import { parsePolicy } from '../lib/policy.mjs';
-import { decryptKey, decryptSymText } from '../lib/vaultcrypto.mjs';
+import { decryptKey, decryptSymText } from '../lib/providers/vaultwarden/vaultcrypto.mjs';
 import { bcryptHash } from '../lib/hashes.mjs';
 import { managePolicy, setup } from './helpers.mjs';
 
