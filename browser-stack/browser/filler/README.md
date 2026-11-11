@@ -153,7 +153,7 @@ symlink, or owned by anyone but its own uid (or root). Edit it with
 - The filler reloads the policy whenever the file changes. While the file is
   invalid, every fill is refused.
 
-- `"all_items": true` on a client (at most one) lets it use every login in
+- `"all_items": true` on a client (at most one per backend) lets it use every login in
   the agent account's own vault, with no policy edit per login:
   - the name is the item's name as a slug: "GitHub (work)" is `github-work`,
     so `github-work.password`; `browser_list_secrets` shows each login with
@@ -202,6 +202,39 @@ gmail.com, google.com and youtube.com in one group.
   `www.gmail.com (+ google.com, youtube.com equivalents)`. A host refusal
   names the equivalents too. A fill allowed this way is audited with
   `"via":"equivalent_domains"` and `"equivalent_of":"<saved host>"`.
+
+### Backends: more than one vault
+
+`"backends"` names the vaults the filler reaches, and each client names the
+one it uses in `"backend"`:
+
+```json
+{"version":1,
+ "backends":{"shared":{"type":"vaultwarden"},
+             "instimate":{"type":"vaultwarden","url":"http://127.0.0.1:8223"}},
+ "clients":{"agent":{"backend":"shared","all_items":true},
+            "instimate":{"backend":"instimate","all_items":true}},
+ "chats":{"<happy session id>":"instimate"},
+ "default_client":"agent","pipe_targets":{}}
+```
+
+- A client uses exactly one backend. Every list, fill, login and vault-tool
+  call of a chat goes to its client's backend and no other: an item id means
+  something only within its backend, so an id from another backend (guessed,
+  or even written into this client's `secrets`) is simply not found there.
+- `all_items` (one client per backend) and "an item belongs to one client"
+  hold per backend, so an Instimate `all_items` client sits next to the
+  shared one.
+- A backend's name is 1..32 of `a-z 0-9 _ -`. `type` is a provider type;
+  every other key is that provider's own (non-secret) setting. For
+  `vaultwarden`: `url` (default `VAULT_URL`). Secrets stay files: `shared`
+  keeps today's `secrets/vault-*`; another backend reads its own from
+  `secrets/<name>/`.
+- A policy without `backends` keeps working: it reads as `{"shared":
+  {"type": "vaultwarden"}}` with every client on it, and its clients may
+  not name another backend. With `backends`, every client must name one.
+- Values typed from any backend are scrubbed and taint their browser session
+  the same way; a session holding one chat's secret refuses another chat.
 
 ### Every chat shares the agent's logins
 
@@ -322,7 +355,9 @@ the chat id (a process without one sends `none`, served by `default_client`).
   `pipe_targets`): it backs it up to `policy-backups/`, gives the
   `all_items` client `manage` with every action on and `"pipe": []`, and
   adds `"pipe_targets": {}`. After that the file is yours: a `manage` you
-  remove is not added back.
+  remove is not added back. A policy without `backends` gets `"backends":
+  {"shared": {"type": "vaultwarden"}}` and `"backend": "shared"` on every
+  client (what it already meant, written out). Each step runs once.
 
 ## Day to day
 

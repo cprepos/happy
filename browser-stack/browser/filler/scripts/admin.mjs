@@ -16,8 +16,9 @@
 //   items                      the agent account's logins (no values)
 //   seed-policy [CLIENT=agent] seed an empty policy
 //   policy-edit                (terminal) back up, edit a copy, validate, swap it in
-//   policy-upgrade             once: give an older policy (no pipe_targets) manage
-//                              rights for all_items clients and empty pipe_targets
+//   policy-upgrade             once per step: give an older policy what it lacks:
+//                              pipe_targets (and manage for all_items clients),
+//                              backends (the shared Vaultwarden, every client on it)
 //   check-policy               validate policy.json
 //   outbox-clear               move tokens nobody took to trash/
 //
@@ -187,7 +188,7 @@ function policyUpgrade() {
     if (!existsSync(pol)) throw new AdminError('no policy; run make vault-init first');
     let up;
     try { up = upgradePolicy(JSON.parse(readFileSync(pol, 'utf8'))); } catch (err) { throw new AdminError(`policy not upgraded: ${err.message}`); }
-    if (!up) { out('policy.json already has pipe_targets; left as is'); return; }
+    if (!up) { out('policy.json is up to date (it has pipe_targets and backends); left as is'); return; }
     mkdirSync(join(ROOT, 'policy-backups'), { recursive: true, mode: 0o700 });
     copyFileSync(pol, join(ROOT, 'policy-backups', `policy.${TS}.json`));
     const t = join(ROOT, `.policy.${TS}`);

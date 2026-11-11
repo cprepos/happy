@@ -95,8 +95,8 @@ test('all_items: one client at most, a boolean, and listed item ids are known', 
     const p = parsePolicy(samplePolicy({ clients: { ...samplePolicy().clients, agent: { all_items: true } } }));
     assert.equal(p.allItems('agent'), true);
     assert.equal(p.allItems('acme'), false);
-    assert.equal(p.isListed(A.replace(/1/g, '5').toUpperCase()), true);
-    assert.equal(p.isListed(B), false);
+    assert.equal(p.isListed(A.replace(/1/g, '5').toUpperCase(), 'shared'), true);
+    assert.equal(p.isListed(B, 'shared'), false);
     assert.throws(() => parsePolicy(samplePolicy({ clients: { a: { all_items: true }, b: { all_items: true } } })), /only one client/);
     for (const bad of ['yes', 1, null, {}]) assert.throws(() => parsePolicy(samplePolicy({ clients: { a: { all_items: bad } } })), /all_items must be true or false/, JSON.stringify(bad));
     assert.equal(itemSlug('GitHub (work)'), 'github-work');
@@ -228,4 +228,82 @@ test('custom_fields on an explicit secret: optional, a list of exact names, neve
     none2.clients.acme.secrets.github.fields = [];
     none2.clients.acme.secrets.github.custom_fields = [];
     assert.throws(() => parsePolicy(none2), /fields must be some of/);
+});
+
+// backends: one vault per name; each client uses one, and every per-item rule holds per backend.
+const TWO = (over = {}) => ({
+    version: 1,
+    backends: { shared: { type: 'vaultwarden' }, instimate: { type: 'vaultwarden', url: 'http://127.0.0.1:8223' } },
+    clients: {
+        agent: { backend: 'shared', all_items: true },
+        instimate: { backend: 'instimate', all_items: true, secrets: { github: { item_id: A, hosts: ['github.com'], fields: ['password'] } } },
+        acme: { backend: 'shared', secrets: { github: { item_id: A, hosts: ['github.com'], fields: ['password'] } } },
+    },
+    chats: { 'chat-inst': 'instimate' },
+    default_client: 'agent',
+    ...over,
+});
+
+test('a policy without backends reads as the shared Vaultwarden, every client on it', () => {
+    const p = parsePolicy(samplePolicy());
+    assert.deepEqual(p.backends(), ['shared']);
+    assert.deepEqual(p.backend('shared'), { type: 'vaultwarden' });
+    assert.equal(p.backendOf('acme'), 'shared');
+    assert.equal(p.backendOf('globex'), 'shared');
+    assert.equal(p.backendOf('nobody'), null);
+    // Naming shared is fine; naming anything else is not (there is no other).
+    const x = samplePolicy(); x.clients.acme.backend = 'shared';
+    assert.equal(parsePolicy(x).backendOf('acme'), 'shared');
+    x.clients.acme.backend = 'instimate';
+    assert.throws(() => parsePolicy(x), /backend "instimate" is not in backends \(a policy without backends has only "shared"\)/);
+});
+
+test('backends: each client names one; all_items and item ids are per backend', () => {
+    const p = parsePolicy(TWO());
+    assert.deepEqual(p.backends(), ['shared', 'instimate']);
+    assert.equal(p.backendOf('instimate'), 'instimate');
+    assert.equal(p.backend('instimate').url, 'http://127.0.0.1:8223');
+    // One all_items client per backend: agent (shared) and instimate coexist.
+    assert.equal(p.allItems('agent'), true);
+    assert.equal(p.allItems('instimate'), true);
+    // The same id in two backends is two items: listed by each backend's own client.
+    assert.equal(p.listedBy(A, 'instimate'), 'instimate');
+    assert.equal(p.listedBy(A, 'shared'), 'acme');
+    assert.equal(p.isListed(B, 'instimate'), false);
+    assert.throws(() => p.isListed(A), /no backend/);
+    assert.throws(() => p.listedBy(A, 'nope'), /no backend/);
+    // Unmapped chats and NO_CHAT still go to default_client.
+    assert.equal(p.clientForChat('chat-other'), 'agent');
+    assert.equal(p.clientForChat(NO_CHAT), 'agent');
+    assert.equal(p.clientForChat('chat-inst'), 'instimate');
+});
+
+test('backends: malformed sections and client bindings fail the whole load', () => {
+    const bad = [
+        [TWO({ backends: {} }), /1\.\.16 backends/],
+        [TWO({ backends: [] }), /backends must be an object/],
+        [TWO({ backends: { Shared: { type: 'vaultwarden' } } }), /bad backend name/],
+        [TWO({ backends: { ['x'.repeat(33)]: { type: 'vaultwarden' } } }), /bad backend name/],
+        [TWO({ backends: { '../x': { type: 'vaultwarden' } } }), /bad backend name/],
+        [TWO({ backends: { shared: { type: 'Vault Warden' } } }), /type must be a provider type/],
+        [TWO({ backends: { shared: {} } }), /type must be a provider type/],
+        [TWO({ backends: { shared: { type: 'vaultwarden', url: { x: 1 } }, instimate: { type: 'x' } } }), /must be a string/],
+        [TWO({ backends: { shared: { type: 'vaultwarden', url: 'a\nb' }, instimate: { type: 'x' } } }), /must be a string/],
+        [TWO({ backends: { shared: { type: 'vaultwarden', 'bad key': 'x' }, instimate: { type: 'x' } } }), /bad key/],
+        [TWO({ backends: Object.fromEntries(Array.from({ length: 17 }, (_, i) => [`b${i}`, { type: 'x' }])) }), /1\.\.16 backends/],
+    ];
+    for (const [pol, re] of bad) assert.throws(() => parsePolicy(pol), re, JSON.stringify(pol.backends).slice(0, 80));
+    // With backends, every client must name one, and it must exist.
+    let x = TWO(); delete x.clients.acme.backend;
+    assert.throws(() => parsePolicy(x), /client acme: backend is required/);
+    x = TWO(); x.clients.acme.backend = 'nope';
+    assert.throws(() => parsePolicy(x), /client acme: backend "nope" is not in backends/);
+    x = TWO(); x.clients.acme.backend = 7;
+    assert.throws(() => parsePolicy(x), /is not in backends/);
+    // Two all_items clients on one backend: refused, as before.
+    x = TWO(); x.clients.acme = { backend: 'instimate', all_items: true };
+    assert.throws(() => parsePolicy(x), /all_items is already set by instimate on backend instimate/);
+    // One item id listed twice in one backend: refused.
+    x = TWO(); x.clients.acme.backend = 'instimate';
+    assert.throws(() => parsePolicy(x), /item already used by instimate\.github/);
 });

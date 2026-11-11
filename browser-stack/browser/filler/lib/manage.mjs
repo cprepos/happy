@@ -105,7 +105,7 @@ export function createManager({ getPolicy, vault, audit, now = () => Date.now(),
             if (chat === NO_CHAT) throw new FillError('this agent process has no chat id, and the filler policy has no default_client, so it may not use the vault', 403, 'unbound_chat');
             throw new FillError('this chat is not bound to a client in the filler policy; ask the user to bind it', 403, 'unbound_chat');
         }
-        return { policy, client: sc.client, path: sc.path, cfg: policy.client(sc.client), manage: policy.manage(sc.client) };
+        return { policy, client: sc.client, path: sc.path, cfg: policy.client(sc.client), manage: policy.manage(sc.client), backend: policy.backendOf(sc.client) };
     }
     function need(ctx, perm) {
         const ok = perm === 'pipe' ? !!ctx.manage?.pipe.length : !!ctx.manage?.[perm];
@@ -136,7 +136,7 @@ export function createManager({ getPolicy, vault, audit, now = () => Date.now(),
         for (const [name, s] of ctx.cfg.secrets) bySecretId.set(s.item_id, [...(bySecretId.get(s.item_id) || []), name]);
         const out = [];
         for (const it of items) {
-            const listedBy = ctx.policy.listedBy(it.id);
+            const listedBy = ctx.policy.listedBy(it.id, ctx.backend);
             if (listedBy === ctx.client) {
                 const names = bySecretId.get(it.id) || [];
                 const allow = (key, list) => list.filter((f) => names.some((n) => ctx.cfg.secrets.get(n)[key].includes(f)));

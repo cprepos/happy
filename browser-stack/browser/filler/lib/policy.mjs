@@ -24,7 +24,7 @@
 // item with no https URI cannot be used. Names the client lists in secrets
 // take precedence, and an item some client lists by item_id never appears
 // under all_items, so its own hosts and fields keep applying. At most one
-// client may set all_items.
+// client per backend may set all_items.
 //
 // An all_items login also honours the vault's equivalent domains, as the
 // Bitwarden extension does: a login saved for www.gmail.com fills on
@@ -61,6 +61,25 @@
 // an unmapped chat reaches nothing, as before. A mapped chat always uses its
 // own client.
 //
+// "backends" (top level) names the vaults the filler reaches, and each client
+// names the one it uses in "backend":
+//
+//     "backends": { "shared":    {"type": "vaultwarden"},
+//                   "instimate": {"type": "onepassword", "vault": "Agent - Happy"} },
+//     "clients":  { "agent":     {"backend": "shared", "all_items": true},
+//                   "instimate": {"backend": "instimate", "all_items": true} }
+//
+// A backend's name is 1..32 of a-z 0-9 _ - (starting with a letter); its type
+// is a registered provider type (providers/builtin.mjs), and every other key
+// is that provider's own config: a scalar (string, number, boolean), never a
+// secret (secrets are files under secrets/<backend>/, or secrets/ itself for
+// "shared"). A policy without "backends" reads as {"shared": {"type":
+// "vaultwarden"}} with every client on it, and its clients may not name
+// another backend; with "backends", every client must name one of them.
+// A client reaches only its own backend: everything below (item ids, all_items,
+// the one-client-per-item rule) holds per backend, and an item id means
+// nothing without its backend.
+//
 // The items live in the agent account's personal vault (no organization), so
 // this file is the only thing that separates clients: a chat reaches only the
 // item ids its client lists, and an item id may be listed by one client only.
@@ -87,9 +106,18 @@ export const ITEM_ID = /^[A-Za-z0-9_-]{8,128}$/;
 const CHAT = /^[A-Za-z0-9_.:-]{1,200}$/;
 /** The chat a caller with no chat id names. Only default_client can serve it. */
 export const NO_CHAT = 'none';
-const TOP_KEYS = new Set(['version', 'clients', 'chats', 'default_client', 'pipe_targets']);
+const TOP_KEYS = new Set(['version', 'clients', 'chats', 'default_client', 'pipe_targets', 'backends']);
+/** A backend's name in the policy (also its secrets/<name>/ directory). */
+export const BACKEND_NAME = /^[a-z][a-z0-9_-]{0,31}$/;
+/** The backend a policy without "backends" has, and whose secrets are secrets/ itself. */
+export const DEFAULT_BACKEND = 'shared';
+const BACKEND_TYPE = /^[a-z][a-z0-9-]{0,31}$/;
+const BACKEND_KEY = /^[A-Za-z][A-Za-z0-9_]{0,31}$/;
+const MAX_BACKENDS = 16;
 const MANAGE_FLAGS = ['create', 'update', 'remove', 'compare'];
 const SLOT = /^[a-z][a-z0-9_]{0,31}$/;
+// eslint-disable-next-line no-control-regex
+const CONTROL = /[\u0000-\u001f\u007f]/;
 
 function parsePipeTargets(raw) {
     const out = new Map();
@@ -127,6 +155,30 @@ function parsePipeTargets(raw) {
     return out;
 }
 
+/** backends -> Map name -> frozen {type, ...config}; absent: the implicit shared Vaultwarden. */
+function parseBackends(raw) {
+    if (raw === undefined) return { implicit: true, backends: new Map([[DEFAULT_BACKEND, Object.freeze({ type: 'vaultwarden' })]]) };
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new PolicyError('backends must be an object');
+    const names = Object.keys(raw);
+    if (!names.length || names.length > MAX_BACKENDS) throw new PolicyError(`backends must name 1..${MAX_BACKENDS} backends`);
+    const backends = new Map();
+    for (const name of names) {
+        if (!BACKEND_NAME.test(name)) throw new PolicyError(`bad backend name ${JSON.stringify(name).slice(0, 70)} (1..32 of a-z 0-9 _ -, starting with a letter)`);
+        const b = raw[name];
+        if (!b || typeof b !== 'object' || Array.isArray(b)) throw new PolicyError(`backend ${name}: must be an object`);
+        if (typeof b.type !== 'string' || !BACKEND_TYPE.test(b.type)) throw new PolicyError(`backend ${name}: type must be a provider type (for example "vaultwarden")`);
+        const cfg = {};
+        for (const [k, v] of Object.entries(b)) {
+            if (!BACKEND_KEY.test(k)) throw new PolicyError(`backend ${name}: bad key ${JSON.stringify(k).slice(0, 40)}`);
+            const ok = (typeof v === 'string' && v.length <= 512 && !CONTROL.test(v)) || typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v));
+            if (!ok) throw new PolicyError(`backend ${name}.${k}: must be a string (at most 512 characters, no control characters), a number or true/false`);
+            cfg[k] = v;
+        }
+        backends.set(name, Object.freeze(cfg));
+    }
+    return { implicit: false, backends };
+}
+
 function parseManage(slug, m, allItems, targets) {
     if (m === undefined) return null;
     if (!m || typeof m !== 'object' || Array.isArray(m)) throw new PolicyError(`client ${slug}: manage must be an object`);
@@ -162,23 +214,34 @@ export function parsePolicy(json) {
     const extraTop = Object.keys(raw).filter((k) => !TOP_KEYS.has(k));
     if (extraTop.length) throw new PolicyError(`unknown top-level key ${JSON.stringify(extraTop[0]).slice(0, 40)}`);
     const targets = parsePipeTargets(raw.pipe_targets);
+    const { implicit, backends } = parseBackends(raw.backends);
     const clients = new Map();
+    // `${backend}/${item id}` -> "client.secret": an item id is per backend.
     const seenItems = new Map();
-    let allItemsClient = null;
+    const allItemsClient = new Map(); // backend -> client
     for (const [slug, c] of Object.entries(raw.clients)) {
         if (!SLUG.test(slug)) throw new PolicyError(`bad client slug ${JSON.stringify(slug).slice(0, 70)}`);
         if (!c || typeof c !== 'object' || Array.isArray(c)) throw new PolicyError(`client ${slug}: must be an object`);
         if ('org_id' in c || 'collection_id' in c) throw new PolicyError(`client ${slug}: org_id and collection_id are no longer used (the items are in the agent account's own vault); remove them`);
-        const extra = Object.keys(c).filter((k) => !['secrets', 'all_items', 'equivalent_domains', 'manage'].includes(k));
+        const extra = Object.keys(c).filter((k) => !['backend', 'secrets', 'all_items', 'equivalent_domains', 'manage'].includes(k));
         if (extra.length) throw new PolicyError(`client ${slug}: unknown key ${JSON.stringify(extra[0]).slice(0, 40)}`);
+        let backend = c.backend;
+        if (backend === undefined) {
+            if (!implicit) throw new PolicyError(`client ${slug}: backend is required (one of ${[...backends.keys()].join(', ')})`);
+            backend = DEFAULT_BACKEND;
+        }
+        if (typeof backend !== 'string' || !backends.has(backend)) {
+            throw new PolicyError(`client ${slug}: backend ${JSON.stringify(backend)?.slice(0, 40)} is not in backends${implicit ? ` (a policy without backends has only "${DEFAULT_BACKEND}")` : ''}`);
+        }
         if (c.secrets !== undefined && (typeof c.secrets !== 'object' || c.secrets === null || Array.isArray(c.secrets))) throw new PolicyError(`client ${slug}: secrets must be an object`);
         const secrets = new Map();
         for (const [name, s] of Object.entries(c.secrets || {})) {
             if (!SLUG.test(name)) throw new PolicyError(`client ${slug}: bad secret name`);
             if (!s || typeof s.item_id !== 'string' || !ITEM_ID.test(s.item_id)) throw new PolicyError(`${slug}.${name}: item_id must be a vault item id (8..128 of A-Z a-z 0-9 _ -; make filler-items lists them)`);
             const item = s.item_id.toLowerCase();
-            if (seenItems.has(item)) throw new PolicyError(`${slug}.${name}: item already used by ${seenItems.get(item)}`);
-            seenItems.set(item, `${slug}.${name}`);
+            const key = `${backend}/${item}`;
+            if (seenItems.has(key)) throw new PolicyError(`${slug}.${name}: item already used by ${seenItems.get(key)}`);
+            seenItems.set(key, `${slug}.${name}`);
             const hosts = (Array.isArray(s.hosts) ? s.hosts : []).map((h) => {
                 const n = normalizeHost(h);
                 if (!n) throw new PolicyError(`${slug}.${name}: bad host`);
@@ -197,11 +260,11 @@ export function parsePolicy(json) {
         if (c.all_items !== undefined && typeof c.all_items !== 'boolean') throw new PolicyError(`client ${slug}: all_items must be true or false`);
         const allItems = c.all_items === true;
         if (allItems) {
-            if (allItemsClient) throw new PolicyError(`client ${slug}: all_items is already set by ${allItemsClient}; only one client may use every vault item`);
-            allItemsClient = slug;
+            if (allItemsClient.has(backend)) throw new PolicyError(`client ${slug}: all_items is already set by ${allItemsClient.get(backend)} on backend ${backend}; only one client per backend may use every vault item`);
+            allItemsClient.set(backend, slug);
         }
         if (c.equivalent_domains !== undefined && typeof c.equivalent_domains !== 'boolean') throw new PolicyError(`client ${slug}: equivalent_domains must be true or false`);
-        clients.set(slug, Object.freeze({ secrets, allItems, equivalentDomains: c.equivalent_domains !== false, manage: parseManage(slug, c.manage, allItems, targets) }));
+        clients.set(slug, Object.freeze({ backend, secrets, allItems, equivalentDomains: c.equivalent_domains !== false, manage: parseManage(slug, c.manage, allItems, targets) }));
     }
     const chats = new Map();
     for (const [chat, slug] of Object.entries(raw.chats || {})) {
@@ -215,7 +278,7 @@ export function parsePolicy(json) {
         if (typeof raw.default_client !== 'string' || !clients.has(raw.default_client)) throw new PolicyError(`default_client ${JSON.stringify(raw.default_client)?.slice(0, 64)} is not a client in clients`);
         defaultClient = raw.default_client;
     }
-    return createPolicy(clients, chats, defaultClient, new Set(seenItems.keys()), targets);
+    return createPolicy(clients, chats, defaultClient, new Set(seenItems.keys()), targets, backends);
 }
 
 /** The name an all_items client uses for a vault item: its name as a slug ("GitHub (work)" -> "github-work"), or null. */
@@ -226,7 +289,12 @@ export function itemSlug(name) {
     return SLUG.test(s) ? s : null;
 }
 
-function createPolicy(clients, chats, defaultClient, listedItems, targets = new Map()) {
+function createPolicy(clients, chats, defaultClient, listedItems, targets, backends) {
+    // Item ids are per backend: every lookup by id names its backend.
+    const itemKey = (itemId, backend) => {
+        if (typeof backend !== 'string' || !backends.has(backend)) throw new PolicyError(`no backend ${JSON.stringify(backend)?.slice(0, 40)} in the policy`);
+        return `${backend}/${String(itemId ?? '').toLowerCase()}`;
+    };
     const scopeOf = (chat) => {
         if (typeof chat !== 'string' || !chat) return null;
         if (chat !== NO_CHAT && chats.has(chat)) return { client: chats.get(chat), path: 'mapped' };
@@ -234,6 +302,12 @@ function createPolicy(clients, chats, defaultClient, listedItems, targets = new 
     };
     return Object.freeze({
         clients: () => [...clients.keys()],
+        /** The backends' names. */
+        backends: () => [...backends.keys()],
+        /** A backend's config {type, ...provider config}, or null. */
+        backend: (name) => backends.get(String(name ?? '')) ?? null,
+        /** The backend a client uses, or null for an unknown client. */
+        backendOf: (slug) => clients.get(slug)?.backend ?? null,
         client: (slug) => clients.get(slug) || null,
         /** The client default_client names, or null when the policy has none. */
         defaultClient: () => defaultClient,
@@ -250,14 +324,17 @@ function createPolicy(clients, chats, defaultClient, listedItems, targets = new 
         /** A pipe target {name, argv, args: Map slot -> RegExp}, or null. */
         pipeTarget: (name) => targets.get(String(name ?? '')) ?? null,
         pipeTargets: () => [...targets.keys()],
-        /** The client that lists this item id in its secrets, or null. */
-        listedBy(itemId) {
-            const id = String(itemId ?? '').toLowerCase();
-            for (const [slug, c] of clients) for (const s of c.secrets.values()) if (s.item_id === id) return slug;
+        /** The client on backend that lists this item id in its secrets, or null. */
+        listedBy(itemId, backend) {
+            const key = itemKey(itemId, backend);
+            for (const [slug, c] of clients) {
+                if (c.backend !== backend) continue;
+                for (const s of c.secrets.values()) if (`${backend}/${s.item_id}` === key) return slug;
+            }
             return null;
         },
-        /** Whether some client lists this item id in its secrets (such an item is never reached through all_items). */
-        isListed: (itemId) => listedItems.has(String(itemId ?? '').toLowerCase()),
+        /** Whether some client on backend lists this item id in its secrets (such an item is never reached through all_items). */
+        isListed: (itemId, backend) => listedItems.has(itemKey(itemId, backend)),
         /** Every fillable name for a client: [{name: "github.password", secret, field, item_id, hosts}]. */
         entries(slug) {
             const c = clients.get(slug);

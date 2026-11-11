@@ -117,7 +117,7 @@ test('admin init: empty policy, 0640, and what is missing', () => {
     assert.match(r.stdout, /make vault-enroll BACKEND=shared/);
 });
 
-test('admin policy-upgrade: an older policy gains manage and pipe_targets once, with a backup', () => {
+test('admin policy-upgrade: an older policy gains manage, pipe_targets and backends once, with a backup', () => {
     const h = home();
     writeFileSync(join(h, 'policy.json'), JSON.stringify({ version: 1, default_client: 'agent', clients: { agent: { all_items: true, secrets: {} } }, chats: {} }), { mode: 0o640 });
     const r = run(h, 'policy-upgrade');
@@ -126,5 +126,7 @@ test('admin policy-upgrade: an older policy gains manage and pipe_targets once, 
     assert.deepEqual(p.pipe_targets, {});
     assert.equal(p.clients.agent.manage.create, true);
     assert.equal(statSync(join(h, 'policy.json')).mode & 0o777, 0o640);
-    assert.match(run(h, 'policy-upgrade').stdout, /already has pipe_targets/);
+    assert.deepEqual(p.backends, { shared: { type: 'vaultwarden' } });
+    assert.equal(p.clients.agent.backend, 'shared');
+    assert.match(run(h, 'policy-upgrade').stdout, /is up to date/);
 });

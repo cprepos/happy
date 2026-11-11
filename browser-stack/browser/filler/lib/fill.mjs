@@ -100,7 +100,7 @@ export function createFiller({ getPolicy, vault, controllers, taint, audit, slee
             if (chat === NO_CHAT) throw new FillError('this agent process has no chat id, and the filler policy has no default_client, so it may not use vault secrets', 403, 'unbound_chat');
             throw new FillError('this chat is not bound to a client in the filler policy; ask the user to bind it', 403, 'unbound_chat');
         }
-        return { policy, client: sc.client, path: sc.path, cfg: policy.client(sc.client) };
+        return { policy, client: sc.client, path: sc.path, cfg: policy.client(sc.client), backend: policy.backendOf(sc.client) };
     }
 
     // all_items: the client's vault logins by name ("github-work" -> login
@@ -116,7 +116,7 @@ export function createFiller({ getPolicy, vault, controllers, taint, audit, slee
         });
         const by = new Map();
         for (const l of logins) {
-            if (l.shared || ctx.policy.isListed(l.id)) continue;
+            if (l.shared || ctx.policy.isListed(l.id, ctx.backend)) continue;
             const slug = itemSlug(l.name);
             if (!slug || ctx.cfg.secrets.has(slug)) continue;
             by.set(slug, by.has(slug) ? null : l);
