@@ -177,10 +177,13 @@ async function fakeEngine(dir) {
             if (req.method === 'DELETE' && (m = path.match(/^\/containers\/([^/]+)$/))) { containers.delete(m[1]); return send(204); }
             if (req.method === 'POST' && (m = path.match(/^\/containers\/([^/]+)\/exec$/))) { const id = hex(1000 + ++n); execs.set(id, m[1]); return send(201, { Id: id }); }
             if (req.method === 'POST' && (m = path.match(/^\/exec\/([^/]+)\/start$/))) {
-                const png = Buffer.alloc(33); png.writeUInt32BE(0x89504e47, 0); png.write('IHDR', 12, 'latin1'); png.writeUInt32BE(64, 16); png.writeUInt32BE(48, 20);
+                const png = Buffer.alloc(33); png.writeUInt32BE(0x89504e47, 0); png.write('IHDR', 12, 'latin1'); png.writeUInt32BE(1920, 16); png.writeUInt32BE(1200, 20);
                 const h = Buffer.alloc(8); h[0] = 1; h.writeUInt32BE(png.length, 4);
+                // The capture's meta line on stderr, as scripts/screen-capture.py prints it.
+                const meta = Buffer.from(`screen-capture-meta: ${JSON.stringify({ captured_at: '2026-11-11T15:00:00.000Z', local: '2026-11-11T10:00:00.000-05:00', tz: 'America/Toronto', screen: { width: 1920, height: 1200 }, rect: { x: 0, y: 0, width: 1920, height: 1200 }, workarea: null, panel_px: 0 })}\n`);
+                const e = Buffer.alloc(8); e[0] = 2; e.writeUInt32BE(meta.length, 4);
                 res.writeHead(200, { 'Content-Type': 'application/vnd.docker.raw-stream' });
-                return res.end(Buffer.concat([h, png]));
+                return res.end(Buffer.concat([h, png, e, meta]));
             }
             if (req.method === 'GET' && (m = path.match(/^\/exec\/([^/]+)\/json$/))) return send(200, { ExitCode: 0 });
             if (req.method === 'GET' && (m = path.match(/^\/images\/(.+)\/json$/))) return send(200, { Id: 'sha256:x' });
@@ -215,7 +218,8 @@ test('the launcher drives pods through the proxy; nothing else gets to the engin
         assert.ok([...eng.containers.values()].every((c) => c.State === 'running'));
         const s = await launcher.handle({ op: 'screen', slot: 2, pod_id: POD });
         assert.equal(s.ok, true, s.error);
-        assert.equal(s.result.width, 64);
+        assert.equal(s.result.width, 1920);
+        assert.equal(s.result.captured_at, '2026-11-11T15:00:00.000Z');
         assert.equal((await launcher.handle({ op: 'list' })).result.pods.length, 1);
         assert.equal((await launcher.handle({ op: 'stop', slot: 2 })).ok, true);
         assert.equal(eng.containers.size, 0);

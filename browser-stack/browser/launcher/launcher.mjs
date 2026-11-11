@@ -18,12 +18,17 @@
 //   {"id":4,"op":"adopt_auth","slot":0,"chat_hash":"<32 hex>"}
 //   {"id":5,"op":"stash_auth","slot":0,"chat_hash":"<32 hex>","keep":false}
 //   {"id":6,"op":"copy_auth","from_chat_hash":"<32 hex>","chat_hash":"<32 hex>"}
-//   {"id":7,"op":"screen","slot":0,"pod_id":"<32 hex>"}
+//   {"id":7,"op":"screen","slot":0,"pod_id":"<32 hex>","rect":{"x":0,"y":28,"width":1920,"height":1172}}
 //
 // screen is the one op that runs something inside a pod: scripts/screen-capture.py, read from
 // this repo when the launcher starts, run as the node's uid in that slot's node container
-// (only if it still carries that pod_id), which prints the whole X screen as a PNG. The reply
-// is {"mime":"image/png","width":..,"height":..,"data":"<base64>"}.
+// (only if it still carries that pod_id), which prints the X screen as a PNG: the whole root
+// window, or with rect (four integers, validated here and again by the script against the
+// screen) only that rectangle, read as such by XGetImage, never cropped afterwards. The reply is
+// {"mime":"image/png","width":..,"height":..,"data":"<base64>","raw_sha256":"<hex>",
+// "captured_at":"<UTC ISO>","local":"..","tz":"..","screen":{..},"capture_rect":{..},"panel_px":N}:
+// raw_sha256 is the sha256 of exactly the PNG bytes the capture printed, taken here, where the
+// capture ran; the controller recomputes it before it files the image.
 //
 // Every reply is {"id":..,"ok":true,"result":..} or {"id":..,"ok":false,"error":".."}. Nothing
 // else is accepted: no image, mount, port, env or command comes from a caller. Image digests are
@@ -32,6 +37,7 @@
 // Paths: LAUNCHER_BROWSER_DIR (this repo's browser-stack/browser) and LAUNCHER_HOME (the host's
 // HAPPY_BROWSER_HOME) are host paths, mounted at the same paths in this container, because the
 // bind sources it hands the Engine API are resolved on the host.
+import { createHash } from 'node:crypto';
 import { createServer, request as httpRequest } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
 import { chmodSync, chownSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, cpSync, lstatSync } from 'node:fs';
@@ -44,9 +50,11 @@ export const ID_RE = /^[0-9a-f]{32}$/;
 export const VNC_RE = /^[A-Za-z0-9]{8}$/;
 export const OPS = new Set(['ensure', 'stop', 'list', 'adopt_auth', 'stash_auth', 'copy_auth', 'screen']);
 // The height of Chromium's tab strip and toolbar in a maximized window (measured on the pinned
-// image at 1920x1200). With BROWSER_KIOSK=0 the page gets the screen less this, so Playwright's
-// window and the maximized one agree and nothing is clipped.
+// image at 1920x1200). With BROWSER_KIOSK=0 the page gets the screen less this and less the
+// desktop panel (BROWSER_PANEL_HEIGHT, browser.mk reads it from kiosk/fluxbox/init.window), so
+// Playwright's window and the maximized one agree and nothing is clipped.
 export const CHROME_UI_HEIGHT = 87;
+export const SCREENSHOT_VIEWS = new Set(['desktop', 'tab']);
 export const SCREEN_MAX_BYTES = 16 * 1024 * 1024;
 const GiB = 1024 ** 3;
 
@@ -84,10 +92,17 @@ export function launcherConfig(env = process.env) {
         rateLimit: num('REQUEST_RATE_LIMIT_REQUESTS', 1200),
         logLevel: env.LOG_LEVEL || 'INFO',
         piiScrub: env.PII_SCRUB_SCREENSHOT || 'true',
-        // The zone of the date/time bar on every screenshot (the evidence stamp); the controller refuses a bad one.
-        evidenceTz: env.EVIDENCE_TZ || 'UTC',
+        // The zone of the desktop panel's clock (the node's TZ) and of the controller's screenshot
+        // audit; the controller refuses a bad one.
+        evidenceTz: env.EVIDENCE_TZ || 'America/Toronto',
+        // browser_screenshot's default view: desktop (the whole screen, panel and clock) or tab.
+        screenshotTimeMode: env.SCREENSHOT_TIME_MODE || 'desktop',
         mcpProfile: env.MCP_TOOL_PROFILE || 'curated',
     };
+    if (!/^[A-Za-z0-9_+-]+(\/[A-Za-z0-9_+-]+)*$/.test(cfg.evidenceTz)) throw new Error('EVIDENCE_TZ must be an IANA zone name');
+    if (!SCREENSHOT_VIEWS.has(cfg.screenshotTimeMode)) throw new Error('SCREENSHOT_TIME_MODE must be desktop or tab');
+    // The desktop panel above the window; the kiosk has none.
+    cfg.panelHeight = cfg.kiosk ? 0 : num('BROWSER_PANEL_HEIGHT', 0);
     cfg.viewportHeight = num('BROWSER_VIEWPORT_HEIGHT', viewportHeight(cfg));
     if (cfg.viewportHeight < 1 || cfg.viewportHeight > cfg.height) throw new Error('BROWSER_VIEWPORT_HEIGHT must be 1..BROWSER_HEIGHT');
     if (!/^[a-z0-9][a-z0-9_-]*$/.test(cfg.project)) throw new Error('LAUNCHER_PROJECT must be a compose project name');
@@ -113,8 +128,9 @@ export function kioskFlag(v) {
     if (s === '1') return true;
     throw new Error('BROWSER_KIOSK must be 0 or 1');
 }
-// The page's height: the whole screen in kiosk mode, the screen less Chromium's own UI otherwise.
-export const viewportHeight = ({ kiosk, height }) => (kiosk ? height : height - CHROME_UI_HEIGHT);
+// The page's height: the whole screen in kiosk mode, the screen less the desktop panel and
+// Chromium's own UI otherwise.
+export const viewportHeight = ({ kiosk, height, panelHeight = 0 }) => (kiosk ? height : height - panelHeight - CHROME_UI_HEIGHT);
 
 // The two image references in compose.browser.yml (x-browser-node-image, x-controller-image).
 export function composeImages(composeText) {
@@ -136,7 +152,7 @@ export const slotDir = (cfg, slot) => join(cfg.podsDir, `slot-${slot}`);
 export function validate(cfg, req) {
     if (!req || typeof req !== 'object' || Array.isArray(req)) throw new Error('bad request');
     if (!OPS.has(req.op)) throw new Error('unknown op');
-    const allowed = { ensure: ['slot', 'pod_id', 'vnc_password'], stop: ['slot'], list: [], adopt_auth: ['slot', 'chat_hash'], stash_auth: ['slot', 'chat_hash', 'keep'], copy_auth: ['from_chat_hash', 'chat_hash'], screen: ['slot', 'pod_id'] }[req.op];
+    const allowed = { ensure: ['slot', 'pod_id', 'vnc_password'], stop: ['slot'], list: [], adopt_auth: ['slot', 'chat_hash'], stash_auth: ['slot', 'chat_hash', 'keep'], copy_auth: ['from_chat_hash', 'chat_hash'], screen: ['slot', 'pod_id', 'rect'] }[req.op];
     for (const k of Object.keys(req)) if (k !== 'id' && k !== 'op' && !allowed.includes(k)) throw new Error(`unexpected field ${k}`);
     if (allowed.includes('slot') && !(Number.isInteger(req.slot) && req.slot >= 0 && req.slot < cfg.maxPods)) throw new Error('bad slot');
     if (allowed.includes('pod_id') && (typeof req.pod_id !== 'string' || !ID_RE.test(req.pod_id))) throw new Error('bad pod_id');
@@ -149,7 +165,29 @@ export function validate(cfg, req) {
         if (req.from_chat_hash === req.chat_hash) throw new Error('from_chat_hash and chat_hash must differ');
     }
     if ('keep' in req && typeof req.keep !== 'boolean') throw new Error('bad keep');
+    if ('rect' in req) req.rect = screenRect(cfg, req.rect);
     return req;
+}
+
+// A screen op's rect: {x, y, width, height}, integers, inside the screen, nothing else.
+export function screenRect(cfg, rect) {
+    if (!rect || typeof rect !== 'object' || Array.isArray(rect)) throw new Error('bad rect');
+    const keys = ['x', 'y', 'width', 'height'];
+    if (Object.keys(rect).length !== 4 || !keys.every((k) => Number.isInteger(rect[k]))) throw new Error('bad rect');
+    const { x, y, width, height } = rect;
+    if (x < 0 || y < 0 || width < 1 || height < 1 || x + width > cfg.width || y + height > cfg.height) throw new Error('rect is not inside the screen');
+    return { x, y, width, height };
+}
+
+const META_PREFIX = 'screen-capture-meta: ';
+// The capture's meta line (scripts/screen-capture.py), or null.
+export function captureMeta(stderr) {
+    const line = stderr.toString('utf8').split('\n').find((l) => l.startsWith(META_PREFIX));
+    if (!line) return null;
+    try {
+        const m = JSON.parse(line.slice(META_PREFIX.length));
+        return m && typeof m === 'object' && !Array.isArray(m) ? m : null;
+    } catch { return null; }
 }
 
 const labels = (cfg, slot, podId, role) => ({
@@ -175,6 +213,8 @@ export function nodeSpec(cfg, { slot, podId, vncPassword, image, seccomp }) {
             `BROWSER_WIDTH=${cfg.width}`,
             `BROWSER_HEIGHT=${cfg.height}`,
             `BROWSER_KIOSK=${cfg.kiosk ? 1 : 0}`,
+            // The desktop panel's clock shows this zone.
+            `TZ=${cfg.evidenceTz}`,
             'BROWSER_URL=about:blank',
             'BROWSER_WS_ENDPOINT_FILE=/data/profile/browser-ws-endpoint.txt',
             'PLAYWRIGHT_SERVER_HOST=127.0.0.1',
@@ -219,8 +259,7 @@ export function nodeSpec(cfg, { slot, podId, vncPassword, image, seccomp }) {
 // The controller: compose.browser.yml's controller service with this pod's port, takeover URL
 // and /data, one session, and a fast reconnect while the node is still starting. It serves the
 // app through controller-patch/happy_live_frames.py (live frames while an action runs, and the
-// evidence stamp's date/time bar from happy_evidence_stamp.py beside it), which
-// refuses to start on any controller but the 1.14.0 it was written against.
+// screen and page screenshots with their audit), which refuses to start on any controller but the 1.14.0 it was written against.
 export const CONTROLLER_PATCH_DIR = '/happy/controller-patch';
 export const TMPFS_NODE = 'rw,exec,nosuid,nodev,size=512m,mode=1777';
 export const TMPFS_CONTROLLER = 'rw,noexec,nosuid,nodev,size=256m,mode=1777';
@@ -263,6 +302,7 @@ export function controllerSpec(cfg, { slot, podId, image, secrets }) {
             'REQUEST_RATE_LIMIT_WINDOW_SECONDS=60',
             `PII_SCRUB_SCREENSHOT=${cfg.piiScrub}`,
             `EVIDENCE_TZ=${cfg.evidenceTz}`,
+            `SCREENSHOT_TIME_MODE=${cfg.screenshotTimeMode}`,
             // As the shared controller: the secret filler's keystrokes are never recorded.
             'ENABLE_TRACING=false',
             'NETWORK_INSPECTOR_CAPTURE_BODIES=false',
@@ -284,7 +324,6 @@ export function controllerSpec(cfg, { slot, podId, image, secrets }) {
             Binds: [
                 `${slotDir(cfg, slot)}:/data`,
                 `${cfg.browserDir}/controller-patch/happy_live_frames.py:${CONTROLLER_PATCH_DIR}/happy_live_frames.py:ro`,
-                `${cfg.browserDir}/controller-patch/happy_evidence_stamp.py:${CONTROLLER_PATCH_DIR}/happy_evidence_stamp.py:ro`,
             ],
         },
     };
@@ -523,18 +562,38 @@ export function createLauncher(cfg, { engine, images, seccomp, secrets, captureS
                 return { copied: true };
             }));
         },
-        // The pod's whole X screen. Not serialized with the slot: it only reads, and a pod that
-        // is removed meanwhile just fails the exec.
-        async screen({ slot, pod_id: podId }) {
+        // The pod's X screen, or one rectangle of it. Not serialized with the slot: it only reads,
+        // and a pod that is removed meanwhile just fails the exec.
+        async screen({ slot, pod_id: podId, rect }) {
             if (!captureScript) throw new Error('screen capture is not available');
             const node = (await containersFor(slot)).find((c) => c.Labels['happy-browser.pod_id'] === podId && c.Labels['happy-browser.role'] === 'node');
             if (!node || node.State !== 'running') throw new Error('pod is not running');
-            const r = await engine.exec(node.Id, { cmd: ['python3', '-I', '-c', captureScript], user: String(cfg.nodeUid), env: ['DISPLAY=:99'] });
+            const args = rect ? [rect.x, rect.y, rect.width, rect.height].map(String) : [];
+            const r = await engine.exec(node.Id, { cmd: ['python3', '-I', '-c', captureScript, ...args], user: String(cfg.nodeUid), env: ['DISPLAY=:99'] });
             if (r.exitCode !== 0) throw new Error(`screen capture failed: ${r.stderr.toString('utf8').trim().split('\n').pop()?.slice(0, 200) || `exit ${r.exitCode}`}`);
             const size = pngSize(r.stdout);
             if (!size) throw new Error('screen capture returned no image');
             if (r.stdout.length > SCREEN_MAX_BYTES) throw new Error('screen capture too large');
-            return { mime: 'image/png', ...size, data: r.stdout.toString('base64') };
+            const meta = captureMeta(r.stderr);
+            if (!meta || typeof meta.captured_at !== 'string' || !meta.rect) throw new Error('screen capture gave no capture time');
+            const want = rect || { x: 0, y: 0, width: cfg.width, height: cfg.height };
+            const got = meta.rect;
+            if (got.x !== want.x || got.y !== want.y || got.width !== want.width || got.height !== want.height
+                || size.width !== want.width || size.height !== want.height) {
+                throw new Error('screen capture is not the rectangle asked for');
+            }
+            return {
+                mime: 'image/png',
+                ...size,
+                data: r.stdout.toString('base64'),
+                raw_sha256: createHash('sha256').update(r.stdout).digest('hex'),
+                captured_at: meta.captured_at,
+                local: typeof meta.local === 'string' ? meta.local : null,
+                tz: typeof meta.tz === 'string' ? meta.tz : null,
+                screen: meta.screen ?? null,
+                capture_rect: want,
+                panel_px: Number.isInteger(meta.panel_px) ? meta.panel_px : 0,
+            };
         },
     };
 

@@ -1,6 +1,7 @@
 // Pod launcher: templates, input validation, the socket protocol and the slot lifecycle, against a
 // fake Engine API on a unix socket. No Docker needed.
 import { test } from 'node:test';
+import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { connect } from 'node:net';
@@ -160,9 +161,10 @@ test('pod templates: host network, loopback ports per slot, no published ports, 
         assert.deepEqual(ctl.Cmd, ['uvicorn', 'happy_live_frames:app', '--host', '127.0.0.1', '--port', String(p.api)]);
         assert.equal(ce.PYTHONPATH, '/happy/controller-patch');
         assert.ok(ctl.HostConfig.Binds.includes(`${BROWSER_DIR}/controller-patch/happy_live_frames.py:/happy/controller-patch/happy_live_frames.py:ro`));
-        assert.ok(ctl.HostConfig.Binds.includes(`${BROWSER_DIR}/controller-patch/happy_evidence_stamp.py:/happy/controller-patch/happy_evidence_stamp.py:ro`));
-        assert.equal(ce.EVIDENCE_TZ, 'UTC', 'the evidence stamp zone: UTC unless EVIDENCE_TZ says');
-        assert.equal(ce.TZ, undefined, 'the container\'s own zone is left alone');
+        assert.equal(ce.EVIDENCE_TZ, 'America/Toronto', 'the audit zone: Toronto unless EVIDENCE_TZ says');
+        assert.equal(ce.SCREENSHOT_TIME_MODE, 'desktop');
+        assert.equal(ce.TZ, undefined, 'the controller\'s own zone is left alone');
+        assert.equal(ne.TZ, 'America/Toronto', 'the node\'s panel clock shows the evidence zone');
         assert.equal(ce.MAX_SESSIONS, '1');
         assert.equal(ce.ENABLE_TRACING, 'false');
         assert.equal(ce.NETWORK_INSPECTOR_CAPTURE_BODIES, 'false');
@@ -215,6 +217,10 @@ test('window mode: BROWSER_KIOSK picks the viewport and reaches the pod node', (
     assert.equal(CHROME_UI_HEIGHT, 87);
     assert.equal(viewportHeight({ kiosk: false, height: 1200 }), 1113);
     assert.equal(viewportHeight({ kiosk: true, height: 1200 }), 1200);
+    // The desktop panel above a maximized window takes its height from the page too.
+    assert.equal(viewportHeight({ kiosk: false, height: 1200, panelHeight: 28 }), 1085);
+    assert.equal(setup({ BROWSER_PANEL_HEIGHT: '28' }).cfg.viewportHeight, 1085);
+    assert.equal(setup({ BROWSER_PANEL_HEIGHT: '28', BROWSER_KIOSK: '1' }).cfg.viewportHeight, 1200, 'the kiosk has no panel');
 
     const envOf = (spec, k) => spec.Env.find((e) => e.startsWith(`${k}=`));
     const win = setup().cfg;
@@ -255,10 +261,21 @@ test('screen: execs the capture script in that pod\'s node only', async () => {
         assert.equal((await launcher.handle({ op: 'screen', slot: 1, pod_id: POD })).error, 'pod is not running');
         await launcher.handle({ op: 'ensure', slot: 1, pod_id: POD, vnc_password: 'Abcd1234' });
         const png = fakePng(1920, 1200, 100);
+        const full = { x: 0, y: 0, width: 1920, height: 1200 };
+        const meta = (rect, extra = {}) => Buffer.from(`noise\nscreen-capture-meta: ${JSON.stringify({
+            captured_at: '2026-11-11T19:32:07.123Z', local: '2026-11-11T14:32:07.123-05:00', tz: 'America/Toronto',
+            screen: { width: 1920, height: 1200 }, rect, workarea: { x: 0, y: 28, width: 1920, height: 1172 }, panel_px: 28, ...extra,
+        })}\n`);
         eng.exec.stdout = png;
+        eng.exec.stderr = meta(full);
         const r = await launcher.handle({ op: 'screen', slot: 1, pod_id: POD });
         assert.equal(r.ok, true, r.error);
-        assert.deepEqual(r.result, { mime: 'image/png', width: 1920, height: 1200, data: png.toString('base64') });
+        assert.deepEqual(r.result, {
+            mime: 'image/png', width: 1920, height: 1200, data: png.toString('base64'),
+            raw_sha256: createHash('sha256').update(png).digest('hex'),
+            captured_at: '2026-11-11T19:32:07.123Z', local: '2026-11-11T14:32:07.123-05:00', tz: 'America/Toronto',
+            screen: { width: 1920, height: 1200 }, capture_rect: full, panel_px: 28,
+        });
         const [ex] = [...eng.execs.values()];
         const node = [...eng.containers.values()].find((c) => c.Labels['happy-browser.role'] === 'node');
         assert.equal(ex.container, node.Id, 'runs in the node, not the controller');
@@ -270,6 +287,24 @@ test('screen: execs the capture script in that pod\'s node only', async () => {
         assert.equal((await launcher.handle({ op: 'screen', slot: 1, pod_id: 'c'.repeat(32) })).error, 'pod is not running');
         assert.equal((await launcher.handle({ op: 'screen', slot: 2, pod_id: POD })).error, 'pod is not running');
         assert.equal(eng.execs.size, 1);
+
+        // A rect (the tab view) is handed to the script as XGetImage's x y w h, and the image must be it.
+        const win = { x: 0, y: 28, width: 1920, height: 1172 };
+        eng.exec.stdout = fakePng(1920, 1172);
+        eng.exec.stderr = meta(win);
+        const t = await launcher.handle({ op: 'screen', slot: 1, pod_id: POD, rect: win });
+        assert.equal(t.ok, true, t.error);
+        assert.deepEqual(t.result.capture_rect, win);
+        assert.deepEqual([...eng.execs.values()].pop().spec.Cmd, ['python3', '-I', '-c', 'print(1)', '0', '28', '1920', '1172']);
+        // An image that is not the rectangle asked for, or no capture time, is refused.
+        eng.exec.stdout = fakePng(1920, 1200);
+        assert.equal((await launcher.handle({ op: 'screen', slot: 1, pod_id: POD, rect: win })).error, 'screen capture is not the rectangle asked for');
+        eng.exec.stdout = fakePng(1920, 1172);
+        eng.exec.stderr = meta(full);
+        assert.equal((await launcher.handle({ op: 'screen', slot: 1, pod_id: POD, rect: win })).error, 'screen capture is not the rectangle asked for');
+        eng.exec.stderr = Buffer.from('no meta\n');
+        assert.equal((await launcher.handle({ op: 'screen', slot: 1, pod_id: POD, rect: win })).error, 'screen capture gave no capture time');
+        assert.equal((await launcher.handle({ op: 'screen', slot: 1, pod_id: POD, rect: { ...win, height: 1173 } })).error, 'rect is not inside the screen');
 
         eng.exec.exitCode = 1;
         eng.exec.stdout = Buffer.alloc(0);
@@ -314,6 +349,13 @@ test('validation: only the seven ops, with exact fields', () => {
     ok({ op: 'stash_auth', slot: 1, chat_hash: CHAT, keep: true });
     ok({ op: 'copy_auth', from_chat_hash: 'e'.repeat(32), chat_hash: CHAT });
     ok({ op: 'screen', slot: 0, pod_id: POD });
+    ok({ op: 'screen', slot: 0, pod_id: POD, rect: { x: 0, y: 28, width: 1920, height: 1172 } });
+    for (const rect of [null, [], 'x', { x: 0, y: 0, width: 10 }, { x: 0, y: 0, width: 10, height: 10, z: 1 },
+        { x: '0', y: 0, width: 10, height: 10 }, { x: 0.5, y: 0, width: 10, height: 10 }, { x: -1, y: 0, width: 10, height: 10 },
+        { x: 0, y: 0, width: 0, height: 10 }, { x: 1, y: 0, width: 1920, height: 10 }, { x: 0, y: 1, width: 10, height: 1200 }]) {
+        bad({ op: 'screen', slot: 0, pod_id: POD, rect }, /rect/);
+    }
+    bad({ op: 'ensure', slot: 0, pod_id: POD, vnc_password: 'Abcd1234', rect: { x: 0, y: 0, width: 1, height: 1 } }, /unexpected field rect/);
     bad({ op: 'screen', slot: 0 }, /bad pod_id/);
     bad({ op: 'screen', slot: 4, pod_id: POD }, /bad slot/);
     bad({ op: 'screen', slot: 0, pod_id: POD, cmd: 'id' }, /unexpected field cmd/);
@@ -528,20 +570,24 @@ test('copy_auth racing stash_auth leaves both chats whole', async () => {
     } finally { await eng.close(); }
 });
 
-test('EVIDENCE_TZ reaches every pod controller, with the evidence stamp patch mounted beside the live frames one', () => {
-    const { cfg } = setup({ EVIDENCE_TZ: 'America/Toronto' });
+test('EVIDENCE_TZ is the pod node\'s TZ (its panel clock) and every pod controller\'s audit zone', () => {
+    const { cfg } = setup({ EVIDENCE_TZ: 'Europe/Paris', SCREENSHOT_TIME_MODE: 'tab' });
     const ctl = controllerSpec(cfg, { slot: 2, podId: POD, image: 'x', secrets: SECRETS });
-    assert.ok(ctl.Env.includes('EVIDENCE_TZ=America/Toronto'));
+    const node = nodeSpec(cfg, { slot: 2, podId: POD, vncPassword: 'Abcd1234', image: 'x', seccomp: SECCOMP });
+    assert.ok(ctl.Env.includes('EVIDENCE_TZ=Europe/Paris'));
+    assert.ok(ctl.Env.includes('SCREENSHOT_TIME_MODE=tab'));
+    assert.ok(node.Env.includes('TZ=Europe/Paris'));
     assert.ok(!ctl.Env.some((e) => e.startsWith('TZ=')));
     const patches = ctl.HostConfig.Binds.filter((b) => b.includes('/controller-patch/'));
-    assert.deepEqual(patches, [
-        `${BROWSER_DIR}/controller-patch/happy_live_frames.py:/happy/controller-patch/happy_live_frames.py:ro`,
-        `${BROWSER_DIR}/controller-patch/happy_evidence_stamp.py:/happy/controller-patch/happy_evidence_stamp.py:ro`,
-    ]);
-    // compose passes it to the launcher and the shared controller alike.
-    const launcherBlock = COMPOSE.split(/^  launcher:$/m)[1].split(/^  \S/m)[0];
-    assert.match(launcherBlock, /^      EVIDENCE_TZ: \$\{EVIDENCE_TZ:-UTC\}$/m);
-    const ctlBlock = COMPOSE.split(/^  controller:$/m)[1].split(/^  \S/m)[0];
-    assert.match(ctlBlock, /^      EVIDENCE_TZ: \$\{EVIDENCE_TZ:-UTC\}$/m);
-    assert.doesNotMatch(ctlBlock, /^      TZ:/m);
+    assert.deepEqual(patches, [`${BROWSER_DIR}/controller-patch/happy_live_frames.py:/happy/controller-patch/happy_live_frames.py:ro`]);
+    assert.throws(() => setup({ SCREENSHOT_TIME_MODE: 'window' }), /SCREENSHOT_TIME_MODE/);
+    assert.throws(() => setup({ EVIDENCE_TZ: '../etc/x y' }), /EVIDENCE_TZ/);
+    // compose passes them to the launcher, the shared controller and the shared node alike.
+    const block = (name) => COMPOSE.split(new RegExp(`^  ${name}:$`, 'm'))[1].split(/^  \S/m)[0];
+    for (const name of ['launcher', 'controller']) {
+        assert.match(block(name), /^      EVIDENCE_TZ: \$\{EVIDENCE_TZ:-America\/Toronto\}$/m, name);
+        assert.match(block(name), /^      SCREENSHOT_TIME_MODE: \$\{SCREENSHOT_TIME_MODE:-desktop\}$/m, name);
+    }
+    assert.match(block('browser-node'), /^      TZ: \$\{EVIDENCE_TZ:-America\/Toronto\}$/m);
+    assert.doesNotMatch(block('controller'), /^      TZ:/m);
 });
