@@ -38,6 +38,21 @@ final class TranslationCatalogTests: XCTestCase {
         for language in AppLanguage.supported.map(\.code) { _ = await TranslationCatalog.load(language) }
     }
 
+    /// What scripts/translation-counts.mjs worked out when the catalogs
+    /// were last generated: the counts these tests pin, kept out of the
+    /// code so a catalog change or a merge never edits them by hand.
+    private struct Counts: Decodable, Equatable {
+        struct Localized: Decodable, Equatable { var strings: Int; var functions: Int }
+        var vectors: Int
+        var keys: Int
+        var localized: [String: Localized]
+    }
+
+    private func counts() throws -> Counts {
+        let url = try XCTUnwrap(Bundle.module.url(forResource: "translation-counts", withExtension: "json", subdirectory: "Fixtures"))
+        return try JSONDecoder().decode(Counts.self, from: Data(contentsOf: url))
+    }
+
     private func vectors() throws -> [String: [Vector]] {
         let url = try XCTUnwrap(Bundle.module.url(forResource: "translation-vectors", withExtension: "json", subdirectory: "Fixtures"))
         return try JSONDecoder().decode([String: [Vector]].self, from: Data(contentsOf: url))
@@ -56,12 +71,12 @@ final class TranslationCatalogTests: XCTestCase {
                 checked += 1
             }
         }
-        XCTAssertEqual(checked, 8610)
+        XCTAssertEqual(checked, try counts().vectors)
     }
 
-    func testEveryCatalogHasEnglishsKeys() {
+    func testEveryCatalogHasEnglishsKeys() throws {
         let english = Set(TranslationCatalog.english.keys)
-        XCTAssertEqual(english.filter { !$0.hasPrefix("native.") }.count, 937)
+        XCTAssertEqual(english.filter { !$0.hasPrefix("native.") }.count, try counts().keys)
         for language in AppLanguage.supported.map(\.code) {
             XCTAssertEqual(Set(TranslationCatalog.catalog(for: language).keys), english, language)
         }
@@ -165,8 +180,9 @@ final class TranslationCatalogTests: XCTestCase {
     /// The screens' strings that read the catalog name a key whose English
     /// is the string they keep beside it, so English stays exactly what it
     /// was. Read from HappyUI's sources, which don't build here. Every
-    /// Strings file is checked; the counts pin the files Home converted,
-    /// and another area's file gets a line here when it wants one.
+    /// Strings file is checked, and every file's counts are pinned by
+    /// translation-counts.json (made again with the catalogs): a call
+    /// gained or lost without generating again fails here.
     func testEveryLocalizedStringKeepsItsKeysEnglish() throws {
         let ui = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -204,18 +220,13 @@ final class TranslationCatalogTests: XCTestCase {
             XCTAssertEqual(valued.numberOfMatches(in: source, range: range), calls - strings, "\(name): a call that is neither a string nor a function")
             counts[name] = (strings, calls - strings)
         }
-        // Home's: Strings.swift, Strings/Home.swift, Strings/SettingsPages.swift.
-        XCTAssertEqual(counts["Strings.swift"]?.strings, 209)
-        XCTAssertEqual(counts["Strings.swift"]?.functions, 6)
-        XCTAssertEqual(counts["Home.swift"]?.strings, 36)
-        XCTAssertEqual(counts["Home.swift"]?.functions, 1)
-        XCTAssertEqual(counts["SettingsPages.swift"]?.strings, 1)
-        XCTAssertEqual(counts["SettingsPages.swift"]?.functions, 0)
-        // The secondary screens': Strings/SecondaryStrings.swift, Strings/Tablet.swift.
-        XCTAssertEqual(counts["SecondaryStrings.swift"]?.strings, 116)
-        XCTAssertEqual(counts["SecondaryStrings.swift"]?.functions, 8)
-        XCTAssertEqual(counts["Tablet.swift"]?.strings, 1)
-        XCTAssertEqual(counts["Tablet.swift"]?.functions, 0)
+        let pinned = try self.counts().localized
+        let found = counts.filter { $0.value.strings + $0.value.functions > 0 }
+        XCTAssertEqual(Set(found.keys), Set(pinned.keys), "Strings files with catalog calls")
+        for (name, value) in found {
+            XCTAssertEqual(value.strings, pinned[name]?.strings, "\(name) strings")
+            XCTAssertEqual(value.functions, pinned[name]?.functions, "\(name) functions")
+        }
     }
 
     /// A Swift string literal's text.

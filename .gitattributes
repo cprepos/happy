@@ -6,6 +6,7 @@
 # Without the driver set up, git merges them as text, as before.
 packages/happy-ios/Sources/HappyCore/Localization/TranslationCatalogs.swift merge=regenerated linguist-generated
 packages/happy-ios/Tests/HappyCoreTests/Fixtures/translation-vectors.json merge=regenerated linguist-generated
+packages/happy-ios/Tests/HappyCoreTests/Fixtures/translation-counts.json merge=regenerated linguist-generated
 packages/happy-android/app/src/test/resources/translation-vectors.json merge=regenerated linguist-generated
 packages/happy-android/app/src/main/kotlin/com/slopus/happy/text/PluralExactNumbers.kt merge=regenerated linguist-generated
 packages/happy-android/app/src/main/res/values*/strings.xml merge=regenerated linguist-generated

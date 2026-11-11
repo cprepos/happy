@@ -11,6 +11,7 @@ ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../..)
 
 translations:
 	node $(ROOT)/packages/happy-ios/scripts/generate-translations.mjs
+	node $(ROOT)/packages/happy-ios/scripts/translation-counts.mjs
 	node $(ROOT)/packages/happy-android/tools/translations/generate.mjs
 
 merge-drivers:
