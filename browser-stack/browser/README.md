@@ -270,15 +270,21 @@ Tunables, such as screen size, ports and `MAX_SESSIONS`, go in
   browser-node and every pod. `make browser-node-chrome` (run by `browser-up` when it is on)
   builds `node-chrome/Dockerfile` locally: the pinned upstream node image plus one exact
   `google-chrome-stable` .deb from Google, checked against the SHA256 in the Dockerfile (read
-  from Google's signed apt index), with no apt repo or update cron left behind. Compose and
+  from Google's signed apt index), with no apt repo or update cron left behind. It adds the
+  Debian fonts the upstream image lacks, `fonts-noto-cjk` and `fonts-noto-color-emoji`, so
+  Chinese, Japanese and Korean text and emoji render as glyphs, not boxes: one exact .deb each
+  from snapshot.debian.org at the base image's Debian snapshot date (`FONTS_SNAPSHOT`), each
+  checked against a SHA256 read from that snapshot's signed index (about 100 MB more image).
+  The image is tagged `happy-browser-node-chrome:<chrome version>-<IMAGE_REVISION>` (now
+  `157.0.8103.50-2`); raise `IMAGE_REVISION` for any other change to the image. Compose and
   the launcher then use the build by its local image id (`sha256:...`), through
   `BROWSER_NODE_IMAGE` / `LAUNCHER_NODE_IMAGE`; both refuse an unpinned tag. `happy-kiosk.mjs`
   launches `/opt/google/chrome/chrome` through Playwright's `executablePath`
   (`BROWSER_EXECUTABLE_PATH`, set in the image), and `kiosk/policy.json` is mounted at
   Chrome's policy path `/etc/opt/chrome/policies/managed` as well as Chromium's. Same uid
   (1994), seccomp profile and user namespace sandbox. A new Chrome version means a new
-  `CHROME_VERSION` and `CHROME_SHA256`, then `make browser-node-chrome browser-up` and
-  `make browser-pods-reap`. **Google Chrome may not be redistributed:** build the image
+  `CHROME_VERSION` and `CHROME_SHA256` (and `IMAGE_REVISION` back to 1), then
+  `make browser-node-chrome browser-up` and `make browser-pods-reap`. **Google Chrome may not be redistributed:** build the image
   locally and never push it to a registry. Unset (the default), nothing changes.
 - **The kiosk (`BROWSER_KIOSK=1`):** set it in `.env.browser` (or on the `make` line) to bring
   the kiosk back: every window held in browser fullscreen with no tab strip, address bar or
