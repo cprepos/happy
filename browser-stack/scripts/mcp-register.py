@@ -104,7 +104,9 @@ REMOTE_TRASH = "~/happy-trash"  # on the Mac
 # time). "ssh": the older /bin/sh wrapper that runs the server on prep-ml over ssh, kept
 # as the rollback (MAC_TRANSPORT=ssh make mcp-register).
 MAC_TRANSPORT = os.environ.get("MAC_TRANSPORT") or "gateway"
-GATEWAY_BASE = "http://192.168.2.72:8904"
+# prep-ml's LAN address: BROWSER_STACK_LAN_BIND (LAN_IP in selfhost/vault/.env), as gateway-config.py.
+LAN_BIND = os.environ.get("BROWSER_STACK_LAN_BIND") or "192.168.2.72"
+GATEWAY_BASE = "http://%s:8904" % LAN_BIND
 GATEWAY_ROUTES = {"happy-browser-bridge": "/browser/mcp", "vault": "/vault/mcp"}
 MAC_NODE = os.environ.get("BROWSER_STACK_MAC_NODE") or "/opt/homebrew/bin/node"  # on the Mac
 # on the Mac: client/ and identity/, put there by `make gateway-mac-install HOST=<mac>`
@@ -113,7 +115,7 @@ MAC_CLIENT = MAC_STACK + "/client/mcp-gateway-client.mjs"
 MAC_KEY = "~/.config/browser-stack/gateway-key"  # on the Mac, mode 600
 # How a Mac reaches the bridge: its LAN listener (BRIDGE_LAN_BIND), not prep-ml's localhost.
 # The bridge's MCP server on prep-ml writes the links a Mac chat gets with this base.
-REMOTE_LINK_BASE = "http://192.168.2.72:6090"
+REMOTE_LINK_BASE = "http://%s:6090" % LAN_BIND
 # Where a harness binary may be on a Mac (for creating a config folder it lacks).
 REMOTE_BIN_DIRS = ["/opt/homebrew/bin", "/usr/local/bin", "~/.local/bin", "~/.npm-global/bin", "~/.bun/bin", "~/.opencode/bin"]
 # The agent-vault skill, installed for Claude on this machine and on each Mac.

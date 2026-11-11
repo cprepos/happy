@@ -60,10 +60,9 @@ LINK_BASE = os.environ.get("BROWSER_STACK_LINK_BASE", "http://%s:6090" % LAN_BIN
 WAIT_MAX_S = "570"
 
 # Each Mac: its address on the LAN. A key works only from that address.
-MACS = [
-    ("prep-air", "192.168.2.56"),
-    ("prep-pro", "192.168.2.55"),
-]
+# BROWSER_STACK_MACS (name=ip,name=ip; LAN_CLIENTS in selfhost/vault/.env) overrides the default.
+DEFAULT_MACS = "prep-air=192.168.2.56,prep-pro=192.168.2.55"
+MACS = [tuple(p.strip().split("=", 1)) for p in (os.environ.get("BROWSER_STACK_MACS") or DEFAULT_MACS).split(",") if p.strip()]
 
 MAC_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 IPV4 = re.compile(r"^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$")
