@@ -23,10 +23,14 @@
 //      kind fits the field (password into type=password only, and so on);
 //   6. type with sensitive:true, response discarded;
 //   7. the page is checked again: a host change is an error and is audited.
+//
+// Every vault read goes to the chat's client's backend (the policy's
+// backends; vaults(name) gives its provider), and to no other: a name, an
+// item id or an all_items login is looked up in that backend only.
 import { allowedHosts, describeEquivalents, httpsHost, matchAllowed } from './hosts.mjs';
 import { currentTotp } from './totp.mjs';
 import { pageUrl, isLive } from './controller.mjs';
-import { FIELDS, itemSlug, NO_CHAT } from './policy.mjs';
+import { DEFAULT_BACKEND, FIELDS, itemSlug, NO_CHAT } from './policy.mjs';
 
 /** "https://github.com" for a page URL: scheme and host only, never a path, query or userinfo. */
 function shownOrigin(url) {
@@ -41,6 +45,22 @@ const urlsOf = (item) => (item.uris || []).map((u) => u.url).filter(Boolean);
 
 export class FillError extends Error {
     constructor(message, status = 403, outcome = 'refused') { super(message); this.status = status; this.outcome = outcome; }
+}
+
+/**
+ * backend name -> its provider, or a 503 FillError when that backend has none
+ * (not enrolled, or it failed to start). vaults(name) returns a provider or
+ * null (it may throw); a lone vault (tests, and the single-backend filler of
+ * old) serves the "shared" backend only.
+ */
+export function backendVaults({ vault = null, vaults = null }) {
+    const get = vaults || ((name) => (name === DEFAULT_BACKEND ? vault : null));
+    return (backend) => {
+        let v = null;
+        try { v = backend ? get(backend) : null; } catch { v = null; }
+        if (!v) throw new FillError(`the filler is not enrolled with this chat's vault backend${backend ? ` (${backend})` : ''}; make vault-enroll`, 503, 'not_enrolled');
+        return v;
+    };
 }
 
 const TOTP_LABEL = /\b(otp|totp|2fa|mfa|one[- ]?time|two[- ]?factor|verification|authenticat\w*|security code|auth code)\b|\bcode\b/i;
@@ -59,7 +79,7 @@ export function kindsOf(el) {
     return out;
 }
 
-export function createFiller({ getPolicy, vault, controllers, taint, audit, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), allowLoopbackHttp = false, totpOpts = {} }) {
+export function createFiller({ getPolicy, vault = null, vaults = null, controllers, taint, audit, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), allowLoopbackHttp = false, totpOpts = {} }) {
     // allow = {hosts: exact hosts, equiv: Map registrable domain -> granting saved host, or null}.
     const matchOf = (url, allow) => {
         const m = matchAllowed(url, allow);
@@ -93,6 +113,8 @@ export function createFiller({ getPolicy, vault, controllers, taint, audit, slee
         return { controller: r.controller, port: r.port, session: body.session_id, key: `${r.port}/${body.session_id}` };
     }
 
+    const vaultOf = backendVaults({ vault, vaults });
+
     function scope(chat) {
         const policy = getPolicy();
         const sc = policy.scopeOf(chat);
@@ -100,7 +122,8 @@ export function createFiller({ getPolicy, vault, controllers, taint, audit, slee
             if (chat === NO_CHAT) throw new FillError('this agent process has no chat id, and the filler policy has no default_client, so it may not use vault secrets', 403, 'unbound_chat');
             throw new FillError('this chat is not bound to a client in the filler policy; ask the user to bind it', 403, 'unbound_chat');
         }
-        return { policy, client: sc.client, path: sc.path, cfg: policy.client(sc.client), backend: policy.backendOf(sc.client) };
+        const backend = policy.backendOf(sc.client);
+        return { policy, client: sc.client, path: sc.path, cfg: policy.client(sc.client), backend, vault: vaultOf(backend) };
     }
 
     // all_items: the client's vault logins by name ("github-work" -> login
@@ -111,7 +134,7 @@ export function createFiller({ getPolicy, vault, controllers, taint, audit, slee
     // refused).
     async function vaultLogins(ctx) {
         if (!ctx.policy.allItems(ctx.client)) return new Map();
-        const logins = await vault.listItems({ force: false }).catch((err) => {
+        const logins = await ctx.vault.listItems({ force: false }).catch((err) => {
             throw new FillError(`vault: ${err.message}`, err.status === 404 ? 404 : 502, 'vault');
         });
         const by = new Map();
@@ -154,7 +177,7 @@ export function createFiller({ getPolicy, vault, controllers, taint, audit, slee
 
     // A provider Login: {username, password, totp, uris: [{url, match}], ...}.
     async function readValue(ctx, entry) {
-        const item = await vault.readItem(entry.item_id).catch((err) => {
+        const item = await ctx.vault.readItem(entry.item_id).catch((err) => {
             throw new FillError(`vault: ${err.message}`, err.status === 404 ? 404 : 403, 'vault');
         });
         return item;
@@ -169,7 +192,7 @@ export function createFiller({ getPolicy, vault, controllers, taint, audit, slee
 
     /** Type one field. Shared by fill() and login(). Returns {kind, host}. */
     async function typeField(ctx, { chat, b, element, name, field, item, allowed, observed }) {
-        const base = { chat, client: ctx.client, path: ctx.path, session: b.key, name, field_kind: field };
+        const base = { chat, client: ctx.client, backend: ctx.backend, path: ctx.path, session: b.key, name, field_kind: field };
         const page = await liveHost(b, allowed);
         const { host } = page;
         const via = page.equivalent_of ? { via: 'equivalent_domains', equivalent_of: page.equivalent_of } : {};

@@ -33,10 +33,13 @@
 // checks (checkId).
 //
 // Which logins a client reaches: the item ids its secrets list, and for an
-// all_items client every personal (not shared) login no client lists. Writes go to the
+// all_items client every personal (not shared) login no client lists, always
+// in the client's own backend (policy backends): every call reads and writes
+// that backend's provider only, so an id from another backend is simply not
+// found. Writes go to the
 // agent account's personal vault only. Every call is audited: action, item id,
 // the names of the fields changed, outcome; never a value.
-import { FillError } from './fill.mjs';
+import { FillError, backendVaults } from './fill.mjs';
 import { itemSlug, FIELDS, NO_CHAT, CUSTOM_FIELD_NAME, ITEM_ID } from './policy.mjs';
 import { compareValue, ALGOS, HashError } from './hashes.mjs';
 import { generatePassword, checkSpec, GenerateError } from './generate.mjs';
@@ -89,11 +92,12 @@ function checkWhich(body) {
 }
 const kindOf = (w) => (w.custom !== undefined ? `custom:${w.custom}` : w.field);
 
-export function createManager({ getPolicy, vault, audit, now = () => Date.now(), compareLimit = { max: 20, windowMs: 10 * 60_000 } }) {
+export function createManager({ getPolicy, vault = null, vaults = null, audit, now = () => Date.now(), compareLimit = { max: 20, windowMs: 10 * 60_000 } }) {
     const compares = new Map(); // `${client}/${id}` -> [timestamps]
-    // An item id from a request: bounded here (ITEM_ID), then the provider's own check.
-    const checkId = (v) => {
-        const id = typeof v === 'string' && ITEM_ID.test(v) ? vault.checkId(v.toLowerCase()) : null;
+    const vaultOf = backendVaults({ vault, vaults });
+    // An item id from a request: bounded here (ITEM_ID), then the client's provider's own check.
+    const checkId = (ctx, v) => {
+        const id = typeof v === 'string' && ITEM_ID.test(v) ? ctx.vault.checkId(v.toLowerCase()) : null;
         if (!id) throw bad('id must be an item id from vault_list');
         return id;
     };
@@ -105,7 +109,8 @@ export function createManager({ getPolicy, vault, audit, now = () => Date.now(),
             if (chat === NO_CHAT) throw new FillError('this agent process has no chat id, and the filler policy has no default_client, so it may not use the vault', 403, 'unbound_chat');
             throw new FillError('this chat is not bound to a client in the filler policy; ask the user to bind it', 403, 'unbound_chat');
         }
-        return { policy, client: sc.client, path: sc.path, cfg: policy.client(sc.client), manage: policy.manage(sc.client), backend: policy.backendOf(sc.client) };
+        const backend = policy.backendOf(sc.client);
+        return { policy, client: sc.client, path: sc.path, cfg: policy.client(sc.client), manage: policy.manage(sc.client), backend, vault: vaultOf(backend) };
     }
     function need(ctx, perm) {
         const ok = perm === 'pipe' ? !!ctx.manage?.pipe.length : !!ctx.manage?.[perm];
@@ -130,7 +135,7 @@ export function createManager({ getPolicy, vault, audit, now = () => Date.now(),
 
     // The client's view of the vault: [{...meta, secret?, listed?}] for every login it reaches.
     async function view(ctx, { trash = false } = {}) {
-        const items = (await vault.listItems({ force: false, trash }).catch((e) => { throw vaultErr(e); })).map(fromMeta);
+        const items = (await ctx.vault.listItems({ force: false, trash }).catch((e) => { throw vaultErr(e); })).map(fromMeta);
         const all = ctx.policy.allItems(ctx.client);
         const bySecretId = new Map();
         for (const [name, s] of ctx.cfg.secrets) bySecretId.set(s.item_id, [...(bySecretId.get(s.item_id) || []), name]);
@@ -168,8 +173,8 @@ export function createManager({ getPolicy, vault, audit, now = () => Date.now(),
     }
     const ambiguous = (n) => new FillError(`that login has more than one custom field named "${n}"; ambiguous, rename one in the vault`, 409, 'refused_ambiguous');
     // The value of w, after usable(): reads the item (a provider Login) and returns {rec, value}. The caller wipes rec.
-    async function valueOf(id, w) {
-        const rec = await vault.readItem(id).catch((e) => { throw vaultErr(e); });
+    async function valueOf(ctx, id, w) {
+        const rec = await ctx.vault.readItem(id).catch((e) => { throw vaultErr(e); });
         if (w.field !== undefined) return { rec, value: rec[w.field] };
         const hits = (rec.fields || []).filter((c) => c.name === w.custom);
         if (hits.length > 1) { wipe(rec); throw ambiguous(w.custom); }
@@ -202,7 +207,7 @@ export function createManager({ getPolicy, vault, audit, now = () => Date.now(),
         try {
             onlyKeys(action, body);
             ctx = scope(chat);
-            Object.assign(ev, { chat, client: ctx.client, path: ctx.path });
+            Object.assign(ev, { chat, client: ctx.client, backend: ctx.backend, path: ctx.path });
             const out = await fn(ctx, ev);
             audit.record({ ...ev, outcome: 'ok' });
             return out;
@@ -234,14 +239,14 @@ export function createManager({ getPolicy, vault, audit, now = () => Date.now(),
             const spec = checkSpec(body.password ?? {});
             await slugFree(ctx, name);
             const password = generatePassword(spec);
-            const id = await vault.createLogin({ name, uris, username, password }).catch((e) => { throw vaultErr(e); });
+            const id = await ctx.vault.createLogin({ name, uris, username, password }).catch((e) => { throw vaultErr(e); });
             Object.assign(ev, { item_id: id, changed: 'name,uris,username,password' });
             return meta(await item(ctx, id));
         }),
 
         update: (body) => run('update', body, async (ctx, ev) => {
             need(ctx, 'update');
-            const id = checkId(body.id);
+            const id = checkId(ctx, body.id);
             ev.item_id = id;
             const it = await item(ctx, id);
             const changes = {};
@@ -250,33 +255,33 @@ export function createManager({ getPolicy, vault, audit, now = () => Date.now(),
             if (body.username !== undefined) changes.username = text(body.username, 'username', { max: 256 });
             if (body.rotate_password !== undefined) changes.password = generatePassword(checkSpec(body.rotate_password));
             if (!Object.keys(changes).length) throw bad('update needs at least one of name, uris, username, rotate_password');
-            const changed = await vault.updateLogin(id, changes).catch((e) => { throw vaultErr(e); });
+            const changed = await ctx.vault.updateLogin(id, changes).catch((e) => { throw vaultErr(e); });
             ev.changed = changed.join(',');
             return { ...meta(await item(ctx, id)), changed };
         }),
 
         remove: (body) => run('remove', body, async (ctx, ev) => {
             need(ctx, 'remove');
-            const id = checkId(body.id);
+            const id = checkId(ctx, body.id);
             ev.item_id = id;
             await item(ctx, id);
-            await vault.trashLogin(id).catch((e) => { throw vaultErr(e); });
+            await ctx.vault.trashLogin(id).catch((e) => { throw vaultErr(e); });
             return { id, trashed: true, note: 'moved to the vault trash; vault_restore brings it back' };
         }),
 
         restore: (body) => run('restore', body, async (ctx, ev) => {
             need(ctx, 'remove');
-            const id = checkId(body.id);
+            const id = checkId(ctx, body.id);
             ev.item_id = id;
             const it = await item(ctx, id, { trash: true });
             if (!it.trashed) throw new FillError('that login is not in the trash', 409, 'refused');
-            await vault.restoreLogin(id).catch((e) => { throw vaultErr(e); });
+            await ctx.vault.restoreLogin(id).catch((e) => { throw vaultErr(e); });
             return meta(await item(ctx, id));
         }),
 
         compare: (body) => run('compare', body, async (ctx, ev) => {
             need(ctx, 'compare');
-            const id = checkId(body.id);
+            const id = checkId(ctx, body.id);
             const which = checkWhich(body);
             if (!ALGOS.includes(body.algo)) throw bad(`algo must be one of ${ALGOS.join(', ')}`);
             Object.assign(ev, { item_id: id, field_kind: kindOf(which), algo: body.algo });
@@ -287,7 +292,7 @@ export function createManager({ getPolicy, vault, audit, now = () => Date.now(),
             const recent = (compares.get(key) || []).filter((x) => t - x < compareLimit.windowMs);
             if (recent.length >= compareLimit.max) throw new FillError(`too many compares for this login; wait ${Math.ceil(compareLimit.windowMs / 60_000)} minutes`, 429, 'rate_limited');
             recent.push(t); compares.set(key, recent);
-            const { rec, value } = await valueOf(id, which);
+            const { rec, value } = await valueOf(ctx, id, which);
             try {
                 return { match: compareValue(value ?? '', { algo: body.algo, digest: body.digest, salt: body.salt }) };
             } finally { wipe(rec); }
@@ -295,7 +300,7 @@ export function createManager({ getPolicy, vault, audit, now = () => Date.now(),
 
         pipe: (body) => run('pipe', body, async (ctx, ev) => {
             need(ctx, 'pipe');
-            const id = checkId(body.id);
+            const id = checkId(ctx, body.id);
             const which = checkWhich(body);
             const what = which.custom !== undefined ? `custom field "${which.custom}"` : which.field;
             const name = typeof body.target === 'string' ? body.target : '';
@@ -310,7 +315,7 @@ export function createManager({ getPolicy, vault, audit, now = () => Date.now(),
                 if (typeof args[slot] !== 'string' || !re.test(args[slot])) throw bad(`args.${slot} does not match what target ${name} allows`);
             }
             usable(await item(ctx, id), which);
-            const { rec, value } = await valueOf(id, which);
+            const { rec, value } = await valueOf(ctx, id, which);
             try {
                 if (!value) throw new FillError(`that login has no ${what} value`, 404, 'not_found');
                 const argv = target.argv.map((a) => {
