@@ -227,6 +227,8 @@ final class HostedLiveBrowserTests: XCTestCase {
         // of the bar under the header.
         XCTAssertEqual(noVNC.navigationItem.rightBarButtonItems?.map(\.accessibilityIdentifier), ["live-browser-control"])
         let viewerActions = noVNC.viewerMenu.menu?.children.compactMap { ($0 as? UIAction)?.identifier.rawValue }
+        // Yolo is in that menu too (deferred, read as it opens).
+        XCTAssertTrue(noVNC.viewerMenu.menu?.children.contains { $0 is UIDeferredMenuElement } ?? false)
         XCTAssertEqual(viewerActions, ["live-browser-native-viewer"])
         XCTAssertTrue(noVNC.viewerMenu.isDescendant(of: noVNC.view))
         XCTAssertEqual(noVNC.navigationItem.rightBarButtonItems?.first, noVNC.control)
@@ -353,7 +355,7 @@ final class HostedLiveBrowserTests: XCTestCase {
         let (navigation, noVNC) = try await takeOver(host, daemon)
         // Minimize and End browser at the left; Release control alone at
         // the right.
-        XCTAssertEqual(noVNC.navigationItem.leftBarButtonItems?.map(\.accessibilityIdentifier), ["live-browser-minimize", "live-browser-end", "live-browser-sleep", "live-browser-yolo"])
+        XCTAssertEqual(noVNC.navigationItem.leftBarButtonItems?.map(\.accessibilityIdentifier), ["live-browser-minimize", "live-browser-end", "live-browser-sleep"])
         XCTAssertEqual(noVNC.navigationItem.rightBarButtonItems?.map(\.accessibilityIdentifier), ["live-browser-control"])
         XCTAssertEqual(noVNC.navigationItem.rightBarButtonItems?.first, noVNC.control)
         XCTAssertTrue(noVNC.endItem.isEnabled)

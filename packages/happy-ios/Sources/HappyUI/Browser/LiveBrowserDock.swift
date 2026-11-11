@@ -1312,7 +1312,9 @@ final class LiveBrowserFullScreenItems: UIViewController {
             dock.setYolo(!dock.yoloOn)
         }, for: .touchUpInside)
         yoloItem.accessibilityIdentifier = "live-browser-yolo"
-        navigationItem.leftBarButtonItems = [minimize, endItem, sleepItem, yoloItem]
+        // noVNC's header keeps its room for Release: yolo is in its More
+        // menu there.
+        navigationItem.leftBarButtonItems = isNoVNC ? [minimize, endItem, sleepItem] : [minimize, endItem, sleepItem, yoloItem]
         control.style = .prominent
         control.accessibilityIdentifier = "live-browser-control"
         // Control alone at the right, or with reload on the frame view: the
@@ -1774,7 +1776,7 @@ final class LiveBrowserFullScreenItems: UIViewController {
         stripSleep.isEnabled = sleepItem.isEnabled
         let yolo = state?.autoApprove ?? false
         let yoloEnabled = state.map { !$0.ended } ?? false
-        showYolo(yoloButton, on: yolo, enabled: yoloEnabled, word: true)
+        showYolo(yoloButton, on: yolo, enabled: yoloEnabled, word: !isPhone)
         showYolo(stripYolo, on: yolo, enabled: yoloEnabled, word: false)
         approvalBar.show(dock?.barApproval)
         view.setNeedsLayout()
