@@ -80,11 +80,12 @@ final class MediaLoader: NSObject, ChatMediaSource {
             registered[item.id] = item.revision
             for piece in item.pieces {
                 switch piece {
+                case .liveBrowser: break // fork: its own clause, away from upstream's lists
                 case .picture(let id, _, let data): sent[Self.sentKey(id)] = data
                 case .sentFile(let file): local[Self.sentKey(file.id)] = file
                 case .gallery(let media, _), .tree(let media, _), .mediaRows(let media, _): for one in media { tools[one.key] = one }
                 case .file(let one): tools[one.key] = one
-                case .text, .artifact, .sidebarProposal, .liveBrowser, .ui, .quickReplies: break
+                case .text, .artifact, .sidebarProposal, .ui, .quickReplies: break
                 }
             }
         }

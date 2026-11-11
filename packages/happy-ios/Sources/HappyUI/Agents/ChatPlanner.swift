@@ -336,6 +336,7 @@ actor ChatPlanner {
         let text = HappyReferences.plain(item.text, instanceId: key.references.instanceId, view: key.references.view)
         var parts: [MessageLayout.Part] = []
         enum Draft {
+            case liveBrowser(LiveBrowserLink) // fork: first, away from where upstream adds
             case markdown(MarkdownPiece)
             case gallery([Media])
             /// A `media` component's items and their labels' one lines.
@@ -343,7 +344,6 @@ actor ChatPlanner {
             case tree(ChatMediaPlan.Tree)
             case card(ChatMediaPlan.Card)
             case page(InlinePage)
-            case liveBrowser(LiveBrowserLink)
             case proposal(String)
             /// Words the planner writes, read but not selectable.
             case line(MarkdownPiece)
@@ -353,6 +353,11 @@ actor ChatPlanner {
         var spoken: [String] = text.isEmpty ? [] : [text]
         for piece in item.pieces {
             switch piece {
+            case .liveBrowser(let id, let url): // fork: first, away from where upstream adds
+                // Across the column, as an inline page is, at its own height.
+                guard let link = LiveBrowserLink(url: url) ?? LiveBrowserLink(id: id) else { break }
+                drafts.append(.liveBrowser(link))
+                parts.append(.page(height: Self.liveBrowserHeight))
             case .text(let text):
                 let resolved = HappyReferences.markdown(text, instanceId: key.references.instanceId, files: key.references.opens, view: key.references.view)
                 let server = key.server
@@ -404,11 +409,6 @@ actor ChatPlanner {
                     parts.append(.markdown(markdown.blocks))
                     spoken.append(line)
                 }
-            case .liveBrowser(let id, let url):
-                // Across the column, as an inline page is, at its own height.
-                guard let link = LiveBrowserLink(url: url) ?? LiveBrowserLink(id: id) else { break }
-                drafts.append(.liveBrowser(link))
-                parts.append(.page(height: Self.liveBrowserHeight))
             case .ui(let shown):
                 let draft = ChatUiPlan.draft(shown, granted: key.uiGranted, environment: environment)
                 drafts.append(.ui(draft))
@@ -448,6 +448,8 @@ actor ChatPlanner {
         }
         for (placed, draft) in zip(layout.parts, drafts) {
             switch (placed, draft) {
+            case (.page(let frame), .liveBrowser(let link)): // fork: first, away from where upstream adds
+                items.append(.embed(.liveBrowser(link), frame: frame))
             case (.markdown(let placed, let origin), .markdown(let markdown)):
                 let drawn = markdown.draw(placed, origin: origin)
                 items += drawn.items
@@ -476,8 +478,6 @@ actor ChatPlanner {
                 card(drafted, frame)
             case (.page(let frame), .page(let page)):
                 items.append(.embed(.page(page), frame: frame))
-            case (.page(let frame), .liveBrowser(let link)):
-                items.append(.embed(.liveBrowser(link), frame: frame))
             case (.markdown(let placed, let origin), .line(let markdown)):
                 items += markdown.draw(placed, origin: origin).items
             case (.proposal(let layout, let frame), .proposal(let artifactId)):

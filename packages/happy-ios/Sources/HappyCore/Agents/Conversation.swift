@@ -36,6 +36,10 @@ public struct ChatItem: Equatable, Sendable, Identifiable {
 
     public enum Piece: Equatable, Sendable {
         case text(String)
+        // fork: ours, here rather than where upstream adds cases.
+        /// A browser the agent drives, linked in its text
+        /// (`LiveBrowserLink`): a card that shows it live and opens it.
+        case liveBrowser(id: String, url: URL)
         /// A picture sent with a message, inline.
         case picture(id: String, mimeType: String, data: Data)
         /// A file sent with a message the computer hasn't taken yet, from
@@ -58,9 +62,6 @@ public struct ChatItem: Equatable, Sendable, Identifiable {
         /// A sidebar Prioritizing proposed (a `sidebar_proposal` artifact),
         /// drawn by the sidebar's own rows and answered where it stands.
         case sidebarProposal(artifactId: String)
-        /// A browser the agent drives, linked in its text
-        /// (`LiveBrowserLink`): a card that shows it live and opens it.
-        case liveBrowser(id: String, url: URL)
         /// One chat UI component (`UiShown`).
         case ui(UiShown)
         /// Replies the person may send with a tap, under the newest
@@ -395,6 +396,11 @@ public actor Conversation {
     private var checkpointClaims: [String: Task<Void, Error>] = [:]
     private var attachmentCleanup: Set<String> = []
     private struct KeptConversation: Codable, Equatable, Sendable {
+        // fork: ours, first and defaulted, so upstream's initializer call
+        // stays as upstream writes it (set after it, in `persistConversation`).
+        /// `mode` was the person's pick, not the computer's default it
+        /// started on; absent in what was kept before it was told apart.
+        var modePicked: Bool? = nil
         struct Run: Codable, Equatable, Sendable { var id: String; var messageIds: [String]; var time: RunTime? }
         struct Picture: Codable, Equatable, Sendable { var mimeType: String; var data: Data }
         struct Send: Codable, Equatable, Sendable {
@@ -412,9 +418,6 @@ public actor Conversation {
         var mode: AgentWire.Mode?
         var hasMore: Bool
         var slashCommands: [AgentWire.SlashCommand]?
-        /// `mode` was the person's pick, not the computer's default it
-        /// started on; absent in what was kept before it was told apart.
-        var modePicked: Bool?
         /// When the computer's history was last read in full, in ms; absent in what was kept before it was.
         var syncedAt: Double?
     }
@@ -1453,11 +1456,11 @@ public actor Conversation {
     private func persistConversation() async -> Bool {
         guard let persistence, snapshot.loaded || !outgoing.isEmpty else { return true }
         let window = Self.kept(runs: transcript.runs.map { ($0.id, $0.messageIds) }, messages: transcript.messages, pending: transcript.pending)
-        let kept = KeptConversation(runs: window.runs.map { .init(id: $0.id, messageIds: $0.messageIds, time: transcript.times[$0.id]) }, messages: window.messages, pending: transcript.pending,
+        var kept = KeptConversation(runs: window.runs.map { .init(id: $0.id, messageIds: $0.messageIds, time: transcript.times[$0.id]) }, messages: window.messages, pending: transcript.pending,
             outgoing: outgoing.filter({ held[$0.id] == nil }).map { .init(id: $0.id, text: $0.text, pictures: $0.pictures.map { .init(mimeType: $0.mimeType, data: $0.data) }, accepted: $0.accepted, failure: $0.failure, mode: outgoingModes[$0.id], files: outgoingFiles[$0.id], at: outgoingTimes[$0.id],
-                toolRequest: outgoingTools[$0.id], quickReply: outgoingReplies[$0.id]) }, mode: mode, hasMore: snapshot.hasMore || window.trimmed, slashCommands: snapshot.slashCommands,
-            modePicked: picked != nil ? true : nil, syncedAt: snapshot.syncedAt)
+                toolRequest: outgoingTools[$0.id], quickReply: outgoingReplies[$0.id]) }, mode: mode, hasMore: snapshot.hasMore || window.trimmed, slashCommands: snapshot.slashCommands, syncedAt: snapshot.syncedAt)
         // When it was last read rides along with what changed, never a write of its own.
+        kept.modePicked = picked != nil ? true : nil // fork
         var compared = kept
         compared.syncedAt = lastKept?.syncedAt
         guard compared != lastKept || conversationWrite != nil else { return true }

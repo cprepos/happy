@@ -52,6 +52,7 @@ struct Picture: Equatable {
         for item in items {
             for piece in item.pieces {
                 switch piece {
+                case .liveBrowser: break // fork: its own clause, away from upstream's lists
                 case .picture(let id, _, _):
                     pictures.append(Picture(key: MediaLoader.sentKey(id), thumbhash: nil, label: Strings.picture))
                 case .gallery(let media, _), .tree(let media, _), .mediaRows(let media, _):
@@ -60,7 +61,7 @@ struct Picture: Equatable {
                     }
                 case .sentFile(let file) where file.isVisual && !file.isVideo:
                     pictures.append(Picture(key: MediaLoader.sentKey(file.id), thumbhash: nil, label: file.name))
-                case .text, .file, .artifact, .sidebarProposal, .sentFile, .liveBrowser, .ui, .quickReplies:
+                case .text, .file, .artifact, .sidebarProposal, .sentFile, .ui, .quickReplies:
                     break
                 }
             }
