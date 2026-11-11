@@ -10,6 +10,7 @@
 #   make browser-verify   MCP answers with the token (tools/list), refuses without it; noVNC demands a password
 #   make browser-bridge-test   bridge unit tests (node:test, auto-browser mocked)
 #   make browser-controller-patch-test  the controller patch (controller-patch/) against the pinned image
+#   make browser-controller-scroll-test the patch's scroll against a real Chromium (throwaway containers)
 #   make browser-bridge-smoke  end-to-end against the running stack: session, link, page, frame, takeover, done
 #   make browser-bridge-restart  restart only the bridge container; lists the held links it releases on the way down
 #   make browser-pod-bench     pod start times, cold and warm (test project only)
@@ -93,7 +94,7 @@ POD_FILTER = --filter label=happy-browser.pod=1 --filter label=happy-browser.pro
 
 .PHONY: browser-init browser-up browser-down browser-status browser-logs browser-verify browser-bridge-test browser-bridge-smoke browser-bridge-restart \
 	browser-pull browser-pods-status browser-pods-reap browser-entrypoint-check \
-	browser-pod-bench browser-pod-smoke browser-controller-patch-test browser-node-chrome
+	browser-pod-bench browser-pod-smoke browser-controller-patch-test browser-controller-scroll-test browser-node-chrome
 
 browser-init:
 	@HAPPY_BROWSER_HOME="$(HAPPY_BROWSER_HOME)" bash $(BROWSER_DIR)/scripts/browser-init.sh
@@ -144,6 +145,21 @@ browser-controller-patch-test:
 		-e PYTHONPATH=/happy/controller-patch -e HAPPY_LIVE_FRAMES_NO_AUTOLOAD=1 -w /app \
 		-v $(BROWSER_DIR)/controller-patch:/happy/controller-patch:ro $(CONTROLLER_IMAGE) \
 		-m unittest -v test_happy_live_frames
+
+# The scroll patch against a real Chromium: a throwaway Playwright server in the pinned browser-node
+# image and the pinned controller image on their own internal network (no route out), both removed after.
+browser-controller-scroll-test:
+	@set -e; n=happy-scroll-test-$$$$; \
+	docker network create --internal $$n >/dev/null; \
+	trap 'docker rm -f $$n-node >/dev/null 2>&1; docker network rm $$n >/dev/null 2>&1' EXIT; \
+	docker run -d --rm --name $$n-node --network $$n --network-alias node --entrypoint node -w /opt/browser-node \
+		$(call COMPOSE_IMAGE,browser-node) --input-type=module \
+		-e "import { chromium } from 'playwright'; await chromium.launchServer({ headless: true, chromiumSandbox: false, host: '0.0.0.0', port: 9223, wsPath: '/scroll-test' }); console.log('ready');" >/dev/null; \
+	for i in $$(seq 1 60); do docker logs $$n-node 2>&1 | grep -q ready && break; sleep 0.5; done; \
+	docker run --rm --name $$n-ctl --network $$n --entrypoint python \
+		-e PYTHONPATH=/happy/controller-patch -e HAPPY_LIVE_FRAMES_NO_AUTOLOAD=1 -e HAPPY_SCROLL_TEST_WS=ws://node:9223/scroll-test -w /app \
+		-v $(BROWSER_DIR)/controller-patch:/happy/controller-patch:ro $(CONTROLLER_IMAGE) \
+		-m unittest -v test_scroll_browser
 
 # Every image the stack and its pods run, by digest, so a pod never waits on a pull.
 browser-pull:

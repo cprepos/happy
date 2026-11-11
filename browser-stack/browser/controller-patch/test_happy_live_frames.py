@@ -1090,5 +1090,78 @@ class AddressBarSchemeTests(ScreenBase):
         self.assertNotIn("address_bar_scheme", out)
 
 
+class ScrollPatchTests(unittest.IsolatedAsyncioTestCase):
+    """The scroll patch's wiring; test_scroll_browser.py runs it against a real Chromium."""
+
+    def test_applied(self) -> None:
+        from app.browser.services.actions import BrowserActionService as S
+
+        self.assertEqual(S.scroll.__module__, hlf.__name__)
+        self.assertEqual(S._dispatch_decision.__module__, hlf.__name__)
+
+    async def test_dispatch_passes_the_point_and_others_go_upstream(self) -> None:
+        from app.browser.services.actions import BrowserActionService
+        from app.models import BrowserActionDecision
+
+        manager = MagicMock()
+        manager.navigate = AsyncMock(return_value={"ok": "navigate"})
+        manager.scroll = AsyncMock(side_effect=AssertionError("upstream manager.scroll drops x/y"))
+        service = BrowserActionService(manager)
+        service.scroll = AsyncMock(return_value={"ok": "scroll"})
+        d = BrowserActionDecision(action="scroll", reason="r", delta_y=800, x=1000, y=600)
+        self.assertEqual(await service._dispatch_decision("s1", d, approval_id=None), {"ok": "scroll"})
+        service.scroll.assert_awaited_once_with("s1", 0, 800, x=1000, y=600)
+        d = BrowserActionDecision(action="navigate", reason="r", url="https://example.com/")
+        self.assertEqual(await service._dispatch_decision("s1", d, approval_id=None), {"ok": "navigate"})
+
+    async def test_scroll_records_the_report_in_the_target(self) -> None:
+        from app.browser.services.actions import BrowserActionService
+
+        manager = MagicMock()
+        page = object()
+        manager.get_session = AsyncMock(return_value=SimpleNamespace(page=page))
+        manager._settle = AsyncMock()
+
+        async def run_action(session: object, name: str, target: dict, operation: object) -> dict:
+            await operation()
+            return {"name": name, "target": target}
+
+        manager._run_action = run_action
+        seen = {}
+
+        async def fake_scroll_page(pg, dx, dy, x, y, *, settle):
+            seen.update(page=pg, args=(dx, dy, x, y))
+            await settle()
+            return {"moved": True}
+
+        original = hlf.scroll_page
+        hlf.scroll_page = fake_scroll_page
+        try:
+            out = await BrowserActionService(manager).scroll("s1", 0, 800, x=10, y=20)
+        finally:
+            hlf.scroll_page = original
+        self.assertEqual(out["name"], "scroll")
+        self.assertEqual(out["target"], {"delta_x": 0, "delta_y": 800, "x": 10, "y": 20, "scroll": {"moved": True}})
+        self.assertEqual(seen, {"page": page, "args": (0, 800, 10, 20)})
+        manager._settle.assert_awaited_once_with(page)
+
+    def test_verification(self) -> None:
+        from app.browser.services.actions import BrowserActionService as S
+
+        same = {"url": "u", "title": "t", "text_excerpt": "x"}
+        moved = S.action_verification("scroll", {"scroll": {"moved": True}}, same, same)
+        self.assertEqual((moved["verified"], moved["signals"]), (True, [hlf.SCROLL_SIGNAL]))
+        still = S.action_verification("scroll", {"scroll": {"moved": False}}, same, same)
+        self.assertEqual((still["verified"], still["signals"]), (False, []))
+        frame = S.action_verification("scroll", {"scroll": {"moved": None}}, same, same)
+        self.assertFalse(frame["verified"])
+        # A scroll that also changed the text is verified as upstream verified it.
+        text = S.action_verification("scroll", {}, same, {**same, "text_excerpt": "y"})
+        self.assertEqual((text["verified"], text["signals"]), (True, ["text_excerpt_changed"]))
+        # Other actions are upstream's, whatever the target holds.
+        click = S.action_verification("click", {"scroll": {"moved": True}}, same, same)
+        self.assertEqual((click["verified"], click["signals"]), (False, []))
+
+
 if __name__ == "__main__":
     unittest.main()
