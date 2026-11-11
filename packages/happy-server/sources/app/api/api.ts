@@ -13,7 +13,7 @@ import { startVoiceStream } from "./voiceStream";
 import { machinesRoutes } from "./routes/machinesRoutes";
 import { devRoutes } from "./routes/devRoutes";
 import { versionRoutes } from "./routes/versionRoutes";
-import { voiceRoutes } from "./routes/voiceRoutes";
+import { voiceRoutes } from "./routes/voiceRoutes.fork"; // ours; upstream's voiceRoutes.ts is kept unused
 import { artifactsRoutes } from "./routes/artifactsRoutes";
 import { accessKeysRoutes } from "./routes/accessKeysRoutes";
 import { enableMonitoring } from "./utils/enableMonitoring";

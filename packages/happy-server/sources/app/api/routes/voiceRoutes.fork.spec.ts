@@ -26,7 +26,7 @@ const { dbMock, warnMock } = vi.hoisted(() => ({
 vi.mock("@/storage/db", () => ({ db: dbMock }));
 vi.mock("@/utils/log", () => ({ log: vi.fn(), warn: warnMock }));
 
-import { voiceRoutes } from "./voiceRoutes";
+import { voiceRoutes } from "./voiceRoutes.fork";
 
 const userId = "voice-user";
 const apiKey = "test-livekit-key";

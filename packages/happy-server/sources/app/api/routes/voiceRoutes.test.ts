@@ -1,0 +1,343 @@
+import { createHmac } from "crypto";
+import fastify, { type FastifyReply, type FastifyRequest } from "fastify";
+import { serializerCompiler, validatorCompiler, ZodTypeProvider } from "fastify-type-provider-zod";
+import { VoiceConversationResponseSchema, VoiceUsageResponseSchema } from "@slopus/happy-wire";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { type Fastify } from "../types";
+import { voiceRoutes } from "./voiceRoutes";
+
+const userId = "voice-user";
+const agentId = "test-agent";
+const masterSecret = "test-master-secret";
+const elevenUserId = `u_${createHmac("sha256", masterSecret).update(userId).digest("base64url")}`;
+// Only the provider's JWT payload is read by this route; signing belongs to ElevenLabs.
+const conversationToken = [
+    Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url"),
+    Buffer.from(JSON.stringify({ video: { room: "agent_conv_test123" } })).toString("base64url"),
+    "provider-signature",
+].join(".");
+
+describe("voiceRoutes", () => {
+    let app: Fastify;
+    const fetchMock = vi.fn<typeof fetch>();
+
+    beforeEach(async () => {
+        vi.stubEnv("ELEVENLABS_API_KEY", "test-elevenlabs-key");
+        vi.stubEnv("HANDY_MASTER_SECRET", masterSecret);
+        // Never read: a configured key must not bring a subscription check back.
+        vi.stubEnv("REVENUECAT_API_KEY", "test-revenuecat-key");
+        fetchMock.mockReset();
+        // Unexpected network requests must fail, never reach a real service.
+        fetchMock.mockRejectedValue(new Error("Unexpected provider request"));
+        vi.stubGlobal("fetch", fetchMock);
+
+        app = fastify().withTypeProvider<ZodTypeProvider>();
+        app.setValidatorCompiler(validatorCompiler);
+        app.setSerializerCompiler(serializerCompiler);
+        app.decorate("authenticate", async (request: FastifyRequest, reply: FastifyReply) => {
+            const authenticatedUserId = request.headers["x-user-id"];
+            if (typeof authenticatedUserId !== "string") {
+                return reply.code(401).send({ error: "Unauthorized" });
+            }
+            request.userId = authenticatedUserId;
+        });
+        voiceRoutes(app);
+        await app.ready();
+    });
+
+    afterEach(async () => {
+        await app.close();
+        vi.unstubAllGlobals();
+        vi.unstubAllEnvs();
+    });
+
+    function mockUsage(durations: number[], nextCursor?: string) {
+        fetchMock.mockResolvedValueOnce(Response.json({
+            conversations: durations.map(call_duration_secs => ({ call_duration_secs })),
+            has_more: nextCursor !== undefined,
+            next_cursor: nextCursor ?? null,
+        }));
+    }
+
+    function mockToken() {
+        fetchMock.mockResolvedValueOnce(Response.json({ token: conversationToken }));
+    }
+
+    function requestConversation(authenticated = true) {
+        return app.inject({
+            method: "POST",
+            url: "/v1/voice/conversations",
+            headers: authenticated ? { "x-user-id": userId } : {},
+            payload: { agentId },
+        });
+    }
+
+    it.each([0, 1199, 1200, 7199])("grants voice below the hard cap at %i seconds without asking about a subscription", async (usedSeconds) => {
+        mockUsage(usedSeconds ? [usedSeconds] : []);
+        mockToken();
+
+        const requestStartedAt = Date.now();
+        const response = await requestConversation();
+
+        expect(response.statusCode).toBe(200);
+        expect(VoiceConversationResponseSchema.parse(response.json())).toEqual({
+            allowed: true,
+            conversationToken,
+            conversationId: "conv_test123",
+            agentId,
+            elevenUserId,
+            usedSeconds,
+            limitSeconds: 7200,
+        });
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        const usageUrl = new URL(String(fetchMock.mock.calls[0][0]));
+        expect(usageUrl.origin).toBe("https://api.elevenlabs.io");
+        expect(usageUrl.pathname).toBe("/v1/convai/conversations");
+        expect(usageUrl.searchParams.get("user_id")).toBe(elevenUserId);
+        expect(usageUrl.searchParams.get("page_size")).toBe("100");
+        expect(usageUrl.searchParams.has("created_after")).toBe(false);
+        const windowStart = Number(usageUrl.searchParams.get("call_start_after_unix"));
+        expect(Number.isInteger(windowStart)).toBe(true);
+        expect(windowStart).toBeGreaterThanOrEqual(Math.floor(requestStartedAt / 1000) - 30 * 86400);
+        expect(windowStart).toBeLessThanOrEqual(Math.floor(Date.now() / 1000) - 30 * 86400);
+        expect(fetchMock).toHaveBeenNthCalledWith(2,
+            `https://api.elevenlabs.io/v1/convai/conversation/token?agent_id=${agentId}&participant_name=${elevenUserId}`,
+            { headers: { "xi-api-key": "test-elevenlabs-key" } },
+        );
+    });
+
+    it("requires authentication before querying usage or minting a token", async () => {
+        const response = await requestConversation(false);
+
+        expect(response.statusCode).toBe(401);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("still requires ElevenLabs credentials", async () => {
+        vi.stubEnv("ELEVENLABS_API_KEY", undefined);
+
+        const response = await requestConversation();
+
+        expect(response.statusCode).toBe(500);
+        expect(response.json()).toEqual({ error: "ELEVENLABS_API_KEY not configured" });
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it.each([7200, 7201, 18000])("enforces the hard cap for every account at %i seconds", async (usedSeconds) => {
+        mockUsage([usedSeconds]);
+
+        const response = await requestConversation();
+
+        expect(response.statusCode).toBe(200);
+        expect(VoiceConversationResponseSchema.parse(response.json())).toEqual({
+            allowed: false,
+            reason: "voice_hard_limit_reached",
+            usedSeconds,
+            limitSeconds: 7200,
+            agentId,
+        });
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("allows a full history page below the hard cap", async () => {
+        mockUsage(Array.from({ length: 100 }, () => 1));
+        mockToken();
+
+        const response = await requestConversation();
+
+        expect(response.statusCode).toBe(200);
+        expect(VoiceConversationResponseSchema.parse(response.json())).toEqual({
+            allowed: true,
+            conversationToken,
+            conversationId: "conv_test123",
+            elevenUserId,
+            usedSeconds: 100,
+            limitSeconds: 7200,
+            agentId,
+        });
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("reports usage against the hard cap without asking about a subscription", async () => {
+        mockUsage([400, 800]);
+
+        const response = await app.inject({
+            method: "GET",
+            url: "/v1/voice/usage",
+            headers: { "x-user-id": userId },
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(VoiceUsageResponseSchema.parse(response.json())).toEqual({
+            usedSeconds: 1200,
+            limitSeconds: 7200,
+            conversationCount: 2,
+            conversationLimit: 100,
+            elevenUserId,
+        });
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("excludes expired conversations from both usage and eligibility", async () => {
+        const now = Date.now();
+        vi.spyOn(Date, "now").mockReturnValue(now);
+        const windowStart = Math.floor(now / 1000) - 30 * 86400;
+        // Emulate the provider's documented date filter. Unknown query parameters
+        // (including the old created_after) leave the expired history included.
+        const history = Array.from({ length: 100 }, () => ({
+            start_time_unix_secs: windowStart - 1,
+            call_duration_secs: 300,
+        }));
+        history.push({ start_time_unix_secs: windowStart + 1, call_duration_secs: 60 });
+        fetchMock.mockImplementation(async (input) => {
+            const url = new URL(String(input));
+            if (url.pathname === "/v1/convai/conversation/token") {
+                return Response.json({ token: conversationToken });
+            }
+            const after = Number(url.searchParams.get("call_start_after_unix") ?? 0);
+            return Response.json({
+                conversations: history.filter(c => c.start_time_unix_secs > after).slice(0, 100),
+                has_more: false,
+            });
+        });
+
+        try {
+            const usage = await app.inject({
+                method: "GET",
+                url: "/v1/voice/usage",
+                headers: { "x-user-id": userId },
+            });
+            expect(usage.statusCode).toBe(200);
+            expect(VoiceUsageResponseSchema.parse(usage.json())).toMatchObject({
+                usedSeconds: 60,
+                conversationCount: 1,
+            });
+
+            const response = await requestConversation();
+            expect(response.statusCode).toBe(200);
+            expect(VoiceConversationResponseSchema.parse(response.json())).toMatchObject({
+                allowed: true,
+                usedSeconds: 60,
+                conversationToken,
+            });
+        } finally {
+            vi.restoreAllMocks();
+        }
+    });
+
+    it("accounts for 101 recent conversations before minting a token", async () => {
+        mockUsage(Array.from({ length: 100 }, () => 70), "page+/2=");
+        mockUsage([2]);
+        mockToken();
+
+        const response = await requestConversation();
+
+        expect(response.statusCode).toBe(200);
+        expect(VoiceConversationResponseSchema.parse(response.json())).toMatchObject({
+            allowed: true,
+            usedSeconds: 7002,
+            limitSeconds: 7200,
+            conversationToken,
+        });
+        expect(fetchMock).toHaveBeenCalledTimes(3);
+        const firstPage = new URL(String(fetchMock.mock.calls[0][0]));
+        const secondPage = new URL(String(fetchMock.mock.calls[1][0]));
+        expect(firstPage.searchParams.has("cursor")).toBe(false);
+        expect(secondPage.searchParams.get("cursor")).toBe("page+/2=");
+        for (const key of ["user_id", "call_start_after_unix", "page_size"]) {
+            expect(secondPage.searchParams.get(key)).toBe(firstPage.searchParams.get(key));
+        }
+        expect(fetchMock.mock.calls[1][1]?.signal).toBe(fetchMock.mock.calls[0][1]?.signal);
+        expect(fetchMock.mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal);
+    });
+
+    it("reports total duration and conversation count across history pages", async () => {
+        mockUsage(Array.from({ length: 100 }, () => 1), "page-2");
+        mockUsage([10, 20], "page-3");
+        mockUsage([30]);
+
+        const response = await app.inject({
+            method: "GET",
+            url: "/v1/voice/usage",
+            headers: { "x-user-id": userId },
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(VoiceUsageResponseSchema.parse(response.json())).toMatchObject({
+            usedSeconds: 160,
+            conversationCount: 103,
+            conversationLimit: 100, // Legacy display compatibility; never gates voice.
+        });
+        expect(new URL(String(fetchMock.mock.calls[2][0])).searchParams.get("cursor")).toBe("page-3");
+    });
+
+    it("stops fetching history once a later page reaches the actual hard duration limit", async () => {
+        mockUsage([7100], "page-2");
+        mockUsage([100], "page-3");
+
+        const response = await requestConversation();
+
+        expect(response.statusCode).toBe(200);
+        expect(VoiceConversationResponseSchema.parse(response.json())).toMatchObject({
+            allowed: false,
+            reason: "voice_hard_limit_reached",
+            usedSeconds: 7200,
+            limitSeconds: 7200,
+        });
+        expect(fetchMock).toHaveBeenCalledTimes(2); // No further page or token.
+    });
+
+    it.each([false, true])("fails safely when a provider history request fails (later page=%s)", async (laterPage) => {
+        if (laterPage) mockUsage([60], "page-2");
+        fetchMock.mockResolvedValueOnce(Response.json({}, { status: 503 }));
+
+        const response = await requestConversation();
+
+        expect(response.statusCode).toBe(500);
+        expect(response.json()).toEqual({ error: "Failed to get voice usage" });
+        expect(fetchMock).toHaveBeenCalledTimes(laterPage ? 2 : 1);
+    });
+
+    it.each([
+        { conversations: [], has_more: true },
+        { conversations: [], has_more: true, next_cursor: "" },
+        { conversations: [], has_more: true, next_cursor: 42 },
+        { conversations: [] },
+        { has_more: false },
+        { conversations: [{ call_duration_secs: -1 }], has_more: false },
+    ])("fails safely on malformed provider history: %j", async (body) => {
+        fetchMock.mockResolvedValueOnce(Response.json(body));
+
+        const response = await requestConversation();
+
+        expect(response.statusCode).toBe(500);
+        expect(response.json()).toEqual({ error: "Failed to get voice usage" });
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("rejects a repeating cursor without issuing a token or looping", async () => {
+        mockUsage([60], "repeat");
+        mockUsage([60], "repeat");
+
+        const response = await requestConversation();
+
+        expect(response.statusCode).toBe(500);
+        expect(response.json()).toEqual({ error: "Failed to get voice usage" });
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not report partial usage after a later provider timeout", async () => {
+        mockUsage([60], "page-2");
+        fetchMock.mockRejectedValueOnce(new DOMException("History request timed out", "TimeoutError"));
+
+        const response = await app.inject({
+            method: "GET",
+            url: "/v1/voice/usage",
+            headers: { "x-user-id": userId },
+        });
+
+        expect(response.statusCode).toBe(500);
+        expect(response.json()).toEqual({ error: "Failed to get voice usage" });
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+});
