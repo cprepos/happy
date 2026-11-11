@@ -66,7 +66,9 @@ services:
       ADMIN_RATELIMIT_MAX_BURST: "3"
       LOG_LEVEL: warn
     volumes:
-      - vault-data:/data
+      # nocopy: an empty volume must keep the uid vault-init gave it, not take
+      # the image's root-owned /data.
+      - { type: volume, source: vault-data, target: /data, volume: { nocopy: true } }
       - vault-config:/etc/vaultwarden:ro
 
   # The secret filler (browser-stack/browser/filler/Dockerfile), in place of
