@@ -210,9 +210,17 @@ test('screen: /api/screen and screen.png show the chat\'s own pod, cached a seco
     // /api/screen is the scrubbed evidence capture of the chat's own session.
     const s = await (await api('/api/screen', { chat_key: KEY_B, label: 'proof', activate: false })).json();
     assert.deepEqual([s.mime, s.width, s.height, s.session_id, s.url, s.pii_scrubbed], ['image/png', 1920, 1200, b.session_id, 'https://example.com/', true]);
-    assert.deepEqual(pods.calls.screenShot, [{ key: KEY_B, activate: false, label: 'proof', redact: true }]);
+    assert.deepEqual(pods.calls.screenShot, [{ key: KEY_B, activate: false, label: 'proof', redact: true, view: null }]);
     await api('/api/screen', { chat_key: KEY_A });
-    assert.deepEqual(pods.calls.screenShot[1], { key: KEY_A, activate: true, label: 'manual', redact: true });
+    assert.deepEqual(pods.calls.screenShot[1], { key: KEY_A, activate: true, label: 'manual', redact: true, view: null });
+    // view: desktop or tab, passed on; anything else is refused before any capture.
+    for (const view of ['desktop', 'tab']) {
+        await api('/api/screen', { chat_key: KEY_A, view });
+        assert.equal(pods.calls.screenShot.pop().view, view);
+    }
+    const badView = await api('/api/screen', { chat_key: KEY_A, view: 'window' });
+    assert.deepEqual([badView.status, (await badView.json()).error], [400, 'bad_view']);
+    assert.equal(pods.calls.screenShot.length, 2);
     // Unredacted only when asked for in so many words.
     await api('/api/screen', { chat_key: KEY_A, redact: 'no' });
     await api('/api/screen', { chat_key: KEY_A, redact: false });
@@ -764,6 +772,37 @@ test('router: browser_screenshot — the whole window by default, page on reques
     const bad = await h.call('browser_screenshot', { scope: 'desktop' });
     assert.equal(bad.result.isError, true);
     assert.match(bad.result.content[0].text, /scope must be one of "page", "screen"/);
+});
+
+test('router: browser_screenshot view — desktop or tab to the bridge, absent left to the deployment', async () => {
+    const h = mcpHarness();
+    const listed = await h.list();
+    const shot = listed.result.tools.find((t) => t.name === 'browser_screenshot');
+    assert.deepEqual(shot.inputSchema.properties.view.enum, ['desktop', 'tab']);
+    for (const view of ['desktop', 'tab']) {
+        h.seen.bridge.length = 0;
+        const r = await h.call('browser_screenshot', { view });
+        assert.equal(r.result.isError, false);
+        assert.deepEqual(h.seen.bridge.filter((b) => b.path === '/api/screen').map((b) => b.body.view), [view]);
+    }
+    h.seen.bridge.length = 0;
+    await h.call('browser_screenshot', { view: null });
+    assert.ok(!('view' in h.seen.bridge.find((b) => b.path === '/api/screen').body));
+    h.seen.bridge.length = 0;
+    h.seen.calls.length = 0;
+    for (const args of [{ view: 'window' }, { scope: 'page', view: 'tab' }]) {
+        const r = await h.call('browser_screenshot', args);
+        assert.equal(r.result.isError, true, JSON.stringify(args));
+    }
+    assert.equal(h.seen.bridge.length + h.seen.calls.filter((c) => c.name === 'browser.screenshot').length, 0);
+    // The evidence fields the controller gives are in the result.
+    const fields = {
+        tz: 'America/Toronto', view: 'desktop', evidence_bar_px: 28, panel_px: 28, capture_rect: { x: 0, y: 0, width: 1920, height: 1200 },
+        raw_sha256: 'a'.repeat(64), filed_sha256: 'b'.repeat(64),
+    };
+    const rich = mcpHarness({ screenReply: () => ({ mime: 'image/png', width: 1920, height: 1200, data: 'x', session_id: 'pod0', captured_at: 't', screenshot_url: '/a', pii_scrubbed: true, redaction: 'on', ...fields }) });
+    const r = await rich.call('browser_screenshot', {});
+    for (const [k, v] of Object.entries(fields)) assert.deepEqual(r.result.structuredContent[k], v, k);
 });
 
 test('router: browser_screenshot redact — on by default, false only on request, refused on the shared browser', async () => {

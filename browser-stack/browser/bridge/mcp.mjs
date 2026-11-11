@@ -192,26 +192,32 @@ const REDACT_PROP = {
     description: 'true (default): personal data in the image (emails, phone numbers, card numbers, ...) is blacked out; the browser\'s address bar with the URL is never redacted. false: the image exactly as it was on screen, unredacted, for compliance evidence; the result says redaction "off_by_request" and the request is recorded in the audit log. Use false only when the evidence must show the page as it was.',
 };
 const REDACT_ONLY_PODS = 'Error: redact: false needs a browser of this chat\'s own (per-chat browser pods). This browser is shared between chats, so its screenshots are always redacted.';
-// The controller's evidence stamp (controller-patch/happy_evidence_stamp.py): a date/time bar across
-// the top of every screenshot image, B = max(24, round(width * 0.035)) px tall, above the page. The
-// coordinates tools return (OCR bbox, element x/y, clicks) stay the page's own. B follows the frame
-// width (BRIDGE_FRAME_WIDTH, the browser's width).
-export const evidenceBarPx = (width) => Math.max(24, Math.round(width * 0.035));
-export function evidenceBarNote(width = Number(process.env.BRIDGE_FRAME_WIDTH) || 1920) {
-    const b = evidenceBarPx(width);
-    return ` Every screenshot image has a ${b} px date/time bar across its top; coordinates in results (bbox, x/y) are page coordinates: page y = image y − ${b}.`;
-}
-const EVIDENCE_BAR_TOOLS = new Set(['browser_screenshot', 'browser_observe']);
+// browser_screenshot's third bridge-side argument, for scope "screen": which pixels of the pod's X
+// screen. "desktop" is the whole screen, the desktop panel across its top with the clock (date, year,
+// seconds, in the browser's time zone); "tab" is the browser window's own rectangle, read directly
+// (not cropped afterwards), with no panel and no clock. Default: the deployment's SCREENSHOT_TIME_MODE.
+// Either way nothing is drawn on the image; the only change is the redaction.
+export const SCREENSHOT_VIEWS = ['desktop', 'tab'];
+const VIEW_PROP = {
+    type: 'string',
+    enum: SCREENSHOT_VIEWS,
+    description: 'For scope "screen" only. "desktop": the whole screen as captured, with the desktop panel across the top showing the window\'s button and a clock with the date, year and seconds in the browser\'s time zone (the panel is the top evidence_bar_px rows). "tab": only the browser window (tab strip, address bar, page), with no panel or clock; the capture time is still in the result. Default: the deployment\'s setting (normally "desktop").',
+};
+const VIEW_SCREEN_ONLY = 'Error: view is for scope "screen"; scope "page" is the page\'s content only.';
 
-/** browser_screenshot's input schema with `scope` and `redact` added. */
+/** browser_screenshot's input schema with `scope`, `redact` and `view` added. */
 export function withScopeParam(schema) {
     const base = schema && typeof schema === 'object' && !Array.isArray(schema) ? schema : { type: 'object' };
-    return { ...base, type: 'object', properties: { ...(base.properties || {}), scope: SCOPE_PROP, redact: REDACT_PROP } };
+    return { ...base, type: 'object', properties: { ...(base.properties || {}), scope: SCOPE_PROP, redact: REDACT_PROP, view: VIEW_PROP } };
 }
 
+// What browser_screenshot's description says about the image's time: the panel's clock is the real
+// one, captured with the screen, so it is the time it showed (it ticks once a second) and can trail
+// captured_at by up to about a second.
+const SCREENSHOT_NOTE = ' By default (scope "screen") the image is the browser as the live view shows it, with the tab strip and the address bar showing the URL, and the result carries the URL, title, capture time (captured_at, UTC, and tz) and the sha256 of the capture as taken and as filed; scope "page" gives the page content only. With view "desktop" the desktop panel across the top shows the clock the screen showed (its own, nothing is drawn on the image); it ticks once a second, so it can be up to about 1 s behind captured_at. View "tab" is the browser window alone. Personal data in the image is redacted unless redact is false (full-fidelity evidence); that redaction is the only change made to the captured pixels, and the address bar and the panel are never redacted.';
+
 /** Expose upstream tools under API-safe names, with references in descriptions renamed too. */
-export function mapUpstreamTools(tools, log = () => {}, { frameWidth } = {}) {
-    const barNote = evidenceBarNote(frameWidth);
+export function mapUpstreamTools(tools, log = () => {}) {
     const byLocal = new Map();
     const renames = tools.filter((t) => typeof t?.name === 'string').map((t) => [t.name, localToolName(t.name)]).filter(([a, b]) => a !== b);
     const rename = (text) => renames.reduce((acc, [from, to]) => acc.split(from).join(to), text);
@@ -221,9 +227,9 @@ export function mapUpstreamTools(tools, log = () => {}, { frameWidth } = {}) {
         const name = localToolName(t.name);
         if (OWN_NAMES.has(name) || byLocal.has(name)) { log(`skipping auto-browser tool ${t.name}: name ${name} already taken`); continue; }
         byLocal.set(name, t.name);
-        const description = rename(t.description || '') + (HINTS[name] || '') + (MUTATING_TOOLS.has(name) ? LOCK_HINT : '') + (EVIDENCE_BAR_TOOLS.has(name) ? barNote : '');
+        const description = rename(t.description || '') + (HINTS[name] || '') + (MUTATING_TOOLS.has(name) ? LOCK_HINT : '');
         listed.push(name === 'browser_screenshot'
-            ? { ...t, name, description: description + ' By default (scope "screen") the image is the whole browser window as the live view shows it, with the tab strip and the address bar showing the URL, and the result carries the URL, title and capture time; scope "page" gives the page content only. Personal data in the image is redacted unless redact is false (full-fidelity evidence); the address bar is never redacted.', inputSchema: withScopeParam(t.inputSchema) }
+            ? { ...t, name, description: description + SCREENSHOT_NOTE, inputSchema: withScopeParam(t.inputSchema) }
             : { ...t, name, description });
     }
     return { tools: listed, byLocal, rename };
@@ -600,6 +606,14 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
             if (r !== undefined && r !== null && typeof r !== 'boolean') return result(id, toolResult('Error: redact must be true or false', true));
             redact = r !== false;
         }
+        // view, likewise: desktop or tab, for scope "screen"; absent leaves it to the deployment.
+        let view = null;
+        if (name === 'browser_screenshot' && args && typeof args === 'object' && 'view' in args) {
+            ({ view, ...args } = args);
+            if (view === undefined) view = null;
+            if (view !== null && !SCREENSHOT_VIEWS.includes(view)) return result(id, toolResult(`Error: view must be one of ${SCREENSHOT_VIEWS.map((v) => `"${v}"`).join(', ')}`, true));
+            if (view !== null && scope === 'page') return result(id, toolResult(VIEW_SCREEN_ONLY, true));
+        }
         // Routing first: the secret gate and the control check both need the chat's session.
         const routedCall = await routeCall(id, name, args, signal, cc);
         if (routedCall.done) return;
@@ -613,7 +627,8 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
         const gate = await secretsBefore(id, name, args, signal, cc);
         if (!gate) return;
         // The whole window, or an unredacted page: through the bridge, for this chat's own pod.
-        if (scope === 'screen' || !redact) return screenShot(id, name, args, signal, via, gate, { scope, redact });
+        if (scope !== 'screen' && view !== null) return result(id, toolResult(VIEW_SCREEN_ONLY, true));
+        if (scope === 'screen' || !redact) return screenShot(id, name, args, signal, via, gate, { scope, redact, view });
         // One state check per call: a page-changing tool asks whether the user holds the browser
         // (recording the action), any other tool on a session only whether the user ended it.
         const state = MUTATING_TOOLS.has(name) ? await guard(name, args, signal, via) : await sessionState(args, signal, via);
@@ -664,14 +679,14 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
     // pod `via` names, the one router.route resolved for this call's chat; no tool argument picks it.
     // While the user holds the browser their tab is not changed: the session's must be in front.
     // scope "page" with redact false comes here too: the session's page, unredacted (/api/page-shot).
-    async function screenShot(id, name, args, signal, via, gate, { scope = 'screen', redact = true } = {}) {
+    async function screenShot(id, name, args, signal, via, gate, { scope = 'screen', redact = true, view = null } = {}) {
         try {
             const state = await sessionState(args, signal, via);
             if (signal.aborted) return;
             if (isUserEnded(state)) return result(id, toolResult(USER_ENDED, true));
             const label = typeof args?.label === 'string' && args.label ? args.label : 'manual';
             const shot = scope === 'screen'
-                ? await bridge('/api/screen', { chat_key: via.key, activate: !HELD.has(state?.status), label, redact }, signal)
+                ? await bridge('/api/screen', { chat_key: via.key, activate: !HELD.has(state?.status), label, redact, ...(view ? { view } : {}) }, signal)
                 : await bridge('/api/page-shot', { chat_key: via.key, label, redact }, signal);
             if (signal.aborted) return;
             // A bridge from before the scrubbed capture answers with the raw screen: never pass that on.
@@ -691,6 +706,8 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
                 url: shot.url,
                 title: shot.title,
                 captured_at: shot.captured_at,
+                ...(typeof shot.tz === 'string' ? { tz: shot.tz } : {}),
+                ...(SCREENSHOT_VIEWS.includes(shot.view) ? { view: shot.view } : {}),
                 width: shot.width,
                 height: shot.height,
                 screenshot_path: shot.screenshot_path,
@@ -698,6 +715,10 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
                 pii_scrubbed: shot.pii_scrubbed === true,
                 redaction: typeof shot.redaction === 'string' ? shot.redaction : (shot.pii_scrubbed === true ? 'on' : 'unknown'),
                 ...(Number.isInteger(shot.evidence_bar_px) ? { evidence_bar_px: shot.evidence_bar_px } : {}),
+                ...(Number.isInteger(shot.panel_px) ? { panel_px: shot.panel_px } : {}),
+                ...(shot.capture_rect && typeof shot.capture_rect === 'object' ? { capture_rect: shot.capture_rect } : {}),
+                ...(typeof shot.raw_sha256 === 'string' ? { raw_sha256: shot.raw_sha256 } : {}),
+                ...(typeof shot.filed_sha256 === 'string' ? { filed_sha256: shot.filed_sha256 } : {}),
                 ...([true, false, 'unknown'].includes(shot.address_bar_scheme) ? { address_bar_scheme: shot.address_bar_scheme } : {}),
                 ...(shot.screenshot_pii_scrub ? { screenshot_pii_scrub: shot.screenshot_pii_scrub } : {}),
             };

@@ -43,8 +43,13 @@ function harness({ maxPods = 2, warm = 0, ensureMs = 0, readyAfter = 0, createFa
                 return { copied: true };
             }
             if (op === 'screen') {
-                calls[calls.length - 1] = `launcher.screen:${args.slot}:${args.pod_id === up.get(args.slot)?.pod_id ? 'pod' : 'other'}`;
-                return { mime: 'image/png', width: 1920, height: 1200, data: 'iVBORw0K' };
+                calls[calls.length - 1] = `launcher.screen:${args.slot}:${args.pod_id === up.get(args.slot)?.pod_id ? 'pod' : 'other'}${args.rect ? `:rect=${args.rect.x},${args.rect.y},${args.rect.width},${args.rect.height}` : ''}`;
+                const rect = args.rect || { x: 0, y: 0, width: 1920, height: 1200 };
+                return {
+                    mime: 'image/png', width: rect.width, height: rect.height, data: 'iVBORw0K', raw_sha256: 'a'.repeat(64),
+                    captured_at: '2026-11-11T15:00:00.250Z', local: '2026-11-11T10:00:00.250-05:00', tz: 'America/Toronto',
+                    screen: { width: 1920, height: 1200 }, capture_rect: rect, panel_px: 28,
+                };
             }
             throw new Error('unknown op');
         },
@@ -65,28 +70,30 @@ function harness({ maxPods = 2, warm = 0, ensureMs = 0, readyAfter = 0, createFa
             approvals: 0,
             async pendingApprovals() { if (c.approvalsFail) throw new Error('down'); return c.approvals; },
             screenQueue: [], // errors (or null) the next screenFront / screenScrub calls throw, in order
-            async screenFront(sid, { activate, redact }) {
-                calls.push(`ctl.screenFront:${slot}:${sid}:${activate}${redact === false ? ':raw' : ''}`);
+            noRect: false, // a controller from before the tab view: no capture_rect back
+            async screenFront(sid, { activate, redact, view }) {
+                calls.push(`ctl.screenFront:${slot}:${sid}:${activate}${redact === false ? ':raw' : ''}${view ? `:${view}` : ''}`);
                 const e = c.screenQueue.shift();
                 if (e) throw e;
-                return { token: `tok-${slot}-${calls.length}`, url: 'https://example.com/', title: 'Example' };
+                const tab = view === 'tab' && !c.noRect;
+                return { token: `tok-${slot}-${calls.length}`, url: 'https://example.com/', title: 'Example', view: view || 'desktop', capture_rect: tab ? { x: 0, y: 28, width: 1920, height: 1172 } : null };
             },
-            scrubCapturedAt: [], // the capturedAt each screenScrub was sent
-            stamp: null, // {captured_at?, evidence_bar_px?}: what a controller with the evidence stamp echoes
-            async screenScrub(sid, { token, png, label, redact, capturedAt }) {
+            scrubSent: [], // {rawSha256, capture} each screenScrub was sent
+            echo: null, // extra fields the controller's reply carries
+            async screenScrub(sid, { token, png, label, redact, rawSha256, capture }) {
                 calls.push(`ctl.screenScrub:${slot}:${sid}:${token.startsWith(`tok-${slot}-`) ? 'tok' : 'bad'}:${png}:${label}${redact === false ? ':raw' : ''}`);
-                c.scrubCapturedAt.push(capturedAt);
+                c.scrubSent.push({ rawSha256, capture });
                 const e = c.screenQueue.shift();
                 if (e) throw e;
                 const raw = redact === false && !c.ignoresRedact;
-                return { ...(c.stamp || {}), url: 'https://example.com/', title: 'Example', screenshot_path: `/data/artifacts/${sid}/x-screen-${label}.png`, screenshot_url: `/artifacts/${sid}/x-screen-${label}.png`, width: 1920, height: 1200, png: raw ? 'UkFX' : 'U0NSVUJCRUQ=', pii_scrubbed: !raw, redaction: raw ? 'off_by_request' : 'on', chrome_strip: { x: 0, y: 0, width: 1920, height: 120, source: 'window' }, address_bar_scheme: true };
+                return { ...(c.echo || {}), url: 'https://example.com/', title: 'Example', screenshot_path: `/data/artifacts/${sid}/x-screen-${label}.png`, screenshot_url: `/artifacts/${sid}/x-screen-${label}.png`, width: 1920, height: 1200, png: raw ? 'UkFX' : 'U0NSVUJCRUQ=', pii_scrubbed: !raw, redaction: raw ? 'off_by_request' : 'on', chrome_strip: { x: 0, y: 0, width: 1920, height: 120, source: 'window' }, address_bar_scheme: true };
             },
             async pageShot(sid, { label, redact }) {
                 calls.push(`ctl.pageShot:${slot}:${sid}:${label}:${redact}`);
                 const e = c.screenQueue.shift();
                 if (e) throw e;
                 const raw = redact === false && !c.ignoresRedact;
-                return { ...(c.stamp || {}), url: 'https://example.com/', title: 'Example', screenshot_path: `/data/artifacts/${sid}/x-${label}.png`, screenshot_url: `/artifacts/${sid}/x-${label}.png`, width: 1280, height: 800, png: raw ? 'UkFX' : 'U0NSVUJCRUQ=', pii_scrubbed: !raw, redaction: raw ? 'off_by_request' : 'on' };
+                return { ...(c.echo || {}), url: 'https://example.com/', title: 'Example', screenshot_path: `/data/artifacts/${sid}/x-${label}.png`, screenshot_url: `/artifacts/${sid}/x-${label}.png`, width: 1280, height: 800, png: raw ? 'UkFX' : 'U0NSVUJCRUQ=', pii_scrubbed: !raw, redaction: raw ? 'off_by_request' : 'on' };
             },
             async getSession(sid) {
                 calls.push(`ctl.getSession:${slot}`);
@@ -442,7 +449,8 @@ test('screen asks the launcher for the chat\'s own slot and pod id, and never wa
     await h.mgr.ensure(A);
     await h.mgr.ensure(B);
     h.calls.length = 0;
-    assert.deepEqual(await h.mgr.screen(B), { mime: 'image/png', width: 1920, height: 1200, data: 'iVBORw0K' });
+    const shot = await h.mgr.screen(B);
+    assert.deepEqual([shot.mime, shot.width, shot.height, shot.data], ['image/png', 1920, 1200, 'iVBORw0K']);
     assert.deepEqual(h.calls, ['launcher.screen:1:pod']);
     await h.mgr.stopChat(A, 'idle');
     h.calls.length = 0;
@@ -843,26 +851,57 @@ test('screenShot / pageShot: redact false is passed to the chat\'s own controlle
     await assert.rejects(h.mgr.pageShot('nothex'), (e) => e.status === 400);
 });
 
-test('screenShot / pageShot: the bridge sends its capture time, and the controller\'s stamped one wins', async () => {
+test('screenShot: the capture\'s hash and meta go to the controller, and its evidence fields come back', async () => {
     const h = harness();
     await h.mgr.ensure(A);
     const c = h.clients.get(0);
-    // A controller from before the evidence stamp: no captured_at back, so the bridge's own stands.
+    // A controller that says no captured_at: the bridge's own time stands.
     const old = await h.mgr.screenShot(A, { label: 'ev' });
-    assert.match(c.scrubCapturedAt[0], /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
-    assert.equal(old.captured_at, c.scrubCapturedAt[0]);
+    assert.match(old.captured_at, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
     assert.ok(!('evidence_bar_px' in old));
-    // With it: the time stamped on the image's bar, and the bar's height.
-    c.stamp = { captured_at: '2026-11-11T19:32:07.123Z', evidence_bar_px: 67 };
+    assert.deepEqual(c.scrubSent[0], {
+        rawSha256: 'a'.repeat(64),
+        capture: {
+            captured_at: '2026-11-11T15:00:00.250Z', local: '2026-11-11T10:00:00.250-05:00', tz: 'America/Toronto',
+            screen: { width: 1920, height: 1200 }, capture_rect: { x: 0, y: 0, width: 1920, height: 1200 }, panel_px: 28,
+        },
+    });
+    const fields = {
+        captured_at: '2026-11-11T15:00:00.250Z', tz: 'America/Toronto', view: 'desktop', evidence_bar_px: 28, panel_px: 28,
+        capture_rect: { x: 0, y: 0, width: 1920, height: 1200 }, raw_sha256: 'a'.repeat(64), filed_sha256: 'b'.repeat(64),
+    };
+    c.echo = fields;
     const shot = await h.mgr.screenShot(A, { label: 'ev' });
-    assert.equal(shot.captured_at, '2026-11-11T19:32:07.123Z');
-    assert.equal(shot.evidence_bar_px, 67);
+    for (const [k, v] of Object.entries(fields)) assert.deepEqual(shot[k], v, k);
+    assert.ok(!('stamp_text' in shot));
     const page = await h.mgr.pageShot(A, { label: 'p' });
-    assert.equal(page.captured_at, '2026-11-11T19:32:07.123Z');
-    assert.equal(page.evidence_bar_px, 67);
-    // Nonsense in either field is not passed on.
-    c.stamp = { captured_at: 5, evidence_bar_px: '67' };
+    assert.equal(page.captured_at, '2026-11-11T15:00:00.250Z');
+    // Nonsense in the fields is not passed on.
+    c.echo = { captured_at: 5, evidence_bar_px: '28', view: 'window', raw_sha256: 1, tz: {} };
     const odd = await h.mgr.pageShot(A, { label: 'p' });
     assert.match(odd.captured_at, /Z$/);
-    assert.ok(!('evidence_bar_px' in odd));
+    for (const k of ['evidence_bar_px', 'view', 'raw_sha256', 'tz']) assert.ok(!(k in odd), k);
+});
+
+test('screenShot view "tab": the controller\'s window rectangle is what the launcher reads', async () => {
+    const h = harness();
+    await h.mgr.ensure(A);
+    const c = h.clients.get(0);
+    h.calls.length = 0;
+    await h.mgr.screenShot(A, { label: 'ev', view: 'tab' });
+    assert.deepEqual(h.calls, ['ctl.screenFront:0:s1:true:tab', 'launcher.screen:0:pod:rect=0,28,1920,1172', 'ctl.screenScrub:0:s1:tok:iVBORw0K:ev']);
+    assert.deepEqual(c.scrubSent.at(-1).capture.capture_rect, { x: 0, y: 28, width: 1920, height: 1172 });
+    // desktop: no rectangle, the whole screen.
+    h.calls.length = 0;
+    await h.mgr.screenShot(A, { view: 'desktop' });
+    assert.equal(h.calls[1], 'launcher.screen:0:pod');
+    // A controller without the tab view: refused, never a whole-screen shot passed off as the tab.
+    c.noRect = true;
+    h.calls.length = 0;
+    await assert.rejects(h.mgr.screenShot(A, { view: 'tab' }), (e) => e.status === 502);
+    assert.ok(!h.calls.some((x) => x.startsWith('launcher.screen')));
+    // The controller's 400s (a hash that does not match, a capture of the wrong rectangle) in its words.
+    c.noRect = false;
+    c.screenQueue.push(null, Object.assign(new PodError('pod POST -> 400', 400, 'raw_hash_mismatch'), { detail: 'The image is not the one the capture produced' }));
+    await assert.rejects(h.mgr.screenShot(A), (e) => e.status === 400 && e.code === 'raw_hash_mismatch' && /not the one/.test(e.message));
 });

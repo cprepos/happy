@@ -3,7 +3,7 @@
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { createMcpServer, mapUpstreamTools, actionOf, sessionOf, USER_HAS_CONTROL, USER_ENDED, evidenceBarPx } from '../mcp.mjs';
+import { createMcpServer, mapUpstreamTools, actionOf, sessionOf, USER_HAS_CONTROL, USER_ENDED, withScopeParam } from '../mcp.mjs';
 import { createUpstreamMcp, parseSse, localToolName } from '../lib/upstream.mjs';
 
 const TOKEN = 'ab-secret-token-fedcba9876543210';
@@ -341,25 +341,16 @@ test('a session the user ended gets USER_ENDED for any tool, and auto-browser is
     }
 });
 
-test('browser_screenshot and browser_observe say the image has a date/time bar of B px above page coordinates', () => {
+test('browser_screenshot describes the real desktop panel and the views; no tool claims a drawn bar', () => {
     const tools = [...UPSTREAM_TOOLS, { name: 'browser.screenshot', description: 'Take a screenshot.' }];
-    const sentence = (b) => `Every screenshot image has a ${b} px date/time bar across its top; coordinates in results (bbox, x/y) are page coordinates: page y = image y \u2212 ${b}.`;
-    for (const [width, b] of [[1920, 67], [1280, 45], [400, 24]]) {
-        assert.equal(evidenceBarPx(width), b);
-        const m = mapUpstreamTools(tools, () => {}, { frameWidth: width });
-        const by = Object.fromEntries(m.tools.map((t) => [t.name, t.description]));
-        assert.ok(by.browser_screenshot.includes(sentence(b)), by.browser_screenshot);
-        assert.ok(by.browser_observe.includes(sentence(b)), by.browser_observe);
-        assert.ok(!by.browser_execute_action.includes('date/time bar'));
-    }
-    // Without a width: BRIDGE_FRAME_WIDTH, else 1920.
-    const saved = process.env.BRIDGE_FRAME_WIDTH;
-    try {
-        delete process.env.BRIDGE_FRAME_WIDTH;
-        assert.ok(mapUpstreamTools(tools).tools.find((t) => t.name === 'browser_observe').description.includes(sentence(67)));
-        process.env.BRIDGE_FRAME_WIDTH = '1280';
-        assert.ok(mapUpstreamTools(tools).tools.find((t) => t.name === 'browser_observe').description.includes(sentence(45)));
-    } finally {
-        if (saved === undefined) delete process.env.BRIDGE_FRAME_WIDTH; else process.env.BRIDGE_FRAME_WIDTH = saved;
-    }
+    const by = Object.fromEntries(mapUpstreamTools(tools).tools.map((t) => [t.name, t]));
+    const shot = by.browser_screenshot;
+    assert.match(shot.description, /view "desktop"/);
+    assert.match(shot.description, /up to about 1 s behind captured_at/);
+    assert.match(shot.description, /nothing is drawn on the image/);
+    assert.match(shot.description, /the only change made to the captured pixels/);
+    assert.deepEqual(shot.inputSchema.properties.view.enum, ['desktop', 'tab']);
+    assert.ok(!('default' in shot.inputSchema.properties.view), 'the default is the deployment\'s');
+    for (const t of Object.values(by)) assert.ok(!/date\/time bar/.test(t.description), t.name);
+    assert.deepEqual(Object.keys(withScopeParam({ type: 'object', properties: { label: {} } }).properties), ['label', 'scope', 'redact', 'view']);
 });

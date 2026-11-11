@@ -66,15 +66,18 @@
 //   POST /api/pod       {chat_key, source?, verify?} or {session_id}
 //                       -> {mcp_url, session_id, link_id, url, slot}: the chat's pod, started or woken
 //   POST /api/pod/close {chat_key}                  -> saves the login, closes the session, stops the pod
-//   POST /api/screen    {chat_key, activate?, label?, redact?} -> {mime, width, height, data (base64
-//                       PNG), session_id, url, title, captured_at, screenshot_path, screenshot_url,
-//                       pii_scrubbed, redaction, evidence_bar_px, chrome_strip, address_bar_scheme?,
-//                       screenshot_pii_scrub?}: that chat's
-//                       pod's whole screen (browser_screenshot scope "screen") with its session's tab
-//                       brought to the front (activate false: it must already be), OCR-scrubbed by
-//                       the pod's controller except the browser's own address bar strip (redact
-//                       false, only when sent as false: not at all) and filed as the session's
-//                       artifact; 503 asleep (never wakes it)
+//   POST /api/screen    {chat_key, activate?, label?, redact?, view?} -> {mime, width, height, data
+//                       (base64 PNG), session_id, url, title, captured_at, tz, view, screenshot_path,
+//                       screenshot_url, pii_scrubbed, redaction, evidence_bar_px, panel_px,
+//                       capture_rect, raw_sha256, filed_sha256, chrome_strip, address_bar_scheme?,
+//                       screenshot_pii_scrub?}: that chat's pod's screen (browser_screenshot scope
+//                       "screen") with its session's tab brought to the front (activate false: it
+//                       must already be); view "desktop" the whole screen with the desktop panel and
+//                       its clock, "tab" the browser window's rectangle alone (absent: the
+//                       deployment's SCREENSHOT_TIME_MODE). OCR-scrubbed by the pod's controller
+//                       except the browser's own address bar strip and the panel (redact false, only
+//                       when sent as false: not at all) and filed as the session's artifact; nothing
+//                       is drawn on it. 400 bad view; 503 asleep (never wakes it)
 //   POST /api/page-shot {chat_key, label?, redact?} -> the same fields: that chat's session's page
 //                       (viewport), for browser_screenshot scope "page" with redact false
 //   POST /api/tools     {}                          -> {tools}: auto-browser's tool list, cached, so
@@ -815,8 +818,10 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
             }
             if (path === '/api/screen') {
                 const label = typeof body.label === 'string' && body.label ? body.label.slice(0, 100) : 'manual';
+                const view = body.view ?? null;
+                if (view !== null && view !== 'desktop' && view !== 'tab') return send(res, 400, { error: 'bad_view' });
                 // Unredacted only when asked for in so many words.
-                return send(res, 200, await pods.screenShot(chatKeyOf(body), { activate: body.activate !== false, label, redact: body.redact !== false }));
+                return send(res, 200, await pods.screenShot(chatKeyOf(body), { activate: body.activate !== false, label, redact: body.redact !== false, view }));
             }
             if (path === '/api/page-shot') {
                 const label = typeof body.label === 'string' && body.label ? body.label.slice(0, 100) : 'manual';
