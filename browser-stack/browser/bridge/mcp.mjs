@@ -192,6 +192,17 @@ const REDACT_PROP = {
     description: 'true (default): personal data in the image (emails, phone numbers, card numbers, ...) is blacked out; the browser\'s address bar with the URL is never redacted. false: the image exactly as it was on screen, unredacted, for compliance evidence; the result says redaction "off_by_request" and the request is recorded in the audit log. Use false only when the evidence must show the page as it was.',
 };
 const REDACT_ONLY_PODS = 'Error: redact: false needs a browser of this chat\'s own (per-chat browser pods). This browser is shared between chats, so its screenshots are always redacted.';
+// The controller's evidence stamp (controller-patch/happy_evidence_stamp.py): a date/time bar across
+// the top of every screenshot image, B = max(24, round(width * 0.035)) px tall, above the page. The
+// coordinates tools return (OCR bbox, element x/y, clicks) stay the page's own. B follows the frame
+// width (BRIDGE_FRAME_WIDTH, the browser's width).
+export const evidenceBarPx = (width) => Math.max(24, Math.round(width * 0.035));
+export function evidenceBarNote(width = Number(process.env.BRIDGE_FRAME_WIDTH) || 1920) {
+    const b = evidenceBarPx(width);
+    return ` Every screenshot image has a ${b} px date/time bar across its top; coordinates in results (bbox, x/y) are page coordinates: page y = image y − ${b}.`;
+}
+const EVIDENCE_BAR_TOOLS = new Set(['browser_screenshot', 'browser_observe']);
+
 /** browser_screenshot's input schema with `scope` and `redact` added. */
 export function withScopeParam(schema) {
     const base = schema && typeof schema === 'object' && !Array.isArray(schema) ? schema : { type: 'object' };
@@ -199,7 +210,8 @@ export function withScopeParam(schema) {
 }
 
 /** Expose upstream tools under API-safe names, with references in descriptions renamed too. */
-export function mapUpstreamTools(tools, log = () => {}) {
+export function mapUpstreamTools(tools, log = () => {}, { frameWidth } = {}) {
+    const barNote = evidenceBarNote(frameWidth);
     const byLocal = new Map();
     const renames = tools.filter((t) => typeof t?.name === 'string').map((t) => [t.name, localToolName(t.name)]).filter(([a, b]) => a !== b);
     const rename = (text) => renames.reduce((acc, [from, to]) => acc.split(from).join(to), text);
@@ -209,7 +221,7 @@ export function mapUpstreamTools(tools, log = () => {}) {
         const name = localToolName(t.name);
         if (OWN_NAMES.has(name) || byLocal.has(name)) { log(`skipping auto-browser tool ${t.name}: name ${name} already taken`); continue; }
         byLocal.set(name, t.name);
-        const description = rename(t.description || '') + (HINTS[name] || '') + (MUTATING_TOOLS.has(name) ? LOCK_HINT : '');
+        const description = rename(t.description || '') + (HINTS[name] || '') + (MUTATING_TOOLS.has(name) ? LOCK_HINT : '') + (EVIDENCE_BAR_TOOLS.has(name) ? barNote : '');
         listed.push(name === 'browser_screenshot'
             ? { ...t, name, description: description + ' By default (scope "screen") the image is the whole browser window as the live view shows it, with the tab strip and the address bar showing the URL, and the result carries the URL, title and capture time; scope "page" gives the page content only. Personal data in the image is redacted unless redact is false (full-fidelity evidence); the address bar is never redacted.', inputSchema: withScopeParam(t.inputSchema) }
             : { ...t, name, description });
@@ -685,6 +697,7 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
                 screenshot_url: shot.screenshot_url,
                 pii_scrubbed: shot.pii_scrubbed === true,
                 redaction: typeof shot.redaction === 'string' ? shot.redaction : (shot.pii_scrubbed === true ? 'on' : 'unknown'),
+                ...(Number.isInteger(shot.evidence_bar_px) ? { evidence_bar_px: shot.evidence_bar_px } : {}),
                 ...([true, false, 'unknown'].includes(shot.address_bar_scheme) ? { address_bar_scheme: shot.address_bar_scheme } : {}),
                 ...(shot.screenshot_pii_scrub ? { screenshot_pii_scrub: shot.screenshot_pii_scrub } : {}),
             };

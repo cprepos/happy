@@ -68,7 +68,7 @@
 //   POST /api/pod/close {chat_key}                  -> saves the login, closes the session, stops the pod
 //   POST /api/screen    {chat_key, activate?, label?, redact?} -> {mime, width, height, data (base64
 //                       PNG), session_id, url, title, captured_at, screenshot_path, screenshot_url,
-//                       pii_scrubbed, redaction, chrome_strip, address_bar_scheme?,
+//                       pii_scrubbed, redaction, evidence_bar_px, chrome_strip, address_bar_scheme?,
 //                       screenshot_pii_scrub?}: that chat's
 //                       pod's whole screen (browser_screenshot scope "screen") with its session's tab
 //                       brought to the front (activate false: it must already be), OCR-scrubbed by

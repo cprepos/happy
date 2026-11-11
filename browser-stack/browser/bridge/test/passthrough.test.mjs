@@ -3,7 +3,7 @@
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { createMcpServer, mapUpstreamTools, actionOf, sessionOf, USER_HAS_CONTROL, USER_ENDED } from '../mcp.mjs';
+import { createMcpServer, mapUpstreamTools, actionOf, sessionOf, USER_HAS_CONTROL, USER_ENDED, evidenceBarPx } from '../mcp.mjs';
 import { createUpstreamMcp, parseSse, localToolName } from '../lib/upstream.mjs';
 
 const TOKEN = 'ab-secret-token-fedcba9876543210';
@@ -338,5 +338,28 @@ test('a session the user ended gets USER_ENDED for any tool, and auto-browser is
         assert.equal((await call(3, 'browser_observe', { session_id: 's1' })).result.content[0].text, 'observed s1', 'only the user ending it is refused');
     } finally {
         b.srv.close();
+    }
+});
+
+test('browser_screenshot and browser_observe say the image has a date/time bar of B px above page coordinates', () => {
+    const tools = [...UPSTREAM_TOOLS, { name: 'browser.screenshot', description: 'Take a screenshot.' }];
+    const sentence = (b) => `Every screenshot image has a ${b} px date/time bar across its top; coordinates in results (bbox, x/y) are page coordinates: page y = image y \u2212 ${b}.`;
+    for (const [width, b] of [[1920, 67], [1280, 45], [400, 24]]) {
+        assert.equal(evidenceBarPx(width), b);
+        const m = mapUpstreamTools(tools, () => {}, { frameWidth: width });
+        const by = Object.fromEntries(m.tools.map((t) => [t.name, t.description]));
+        assert.ok(by.browser_screenshot.includes(sentence(b)), by.browser_screenshot);
+        assert.ok(by.browser_observe.includes(sentence(b)), by.browser_observe);
+        assert.ok(!by.browser_execute_action.includes('date/time bar'));
+    }
+    // Without a width: BRIDGE_FRAME_WIDTH, else 1920.
+    const saved = process.env.BRIDGE_FRAME_WIDTH;
+    try {
+        delete process.env.BRIDGE_FRAME_WIDTH;
+        assert.ok(mapUpstreamTools(tools).tools.find((t) => t.name === 'browser_observe').description.includes(sentence(67)));
+        process.env.BRIDGE_FRAME_WIDTH = '1280';
+        assert.ok(mapUpstreamTools(tools).tools.find((t) => t.name === 'browser_observe').description.includes(sentence(45)));
+    } finally {
+        if (saved === undefined) delete process.env.BRIDGE_FRAME_WIDTH; else process.env.BRIDGE_FRAME_WIDTH = saved;
     }
 });

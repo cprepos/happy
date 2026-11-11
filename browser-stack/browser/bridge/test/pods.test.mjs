@@ -71,19 +71,22 @@ function harness({ maxPods = 2, warm = 0, ensureMs = 0, readyAfter = 0, createFa
                 if (e) throw e;
                 return { token: `tok-${slot}-${calls.length}`, url: 'https://example.com/', title: 'Example' };
             },
-            async screenScrub(sid, { token, png, label, redact }) {
+            scrubCapturedAt: [], // the capturedAt each screenScrub was sent
+            stamp: null, // {captured_at?, evidence_bar_px?}: what a controller with the evidence stamp echoes
+            async screenScrub(sid, { token, png, label, redact, capturedAt }) {
                 calls.push(`ctl.screenScrub:${slot}:${sid}:${token.startsWith(`tok-${slot}-`) ? 'tok' : 'bad'}:${png}:${label}${redact === false ? ':raw' : ''}`);
+                c.scrubCapturedAt.push(capturedAt);
                 const e = c.screenQueue.shift();
                 if (e) throw e;
                 const raw = redact === false && !c.ignoresRedact;
-                return { url: 'https://example.com/', title: 'Example', screenshot_path: `/data/artifacts/${sid}/x-screen-${label}.png`, screenshot_url: `/artifacts/${sid}/x-screen-${label}.png`, width: 1920, height: 1200, png: raw ? 'UkFX' : 'U0NSVUJCRUQ=', pii_scrubbed: !raw, redaction: raw ? 'off_by_request' : 'on', chrome_strip: { x: 0, y: 0, width: 1920, height: 120, source: 'window' }, address_bar_scheme: true };
+                return { ...(c.stamp || {}), url: 'https://example.com/', title: 'Example', screenshot_path: `/data/artifacts/${sid}/x-screen-${label}.png`, screenshot_url: `/artifacts/${sid}/x-screen-${label}.png`, width: 1920, height: 1200, png: raw ? 'UkFX' : 'U0NSVUJCRUQ=', pii_scrubbed: !raw, redaction: raw ? 'off_by_request' : 'on', chrome_strip: { x: 0, y: 0, width: 1920, height: 120, source: 'window' }, address_bar_scheme: true };
             },
             async pageShot(sid, { label, redact }) {
                 calls.push(`ctl.pageShot:${slot}:${sid}:${label}:${redact}`);
                 const e = c.screenQueue.shift();
                 if (e) throw e;
                 const raw = redact === false && !c.ignoresRedact;
-                return { url: 'https://example.com/', title: 'Example', screenshot_path: `/data/artifacts/${sid}/x-${label}.png`, screenshot_url: `/artifacts/${sid}/x-${label}.png`, width: 1280, height: 800, png: raw ? 'UkFX' : 'U0NSVUJCRUQ=', pii_scrubbed: !raw, redaction: raw ? 'off_by_request' : 'on' };
+                return { ...(c.stamp || {}), url: 'https://example.com/', title: 'Example', screenshot_path: `/data/artifacts/${sid}/x-${label}.png`, screenshot_url: `/artifacts/${sid}/x-${label}.png`, width: 1280, height: 800, png: raw ? 'UkFX' : 'U0NSVUJCRUQ=', pii_scrubbed: !raw, redaction: raw ? 'off_by_request' : 'on' };
             },
             async getSession(sid) {
                 calls.push(`ctl.getSession:${slot}`);
@@ -838,4 +841,28 @@ test('screenShot / pageShot: redact false is passed to the chat\'s own controlle
     await h.mgr.stopChat(A, 'idle');
     await assert.rejects(h.mgr.pageShot(A, { redact: false }), (e) => e.status === 503);
     await assert.rejects(h.mgr.pageShot('nothex'), (e) => e.status === 400);
+});
+
+test('screenShot / pageShot: the bridge sends its capture time, and the controller\'s stamped one wins', async () => {
+    const h = harness();
+    await h.mgr.ensure(A);
+    const c = h.clients.get(0);
+    // A controller from before the evidence stamp: no captured_at back, so the bridge's own stands.
+    const old = await h.mgr.screenShot(A, { label: 'ev' });
+    assert.match(c.scrubCapturedAt[0], /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
+    assert.equal(old.captured_at, c.scrubCapturedAt[0]);
+    assert.ok(!('evidence_bar_px' in old));
+    // With it: the time stamped on the image's bar, and the bar's height.
+    c.stamp = { captured_at: '2026-11-11T19:32:07.123Z', evidence_bar_px: 67 };
+    const shot = await h.mgr.screenShot(A, { label: 'ev' });
+    assert.equal(shot.captured_at, '2026-11-11T19:32:07.123Z');
+    assert.equal(shot.evidence_bar_px, 67);
+    const page = await h.mgr.pageShot(A, { label: 'p' });
+    assert.equal(page.captured_at, '2026-11-11T19:32:07.123Z');
+    assert.equal(page.evidence_bar_px, 67);
+    // Nonsense in either field is not passed on.
+    c.stamp = { captured_at: 5, evidence_bar_px: '67' };
+    const odd = await h.mgr.pageShot(A, { label: 'p' });
+    assert.match(odd.captured_at, /Z$/);
+    assert.ok(!('evidence_bar_px' in odd));
 });

@@ -160,13 +160,15 @@ export function createPodClient({ baseUrl, token, fetchImpl = fetch, timeoutMs =
         // The whole-screen capture's controller steps (controller-patch/happy_live_frames.py):
         // the session's tab to the front -> {token, url, title}; then the captured PNG checked,
         // OCR-scrubbed and filed as an artifact -> {url, title, screenshot_path, screenshot_url,
-        // width, height, png, pii_scrubbed, redaction, chrome_strip, address_bar_scheme?, screenshot_pii_scrub?}.
+        // width, height, png, pii_scrubbed, redaction, chrome_strip, captured_at, evidence_bar_px,
+        // address_bar_scheme?, screenshot_pii_scrub?}. captured_at is the bridge's own time of the capture,
+        // which the controller holds between the front step and now and stamps on the image's date/time bar.
         // redact false (the explicit opt-in) files it unscrubbed; the controller refuses that under
         // PII_SCRUB_SCREENSHOT_STRICT.
         screenFront: (sid, { activate = true, redact = true } = {}) =>
             call('POST', `/happy/sessions/${encodeURIComponent(sid)}/screen/front`, { activate, redact }, 15_000),
-        screenScrub: (sid, { token, png, label, redact = true }) =>
-            call('POST', `/happy/sessions/${encodeURIComponent(sid)}/screen/scrub`, { token, png, label, redact }, 90_000),
+        screenScrub: (sid, { token, png, label, redact = true, capturedAt }) =>
+            call('POST', `/happy/sessions/${encodeURIComponent(sid)}/screen/scrub`, { token, png, label, redact, ...(capturedAt ? { captured_at: capturedAt } : {}) }, 90_000),
         // browser_screenshot scope "page" with redact false: the viewport, filed unscrubbed.
         pageShot: (sid, { label, redact = true }) =>
             call('POST', `/happy/sessions/${encodeURIComponent(sid)}/page-shot`, { label, redact }, 90_000),
@@ -921,9 +923,11 @@ export function createPodManager({
      * OCR-scrubs the image and files it as the session's artifact. A page that navigated in between
      * is captured again, once. Never starts or wakes a pod. -> {mime, width, height, data (base64
      * PNG, scrubbed), session_id, url, title, captured_at, screenshot_path, screenshot_url,
-     * pii_scrubbed, redaction, chrome_strip?, address_bar_scheme?, screenshot_pii_scrub?}
+     * pii_scrubbed, redaction, evidence_bar_px?, chrome_strip?, address_bar_scheme?, screenshot_pii_scrub?}
      */
-    // The result fields both shots share (controller reply -> bridge reply).
+    // The result fields both shots share (controller reply -> bridge reply). captured_at: the time the
+    // controller stamped on the image's date/time bar when it says one (a controller from before the
+    // stamp does not), else the bridge's own.
     function shotReply(p, out, capturedAt) {
         return {
             mime: 'image/png',
@@ -933,11 +937,13 @@ export function createPodManager({
             session_id: p.sessionId,
             url: out.url,
             title: out.title,
-            captured_at: capturedAt,
+            captured_at: typeof out.captured_at === 'string' && out.captured_at ? out.captured_at : capturedAt,
             screenshot_path: out.screenshot_path,
             screenshot_url: out.screenshot_url,
             pii_scrubbed: out.pii_scrubbed === true,
             redaction: typeof out.redaction === 'string' ? out.redaction : (out.pii_scrubbed === true ? 'on' : 'unknown'),
+            // The height of the date/time bar across the image's top: page y = image y - evidence_bar_px.
+            ...(Number.isInteger(out.evidence_bar_px) ? { evidence_bar_px: out.evidence_bar_px } : {}),
             ...(out.chrome_strip ? { chrome_strip: out.chrome_strip } : {}),
             // An https page's screen shot: whether OCR saw "https://" in the address bar (true, false, "unknown").
             ...([true, false, 'unknown'].includes(out.address_bar_scheme) ? { address_bar_scheme: out.address_bar_scheme } : {}),
@@ -978,7 +984,7 @@ export function createPodManager({
                 if (!still || still.slot !== p.slot || chats.get(chatKey)?.podId !== podId || still.sessionId !== p.sessionId) {
                     throw new PodError('this chat\'s browser changed while the screen was captured; take it again', 409, 'moved');
                 }
-                const out = await p.client.screenScrub(p.sessionId, { token: front.token, png: raw.data, label, redact });
+                const out = await p.client.screenScrub(p.sessionId, { token: front.token, png: raw.data, label, redact, capturedAt });
                 // A controller that knows no redact switch scrubs anyway: say so rather than claim otherwise.
                 if (redact === false && out.redaction !== 'off_by_request') throw new PodError('the controller did not confirm an unredacted capture; it may predate redact: false (restart the pod)', 502, 'pod_error');
                 return shotReply(p, out, capturedAt);
