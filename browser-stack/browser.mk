@@ -51,6 +51,10 @@ BROWSER_HEIGHT ?= $(or $(shell sed -nE 's/^BROWSER_HEIGHT=([0-9]+)[[:space:]]*$$
 CHROME_UI_HEIGHT := 87
 BROWSER_VIEWPORT_HEIGHT ?= $(if $(filter 1,$(BROWSER_KIOSK)),$(BROWSER_HEIGHT),$(shell expr $(BROWSER_HEIGHT) - $(CHROME_UI_HEIGHT)))
 export BROWSER_KIOSK BROWSER_HEIGHT BROWSER_VIEWPORT_HEIGHT
+# The zone of the date/time bar stamped across the top of every screenshot (an IANA name): the
+# host's own (/etc/timezone), else America/Toronto. The controller refuses to start on a bad one.
+EVIDENCE_TZ ?= $(or $(shell cat /etc/timezone 2>/dev/null | head -1 | tr -d '[:space:]'),America/Toronto)
+export EVIDENCE_TZ
 BROWSER_BIND_OK = ^127\.0\.0\.1:$(if $(BRIDGE_LAN_BIND),|^$(subst .,\.,$(BRIDGE_LAN_BIND)):$(BRIDGE_LAN_PORT)$$)
 BROWSER_IMAGES = $(shell sed -nE 's/^x-(browser-node|controller)-image: &[a-z_]+ (.+)$$/\2/p' $(BROWSER_DIR)/compose.browser.yml) \
 	$(shell sed -nE 's/^    image: (node:.+)$$/\1/p' $(BROWSER_DIR)/compose.browser.yml | sort -u)
@@ -91,14 +95,14 @@ browser-bridge-test:
 	cd $(BROWSER_DIR)/launcher && node --test test/*.test.mjs
 	cd $(BROWSER_DIR)/kiosk && node --test test/*.test.mjs
 
-# The controller patch (controller-patch/happy_live_frames.py) in a throwaway container of the
+# The controller patch (controller-patch/: the live frames and the evidence stamp) in a throwaway container of the
 # pinned controller image, no network: its pin check against the image's files, then its tests.
 CONTROLLER_IMAGE = $(shell sed -nE 's/^x-controller-image: &[a-z_]+ (.+)$$/\1/p' $(BROWSER_DIR)/compose.browser.yml)
 browser-controller-patch-test:
 	docker run --rm --name happy-controller-patch-test-$$$$ --network none --entrypoint python \
 		-e PYTHONPATH=/happy/controller-patch -e HAPPY_LIVE_FRAMES_NO_AUTOLOAD=1 -w /app \
 		-v $(BROWSER_DIR)/controller-patch:/happy/controller-patch:ro $(CONTROLLER_IMAGE) \
-		-m unittest -v test_happy_live_frames
+		-m unittest -v test_happy_live_frames test_happy_evidence_stamp
 
 # Every image the stack and its pods run, by digest, so a pod never waits on a pull.
 browser-pull:

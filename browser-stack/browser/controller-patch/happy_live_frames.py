@@ -31,6 +31,10 @@ one-use token; POST /happy/sessions/{session_id}/screen/scrub takes the PNG the 
 node capture, checks the page did not move, OCR-scrubs it through the controller's own redaction and
 files it in the session's artifact directory, as a page screenshot is.
 
+And the evidence stamp (happy_evidence_stamp.py): every screenshot the controller hands out (capture,
+observe, the action snapshots, the screen and page shots) gets a date/time bar across its top, drawn
+after OCR and redaction; the live view's frames do not. The screenshot diff crops it off.
+
 The share route and its token check (app/routes/share.py) are untouched; the patch refuses to load if
 that file, or any file whose behaviour it relies on, is not the 1.14.0 file it was written against.
 
@@ -51,8 +55,11 @@ import secrets
 import struct
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+import happy_evidence_stamp as evidence
 
 logger = logging.getLogger("happy_live_frames")
 
@@ -64,6 +71,8 @@ EXPECTED_SHA256 = {
     "artifacts.py": "01055666b7921868c8b2fc6aa331aee576bd09666c4cc3b54050aa9070edf5ab",
     # The share route: its token check is what keeps who can read a frame unchanged.
     "routes/share.py": "71949b2a687dc37c831ba82270987749ea1c9d8548aefbe0a19f643a9c075e42",
+    # compute_diff, wrapped by the evidence stamp patch to compare pages without their date/time bar.
+    "browser/services/diagnostics.py": "513ba73b6ae613e2d428a09417f5d52e328803e4ca87411f777c9912ae116adc",
 }
 
 # A lockless capture: how long a poll waits on it before serving the previous frame, and the
@@ -111,6 +120,8 @@ def verify(app_dir: Path | None = None) -> None:
                 f"happy_live_frames: app/{rel} is not the {EXPECTED_VERSION} file the patch was written against "
                 f"(sha256 {actual}): re-port the patch or run uvicorn app.main:app"
             )
+    # Every screenshot is stamped with its capture time in this zone: a wrong one must not start.
+    evidence.check_tz()
 
 
 @dataclass(frozen=True)
@@ -211,6 +222,8 @@ def build(observation_module: Any, page_read_module: Any) -> dict[str, Any]:
     bounded = page_read_module.bounded
     upstream_share_snapshot = Service.share_snapshot
     upstream_light_snapshot = Service.light_snapshot
+    upstream_capture_screenshot = Service.capture_screenshot
+    upstream_observation_payload = Service.observation_payload
 
     async def _redact_in_place(self: Any, session: Any, screenshot: dict[str, str]) -> bool:
         """The controller's own redaction (OCR boxes, then _scrub_screenshot_if_needed). True only if it ran."""
@@ -335,9 +348,27 @@ def build(observation_module: Any, page_read_module: Any) -> dict[str, Any]:
                 )
             except Exception as exc:
                 logger.debug("live frames: could not keep an action snapshot: %s", type(exc).__name__)
+        # The evidence stamp, after the live-frame copy: the live view's frame stays without the bar.
+        await evidence.stamp_artifact(result.get("screenshot_path"))
         return result
 
-    return {"share_snapshot": share_snapshot, "light_snapshot": light_snapshot}
+    # The evidence stamp on the screenshots these return, after their OCR, redaction and page check.
+    async def capture_screenshot(self: Any, session_id: str, *, label: str = "manual") -> dict[str, Any]:
+        result = await upstream_capture_screenshot(self, session_id, label=label)
+        await evidence.stamp_artifact(result.get("screenshot_path"))
+        return result
+
+    async def observation_payload(self: Any, session: Any, **kwargs: Any) -> dict[str, Any]:
+        payload = await upstream_observation_payload(self, session, **kwargs)
+        await evidence.stamp_artifact(payload.get("screenshot_path"))
+        return payload
+
+    return {
+        "share_snapshot": share_snapshot,
+        "light_snapshot": light_snapshot,
+        "capture_screenshot": capture_screenshot,
+        "observation_payload": observation_payload,
+    }
 
 
 # ── the focus read ──────────────────────────────────────────────────────────
@@ -398,8 +429,11 @@ async def editable_focused(page: Any) -> bool | None:
 #      session's page is still the one step 1 saw, on the same URL, still in front, and not refused.
 #      The image is written outside the artifact tree, OCR-scrubbed through the controller's own
 #      redaction, and only then moved into the session's artifact directory as
-#      <stamp>Z-screen-<label>.png. -> {url, title, screenshot_path, screenshot_url, width, height,
-#      png, pii_scrubbed, redaction, chrome_strip, address_bar_scheme?, screenshot_pii_scrub?}
+#      <stamp>Z-screen-<label>.png, with the evidence stamp's date/time bar on top (captured_at, the
+#      bridge's time of the capture, held between step 1 and now). -> {url, title, screenshot_path,
+#      screenshot_url, width, height, png, pii_scrubbed, redaction, chrome_strip, captured_at,
+#      evidence_bar_px, stamp_text, address_bar_scheme?, screenshot_pii_scrub?}. width and height are
+#      the stamped image's; chrome_strip and OCR are in the capture's own pixels (image y - evidence_bar_px).
 #      (address_bar_scheme, for an https page: whether OCR saw "https://" in the address bar; see
 #      ADDRESS_BAR_SCHEME). With PII_SCRUB_SCREENSHOT
 #      off the image is stored as captured, as page screenshots are; PII_SCRUB_SCREENSHOT_STRICT
@@ -620,9 +654,20 @@ def _redaction(redact: bool, scrubbing: bool, shot: dict[str, Any]) -> str:
     return "on"
 
 
-async def _audit_shot(manager: Any, session: Any, *, scope: str, redaction: str, url: str, screenshot_url: str) -> None:
-    """The evidence trail for one browser_screenshot: whether it was redacted. An unredacted shot that
-    cannot be recorded is refused (ScreenRefused 503) before it is filed."""
+async def _audit_shot(
+    manager: Any,
+    session: Any,
+    *,
+    scope: str,
+    redaction: str,
+    url: str,
+    screenshot_url: str,
+    sha256: str | None = None,
+    stamp_text: str | None = None,
+) -> None:
+    """The evidence trail for one browser_screenshot: whether it was redacted, the sha256 of the image
+    as filed (stamped) and the date/time its bar shows. An unredacted shot that cannot be recorded is
+    refused (ScreenRefused 503) before it is filed."""
     try:
         await manager.audit.append(
             event_type="evidence_screenshot",
@@ -635,6 +680,8 @@ async def _audit_shot(manager: Any, session: Any, *, scope: str, redaction: str,
                 "redaction": redaction,
                 "url": url,
                 "screenshot_url": screenshot_url,
+                **({} if sha256 is None else {"sha256": sha256}),
+                **({} if stamp_text is None else {"stamp_text": stamp_text}),
             },
         )
     except Exception as exc:
@@ -643,6 +690,22 @@ async def _audit_shot(manager: Any, session: Any, *, scope: str, redaction: str,
             raise ScreenRefused(
                 503, "audit_failed", "The unredacted screenshot could not be recorded in the audit log, so it was not kept."
             ) from None
+
+
+async def _stamp_shot(path: str | Path, captured_at: Any) -> tuple[dict[str, Any], bytes]:
+    """The evidence stamp on a shot about to be filed: (its stamp, the stamped bytes). A shot that
+    cannot be stamped is not kept (ScreenRefused 503)."""
+    try:
+        stamp = await evidence.stamp_evidence(path, captured_at)
+        if stamp is None:
+            raise FileNotFoundError(str(path))
+        data = await asyncio.to_thread(Path(path).read_bytes)
+    except Exception as exc:
+        logger.warning("evidence screenshot: could not stamp: %s", type(exc).__name__)
+        raise ScreenRefused(
+            503, "stamp_failed", "The screenshot could not be stamped with its capture time, so it was not kept."
+        ) from None
+    return stamp, data
 
 
 def _strict(manager: Any) -> bool:
@@ -716,16 +779,32 @@ async def screen_front(
         url = manager._shown_url(session.page)
         title = await _screen_title(session)
         token = secrets.token_hex(16)
-        _screen_tokens(session)[token] = {"read": read, "url": url, "geometry": _geometry(state), "at": time.monotonic()}
+        _screen_tokens(session)[token] = {
+            "read": read,
+            "url": url,
+            "geometry": _geometry(state),
+            "at": time.monotonic(),
+            # The earliest the bridge's capture can be: its claimed capture time is held to this and now.
+            "wall": datetime.now(UTC),
+        }
         return {"token": token, "url": url, "title": title}
     finally:
         session.lock.release()
 
 
 async def screen_scrub(
-    manager: Any, session_id: str, *, token: str, png: bytes, label: str = "manual", redact: bool = True
+    manager: Any,
+    session_id: str,
+    *,
+    token: str,
+    png: bytes,
+    label: str = "manual",
+    redact: bool = True,
+    captured_at: str | None = None,
 ) -> dict[str, Any]:
-    """Step 3: check the page has not moved since step 1, scrub the capture, file it as an artifact."""
+    """Step 3: check the page has not moved since step 1, scrub the capture, stamp it with its capture
+    time and file it as an artifact. captured_at (the bridge's, ISO 8601) is held between step 1's time
+    and now; without one, step 1's time stands."""
     from app.browser.services.observation import _scrub_disclosure
 
     if not redact:
@@ -778,10 +857,15 @@ async def screen_scrub(
         if read.moved():
             raise _moved()
         redaction = _redaction(redact, scrubbing, shot)
-        await _audit_shot(manager, session, scope="screen", redaction=redaction, url=url, screenshot_url=target["url"])
+        # After OCR, redaction and the page check: the bar is never read or redacted, the boxes stay put.
+        at = evidence.clamp(evidence.parse_iso(captured_at), entry["wall"], datetime.now(UTC))
+        stamp, data = await _stamp_shot(pending, at)
+        await _audit_shot(
+            manager, session, scope="screen", redaction=redaction, url=url, screenshot_url=target["url"],
+            sha256=hashlib.sha256(data).hexdigest(), stamp_text=stamp["text"],
+        )
         await asyncio.to_thread(os.replace, pending, final)
         pending = None
-        data = await asyncio.to_thread(final.read_bytes)
         width, height = png_size(data)
         return {
             "url": url,
@@ -794,6 +878,9 @@ async def screen_scrub(
             "pii_scrubbed": scrubbing and "pii_scrub_skipped" not in shot,
             "redaction": redaction,
             "chrome_strip": strip,
+            "captured_at": stamp["captured_at"],
+            "evidence_bar_px": stamp["bar_px"],
+            "stamp_text": stamp["text"],
             **({} if scheme is None else {"address_bar_scheme": scheme}),
             **_scrub_disclosure(shot),
         }
@@ -827,8 +914,13 @@ async def page_shot(manager: Any, session_id: str, *, label: str = "manual", red
             raise _moved()
         title = await _screen_title(session)
         redaction = _redaction(redact, scrubbing, shot)
-        await _audit_shot(manager, session, scope="page", redaction=redaction, url=url, screenshot_url=shot["url"])
-        data = await asyncio.to_thread(Path(shot["path"]).read_bytes)
+        # The capture's own time, from its artifact name; stamped after redaction and the page check.
+        at = evidence.captured_at_from_name(shot["path"]) or datetime.now(UTC)
+        stamp, data = await _stamp_shot(shot["path"], at)
+        await _audit_shot(
+            manager, session, scope="page", redaction=redaction, url=url, screenshot_url=shot["url"],
+            sha256=hashlib.sha256(data).hexdigest(), stamp_text=stamp["text"],
+        )
         width, height = png_size(data)
         result = {
             "url": url,
@@ -840,6 +932,9 @@ async def page_shot(manager: Any, session_id: str, *, label: str = "manual", red
             "png": base64.b64encode(data).decode("ascii"),
             "pii_scrubbed": scrubbing and "pii_scrub_skipped" not in shot,
             "redaction": redaction,
+            "captured_at": stamp["captured_at"],
+            "evidence_bar_px": stamp["bar_px"],
+            "stamp_text": stamp["text"],
             **_scrub_disclosure(shot),
         }
         shot = None
@@ -880,15 +975,20 @@ def install_screen_routes(application: Any, manager: Any) -> None:
             body = await request.json()
             token, label = body["token"], body.get("label") or "manual"
             redact = body.get("redact", True)
+            captured_at = body.get("captured_at")
             if not isinstance(token, str) or not isinstance(label, str) or not isinstance(body["png"], str):
                 raise TypeError
-            if not isinstance(redact, bool):
+            if not isinstance(redact, bool) or not (captured_at is None or isinstance(captured_at, str)):
                 raise TypeError
             png = base64.b64decode(body["png"], validate=True)
         except (ValueError, KeyError, TypeError, binascii.Error):
-            return _screen_refusal(ScreenRefused(400, "bad_request", "expects {token, png (base64), label?, redact?}"))
+            return _screen_refusal(
+                ScreenRefused(400, "bad_request", "expects {token, png (base64), label?, redact?, captured_at?}")
+            )
         try:
-            return await screen_scrub(manager, session_id, token=token, png=png, label=label, redact=redact)
+            return await screen_scrub(
+                manager, session_id, token=token, png=png, label=label, redact=redact, captured_at=captured_at
+            )
         except (ScreenRefused, PermissionError) as exc:
             return _screen_refusal(exc)
 
@@ -938,7 +1038,7 @@ def install_routes(application: Any, manager: Any) -> None:
 
 def apply() -> None:
     from app.browser import page_read
-    from app.browser.services import observation
+    from app.browser.services import diagnostics, observation
 
     Service = observation.BrowserObservationService
     if getattr(Service, "_happy_live_frames", False):
@@ -946,7 +1046,13 @@ def apply() -> None:
     for name, fn in build(observation, page_read).items():
         setattr(Service, name, fn)
     Service._happy_live_frames = True
-    logger.warning("happy_live_frames: patched auto-browser %s share_snapshot/light_snapshot", EXPECTED_VERSION)
+    # The evidence stamp's date/time bar is cropped off before two screenshots are compared.
+    evidence.apply_diff(diagnostics)
+    logger.warning(
+        "happy_live_frames: patched auto-browser %s share_snapshot/light_snapshot, evidence stamp in %s",
+        EXPECTED_VERSION,
+        evidence.tz_name(),
+    )
 
 
 if os.environ.get("HAPPY_LIVE_FRAMES_NO_AUTOLOAD") != "1":

@@ -78,6 +78,8 @@ export function launcherConfig(env = process.env) {
         rateLimit: num('REQUEST_RATE_LIMIT_REQUESTS', 1200),
         logLevel: env.LOG_LEVEL || 'INFO',
         piiScrub: env.PII_SCRUB_SCREENSHOT || 'true',
+        // The zone of the date/time bar on every screenshot (the evidence stamp); the controller refuses a bad one.
+        evidenceTz: env.EVIDENCE_TZ || 'UTC',
         mcpProfile: env.MCP_TOOL_PROFILE || 'curated',
     };
     cfg.viewportHeight = num('BROWSER_VIEWPORT_HEIGHT', viewportHeight(cfg));
@@ -195,7 +197,8 @@ export function nodeSpec(cfg, { slot, podId, vncPassword, image, seccomp }) {
 
 // The controller: compose.browser.yml's controller service with this pod's port, takeover URL
 // and /data, one session, and a fast reconnect while the node is still starting. It serves the
-// app through controller-patch/happy_live_frames.py (live frames while an action runs), which
+// app through controller-patch/happy_live_frames.py (live frames while an action runs, and the
+// evidence stamp's date/time bar from happy_evidence_stamp.py beside it), which
 // refuses to start on any controller but the 1.14.0 it was written against.
 export const CONTROLLER_PATCH_DIR = '/happy/controller-patch';
 export function controllerSpec(cfg, { slot, podId, image, secrets }) {
@@ -236,6 +239,7 @@ export function controllerSpec(cfg, { slot, podId, image, secrets }) {
             `REQUEST_RATE_LIMIT_REQUESTS=${cfg.rateLimit}`,
             'REQUEST_RATE_LIMIT_WINDOW_SECONDS=60',
             `PII_SCRUB_SCREENSHOT=${cfg.piiScrub}`,
+            `EVIDENCE_TZ=${cfg.evidenceTz}`,
             // As the shared controller: the secret filler's keystrokes are never recorded.
             'ENABLE_TRACING=false',
             'NETWORK_INSPECTOR_CAPTURE_BODIES=false',
@@ -252,6 +256,7 @@ export function controllerSpec(cfg, { slot, podId, image, secrets }) {
             Binds: [
                 `${slotDir(cfg, slot)}:/data`,
                 `${cfg.browserDir}/controller-patch/happy_live_frames.py:${CONTROLLER_PATCH_DIR}/happy_live_frames.py:ro`,
+                `${cfg.browserDir}/controller-patch/happy_evidence_stamp.py:${CONTROLLER_PATCH_DIR}/happy_evidence_stamp.py:ro`,
             ],
         },
     };

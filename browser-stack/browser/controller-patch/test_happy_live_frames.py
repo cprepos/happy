@@ -13,7 +13,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 os.environ.setdefault("HAPPY_LIVE_FRAMES_NO_AUTOLOAD", "1")
 
@@ -391,9 +391,21 @@ def png(width: int = 1920, height: int = 1200, tail: bytes = b"") -> bytes:
     return hlf.PNG_SIGNATURE + struct.pack(">I", 13) + b"IHDR" + struct.pack(">II", width, height) + b"\x08\x02\x00\x00\x00" + tail
 
 
+# The stamp these screen tests see: their PNGs are headers only, so the real one (and its own tests)
+# is in test_happy_evidence_stamp; here the file is left as it is.
+FAKE_STAMP = {"bar_px": 67, "captured_at": "2026-01-01T00:00:00.000Z", "tz": "UTC",
+              "text": "2026-01-01 00:00:00 UTC (UTC+00:00)", "stamped": True}
+
+
 class ScreenBase(Base):
+    REAL_STAMP = False
+
     def setUp(self) -> None:
         super().setUp()
+        if not self.REAL_STAMP:
+            stub = patch.object(hlf.evidence, "stamp_evidence", AsyncMock(return_value=dict(FAKE_STAMP)))
+            self.stamp_stub = stub.start()
+            self.addCleanup(stub.stop)
         m = self.service.manager
         m.observation = self.service
         m._shown_url = lambda page: page.url

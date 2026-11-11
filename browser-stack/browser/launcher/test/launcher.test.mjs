@@ -149,6 +149,9 @@ test('pod templates: host network, loopback ports per slot, no published ports, 
         assert.deepEqual(ctl.Cmd, ['uvicorn', 'happy_live_frames:app', '--host', '127.0.0.1', '--port', String(p.api)]);
         assert.equal(ce.PYTHONPATH, '/happy/controller-patch');
         assert.ok(ctl.HostConfig.Binds.includes(`${BROWSER_DIR}/controller-patch/happy_live_frames.py:/happy/controller-patch/happy_live_frames.py:ro`));
+        assert.ok(ctl.HostConfig.Binds.includes(`${BROWSER_DIR}/controller-patch/happy_evidence_stamp.py:/happy/controller-patch/happy_evidence_stamp.py:ro`));
+        assert.equal(ce.EVIDENCE_TZ, 'UTC', 'the evidence stamp zone: UTC unless EVIDENCE_TZ says');
+        assert.equal(ce.TZ, undefined, 'the container\'s own zone is left alone');
         assert.equal(ce.MAX_SESSIONS, '1');
         assert.equal(ce.ENABLE_TRACING, 'false');
         assert.equal(ce.NETWORK_INSPECTOR_CAPTURE_BODIES, 'false');
@@ -494,4 +497,22 @@ test('copy_auth racing stash_auth leaves both chats whole', async () => {
             }
         }
     } finally { await eng.close(); }
+});
+
+test('EVIDENCE_TZ reaches every pod controller, with the evidence stamp patch mounted beside the live frames one', () => {
+    const { cfg } = setup({ EVIDENCE_TZ: 'America/Toronto' });
+    const ctl = controllerSpec(cfg, { slot: 2, podId: POD, image: 'x', secrets: SECRETS });
+    assert.ok(ctl.Env.includes('EVIDENCE_TZ=America/Toronto'));
+    assert.ok(!ctl.Env.some((e) => e.startsWith('TZ=')));
+    const patches = ctl.HostConfig.Binds.filter((b) => b.includes('/controller-patch/'));
+    assert.deepEqual(patches, [
+        `${BROWSER_DIR}/controller-patch/happy_live_frames.py:/happy/controller-patch/happy_live_frames.py:ro`,
+        `${BROWSER_DIR}/controller-patch/happy_evidence_stamp.py:/happy/controller-patch/happy_evidence_stamp.py:ro`,
+    ]);
+    // compose passes it to the launcher and the shared controller alike.
+    const launcherBlock = COMPOSE.split(/^  launcher:$/m)[1].split(/^  \S/m)[0];
+    assert.match(launcherBlock, /^      EVIDENCE_TZ: \$\{EVIDENCE_TZ:-UTC\}$/m);
+    const ctlBlock = COMPOSE.split(/^  controller:$/m)[1].split(/^  \S/m)[0];
+    assert.match(ctlBlock, /^      EVIDENCE_TZ: \$\{EVIDENCE_TZ:-UTC\}$/m);
+    assert.doesNotMatch(ctlBlock, /^      TZ:/m);
 });

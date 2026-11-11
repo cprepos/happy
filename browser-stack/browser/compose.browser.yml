@@ -155,6 +155,10 @@ services:
       REQUEST_RATE_LIMIT_REQUESTS: ${REQUEST_RATE_LIMIT_REQUESTS:-1200}
       REQUEST_RATE_LIMIT_WINDOW_SECONDS: "60"
       PII_SCRUB_SCREENSHOT: ${PII_SCRUB_SCREENSHOT:-true}
+      # The zone of the date/time bar stamped across the top of every screenshot (the evidence
+      # stamp, controller-patch/happy_evidence_stamp.py); browser.mk sets it from the host. The
+      # container's own TZ is left alone.
+      EVIDENCE_TZ: ${EVIDENCE_TZ:-UTC}
       # Secrets typed by the secret filler (browser-stack/browser/filler) must not
       # be written anywhere. A trace records each keystroke's params and DOM
       # snapshots; the network inspector keeps request bodies, and a login
@@ -167,6 +171,7 @@ services:
     volumes:
       - ${HAPPY_BROWSER_HOME:?}/data:/data
       - ./controller-patch/happy_live_frames.py:/happy/controller-patch/happy_live_frames.py:ro
+      - ./controller-patch/happy_evidence_stamp.py:/happy/controller-patch/happy_evidence_stamp.py:ro
 
   # The live bridge (browser-stack/browser/bridge): the phone page /live/<id>, its
   # frames and state, and the takeover hand-back the MCP tool waits on. Plain
@@ -264,6 +269,7 @@ services:
       MCP_TOOL_PROFILE: ${MCP_TOOL_PROFILE:-curated}
       REQUEST_RATE_LIMIT_REQUESTS: ${REQUEST_RATE_LIMIT_REQUESTS:-1200}
       PII_SCRUB_SCREENSHOT: ${PII_SCRUB_SCREENSHOT:-true}
+      EVIDENCE_TZ: ${EVIDENCE_TZ:-UTC}
     healthcheck:
       test: ["CMD", "test", "-S", "/launcher-run/launcher.sock"]
       interval: 10s
