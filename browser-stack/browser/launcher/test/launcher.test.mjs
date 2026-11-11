@@ -26,7 +26,7 @@ function setup(extra = {}) {
     const me = { uid: process.getuid(), gid: process.getgid() };
     const cfg = launcherConfig({
         LAUNCHER_BROWSER_DIR: BROWSER_DIR, LAUNCHER_HOME: home, LAUNCHER_PROJECT: 'hbtest',
-        POD_DATA_UID: String(me.uid), POD_DATA_GID: String(me.gid), ...extra,
+        POD_DATA_UID: String(me.uid), POD_DATA_GID: String(me.gid), POD_NODE_UID: String(me.uid + 1), POD_NODE_GID: String(me.gid), ...extra,
     });
     return { home, cfg };
 }
@@ -134,7 +134,18 @@ test('pod templates: host network, loopback ports per slot, no published ports, 
         assert.equal(node.HostConfig.NanoCpus, 2e9);
         assert.equal(node.HostConfig.PidsLimit, 2048);
         assert.deepEqual(node.HostConfig.CapDrop, ['ALL']);
-        assert.deepEqual(node.HostConfig.CapAdd, ['CHOWN', 'DAC_OVERRIDE', 'KILL', 'SETGID', 'SETUID']);
+        // Both run as their own non-root uids from the start: no capability, a read-only root, a private /tmp.
+        assert.equal(node.HostConfig.CapAdd, undefined);
+        assert.equal(node.User, `${cfg.nodeUid}:${cfg.nodeGid}`);
+        assert.equal(ctl.User, `${cfg.dataUid}:${cfg.dataGid}`);
+        for (const spec of [node, ctl]) {
+            assert.deepEqual(spec.HostConfig.CapDrop, ['ALL']);
+            assert.equal(spec.HostConfig.ReadonlyRootfs, true);
+            assert.deepEqual(Object.keys(spec.HostConfig.Tmpfs), ['/tmp']);
+            assert.ok(spec.Env.includes('HOME=/tmp'));
+        }
+        assert.match(node.HostConfig.Tmpfs['/tmp'], /(^|,)exec(,|$)/, 'the entrypoint runs its patched script from /tmp');
+        assert.match(ctl.HostConfig.Tmpfs['/tmp'], /(^|,)noexec(,|$)/);
         assert.equal(node.HostConfig.SecurityOpt.find((s) => s.startsWith('seccomp=')), `seccomp=${SECCOMP}`, 'seccomp is the file content');
         const env = (s) => Object.fromEntries(s.Env.map((e) => [e.slice(0, e.indexOf('=')), e.slice(e.indexOf('=') + 1)]));
         const ne = env(node), ce = env(ctl);
@@ -252,7 +263,7 @@ test('screen: execs the capture script in that pod\'s node only', async () => {
         const node = [...eng.containers.values()].find((c) => c.Labels['happy-browser.role'] === 'node');
         assert.equal(ex.container, node.Id, 'runs in the node, not the controller');
         assert.deepEqual(ex.spec.Cmd, ['python3', '-I', '-c', 'print(1)']);
-        assert.equal(ex.spec.User, 'browser');
+        assert.equal(ex.spec.User, String(cfg.nodeUid), 'as the node\'s own uid');
         assert.deepEqual(ex.spec.Env, ['DISPLAY=:99']);
 
         // Another pod id on the same slot (a chat that lost it) gets nothing.
@@ -279,6 +290,17 @@ test('config: slots and port bases are bounded', () => {
     assert.throws(() => setup({ MAX_PODS: '0' }), /MAX_PODS/);
     assert.throws(() => setup({ POD_API_BASE: '80' }), /out of range/);
     assert.throws(() => launcherConfig({}), /required/);
+    for (const k of ['POD_DATA_UID', 'POD_DATA_GID', 'POD_NODE_UID', 'POD_NODE_GID']) assert.throws(() => setup({ [k]: '0' }), /must not be root/);
+});
+
+test('config: the Docker socket comes from DOCKER_SOCKET or DOCKER_HOST (the proxy), never TCP', () => {
+    const base = { LAUNCHER_BROWSER_DIR: '/b', LAUNCHER_HOME: '/h' };
+    assert.equal(launcherConfig(base).dockerSocket, '/var/run/docker.sock');
+    assert.equal(launcherConfig({ ...base, DOCKER_HOST: 'unix:///proxy/docker.sock' }).dockerSocket, '/proxy/docker.sock');
+    assert.equal(launcherConfig({ ...base, DOCKER_SOCKET: '/p/d.sock', DOCKER_HOST: 'unix:///x' }).dockerSocket, '/p/d.sock');
+    assert.throws(() => launcherConfig({ ...base, DOCKER_HOST: 'tcp://127.0.0.1:2375' }), /unix/);
+    const d = launcherConfig(base);
+    assert.deepEqual([d.dataUid, d.dataGid, d.nodeUid, d.nodeGid, d.socketGid], [1993, 1993, 1994, 1994, 1996]);
 });
 
 test('validation: only the seven ops, with exact fields', () => {
@@ -325,7 +347,7 @@ test('lifecycle over the socket: ensure, idempotent ensure, list, auth round tri
     mkdirSync(join(home, 'run'));
     const sock = join(home, 'run', 'launcher.sock');
     const server = await serve(launcher, sock, { log: { log() {} } });
-    assert.equal(statSync(sock).mode & 0o777, 0o600);
+    assert.equal(statSync(sock).mode & 0o777, 0o660, 'the bridge reaches it through the socket group');
     const conn = connect(sock);
     const lines = createInterface({ input: conn });
     const waiting = [];
@@ -341,6 +363,13 @@ test('lifecycle over the socket: ensure, idempotent ensure, list, auth round tri
         const creates = eng.calls.filter((c) => c.path === '/containers/create');
         assert.deepEqual(creates.map((c) => c.query.name).sort(), ['hbtest-pod-2-controller', 'hbtest-pod-2-node']);
         for (const d of ['browser-profile', 'downloads', 'auth']) assert.ok(existsSync(join(home, 'data/pods/slot-2', d)));
+        // The node writes browser-profile and downloads through their group; the rest is the controller's alone.
+        for (const [d, mode] of [['', 0o700], ['browser-profile', 0o775], ['downloads', 0o775], ['auth', 0o700]]) {
+            const st = statSync(join(home, 'data/pods/slot-2', d));
+            assert.equal(st.mode & 0o7777, mode, `slot-2/${d} mode`);
+            assert.equal(st.uid, cfg.dataUid);
+            assert.equal(st.gid, d === 'browser-profile' || d === 'downloads' ? cfg.nodeGid : cfg.dataGid);
+        }
 
         const e2 = await call({ id: 2, op: 'ensure', slot: 2, pod_id: POD, vnc_password: 'Abcd1234' });
         assert.equal(e2.result.existing, true);

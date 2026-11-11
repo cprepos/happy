@@ -6,8 +6,11 @@
 // and its own auto-browser controller (127.0.0.1:API_BASE+slot, MAX_SESSIONS=1, /data is
 // data/pods/slot-N). See docs/per-chat-pods-plan.md.
 //
-// It runs with no network (network_mode: none), and listens only on a unix socket
-// (LAUNCHER_SOCKET, 0600, owned by the bridge's uid) speaking newline-delimited JSON:
+// It runs as its own non-root uid (POD_DATA_UID, which owns every slot directory and runs each pod's
+// controller) with no network (network_mode: none) and no capabilities, reaches Docker only
+// through the allowlisting socket proxy (docker-proxy/, DOCKER_SOCKET or DOCKER_HOST=unix://..),
+// and listens only on a unix socket (LAUNCHER_SOCKET, 0660, group LAUNCHER_SOCKET_GID, which only
+// the bridge is given) speaking newline-delimited JSON:
 //
 //   {"id":1,"op":"ensure","slot":0,"pod_id":"<32 hex>","vnc_password":"<8 alnum>"}
 //   {"id":2,"op":"stop","slot":0}
@@ -18,7 +21,7 @@
 //   {"id":7,"op":"screen","slot":0,"pod_id":"<32 hex>"}
 //
 // screen is the one op that runs something inside a pod: scripts/screen-capture.py, read from
-// this repo when the launcher starts, run as the browser user in that slot's node container
+// this repo when the launcher starts, run as the node's uid in that slot's node container
 // (only if it still carries that pod_id), which prints the whole X screen as a PNG. The reply
 // is {"mime":"image/png","width":..,"height":..,"data":"<base64>"}.
 //
@@ -61,7 +64,7 @@ export function launcherConfig(env = process.env) {
         chatsDir: join(home, 'data', 'chats'),
         secretsDir: env.LAUNCHER_SECRETS_DIR || join(home, 'secrets'),
         socketPath: env.LAUNCHER_SOCKET || join(home, 'run', 'launcher.sock'),
-        dockerSocket: env.DOCKER_SOCKET || '/var/run/docker.sock',
+        dockerSocket: dockerSocket(env),
         project: env.LAUNCHER_PROJECT || 'happy-browser',
         maxPods,
         novncBase: num('POD_NOVNC_BASE', 6100),
@@ -70,10 +73,13 @@ export function launcherConfig(env = process.env) {
         width: num('BROWSER_WIDTH', 1920),
         height: num('BROWSER_HEIGHT', 1200),
         kiosk: kioskFlag(env.BROWSER_KIOSK),
-        dataUid: num('POD_DATA_UID', 1000),
-        dataGid: num('POD_DATA_GID', 1000),
-        socketUid: num('LAUNCHER_SOCKET_UID', 1000),
-        socketGid: num('LAUNCHER_SOCKET_GID', 1000),
+        // The controller's uid and gid (each pod's, and the owner of every slot directory: the
+        // launcher's own), and the browser node's. Never root.
+        dataUid: num('POD_DATA_UID', 1993),
+        dataGid: num('POD_DATA_GID', 1993),
+        nodeUid: num('POD_NODE_UID', 1994),
+        nodeGid: num('POD_NODE_GID', 1994),
+        socketGid: num('LAUNCHER_SOCKET_GID', 1996),
         maxSessions: 1,
         rateLimit: num('REQUEST_RATE_LIMIT_REQUESTS', 1200),
         logLevel: env.LOG_LEVEL || 'INFO',
@@ -85,10 +91,20 @@ export function launcherConfig(env = process.env) {
     cfg.viewportHeight = num('BROWSER_VIEWPORT_HEIGHT', viewportHeight(cfg));
     if (cfg.viewportHeight < 1 || cfg.viewportHeight > cfg.height) throw new Error('BROWSER_VIEWPORT_HEIGHT must be 1..BROWSER_HEIGHT');
     if (!/^[a-z0-9][a-z0-9_-]*$/.test(cfg.project)) throw new Error('LAUNCHER_PROJECT must be a compose project name');
+    for (const k of ['dataUid', 'dataGid', 'nodeUid', 'nodeGid']) if (cfg[k] === 0) throw new Error(`${k} must not be root`);
     for (const base of ['novncBase', 'apiBase', 'playwrightBase']) {
         if (cfg[base] < 1024 || cfg[base] + HARD_MAX_PODS > 65535) throw new Error(`${base} out of range`);
     }
     return cfg;
+}
+
+// The Engine API socket: DOCKER_SOCKET, else DOCKER_HOST's unix:// path, else the default.
+export function dockerSocket(env) {
+    if (env.DOCKER_SOCKET) return env.DOCKER_SOCKET;
+    const h = env.DOCKER_HOST || '';
+    if (h.startsWith('unix://')) return h.slice('unix://'.length);
+    if (h) throw new Error('DOCKER_HOST must be a unix:// socket');
+    return '/var/run/docker.sock';
 }
 
 export function kioskFlag(v) {
@@ -146,6 +162,8 @@ const labels = (cfg, slot, podId, role) => ({
 
 // The browser-node: compose.browser.yml's browser-node service, per-slot ports, plus memory
 // and CPU caps. Its own private /dev/shm (ShmSize); no IPC or /dev/shm shared with anything.
+// Its own uid from the start (no root setup step), no capabilities, a read-only root and a
+// private /tmp (exec: the entrypoint runs its patched script from there).
 export function nodeSpec(cfg, { slot, podId, vncPassword, image, seccomp }) {
     const p = ports(cfg, slot);
     const dir = slotDir(cfg, slot);
@@ -168,14 +186,17 @@ export function nodeSpec(cfg, { slot, podId, vncPassword, image, seccomp }) {
             `VNC_PASSWORD=${vncPassword}`,
             'NOVNC_ALLOWED_HOSTS=',
             'NOVNC_ALLOWED_ORIGINS=',
+            'HOME=/tmp',
         ],
+        User: `${cfg.nodeUid}:${cfg.nodeGid}`,
         Labels: labels(cfg, slot, podId, 'node'),
         HostConfig: {
             NetworkMode: 'host',
             ShmSize: 2 * GiB,
             CapDrop: ['ALL'],
-            CapAdd: ['CHOWN', 'DAC_OVERRIDE', 'KILL', 'SETGID', 'SETUID'],
             SecurityOpt: ['no-new-privileges:true', `seccomp=${seccomp}`],
+            ReadonlyRootfs: true,
+            Tmpfs: { '/tmp': TMPFS_NODE },
             PidsLimit: 2048,
             Memory: 3 * GiB,
             MemorySwap: 3 * GiB,
@@ -201,6 +222,8 @@ export function nodeSpec(cfg, { slot, podId, vncPassword, image, seccomp }) {
 // evidence stamp's date/time bar from happy_evidence_stamp.py beside it), which
 // refuses to start on any controller but the 1.14.0 it was written against.
 export const CONTROLLER_PATCH_DIR = '/happy/controller-patch';
+export const TMPFS_NODE = 'rw,exec,nosuid,nodev,size=512m,mode=1777';
+export const TMPFS_CONTROLLER = 'rw,noexec,nosuid,nodev,size=256m,mode=1777';
 export function controllerSpec(cfg, { slot, podId, image, secrets }) {
     const p = ports(cfg, slot);
     return {
@@ -244,11 +267,16 @@ export function controllerSpec(cfg, { slot, podId, image, secrets }) {
             'ENABLE_TRACING=false',
             'NETWORK_INSPECTOR_CAPTURE_BODIES=false',
             'CONNECT_RETRY_DELAY_SECONDS=0.2',
+            'HOME=/tmp',
         ],
+        User: `${cfg.dataUid}:${cfg.dataGid}`,
         Labels: labels(cfg, slot, podId, 'controller'),
         HostConfig: {
             NetworkMode: 'host',
+            CapDrop: ['ALL'],
             SecurityOpt: ['no-new-privileges:true'],
+            ReadonlyRootfs: true,
+            Tmpfs: { '/tmp': TMPFS_CONTROLLER },
             Memory: 1 * GiB,
             MemorySwap: 1 * GiB,
             Init: true,
@@ -368,13 +396,13 @@ export function createLauncher(cfg, { engine, images, seccomp, secrets, captureS
         wipe(slot);
         const dir = slotDir(cfg, slot);
         mkdirSync(cfg.podsDir, { recursive: true });
-        // As browser-init.sh does for the shared stack: browser-node chowns browser-profile and
-        // downloads to its own uid and keeps their mode, and the controller (the uid of /data)
-        // must still read the endpoint file there, so those two are 755; the rest stays 700.
-        for (const [d, mode] of [['', 0o700], ['browser-profile', 0o755], ['downloads', 0o755], ['auth', 0o700]]) {
+        // As browser-init.sh does for the shared stack: the node (its own uid) writes browser-profile
+        // and downloads through their group, the controller (the owner, as the whole slot) reads the
+        // endpoint file there, and the launcher can still wipe both; the rest stays 700.
+        for (const [d, mode, gid] of [['', 0o700, cfg.dataGid], ['browser-profile', 0o775, cfg.nodeGid], ['downloads', 0o775, cfg.nodeGid], ['auth', 0o700, cfg.dataGid]]) {
             mkdirSync(join(dir, d), { recursive: true });
+            chownSync(join(dir, d), cfg.dataUid, gid);
             chmodSync(join(dir, d), mode);
-            chownSync(join(dir, d), cfg.dataUid, cfg.dataGid);
         }
         return dir;
     };
@@ -501,7 +529,7 @@ export function createLauncher(cfg, { engine, images, seccomp, secrets, captureS
             if (!captureScript) throw new Error('screen capture is not available');
             const node = (await containersFor(slot)).find((c) => c.Labels['happy-browser.pod_id'] === podId && c.Labels['happy-browser.role'] === 'node');
             if (!node || node.State !== 'running') throw new Error('pod is not running');
-            const r = await engine.exec(node.Id, { cmd: ['python3', '-I', '-c', captureScript], user: 'browser', env: ['DISPLAY=:99'] });
+            const r = await engine.exec(node.Id, { cmd: ['python3', '-I', '-c', captureScript], user: String(cfg.nodeUid), env: ['DISPLAY=:99'] });
             if (r.exitCode !== 0) throw new Error(`screen capture failed: ${r.stderr.toString('utf8').trim().split('\n').pop()?.slice(0, 200) || `exit ${r.exitCode}`}`);
             const size = pngSize(r.stdout);
             if (!size) throw new Error('screen capture returned no image');
@@ -528,7 +556,7 @@ function chownTree(path, uid, gid) {
     if (st.isDirectory()) for (const e of readdirSync(path)) chownTree(join(path, e), uid, gid);
 }
 
-export function serve(launcher, socketPath, { uid, gid, log = console } = {}) {
+export function serve(launcher, socketPath, { gid, log = console } = {}) {
     if (existsSync(socketPath)) {
         if (!statSync(socketPath).isSocket()) throw new Error(`${socketPath} exists and is not a socket`);
         unlinkSync(socketPath);
@@ -549,8 +577,9 @@ export function serve(launcher, socketPath, { uid, gid, log = console } = {}) {
         server.once('error', reject);
         server.listen(socketPath, () => {
             process.umask(oldMask);
-            chmodSync(socketPath, 0o600);
-            if (uid !== undefined && typeof process.getuid === 'function' && process.getuid() === 0) chownSync(socketPath, uid, gid);
+            // Its group is the bridge's way in (the launcher is a member, so no capability is needed).
+            if (gid !== undefined) chownSync(socketPath, process.getuid(), gid);
+            chmodSync(socketPath, 0o660);
             log.log(`launcher: listening on ${socketPath}`);
             resolve(server);
         });
@@ -558,6 +587,7 @@ export function serve(launcher, socketPath, { uid, gid, log = console } = {}) {
 }
 
 async function main() {
+    if (typeof process.getuid === 'function' && process.getuid() === 0) throw new Error('refusing to run as root');
     const cfg = launcherConfig();
     const images = composeImages(readFileSync(join(cfg.browserDir, 'compose.browser.yml'), 'utf8'));
     // The Engine API takes the profile's content, not a path (as `docker run --security-opt seccomp=FILE` does).
@@ -571,7 +601,7 @@ async function main() {
     mkdirSync(cfg.chatsDir, { recursive: true, mode: 0o700 });
     const captureScript = readFileSync(join(cfg.browserDir, 'scripts', 'screen-capture.py'), 'utf8');
     const launcher = createLauncher(cfg, { engine, images, seccomp, secrets, captureScript });
-    await serve(launcher, cfg.socketPath, { uid: cfg.socketUid, gid: cfg.socketGid });
+    await serve(launcher, cfg.socketPath, { gid: cfg.socketGid });
     for (const s of ['SIGINT', 'SIGTERM']) process.on(s, () => process.exit(0));
 }
 
