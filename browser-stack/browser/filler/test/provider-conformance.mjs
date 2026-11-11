@@ -9,7 +9,8 @@
 //       hostMatch: {id, host}                                    a URI with host matching
 //       otherId                                                  a well-formed id of no item
 //       badId                                                    a string that is not an id
-//   }}
+//   }, undoRemove(id)}   for capabilities.restore 'manual' only: what a person does
+//                        in the vault app before restoreLogin can succeed
 //
 // Values the suite reads must never appear in listItems or in an error message.
 import { test } from 'node:test';
@@ -35,7 +36,7 @@ export function providerConformance(label, harness) {
 
     t('has the contract\'s shape and passes the registry check', async (p) => {
         for (const m of METHODS) assert.equal(typeof p[m], 'function', m);
-        assert.ok(['native', 'tag'].includes(p.capabilities.restore));
+        assert.ok(['native', 'tag', 'manual'].includes(p.capabilities.restore));
         for (const k of ['equivalentDomains', 'totp']) assert.equal(typeof p.capabilities[k], 'boolean', k);
         const type = `conf-${p.type}`.slice(0, 32);
         if (!types().includes(type)) register(type, () => ({ ...p, type }));
@@ -148,12 +149,17 @@ export function providerConformance(label, harness) {
         await rejects(p.updateLogin(fx.otherId, { name: 'x' }), 404);
     });
 
-    t('trash and restore round trip; never twice', async (p, fx) => {
+    t('trash and restore round trip; never twice', async (p, fx, h) => {
         await p.trashLogin(fx.portal.id);
         assert.ok(!(await p.listItems()).some((i) => i.id === fx.portal.id));
         await rejects(p.readItem(fx.portal.id), 404);
         await rejects(p.trashLogin(fx.portal.id), 409);
         assert.equal((await p.listItems({ trash: true })).find((i) => i.id === fx.portal.id)?.trashed, true);
+        if (p.capabilities.restore === 'manual') {
+            const e = await rejects(p.restoreLogin(fx.portal.id), 409);
+            assert.match(e.message, /unarchive|by hand|in the vault app|in 1Password/i, 'the refusal says what a person must do');
+            await h.undoRemove(fx.portal.id);
+        }
         await p.restoreLogin(fx.portal.id);
         await rejects(p.restoreLogin(fx.portal.id), 409);
         const back = await p.readItem(fx.portal.id);

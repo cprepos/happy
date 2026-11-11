@@ -5,15 +5,19 @@
 // Policy config ("backends" entry):
 //   {"type": "onepassword", "vault": "<vault name or id>",
 //    "token_file": "onepassword.token" (optional, a file in secrets/<backend>/),
-//    "archive": false (optional: also archive a login on remove)}
+//    "remove": "archive" (default) | "tag"}
 //
 // Safety:
 //   - one vault only, resolved by exact id or exact title; missing or ambiguous
 //     fails closed. Every item read or written must carry that vault id.
 //   - the cache holds metadata only (toMeta: no password, TOTP or field
 //     value). readItem fetches the one item it is asked for.
-//   - items are never deleted: remove tags the item TRASH_TAG (and archives it
-//     only with "archive": true), restore takes the tag off.
+//   - items are never deleted. Remove tags the item TRASH_TAG (so it stays
+//     identifiable as removed by the filler) and, with "remove": "archive"
+//     (the default), archives it. The SDK cannot unarchive, so restore of an
+//     archived login is refused (409) until a person unarchives it in
+//     1Password; then restore takes the tag off. capabilities.restore says
+//     which: 'manual' (archive) or 'tag' (tag only).
 //   - error messages are fixed strings: no SDK message (which can quote input),
 //     no value, no token.
 //   - a rate limit puts the provider in a cooldown that doubles up to 5
@@ -22,11 +26,12 @@ import { ProviderError } from '../index.mjs';
 import { DEFAULT_TOKEN_FILE, checkTokenFile, readToken, tokenPath } from './token.mjs';
 import { ID, NEW_WEBSITE_BEHAVIOR, TRASH_TAG, byNameThenId, isTrashed, passwordField, toLogin, toMeta, usernameField } from './map.mjs';
 
-const CONFIG_KEYS = new Set(['type', 'id', 'secretsDir', 'vault', 'token_file', 'archive']);
+const CONFIG_KEYS = new Set(['type', 'id', 'secretsDir', 'vault', 'token_file', 'remove']);
 const MAX_NAME = 512, MAX_VALUE = 4096, MAX_URIS = 32, MAX_URI = 2048, MAX_ITEMS = 10_000;
 const COOLDOWN_MIN_MS = 5_000, COOLDOWN_MAX_MS = 300_000;
 const INTEGRATION = { integrationName: 'happy-secret-filler', integrationVersion: '1.0.0' };
 const LOGIN = 'Login';
+const REMOVE_MODES = ['archive', 'tag'];
 
 const err = (message, status) => new ProviderError(message, status);
 const errName = (e) => e?.constructor?.name || e?.name || '';
@@ -36,9 +41,9 @@ export const isId = (s) => typeof s === 'string' && ID.test(s.toLowerCase());
 
 function checkConfig(config) {
     for (const k of Object.keys(config)) if (!CONFIG_KEYS.has(k)) throw err(`1Password backend: unknown setting ${JSON.stringify(k).slice(0, 40)}`, 500);
-    const { vault, archive = false } = config;
+    const { vault, remove = 'archive' } = config;
     if (typeof vault !== 'string' || !vault.trim() || vault.length > 256 || /[\u0000-\u001f\u007f]/.test(vault)) throw err('1Password backend: "vault" must be a vault name or id', 500);
-    if (typeof archive !== 'boolean') throw err('1Password backend: "archive" must be true or false', 500);
+    if (!REMOVE_MODES.includes(remove)) throw err('1Password backend: "remove" must be "archive" or "tag"', 500);
 }
 
 function checkString(v, what, max, { allowEmpty = true } = {}) {
@@ -58,13 +63,14 @@ function checkUris(uris) {
 
 /**
  * A 1Password provider.
- * config: {id, secretsDir, vault, token_file?, archive?} (type is allowed).
+ * config: {id, secretsDir, vault, token_file?, remove?} (type is allowed).
  * deps (tests): client (a ready SDK client) or createClient(token) -> client;
  *   now, ttlMs (15 s), batchSize (50).
  */
 export function createOnePasswordProvider(config = {}, deps = {}) {
     checkConfig(config);
-    const { id = 'onepassword', secretsDir, vault: vaultRef, token_file: tokenFile = DEFAULT_TOKEN_FILE, archive = false } = config;
+    const { id = 'onepassword', secretsDir, vault: vaultRef, token_file: tokenFile = DEFAULT_TOKEN_FILE, remove = 'archive' } = config;
+    const archive = remove === 'archive';
     const { now = () => Date.now(), ttlMs = 15_000, batchSize = 50 } = deps;
     let path = null;
     if (!deps.client) {
@@ -146,7 +152,7 @@ export function createOnePasswordProvider(config = {}, deps = {}) {
         if (inflight) return inflight;
         inflight = (async () => {
             const c = await connect();
-            const filter = { type: 'ByState', content: { active: true, archived: archive } };
+            const filter = { type: 'ByState', content: { active: true, archived: true } };
             const overviews = await call('item list', () => c.items.list(vaultId, filter));
             if (!Array.isArray(overviews)) throw err('1Password item list failed', 502);
             // An archived login is listed only when we archived it (it carries
@@ -195,7 +201,7 @@ export function createOnePasswordProvider(config = {}, deps = {}) {
     return {
         id,
         type: 'onepassword',
-        capabilities: Object.freeze({ restore: 'tag', equivalentDomains: false, totp: true }),
+        capabilities: Object.freeze({ restore: archive ? 'manual' : 'tag', equivalentDomains: false, totp: true }),
         checkId: (x) => (isId(x) ? x.toLowerCase() : null),
         status: () => {
             const out = { unlocked: !!(client && vaultId), sync_age_s: cache ? Math.round((now() - cache.at) / 1000) : null };
@@ -257,10 +263,13 @@ export function createOnePasswordProvider(config = {}, deps = {}) {
             return changed;
         },
         async trashLogin(itemId) {
-            const { c, item } = await fetchItem(itemId, { forWrite: true });
-            if (isTrashed(item)) throw err('item is in the trash', 409);
+            const { c, item, archived: arch } = await fetchItem(itemId, { forWrite: true });
+            // Tagged but still active with remove "archive": an earlier remove
+            // stopped between the tag and the archive; finish it.
+            const unfinished = isTrashed(item) && archive && !arch;
+            if (isTrashed(item) && !unfinished) throw err('item is in the trash', 409);
             await write(async () => {
-                await call('item update', () => c.items.put({ ...item, tags: [...(item.tags || []), TRASH_TAG] }));
+                if (!unfinished) await call('item update', () => c.items.put({ ...item, tags: [...(item.tags || []), TRASH_TAG] }));
                 if (archive) await call('item archive', () => c.items.archive(vaultId, item.id));
             });
         },

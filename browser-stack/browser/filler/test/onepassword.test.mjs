@@ -1,6 +1,7 @@
 // The 1Password provider's own rules, beyond the shared conformance suite:
-// the token file, config bounds, vault resolution, the tag-only trash (never
-// delete, archive only when configured), the rate-limit cooldown, re-sign-in,
+// the token file, config bounds, vault resolution, remove (archive plus the
+// tag by default, tag only on request, never delete), the rate-limit cooldown,
+// re-sign-in,
 // and that no SDK message, token or value reaches an error.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -71,7 +72,7 @@ test('token: a sign-in failure message from the SDK is not passed on', async () 
 
 test('config: unknown keys and bad values fail closed', () => {
     const op = fakeOnePassword();
-    for (const cfg of [{ vault: 'v', url: 'x' }, { vault: '' }, { vault: 'a'.repeat(300) }, { vault: 'a\nb' }, { vault: 'v', archive: 'yes' }, {}]) {
+    for (const cfg of [{ vault: 'v', url: 'x' }, { vault: '' }, { vault: 'a'.repeat(300) }, { vault: 'a\nb' }, { vault: 'v', remove: 'delete' }, { vault: 'v', remove: true }, { vault: 'v', remove: 'Archive' }, { vault: 'v', archive: true }, {}]) {
         assert.throws(() => createOnePasswordProvider(cfg, { client: op.client }), (e) => e.status === 500, JSON.stringify(cfg));
     }
 });
@@ -105,9 +106,10 @@ test('list: logins only, getAll in batches, cached for the ttl', async () => {
     assert.deepEqual(never.uris.map((u) => u.match), ['never']);
 });
 
-test('trash is a tag: never items.delete, no archive unless configured', async () => {
+test('remove: "tag" only tags: no archive, no delete; restore is the API\'s', async () => {
     const op = fakeOnePassword();
-    const p = createOnePasswordProvider({ vault: VAULT_TITLE }, { client: op.client });
+    const p = createOnePasswordProvider({ vault: VAULT_TITLE, remove: 'tag' }, { client: op.client });
+    assert.equal(p.capabilities.restore, 'tag');
     const id = op.byLabel('acme-portal');
     await p.trashLogin(id);
     assert.ok(op.store.get(id).item.tags.includes('happy-trashed'));
@@ -117,12 +119,18 @@ test('trash is a tag: never items.delete, no archive unless configured', async (
     assert.ok(!op.calls.some((c) => /delete|archive/i.test(c.name)), 'no delete, no archive');
 });
 
-test('archive: true archives on remove; restore waits for a manual unarchive', async () => {
+test('remove defaults to archive plus the tag; restore is manual: 409 until unarchived by hand', async () => {
     const op = fakeOnePassword();
-    const p = createOnePasswordProvider({ vault: VAULT_TITLE, archive: true }, { client: op.client });
+    const p = createOnePasswordProvider({ vault: VAULT_TITLE }, { client: op.client });
+    assert.equal(p.capabilities.restore, 'manual');
     const id = op.byLabel('acme-portal');
     await p.trashLogin(id);
     assert.equal(op.store.get(id).state, 'archived');
+    assert.ok(op.store.get(id).item.tags.includes('happy-trashed'), 'tagged before it is archived');
+    assert.deepEqual(op.calls.filter((c) => /put|archive/.test(c.name)).map((c) => c.name), ['items.put', 'items.archive']);
+    assert.ok(!(await p.listItems()).some((i) => i.id === id));
+    assert.equal((await status(p.trashLogin(id))).status, 409);
+    assert.match((await status(p.restoreLogin(id))).message, /unarchive it in 1Password, then restore/);
     assert.equal((await p.listItems({ trash: true })).find((i) => i.id === id)?.trashed, true);
     assert.equal((await status(p.readItem(id))).status, 404);
     assert.equal((await status(p.restoreLogin(id))).status, 409);
@@ -219,4 +227,34 @@ test('reads of guessed ids cost no SDK calls inside the cache', async () => {
     const n = op.calls.length;
     for (let i = 0; i < 20; i++) assert.equal((await status(p.readItem(newId()))).status, 404);
     assert.equal(op.calls.length, n);
+});
+
+test('remove: a remove that stopped between tag and archive is finished, not refused', async () => {
+    const op = fakeOnePassword();
+    const p = createOnePasswordProvider({ vault: VAULT_TITLE }, { client: op.client });
+    const id = op.byLabel('acme-portal');
+    const archive = op.client.items.archive;
+    op.client.items.archive = async () => { throw new Error('network'); };
+    assert.equal((await status(p.trashLogin(id))).status, 502);
+    assert.equal(op.store.get(id).state, 'active');
+    op.client.items.archive = archive;
+    await p.trashLogin(id);
+    assert.equal(op.store.get(id).state, 'archived');
+    assert.equal(op.store.get(id).item.tags.filter((t) => t === 'happy-trashed').length, 1);
+});
+
+test('never items.delete, in either remove mode, across every write', async () => {
+    for (const remove of ['archive', 'tag']) {
+        const op = fakeOnePassword();
+        const p = createOnePasswordProvider({ vault: VAULT_TITLE, remove }, { client: op.client });
+        const id = await p.createLogin({ name: 'd', uris: ['https://d.test'], username: 'u', password: 'P-1' });
+        await p.updateLogin(id, { name: 'd2' });
+        await p.trashLogin(id);
+        if (remove === 'archive') op.unarchive(id);
+        await p.restoreLogin(id);
+        await p.trashLogin(op.byLabel('acme-github'));
+        p.lock();
+        assert.ok(op.store.has(id));
+        assert.deepEqual(op.calls.filter((c) => /delete/i.test(c.name)), [], remove);
+    }
 });

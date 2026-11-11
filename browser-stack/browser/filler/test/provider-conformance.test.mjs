@@ -1,5 +1,6 @@
 // The provider conformance suite (provider-conformance.mjs) on each provider:
-// Vaultwarden over fake-vaultwarden.mjs, 1Password over fake-onepassword.mjs.
+// Vaultwarden over fake-vaultwarden.mjs, 1Password over fake-onepassword.mjs
+// in both remove modes (archive: restore is 'manual'; tag: restore is 'tag').
 import { createVaultwardenProvider } from '../lib/providers/vaultwarden/index.mjs';
 import { createOnePasswordProvider } from '../lib/providers/onepassword/index.mjs';
 import { startFakeVaultwarden, buildVault, TOTP_SECRET } from './fake-vaultwarden.mjs';
@@ -25,13 +26,15 @@ providerConformance('vaultwarden', async () => {
     };
 });
 
-providerConformance('onepassword', async () => {
+for (const remove of ['archive', 'tag']) providerConformance(`onepassword (remove: ${remove})`, async () => {
     const op = fakeOnePassword();
-    const provider = createOnePasswordProvider({ type: 'onepassword', id: 'conf', vault: VAULT_TITLE }, { client: op.client });
+    const provider = createOnePasswordProvider({ type: 'onepassword', id: 'conf', vault: VAULT_TITLE, remove }, { client: op.client });
     const item = (label) => op.store.get(op.byLabel(label)).item;
     const val = (label, fid) => item(label).fields.find((f) => f.id === fid).value;
     return {
         provider,
+        undoRemove: (id) => op.unarchive(id),
+        close: () => { if (op.calls.some((c) => /delete/i.test(c.name))) throw new Error('the provider called items.delete'); },
         fx: {
             github: { id: op.byLabel('acme-github'), username: val('acme-github', 'username'), password: val('acme-github', 'password'), totp: TOTP_SECRET, hosts: ['github.com', 'www.github.com'] },
             portal: { id: op.byLabel('acme-portal'), fields: Object.fromEntries(item('acme-portal').fields.filter((f) => f.sectionId).map((f) => [f.title, f.value])) },

@@ -13,6 +13,9 @@
 //   p.capabilities  {restore, equivalentDomains, totp}:
 //                     restore: 'native'  trashLogin/restoreLogin use the vault's own trash
 //                              'tag'     they tag the item and hide it (a vault with no trash API)
+//                              'manual'  trashLogin hides the item where the API cannot bring
+//                                        it back (1Password's archive): restoreLogin refuses
+//                                        (409) until a person has undone that in the vault app
 //                     equivalentDomains: true when listItems can attach `equivalents`
 //                     totp: true when readItem can return a TOTP seed
 //   p.checkId(id)   the canonical form of an item id, or null when id is not

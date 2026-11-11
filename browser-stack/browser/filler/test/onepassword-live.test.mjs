@@ -3,9 +3,10 @@
 //   OP_TEST_TOKEN_FILE  a service account token file (mode 0400)
 //   OP_TEST_VAULT       a vault name or id the account can write, used only
 //                       for this test
-// It lists, creates one login, reads it, updates it, trashes and restores it,
-// and leaves it tagged happy-trashed (the provider never deletes). Values are
-// never printed.
+// It lists, creates one login, reads it, updates it and removes it (the
+// default: tagged happy-trashed and archived), checks that restore asks for a
+// manual unarchive, and leaves the login archived (the provider never
+// deletes). Values are never printed.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { basename, dirname, resolve } from 'node:path';
@@ -16,7 +17,7 @@ const tokenFile = process.env.OP_TEST_TOKEN_FILE;
 const vault = process.env.OP_TEST_VAULT;
 const skip = !(tokenFile && vault) && 'set OP_TEST_TOKEN_FILE and OP_TEST_VAULT to run';
 
-test('1Password live: list, create, read, update, trash, restore', { skip, timeout: 120_000 }, async () => {
+test('1Password live: list, create, read, update, remove (archive), restore refused', { skip, timeout: 120_000 }, async () => {
     const p = createOnePasswordProvider({ id: 'live', vault, secretsDir: dirname(resolve(tokenFile)), token_file: basename(tokenFile) });
     const before = await p.listItems({ trash: true });
     assert.ok(Array.isArray(before));
@@ -30,10 +31,10 @@ test('1Password live: list, create, read, update, trash, restore', { skip, timeo
     assert.ok(it.password === pw, 'password round trip');
     assert.deepEqual(await p.updateLogin(id, { username: 'live-user-2' }), ['username']);
     assert.equal((await p.readItem(id)).username, 'live-user-2');
+    assert.equal(p.capabilities.restore, 'manual');
     await p.trashLogin(id);
     assert.ok(!(await p.listItems()).some((i) => i.id === id));
-    await p.restoreLogin(id);
-    assert.ok((await p.listItems()).some((i) => i.id === id));
-    await p.trashLogin(id);
+    assert.equal((await p.listItems({ trash: true })).find((i) => i.id === id)?.trashed, true);
+    await assert.rejects(p.restoreLogin(id), (e) => e.status === 409);
     p.lock();
 });
