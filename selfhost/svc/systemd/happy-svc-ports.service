@@ -1,0 +1,14 @@
+# Publishes ports.list on the host's 127.0.0.1 each time happy-svc's daemon starts:
+# rootlesskit forgets ports added through its API when it restarts.
+[Unit]
+Description=happy-svc: publish the stack's loopback ports
+After=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/libexec/happy-svc-ctl ports
+
+[Install]
+WantedBy=docker.service
