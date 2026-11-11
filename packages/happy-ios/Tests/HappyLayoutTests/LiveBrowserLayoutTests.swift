@@ -345,11 +345,12 @@ final class LiveBrowserLayoutTests: XCTestCase {
     }
 
     func testAWidePlayerHasEveryButtonOnTheBar() throws {
-        // An iPad's small player: 176, four 44-point buttons.
+        // An iPad's narrowest player (dragged down to 176): four 44-point buttons.
         let wide = LiveBrowserDockLayout(.init(
             size: CGSize(width: 834, height: 1194), safeArea: LayoutInsets(top: 24, left: 0, bottom: 20, right: 0),
-            card: CGRect(x: 12, y: 1100, width: 810, height: 56), anchor: 1080
+            card: CGRect(x: 12, y: 1100, width: 810, height: 56), anchor: 1080, idiom: .pad, width: 176
         ))
+        XCTAssertEqual(wide.limits.lowerBound, 176)
         assertFrame(wide.frame, rect(646, 888, 176, 184))
         assertFrame(wide.close, rect(0, 0, 44, 44))
         assertFrame(wide.menu, rect(44, 0, 44, 44))
