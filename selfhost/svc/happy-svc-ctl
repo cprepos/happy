@@ -16,7 +16,9 @@
 #
 # Verbs (the sudoers drop-in lets prep run the first group without a password; the second
 # needs prep's own sudo password, which agents do not have):
-#   up [vault|browser]            compose up (vault, then browser), then publish ports
+#   up [vault|browser]            compose up (vault, then browser), then publish ports; with
+#                                 BROWSER_NODE_CHROME=1 in browser.env, first build the release's
+#                                 node-chrome/Dockerfile in this daemon (cached when unchanged)
 #   down [vault|browser]          compose down (browser, then vault); volumes are kept
 #   restart <vault|browser> [svc] compose restart
 #   status                        containers, published ports, loopback-only check
@@ -100,6 +102,12 @@ FILLER_VOLUME=happy-filler
 # node:22-alpine, the image the browser compose already pins; used for one-shot tar and copy jobs.
 HELPER_IMAGE=node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
 
+# The browser node with Google Chrome (BROWSER_NODE_CHROME=1 in $ETC/browser.env): built here,
+# in this daemon, from the release's node-chrome/Dockerfile (its pinned base image and its
+# SHA256-checked downloads), tagged as browser.mk tags it, and run by its local image id. Never
+# an image from elsewhere, and never a name from the settings.
+NODE_CHROME_DIR=$REL/browser-stack/browser/node-chrome
+
 # Every child: a cleared environment, the daemon's socket, the fixed data paths, LAN listener off.
 # The browser services keep their own non-root uids (compose defaults, mapped through the subuid
 # range). HAPPY_DOCKER_SOCKET is the docker-proxy's upstream: this daemon's socket, whose group
@@ -111,8 +119,64 @@ denv() {
         HAPPY_BROWSER_HOME="$BROWSER_HOME" HAPPY_BROWSER_DIR="$REL/browser-stack/browser" \
         BROWSER_PROJECT=happy-browser \
         DOCKER_SOCKET_GID=0 \
+        BROWSER_NODE_IMAGE= \
         BRIDGE_LAN_BIND= BRIDGE_LAN_ALLOW= BRIDGE_LAN_PUBLIC_BASE= \
         "$@"
+}
+
+# BROWSER_NODE_CHROME from root's browser.env (deploy-root.sh checked it; checked again here).
+node_chrome() {
+    c=0
+    if [ -f "$ETC/browser.env" ]; then c=$(sed -n 's/^BROWSER_NODE_CHROME=//p' "$ETC/browser.env" | tail -n 1); fi
+    case $c in ''|0) echo 0 ;; 1) echo 1 ;; *) die "BROWSER_NODE_CHROME in $ETC/browser.env is not 0 or 1" ;; esac
+}
+
+# happy-browser-node-chrome:<Chrome version>-<IMAGE_REVISION>, from the release's Dockerfile.
+node_chrome_tag() {
+    df=$NODE_CHROME_DIR/Dockerfile
+    [ -f "$df" ] || die "node-chrome: no Dockerfile in the release"
+    v=$(sed -n 's/^ARG CHROME_VERSION=\([0-9.]*\)-[0-9]*$/\1/p' "$df" | head -n 1)
+    r=$(sed -n 's/^ARG IMAGE_REVISION=\([0-9]*\)$/\1/p' "$df" | head -n 1)
+    case $v in ''|.*|*.|*[!0-9.]*) die "node-chrome: bad CHROME_VERSION in the Dockerfile" ;; esac
+    case $r in ''|*[!0-9]*) die "node-chrome: bad IMAGE_REVISION in the Dockerfile" ;; esac
+    printf 'happy-browser-node-chrome:%s-%s' "$v" "$r"
+}
+
+# The local image id of a tag in this daemon (sha256:<64 hex>), or nothing if it is absent.
+node_chrome_id() {
+    id=$(denv docker image inspect -f '{{.Id}}' "$1" 2>/dev/null) || return 0
+    h=${id#sha256:}
+    case $id in sha256:*) ;; *) die "node-chrome: the image id is not sha256:<hex>" ;; esac
+    case $h in *[!0-9a-f]*) die "node-chrome: the image id is not sha256:<hex>" ;; esac
+    [ ${#h} -eq 64 ] || die "node-chrome: the image id is not sha256:<64 hex>"
+    printf '%s' "$id"
+}
+
+# BROWSER_NODE_IMAGE for every browser compose call: empty (the compose file's pinned upstream
+# image) unless BROWSER_NODE_CHROME=1, then the built image's id. Set in the environment, it
+# wins over the env files. NODE_IMAGE_SET: resolved once per run (up resolves it after its build).
+NODE_IMAGE='' NODE_IMAGE_SET=0
+node_image() {
+    [ "$NODE_IMAGE_SET" = 1 ] && return 0
+    # Assignments, not $(..) inside a test, so that a die in them stops this run.
+    c=$(node_chrome)
+    if [ "$c" = 1 ]; then
+        tag=$(node_chrome_tag)
+        NODE_IMAGE=$(node_chrome_id "$tag")
+        [ -n "$NODE_IMAGE" ] || echo "happy-svc-ctl: BROWSER_NODE_CHROME=1 but $tag is not built yet (up builds it)" >&2
+    fi
+    NODE_IMAGE_SET=1
+}
+
+build_node_chrome() {
+    c=$(node_chrome)
+    [ "$c" = 1 ] || return 0
+    tag=$(node_chrome_tag)
+    denv docker build -t "$tag" "$NODE_CHROME_DIR"
+    NODE_IMAGE=$(node_chrome_id "$tag")
+    [ -n "$NODE_IMAGE" ] || die "node-chrome: $tag is missing after its build"
+    NODE_IMAGE_SET=1
+    printf 'node-chrome: %s %s\n' "$tag" "$NODE_IMAGE"
 }
 
 # shellcheck disable=SC2086  # *_FILES are fixed strings of -f <path> pairs, paths without spaces
@@ -125,7 +189,8 @@ compose() {
         browser)
             if [ -f "$ETC/browser.env" ]; then set -- --env-file "$ETC/browser.env" "$@"; fi
             if [ -f "$BROWSER_HOME/secrets/browser.env" ]; then set -- --env-file "$BROWSER_HOME/secrets/browser.env" "$@"; fi
-            denv docker compose -p happy-browser --project-directory "$REL/browser-stack/browser" $BROWSER_FILES "$@" ;;
+            node_image
+            denv BROWSER_NODE_IMAGE="$NODE_IMAGE" docker compose -p happy-browser --project-directory "$REL/browser-stack/browser" $BROWSER_FILES "$@" ;;
         *) die "unknown project" ;;
     esac
 }
@@ -240,7 +305,10 @@ case $VERB in
 up)
     nargs 0 $# 1
     if [ $# -eq 1 ]; then ps=$(project_arg "$1"); else ps="vault browser"; fi
-    for p in $ps; do compose "$p" up -d --build --wait; done
+    for p in $ps; do
+        if [ "$p" = browser ]; then build_node_chrome; fi
+        compose "$p" up -d --build --wait
+    done
     do_ports ;;
 down)
     nargs 0 $# 1

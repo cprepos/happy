@@ -49,6 +49,7 @@ env >"$D/docker.env"
 case " $* " in
     *" config --services "*) case " $* " in *" happy-vault "*) printf 'vaultwarden\nfiller\nfiller-admin\n' ;; *) printf 'bridge\ncontroller\n' ;; esac ;;
     " volume inspect "*) [ -e "$D/vol.$3" ] ;;
+    " image inspect "*) [ -f "$D/image.id" ] && cat "$D/image.id" ;;
     " run "*) [ ! -f "$D/run.out" ] || cat "$D/run.out" ;;
 esac
 EOF
@@ -160,6 +161,33 @@ check "import: no volume created over it" bash -c "! grep -q 'volume create' '$T
 runs import happy-vault-data && called "volume create --label happy-svc.imported=1 happy-vault-data" \
     && test ! -e "$T/drop/in/happy-vault-data.tar" && ls "$T"/home/imported/*/happy-vault-data.tar >/dev/null 2>&1 \
     && ok "import: new volume, tarball moved to imported/" || bad "import"
+
+# BROWSER_NODE_CHROME=1: up builds the release's node-chrome/Dockerfile in this daemon and runs
+# it by its image id; nothing else may name the node image.
+ctag="happy-browser-node-chrome:$(sed -nE 's/^ARG CHROME_VERSION=([0-9.]+)-[0-9]+$/\1/p' "$REPO/browser-stack/browser/node-chrome/Dockerfile")-$(sed -nE 's/^ARG IMAGE_REVISION=([0-9]+)$/\1/p' "$REPO/browser-stack/browser/node-chrome/Dockerfile")"
+check "node-chrome: tag read from the Dockerfile ($ctag)" bash -c "[[ '$ctag' =~ ^happy-browser-node-chrome:[0-9.]+-[0-9]+$ ]]"
+runs up browser
+check "chrome off: no build" bash -c "! grep -q ' build ' '$T/log/docker.calls' && ! grep -q '^build ' '$T/log/docker.calls'"
+check "chrome off: BROWSER_NODE_IMAGE cleared (env files cannot set it)" grep -qx "BROWSER_NODE_IMAGE=" "$T/log/docker.env"
+printf 'BROWSER_NODE_CHROME=1\n' >"$T/etc/browser.env"
+printf '%s\n' "$idok" >"$T/log/image.id"
+runs up browser && called "build -t $ctag $T/opt/current/browser-stack/browser/node-chrome" \
+    && ok "chrome on: up builds the release's node-chrome/Dockerfile here" || bad "chrome on: up build"
+check "chrome on: the build comes before compose up" bash -c "grep -n '' '$T/log/docker.calls' | grep -E ':build |up -d' | head -1 | grep -q ':build '"
+check "chrome on: compose gets the image id" grep -qx "BROWSER_NODE_IMAGE=$idok" "$T/log/docker.env"
+check "chrome on: compose up with the release's files" called "-p happy-browser"
+runs up vault
+check "chrome on: up vault builds nothing" bash -c "! grep -q '^build ' '$T/log/docker.calls'"
+runs logs browser bridge && called "logs --no-color --tail 200 bridge" && ! called "build -t" \
+    && grep -qx "BROWSER_NODE_IMAGE=$idok" "$T/log/docker.env" && ok "chrome on: logs uses the built id, no build" || bad "chrome on: logs"
+mv "$T/log/image.id" "$T/log/image.id.absent"
+refused_late "chrome on: an image missing after its build" up browser
+printf 'sha256:abc\n' >"$T/log/image.id"
+refused_late "chrome on: an image id that is not sha256:<64 hex>" up browser
+printf '%s\n' "$idok" >"$T/log/image.id"
+printf 'BROWSER_NODE_CHROME=yes\n' >"$T/etc/browser.env"
+refused "BROWSER_NODE_CHROME not 0 or 1 in browser.env" up browser
+printf 'BROWSER_NODE_CHROME=0\n' >"$T/etc/browser.env"
 
 check "journal: verbs only, no argument values" bash -c "! grep -Eq 'NAME=|bridge-client|happy-vault-data|filler' '$T/log/logger.calls' && grep -q 'verb=refused' '$T/log/logger.calls' && grep -q 'verb=up caller=' '$T/log/logger.calls'"
 
