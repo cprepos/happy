@@ -22,6 +22,7 @@ echo "== 1 shellcheck"
 if command -v shellcheck >/dev/null; then
     check "bash scripts" shellcheck "$SVC/setup-root.sh" "$SVC/teardown-root.sh" "$SVC/deploy-root.sh" "$SVC/test/run.sh"
     check "happy-svc-ctl (POSIX sh)" shellcheck -s sh "$SVC/happy-svc-ctl"
+    check "browser-geometry.sh (POSIX sh)" shellcheck -s sh "$REPO/browser-stack/browser/scripts/browser-geometry.sh"
 else
     bad "shellcheck is not installed"
 fi
@@ -57,6 +58,7 @@ cat >"$T/bin/curl" <<'EOF'
 #!/bin/sh
 D=$(cd "$(dirname "$0")/../log" && pwd)
 printf '%s\n' "$*" >>"$D/curl.calls"
+for b in $(cat "$D/rk-busy" 2>/dev/null); do case " $* " in *"\"parentPort\":$b,"*) exit 22 ;; esac; done
 case " $* " in *" -X "*) echo '{}' ;; *) cat "$D/rk-ports" ;; esac
 EOF
 cat >"$T/bin/logger" <<'EOF'
@@ -189,6 +191,96 @@ printf 'BROWSER_NODE_CHROME=yes\n' >"$T/etc/browser.env"
 refused "BROWSER_NODE_CHROME not 0 or 1 in browser.env" up browser
 printf 'BROWSER_NODE_CHROME=0\n' >"$T/etc/browser.env"
 
+# What browser.mk computes and exports, supplied by the wrapper too (from browser.env, through
+# the release's browser-geometry.sh); a stale BROWSER_VIEWPORT_HEIGHT in browser.env loses.
+envhas() { grep -qx "$1" "$T/log/docker.env"; }
+runs up browser
+check "geometry: defaults (1920x1200, panel 28, page 1085)" bash -c "grep -qx BROWSER_VIEWPORT_HEIGHT=1085 '$T/log/docker.env' && grep -qx BROWSER_PANEL_HEIGHT=28 '$T/log/docker.env' \
+    && grep -qx BROWSER_KIOSK=0 '$T/log/docker.env' && grep -qx BROWSER_HEIGHT=1200 '$T/log/docker.env' && grep -qx BROWSER_WIDTH=1920 '$T/log/docker.env'"
+printf 'BROWSER_NODE_CHROME=0\nBROWSER_KIOSK=1\nBROWSER_HEIGHT=1080\nBROWSER_WIDTH=1600\nBROWSER_VIEWPORT_HEIGHT=5\nEVIDENCE_TZ=Etc/GMT+5\n' >"$T/etc/browser.env"
+runs logs browser bridge
+check "geometry: kiosk from browser.env (page = screen, no panel)" bash -c "grep -qx BROWSER_VIEWPORT_HEIGHT=1080 '$T/log/docker.env' && grep -qx BROWSER_PANEL_HEIGHT=0 '$T/log/docker.env' && grep -qx BROWSER_KIOSK=1 '$T/log/docker.env'"
+check "geometry: width and height from browser.env" bash -c "grep -qx BROWSER_WIDTH=1600 '$T/log/docker.env' && grep -qx BROWSER_HEIGHT=1080 '$T/log/docker.env'"
+check "EVIDENCE_TZ: browser.env's zone" envhas "EVIDENCE_TZ=Etc/GMT+5"
+printf 'BROWSER_KIOSK=0\nBROWSER_HEIGHT=1080\n' >"$T/etc/browser.env"
+runs logs browser bridge
+check "geometry: windowed 1080 high (1080-28-87=965)" envhas "BROWSER_VIEWPORT_HEIGHT=965"
+htz=$(head -n 1 /etc/timezone 2>/dev/null | tr -d '[:space:]')
+if [ -n "$htz" ] && [ -f "/usr/share/zoneinfo/$htz" ]; then
+    check "EVIDENCE_TZ: the host's /etc/timezone when browser.env has none ($htz)" envhas "EVIDENCE_TZ=$htz"
+fi
+check "environment: HAPPY_BROWSER_HOME is happy-svc's data" envhas "HAPPY_BROWSER_HOME=$T/home/data/browser"
+check "environment: HAPPY_BROWSER_DIR is the release's" envhas "HAPPY_BROWSER_DIR=$T/opt/current/browser-stack/browser"
+check "environment: HOME is happy-svc's" envhas "HOME=$T/home"
+check "environment: BROWSER_PROJECT" envhas "BROWSER_PROJECT=happy-browser"
+for bad_env in 'BROWSER_KIOSK=2' 'BROWSER_KIOSK=yes' 'BROWSER_HEIGHT=abc' 'BROWSER_HEIGHT=0900' 'BROWSER_HEIGHT=99999' 'BROWSER_HEIGHT=100' \
+    'BROWSER_WIDTH=-1' 'BROWSER_WIDTH=$(id)' 'EVIDENCE_TZ=../../etc/passwd' 'EVIDENCE_TZ=Mars/Olympus'; do
+    printf '%s\n' "$bad_env" >"$T/etc/browser.env"
+    refused "browser.env $bad_env refused before compose" up browser
+done
+printf 'BROWSER_NODE_CHROME=0\n' >"$T/etc/browser.env"
+runs up vault && ok "geometry: up vault does not need it" || bad "geometry: up vault"
+
+# The geometry script itself, and browser.mk agreeing with it (and with the launcher's constant).
+GEO="$REPO/browser-stack/browser/scripts/browser-geometry.sh"
+INIT="$REPO/browser-stack/browser/kiosk/fluxbox/init.window"
+geo() { env -i PATH=/usr/bin:/bin "$@" sh "$GEO" "$INIT" 2>/dev/null | sed -n 's/^BROWSER_VIEWPORT_HEIGHT=//p'; }
+check "geometry script: defaults 1085" test "$(geo)" = 1085
+check "geometry script: kiosk 1200" test "$(geo BROWSER_KIOSK=1)" = 1200
+check "geometry script: refuses a missing init.window" bash -c "! sh '$GEO' '$T/none' 2>/dev/null"
+printf 'session.screen0.toolbar.visible: false\nsession.screen0.toolbar.height: 28\n' >"$T/init.hidden"
+check "geometry script: hidden toolbar, no panel (1113)" bash -c "env -i PATH=/usr/bin:/bin sh '$GEO' '$T/init.hidden' | grep -qx BROWSER_VIEWPORT_HEIGHT=1113"
+check "geometry script: CHROME_UI_HEIGHT matches launcher.mjs" bash -c "c=\$(sed -nE 's/^export const CHROME_UI_HEIGHT = ([0-9]+);\$/\1/p' '$REPO/browser-stack/browser/launcher/launcher.mjs'); \
+    [ -n \"\$c\" ] && grep -qx \"CHROME_UI_HEIGHT=\$c\" '$GEO'"
+printf 'include %s\npv:\n\t@echo "$$BROWSER_KIOSK $$BROWSER_HEIGHT $$BROWSER_PANEL_HEIGHT $$BROWSER_VIEWPORT_HEIGHT"\n' "$REPO/browser-stack/browser.mk" >"$T/geo.mk"
+for args in "BROWSER_KIOSK=0 BROWSER_HEIGHT=1200" "BROWSER_KIOSK=1 BROWSER_HEIGHT=1200" "BROWSER_KIOSK=0 BROWSER_HEIGHT=1080" "BROWSER_KIOSK=1 BROWSER_HEIGHT=900"; do
+    # shellcheck disable=SC2086  # the KEY=value words on purpose
+    # A clean environment: a calling make (svc-test) exports its own BROWSER_VIEWPORT_HEIGHT.
+    mk=$(env -i PATH=/usr/bin:/bin HOME="$T/home" make -s --no-print-directory -f "$T/geo.mk" pv $args 2>/dev/null)
+    # shellcheck disable=SC2086
+    sc=$(env -i PATH=/usr/bin:/bin $args sh "$GEO" "$INIT" | sed -nE 's/^(BROWSER_KIOSK|BROWSER_HEIGHT|BROWSER_PANEL_HEIGHT|BROWSER_VIEWPORT_HEIGHT)=//p' | tr '\n' ' ')
+    check "browser.mk and the wrapper's script agree ($args: $mk)" test "$mk " = "$sc"
+done
+
+# rootlesskit answers null while nothing is published: ports and status handle it (and an empty answer).
+for answer in null ''; do
+    printf '%s' "$answer" >"$T/log/rk-ports"; : >"$T/log/curl.calls"
+    runs ports && ! grep -q 'jq: error' "$T/log/out" && test "$(grep -c 'X POST' "$T/log/curl.calls")" = 69 \
+        && ok "ports: rootlesskit answers '${answer:-nothing}': all 69 added, no jq error" || bad "ports: '${answer:-nothing}' ($(head -c 200 "$T/log/out"))"
+    runs status && ! grep -q 'jq: error' "$T/log/out" && grep -q 'ports: 0 published, 0 beyond' "$T/log/out" \
+        && ok "status: rootlesskit answers '${answer:-nothing}': 0 published, no jq error" || bad "status: '${answer:-nothing}' ($(head -c 200 "$T/log/out"))"
+done
+# A port held on the host (rootlesskit answers 400): the others are still published, the busy
+# ones are named, and the verb fails.
+printf '8101\n6101\n' >"$T/log/rk-busy"; : >"$T/log/curl.calls"
+refused_late "ports: a port in use on the host fails the verb" ports
+check "ports: the others still published (69 tried)" test "$(grep -c 'X POST' "$T/log/curl.calls")" = 69
+check "ports: the busy ones named" grep -q 'not published (in use on the host? ss -ltnp): 8101 6101' "$T/log/out"
+mv "$T/log/rk-busy" "$T/log/rk-busy.done"
+echo '{"message":"x"}' >"$T/log/rk-ports"
+refused_late "ports: a port list that is not a list" ports
+echo '[]' >"$T/log/rk-ports"
+
+# The real interpolation: docker compose config of the release's browser files with the
+# environment the wrapper gave compose, and placeholder secrets (no daemon needed).
+if docker compose version >/dev/null 2>&1; then
+    printf 'BROWSER_NODE_CHROME=1\n' >"$T/etc/browser.env"
+    runs logs browser bridge
+    mkdir -p "$T/cfg"
+    printf 'API_BEARER_TOKEN=x\nAUTH_STATE_ENCRYPTION_KEY=x\nSHARE_TOKEN_SECRET=x\nVNC_PASSWORD=x\n' >"$T/cfg/secrets.env"
+    mapfile -t cenv <"$T/log/docker.env"
+    check "compose config: every variable the browser files need is supplied" \
+        env -i "${cenv[@]}" DOCKER_HOST=unix:///nonexistent docker compose -p happy-browser --project-directory "$REPO/browser-stack/browser" \
+            -f "$REPO/browser-stack/browser/compose.browser.yml" -f "$SVC/compose.rootless.browser.yml" \
+            --env-file "$T/cfg/secrets.env" --env-file "$T/etc/browser.env" config -q
+    check "compose config: the controller's page height is 1085" bash -c "env -i $(printf '%q ' "${cenv[@]}") docker compose -p happy-browser \
+        -f '$REPO/browser-stack/browser/compose.browser.yml' -f '$SVC/compose.rootless.browser.yml' --env-file '$T/cfg/secrets.env' \
+        config --format json | jq -e '.services.controller.environment.DEFAULT_VIEWPORT_HEIGHT == \"1085\"' >/dev/null"
+    printf 'BROWSER_NODE_CHROME=0\n' >"$T/etc/browser.env"
+else
+    echo "  skip compose config (no docker compose)"
+fi
+
 check "journal: verbs only, no argument values" bash -c "! grep -Eq 'NAME=|bridge-client|happy-vault-data|filler' '$T/log/logger.calls' && grep -q 'verb=refused' '$T/log/logger.calls' && grep -q 'verb=up caller=' '$T/log/logger.calls'"
 
 echo "== 4 root scripts refuse without root"
@@ -221,6 +313,10 @@ settings_check "settings: EVIDENCE_TZ a directory" no EVIDENCE_TZ=America
 settings_check "settings: EVIDENCE_TZ a non-TZif file" no EVIDENCE_TZ=zone.tab
 settings_check "settings: EVIDENCE_TZ posix/ copy refused" no EVIDENCE_TZ=posix/America/Toronto
 settings_check "settings: EVIDENCE_TZ empty refused" no EVIDENCE_TZ=
+settings_check "settings: geometry accepted" ok BROWSER_KIOSK=1 BROWSER_WIDTH=1920 BROWSER_HEIGHT=1200 BROWSER_VIEWPORT_HEIGHT=1085
+settings_check "settings: BROWSER_KIOSK=yes refused" no BROWSER_KIOSK=yes
+settings_check "settings: BROWSER_HEIGHT not a number" no BROWSER_HEIGHT=12a
+settings_check "settings: BROWSER_WIDTH leading zero" no BROWSER_WIDTH=01920
 settings_check "settings: no BROWSER_NODE_IMAGE" no "BROWSER_NODE_IMAGE=$idok"
 check "deploy-root.sh: bad settings refused before the root check" bash -c "printf 'BROWSER_NODE_CHROME=2\n' >'$S/browser.env'; bash '$SVC/deploy-root.sh' $(printf '0%.0s' $(seq 1 40)) --settings '$S' 2>&1 | grep -q 'BROWSER_NODE_CHROME is 0 or 1'"
 # make svc-settings: the new keys copied, EVIDENCE_TZ defaulted, a BROWSER_NODE_IMAGE dropped.

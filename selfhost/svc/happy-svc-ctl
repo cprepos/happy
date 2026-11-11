@@ -179,6 +179,59 @@ build_node_chrome() {
     printf 'node-chrome: %s %s\n' "$tag" "$NODE_IMAGE"
 }
 
+# The last value of a key in root's browser.env (deploy-root.sh accepted the file), or nothing.
+browser_setting() {
+    if [ -f "$ETC/browser.env" ]; then sed -n "s/^$1=//p" "$ETC/browser.env" | tail -n 1; fi
+}
+
+# What browser.mk computes and exports for compose, worked out the same way: the geometry by the
+# release's own scripts/browser-geometry.sh (the one browser.mk runs, so the formula has one home)
+# from BROWSER_KIOSK, BROWSER_HEIGHT and BROWSER_WIDTH in browser.env, and EVIDENCE_TZ from
+# browser.env, else the host's /etc/timezone (as browser.mk defaults it), else compose's default.
+# Every value is checked again here before it reaches compose. Set in the environment, these win
+# over the env files, as browser.mk's exports do (so a BROWSER_VIEWPORT_HEIGHT in browser.env is
+# ignored, as browser.mk ignores .env.browser's). GEOM_SET: worked out once per run.
+GEOM_ENV='' GEOM_SET=0
+browser_geometry() {
+    [ "$GEOM_SET" = 1 ] && return 0
+    k=$(browser_setting BROWSER_KIOSK) h=$(browser_setting BROWSER_HEIGHT) w=$(browser_setting BROWSER_WIDTH)
+    g=$(denv BROWSER_KIOSK="$k" BROWSER_HEIGHT="$h" BROWSER_WIDTH="$w" \
+        sh "$REL/browser-stack/browser/scripts/browser-geometry.sh" "$REL/browser-stack/browser/kiosk/fluxbox/init.window") \
+        || die "browser geometry: refused (BROWSER_KIOSK, BROWSER_HEIGHT or BROWSER_WIDTH in $ETC/browser.env)"
+    GEOM_ENV='' seen=''
+    for kv in $g; do
+        key=${kv%%=*} val=${kv#*=}
+        case $key in
+            BROWSER_KIOSK) case $val in 0|1) ;; *) die "browser geometry: bad $key" ;; esac ;;
+            BROWSER_WIDTH|BROWSER_HEIGHT|BROWSER_PANEL_HEIGHT|BROWSER_VIEWPORT_HEIGHT|CHROME_UI_HEIGHT)
+                case $val in ''|*[!0-9]*|0?*) die "browser geometry: bad $key" ;; esac
+                [ ${#val} -le 5 ] || die "browser geometry: bad $key" ;;
+            *) die "browser geometry: unexpected output" ;;
+        esac
+        GEOM_ENV="$GEOM_ENV $key=$val" seen="$seen $key"
+    done
+    for key in BROWSER_KIOSK BROWSER_WIDTH BROWSER_HEIGHT BROWSER_PANEL_HEIGHT BROWSER_VIEWPORT_HEIGHT; do
+        case "$seen " in *" $key "*) ;; *) die "browser geometry: no $key" ;; esac
+    done
+    tz=$(browser_setting EVIDENCE_TZ)
+    if [ -n "$tz" ]; then
+        valid_tz "$tz" || die "EVIDENCE_TZ in $ETC/browser.env is not a zone in /usr/share/zoneinfo"
+    else
+        tz=$(head -n 1 /etc/timezone 2>/dev/null | tr -d '[:space:]') || tz=''
+        valid_tz "$tz" || tz=''
+    fi
+    if [ -n "$tz" ]; then GEOM_ENV="$GEOM_ENV EVIDENCE_TZ=$tz"; fi
+    GEOM_SET=1
+}
+
+# A zone name: letters, digits, _ + - in up to three /-separated parts (no dots, so no ..), a
+# file under /usr/share/zoneinfo, not one of its posix/ or right/ copies.
+valid_tz() {
+    z=$1
+    case $z in ''|[!A-Za-z]*|*[!A-Za-z0-9_+/-]*|*//*|*/|*/*/*/*|posix/*|right/*|posixrules) return 1 ;; esac
+    [ ${#z} -le 64 ] && [ -f "/usr/share/zoneinfo/$z" ]
+}
+
 # shellcheck disable=SC2086  # *_FILES are fixed strings of -f <path> pairs, paths without spaces
 compose() {
     p=$1; shift
@@ -190,7 +243,9 @@ compose() {
             if [ -f "$ETC/browser.env" ]; then set -- --env-file "$ETC/browser.env" "$@"; fi
             if [ -f "$BROWSER_HOME/secrets/browser.env" ]; then set -- --env-file "$BROWSER_HOME/secrets/browser.env" "$@"; fi
             node_image
-            denv BROWSER_NODE_IMAGE="$NODE_IMAGE" docker compose -p happy-browser --project-directory "$REL/browser-stack/browser" $BROWSER_FILES "$@" ;;
+            browser_geometry
+            # shellcheck disable=SC2086  # GEOM_ENV: KEY=value words, each checked above
+            denv BROWSER_NODE_IMAGE="$NODE_IMAGE" $GEOM_ENV docker compose -p happy-browser --project-directory "$REL/browser-stack/browser" $BROWSER_FILES "$@" ;;
         *) die "unknown project" ;;
     esac
 }
@@ -246,34 +301,51 @@ ports_wanted() {
     done <"$REL/selfhost/svc/ports.list"
 }
 
+# The published ports as a JSON array: rootlesskit answers null (not []) while none is
+# published, and nothing at all is treated the same way; anything else that is not a list is refused.
+rk_ports() {
+    out=$(rk http://rootlesskit/v1/ports) || return 1
+    [ -n "$out" ] || out=null
+    printf '%s' "$out" | denv jq -c 'if . == null then [] elif type == "array" then map(select(type == "object")) else error("not a list") end'
+}
+
 # Remove any published port whose host side is not 127.0.0.1 (a compose `ports: "8222:8222"`
 # would otherwise reach the LAN), then add the wanted ones that are missing.
 do_ports() {
     [ -S "$RK_API" ] || die "rootlesskit API socket missing: is docker.service of $SVC_USER running?"
-    have=$(rk http://rootlesskit/v1/ports)
-    printf '%s' "$have" | denv jq -r '.[] | select(.spec.parentIP != "127.0.0.1") | .id' | while IFS= read -r id; do
+    have=$(rk_ports) || die "ports: rootlesskit's port list could not be read"
+    printf '%s' "$have" | denv jq -r '.[] | select(.spec.parentIP != "127.0.0.1") | .id // empty' | while IFS= read -r id; do
         case $id in ''|*[!0-9]*) continue ;; esac
         rk -X DELETE "http://rootlesskit/v1/ports/$id" >/dev/null
         printf 'removed a non-loopback port (id %s)\n' "$id" >&2
     done
-    added=0
+    added=0 failed=''
     for port in $(ports_wanted); do
         if printf '%s' "$have" | denv jq -e --argjson p "$port" \
             'any(.[]; .spec.parentIP == "127.0.0.1" and .spec.parentPort == $p and .spec.proto == "tcp")' >/dev/null; then
             continue
         fi
-        rk -X POST -H 'Content-Type: application/json' \
+        # A port another process holds on the host is refused (400); the rest are still published.
+        if rk -X POST -H 'Content-Type: application/json' \
             -d "{\"proto\":\"tcp\",\"parentIP\":\"127.0.0.1\",\"parentPort\":$port,\"childIP\":\"127.0.0.1\",\"childPort\":$port}" \
-            http://rootlesskit/v1/ports >/dev/null
-        added=$((added + 1))
+            http://rootlesskit/v1/ports >/dev/null 2>&1; then
+            added=$((added + 1))
+        else
+            failed="$failed $port"
+        fi
     done
     printf 'ports: %s added; all on 127.0.0.1\n' "$added"
+    if [ -n "$failed" ]; then
+        printf 'ports: not published (in use on the host? ss -ltnp):%s\n' "$failed" >&2
+        return 1
+    fi
 }
 
 ports_check() {
     [ -S "$RK_API" ] || { echo "ports: rootlesskit API socket missing"; return 1; }
-    bad=$(rk http://rootlesskit/v1/ports | denv jq -r '[.[] | select(.spec.parentIP != "127.0.0.1")] | length')
-    n=$(rk http://rootlesskit/v1/ports | denv jq -r 'length')
+    have=$(rk_ports) || { echo "ports: rootlesskit's port list could not be read"; return 1; }
+    bad=$(printf '%s' "$have" | denv jq -r '[.[] | select(.spec.parentIP != "127.0.0.1")] | length')
+    n=$(printf '%s' "$have" | denv jq -r 'length')
     printf 'ports: %s published, %s beyond 127.0.0.1\n' "$n" "$bad"
     [ "$bad" = 0 ]
 }
