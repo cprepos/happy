@@ -8,7 +8,7 @@ COMPOSE := docker compose --project-directory $(CURDIR) -f $(CURDIR)/docker-comp
 
 help:
 	@echo "Targets: env build up down status logs migrate"
-	@echo "Stack:   stack-up stack-down (the vault with its filler, then the browser stack)"
+	@echo "Stack:   stack-up stack-down (Vaultwarden, then the browser stack; the filler is its own systemd unit)"
 
 # Create .env with random secrets if it does not exist yet (never overwrites).
 env:
@@ -50,11 +50,11 @@ BROWSER_STACK_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../browser-st
 migrate: env
 	$(COMPOSE) run --rm happy-server pnpm exec prisma migrate deploy --schema=prisma/schema.prisma
 
-# The vault (Vaultwarden + the filler, compose project happy-vault) and the browser stack
-# (project happy-browser) together. Two projects, run in order: the browser's containers,
-# env files and pod labels are keyed to its own project name, so it is not merged in with
-# compose include:. Host processes (agents, vault-mcp, the bridge's stdio MCP,
-# agentgateway) are not touched.
+# Vaultwarden (the standalone container vaultwarden, vault.mk) and the browser stack (compose
+# project happy-browser, browser.mk) together, in order. The secret filler is not touched: it
+# is a systemd user unit of the happy-filler account (browser-stack/filler.mk), and keeps
+# running; make filler-status shows it. Host processes (agents, vault-mcp, the bridge's stdio
+# MCP, agentgateway) are not touched either.
 stack-up:
 	$(MAKE) --no-print-directory vault-up
 	$(MAKE) --no-print-directory browser-up
