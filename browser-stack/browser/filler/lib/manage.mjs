@@ -16,8 +16,8 @@
 // set, and only the names of custom fields.
 
 // compare and pipe take exactly one of field (username, password, totp) and
-// custom_field (the exact, case-sensitive name of one of the login's Bitwarden
-// custom fields, as vault_list shows it). A custom field is reachable only by
+// custom_field (the exact, case-sensitive name of one of the login's custom
+// fields, as vault_list shows it). A custom field is reachable only by
 // all_items clients and by explicit secrets whose policy lists it in
 // custom_fields. Two custom fields with the same name are refused as
 // ambiguous, so only one value is ever chosen. The audit names it
@@ -28,16 +28,19 @@
 // it to an allowlisted command's stdin and returns only the command's scrubbed
 // output (see README, "Known limit").
 //
+// The vault is a provider (providers/index.mjs): this file sees only its
+// normalized LoginMeta and Login, and item ids are opaque strings the provider
+// checks (checkId).
+//
 // Which logins a client reaches: the item ids its secrets list, and for an
-// all_items client every personal login no client lists. Writes go to the
+// all_items client every personal (not shared) login no client lists. Writes go to the
 // agent account's personal vault only. Every call is audited: action, item id,
 // the names of the fields changed, outcome; never a value.
 import { FillError } from './fill.mjs';
-import { itemSlug, FIELDS, NO_CHAT, CUSTOM_FIELD_NAME } from './policy.mjs';
+import { itemSlug, FIELDS, NO_CHAT, CUSTOM_FIELD_NAME, ITEM_ID } from './policy.mjs';
 import { compareValue, ALGOS, HashError } from './hashes.mjs';
 import { generatePassword, checkSpec, GenerateError } from './generate.mjs';
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // eslint-disable-next-line no-control-regex
 const CONTROL = /[\u0000-\u001f\u007f]/;
 export const ACTIONS = ['list', 'search', 'create', 'update', 'remove', 'restore', 'compare', 'pipe'];
@@ -74,7 +77,6 @@ export function checkUris(v) {
         return x.toString();
     });
 }
-const checkId = (v) => { if (typeof v !== 'string' || !UUID.test(v)) throw bad('id must be an item id (uuid) from vault_list'); return v.toLowerCase(); };
 const checkBool = (v, what) => { if (v !== undefined && typeof v !== 'boolean') throw bad(`${what} must be true or false`); return v === true; };
 const checkField = (v) => { if (!FIELDS.includes(v)) throw bad(`field must be one of ${FIELDS.join(', ')}`); return v; };
 /** compare/pipe: {field} or {custom}, from exactly one of body.field and body.custom_field. */
@@ -89,6 +91,12 @@ const kindOf = (w) => (w.custom !== undefined ? `custom:${w.custom}` : w.field);
 
 export function createManager({ getPolicy, vault, audit, now = () => Date.now(), compareLimit = { max: 20, windowMs: 10 * 60_000 } }) {
     const compares = new Map(); // `${client}/${id}` -> [timestamps]
+    // An item id from a request: bounded here (ITEM_ID), then the provider's own check.
+    const checkId = (v) => {
+        const id = typeof v === 'string' && ITEM_ID.test(v) ? vault.checkId(v.toLowerCase()) : null;
+        if (!id) throw bad('id must be an item id from vault_list');
+        return id;
+    };
 
     function scope(chat) {
         const policy = getPolicy();
@@ -110,9 +118,19 @@ export function createManager({ getPolicy, vault, audit, now = () => Date.now(),
         return new FillError(`vault: ${err.message}`, [400, 403, 404, 409, 422].includes(st) ? st : 502, 'vault');
     };
 
+    // A provider LoginMeta in this file's shape: uris as shown strings, fields as
+    // the names of the standard fields set, custom_fields as the addressable
+    // custom field names (CUSTOM_FIELD_NAME; duplicates kept).
+    const fromMeta = (m) => ({
+        id: m.id, name: m.name, username: m.username, uris: m.uris.map((u) => u.url), hosts: m.hosts,
+        fields: FIELDS.filter((f) => m.has[f]),
+        custom_fields: m.fields.map((f) => f.name).filter((n) => typeof n === 'string' && CUSTOM_FIELD_NAME.test(n)),
+        revision_date: m.revisionDate ?? null, trashed: !!m.trashed, shared: !!m.shared,
+    });
+
     // The client's view of the vault: [{...meta, secret?, listed?}] for every login it reaches.
     async function view(ctx, { trash = false } = {}) {
-        const items = await vault.listItems({ force: false, trash }).catch((e) => { throw vaultErr(e); });
+        const items = (await vault.listItems({ force: false, trash }).catch((e) => { throw vaultErr(e); })).map(fromMeta);
         const all = ctx.policy.allItems(ctx.client);
         const bySecretId = new Map();
         for (const [name, s] of ctx.cfg.secrets) bySecretId.set(s.item_id, [...(bySecretId.get(s.item_id) || []), name]);
@@ -123,7 +141,7 @@ export function createManager({ getPolicy, vault, audit, now = () => Date.now(),
                 const names = bySecretId.get(it.id) || [];
                 const allow = (key, list) => list.filter((f) => names.some((n) => ctx.cfg.secrets.get(n)[key].includes(f)));
                 out.push({ ...it, secret: names[0], listed: true, fields: allow('fields', it.fields), custom_fields: allow('custom_fields', it.custom_fields || []) });
-            } else if (!listedBy && all && !it.organization) {
+            } else if (!listedBy && all && !it.shared) {
                 const slug = itemSlug(it.name);
                 out.push({ ...it, ...(slug && !ctx.cfg.secrets.has(slug) && !it.trashed ? { secret: slug } : {}) });
             }
@@ -149,19 +167,20 @@ export function createManager({ getPolicy, vault, audit, now = () => Date.now(),
         }
     }
     const ambiguous = (n) => new FillError(`that login has more than one custom field named "${n}"; ambiguous, rename one in the vault`, 409, 'refused_ambiguous');
-    // The value of w, after usable(): reads the item and returns {rec, value}. The caller wipes rec.
+    // The value of w, after usable(): reads the item (a provider Login) and returns {rec, value}. The caller wipes rec.
     async function valueOf(id, w) {
         const rec = await vault.readItem(id).catch((e) => { throw vaultErr(e); });
         if (w.field !== undefined) return { rec, value: rec[w.field] };
-        const hits = (rec.custom || []).filter((c) => c.name === w.custom);
+        const hits = (rec.fields || []).filter((c) => c.name === w.custom);
         if (hits.length > 1) { wipe(rec); throw ambiguous(w.custom); }
         return { rec, value: hits[0]?.value ?? null };
     }
     // Drop every value a readItem returned (keep: the username, which pipe's argv may use).
     function wipe(rec, { keepUsername = false } = {}) {
         for (const f of FIELDS) if (!(keepUsername && f === 'username')) rec[f] = null;
-        for (const c of rec.custom || []) c.value = null;
-        rec.custom = null;
+        for (const c of rec.fields || []) c.value = null;
+        rec.fields = null;
+        rec.notes = null;
     }
     async function item(ctx, id, { trash = false } = {}) {
         const it = (await view(ctx, { trash })).find((x) => x.id === id);

@@ -8,7 +8,7 @@ import { TOTP_SECRET } from './fake-vaultwarden.mjs';
 import { loginPages } from './fake-controller.mjs';
 import { parsePolicy, NO_CHAT } from '../lib/policy.mjs';
 import { policyFor, setup } from './helpers.mjs';
-import { createVault } from '../lib/providers/vaultwarden/vault.mjs';
+import { createVaultwardenProvider as createVault } from '../lib/providers/vaultwarden/index.mjs';
 
 const auditText = (dir) => readdirSync(join(dir, 'audit')).map((f) => readFileSync(join(dir, 'audit', f), 'utf8')).join('');
 

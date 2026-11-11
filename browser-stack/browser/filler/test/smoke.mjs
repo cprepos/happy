@@ -24,7 +24,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createApp, tokenChecker } from '../server.mjs';
 import { parsePolicy } from '../lib/policy.mjs';
-import { createVault } from '../lib/providers/vaultwarden/vault.mjs';
+import { createVaultwardenProvider as createVault } from '../lib/providers/vaultwarden/index.mjs';
 import { controllerSet } from '../lib/controller.mjs';
 import { createScrubber, variantsOf } from '../lib/scrub.mjs';
 import { createTaint } from '../lib/taint.mjs';

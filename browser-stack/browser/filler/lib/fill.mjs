@@ -15,7 +15,7 @@
 //   3. allowed hosts = item https URIs ∩ policy hosts, matched exactly (for an
 //      all_items login, the policy hosts are the item's own https URI hosts;
 //      an item without one is refused). An all_items login also allows the
-//      hosts the vault's equivalent domains grant (domains.mjs) unless its
+//      hosts the vault's equivalent domains grant (when its provider has them) unless its
 //      client sets "equivalent_domains": false; explicit secrets never do;
 //   4. the session's page is https on an allowed host (a fill allowed through
 //      equivalence is audited with via and equivalent_of);
@@ -23,8 +23,7 @@
 //      kind fits the field (password into type=password only, and so on);
 //   6. type with sensitive:true, response discarded;
 //   7. the page is checked again: a host change is an error and is audited.
-import { allowedHosts, httpsHost, matchAllowed } from './hosts.mjs';
-import { describeEquivalents } from './providers/vaultwarden/domains.mjs';
+import { allowedHosts, describeEquivalents, httpsHost, matchAllowed } from './hosts.mjs';
 import { currentTotp } from './totp.mjs';
 import { pageUrl, isLive } from './controller.mjs';
 import { FIELDS, itemSlug, NO_CHAT } from './policy.mjs';
@@ -36,6 +35,9 @@ function shownOrigin(url) {
         return u.host && /^[a-z0-9.:\[\]-]+$/i.test(u.host) ? `${u.protocol}//${u.host}` : null;
     } catch { return null; }
 }
+
+/** A Login's stored URLs, for host matching (fill matches exact https hosts whatever the URI's match rule). */
+const urlsOf = (item) => (item.uris || []).map((u) => u.url).filter(Boolean);
 
 export class FillError extends Error {
     constructor(message, status = 403, outcome = 'refused') { super(message); this.status = status; this.outcome = outcome; }
@@ -101,19 +103,20 @@ export function createFiller({ getPolicy, vault, controllers, taint, audit, slee
         return { policy, client: sc.client, path: sc.path, cfg: policy.client(sc.client) };
     }
 
-    // all_items: the client's vault logins by name ("github-work" -> login),
-    // from the vault's cached sync, so a login added to the vault appears on
-    // the next sync. Skipped: organization items, items some client lists by
-    // id, names the client's secrets already use. Two items with one name map
-    // to null (ambiguous, refused).
+    // all_items: the client's vault logins by name ("github-work" -> login
+    // metadata, a provider LoginMeta), from the provider's cache, so a login
+    // added to the vault appears on the next sync. Skipped: shared
+    // (organization) items, items some client lists by id, names the client's
+    // secrets already use. Two items with one name map to null (ambiguous,
+    // refused).
     async function vaultLogins(ctx) {
         if (!ctx.policy.allItems(ctx.client)) return new Map();
-        const logins = await vault.listLogins({ force: false }).catch((err) => {
+        const logins = await vault.listItems({ force: false }).catch((err) => {
             throw new FillError(`vault: ${err.message}`, err.status === 404 ? 404 : 502, 'vault');
         });
         const by = new Map();
         for (const l of logins) {
-            if (l.organization || ctx.policy.isListed(l.id)) continue;
+            if (l.shared || ctx.policy.isListed(l.id)) continue;
             const slug = itemSlug(l.name);
             if (!slug || ctx.cfg.secrets.has(slug)) continue;
             by.set(slug, by.has(slug) ? null : l);
@@ -149,6 +152,7 @@ export function createFiller({ getPolicy, vault, controllers, taint, audit, slee
         return { host: m?.host ?? null, equivalent_of: m?.equivalent_of ?? null, pageHost: httpsHost(url), shown: shownOrigin(url) };
     }
 
+    // A provider Login: {username, password, totp, uris: [{url, match}], ...}.
     async function readValue(ctx, entry) {
         const item = await vault.readItem(entry.item_id).catch((err) => {
             throw new FillError(`vault: ${err.message}`, err.status === 404 ? 404 : 403, 'vault');
@@ -207,7 +211,7 @@ export function createFiller({ getPolicy, vault, controllers, taint, audit, slee
         for (const [slug, l] of [...(await vaultLogins(ctx))].sort((a, b) => a[0].localeCompare(b[0]))) {
             if (!l || !l.hosts.length) continue;
             const eq = ctx.policy.equivalentDomains(ctx.client) ? describeEquivalents(l.hosts, l.equivalents) : null;
-            for (const f of FIELDS) if (l.fields.includes(f)) secrets.push({ name: `${slug}.${f}`, hosts: [...l.hosts], kind: f, ...(eq ? { equivalents: eq } : {}) });
+            for (const f of FIELDS) if (l.has[f]) secrets.push({ name: `${slug}.${f}`, hosts: [...l.hosts], kind: f, ...(eq ? { equivalents: eq } : {}) });
         }
         return { client: ctx.client, secrets };
     }
@@ -227,7 +231,7 @@ export function createFiller({ getPolicy, vault, controllers, taint, audit, slee
         }
         if (!entry) { audit.record({ chat, client: ctx.client, path: ctx.path, session, name: String(name ?? '').slice(0, 80), outcome: 'refused_name' }); throw new FillError('no such secret for this chat (see browser_list_secrets)', 404, 'refused_name'); }
         const item = await readValue(ctx, entry);
-        const allowed = allowFor(item.uris, entry);
+        const allowed = allowFor(urlsOf(item), entry);
         if (!allowed.hosts.length) { audit.record({ chat, client: ctx.client, path: ctx.path, session, name: entry.name, outcome: 'refused_no_hosts' }); throw new FillError('this secret has no host that both the vault item and the policy allow', 403, 'refused_no_hosts'); }
         const r = await typeField(ctx, { chat, b, element, name: entry.name, field: entry.field, item, allowed });
         return { ok: true, ...r };
@@ -252,7 +256,7 @@ export function createFiller({ getPolicy, vault, controllers, taint, audit, slee
         const sec = ctx.policy.secret(ctx.client, site) || (typeof site === 'string' && /^[a-z0-9][a-z0-9_-]{0,62}$/.test(site) ? await vaultSecret(ctx, site) : null);
         if (!sec) throw new FillError('no such site for this chat (see browser_list_secrets)', 404, 'refused_name');
         const item = await readValue(ctx, sec);
-        const allowed = allowFor(item.uris, sec);
+        const allowed = allowFor(urlsOf(item), sec);
         if (!allowed.hosts.length) throw new FillError('this site has no host that both the vault item and the policy allow', 403, 'refused_no_hosts');
         const can = (f) => sec.fields.includes(f) && (f === 'totp' ? !!item.totp : !!item[f]);
         const done = new Set();

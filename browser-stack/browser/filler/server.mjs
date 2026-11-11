@@ -35,7 +35,7 @@ import { createScrubber } from './lib/scrub.mjs';
 import { createTaint } from './lib/taint.mjs';
 import { createAudit } from './lib/audit.mjs';
 import { controllerSet, parsePorts } from './lib/controller.mjs';
-import { createVault } from './lib/providers/vaultwarden/vault.mjs';
+import { create as createProvider } from './lib/providers/builtin.mjs';
 import { createFiller, FillError } from './lib/fill.mjs';
 import { createManager, ACTIONS } from './lib/manage.mjs';
 
@@ -74,7 +74,8 @@ export function tokenChecker(sha256Hex) {
 
 /**
  * The request handler, with every dependency injected (tests build it
- * directly). vault may be null: not enrolled, list/fill/login answer 503.
+ * directly). vault is a vault provider (lib/providers/index.mjs), or null:
+ * not enrolled, list/fill/login answer 503.
  */
 export function createApp({ checkToken, checkVaultToken = () => false, getPolicy, vault, controllers, scrubber, taint, audit, allowLoopbackHttp = false, sleep, totpOpts, now }) {
     const filler = vault ? createFiller({ getPolicy, vault, controllers, taint, audit, allowLoopbackHttp, sleep, totpOpts }) : null;
@@ -155,6 +156,7 @@ export function createApp({ checkToken, checkVaultToken = () => false, getPolicy
     };
 }
 
+// The one backend: the Vaultwarden provider, from the enrollment's key files.
 function buildVaultFromFiles(cfg) {
     const f = cfg.files;
     const userKeyB64 = readSecretOrNull(f.vaultUserKey);
@@ -162,7 +164,7 @@ function buildVaultFromFiles(cfg) {
     const clientSecret = readSecretOrNull(f.vaultClientSecret);
     const deviceId = readSecretOrNull(f.vaultDeviceId);
     if (!userKeyB64 || !clientId || !clientSecret || !deviceId) return null;
-    return createVault({ url: cfg.vaultUrl, clientId, clientSecret, userKey: Buffer.from(userKeyB64, 'base64'), deviceId });
+    return createProvider('vaultwarden', { id: 'shared', url: cfg.vaultUrl, clientId, clientSecret, userKey: Buffer.from(userKeyB64, 'base64'), deviceId });
 }
 
 async function main(argv) {

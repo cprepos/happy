@@ -43,6 +43,15 @@ export const CLIENT_HEADERS = Object.freeze({
     'Device-Type': DEVICE_TYPE,
 });
 
+/** A URI shown as metadata: scheme, host and path; never userinfo, a query or a fragment. */
+export function shownUri(u) {
+    try {
+        const x = new URL(u);
+        if (!/^https?:$/.test(x.protocol) || !x.host) return null;
+        return `${x.protocol}//${x.host}${x.pathname === '/' ? '' : x.pathname}`.slice(0, 300);
+    } catch { return null; }
+}
+
 export function checkVaultUrl(url, { allowLoopbackHttp = true } = {}) {
     const u = new URL(url);
     const loopback = ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname);
@@ -139,16 +148,11 @@ export function createVault({ url, clientId, clientSecret, userKey, deviceId, fe
     }
 
     /**
-     * Decrypt one login item by id. The caller has already resolved the id
-     * through the chat's client policy.
-     * Returns {username, password, totp, uris, custom} (strings, or null for
-     * empty), or throws. custom is the item's custom fields as [{name, value}]:
-     * text, hidden and boolean ones (a boolean's value is "true" or "false"),
-     * decrypted with the item's key. Linked fields (no value of their own),
-     * unnamed ones and any that do not decrypt are left out. Fill never uses
-     * custom; only the vault tools' compare and pipe do (manage.mjs).
+     * The live login cipher with this id and its item key, or throws: 404 (not
+     * found, or in the trash), 422 (not a login, or its key does not decrypt),
+     * 403 (no key for its organization).
      */
-    async function readItem(itemId) {
+    async function openLogin(itemId) {
         const s = await sync();
         const c = findCipher(s, String(itemId).toLowerCase());
         if (!c) throw new VaultError('item not found in the agent account\'s vault', 404);
@@ -159,9 +163,27 @@ export function createVault({ url, clientId, clientSecret, userKey, deviceId, fe
         const orgId = c.organizationId ? String(c.organizationId).toLowerCase() : null;
         const baseKey = orgId ? s.orgKeys.get(orgId) : userKey;
         if (!baseKey) throw new VaultError('the agent account holds no key for this item\'s organization', 403);
-        let key = baseKey;
         try {
-            if (c.key) key = decryptKey(c.key, { symKey: baseKey });
+            return { c, key: c.key ? decryptKey(c.key, { symKey: baseKey }) : baseKey };
+        } catch (err) {
+            if (err instanceof VaultCryptoError) throw new VaultError(`cannot decrypt item: ${err.message}`, 422);
+            throw err;
+        }
+    }
+
+    /**
+     * Decrypt one login item by id. The caller has already resolved the id
+     * through the chat's client policy.
+     * Returns {username, password, totp, uris, custom} (strings, or null for
+     * empty), or throws. custom is the item's custom fields as [{name, value}]:
+     * text, hidden and boolean ones (a boolean's value is "true" or "false"),
+     * decrypted with the item's key. Linked fields (no value of their own),
+     * unnamed ones and any that do not decrypt are left out. Fill never uses
+     * custom; only the vault tools' compare and pipe do (manage.mjs).
+     */
+    async function readItem(itemId) {
+        const { c, key } = await openLogin(itemId);
+        try {
             const dec = (v) => (v ? decryptSymText(v, key) : null);
             return {
                 username: dec(c.login.username),
@@ -174,6 +196,53 @@ export function createVault({ url, clientId, clientSecret, userKey, deviceId, fe
             if (err instanceof VaultCryptoError) throw new VaultError(`cannot decrypt item: ${err.message}`, 422);
             throw err;
         }
+    }
+
+    /**
+     * One login decrypted, still in Bitwarden's shape, for the provider
+     * adapter (index.mjs): {id, name, notes, login: {username, password, totp,
+     * uris: [{uri, match}]}, fields: [{type, name, value}]}. The same checks
+     * and errors as readItem. name and notes are null when they do not
+     * decrypt; a custom field that is unnamed or does not decrypt is left
+     * out; a linked one (type 3) is kept with a null value.
+     */
+    async function readCipher(itemId) {
+        const { c, key } = await openLogin(itemId);
+        const soft = (v) => { try { return v ? decryptSymText(v, key) : null; } catch { return null; } };
+        try {
+            const dec = (v) => (v ? decryptSymText(v, key) : null);
+            return {
+                id: String(c.id || c.Id).toLowerCase(),
+                name: soft(c.name),
+                notes: soft(c.notes),
+                login: {
+                    username: dec(c.login.username),
+                    password: dec(c.login.password),
+                    totp: dec(c.login.totp),
+                    uris: (c.login.uris || []).map((u) => ({ uri: dec(u?.uri), match: u?.match ?? null })).filter((u) => u.uri),
+                },
+                fields: rawFields(c, key, true),
+            };
+        } catch (err) {
+            if (err instanceof VaultCryptoError) throw new VaultError(`cannot decrypt item: ${err.message}`, 422);
+            throw err;
+        }
+    }
+
+    /** A cipher's named custom fields as [{type, name, value?}]: linked ones kept (value null), the rest skipped when they do not decrypt. */
+    function rawFields(c, key, withValues) {
+        const out = [];
+        for (const f of Array.isArray(c.fields) ? c.fields : []) {
+            if (!f || !f.name) continue;
+            let name; let value = null;
+            try {
+                name = decryptSymText(f.name, key);
+                if (withValues && f.type !== LINKED_FIELD && f.value) value = decryptSymText(f.value, key);
+            } catch { continue; }
+            if (typeof name !== 'string' || !name) continue;
+            out.push(withValues ? { type: f.type ?? 0, name, value } : { type: f.type ?? 0, name });
+        }
+        return out;
     }
 
     /**
@@ -247,15 +316,6 @@ export function createVault({ url, clientId, clientSecret, userKey, deviceId, fe
         return { orgId, key: c.key ? decryptKey(c.key, { symKey: baseKey }) : baseKey };
     }
 
-    /** A URI shown as metadata: scheme, host and path; never userinfo, a query or a fragment. */
-    function shownUri(u) {
-        try {
-            const x = new URL(u);
-            if (!/^https?:$/.test(x.protocol) || !x.host) return null;
-            return `${x.protocol}//${x.host}${x.pathname === '/' ? '' : x.pathname}`.slice(0, 300);
-        } catch { return null; }
-    }
-
     /**
      * Login metadata for the vault tools: {id, name, username, uris, hosts,
      * fields, custom_fields, revision_date, trashed, organization}. The username
@@ -298,6 +358,45 @@ export function createVault({ url, clientId, clientSecret, userKey, deviceId, fe
         if (!ID.test(v)) throw new VaultError('item id must be a uuid', 400);
         return v;
     }
+
+    /**
+     * Every login's metadata, decrypted, still in Bitwarden's shape, for the
+     * provider adapter (index.mjs): {items: [{id, name, username, uris: [{uri,
+     * match}], present, fields: [{type, name}], revisionDate, trashed,
+     * organization}], equivalence}. present is which of username, password
+     * and totp are set (nothing but the name, username, URIs and custom field
+     * names is decrypted). The same items as listItems; uris are the full
+     * decrypted URIs (the adapter derives hosts and the shown form).
+     * equivalence is the sync's equivalent-domains index (domains.mjs).
+     */
+    async function listCipherMeta({ force = false, trash = false } = {}) {
+        const s = await sync({ force });
+        const items = [];
+        for (const c of s.ciphers) {
+            if (!c || c.type !== 1 || !c.login) continue;
+            if (c.deletedDate && !trash) continue;
+            let k;
+            try { k = keysOf(s, c); } catch { k = null; }
+            if (!k) continue;
+            const dec = (v) => { try { return v ? decryptSymText(v, k.key) : null; } catch { return null; } };
+            items.push({
+                id: String(c.id || c.Id).toLowerCase(),
+                name: dec(c.name),
+                username: dec(c.login.username),
+                uris: (c.login.uris || []).map((u) => ({ uri: dec(u?.uri), match: u?.match ?? null })).filter((u) => u.uri),
+                present: ['username', 'password', 'totp'].filter((f) => !!c.login[f]),
+                fields: rawFields(c, k.key, false),
+                revisionDate: c.revisionDate || null,
+                trashed: !!c.deletedDate,
+                organization: !!k.orgId,
+            });
+        }
+        items.sort((a, b) => String(a.name ?? '').localeCompare(String(b.name ?? '')) || a.id.localeCompare(b.id));
+        return { items, equivalence: s.equivalence };
+    }
+
+    /** Whether id is a Vaultwarden item id (a uuid, any case). */
+    const isId = (id) => typeof id === 'string' && ID.test(id.toLowerCase());
 
     /** The cipher for a write, from a fresh sync: a personal login, or throws. */
     async function personal(itemId, { trashed = false } = {}) {
@@ -390,7 +489,10 @@ export function createVault({ url, clientId, clientSecret, userKey, deviceId, fe
     return {
         sync,
         readItem,
+        readCipher,
         listLogins,
+        listCipherMeta,
+        isId,
         listItems,
         createLogin,
         updateLogin,

@@ -2,7 +2,7 @@
 // client's agent may have typed, for which fields and hosts.
 //
 //   { "version": 1,
-//     "clients": { "acme": { "secrets": { "github": { "item_id": "<cipher uuid>",
+//     "clients": { "acme": { "secrets": { "github": { "item_id": "<item id>",
 //                                                     "hosts": ["github.com"],
 //                                                     "fields": ["username", "password", "totp"],
 //                                                     "custom_fields": ["token"] } } } },   // optional
@@ -77,7 +77,13 @@ export const FIELDS = ['username', 'password', 'totp'];
 /** A custom field name the vault tools take (custom_field) and the policy lists (custom_fields). */
 export const CUSTOM_FIELD_NAME = /^[A-Za-z0-9 _.-]{1,64}$/;
 const SLUG = /^[a-z0-9][a-z0-9_-]{0,62}$/;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/**
+ * A vault item id as the policy and the vault tools take it: opaque to the
+ * filler (the vault provider checks its own form, e.g. a uuid for
+ * Vaultwarden), only bounded here: 8..128 of A-Z a-z 0-9 _ -. Ids are compared
+ * case-insensitively (stored lower case).
+ */
+export const ITEM_ID = /^[A-Za-z0-9_-]{8,128}$/;
 const CHAT = /^[A-Za-z0-9_.:-]{1,200}$/;
 /** The chat a caller with no chat id names. Only default_client can serve it. */
 export const NO_CHAT = 'none';
@@ -169,7 +175,7 @@ export function parsePolicy(json) {
         const secrets = new Map();
         for (const [name, s] of Object.entries(c.secrets || {})) {
             if (!SLUG.test(name)) throw new PolicyError(`client ${slug}: bad secret name`);
-            if (!s || !UUID.test(s.item_id || '')) throw new PolicyError(`${slug}.${name}: item_id must be a uuid`);
+            if (!s || typeof s.item_id !== 'string' || !ITEM_ID.test(s.item_id)) throw new PolicyError(`${slug}.${name}: item_id must be a vault item id (8..128 of A-Z a-z 0-9 _ -; make filler-items lists them)`);
             const item = s.item_id.toLowerCase();
             if (seenItems.has(item)) throw new PolicyError(`${slug}.${name}: item already used by ${seenItems.get(item)}`);
             seenItems.set(item, `${slug}.${name}`);

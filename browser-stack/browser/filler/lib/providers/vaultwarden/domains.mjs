@@ -12,25 +12,10 @@
 // Only all_items logins use this (fill.mjs), only for URIs with the default
 // match detection, and only on https pages. A policy secret with its own hosts
 // stays exact.
-import { normalizeHost } from '../../hosts.mjs';
-import { SUFFIXES, WILDCARD_TLDS } from '../../psl.mjs';
+import { normalizeHost, registrableDomain, describeEquivalents } from '../../hosts.mjs';
 
-const IPV4 = /^\d{1,3}(?:\.\d{1,3}){3}$/;
-
-/** The registrable domain of a host ("accounts.google.co.uk" -> "google.co.uk"), or null for a suffix, an IP or junk. */
-export function registrableDomain(host) {
-    if (typeof host !== 'string') return null;
-    const h = host.trim().toLowerCase().replace(/\.$/, '');
-    if (!h || IPV4.test(h) || /[^a-z0-9.-]/.test(h)) return null;
-    const labels = h.split('.');
-    if (labels.length < 2 || labels.some((l) => !l)) return null;
-    let suffix = 1; // the TLD
-    for (let k = labels.length; k >= 2; k--) {
-        if (SUFFIXES.has(labels.slice(-k).join('.'))) { suffix = k; break; }
-    }
-    if (suffix === 1 && WILDCARD_TLDS.has(labels.at(-1))) suffix = 2;
-    return labels.length > suffix ? labels.slice(-(suffix + 1)).join('.') : null;
-}
+// Provider-neutral, kept in hosts.mjs; re-exported for the callers that import them from here.
+export { registrableDomain, describeEquivalents };
 
 /**
  * The equivalence index from a sync's domains object: Map registrable domain
@@ -77,17 +62,4 @@ export function equivalentsFor(hosts, index) {
         for (const d of [...group].sort()) if (!out.has(d)) out.set(d, h);
     }
     return out;
-}
-
-/**
- * A short label for the equivalents of saved hosts: the domains beyond the
- * saved hosts' own, at most three, e.g. "+ google.com, youtube.com equivalents"
- * or "+ amazon.ca, amazon.cn, amazon.co.jp … 20 more equivalents". Null when there are none.
- */
-export function describeEquivalents(hosts, equivalents) {
-    if (!equivalents?.size) return null;
-    const own = new Set((hosts || []).map(registrableDomain));
-    const others = [...equivalents.keys()].filter((d) => !own.has(d)).sort();
-    if (!others.length) return null;
-    return `+ ${others.slice(0, 3).join(', ')}${others.length > 3 ? ` … ${others.length - 3} more` : ''} equivalents`;
 }

@@ -279,7 +279,7 @@ test('custom fields: every value read is nulled once pipe or compare is done', a
         await assert.rejects(m.pipe({ chat: D, id, custom_field: 'empty', target: 'sha' }), (e) => e.status === 404);
         assert.equal(recs.length, 4);
         for (const rec of recs) {
-            assert.equal(rec.custom, null);
+            assert.equal(rec.fields, null);
             assert.equal(rec.password, null);
             assert.equal(rec.totp, null);
         }
