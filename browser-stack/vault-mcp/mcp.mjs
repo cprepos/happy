@@ -25,7 +25,7 @@ export const NO_CHAT = 'none'; // must match NO_CHAT in browser/filler/lib/polic
 // Behind the LAN gateway (fromMeta): a call whose _meta names no chat goes nowhere.
 export const NO_META_CHAT = 'this vault call could not be matched to its chat, so it was not sent to the vault. Try it again.';
 
-const ID = { type: 'string', pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$', description: 'The login\'s id, from vault_list or vault_search.' };
+const ID = { type: 'string', pattern: '^[A-Za-z0-9_-]{8,128}$', description: 'The login\'s id, exactly as vault_list or vault_search shows it.' };
 const NAME = { type: 'string', minLength: 1, maxLength: 100, description: 'The login\'s name in the vault. Its slug becomes the fill name browser_login and browser_fill_secret use.' };
 const URIS = { type: 'array', minItems: 1, maxItems: 10, items: { type: 'string', minLength: 9, maxLength: 2048, pattern: '^https://' }, description: 'The https URLs the login is for (no user name or password in them). Logins fill only on these hosts.' };
 const USERNAME = { type: 'string', minLength: 1, maxLength: 256, description: 'The account\'s user name or email.' };
