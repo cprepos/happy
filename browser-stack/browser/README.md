@@ -34,6 +34,7 @@ make browser-bridge-smoke   # end to end on the running stack; makes and deletes
 make browser-pods-status    # each chat's pod: slot, containers, the bridge's view (chat, held, idle)
 make browser-pods-reap      # remove pods no chat is using; asks first (see below)
 make browser-bridge-restart BRIDGE_ENV=1     # recreate only the bridge, so a changed .env.browser applies
+make browser-node-chrome    # build the local node image with Google Chrome stable (see below)
 ```
 
 `make browser-pods-reap` keeps every pod the bridge says is in use: one with a chat's
@@ -238,7 +239,8 @@ Tunables, such as screen size, ports and `MAX_SESSIONS`, go in
   `TZ` (`EVIDENCE_TZ`, default `America/Toronto`, set on the shared node in compose and on
   every pod's node by the launcher). The panel is always shown and `maxOver: false` reserves
   its strip (`_NET_WORKAREA`), so a maximized Chromium never covers it. The window's button
-  shows the window's own title, `<page title> - Google Chrome for Testing`: Chromium's
+  shows the window's own title, `<page title> - Google Chrome` (with `BROWSER_NODE_CHROME=1`;
+  `<page title> - Google Chrome for Testing` on the upstream image): Chromium's
   `--window-name` does not reach the windows Playwright opens over CDP, and fluxbox 1.3.7 has
   no way to set a button's text without remote actions or key bindings, both of which stay off.
   No slit, menu, icons or key bindings, and `apps.window` maximizes every window with no frame.
@@ -263,6 +265,21 @@ Tunables, such as screen size, ports and `MAX_SESSIONS`, go in
   shared stack's node comes back by itself (`restart: unless-stopped`); a pod's does not
   restart in place (`RestartPolicy: no`), but the bridge's health check stops it after two
   failed checks and the chat's next call gets a new pod on its last page, as for any crash.
+- **Google Chrome (`BROWSER_NODE_CHROME=1`):** set it in `.env.browser` (or on the `make`
+  line) to run Google Chrome stable instead of the upstream image's Chrome for Testing, in
+  browser-node and every pod. `make browser-node-chrome` (run by `browser-up` when it is on)
+  builds `node-chrome/Dockerfile` locally: the pinned upstream node image plus one exact
+  `google-chrome-stable` .deb from Google, checked against the SHA256 in the Dockerfile (read
+  from Google's signed apt index), with no apt repo or update cron left behind. Compose and
+  the launcher then use the build by its local image id (`sha256:...`), through
+  `BROWSER_NODE_IMAGE` / `LAUNCHER_NODE_IMAGE`; both refuse an unpinned tag. `happy-kiosk.mjs`
+  launches `/opt/google/chrome/chrome` through Playwright's `executablePath`
+  (`BROWSER_EXECUTABLE_PATH`, set in the image), and `kiosk/policy.json` is mounted at
+  Chrome's policy path `/etc/opt/chrome/policies/managed` as well as Chromium's. Same uid
+  (1994), seccomp profile and user namespace sandbox. A new Chrome version means a new
+  `CHROME_VERSION` and `CHROME_SHA256`, then `make browser-node-chrome browser-up` and
+  `make browser-pods-reap`. **Google Chrome may not be redistributed:** build the image
+  locally and never push it to a registry. Unset (the default), nothing changes.
 - **The kiosk (`BROWSER_KIOSK=1`):** set it in `.env.browser` (or on the `make` line) to bring
   the kiosk back: every window held in browser fullscreen with no tab strip, address bar or
   frame, fluxbox on `kiosk/fluxbox/init`, and the page the full 1920x1200. Chromium's own
