@@ -78,6 +78,9 @@ extension Strings {
         /// AgentInput.tsx `accessibilityLabel={shouldShowStopButton ? 'Stop' … : 'Send'}`, literals.
         public static let stop = "Stop"
         public static let send = "Send"
+        /// A hardware keyboard's newline shortcut, in the ⌘-hold list
+        /// beside Send (`SendShortcut`); a literal, as Send is.
+        public static let newLine = "New line"
     }
 
     /// en.ts `imageUpload`: useImagePicker.ts's alerts, and sync.ts's

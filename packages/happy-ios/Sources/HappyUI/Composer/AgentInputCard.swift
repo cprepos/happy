@@ -1633,15 +1633,27 @@ public final class AgentInputCardView: UIView {
         delegate?.agentInputCardDidPressPrimary(self)
     }
 
-    /// ⌘↩ while the text has the keyboard (`SendShortcut`).
+    /// A hardware keyboard's Return and its newlines while the text has
+    /// the keyboard (`SendShortcut`).
     public override var keyCommands: [UIKeyCommand]? {
         guard textView.isFirstResponder else { return super.keyCommands }
-        return [SendShortcut.command(action: #selector(sendShortcut(_:)))] + (super.keyCommands ?? [])
+        return SendShortcut.commands(send: #selector(sendShortcut(_:)), newline: #selector(newlineShortcut(_:))) + (super.keyCommands ?? [])
+    }
+
+    /// Neither while an input method is composing: Return is its.
+    public override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(sendShortcut(_:)) || action == #selector(newlineShortcut(_:)) {
+            return SendShortcut.takes(in: textView)
+        }
+        return super.canPerformAction(action, withSender: sender)
     }
 
     /// What the send button does, only when it would send: the flat
-    /// panel's send, or the round button showing send.
+    /// panel's send, or the round button showing send. A plain Return goes
+    /// to the owner first, as a typed one does, so an open suggestion list
+    /// picks with it (`agentInputCardShouldInsertNewline`).
     @objc func sendShortcut(_ sender: Any?) {
+        if SendShortcut.isPlainReturn(sender), delegate?.agentInputCardShouldInsertNewline(self) == false { return }
         if let desktop = configuration.desktop {
             SendShortcut.fire(allowed: SendShortcut.allows(desktop: desktop.send)) {
                 delegate?.agentInputCardDidPressSend(self)
@@ -1651,6 +1663,12 @@ public final class AgentInputCardView: UIView {
                 primaryTapped()
             }
         }
+    }
+
+    /// ⇧↩, and ⌘↩ or ⌃↩: a newline at the cursor, whatever the owner
+    /// would do with a typed Return.
+    @objc func newlineShortcut(_ sender: Any?) {
+        SendShortcut.insertNewline(in: textView)
     }
 
     @objc private func expandTapped() {

@@ -2,6 +2,7 @@
 import HappyAnalytics
 import HappyCore
 import HappyLayout
+import HappyStore
 import HappyWire
 import UIKit
 
@@ -43,6 +44,8 @@ public final class AppCoordinator {
     /// Decides the language of the screens about to be built, holding the
     /// window's touches meanwhile; a newer root replaces a pending one.
     private let language: ScreensLanguage
+    /// The shown account's Enter to send, kept in `SendShortcut`.
+    private var enterToSendObservation: StoreObservation?
 
     public init(window: UIWindow, context: AppContext) {
         self.window = window
@@ -330,6 +333,19 @@ public final class AppCoordinator {
         install(session: context.account.session, pending: context.account.pendingServerConfirmation, animated: false)
     }
 
+    /// The chat boxes' Return follows the shown account's Enter to send, as
+    /// it syncs; the default while none is shown.
+    private func followEnterToSend(_ session: AccountSession?) {
+        enterToSendObservation = nil
+        guard let session else {
+            SendShortcut.enterToSend = AccountSettings().enterToSend
+            return
+        }
+        enterToSendObservation = session.store.observeSettings { snapshot in
+            SendShortcut.enterToSend = AccountSettings(snapshot).enterToSend
+        }
+    }
+
     /// The account's `preferredLanguage` and the device's languages, as
     /// text/index.ts resolves them; the device's alone while signed out, or
     /// when the account's settings don't answer within a second.
@@ -354,6 +370,7 @@ public final class AppCoordinator {
     }
 
     private func install(session: AccountSession?, pending: AccountSummary?, animated: Bool) {
+        followEnterToSend(session)
         // A swipe back under way (from settings, say) ends first.
         if let transition = shell.stackTransition {
             transition.animate(alongsideTransition: nil) { [weak self] _ in self?.install(session: session, pending: pending, animated: animated) }

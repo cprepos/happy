@@ -6,8 +6,9 @@ import HappyWire
 import UIKit
 
 /// Settings › Appearance (app/(app)/settings/appearance.tsx), iOS rows only:
-/// theme, language, chat, avatars, input and display. The web-only rows
-/// (Enter to send, command palette) are left out, as on an iPhone. So is
+/// theme, language, chat, avatars, input and display. Enter to send is a
+/// hardware keyboard's here (`SendShortcut`); the web-only command palette
+/// is left out, as on an iPhone. So is
 /// Avatar Style: every avatar without a picture wears its placeholder
 /// (`AvatarPlaceholder`) whichever style is set, so only Black & White
 /// Avatars changes how they look, and this app's own Animated Avatars
@@ -171,10 +172,21 @@ public final class SettingsAppearanceViewController: UIViewController {
             icon: "analytics-outline",
             tint: purple
         )
-        sections.append(ItemGroupView(title: Strings.SettingsAppearance.input, footer: Strings.SettingsAppearance.inputDescription, rows: [contextSize]))
-        // ItemGroup counts the empty web-only slot after it, so the row keeps
-        // its divider on iOS.
-        contextSize.showsDivider = true
+        // The same synced key as the web's Enter to send, so one switch sets
+        // both; the composers read it as they list their keys.
+        // Its subtitle says what Return does now, so it is rebuilt at once:
+        // the store's echo matches what `set` already shows.
+        let enterToSend = toggles.row(
+            "agentInputEnterToSend",
+            title: Strings.SettingsFeatures.enterToSend,
+            subtitle: settings.enterToSend ? Strings.SettingsFeatures.enterToSendEnabled : Strings.SettingsFeatures.enterToSendDisabled,
+            icon: ItemIcon(.ionicons("return-down-forward-outline"), tint: purple),
+            isOn: settings.enterToSend
+        ) { [weak self] on in
+            self?.set("agentInputEnterToSend", .bool(on))
+            self?.rebuild()
+        }
+        sections.append(ItemGroupView(title: Strings.SettingsAppearance.input, footer: Strings.SettingsAppearance.inputDescription, rows: [contextSize, enterToSend]))
 
         let grouping = settings.sessionListGrouping
         sections.append(ItemGroupView(title: Strings.SettingsAppearance.display, footer: Strings.SettingsAppearance.displayDescription, rows: [

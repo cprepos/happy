@@ -212,9 +212,22 @@ final class ComposerEditorViewController: UIViewController, UITextViewDelegate {
         dismiss(animated: true)
     }
 
+    /// A hardware keyboard's Return and its newlines (`SendShortcut`).
     override var keyCommands: [UIKeyCommand]? {
         guard textView.isFirstResponder else { return super.keyCommands }
-        return [SendShortcut.command(action: #selector(sendShortcut(_:)))] + (super.keyCommands ?? [])
+        return SendShortcut.commands(send: #selector(sendShortcut(_:)), newline: #selector(newlineShortcut(_:))) + (super.keyCommands ?? [])
+    }
+
+    /// Neither while an input method is composing: Return is its.
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(sendShortcut(_:)) || action == #selector(newlineShortcut(_:)) {
+            return SendShortcut.takes(in: textView)
+        }
+        return super.canPerformAction(action, withSender: sender)
+    }
+
+    @objc func newlineShortcut(_ sender: Any?) {
+        SendShortcut.insertNewline(in: textView)
     }
 
     @objc func sendShortcut(_ sender: Any?) {
