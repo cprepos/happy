@@ -1,4 +1,5 @@
 #if canImport(UIKit)
+import HappyLayout
 import UIKit
 
 /// A button's name and what it does, shown while it is held: a small
