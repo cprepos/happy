@@ -1176,6 +1176,72 @@ final class HostedLiveBrowserTests: XCTestCase {
         }
     }
 
+    /// Approve reads in both appearances, in the chat's bar under the
+    /// mini player: its fill is never the window's tint (the header's
+    /// white in dark mode), nor its words the fill's colour.
+    func testApproveAndDenyReadInDarkAndLight() async throws {
+        let scene = try await hostedActiveScene()
+        for style in [UIUserInterfaceStyle.dark, .light] {
+            let window = UIWindow(windowScene: scene)
+            window.overrideUserInterfaceStyle = style
+            window.tintColor = UIColor(Palette.headerTint)
+            let root = UIViewController()
+            window.rootViewController = root
+            window.isHidden = false
+            defer { window.isHidden = true }
+            let bar = LiveBrowserApprovalBar()
+            root.view.addSubview(bar)
+            bar.show(LiveBrowserState.Approval(id: "a1", summary: "The agent wants to post a comment."))
+            let size = root.view.bounds.size
+            let layout = LiveBrowserApprovalBarLayout(size: size, safeArea: LayoutInsets(window.safeAreaInsets),
+                                                      place: .chat(card: CGRect(x: 0, y: size.height - 180, width: size.width, height: 120),
+                                                                   anchor: size.height - 190))
+            bar.place(layout)
+            bar.layoutIfNeeded()
+            let traits = bar.traitCollection
+            XCTAssertEqual(traits.userInterfaceStyle, style)
+            let approve = try XCTUnwrap(bar.approve.configuration)
+            XCTAssertFalse(bar.approve.isHidden)
+            let fill = (approve.baseBackgroundColor ?? bar.approve.tintColor).resolvedColor(with: traits)
+            let ink = (approve.baseForegroundColor ?? .white).resolvedColor(with: traits)
+            XCTAssertGreaterThanOrEqual(Self.contrast(fill, ink), 4.5, "Approve in \(style.rawValue)")
+            let card = try XCTUnwrap(bar.backgroundColor).resolvedColor(with: traits)
+            XCTAssertGreaterThanOrEqual(Self.contrast(fill, card), 3, "Approve's fill against the card in \(style.rawValue)")
+            let deny = try XCTUnwrap(bar.deny.configuration?.baseForegroundColor).resolvedColor(with: traits)
+            XCTAssertGreaterThanOrEqual(Self.contrast(deny, card), 3, "Deny in \(style.rawValue)")
+            try screenshot(window, name: "live-browser-approval-\(style == .dark ? "dark" : "light")")
+        }
+    }
+
+    /// The colours this screen added read in both appearances: yolo's
+    /// orange on the card and the header, a held control's hand and the
+    /// help's numbers on their discs, a tip's words on its bubble.
+    func testAddedColoursReadInDarkAndLight() {
+        for style in [UIUserInterfaceStyle.dark, .light] {
+            let traits = UITraitCollection(userInterfaceStyle: style)
+            func c(_ color: UIColor) -> UIColor { color.resolvedColor(with: traits) }
+            let card = c(UIColor(Palette.cardFill)), header = c(UIColor(Palette.headerBackground))
+            XCTAssertGreaterThanOrEqual(Self.contrast(c(.liveBrowserYolo), card), 4.5, "yolo on the card, \(style.rawValue)")
+            XCTAssertGreaterThanOrEqual(Self.contrast(c(.liveBrowserYolo), header), 4.5, "yolo on the header, \(style.rawValue)")
+            XCTAssertGreaterThanOrEqual(Self.contrast(c(.liveBrowserFill), c(.liveBrowserOnFill)), 7, "filled, \(style.rawValue)")
+            XCTAssertGreaterThanOrEqual(Self.contrast(c(.liveBrowserFill), header), 3, "the held disc on the header, \(style.rawValue)")
+            XCTAssertGreaterThanOrEqual(Self.contrast(c(UIColor(Palette.cardTitle)), card), 7, "a tip's title, \(style.rawValue)")
+            XCTAssertGreaterThanOrEqual(Self.contrast(c(UIColor(Palette.cardDetail)), card), 4.5, "a tip's detail, \(style.rawValue)")
+        }
+    }
+
+    /// WCAG's contrast ratio of two opaque colours.
+    static func contrast(_ a: UIColor, _ b: UIColor) -> CGFloat {
+        func luminance(_ color: UIColor) -> CGFloat {
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, alpha: CGFloat = 0
+            color.getRed(&r, green: &g, blue: &b, alpha: &alpha)
+            func linear(_ v: CGFloat) -> CGFloat { v <= 0.03928 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4) }
+            return 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+        }
+        let (x, y) = (luminance(a), luminance(b))
+        return (max(x, y) + 0.05) / (min(x, y) + 0.05)
+    }
+
     /// Full screen says "Yolo mode enabled" under the header while yolo is
     /// on, plain words on a clear background, as the line above the chat.
     func testFullScreenSaysYoloModeEnabledOnlyWhileOn() async throws {

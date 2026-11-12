@@ -1472,8 +1472,10 @@ final class LiveBrowserFullScreenItems: UIViewController {
     private func showControl(_ button: UIButton, held: Bool, size: CGFloat = 17) {
         let symbol = UIImage.SymbolConfiguration(pointSize: size, weight: .medium)
         button.configuration?.image = UIImage(systemName: held ? "hand.raised.slash.fill" : "hand.tap", withConfiguration: symbol)
-        button.configuration?.baseForegroundColor = held ? .white : UIColor(Palette.headerTint)
-        button.configuration?.background.backgroundColor = held ? .tintColor : .clear
+        // Held: the hand in a disc of the header's ink, never the tint
+        // (the header's white in dark mode) under a white hand.
+        button.configuration?.baseForegroundColor = held ? .liveBrowserOnFill : UIColor(Palette.headerTint)
+        button.configuration?.background.backgroundColor = held ? .liveBrowserFill : .clear
         button.isSelected = held
         let title = held ? Strings.LiveBrowser.releaseControl : Strings.LiveBrowser.takeControl
         button.accessibilityLabel = title
@@ -1510,7 +1512,7 @@ final class LiveBrowserFullScreenItems: UIViewController {
         button.configuration?.image = UIImage(systemName: on ? "bolt.shield.fill" : "bolt.shield",
                                               withConfiguration: UIImage.SymbolConfiguration(pointSize: size, weight: .medium))
         button.configuration?.title = on && word ? Strings.LiveBrowser.yoloBadge : nil
-        button.configuration?.baseForegroundColor = on ? .systemOrange : UIColor(Palette.headerTint)
+        button.configuration?.baseForegroundColor = on ? .liveBrowserYolo : UIColor(Palette.headerTint)
         button.isEnabled = enabled
         button.isSelected = on
         button.accessibilityValue = on ? Strings.LiveBrowser.yoloOn : Strings.LiveBrowser.yoloOff
@@ -2147,8 +2149,8 @@ final class LiveBrowserYoloLine: UIView {
     }
 
     private func render() {
-        let attributes = style.attributes(color: .systemOrange, alignment: .center, lineBreakMode: .byTruncatingTail)
-        label.attributedText = Self.text(Strings.LiveBrowser.yoloEnabled, font: style.font, color: .systemOrange, attributes: attributes)
+        let attributes = style.attributes(color: .liveBrowserYolo, alignment: .center, lineBreakMode: .byTruncatingTail)
+        label.attributedText = Self.text(Strings.LiveBrowser.yoloEnabled, font: style.font, color: .liveBrowserYolo, attributes: attributes)
         accessibilityLabel = Strings.LiveBrowser.yoloEnabled
         setNeedsLayout()
     }
@@ -2193,7 +2195,7 @@ final class LiveBrowserIndicatorView: UIControl {
             let line = NSMutableAttributedString(attributedString: style.attributedString(text, color: color, lineBreakMode: .byTruncatingTail))
             // Yolo's words, while on, in yolo's orange.
             let yolo = (text as NSString).range(of: Strings.LiveBrowser.yoloEnabled)
-            if yolo.location != NSNotFound { line.addAttribute(.foregroundColor, value: UIColor.systemOrange, range: yolo) }
+            if yolo.location != NSNotFound { line.addAttribute(.foregroundColor, value: UIColor.liveBrowserYolo, range: yolo) }
             return line
         }
         accessibilityLabel = text
@@ -2448,11 +2450,11 @@ final class LiveBrowserPlayerView: UIView, UIGestureRecognizerDelegate {
         yoloButton.isHidden = layout.yolo == nil || isOver
         // The whole words where they fit the picture, else "Yolo".
         let yoloFont = Fonts.ui(.semiBold, size: 11)
-        let whole = LiveBrowserYoloLine.text(Strings.LiveBrowser.yoloEnabled, font: yoloFont, color: .systemOrange)
+        let whole = LiveBrowserYoloLine.text(Strings.LiveBrowser.yoloEnabled, font: yoloFont, color: .liveBrowserYolo)
         let words = ceil(whole.size().width) <= layout.picture.width - 24 ? Strings.LiveBrowser.yoloEnabled : Strings.LiveBrowser.yoloBadge
         if words != yoloBadgeWords || yoloBadge.attributedText == nil {
             yoloBadgeWords = words
-            yoloBadge.attributedText = words == Strings.LiveBrowser.yoloEnabled ? whole : LiveBrowserYoloLine.text(words, font: yoloFont, color: .systemOrange)
+            yoloBadge.attributedText = words == Strings.LiveBrowser.yoloEnabled ? whole : LiveBrowserYoloLine.text(words, font: yoloFont, color: .liveBrowserYolo)
         }
         let yoloWidth = ceil(yoloBadge.sizeThatFits(CGSize(width: layout.picture.width, height: 18)).width)
         yoloBadge.frame = CGRect(x: layout.picture.maxX - yoloWidth - 8, y: layout.picture.minY + 6, width: yoloWidth, height: 18)
@@ -2575,7 +2577,7 @@ final class LiveBrowserPlayerView: UIView, UIGestureRecognizerDelegate {
         yoloButton.isHidden = layout?.yolo == nil || isOver
         yoloButton.configuration?.image = UIImage(systemName: yolo ? "bolt.shield.fill" : "bolt.shield",
                                                   withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
-        yoloButton.configuration?.baseForegroundColor = yolo ? .systemOrange : UIColor(Palette.cardTitle)
+        yoloButton.configuration?.baseForegroundColor = yolo ? .liveBrowserYolo : UIColor(Palette.cardTitle)
         yoloButton.isSelected = yolo
         yoloButton.accessibilityValue = yolo ? Strings.LiveBrowser.yoloOn : Strings.LiveBrowser.yoloOff
         let tip = switch feed.phase {

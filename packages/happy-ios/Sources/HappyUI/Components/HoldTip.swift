@@ -161,14 +161,15 @@ enum HoldTip {
         }
         let frames = columns(sizes: bubbles.map { $0.measure(maxWidth: min(M.maxWidth, safe.width)) },
                              sources: sources, safe: safe, placement: placement)
+        // In the window first: the rings take its appearance (dark or light).
+        overlay.alpha = 0
+        window.addSubview(overlay)
         for (index, bubble) in bubbles.enumerated() {
             bubble.frame = frames[index]
             bubble.accessibilityIdentifier = "hold-tip-help-bubble"
             overlay.addSubview(bubble)
             overlay.mark(sources[index], number: index + 1)
         }
-        overlay.alpha = 0
-        window.addSubview(overlay)
         help = overlay
         Haptics.play(.hold)
         UIView.animate(withDuration: 0.15) { overlay.alpha = 1 }
@@ -253,8 +254,8 @@ final class HoldTipHelp: UIView {
         badge.text = "\(number)"
         badge.font = Fonts.ui(.semiBold, size: 11)
         badge.textAlignment = .center
-        badge.textColor = .white
-        badge.backgroundColor = .tintColor
+        badge.textColor = UIColor(Palette.roundButtonText)
+        badge.backgroundColor = UIColor(Palette.roundButtonFill)
         badge.layer.cornerRadius = 9
         badge.layer.masksToBounds = true
         badge.accessibilityIdentifier = "hold-tip-help-number"
@@ -265,7 +266,7 @@ final class HoldTipHelp: UIView {
         let ring = UIView(frame: source.insetBy(dx: 2, dy: 2))
         ring.isUserInteractionEnabled = false
         ring.layer.cornerRadius = min(ring.bounds.width, ring.bounds.height) / 2
-        ring.layer.borderColor = UIColor.tintColor.cgColor
+        ring.layer.borderColor = UIColor(Palette.roundButtonFill).resolvedColor(with: traitCollection).cgColor
         ring.layer.borderWidth = 2
         insertSubview(ring, at: 0)
     }

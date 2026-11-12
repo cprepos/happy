@@ -16,7 +16,7 @@ const style = ({ frameWidth, frameHeight }) => `
   --need-bg: #fff1d6; --need-fg: #8a5300;
   --done-bg: #e3f4e8; --done-fg: #1d6b38;
   --err-bg: #fde7e7; --err-fg: #9b1c1c;
-  --yolo: #c25e00;
+  --yolo: #a65000;
   --frame-ar: ${frameWidth} / ${frameHeight};
   --gutter-l: max(16px, env(safe-area-inset-left));
   --gutter-r: max(16px, env(safe-area-inset-right));

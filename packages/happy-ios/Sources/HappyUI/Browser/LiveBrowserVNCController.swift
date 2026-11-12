@@ -564,8 +564,8 @@ final class LiveBrowserVNCKeyRow: UIInputView {
         for (button, keysym) in modifierButtons {
             var configuration = button.configuration ?? .gray()
             let on = armed.contains(keysym)
-            configuration.baseBackgroundColor = on ? .tintColor : nil
-            configuration.baseForegroundColor = on ? .white : nil
+            configuration.baseBackgroundColor = on ? .liveBrowserFill : nil
+            configuration.baseForegroundColor = on ? .liveBrowserOnFill : nil
             button.configuration = configuration
         }
     }
