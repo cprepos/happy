@@ -207,6 +207,10 @@ extension Strings {
         static let yoloOn = "Yolo mode is on"
         static let yoloOff = "Yolo mode is off"
         static let yoloHint = "Approves the agent’s browser actions without asking."
+        /// The "?" that shows every button's tip at once.
+        static let help = "Help"
+        /// The player's menu item that does the same.
+        static let showHelp = "Show button help"
         /// What a held header, strip or player button says
         /// (`HoldTip`): its name, then this.
         enum Tip {
@@ -223,6 +227,7 @@ extension Strings {
             static let playerMore = "Sleep or end the browser."
             static let review = "See the action the agent waits on; approve or deny it."
             static let retry = "Check on the browser again."
+            static let help = "Show what every button does."
         }
         static func yoloApproved(_ summary: String) -> String { "Yolo approved: \(summary)" }
         static let yoloFailed = "Couldn’t Change Yolo Mode"

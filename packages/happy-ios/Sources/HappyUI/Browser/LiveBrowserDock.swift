@@ -966,6 +966,7 @@ final class LiveBrowserDock: NSObject {
                     'max-height': '100dvh' });
       set('#approval', { display: 'none' });
       set('#reason', { display: 'none' });
+      set('#yolo-row', { display: 'none' });
     })();
     """
 
@@ -974,13 +975,13 @@ final class LiveBrowserDock: NSObject {
             WKUserScript(source: pictureOnlySource, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
     }
 
-    /// The live page without its footer (Take control, Release, Sleep),
-    /// which the full screen's header has, nor its approval card and
+    /// The live page without its footer (Take control, Release, Sleep)
+    /// or its yolo row, which the full screen's header has, nor its approval card and
     /// "needs you" note (the native bar asks); the rest as the page lays
     /// it out. Set as `pictureOnlySource` sets it.
     nonisolated static let withoutFooterSource = """
     (function () {
-      ['footer', '#approval', '#reason'].forEach(function (selector) {
+      ['footer', '#approval', '#reason', '#yolo-row'].forEach(function (selector) {
         var element = document.querySelector(selector);
         if (element) { element.style.setProperty('display', 'none', 'important'); }
       });
@@ -1422,6 +1423,14 @@ final class LiveBrowserFullScreenItems: UIViewController {
             HoldTip.attach(to: reload, title: Strings.LiveBrowser.reload, detail: Strings.LiveBrowser.Tip.reload)
             items.append(Self.item(reload))
         }
+        // "?": every button's tip at once.
+        let help = Self.headerButton("questionmark.circle", Strings.LiveBrowser.help, "live-browser-help")
+        help.addAction(UIAction { [weak self] _ in self?.showHelp() }, for: .touchUpInside)
+        HoldTip.attach(to: help, title: Strings.LiveBrowser.help, detail: Strings.LiveBrowser.Tip.help)
+        items.append(Self.item(help))
+        headerWidths = items.compactMap { item in
+            item.customView?.constraints.first { $0.firstAttribute == .width && $0.secondItem == nil }
+        }
         navigationItem.leftBarButtonItems = items
         navigationItem.rightBarButtonItems = []
         if isPhone { buildStrip() }
@@ -1518,6 +1527,37 @@ final class LiveBrowserFullScreenItems: UIViewController {
     /// turned sideways; the header and noVNC's address row hide meanwhile.
     let strip = UIView()
     private(set) var stripShown = false
+    /// The header buttons' widths: narrowed together where the bar is
+    /// too narrow for all at 44, never pushed into the overflow "…".
+    private var headerWidths: [NSLayoutConstraint] = []
+    private let stripHelp = LiveBrowserFullScreenItems.stripButton("questionmark.circle", Strings.LiveBrowser.help, "live-browser-strip-help")
+
+    /// Each header button's width on a bar `width` wide holding `count`:
+    /// 44, or narrower alike (at least 32) where they wouldn't all fit
+    /// between the bar's margins and the gaps between them.
+    nonisolated static func headerButtonWidth(barWidth width: CGFloat, count: Int) -> CGFloat {
+        guard count > 0 else { return 44 }
+        let margins: CGFloat = 16 * 2 + 16
+        let gaps = CGFloat(count - 1) * 8
+        return max(32, min(44, floor((width - margins - gaps) / CGFloat(count))))
+    }
+
+    /// The header's buttons, or the strip's while it shows, each tip at once.
+    func showHelp() {
+        let views: [UIView]
+        let placement: HoldTip.Placement
+        if stripShown {
+            func buttons(_ view: UIView) -> [UIView] {
+                (view is UIButton ? [view] : []) + view.subviews.flatMap(buttons)
+            }
+            views = buttons(strip)
+            placement = .leading
+        } else {
+            views = navigationItem.leftBarButtonItems?.compactMap(\.customView) ?? []
+            placement = .below
+        }
+        HoldTip.showAll(for: views, placement: placement)
+    }
     private let stripControl = UIButton(configuration: .prominentGlass())
     private let stripEnd = LiveBrowserFullScreenItems.stripButton("xmark.octagon", Strings.LiveBrowser.endBrowser, "live-browser-end")
     private let stripSleep = LiveBrowserFullScreenItems.stripButton("moon.zzz", Strings.LiveBrowser.sleepBrowser, "live-browser-sleep")
@@ -1623,7 +1663,9 @@ final class LiveBrowserFullScreenItems: UIViewController {
             stack.alignment = .center
             return stack
         }
-        let column = UIStackView(arrangedSubviews: [group([minimize, stripEnd, stripSleep]), group(page), group([stripControl])])
+        stripHelp.addAction(UIAction { [weak self] _ in self?.showHelp() }, for: .touchUpInside)
+        HoldTip.attach(to: stripHelp, title: Strings.LiveBrowser.help, detail: Strings.LiveBrowser.Tip.help, placement: .leading)
+        let column = UIStackView(arrangedSubviews: [group([minimize, stripEnd, stripSleep]), group(page), group([stripHelp, stripControl])])
         column.axis = .vertical
         column.alignment = .center
         column.distribution = .equalSpacing
@@ -1632,7 +1674,7 @@ final class LiveBrowserFullScreenItems: UIViewController {
         // Nine on noVNC's page outgrow a short phone's column at 44: all
         // shrink alike, not one. Only once they share the column: a
         // constraint between views with no common ancestor throws.
-        let buttons = [minimize, stripEnd, stripSleep] + page + [stripControl]
+        let buttons = [minimize, stripEnd, stripSleep] + page + [stripHelp, stripControl]
         NSLayoutConstraint.activate(buttons.dropFirst().map { $0.heightAnchor.constraint(equalTo: minimize.heightAnchor) })
         NSLayoutConstraint.activate([
             column.topAnchor.constraint(equalTo: strip.topAnchor),
@@ -1647,6 +1689,8 @@ final class LiveBrowserFullScreenItems: UIViewController {
 
     override func viewWillLayoutSubviews() {
         super.viewWillLayoutSubviews()
+        let width = Self.headerButtonWidth(barWidth: navigationController?.navigationBar.bounds.width ?? view.bounds.width, count: headerWidths.count)
+        for constraint in headerWidths where constraint.constant != width { constraint.constant = width }
         applyMode()
     }
 
@@ -2308,6 +2352,10 @@ final class LiveBrowserPlayerView: UIView, UIGestureRecognizerDelegate {
         menuButton.accessibilityIdentifier = "live-browser-player-menu"
         menuButton.showsMenuAsPrimaryAction = true
         menuButton.menu = UIMenu(children: [
+            UIMenu(options: .displayInline, children: [
+                UIAction(title: Strings.LiveBrowser.showHelp, image: UIImage(systemName: "questionmark.circle"),
+                         identifier: UIAction.Identifier("live-browser-player-help")) { [weak self] _ in self?.showHelp() },
+            ]),
             UIAction(title: Strings.LiveBrowser.sleepBrowser, image: UIImage(systemName: "moon.zzz")) { [weak self] _ in self?.onSleep?() },
             UIAction(title: Strings.LiveBrowser.endBrowser, image: UIImage(systemName: "xmark.octagon"), attributes: .destructive) { [weak self] _ in self?.onEnd?() },
         ])
@@ -2316,6 +2364,7 @@ final class LiveBrowserPlayerView: UIView, UIGestureRecognizerDelegate {
         yoloButton.addAction(UIAction { [weak self] _ in self?.onYolo?() }, for: .touchUpInside)
         // Held, each says what it does over the player, clear of the hand.
         HoldTip.attach(to: close, title: Strings.LiveBrowser.close, detail: Strings.LiveBrowser.Tip.close, placement: .above)
+        // The bar has no room for a "?": the menu has "Show button help".
         HoldTip.attach(to: menuButton, title: Strings.LiveBrowser.more, detail: Strings.LiveBrowser.Tip.playerMore, placement: .above)
         HoldTip.attach(to: yoloButton, title: Strings.LiveBrowser.yoloMenu, detail: Strings.LiveBrowser.yoloHint, placement: .above)
         HoldTip.attach(to: full, title: Strings.LiveBrowser.fullScreen, detail: Strings.LiveBrowser.Tip.fullScreen, placement: .above)
@@ -2367,6 +2416,11 @@ final class LiveBrowserPlayerView: UIView, UIGestureRecognizerDelegate {
     /// Whether the menu (End browser) is on the bar: not on a narrow
     /// player, where full screen has it.
     var showsMenu: Bool { !menuButton.isHidden }
+
+    /// Every bar button's tip at once, over the player.
+    func showHelp() {
+        HoldTip.showAll(for: [close, menuButton, yoloButton, action, full, resize], placement: .above)
+    }
 
     func apply(_ layout: LiveBrowserDockLayout) {
         self.layout = layout

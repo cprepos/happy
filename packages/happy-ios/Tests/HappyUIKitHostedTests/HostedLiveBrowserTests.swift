@@ -149,7 +149,7 @@ final class HostedLiveBrowserTests: XCTestCase {
         XCTAssertEqual(noVNC.browser.originalURL.absoluteString, dock.isPhone ? scaled : BrowserDaemon.chatNoVNC)
         try await until { dock.indicator.text == Strings.LiveBrowser.indicator(Strings.LiveBrowser.youHaveControl) }
         try await until { navigation.transitionCoordinator == nil && noVNC.isViewLoaded }
-        let control = try XCTUnwrap(noVNC.navigationItem.leftBarButtonItems?.last)
+        let control = try XCTUnwrap(noVNC.navigationItem.leftBarButtonItems?.first { $0.accessibilityIdentifier == "live-browser-control" })
         XCTAssertEqual(control.accessibilityIdentifier, "live-browser-control")
         XCTAssertEqual(control.title, Strings.LiveBrowser.releaseControl)
         XCTAssertEqual(noVNC.navigationItem.leftBarButtonItems?.first?.accessibilityIdentifier, "live-browser-minimize")
@@ -227,12 +227,12 @@ final class HostedLiveBrowserTests: XCTestCase {
         // under the header; yolo is a switch of its own, in no menu.
         XCTAssertEqual(noVNC.navigationItem.rightBarButtonItems ?? [], [])
         XCTAssertEqual(noVNC.navigationItem.leftBarButtonItems?.map(\.accessibilityIdentifier),
-                       ["live-browser-minimize", "live-browser-end", "live-browser-sleep", "live-browser-yolo", "live-browser-control"])
+                       ["live-browser-minimize", "live-browser-end", "live-browser-sleep", "live-browser-yolo", "live-browser-control", "live-browser-help"])
         let viewerActions = noVNC.viewerMenu.menu?.children.compactMap { ($0 as? UIAction)?.identifier.rawValue }
         XCTAssertFalse(noVNC.viewerMenu.menu?.children.contains { $0 is UIDeferredMenuElement } ?? true)
         XCTAssertEqual(viewerActions, ["live-browser-native-viewer"])
         XCTAssertTrue(noVNC.viewerMenu.isDescendant(of: noVNC.view))
-        XCTAssertEqual(noVNC.navigationItem.leftBarButtonItems?.last, noVNC.control)
+        XCTAssertEqual(noVNC.navigationItem.leftBarButtonItems?.dropLast().last, noVNC.control)
         // Control is a glyph: filled while held, its name for VoiceOver.
         XCTAssertTrue(noVNC.controlButton.isSelected)
         XCTAssertEqual(noVNC.controlButton.accessibilityLabel, Strings.LiveBrowser.releaseControl)
@@ -359,14 +359,14 @@ final class HostedLiveBrowserTests: XCTestCase {
         // Minimize, End browser, Sleep, yolo and Release control, all at
         // the left; nothing at the right.
         XCTAssertEqual(noVNC.navigationItem.leftBarButtonItems?.map(\.accessibilityIdentifier),
-                       ["live-browser-minimize", "live-browser-end", "live-browser-sleep", "live-browser-yolo", "live-browser-control"])
+                       ["live-browser-minimize", "live-browser-end", "live-browser-sleep", "live-browser-yolo", "live-browser-control", "live-browser-help"])
         XCTAssertEqual(noVNC.navigationItem.rightBarButtonItems ?? [], [])
         XCTAssertTrue(noVNC.endItem.isEnabled)
         let frame = try XCTUnwrap(navigation.viewControllers.first as? LiveBrowserFullScreenItems)
         frame.loadViewIfNeeded()
         // The frame view's: the same, then Reload.
         XCTAssertEqual(frame.navigationItem.leftBarButtonItems?.map(\.accessibilityIdentifier),
-                       ["live-browser-minimize", "live-browser-end", "live-browser-sleep", "live-browser-yolo", "live-browser-control", "browser-reload"])
+                       ["live-browser-minimize", "live-browser-end", "live-browser-sleep", "live-browser-yolo", "live-browser-control", "browser-reload", "live-browser-help"])
         XCTAssertEqual(Array(frame.navigationItem.leftBarButtonItems?.dropFirst().prefix(4) ?? []), [frame.endItem, frame.sleepItem, frame.yoloItem, frame.control])
         XCTAssertEqual(frame.navigationItem.rightBarButtonItems ?? [], [])
 
@@ -856,7 +856,7 @@ final class HostedLiveBrowserTests: XCTestCase {
         try screenshot(window, name: "live-browser-phone-upright")
 
         try await turn(window, to: .landscapeRight)
-        try await assertSideways(frame, navigation, ids: ["live-browser-minimize", "live-browser-end", "live-browser-sleep", "browser-reload", "live-browser-strip-yolo", "live-browser-control"])
+        try await assertSideways(frame, navigation, ids: ["live-browser-minimize", "live-browser-end", "live-browser-sleep", "browser-reload", "live-browser-strip-yolo", "live-browser-strip-help", "live-browser-control"])
         let control = try XCTUnwrap(showing("live-browser-control", in: frame.strip).first)
         XCTAssertEqual(control.accessibilityLabel, Strings.LiveBrowser.takeControl)
         try screenshot(window, name: "live-browser-phone-sideways")
@@ -884,7 +884,7 @@ final class HostedLiveBrowserTests: XCTestCase {
         try await turn(window, to: .landscapeLeft)
         try await assertSideways(noVNC, navigation, ids: [
             "live-browser-minimize", "live-browser-end", "live-browser-sleep", "live-browser-back", "live-browser-forward",
-            "live-browser-reload", "live-browser-viewer-menu", "live-browser-strip-yolo", "live-browser-control",
+            "live-browser-reload", "live-browser-viewer-menu", "live-browser-strip-yolo", "live-browser-strip-help", "live-browser-control",
         ])
         let release = try XCTUnwrap(showing("live-browser-control", in: noVNC.strip).first as? UIButton)
         XCTAssertEqual(release.accessibilityLabel, Strings.LiveBrowser.releaseControl)
@@ -1114,8 +1114,65 @@ final class HostedLiveBrowserTests: XCTestCase {
         func buttons(_ view: UIView) -> [UIButton] { ((view as? UIButton).map { [$0] } ?? []) + view.subviews.flatMap(buttons) }
         let column = buttons(page.strip)
         let ids = column.compactMap(\.accessibilityIdentifier)
-        for id in ["live-browser-minimize", "live-browser-end", "live-browser-sleep", "live-browser-strip-yolo", "live-browser-control"] {
+        for id in ["live-browser-minimize", "live-browser-end", "live-browser-sleep", "live-browser-strip-yolo", "live-browser-strip-help", "live-browser-control"] {
             XCTAssertTrue(ids.contains(id), "\(id) in the strip", file: file, line: line)
+        }
+    }
+
+    /// "?" shows every header button's tip at once: one numbered bubble
+    /// each, none over another or over the bar, inside the safe area; a
+    /// tap anywhere closes it.
+    func testHelpShowsEveryButtonsTipAndATapCloses() async throws {
+        let daemon = BrowserDaemon()
+        let (host, window) = try await makeHost(daemon)
+        defer { window.isHidden = true; host.dock.update(link: nil) }
+        let (navigation, noVNC) = try await takeOver(host, daemon)
+        navigation.navigationBar.layoutIfNeeded()
+        let items = noVNC.navigationItem.leftBarButtonItems ?? []
+        let help = try XCTUnwrap(items.last?.customView as? UIButton)
+        XCTAssertEqual(help.accessibilityIdentifier, "live-browser-help")
+        XCTAssertEqual(help.accessibilityHint, Strings.LiveBrowser.Tip.help)
+        help.sendActions(for: .touchUpInside)
+        let overlay = try XCTUnwrap(HoldTip.help)
+        XCTAssertTrue(overlay.isDescendant(of: window))
+        let shown = items.compactMap(\.customView).filter { $0.window != nil && !$0.isHidden }
+        XCTAssertEqual(overlay.bubbles.count, shown.count, "one bubble per button")
+        XCTAssertEqual(overlay.bubbles.first?.title.text, "1  \(Strings.LiveBrowser.minimize)")
+        let safe = window.bounds.inset(by: window.safeAreaInsets)
+        let bar = navigation.navigationBar.convert(navigation.navigationBar.bounds, to: window)
+        for (index, bubble) in overlay.bubbles.enumerated() {
+            XCTAssertTrue(safe.contains(bubble.frame), "\(bubble.frame) inside \(safe)")
+            XCTAssertFalse(bubble.frame.intersects(bar), "off the bar")
+            for other in overlay.bubbles[(index + 1)...] { XCTAssertFalse(bubble.frame.intersects(other.frame)) }
+        }
+        try screenshot(window, name: "live-browser-help")
+        overlay.dismiss()
+        try await until { HoldTip.help == nil || overlay.superview == nil }
+    }
+
+    /// The header's glyphs fit the narrowest iPhones without the "…":
+    /// seven at 44 on a 402 bar, narrower alike on 375 and 320.
+    func testTheHeaderFitsTheNarrowestPhonesWithoutOverflow() {
+        for (width, count) in [(320, 7), (375, 7), (402, 7), (375, 6)] as [(CGFloat, Int)] {
+            let each = LiveBrowserFullScreenItems.headerButtonWidth(barWidth: width, count: count)
+            XCTAssertGreaterThanOrEqual(each, 32)
+            XCTAssertLessThanOrEqual(each, 44)
+            let used = CGFloat(count) * each + CGFloat(count - 1) * 8 + 16 * 2
+            XCTAssertLessThanOrEqual(used, width, "\(count) on \(width)")
+        }
+        XCTAssertEqual(LiveBrowserFullScreenItems.headerButtonWidth(barWidth: 834, count: 7), 44)
+    }
+
+    /// The columns of `showAll` never overlap, nor the bar, sideways too.
+    func testHelpColumnsStayOffTheBarAndEachOther() {
+        let sizes = Array(repeating: CGSize(width: 260, height: 52), count: 10)
+        let safe = CGRect(x: 70, y: 8, width: 734, height: 365)
+        let strip = (0..<10).map { CGRect(x: 760, y: 8 + CGFloat($0) * 36, width: 44, height: 34) }
+        let frames = HoldTip.columns(sizes: sizes, sources: strip, safe: safe, placement: .leading)
+        for (index, frame) in frames.enumerated() {
+            XCTAssertTrue(safe.contains(frame), "\(frame)")
+            XCTAssertLessThan(frame.maxX, 760, "to the strip's leading side")
+            for other in frames[(index + 1)...] { XCTAssertFalse(frame.intersects(other)) }
         }
     }
 
@@ -1173,6 +1230,9 @@ final class HostedLiveBrowserTests: XCTestCase {
         XCTAssertEqual(bubble.detail.text, Strings.LiveBrowser.Tip.endBrowser)
         let finger = CGRect(x: touch.x - 22, y: touch.y - 22, width: 44, height: 44)
         XCTAssertFalse(bubble.frame.intersects(finger), "clear of the finger")
+        // Well under the finger and the hand, across the middle.
+        XCTAssertGreaterThanOrEqual(bubble.frame.minY, touch.y + HoldTip.Metrics.clear - 0.5)
+        XCTAssertEqual(bubble.frame.midX, window.bounds.inset(by: window.safeAreaInsets).midX, accuracy: 1)
         XCTAssertFalse(bubble.frame.intersects(source))
         let safe = window.bounds.inset(by: window.safeAreaInsets)
         XCTAssertTrue(safe.contains(bubble.frame), "inside the safe area")

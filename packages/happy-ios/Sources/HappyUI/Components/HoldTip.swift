@@ -8,15 +8,17 @@ import UIKit
 /// a light tap plays as it shows, and it goes about 1.5 s after the
 /// finger lifts. The description is VoiceOver's hint too.
 ///
-/// It stands clear of the finger and the hand under it:
-/// - `.below` (a header): under the button, shifted sideways away from
-///   the touch;
-/// - `.leading` (a column at the trailing edge): beside it, to the
-///   leading side;
-/// - `.above` (the floating player's bar): over the button's superview,
-///   or under it where there is no room above.
+/// It stands well clear of the finger and the hand under it:
+/// - `.below` (a header): `Metrics.clear` under the touch, centred
+///   across the screen;
+/// - `.leading` (a column at the trailing edge): in the middle of the
+///   room to the leading side;
+/// - `.above` (the floating player's bar): `Metrics.clear` over the
+///   player, or at the top where there is no room.
 ///
-/// Always inside the window's safe area.
+/// Always inside the window's safe area. `showAll` shows every tip of a
+/// bar at once (the "?" button): numbered bubbles in columns clear of
+/// the bar, each button wearing its number.
 @MainActor
 enum HoldTip {
     enum Placement {
@@ -30,12 +32,18 @@ enum HoldTip {
         static let arrow: CGFloat = 6
         static let margin: CGFloat = 8
         static let maxWidth: CGFloat = 280
-        /// How far past the finger's point a `.below` bubble starts.
-        static let finger: CGFloat = 28
+        /// How far a held tip stands from the touch (`.below`) or the
+        /// player (`.above`): past the fingertip and the hand.
+        static let clear: CGFloat = 120
+        static let aboveClear: CGFloat = 48
+        /// Between the bubbles of `showAll`.
+        static let spacing: CGFloat = 8
     }
 
     /// The bubble showing now, if any (tests).
     private(set) static weak var shown: HoldTipBubble?
+    /// `showAll`'s overlay, if up (tests).
+    private(set) static weak var help: HoldTipHelp?
     private static var hiding: DispatchWorkItem?
 
     /// Adds the hold to `view`: its tip says `title` and `detail`.
@@ -98,38 +106,172 @@ enum HoldTip {
     /// points) and the edge the arrow stands on.
     static func frame(size: CGSize, source: CGRect, container: CGRect, touch: CGPoint, safe: CGRect,
                       placement: Placement) -> (frame: CGRect, arrow: CGPoint, edge: UIRectEdge) {
-        typealias M = Metrics
         func clampX(_ x: CGFloat) -> CGFloat { min(max(x, safe.minX), max(safe.minX, safe.maxX - size.width)) }
         func clampY(_ y: CGFloat) -> CGFloat { min(max(y, safe.minY), max(safe.minY, safe.maxY - size.height)) }
         switch placement {
         case .below:
-            // Under the bar, beside the finger: past it on the side with
-            // more room.
-            let y = clampY(source.maxY + M.gap + M.arrow)
-            let rightward = touch.x <= (safe.minX + safe.maxX) / 2
-            let x = clampX(rightward ? touch.x + M.finger : touch.x - M.finger - size.width)
-            let frame = CGRect(x: x, y: y, width: size.width, height: size.height)
-            let arrowX = min(max(source.midX, frame.minX + 12), frame.maxX - 12)
-            return (frame, CGPoint(x: arrowX, y: frame.minY), .top)
+            // Well under the finger and the hand, across the screen's
+            // middle: no arrow, the title says whose it is.
+            let y = clampY(max(source.maxY + M.gap + M.arrow, touch.y + M.clear))
+            let x = clampX(safe.midX - size.width / 2)
+            return (CGRect(x: x, y: y, width: size.width, height: size.height), .zero, [])
         case .leading:
-            let x = clampX(source.minX - M.gap - M.arrow - size.width)
+            // The middle of the room to the column's leading side.
+            let room = CGRect(x: safe.minX, y: safe.minY, width: max(0, source.minX - M.gap - safe.minX), height: safe.height)
+            let x = clampX(room.midX - size.width / 2)
             let y = clampY(source.midY - size.height / 2)
-            let frame = CGRect(x: x, y: y, width: size.width, height: size.height)
-            let arrowY = min(max(source.midY, frame.minY + 10), frame.maxY - 10)
-            return (frame, CGPoint(x: frame.maxX, y: arrowY), .right)
+            return (CGRect(x: x, y: y, width: size.width, height: size.height), .zero, [])
         case .above:
-            let x = clampX(source.midX - size.width / 2)
-            var y = container.minY - M.gap - M.arrow - size.height
-            var edge: UIRectEdge = .bottom
-            if y < safe.minY {
-                // No room over it: under it instead, still off the bar.
-                y = container.maxY + M.gap + M.arrow
-                edge = .top
-            }
+            let x = clampX(container.midX - size.width / 2)
+            let over = container.minY - M.aboveClear - size.height
+            // No room over the player: the top of the screen, far from it.
+            let y = over >= safe.minY ? over : safe.minY
             let frame = CGRect(x: x, y: clampY(y), width: size.width, height: size.height)
-            let arrowX = min(max(source.midX, frame.minX + 12), frame.maxX - 12)
-            return (frame, CGPoint(x: arrowX, y: edge == .top ? frame.minY : frame.maxY), edge)
+            if frame.intersects(container) {
+                return (CGRect(x: x, y: clampY(container.maxY + M.aboveClear), width: size.width, height: size.height), .zero, [])
+            }
+            return (frame, .zero, [])
         }
+    }
+
+    // MARK: Every tip at once
+
+    /// Shows the tips of `views` (those with a hold, on screen) at once
+    /// over a dimmed window: each button numbered, its bubble numbered
+    /// the same, the bubbles in columns clear of the bar. A tap anywhere
+    /// closes it.
+    @discardableResult
+    static func showAll(for views: [UIView], placement: Placement) -> HoldTipHelp? {
+        let shownViews = views.filter { view in
+            guard let window = view.window, gesture(on: view) != nil else { return false }
+            var current: UIView? = view
+            while let v = current { if v.isHidden || v.alpha < 0.01 { return false }; current = v.superview }
+            return window.bounds.intersects(view.convert(view.bounds, to: window))
+        }
+        guard let window = shownViews.first?.window else { return nil }
+        hiding?.cancel()
+        shown?.removeFromSuperview()
+        help?.removeFromSuperview()
+        let overlay = HoldTipHelp(frame: window.bounds)
+        let safe = window.bounds.inset(by: window.safeAreaInsets).insetBy(dx: M.margin, dy: M.margin)
+        let sources = shownViews.map { $0.convert($0.bounds, to: window) }
+        let bubbles = shownViews.enumerated().map { index, view -> HoldTipBubble in
+            let hold = gesture(on: view)!
+            return HoldTipBubble(title: "\(index + 1)  \(hold.title)", detail: hold.detail)
+        }
+        let frames = columns(sizes: bubbles.map { $0.measure(maxWidth: min(M.maxWidth, safe.width)) },
+                             sources: sources, safe: safe, placement: placement)
+        for (index, bubble) in bubbles.enumerated() {
+            bubble.frame = frames[index]
+            bubble.accessibilityIdentifier = "hold-tip-help-bubble"
+            overlay.addSubview(bubble)
+            overlay.mark(sources[index], number: index + 1)
+        }
+        overlay.alpha = 0
+        window.addSubview(overlay)
+        help = overlay
+        Haptics.play(.hold)
+        UIView.animate(withDuration: 0.15) { overlay.alpha = 1 }
+        return overlay
+    }
+
+    private typealias M = Metrics
+
+    /// The bubbles' frames: columns filled top to bottom (bottom to top
+    /// over a player), a new column beside when one is full; none on the
+    /// bar (`sources`).
+    static func columns(sizes: [CGSize], sources: [CGRect], safe: CGRect, placement: Placement) -> [CGRect] {
+        guard !sizes.isEmpty else { return [] }
+        let bar = sources.dropFirst().reduce(sources.first ?? .zero) { $0.union($1) }
+        let room: CGRect
+        switch placement {
+        case .below:
+            let top = min(safe.maxY, bar.maxY + M.gap * 2)
+            room = CGRect(x: safe.minX, y: top, width: safe.width, height: max(0, safe.maxY - top))
+        case .leading:
+            room = CGRect(x: safe.minX, y: safe.minY, width: max(0, bar.minX - M.gap * 2 - safe.minX), height: safe.height)
+        case .above:
+            let bottom = max(safe.minY, bar.minY - M.gap * 2)
+            if bottom - safe.minY >= (sizes.map(\.height).max() ?? 0) {
+                room = CGRect(x: safe.minX, y: safe.minY, width: safe.width, height: bottom - safe.minY)
+            } else {
+                room = safe
+            }
+        }
+        let width = min(M.maxWidth, room.width, sizes.map(\.width).max() ?? 0)
+        // Fill columns, then centre them across the room.
+        var columns: [[Int]] = [[]]
+        var used: CGFloat = 0
+        for (index, size) in sizes.enumerated() {
+            if used + size.height > room.height, !(columns.last?.isEmpty ?? true) {
+                columns.append([])
+                used = 0
+            }
+            columns[columns.count - 1].append(index)
+            used += size.height + M.spacing
+        }
+        let total = CGFloat(columns.count) * width + CGFloat(columns.count - 1) * M.spacing
+        let left = max(room.minX, room.midX - total / 2)
+        var frames = Array(repeating: CGRect.zero, count: sizes.count)
+        for (c, column) in columns.enumerated() {
+            let x = left + CGFloat(c) * (width + M.spacing)
+            let height = column.reduce(CGFloat(0)) { $0 + sizes[$1].height } + CGFloat(max(0, column.count - 1)) * M.spacing
+            var y: CGFloat
+            switch placement {
+            case .below: y = room.minY
+            case .leading: y = max(room.minY, room.midY - height / 2)
+            case .above: y = max(room.minY, room.maxY - height)
+            }
+            for index in column {
+                frames[index] = CGRect(x: x, y: y, width: width, height: sizes[index].height)
+                y += sizes[index].height + M.spacing
+            }
+        }
+        return frames
+    }
+}
+
+/// `showAll`'s overlay: the window dimmed, each button's number on it.
+final class HoldTipHelp: UIView {
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        accessibilityIdentifier = "hold-tip-help"
+        backgroundColor = UIColor.black.withAlphaComponent(0.35)
+        autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(dismiss)))
+        isAccessibilityElement = false
+        accessibilityViewIsModal = true
+    }
+    @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
+
+    /// The bubbles, in order (tests).
+    var bubbles: [HoldTipBubble] { subviews.compactMap { $0 as? HoldTipBubble } }
+
+    /// A small numbered disc at the button's top trailing corner.
+    func mark(_ source: CGRect, number: Int) {
+        let badge = UILabel()
+        badge.text = "\(number)"
+        badge.font = Fonts.ui(.semiBold, size: 11)
+        badge.textAlignment = .center
+        badge.textColor = .white
+        badge.backgroundColor = .tintColor
+        badge.layer.cornerRadius = 9
+        badge.layer.masksToBounds = true
+        badge.accessibilityIdentifier = "hold-tip-help-number"
+        let size: CGFloat = 18
+        badge.frame = CGRect(x: min(source.maxX - size + 2, bounds.maxX - size), y: max(source.minY - 2, 0), width: size, height: size)
+        addSubview(badge)
+        // The button itself stays lit under the dim.
+        let ring = UIView(frame: source.insetBy(dx: 2, dy: 2))
+        ring.isUserInteractionEnabled = false
+        ring.layer.cornerRadius = min(ring.bounds.width, ring.bounds.height) / 2
+        ring.layer.borderColor = UIColor.tintColor.cgColor
+        ring.layer.borderWidth = 2
+        insertSubview(ring, at: 0)
+    }
+
+    @objc func dismiss() {
+        UIView.animate(withDuration: 0.2, animations: { self.alpha = 0 }) { _ in self.removeFromSuperview() }
     }
 }
 
@@ -214,7 +356,7 @@ final class HoldTipBubble: UIView {
         title.frame = CGRect(x: inner.minX, y: inner.minY, width: inner.width, height: titleHeight)
         detail.frame = CGRect(x: inner.minX, y: title.frame.maxY + 2, width: inner.width, height: max(0, inner.maxY - title.frame.maxY - 2))
         let path = UIBezierPath(roundedRect: bounds, cornerRadius: 10)
-        if let (tip, edge) = arrow {
+        if let (tip, edge) = arrow, !edge.isEmpty {
             let a = HoldTip.Metrics.arrow
             let local = CGPoint(x: tip.x - frame.minX, y: tip.y - frame.minY)
             let triangle = UIBezierPath()
@@ -227,10 +369,12 @@ final class HoldTipBubble: UIView {
                 triangle.move(to: CGPoint(x: local.x - a, y: bounds.maxY))
                 triangle.addLine(to: CGPoint(x: local.x, y: bounds.maxY + a))
                 triangle.addLine(to: CGPoint(x: local.x + a, y: bounds.maxY))
-            default:
+            case .right:
                 triangle.move(to: CGPoint(x: bounds.maxX, y: local.y - a))
                 triangle.addLine(to: CGPoint(x: bounds.maxX + a, y: local.y))
                 triangle.addLine(to: CGPoint(x: bounds.maxX, y: local.y + a))
+            default:
+                break
             }
             triangle.close()
             path.append(triangle)
