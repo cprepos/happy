@@ -361,18 +361,17 @@ test('yolo: POST /live/<id>/auto sets this chat\'s flag only, shows in state, su
     assert.equal((await state(two.id)).auto_approve, false, 'never another chat\'s');
     assert.ok(logs.some((l) => /yolo mode .* on/.test(l)));
     const page = await (await fetch(`${base}/live/${one.id}`)).text();
-    // A button, pressed while on, as the app's: no checkbox. "Yolo mode enabled" beside it,
-    // and its name and what it does as its title and tip.
+    // No switch on the page (the app's header has it): no checkbox, no yolo button, only
+    // "Yolo mode enabled" while on.
     assert.doesNotMatch(page, /type="checkbox"/);
-    assert.match(page, /<button id="yolo" type="button" aria-pressed="true"/);
-    assert.match(page, /title="Yolo mode: Approves the agent’s browser actions without asking\."/);
+    assert.doesNotMatch(page, /id="yolo"[ >]/);
+    assert.doesNotMatch(page, /\$\('yolo'\)/);
     assert.match(page, /<span id="yolo-on" role="status">.*Yolo mode enabled<\/span>/);
-    assert.match(page, /id="yolo-tip" role="tooltip" hidden><b>Yolo mode<\/b>/);
-    // Inside the app's web view the row is not shown: the app's header has the switch.
+    // Inside the app's web view the row is not shown: the app says it itself.
     assert.match(page, /if \(inApp\) \$\('yolo-row'\)\.hidden = true/);
     // "?" lists what every button does; each button has it as its title too.
     assert.match(page, /<button id="help" type="button" aria-expanded="false"/);
-    assert.match(page, /<ul id="help-pop" hidden><li><b>Yolo mode<\/b>/);
+    assert.match(page, /<ul id="help-pop" hidden><li><b>Take control<\/b>/);
     assert.match(page, /<li><b>Take control<\/b>Use the page yourself/);
     assert.match(page, /id="sleep" class="btn" type="button" title="Sleep: Pause the browser/);
 
@@ -384,7 +383,7 @@ test('yolo: POST /live/<id>/auto sets this chat\'s flag only, shows in state, su
     assert.deepEqual(await (await post(`/live/${one.id}/auto`, { on: false })).json(), { auto_approve: false });
     assert.equal((await state(one.id)).auto_approve, false);
     const off = await (await fetch(`${base}/live/${one.id}`)).text();
-    assert.match(off, /<button id="yolo" type="button" aria-pressed="false"/);
+    assert.doesNotMatch(off, /type="checkbox"|id="yolo"[ >]/);
     assert.match(off, /<span id="yolo-on" role="status" hidden>/);
 });
 
