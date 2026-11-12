@@ -1073,6 +1073,52 @@ final class HostedLiveBrowserTests: XCTestCase {
         XCTAssertNil(player.menuButton.menu?.children.first { $0 is UIDeferredMenuElement })
     }
 
+    /// Going full screen builds its page without throwing, the frame view
+    /// and noVNC's alike: on a phone the sideways strip is built in
+    /// viewDidLoad, its buttons held to one height only once they share
+    /// the column (a constraint across unrelated views raises and kills
+    /// the app). On an iPad there is no strip; the header is the same.
+    func testGoingFullScreenBuildsEachPageAndItsStrip() async throws {
+        let daemon = BrowserDaemon()
+        let (host, window) = try await makeHost(daemon)
+        defer { window.isHidden = true; host.dock.update(link: nil) }
+        let dock = host.dock!
+        dock.update(link: LiveBrowserLink(id: id))
+        try await until { dock.player != nil && dock.feed?.phase.state != nil }
+        dock.presentFullScreen(taking: false)
+        try await until { (host.presentedViewController as? UINavigationController)?.transitionCoordinator == nil }
+        let navigation = try XCTUnwrap(host.presentedViewController as? UINavigationController)
+        let frame = try XCTUnwrap(navigation.viewControllers.first as? LiveBrowserFullScreenItems)
+        try await until { frame.isViewLoaded }
+        assertBuilt(frame, phone: dock.isPhone)
+
+        dock.minimize()
+        try await until { host.presentedViewController == nil }
+        let (_, noVNC) = try await takeOver(host, daemon)
+        assertBuilt(noVNC, phone: dock.isPhone)
+        dock.minimize()
+        try await until { host.presentedViewController == nil }
+    }
+
+    private func assertBuilt(_ page: LiveBrowserFullScreenItems, phone: Bool, file: StaticString = #filePath, line: UInt = #line) {
+        page.view.layoutIfNeeded()
+        XCTAssertEqual(page.navigationItem.rightBarButtonItems ?? [], [], file: file, line: line)
+        XCTAssertEqual(page.navigationItem.leftBarButtonItems?.first?.accessibilityIdentifier, "live-browser-minimize", file: file, line: line)
+        XCTAssertTrue(page.navigationItem.leftBarButtonItems?.contains(page.control) ?? false, file: file, line: line)
+        XCTAssertTrue(page.yoloLine.isDescendant(of: page.view), file: file, line: line)
+        guard phone else {
+            XCTAssertNil(page.strip.superview, "no strip off a phone", file: file, line: line)
+            return
+        }
+        XCTAssertTrue(page.strip.isDescendant(of: page.view), file: file, line: line)
+        func buttons(_ view: UIView) -> [UIButton] { ((view as? UIButton).map { [$0] } ?? []) + view.subviews.flatMap(buttons) }
+        let column = buttons(page.strip)
+        let ids = column.compactMap(\.accessibilityIdentifier)
+        for id in ["live-browser-minimize", "live-browser-end", "live-browser-sleep", "live-browser-strip-yolo", "live-browser-control"] {
+            XCTAssertTrue(ids.contains(id), "\(id) in the strip", file: file, line: line)
+        }
+    }
+
     /// Full screen says "Yolo mode enabled" under the header while yolo is
     /// on, plain words on a clear background, as the line above the chat.
     func testFullScreenSaysYoloModeEnabledOnlyWhileOn() async throws {

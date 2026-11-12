@@ -1617,10 +1617,6 @@ final class LiveBrowserFullScreenItems: UIViewController {
         HoldTip.attach(to: stripSleep, title: Strings.LiveBrowser.sleepBrowser, detail: Strings.LiveBrowser.Tip.sleep, placement: .leading)
         HoldTip.attach(to: stripYolo, title: Strings.LiveBrowser.yoloMenu, detail: Strings.LiveBrowser.yoloHint, placement: .leading)
         HoldTip.attach(to: stripControl, title: Strings.LiveBrowser.takeControl, detail: Strings.LiveBrowser.Tip.takeControl, placement: .leading)
-        // Nine on noVNC's page outgrow a short phone's column at 44: all
-        // shrink alike, not one.
-        let buttons = [minimize, stripEnd, stripSleep] + page + [stripControl]
-        for button in buttons.dropFirst() { button.heightAnchor.constraint(equalTo: minimize.heightAnchor).isActive = true }
         func group(_ views: [UIView]) -> UIStackView {
             let stack = UIStackView(arrangedSubviews: views)
             stack.axis = .vertical
@@ -1633,6 +1629,11 @@ final class LiveBrowserFullScreenItems: UIViewController {
         column.distribution = .equalSpacing
         column.translatesAutoresizingMaskIntoConstraints = false
         strip.addSubview(column)
+        // Nine on noVNC's page outgrow a short phone's column at 44: all
+        // shrink alike, not one. Only once they share the column: a
+        // constraint between views with no common ancestor throws.
+        let buttons = [minimize, stripEnd, stripSleep] + page + [stripControl]
+        NSLayoutConstraint.activate(buttons.dropFirst().map { $0.heightAnchor.constraint(equalTo: minimize.heightAnchor) })
         NSLayoutConstraint.activate([
             column.topAnchor.constraint(equalTo: strip.topAnchor),
             column.bottomAnchor.constraint(equalTo: strip.bottomAnchor),
