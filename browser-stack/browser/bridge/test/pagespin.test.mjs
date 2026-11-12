@@ -17,6 +17,7 @@ function el(id) {
         classList: { toggle: (c, on) => (on ? classes.add(c) : classes.delete(c)), contains: (c) => classes.has(c) },
         style: { setProperty() {} },
         addEventListener() {}, appendChild() {},
+        attrs: {}, setAttribute(k, v) { this.attrs[k] = String(v); }, getAttribute(k) { return this.attrs[k] ?? null; },
     };
 }
 
