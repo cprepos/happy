@@ -84,6 +84,8 @@ final class LiveBrowserDock: NSObject {
     private(set) var player: LiveBrowserPlayerView?
     private(set) var isOnScreen = false
     private var shownStatus: String?
+    /// Yolo's words on the line as it last showed.
+    private var shownYolo = false
     private var lastStatus: LiveBrowserState.Status?
     /// The approval the haptic last played for, so each plays once.
     private var askedApproval: String?
@@ -322,7 +324,8 @@ final class LiveBrowserDock: NSObject {
     }
 
     /// The line's words for the status row, nil while it doesn't show.
-    var indicatorText: String? { shownStatus.map(Strings.LiveBrowser.indicator) }
+    /// "Live browser · Yolo mode enabled · Click to watch" while yolo is on.
+    var indicatorText: String? { shownStatus.map { Strings.LiveBrowser.indicator($0, yolo: shownYolo) } }
 
     /// Where the player goes, in the host view's coordinates: the card's
     /// frame and the highest of the status line's top, the keyboard's.
@@ -484,8 +487,10 @@ final class LiveBrowserDock: NSObject {
 
     private func refresh() {
         let status = lineShows ? feed.flatMap { lineStatus($0.phase) } : nil
-        let changed = status != shownStatus
+        let yolo = status != nil && yoloOn
+        let changed = status != shownStatus || yolo != shownYolo
         shownStatus = status
+        shownYolo = yolo
         indicator.text = indicatorText
         indicator.isHidden = status == nil
         if let feed { player?.show(feed) }
@@ -1267,8 +1272,9 @@ final class LiveBrowserDock: NSObject {
     }
 }
 
-/// The full screen's page: the browser, with Minimize and End browser at
-/// the left and Take control or Release control at the right.
+/// The full screen's page: the browser, its header's glyphs all at the
+/// left (Minimize, End, Sleep, yolo, Take or Release control, and Reload
+/// on the frame view), each saying what it does while held (`HoldTip`).
 @MainActor
 final class LiveBrowserFullScreenItems: UIViewController {
     /// The web page shown: the live frame view, or noVNC's page.
@@ -1280,14 +1286,23 @@ final class LiveBrowserFullScreenItems: UIViewController {
     let isNoVNC: Bool
     /// Replaced by the other viewer: leaving hands nothing back.
     var swappedOut = false
-    let control = UIBarButtonItem()
-    /// End browser: at the left by Minimize, far from Release control.
-    let endItem = UIBarButtonItem()
+    /// Take control or Release control: the hand's glyph, tinted and
+    /// filled while held. Its item's title says which, for VoiceOver
+    /// and tests; the glyph is what shows.
+    let controlButton = LiveBrowserFullScreenItems.headerButton("hand.tap", Strings.LiveBrowser.takeControl, "live-browser-control")
+    private(set) lazy var control = LiveBrowserFullScreenItems.item(controlButton)
+    /// End browser: at the left by Minimize, far from Take control.
+    let endButton = LiveBrowserFullScreenItems.headerButton("xmark.octagon", Strings.LiveBrowser.endBrowser, "live-browser-end")
+    private(set) lazy var endItem = LiveBrowserFullScreenItems.item(endButton)
     /// Sleep browser: beside End, not destructive.
-    let sleepItem = UIBarButtonItem()
+    let sleepButton = LiveBrowserFullScreenItems.headerButton("moon.zzz", Strings.LiveBrowser.sleepBrowser, "live-browser-sleep")
+    private(set) lazy var sleepItem = LiveBrowserFullScreenItems.item(sleepButton)
     /// The browser's yolo switch, and its "Yolo" while on.
     let yoloButton = LiveBrowserFullScreenItems.makeYoloButton()
-    private(set) lazy var yoloItem = UIBarButtonItem(customView: yoloButton)
+    private(set) lazy var yoloItem = LiveBrowserFullScreenItems.item(yoloButton)
+    /// "Yolo mode enabled" under the header while the bridge approves by
+    /// itself: clear, as the minimized line is.
+    let yoloLine = LiveBrowserYoloLine()
     /// The action the agent waits on: under a phone's upright picture,
     /// else over the bottom, compact. Never over the header, never moves
     /// the picture.
@@ -1368,51 +1383,92 @@ final class LiveBrowserFullScreenItems: UIViewController {
             constrained = placed
         }
         content.didMove(toParent: self)
-        let minimize = UIBarButtonItem(image: UIImage(systemName: "chevron.down"), primaryAction: UIAction { [weak self] _ in self?.dock?.minimize() })
-        minimize.accessibilityLabel = Strings.LiveBrowser.minimize
-        minimize.accessibilityIdentifier = "live-browser-minimize"
+        let minimizeButton = Self.headerButton("chevron.down", Strings.LiveBrowser.minimize, "live-browser-minimize")
+        minimizeButton.addAction(UIAction { [weak self] _ in self?.dock?.minimize() }, for: .touchUpInside)
+        HoldTip.attach(to: minimizeButton, title: Strings.LiveBrowser.minimize, detail: Strings.LiveBrowser.Tip.minimize)
+        let minimize = Self.item(minimizeButton)
         // Minimize is the way back: noVNC's page has no back to go to,
         // and a back button there would leave control held.
         navigationItem.hidesBackButton = true
-        endItem.image = UIImage(systemName: "xmark.octagon")
-        endItem.tintColor = .systemRed
-        endItem.accessibilityLabel = Strings.LiveBrowser.endBrowser
-        endItem.accessibilityIdentifier = "live-browser-end"
-        endItem.primaryAction = UIAction(title: Strings.LiveBrowser.endBrowser, image: UIImage(systemName: "xmark.octagon")) { [weak self] _ in
+        endButton.configuration?.baseForegroundColor = .systemRed
+        endButton.addAction(UIAction { [weak self] _ in
             guard let self else { return }
             self.dock?.confirmEnd(from: self.endItem)
-        }
-        sleepItem.image = UIImage(systemName: "moon.zzz")
-        sleepItem.accessibilityLabel = Strings.LiveBrowser.sleepBrowser
-        sleepItem.accessibilityIdentifier = "live-browser-sleep"
-        sleepItem.primaryAction = UIAction(title: Strings.LiveBrowser.sleepBrowser, image: UIImage(systemName: "moon.zzz")) { [weak self] _ in
-            self?.dock?.sleep()
-        }
+        }, for: .touchUpInside)
+        HoldTip.attach(to: endButton, title: Strings.LiveBrowser.endBrowser, detail: Strings.LiveBrowser.Tip.endBrowser)
+        sleepButton.addAction(UIAction { [weak self] _ in self?.dock?.sleep() }, for: .touchUpInside)
+        HoldTip.attach(to: sleepButton, title: Strings.LiveBrowser.sleepBrowser, detail: Strings.LiveBrowser.Tip.sleep)
         yoloButton.addAction(UIAction { [weak self] _ in
             guard let dock = self?.dock else { return }
             dock.setYolo(!dock.yoloOn)
         }, for: .touchUpInside)
-        yoloItem.accessibilityIdentifier = "live-browser-yolo"
-        // noVNC's header keeps its room for Release: yolo is in its More
-        // menu there.
-        navigationItem.leftBarButtonItems = isNoVNC ? [minimize, endItem, sleepItem] : [minimize, endItem, sleepItem, yoloItem]
-        control.style = .prominent
-        control.accessibilityIdentifier = "live-browser-control"
-        // Control alone at the right, or with reload on the frame view: the
-        // browser's back, forward and share pushed it into the header's
-        // overflow menu on a phone, out of sight under noVNC. So did the
-        // viewer switch beside it, with Minimize, End and Sleep at the
-        // left: on noVNC's page it is in the More menu of the bar under
-        // the header, as Use the web viewer is in the native viewer's.
-        if viewer != nil || isNoVNC {
-            navigationItem.rightBarButtonItems = [control]
-        } else {
-            navigationItem.rightBarButtonItems = [control, browser.reloadItem]
+        HoldTip.attach(to: yoloButton, title: Strings.LiveBrowser.yoloMenu, detail: Strings.LiveBrowser.yoloHint)
+        controlButton.addAction(UIAction { [weak self] _ in
+            guard let self, let dock = self.dock else { return }
+            if self.held { dock.release() } else { dock.take() }
+        }, for: .touchUpInside)
+        HoldTip.attach(to: controlButton, title: Strings.LiveBrowser.takeControl, detail: Strings.LiveBrowser.Tip.takeControl)
+        // Every glyph at the left, none at the right: a wide Take control,
+        // or anything the bar can't fit, went into the header's overflow
+        // "…" on a phone, out of sight. Six 44-point glyphs fit the
+        // narrowest iPhone. The browser's back, forward and share stay
+        // off it; noVNC's are on the bar under the header, with its More
+        // (Use the native viewer), as Use the web viewer is in the
+        // native viewer's.
+        var items = [minimize, endItem, sleepItem, yoloItem, control]
+        if viewer == nil, !isNoVNC, let browser {
+            let reload = Self.headerButton("arrow.clockwise", Strings.Browser.reload, "browser-reload")
+            reload.addAction(UIAction { [weak browser] _ in browser?.reloadOrStop() }, for: .touchUpInside)
+            HoldTip.attach(to: reload, title: Strings.LiveBrowser.reload, detail: Strings.LiveBrowser.Tip.reload)
+            items.append(Self.item(reload))
         }
+        navigationItem.leftBarButtonItems = items
+        navigationItem.rightBarButtonItems = []
         if isPhone { buildStrip() }
         approvalBar.onDecide = { [weak self] approval, approve in self?.dock?.decide(approval, approve: approve) }
         view.addSubview(approvalBar)
+        yoloLine.isHidden = true
+        view.addSubview(yoloLine)
         update(state, held: held)
+    }
+
+    /// A header glyph on a 44-point target, in the header's tint: a
+    /// button of its own (`item`) so a hold can show its tip.
+    private static func headerButton(_ symbol: String, _ label: String, _ id: String) -> UIButton {
+        var configuration = UIButton.Configuration.plain()
+        configuration.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .medium))
+        configuration.baseForegroundColor = UIColor(Palette.headerTint)
+        configuration.contentInsets = .zero
+        configuration.background.cornerRadius = 22
+        let button = UIButton(configuration: configuration)
+        button.accessibilityLabel = label
+        button.accessibilityIdentifier = id
+        NSLayoutConstraint.activate([
+            button.widthAnchor.constraint(equalToConstant: 44),
+            button.heightAnchor.constraint(equalToConstant: 44),
+        ])
+        return button
+    }
+
+    /// The header's item for one of its buttons, named as the button.
+    private static func item(_ button: UIButton) -> UIBarButtonItem {
+        let item = UIBarButtonItem(customView: button)
+        item.accessibilityIdentifier = button.accessibilityIdentifier
+        item.accessibilityLabel = button.accessibilityLabel
+        return item
+    }
+
+    /// Take control's glyph, or Release control's, tinted and filled
+    /// while held.
+    private func showControl(_ button: UIButton, held: Bool, size: CGFloat = 17) {
+        let symbol = UIImage.SymbolConfiguration(pointSize: size, weight: .medium)
+        button.configuration?.image = UIImage(systemName: held ? "hand.raised.slash.fill" : "hand.tap", withConfiguration: symbol)
+        button.configuration?.baseForegroundColor = held ? .white : UIColor(Palette.headerTint)
+        button.configuration?.background.backgroundColor = held ? .tintColor : .clear
+        button.isSelected = held
+        let title = held ? Strings.LiveBrowser.releaseControl : Strings.LiveBrowser.takeControl
+        button.accessibilityLabel = title
+        HoldTip.update(button, title: title, detail: held ? Strings.LiveBrowser.Tip.releaseControl : Strings.LiveBrowser.Tip.takeControl)
     }
 
     /// The yolo switch: a shield with a bolt, filled and saying "Yolo"
@@ -1452,22 +1508,6 @@ final class LiveBrowserFullScreenItems: UIViewController {
         button.accessibilityTraits.insert(.button)
     }
 
-    /// The yolo switch as a menu item: checked while on.
-    private func yoloMenuItem() -> UIMenuElement {
-        UIDeferredMenuElement.uncached { [weak self] completion in
-            let on = self?.dock?.yoloOn ?? false
-            let item = UIAction(title: Strings.LiveBrowser.yoloMenu, subtitle: Strings.LiveBrowser.yoloHint,
-                                image: UIImage(systemName: on ? "bolt.shield.fill" : "bolt.shield"),
-                                identifier: UIAction.Identifier("live-browser-yolo-menu"),
-                                attributes: self?.dock?.yoloAvailable == true ? [] : .disabled,
-                                state: on ? .on : .off) { [weak self] _ in
-                guard let dock = self?.dock else { return }
-                dock.setYolo(!dock.yoloOn)
-            }
-            completion([item])
-        }
-    }
-
     // MARK: A phone turned sideways
 
     /// An iPhone (not an iPad, not the app on a Mac).
@@ -1497,7 +1537,8 @@ final class LiveBrowserFullScreenItems: UIViewController {
     }
 
     /// A button in the column: the glyph alone on a 44-point target, in
-    /// the header's tint.
+    /// the header's tint; a little less where the column is full (all
+    /// its buttons alike, `buildStrip`).
     private static func stripButton(_ symbol: String, _ label: String, _ id: String) -> UIButton {
         var configuration = UIButton.Configuration.plain()
         configuration.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .medium))
@@ -1506,18 +1547,25 @@ final class LiveBrowserFullScreenItems: UIViewController {
         let button = UIButton(configuration: configuration)
         button.accessibilityLabel = label
         button.accessibilityIdentifier = id
-        typealias M = LiveBrowserFullScreenLayout.Metrics
-        NSLayoutConstraint.activate([
-            button.widthAnchor.constraint(equalToConstant: M.button),
-            button.heightAnchor.constraint(equalToConstant: M.button),
-        ])
+        sizeStripButton(button)
         return button
     }
 
-    /// Minimize, End and Sleep at the top; the page's own (back, forward,
-    /// reload, More) in the middle; Take or Release control at the bottom.
-    private func buildStrip() {
+    private static func sizeStripButton(_ button: UIButton) {
         typealias M = LiveBrowserFullScreenLayout.Metrics
+        let height = button.heightAnchor.constraint(equalToConstant: M.button)
+        height.priority = .defaultHigh
+        NSLayoutConstraint.activate([
+            button.widthAnchor.constraint(equalToConstant: M.button),
+            height,
+            button.heightAnchor.constraint(greaterThanOrEqualToConstant: 34),
+        ])
+    }
+
+    /// Minimize, End and Sleep at the top; the page's own (back, forward,
+    /// reload, More) and yolo in the middle; Take or Release control at
+    /// the bottom. Each says what it does while held, beside the column.
+    private func buildStrip() {
         let minimize = Self.stripButton("chevron.down", Strings.LiveBrowser.minimize, "live-browser-minimize")
         minimize.addAction(UIAction { [weak self] _ in self?.dock?.minimize() }, for: .touchUpInside)
         stripEnd.configuration?.baseForegroundColor = .systemRed
@@ -1536,20 +1584,24 @@ final class LiveBrowserFullScreenItems: UIViewController {
             let more = Self.stripButton("ellipsis.circle", Strings.LiveBrowser.Viewer.more, "live-browser-viewer-menu")
             more.showsMenuAsPrimaryAction = true
             more.menu = viewerMenu.menu
+            HoldTip.attach(to: more, title: Strings.LiveBrowser.Viewer.more, detail: Strings.LiveBrowser.Tip.more, placement: .leading)
+            let reload = nav("arrow.clockwise", Strings.LiveBrowser.reload, "live-browser-reload", .reload)
+            HoldTip.attach(to: reload, title: Strings.LiveBrowser.reload, detail: Strings.LiveBrowser.Tip.reload, placement: .leading)
             page = [
                 nav("chevron.backward", Strings.LiveBrowser.back, "live-browser-back", .back),
                 nav("chevron.forward", Strings.LiveBrowser.forward, "live-browser-forward", .forward),
-                nav("arrow.clockwise", Strings.LiveBrowser.reload, "live-browser-reload", .reload),
+                reload,
                 more,
+                stripYolo,
             ]
         } else if viewer == nil, let browser {
             let reload = Self.stripButton("arrow.clockwise", Strings.Browser.reload, "browser-reload")
             reload.addAction(UIAction { [weak browser] _ in browser?.reloadOrStop() }, for: .touchUpInside)
+            HoldTip.attach(to: reload, title: Strings.LiveBrowser.reload, detail: Strings.LiveBrowser.Tip.reload, placement: .leading)
             page = [reload, stripYolo]
         } else {
             page = [stripYolo]
         }
-        // noVNC's page has yolo in its More menu: the column is full.
         stripYolo.addAction(UIAction { [weak self] _ in
             guard let dock = self?.dock else { return }
             dock.setYolo(!dock.yoloOn)
@@ -1559,10 +1611,16 @@ final class LiveBrowserFullScreenItems: UIViewController {
             guard let self, let dock = self.dock else { return }
             if self.held { dock.release() } else { dock.take() }
         }, for: .touchUpInside)
-        NSLayoutConstraint.activate([
-            stripControl.widthAnchor.constraint(equalToConstant: M.button),
-            stripControl.heightAnchor.constraint(equalToConstant: M.button),
-        ])
+        Self.sizeStripButton(stripControl)
+        HoldTip.attach(to: minimize, title: Strings.LiveBrowser.minimize, detail: Strings.LiveBrowser.Tip.minimize, placement: .leading)
+        HoldTip.attach(to: stripEnd, title: Strings.LiveBrowser.endBrowser, detail: Strings.LiveBrowser.Tip.endBrowser, placement: .leading)
+        HoldTip.attach(to: stripSleep, title: Strings.LiveBrowser.sleepBrowser, detail: Strings.LiveBrowser.Tip.sleep, placement: .leading)
+        HoldTip.attach(to: stripYolo, title: Strings.LiveBrowser.yoloMenu, detail: Strings.LiveBrowser.yoloHint, placement: .leading)
+        HoldTip.attach(to: stripControl, title: Strings.LiveBrowser.takeControl, detail: Strings.LiveBrowser.Tip.takeControl, placement: .leading)
+        // Nine on noVNC's page outgrow a short phone's column at 44: all
+        // shrink alike, not one.
+        let buttons = [minimize, stripEnd, stripSleep] + page + [stripControl]
+        for button in buttons.dropFirst() { button.heightAnchor.constraint(equalTo: minimize.heightAnchor).isActive = true }
         func group(_ views: [UIView]) -> UIStackView {
             let stack = UIStackView(arrangedSubviews: views)
             stack.axis = .vertical
@@ -1604,6 +1662,19 @@ final class LiveBrowserFullScreenItems: UIViewController {
         if let frame = layout.strip { strip.frame = frame }
         if stripShown || placesByLayout { content.view.frame = layout.content }
         layoutApprovalBar(layout)
+        layoutYoloLine(layout)
+    }
+
+    /// Yolo's line under the header (and noVNC's address row), over the
+    /// page's top, clear of the strip; under the strip, the approval bar
+    /// and the header's tips.
+    private func layoutYoloLine(_ layout: LiveBrowserFullScreenLayout) {
+        guard !yoloLine.isHidden else { return }
+        let top = isNoVNC && viewer == nil && !navBar.isHidden ? navBar.frame.maxY : view.safeAreaInsets.top
+        let frame = LiveBrowserApprovalBarLayout.yoloLine(size: view.bounds.size, safeArea: LayoutInsets(view.safeAreaInsets), top: top,
+                                                          strip: stripShown ? layout.strip : nil, height: yoloLine.height)
+        yoloLine.frame = frame
+        view.insertSubview(yoloLine, belowSubview: approvalBar)
     }
 
     /// The bar under a phone's upright picture, else over the bottom; the
@@ -1775,8 +1846,8 @@ final class LiveBrowserFullScreenItems: UIViewController {
                      identifier: UIAction.Identifier("live-browser-native-viewer")) { [weak self] _ in
                 self?.dock?.switchViewer(native: true)
             },
-            yoloMenuItem(),
         ])
+        HoldTip.attach(to: viewerMenu, title: Strings.LiveBrowser.Viewer.more, detail: Strings.LiveBrowser.Tip.more)
         viewerMenu.widthAnchor.constraint(equalToConstant: 36).isActive = true
         let row = UIStackView(arrangedSubviews: [
             button("chevron.backward", Strings.LiveBrowser.back, "live-browser-back", .back),
@@ -1843,23 +1914,27 @@ final class LiveBrowserFullScreenItems: UIViewController {
         self.state = state
         self.held = held
         guard isViewLoaded else { return }
-        control.primaryAction = UIAction(title: held ? Strings.LiveBrowser.releaseControl : Strings.LiveBrowser.takeControl) { [weak self] _ in
-            guard let dock = self?.dock else { return }
-            if held { dock.release() } else { dock.take() }
-        }
-        control.isEnabled = state.map { !$0.ended } ?? false
-        endItem.isEnabled = state.map { !$0.ended } ?? false
-        sleepItem.isEnabled = state.map { !$0.ended && !$0.asleep } ?? false
+        let live = state.map { !$0.ended } ?? false
         let controlTitle = held ? Strings.LiveBrowser.releaseControl : Strings.LiveBrowser.takeControl
+        control.title = controlTitle
+        control.accessibilityLabel = controlTitle
+        showControl(controlButton, held: held)
+        control.isEnabled = live
+        controlButton.isEnabled = live
+        endItem.isEnabled = live
+        endButton.isEnabled = live
+        sleepItem.isEnabled = state.map { !$0.ended && !$0.asleep } ?? false
+        sleepButton.isEnabled = sleepItem.isEnabled
         stripControl.configuration?.image = UIImage(systemName: held ? "hand.raised.slash" : "hand.tap")
         stripControl.accessibilityLabel = controlTitle
-        stripControl.isEnabled = control.isEnabled
+        HoldTip.update(stripControl, title: controlTitle, detail: held ? Strings.LiveBrowser.Tip.releaseControl : Strings.LiveBrowser.Tip.takeControl)
+        stripControl.isEnabled = live
         stripEnd.isEnabled = endItem.isEnabled
         stripSleep.isEnabled = sleepItem.isEnabled
         let yolo = state?.autoApprove ?? false
-        let yoloEnabled = state.map { !$0.ended } ?? false
-        showYolo(yoloButton, on: yolo, enabled: yoloEnabled, word: !isPhone)
-        showYolo(stripYolo, on: yolo, enabled: yoloEnabled, word: false)
+        showYolo(yoloButton, on: yolo, enabled: live, word: !isPhone)
+        showYolo(stripYolo, on: yolo, enabled: live, word: false)
+        yoloLine.isHidden = !(yolo && live)
         approvalBar.show(dock?.barApproval)
         view.setNeedsLayout()
         // The picture's height follows the frame's aspect once one came.
@@ -1987,6 +2062,61 @@ final class LiveBrowserNoVNCWatch: NSObject {
     }
 }
 
+// MARK: Yolo's line
+
+/// "⛨ Yolo mode enabled" under the full screen's header while the bridge
+/// approves by itself: clear, in the minimized line's font, in yolo's
+/// orange. Taps go through to the page; the shield switches it off.
+final class LiveBrowserYoloLine: UIView {
+    let label = UILabel()
+    var style: TextStyle = TextStyles.composerStatus { didSet { render() } }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+        isUserInteractionEnabled = false
+        label.textAlignment = .center
+        addSubview(label)
+        isAccessibilityElement = true
+        accessibilityTraits = .staticText
+        accessibilityIdentifier = "live-browser-yolo-line"
+        render()
+    }
+    @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
+
+    /// The words with the filled shield before them, in `font` and `color`.
+    static func text(_ words: String, font: UIFont, color: UIColor, attributes: [NSAttributedString.Key: Any] = [:]) -> NSAttributedString {
+        let shield = UIImage(systemName: "bolt.shield.fill", withConfiguration: UIImage.SymbolConfiguration(font: font))?
+            .withTintColor(color, renderingMode: .alwaysOriginal)
+        let line = NSMutableAttributedString()
+        if let shield {
+            line.append(NSAttributedString(attachment: NSTextAttachment(image: shield)))
+            line.append(NSAttributedString(string: " "))
+        }
+        line.append(NSAttributedString(string: words))
+        var all = attributes
+        all[.font] = font
+        all[.foregroundColor] = color
+        line.addAttributes(all, range: NSRange(location: 0, length: line.length))
+        return line
+    }
+
+    private func render() {
+        let attributes = style.attributes(color: .systemOrange, alignment: .center, lineBreakMode: .byTruncatingTail)
+        label.attributedText = Self.text(Strings.LiveBrowser.yoloEnabled, font: style.font, color: .systemOrange, attributes: attributes)
+        accessibilityLabel = Strings.LiveBrowser.yoloEnabled
+        setNeedsLayout()
+    }
+
+    /// Its text's height.
+    var height: CGFloat { ceil(max(label.sizeThatFits(CGSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude)).height, 20)) }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        label.frame = bounds
+    }
+}
+
 // MARK: The red line
 
 /// "Live browser · Watching ●": the composer status row's right, its dot at
@@ -2014,7 +2144,13 @@ final class LiveBrowserIndicatorView: UIControl {
 
     private func render() {
         let color = UIColor(Palette.statusError)
-        label.attributedText = text.map { style.attributedString($0, color: color, lineBreakMode: .byTruncatingTail) }
+        label.attributedText = text.map { text in
+            let line = NSMutableAttributedString(attributedString: style.attributedString(text, color: color, lineBreakMode: .byTruncatingTail))
+            // Yolo's words, while on, in yolo's orange.
+            let yolo = (text as NSString).range(of: Strings.LiveBrowser.yoloEnabled)
+            if yolo.location != NSNotFound { line.addAttribute(.foregroundColor, value: UIColor.systemOrange, range: yolo) }
+            return line
+        }
         accessibilityLabel = text
         dot.isPulsing = text != nil
         setNeedsLayout()
@@ -2056,7 +2192,7 @@ final class LiveBrowserPlayerView: UIView, UIGestureRecognizerDelegate {
     var onEnd: (() -> Void)?
     /// The menu's Sleep browser.
     var onSleep: (() -> Void)?
-    /// The menu's Yolo mode: whether it is on, and turning it over.
+    /// Yolo's shield: whether it is on, and turning it over.
     var yoloOn: (() -> Bool)?
     var onYolo: (() -> Void)?
     var onTap: (() -> Void)?
@@ -2092,9 +2228,14 @@ final class LiveBrowserPlayerView: UIView, UIGestureRecognizerDelegate {
     /// End browser, away from Take over and Release: behind a menu, and
     /// asked about again before anything ends.
     let menuButton = LiveBrowserPlayerView.overlayButton("ellipsis")
-    /// "Yolo" over the picture's corner while the bridge approves by
-    /// itself.
+    /// The browser's yolo switch, beside the menu: the bar's own, as the
+    /// player has no header.
+    let yoloButton = LiveBrowserPlayerView.overlayButton("bolt.shield")
+    /// "Yolo mode enabled" (or "Yolo", narrow) over the picture's corner
+    /// while the bridge approves by itself: clear, in yolo's orange.
     let yoloBadge = UILabel()
+    /// Whether the badge says it all (tests).
+    private(set) var yoloBadgeWords = Strings.LiveBrowser.yoloEnabled
     private let footer = UIView()
     private let pillDot = UIView()
     private let pill = UILabel()
@@ -2167,15 +2308,18 @@ final class LiveBrowserPlayerView: UIView, UIGestureRecognizerDelegate {
         menuButton.showsMenuAsPrimaryAction = true
         menuButton.menu = UIMenu(children: [
             UIAction(title: Strings.LiveBrowser.sleepBrowser, image: UIImage(systemName: "moon.zzz")) { [weak self] _ in self?.onSleep?() },
-            UIDeferredMenuElement.uncached { [weak self] completion in
-                let on = self?.yoloOn?() ?? false
-                completion([UIAction(title: Strings.LiveBrowser.yoloMenu, subtitle: Strings.LiveBrowser.yoloHint,
-                                     image: UIImage(systemName: on ? "bolt.shield.fill" : "bolt.shield"),
-                                     identifier: UIAction.Identifier("live-browser-player-yolo"),
-                                     state: on ? .on : .off) { [weak self] _ in self?.onYolo?() }])
-            },
             UIAction(title: Strings.LiveBrowser.endBrowser, image: UIImage(systemName: "xmark.octagon"), attributes: .destructive) { [weak self] _ in self?.onEnd?() },
         ])
+        yoloButton.accessibilityLabel = Strings.LiveBrowser.yoloMenu
+        yoloButton.accessibilityIdentifier = "live-browser-player-yolo"
+        yoloButton.addAction(UIAction { [weak self] _ in self?.onYolo?() }, for: .touchUpInside)
+        // Held, each says what it does over the player, clear of the hand.
+        HoldTip.attach(to: close, title: Strings.LiveBrowser.close, detail: Strings.LiveBrowser.Tip.close, placement: .above)
+        HoldTip.attach(to: menuButton, title: Strings.LiveBrowser.more, detail: Strings.LiveBrowser.Tip.playerMore, placement: .above)
+        HoldTip.attach(to: yoloButton, title: Strings.LiveBrowser.yoloMenu, detail: Strings.LiveBrowser.yoloHint, placement: .above)
+        HoldTip.attach(to: full, title: Strings.LiveBrowser.fullScreen, detail: Strings.LiveBrowser.Tip.fullScreen, placement: .above)
+        HoldTip.attach(to: resize, title: Strings.LiveBrowser.bigger, detail: Strings.LiveBrowser.Tip.resize, placement: .above)
+        HoldTip.attach(to: action, title: Strings.LiveBrowser.takeControl, detail: Strings.LiveBrowser.Tip.takeControl, placement: .above)
         spinner.color = .white
         spinner.isHidden = true
         spinner.hidesWhenStopped = false
@@ -2192,16 +2336,11 @@ final class LiveBrowserPlayerView: UIView, UIGestureRecognizerDelegate {
         badge.layer.masksToBounds = true
         badge.isHidden = true
         badge.accessibilityIdentifier = "live-browser-player-size"
-        yoloBadge.text = Strings.LiveBrowser.yoloBadge
-        yoloBadge.font = Fonts.ui(.semiBold, size: 10)
-        yoloBadge.textColor = .white
-        yoloBadge.textAlignment = .center
-        yoloBadge.backgroundColor = UIColor.systemOrange
-        yoloBadge.layer.cornerRadius = 8
-        yoloBadge.layer.masksToBounds = true
+        yoloBadge.textAlignment = .right
+        yoloBadge.backgroundColor = .clear
         yoloBadge.isHidden = true
         yoloBadge.accessibilityIdentifier = "live-browser-player-yolo-badge"
-        for view in [bar, picture, message, footer, close, full, resize, menuButton, action, spinner, badge, yoloBadge] as [UIView] { addSubview(view) }
+        for view in [bar, picture, message, footer, close, full, resize, menuButton, yoloButton, action, spinner, badge, yoloBadge] as [UIView] { addSubview(view) }
         for view in [pillDot, pill] as [UIView] { footer.addSubview(view) }
         picture.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tapped)))
         let move = UIPanGestureRecognizer(target: self, action: #selector(panned(_:)))
@@ -2250,8 +2389,18 @@ final class LiveBrowserPlayerView: UIView, UIGestureRecognizerDelegate {
         resize.isHidden = layout.resize == nil
         menuButton.frame = layout.menu ?? .zero
         menuButton.isHidden = layout.menu == nil || isOver
-        let yoloWidth = ceil(yoloBadge.sizeThatFits(CGSize(width: 200, height: 16)).width) + 12
-        yoloBadge.frame = CGRect(x: layout.picture.maxX - yoloWidth - 6, y: layout.picture.minY + 6, width: yoloWidth, height: 16)
+        yoloButton.frame = layout.yolo ?? .zero
+        yoloButton.isHidden = layout.yolo == nil || isOver
+        // The whole words where they fit the picture, else "Yolo".
+        let yoloFont = Fonts.ui(.semiBold, size: 11)
+        let whole = LiveBrowserYoloLine.text(Strings.LiveBrowser.yoloEnabled, font: yoloFont, color: .systemOrange)
+        let words = ceil(whole.size().width) <= layout.picture.width - 24 ? Strings.LiveBrowser.yoloEnabled : Strings.LiveBrowser.yoloBadge
+        if words != yoloBadgeWords || yoloBadge.attributedText == nil {
+            yoloBadgeWords = words
+            yoloBadge.attributedText = words == Strings.LiveBrowser.yoloEnabled ? whole : LiveBrowserYoloLine.text(words, font: yoloFont, color: .systemOrange)
+        }
+        let yoloWidth = ceil(yoloBadge.sizeThatFits(CGSize(width: layout.picture.width, height: 18)).width)
+        yoloBadge.frame = CGRect(x: layout.picture.maxX - yoloWidth - 8, y: layout.picture.minY + 6, width: yoloWidth, height: 18)
         // Over the picture's middle; above the words when there are some.
         spinner.center = CGPoint(x: layout.picture.midX, y: layout.picture.midY - (message.isHidden ? 0 : 34))
         footer.frame = layout.footer
@@ -2366,7 +2515,19 @@ final class LiveBrowserPlayerView: UIView, UIGestureRecognizerDelegate {
         action.isEnabled = !feed.phase.isOver
         isOver = feed.phase.isOver
         menuButton.isHidden = layout?.menu == nil || isOver
-        yoloBadge.isHidden = isOver || state?.autoApprove != true
+        let yolo = state?.autoApprove == true
+        yoloBadge.isHidden = isOver || !yolo
+        yoloButton.isHidden = layout?.yolo == nil || isOver
+        yoloButton.configuration?.image = UIImage(systemName: yolo ? "bolt.shield.fill" : "bolt.shield",
+                                                  withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
+        yoloButton.configuration?.baseForegroundColor = yolo ? .systemOrange : UIColor(Palette.cardTitle)
+        yoloButton.isSelected = yolo
+        yoloButton.accessibilityValue = yolo ? Strings.LiveBrowser.yoloOn : Strings.LiveBrowser.yoloOff
+        let tip = switch feed.phase {
+        case .dormant, .notResponding: Strings.LiveBrowser.Tip.retry
+        default: state?.pendingApproval != nil ? Strings.LiveBrowser.Tip.review : held ? Strings.LiveBrowser.Tip.releaseControl : Strings.LiveBrowser.Tip.takeControl
+        }
+        HoldTip.update(action, title: title, detail: tip)
         accessibilityLabel = [Strings.LiveBrowser.title, status].joined(separator: ", ")
         accessibilityValue = state?.status.rawValue ?? "\(feed.phase)"
         setNeedsLayout()

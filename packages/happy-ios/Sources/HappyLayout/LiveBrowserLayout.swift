@@ -80,11 +80,12 @@ public struct ChatStatusLineLayout: Equatable, Sendable {
 /// under it. Nothing stands on the picture, so the page and its title read
 /// whole.
 ///
-///     ┌ bar ───────────────────┐   ✕ close and ••• (End browser) on the
-///     │ ✕  •••          ⤢  ⇲   │   left, ⤢ full screen and ⇲ big or
-///     ├ picture ───────────────┤   small on the right, each a 44-point
-///     │                        │   target; a narrow player keeps ✕ and
-///     │                        │   ⇲, and too narrow for both, ✕ alone
+///     ┌ bar ───────────────────┐   ✕ close, ••• (End browser) and the
+///     │ ✕  •••  ⛨       ⤢  ⇲   │   yolo shield on the left, ⤢ full
+///     ├ picture ───────────────┤   screen and ⇲ big or small on the
+///     │                        │   right, each a 44-point target; a
+///     │                        │   narrower player drops the shield,
+///     │                        │   then ••• and ⤢, then ⇲
 ///     ├ footer ────────────────┤
 ///     └────────────────────────┘   pill · Take over / Release
 ///
@@ -242,6 +243,9 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
     public var resize: CGRect?
     /// The menu (End browser), beside close; nil where full screen is.
     public var menu: CGRect?
+    /// Yolo's shield, beside the menu; nil on a player too narrow for
+    /// five buttons.
+    public var yolo: CGRect?
     public var footer: CGRect
     /// The status pill shows in the footer when there is room.
     public var showsPill: Bool
@@ -333,11 +337,23 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
         let four = width >= 4 * b
         menu = four ? CGRect(x: b, y: 0, width: b, height: b) : nil
         fullScreen = four ? CGRect(x: width - 2 * b, y: 0, width: b, height: b) : nil
+        let five = width >= 5 * b
+        yolo = five ? CGRect(x: 2 * b, y: 0, width: b, height: b) : nil
         footer = CGRect(x: 0, y: M.barHeight + pictureHeight, width: width, height: M.footerHeight)
         showsPill = width >= 200
         // Each side keeps as much as the wider: the middle is the bar's.
-        let side = four ? 2 * b : b
-        control = width - 2 * side >= b ? CGRect(x: side, y: 0, width: width - 2 * side, height: b) : nil
+        // Where that leaves no room (yolo makes the left the wider), the
+        // room between the sides; none there, the footer has it.
+        let left = five ? 3 * b : four ? 2 * b : b
+        let right = four ? 2 * b : b
+        let side = max(left, right)
+        if width - 2 * side >= b {
+            control = CGRect(x: side, y: 0, width: width - 2 * side, height: b)
+        } else if width - left - right >= b {
+            control = CGRect(x: left, y: 0, width: width - left - right, height: b)
+        } else {
+            control = nil
+        }
         let corners: [Corner] = [.bottomLeft, .bottomRight]
         grips = corners.map { corner in
             Grip(corner: corner, frame: CGRect(

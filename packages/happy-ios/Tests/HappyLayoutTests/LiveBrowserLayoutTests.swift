@@ -168,8 +168,10 @@ final class LiveBrowserLayoutTests: XCTestCase {
             assertFrame(down.menu, rect(44, 0, 44, 44))
             assertFrame(down.fullScreen, rect(144, 0, 44, 44))
             assertFrame(down.resize, rect(188, 0, 44, 44))
-            // Take control in the bar's middle, between the sides.
-            assertFrame(down.control, rect(88, 0, 56, 44))
+            // The yolo shield beside •••; that leaves Take control no
+            // room on the bar: the footer has it.
+            assertFrame(down.yolo, rect(88, 0, 44, 44))
+            XCTAssertNil(down.control)
             XCTAssertTrue(down.showsPill)
             XCTAssertFalse(down.isBig)
             XCTAssertEqual(down.radius, LiveBrowserDockLayout.Metrics.radius)
@@ -201,6 +203,7 @@ final class LiveBrowserLayoutTests: XCTestCase {
         XCTAssertNil(tight.menu)
         XCTAssertNil(tight.fullScreen)
         XCTAssertNil(tight.control, "no room on the bar: the footer has it")
+        XCTAssertNil(tight.yolo)
         assertControlsClearThePicture(tight)
     }
 
@@ -218,7 +221,8 @@ final class LiveBrowserLayoutTests: XCTestCase {
             assertFrame(big.menu, rect(44, 0, 44, 44))
             assertFrame(big.fullScreen, rect(314, 0, 44, 44))
             assertFrame(big.resize, rect(358, 0, 44, 44))
-            assertFrame(big.control, rect(88, 0, 226, 44))
+            assertFrame(big.yolo, rect(88, 0, 44, 44))
+            assertFrame(big.control, rect(132, 0, 138, 44))
             XCTAssertEqual(big.control?.midX, big.bar.midX)
             XCTAssertTrue(big.isBig)
             XCTAssertEqual(big.radius, 0)
@@ -386,16 +390,17 @@ final class LiveBrowserLayoutTests: XCTestCase {
         assertFrame(wide.fullScreen, rect(88, 0, 44, 44))
         assertFrame(wide.resize, rect(132, 0, 44, 44))
         XCTAssertNil(wide.control, "no room between them: Take control is the footer's")
+        XCTAssertNil(wide.yolo, "under five buttons wide: yolo is on the strip and full screen")
         assertControlsClearThePicture(wide)
     }
 
     /// Every button is a 44-point target on the bar, none on the picture
     /// (the page and its title) and none on another.
     private func assertControlsClearThePicture(_ layout: LiveBrowserDockLayout, file: StaticString = #filePath, line: UInt = #line) {
-        let buttons = [layout.close, layout.menu, layout.fullScreen, layout.resize].compactMap { $0 }
+        let buttons = [layout.close, layout.menu, layout.yolo, layout.fullScreen, layout.resize].compactMap { $0 }
         if let control = layout.control {
             XCTAssertTrue(layout.bar.contains(control), file: file, line: line)
-            XCTAssertEqual(control.midX, layout.bar.midX, "Take control is centred", file: file, line: line)
+            XCTAssertGreaterThanOrEqual(control.width, 44, file: file, line: line)
             for button in buttons { XCTAssertFalse(control.intersects(button), "\(control) overlaps \(button)", file: file, line: line) }
         }
         for (index, button) in buttons.enumerated() {

@@ -111,6 +111,18 @@ public struct LiveBrowserApprovalBarLayout: Equatable, Sendable {
         }
     }
 
+    /// Yolo's "Yolo mode enabled" in the full screen: a line under the
+    /// header (and noVNC's address row), `top` being where they end, 12
+    /// in from the safe area's sides and clear of a sideways phone's
+    /// column; `height` its text's. The approval bar's notices still
+    /// show where the bar goes.
+    public static func yoloLine(size: CGSize, safeArea: LayoutInsets, top: CGFloat, strip: CGRect?, height: CGFloat) -> CGRect {
+        typealias M = Metrics
+        let left = safeArea.left + M.margin
+        let right = (strip?.minX ?? (size.width - safeArea.right)) - M.margin
+        return CGRect(x: left, y: max(top, safeArea.top) + 6, width: max(0, right - left), height: height)
+    }
+
     /// The bar's frame for content that measures `height` at `width`.
     public func frame(height: CGFloat) -> CGRect {
         let height = min(max(0, height), maxHeight)
