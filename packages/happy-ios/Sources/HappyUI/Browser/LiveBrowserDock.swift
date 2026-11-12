@@ -2298,7 +2298,7 @@ final class LiveBrowserPlayerView: UIView, UIGestureRecognizerDelegate {
     private(set) var gripViews: [LiveBrowserResizeGrip] = []
     /// The picture's size while a grip is dragged.
     private let badge = UILabel()
-    private var layout: LiveBrowserDockLayout?
+    private(set) var layout: LiveBrowserDockLayout?
     /// The browser ended: nothing left to end.
     private var isOver = false
     private var frameBytes: Data?

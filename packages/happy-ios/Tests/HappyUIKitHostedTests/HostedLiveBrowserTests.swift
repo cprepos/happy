@@ -584,14 +584,18 @@ final class HostedLiveBrowserTests: XCTestCase {
         try screenshot(window, name: dock.isPhone ? "live-browser-phone-big" : "live-browser-pad-big")
 
         // Turned sideways, big stays the windowed player, at its aspect.
-        try await turn(window, to: .landscapeRight)
-        host.view.layoutIfNeeded()
-        XCTAssertNil(host.presentedViewController, "landscape is full screen's, asked for only by its button")
-        XCTAssertEqual(picture.frame.width / picture.frame.height, 1.6, accuracy: 0.02)
-        XCTAssertEqual(player.frame.minY, host.view.safeAreaInsets.top)
-        try await turn(window, to: .portrait)
-        host.view.layoutIfNeeded()
-        XCTAssertEqual(player.frame.width, width)
+        // A phone only: iPadOS's windowing refuses a scene's asked turn
+        // (UISceneErrorDomain 101), so an iPad is not turned.
+        if dock.isPhone {
+            try await turn(window, to: .landscapeRight)
+            host.view.layoutIfNeeded()
+            XCTAssertNil(host.presentedViewController, "landscape is full screen's, asked for only by its button")
+            XCTAssertEqual(picture.frame.width / picture.frame.height, 1.6, accuracy: 0.02)
+            XCTAssertEqual(player.frame.minY, host.view.safeAreaInsets.top)
+            try await turn(window, to: .portrait)
+            host.view.layoutIfNeeded()
+            XCTAssertEqual(player.frame.width, width)
+        }
 
         // The picture tapped: as ⤢, back to small where it was.
         player.onTap?()
@@ -622,7 +626,8 @@ final class HostedLiveBrowserTests: XCTestCase {
     /// frame's aspect, its docked corner held; a tick at each limit; the
     /// size kept for the chat; VoiceOver steps it; ⤢ snaps to big and drops
     /// it; big grows from its middle, the chat's content following. Take
-    /// control stands in the bar's middle.
+    /// control stands in the bar's middle where there is room beside the
+    /// yolo shield, else under the picture.
     func testDraggingTheGripResizesThePlayerAndKeepsTheSize() async throws {
         let daemon = BrowserDaemon()
         let chat = UUID().uuidString
@@ -643,10 +648,19 @@ final class HostedLiveBrowserTests: XCTestCase {
         let player = try XCTUnwrap(dock.player)
         let feed = try XCTUnwrap(dock.feed)
 
-        // Take control in the bar's middle.
+        // Take control in the bar's middle where it fits beside the yolo
+        // shield; on a small phone player, under the picture in the
+        // footer's middle.
         let action = try XCTUnwrap(player.subviews.first { $0.accessibilityIdentifier == "live-browser-player-action" })
-        XCTAssertEqual(action.frame.midX, player.bounds.midX, accuracy: 0.5)
-        XCTAssertEqual(action.frame.minY, 0)
+        let small = try XCTUnwrap(player.layout)
+        if let slot = small.control {
+            XCTAssertEqual(action.frame.midX, slot.midX, accuracy: 1)
+            XCTAssertEqual(action.frame.minY, 0)
+        } else {
+            XCTAssertEqual(action.frame.midX, small.footer.midX, accuracy: 1)
+            XCTAssertEqual(action.frame.minY, small.footer.minY, accuracy: 0.5)
+            if dock.isPhone { XCTAssertLessThan(small.frame.width, 300, "only a small player has no room") }
+        }
 
         // Small at the bottom right: a grip flush in each bottom corner.
         let corners: [LiveBrowserDockLayout.Corner] = [.bottomLeft, .bottomRight]
@@ -1086,7 +1100,10 @@ final class HostedLiveBrowserTests: XCTestCase {
         dock.update(link: LiveBrowserLink(id: id))
         try await until { dock.player != nil && dock.feed?.phase.state != nil }
         dock.presentFullScreen(taking: false)
-        try await until { (host.presentedViewController as? UINavigationController)?.transitionCoordinator == nil }
+        try await until {
+            guard let navigation = host.presentedViewController as? UINavigationController else { return false }
+            return navigation.transitionCoordinator == nil
+        }
         let navigation = try XCTUnwrap(host.presentedViewController as? UINavigationController)
         let frame = try XCTUnwrap(navigation.viewControllers.first as? LiveBrowserFullScreenItems)
         try await until { frame.isViewLoaded }
@@ -1142,7 +1159,7 @@ final class HostedLiveBrowserTests: XCTestCase {
         let bar = navigation.navigationBar.convert(navigation.navigationBar.bounds, to: window)
         for (index, bubble) in overlay.bubbles.enumerated() {
             XCTAssertTrue(safe.contains(bubble.frame), "\(bubble.frame) inside \(safe)")
-            XCTAssertFalse(bubble.frame.intersects(bar), "off the bar")
+            XCTAssertFalse(bubble.frame.intersects(bar), "off the bar: \(bubble.frame) \(bar) buttons \(items.compactMap(\.customView).map { $0.convert($0.bounds, to: window) })")
             for other in overlay.bubbles[(index + 1)...] { XCTAssertFalse(bubble.frame.intersects(other.frame)) }
         }
         try screenshot(window, name: "live-browser-help")
@@ -1252,7 +1269,10 @@ final class HostedLiveBrowserTests: XCTestCase {
         dock.update(link: LiveBrowserLink(id: id))
         try await until { dock.player != nil && dock.feed?.phase.state != nil }
         dock.presentFullScreen(taking: false)
-        try await until { (host.presentedViewController as? UINavigationController)?.transitionCoordinator == nil }
+        try await until {
+            guard let navigation = host.presentedViewController as? UINavigationController else { return false }
+            return navigation.transitionCoordinator == nil
+        }
         let navigation = try XCTUnwrap(host.presentedViewController as? UINavigationController)
         let frame = try XCTUnwrap(navigation.viewControllers.first as? LiveBrowserFullScreenItems)
         try await until { frame.isViewLoaded }

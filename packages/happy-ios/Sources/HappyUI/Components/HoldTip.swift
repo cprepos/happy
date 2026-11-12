@@ -159,8 +159,17 @@ enum HoldTip {
             let hold = gesture(on: view)!
             return HoldTipBubble(title: "\(index + 1)  \(hold.title)", detail: hold.detail)
         }
+        // What the bubbles keep off: a header button's whole bar (its
+        // glyphs may still be growing in, smaller than they will be), else
+        // the button.
+        let obstacles = shownViews.map { view -> CGRect in
+            var bar = view.superview
+            while let current = bar, !(current is UINavigationBar) { bar = current.superview }
+            let around = bar ?? view
+            return around.convert(around.bounds, to: window)
+        }
         let frames = columns(sizes: bubbles.map { $0.measure(maxWidth: min(M.maxWidth, safe.width)) },
-                             sources: sources, safe: safe, placement: placement)
+                             sources: obstacles, safe: safe, placement: placement)
         // In the window first: the rings take its appearance (dark or light).
         overlay.alpha = 0
         window.addSubview(overlay)
