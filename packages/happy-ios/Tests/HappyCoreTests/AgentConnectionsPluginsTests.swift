@@ -14,7 +14,10 @@ final class AgentConnectionsPluginsTests: XCTestCase {
         let transport = IdentityTransport()
         let manager = AgentConnections(credentials: InMemoryAgentConnectionCredentialStore(), directory: nil, makeTransport: { _ in transport })
         await manager.setForeground(false)
-        await transport.failNext(1)
+        // `add` reads the identity once itself and shrugs off a failure:
+        // the first failure is that read's, the second the loop's first
+        // check, which leaves it retrying a second later.
+        await transport.failNext(2)
         let account = try await manager.add(value("retrying"), name: "Mac")
         await manager.setForeground(true)
         for _ in 0..<100 where manager.accounts.first?.status != .retrying { try await Task.sleep(for: .milliseconds(5)) }
