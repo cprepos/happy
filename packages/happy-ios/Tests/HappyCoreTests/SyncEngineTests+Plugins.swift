@@ -11,7 +11,7 @@ extension SyncFixture {
     func resetCount(_ category: RequestCategory) -> Int { resets.filter { $0 == category }.count }
 }
 
-final class SyncEngineForkTests: XCTestCase {
+final class SyncEnginePluginsTests: XCTestCase {
     private struct Timeout: Error {}
     private func wait(_ engine: SyncEngine, _ predicate: @escaping @Sendable (HomeSnapshot) -> Bool) async throws -> HomeSnapshot {
         try await withThrowingTaskGroup(of: HomeSnapshot.self) { group in

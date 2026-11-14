@@ -11,7 +11,7 @@ import XCTest
 extension BrowserDaemon {
     /// What our fake adds to the daemon: kept in one stored property so the
     /// actor's own list of them stays upstream's.
-    struct ForkState {
+    struct PluginState {
         /// Each page request's `Host`, `Origin` and request line, as the server saw them.
         var pageHeads: [(line: String, host: String?, origin: String?)] = []
         /// What the live browser (`/live/<id>/state`) says it is; `/done` makes it watching.
@@ -42,19 +42,19 @@ extension BrowserDaemon {
     }
 
     var pageHeads: [(line: String, host: String?, origin: String?)] {
-        get { forkState.pageHeads } set { forkState.pageHeads = newValue }
+        get { pluginState.pageHeads } set { pluginState.pageHeads = newValue }
     }
-    var liveStatus: String { get { forkState.liveStatus } set { forkState.liveStatus = newValue } }
-    var livePod: String? { get { forkState.livePod } set { forkState.livePod = newValue } }
-    var chatLink: String? { get { forkState.chatLink } set { forkState.chatLink = newValue } }
-    var wakingTakes: Int { get { forkState.wakingTakes } set { forkState.wakingTakes = newValue } }
-    var stalledFrames: Int { get { forkState.stalledFrames } set { forkState.stalledFrames = newValue } }
-    var workspaces: String { get { forkState.workspaces } set { forkState.workspaces = newValue } }
-    var nodeName: String { get { forkState.nodeName } set { forkState.nodeName = newValue } }
-    var takeNoVNC: String { get { forkState.takeNoVNC } set { forkState.takeNoVNC = newValue } }
-    func setLiveApproval(_ id: String?) { forkState.liveApproval = id }
-    func setLiveAutoApproved(_ json: String) { forkState.liveAutoApproved = json }
-    var liveAuto: Bool { forkState.liveAuto }
+    var liveStatus: String { get { pluginState.liveStatus } set { pluginState.liveStatus = newValue } }
+    var livePod: String? { get { pluginState.livePod } set { pluginState.livePod = newValue } }
+    var chatLink: String? { get { pluginState.chatLink } set { pluginState.chatLink = newValue } }
+    var wakingTakes: Int { get { pluginState.wakingTakes } set { pluginState.wakingTakes = newValue } }
+    var stalledFrames: Int { get { pluginState.stalledFrames } set { pluginState.stalledFrames = newValue } }
+    var workspaces: String { get { pluginState.workspaces } set { pluginState.workspaces = newValue } }
+    var nodeName: String { get { pluginState.nodeName } set { pluginState.nodeName = newValue } }
+    var takeNoVNC: String { get { pluginState.takeNoVNC } set { pluginState.takeNoVNC = newValue } }
+    func setLiveApproval(_ id: String?) { pluginState.liveApproval = id }
+    func setLiveAutoApproved(_ json: String) { pluginState.liveAutoApproved = json }
+    var liveAuto: Bool { pluginState.liveAuto }
 
     /// `/v0/config` and `/v0/workspaces` as our fake answers them.
     func forkRequest(_ path: String) -> String? {
@@ -64,7 +64,7 @@ extension BrowserDaemon {
     }
 
     /// A stalled frame, the live browser or noVNC; nil for anything else.
-    func forkAnswer(_ head: BrowserHTTPHead) -> (Data, Bool)? {
+    func pluginAnswer(_ head: BrowserHTTPHead) -> (Data, Bool)? {
         if head.line.contains("/frame.jpg "), stalledFrames > 0 {
             stalledFrames -= 1
             return (Data(), true)
@@ -83,20 +83,20 @@ extension BrowserDaemon {
         }
         let pod = livePod.map { #","pod":"\#($0)""# } ?? ""
         func approvalAndYolo() -> String {
-            let approval = forkState.liveApproval.map {
+            let approval = pluginState.liveApproval.map {
                 #","approval":{"id":"\#($0)","kind":"submit","summary":"Submit the order form","details":["Total: $42.00"],"asked_at":1}"#
             } ?? ""
-            return #"\#(approval),"auto_approve":\#(forkState.liveAuto),"auto_approved":\#(forkState.liveAutoApproved)"#
+            return #"\#(approval),"auto_approve":\#(pluginState.liveAuto),"auto_approved":\#(pluginState.liveAutoApproved)"#
         }
         if head.line.hasPrefix("POST ") && head.line.contains("/auto ") {
             let body = (try? JSONSerialization.jsonObject(with: bodies.last ?? Data())) as? [String: Any]
             guard let on = body?["on"] as? Bool else { return reply("400 Bad Request", "application/json", Data(#"{"error":"bad_body"}"#.utf8)) }
-            forkState.liveAuto = on
-            if on { forkState.liveApproval = nil }
+            pluginState.liveAuto = on
+            if on { pluginState.liveApproval = nil }
             return reply("200 OK", "application/json", Data(#"{"auto_approve":\#(on)}"#.utf8))
         }
         if head.line.hasPrefix("POST ") && (head.line.contains("/approve ") || head.line.contains("/deny ")) {
-            forkState.liveApproval = nil
+            pluginState.liveApproval = nil
             return reply("200 OK", "application/json", Data(#"{"status":"\#(liveStatus)","url":"https://example.com/login","title":"Log in to Example"\#(approvalAndYolo())}"#.utf8))
         }
         if head.line.contains(" /live/chat/") {
@@ -128,7 +128,7 @@ extension BrowserDaemon {
             liveStatus = "watching"
             return reply("200 OK", "application/json", Data(#"{"ok":true}"#.utf8))
         }
-        if head.line.contains("/state ") && forkState.stateMissing {
+        if head.line.contains("/state ") && pluginState.stateMissing {
             return reply("404 Not Found", "application/json", Data(#"{"error":"not_found"}"#.utf8))
         }
         if head.line.contains("/state ") {
@@ -186,7 +186,7 @@ extension BrowserDaemon {
     func setChatLink(_ id: String?) { chatLink = id }
     func setWakingTakes(_ count: Int) { wakingTakes = count }
     func setStalledFrames(_ count: Int) { stalledFrames = count }
-    func setStateMissing(_ missing: Bool) { forkState.stateMissing = missing }
+    func setStateMissing(_ missing: Bool) { pluginState.stateMissing = missing }
     var frameReads: Int { requests.filter { $0.contains("/frame.jpg ") }.count }
 
     /// The bridge serves `frame.jpg` as a PNG; the card reads it by its bytes.

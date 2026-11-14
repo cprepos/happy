@@ -17,8 +17,8 @@ actor BrowserDaemon: AgentTransport {
     let artifactHTML: String?
     let keepAlive: Bool
     var connections = 0
-    /// Our fake's live browser and noVNC (HostedBrowserForkTests.swift).
-    var forkState = BrowserDaemon.ForkState()
+    /// Our fake's live browser and noVNC (HostedBrowserPluginsTests.swift).
+    var pluginState = BrowserDaemon.PluginState()
     init(artifactHTML: String? = nil, keepAlive: Bool = false) { self.artifactHTML = artifactHTML; self.keepAlive = keepAlive }
 
     func browserConnection() async throws -> any BrowserStream { connections += 1; return Socket(self) }
@@ -46,7 +46,7 @@ actor BrowserDaemon: AgentTransport {
             bytes.append(contentsOf: [0x81, 7]); bytes.append(Data("ws-live".utf8))
             return (bytes, true)
         }
-        if let fork = forkAnswer(head) { return fork }
+        if let fork = pluginAnswer(head) { return fork }
         if head.line.contains("/api/v1/kv/events") {
             let event = "data: shared-update\n\n"
             return (Data("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nTransfer-Encoding: chunked\r\n\r\n\(String(event.utf8.count, radix: 16))\r\n\(event)\r\n".utf8), true)

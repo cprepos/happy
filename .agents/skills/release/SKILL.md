@@ -50,7 +50,7 @@ git status --porcelain                     # must print nothing
 ```
 
 If `HEAD` is behind, `git merge --ff-only origin/main`. If it is ahead, the
-commits are not on `main` yet — push first (see `AGENTS.fork.md` "Sync To Main"),
+commits are not on `main` yet — push first (see `AGENTS.plugins.md` "Sync To Main"),
 then release. If the tree is dirty, commit or stash; a release must be
 reproducible from the released artifact's recorded commit.
 

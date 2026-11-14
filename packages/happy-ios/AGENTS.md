@@ -1,6 +1,6 @@
 # happy-ios
 
-**This fork overrides parts of this file: read AGENTS.fork.md first.**
+**Plugins override parts of this file: read AGENTS.plugins.md first.**
 
 Native iOS client for Happy, written in Swift with UIKit.
 

@@ -52,7 +52,7 @@ struct Picture: Equatable {
         for item in items {
             for piece in item.pieces {
                 switch piece {
-                case .liveBrowser: break // fork: its own clause, away from upstream's lists
+                case .liveBrowser: break // plugins: its own clause, away from upstream's lists
                 case .picture(let id, _, _):
                     pictures.append(Picture(key: MediaLoader.sentKey(id), thumbhash: nil, label: Strings.picture))
                 case .gallery(let media, _), .tree(let media, _):

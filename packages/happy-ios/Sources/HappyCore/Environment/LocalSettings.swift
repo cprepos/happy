@@ -166,7 +166,7 @@ public final class LocalSettings: Sendable {
         for key in [Keys.linkComputerChecklist, Keys.themePreference, Keys.devModeEnabled, Keys.markdownCopyV2, Keys.expandedProjects, Keys.acknowledgedCliVersions, Keys.registeredPushToken, Keys.zenMode, Keys.dictationStaysHome, NewSessionDraft.storageKey] {
             storage.set(nil, forKey: key)
         }
-        clearForkKeys()
+        clearPluginKeys()
     }
 
     /// persistence.registered-push-token-v1, scoped to this account's local-settings suite.

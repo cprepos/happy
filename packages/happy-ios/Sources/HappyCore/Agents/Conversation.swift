@@ -36,7 +36,7 @@ public struct ChatItem: Equatable, Sendable, Identifiable {
 
     public enum Piece: Equatable, Sendable {
         case text(String)
-        // fork: ours, here rather than where upstream adds cases.
+        // plugins: ours, here rather than where upstream adds cases.
         /// A browser the agent drives, linked in its text
         /// (`LiveBrowserLink`): a card that shows it live and opens it.
         case liveBrowser(id: String, url: URL)
@@ -386,7 +386,7 @@ public actor Conversation {
     private var checkpointClaims: [String: Task<Void, Error>] = [:]
     private var attachmentCleanup: Set<String> = []
     private struct KeptConversation: Codable, Equatable, Sendable {
-        // fork: ours, first and defaulted, so upstream's initializer call
+        // plugins: ours, first and defaulted, so upstream's initializer call
         // stays as upstream writes it (set after it, in `persistConversation`).
         /// `mode` was the person's pick, not the computer's default it
         /// started on; absent in what was kept before it was told apart.
@@ -1505,7 +1505,7 @@ public actor Conversation {
             outgoing: outgoing.filter({ held[$0.id] == nil }).map { .init(id: $0.id, text: $0.text, pictures: $0.pictures.map { .init(mimeType: $0.mimeType, data: $0.data) }, accepted: $0.accepted, failure: $0.failure, mode: outgoingModes[$0.id], files: outgoingFiles[$0.id], at: outgoingTimes[$0.id],
                 toolRequest: outgoingTools[$0.id]) }, mode: mode, hasMore: snapshot.hasMore || window.trimmed, slashCommands: snapshot.slashCommands, syncedAt: snapshot.syncedAt)
         // When it was last read rides along with what changed, never a write of its own.
-        kept.modePicked = picked != nil ? true : nil // fork
+        kept.modePicked = picked != nil ? true : nil // plugins
         var compared = kept
         compared.syncedAt = lastKept?.syncedAt
         guard compared != lastKept || conversationWrite != nil else { return true }

@@ -1,6 +1,6 @@
 # Agent Workflow
 
-**This fork overrides parts of this file: read AGENTS.fork.md first. In particular, never push to `origin`; pushes go to `fork`.**
+**Plugins override parts of this file: read AGENTS.plugins.md first. In particular, never push to `origin`; pushes go to `fork`.**
 
 ## Releasing anything
 

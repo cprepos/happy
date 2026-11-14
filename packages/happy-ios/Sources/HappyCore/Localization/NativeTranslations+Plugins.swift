@@ -3,8 +3,8 @@ extension TranslationCatalog {
     /// NativeTranslations.swift so upstream merges don't conflict there:
     /// the browser's (`browserSources`), the hardware keyboard's
     /// (`hardwareKeyboardSources`) and the rest below. Joined into
-    /// `nativeSources` by the one `forkSources` entry in its list.
-    static let forkSources: [String: [String: String]] = [browserSources, hardwareKeyboardSources].reduce(forkOwnSources) { all, area in
+    /// `nativeSources` by the one `pluginSources` entry in its list.
+    static let pluginSources: [String: [String: String]] = [browserSources, hardwareKeyboardSources].reduce(pluginOwnSources) { all, area in
         all.merging(area) { kept, added in kept.merging(added) { first, _ in first } }
     }
 
@@ -12,7 +12,7 @@ extension TranslationCatalog {
     /// offline computer, and the chat's load-earlier-history button. The
     /// voice services' names, Happy Server and ElevenLabs, are products
     /// that no language translates.
-    static let forkOwnSources: [String: [String: String]] = [
+    static let pluginOwnSources: [String: [String: String]] = [
         "en": [
             "native.voice.service": "Voice service",
             "native.voice.needsOwnAgent": "Needs your own agent ID",

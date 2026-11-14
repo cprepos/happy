@@ -328,7 +328,7 @@ actor ChatPlanner {
         let text = HappyReferences.plain(item.text, instanceId: key.references.instanceId, view: key.references.view)
         var parts: [MessageLayout.Part] = []
         enum Draft {
-            case liveBrowser(LiveBrowserLink) // fork: first, away from where upstream adds
+            case liveBrowser(LiveBrowserLink) // plugins: first, away from where upstream adds
             case markdown(MarkdownPiece)
             case gallery([Media])
             case tree(ChatMediaPlan.Tree)
@@ -343,7 +343,7 @@ actor ChatPlanner {
         var spoken: [String] = text.isEmpty ? [] : [text]
         for piece in item.pieces {
             switch piece {
-            case .liveBrowser(let id, let url): // fork: first, away from where upstream adds
+            case .liveBrowser(let id, let url): // plugins: first, away from where upstream adds
                 // Across the column, as an inline page is, at its own height.
                 guard let link = LiveBrowserLink(url: url) ?? LiveBrowserLink(id: id) else { break }
                 drafts.append(.liveBrowser(link))
@@ -424,7 +424,7 @@ actor ChatPlanner {
         }
         for (placed, draft) in zip(layout.parts, drafts) {
             switch (placed, draft) {
-            case (.page(let frame), .liveBrowser(let link)): // fork: first, away from where upstream adds
+            case (.page(let frame), .liveBrowser(let link)): // plugins: first, away from where upstream adds
                 items.append(.embed(.liveBrowser(link), frame: frame))
             case (.markdown(let placed, let origin), .markdown(let markdown)):
                 let drawn = markdown.draw(placed, origin: origin)

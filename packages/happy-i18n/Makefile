@@ -15,4 +15,4 @@ translations:
 	node $(ROOT)/packages/happy-android/tools/translations/generate.mjs
 
 merge-drivers:
-	$(ROOT)/scripts/fork/merge-drivers.sh
+	$(ROOT)/scripts/plugins/merge-drivers.sh

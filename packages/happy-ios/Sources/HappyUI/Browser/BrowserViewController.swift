@@ -30,7 +30,7 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
     private(set) var web: WKWebView?
     private var loading: Task<Void, Never>?
     private var observations: [NSKeyValueObservation] = []
-    /// Inside `lockRemoteScreen` (BrowserViewController+Fork).
+    /// Inside `lockRemoteScreen` (BrowserViewController+Plugins).
     var locking = false
     private let progressView = BrowserProgressView()
     let failureView = BrowserFailureView()
