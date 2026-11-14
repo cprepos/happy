@@ -405,7 +405,7 @@ public actor Conversation {
     /// The agents this one spawns or retitles while it is open.
     private var children: Task<Void, Never>?
     var reading: Task<Void, Never>?
-    // plugins: stored for Conversation+Reload.swift, which says what each is.
+    // plugins: stored for Conversation+Reload.swift and +StartingMode.swift, which say what each is.
     var readingId = UUID(), starting = false, followed = false, stopped = false, followsDefault = false
     var claimOverride: (@Sendable (String) async throws -> Void)?
     private var reloadSoon: Task<Void, Never>?
