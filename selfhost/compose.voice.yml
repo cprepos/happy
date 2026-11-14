@@ -8,7 +8,12 @@ x-hf-cache: &hf-cache
   - ${HF_CACHE_DIR:-/mnt/ai-data/huggingface}:/hf-cache
 
 services:
+  # LiveKit and the voice-agent worker now run natively on prep-air (selfhost/mac-voice, launchd
+  # com.openclaw.livekit and com.happy.voice-agent; see VOICE_SERVICES.md). The prep-ml copies are
+  # kept behind the `local-livekit` profile as a fallback:
+  #   docker compose ... --profile local-livekit up -d livekit voice-agent
   livekit:
+    profiles: ["local-livekit"]
     image: livekit/livekit-server:v1.13.10
     container_name: happy-voice-livekit
     restart: unless-stopped
@@ -157,6 +162,7 @@ services:
   # livekit signaling, stt, tts and llm on 127.0.0.1 (LiveKit media goes to the container IP
   # on the happy-selfhost bridge). Dispatched explicitly as "happy-voice".
   voice-agent:
+    profiles: ["local-livekit"]
     build:
       context: ../packages/happy-voice-agent
     image: happy-voice-agent:local
