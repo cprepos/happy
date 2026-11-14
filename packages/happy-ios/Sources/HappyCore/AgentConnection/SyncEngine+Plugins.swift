@@ -45,18 +45,6 @@ extension SyncEngine {
         }
     }
 
-    /// `intentsChanged`'s first line. A refused one stays off until a list
-    /// comes without it; after that no list holds it again. With it,
-    /// `refused` takes the refused one out of `waiting` at once (one line
-    /// beside upstream's `refusedIds.insert`): the outbox's list without it
-    /// may come after, on its own stream, and what it hid is back by the
-    /// time the notice says why. `intentsChanged` no longer drops a refused
-    /// id from `refusedIds` as it skips it; this does that instead.
-    func withoutRefused(_ list: [Intent]) -> [Intent] {
-        refusedIds.formIntersection(list.map(\.id))
-        return list.filter { !refusedIds.contains($0.id) }
-    }
-
     /// Pull to refresh: drop the realtime and query clients (never the file
     /// client, so a download in flight goes on), start the run again even
     /// when it is live, read home whole once rather than resuming the

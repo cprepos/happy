@@ -84,7 +84,7 @@ public actor SyncEngine {
     /// between: each with the number of the read last begun then.
     private var settling: [(intent: Intent, read: Int)] = []
     /// Refused before the list said they were gone: not settling.
-    var refusedIds: Set<String> = []
+    private var refusedIds: Set<String> = []
     /// Reads of the computer begun (`reconcile`).
     private var reads = 0
     /// The newest read home has taken: one begun before it is older in
@@ -1298,10 +1298,10 @@ public actor SyncEngine {
     }
 
     private func intentsChanged(_ list: [Intent]) async {
-        let list = withoutRefused(list)
         let ids = Set(list.map(\.id)), slots = Set(list.map(\.slot))
         var taken = false
         for intent in waiting where !intent.kind.isTodo && !intent.kind.isFeed && !ids.contains(intent.id) && !slots.contains(intent.slot) {
+            if refusedIds.remove(intent.id) != nil { continue }
             settling.append((intent, reads))
             taken = true
         }
@@ -1330,7 +1330,6 @@ public actor SyncEngine {
             settling.removeAll { $0.intent.id == id }
         } else if waiting.contains(where: { $0.id == id }) {
             refusedIds.insert(id)
-            waiting.removeAll { $0.id == id }
         }
         await layIntents()
         // A refused read or seen entry is nothing to tell; a todo list tells its own.
