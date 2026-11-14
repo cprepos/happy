@@ -3,11 +3,14 @@
 
 SHELL := /bin/bash
 COMPOSE := docker compose --project-directory $(CURDIR) -f $(CURDIR)/docker-compose.yml --env-file $(CURDIR)/.env
+# The same, with the "rs" profile on: the Rust server (happy-server-rs) is addressable.
+COMPOSE_RS := $(COMPOSE) --profile rs
 
-.PHONY: help env build up down status logs migrate webapp-dir stack-up stack-down
+.PHONY: help env build up down status logs migrate webapp-dir stack-up stack-down server-ts server-rs server-rs-build
 
 help:
 	@echo "Targets: env build up down status logs migrate"
+	@echo "Server:  server-ts server-rs server-rs-build (switch between the TypeScript and the Rust server)"
 	@echo "Stack:   stack-up stack-down (Vaultwarden, then the browser stack; the filler is its own systemd unit)"
 
 # Create .env with random secrets if it does not exist yet (never overwrites).
@@ -25,13 +28,14 @@ build: env
 	$(COMPOSE) build happy-server
 
 up: env webapp-dir
+	$(COMPOSE_RS) stop happy-server-rs
 	$(COMPOSE) up -d --build postgres happy-server
 
 down:
-	$(COMPOSE) down
+	$(COMPOSE_RS) down
 
 status:
-	$(COMPOSE) ps
+	$(COMPOSE_RS) ps
 	@echo
 	@printf "local  /      : HTTP "; curl -sS -o /dev/null -w "%{http_code}" --max-time 5 http://127.0.0.1:3005/ || echo "unreachable"; echo
 	@printf "local  /health: "; curl -fsS --max-time 5 http://127.0.0.1:3005/health || echo "unreachable"; echo
@@ -39,7 +43,27 @@ status:
 	@$(MAKE) --no-print-directory vault-status || echo "vault-status: FAILED"
 
 logs:
-	$(COMPOSE) logs -f --tail=200
+	$(COMPOSE_RS) logs -f --tail=200
+
+# Switching servers. happy-server (TypeScript) and happy-server-rs (Rust) share the database,
+# the port, the data volume and the web app, and must never run at the same time: each target
+# stops the other server first, then starts its own and waits until it is healthy. Neither
+# rebuilds an image that exists (`make build` / `make server-rs-build` do), so switching back
+# is quick and uses what ran before.
+server-ts: env webapp-dir
+	$(COMPOSE_RS) stop happy-server-rs
+	$(COMPOSE) up -d --wait --wait-timeout 180 postgres happy-server
+	@printf "server-ts: GET / -> "; curl -fsS --max-time 5 http://127.0.0.1:3005/ -H 'Accept: text/plain' | head -c 200; echo
+
+server-rs: env webapp-dir
+	$(COMPOSE) stop happy-server
+	$(COMPOSE_RS) up -d --wait --wait-timeout 180 postgres happy-server-rs
+	@printf "server-rs: GET / -> "; curl -fsS --max-time 5 http://127.0.0.1:3005/ -H 'Accept: text/plain' | head -c 200; echo
+
+# Rebuilds the Rust server image from HAPPY_SERVER_RS_CONTEXT (see docker-compose.yml) without
+# touching the running server; `make server-rs` then starts it.
+server-rs-build: env
+	$(COMPOSE_RS) build happy-server-rs
 
 # The browser stack (live browser, bridge, filler, vault MCP server, MCP registration) lives in
 # ../browser-stack; its make fragments are included here so every browser-*, filler-*,
