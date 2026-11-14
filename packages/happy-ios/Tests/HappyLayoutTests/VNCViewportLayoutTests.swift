@@ -93,9 +93,14 @@ final class VNCViewportLayoutTests: XCTestCase {
         viewport.reveal(shown)
         XCTAssertEqual(viewport.imageFrame.origin, before, "already in view")
 
-        viewport.reveal(CGPoint(x: 1900, y: 600))
-        let cursor = viewport.toView(CGPoint(x: 1900, y: 600))
+        // Far enough from the desktop's right edge for the pan to reach
+        // the margin (1900 was 20 pixels in: the edge stopped it short).
+        viewport.reveal(CGPoint(x: 1800, y: 600))
+        let cursor = viewport.toView(CGPoint(x: 1800, y: 600))
         XCTAssertEqual(cursor.x, phone.width - 24, accuracy: 1e-6, "inside the margin, no further")
+        // Nearer the edge than the margin: as far as the edge allows.
+        viewport.reveal(CGPoint(x: 1900, y: 600))
+        XCTAssertEqual(viewport.imageFrame.maxX, phone.width, accuracy: 1e-6, "as far as the edge allows")
         viewport.reveal(.zero)
         XCTAssertEqual(viewport.imageFrame.origin.x, 0, "as far as the edge allows")
     }

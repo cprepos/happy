@@ -8,7 +8,7 @@ SHELL := /bin/bash
 .PHONY: help test
 help:
 	@echo "browser-*: browser-up browser-down browser-status browser-logs browser-verify browser-bridge-test ... (browser.mk)"
-	@echo "filler-*:  filler-status filler-up filler-restart filler-test vault-mcp-test ... (filler.mk)"
+	@echo "filler-*:  as prep: filler-status filler-audit filler-test filler-token-take vault-mcp-test; as happy-filler: filler-install COMMIT=<sha> filler-restart ... (filler.mk)"
 	@echo "mcp-*:     mcp-register mcp-check mcp-unregister mcp-register-test (register.mk)"
 	@echo "gateway-*: gateway-config [WRITE=1] gateway-keys gateway-test (gateway.mk)"
 	@echo "test:      every unit suite here (bridge, launcher, identity, filler, vault MCP, client, mcp-register)"

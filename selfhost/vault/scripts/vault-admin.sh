@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Turn Vaultwarden's admin panel on or off (make vault-admin-on /
-# vault-admin-off). No sudo: the env file lives in the happy-vault-config
-# volume, and is changed by a one-shot container running as Vaultwarden's
-# uid, with no network and no capabilities.
+# vault-admin-off). No sudo: the env file lives in the vaultwarden-config
+# volume of the standalone vaultwarden container (scripts/vaultwarden.sh), and
+# is changed by a one-shot container running as Vaultwarden's uid, with no
+# network and no capabilities.
 #
 #   vault-admin.sh on    asks for a new admin password on the terminal (twice),
 #                        stores only its Argon2id PHC hash as ADMIN_TOKEN, and
-#                        recreates the container. Then open
+#                        restarts the container. Then open
 #                        http://127.0.0.1:8222/admin on this machine.
 #   vault-admin.sh off   removes ADMIN_TOKEN, which disables /admin entirely.
 #
@@ -20,8 +21,9 @@ set -euo pipefail
 MODE="${1:-}"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 VUID="${VAULT_UID:-1991}"
-IMAGE="$(awk '/^ *image: vaultwarden\/server:/{print $2; exit}' "$HERE/compose.vault.yml")"
-docker volume inspect happy-vault-config >/dev/null 2>&1 || { echo "vault-admin: no happy-vault-config volume; run make vault-init first" >&2; exit 1; }
+IMAGE="$(bash "$HERE/scripts/vaultwarden.sh" image)"
+CONFIG_VOL=vaultwarden-config
+docker volume inspect "$CONFIG_VOL" >/dev/null 2>&1 || { echo "vault-admin: no $CONFIG_VOL volume; make vault-up creates it" >&2; exit 1; }
 
 # Inside: /config is the volume; MODE on|off. The new file is written next to
 # the old one and renamed over it.
@@ -30,7 +32,7 @@ EDIT_SH='
   set -eu
   umask 077
   env=/config/vaultwarden.env
-  [ -f "$env" ] || { echo "vault-admin: vaultwarden.env missing; run make vault-init first" >&2; exit 1; }
+  [ -f "$env" ] || { echo "vault-admin: vaultwarden.env missing; make vault-up VAULT_OWNER_EMAIL=<your vault email> writes it" >&2; exit 1; }
   if [ "$MODE" = on ]; then
     echo "Choose the admin panel password (typed twice, not shown)."
     # rpassword prompts on /dev/tty; only the result line goes to stdout -> /tmp (tmpfs).
@@ -57,7 +59,7 @@ case "$MODE" in
 esac
 docker run --rm "${tty[@]}" --network none --read-only --tmpfs /tmp:mode=0700,uid="$VUID" \
   --cap-drop ALL --security-opt no-new-privileges:true -u "$VUID:$VUID" \
-  -v happy-vault-config:/config -e MODE="$MODE" --entrypoint sh "$IMAGE" -c "$EDIT_SH"
+  -v "$CONFIG_VOL":/config -e MODE="$MODE" --entrypoint sh "$IMAGE" -c "$EDIT_SH"
 
-# Vaultwarden reads ENV_FILE at start: recreate it (only it; the filler keeps running).
-docker compose -p happy-vault -f "$HERE/compose.vault.yml" up -d --force-recreate --no-deps --wait vaultwarden
+# Vaultwarden reads ENV_FILE at start: restart it.
+bash "$HERE/scripts/vaultwarden.sh" restart

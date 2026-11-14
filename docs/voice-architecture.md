@@ -388,7 +388,7 @@ in `packages/happy-ios/docs/FEATURES.md`.
   the worker.
 - `make voice-stream-e2e` runs a full conversation through happy-server's
   `/v1/voice/stream` and reports latency and jitter.
-- `selfhost/cutover/check-no-public-livekit.sh` checks that no public path
+- `selfhost/scripts/check-no-public-livekit.sh` checks that no public path
   reaches LiveKit and the internal paths still do.
 
 Real ElevenLabs calls and the native iOS app's audio on a real device have not

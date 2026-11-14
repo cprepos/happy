@@ -7,8 +7,8 @@ it into the agent's browser session itself. The value is never returned, and
 any copy of it that turns up in a later tool result is replaced with
 `[secret:github.password]`.
 
-- Runs in Docker as uid 1990 (the service `filler` of `selfhost/vault/compose.vault.yml`), with its data
-  in the named volume `happy-filler` (uid 1990), and listens only on `127.0.0.1:6091`.
+- Runs as its own account, `happy-filler` (uid 1990), from `/srv/happy-filler/current`, which is a reviewed git
+  commit (not the working tree), and listens only on `127.0.0.1:6091`.
 - Logs in to the vault with the agent account's API key and user key. It never
   holds the master password (enrollment uses it once to read the API key and
   derive the user key).
@@ -25,74 +25,75 @@ any copy of it that turns up in a later tool result is replaced with
   passwords it generates itself, compare a value against a hash, and pipe a
   value into an allowlisted command's stdin. No route returns a value to the
   model.
-- Audit log: `audit/YYYY-MM.jsonl` in the volume records names, hosts and
+- Audit log: `/srv/happy-filler/audit/YYYY-MM.jsonl` records names, hosts and
   outcomes. It never records values. Read it with `make filler-audit`.
 
 The design and its limits are in `selfhost/vault/docs/plan.md`.
 
-## How it runs
+## Accounts
 
-The filler is a container: the service `filler` of the vault's compose
-project (`happy-vault`, `selfhost/vault/compose.vault.yml`), built from
-`Dockerfile` here (node 22, pinned by digest; the app files root-owned and
-read-only). It runs as uid 1990, the owner of the volume `happy-filler`, with
-`--disallow-code-generation-from-strings`, a read-only root filesystem, every
-capability dropped and `no-new-privileges`. It uses the host network so it can
-bind `127.0.0.1:6091` itself and reach Vaultwarden on `127.0.0.1:8222` and the
-browser controllers on `127.0.0.1:8010` and 8100-8131. The volume is mounted
-read-only at `/filler`, with only its `state/` and `audit/` subpaths writable.
-It is one volume rather than one per directory because the admin commands
-need the whole tree, and the handoff directories must sit beside it.
-`restart: unless-stopped`: it comes back after a crash or reboot and unlocks
-itself from its key files; `make filler-lock` stops it until `make filler-up`.
+The filler runs as its own Linux account, **`happy-filler`** (uid/gid 1990,
+home `/var/lib/happy-filler`, linger on, in no `sudo`, `docker`, `lxd` or
+`adm` group), as a systemd user unit of that account
+(`systemd/happy-filler.service`: host node, `127.0.0.1:6091`,
+`Restart=always`, a read-only view of the system with only `state/` and
+`audit/` writable). prep cannot change the filler's side: its releases, its
+policy, its secrets or its unit.
 
-Its admin commands (`scripts/admin.mjs`) run once each in the same image, as
-the compose service `filler-admin` (profile `admin`, the volume
-writable), through make. Agents give you these commands to type; they do not
-run them.
+- **Root is used once**, to create the account: `make filler-account-setup
+  COMMIT=<sha>` as prep. It asks for your sudo password, then for a new
+  password for `happy-filler` (twice). It creates the account, enables linger,
+  stops an old docker filler (if one runs), hands `/srv/happy-filler` to the
+  account and makes `outbox/` and `inbox/`. It copies no tokens and installs
+  or starts nothing. Existing secrets stay as they are (they already belong
+  to uid 1990).
+- **Admin targets run as happy-filler**, never with sudo: `su - happy-filler`
+  (it asks for that password), then `make -C /home/prep/happy/selfhost
+  filler-<command>` or `filler-admin <command>`. As any other account they
+  print the `su` command and fail. An agent cannot run them; it gives you the
+  command to type.
+- **Read-only targets run as prep:** `filler-status`, `filler-audit`,
+  `filler-test`, `filler-smoke`, and prep's halves of the token handoff.
 
-The vault tools' MCP server (`browser-stack/vault-mcp`) and the bridge's stdio
-MCP server stay on the host: each agent harness spawns them, and `vault_pipe`
-runs host commands (gh, docker, gpg) with your own configs.
+Token handoff, no root involved:
 
-Token handoff, no root involved (`make vault-tokens` does all four):
+| as | target | does |
+|---|---|---|
+| happy-filler | `make filler-token-issue NAME=bridge-client` (or `vault-client`) | a new token: its SHA-256 to `secrets/`, the plaintext once to `/srv/happy-filler/outbox/<NAME>-token` (0640, group prep). Refuses if one exists, unless `FILLER_ROTATE=1` |
+| prep | `make filler-token-take` | each outbox token into prep's secrets dir (0600): `bridge-client-token` to `~/.local/share/happy-browser/secrets/filler-client-token`, `vault-client-token` to `~/.local/share/happy-vault-mcp/secrets/vault-client-token`; the outbox file moves to prep's trash |
+| prep | `make filler-controller-token-give` | copies `~/.local/share/happy-browser/secrets/api-token` into `/srv/happy-filler/inbox/` |
+| happy-filler | `make filler-controller-token-take` | that file into `secrets/controller-token` (0400); the inbox file moves to trash |
 
-| target | does |
-|---|---|
-| `make filler-token-issue NAME=bridge-client` (or `vault-client`) | in the container: a new token, its SHA-256 to `secrets/`, the plaintext once to `outbox/<NAME>-token` in the volume (0640, group 1990). Refuses if one exists, unless `FILLER_ROTATE=1` |
-| `make filler-token-take` | the operator container reads each outbox token, and make writes it as prep into prep's secrets dir (0600): `bridge-client-token` to `~/.local/share/happy-browser/secrets/filler-client-token`, `vault-client-token` to `~/.local/share/happy-vault-mcp/secrets/vault-client-token`; the outbox file moves to prep's trash |
-| `make filler-controller-token-give` | as prep: the operator container drops `~/.local/share/happy-browser/secrets/api-token` into the volume's `inbox/` |
-| `make filler-controller-token-take` | in the container: that file into `secrets/controller-token` (0400); the inbox file moves to trash |
+`outbox/` is happy-filler:prep 2770 (prep may move files out); `inbox/` is
+happy-filler:prep 3730 (prep may drop a file in, but not list it). A token is
+read without following a symlink and only from a regular, singly linked file
+of the other account's that holds nothing but a token
+(`scripts/handoff-copy.mjs`). Tokens never pass through root.
 
-prep never opens the volume. The handoffs go through the compose service
-`filler-operator` (profile `admin`): its own uid, 1989 (`FILLER_OPERATOR_UID`),
-in the filler's group 1990, no network, no capabilities, read-only root. It
-mounts only `outbox/` (2770, read), `inbox/` (3730, may drop a file in but
-not list it) and `audit/` (2750, read); a token it reads goes to its stdout,
-which make writes into a 0600 file of prep's. A token is read without
-following a symlink and only from a regular, singly linked file of the other
-uid's that holds nothing but a token (`scripts/handoff-copy.mjs`).
+Deploys: `filler-install COMMIT=<sha>` (`scripts/filler-install.sh`) fetches
+prep's repo into the account's own mirror (`~happy-filler/src.git`; a fetch
+re-hashes every object, so a changed `.git` on prep's side cannot slip code
+in), unpacks only `browser-stack/browser/filler` of that commit into
+`releases/<sha>`, installs its dependencies only from `package-lock.json`
+(`npm ci --omit=dev --ignore-scripts`), makes it read-only and points
+`current` at it. It upgrades the policy if it lacks a step (backup in
+`policy-backups/`) and checks it with the new release (a policy the release
+rejects switches `current` back), installs and enables the user unit, links
+`~happy-filler/bin/filler-admin` to the release's `scripts/filler-admin.sh`,
+restarts the unit and waits for `/healthz`. The make target runs the
+`filler-install.sh` of that commit; the other admin targets run the installed
+release's `filler-admin.sh`. Typing `filler-admin <command>` is the stricter
+path, since `make` reads prep's writable Makefile. Nothing is deleted: a
+replaced unit, shim or stage goes to `/srv/happy-filler/trash/<ts>/`, and every
+earlier release stays in `releases/` (rolling back is `filler-install` of its
+sha).
 
-Before November 2026 the filler ran as a systemd user unit of its own account,
-`happy-filler`, with its data in `/srv/happy-filler`; `filler-admin.sh` and
-`filler-account-setup.sh` are in the repo's `trash/*_filler-systemd/`. To move
-such an install (see "Moving an install from /srv into the volumes" in
-`selfhost/vault/README.md`): `make vault-migrate-volumes` copies the data into
-the volume while the old unit keeps serving; then stop the unit (sudo, by you)
-and run the cutover, which copies whatever changed since and starts the
-container:
-
-```
-sudo -u happy-filler XDG_RUNTIME_DIR=/run/user/1990 systemctl --user disable --now happy-filler.service
-make -C selfhost vault-filler-cutover
-```
-
-`/srv/happy-filler` is never changed, so it stays as the rollback.
+Vaultwarden is a separate container on `127.0.0.1:8222`
+(`selfhost/vault/README.md`); the filler only connects to it.
 
 ## Setup (once)
 
-From `selfhost/`, after `cp vault/.env.example vault/.env` and filling it in
-(domain, agent email, uids):
+These steps come after the vault is up (`selfhost/vault/README.md`).
 
 1. **Register the agent account.** The agent account's email
    (`VAULT_AGENT_EMAIL`) is invited on the server (sign-ups are closed, so only
@@ -104,30 +105,53 @@ From `selfhost/`, after `cp vault/.env.example vault/.env` and filling it in
    web vault) and add each login agents may use, with its https URL and,
    if wanted, its TOTP seed (Authenticator key). Nothing else goes in this
    vault. You can add more at any time.
-3. `make vault-init` (no sudo): the volumes, the filler's tree in
-   `happy-filler` (uid 1990; `audit/`, `outbox/`, `inbox/` shared with the
-   operator uid 1989 through group 1990), then in the container an empty policy.
-4. `make browser-init` if the browser stack is new (the controller token).
-5. `make vault-tokens`: both client tokens and the controller token.
-6. `make filler-seed-policy`:
-   `{"version":1,"default_client":"agent","clients":{"agent":{"all_items":true,"secrets":{},"manage":{"create":true,"update":true,"remove":true,"compare":true,"pipe":[]}}},"chats":{},"pipe_targets":{}}`
-   (a policy with content is left alone).
-7. `make vault-enroll BACKEND=shared` (a terminal): asks only for the agent's
-   email (Enter accepts the default) and master password, and reads the
-   account's API key from the vault itself, as the web vault's "View API key"
-   does. If that fails (for example, the account has two-step login), it asks
-   for the API key's `client_id` and `client_secret` instead (Settings >
-   Security > Keys > View API key). Only the API key and the derived user key
-   are stored, as 0400 files. Then it restarts the filler.
-8. `make stack-up` (or `make vault-up`), `make filler-items` (each login's
-   name, item id and https hosts, never a username or password), restart the
-   bridge, and `make vault-status`.
+3. **The account (root, once):** as prep, `make filler-account-setup
+   COMMIT=<sha>` (the commit you reviewed).
+4. **As prep:** `make filler-controller-token-give`.
+5. **As happy-filler** (`su - happy-filler`, then
+   `cd /home/prep/happy/selfhost`): `make filler-setup COMMIT=<sha>`. It runs:
+   - `init`: directories and an empty policy;
+   - `install COMMIT=<sha>`: deploys that commit and installs the unit
+     (not restarted yet);
+   - `controller-token-take`, and `token-issue` for `bridge-client` and
+     `vault-client` (each only when missing);
+   - `seed-policy`:
+     `{"version":1,"default_client":"agent","clients":{"agent":{"all_items":true,"secrets":{},"manage":{"create":true,"update":true,"remove":true,"compare":true,"pipe":[]}}},"chats":{},"pipe_targets":{}}`
+     (a policy with content is left alone);
+   - `enroll`: asks only for the agent's email (Enter accepts the default)
+     and master password, and reads the account's API key from the vault
+     itself, as the web vault's "View API key" does. If that fails (for
+     example, the account has two-step login), it asks for the API key's
+     `client_id` and `client_secret` instead (Settings > Security > Keys >
+     View API key). Only the API key and the derived user key are stored, as
+     0400 files (backend `shared`, in `secrets/`);
+   - `restart`, then `items` (each login's name, item id and https hosts, never a
+     username or password).
+6. **As prep:** `make filler-token-take`, restart the bridge, then `make
+   filler-status`.
 
-## Policy: `policy.json` in the volume `happy-filler` (uid 1990, 0640)
+The steps can also be run one by one (`make filler-init`, `filler-install
+COMMIT=<sha>`, `filler-controller-token-take`, `filler-token-issue NAME=...`,
+`filler-enroll`, `filler-policy-edit`, `filler-up`, all as happy-filler).
+Another backend (the policy's `backends.<name>`) is enrolled with `make
+filler-enroll BACKEND=<name> [VAULT_URL=...]`: its keys go to
+`secrets/<name>/`.
+
+**Moving an existing docker filler** (secrets already in place): step 3, then
+as happy-filler `make filler-install COMMIT=<sha>`. The secrets and tokens are
+kept as they are; nothing is re-issued. The vault tools are down from the
+docker stop in step 3 until the install's restart answers.
+
+From November 10 to 11, 2026 the filler ran briefly as a container of the
+vault's compose project; its image, `scripts/admin.mjs` and the compose file
+are in the repo's `trash/*_filler-container/` and `trash/*_vault-compose/`.
+The data never left `/srv/happy-filler`.
+
+## Policy: `/srv/happy-filler/policy.json` (happy-filler 0640)
 
 The filler refuses a policy file that is group- or world-writable, a
-symlink, or owned by anyone but its own uid (or root). Edit it with
-`make filler-policy-edit` (vi, in the container).
+symlink, or owned by anyone but its own account (or root). Edit it as
+happy-filler with `make filler-policy-edit`.
 
 ```json
 {
@@ -314,7 +338,7 @@ and the pipe's output is scrubbed to `[secret:<name>]`.
   `browser_fill_secret` (field `password`) on the change-password form, after
   `vault_update` with `rotate_password`.
 - There is no purge or hard delete anywhere. Vaultwarden empties its trash
-  only if `TRASH_AUTO_DELETE_DAYS` is set in `vaultwarden.env` (the volume `happy-vault-config`).
+  only if `TRASH_AUTO_DELETE_DAYS` is set in `vaultwarden.env` (the volume `vaultwarden-config`).
 - Writes go only to the agent account's personal logins that the chat's
   client reaches (its listed item ids, or for an `all_items` client the
   personal logins no client lists). `create` requires `all_items`: a login
@@ -324,8 +348,8 @@ and the pipe's output is scrubbed to `[secret:<name>]`.
 **Two tokens.** The bridge's client token (`secrets/client-token.sha256`)
 reaches only the fill routes, and the vault tools' token
 (`secrets/vault-client-token.sha256`) only `/v1/vault/*`. `make
-vault-tokens` (or `make filler-token-issue NAME=vault-client` and `make
-filler-token-take`) puts the vault tools' token in
+filler-token-issue NAME=vault-client` (as happy-filler) and `make
+filler-token-take` (as prep) put the vault tools' token in
 `~/.local/share/happy-vault-mcp/secrets/vault-client-token` (yours, 0600;
 `HAPPY_VAULT_MCP_HOME` moves it). If the two hashes are the same, the filler
 turns the vault routes off. `FILLER_ROTATE=1` on `filler-token-issue` rotates
@@ -382,20 +406,22 @@ the chat id (a process without one sends `none`, served by `default_client`).
 
 ## Day to day
 
-All from `selfhost/` (or `browser-stack/`), as prep:
+| as | | |
+|---|---|---|
+| happy-filler | `make filler-install COMMIT=<sha>` | deploy a reviewed commit (it restarts the filler) |
+| happy-filler | `make filler-items` | the agent account's logins: name, item id, https hosts |
+| happy-filler | `make filler-policy-edit` | back up, edit a copy, validate, swap it in |
+| happy-filler | `make filler-policy-upgrade` / `make filler-check-policy` | give an older policy what it lacks / validate it |
+| happy-filler | `make filler-lock` | stop the filler (and disable it at boot); its keys leave memory |
+| happy-filler | `make filler-up` | start again (unlocks from the key files) |
+| happy-filler | `make filler-logs` | the unit's journal |
+| prep | `make filler-status` / `make vault-status` | release, process, bind, health, tokens (vault-status: and Vaultwarden) |
+| prep | `make filler-audit` | recent fills and refusals |
+| prep | `make filler-test` | unit tests |
+| prep | `make filler-smoke` | end-to-end canary run with a leak sweep, against fakes |
 
-| | |
-|---|---|
-| `make vault-up` / `make stack-up` | build the image from this tree and (re)start the filler with Vaultwarden (stack-up: and the browser) |
-| `make filler-items` | the agent account's logins: name, item id, https hosts |
-| `make filler-policy-edit` | back up, edit a copy, validate, swap it in |
-| `make filler-lock` | stop the filler; its keys leave memory, and it stays stopped across reboots |
-| `make filler-up` | start again (unlocks from the key files) |
-| `make filler-restart` / `make filler-logs` | restart; the container's log |
-| `make filler-status` / `make vault-status` | container, bind, health (unlocked), tokens |
-| `make filler-audit` | recent fills and refusals |
-| `make filler-test` | unit tests |
-| `make filler-smoke` | end-to-end canary run with a leak sweep, against fakes |
+Happy-filler targets: `su - happy-filler` first, then
+`make -C /home/prep/happy/selfhost <target>` (or `filler-admin <command>`).
 
 **Adding a login later.** Add it to the agent account's vault, with its https
 URL. With `all_items` that is all: it can be used within 15 s. Otherwise add
@@ -403,20 +429,28 @@ its `item_id` (from `make filler-items`) under the client in `make
 filler-policy-edit`. No re-enroll needed either way.
 
 **Rotation.** If you rotate the agent's API key or encryption key in the web
-vault, run `make vault-enroll BACKEND=shared` again. To rotate a client
-token: `make vault-tokens ROTATE=1 NAME=bridge-client` (or
-`NAME=vault-client`); it issues, takes and restarts the filler. For the bridge
-token, restart the bridge too (the vault tools' MCP server reads its token on
-every call). A new browser controller token goes over with `make vault-tokens`.
+vault, run `make filler-enroll` again (as happy-filler; `BACKEND=<name>` for another backend). To rotate a client
+token: as happy-filler `make filler-token-issue NAME=bridge-client
+FILLER_ROTATE=1` (or `NAME=vault-client`) and `make filler-restart`; then as
+prep `make filler-token-take` and, for the bridge token, restart the bridge
+(the vault tools' MCP server reads its token on every call). A new browser
+controller token goes over with `make filler-controller-token-give` (prep),
+then `make filler-controller-token-take` and `make filler-restart`
+(happy-filler).
 
 ## Limits
 
-- **Known limit: the `docker` group.** prep is in the `docker` group, and
-  any account in it (or in `sudo`) is root in effect: it can start a
-  container that mounts the volume `happy-filler` or reads the filler's memory, and
-  it runs the filler's admin commands. The filler protects secrets fully only
-  from agents with no docker or sudo access (a follow-up: run agents as such a
-  user).
+- **Known limit: the `docker` group.** prep is still in the `docker` group,
+  and any account in it (or in `sudo`) is root in effect: it can start a
+  container that mounts `/srv/happy-filler` or reads the filler's memory. The
+  separate account keeps prep's ordinary processes (and agents running as
+  prep) from changing the filler's code, policy, secrets or unit, and from
+  reading its secrets; it does not stop a deliberate attack through docker.
+  The filler protects secrets fully only from agents with no docker or sudo
+  access.
+- The `make` forms of the admin targets read prep's writable Makefile; as
+  happy-filler, `filler-admin <command>` (the installed release's script) is
+  the stricter path.
 - **Known limit: `vault_pipe`.** To feed a command's stdin, the value has to
   reach the agent-side MCP process (`vault-mcp`) for that one call: the filler
   returns it only on the vault token's pipe route, and `lib/pipe.mjs` writes

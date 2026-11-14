@@ -700,10 +700,23 @@ final class NewSessionComposerView: UIView, UITextViewDelegate {
         textChanged(report: true)
     }
 
-    /// ⌘↩ while the prompt has the keyboard (`SendShortcut`).
+    /// A hardware keyboard's Return and its newlines while the prompt has
+    /// the keyboard (`SendShortcut`).
     override var keyCommands: [UIKeyCommand]? {
         guard textView.isFirstResponder else { return super.keyCommands }
-        return [SendShortcut.command(action: #selector(sendShortcut(_:)))] + (super.keyCommands ?? [])
+        return SendShortcut.commands(send: #selector(sendShortcut(_:)), newline: #selector(newlineShortcut(_:))) + (super.keyCommands ?? [])
+    }
+
+    /// Neither while an input method is composing: Return is its.
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(sendShortcut(_:)) || action == #selector(newlineShortcut(_:)) {
+            return SendShortcut.takes(in: textView)
+        }
+        return super.canPerformAction(action, withSender: sender)
+    }
+
+    @objc func newlineShortcut(_ sender: Any?) {
+        SendShortcut.insertNewline(in: textView)
     }
 
     /// Send's own press, only while it can be pressed and nothing is starting.

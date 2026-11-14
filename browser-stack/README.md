@@ -14,8 +14,10 @@ Any harness can use it, on prep-ml or on a Mac, and any app can embed its live v
 | `scripts/` | `mcp-register.py`, which registers the MCP servers with every harness |
 
 Every container runs as its own non-root uid (bridge 1992, controller and launcher 1993,
-browser node 1994, docker proxy 1995; the filler 1990, Vaultwarden 1991) with all
-capabilities dropped and a read-only root. The launcher reaches docker only through an
+browser node 1994, docker proxy 1995) with all capabilities dropped and a read-only root.
+The filler is not a container: it runs on the host as its own account, `happy-filler`
+(uid 1990), as a systemd user unit (`browser/filler/README.md`). Vaultwarden (uid 1991) is
+the standalone container `vaultwarden` (`selfhost/vault/README.md`). The launcher reaches docker only through an
 allowlisting socket proxy. See "Users and privileges" in `browser/README.md`.
 
 The old `selfhost/browser` and `selfhost/vault-mcp` paths are symlinks to the folders here.
@@ -29,7 +31,8 @@ same thing.
 make help
 make browser-up / browser-down / browser-status / browser-logs     (browser.mk)
 make browser-bridge-restart [BRIDGE_ENV=1]
-make filler-status / filler-install COMMIT=<sha> / ...           (filler.mk)
+make filler-status / filler-audit / filler-token-take              (filler.mk, as prep)
+make filler-install COMMIT=<sha> / filler-restart / ...          (filler.mk, as happy-filler)
 make mcp-register [DRY=1] [NO_REMOTE=1] / mcp-check               (register.mk)
 make gateway-config [WRITE=1] / gateway-keys / gateway-test       (gateway.mk)
 make test        every unit suite here

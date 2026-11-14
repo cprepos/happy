@@ -1,3 +1,14 @@
+> **Note (November 11, 2026): partly superseded.** This is the original design.
+> What runs now is described in `selfhost/vault/README.md` and
+> `browser-stack/browser/filler/README.md`. Vaultwarden is the standalone
+> container `vaultwarden` with its data in the Docker volumes `vaultwarden-data`
+> and `vaultwarden-config` (not `/srv/happy-vault`, and no longer a compose
+> project); the filler runs as designed here, as the `happy-filler` account's
+> user unit from `/srv/happy-filler`, deployed with `make filler-install
+> COMMIT=<sha>`. Sections below that name `/srv/happy-vault`, the compose
+> project `happy-vault`, the filler container or the `happy-vault-backup`
+> timer describe earlier layouts.
+
 I've designed a self-hosted Vaultwarden plus a separate "secret-filler" service on prep-ml. Nothing was changed, but I need to report a slip first.
 
 ## Read this first

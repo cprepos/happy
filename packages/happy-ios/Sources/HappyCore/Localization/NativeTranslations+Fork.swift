@@ -1,9 +1,10 @@
 extension TranslationCatalog {
     /// Words this fork adds to `nativeSources`, kept out of
     /// NativeTranslations.swift so upstream merges don't conflict there:
-    /// the browser's (`browserSources`) and the rest below. Joined into
+    /// the browser's (`browserSources`), the hardware keyboard's
+    /// (`hardwareKeyboardSources`) and the rest below. Joined into
     /// `nativeSources` by the one `forkSources` entry in its list.
-    static let forkSources: [String: [String: String]] = [browserSources].reduce(forkOwnSources) { all, area in
+    static let forkSources: [String: [String: String]] = [browserSources, hardwareKeyboardSources].reduce(forkOwnSources) { all, area in
         all.merging(area) { kept, added in kept.merging(added) { first, _ in first } }
     }
 

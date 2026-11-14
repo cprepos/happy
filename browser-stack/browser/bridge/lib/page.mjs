@@ -16,6 +16,7 @@ const style = ({ frameWidth, frameHeight }) => `
   --need-bg: #fff1d6; --need-fg: #8a5300;
   --done-bg: #e3f4e8; --done-fg: #1d6b38;
   --err-bg: #fde7e7; --err-fg: #9b1c1c;
+  --yolo: #a65000;
   --frame-ar: ${frameWidth} / ${frameHeight};
   --gutter-l: max(16px, env(safe-area-inset-left));
   --gutter-r: max(16px, env(safe-area-inset-right));
@@ -28,6 +29,7 @@ const style = ({ frameWidth, frameHeight }) => `
     --need-bg: #3a2a0c; --need-fg: #ffcf73;
     --done-bg: #12301d; --done-fg: #8fe0a8;
     --err-bg: #3a1414; --err-fg: #ffb4b4;
+    --yolo: #ff9f0a;
   }
 }
 *, *::before, *::after { box-sizing: border-box; }
@@ -58,12 +60,18 @@ header { position: sticky; top: 0; z-index: 1; width: 100%; background: var(--su
 #approval .row { display: flex; gap: 10px; }
 #approval .btn.deny { color: var(--err-fg); }
 #approval-msg { margin-top: 8px; font-size: 13px; }
-#yolo-row { margin: 8px var(--gutter-r) 0 var(--gutter-l); display: flex; align-items: center; gap: 8px;
-  font-size: 13px; color: var(--muted); }
-#yolo-row label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
-#yolo-row input { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); }
-#yolo-row.on label { color: var(--need-fg); font-weight: 600; }
+#yolo-row { position: relative; margin: 8px var(--gutter-r) 0 var(--gutter-l); display: flex; align-items: center; gap: 8px;
+  font-size: 13px; color: var(--muted); min-width: 0; }
+#yolo-on svg { width: 16px; height: 16px; flex: none; }
+#yolo-on { display: inline-flex; align-items: center; gap: 4px; color: var(--yolo); font-weight: 600; white-space: nowrap; }
 #yolo-msg { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#help { margin-left: auto; flex: none; width: 44px; height: 44px; border-radius: 50%; border: 1px solid var(--line);
+  background: var(--surface); color: var(--text); font: inherit; font-weight: 700; font-size: 17px; cursor: pointer; }
+#help[aria-expanded="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+#help-pop { position: absolute; right: 0; top: calc(100% + 8px); z-index: 3; width: min(320px, 100%); margin: 0; padding: 10px 12px;
+  list-style: none; border-radius: 10px; background: var(--surface); color: var(--text); border: 1px solid var(--line);
+  box-shadow: 0 3px 12px rgba(0, 0, 0, .2); font-size: 12px; display: grid; gap: 8px; }
+#help-pop b { display: block; font-size: 13px; }
 main { flex: 1; width: 100%; min-width: 0; padding: 12px var(--gutter-r) 12px var(--gutter-l); }
 #box { position: relative; width: 100%; max-width: ${frameWidth}px; margin: 0 auto; aspect-ratio: var(--frame-ar);
   max-height: calc(100vh - 170px); max-height: calc(100dvh - 170px); min-height: 200px;
@@ -218,34 +226,26 @@ const SCRIPT = `
       $('approve').disabled = $('deny').disabled = false;
     } finally { deciding = false; }
   }
-  // Yolo mode: approvals for this chat are given at once. The bridge keeps the switch.
-  let yoloBusy = false;
+  // Yolo mode is switched in the app (its header's shield); the page only says it is on,
+  // with the last action it approved. Inside the app (its web view: WebKit on an Apple
+  // device, no Safari in the agent) the app says so itself, so the row is not shown twice.
+  const ua = (typeof navigator !== 'undefined' && navigator.userAgent) || '';
+  const inApp = /(iPhone|iPad|Macintosh)/.test(ua) && /AppleWebKit/.test(ua) && !/Safari[/]/.test(ua);
+  if (inApp) $('yolo-row').hidden = true;
   function renderYolo() {
     const on = state.auto_approve === true;
-    if (!yoloBusy) $('yolo').checked = on;
     $('yolo-row').classList.toggle('on', on);
+    $('yolo-on').hidden = !on;
     const last = Array.isArray(state.auto_approved) ? state.auto_approved[0] : null;
-    if (!yoloBusy) $('yolo-msg').textContent = on && last ? 'Last: ' + (last.summary || 'an action') : '';
+    $('yolo-msg').textContent = on && last ? 'Last: ' + (last.summary || 'an action') : '';
   }
-  $('yolo').addEventListener('change', async () => {
-    const want = $('yolo').checked;
-    yoloBusy = true;
-    $('yolo').disabled = true;
-    $('yolo-msg').textContent = '';
-    try {
-      const r = await fetch(base + '/auto', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ on: want }) });
-      const body = r.ok ? await r.json().catch(() => null) : null;
-      if (body && typeof body.auto_approve === 'boolean') state = Object.assign({}, state, { auto_approve: body.auto_approve });
-      else $('yolo-msg').textContent = 'That did not go through.';
-    } catch (e) {
-      $('yolo-msg').textContent = 'No connection.';
-    } finally {
-      yoloBusy = false;
-      $('yolo').disabled = false;
-      $('yolo').checked = state.auto_approve === true;
-      $('yolo-row').classList.toggle('on', state.auto_approve === true);
-    }
-  });
+  // "?": every button's name and what it does, in one list; a tap anywhere closes it.
+  function help(open) {
+    $('help-pop').hidden = !open;
+    $('help').setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+  $('help').addEventListener('click', (e) => { e.stopPropagation(); help($('help-pop').hidden); });
+  document.addEventListener('click', () => { if (!$('help-pop').hidden) help(false); });
 
   $('approve').addEventListener('click', () => decide(true));
   $('deny').addEventListener('click', () => decide(false));
@@ -407,6 +407,22 @@ const SCRIPT = `
 })();
 `;
 
+// Yolo's "enabled" line: a shield with a bolt, filled in the text's colour.
+const SHIELD = '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5l-8-3Zm1 4-5 8h4l-1 5 5-8h-4l1-5Z" fill-rule="evenodd"/></svg>';
+
+// What each of the page's buttons does: their titles, and the "?" list of them all.
+const TIPS = {
+    take: 'Use the page yourself; the agent waits until you release.',
+    release: 'Hand the page back to the agent.',
+    sleep: 'Pause the browser to save power; it wakes on the agent’s next action.',
+};
+const HELP_DETAIL = 'Show what every button does.';
+const HELP = [
+    ['Take control', TIPS.take],
+    ['Release control', TIPS.release],
+    ['Sleep', TIPS.sleep],
+];
+
 export function renderPage({ id, state, takeoverUrl, nonce, frameWidth = 1920, frameHeight = 1200 }) {
     const fw = Math.max(1, Math.round(Number(frameWidth) || 1920));
     const fh = Math.max(1, Math.round(Number(frameHeight) || 1200));
@@ -427,9 +443,12 @@ export function renderPage({ id, state, takeoverUrl, nonce, frameWidth = 1920, f
   <div id="url">${esc(state.url || '')}</div>
 </header>
 <div id="reason" hidden></div>
-<div id="yolo-row">
-  <label title="Approve this chat's browser actions without asking"><input id="yolo" type="checkbox"${state.auto_approve === true ? ' checked' : ''}> Yolo mode</label>
+<div id="yolo-row"${state.auto_approve === true ? ' class="on"' : ''}>
+  <span id="yolo-on" role="status"${state.auto_approve === true ? '' : ' hidden'}>${SHIELD}Yolo mode enabled</span>
   <span id="yolo-msg" role="status"></span>
+  <button id="help" type="button" aria-expanded="false" aria-controls="help-pop" aria-label="Help"
+    title="Help: ${HELP_DETAIL}">?</button>
+  <ul id="help-pop" hidden>${HELP.map(([name, detail]) => `<li><b>${esc(name)}</b>${esc(detail)}</li>`).join('')}</ul>
 </div>
 <section id="approval" role="alertdialog" aria-labelledby="approval-title" hidden>
   <h2 id="approval-title">Allow this browser action?</h2>
@@ -449,9 +468,9 @@ export function renderPage({ id, state, takeoverUrl, nonce, frameWidth = 1920, f
   </div>
 </main>
 <footer>
-  <a id="take" class="btn" href="${esc(takeoverUrl)}" rel="noreferrer">Take control</a>
-  <button id="done" class="btn primary" type="button" hidden>Release control</button>
-  <button id="sleep" class="btn" type="button" hidden>Sleep</button>
+  <a id="take" class="btn" href="${esc(takeoverUrl)}" rel="noreferrer" title="Take control: ${esc(TIPS.take)}">Take control</a>
+  <button id="done" class="btn primary" type="button" title="Release control: ${esc(TIPS.release)}" hidden>Release control</button>
+  <button id="sleep" class="btn" type="button" title="Sleep: ${esc(TIPS.sleep)}" hidden>Sleep</button>
 </footer>
 <script id="initial" type="application/json">${jsonForScript(state)}</script>
 <script nonce="${nonce}">${SCRIPT}</script>

@@ -587,7 +587,10 @@ export function createPodManager({
                 if (timings.length > 50) timings.shift();
                 log(`pod slot ${mine.slot}: chat ${chatKey.slice(0, 8)} ${wasWarm ? 'warm' : fromSpare ? 'spare (still starting)' : 'cold'} start ${timing.total_ms} ms`);
                 persist();
-                return describe(chat);
+                // new_session: this start made the chat's first browser (or the first after the
+                // user's End), with nothing of theirs open yet. The MCP server's create_session
+                // opens its start_url only then, never on a session the chat already had.
+                return { ...describe(chat), ...(!previous || fresh ? { new_session: true } : {}) };
             } catch (err) {
                 if (stale()) { await dropPod(mine); persist(); throw err; }
                 log(`pod slot ${mine.slot}: starting the session failed: ${short(err)}`);

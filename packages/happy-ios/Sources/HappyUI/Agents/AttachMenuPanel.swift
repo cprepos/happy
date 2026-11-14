@@ -231,11 +231,23 @@ final class AttachMenuPanel: UIView, UITextViewDelegate, UIGestureRecognizerDele
         if layout?.glass.height != before { onResize?() }
     }
 
-    /// ⌘↩ in the caption sends the picked pictures, as send does
-    /// (`SendShortcut`).
+    /// A hardware keyboard's Return in the caption sends the picked
+    /// pictures, as send does, and its newlines make lines (`SendShortcut`).
     override var keyCommands: [UIKeyCommand]? {
         guard field.isFirstResponder else { return super.keyCommands }
-        return [SendShortcut.command(action: #selector(sendShortcut(_:)))] + (super.keyCommands ?? [])
+        return SendShortcut.commands(send: #selector(sendShortcut(_:)), newline: #selector(newlineShortcut(_:))) + (super.keyCommands ?? [])
+    }
+
+    /// Neither while an input method is composing: Return is its.
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(sendShortcut(_:)) || action == #selector(newlineShortcut(_:)) {
+            return SendShortcut.takes(in: field)
+        }
+        return super.canPerformAction(action, withSender: sender)
+    }
+
+    @objc func newlineShortcut(_ sender: Any?) {
+        SendShortcut.insertNewline(in: field)
     }
 
     @objc func sendShortcut(_ sender: Any?) {

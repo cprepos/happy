@@ -104,7 +104,7 @@ final class HostedLiveBrowserTests: XCTestCase {
         let player = try XCTUnwrap(dock.player)
         let expected = LiveBrowserDockLayout(.init(
             size: host.view.bounds.size, safeArea: LayoutInsets(host.view.safeAreaInsets), card: host.cardFrame, anchor: line.frame.minY,
-            idiom: dock.isPhone ? .phone : .pad
+            idiom: dock.isPhone ? .phone : .pad, aspect: dock.frameAspect
         ))
         XCTAssertEqual(player.frame, expected.frame)
         XCTAssertEqual(player.frame.maxX, host.cardFrame.maxX)
@@ -149,10 +149,10 @@ final class HostedLiveBrowserTests: XCTestCase {
         XCTAssertEqual(noVNC.browser.originalURL.absoluteString, dock.isPhone ? scaled : BrowserDaemon.chatNoVNC)
         try await until { dock.indicator.text == Strings.LiveBrowser.indicator(Strings.LiveBrowser.youHaveControl) }
         try await until { navigation.transitionCoordinator == nil && noVNC.isViewLoaded }
-        let control = try XCTUnwrap(noVNC.navigationItem.rightBarButtonItems?.first)
+        let control = try XCTUnwrap(noVNC.navigationItem.leftBarButtonItems?.first { $0.accessibilityIdentifier == "live-browser-control" })
         XCTAssertEqual(control.accessibilityIdentifier, "live-browser-control")
         XCTAssertEqual(control.title, Strings.LiveBrowser.releaseControl)
-        XCTAssertEqual(noVNC.navigationItem.leftBarButtonItem?.accessibilityIdentifier, "live-browser-minimize")
+        XCTAssertEqual(noVNC.navigationItem.leftBarButtonItems?.first?.accessibilityIdentifier, "live-browser-minimize")
         // noVNC has every touch: the page neither scrolls, bounces nor
         // zooms, and no swipe back or pull to dismiss is under it.
         let scroll = try XCTUnwrap(noVNC.browser.web?.scrollView)
@@ -221,17 +221,21 @@ final class HostedLiveBrowserTests: XCTestCase {
         let (host, window) = try await makeHost(daemon)
         defer { window.isHidden = true; host.dock.update(link: nil) }
         let (navigation, noVNC) = try await takeOver(host, daemon)
-        // Control alone at the far right, Minimize at the left, no back
-        // button that would leave control held: nothing pushes Release
-        // into the overflow menu. The native viewer is in the More menu
-        // of the bar under the header.
-        XCTAssertEqual(noVNC.navigationItem.rightBarButtonItems?.map(\.accessibilityIdentifier), ["live-browser-control"])
+        // Every glyph at the left, none at the right, no back button that
+        // would leave control held: nothing goes into the header's
+        // overflow "…". The native viewer is in the More menu of the bar
+        // under the header; yolo is a switch of its own, in no menu.
+        XCTAssertEqual(noVNC.navigationItem.rightBarButtonItems ?? [], [])
+        XCTAssertEqual(noVNC.navigationItem.leftBarButtonItems?.map(\.accessibilityIdentifier),
+                       ["live-browser-minimize", "live-browser-end", "live-browser-sleep", "live-browser-yolo", "live-browser-control", "live-browser-help"])
         let viewerActions = noVNC.viewerMenu.menu?.children.compactMap { ($0 as? UIAction)?.identifier.rawValue }
-        // Yolo is in that menu too (deferred, read as it opens).
-        XCTAssertTrue(noVNC.viewerMenu.menu?.children.contains { $0 is UIDeferredMenuElement } ?? false)
+        XCTAssertFalse(noVNC.viewerMenu.menu?.children.contains { $0 is UIDeferredMenuElement } ?? true)
         XCTAssertEqual(viewerActions, ["live-browser-native-viewer"])
         XCTAssertTrue(noVNC.viewerMenu.isDescendant(of: noVNC.view))
-        XCTAssertEqual(noVNC.navigationItem.rightBarButtonItems?.first, noVNC.control)
+        XCTAssertEqual(noVNC.navigationItem.leftBarButtonItems?.dropLast().last, noVNC.control)
+        // Control is a glyph: filled while held, its name for VoiceOver.
+        XCTAssertTrue(noVNC.controlButton.isSelected)
+        XCTAssertEqual(noVNC.controlButton.accessibilityLabel, Strings.LiveBrowser.releaseControl)
         XCTAssertTrue(noVNC.navigationItem.hidesBackButton)
         XCTAssertEqual(noVNC.control.title, Strings.LiveBrowser.releaseControl)
         XCTAssertTrue(noVNC.control.isEnabled)
@@ -249,8 +253,7 @@ final class HostedLiveBrowserTests: XCTestCase {
         defer { window.isHidden = true; host.dock.update(link: nil) }
         let (navigation, noVNC) = try await takeOver(host, daemon)
         XCTAssertNotNil(noVNC.browser.web)
-        let action = try XCTUnwrap(noVNC.control.primaryAction)
-        action.performWithSender(nil, target: nil)
+        noVNC.controlButton.sendActions(for: .touchUpInside)
         try await until { await daemon.requests.contains { $0.hasPrefix("POST /live/\(self.id)/release HTTP/1.1") } }
         try await until { navigation.viewControllers.count == 1 && navigation.transitionCoordinator == nil }
         let frame = try XCTUnwrap(navigation.viewControllers.first as? LiveBrowserFullScreenItems)
@@ -353,19 +356,21 @@ final class HostedLiveBrowserTests: XCTestCase {
         let (host, window) = try await makeHost(daemon)
         defer { window.isHidden = true; host.dock.update(link: nil) }
         let (navigation, noVNC) = try await takeOver(host, daemon)
-        // Minimize and End browser at the left; Release control alone at
-        // the right.
-        XCTAssertEqual(noVNC.navigationItem.leftBarButtonItems?.map(\.accessibilityIdentifier), ["live-browser-minimize", "live-browser-end", "live-browser-sleep"])
-        XCTAssertEqual(noVNC.navigationItem.rightBarButtonItems?.map(\.accessibilityIdentifier), ["live-browser-control"])
-        XCTAssertEqual(noVNC.navigationItem.rightBarButtonItems?.first, noVNC.control)
+        // Minimize, End browser, Sleep, yolo and Release control, all at
+        // the left; nothing at the right.
+        XCTAssertEqual(noVNC.navigationItem.leftBarButtonItems?.map(\.accessibilityIdentifier),
+                       ["live-browser-minimize", "live-browser-end", "live-browser-sleep", "live-browser-yolo", "live-browser-control", "live-browser-help"])
+        XCTAssertEqual(noVNC.navigationItem.rightBarButtonItems ?? [], [])
         XCTAssertTrue(noVNC.endItem.isEnabled)
         let frame = try XCTUnwrap(navigation.viewControllers.first as? LiveBrowserFullScreenItems)
         frame.loadViewIfNeeded()
-        // End at the left with Sleep beside it, then yolo.
-        XCTAssertEqual(frame.navigationItem.leftBarButtonItems?.suffix(3).map { $0 }, [frame.endItem, frame.sleepItem, frame.yoloItem])
-        XCTAssertFalse(frame.navigationItem.rightBarButtonItems?.contains(frame.endItem) ?? true)
+        // The frame view's: the same, then Reload.
+        XCTAssertEqual(frame.navigationItem.leftBarButtonItems?.map(\.accessibilityIdentifier),
+                       ["live-browser-minimize", "live-browser-end", "live-browser-sleep", "live-browser-yolo", "live-browser-control", "browser-reload", "live-browser-help"])
+        XCTAssertEqual(Array(frame.navigationItem.leftBarButtonItems?.dropFirst().prefix(4) ?? []), [frame.endItem, frame.sleepItem, frame.yoloItem, frame.control])
+        XCTAssertEqual(frame.navigationItem.rightBarButtonItems ?? [], [])
 
-        noVNC.endItem.primaryAction?.performWithSender(nil, target: nil)
+        noVNC.endButton.sendActions(for: .touchUpInside)
         let sheet = try await endSheet(host)
         XCTAssertEqual(sheet.title, Strings.LiveBrowser.endConfirm)
         sheet.dismiss(animated: false)
@@ -384,7 +389,7 @@ final class HostedLiveBrowserTests: XCTestCase {
         defer { window.isHidden = true; host.dock.update(link: nil) }
         let dock = host.dock!
         dock.update(link: LiveBrowserLink(id: id))
-        try await until { dock.indicator.text == Strings.LiveBrowser.indicator(Strings.LiveBrowser.watching) }
+        try await until { dock.indicator.text == Strings.LiveBrowser.indicator(Strings.LiveBrowser.clickToWatch) }
         try await Task.sleep(for: .milliseconds(600))
         XCTAssertNil(dock.player, "watching: the line only")
         await daemon.setLiveStatus("takeover")
@@ -579,14 +584,18 @@ final class HostedLiveBrowserTests: XCTestCase {
         try screenshot(window, name: dock.isPhone ? "live-browser-phone-big" : "live-browser-pad-big")
 
         // Turned sideways, big stays the windowed player, at its aspect.
-        try await turn(window, to: .landscapeRight)
-        host.view.layoutIfNeeded()
-        XCTAssertNil(host.presentedViewController, "landscape is full screen's, asked for only by its button")
-        XCTAssertEqual(picture.frame.width / picture.frame.height, 1.6, accuracy: 0.02)
-        XCTAssertEqual(player.frame.minY, host.view.safeAreaInsets.top)
-        try await turn(window, to: .portrait)
-        host.view.layoutIfNeeded()
-        XCTAssertEqual(player.frame.width, width)
+        // A phone only: iPadOS's windowing refuses a scene's asked turn
+        // (UISceneErrorDomain 101), so an iPad is not turned.
+        if dock.isPhone {
+            try await turn(window, to: .landscapeRight)
+            host.view.layoutIfNeeded()
+            XCTAssertNil(host.presentedViewController, "landscape is full screen's, asked for only by its button")
+            XCTAssertEqual(picture.frame.width / picture.frame.height, 1.6, accuracy: 0.02)
+            XCTAssertEqual(player.frame.minY, host.view.safeAreaInsets.top)
+            try await turn(window, to: .portrait)
+            host.view.layoutIfNeeded()
+            XCTAssertEqual(player.frame.width, width)
+        }
 
         // The picture tapped: as ⤢, back to small where it was.
         player.onTap?()
@@ -617,7 +626,8 @@ final class HostedLiveBrowserTests: XCTestCase {
     /// frame's aspect, its docked corner held; a tick at each limit; the
     /// size kept for the chat; VoiceOver steps it; ⤢ snaps to big and drops
     /// it; big grows from its middle, the chat's content following. Take
-    /// control stands in the bar's middle.
+    /// control stands in the bar's middle where there is room beside the
+    /// yolo shield, else under the picture.
     func testDraggingTheGripResizesThePlayerAndKeepsTheSize() async throws {
         let daemon = BrowserDaemon()
         let chat = UUID().uuidString
@@ -638,10 +648,19 @@ final class HostedLiveBrowserTests: XCTestCase {
         let player = try XCTUnwrap(dock.player)
         let feed = try XCTUnwrap(dock.feed)
 
-        // Take control in the bar's middle.
+        // Take control in the bar's middle where it fits beside the yolo
+        // shield; on a small phone player, under the picture in the
+        // footer's middle.
         let action = try XCTUnwrap(player.subviews.first { $0.accessibilityIdentifier == "live-browser-player-action" })
-        XCTAssertEqual(action.frame.midX, player.bounds.midX, accuracy: 0.5)
-        XCTAssertEqual(action.frame.minY, 0)
+        let small = try XCTUnwrap(player.layout)
+        if let slot = small.control {
+            XCTAssertEqual(action.frame.midX, slot.midX, accuracy: 1)
+            XCTAssertEqual(action.frame.minY, 0)
+        } else {
+            XCTAssertEqual(action.frame.midX, small.footer.midX, accuracy: 1)
+            XCTAssertEqual(action.frame.minY, small.footer.minY, accuracy: 0.5)
+            if dock.isPhone { XCTAssertLessThan(small.frame.width, 300, "only a small player has no room") }
+        }
 
         // Small at the bottom right: a grip flush in each bottom corner.
         let corners: [LiveBrowserDockLayout.Corner] = [.bottomLeft, .bottomRight]
@@ -779,7 +798,8 @@ final class HostedLiveBrowserTests: XCTestCase {
         page.view.layoutIfNeeded()
         XCTAssertTrue(page.strip.isHidden, file: file, line: line)
         XCTAssertNotNil(page.navigationItem.leftBarButtonItems?.first { $0.accessibilityIdentifier == "live-browser-sleep" }, file: file, line: line)
-        XCTAssertEqual(page.navigationItem.rightBarButtonItems?.first, page.control, file: file, line: line)
+        XCTAssertTrue(page.navigationItem.leftBarButtonItems?.contains(page.control) ?? false, file: file, line: line)
+        XCTAssertEqual(page.navigationItem.rightBarButtonItems ?? [], [], file: file, line: line)
         let picture = try XCTUnwrap(page.browser?.view.frame, file: file, line: line)
         let width = page.view.bounds.width
         XCTAssertEqual(picture.minX, 0, file: file, line: line)
@@ -850,7 +870,7 @@ final class HostedLiveBrowserTests: XCTestCase {
         try screenshot(window, name: "live-browser-phone-upright")
 
         try await turn(window, to: .landscapeRight)
-        try await assertSideways(frame, navigation, ids: ["live-browser-minimize", "live-browser-end", "live-browser-sleep", "browser-reload", "live-browser-strip-yolo", "live-browser-control"])
+        try await assertSideways(frame, navigation, ids: ["live-browser-minimize", "live-browser-end", "live-browser-sleep", "browser-reload", "live-browser-strip-yolo", "live-browser-strip-help", "live-browser-control"])
         let control = try XCTUnwrap(showing("live-browser-control", in: frame.strip).first)
         XCTAssertEqual(control.accessibilityLabel, Strings.LiveBrowser.takeControl)
         try screenshot(window, name: "live-browser-phone-sideways")
@@ -878,7 +898,7 @@ final class HostedLiveBrowserTests: XCTestCase {
         try await turn(window, to: .landscapeLeft)
         try await assertSideways(noVNC, navigation, ids: [
             "live-browser-minimize", "live-browser-end", "live-browser-sleep", "live-browser-back", "live-browser-forward",
-            "live-browser-reload", "live-browser-viewer-menu", "live-browser-control",
+            "live-browser-reload", "live-browser-viewer-menu", "live-browser-strip-yolo", "live-browser-strip-help", "live-browser-control",
         ])
         let release = try XCTUnwrap(showing("live-browser-control", in: noVNC.strip).first as? UIButton)
         XCTAssertEqual(release.accessibilityLabel, Strings.LiveBrowser.releaseControl)
@@ -1042,9 +1062,16 @@ final class HostedLiveBrowserTests: XCTestCase {
         XCTAssertEqual(body.map { String(decoding: $0, as: UTF8.self) }, #"{"on":true}"#)
         let on = await daemon.liveAuto
         XCTAssertTrue(on)
-        // On approves what waited: the bar goes; the badge shows.
+        // On approves what waited: the bar goes; the badge shows, its
+        // words orange on the picture, no pill behind them.
         try await until { dock.yoloOn && dock.approvalBar.approval == nil && !player.yoloBadge.isHidden }
-        XCTAssertEqual(player.yoloBadge.text, Strings.LiveBrowser.yoloBadge)
+        XCTAssertTrue([Strings.LiveBrowser.yoloEnabled, Strings.LiveBrowser.yoloBadge].contains(player.yoloBadgeWords))
+        XCTAssertTrue(player.yoloBadge.attributedText?.string.contains(player.yoloBadgeWords) ?? false)
+        XCTAssertTrue(player.yoloBadge.backgroundColor == nil || player.yoloBadge.backgroundColor == .clear)
+        // The player's own switch says it is on.
+        XCTAssertTrue(player.yoloButton.isSelected)
+        // The line above the chat says it too.
+        try await until { dock.indicator.text?.contains(Strings.LiveBrowser.yoloEnabled) ?? false }
 
         await daemon.setLiveAutoApproved(#"[{"id":"a3","summary":"Click Save","at":2}]"#)
         try await until { dock.approvalBar.notice == Strings.LiveBrowser.yoloApproved("Click Save") }
@@ -1054,6 +1081,252 @@ final class HostedLiveBrowserTests: XCTestCase {
         try await until { !dock.yoloOn && player.yoloBadge.isHidden }
         let off = await daemon.liveAuto
         XCTAssertFalse(off)
+        XCTAssertFalse(player.yoloButton.isSelected)
+        try await until { !(dock.indicator.text?.contains(Strings.LiveBrowser.yoloEnabled) ?? true) }
+        // The player's menu is Sleep and End; yolo is its own button.
+        XCTAssertNil(player.menuButton.menu?.children.first { $0 is UIDeferredMenuElement })
+    }
+
+    /// Going full screen builds its page without throwing, the frame view
+    /// and noVNC's alike: on a phone the sideways strip is built in
+    /// viewDidLoad, its buttons held to one height only once they share
+    /// the column (a constraint across unrelated views raises and kills
+    /// the app). On an iPad there is no strip; the header is the same.
+    func testGoingFullScreenBuildsEachPageAndItsStrip() async throws {
+        let daemon = BrowserDaemon()
+        let (host, window) = try await makeHost(daemon)
+        defer { window.isHidden = true; host.dock.update(link: nil) }
+        let dock = host.dock!
+        dock.update(link: LiveBrowserLink(id: id))
+        try await until { dock.player != nil && dock.feed?.phase.state != nil }
+        dock.presentFullScreen(taking: false)
+        try await until {
+            guard let navigation = host.presentedViewController as? UINavigationController else { return false }
+            return navigation.transitionCoordinator == nil
+        }
+        let navigation = try XCTUnwrap(host.presentedViewController as? UINavigationController)
+        let frame = try XCTUnwrap(navigation.viewControllers.first as? LiveBrowserFullScreenItems)
+        try await until { frame.isViewLoaded }
+        assertBuilt(frame, phone: dock.isPhone)
+
+        dock.minimize()
+        try await until { host.presentedViewController == nil }
+        let (_, noVNC) = try await takeOver(host, daemon)
+        assertBuilt(noVNC, phone: dock.isPhone)
+        dock.minimize()
+        try await until { host.presentedViewController == nil }
+    }
+
+    private func assertBuilt(_ page: LiveBrowserFullScreenItems, phone: Bool, file: StaticString = #filePath, line: UInt = #line) {
+        page.view.layoutIfNeeded()
+        XCTAssertEqual(page.navigationItem.rightBarButtonItems ?? [], [], file: file, line: line)
+        XCTAssertEqual(page.navigationItem.leftBarButtonItems?.first?.accessibilityIdentifier, "live-browser-minimize", file: file, line: line)
+        XCTAssertTrue(page.navigationItem.leftBarButtonItems?.contains(page.control) ?? false, file: file, line: line)
+        XCTAssertTrue(page.yoloLine.isDescendant(of: page.view), file: file, line: line)
+        guard phone else {
+            XCTAssertNil(page.strip.superview, "no strip off a phone", file: file, line: line)
+            return
+        }
+        XCTAssertTrue(page.strip.isDescendant(of: page.view), file: file, line: line)
+        func buttons(_ view: UIView) -> [UIButton] { ((view as? UIButton).map { [$0] } ?? []) + view.subviews.flatMap(buttons) }
+        let column = buttons(page.strip)
+        let ids = column.compactMap(\.accessibilityIdentifier)
+        for id in ["live-browser-minimize", "live-browser-end", "live-browser-sleep", "live-browser-strip-yolo", "live-browser-strip-help", "live-browser-control"] {
+            XCTAssertTrue(ids.contains(id), "\(id) in the strip", file: file, line: line)
+        }
+    }
+
+    /// "?" shows every header button's tip at once: one numbered bubble
+    /// each, none over another or over the bar, inside the safe area; a
+    /// tap anywhere closes it.
+    func testHelpShowsEveryButtonsTipAndATapCloses() async throws {
+        let daemon = BrowserDaemon()
+        let (host, window) = try await makeHost(daemon)
+        defer { window.isHidden = true; host.dock.update(link: nil) }
+        let (navigation, noVNC) = try await takeOver(host, daemon)
+        navigation.navigationBar.layoutIfNeeded()
+        let items = noVNC.navigationItem.leftBarButtonItems ?? []
+        let help = try XCTUnwrap(items.last?.customView as? UIButton)
+        XCTAssertEqual(help.accessibilityIdentifier, "live-browser-help")
+        XCTAssertEqual(help.accessibilityHint, Strings.LiveBrowser.Tip.help)
+        help.sendActions(for: .touchUpInside)
+        let overlay = try XCTUnwrap(HoldTip.help)
+        XCTAssertTrue(overlay.isDescendant(of: window))
+        let shown = items.compactMap(\.customView).filter { $0.window != nil && !$0.isHidden }
+        XCTAssertEqual(overlay.bubbles.count, shown.count, "one bubble per button")
+        XCTAssertEqual(overlay.bubbles.first?.title.text, "1  \(Strings.LiveBrowser.minimize)")
+        let safe = window.bounds.inset(by: window.safeAreaInsets)
+        let bar = navigation.navigationBar.convert(navigation.navigationBar.bounds, to: window)
+        for (index, bubble) in overlay.bubbles.enumerated() {
+            XCTAssertTrue(safe.contains(bubble.frame), "\(bubble.frame) inside \(safe)")
+            XCTAssertFalse(bubble.frame.intersects(bar), "off the bar: \(bubble.frame) \(bar) buttons \(items.compactMap(\.customView).map { $0.convert($0.bounds, to: window) })")
+            for other in overlay.bubbles[(index + 1)...] { XCTAssertFalse(bubble.frame.intersects(other.frame)) }
+        }
+        try screenshot(window, name: "live-browser-help")
+        overlay.dismiss()
+        try await until { HoldTip.help == nil || overlay.superview == nil }
+    }
+
+    /// The header's glyphs fit the narrowest iPhones without the "…":
+    /// seven at 44 on a 402 bar, narrower alike on 375 and 320.
+    func testTheHeaderFitsTheNarrowestPhonesWithoutOverflow() {
+        for (width, count) in [(320, 7), (375, 7), (402, 7), (375, 6)] as [(CGFloat, Int)] {
+            let each = LiveBrowserFullScreenItems.headerButtonWidth(barWidth: width, count: count)
+            XCTAssertGreaterThanOrEqual(each, 32)
+            XCTAssertLessThanOrEqual(each, 44)
+            let used = CGFloat(count) * each + CGFloat(count - 1) * 8 + 16 * 2
+            XCTAssertLessThanOrEqual(used, width, "\(count) on \(width)")
+        }
+        XCTAssertEqual(LiveBrowserFullScreenItems.headerButtonWidth(barWidth: 834, count: 7), 44)
+    }
+
+    /// The columns of `showAll` never overlap, nor the bar, sideways too.
+    func testHelpColumnsStayOffTheBarAndEachOther() {
+        let sizes = Array(repeating: CGSize(width: 260, height: 52), count: 10)
+        let safe = CGRect(x: 70, y: 8, width: 734, height: 365)
+        let strip = (0..<10).map { CGRect(x: 760, y: 8 + CGFloat($0) * 36, width: 44, height: 34) }
+        let frames = HoldTip.columns(sizes: sizes, sources: strip, safe: safe, placement: .leading)
+        for (index, frame) in frames.enumerated() {
+            XCTAssertTrue(safe.contains(frame), "\(frame)")
+            XCTAssertLessThan(frame.maxX, 760, "to the strip's leading side")
+            for other in frames[(index + 1)...] { XCTAssertFalse(frame.intersects(other)) }
+        }
+    }
+
+    /// Approve reads in both appearances, in the chat's bar under the
+    /// mini player: its fill is never the window's tint (the header's
+    /// white in dark mode), nor its words the fill's colour.
+    func testApproveAndDenyReadInDarkAndLight() async throws {
+        let scene = try await hostedActiveScene()
+        for style in [UIUserInterfaceStyle.dark, .light] {
+            let window = UIWindow(windowScene: scene)
+            window.overrideUserInterfaceStyle = style
+            window.tintColor = UIColor(Palette.headerTint)
+            let root = UIViewController()
+            window.rootViewController = root
+            window.isHidden = false
+            defer { window.isHidden = true }
+            let bar = LiveBrowserApprovalBar()
+            root.view.addSubview(bar)
+            bar.show(LiveBrowserState.Approval(id: "a1", summary: "The agent wants to post a comment."))
+            let size = root.view.bounds.size
+            let layout = LiveBrowserApprovalBarLayout(size: size, safeArea: LayoutInsets(window.safeAreaInsets),
+                                                      place: .chat(card: CGRect(x: 0, y: size.height - 180, width: size.width, height: 120),
+                                                                   anchor: size.height - 190))
+            bar.place(layout)
+            bar.layoutIfNeeded()
+            let traits = bar.traitCollection
+            XCTAssertEqual(traits.userInterfaceStyle, style)
+            let approve = try XCTUnwrap(bar.approve.configuration)
+            XCTAssertFalse(bar.approve.isHidden)
+            let fill = (approve.baseBackgroundColor ?? bar.approve.tintColor).resolvedColor(with: traits)
+            let ink = (approve.baseForegroundColor ?? .white).resolvedColor(with: traits)
+            XCTAssertGreaterThanOrEqual(Self.contrast(fill, ink), 4.5, "Approve in \(style.rawValue)")
+            let card = try XCTUnwrap(bar.backgroundColor).resolvedColor(with: traits)
+            XCTAssertGreaterThanOrEqual(Self.contrast(fill, card), 3, "Approve's fill against the card in \(style.rawValue)")
+            let deny = try XCTUnwrap(bar.deny.configuration?.baseForegroundColor).resolvedColor(with: traits)
+            XCTAssertGreaterThanOrEqual(Self.contrast(deny, card), 3, "Deny in \(style.rawValue)")
+            try screenshot(window, name: "live-browser-approval-\(style == .dark ? "dark" : "light")")
+        }
+    }
+
+    /// The colours this screen added read in both appearances: yolo's
+    /// orange on the card and the header, a held control's hand and the
+    /// help's numbers on their discs, a tip's words on its bubble.
+    func testAddedColoursReadInDarkAndLight() {
+        for style in [UIUserInterfaceStyle.dark, .light] {
+            let traits = UITraitCollection(userInterfaceStyle: style)
+            func c(_ color: UIColor) -> UIColor { color.resolvedColor(with: traits) }
+            let card = c(UIColor(Palette.cardFill)), header = c(UIColor(Palette.headerBackground))
+            XCTAssertGreaterThanOrEqual(Self.contrast(c(.liveBrowserYolo), card), 4.5, "yolo on the card, \(style.rawValue)")
+            XCTAssertGreaterThanOrEqual(Self.contrast(c(.liveBrowserYolo), header), 4.5, "yolo on the header, \(style.rawValue)")
+            XCTAssertGreaterThanOrEqual(Self.contrast(c(.liveBrowserFill), c(.liveBrowserOnFill)), 7, "filled, \(style.rawValue)")
+            XCTAssertGreaterThanOrEqual(Self.contrast(c(.liveBrowserFill), header), 3, "the held disc on the header, \(style.rawValue)")
+            XCTAssertGreaterThanOrEqual(Self.contrast(c(UIColor(Palette.cardTitle)), card), 7, "a tip's title, \(style.rawValue)")
+            XCTAssertGreaterThanOrEqual(Self.contrast(c(UIColor(Palette.cardDetail)), card), 4.5, "a tip's detail, \(style.rawValue)")
+        }
+    }
+
+    /// WCAG's contrast ratio of two opaque colours.
+    static func contrast(_ a: UIColor, _ b: UIColor) -> CGFloat {
+        func luminance(_ color: UIColor) -> CGFloat {
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, alpha: CGFloat = 0
+            color.getRed(&r, green: &g, blue: &b, alpha: &alpha)
+            func linear(_ v: CGFloat) -> CGFloat { v <= 0.03928 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4) }
+            return 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+        }
+        let (x, y) = (luminance(a), luminance(b))
+        return (max(x, y) + 0.05) / (min(x, y) + 0.05)
+    }
+
+    /// Full screen says "Yolo mode enabled" under the header while yolo is
+    /// on, plain words on a clear background, as the line above the chat.
+    func testFullScreenSaysYoloModeEnabledOnlyWhileOn() async throws {
+        let daemon = BrowserDaemon()
+        let (host, window) = try await makeHost(daemon)
+        defer { window.isHidden = true; host.dock.update(link: nil) }
+        let dock = host.dock!
+        dock.update(link: LiveBrowserLink(id: id))
+        try await until { dock.player != nil && dock.feed?.phase.state != nil }
+        dock.presentFullScreen(taking: false)
+        try await until {
+            guard let navigation = host.presentedViewController as? UINavigationController else { return false }
+            return navigation.transitionCoordinator == nil
+        }
+        let navigation = try XCTUnwrap(host.presentedViewController as? UINavigationController)
+        let frame = try XCTUnwrap(navigation.viewControllers.first as? LiveBrowserFullScreenItems)
+        try await until { frame.isViewLoaded }
+        XCTAssertEqual(Strings.LiveBrowser.yoloEnabled, "Yolo mode enabled")
+        XCTAssertTrue(frame.yoloLine.isHidden, "off: nothing said")
+
+        dock.setYolo(true)
+        try await until { dock.yoloOn && !frame.yoloLine.isHidden }
+        frame.view.layoutIfNeeded()
+        XCTAssertTrue(frame.yoloLine.backgroundColor == nil || frame.yoloLine.backgroundColor == .clear, "no banner")
+        XCTAssertEqual(frame.yoloLine.accessibilityIdentifier, "live-browser-yolo-line")
+        XCTAssertGreaterThan(frame.yoloLine.frame.width, 0)
+        XCTAssertGreaterThanOrEqual(frame.yoloLine.frame.minY, frame.view.safeAreaInsets.top, "under the header")
+        XCTAssertTrue(frame.yoloButton.isSelected)
+        try screenshot(window, name: "live-browser-yolo-enabled")
+
+        dock.setYolo(false)
+        try await until { !dock.yoloOn && frame.yoloLine.isHidden }
+        dock.minimize()
+        try await until { host.presentedViewController == nil }
+    }
+
+    /// Holding a header button shows what it does, clear of the finger,
+    /// and never presses it.
+    func testHoldingAHeaderButtonShowsItsTipAwayFromTheFinger() async throws {
+        let daemon = BrowserDaemon()
+        let (host, window) = try await makeHost(daemon)
+        defer { window.isHidden = true; host.dock.update(link: nil) }
+        let (navigation, noVNC) = try await takeOver(host, daemon)
+        navigation.navigationBar.layoutIfNeeded()
+        let button = noVNC.endButton
+        let hold = try XCTUnwrap(HoldTip.gesture(on: button))
+        XCTAssertTrue(hold.cancelsTouchesInView, "the hold cancels the tap")
+        XCTAssertEqual(hold.minimumPressDuration, 0.4, accuracy: 0.001)
+        XCTAssertEqual(button.accessibilityHint, Strings.LiveBrowser.Tip.endBrowser)
+        let source = button.convert(button.bounds, to: window)
+        let touch = CGPoint(x: source.midX, y: source.midY)
+        HoldTip.show(for: button, at: touch)
+        let bubble = try XCTUnwrap(HoldTip.shown)
+        XCTAssertEqual(bubble.title.text, Strings.LiveBrowser.endBrowser)
+        XCTAssertEqual(bubble.detail.text, Strings.LiveBrowser.Tip.endBrowser)
+        let finger = CGRect(x: touch.x - 22, y: touch.y - 22, width: 44, height: 44)
+        XCTAssertFalse(bubble.frame.intersects(finger), "clear of the finger")
+        // Well under the finger and the hand, across the middle.
+        XCTAssertGreaterThanOrEqual(bubble.frame.minY, touch.y + HoldTip.Metrics.clear - 0.5)
+        XCTAssertEqual(bubble.frame.midX, window.bounds.inset(by: window.safeAreaInsets).midX, accuracy: 1)
+        XCTAssertFalse(bubble.frame.intersects(source))
+        let safe = window.bounds.inset(by: window.safeAreaInsets)
+        XCTAssertTrue(safe.contains(bubble.frame), "inside the safe area")
+        try screenshot(window, name: "live-browser-hold-tip")
+        HoldTip.hide(after: 0)
+        try await until { HoldTip.shown == nil }
+        let ends = await daemon.requests.filter { $0.hasPrefix("POST /live/\(self.id)/end") }
+        XCTAssertTrue(ends.isEmpty, "a hold never ends the browser")
     }
 
     // MARK: Helpers

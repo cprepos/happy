@@ -132,6 +132,17 @@ test('a cold start makes one pod, one session and the chat link', async () => {
     assert.equal(h.calls.filter((c) => c === 'launcher.ensure:0').length, 1);
 });
 
+test('only the start of a chat\'s first browser is a new_session', async () => {
+    const h = harness();
+    assert.equal((await h.mgr.ensure(A)).new_session, true);
+    assert.equal((await h.mgr.ensure(A)).new_session, undefined, 'a running browser is not new');
+    h.advance(11 * 60_000);
+    await h.mgr.idleSweep();
+    const woken = await h.mgr.ensure(A);
+    assert.equal(woken.session_id, 's2');
+    assert.equal(woken.new_session, undefined, 'a woken browser reopens the chat\'s page; it is not new');
+});
+
 test('concurrent calls for one chat start one pod', async () => {
     const h = harness({ ensureMs: 30 });
     const ds = await Promise.all([h.mgr.ensure(A), h.mgr.ensure(A), h.mgr.ensure(A)]);

@@ -5,7 +5,7 @@ BrowserObservationService.share_snapshot. Upstream, that waits for the session l
 holds the lock from its before-snapshot to its after-snapshot, so the viewer saw nothing between an
 action's start and its end: a navigation that took ten seconds was ten seconds of a frozen frame.
 
-What this changes (share_snapshot and light_snapshot only; nothing else in the controller):
+What this changes (share_snapshot and light_snapshot; and the scroll action, see "scroll" below):
 
 - Each session keeps its most recent PII-scrubbed frame (a PNG in its artifact directory, with the
   URL and title it was taken with). It is filled by the share poll itself, by every action's
@@ -71,6 +71,11 @@ EXPECTED_SHA256 = {
     "artifacts.py": "01055666b7921868c8b2fc6aa331aee576bd09666c4cc3b54050aa9070edf5ab",
     # The share route: its token check is what keeps who can read a frame unchanged.
     "routes/share.py": "71949b2a687dc37c831ba82270987749ea1c9d8548aefbe0a19f643a9c075e42",
+    # The scroll patch (see "scroll" below): actions.py has the methods it replaces; pipeline.py hands
+    # verification the target dict the operation filled; browser_manager.py delegates to the service.
+    "browser/services/actions.py": "861f865cf05a2c64102000decfac41f16701fde642ff898f3cb43cfe94c3a29a",
+    "actions/pipeline.py": "0eed86efa2cfe54a1ea827d6a03bbceeba3914695625fd521681d9d4b1d4d31a",
+    "browser_manager.py": "c5410eb4c2731102e75d575e46df6a44cbba5d39c660998936418ee1124364a3",
 }
 
 # A lockless capture: how long a poll waits on it before serving the previous frame, and the
@@ -1206,6 +1211,291 @@ def install_routes(application: Any, manager: Any) -> None:
     application.state.happy_focus_route = True
 
 
+# ── scroll ──────────────────────────────────────────────────────────────────
+#
+# Upstream's scroll action (app/browser/services/actions.py, BrowserActionService.scroll) is
+# ``page.mouse.wheel(delta_x, delta_y)`` and nothing else, so:
+#
+# - The wheel goes wherever the mouse happens to be: (0, 0) on a page nothing has clicked yet. A page
+#   whose document does not scroll, and which scrolls an inner container instead (an app shell with a
+#   sidebar and an ``overflow: auto`` main pane, as most single-page apps are), gets its wheel over
+#   the sidebar or the header, and nothing moves.
+# - The action's x/y are dropped (_dispatch_decision passes only the deltas), so pointing the wheel at
+#   the container does not help either.
+# - Verification looks for a changed URL, title, focus or text excerpt; the text excerpt is the start
+#   of ``document.body.innerText``, which a scroll does not change. A scroll that worked was reported
+#   as ``verified: false`` too, on any page.
+#
+# What this changes (BrowserActionService.scroll, _dispatch_decision for scroll only, and
+# action_verification for scroll only; nothing else):
+#
+# - The wheel is sent at a point: the action's x/y when given (clamped into the viewport); otherwise
+#   the viewport's centre when the document itself can scroll that way, or else the centre of the
+#   visible part of the largest element that can.
+# - The scroll offsets of every scroller under that point (its scrollable ancestors, through shadow
+#   roots, and the document) are read before and after. If the wheel moved none of them, the nearest
+#   one that can scroll that way is scrolled by script, by the same deltas. A point inside a frame is
+#   left to the wheel: the frame's own scrollers are not read from here.
+# - What moved is recorded in the action's target as ``scroll`` (the point, how it was chosen, wheel
+#   or script, and each scroller's offsets before and after), and verification counts a moved
+#   scroller as the signal ``scroll_position_changed``.
+#
+# The page scripts run in the page's main world, read-only but for the fallback's ``scrollBy``; they
+# set nothing on the page (the scrollers are held through a JS handle, disposed after).
+#
+# Pinned with the rest (EXPECTED_SHA256): actions.py, pipeline.py, browser_manager.py.
+
+# How long to wait for the wheel's scroll (smooth scrolling animates it) before the script fallback,
+# and how often to look.
+SCROLL_WHEEL_WAIT_SECONDS = 1.0
+SCROLL_POLL_SECONDS = 0.05
+SCROLL_SIGNAL = "scroll_position_changed"
+
+
+# Picks the point and collects the scrollers under it. Returns an object held as a JS handle:
+# { x, y, point, frame, scrollers: [Element|null] } (null stands for the document's own scroll).
+SCROLL_PICK_SCRIPT = r"""
+({ dx, dy, x, y }) => {
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const doc = document.scrollingElement || document.documentElement;
+  const style = (el) => getComputedStyle(el);
+  const scrollsY = (el) => el.scrollHeight > el.clientHeight + 1 && /(auto|scroll|overlay)/.test(style(el).overflowY);
+  const scrollsX = (el) => el.scrollWidth > el.clientWidth + 1 && /(auto|scroll|overlay)/.test(style(el).overflowX);
+  // The viewport takes the root's overflow, or the body's when the root's is visible; the body then
+  // does not scroll on its own (and does when the root's is not visible).
+  const rootStyle = style(document.documentElement), bodyStyle = document.body ? style(document.body) : null;
+  const viewportOverflow = (prop) => rootStyle[prop] !== 'visible' ? rootStyle[prop] : (bodyStyle ? bodyStyle[prop] : 'visible');
+  const bodyOwn = !!document.body && document.body !== doc && rootStyle.overflowY !== 'visible';
+  const docScrolls = (axis) => {
+    const v = viewportOverflow(axis === 'y' ? 'overflowY' : 'overflowX');
+    if (v === 'hidden' || v === 'clip') return false;
+    return axis === 'y' ? doc.scrollHeight > vh + 1 : doc.scrollWidth > vw + 1;
+  };
+  const room = (el) => {
+    if (el === null) {
+      return {
+        y: docScrolls('y') && (dy > 0 ? window.scrollY + vh < doc.scrollHeight - 1 : dy < 0 && window.scrollY > 0),
+        x: docScrolls('x') && (dx > 0 ? window.scrollX + vw < doc.scrollWidth - 1 : dx < 0 && window.scrollX > 0),
+      };
+    }
+    return {
+      y: scrollsY(el) && (dy > 0 ? el.scrollTop + el.clientHeight < el.scrollHeight - 1 : dy < 0 && el.scrollTop > 0),
+      x: scrollsX(el) && (dx > 0 ? el.scrollLeft + el.clientWidth < el.scrollWidth - 1 : dx < 0 && el.scrollLeft > 0),
+    };
+  };
+  const canGo = (el) => { const r = room(el); return (dy !== 0 && r.y) || (dx !== 0 && r.x); };
+  const parentOf = (el) => el.parentElement || (el.parentNode && el.parentNode.host) || null;
+  const deepAt = (px, py) => {
+    let el = document.elementFromPoint(px, py);
+    while (el && el.shadowRoot) {
+      const inner = el.shadowRoot.elementFromPoint(px, py);
+      if (!inner || inner === el) break;
+      el = inner;
+    }
+    return el;
+  };
+  const contains = (outer, el) => { for (let e = el; e; e = parentOf(e)) if (e === outer) return true; return false; };
+  const clamp = (v, hi) => Math.min(Math.max(0, v), Math.max(0, hi - 1));
+
+  let px, py, point;
+  if (typeof x === 'number' && typeof y === 'number') {
+    px = clamp(x, vw); py = clamp(y, vh); point = 'given';
+  } else if (canGo(null)) {
+    px = vw / 2; py = vh / 2; point = 'viewport_centre';
+  } else {
+    let best = null, bestArea = 0;
+    for (const el of document.querySelectorAll('*')) {
+      if (el === document.documentElement || el === doc || (el === document.body && !bodyOwn)) continue;
+      if (el.scrollHeight <= el.clientHeight + 1 && el.scrollWidth <= el.clientWidth + 1) continue;
+      if (!canGo(el)) continue;
+      const r = el.getBoundingClientRect();
+      const w = Math.min(r.right, vw) - Math.max(r.left, 0), h = Math.min(r.bottom, vh) - Math.max(r.top, 0);
+      if (w <= 0 || h <= 0) continue;
+      if (w * h > bestArea) { best = { el, l: Math.max(r.left, 0), t: Math.max(r.top, 0), w, h }; bestArea = w * h; }
+    }
+    if (best) {
+      point = 'largest_scroller';
+      const tries = [[0.5, 0.5], [0.5, 0.25], [0.5, 0.75], [0.25, 0.5], [0.75, 0.5]];
+      [px, py] = [best.l + best.w / 2, best.t + best.h / 2];
+      for (const [fx, fy] of tries) {
+        const cx = best.l + best.w * fx, cy = best.t + best.h * fy;
+        if (contains(best.el, deepAt(cx, cy))) { px = cx; py = cy; break; }
+      }
+    } else {
+      px = vw / 2; py = vh / 2; point = 'viewport_centre';
+    }
+  }
+  px = Math.round(px); py = Math.round(py);
+
+  const hit = deepAt(px, py);
+  const frame = !!hit && /^(IFRAME|FRAME|EMBED|OBJECT)$/.test(hit.tagName);
+  const scrollers = [];
+  for (let el = hit; el; el = parentOf(el)) {
+    if (el === document.documentElement || el === doc || (el === document.body && !bodyOwn)) continue;
+    if (scrollsY(el) || scrollsX(el)) scrollers.push(el);
+  }
+  scrollers.push(null);
+  return { x: px, y: py, point, frame, scrollers, canGo, room };
+}
+"""
+
+# The scrollers' offsets now: [{ element, left, top }], the document as "document".
+SCROLL_READ_SCRIPT = r"""
+(held) => held.scrollers.map((el) => {
+  if (el === null) return { element: 'document', left: Math.round(window.scrollX), top: Math.round(window.scrollY) };
+  let name = el.tagName.toLowerCase();
+  if (el.id) name += '#' + el.id;
+  const cls = typeof el.className === 'string' ? el.className.trim().split(/\s+/)[0] : '';
+  if (cls) name += '.' + cls;
+  return { element: name.slice(0, 80), left: Math.round(el.scrollLeft), top: Math.round(el.scrollTop), gone: !el.isConnected };
+})
+"""
+
+# The fallback: the nearest scroller under the point that can scroll that way, by the deltas.
+# Returns its index in held.scrollers, or -1 when none can.
+SCROLL_FALLBACK_SCRIPT = r"""
+(held, [dx, dy]) => {
+  const i = held.scrollers.findIndex((el) => (el === null || el.isConnected) && held.canGo(el));
+  if (i < 0) return -1;
+  const el = held.scrollers[i];
+  if (el === null) window.scrollBy({ left: dx, top: dy, behavior: 'instant' });
+  else el.scrollBy({ left: dx, top: dy, behavior: 'instant' });
+  return i;
+}
+"""
+
+SCROLL_INFO_SCRIPT = "(held) => ({ x: held.x, y: held.y, point: held.point, frame: held.frame })"
+
+
+def _scroll_moved(before: list[dict[str, Any]], after: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out = []
+    for b, a in zip(before, after):
+        if (b["left"], b["top"]) != (a["left"], a["top"]):
+            out.append({"element": b["element"], "from": [b["left"], b["top"]], "to": [a["left"], a["top"]]})
+    return out
+
+
+async def _scroll_until_moved(held: Any, before: list[dict[str, Any]], wait_s: float) -> list[dict[str, Any]]:
+    """The offsets once they have moved and come to rest, or as they are after wait_s if nothing moved."""
+    deadline = time.monotonic() + wait_s
+    now = await held.evaluate(SCROLL_READ_SCRIPT)
+    while not _scroll_moved(before, now) and time.monotonic() < deadline:
+        await asyncio.sleep(SCROLL_POLL_SECONDS)
+        now = await held.evaluate(SCROLL_READ_SCRIPT)
+    if _scroll_moved(before, now):
+        # Smooth scrolling animates: read until two reads agree (bounded by the same wait).
+        rest_deadline = time.monotonic() + wait_s
+        while time.monotonic() < rest_deadline:
+            await asyncio.sleep(SCROLL_POLL_SECONDS * 2)
+            again = await held.evaluate(SCROLL_READ_SCRIPT)
+            if again == now:
+                break
+            now = again
+    return now
+
+
+async def scroll_page(
+    page: Any,
+    delta_x: float,
+    delta_y: float,
+    x: float | None = None,
+    y: float | None = None,
+    *,
+    settle: Any = None,
+    wheel_wait_s: float = SCROLL_WHEEL_WAIT_SECONDS,
+) -> dict[str, Any]:
+    """Wheel at a point that scrolls, fall back to scrolling the scroller under it; report what moved."""
+    held = await page.evaluate_handle(SCROLL_PICK_SCRIPT, {"dx": delta_x, "dy": delta_y, "x": x, "y": y})
+    try:
+        info = await held.evaluate(SCROLL_INFO_SCRIPT)
+        before = await held.evaluate(SCROLL_READ_SCRIPT)
+        await page.mouse.move(info["x"], info["y"])
+        await page.mouse.wheel(delta_x, delta_y)
+        after = await _scroll_until_moved(held, before, wheel_wait_s)
+        method = "wheel"
+        if not _scroll_moved(before, after) and not info["frame"]:
+            index = await held.evaluate(SCROLL_FALLBACK_SCRIPT, [delta_x, delta_y])
+            if index >= 0:
+                method = "script"
+                after = await _scroll_until_moved(held, before, wheel_wait_s)
+        if settle is not None:
+            await settle()
+        final = await held.evaluate(SCROLL_READ_SCRIPT)
+        moved = _scroll_moved(before, final)
+        if not moved and method == "script":
+            moved = _scroll_moved(before, after)
+    finally:
+        try:
+            await held.dispose()
+        except Exception:  # the page went away (a scroll that navigated): nothing to free
+            pass
+    report: dict[str, Any] = {
+        "x": info["x"],
+        "y": info["y"],
+        "point": info["point"],
+        "method": method if moved else "none",
+        "moved": bool(moved),
+        "scrolled": moved,
+    }
+    if info["frame"]:
+        # The wheel went into a frame, whose scrollers are not read from the top document.
+        report["into_frame"] = True
+        if not moved:
+            report["moved"] = None
+            report["method"] = "wheel"
+    elif not moved:
+        report["reason"] = "nothing under the point could scroll further that way"
+    return report
+
+
+def build_scroll(actions_module: Any) -> dict[str, Any]:
+    Service = actions_module.BrowserActionService
+    upstream_dispatch = Service._dispatch_decision
+    upstream_verification = Service.action_verification  # the plain function (staticmethod unwrapped)
+
+    async def scroll(
+        self: Any,
+        session_id: str,
+        delta_x: float,
+        delta_y: float,
+        x: float | None = None,
+        y: float | None = None,
+    ) -> dict[str, Any]:
+        session = await self.manager.get_session(session_id)
+        target: dict[str, Any] = {"delta_x": delta_x, "delta_y": delta_y}
+        if x is not None and y is not None:
+            target["x"], target["y"] = x, y
+
+        async def operation() -> None:
+            target["scroll"] = await scroll_page(
+                session.page, delta_x, delta_y, x, y, settle=lambda: self.manager._settle(session.page)
+            )
+
+        return await self.manager._run_action(session, "scroll", target, operation)
+
+    async def _dispatch_decision(self: Any, session_id: str, decision: Any, *, approval_id: str | None) -> dict[str, Any]:
+        if decision.action == "scroll":
+            return await self.scroll(session_id, decision.delta_x, decision.delta_y, x=decision.x, y=decision.y)
+        return await upstream_dispatch(self, session_id, decision, approval_id=approval_id)
+
+    def action_verification(
+        action_name: str,
+        target: dict[str, Any],
+        before: dict[str, Any],
+        after: dict[str, Any],
+    ) -> dict[str, Any]:
+        result = upstream_verification(action_name, target, before, after)
+        if action_name == "scroll" and isinstance(target.get("scroll"), dict) and target["scroll"].get("moved"):
+            result = {**result, "signals": [*result["signals"], SCROLL_SIGNAL], "verified": True}
+        return result
+
+    return {
+        "scroll": scroll,
+        "_dispatch_decision": _dispatch_decision,
+        "action_verification": staticmethod(action_verification),
+    }
+
+
 def apply() -> None:
     from app.browser import page_read
     from app.browser.services import observation
@@ -1216,8 +1506,12 @@ def apply() -> None:
     for name, fn in build(observation, page_read).items():
         setattr(Service, name, fn)
     Service._happy_live_frames = True
+    from app.browser.services import actions
+
+    for name, fn in build_scroll(actions).items():
+        setattr(actions.BrowserActionService, name, fn)
     logger.warning(
-        "happy_live_frames: patched auto-browser %s share_snapshot/light_snapshot; screenshot audit in %s, default view %s",
+        "happy_live_frames: patched auto-browser %s share_snapshot/light_snapshot and scroll; screenshot audit in %s, default view %s",
         EXPECTED_VERSION,
         tz_name(),
         default_view(),

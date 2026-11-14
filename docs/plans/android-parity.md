@@ -50,9 +50,10 @@ nature.
 
 ### Neither app
 
-The vault (Vaultwarden filler, logins and passwords) has no screen in either
-app. It is agent-side only: `selfhost/vault`, `browser-stack/vault-mcp` and
-`browser-stack/browser/filler`.
+The vault (logins and passwords: the standalone Vaultwarden container and the
+secret filler, which runs on prep-ml as the `happy-filler` account) has no
+screen in either app. It is agent-side only: `selfhost/vault`,
+`browser-stack/vault-mcp` and `browser-stack/browser/filler`.
 
 ## Phase 0: Prerequisites
 

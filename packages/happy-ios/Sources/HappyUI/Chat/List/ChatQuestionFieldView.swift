@@ -57,9 +57,23 @@ final class ChatQuestionFieldView: UITextView, UITextViewDelegate {
         onChange?(text)
     }
 
+    /// A hardware keyboard's Return submits the form and its newlines make
+    /// lines (`SendShortcut`), once there is a form to submit.
     override var keyCommands: [UIKeyCommand]? {
         guard isFirstResponder, onSubmit != nil else { return super.keyCommands }
-        return [SendShortcut.command(action: #selector(sendShortcut(_:)))] + (super.keyCommands ?? [])
+        return SendShortcut.commands(send: #selector(sendShortcut(_:)), newline: #selector(newlineShortcut(_:))) + (super.keyCommands ?? [])
+    }
+
+    /// Neither while an input method is composing: Return is its.
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(sendShortcut(_:)) || action == #selector(newlineShortcut(_:)) {
+            return SendShortcut.takes(in: self)
+        }
+        return super.canPerformAction(action, withSender: sender)
+    }
+
+    @objc func newlineShortcut(_ sender: Any?) {
+        SendShortcut.insertNewline(in: self)
     }
 
     @objc func sendShortcut(_ sender: Any?) {

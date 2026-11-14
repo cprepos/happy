@@ -564,5 +564,53 @@ final class HostedSettingsUnifiedTests: XCTestCase {
         XCTAssertFalse(search.isActive)
         withExtendedLifetime(account) {}
     }
+
+    // MARK: Appearance
+
+    /// Appearance's Input has the hardware keyboard's Enter to send under
+    /// Show Usage Status, on as happy-app's default is; it writes the synced
+    /// key the web reads, says what Return does now, and the chat boxes'
+    /// keys follow it.
+    func testAppearanceHasEnterToSendAndItWritesTheKey() async throws {
+        let (account, context, _) = try await rig()
+        let session = try XCTUnwrap(account.session)
+        let screen = SettingsAppearanceViewController(context: context, session: session)
+        _ = try await host(screen)
+        func rows() -> [ItemRowView] {
+            func descendants(_ view: UIView) -> [UIView] { [view] + view.subviews.flatMap(descendants) }
+            return descendants(screen.view).compactMap { $0 as? ItemRowView }
+        }
+        let titles = rows().map(\.title)
+        let index = try XCTUnwrap(titles.firstIndex(of: "Hardware Keyboard: Enter to Send"), "\(titles)")
+        XCTAssertEqual(titles[index - 1], Strings.SettingsAppearance.alwaysShowContextSize, "in Input, under Show Usage Status")
+        let row = rows()[index]
+        XCTAssertEqual(row.subtitle, "Enter sends; Shift, ⌘ or Control + Enter for a new line")
+        let toggle = try XCTUnwrap(row.trailingView as? UISwitch)
+        XCTAssertTrue(toggle.isOn, "on by default")
+
+        // The chat boxes' keys follow the store, as the app's coordinator
+        // keeps them; here the test does what it does.
+        let saved = SendShortcut.enterToSend
+        addTeardownBlock { @MainActor in SendShortcut.enterToSend = saved }
+        let following = session.store.observeSettings { SendShortcut.enterToSend = AccountSettings($0).enterToSend }
+
+        func stored() -> Bool? { (try? session.store.settingsSnapshot()).map { AccountSettings($0).enterToSend } }
+        toggle.isOn = false
+        toggle.sendActions(for: .valueChanged)
+        let off = try await until { stored() == false }
+        XCTAssertTrue(off, "agentInputEnterToSend is written")
+        XCTAssertEqual(rows()[index].subtitle, "Enter inserts a new line; ⌘ + Enter sends")
+        let boxesOff = try await until { !SendShortcut.enterToSend }
+        XCTAssertTrue(boxesOff, "the boxes' Return is a newline again")
+
+        toggle.isOn = true
+        toggle.sendActions(for: .valueChanged)
+        let on = try await until { stored() == true }
+        XCTAssertTrue(on)
+        XCTAssertEqual(rows()[index].subtitle, "Enter sends; Shift, ⌘ or Control + Enter for a new line")
+        let boxesOn = try await until { SendShortcut.enterToSend }
+        XCTAssertTrue(boxesOn)
+        withExtendedLifetime((account, following)) {}
+    }
 }
 #endif

@@ -1,9 +1,0 @@
-# Override for browser-stack/browser/compose.browser.yml under the happy-svc rootless daemon;
-# only happy-svc-ctl passes it. The daemon's network namespace has no LAN address, so the
-# bridge's optional LAN listener stays off here (happy-svc-ctl also clears these variables).
-services:
-  bridge:
-    environment:
-      BRIDGE_LAN_BIND: ""
-      BRIDGE_LAN_ALLOW: ""
-      BRIDGE_LAN_PUBLIC_BASE: ""

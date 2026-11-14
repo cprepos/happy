@@ -80,11 +80,12 @@ public struct ChatStatusLineLayout: Equatable, Sendable {
 /// under it. Nothing stands on the picture, so the page and its title read
 /// whole.
 ///
-///     ┌ bar ───────────────────┐   ✕ close and ••• (End browser) on the
-///     │ ✕  •••          ⤢  ⇲   │   left, ⤢ full screen and ⇲ big or
-///     ├ picture ───────────────┤   small on the right, each a 44-point
-///     │                        │   target; a narrow player keeps ✕ and
-///     │                        │   ⇲, and too narrow for both, ✕ alone
+///     ┌ bar ───────────────────┐   ✕ close, ••• (End browser) and the
+///     │ ✕  •••  ⛨       ⤢  ⇲   │   yolo shield on the left, ⤢ full
+///     ├ picture ───────────────┤   screen and ⇲ big or small on the
+///     │                        │   right, each a 44-point target; a
+///     │                        │   narrower player drops the shield,
+///     │                        │   then ••• and ⤢, then ⇲
 ///     ├ footer ────────────────┤
 ///     └────────────────────────┘   pill · Take over / Release
 ///
@@ -166,7 +167,8 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
         /// itself and the composer, unless that would make it smaller than
         /// small.
         public static let padChatRoom: CGFloat = 120
-        /// The picture's width over its height.
+        /// The picture's width over its height when no frame has said
+        /// otherwise (`Input.aspect`).
         public static let aspect: CGFloat = 1.6
         public static let footerHeight: CGFloat = 30
         /// The bar over the picture, as tall as its buttons.
@@ -219,9 +221,13 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
         /// A dragged picture width, held to `limits`; nil is the preset
         /// (small's or big's).
         public var width: CGFloat?
+        /// The newest frame's width over its height; nil (no frame yet) is
+        /// `Metrics.aspect`. The picture always takes it, so a kept width
+        /// from a frame of another shape re-fits, never cropped.
+        public var aspect: CGFloat?
 
-        public init(size: CGSize, safeArea: LayoutInsets, card: CGRect, anchor: CGFloat, corner: Corner = .bottomRight, big: Bool = false, idiom: Idiom = .phone, width: CGFloat? = nil) {
-            self.size = size; self.safeArea = safeArea; self.card = card; self.anchor = anchor; self.corner = corner; self.big = big; self.idiom = idiom; self.width = width
+        public init(size: CGSize, safeArea: LayoutInsets, card: CGRect, anchor: CGFloat, corner: Corner = .bottomRight, big: Bool = false, idiom: Idiom = .phone, width: CGFloat? = nil, aspect: CGFloat? = nil) {
+            self.size = size; self.safeArea = safeArea; self.card = card; self.anchor = anchor; self.corner = corner; self.big = big; self.idiom = idiom; self.width = width; self.aspect = aspect
         }
     }
 
@@ -237,6 +243,9 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
     public var resize: CGRect?
     /// The menu (End browser), beside close; nil where full screen is.
     public var menu: CGRect?
+    /// Yolo's shield, beside the menu; nil on a player too narrow for
+    /// five buttons.
+    public var yolo: CGRect?
     public var footer: CGRect
     /// The status pill shows in the footer when there is room.
     public var showsPill: Bool
@@ -244,6 +253,8 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
     /// moved to a corner; the chat's content starts under it.
     public var isBig: Bool
     public var radius: CGFloat
+    /// The picture's width over its height: the frame's.
+    public var aspect: CGFloat
     /// The widths a drag can reach here: from the old mini player's to the
     /// pane's (a floating player's card), leaving the chat some room.
     public var limits: ClosedRange<CGFloat>
@@ -275,7 +286,9 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
         isBig = big
         radius = big ? 0 : M.radius
         let least = input.idiom == .pad ? M.minWidthWide : M.minWidth
-        let fitting = { (height: CGFloat) in max(0, (height - chrome) * M.aspect).rounded(.down) }
+        let ratio = input.aspect.flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? M.aspect
+        aspect = ratio
+        let fitting = { (height: CGFloat) in max(0, (height - chrome) * ratio).rounded(.down) }
         var width: CGFloat
         let range: ClosedRange<CGFloat>
         if big {
@@ -299,7 +312,7 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
             range = min(least, most)...most
         } else {
             width = Self.smallWidth(card: input.card, size: input.size)
-            if width / M.aspect + chrome > room { width = fitting(room) }
+            if width / ratio + chrome > room { width = fitting(room) }
             // Dragged: up to the card's width (the side it lines up with),
             // leaving the chat room over or under it, never short of small.
             let most = min(input.card.width, max(width, fitting(room - M.chatRoom)))
@@ -307,7 +320,7 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
         }
         limits = range
         if let asked = input.width { width = Self.clamp(asked.rounded(), to: range) }
-        let pictureHeight = (width / M.aspect).rounded()
+        let pictureHeight = (width / ratio).rounded()
         let height = M.barHeight + pictureHeight + M.footerHeight
         if big {
             frame = CGRect(x: ((input.size.width - width) / 2).rounded(), y: input.safeArea.top, width: width, height: height)
@@ -324,11 +337,23 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
         let four = width >= 4 * b
         menu = four ? CGRect(x: b, y: 0, width: b, height: b) : nil
         fullScreen = four ? CGRect(x: width - 2 * b, y: 0, width: b, height: b) : nil
+        let five = width >= 5 * b
+        yolo = five ? CGRect(x: 2 * b, y: 0, width: b, height: b) : nil
         footer = CGRect(x: 0, y: M.barHeight + pictureHeight, width: width, height: M.footerHeight)
         showsPill = width >= 200
         // Each side keeps as much as the wider: the middle is the bar's.
-        let side = four ? 2 * b : b
-        control = width - 2 * side >= b ? CGRect(x: side, y: 0, width: width - 2 * side, height: b) : nil
+        // Where that leaves no room (yolo makes the left the wider), the
+        // room between the sides; none there, the footer has it.
+        let left = five ? 3 * b : four ? 2 * b : b
+        let right = four ? 2 * b : b
+        let side = max(left, right)
+        if width - 2 * side >= b {
+            control = CGRect(x: side, y: 0, width: width - 2 * side, height: b)
+        } else if width - left - right >= b {
+            control = CGRect(x: left, y: 0, width: width - left - right, height: b)
+        } else {
+            control = nil
+        }
         let corners: [Corner] = [.bottomLeft, .bottomRight]
         grips = corners.map { corner in
             Grip(corner: corner, frame: CGRect(
@@ -354,7 +379,7 @@ public struct LiveBrowserDockLayout: Equatable, Sendable {
     /// smoothly. The player's docked corner stays where it is.
     public func width(dragging corner: Corner, from start: CGFloat, by translation: CGPoint) -> CGFloat {
         let across: CGFloat = (isBig ? 0.5 : 1) * (corner.isLeft ? -1 : 1)
-        let down: CGFloat = (corner.isTop ? -1 : 1) / Metrics.aspect
+        let down: CGFloat = (corner.isTop ? -1 : 1) / aspect
         return start + (translation.x * across + translation.y * down) / (across * across + down * down)
     }
 

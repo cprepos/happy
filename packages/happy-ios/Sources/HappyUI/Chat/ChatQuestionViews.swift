@@ -513,10 +513,28 @@ final class AgentQuestionSheetController: UIViewController, UITextViewDelegate {
         update()
     }
 
-    /// ⌘↩ in a written answer submits, as the button does (`SendShortcut`).
+    /// A hardware keyboard's Return in a written answer submits, as the
+    /// button does, and its newlines make lines (`SendShortcut`).
     override var keyCommands: [UIKeyCommand]? {
-        guard blocks.contains(where: { $0.input?.isFirstResponder == true }) else { return super.keyCommands }
-        return [SendShortcut.command(action: #selector(sendShortcut(_:)))] + (super.keyCommands ?? [])
+        guard focusedInput != nil else { return super.keyCommands }
+        return SendShortcut.commands(send: #selector(sendShortcut(_:)), newline: #selector(newlineShortcut(_:))) + (super.keyCommands ?? [])
+    }
+
+    /// The written answer with the keyboard.
+    private var focusedInput: UITextView? {
+        blocks.lazy.compactMap(\.input).first { $0.isFirstResponder }
+    }
+
+    /// Neither while an input method is composing: Return is its.
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(sendShortcut(_:)) || action == #selector(newlineShortcut(_:)) {
+            return SendShortcut.takes(in: focusedInput)
+        }
+        return super.canPerformAction(action, withSender: sender)
+    }
+
+    @objc func newlineShortcut(_ sender: Any?) {
+        SendShortcut.insertNewline(in: focusedInput)
     }
 
     @objc func sendShortcut(_ sender: Any?) {

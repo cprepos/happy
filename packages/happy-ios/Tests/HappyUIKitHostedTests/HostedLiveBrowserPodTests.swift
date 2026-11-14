@@ -91,7 +91,7 @@ final class HostedLiveBrowserPodTests: XCTestCase {
 
         // The agent starts one: the line comes, though no link was posted.
         await daemon.setChatLink(id)
-        try await until { dock.indicator.text == Strings.LiveBrowser.indicator(Strings.LiveBrowser.watching) }
+        try await until { dock.indicator.text == Strings.LiveBrowser.indicator(Strings.LiveBrowser.clickToWatch) }
         XCTAssertFalse(dock.indicator.isHidden)
         XCTAssertEqual(dock.feed?.link.id, id)
         try await until { await daemon.requests.contains { $0.hasPrefix("GET /live/\(self.id)/state") } }
@@ -307,10 +307,152 @@ final class HostedLiveBrowserPodTests: XCTestCase {
         try await assertPictureComing(daemon, dock, "back to where it was")
     }
 
+    // MARK: The line comes back
+
+    /// The bridge marked the link done (a controller restarted), then the
+    /// agent's next call revived the same id: the line shows again, with
+    /// no new dock.
+    func testALinkThatEndsAndComesBackLiveWithTheSameIdShowsTheLineAgain() async throws {
+        let daemon = BrowserDaemon()
+        await daemon.setLiveStatus("watching")
+        await daemon.setLivePod("running")
+        await daemon.setChatLink(id)
+        let (host, window) = try await makeHost(daemon)
+        defer { window.isHidden = true; host.dock.lookUp(key: nil); host.dock.update(link: nil) }
+        let dock = host.dock!
+        // At the origin the lookup answers at: the same link as its.
+        dock.update(link: LiveBrowserLink(id: id, origin: LiveBrowserLink.lanOrigin))
+        dock.lookUp(key: key)
+        try await until { dock.browserRuns }
+        let ended = try XCTUnwrap(dock.feed)
+
+        // The feed reads done before the lookup says so (the lookup
+        // answers no link meanwhile, the transcript's link kept): it is over.
+        await daemon.setChatLink(nil)
+        try await until { dock.chatWatch?.answer == .noLink }
+        await daemon.setLiveStatus("done")
+        try await until { ended.phase.isOver }
+        try await until { dock.indicator.isHidden }
+
+        await daemon.setLiveStatus("watching")
+        await daemon.setChatLink(id)
+        // The next lookup, now rather than in 30 s.
+        dock.chatWatch?.checkNow()
+        try await until { dock.browserRuns && !dock.indicator.isHidden }
+        XCTAssertFalse(dock.feed === ended, "a fresh feed for the revived link")
+        XCTAssertEqual(dock.feed?.link.id, id)
+        XCTAssertEqual(dock.indicator.text, Strings.LiveBrowser.indicator(Strings.LiveBrowser.clickToWatch))
+    }
+
+    /// The feed read a 404 (the tunnel's, not the bridge's) and gave up,
+    /// while the bridge goes on saying the browser runs: two answers
+    /// later it reads again, and the line shows.
+    func testAFeedThatSawA404ReadsAgainWhenTheBridgeSaysRunning() async throws {
+        let daemon = BrowserDaemon()
+        await daemon.setLiveStatus("watching")
+        await daemon.setLivePod("running")
+        await daemon.setChatLink(id)
+        await daemon.setStateMissing(true)
+        let (host, window) = try await makeHost(daemon)
+        defer { window.isHidden = true; host.dock.lookUp(key: nil); host.dock.update(link: nil) }
+        let dock = host.dock!
+        dock.lookUp(key: key)
+        try await until { dock.feed?.phase.isOver == true }
+        XCTAssertTrue(dock.indicator.isHidden)
+        XCTAssertEqual(dock.chatWatch?.answer.chat?.running, true)
+
+        await daemon.setStateMissing(false)
+        try await until({ dock.browserRuns && !dock.indicator.isHidden }, tries: 200)
+        XCTAssertEqual(dock.feed?.link.id, id)
+    }
+
+    /// Back from the background, the bridge is asked at once, not at the
+    /// next 30 s turn.
+    func testComingToTheForegroundAsksTheBridgeAtOnce() async throws {
+        let daemon = BrowserDaemon()
+        await daemon.setLiveStatus("watching")
+        await daemon.setLivePod("asleep")
+        await daemon.setChatLink(id)
+        let (host, window) = try await makeHost(daemon)
+        defer { window.isHidden = true; host.dock.lookUp(key: nil); host.dock.update(link: nil) }
+        let dock = host.dock!
+        dock.lookUp(key: key)
+        try await until { dock.feed?.phase.dormantState != nil }
+        XCTAssertEqual(dock.chatWatch?.currentInterval, LiveBrowserChatWatch.idleInterval)
+        let lookups = { await daemon.requests.filter { $0.hasPrefix("GET /live/chat/") }.count }
+        let before = await lookups()
+
+        await daemon.setLivePod("running")
+        NotificationCenter.default.post(name: UIApplication.willEnterForegroundNotification, object: nil)
+        try await until({ await lookups() > before }, tries: 30)
+        try await until { dock.browserRuns && !dock.indicator.isHidden }
+    }
+
+    /// The bridge had no link for the chat when it was first routed: once
+    /// that has gone on long enough, the next route works the chat's
+    /// computer and keys out again, and a link that comes is shown.
+    func testAChatWithNoComputerAtFirstRoutesAgainLater() async throws {
+        let daemon = BrowserDaemon()
+        await daemon.setLiveStatus("watching")
+        await daemon.setLivePod("running")
+        let (host, window) = try await makeHost(daemon)
+        let routeAgain = LiveBrowserDock.routeAgainAfterNoLink
+        LiveBrowserDock.routeAgainAfterNoLink = .seconds(1)
+        defer {
+            LiveBrowserDock.routeAgainAfterNoLink = routeAgain
+            window.isHidden = true
+            host.dock.lookUp(key: nil)
+        }
+        let dock = host.dock!
+        let client = AgentClient(transport: daemon, token: "native-secret")
+        let identity = LiveBrowserChatIdentity.agent(id: "agent-1", happySession: "cmhk2v9q40001ab12cd34ef56")
+        dock.route(identity, through: .client(client, happy: nil))
+        try await until { dock.routing == nil && dock.chatWatch?.answer == .noLink }
+        XCTAssertEqual(dock.routedKeys.first, key)
+
+        // Too soon: decided once, nothing decided again.
+        dock.route(identity, through: .client(client, happy: nil))
+        XCTAssertNil(dock.routing)
+
+        try await Task.sleep(for: .milliseconds(1200))
+        dock.route(identity, through: .client(client, happy: nil))
+        XCTAssertNotNil(dock.routing, "no link for long enough: worked out again")
+        try await until { dock.routing == nil }
+
+        await daemon.setChatLink(id)
+        dock.chatWatch?.checkNow()
+        try await until { dock.browserRuns && !dock.indicator.isHidden }
+    }
+
+    // MARK: Click to watch
+
+    /// Minimized, the line asks to be clicked; while the player shows it,
+    /// it says Watching.
+    func testTheLineSaysClickToWatchUntilThePlayerOpens() async throws {
+        let daemon = BrowserDaemon()
+        await daemon.setLiveStatus("watching")
+        let (host, window) = try await makeHost(daemon)
+        defer { window.isHidden = true; host.dock.update(link: nil) }
+        let dock = host.dock!
+        dock.update(link: LiveBrowserLink(id: id))
+        let click = Strings.LiveBrowser.indicator(Strings.LiveBrowser.clickToWatch)
+        let watching = Strings.LiveBrowser.indicator(Strings.LiveBrowser.watching)
+        try await until { dock.indicator.text == click }
+        XCTAssertEqual(dock.indicator.accessibilityLabel, click)
+
+        dock.openPlayer()
+        XCTAssertEqual(dock.indicator.text, watching)
+        XCTAssertEqual(dock.indicator.accessibilityLabel, watching)
+
+        dock.closePlayer(animated: false)
+        XCTAssertEqual(dock.indicator.text, click)
+        XCTAssertEqual(dock.indicator.accessibilityLabel, click)
+    }
+
     // MARK: Helpers
 
-    private func until(_ condition: () async -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
-        for _ in 0..<100 {
+    private func until(_ condition: () async -> Bool, tries: Int = 100, file: StaticString = #filePath, line: UInt = #line) async throws {
+        for _ in 0..<tries {
             if await condition() { return }
             try await Task.sleep(for: .milliseconds(100))
         }

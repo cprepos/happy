@@ -1,49 +1,45 @@
 # The vault: Vaultwarden, the self-hosted Bitwarden server for every device
-# (phone, laptops, browser extensions), and the browser agent's secret filler,
-# both in one compose project (happy-vault, vault/compose.vault.yml). No
-# browser-* target touches it. Its data is in named Docker volumes
-# (happy-vault-data, -config, -backups, happy-filler); nothing here needs sudo.
+# (phone, laptops, browser extensions). It runs as one standalone container in
+# prep's Docker, `vaultwarden` (label happy.standalone=vaultwarden, outside
+# every compose project, restart unless-stopped, 127.0.0.1:8222), with its
+# data in the named volumes vaultwarden-data and vaultwarden-config
+# (vault/scripts/vaultwarden.sh). Nothing here needs sudo. No browser-* target
+# touches it. The browser agent's secret filler, which reads the vault, runs on
+# bare metal as happy-filler (browser-stack/filler.mk).
 # Host settings (domain, agent email, uids, LAN addresses) are in vault/.env
 # (copy vault/.env.example).
 # Included from selfhost/Makefile via `-include vault.mk`. See selfhost/vault/README.md.
 #
-# A fresh install, in order:
-#   make vault-init           (once) the volumes, the env file, the filler's tree and its empty
-#                             policy; VAULT_OWNER_EMAIL=<your vault email>
-#   make vault-up             Vaultwarden and the filler (builds the filler image)
-#   make vault-tokens         client tokens for vault-mcp and the bridge, and the browser controller
-#                             token for the filler (each only once; ROTATE=1 NAME=bridge-client|vault-client
-#                             replaces one), then restarts the filler
-#   make filler-seed-policy   a default policy (or make filler-policy-edit)
-#   make vault-enroll BACKEND=shared   (terminal) enroll the filler with the agent's vault account;
-#                             BACKEND=<name> enrolls another Vaultwarden backend into secrets/<name>/
-#
-#   make stack-up / stack-down  the vault and the browser stack together (selfhost/Makefile)
-#   make vault-up / vault-down / vault-logs
-#   make vault-status         containers, 127.0.0.1-only binds, /alive, Caddy site, filler unlocked, last backup
-#   make vault-admin-on       set an admin password (asked on the terminal; only its hash is kept)
-#   make vault-admin-off      remove it, which disables /admin
+#   make vault-up             start Vaultwarden; create it first if there is none (a fresh install
+#                             also needs VAULT_OWNER_EMAIL=<your vault email>, once, for its env file).
+#                             A running container is left alone. Refuses a vaultwarden container
+#                             that is not this one (no label).
+#   make vault-down           stop it (container and volumes kept)
+#   make vault-logs
+#   make vault-status         the container, 127.0.0.1-only bind, local and public /alive, public /admin
+#                             = 404, env keys set/unset, then filler-status
+#   make vault-admin-on       set an admin password (asked on the terminal; only its hash is kept),
+#                             then restart Vaultwarden
+#   make vault-admin-off      remove it, which disables /admin, then restart Vaultwarden
 #   make vault-caddy-apply    add $(VAULT_DOMAIN) to the host's Caddy (backup, validate, reload)
-#   make vault-backup         versioned tarballs: the vault (uid 1991, happy-vault-backups) and the filler
-#                             (uid 1990, happy-filler-backups), newest 30 kept in each, then copied to every
-#                             mirror (VAULT_BACKUP_MIRRORS; filler ones into <mirror>/filler/) + a ZFS snapshot
-#   make vault-backup-mirror  copy any tarball a mirror is missing (no new backup)
-#   make vault-restore-check  restore the newest backup of every location in a throwaway container,
-#                             count what is in it, check the sha256 matches across locations
-#   make vault-restore TARBALL=vault-<ts>.tar.gz   (or a mirror's absolute path) check its sha256,
-#                             stop Vaultwarden, set the current data aside in happy-vault-backups, unpack, start
-#   make vault-backup-timer   install + enable the nightly systemd user timer that runs vault-backup
-#   make vault-migrate-volumes  (once, an install from before the volumes) copy /srv/happy-filler and
-#                             /srv/happy-vault into the volumes; Vaultwarden stops for the copy, the old
-#                             filler unit keeps serving 6091 from /srv; /srv is left as the rollback
-#   make vault-filler-cutover (after stopping the old filler unit) copy again what is newer in /srv,
-#                             then start the filler container
-#   make vault-backup-setup   print (never run) the one-time sudo commands: mirror dirs, ZFS delegation
+#   make stack-up / stack-down  Vaultwarden and the browser stack together (selfhost/Makefile)
+#
+# The filler's enrollment and tokens are filler targets: make filler-enroll, filler-token-issue,
+# filler-token-take (browser-stack/filler.mk).
+#
+# Backups (vault/scripts/vault-backup.sh; selfhost/vault/README.md, Backups), from prep's cron:
+#   make vault-backup         vault and filler tarballs into /girth/backup/vault (ZFS snapshot
+#                             after each run), then the mirror /mnt/ai-data/backups/happy-vault
+#   make vault-backup-check   restore the newest tarballs into throwaway containers and count
+#   make vault-backup-status  newest tarball per location and its age (STALE past 26 h)
+#   make vault-restore TARBALL=vault-<ts>.tar.gz|/path/to/it   stops Vaultwarden while it runs
+#   make vault-backup-cron    add the nightly backup and the weekly check to prep's crontab,
+#                             each line only if it is missing
 
 VAULT_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))/vault
-# Host settings: plain KEY=value lines, read by compose (from vault/) and here.
+# Host settings: plain KEY=value lines, read here (and by browser-stack/filler.mk through the exports).
 -include $(VAULT_DIR)/.env
-VAULT_ENV_VARS := VAULT_DOMAIN CADDY_AFTER_SITE CADDYFILE VAULT_AGENT_EMAIL VAULT_ROOT FILLER_ROOT VAULT_UID FILLER_UID FILLER_GID
+VAULT_ENV_VARS := VAULT_DOMAIN CADDY_AFTER_SITE CADDYFILE VAULT_AGENT_EMAIL FILLER_ROOT VAULT_UID FILLER_UID FILLER_GID
 export $(VAULT_ENV_VARS)
 # The LAN addresses, for the agent gateway and MCP registration (browser-stack/gateway, scripts/mcp-register.py).
 ifneq ($(LAN_IP),)
@@ -52,73 +48,30 @@ endif
 ifneq ($(LAN_CLIENTS),)
 export BROWSER_STACK_MACS ?= $(LAN_CLIENTS)
 endif
-VAULT_COMPOSE := docker compose -p happy-vault -f $(VAULT_DIR)/compose.vault.yml
 VAULT_URL ?= http://127.0.0.1:8222
 VAULT_SITE ?= $(VAULT_DOMAIN)
-BACKEND ?= shared
 VAULT_OWNER_EMAIL ?=
-VAULT_SYSTEMD := $(HOME)/.config/systemd/user
-VAULT_BACKUP_MIRRORS ?= /girth/backup/vault /mnt/ai-data/backups/happy-vault
-export VAULT_BACKUP_MIRRORS
+export VAULT_OWNER_EMAIL
+VAULTWARDEN := bash $(VAULT_DIR)/scripts/vaultwarden.sh
 
-.PHONY: vault-init vault-up vault-down vault-logs vault-status vault-enroll vault-tokens vault-admin-on vault-admin-off \
-	vault-caddy-apply vault-backup vault-backup-mirror vault-restore-check vault-restore vault-backup-timer vault-backup-setup \
-	vault-migrate-volumes vault-filler-cutover
+.PHONY: vault-up vault-down vault-logs vault-status vault-admin-on vault-admin-off vault-caddy-apply \
+	vault-backup vault-backup-check vault-backup-status vault-restore vault-backup-cron
 
 VAULT_NEED_ENV = @test -f $(VAULT_DIR)/.env || { echo "$@: no $(VAULT_DIR)/.env; cp $(VAULT_DIR)/.env.example $(VAULT_DIR)/.env and fill it in" >&2; exit 1; }
 
-vault-init:
-	$(VAULT_NEED_ENV)
-	VAULT_OWNER_EMAIL="$(VAULT_OWNER_EMAIL)" bash $(VAULT_DIR)/scripts/vault-init.sh
-	@$(MAKE) --no-print-directory filler-build
-	$(FILLER_ADMIN_RUN) -T filler-admin init
-
 vault-up:
 	$(VAULT_NEED_ENV)
-	@docker volume inspect happy-vault-config happy-filler >/dev/null 2>&1 || { echo "$@: no vault volumes; run make vault-init first" >&2; exit 1; }
-	$(FILLER_PORT_GUARD)
-	$(VAULT_COMPOSE) up -d --build --wait
-
-# BACKEND=shared (the default) enrolls into secrets/ itself; any other
-# Vaultwarden backend of the policy into secrets/<BACKEND>/ (made 0500 on first
-# use), against VAULT_URL (that backend's url in the policy, if it has one).
-VAULT_BACKEND_NAME := ^[a-z][a-z0-9_-]{0,31}$$
-vault-enroll:
-	@printf '%s\n' "$(BACKEND)" | grep -qxE '$(VAULT_BACKEND_NAME)' || { echo "$@: bad BACKEND=$(BACKEND) (1..32 of a-z 0-9 _ -, starting with a letter)" >&2; exit 1; }
-ifeq ($(BACKEND),shared)
-	$(FILLER_ADMIN_RUN) filler-admin enroll
-else
-	$(FILLER_ADMIN_RUN) -T --entrypoint sh filler-admin -euc \
-		'd=/filler/secrets/$$0; [ -d "$$d" ] && exit 0; chmod 0700 /filler/secrets; mkdir -m 0500 "$$d" || r=$$?; chmod 0500 /filler/secrets; exit $${r:-0}' "$(BACKEND)"
-	FILLER_BACKEND="$(BACKEND)" FILLER_ENROLL_VAULT_URL="$(VAULT_URL)" $(FILLER_ADMIN_RUN) filler-enroll enroll
-endif
-	$(VAULT_COMPOSE) restart filler
-
-# The tokens, both ways, with no account line to hand them across: the filler
-# (in its container) writes each client token it issues to outbox/, and
-# filler-token-take copies it into prep's secrets dirs (0600); the browser
-# controller token goes the other way through inbox/. A token that exists is
-# kept; ROTATE=1 NAME=bridge-client|vault-client issues that one again.
-vault-tokens:
-	$(FILLER_AS_OPERATOR)
-	@set -e; names="$$($(FILLER_ADMIN_RUN) -T filler-admin tokens-missing)"; \
-	if [ "$(ROTATE)" = 1 ]; then names="$(NAME)"; test -n "$$names" || { echo "$@: ROTATE=1 needs NAME=bridge-client|vault-client" >&2; exit 1; }; fi; \
-	for n in $$names; do $(FILLER_ADMIN_RUN) -T filler-admin token-issue NAME=$$n $(if $(filter 1,$(ROTATE)),ROTATE=1); done
-	@$(MAKE) --no-print-directory filler-token-take
-	@$(MAKE) --no-print-directory filler-controller-token-give
-	$(FILLER_ADMIN_RUN) -T filler-admin controller-token-take
-	@if [ "$$(docker container inspect -f '{{.State.Running}}' happy-vault-filler-1 2>/dev/null)" = true ]; then \
-		$(VAULT_COMPOSE) restart filler && $(MAKE) --no-print-directory filler-wait; fi
+	@$(VAULTWARDEN) up
 
 vault-down:
-	$(VAULT_COMPOSE) down
+	@$(VAULTWARDEN) down
 
 vault-logs:
-	$(VAULT_COMPOSE) logs -f --tail=200
+	@$(VAULTWARDEN) logs
 
 vault-status:
-	@echo "== vault (happy-vault)"
-	@$(VAULT_COMPOSE) ps -a --format 'table {{.Service}}\t{{.Status}}\t{{.Ports}}'
+	@echo "== vault (standalone container vaultwarden)"
+	@$(VAULTWARDEN) status
 	@echo "listening on 8222 (expect 127.0.0.1 only):"
 	@ss -ltnH | awk '{print $$4}' | grep -E ':8222$$' | sort -u || echo "  (none)"
 	@if ss -ltnH | awk '{print $$4}' | grep -E ':8222$$' | grep -qvE '^127\.0\.0\.1:'; then \
@@ -126,15 +79,6 @@ vault-status:
 	@printf "local  /alive : "; curl -fs --max-time 5 -o /dev/null -w '%{http_code}' $(VAULT_URL)/alive || printf " unreachable"; echo
 	@printf "public /alive : "; curl -s --max-time 8 -o /dev/null -w '%{http_code}' https://$(VAULT_SITE)/alive || printf " unreachable"; echo
 	@printf "public /admin : "; curl -s --max-time 8 -o /dev/null -w '%{http_code} (expect 404)' https://$(VAULT_SITE)/admin || printf " unreachable"; echo
-	@# Vaultwarden loads the env file into its own process (ENV_FILE), so
-	@# docker exec printenv never shows these; read key names from the mount.
-	@printf "env file      : "; docker exec happy-vault-vaultwarden-1 sh -c \
-		'f=/etc/vaultwarden/vaultwarden.env; test -r $$f || { echo "not readable in the container"; exit 0; }; \
-		for k in ORG_CREATION_USERS ADMIN_TOKEN; do grep -qE "^$$k=.+" $$f && printf "%s set  " $$k || printf "%s unset  " $$k; done; echo' \
-		2>/dev/null || echo "container not running"
-	@printf "backup timer  : "; systemctl --user is-active happy-vault-backup.timer 2>/dev/null || true
-	@echo "newest backup per location (STALE = older than 26h):"
-	@bash $(VAULT_DIR)/scripts/vault-backup.sh status || echo "  unknown"
 	@$(MAKE) --no-print-directory filler-status
 
 vault-admin-on:
@@ -143,54 +87,39 @@ vault-admin-on:
 vault-admin-off:
 	@bash $(VAULT_DIR)/scripts/vault-admin.sh off
 
-vault-migrate-volumes:
-	$(VAULT_NEED_ENV)
-	@bash $(VAULT_DIR)/scripts/vault-migrate.sh filler
-	@bash $(VAULT_DIR)/scripts/vault-migrate.sh vaultwarden
-	@printf "local /alive : "; curl -fs --max-time 5 -o /dev/null -w '%{http_code}\n' $(VAULT_URL)/alive
-	@printf "filler 6091  : "; curl -fs --max-time 5 http://127.0.0.1:6091/healthz; echo
-	@echo "$@: done. Secrets or policy changed before the cutover need make vault-filler-cutover to come across."
-
-vault-filler-cutover:
-	$(VAULT_NEED_ENV)
-	$(FILLER_PORT_GUARD)
-	@bash $(VAULT_DIR)/scripts/vault-migrate.sh filler-cutover
-	@$(MAKE) --no-print-directory filler-up
-
 vault-caddy-apply:
 	@bash $(VAULT_DIR)/scripts/vault-caddy-apply.sh
 
+VAULT_BACKUP := bash $(VAULT_DIR)/scripts/vault-backup.sh
+VAULT_CRON_BACKUP := 15 4 * * *  make -C /home/prep/happy/selfhost vault-backup >> ~/.local/state/happy/vault-backup.log 2>&1
+VAULT_CRON_CHECK := 45 4 * * 0  make -C /home/prep/happy/selfhost vault-backup-check >> ~/.local/state/happy/vault-backup.log 2>&1
+
 vault-backup:
-	@bash $(VAULT_DIR)/scripts/vault-backup.sh backup
+	@echo "== vault-backup $$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+	@$(VAULT_BACKUP) backup
 
-vault-backup-mirror:
-	@bash $(VAULT_DIR)/scripts/vault-backup.sh mirror
+vault-backup-check:
+	@echo "== vault-backup-check $$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+	@$(VAULT_BACKUP) check
 
-vault-restore-check:
-	@bash $(VAULT_DIR)/scripts/vault-backup.sh check
+vault-backup-status:
+	@$(VAULT_BACKUP) status
 
 vault-restore:
-	@test -n "$(TARBALL)" || { echo "$@: TARBALL=vault-<ts>.tar.gz (in happy-vault-backups) or an absolute path" >&2; exit 1; }
-	@bash $(VAULT_DIR)/scripts/vault-backup.sh restore "$(TARBALL)"
+	@test -n "$(TARBALL)" || { echo "usage: make vault-restore TARBALL=vault-<ts>.tar.gz|/path/to/vault-<ts>.tar.gz" >&2; exit 2; }
+	@$(VAULT_BACKUP) restore '$(TARBALL)'
 
-vault-backup-timer:
-	@mkdir -p $(VAULT_SYSTEMD)
-	@for u in happy-vault-backup.service happy-vault-backup.timer; do \
-		if [ -e $(VAULT_SYSTEMD)/$$u ] && ! cmp -s $(VAULT_DIR)/systemd/$$u $(VAULT_SYSTEMD)/$$u; then \
-			d=$(VAULT_SYSTEMD)/trash/$$(date +%Y%m%d_%H%M%S)_$$u; mkdir -p $$d && mv $(VAULT_SYSTEMD)/$$u $$d/; fi; \
-		cp $(VAULT_DIR)/systemd/$$u $(VAULT_SYSTEMD)/$$u; done
-	systemctl --user daemon-reload
-	systemctl --user enable --now happy-vault-backup.timer
-	@systemctl --user list-timers happy-vault-backup.timer --no-pager
+# Adds each line only if prep's crontab lacks it; every other line stays as it is. The crontab
+# as it was goes to ~/.local/state/happy/crontab-before-<ts> first.
+vault-backup-cron:
+	@mkdir -p $(HOME)/.local/state/happy
+	@cur="$$(crontab -l 2>/dev/null || true)"; add=""; \
+	for l in '$(VAULT_CRON_BACKUP)' '$(VAULT_CRON_CHECK)'; do \
+		if grep -qxF -- "$$l" <<<"$$cur"; then echo "vault-backup-cron: present: $$l"; \
+		else add="$$add$$l"$$'\n'; echo "vault-backup-cron: adding: $$l"; fi; \
+	done; \
+	if [ -n "$$add" ]; then \
+		ts=$$(date -u +%Y%m%dT%H%M%SZ); printf '%s\n' "$$cur" > $(HOME)/.local/state/happy/crontab-before-$$ts; \
+		{ printf '%s\n' "$$cur"; printf '%s' "$$add"; } | crontab - && echo "vault-backup-cron: installed (previous crontab in ~/.local/state/happy/crontab-before-$$ts)"; \
+	fi
 
-# Prints the one-time root setup; nothing here runs sudo. <mirror> is uid
-# 1991's with mode 0711 so uid 1990 can reach <mirror>/filler/ (its own, 0700)
-# without listing the vault tarballs; 1991 cannot read the filler's.
-vault-backup-setup:
-	@echo "# mirror dirs and ZFS snapshot delegation"
-	@echo "sudo zfs create -p -o compression=lz4 girth/backup/vault"
-	@echo "sudo mkdir -p /mnt/ai-data/backups/happy-vault"
-	@for m in $(VAULT_BACKUP_MIRRORS); do \
-		echo "sudo chown $(or $(VAULT_UID),1991):$(or $(VAULT_UID),1991) $$m && sudo chmod 0711 $$m"; \
-		echo "sudo install -d -o $(or $(FILLER_UID),1990) -g $(or $(FILLER_GID),1990) -m 0700 $$m/filler"; done
-	@echo "sudo zfs allow -u $(USER) snapshot,mount girth/backup"

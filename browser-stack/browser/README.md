@@ -158,7 +158,7 @@ old ssh tunnels are retired; see "Chats on the Macs" for where their files are).
 - `run-docker/` (uid 1995, 750): the docker proxy's socket, `docker.sock` (660).
 
 `secrets/` stays the operator's (`prep`, 600), so host tools (the stdio MCP server,
-`make vault-tokens`, Happy Agent) keep reading it as before. `browser-init` copies what each
+`make filler-token-take`, Happy Agent) keep reading it as before. `browser-init` copies what each
 service needs into that service's own directory; nothing is group-readable. A copy is replaced
 when the source changes, but a file removed from `secrets/` stays in the copies until moved
 to trash by hand.
@@ -177,7 +177,7 @@ Every service and every pod runs as its uid, with `cap_drop: ALL`, no capabiliti
 `no-new-privileges`, and a read-only root with a tmpfs `/tmp` (`HOME=/tmp`). Chromium keeps
 its sandbox: its `/tmp` tmpfs allows exec, `shm_size` is 2g, and the node's seccomp profile
 lets it make the user namespaces its renderers run in. Controllers get a `noexec` `/tmp`.
-All uids are below 65536, so they map through a rootless daemon's subuid range. Override
+All uids are below 65536. The stack runs in prep's own Docker daemon. Override
 them with `BRIDGE_UID`, `CONTROLLER_UID`, `BROWSER_NODE_UID`, `DOCKER_PROXY_UID` and
 `LAUNCHER_SOCKET_GID` (none may be 0).
 
@@ -199,8 +199,8 @@ A create body must match the launcher's templates: host network, read-only root,
 `CapDrop: ALL` and no `CapAdd`, `no-new-privileges`, the role's uid, a tmpfs only at `/tmp`,
 and binds only under that slot's `data/pods/slot-N/` or read-only under the browser
 directory, never the docker socket. Anything else gets a 403 and never reaches the engine.
-Under rootless docker set `HAPPY_DOCKER_SOCKET` to the user's socket and
-`DOCKER_SOCKET_GID=0`.
+`browser.mk` sets `DOCKER_SOCKET_GID` to the group of `HAPPY_DOCKER_SOCKET` (the
+`docker` group); a socket elsewhere is named with `HAPPY_DOCKER_SOCKET`.
 
 **Host network.** `browser-node`, `controller`, `bridge` and the pods stay on the host
 network: the controllers and Chromium talk over the host's `127.0.0.1`, and the bridge
@@ -226,8 +226,7 @@ Tunables, such as screen size, ports and `MAX_SESSIONS`, go in
   panel (28 px, `session.screen0.toolbar.height` in `kiosk/fluxbox/init.window`) and Chrome's
   87 px of tab strip and address bar (1920x1085): `scripts/browser-geometry.sh` works out
   `BROWSER_PANEL_HEIGHT` and `BROWSER_VIEWPORT_HEIGHT` from `BROWSER_KIOSK` and the fluxbox
-  config (and checks every value as an integer in range); `browser.mk`, and under happy-svc
-  `selfhost/svc/happy-svc-ctl`, run it and hand them to the controller, the bridge frame and the launcher, so Playwright's
+  config (and checks every value as an integer in range); `browser.mk` runs it and hands them to the controller, the bridge frame and the launcher, so Playwright's
   viewport matches the maximized window exactly. The kiosk has no panel (1920x1200).
 - **A normal browser window, maximized (`BROWSER_KIOSK=0`, the default):** `kiosk/` is
   mounted into browser-node. `happy-kiosk.mjs` runs in place of the image's `server.mjs` and

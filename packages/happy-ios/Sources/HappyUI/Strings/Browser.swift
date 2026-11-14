@@ -76,6 +76,7 @@ extension Strings {
     enum LiveBrowser {
         static let title = "Live Browser"
         static let watching = "Watching"
+        static let clickToWatch = "Click to watch"
         static let needsYou = "Needs you"
         static let done = "Done"
         static let youHaveControl = "You have control"
@@ -114,6 +115,10 @@ extension Strings {
         /// The red line over the composer, before the status.
         static let indicator = "Live browser"
         static func indicator(_ status: String) -> String { "\(indicator) · \(status)" }
+        /// The same, with yolo's words between while it is on.
+        static func indicator(_ status: String, yolo: Bool) -> String {
+            yolo ? "\(indicator) · \(yoloEnabled) · \(status)" : indicator(status)
+        }
         /// The full screen's button that takes the browser from the agent.
         static let takeControl = "Take control"
         /// The player's: the same, short.
@@ -196,9 +201,34 @@ extension Strings {
         /// approves what the agent asks for by itself.
         static let yoloMenu = "Yolo mode"
         static let yoloBadge = "Yolo"
+        /// Said wherever the browser shows while yolo is on: the full
+        /// screen's line, the player's badge, the minimized line.
+        static let yoloEnabled = "Yolo mode enabled"
         static let yoloOn = "Yolo mode is on"
         static let yoloOff = "Yolo mode is off"
         static let yoloHint = "Approves the agent’s browser actions without asking."
+        /// The "?" that shows every button's tip at once.
+        static let help = "Help"
+        /// The player's menu item that does the same.
+        static let showHelp = "Show button help"
+        /// What a held header, strip or player button says
+        /// (`HoldTip`): its name, then this.
+        enum Tip {
+            static let minimize = "Shrink the browser to the line above the chat."
+            static let endBrowser = "Close this browser for good; the agent starts a new one if needed."
+            static let sleep = "Pause the browser to save power; it wakes on the agent’s next action."
+            static let takeControl = "Use the page yourself; the agent waits until you release."
+            static let releaseControl = "Hand the page back to the agent."
+            static let reload = "Reload the page."
+            static let more = "Viewer options."
+            static let close = "Hide the player; the line above the chat brings it back."
+            static let fullScreen = "Show the browser on the whole screen."
+            static let resize = "Make the player bigger or smaller."
+            static let playerMore = "Sleep or end the browser."
+            static let review = "See the action the agent waits on; approve or deny it."
+            static let retry = "Check on the browser again."
+            static let help = "Show what every button does."
+        }
         static func yoloApproved(_ summary: String) -> String { "Yolo approved: \(summary)" }
         static let yoloFailed = "Couldn’t Change Yolo Mode"
         /// `/auto` answered 404: a bridge from before it.

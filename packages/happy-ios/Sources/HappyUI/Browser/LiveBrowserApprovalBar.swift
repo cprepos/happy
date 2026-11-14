@@ -66,6 +66,10 @@ final class LiveBrowserApprovalBar: UIView {
         deny.addAction(UIAction { [weak self] _ in self?.decide(false) }, for: .touchUpInside)
         approve.configuration?.title = Strings.LiveBrowser.approve
         approve.configuration?.cornerStyle = .capsule
+        // Its own fill and ink: `.filled()` takes the window's tint, the
+        // header's, which is white in dark mode: white on white.
+        approve.configuration?.baseBackgroundColor = .liveBrowserFill
+        approve.configuration?.baseForegroundColor = .liveBrowserOnFill
         approve.accessibilityIdentifier = "live-browser-approval-approve"
         approve.addAction(UIAction { [weak self] _ in self?.decide(true) }, for: .touchUpInside)
         for view in [icon, summary, details, deny, approve] as [UIView] { addSubview(view) }
@@ -128,7 +132,7 @@ final class LiveBrowserApprovalBar: UIView {
     private func render() {
         let asking = approval != nil
         icon.image = UIImage(systemName: asking ? "checkmark.shield" : "bolt.shield.fill")
-        icon.tintColor = asking ? .systemOrange : .systemYellow
+        icon.tintColor = .liveBrowserYolo
         summary.text = approval?.summary ?? notice
         details.text = detailText
         details.isHidden = detailText == nil
@@ -220,5 +224,21 @@ final class LiveBrowserApprovalBar: UIView {
             UIView.animate(withDuration: 0.18) { self.transform = .identity }
         }
     }
+}
+
+extension UIColor {
+    /// Yolo's orange: deep on a light background, bright on a dark one,
+    /// readable as text on either (systemOrange is too pale on white).
+    static var liveBrowserYolo: UIColor {
+        UIColor { traits in
+            traits.userInterfaceStyle == .dark
+                ? UIColor(red: 1, green: 0x9F / 255, blue: 0x0A / 255, alpha: 1)
+                : UIColor(red: 0xA6 / 255, green: 0x50 / 255, blue: 0, alpha: 1)
+        }
+    }
+    /// A filled button's fill and its ink, opposite in each appearance:
+    /// never the tint, which is the header's white in dark mode.
+    static var liveBrowserFill: UIColor { UIColor(Palette.roundButtonFill) }
+    static var liveBrowserOnFill: UIColor { UIColor(Palette.roundButtonText) }
 }
 #endif

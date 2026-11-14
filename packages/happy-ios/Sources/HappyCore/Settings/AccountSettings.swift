@@ -95,6 +95,9 @@ public struct AccountSettings: Equatable, Sendable {
 
     public var hideArchivedSessions: Bool { bool("hideInactiveSessions") }
     public var analyticsOptOut: Bool { bool("analyticsOptOut") }
+    /// A hardware keyboard's Return sends, and Shift, ⌘ or Control with it
+    /// makes a new line (`agentInputEnterToSend`; the web's Enter to send).
+    public var enterToSend: Bool { bool("agentInputEnterToSend") }
     public var experiments: Bool { bool("experiments") }
     public var avatarStyle: AvatarStyle { AvatarStyle(normalizing: string("avatarStyle")) }
     public var avatarMonochrome: Bool { bool("avatarMonochrome") }

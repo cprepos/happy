@@ -58,7 +58,7 @@ export function backendVaults({ vault = null, vaults = null }) {
     return (backend) => {
         let v = null;
         try { v = backend ? get(backend) : null; } catch { v = null; }
-        if (!v) throw new FillError(`the filler is not enrolled with this chat's vault backend${backend ? ` (${backend})` : ''}; make vault-enroll`, 503, 'not_enrolled');
+        if (!v) throw new FillError(`the filler is not enrolled with this chat's vault backend${backend ? ` (${backend})` : ''}; make filler-enroll`, 503, 'not_enrolled');
         return v;
     };
 }

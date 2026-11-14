@@ -168,8 +168,10 @@ final class LiveBrowserLayoutTests: XCTestCase {
             assertFrame(down.menu, rect(44, 0, 44, 44))
             assertFrame(down.fullScreen, rect(144, 0, 44, 44))
             assertFrame(down.resize, rect(188, 0, 44, 44))
-            // Take control in the bar's middle, between the sides.
-            assertFrame(down.control, rect(88, 0, 56, 44))
+            // The yolo shield beside •••; that leaves Take control no
+            // room on the bar: the footer has it.
+            assertFrame(down.yolo, rect(88, 0, 44, 44))
+            XCTAssertNil(down.control)
             XCTAssertTrue(down.showsPill)
             XCTAssertFalse(down.isBig)
             XCTAssertEqual(down.radius, LiveBrowserDockLayout.Metrics.radius)
@@ -201,6 +203,7 @@ final class LiveBrowserLayoutTests: XCTestCase {
         XCTAssertNil(tight.menu)
         XCTAssertNil(tight.fullScreen)
         XCTAssertNil(tight.control, "no room on the bar: the footer has it")
+        XCTAssertNil(tight.yolo)
         assertControlsClearThePicture(tight)
     }
 
@@ -218,7 +221,8 @@ final class LiveBrowserLayoutTests: XCTestCase {
             assertFrame(big.menu, rect(44, 0, 44, 44))
             assertFrame(big.fullScreen, rect(314, 0, 44, 44))
             assertFrame(big.resize, rect(358, 0, 44, 44))
-            assertFrame(big.control, rect(88, 0, 226, 44))
+            assertFrame(big.yolo, rect(88, 0, 44, 44))
+            assertFrame(big.control, rect(132, 0, 138, 44))
             XCTAssertEqual(big.control?.midX, big.bar.midX)
             XCTAssertTrue(big.isBig)
             XCTAssertEqual(big.radius, 0)
@@ -305,6 +309,35 @@ final class LiveBrowserLayoutTests: XCTestCase {
         assertControlsClearThePicture(big)
     }
 
+    func testA1920x1085FrameInADockKeptAt16x10ShowsWholeAndReFits() {
+        // The bridge's frames went from 1920x1200 to 1920x1085. An iPad's
+        // player kept 420 wide was 420x263 for them; it keeps its width
+        // and takes the new frame's aspect, so the picture is the frame's
+        // shape and an aspect-fit image fills it with nothing cropped.
+        let frame: CGFloat = 1920.0 / 1085.0
+        let card = CGRect(x: 16, y: 1180 - 20 - 76, width: 820 - 32, height: 56)
+        func pad(_ aspect: CGFloat?) -> LiveBrowserDockLayout {
+            LiveBrowserDockLayout(.init(size: CGSize(width: 820, height: 1180), safeArea: LayoutInsets(top: 74, bottom: 20),
+                                        card: card, anchor: card.minY - 20, idiom: .pad, width: 420, aspect: aspect))
+        }
+        assertFrame(pad(nil).picture, rect(0, 44, 420, 263))
+        let fitted = pad(frame)
+        XCTAssertEqual(fitted.aspect, frame)
+        assertFrame(fitted.picture, rect(0, 44, 420, 237))
+        XCTAssertEqual(fitted.picture.width / fitted.picture.height, frame, accuracy: 0.01)
+        XCTAssertEqual(fitted.frame.maxY, pad(nil).frame.maxY, "the corner stays")
+        XCTAssertEqual(fitted.frame.height, 44 + 237 + 30)
+        // A phone's small preset, and its grip, follow the frame too.
+        let phone = LiveBrowserDockLayout(.init(size: size, safeArea: safe, card: rect(8, 776, 386, 56), anchor: 756, aspect: frame))
+        assertFrame(phone.picture, rect(0, 44, 232, 131))
+        XCTAssertEqual(phone.width(dragging: .bottomRight, from: 232, by: CGPoint(x: 40, y: 40 / frame)), 272, accuracy: 0.001)
+        // Nonsense from a header reads as no frame yet.
+        XCTAssertEqual(pad(0).picture, pad(nil).picture)
+        // A phone's full-screen picture, edge to edge at the frame's shape.
+        let page = LiveBrowserFullScreenLayout(size: size, safeArea: safe, top: 116, phone: true, aspect: frame)
+        assertFrame(page.content, rect(0, 116, 402, 227))
+    }
+
     // MARK: Full screen
 
     func testUprightOnAPhoneThePictureIsEdgeToEdgeAtItsAspect() {
@@ -357,16 +390,17 @@ final class LiveBrowserLayoutTests: XCTestCase {
         assertFrame(wide.fullScreen, rect(88, 0, 44, 44))
         assertFrame(wide.resize, rect(132, 0, 44, 44))
         XCTAssertNil(wide.control, "no room between them: Take control is the footer's")
+        XCTAssertNil(wide.yolo, "under five buttons wide: yolo is on the strip and full screen")
         assertControlsClearThePicture(wide)
     }
 
     /// Every button is a 44-point target on the bar, none on the picture
     /// (the page and its title) and none on another.
     private func assertControlsClearThePicture(_ layout: LiveBrowserDockLayout, file: StaticString = #filePath, line: UInt = #line) {
-        let buttons = [layout.close, layout.menu, layout.fullScreen, layout.resize].compactMap { $0 }
+        let buttons = [layout.close, layout.menu, layout.yolo, layout.fullScreen, layout.resize].compactMap { $0 }
         if let control = layout.control {
             XCTAssertTrue(layout.bar.contains(control), file: file, line: line)
-            XCTAssertEqual(control.midX, layout.bar.midX, "Take control is centred", file: file, line: line)
+            XCTAssertGreaterThanOrEqual(control.width, 44, file: file, line: line)
             for button in buttons { XCTAssertFalse(control.intersects(button), "\(control) overlaps \(button)", file: file, line: line) }
         }
         for (index, button) in buttons.enumerated() {
