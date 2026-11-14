@@ -6,6 +6,7 @@
 //! keys and the ElevenLabs key decide which of the two the server offers.
 
 pub mod backends;
+pub mod bridge;
 pub mod conversations;
 pub mod elevenlabs;
 pub mod livekit_token;
