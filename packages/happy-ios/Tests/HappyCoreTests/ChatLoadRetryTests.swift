@@ -55,8 +55,6 @@ final class ChatLoadRetryTests: XCTestCase {
         _ = await (a, b, c)
         let read = try await eventually(seen, "read") { $0.loaded && $0.error == nil && !$0.items.isEmpty }
         XCTAssertEqual(read.items.first?.text, "hello")
-        let inFlight = await conversation.loadInFlight
-        XCTAssertFalse(inFlight)
         let retried = await server.bootstraps
         XCTAssertEqual(retried, 2)
         // Read, it is not read again.

@@ -7,19 +7,18 @@ import OSLog
 // out of Conversation.swift so upstream merges do not conflict there.
 extension Conversation {
     // Stored in Conversation.swift, beside `reading` (an extension cannot
-    // store): `readingId`, which `reload` `reading` is (`beginReading`);
-    // `starting`, `start` is past its guard and not yet following, so a
+    // store): `starting`, `start` is past its guard and not yet following, so a
     // second call or a retry waits for it rather than starting again;
     // `followed`, `follow` has asked for history, so a retry reads again
     // from there; `stopped`, `stop` was called; `claimOverride`, stands in
     // for the checkpoint claim, for a test.
 
-    /// Reads again a conversation whose read failed, or that never
-    /// finished reading with nothing reading it now: a screen opening it,
-    /// or the phone coming back to it. A start that failed is started
-    /// again. Does nothing while a start or a read is underway, once read
-    /// without an error, for new work, or after `stop`; so it may be
-    /// called as often as it likes.
+    /// Reads again a conversation whose read failed, now rather than at
+    /// the read's next backoff (`refresh`): a screen opening it, the phone
+    /// coming back to it, or Retry. A start that failed is started again.
+    /// Does nothing while a start is underway, without a failed read
+    /// (`refresh` clears it as it begins), for new work, or after `stop`;
+    /// so it may be called as often as it likes.
     public func retryLoad() async {
         guard !stopped, !starting, creation == nil else { return }
         if following == nil {
@@ -28,13 +27,11 @@ extension Conversation {
             await start()
             return
         }
-        guard followed, reading == nil, snapshot.error != nil || !snapshot.loaded else { return }
+        guard followed, snapshot.error != nil else { return }
         Self.note("retrying read for \(agentId)")
-        snapshot.error = nil
         // Nothing to show meanwhile: back to reading, not an empty conversation.
         if transcript.runs.isEmpty, transcript.pending.isEmpty { snapshot.loaded = false }
-        publish()
-        reload()
+        await refresh()
     }
 
     /// Pull to refresh: the conversation read whole again now, whether or
@@ -84,22 +81,6 @@ extension Conversation {
         guard !starting, !stopped else { return false }
         starting = true
         return true
-    }
-
-    /// `reload`'s read begins: a new `readingId` (stored in
-    /// Conversation.swift, beside `reading`), which the read hands to
-    /// `endReading` as it ends.
-    func beginReading() -> UUID {
-        let id = UUID()
-        readingId = id
-        return id
-    }
-
-    /// `reload`'s read `id` ended: `reading` is let go of only when it is
-    /// still that read's, so one that ends after a newer began leaves the
-    /// newer's in place.
-    func endReading(_ id: UUID) {
-        if readingId == id { reading = nil }
     }
 
     /// A read cancelled underneath it, not by it (a connect another caller

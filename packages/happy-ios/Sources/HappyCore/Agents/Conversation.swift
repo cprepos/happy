@@ -406,7 +406,7 @@ public actor Conversation {
     private var children: Task<Void, Never>?
     var reading: Task<Void, Never>?
     // plugins: stored for Conversation+Reload.swift and +StartingMode.swift, which say what each is.
-    var readingId = UUID(), starting = false, followed = false, stopped = false, followsDefault = false
+    var starting = false, followed = false, stopped = false, followsDefault = false
     var claimOverride: (@Sendable (String) async throws -> Void)?
     private var reloadSoon: Task<Void, Never>?
     /// History reads finished, read or failed.
@@ -762,9 +762,7 @@ public actor Conversation {
         let agentId = agentId
         let anchors = anchoring
         anchoring = false
-        let id = beginReading()
         reading = Task {
-            defer { endReading(id) }
             var failures = 0
             var anchored = anchors
             while true {
