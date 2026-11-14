@@ -4,7 +4,7 @@
   "localized": {
     "Strings.swift": {"strings":212,"functions":6},
     "AccountKinds.swift": {"strings":11,"functions":1},
-    "Browser.swift": {"strings":3,"functions":2},
+    "Browser+Plugins.swift": {"strings":3,"functions":2},
     "Chat.swift": {"strings":16,"functions":2},
     "ChatQuestions.swift": {"strings":8,"functions":2},
     "Composer.swift": {"strings":25,"functions":11},
