@@ -7,7 +7,7 @@
 #                      stack's virtual `coder` on agentgateway (systemd, port 8903); the old
 #                      local voice LLM is opt-in: make voice-up SVC=llm
 #   make voice-down    stop and remove the voice containers (volumes and model cache kept)
-#   make voice-status  container state + per-service health + GPU memory
+#   make voice-status  container state, health of prep-air's livekit/stt/tts/agent, GPU memory
 #   make voice-logs    follow logs (SVC=llm to pick one service)
 #   make voice-smoke   end-to-end smoke test of every service (see scripts/voice-smoke.sh)
 #   make voice-try     browser test page (TTS, STT, full turn) on http://127.0.0.1:8897 (loopback only)
@@ -25,6 +25,10 @@ VOICE_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 VOICE_ENV := $(VOICE_DIR)/.env.voice
 VOICE_COMPOSE := docker compose -p happy-voice -f $(VOICE_DIR)/compose.voice.yml --env-file $(VOICE_ENV)
 SVC ?=
+# LiveKit, STT, TTS and the voice-agent worker run on prep-air (selfhost/mac-voice). voice-status
+# probes it over the LAN and checks the launchd jobs over ssh (an operator check, not the app).
+VOICE_MAC ?= 192.168.2.56
+VOICE_MAC_SSH ?= prep-air
 
 .PHONY: voice-keys voice-build voice-up voice-down voice-status voice-logs voice-smoke voice-try voice-agent-up voice-agent-logs voice-agent-e2e voice-stream-e2e voice-agent-venv voice-tts-lead-sweep voice-agent-test
 
@@ -62,11 +66,16 @@ voice-status: $(VOICE_ENV)
 	@$(VOICE_COMPOSE) ps
 	@set -a; . "$(VOICE_ENV)"; set +a; \
 	check() { printf '%-8s %-32s ' "$$1" "$$2"; out=$$(curl -fsS -m 3 "$$2" 2>/dev/null) && echo "OK $$(echo "$$out" | head -c 120)" || echo "DOWN"; }; \
-	check livekit http://127.0.0.1:7880/; \
-	check stt  http://127.0.0.1:$${STT_PORT:-8090}/health; \
-	check tts  http://127.0.0.1:$${TTS_PORT:-8880}/health; \
-	check llm  $${VOICE_LLM_BASE_URL:-http://127.0.0.1:8903/v1}/models; \
-	check agent http://127.0.0.1:$${VOICE_AGENT_HTTP_PORT:-8791}/
+	check livekit http://$(VOICE_MAC):7880/; \
+	check stt  http://$(VOICE_MAC):$${STT_PORT:-8090}/health; \
+	check tts  http://$(VOICE_MAC):$${TTS_PORT:-8880}/health; \
+	check llm  $${VOICE_LLM_BASE_URL:-http://127.0.0.1:8903/v1}/models
+	@printf '%-8s %-32s ' agent "$(VOICE_MAC_SSH):com.happy.voice-agent"; \
+	ssh -o BatchMode=yes -o ConnectTimeout=5 $(VOICE_MAC_SSH) \
+	  'launchctl print gui/$$(id -u)/com.happy.voice-agent 2>/dev/null | grep -qE "^[[:space:]]+state = running" && curl -fsS -m 3 http://127.0.0.1:$${VOICE_AGENT_HTTP_PORT:-8791}/ >/dev/null && echo OK || echo DOWN' 2>/dev/null || echo "DOWN (ssh)"
+	@printf '%-8s %-32s ' lk-job "$(VOICE_MAC_SSH):com.openclaw.livekit"; \
+	ssh -o BatchMode=yes -o ConnectTimeout=5 $(VOICE_MAC_SSH) \
+	  'launchctl print gui/$$(id -u)/com.openclaw.livekit 2>/dev/null | grep -qE "^[[:space:]]+state = running" && echo OK || echo DOWN' 2>/dev/null || echo "DOWN (ssh)"
 	@nvidia-smi --query-gpu=index,name,memory.used,memory.total,utilization.gpu --format=csv,noheader
 
 voice-logs: $(VOICE_ENV)

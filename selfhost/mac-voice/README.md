@@ -9,6 +9,10 @@ either one. MLX does all the work on the Mac. Nothing here runs an LLM.
 | STT | 8090 | `nvidia/nemotron-speech-streaming-en-0.6b` (mlx-audio port, fp16 encoder) | WS `/v1/stream` (partial/final JSON), `POST /v1/audio/transcriptions`, `GET /health` |
 | TTS | 8880 | Kokoro-82M (`prince-canuma/Kokoro-82M`, mlx-audio), voice `af_heart` | `POST /v1/audio/speech` (pcm, wav and mp3 stream; flac and opus are sent whole), `GET /v1/audio/voices`, `GET /v1/models`, `GET /health` |
 
+prep-air also runs the shared LiveKit (`livekit.yaml`, launchd `com.openclaw.livekit`) and
+Happy's voice-agent worker (`agent/`, launchd `com.happy.voice-agent`); see "LiveKit and the voice
+agent" below and `../VOICE_SERVICES.md`.
+
 ## Setup and start
 
 Run it in place from a checkout of this repo on the Mac. The `.venv`, `logs/` and `bench/`
@@ -35,6 +39,28 @@ installed, `run.sh start|restart` goes through `launchctl kickstart`.
 
 The models download into the Hugging Face cache on first start: Nemotron 0.6B is 2.5 GB and
 Kokoro-82M with its voices is 0.34 GB. The `.venv` takes another 1.4 GB.
+
+## LiveKit and the voice agent
+
+LiveKit comes from Homebrew (`brew install livekit`). Its launchd job keeps OpenClaw's label,
+`com.openclaw.livekit`, and runs `livekit-server --config <this folder>/livekit.yaml`. The yaml
+has no secrets; it names `key_file: ~/.config/livekit/keys.yaml` (chmod 600), one `name: secret`
+line per consumer. Any worker on it must register with an explicit `agent_name`: an unnamed worker
+is sent into every room, Happy's included.
+
+The worker is `packages/happy-voice-agent` from this checkout:
+
+```sh
+# ~/.config/happy-voice-agent/agent.env, chmod 600:
+#   LIVEKIT_URL=ws://127.0.0.1:7880, LIVEKIT_API_KEY/SECRET (Happy's pair),
+#   STT_URL=ws://127.0.0.1:8090/v1/stream, TTS_URL=http://127.0.0.1:8880/v1, TTS_VOICE, TTS_SPEED,
+#   LLM_BASE_URL=http://192.168.2.72:8904/v1, LLM_MODEL=coder-voice, LLM_API_KEY (this Mac's gateway key),
+#   VOICE_AGENT_NAME=happy-voice, VOICE_AGENT_HTTP_PORT=8791, VOICE_AGENT_IDLE_PROCESSES=1,
+#   HF_HUB_OFFLINE=1, TRANSFORMERS_OFFLINE=1
+./agent/install-agent.sh              # builds packages/happy-voice-agent/.venv if missing, loads com.happy.voice-agent
+./agent/install-agent.sh --uninstall  # unloads it; the plist goes to ~/trash
+tail -f logs/agent.log                # look for: registered worker ... "agent_name": "happy-voice"
+```
 
 ## Settings (environment)
 

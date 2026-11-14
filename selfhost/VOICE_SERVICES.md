@@ -1,7 +1,12 @@
 # Voice services contract
 
 This document is for whoever writes the voice-agent worker (LiveKit Agents, Python).
-Everything below runs from `selfhost/compose.voice.yml` (Compose project `happy-voice`).
+
+**Since 2026-11-13 LiveKit and the voice-agent worker run natively on prep-air** (192.168.2.56,
+launchd, no Docker), next to the Mac STT/TTS in `selfhost/mac-voice`; see "LiveKit on prep-air"
+below. The prep-ml `livekit` and `voice-agent` services in `selfhost/compose.voice.yml` (Compose
+project `happy-voice`) sit behind the `local-livekit` profile as a fallback. The rest of this
+document still describes the prep-ml services where it names containers.
 
 ```
 make voice-up      # start livekit, stt, tts and the voice-agent worker
@@ -54,13 +59,41 @@ STT and TTS are deliberately on different GPUs (`STT_GPU=0`, `TTS_GPU=1`). The S
 one global GPU lock per 10-20 ms streaming step, so when Kokoro shared the device its synthesis
 bursts queued behind those steps and reply chunks arrived late enough to sound choppy.
 
+## LiveKit on prep-air (shared with OpenClaw)
+
+One LiveKit serves both Happy and OpenClaw on prep-air.
+
+| What | Where |
+|---|---|
+| LiveKit 1.13.x (Homebrew) | launchd `com.openclaw.livekit` (label kept from OpenClaw), `~/Library/LaunchAgents/com.openclaw.livekit.plist`, log `/tmp/openclaw-livekit.err` |
+| Config (no secrets) | `selfhost/mac-voice/livekit.yaml`: signaling 7880, ICE/TCP 7881, UDP 50000-50100, `node_ip` 192.168.2.56, ICE limited to that address, `empty_timeout` 300, `departure_timeout` 20, no participant cap |
+| Keys | `~/.config/livekit/keys.yaml` (chmod 600, `key_file`): one pair per consumer (`openclaw_...` and Happy's `LIVEKIT_API_KEY`) |
+| Voice agent | launchd `com.happy.voice-agent`, `selfhost/mac-voice/agent/` (wrapper, plist template, `install-agent.sh`), env `~/.config/happy-voice-agent/agent.env` (chmod 600), log `selfhost/mac-voice/logs/agent.log`, health `127.0.0.1:8791` |
+| happy-server | `LIVEKIT_URL=ws://192.168.2.56:7880` in `selfhost/.env` |
+
+LAN only: no Caddy site, no router forward. The worker on prep-air reaches STT/TTS on loopback
+and the LLM on prep-ml's LAN gateway (`http://192.168.2.72:8904/v1`, prep-air's gateway key,
+model `coder-voice`).
+
+**Every worker on this LiveKit must set an explicit `agent_name` and be dispatched explicitly.**
+A worker with no `agent_name` is auto-dispatched into every new room, Happy's `happy-voice-*`
+rooms included. Happy's worker registers as `happy-voice`.
+
+`make voice-status` probes prep-air's LiveKit, STT, TTS and the two launchd jobs.
+`scripts/check-no-public-livekit.sh` checks the public paths stay closed and the internal ones
+(prep-ml host and the happy-server container to 192.168.2.56:7880/7881) work.
+
+Fallback to prep-ml: `docker compose -p happy-voice -f compose.voice.yml --env-file .env.voice
+--profile local-livekit up -d livekit voice-agent`, set `LIVEKIT_URL=ws://livekit:7880` (or drop
+the line), and recreate happy-server.
+
 ## LiveKit
 
 - API key/secret: `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` in `.env.voice`.
-- Worker URL (same host): `ws://127.0.0.1:7880`. happy-server: `ws://livekit:7880` (`LIVEKIT_URL`). No client URL.
-- Health: `GET http://127.0.0.1:7880/` -> `OK`.
+- Worker URL (same host): `ws://127.0.0.1:7880`. happy-server: `ws://192.168.2.56:7880` (prep-air; `ws://livekit:7880` for the prep-ml fallback) (`LIVEKIT_URL`). No client URL.
+- Health: `GET http://192.168.2.56:7880/` -> `OK`.
 - Token: a standard LiveKit JWT (`livekit-api` `AccessToken(...).with_grants(VideoGrants(room_join=True, room=...))`).
-- Room settings: `empty_timeout: 300`, `departure_timeout: 20` (`selfhost/livekit.yaml`).
+- Room settings: `empty_timeout: 300`, `departure_timeout: 20` (`selfhost/mac-voice/livekit.yaml`; `selfhost/livekit.yaml` for the fallback).
 
 ## STT: Nemotron streaming (`http://127.0.0.1:8090`)
 
