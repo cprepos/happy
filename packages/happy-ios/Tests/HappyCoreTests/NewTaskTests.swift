@@ -253,8 +253,14 @@ extension NewTaskTests {
     /// The computer's configuration, declaring an Anthropic model its
     /// default while listing Codex first.
     static let config = #"{"config":{"defaults":{"providerId":"claude","modelId":"anthropic/opus-5-5","permissionMode":"auto"},"models":{"openai/sol":{"name":"Sol","efforts":["low","medium"],"defaultEffort":"medium"},"anthropic/opus-5-5":{"name":"Opus 5.5","efforts":["medium","high"],"defaultEffort":"high"},"anthropic/sonnet-5":{"name":"Sonnet 5","efforts":["low","medium"],"defaultEffort":"medium"}},"providers":{"codex":{"type":"codex","enabled":true,"models":[{"id":"openai/sol","enabled":true}]},"claude":{"type":"claude","enabled":true,"models":[{"id":"anthropic/opus-5-5","enabled":true},{"id":"anthropic/sonnet-5","enabled":true}]}}}}"#
-    static let live = AgentWire.Mode(providerId: "claude", modelId: "anthropic/opus-5-5", effort: "high", serviceTier: nil, permissionMode: "auto")
-    static let stale = AgentWire.Mode(providerId: "codex", modelId: "openai/sol", effort: "medium", serviceTier: nil, permissionMode: "auto")
+    /// What new work starts on there, as desktop resolves it
+    /// (`ModelCatalog.startMode`): the declared model on its account, at
+    /// the person's default effort, which unset is medium, since Opus 5.5
+    /// offers it; its own "high" goes only for a person's effort it lacks.
+    static let live = AgentWire.Mode(providerId: "claude", modelId: "anthropic/opus-5-5", effort: "medium", serviceTier: nil, permissionMode: "auto")
+    /// Kept offline from an earlier configuration: another account, model
+    /// and effort, so each is seen replaced.
+    static let stale = AgentWire.Mode(providerId: "codex", modelId: "openai/sol", effort: "low", serviceTier: nil, permissionMode: "auto")
     static let sonnet = AgentWire.Mode(providerId: "claude", modelId: "anthropic/sonnet-5", effort: "medium", serviceTier: nil, permissionMode: "auto")
 
     private func starting(_ computer: TaskComputer, _ task: NewTask, on mode: AgentWire.Mode?, engine: SyncEngine? = nil, store: Store? = nil) -> Conversation {
@@ -269,6 +275,18 @@ extension NewTaskTests {
             writes = await computer.writes
         }
         return try XCTUnwrap(writes.first { $0.path.hasSuffix("/send") }, "nothing was sent").body?["mode"]
+    }
+
+    /// The first snapshot `chat` shows that `match` takes, or nil when none
+    /// came within `limit`: a mode never shown fails, not hangs.
+    private func shown(_ chat: Conversation, within limit: Duration = .seconds(5), where match: @escaping @Sendable (ChatSnapshot) -> Bool) async -> ChatSnapshot? {
+        await withTaskGroup(of: ChatSnapshot?.self) { group in
+            group.addTask { for await snapshot in chat.updates where match(snapshot) { return snapshot }; return nil }
+            group.addTask { try? await Task.sleep(for: limit); return nil }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
     }
 
     private func expect(_ mode: JSONValue?, _ expected: AgentWire.Mode, _ message: String, file: StaticString = #filePath, line: UInt = #line) {
@@ -303,15 +321,9 @@ extension NewTaskTests {
         let task = await store.newTask()
         task.choice = NewTask.Choice(kind: .bot, name: "Helper")
         let chat = starting(computer, task, on: Self.stale, store: store)
-        var updates = chat.updates.makeAsyncIterator()
         await chat.start()
-        var shown: AgentWire.Mode?
-        for _ in 0..<20 {
-            guard let snapshot = await updates.next() else { break }
-            shown = snapshot.mode
-            if shown == Self.live { break }
-        }
-        XCTAssertEqual(shown, Self.live, "the screen stayed on the offline default")
+        let live = await shown(chat) { $0.mode == Self.live }
+        XCTAssertEqual(live?.mode, Self.live, "the screen stayed on the offline default")
         let sent = await chat.send(id: "m1", text: "Hello")
         XCTAssertTrue(sent)
         expect(try await sentMode(computer), Self.live, "the offline default was sent")
