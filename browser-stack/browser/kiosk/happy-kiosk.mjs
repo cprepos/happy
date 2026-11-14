@@ -65,11 +65,28 @@ export function stepsTo(current, wanted) {
 export const forbiddenUrl = (url) => /^\s*view-source:/i.test(String(url || ""));
 
 /**
- * The launch options server.mjs asked for, with this file's window flags added and, when
- * BROWSER_EXECUTABLE_PATH is set, the browser binary it names (an absolute path, or refused).
+ * Flags server.mjs passes that leave the browser with no WebGL at all: with them, sites that draw
+ * on a WebGL canvas (Figma, maps) refuse to open. Without them Chromium, with no GPU in the
+ * container, renders WebGL in software through SwiftShader (Playwright adds
+ * --enable-unsafe-swiftshader).
+ */
+export const NO_WEBGL_ARGS = ["--disable-gpu", "--disable-software-rasterizer"];
+
+/**
+ * SwiftShader alone is not enough for those sites: they ask for a context with
+ * failIfMajorPerformanceCaveat, which Chromium refuses on SwiftShader. With the blocklist ignored
+ * it drives the container's Mesa llvmpipe through ANGLE's GL backend instead, still software but
+ * not flagged as a caveat, so the context is made.
+ */
+export const WEBGL_ARGS = ["--ignore-gpu-blocklist"];
+
+/**
+ * The launch options server.mjs asked for, less NO_WEBGL_ARGS, with WEBGL_ARGS and this file's window flags added
+ * and, when BROWSER_EXECUTABLE_PATH is set, the browser binary it names (an absolute path, or refused).
  */
 export function launchOptions(options = {}, { kiosk = kioskMode(), env = process.env } = {}) {
-  const out = { ...options, args: [...(options.args || []), ...argsFor(kiosk)] };
+  const asked = (options.args || []).filter((a) => !NO_WEBGL_ARGS.includes(a));
+  const out = { ...options, args: [...asked, ...WEBGL_ARGS, ...argsFor(kiosk)] };
   const exe = String(env.BROWSER_EXECUTABLE_PATH ?? "");
   if (exe) {
     if (!exe.startsWith("/") || /\s/.test(exe)) throw new Error("BROWSER_EXECUTABLE_PATH must be an absolute path");
