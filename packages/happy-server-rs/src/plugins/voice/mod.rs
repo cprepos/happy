@@ -44,6 +44,15 @@ pub fn backends() -> &'static Resolved {
     &BACKENDS
 }
 
+/// The error for LiveKit keys set without `LIVEKIT_PUBLIC_URL`, which has no
+/// default: apps would otherwise be handed a URL for some other host.
+fn missing_public_url(livekit: &LiveKitConfig) -> Option<&'static str> {
+    livekit.public_url.is_none().then_some(
+        "LIVEKIT_PUBLIC_URL is not set: LiveKit grants on POST /v1/voice/conversations answer 500 until it is \
+         (set it to the wss:// URL apps reach LiveKit on; the /v1/voice/stream bridge does not need it)",
+    )
+}
+
 fn error_schema() -> S {
     object(vec![("error", string())])
 }
@@ -51,6 +60,9 @@ fn error_schema() -> S {
 pub fn register(r: &mut Router) {
     for warning in &backends().warnings {
         tracing::warn!(module = "voice", "{}", warning);
+    }
+    if let Some(problem) = livekit().and_then(missing_public_url) {
+        tracing::error!(module = "voice", "{}", problem);
     }
     crate::plugins::remove_route(r, &Method::POST, "/v1/voice/conversations");
     crate::plugins::remove_route(r, &Method::GET, "/v1/voice/usage");
@@ -142,6 +154,10 @@ async fn conversations(app: Arc<App>, req: Req) -> HResult {
     if !backends().offers(backends::STREAM) {
         return Reply::error(503, "Voice stream is not offered by this server");
     }
+    let Some(public_url) = livekit.public_url.as_deref() else {
+        tracing::error!(module = "voice", "{}", missing_public_url(livekit).unwrap_or_default());
+        return Reply::error(500, "LIVEKIT_PUBLIC_URL is not configured");
+    };
     match conversations::create(&app.pool, &uid, session_id.as_deref(), language.as_deref()).await {
         Ok((conversation_id, room_name)) => {
             let token = livekit_token::create(livekit, &uid, &room_name);
@@ -151,7 +167,7 @@ async fn conversations(app: Arc<App>, req: Req) -> HResult {
                 "conversationId": conversation_id,
                 "roomName": room_name,
                 "token": token,
-                "url": livekit.public_url,
+                "url": public_url,
             }))
         }
         Err(e) => {
@@ -273,6 +289,14 @@ mod tests {
         assert_eq!(p.iter().filter(|(m, x)| m == "GET" && *x == "/v1/voice/usage").count(), 1);
         assert_eq!(p.iter().filter(|(m, x)| m == "GET" && *x == "/v1/voice/config").count(), 1);
         assert!(r.routes.iter().all(|x| !upstream.contains(&(x.handler as usize))));
+    }
+
+    #[test]
+    fn a_missing_public_url_is_an_error() {
+        let mut c = LiveKitConfig { api_key: "k".into(), api_secret: "s".into(), url: "ws://lk".into(), public_url: None };
+        assert!(missing_public_url(&c).unwrap().starts_with("LIVEKIT_PUBLIC_URL is not set"));
+        c.public_url = Some("wss://lk.example".into());
+        assert_eq!(missing_public_url(&c), None);
     }
 
     #[test]

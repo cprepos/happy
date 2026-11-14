@@ -9,7 +9,6 @@ use sha2::Sha256;
 pub const VOICE_AGENT_NAME: &str = "happy-voice";
 /// Lifetime of a voice room token. It only needs to outlive the join.
 pub const VOICE_TOKEN_TTL_SECONDS: i64 = 15 * 60;
-pub const DEFAULT_LIVEKIT_PUBLIC_URL: &str = "wss://livekit.girthbass.duckdns.org";
 /// Where the server itself reaches LiveKit (the stream bridge joins rooms there).
 pub const DEFAULT_LIVEKIT_URL: &str = "ws://livekit:7880";
 
@@ -19,18 +18,21 @@ pub struct LiveKitConfig {
     pub api_secret: String,
     /// Internal URL the server joins rooms on.
     pub url: String,
-    /// URL handed to clients by the REST route.
-    pub public_url: String,
+    /// URL handed to clients by the REST route (`LIVEKIT_PUBLIC_URL`). It has
+    /// no default: without it, LiveKit grants answer an error.
+    pub public_url: Option<String>,
 }
 
 /// `voiceLiveKitConfig` over an environment lookup that treats empty as unset:
-/// `None` when the key or secret is missing.
+/// `None` when the key or secret is missing. `LIVEKIT_PUBLIC_URL` is not
+/// defaulted (the TypeScript server's default is one particular host); the
+/// stream does not need it, only the grants on the REST route.
 pub fn config_from_env(var: impl Fn(&str) -> Option<String>) -> Option<LiveKitConfig> {
     Some(LiveKitConfig {
         api_key: var("LIVEKIT_API_KEY")?,
         api_secret: var("LIVEKIT_API_SECRET")?,
         url: var("LIVEKIT_URL").unwrap_or_else(|| DEFAULT_LIVEKIT_URL.into()),
-        public_url: var("LIVEKIT_PUBLIC_URL").unwrap_or_else(|| DEFAULT_LIVEKIT_PUBLIC_URL.into()),
+        public_url: var("LIVEKIT_PUBLIC_URL"),
     })
 }
 
@@ -91,7 +93,7 @@ mod tests {
     use super::*;
 
     fn config() -> LiveKitConfig {
-        LiveKitConfig { api_key: "APIkey".into(), api_secret: "secret-secret-secret-secret-secret".into(), url: "ws://lk:7880".into(), public_url: "wss://pub".into() }
+        LiveKitConfig { api_key: "APIkey".into(), api_secret: "secret-secret-secret-secret-secret".into(), url: "ws://lk:7880".into(), public_url: Some("wss://pub".into()) }
     }
 
     #[test]
@@ -102,9 +104,9 @@ mod tests {
         assert_eq!(config_from_env(env(&[("LIVEKIT_API_KEY", "k")])), None);
         assert_eq!(config_from_env(env(&[("LIVEKIT_API_KEY", "k"), ("LIVEKIT_API_SECRET", "")])), None);
         let c = config_from_env(env(&[("LIVEKIT_API_KEY", "k"), ("LIVEKIT_API_SECRET", "s"), ("LIVEKIT_URL", "")])).unwrap();
-        assert_eq!((c.url.as_str(), c.public_url.as_str()), (DEFAULT_LIVEKIT_URL, DEFAULT_LIVEKIT_PUBLIC_URL));
+        assert_eq!((c.url.as_str(), c.public_url.as_deref()), (DEFAULT_LIVEKIT_URL, None));
         let c = config_from_env(env(&[("LIVEKIT_API_KEY", "k"), ("LIVEKIT_API_SECRET", "s"), ("LIVEKIT_URL", "ws://a"), ("LIVEKIT_PUBLIC_URL", "wss://b")])).unwrap();
-        assert_eq!((c.url.as_str(), c.public_url.as_str()), ("ws://a", "wss://b"));
+        assert_eq!((c.url.as_str(), c.public_url.as_deref()), ("ws://a", Some("wss://b")));
     }
 
     #[test]

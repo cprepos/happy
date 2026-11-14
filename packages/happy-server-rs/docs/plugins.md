@@ -30,7 +30,7 @@ Environment:
 |---|---|
 | `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` | voice: LiveKit grants and the stream. Without them LiveKit is off. |
 | `LIVEKIT_URL` | voice: the LiveKit server the stream joins (default `ws://livekit:7880`, as the TypeScript server). |
-| `LIVEKIT_PUBLIC_URL` | voice: the URL handed to apps in grants (default as the TypeScript server's `DEFAULT_LIVEKIT_PUBLIC_URL`). |
+| `LIVEKIT_PUBLIC_URL` | voice: the URL handed to apps in grants. Required with the LiveKit keys; it has no default. Without it the server logs an error at startup and `POST /v1/voice/conversations` answers 500 for LiveKit grants. The stream does not need it. |
 | `VOICE_BACKENDS` | voice: offered backends, e.g. `elevenlabs,stream`. |
 | `ELEVENLABS_API_KEY` | voice: the ElevenLabs backend, as upstream. |
 | `HAPPY_STATIC_DIR` | webapp: the built web app. Needs an `index.html`. |
@@ -151,6 +151,11 @@ The rest is kept because upstream covers only part of it:
   a78d7ca59.
 
 ## Differences from the TypeScript server
+
+- **`LIVEKIT_PUBLIC_URL`** has no default. The TypeScript server falls back
+  to one particular host; this server answers a LiveKit grant with
+  `500 {"error":"LIVEKIT_PUBLIC_URL is not configured"}` instead, and logs why
+  at startup.
 
 - **Heartbeat connect time.** `SocketHandle` has no connect timestamp, so a
   socket counts as connected when it sends its first event (`heartbeat::seen`).
