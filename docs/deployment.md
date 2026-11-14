@@ -65,9 +65,6 @@ Key notes:
   advisory lock keeps a second instance from starting. Run one replica, and deploy
   by stopping the old pod before starting the new one (`strategy: Recreate`).
 - `HAPPY_WORKERS` sets the worker threads (default: the CPUs the container may use).
-- `selfhost/docker-compose.yml` is a single-host example: Postgres plus the TypeScript
-  server (`packages/happy-server`, built by `selfhost/Dockerfile.server`; it carries the plugin voice routes), local file
-  storage, no Redis or S3. Its image includes FFmpeg and Python for media processing.
 
 ## Kubernetes manifests
 Example manifests live in `packages/happy-server/deploy`:

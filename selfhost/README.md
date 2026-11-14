@@ -13,6 +13,12 @@ cloud dependencies. Everything runs on your LAN.
 | **iOS app** | Native iPhone and iPad client (`packages/happy-ios`) | Built on a Mac with Xcode |
 | **Voice pipeline** | STT → LLM → TTS, real-time over WebSocket | GPU Linux box (Docker) or Apple Silicon Mac |
 
+The server here is the TypeScript one (`packages/happy-server`), built by
+`selfhost/Dockerfile.server`: it carries the plugin voice routes, which the
+Rust server in the root `Dockerfile.server` (see `docs/deployment.md`) lacks.
+`docker-compose.yml` runs it beside Postgres with local file storage, no Redis
+or S3; its image includes FFmpeg and Python for media processing.
+
 ## Architecture
 
 ```
