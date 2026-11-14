@@ -76,13 +76,15 @@ final class NewWorkLayoutModeRowTests: XCTestCase {
         XCTAssertEqual(layout.block, CGRect(x: 27.5, y: 80.5, width: 320, height: 201))
     }
 
-    /// Tightened and still short: it doesn't show, as before.
+    /// Tightened and still short: it doesn't fit, and stands its margin
+    /// over the composer (`NewWorkLayout`), running up under the bar.
     func testTooShortEvenTightDoesNotFit() {
         let edge = session(top: 64, bottom: 64 + 162 + 2 * M.compactMargin)
         XCTAssertTrue(edge.fits)
-        let short = session(top: 64, bottom: 64 + 162 + 2 * M.compactMargin - 1)
+        let bottom = 64 + 162 + 2 * M.compactMargin - 1
+        let short = session(top: 64, bottom: bottom)
         XCTAssertFalse(short.fits)
-        XCTAssertEqual(short.block.minY, 64 + M.compactMargin)
+        XCTAssertEqual(short.block.maxY, bottom - M.compactMargin)
     }
 
     /// `.work` doesn't ask for it: the same room leaves it at its own size,
