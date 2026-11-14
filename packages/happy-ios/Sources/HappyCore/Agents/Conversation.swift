@@ -36,10 +36,7 @@ public struct ChatItem: Equatable, Sendable, Identifiable {
 
     public enum Piece: Equatable, Sendable {
         case text(String)
-        // plugins: ours, here rather than where upstream adds cases.
-        /// A browser the agent drives, linked in its text
-        /// (`LiveBrowserLink`): a card that shows it live and opens it.
-        case liveBrowser(id: String, url: URL)
+        case liveBrowser(id: String, url: URL) // plugins: Conversation+LiveBrowser.swift
         /// A picture sent with a message, inline.
         case picture(id: String, mimeType: String, data: Data)
         /// A file sent with a message the computer hasn't taken yet, from
@@ -147,15 +144,8 @@ public struct ChatItem: Equatable, Sendable, Identifiable {
         }
     }
 
-    /// Its words; a live browser's card is its link, so a copy keeps it.
     public var text: String {
-        pieces.compactMap { piece in
-            switch piece {
-            case .text(let text): text
-            case .liveBrowser(_, let url): url.absoluteString
-            default: nil
-            }
-        }.joined(separator: "\n\n")
+        pieces.compactMap(\.copiedText).joined(separator: "\n\n")
     }
 
     /// The sidebar proposals it shows, by artifact ID.
@@ -2000,9 +1990,9 @@ public actor Conversation {
     }
 
     /// An agent's text with its layout blocks as the trees they make of
-    /// media shown earlier, and its live browsers' links as their cards. A
-    /// block that places nothing shown, or lost content to a limit, is the
-    /// Markdown it is; one still arriving is held back until it closes.
+    /// media shown earlier. A block that places nothing shown, or lost
+    /// content to a limit, is the Markdown it is; one still arriving is held
+    /// back until it closes.
     static func pieces(_ text: String, shown: [String: Media], streaming: Bool) -> [ChatItem.Piece] {
         made(text, shown: shown, streaming: streaming).pieces
     }
@@ -2019,18 +2009,10 @@ public actor Conversation {
         }
         // A reference tag still arriving is held back, not flashed as raw text.
         let text = streaming ? HappyReferences.droppingPartialTag(text) : text
-        let segments = MediaBlocks.split(text)
-        for (index, segment) in segments.enumerated() {
+        for (segment, last) in Self.markingLast(MediaBlocks.split(text)) {
             switch segment {
             case .markdown(let text):
-                // A live browser's link is its card; one the text may still
-                // be writing waits until it is whole.
-                for part in LiveBrowserLink.split(text, open: streaming && index == segments.count - 1) {
-                    switch part {
-                    case .markdown(let text): markdown(text)
-                    case .link(let link): pieces.append(.liveBrowser(id: link.id, url: link.url))
-                    }
-                }
+                Self.liveBrowsers(in: text, open: streaming && last) { if case .text(let text) = $0 { markdown(text) } else { pieces.append($0) } }
             case .layout(let layout):
                 layouts = true
                 if !layout.complete {
