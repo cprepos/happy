@@ -63,6 +63,56 @@ services:
       start_period: 60s
       retries: 6
 
+  # The Rust server (packages/happy-server-rs, with its plugins), in place of happy-server above:
+  # the same settings, port, data volume and web app. The two must never run against the database
+  # at the same time, so it sits behind the "rs" profile and is switched with `make server-rs` /
+  # `make server-ts`, which stop the other one first. The Rust server also takes a Postgres advisory
+  # lock and refuses to start beside another instance of itself.
+  # It builds from the tree at HAPPY_SERVER_RS_CONTEXT (a checkout with packages/happy-server-rs and
+  # the Rust Dockerfile.server); `make server-rs-build` rebuilds the image, `make server-rs` reuses it.
+  happy-server-rs:
+    profiles: ["rs"]
+    build:
+      context: ${HAPPY_SERVER_RS_CONTEXT:-..}
+      dockerfile: Dockerfile.server
+    image: happy-selfhost/happy-server-rs:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: "3005"
+      DATABASE_URL: postgresql://${POSTGRES_USER:-happy}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-happy}
+      HANDY_MASTER_SECRET: ${HANDY_MASTER_SECRET:?set HANDY_MASTER_SECRET in selfhost/.env}
+      PUBLIC_URL: ${PUBLIC_URL:-https://happy.girthbass.duckdns.org}
+      METRICS_ENABLED: ${METRICS_ENABLED:-false}
+      DATA_DIR: /data
+      HAPPY_STATIC_DIR: /webapp
+      HAPPY_INJECT_HTML_CONFIG: '{"disableAnalytics":true}'
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-}
+      LIVEKIT_URL: ${LIVEKIT_URL:-ws://livekit:7880}
+      # Required with the LiveKit keys: the Rust server has no default for it (happy-server falls
+      # back to wss://livekit.girthbass.duckdns.org). Without it LiveKit grants answer 500.
+      LIVEKIT_PUBLIC_URL: ${LIVEKIT_PUBLIC_URL:-}
+      VOICE_BACKENDS: ${VOICE_BACKENDS:-}
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
+    # Apply pending migrations (the same Prisma migrations, embedded), then start the server.
+    command: ["sh", "-c", "happy-server-rs migrate && exec happy-server-rs serve"]
+    volumes:
+      - happy-data:/data
+      - ${HAPPY_WEBAPP_DIR:-./webapp}:/webapp:ro
+    ports:
+      - "127.0.0.1:3005:3005"
+    # The runtime image has node but no curl.
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3005/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 6
+
 volumes:
   pgdata:
   happy-data:
