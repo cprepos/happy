@@ -3,9 +3,17 @@ import Foundation
 import OSLog
 #endif
 
-// Our retry, refresh and cancelled-read handling for `Conversation`, kept
+// Our plugins' retry, refresh and cancelled-read handling for `Conversation`, kept
 // out of Conversation.swift so upstream merges do not conflict there.
 extension Conversation {
+    // Stored in Conversation.swift, beside `reading` (an extension cannot
+    // store): `readingId`, which `reload` `reading` is (`beginReading`);
+    // `starting`, `start` is past its guard and not yet following, so a
+    // second call or a retry waits for it rather than starting again;
+    // `followed`, `follow` has asked for history, so a retry reads again
+    // from there; `stopped`, `stop` was called; `claimOverride`, stands in
+    // for the checkpoint claim, for a test.
+
     /// Reads again a conversation whose read failed, or that never
     /// finished reading with nothing reading it now: a screen opening it,
     /// or the phone coming back to it. A start that failed is started
@@ -58,9 +66,26 @@ extension Conversation {
     /// Makes the checkpoint claim `claim`, for a test.
     func overrideClaim(_ claim: @escaping @Sendable (String) async throws -> Void) { claimOverride = claim }
 
+    /// `reload`'s read begins: a new `readingId` (stored in
+    /// Conversation.swift, beside `reading`), which the read hands to
+    /// `endReading` as it ends.
+    func beginReading() -> UUID {
+        let id = UUID()
+        readingId = id
+        return id
+    }
+
+    /// `reload`'s read `id` ended: `reading` is let go of only when it is
+    /// still that read's, so one that ends after a newer began leaves the
+    /// newer's in place.
+    func endReading(_ id: UUID) {
+        if readingId == id { reading = nil }
+    }
+
     /// A read cancelled underneath it, not by it (a connect another caller
-    /// gave up on): `reload` asks again without saying it failed. The
-    /// caller checks that the cancellation is not the read's own.
+    /// gave up on): `reload` asks again without saying it failed, as for a
+    /// network change (its one call, beside upstream's `carrierResets`
+    /// check). The caller checks that the cancellation is not the read's own.
     static func cancelledUnderneath(_ error: Error) -> Bool {
         error is CancellationError || (error as? URLError)?.code == .cancelled
     }

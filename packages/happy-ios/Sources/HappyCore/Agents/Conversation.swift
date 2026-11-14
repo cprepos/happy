@@ -419,16 +419,8 @@ public actor Conversation {
     /// The agents this one spawns or retitles while it is open.
     private var children: Task<Void, Never>?
     var reading: Task<Void, Never>?
-    /// Which `reload` `reading` is, so one that ends after a newer began
-    /// leaves the newer's in place.
-    private var readingId = UUID()
-    /// `start` is past its guard and not yet following: a second call, or
-    /// a retry, waits for it rather than starting again.
-    var starting = false
-    /// `follow` has asked for history: a retry reads again from there.
-    var followed = false
-    var stopped = false
-    /// Stands in for the checkpoint claim, for a test.
+    // plugins: stored for Conversation+Reload.swift, which says what each is.
+    var readingId = UUID(), starting = false, followed = false, stopped = false
     var claimOverride: (@Sendable (String) async throws -> Void)?
     private var reloadSoon: Task<Void, Never>?
     /// History reads finished, read or failed.
@@ -793,10 +785,9 @@ public actor Conversation {
         let agentId = agentId
         let anchors = anchoring
         anchoring = false
-        let id = UUID()
-        readingId = id
+        let id = beginReading()
         reading = Task {
-            defer { if readingId == id { reading = nil } }
+            defer { endReading(id) }
             var failures = 0
             var anchored = anchors
             while true {
@@ -816,9 +807,7 @@ public actor Conversation {
                     if Task.isCancelled { return }
                     // A message the computer no longer holds: the newest runs instead, at once.
                     if after != nil, case AgentClientError.status = error { anchored = false; continue }
-                    // Let go with its client (a network change), or cancelled
-                    // underneath it (a connect another caller gave up on):
-                    // asked again, unsaid.
+                    // Let go with its client (a network change): asked again, unsaid.
                     if await store.carrierResets == resets, !Self.cancelledUnderneath(error) {
                         reads += 1
                         snapshot.synced = false
