@@ -1,5 +1,13 @@
 //! Plugins: server features that live outside the upstream port.
 //!
+//! - `voice`: self-hosted voice. LiveKit grants and recorded usage on the REST
+//!   routes, `GET /v1/voice/config`, and the `/v1/voice/stream` WebSocket that
+//!   bridges an app's audio into a LiveKit room.
+//! - `webapp`: serves a static web app from `HAPPY_STATIC_DIR`, with the server
+//!   check on `/` the apps rely on.
+//! - `heartbeat`: when a session's socket connected, so a session resumed right
+//!   after a stop counts from its new owner's first beat.
+//!
 //! Upstream code calls in at a handful of places, each listed in
 //! docs/plugins.md. Settings come from the environment on first use and shared
 //! state lives in statics, so `Config` and `App` stay as upstream has them.
@@ -21,17 +29,30 @@ pub fn register(r: &mut Router, c: &Config) {
 }
 
 /// Whether a plugin answers upgrades on this path.
-pub fn owns_upgrade(_path: &str) -> bool {
-    false
+pub fn owns_upgrade(path: &str) -> bool {
+    path == voice::stream::PATH
 }
 
 /// Answers an upgrade request on a path `owns_upgrade` claimed.
-pub async fn upgrade(_app: Arc<App>, req: hyper::Request<hyper::body::Incoming>) -> Result<HttpResponse, crate::engine::Destroy> {
-    unreachable!("no plugin owns upgrades on {}", req.uri().path())
+pub async fn upgrade(app: Arc<App>, req: hyper::Request<hyper::body::Incoming>) -> Result<HttpResponse, crate::engine::Destroy> {
+    voice::stream::upgrade(app, req).await
 }
 
 /// Drops the routes registered so far for `method` and `pattern`, so the
 /// plugin's own registration is the one `Router::find` picks.
 pub(crate) fn remove_route(r: &mut Router, method: &hyper::Method, pattern: &str) {
     r.routes.retain(|route| !(route.method == *method && route.pattern == pattern));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn owns_only_the_voice_stream_path() {
+        assert!(owns_upgrade("/v1/voice/stream"));
+        assert!(!owns_upgrade("/v1/voice/stream/"));
+        assert!(!owns_upgrade("/v1/updates"));
+        assert!(!owns_upgrade("/"));
+    }
 }

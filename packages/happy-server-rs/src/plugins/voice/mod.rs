@@ -10,6 +10,7 @@ pub mod bridge;
 pub mod conversations;
 pub mod elevenlabs;
 pub mod livekit_token;
+pub mod stream;
 pub mod usage;
 
 use crate::app::App;
