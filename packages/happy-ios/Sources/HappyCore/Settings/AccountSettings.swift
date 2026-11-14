@@ -95,9 +95,6 @@ public struct AccountSettings: Equatable, Sendable {
 
     public var hideArchivedSessions: Bool { bool("hideInactiveSessions") }
     public var analyticsOptOut: Bool { bool("analyticsOptOut") }
-    /// A hardware keyboard's Return sends, and Shift, ⌘ or Control with it
-    /// makes a new line (`agentInputEnterToSend`; the web's Enter to send).
-    public var enterToSend: Bool { bool("agentInputEnterToSend") }
     public var experiments: Bool { bool("experiments") }
     public var avatarStyle: AvatarStyle { AvatarStyle(normalizing: string("avatarStyle")) }
     public var avatarMonochrome: Bool { bool("avatarMonochrome") }
@@ -109,14 +106,6 @@ public struct AccountSettings: Equatable, Sendable {
     /// nil follows the device.
     public var preferredLanguage: String? { string("preferredLanguage") }
     public var agentDefaultOverrides: [String: JSONValue] { values["agentDefaultOverrides"]?.objectValue ?? [:] }
-    /// nil follows the server's default, as does a backend this build doesn't know.
-    public var voiceBackend: VoiceBackend? { string("voiceBackend").flatMap(VoiceBackend.init(rawValue:)) }
-    /// The default voice preset's id; nil is the server's default voice.
-    public var voiceAssistantVoice: String? { string("voiceAssistantVoice") }
-    /// Per-chat voice preset ids, by session id.
-    public var voiceBySession: [String: String] {
-        (values["voiceBySession"]?.objectValue ?? [:]).compactMapValues(\.stringValue)
-    }
 
     /// The body `POST /v1/account/settings` carries: everything, with empty
     /// per-agent overrides dropped (`settingsToSyncPayload`).
@@ -152,15 +141,6 @@ public enum SessionListGrouping: String, CaseIterable, Sendable {
     case project
     /// Each computer's chats as flat rows under its heading.
     case machine
-
-    /// What a tap on Appearance's row moves to (settings/appearance.tsx).
-    public var next: SessionListGrouping {
-        switch self {
-        case .flat: .project
-        case .project: .machine
-        case .machine: .flat
-        }
-    }
 }
 
 /// utils/userMessageBubbleColor.ts presets.
