@@ -242,27 +242,11 @@ public enum Strings {
         public static var groupingTitle: String { localized("sessionsFilter.groupingTitle", "Grouping") }
         public static var flatList: String { localized("sessionsFilter.flatList", "Flat List") }
         public static var groupByProject: String { localized("sessionsFilter.groupByProject", "Group by Project") }
-        public static var groupByMachine: String { localized("sessionsFilter.groupByMachine", "Group by Host") }
-
-        /// A grouping's name, as Appearance's row shows it.
-        public static func title(_ grouping: SessionListGrouping) -> String {
-            switch grouping {
-            case .flat: flatList
-            case .project: groupByProject
-            case .machine: groupByMachine
-            }
-        }
     }
 
     public enum SettingsFeatures {
         public static var groupToolCalls: String { localized("settingsFeatures.groupToolCalls", "Group Tool Calls") }
         public static var groupToolCallsSubtitle: String { localized("settingsFeatures.groupToolCallsSubtitle", "Collapse consecutive tool calls into one container") }
-        /// happy-app's Enter to send (`agentInputEnterToSend`), which on iOS
-        /// is a hardware keyboard's: its own words, under native keys
-        /// (`TranslationCatalog.hardwareKeyboardSources`).
-        public static var enterToSend: String { localized("native.hardwareKeyboard.enterToSend", "Hardware Keyboard: Enter to Send") }
-        public static var enterToSendEnabled: String { localized("native.hardwareKeyboard.enterToSendEnabled", "Enter sends; Shift, ⌘ or Control + Enter for a new line") }
-        public static var enterToSendDisabled: String { localized("native.hardwareKeyboard.enterToSendDisabled", "Enter inserts a new line; ⌘ + Enter sends") }
     }
 
     public enum SettingsLanguage {
