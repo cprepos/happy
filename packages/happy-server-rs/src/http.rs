@@ -695,6 +695,9 @@ pub async fn serve(app: Arc<App>, req: hyper::Request<Incoming>) -> Result<HttpR
     if crate::engine::is_engine_path(path) {
         return crate::engine::handle(app, req).await;
     }
+    if crate::engine::is_upgrade(req.headers()) && crate::plugins::owns_upgrade(path) {
+        return crate::plugins::upgrade(app, req).await;
+    }
     if crate::engine::is_upgrade(req.headers()) {
         // Node routes it to the 'upgrade' listener, which ends the socket after 1 s.
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
