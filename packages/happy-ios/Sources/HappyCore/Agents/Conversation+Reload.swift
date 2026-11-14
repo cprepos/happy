@@ -66,6 +66,18 @@ extension Conversation {
     /// Makes the checkpoint claim `claim`, for a test.
     func overrideClaim(_ claim: @escaping @Sendable (String) async throws -> Void) { claimOverride = claim }
 
+    /// `start`'s first line: past it, `start` is underway (`starting`,
+    /// which `start` lets go of as it returns), so a second call or a retry
+    /// waits for it rather than starting again. False, with nothing
+    /// changed, while one is underway or once stopped. `start`'s own guard
+    /// follows; its claim failing leaves it not following, so `retryLoad`
+    /// starts it again, and a `stop` meanwhile ends it (`if stopped`).
+    func beginStart() -> Bool {
+        guard !starting, !stopped else { return false }
+        starting = true
+        return true
+    }
+
     /// `reload`'s read begins: a new `readingId` (stored in
     /// Conversation.swift, beside `reading`), which the read hands to
     /// `endReading` as it ends.

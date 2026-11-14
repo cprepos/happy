@@ -559,12 +559,10 @@ public actor Conversation {
     // MARK: Life
 
     public func start() async {
-        guard following == nil, !starting, !stopped else { return }
-        starting = true
-        defer { starting = false }
+        guard beginStart() else { return }; defer { starting = false } // plugins
+        guard following == nil else { return }
         do { try await checkpointClaim(for: "conversation:\(agentId)").value }
         catch {
-            // Left not following, so `retryLoad` starts it again.
             checkpointClaims.removeValue(forKey: "conversation:\(agentId)")
             Self.note("claim failed for \(agentId)")
             snapshot.error = "Could not open this conversation on this device."; publish(); return
