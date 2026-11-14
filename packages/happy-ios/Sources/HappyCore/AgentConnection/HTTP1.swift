@@ -303,13 +303,9 @@ public final class AgentHTTPTransport: SelfMeteringTransport {
 
     private func perform(method: String, path: String, credential: String, body: Data?, headers: [String: String], category: RequestCategory, sent: (@Sendable (Int) -> Void)?) async throws -> HTTP1Response {
         guard ["GET", "POST", "PATCH", "PUT", "DELETE"].contains(method), Self.safe(path: path, credential: credential, headers: headers) else { throw PairingError.invalidResponse }
-        // The connect counts against the deadline too: a request waiting on
-        // a client that never comes up gives up when its answer would have.
-        let deadline = ContinuousClock.now + Self.deadline(category)
-        let lease = try await lease(category, until: deadline)
+        let (lease, left) = try await leaseWithinDeadline(category)
         defer { lease?.release() }
         do {
-            let left = max(.zero, deadline - ContinuousClock.now)
             return try await exchange(lease: lease, category: category, method: method, path: path, credential: credential, body: body, headers: headers, timeout: left, sent: sent)
         } catch {
             // The stream's heartbeats say whether the tunnel is gone or only this request.
