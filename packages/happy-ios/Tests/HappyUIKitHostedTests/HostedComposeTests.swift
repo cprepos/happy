@@ -412,6 +412,15 @@ final class HostedComposeTests: XCTestCase {
         XCTAssertEqual(log.spawned.map(\.directory), [Self.studioFolder])
     }
 
+    /// Takes an alert down once it has finished coming up: one dismissed
+    /// mid-presentation stays.
+    private func dismissAlert(on chat: UIViewController) async throws {
+        try await until {
+            if let alert = chat.presentedViewController, !alert.isBeingPresented { alert.dismiss(animated: false) }
+            return chat.presentedViewController == nil
+        }
+    }
+
     /// Picks a segment of the panel's Session | Bot | Task as a tap does.
     private func pick(_ kind: HomeDockKind, in panel: NewWorkPanel) throws {
         panel.kind.selectedSegmentIndex = try XCTUnwrap(panel.sessionKinds.firstIndex(of: kind))
