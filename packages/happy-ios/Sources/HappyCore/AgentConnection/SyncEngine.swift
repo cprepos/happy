@@ -83,9 +83,8 @@ public actor SyncEngine {
     /// of it that began after it took them, so nothing flickers back in
     /// between: each with the number of the read last begun then.
     private var settling: [(intent: Intent, read: Int)] = []
-    /// Refused before the list said they were gone: off the overlay, and
-    /// not settling.
-    private var refusedIds: Set<String> = []
+    /// Refused before the list said they were gone: not settling.
+    var refusedIds: Set<String> = []
     /// Reads of the computer begun (`reconcile`).
     private var reads = 0
     /// The newest read home has taken: one begun before it is older in
@@ -140,8 +139,6 @@ public actor SyncEngine {
     var snapshot = HomeSnapshot()
     private var listeners: [UUID: AsyncStream<HomeSnapshot>.Continuation] = [:]
     private var runner: Task<Void, Never>?
-    /// Paused on purpose (or not started yet): `reconnect` leaves it be.
-    var held = true
     private var eventStream: EventStreamRace?
     /// UIKit supplies a short execution lease; nil means no safe hold.
     public typealias StreamHold = @Sendable (@escaping @Sendable () -> Void) async -> (@Sendable () async -> Void)?
@@ -169,6 +166,7 @@ public actor SyncEngine {
     private var holding: Set<String> = []
     private var generation = 0
     var stopped = false
+    var held = true // SyncEngine+Plugins.swift
     private var cursor: String?
     private var dirty = false
     /// The team members the listed tasks belong to, as last read, kept
@@ -264,8 +262,8 @@ public actor SyncEngine {
     private func removeListener(_ id: UUID) { listeners.removeValue(forKey: id) }
 
     public func start() {
-        guard !stopped, runner == nil else { return }
         held = false
+        guard !stopped, runner == nil else { return }
         backgrounded = false
         generation += 1
         verified = false
@@ -338,9 +336,6 @@ public actor SyncEngine {
         let release = releaseHold; releaseHold = nil
         let events = eventStream; eventStream = nil
         let tasks = [runner, refresh, delivery, messageDelivery, usersRead, gitWatcher].compactMap { $0 }
-        // Let go of the tasks before the first await: a `start()` that
-        // comes while this pause waits begins a new run instead of finding
-        // the old runner still set and leaving the engine paused for good.
         gitWatcher = nil; gitInterest = []
         runner = nil; refresh = nil; delivery = nil; messageDelivery = nil; usersRead = nil
         deriving?.cancel(); deriving = nil
@@ -367,16 +362,10 @@ public actor SyncEngine {
     }
 
     /// The phone has a way out again: try now, not when the backoff says.
-    /// Does nothing while the engine is paused or already live; a run that
-    /// ended on its own (its setup failed or timed out) starts again.
+    /// Does nothing while the engine is paused or already live.
     public func reconnect() async {
-        guard !stopped, !held else { return }
-        guard runner != nil else {
-            snapshot.error = nil
-            start()
-            return
-        }
-        guard !snapshot.live else { return }
+        if restartEndedRun() { return }
+        guard !stopped, runner != nil, !snapshot.live else { return }
         // What failed while there was no network says nothing of the
         // computer: the header says "connecting…" until this try answers.
         // Cleared in the same turn as the pause, which publishes it.
@@ -449,10 +438,7 @@ public actor SyncEngine {
         // the pause before it was overtaken and left the outbox as it was.
         await intents.setOnline(false)
         do {
-            // Given up after `setupDeadline`: a step stuck on a dead
-            // connection or a slow disk shows as an error. The body keeps
-            // its indentation from before it moved into this task.
-            let setUp = Task { () async throws -> Void in
+            try await Self.wait(for: Task { () async throws -> Void in
             let database = try database()
             if desktop == nil, let cached = try await database.checkpoint("desktop") {
                 desktop = try JSONDecoder().decode(DesktopSnapshot.self, from: JSONEncoder().encode(cached.value))
@@ -477,8 +463,7 @@ public actor SyncEngine {
             guard current(generation) else { return }
             await spaces.startExternal()
             await artifacts.start()
-            }
-            try await Self.wait(for: setUp, upTo: Self.setupDeadline)
+            }, upTo: Self.setupDeadline)
         } catch {
             guard current(generation) else { return }
             // What this phone keeps could not be read: nothing to do with the link.
@@ -529,9 +514,7 @@ public actor SyncEngine {
                     }
                     if frame.event == "hello" {
                         attempt = 0
-                        // Given up after `helloDeadline` like a dropped stream:
-                        // a read stuck on a dead connection comes back round.
-                        let greet = Task { [resuming] () async throws -> Void in
+                        try await Self.wait(for: Task { [resuming] () async throws -> Void in
                         guard current(generation) else { throw CancellationError() }
                         heldVerification = false
                         let hello = try JSONValue.decode(Data(frame.data.utf8))
@@ -580,8 +563,7 @@ public actor SyncEngine {
                         if !continued { readAuthors(generation, again: Set(users.keys)) }
                         // Conversations and lists read again only for what they missed.
                         await spaces.externalOpened(missedBefore: continued ? nil : streamStart)
-                        }
-                        try await Self.wait(for: greet, upTo: Self.helloDeadline)
+                        }, upTo: Self.helloDeadline)
                         // A later hello is a race candidate's, opened from the cursor.
                         resuming = true
                         continue
@@ -1316,10 +1298,7 @@ public actor SyncEngine {
     }
 
     private func intentsChanged(_ list: [Intent]) async {
-        // A refused one stays off until a list comes without it; after
-        // that no list holds it again.
-        refusedIds.formIntersection(list.map(\.id))
-        let list = list.filter { !refusedIds.contains($0.id) }
+        let list = withoutRefused(list)
         let ids = Set(list.map(\.id)), slots = Set(list.map(\.slot))
         var taken = false
         for intent in waiting where !intent.kind.isTodo && !intent.kind.isFeed && !ids.contains(intent.id) && !slots.contains(intent.slot) {
@@ -1350,12 +1329,8 @@ public actor SyncEngine {
         if settling.contains(where: { $0.intent.id == id }) {
             settling.removeAll { $0.intent.id == id }
         } else if waiting.contains(where: { $0.id == id }) {
-            // The outbox's list without it may come after this, on its own
-            // stream: off the overlay now, so what it hid is back by the
-            // time the notice says why.
             refusedIds.insert(id)
             waiting.removeAll { $0.id == id }
-            await layIntents()
         }
         await layIntents()
         // A refused read or seen entry is nothing to tell; a todo list tells its own.
