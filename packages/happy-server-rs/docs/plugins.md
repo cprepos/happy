@@ -22,7 +22,7 @@ possible:
 |---|---|---|
 | voice | `src/plugins/voice/` | `GET /v1/voice/config`; `POST /v1/voice/conversations` and `GET /v1/voice/usage` with LiveKit grants and recorded durations as well as ElevenLabs; the `/v1/voice/stream` WebSocket, which bridges the app's audio into a LiveKit room (`bridge.rs`). |
 | webapp | `src/plugins/webapp.rs` | Serves the web app from `HAPPY_STATIC_DIR`, injects `HAPPY_INJECT_HTML_CONFIG` as `window.__HAPPY_CONFIG__`, keeps the `GET /` server check the apps use, and falls back to `index.html` for app routes. |
-| heartbeat | `src/plugins/heartbeat.rs` | A session resumed right after it stopped counts from its new owner's first beat, and a session the server knows is inactive writes its first beat at once. |
+| heartbeat | `src/plugins/heartbeat.rs` | A session resumed right after it stopped counts from its new owner's first beat, which is written at once. The stop is lifted with upstream's own `resume_session_updates`. |
 
 Environment:
 
@@ -45,9 +45,9 @@ reads this block. `*` means any number.
 ```touch-points
 packages/happy-server-rs/src/main.rs 1
 packages/happy-server-rs/src/routes/mod.rs 1
-packages/happy-server-rs/src/http.rs 3
-packages/happy-server-rs/src/activity.rs 25
-packages/happy-server-rs/src/handlers.rs 6
+packages/happy-server-rs/src/http.rs 1
+packages/happy-server-rs/src/activity.rs 2
+packages/happy-server-rs/src/handlers.rs 1
 packages/happy-server-rs/Cargo.toml 17
 packages/happy-server-rs/Cargo.lock *
 ```
@@ -63,26 +63,19 @@ Each one, and why it is needed:
 
   Each replaced route is dropped with `plugins::remove_route` before the plugin
   route is added. `src/routes/voice.rs` itself is not changed.
-- **`src/http.rs:698-700`**, 3 lines. These hand WebSocket upgrades on
+- **`src/http.rs:698`**, 1 line. It hands WebSocket upgrades on
   `/v1/voice/stream` to the plugin, before upstream's `/v1/updates` upgrade
   handling. This is the only place that sees the raw request with its upgrade.
-- **`src/activity.rs`**, 25 lines, and **`src/handlers.rs:155, 330-334`**, 6
-  lines. These are the heartbeat fix.
-  - `SessionEntry` gets an `active` flag. It is read with `lastActiveAt` and set
-    by the flush.
-  - `is_session_stopped`, `is_session_valid` and `queue_session_update` take the
-    socket's `connected_at`.
-  - The stop check asks `heartbeat::stop_applies`, and the update threshold asks
-    `heartbeat::should_queue`.
-  - In `handlers.rs`, `dispatch` reports each socket (`heartbeat::seen`), and
-    `session_alive` passes `connected_at` on.
+- **`src/activity.rs:165, 170`**, 1 line each, and **`src/handlers.rs:329`**,
+  1 line. These are the heartbeat fix's hooks:
+  - `clear_session_updates` reports the stop (`heartbeat::stopped`), and
+    `resume_session_updates` reports a lift (`heartbeat::resumed`).
+  - `session_alive` asks `heartbeat::alive` before upstream checks the
+    session; `false` drops the beat.
 
-  The decisions live in `heartbeat.rs`. What is left in upstream files is the
-  plumbing, which has no place outside them.
-
-  A smaller variant was weighed and rejected: a plugin-side map consulted only
-  in `session_alive`. It would let a stale owner's beat through during the
-  resume window, which is the case the fix exists to prevent.
+  Everything else lives in `heartbeat.rs`. To lift a stop it calls upstream's
+  `resume_session_updates`, the same call `POST /v1/sessions` makes, so the
+  stop window, the cache and the flush stay upstream's.
 - **`Cargo.toml`**, 17 lines. These are tail tables that only the plugins use:
   - `[target.'cfg(all())'.dependencies]` holds livekit and its pins.
   - `[target.'cfg(all())'.build-dependencies]` holds `webrtc-sys-build`.
@@ -140,9 +133,11 @@ The rest is kept because upstream covers only part of it:
 
 - **Heartbeats.** Upstream lifts a stop only on `POST /v1/sessions`
   (`resume_session_updates`). A resumed owner that reattaches without that call
-  stays ignored for the 60 s window. Upstream also writes a session's first
-  beat only after the update threshold; it already does this for machines, but
-  not for sessions.
+  stays ignored for the 60 s window, and its first beat, within the update
+  threshold of the stop, is not written. The plugin keeps only that decision
+  and lifts the stop with upstream's own call. Dropped in favour of upstream:
+  the session `active` flag in `ActivityCache` and the stop check rewritten to
+  take a connect time (see "Differences" for what that gives up).
 - **Voice usage and grants.** Upstream's routes are ElevenLabs-only, with a
   2 h cap. Without the plugin's routes, LiveKit grants, recorded durations and
   the 5 h cap would be lost.
@@ -158,9 +153,15 @@ The rest is kept because upstream covers only part of it:
   at startup.
 
 - **Heartbeat connect time.** `SocketHandle` has no connect timestamp, so a
-  socket counts as connected when it sends its first event (`heartbeat::seen`).
-  The TypeScript server takes the time at connect. A socket that connects
-  before a stop but sends nothing until after it is therefore treated as new.
+  socket counts from its first `session-alive`. The TypeScript server takes the
+  time at connect. A socket that connects before a stop but beats only after it
+  is therefore treated as the new owner.
+- **First beat of an inactive session.** The TypeScript server writes the first
+  beat of any session it reads as inactive at once. Here only a resumed
+  owner's first beat after a stop is; other inactive sessions follow
+  upstream's update threshold. A session is inactive with a recent
+  `lastActiveAt` only right after a stop, so this differs only for a session
+  set inactive by hand.
 - **Web app files.** `@fastify/static` with `wildcard: false` makes one route
   per file found at startup, so files added later 404 or fall back to the SPA.
   The plugin reads the directory on each request. Files added later are
@@ -214,4 +215,4 @@ compat/withpg.sh compat/diff.sh plugins-webapp
 | `plugins-webapp` | `testdata/plugins-webapp` with injected config | server check, files, traversal, conditional and range requests, SPA fallback, API paths |
 | `plugins-webapp-plain` | the same directory, without config | the same |
 | `plugins-webapp-noindex` | a directory without `index.html` | no web app; upstream's `GET /` |
-| `plugins-heartbeat` | none | stop window, resumed owner, first beat of an inactive session |
+| `plugins-heartbeat` | none | stop window, resumed owner and its first beat written |

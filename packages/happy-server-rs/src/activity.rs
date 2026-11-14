@@ -17,7 +17,6 @@ struct SessionEntry {
     last_update_sent: i64,
     pending_update: Option<i64>,
     user_id: String,
-    active: bool,
 }
 
 struct MachineEntry {
@@ -45,18 +44,18 @@ impl ActivityCache {
         self.metrics.session_cache.with_label_values(&[op, result]).inc();
     }
 
-    fn is_session_stopped(&self, id: &str, now: i64, connected_at: Option<i64>) -> bool {
+    fn is_session_stopped(&self, id: &str, now: i64) -> bool {
         let Some(until) = self.stopped.get(id).map(|v| *v) else { return false };
         if until <= now {
             self.stopped.remove_if(id, |_, v| *v <= now);
             return false;
         }
-        crate::plugins::heartbeat::stop_applies(until - STOPPED_TTL, connected_at)
+        true
     }
 
-    pub async fn is_session_valid(&self, session_id: &str, user_id: &str, connected_at: Option<i64>) -> bool {
+    pub async fn is_session_valid(&self, session_id: &str, user_id: &str) -> bool {
         let now = now_ms();
-        if self.is_session_stopped(session_id, now, connected_at) {
+        if self.is_session_stopped(session_id, now) {
             self.cache_op("session_validation", "stopped");
             return false;
         }
@@ -67,15 +66,15 @@ impl ActivityCache {
             }
         }
         self.cache_op("session_validation", "miss");
-        let row: Result<Option<(chrono::NaiveDateTime, bool)>, _> =
-            sqlx::query_as(r#"SELECT "lastActiveAt", "active" FROM "Session" WHERE "id" = $1 AND "accountId" = $2 LIMIT 1"#)
+        let row: Result<Option<(chrono::NaiveDateTime,)>, _> =
+            sqlx::query_as(r#"SELECT "lastActiveAt" FROM "Session" WHERE "id" = $1 AND "accountId" = $2 LIMIT 1"#)
                 .bind(session_id)
                 .bind(user_id)
                 .fetch_optional(&self.pool)
                 .await;
         match row {
-            Ok(Some((last, active))) => {
-                if self.is_session_stopped(session_id, now_ms(), connected_at) {
+            Ok(Some((last,))) => {
+                if self.is_session_stopped(session_id, now_ms()) {
                     self.cache_op("session_validation", "stopped");
                     return false;
                 }
@@ -86,7 +85,6 @@ impl ActivityCache {
                         last_update_sent: crate::util::naive_to_ms(last),
                         pending_update: None,
                         user_id: user_id.to_string(),
-                        active,
                     },
                 );
                 true
@@ -136,13 +134,13 @@ impl ActivityCache {
         }
     }
 
-    pub fn queue_session_update(&self, session_id: &str, timestamp: i64, connected_at: Option<i64>) -> bool {
-        if self.is_session_stopped(session_id, now_ms(), connected_at) {
+    pub fn queue_session_update(&self, session_id: &str, timestamp: i64) -> bool {
+        if self.is_session_stopped(session_id, now_ms()) {
             self.metrics.database_updates_skipped.with_label_values(&["session"]).inc();
             return false;
         }
         let Some(mut e) = self.sessions.get_mut(session_id) else { return false };
-        if crate::plugins::heartbeat::should_queue(e.active, (timestamp - e.last_update_sent).abs(), UPDATE_THRESHOLD) {
+        if (timestamp - e.last_update_sent).abs() > UPDATE_THRESHOLD {
             e.pending_update = Some(timestamp);
             return true;
         }
@@ -164,10 +162,12 @@ impl ActivityCache {
 
     pub fn clear_session_updates(&self, session_id: &str) {
         self.sessions.remove(session_id);
+        crate::plugins::heartbeat::stopped(session_id);
         self.stopped.insert(session_id.to_string(), now_ms() + STOPPED_TTL);
     }
 
     pub fn resume_session_updates(&self, session_id: &str) {
+        crate::plugins::heartbeat::resumed(session_id);
         self.stopped.remove(session_id);
     }
 
@@ -177,7 +177,6 @@ impl ActivityCache {
         for mut e in self.sessions.iter_mut() {
             if let Some(ts) = e.pending_update.take().filter(|t| *t != 0) {
                 e.last_update_sent = ts;
-                e.active = true;
                 sessions.push((e.key().clone(), ts));
             }
         }

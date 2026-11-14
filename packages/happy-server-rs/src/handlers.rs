@@ -152,7 +152,6 @@ fn count_event(app: &App, s: &SocketHandle, event: &str) {
 }
 
 pub fn dispatch(app: &Arc<App>, s: &Arc<SocketHandle>, name: &str, args: Vec<Arg>) {
-    crate::plugins::heartbeat::seen(s);
     let args = Args(args);
     let (a, sh) = (app.clone(), s.clone());
     match name {
@@ -327,11 +326,11 @@ async fn session_alive(app: Arc<App>, s: Arc<SocketHandle>, args: Args) {
         app.metrics.session_cache.with_label_values(&["session_validation", "miss"]).inc();
         return;
     };
-    let connected_at = crate::plugins::heartbeat::connected_at(&s);
-    if !app.activity.is_session_valid(sid, &s.user_id, connected_at).await {
+    if !crate::plugins::heartbeat::alive(&app, &s, sid, t as i64).await { return; }
+    if !app.activity.is_session_valid(sid, &s.user_id).await {
         return;
     }
-    app.activity.queue_session_update(sid, t as i64, connected_at);
+    app.activity.queue_session_update(sid, t as i64);
     let thinking = match d.get("thinking") {
         v if js::truthy(v) => v.cloned().unwrap(),
         _ => Value::Bool(false),
