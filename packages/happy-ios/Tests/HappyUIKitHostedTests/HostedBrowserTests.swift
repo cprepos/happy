@@ -17,7 +17,7 @@ actor BrowserDaemon: AgentTransport {
     let artifactHTML: String?
     let keepAlive: Bool
     var connections = 0
-    /// Our fake's live browser and noVNC (HostedBrowserPluginsTests.swift).
+    /// Our fake's live browser and noVNC (HostedBrowserAddonsTests.swift).
     var pluginState = BrowserDaemon.PluginState()
     init(artifactHTML: String? = nil, keepAlive: Bool = false) { self.artifactHTML = artifactHTML; self.keepAlive = keepAlive }
 

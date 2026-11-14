@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Checks that the plugins stay a small, mergeable layer over upstream.
+# Checks that the addons stay a small, mergeable layer over upstream.
 #
-#   scripts/plugins/upstream-check.sh [UPSTREAM]     (default: origin/main)
+#   scripts/addons/upstream-check.sh [UPSTREAM]     (default: origin/main)
 #
 # 1. Every file that exists upstream and that this branch changes must be
-#    listed in docs/plugins.md (the `touch-points` block) and change no more
+#    listed in docs/addons.md (the `touch-points` block) and change no more
 #    lines (added + removed) than listed there. Fails otherwise.
 # 2. `git merge-tree` of HEAD and UPSTREAM over their merge base must merge
 #    cleanly. Fails on a conflict, except in Cargo.lock, which is regenerated
 #    (warning only).
-# 3. Each `// upstream-copy: <file> <item> <hash>` comment in src/plugins names
-#    an upstream item the plugins copy. The item's text in UPSTREAM is hashed
+# 3. Each `// upstream-copy: <file> <item> <hash>` comment in src/addons names
+#    an upstream item the addons copy. The item's text in UPSTREAM is hashed
 #    again; a different hash is a warning: upstream changed the original, so
 #    the copy should be looked at.
 set -euo pipefail
@@ -19,8 +19,8 @@ upstream="${1:-${UPSTREAM:-origin/main}}"
 crate_dir="$(cd "$(dirname "$0")/../.." && pwd)"
 repo="$(git -C "$crate_dir" rev-parse --show-toplevel)"
 crate_rel="${crate_dir#"$repo"/}"
-doc="$crate_dir/docs/plugins.md"
-item="$crate_dir/scripts/plugins/upstream-item.sh"
+doc="$crate_dir/docs/addons.md"
+item="$crate_dir/scripts/addons/upstream-item.sh"
 
 git -C "$repo" rev-parse --verify -q "$upstream^{commit}" >/dev/null \
   || { echo "upstream-check: unknown ref $upstream" >&2; exit 2; }
@@ -38,16 +38,16 @@ done < <(awk '/^```touch-points/{on=1; next} on && /^```/{exit} on' "$doc")
 
 declare -A seen=()
 while IFS=$'\t' read -r added removed path; do
-  # Only files upstream has: files the branch adds are the plugins' own.
+  # Only files upstream has: files the branch adds are the addons' own.
   git -C "$repo" cat-file -e "$base:$path" 2>/dev/null || continue
   seen["$path"]=1
   max="${allowed[$path]:-}"
   n=$(( ${added/-/0} + ${removed/-/0} ))
   if [[ -z "$max" ]]; then
-    echo "FAIL  $path: upstream file changed ($n lines) but not listed in docs/plugins.md"
+    echo "FAIL  $path: upstream file changed ($n lines) but not listed in docs/addons.md"
     fail=1
   elif [[ "$max" != "*" && "$n" -gt "$max" ]]; then
-    echo "FAIL  $path: $n changed lines, docs/plugins.md allows $max"
+    echo "FAIL  $path: $n changed lines, docs/addons.md allows $max"
     fail=1
   else
     echo "ok    $path: $n changed lines (allowed $max)"
@@ -98,7 +98,7 @@ while IFS= read -r line; do
     echo "warn  copy $file $name: upstream changed it ($hash -> $now); compare ${line%%:*}"
     warn=1
   fi
-done < <(cd "$crate_dir" && grep -rn "// upstream-copy:" src/plugins)
+done < <(cd "$crate_dir" && grep -rn "// upstream-copy:" src/addons)
 
 if [[ $fail -ne 0 ]]; then
   echo "upstream-check: FAILED"

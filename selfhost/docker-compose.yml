@@ -63,7 +63,7 @@ services:
       start_period: 60s
       retries: 6
 
-  # The Rust server (packages/happy-server-rs, with its plugins), in place of happy-server above:
+  # The Rust server (packages/happy-server-rs, with its addons), in place of happy-server above:
   # the same settings, port, data volume and web app. The two must never run against the database
   # at the same time, so it sits behind the "rs" profile and is switched with `make server-rs` /
   # `make server-ts`, which stop the other one first. The Rust server also takes a Postgres advisory

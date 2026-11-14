@@ -4,7 +4,7 @@
   "localized": {
     "Strings.swift": {"strings":208,"functions":6},
     "AccountKinds.swift": {"strings":11,"functions":1},
-    "Browser+Plugins.swift": {"strings":3,"functions":2},
+    "Browser+Addons.swift": {"strings":3,"functions":2},
     "Chat.swift": {"strings":16,"functions":2},
     "ChatQuestions.swift": {"strings":8,"functions":2},
     "Composer.swift": {"strings":25,"functions":11},
@@ -17,7 +17,7 @@
     "SessionResume.swift": {"strings":1,"functions":0},
     "SettingsPages.swift": {"strings":1,"functions":0},
     "SlashCommands.swift": {"strings":2,"functions":5},
-    "Strings+Plugins.swift": {"strings":4,"functions":0},
+    "Strings+Addons.swift": {"strings":4,"functions":0},
     "SupportUs.swift": {"strings":3,"functions":0},
     "Tablet.swift": {"strings":1,"functions":0},
     "Voice.swift": {"strings":40,"functions":2}

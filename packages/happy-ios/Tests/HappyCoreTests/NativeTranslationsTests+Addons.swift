@@ -5,7 +5,7 @@ import XCTest
 /// `nativeSourcesWithPlugins`. Upstream's AccountKindNamingTests checks every
 /// language has every word of `nativeSources`; this checks the same for the
 /// joined words, so a plugin word missing from a language is caught.
-final class NativeTranslationsPluginsTests: XCTestCase {
+final class NativeTranslationsAddonsTests: XCTestCase {
     func testEveryLanguageHasEveryPluginWord() {
         let languages = AppLanguage.supported.map(\.code)
         XCTAssertEqual(Set(TranslationCatalog.nativeSourcesWithPlugins.keys), Set(languages))

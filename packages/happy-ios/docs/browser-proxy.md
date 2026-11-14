@@ -1,6 +1,6 @@
 # Remote-only browser and artifact proxy
 
-**Plugins override parts of this file: read browser-proxy.plugins.md first.**
+**Addons override parts of this file: read browser-proxy.addons.md first.**
 
 Every HTTP(S) request and WebSocket from the in-app browser goes through the
 agent connection, including public sites and CDN resources. There is no direct

@@ -38,7 +38,7 @@ pub fn register(r: &mut Router, c: &Config) {
     voice::register(r);
     session_files::register(r);
     version::register(r, c);
-    crate::plugins::register(r, c);
+    crate::addons::register(r, c);
 }
 
 /// Prisma's `new Date(x)` accepts only JS-representable instants (±8.64e15 ms);

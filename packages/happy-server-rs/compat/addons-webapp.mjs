@@ -1,10 +1,10 @@
-// Plugins: the bundled web app (src/plugins/webapp.rs) against main.ts
+// Addons: the bundled web app (src/addons/webapp.rs) against main.ts
 // staticWebappOptions and the static part of api.ts (@fastify/static, the
 // server check hook, the injected config, the SPA fallback). The env file
-// decides the directory (testdata/plugins-webapp) and the injected config:
-//   plugins-webapp          with HAPPY_INJECT_HTML_CONFIG
-//   plugins-webapp-plain    without it
-//   plugins-webapp-noindex  a directory without index.html: no web app
+// decides the directory (testdata/addons-webapp) and the injected config:
+//   addons-webapp          with HAPPY_INJECT_HTML_CONFIG
+//   addons-webapp-plain    without it
+//   addons-webapp-noindex  a directory without index.html: no web app
 // Validators (etag, last-modified) are compared by how the server answers
 // them, not by value: the two servers stat the same files but format them
 // independently.

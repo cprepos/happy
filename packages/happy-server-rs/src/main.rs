@@ -18,7 +18,7 @@ mod handlers;
 mod history;
 mod http;
 mod js;
-mod plugins;
+mod addons;
 mod logwriter;
 mod metrics;
 mod models;

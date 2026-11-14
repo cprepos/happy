@@ -25,7 +25,7 @@ pub struct Webapp {
     pub inject_script: Option<String>,
 }
 
-static WEBAPP: LazyLock<Option<Webapp>> = LazyLock::new(|| from_env(crate::plugins::voice::env));
+static WEBAPP: LazyLock<Option<Webapp>> = LazyLock::new(|| from_env(crate::addons::voice::env));
 
 /// `staticWebappOptions`: `None` (with a warning) when the directory has no
 /// `index.html`; an invalid `HAPPY_INJECT_HTML_CONFIG` is ignored with a warning.
@@ -56,7 +56,7 @@ pub fn register(r: &mut Router, _c: &Config) {
     if webapp().is_none() {
         return;
     }
-    crate::plugins::remove_route(r, &Method::GET, "/");
+    crate::addons::remove_route(r, &Method::GET, "/");
     r.get("/").handle(h!(root));
     r.get("/*").handle(h!(get_any));
     for m in [Method::POST, Method::PUT, Method::PATCH, Method::DELETE] {
@@ -387,7 +387,7 @@ mod tests {
     #[tokio::test]
     async fn resolves_files_inside_the_directory_only() {
         // A fixed directory, rewritten on every run.
-        let dir = std::env::temp_dir().join("happy-server-rs-plugins-webapp-test");
+        let dir = std::env::temp_dir().join("happy-server-rs-addons-webapp-test");
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         std::fs::write(dir.join("index.html"), "<head></head>").unwrap();
         std::fs::write(dir.join("a.js"), "1").unwrap();

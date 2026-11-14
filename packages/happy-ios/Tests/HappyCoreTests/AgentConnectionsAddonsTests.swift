@@ -6,7 +6,7 @@ import HappyWire
 // Our AgentConnections tests, kept out of AgentConnectionsTests.swift so
 // upstream merges do not conflict there.
 @MainActor
-final class AgentConnectionsPluginsTests: XCTestCase {
+final class AgentConnectionsAddonsTests: XCTestCase {
     /// Pull to refresh on a computer waiting out its retry backoff asks
     /// again at once, showing connecting, not when the backoff ends; a
     /// revoked computer and a backgrounded app are left alone.

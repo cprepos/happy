@@ -1,10 +1,10 @@
-// Plugins: the voice stream into a real LiveKit room (plugins-voice-live.env).
+// Addons: the voice stream into a real LiveKit room (addons-voice-live.env).
 // What the agent says is not deterministic, so each run is reduced to what
 // must hold on both servers: `ready` with the conversation id, the agent
 // joining, audio and agent messages arriving, RPCs answered, `end` closing
 // with 1000 and the duration being recorded.
 import { login } from './phase2.mjs';
-import { stream } from './plugins-voice.mjs';
+import { stream } from './addons-voice.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

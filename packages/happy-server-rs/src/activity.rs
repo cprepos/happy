@@ -162,12 +162,12 @@ impl ActivityCache {
 
     pub fn clear_session_updates(&self, session_id: &str) {
         self.sessions.remove(session_id);
-        crate::plugins::heartbeat::stopped(session_id);
+        crate::addons::heartbeat::stopped(session_id);
         self.stopped.insert(session_id.to_string(), now_ms() + STOPPED_TTL);
     }
 
     pub fn resume_session_updates(&self, session_id: &str) {
-        crate::plugins::heartbeat::resumed(session_id);
+        crate::addons::heartbeat::resumed(session_id);
         self.stopped.remove(session_id);
     }
 

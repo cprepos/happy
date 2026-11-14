@@ -100,7 +100,7 @@ final class NewWorkPanel: UIView, UITextFieldDelegate {
         }
     }
 
-    var modeTitle: String? { didSet { modeTitleChanged() } } // NewWorkPanel+Plugins.swift
+    var modeTitle: String? { didSet { modeTitleChanged() } } // NewWorkPanel+Addons.swift
 
     /// `.session`: the kinds this computer makes; one alone hides the
     /// control.

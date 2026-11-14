@@ -1,6 +1,6 @@
 //! ElevenLabs helpers copied from upstream's `routes/voice.rs`, which keeps
 //! them private. Each copy names its original and the hash of the original's
-//! text when it was copied; `scripts/plugins/upstream-check.sh` warns once
+//! text when it was copied; `scripts/addons/upstream-check.sh` warns once
 //! upstream's version no longer matches, so the copy can follow it.
 
 use crate::app::App;

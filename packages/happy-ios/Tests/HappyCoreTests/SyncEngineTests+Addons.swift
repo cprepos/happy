@@ -26,7 +26,7 @@ private actor RevokedTransport: AgentTransport {
     func close() {}
 }
 
-final class SyncEnginePluginsTests: XCTestCase {
+final class SyncEngineAddonsTests: XCTestCase {
     private struct Timeout: Error {}
     private func wait(_ engine: SyncEngine, _ predicate: @escaping @Sendable (HomeSnapshot) -> Bool) async throws -> HomeSnapshot {
         try await withThrowingTaskGroup(of: HomeSnapshot.self) { group in

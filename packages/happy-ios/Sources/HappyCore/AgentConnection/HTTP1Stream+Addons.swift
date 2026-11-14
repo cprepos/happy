@@ -8,7 +8,7 @@ import Tailcat
 /// `stream(path:credential:headers:)`'s first line in HTTP1Stream.swift
 /// hands the call to `stream(path:credential:headers:within:)` below, so
 /// upstream's body after that line is not run. When a merge changes that
-/// body, carry the change in here; `HTTP1StreamPluginsTests` fails until
+/// body, carry the change in here; `HTTP1StreamAddonsTests` fails until
 /// its pinned hash of upstream's body is updated, so a change is not missed.
 ///
 /// Ours: the head must arrive within `streamHeadDeadline`, counted from

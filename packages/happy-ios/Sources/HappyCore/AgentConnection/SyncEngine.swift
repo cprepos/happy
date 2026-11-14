@@ -166,7 +166,7 @@ public actor SyncEngine {
     private var holding: Set<String> = []
     private var generation = 0
     var stopped = false
-    var held = true, setupFailed = false // SyncEngine+Plugins.swift
+    var held = true, setupFailed = false // SyncEngine+Addons.swift
     private var cursor: String?
     private var dirty = false
     /// The team members the listed tasks belong to, as last read, kept

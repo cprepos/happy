@@ -3,11 +3,11 @@ import Foundation
 import XCTest
 
 /// `stream(path:credential:headers:)` in HTTP1Stream.swift hands every call
-/// to our plugins' `stream(…within:)` (HTTP1Stream+Plugins.swift), so
+/// to our plugins' `stream(…within:)` (HTTP1Stream+Addons.swift), so
 /// upstream's body after that first line is not run. This pins upstream's
 /// body: when a merge changes it, this fails until the change is carried
-/// into HTTP1Stream+Plugins.swift and the hash below is updated.
-final class HTTP1StreamPluginsTests: XCTestCase {
+/// into HTTP1Stream+Addons.swift and the hash below is updated.
+final class HTTP1StreamAddonsTests: XCTestCase {
     static let upstreamBody = "6a8fda15a0f0f90e5d7d3db5c45a56390555b90b8caaabd6c08008788f1745ed"
 
     func testUpstreamStreamBodyIsTheOneOursFollows() throws {
@@ -23,6 +23,6 @@ final class HTTP1StreamPluginsTests: XCTestCase {
             .filter { !$0.contains("headDeadlineFromCall") }
             .joined(separator: "\n")
         let hash = SHA256.hash(data: Data(body.utf8)).map { String(format: "%02x", $0) }.joined()
-        XCTAssertEqual(hash, Self.upstreamBody, "upstream's stream() changed: carry the change into HTTP1Stream+Plugins.swift, then update the hash")
+        XCTAssertEqual(hash, Self.upstreamBody, "upstream's stream() changed: carry the change into HTTP1Stream+Addons.swift, then update the hash")
     }
 }

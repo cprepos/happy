@@ -1,4 +1,4 @@
-//! Plugins: server features that live outside the upstream port.
+//! Addons: server features that live outside the upstream port.
 //!
 //! - `voice`: self-hosted voice. LiveKit grants and recorded usage on the REST
 //!   routes, `GET /v1/voice/config`, and the `/v1/voice/stream` WebSocket that
@@ -9,7 +9,7 @@
 //!   after a stop counts from its new owner's first beat.
 //!
 //! Upstream code calls in at a handful of places, each listed in
-//! docs/plugins.md. Settings come from the environment on first use and shared
+//! docs/addons.md. Settings come from the environment on first use and shared
 //! state lives in statics, so `Config` and `App` stay as upstream has them.
 
 pub mod heartbeat;
@@ -21,14 +21,14 @@ use crate::config::Config;
 use crate::http::{HttpResponse, Router};
 use std::sync::Arc;
 
-/// Called last from `routes::register`. Replaces the upstream routes the plugins
+/// Called last from `routes::register`. Replaces the upstream routes the addons
 /// answer differently and adds the rest.
 pub fn register(r: &mut Router, c: &Config) {
     voice::register(r);
     webapp::register(r, c);
 }
 
-/// Whether a plugin answers this request: an upgrade on a plugin's path.
+/// Whether an addon answers this request: an upgrade on an addon's path.
 pub fn owns_upgrade(path: &str, headers: &hyper::HeaderMap) -> bool {
     path == voice::stream::PATH && crate::engine::is_upgrade(headers)
 }
@@ -39,7 +39,7 @@ pub async fn upgrade(app: Arc<App>, req: hyper::Request<hyper::body::Incoming>) 
 }
 
 /// Drops the routes registered so far for `method` and `pattern`, so the
-/// plugin's own registration is the one `Router::find` picks.
+/// addon's own registration is the one `Router::find` picks.
 pub(crate) fn remove_route(r: &mut Router, method: &hyper::Method, pattern: &str) {
     r.routes.retain(|route| !(route.method == *method && route.pattern == pattern));
 }

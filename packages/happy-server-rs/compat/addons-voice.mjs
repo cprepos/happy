@@ -1,10 +1,10 @@
-// Plugins: self-hosted voice (src/plugins/voice) against the TS server's
+// Addons: self-hosted voice (src/addons/voice) against the TS server's
 // voiceRoutes.ts and api/voiceStream.ts. The same scenario runs under each
 // configuration; the env file decides what the servers offer:
-//   plugins-voice        LiveKit only, its server unreachable
-//   plugins-voice-both   LiveKit (unreachable) and ElevenLabs (the mock)
-//   plugins-voice-bare   nothing configured
-// The stream cases here end before a room is joined; plugins-voice-live joins
+//   addons-voice        LiveKit only, its server unreachable
+//   addons-voice-both   LiveKit (unreachable) and ElevenLabs (the mock)
+//   addons-voice-bare   nothing configured
+// The stream cases here end before a room is joined; addons-voice-live joins
 // a real LiveKit room.
 import { createRequire } from 'node:module';
 import net from 'node:net';

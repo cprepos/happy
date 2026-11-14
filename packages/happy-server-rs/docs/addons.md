@@ -1,28 +1,28 @@
-# Plugins
+# Addons
 
-`src/plugins` holds server features that are not part of the upstream port:
+`src/addons` holds server features that are not part of the upstream port:
 self-hosted voice, the bundled web app, and a heartbeat fix for resumed
 sessions. The TypeScript server (`packages/happy-server`) is the reference for
 each of them; the compat scenarios below compare the two.
 
-The plugins are written to merge with upstream with as few conflicts as
+The addons are written to merge with upstream with as few conflicts as
 possible:
 
 - They live in their own files. Upstream files call into them at the touch
   points listed below, and nowhere else.
 - Settings are read from the environment on first use, and shared state lives
   in statics, so `Config` and `App` are as upstream has them.
-- Where a plugin needs a private upstream item, it copies it and marks the copy
+- Where an addon needs a private upstream item, it copies it and marks the copy
   (see "Copied items").
 - `make upstream-check` checks all three (see "Checking against upstream").
 
 ## Features
 
-| Plugin | Files | What it does |
+| Addon | Files | What it does |
 |---|---|---|
-| voice | `src/plugins/voice/` | `GET /v1/voice/config`; `POST /v1/voice/conversations` and `GET /v1/voice/usage` with LiveKit grants and recorded durations as well as ElevenLabs; the `/v1/voice/stream` WebSocket, which bridges the app's audio into a LiveKit room (`bridge.rs`). |
-| webapp | `src/plugins/webapp.rs` | Serves the web app from `HAPPY_STATIC_DIR`, injects `HAPPY_INJECT_HTML_CONFIG` as `window.__HAPPY_CONFIG__`, keeps the `GET /` server check the apps use, and falls back to `index.html` for app routes. |
-| heartbeat | `src/plugins/heartbeat.rs` | A session resumed right after it stopped counts from its new owner's first beat, which is written at once. The stop is lifted with upstream's own `resume_session_updates`. |
+| voice | `src/addons/voice/` | `GET /v1/voice/config`; `POST /v1/voice/conversations` and `GET /v1/voice/usage` with LiveKit grants and recorded durations as well as ElevenLabs; the `/v1/voice/stream` WebSocket, which bridges the app's audio into a LiveKit room (`bridge.rs`). |
+| webapp | `src/addons/webapp.rs` | Serves the web app from `HAPPY_STATIC_DIR`, injects `HAPPY_INJECT_HTML_CONFIG` as `window.__HAPPY_CONFIG__`, keeps the `GET /` server check the apps use, and falls back to `index.html` for app routes. |
+| heartbeat | `src/addons/heartbeat.rs` | A session resumed right after it stopped counts from its new owner's first beat, which is written at once. The stop is lifted with upstream's own `resume_session_updates`. |
 
 Environment:
 
@@ -38,7 +38,7 @@ Environment:
 
 ## Touch points
 
-Every upstream file the plugins change, with the most lines (added plus
+Every upstream file the addons change, with the most lines (added plus
 removed, from `git diff --numstat`) the change may take. `upstream-check.sh`
 reads this block. `*` means any number.
 
@@ -54,17 +54,17 @@ packages/happy-server-rs/Cargo.lock *
 
 Each one, and why it is needed:
 
-- **`src/main.rs:21`**, 1 line (`mod plugins;`). This declares the module.
-- **`src/routes/mod.rs:41`**, 1 line (`crate::plugins::register(r, c);`), the
-  last line of `routes::register`. It adds the plugin routes. Because it runs
-  last, it can also replace upstream routes the plugins answer differently:
+- **`src/main.rs:21`**, 1 line (`mod addons;`). This declares the module.
+- **`src/routes/mod.rs:41`**, 1 line (`crate::addons::register(r, c);`), the
+  last line of `routes::register`. It adds the addon routes. Because it runs
+  last, it can also replace upstream routes the addons answer differently:
   - `POST /v1/voice/conversations` and `GET /v1/voice/usage`, replaced by voice.
   - `GET /`, replaced by webapp, only when a web app is configured.
 
-  Each replaced route is dropped with `plugins::remove_route` before the plugin
+  Each replaced route is dropped with `addons::remove_route` before the addon
   route is added. `src/routes/voice.rs` itself is not changed.
 - **`src/http.rs:698`**, 1 line. It hands WebSocket upgrades on
-  `/v1/voice/stream` to the plugin, before upstream's `/v1/updates` upgrade
+  `/v1/voice/stream` to the addon, before upstream's `/v1/updates` upgrade
   handling. This is the only place that sees the raw request with its upgrade.
 - **`src/activity.rs:165, 170`**, 1 line each, and **`src/handlers.rs:329`**,
   1 line. These are the heartbeat fix's hooks:
@@ -76,7 +76,7 @@ Each one, and why it is needed:
   Everything else lives in `heartbeat.rs`. To lift a stop it calls upstream's
   `resume_session_updates`, the same call `POST /v1/sessions` makes, so the
   stop window, the cache and the flush stay upstream's.
-- **`Cargo.toml`**, 17 lines. These are tail tables that only the plugins use:
+- **`Cargo.toml`**, 17 lines. These are tail tables that only the addons use:
   - `[target.'cfg(all())'.dependencies]` holds livekit and its pins.
   - `[target.'cfg(all())'.build-dependencies]` holds `webrtc-sys-build`.
 
@@ -100,10 +100,10 @@ Outside the crate:
 
 ## Copied items
 
-Private upstream items the plugins need are copied, not made public, so the
+Private upstream items the addons need are copied, not made public, so the
 upstream files stay unchanged. Each copy carries a marker of the form
 `// upstream-copy: <file> <item> <hash>`. The hash is the first 16 hex
-characters of the sha256 of the item's text, as `scripts/plugins/upstream-item.sh`
+characters of the sha256 of the item's text, as `scripts/addons/upstream-item.sh`
 extracts it.
 
 | Copy | Original | Hash |
@@ -123,10 +123,10 @@ does, but it stops at the 5 h cap the grant checks against, not upstream's
 
 Upstream code is used wherever it does the whole job:
 
-- **`GET /`** stays upstream's route when no web app is configured. The plugin
+- **`GET /`** stays upstream's route when no web app is configured. The addon
   replaces it only with `HAPPY_STATIC_DIR` set, and then answers the server
   check with upstream's banner text.
-- **ElevenLabs.** The voice plugin uses upstream's `Config` (`elevenlabs_api`,
+- **ElevenLabs.** The voice addon uses upstream's `Config` (`elevenlabs_api`,
   the master secret) and the copied items above.
 
 The rest is kept because upstream covers only part of it:
@@ -134,12 +134,12 @@ The rest is kept because upstream covers only part of it:
 - **Heartbeats.** Upstream lifts a stop only on `POST /v1/sessions`
   (`resume_session_updates`). A resumed owner that reattaches without that call
   stays ignored for the 60 s window, and its first beat, within the update
-  threshold of the stop, is not written. The plugin keeps only that decision
+  threshold of the stop, is not written. The addon keeps only that decision
   and lifts the stop with upstream's own call. Dropped in favour of upstream:
   the session `active` flag in `ActivityCache` and the stop check rewritten to
   take a connect time (see "Differences" for what that gives up).
 - **Voice usage and grants.** Upstream's routes are ElevenLabs-only, with a
-  2 h cap. Without the plugin's routes, LiveKit grants, recorded durations and
+  2 h cap. Without the addon's routes, LiveKit grants, recorded durations and
   the 5 h cap would be lost.
 - **Web app.** Upstream has no static serving.
   `docs/plans/happy-serve-self-host.md` plans one, but none is implemented at
@@ -164,7 +164,7 @@ The rest is kept because upstream covers only part of it:
   set inactive by hand.
 - **Web app files.** `@fastify/static` with `wildcard: false` makes one route
   per file found at startup, so files added later 404 or fall back to the SPA.
-  The plugin reads the directory on each request. Files added later are
+  The addon reads the directory on each request. Files added later are
   served; otherwise it routes the same way:
   - dot files are skipped
   - a directory needs a trailing slash
@@ -181,7 +181,7 @@ make upstream-check                 # against origin/main
 make upstream-check UPSTREAM=<ref>
 ```
 
-`scripts/plugins/upstream-check.sh` runs three checks:
+`scripts/addons/upstream-check.sh` runs three checks:
 
 1. **Touch points.** It fails if an upstream file changes but is not listed in
    the touch-points block, or changes more lines than the block allows.
@@ -194,7 +194,7 @@ make upstream-check UPSTREAM=<ref>
 
 Upstream's `src/rpc.rs` does not build with rustc 1.94
 (`with_label_values(&[&label, result])`). It builds with the rust:1.99 image
-upstream's Dockerfile uses. The plugins need nothing newer than upstream does.
+upstream's Dockerfile uses. The addons need nothing newer than upstream does.
 
 ## Compat scenarios
 
@@ -203,16 +203,16 @@ transcripts are compared. Run them the same way as upstream's (see
 `compat/diff.sh`):
 
 ```
-compat/withpg.sh compat/diff.sh plugins-webapp
+compat/withpg.sh compat/diff.sh addons-webapp
 ```
 
 | Scenario | Env file | Covers |
 |---|---|---|
-| `plugins-voice` | LiveKit set, its server unreachable | REST, grants (JWT claims), usage, stream handshakes, hello checks, close codes |
-| `plugins-voice-both` | LiveKit and ElevenLabs (the mock) | the same, with both backends offered |
-| `plugins-voice-bare` | nothing | the same, with voice off |
-| `plugins-voice-live` | `VOICE_LIVE_ENV=<env with LiveKit keys>`, `VOICE_LIVE_URL` | a real room: ready, the agent joining, audio, RPCs, `end`, and the recorded duration |
-| `plugins-webapp` | `testdata/plugins-webapp` with injected config | server check, files, traversal, conditional and range requests, SPA fallback, API paths |
-| `plugins-webapp-plain` | the same directory, without config | the same |
-| `plugins-webapp-noindex` | a directory without `index.html` | no web app; upstream's `GET /` |
-| `plugins-heartbeat` | none | stop window, resumed owner and its first beat written |
+| `addons-voice` | LiveKit set, its server unreachable | REST, grants (JWT claims), usage, stream handshakes, hello checks, close codes |
+| `addons-voice-both` | LiveKit and ElevenLabs (the mock) | the same, with both backends offered |
+| `addons-voice-bare` | nothing | the same, with voice off |
+| `addons-voice-live` | `VOICE_LIVE_ENV=<env with LiveKit keys>`, `VOICE_LIVE_URL` | a real room: ready, the agent joining, audio, RPCs, `end`, and the recorded duration |
+| `addons-webapp` | `testdata/addons-webapp` with injected config | server check, files, traversal, conditional and range requests, SPA fallback, API paths |
+| `addons-webapp-plain` | the same directory, without config | the same |
+| `addons-webapp-noindex` | a directory without `index.html` | no web app; upstream's `GET /` |
+| `addons-heartbeat` | none | stop window, resumed owner and its first beat written |

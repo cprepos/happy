@@ -64,8 +64,8 @@ pub fn register(r: &mut Router) {
     if let Some(problem) = livekit().and_then(missing_public_url) {
         tracing::error!(module = "voice", "{}", problem);
     }
-    crate::plugins::remove_route(r, &Method::POST, "/v1/voice/conversations");
-    crate::plugins::remove_route(r, &Method::GET, "/v1/voice/usage");
+    crate::addons::remove_route(r, &Method::POST, "/v1/voice/conversations");
+    crate::addons::remove_route(r, &Method::GET, "/v1/voice/usage");
 
     let backend = || enumeration(&[backends::STREAM, backends::ELEVENLABS]);
     r.get("/v1/voice/config")

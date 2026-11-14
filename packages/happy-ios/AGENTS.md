@@ -1,6 +1,6 @@
 # happy-ios
 
-**Plugins override parts of this file: read AGENTS.plugins.md first.**
+**Addons override parts of this file: read AGENTS.addons.md first.**
 
 Native iOS client for Happy, written in Swift with UIKit.
 

@@ -1,7 +1,7 @@
-# Plugins layer checks. See docs/plugins.md.
+# Addons layer checks. See docs/addons.md.
 
 UPSTREAM ?= origin/main
 
 .PHONY: upstream-check
 upstream-check:
-	scripts/plugins/upstream-check.sh $(UPSTREAM)
+	scripts/addons/upstream-check.sh $(UPSTREAM)

@@ -1,4 +1,4 @@
-// Plugins: heartbeats of a resumed session (src/plugins/heartbeat.rs) against
+// Addons: heartbeats of a resumed session (src/addons/heartbeat.rs) against
 // the TS server's sessionCache.ts and sessionUpdateHandler.ts.
 //   - After a stop, beats from a socket connected before it stay ignored for
 //     the stop window; beats from a socket connected after it count at once.
@@ -6,7 +6,7 @@
 //     session inactive within the update threshold.
 //   Not compared: the TS server also writes the first beat of a session it
 //   reads as inactive without a stop (set by hand in the database); the Rust
-//   server leaves that to upstream's threshold (docs/plugins.md).
+//   server leaves that to upstream's threshold (docs/addons.md).
 import { connected, login, step } from './phase2.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
