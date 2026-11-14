@@ -4,6 +4,8 @@
 //! docs/plugins.md. Settings come from the environment on first use and shared
 //! state lives in statics, so `Config` and `App` stay as upstream has them.
 
+pub mod voice;
+
 use crate::app::App;
 use crate::config::Config;
 use crate::http::{HttpResponse, Router};
@@ -11,7 +13,9 @@ use std::sync::Arc;
 
 /// Called last from `routes::register`. Replaces the upstream routes the plugins
 /// answer differently and adds the rest.
-pub fn register(_r: &mut Router, _c: &Config) {}
+pub fn register(r: &mut Router, _c: &Config) {
+    voice::register(r);
+}
 
 /// Whether a plugin answers upgrades on this path.
 pub fn owns_upgrade(_path: &str) -> bool {
@@ -25,7 +29,6 @@ pub async fn upgrade(_app: Arc<App>, req: hyper::Request<hyper::body::Incoming>)
 
 /// Drops the routes registered so far for `method` and `pattern`, so the
 /// plugin's own registration is the one `Router::find` picks.
-#[allow(dead_code)]
 pub(crate) fn remove_route(r: &mut Router, method: &hyper::Method, pattern: &str) {
     r.routes.retain(|route| !(route.method == *method && route.pattern == pattern));
 }
