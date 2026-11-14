@@ -8,9 +8,9 @@ import Foundation
 ///
 /// A legacy account's block asks the computer (when it has more than one),
 /// folder, harness and mode, so on a small phone with the keyboard up it may
-/// tighten before it gives up (`compactsWhenShort`). Each initializer here
-/// lays the block out as upstream's does, and only when that does not fit
-/// lays it out again with the compact rows.
+/// tighten before it gives up (`compactsWhenShort`). The initializer here
+/// lays the block out as upstream's `givingWay` does, and only when that
+/// does not fit lays it out again with the compact rows.
 extension NewWorkLayout.Metrics {
     /// `compactsWhenShort`'s, when the regular ones don't fit.
     public static let compactRowHeight: CGFloat = 36
@@ -23,18 +23,6 @@ extension NewWorkLayout.Metrics {
 }
 
 extension NewWorkLayout {
-    /// Upstream's `init(…rows:…)`; with `compactsWhenShort`, when that does
-    /// not fit, the rows and their gaps tighten (`compactRowHeight`), the
-    /// kind's picture and the note staying.
-    public init(width: CGFloat, sides: LayoutInsets = .zero, top: CGFloat, bottom: CGFloat, kindHeight: CGFloat?, rows count: Int, note: Measurable?, art: Bool = false, compactsWhenShort: Bool) {
-        self.init(width: width, sides: sides, top: top, bottom: bottom, kindHeight: kindHeight, rows: count, note: note, art: art)
-        guard compactsWhenShort, !fits else { return }
-        typealias M = Metrics
-        let noteHeight = note?.size(fitting: block.width).height
-        let compact = Self.compactStack(width: block.width, art: art, kindHeight: kindHeight, kindGap: count > 0 ? M.compactKindToRows : 0, count: count, noteHeight: noteHeight)
-        place(compact, top: top, bottom: bottom)
-    }
-
     /// Upstream's `init(…givingWay:…)`; with `compactsWhenShort`, when even
     /// its closed gaps do not fit, the rows shorten (`compactRowHeight`),
     /// first keeping the gap the status chip clears, then closing it too.
