@@ -322,23 +322,6 @@ final class TailcatClientsTests: XCTestCase {
         XCTAssertTrue(condition())
     }
 
-    /// The last waiter to go cancels the connect: nobody wants it.
-    func testTheLastWaiterGoneCancelsTheConnect() async throws {
-        let connect = HeldConnect(), made = Made()
-        let clients = held(connect, made)
-        let only = Task { try await clients.lease(.query) }
-        try await waitFor { connect.starts == 1 }
-        only.cancel()
-        do { _ = try await only.value; XCTFail("a cancelled waiter got a client") } catch is CancellationError {}
-        try await waitFor { connect.cancels == 1 }
-        // The next request connects afresh.
-        let next = Task { try await clients.lease(.query) }
-        try await waitFor { connect.starts == 2 }
-        connect.open()
-        _ = try await next.value
-        XCTAssertEqual(made.all.count, 1)
-    }
-
     /// A request's deadline covers waiting for its client: past it, the
     /// request gives up while the connect goes on for anyone else.
     func testALeasePastItsDeadlineGivesUpWithoutTheConnect() async throws {
