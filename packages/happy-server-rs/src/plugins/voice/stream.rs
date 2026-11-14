@@ -14,7 +14,7 @@ use super::{backends, conversations, livekit_token};
 use crate::app::App;
 use crate::http::{HttpResponse, RespBody};
 use bytes::Bytes;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{FutureExt, SinkExt, StreamExt};
 use hyper::body::Incoming;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
@@ -194,6 +194,8 @@ struct Conn {
     user_id: Mutex<Option<String>>,
     conversation_id: Mutex<Option<String>>,
     ready_at: AtomicI64,
+    /// Holds `start` back until the messages already received are handled.
+    gate: Mutex<Option<Arc<tokio::sync::Notify>>>,
 }
 
 struct Client(Weak<Conn>);
@@ -232,6 +234,9 @@ async fn run(app: Arc<App>, ws: WebSocketStream<Io>, hello_timeout: Duration) {
                 break;
             }
         }
+        // Sends the reply tungstenite queued to the app's close frame.
+        let _ = sink.close().await;
+        sink
     });
     let conn = Arc::new(Conn {
         app,
@@ -242,9 +247,13 @@ async fn run(app: Arc<App>, ws: WebSocketStream<Io>, hello_timeout: Duration) {
         user_id: Mutex::new(None),
         conversation_id: Mutex::new(None),
         ready_at: AtomicI64::new(0),
+        gate: Mutex::new(None),
     });
 
     let hello_deadline = tokio::time::Instant::now() + hello_timeout;
+    // After a read error the stream yields nothing more; the rest of what the
+    // app sends is read off the socket directly.
+    let mut drain = false;
     loop {
         let state = conn.state();
         let next = if state == State::Hello {
@@ -260,13 +269,31 @@ async fn run(app: Arc<App>, ws: WebSocketStream<Io>, hello_timeout: Duration) {
             let _ = tokio::time::timeout(CLOSE_TIMEOUT, async { while let Some(Ok(_)) = stream.next().await {} }).await;
             break;
         } else {
-            stream.next().await
+            let gate = conn.gate.lock().unwrap().take();
+            match gate {
+                None => stream.next().await,
+                Some(g) => match stream.next().now_or_never() {
+                    Some(n) => {
+                        *conn.gate.lock().unwrap() = Some(g);
+                        n
+                    }
+                    None => {
+                        g.notify_one();
+                        stream.next().await
+                    }
+                },
+            }
         };
         match next {
             Some(Ok(Message::Binary(data))) => conn.on_binary(&data).await,
             Some(Ok(Message::Text(text))) => conn.on_text(text.as_str()).await,
-            Some(Ok(Message::Close(_))) | None => {
-                conn.close(1000, "").await;
+            // tungstenite answers the app's close frame itself.
+            Some(Ok(Message::Close(_))) => {
+                conn.close(1005, "").await;
+                break;
+            }
+            None => {
+                conn.close(1006, "").await;
                 break;
             }
             Some(Ok(_)) => {}
@@ -282,12 +309,24 @@ async fn run(app: Arc<App>, ws: WebSocketStream<Io>, hello_timeout: Duration) {
                     }
                 };
                 conn.close(code, "").await;
+                drain = true;
+                break;
             }
         }
     }
     conn.close(1000, "").await;
     drop(conn);
-    let _ = writer.await;
+    let Ok(sink) = writer.await else { return };
+    if drain {
+        // As `ws` does after a bad message: keep reading until the app goes
+        // away, so the socket is not reset under the close frame.
+        if let Ok(mut ws) = stream.reunite(sink) {
+            use tokio::io::AsyncReadExt;
+            let io = ws.get_mut();
+            let mut buf = vec![0u8; 16 * 1024];
+            let _ = tokio::time::timeout(CLOSE_TIMEOUT, async { while matches!(io.read(&mut buf).await, Ok(n) if n > 0) {} }).await;
+        }
+    }
 }
 
 impl Conn {
@@ -334,8 +373,11 @@ impl Conn {
             *state = State::Closed;
             was_ready
         };
-        // 1005/1006 are never sent: the socket is already gone.
-        if code != 1006 {
+        if let Some(g) = self.gate.lock().unwrap().take() {
+            g.notify_one();
+        }
+        // 1005/1006 are never sent: the app closed, or the socket is gone.
+        if code != 1005 && code != 1006 {
             let frame = CloseFrame { code: CloseCode::from(code), reason: reason.to_string().into() };
             let _ = self.out.send(Message::Close(Some(frame)));
         }
@@ -397,10 +439,12 @@ impl Conn {
             Err((code, message)) => return self.fail(code, message).await,
         };
         *self.state.lock().unwrap() = State::Starting;
+        let gate = Arc::new(tokio::sync::Notify::new());
+        *self.gate.lock().unwrap() = Some(gate.clone());
         *self.bridge.lock().unwrap() = Some(Arc::new(Bridge::new(Arc::new(Client(Arc::downgrade(self))))));
         let conn = self.clone();
         tokio::spawn(async move {
-            if let Err(e) = conn.start(hello).await {
+            if let Err(e) = conn.start(hello, gate).await {
                 tracing::info!(module = "voice-stream", "Voice stream start failed: {:#}", e);
                 conn.fail("internal", "Failed to start voice").await;
             }
@@ -411,7 +455,10 @@ impl Conn {
         self.state() == State::Starting
     }
 
-    async fn start(self: &Arc<Self>, hello: Hello) -> anyhow::Result<()> {
+    async fn start(self: &Arc<Self>, hello: Hello, gate: Arc<tokio::sync::Notify>) -> anyhow::Result<()> {
+        // Messages that came in with the hello go first, as `ws` emits all
+        // of a chunk's messages before the TS server's first await resumes.
+        gate.notified().await;
         let verified = self.app.auth.verify_token(&hello.token);
         if !self.starting() {
             return Ok(());
