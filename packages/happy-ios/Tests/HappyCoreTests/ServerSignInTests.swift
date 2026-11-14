@@ -387,9 +387,37 @@ final class SignInRequiredTests: XCTestCase {
         let member = try await flow.saveProfile("Steve", for: signedIn)
         XCTAssertFalse(member.needsProfile)
         XCTAssertEqual(member.record.userId, "u1")
+        // The suggested email goes with the name, as desktop sends it.
+        let writes = await daemon.writes
+        let patch = try XCTUnwrap(writes.first { $0.method == "PATCH" })
+        XCTAssertEqual(patch.path, "/v0/profile")
+        XCTAssertEqual(patch.headers["If-Match"], "v0")
+        let fields = try XCTUnwrap(JSONSerialization.jsonObject(with: patch.body ?? Data()) as? [String: String])
+        XCTAssertEqual(fields["name"], "Steve")
+        XCTAssertEqual(fields["email"], "s@example.com")
+        // Then the picture, as a JPEG, under the same token.
+        try await flow.saveProfilePhoto(Data([0xFF, 0xD8, 0xFF]), for: member)
+        let afterPhoto = await daemon.writes
+        let put = try XCTUnwrap(afterPhoto.last)
+        XCTAssertEqual(put.method, "PUT")
+        XCTAssertEqual(put.path, "/v0/profile/photo")
+        XCTAssertEqual(put.headers["Content-Type"], "image/jpeg")
+        XCTAssertEqual(put.body, Data([0xFF, 0xD8, 0xFF]))
+        await daemon.answer("/v0/profile/photo", HTTP1Response(status: 413))
+        do {
+            try await flow.saveProfilePhoto(Data([0xFF]), for: member)
+            XCTFail("a refused picture throws")
+        } catch {}
         await daemon.answer("/v0/profile", HTTP1Response(status: 200, body: Data(#"{"profile":{"name":null,"updatedAt":0,"version":"v0"}}"#.utf8)))
         let none = await flow.suggestedName(for: signedIn)
         XCTAssertNil(none, "no suggestion, an empty field")
+        // No suggested email: none is sent.
+        _ = try await flow.saveProfile("Steve", for: signedIn)
+        let lastWrites = await daemon.writes
+        let bare = try XCTUnwrap(lastWrites.last { $0.method == "PATCH" })
+        let sent = try XCTUnwrap(JSONSerialization.jsonObject(with: bare.body ?? Data()) as? [String: String])
+        XCTAssertNil(sent["email"])
+        XCTAssertEqual(sent["name"], "Steve")
     }
 
     func testHappyCloudServersAreNamedUnderTheBase() throws {
@@ -454,10 +482,6 @@ final class SignInRequiredTests: XCTestCase {
         XCTAssertEqual(roles, [.viewer, .admin, .other("reviewers")])
         XCTAssertEqual(http.requests.last?.headers["Authorization"], "Bearer \(pass)")
 
-        http.json(accounts + "/v1/servers/join", status: 404, #"{"code":"not_found","error":"No such server."}"#)
-        await XCTAssertThrowsAsync(try await account.join("acme", code: "nope")) {
-            XCTAssertEqual($0 as? CloudAccountError, .refused(status: 404, code: "not_found", message: "No such server."))
-        }
         http.json(accounts + "/v1/servers/availability?name=acme", #"{"name":"acme","available":false,"reason":"taken"}"#)
         let taken = try await account.availability("acme")
         XCTAssertEqual(taken, .taken)
@@ -539,6 +563,31 @@ final class SignInRequiredTests: XCTestCase {
         XCTAssertNil(keychain.stored(item))
     }
 
+    /// Continue with Google: the same endpoint with Google's ID token and
+    /// the raw nonce it was bound to, and nothing else: no authorization
+    /// code and no name, which Google's token carries itself.
+    func testHappyCloudSignsInWithGoogle() async throws {
+        let accounts = HappyCloud.accounts
+        let http = ScriptedHTTP()
+        let pass = jwt("acc-g", aud: accounts + "/")
+        http.on(accounts + "/v1/auth/native") { request in
+            XCTAssertEqual(request.method, "POST")
+            XCTAssertEqual(request.headers["Content-Type"], "application/json")
+            XCTAssertNil(request.headers["Authorization"])
+            let body = try JSONSerialization.jsonObject(with: request.body ?? Data()) as? [String: String]
+            XCTAssertEqual(body, ["provider": "google", "idToken": "google.id.token", "nonce": "raw-nonce"])
+            return HTTPResponse(status: 200, body: Data(#"{"access_token":"\#(pass)","expires_in":3600}"#.utf8))
+        }
+        let account = try await CloudAccount.signIn(provider: "google", idToken: "google.id.token", nonce: "raw-nonce", authorizationCode: nil, name: nil, http: http)
+        XCTAssertTrue(account.isLive())
+        XCTAssertEqual(http.requests.count, 1)
+        // A token without the nonce, or for another client, is refused: a failure, not an ended pass.
+        http.json(accounts + "/v1/auth/native", status: 401, #"{"code":"invalid_token","error":"That sign-in could not be verified."}"#)
+        await XCTAssertThrowsAsync(try await CloudAccount.signIn(provider: "google", idToken: "bad", nonce: "raw-nonce", authorizationCode: nil, name: nil, http: http)) {
+            XCTAssertEqual($0 as? CloudAccountError, .refused(status: 401, code: "invalid_token", message: "That sign-in could not be verified."))
+        }
+    }
+
     /// A test account signs in with its login and password and gets the
     /// same one-hour pass; a wrong password and a lockout say which.
     func testHappyCloudTestAccountSignsInWithAPassword() async throws {
@@ -563,6 +612,95 @@ final class SignInRequiredTests: XCTestCase {
         http.json(accounts + "/v1/auth/password", status: 429, #"{"code":"locked","retryAfter":840}"#)
         await XCTAssertThrowsAsync(try await CloudAccount.signIn(login: "qa-ios", password: "no", http: http)) {
             XCTAssertEqual($0 as? CloudAccountError, .locked(retryAfter: 840))
+        }
+    }
+
+    /// Email sign-in's first half: the address alone goes to the accounts
+    /// service, unsigned, and `202 {}` means a code is on its way. Each
+    /// refusal keeps its code and words; `429 rate_limited` says when to
+    /// ask again, from the body or else the `Retry-After` header.
+    func testHappyCloudEmailSignInSendsACode() async throws {
+        let accounts = HappyCloud.accounts, start = accounts + "/v1/auth/email/start"
+        let http = ScriptedHTTP()
+        http.on(start) { request in
+            XCTAssertEqual(request.method, "POST")
+            XCTAssertNil(request.headers["Authorization"])
+            XCTAssertEqual(request.headers["Content-Type"], "application/json")
+            let body = try JSONSerialization.jsonObject(with: request.body ?? Data()) as? [String: String]
+            XCTAssertEqual(body, ["email": "steve@example.com"])
+            return HTTPResponse(status: 202, body: Data("{}".utf8))
+        }
+        try await CloudAccount.startEmailSignIn(email: "steve@example.com", http: http)
+        XCTAssertEqual(http.requests.count, 1)
+
+        let refusals: [(Int, String, String)] = [
+            (400, "invalid_email", "Enter a valid email address."),
+            (400, "unsupported_provider", "Email sign-in isn't available."),
+            (502, "unavailable", "Email sign-in is unavailable. Try again."),
+        ]
+        for (status, code, message) in refusals {
+            http.json(start, status: status, #"{"code":"\#(code)","error":"\#(message)"}"#)
+            await XCTAssertThrowsAsync(try await CloudAccount.startEmailSignIn(email: "steve@example.com", http: http)) {
+                XCTAssertEqual($0 as? CloudAccountError, .refused(status: status, code: code, message: message))
+            }
+        }
+
+        http.on(start) { _ in
+            HTTPResponse(status: 429, body: Data(#"{"code":"rate_limited","error":"Too many codes. Wait a minute.","retryAfter":42}"#.utf8), headers: ["Retry-After": "42"])
+        }
+        await XCTAssertThrowsAsync(try await CloudAccount.startEmailSignIn(email: "steve@example.com", http: http)) {
+            XCTAssertEqual($0 as? CloudAccountError, .rateLimited(retryAfter: 42, message: "Too many codes. Wait a minute."))
+        }
+        http.on(start) { _ in HTTPResponse(status: 429, body: Data(#"{"code":"rate_limited","error":"Slow down."}"#.utf8), headers: ["retry-after": "17"]) }
+        await XCTAssertThrowsAsync(try await CloudAccount.startEmailSignIn(email: "steve@example.com", http: http)) {
+            XCTAssertEqual($0 as? CloudAccountError, .rateLimited(retryAfter: 17, message: "Slow down."), "the header's wait when the body has none")
+        }
+    }
+
+    /// Email sign-in's second half: the address and the code answer the
+    /// same one-hour pass as Apple's, bound to the accounts service. A
+    /// wrong code, an ended sign-in and a lockout each say which, and a 401
+    /// here is a refusal, not an ended pass.
+    func testHappyCloudEmailCodeSignsIn() async throws {
+        let accounts = HappyCloud.accounts, verify = accounts + "/v1/auth/email/verify"
+        let http = ScriptedHTTP()
+        let pass = jwt("acc-mail", aud: accounts + "/")
+        http.on(verify) { request in
+            XCTAssertEqual(request.method, "POST")
+            XCTAssertNil(request.headers["Authorization"])
+            let body = try JSONSerialization.jsonObject(with: request.body ?? Data()) as? [String: String]
+            XCTAssertEqual(body, ["email": "steve@example.com", "code": "123456"])
+            return HTTPResponse(status: 200, body: Data(#"{"access_token":"\#(pass)","refresh_token":"r1","token_type":"Bearer","expires_in":3600}"#.utf8))
+        }
+        let account = try await CloudAccount.signIn(email: "steve@example.com", code: "123456", http: http)
+        XCTAssertTrue(account.isLive())
+        XCTAssertEqual(account.expiresAt.timeIntervalSinceNow, 3600, accuracy: 5)
+        // The pass is what the account's calls carry.
+        http.json(accounts + "/v1/servers", #"{"servers":[]}"#)
+        _ = try await account.servers()
+        XCTAssertEqual(http.requests.last?.headers["Authorization"], "Bearer \(pass)")
+
+        let refusals: [(Int, String, String)] = [
+            (400, "invalid_code", "That code didn't work."),
+            (400, "invalid_email", "Enter a valid email address."),
+            (400, "unsupported_provider", "Email sign-in isn't available."),
+            (502, "unavailable", "Email sign-in is unavailable. Try again."),
+            (401, "invalid_code", "That code has expired."),
+        ]
+        for (status, code, message) in refusals {
+            http.json(verify, status: status, #"{"code":"\#(code)","error":"\#(message)"}"#)
+            await XCTAssertThrowsAsync(try await CloudAccount.signIn(email: "steve@example.com", code: "000000", http: http)) {
+                XCTAssertEqual($0 as? CloudAccountError, .refused(status: status, code: code, message: message))
+            }
+        }
+        http.on(verify) { _ in HTTPResponse(status: 429, body: Data(#"{"code":"rate_limited","error":"Too many tries.","retryAfter":60}"#.utf8), headers: ["Retry-After": "60"]) }
+        await XCTAssertThrowsAsync(try await CloudAccount.signIn(email: "steve@example.com", code: "000000", http: http)) {
+            XCTAssertEqual($0 as? CloudAccountError, .rateLimited(retryAfter: 60, message: "Too many tries."))
+        }
+        // A pass for anything else is refused.
+        http.json(verify, #"{"access_token":"\#(jwt("x", aud: "https://acme.example/"))"}"#)
+        await XCTAssertThrowsAsync(try await CloudAccount.signIn(email: "steve@example.com", code: "123456", http: http)) {
+            XCTAssertEqual($0 as? OAuthError, .wrongAudience)
         }
     }
 
@@ -621,9 +759,12 @@ private final class Clock: @unchecked Sendable {
 private actor Daemon: AgentTransport {
     var answers: [String: [HTTP1Response]] = [:]
     var seen: [(path: String, credential: String)] = []
+    /// What was written: its method, path, body and headers.
+    var writes: [(method: String, path: String, body: Data?, headers: [String: String])] = []
     func answer(_ path: String, _ responses: HTTP1Response...) { answers[path] = responses }
     func request(method: String, path: String, credential: String, body: Data?, headers: [String: String]) async throws -> HTTP1Response {
         seen.append((path, credential))
+        if method != "GET" { writes.append((method, path, body, headers)) }
         guard var queue = answers[path], !queue.isEmpty else { return HTTP1Response(status: 200, body: Data("{}".utf8)) }
         let next = queue.removeFirst()
         answers[path] = queue.isEmpty ? [next] : queue
@@ -1043,5 +1184,84 @@ final class WebSocketTunnelTests: XCTestCase {
         XCTAssertEqual(support.mode(origin), .blocked)
         support.forget()
         XCTAssertNil(support.mode(origin))
+    }
+}
+
+final class CloudInviteTests: XCTestCase {
+    private static let token = "q7Xk2_bN-9vLmR4tY8wE1zA6sD3fG5hJ0kP2oI9uYtR"
+
+    /// An invite link is the invite host with the token in the fragment,
+    /// or the web app's older `/join`; anything else isn't one.
+    func testInviteLinksParse() {
+        let token = Self.token
+        XCTAssertEqual(token.count, 43)
+        XCTAssertEqual(CloudInvite(url: URL(string: "https://join.happy.engineering/#\(token)")!)?.token, token)
+        XCTAssertEqual(CloudInvite(url: URL(string: "https://join.happy.engineering#\(token)")!)?.token, token)
+        XCTAssertEqual(CloudInvite(url: URL(string: "https://JOIN.happy.engineering/#\(token)")!)?.token, token)
+        XCTAssertEqual(CloudInvite(url: URL(string: "https://happybases.com/join#\(token)")!)?.token, token)
+        for link in [
+            "http://join.happy.engineering/#\(token)",
+            "https://join.happy.engineering/",
+            "https://join.happy.engineering/#\(token.dropLast())",
+            "https://join.happy.engineering/#\(token)A",
+            "https://join.happy.engineering/#\(token.dropLast())=",
+            "https://join.happy.engineering/x#\(token)",
+            "https://join.happy.engineering/?t=1#\(token)",
+            "https://join.happy.engineering:8443/#\(token)",
+            "https://user@join.happy.engineering/#\(token)",
+            "https://happybases.com/#\(token)",
+            "https://acme.happybases.com/join#\(token)",
+            "https://evil.example/#\(token)",
+            "https://app.happy.engineering/bot/invite/\(token)",
+        ] {
+            XCTAssertNil(CloudInvite(url: URL(string: link)!), link)
+        }
+    }
+
+    /// Preview and accept send the token in the body under the account's
+    /// pass; what they answer, and each refusal, read as the app shows them.
+    func testInvitePreviewAcceptAndRefusals() async throws {
+        let accounts = HappyCloud.accounts
+        let http = ScriptedHTTP()
+        let account = CloudAccount.preview(token: "pass", http: http)
+        let invite = CloudInvite(url: URL(string: "https://join.happy.engineering/#\(Self.token)")!)!
+        http.json(accounts + "/v1/invites/preview", #"{"server":{"name":"acme","displayName":"Acme","image":"data:image/png;base64,iVBORw0KGgo="},"roleName":"Viewer","expiresAt":"2026-11-19T09:28:08.851234Z","inviter":{"name":"Steve K","image":null}}"#)
+        let preview = try await account.preview(invite)
+        XCTAssertEqual(preview, CloudInvitePreview(server: .init(name: "acme", displayName: "Acme", image: "data:image/png;base64,iVBORw0KGgo="), roleName: "Viewer",
+                                                   inviter: .init(name: "Steve K")))
+        XCTAssertNil(preview.inviter?.imageData)
+        XCTAssertEqual(preview.server.imageData, Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]))
+        XCTAssertEqual(try JSONSerialization.jsonObject(with: http.requests.last?.body ?? Data()) as? [String: String], ["token": Self.token])
+
+        http.json(accounts + "/v1/invites/accept", #"{"server":{"id":"6f1c","name":"acme","displayName":"acme","url":"https://acme.happy-clusters.com/","webUrl":"https://acme.happybases.com/","image":null,"createdAt":"2026-11-12T09:28:08Z"}}"#)
+        let server = try await account.accept(invite)
+        XCTAssertEqual(server, CloudServer(id: "6f1c", name: "acme", url: "https://acme.happy-clusters.com/", role: nil, displayName: "acme"))
+        XCTAssertEqual(http.requests.last?.method, "POST")
+        XCTAssertEqual(http.requests.last?.headers["Authorization"], "Bearer pass")
+        XCTAssertEqual(try JSONSerialization.jsonObject(with: http.requests.last?.body ?? Data()) as? [String: String], ["token": Self.token])
+
+        let refusals: [(Int, String, any Error)] = [
+            (410, #"{"code":"invalid","error":"Invalid invitation."}"#, CloudInviteError.invalid),
+            (410, #"{"code":"expired","error":"Expired."}"#, CloudInviteError.expired),
+            (410, #"{"code":"revoked","error":"Revoked."}"#, CloudInviteError.revoked),
+            (410, #"{"code":"exhausted","error":"Used up."}"#, CloudInviteError.exhausted),
+            (410, #"{"code":"accepted","error":"Already accepted."}"#, CloudInviteError.accepted),
+            (403, #"{"code":"email_mismatch","error":"For another email.","emailHint":"s…@…"}"#, CloudInviteError.emailMismatch(hint: "s…@…")),
+            (401, #"{"code":"unauthorized","error":"Sign in."}"#, CloudAccountError.signInRequired),
+            (503, #"{"code":"unavailable","error":"Try again."}"#, CloudAccountError.refused(status: 503, code: "unavailable", message: "Try again.")),
+        ]
+        for (status, body, expected) in refusals {
+            http.json(accounts + "/v1/invites/accept", status: status, body)
+            await XCTAssertThrowsAsync(try await account.accept(invite)) {
+                XCTAssertEqual("\($0)", "\(expected)", body)
+            }
+        }
+    }
+
+    /// The token never prints.
+    func testInviteDoesNotPrintItsToken() {
+        let invite = CloudInvite(url: URL(string: "https://join.happy.engineering/#\(Self.token)")!)!
+        XCTAssertEqual("\(invite)", "CloudInvite(…)")
+        XCTAssertEqual(String(reflecting: invite), "CloudInvite(…)")
     }
 }

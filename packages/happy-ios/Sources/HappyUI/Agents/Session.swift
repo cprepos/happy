@@ -38,6 +38,9 @@ final class Session {
     private(set) var permissions: Permissions?
     /// What each vault lets the person do, by Surface ID (cloud only).
     private(set) var vaultAccesses: [String: VaultAccess] = [:]
+    /// The server serves its instructions and security policy from its
+    /// settings (`PolicyDocument.served`); nil until its permissions are read.
+    var policyDocuments: Bool? { PolicyDocument.served(permissions) }
     private var accessWatchers: [UUID: () -> Void] = [:]
     /// What the controls a role decides follow: a computer gates nothing.
     var gate: RoleGate { isCloud ? .cloud(permissions) : .open }
@@ -81,6 +84,8 @@ final class Session {
         return source
     }
     private var madeProfile: ProfileSource?
+    /// A Happy Cloud server's plugins, read while a screen watches.
+    private(set) lazy var plugins = PluginsModel(client: client, store: store)
     private(set) var snapshot = Snapshot()
     private var watchers: [UUID: (Snapshot) -> Void] = [:]
     /// Readable, not settable, so a test can say the follow was let go of
@@ -272,7 +277,7 @@ final class Session {
     /// permissions (`role.*`), and the vaults' access (`surface.*`,
     /// `vault.settings.updated`); everything on a resync. A role changed at
     /// the accounts service lands with the next token, so a reconnect
-    /// reads the permissions again too (`reconnected`).
+    /// reads the permissions and onboarding again too (`reconnected`).
     private func followCloud() {
         let store = store
         cloudFollowing = Task { [weak self] in
@@ -306,7 +311,24 @@ final class Session {
 
     private func reconnected() {
         guard isCloud else { return }
-        read([.permissions, .vaults])
+        // Back in the foreground, too: a sign-in on another phone moves
+        // onboarding (`mobileApp`) without an event.
+        read([.onboarding, .permissions, .vaults])
+        renewPush()
+    }
+
+    /// This phone's push registration on the server, renewed quietly
+    /// where notifications are allowed (`CloudPush`); a new one completes
+    /// onboarding's `mobileApp` gate, which is read again for it.
+    private func renewPush() {
+        guard let push = SettingsHooks.cloudPush else { return }
+        let client = client
+        let connection = accountID
+        Task { [weak self] in
+            guard (try? await push.register(connection: connection, client: client, ask: false)) == .registered,
+                  let self, onboarding?.gate("mobileApp")?.isPending == true else { return }
+            read([.onboarding])
+        }
     }
 
     private func read(_ parts: Set<CloudPart>) {
@@ -350,6 +372,20 @@ final class Session {
     private func adopt(_ onboarding: Onboarding) {
         self.onboarding = onboarding
         for watcher in onboardingWatchers.values { watcher(onboarding) }
+    }
+
+    /// Reads onboarding now, as a step does once it is seen to; a failed
+    /// read keeps what was read and throws.
+    @discardableResult
+    func readOnboarding() async throws -> Onboarding {
+        let read = try await client.onboarding()
+        took(read)
+        return read
+    }
+
+    /// Onboarding as a route answered it (a skip).
+    func took(_ onboarding: Onboarding) {
+        if onboarding != self.onboarding { adopt(onboarding) }
     }
 
     private func adopt(_ permissions: Permissions) {

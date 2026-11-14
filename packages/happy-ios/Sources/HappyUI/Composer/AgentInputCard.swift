@@ -265,6 +265,8 @@ public struct AgentInputCardConfiguration: Equatable, Sendable {
     /// `compact`). Its owner decides from `restingHeight(fitting:)`. The
     /// flat panel ignores it.
     public var compact: Bool
+    /// The lines the compact card shows before its text scrolls.
+    public var compactLines: Int
 
     public init(
         placeholder: String,
@@ -286,7 +288,8 @@ public struct AgentInputCardConfiguration: Equatable, Sendable {
         zenMode: Bool = false,
         desktop: AgentInputDesktopConfiguration? = nil,
         showsExpand: Bool = false,
-        compact: Bool = false
+        compact: Bool = false,
+        compactLines: Int = 2
     ) {
         self.placeholder = placeholder
         self.isEditable = isEditable
@@ -308,6 +311,7 @@ public struct AgentInputCardConfiguration: Equatable, Sendable {
         self.desktop = desktop
         self.showsExpand = showsExpand
         self.compact = compact
+        self.compactLines = compactLines
     }
 }
 
@@ -406,6 +410,8 @@ public final class AgentInputCardView: UIView {
     private let addButton = ComposerIconButton(icon: .ionicons("add"), size: MobileComposerMetrics.mobile.addIconSize)
     /// The "+", for what it opens to sit over (the iPad's attachment card).
     var addControl: UIView { addButton }
+    /// The round send button, for an owner that names it (the "+" menu's caption).
+    var primaryControl: UIControl { primaryButton }
     private let middle = UIView()
     private let permissionChip = ComposerChipButton(chip: .permission)
     private let modelChip = ComposerChipButton(chip: .model)
@@ -525,6 +531,15 @@ public final class AgentInputCardView: UIView {
     /// MultiTextInput's 16/22, as drawn here.
     private var inputStyle: TextStyle {
         textScale.map { TextStyles.composerInput.scaled($0) } ?? TextStyles.composerInput
+    }
+
+    /// How far apart the text's lines are drawn: TextKit 2 sets them the
+    /// style's `baselineOffset` closer than its fixed line height (21.27
+    /// for 22), so five lines take a little less than 5 × 22.
+    private var drawnLineHeight: CGFloat {
+        let style = inputStyle
+        guard let lineHeight = style.lineHeight else { return inputLineHeight }
+        return lineHeight - (lineHeight - style.font.lineHeight) / 4
     }
 
     private var chipStyle: TextStyle {
@@ -1084,7 +1099,7 @@ public final class AgentInputCardView: UIView {
                 lineHeight: inputLineHeight,
                 paddingTop: metrics.inputPaddingTop,
                 paddingBottom: metrics.inputPaddingBottom,
-                maxHeight: compact ? AgentInputCardLayout.compactTextCap(lineHeight: inputLineHeight, metrics: metrics) : metrics.inputMaxHeight
+                maxHeight: compact ? AgentInputCardLayout.compactTextCap(lineHeight: inputLineHeight, lines: configuration.compactLines, metrics: metrics) : metrics.inputMaxHeight
             )
         }
         return ComposerTextHeights.Stamp(key: key, revision: textRevision, generation: textGeneration)
@@ -1282,6 +1297,7 @@ public final class AgentInputCardView: UIView {
             zenMode: config.zenMode,
             offersExpand: config.showsExpand,
             compact: compact,
+            compactLines: config.compactLines,
             recording: isDictating
         )
     }
@@ -1320,7 +1336,16 @@ public final class AgentInputCardView: UIView {
             textView.textContainerInset.top = layout.textPaddingTop
             textView.textContainerInset.bottom = layout.textPaddingBottom
         }
-        textView.setLayoutFrame(layout.text)
+        var textFrame = layout.text
+        if isCompact, layout.textScrolls {
+            // Its lines as drawn, from the top: scrolled to its end, the top
+            // line is whole and nothing of the one above it shows.
+            let drawn = CGFloat(max(1, configuration.compactLines)) * drawnLineHeight
+            let trim = max(0, textFrame.height - drawn)
+            textFrame.origin.y += trim
+            textFrame.size.height -= trim
+        }
+        textView.setLayoutFrame(textFrame)
         if textView.isScrollEnabled != layout.textScrolls {
             textView.isScrollEnabled = layout.textScrolls
         }
@@ -1504,6 +1529,7 @@ public final class AgentInputCardView: UIView {
             || previous.effort != config.effort
             || previous.zenMode != config.zenMode
             || previous.compact != config.compact
+            || previous.compactLines != config.compactLines
             || Self.panelShape(previous.desktop) != Self.panelShape(config.desktop) {
             // Chips that come with the session's record, the panel: the
             // card takes its new height at once. What is typed, and a
@@ -1512,7 +1538,7 @@ public final class AgentInputCardView: UIView {
                 && previous.inputMinHeight == config.inputMinHeight && previous.showsAdd == config.showsAdd
                 && previous.permission == config.permission && previous.model == config.model
                 && previous.effort == config.effort && previous.zenMode == config.zenMode
-                && previous.compact == config.compact && Self.panelShape(previous.desktop) == Self.panelShape(config.desktop)
+                && previous.compact == config.compact && previous.compactLines == config.compactLines && Self.panelShape(previous.desktop) == Self.panelShape(config.desktop)
             reportHeightChange(animated: picturesOnly && window != nil)
             setNeedsLayout()
         }

@@ -45,7 +45,7 @@ extension Conversation {
         guard followed else { return }
         if snapshot.error != nil { snapshot.error = nil; publish() }
         reload()
-        for send in outgoing where !send.accepted && send.failure == nil { deliver(send.id) }
+        deliverWaiting()
         while let current = reading {
             await current.value
             if reading == current { break }
@@ -58,31 +58,9 @@ extension Conversation {
     /// Makes the checkpoint claim `claim`, for a test.
     func overrideClaim(_ claim: @escaping @Sendable (String) async throws -> Void) { claimOverride = claim }
 
-    /// A failed read cancelled underneath it, not by it (a connect another
-    /// caller gave up on): no answer, so no failure to keep. Read again
-    /// shortly; past that, left unread for a reopen or the phone's return to
-    /// read again. False for any other failure, which the caller keeps.
-    func readAgainIfCancelledUnderneath(_ error: Error, agentId: String, attempt: Int) async -> Bool {
-        if Self.cancelledUnderneath(error) {
-            guard attempt < Self.transientRetries else {
-                Self.note("read of \(agentId) cancelled underneath \(attempt + 1) times; left unread")
-                return true
-            }
-            Self.note("read of \(agentId) cancelled underneath; reading again")
-            try? await Task.sleep(for: Self.transientBackoff(attempt))
-            if Task.isCancelled { return true }
-            reload(attempt: attempt + 1)
-            return true
-        }
-        Self.note("read of \(agentId) failed")
-        return false
-    }
-
-    /// Reads again after a read cancelled underneath it, before leaving it unread.
-    static let transientRetries = 3
-    static func transientBackoff(_ attempt: Int) -> Duration { .milliseconds(250 << min(attempt, 4)) }
-
-    /// A cancellation that is not the read's own: the caller checks that.
+    /// A read cancelled underneath it, not by it (a connect another caller
+    /// gave up on): `reload` asks again without saying it failed. The
+    /// caller checks that the cancellation is not the read's own.
     static func cancelledUnderneath(_ error: Error) -> Bool {
         error is CancellationError || (error as? URLError)?.code == .cancelled
     }

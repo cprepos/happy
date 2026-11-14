@@ -6,46 +6,84 @@ import CoreGraphics
 /// Happy Cloud's welcome (CloudWelcomeViewController), laid out as the
 /// first screen is so the two read as one flow: desktop's Cloud slides in
 /// the first screen's gallery at its place, Continue with Apple where Start
-/// is and Sign in with GitHub where Use Happy Cloud is under it (12 under,
-/// at least 24 above the bottom inset, Apple's rising to make room), both
-/// as wide as the wider. A note (the account's sign-in has ended, or why a
-/// sign-in failed) sits 12 over Apple's, and the slides centre again over
-/// it all.
+/// is, Continue with Google 12 under it, and Sign in with GitHub where Use
+/// Happy Cloud is under them (12 under, at least 24 above the bottom inset,
+/// Apple's and Google's rising to make room), Continue with email 12 under
+/// GitHub's when there is one, all as wide as the widest. A note (the
+/// account's sign-in has ended, or why a sign-in failed) sits 12 over
+/// Apple's. A note coming or going moves nothing: where the slides leave
+/// room for `noteRoom` over the buttons it floats there, else that room is
+/// kept under the slides whether or not there is a note.
 public struct CloudWelcomeLayout: Equatable, Sendable {
     public enum Metrics {
         /// Between the note and the button under it.
         public static let noteGap: CGFloat = 12
+        /// Between Apple's button and Google's.
+        public static let googleGap: CGFloat = StartLayout.Metrics.buttonGap
     }
 
-    /// The first screen's layout with the two buttons as Start and Use
-    /// Happy Cloud: the gallery, its pages and dots, and the scrolled
-    /// content's height.
+    /// The first screen's layout with Apple's and Google's buttons as Start
+    /// and GitHub's as Use Happy Cloud: the gallery, its pages and dots,
+    /// and the scrolled content's height.
     public var start: StartLayout
     /// Continue with Apple.
     public var button: CGRect
-    /// Sign in with GitHub, under it.
+    /// Continue with Google, under it; zero without one.
+    public var google: CGRect
+    /// Sign in with GitHub, under them.
     public var secondary: CGRect
+    /// Continue with email, under GitHub's; zero without it.
+    public var tertiary: CGRect = .zero
     /// The note over the buttons; zero without one.
     public var note: CGRect
 
     /// `safeArea` is the first screen's (without this one's bar, which
-    /// sits over the first screen's top row). `button` and `secondary` are
-    /// the two buttons' own sizes.
-    public init(size: CGSize, safeArea: LayoutInsets, button buttonSize: CGSize, secondary: CGSize, note: Measurable? = nil,
-                slides: [StartLayout.Slide], dots: CGSize) {
+    /// sits over the first screen's top row). `button`, `google`,
+    /// `secondary` and `tertiary` are the buttons' own sizes; a zero
+    /// `google` or `tertiary` leaves that one out. `noteRoom` is the most a
+    /// note takes (its longest, two lines), kept for one whether or not
+    /// there is one.
+    public init(size: CGSize, safeArea: LayoutInsets, button buttonSize: CGSize, google googleSize: CGSize = .zero, secondary: CGSize,
+                tertiary: CGSize = .zero, note: Measurable? = nil, noteRoom reserved: CGFloat = 0, slides: [StartLayout.Slide], dots: CGSize) {
         let width = max(0, size.width - safeArea.horizontal)
         let column = min(StartLayout.Metrics.columnMaxWidth, max(0, width - StartLayout.Metrics.sidePadding * 2))
         let noteSize = note?.size(fitting: column) ?? .zero
-        let noteRoom = noteSize.height > 0 ? noteSize.height + Metrics.noteGap : 0
-        // The note and Apple's button are one block where Start is.
-        start = StartLayout(size: size, safeArea: safeArea, button: CGSize(width: buttonSize.width, height: buttonSize.height + noteRoom),
-                            cloud: secondary, slides: slides, dots: dots)
+        // Where the slides, laid out with no note, leave the room over the
+        // buttons the note floats there; else the room is always kept.
+        let floating = Self(size: size, safeArea: safeArea, button: buttonSize, google: googleSize, secondary: secondary, tertiary: tertiary,
+                            keptRoom: 0, slides: slides, dots: dots)
+        let dotsBottom = floating.start.gallery.minY + floating.start.dots.maxY
+        let fits = floating.start.button.minY - dotsBottom >= max(reserved, noteSize.height) + Metrics.noteGap * 2
+        let keptRoom = fits ? 0 : max(reserved, noteSize.height) + Metrics.noteGap
+        self.init(size: size, safeArea: safeArea, button: buttonSize, google: googleSize, secondary: secondary, tertiary: tertiary,
+                  keptRoom: keptRoom, slides: slides, dots: dots)
+        let x = safeArea.left + (width - column) / 2
+        self.note = noteSize.height > 0 ? CGRect(x: x, y: button.minY - Metrics.noteGap - noteSize.height, width: column, height: noteSize.height) : .zero
+    }
+
+    /// The welcome with `keptRoom` over Apple's button for a note.
+    private init(size: CGSize, safeArea: LayoutInsets, button buttonSize: CGSize, google googleSize: CGSize, secondary: CGSize,
+                 tertiary: CGSize, keptRoom noteRoom: CGFloat, slides: [StartLayout.Slide], dots: CGSize) {
+        let googleRoom = googleSize.height > 0 ? Metrics.googleGap + googleSize.height : 0
+        // The note, Apple's button and Google's are one block where Start is;
+        // GitHub's and email's are one block where Use Happy Cloud is.
+        let lower = tertiary.height > 0
+            ? CGSize(width: max(secondary.width, tertiary.width), height: secondary.height + StartLayout.Metrics.buttonGap + tertiary.height)
+            : secondary
+        start = StartLayout(size: size, safeArea: safeArea,
+                            button: CGSize(width: max(buttonSize.width, googleSize.width), height: noteRoom + buttonSize.height + googleRoom),
+                            cloud: lower, slides: slides, dots: dots)
         let block = start.button
-        button = CGRect(x: block.minX, y: block.maxY - buttonSize.height, width: block.width, height: buttonSize.height)
-        self.secondary = start.cloud
-        self.note = noteSize.height > 0
-            ? CGRect(x: safeArea.left + (width - column) / 2, y: block.minY, width: column, height: noteSize.height)
+        button = CGRect(x: block.minX, y: block.maxY - googleRoom - buttonSize.height, width: block.width, height: buttonSize.height)
+        google = googleSize.height > 0
+            ? CGRect(x: block.minX, y: block.maxY - googleSize.height, width: block.width, height: googleSize.height)
             : .zero
+        let cloud = start.cloud
+        self.secondary = CGRect(x: cloud.minX, y: cloud.minY, width: cloud.width, height: secondary.height)
+        if tertiary.height > 0 {
+            self.tertiary = CGRect(x: cloud.minX, y: cloud.maxY - tertiary.height, width: cloud.width, height: tertiary.height)
+        }
+        note = .zero
     }
 }
 
@@ -66,15 +104,38 @@ public struct CloudWelcomeLayout: Equatable, Sendable {
 ///                                the screen's edge where there is none)
 ///
 /// What is above the actions is centred in the room over them, as
-/// desktop's centred setup pages are. The actions ride the keyboard; the
-/// rest rises only as much as it must to stay clear of them, never above
-/// its top margin, and past that the screen scrolls.
+/// desktop's centred setup pages are, by its steady measure (`steadyBody`,
+/// `steadyContent`): a status line at the room kept for it, a list at its
+/// loading size. What then comes and goes there grows down from where the
+/// block already is, so an error, a hint or a list arriving never moves
+/// the title. The actions ride the keyboard and
+/// the rest stays centred in the room left over them, never above its top
+/// margin; past that the screen scrolls.
+///
+/// A step whose content is a list (Join a server, `pinsActions`) instead
+/// starts at its top margin, and its actions stay where they rest while
+/// the rest scrolls under them: however long the list, the actions are in
+/// sight, and scrolled to its end the list stops 24 over them.
 public struct CloudStageLayout: Equatable, Sendable {
     public enum Metrics {
         public static let sidePadding: CGFloat = StartLayout.Metrics.sidePadding
         public static let columnMaxWidth: CGFloat = StartLayout.Metrics.columnMaxWidth
         public static let top: CGFloat = 24
+        /// A step's list of short lines (the admin bot's points), in from the column's sides.
+        public static let pointsInset: CGFloat = 12
+        /// The most a person's text size grows the words in a pill of a
+        /// fixed height (the actions, a row's button): past it they would
+        /// be cut short.
+        public static let pillTextMaxScale: CGFloat = 1.4
+        /// The most it grows the step's lines (`TextStyles.cloudStageBody`):
+        /// under the title's 1.2 of 28, and the field or list still on the
+        /// first screen of a phone. Their 24 grows to a whole 30, so a
+        /// frame snapped to the screen's pixels never cuts off a last line.
+        public static let bodyMaxScale: CGFloat = 1.25
         public static let artGap: CGFloat = 24
+        /// Between the art and a caption under it (Create your profile's
+        /// Add photo).
+        public static let captionGap: CGFloat = 8
         public static let titleGap: CGFloat = 12
         public static let bodyGap: CGFloat = 32
         public static let actionsGap: CGFloat = 24
@@ -100,14 +161,24 @@ public struct CloudStageLayout: Equatable, Sendable {
     }
 
     public var art: CGRect
+    /// Under the art, centred; zero without one.
+    public var caption: CGRect
     public var title: CGRect
     public var body: CGRect
     public var content: CGRect
+    /// With `pinsActions`, in the view rather than the scrolled content.
     public var actions: [CGRect]
+    /// With `pinsActions`, how far up from the screen's bottom edge the
+    /// pinned actions (and the gap over them) cover the scrolled content
+    /// while the keyboard is down; zero without.
+    public var pinnedInset: CGFloat
     /// The scrolled content's height.
     public var contentHeight: CGFloat
     /// How far the keyboard covers the scroll view, for its bottom inset.
     public var keyboardInset: CGFloat
+    /// Where the screen scrolls to while the keyboard is up so the last
+    /// action rests 16 over it: zero when everything already fits.
+    public var keyboardOffset: CGFloat
 
     /// The column's width in a window this size: what the step's own parts
     /// and its actions are measured at.
@@ -117,10 +188,13 @@ public struct CloudStageLayout: Equatable, Sendable {
 
     /// `safeArea` includes the bar. `keyboardTop` is the keyboard's top in
     /// the view, the safe area's bottom while it is down. `art` is the
-    /// scene's side, zero without one; an empty `body` or `content`
-    /// measures zero tall and takes no gap.
-    public init(size: CGSize, safeArea: LayoutInsets, keyboardTop: CGFloat? = nil, art side: CGFloat = 0,
-                title: Measurable, body: Measurable, content: Measurable, actions: [Action]) {
+    /// scene's side, zero without one, and `caption` the size of a line
+    /// under it, zero without one; an empty `body` or `content` measures
+    /// zero tall and takes no gap. `pinsActions` starts the step at its top
+    /// margin and keeps the actions in place while the rest scrolls.
+    public init(size: CGSize, safeArea: LayoutInsets, keyboardTop: CGFloat? = nil, art side: CGFloat = 0, caption captionSize: CGSize = .zero,
+                title: Measurable, body: Measurable, content: Measurable, steadyBody: Measurable? = nil, steadyContent: Measurable? = nil,
+                pinsActions: Bool = false, actions: [Action]) {
         typealias M = Metrics
         let width = max(0, size.width - safeArea.horizontal)
         let column = Self.column(size: size, safeArea: safeArea)
@@ -128,26 +202,32 @@ public struct CloudStageLayout: Equatable, Sendable {
         let titleHeight = title.height(fitting: column)
         let bodyHeight = body.height(fitting: column)
         let contentHeight = content.height(fitting: column)
+        let steadyBodyHeight = steadyBody?.height(fitting: column) ?? bodyHeight
+        let steadyContentHeight = steadyContent?.height(fitting: column) ?? contentHeight
 
+        // Measured steady: what may come and go under the title doesn't count.
         var block = titleHeight
         if side > 0 { block += side + M.artGap }
-        if bodyHeight > 0 { block += M.titleGap + bodyHeight }
-        if contentHeight > 0 { block += M.bodyGap + contentHeight }
+        let captioned = side > 0 && captionSize.height > 0
+        if captioned { block += M.captionGap + captionSize.height }
+        if steadyBodyHeight > 0 { block += M.titleGap + steadyBodyHeight }
+        if steadyContentHeight > 0 { block += M.bodyGap + steadyContentHeight }
         let actionsHeight = actions.enumerated().reduce(CGFloat(0)) { $0 + $1.element.height + ($1.offset > 0 ? $1.element.gap : 0) }
 
         let edge = max(safeArea.bottom, M.bottomPadding)
         let resting = size.height - edge - M.bottomPadding
         let bottom = min(resting, (keyboardTop ?? size.height) - M.bottomPadding)
         let minTop = safeArea.top + M.top
-        // Centred over the actions while the keyboard is down…
-        let free = resting - actionsHeight - M.actionsGap - minTop - block
-        var y = minTop + max(0, free / 2)
-        // …and lifted only as far as the keyboard's actions need.
-        let over = y + block + M.actionsGap - (bottom - actionsHeight)
-        if over > 0 { y = max(minTop, y - over) }
+        // Centred over the actions, wherever the keyboard has put them.
+        let free = bottom - actionsHeight - M.actionsGap - minTop - block
+        var y = pinsActions ? minTop : minTop + max(0, free / 2)
 
         art = side > 0 ? CGRect(x: safeArea.left + (width - side) / 2, y: y, width: side, height: side) : .zero
-        if side > 0 { y += side + M.artGap }
+        if side > 0 { y += side }
+        let captionWidth = min(column, captionSize.width)
+        caption = captioned ? CGRect(x: safeArea.left + (width - captionWidth) / 2, y: y + M.captionGap, width: captionWidth, height: captionSize.height) : .zero
+        if captioned { y += M.captionGap + captionSize.height }
+        if side > 0 { y += M.artGap }
         self.title = CGRect(x: x, y: y, width: column, height: titleHeight)
         y += titleHeight
         if bodyHeight > 0 { y += M.titleGap }
@@ -157,7 +237,7 @@ public struct CloudStageLayout: Equatable, Sendable {
         self.content = CGRect(x: x, y: y, width: column, height: contentHeight)
         y += contentHeight
 
-        var top = max(y + M.actionsGap, bottom - actionsHeight)
+        var top = pinsActions ? bottom - actionsHeight : max(y + M.actionsGap, bottom - actionsHeight)
         if actions.isEmpty { top = y }
         var frames: [CGRect] = []
         for (index, action) in actions.enumerated() {
@@ -166,8 +246,10 @@ public struct CloudStageLayout: Equatable, Sendable {
             top += action.height
         }
         self.actions = frames
-        self.contentHeight = max(size.height, top + edge + M.bottomPadding)
+        pinnedInset = pinsActions ? edge + M.bottomPadding + actionsHeight + (actions.isEmpty ? 0 : M.actionsGap) : 0
+        self.contentHeight = pinsActions ? max(size.height, y + pinnedInset) : max(size.height, top + edge + M.bottomPadding)
         keyboardInset = keyboardTop.map { max(0, size.height - $0 - edge) } ?? 0
+        keyboardOffset = keyboardTop == nil || pinsActions ? 0 : max(0, (frames.last?.maxY ?? y) - bottom)
     }
 }
 
@@ -233,17 +315,102 @@ public struct CloudServerRowLayout: Equatable, Sendable {
     public var subtitle: CGRect
     public var button: CGRect
 
-    /// `button` is Join's (or Joined's) own size.
-    public init(width: CGFloat, button buttonSize: CGSize) {
+    /// The row's height with a subtitle of `lines` lines, its name and
+    /// subtitle `titleHeight` and `subtitleHeight` a line: bigger text
+    /// grows the row by what it grows, the padding kept.
+    public static func height(subtitleLines lines: Int = 1, titleHeight: CGFloat = Metrics.titleHeight, subtitleHeight: CGFloat = Metrics.subtitleHeight) -> CGFloat {
+        let lines = CGFloat(max(1, lines))
+        let grown = titleHeight - Metrics.titleHeight + lines * (subtitleHeight - Metrics.subtitleHeight)
+        return Metrics.height + (lines - 1) * Metrics.subtitleHeight + max(0, grown)
+    }
+
+    /// `button` is Join's (or Joined's) own size; `minButton` the least
+    /// width it takes (Join's 104; a row of a list of its own, its own
+    /// width). The row has room for `subtitleLines` subtitle lines; the
+    /// name and the `usedLines` its subtitle fills are centred down it.
+    public init(width: CGFloat, button buttonSize: CGSize, minButton: CGFloat = Metrics.buttonWidth, subtitleLines: Int = 1, usedLines: Int? = nil,
+                titleHeight: CGFloat = Metrics.titleHeight, subtitleHeight: CGFloat = Metrics.subtitleHeight) {
         typealias M = Metrics
-        let height = M.height
+        let lines = CGFloat(min(max(1, usedLines ?? subtitleLines), max(1, subtitleLines)))
+        let height = Self.height(subtitleLines: subtitleLines, titleHeight: titleHeight, subtitleHeight: subtitleHeight)
         picture = CGRect(x: M.padding, y: (height - M.picture) / 2, width: M.picture, height: M.picture)
-        let buttonWidth = max(M.buttonWidth, buttonSize.width)
+        let buttonWidth = max(minButton, buttonSize.width)
         button = CGRect(x: width - M.padding - buttonWidth, y: (height - buttonSize.height) / 2, width: buttonWidth, height: buttonSize.height)
         let textX = picture.maxX + M.gap
         let textWidth = max(0, button.minX - M.gap - textX)
-        let textTop = (height - M.titleHeight - M.subtitleHeight) / 2
-        title = CGRect(x: textX, y: textTop, width: textWidth, height: M.titleHeight)
-        subtitle = CGRect(x: textX, y: title.maxY, width: textWidth, height: M.subtitleHeight)
+        let textTop = (height - titleHeight - lines * subtitleHeight) / 2
+        title = CGRect(x: textX, y: textTop, width: textWidth, height: titleHeight)
+        subtitle = CGRect(x: textX, y: title.maxY, width: textWidth, height: lines * subtitleHeight)
+    }
+}
+
+/// Create your profile's picture: the person's photo, else their
+/// placeholder, round, with a camera badge on its edge at the bottom right.
+public enum CloudProfileLayout {
+    public enum Metrics {
+        public static let avatar: CGFloat = 120
+        public static let badge: CGFloat = 36
+        public static let badgeGlyph: CGFloat = 18
+        /// The badge's border, the gradient's colour, to part it from the photo.
+        public static let badgeBorder: CGFloat = 3
+        /// "Add photo": its text, and room around it for a thumb.
+        public static let captionHeight: CGFloat = 32
+        public static let captionPadding: CGFloat = 12
+    }
+
+    /// The badge over `avatar`: its centre on the circle's edge, at 45°.
+    public static func badge(avatar: CGRect) -> CGRect {
+        typealias M = Metrics
+        let reach = avatar.width / 2 * 0.70710678
+        let centre = CGPoint(x: avatar.midX + reach, y: avatar.midY + reach)
+        return CGRect(x: (centre.x - M.badge / 2).rounded(), y: (centre.y - M.badge / 2).rounded(), width: M.badge, height: M.badge)
+    }
+
+    /// The caption's size for its text `width` as measured.
+    public static func caption(textWidth: CGFloat) -> CGSize {
+        CGSize(width: textWidth.rounded(.up) + 2 * Metrics.captionPadding, height: Metrics.captionHeight)
+    }
+}
+
+/// An invite's own part (CloudInviteViewController), the same in every
+/// state so nothing moves as it loads, fails or joins: the server's picture
+/// centred, its name and `@name` under it, who invited them (a small
+/// picture beside "<name> invited you", the pair centred), and a line for
+/// what the invite says, as tall as `status` whatever it holds.
+public struct CloudInviteLayout: Equatable, Sendable {
+    public enum Metrics {
+        public static let picture: CGFloat = 88
+        public static let nameHeight: CGFloat = 28
+        public static let handleHeight: CGFloat = 20
+        public static let inviter: CGFloat = 24
+        public static let inviterGap: CGFloat = 8
+        public static let nameGap: CGFloat = 14
+        public static let handleGap: CGFloat = 2
+        public static let inviterTopGap: CGFloat = 18
+        public static let statusGap: CGFloat = 18
+    }
+
+    public var picture: CGRect
+    public var name: CGRect
+    public var handle: CGRect
+    public var inviterPicture: CGRect
+    public var inviterLabel: CGRect
+    public var status: CGRect
+    public var height: CGFloat
+
+    /// `inviterLabel` is the label's own width, kept within the column
+    /// beside the picture; `status` the room its line keeps.
+    public init(width: CGFloat, inviterLabel labelWidth: CGFloat, status statusHeight: CGFloat) {
+        typealias M = Metrics
+        picture = CGRect(x: (width - M.picture) / 2, y: 0, width: M.picture, height: M.picture)
+        name = CGRect(x: 0, y: picture.maxY + M.nameGap, width: width, height: M.nameHeight)
+        handle = CGRect(x: 0, y: name.maxY + M.handleGap, width: width, height: M.handleHeight)
+        let label = min(labelWidth, max(0, width - M.inviter - M.inviterGap))
+        let pair = M.inviter + M.inviterGap + label
+        let top = handle.maxY + M.inviterTopGap
+        inviterPicture = CGRect(x: (width - pair) / 2, y: top, width: M.inviter, height: M.inviter)
+        inviterLabel = CGRect(x: inviterPicture.maxX + M.inviterGap, y: top, width: label, height: M.inviter)
+        status = CGRect(x: 0, y: inviterPicture.maxY + M.statusGap, width: width, height: statusHeight)
+        height = status.maxY
     }
 }

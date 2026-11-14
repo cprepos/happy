@@ -48,9 +48,6 @@ public struct ChatItem: Equatable, Sendable, Identifiable {
         /// Pictures and videos an agent's tool presented, in `columns` (0:
         /// justified rows); read on demand.
         case gallery([Media], columns: Int)
-        /// A `media` component's items in justified rows (`MediaRows`),
-        /// each with its label, as long as `media`.
-        case mediaRows([Media], labels: [String?])
         /// A layout the agent wrote for media it showed: a presentation's
         /// `tree`, or a block in its text. The tree's item indexes are
         /// positions in `media`.
@@ -62,11 +59,6 @@ public struct ChatItem: Equatable, Sendable, Identifiable {
         /// A sidebar Prioritizing proposed (a `sidebar_proposal` artifact),
         /// drawn by the sidebar's own rows and answered where it stands.
         case sidebarProposal(artifactId: String)
-        /// One chat UI component (`UiShown`).
-        case ui(UiShown)
-        /// Replies the person may send with a tap, under the newest
-        /// suggestion while nobody has written since.
-        case quickReplies(QuickReplies)
     }
 
     /// A file of a message still on its way, by its piece's id
@@ -107,8 +99,6 @@ public struct ChatItem: Equatable, Sendable, Identifiable {
     /// On a team's computer, the member who wrote a person's message, by
     /// their user ID; nil for one still on its way and outside a team.
     public var author: String? { didSet { revision = 0 } }
-    /// A person's message that is a suggested reply: its bubble says so.
-    public var suggested = false { didSet { revision = 0 } }
 
     public init(id: String, role: Role, pieces: [Piece], delivery: Delivery, turn: String? = nil, time: Double? = nil, author: String? = nil) {
         self.id = id
@@ -409,7 +399,6 @@ public actor Conversation {
             /// When it was sent, in ms; absent in what was kept before it was.
             var at: Double?
             var toolRequest: AgentWire.ToolCallRequest?
-            var quickReply: QuickReply?
         }
         var runs: [Run]
         var messages: [String: AgentWire.Message]
@@ -453,6 +442,19 @@ public actor Conversation {
     private var behind: [String: Int] = [:]
     /// Events that came while history was being read, applied after it.
     private var heldEvents: [JSONValue]?
+    /// Where the journal stood when the newest read taken began (the
+    /// earlier of its two parts), and where the account's stream began
+    /// while a read was on its way: a read that began before the stream is
+    /// read again, once.
+    private var readCursor: String?
+    private var streamFrom: String?
+    /// The account's stream picks up where it left off (`.resync(replays:)`):
+    /// its replay brings what changed in runs that had finished, so the read
+    /// beside it need only bring the runs after the newest finished one held.
+    /// Any other read takes the newest runs whole: a finished run is changed
+    /// in place (a failure resolved, a permission answered), and that is in
+    /// no run after it.
+    private var anchoring = false
     /// Subagents made or retitled while history was being read, applied over
     /// the bootstrap's list.
     private var heldChildren: [JSONValue] = []
@@ -466,8 +468,7 @@ public actor Conversation {
         var endedAt: Double?
         var reason: String?
         /// `standalone` on a run stored already finished, outside any
-        /// turn: a chat UI attempt record's, or a message the computer
-        /// wrote itself. It is no turn and ends none.
+        /// turn, for a message the computer wrote itself. It ends no turn.
         var kind: String?
         var standalone: Bool { kind == "standalone" }
 
@@ -493,18 +494,6 @@ public actor Conversation {
     var outgoing: [(id: String, text: String, pictures: [(mimeType: String, data: Data)], accepted: Bool, failure: String?)] = []
     private var outgoingFiles: [String: [QueuedFile]] = [:]
     private var outgoingTools: [String: AgentWire.ToolCallRequest] = [:]
-    /// The suggested reply each send is, when it is one.
-    private var outgoingReplies: [String: QuickReply] = [:]
-    /// Chat UI presses on their way, or that ended without the computer's
-    /// answer (`failure`), oldest first, by attempt ID; each action without
-    /// its secrets.
-    private var acting: [(id: String, offer: UiOffer, action: UiAction, failure: String?, at: Double)] = []
-    /// When this phone learned how each attempt record stands, by record ID.
-    private var recordsLearned: [String: (status: String, at: Double)] = [:]
-    /// The default model `default_model` components draw, once one is shown.
-    private let liveDefaults: UiLiveDefaults
-    private var defaults: UiLiveDefaults.Reading?
-    private var defaultsFollowed: Task<Void, Never>?
     /// When each send was made, in ms, for its bubble's time.
     private var outgoingTimes: [String: Double] = [:]
     private var admitting: Set<String> = []
@@ -586,7 +575,6 @@ public actor Conversation {
                 persistence: SyncEngine? = nil) {
         self.client = client
         self.store = store
-        liveDefaults = UiLiveDefaults(client: client, store: store)
         self.persistence = persistence
         self.agentId = newTask?.agentId ?? agentId
         self.creation = newTask
@@ -638,7 +626,6 @@ public actor Conversation {
         following?.cancel(); following = nil
         children?.cancel(); children = nil
         questionEvents?.cancel(); questionEvents = nil
-        defaultsFollowed?.cancel(); defaultsFollowed = nil
         askingRead?.cancel(); askingRead = nil
         reading?.cancel(); reading = nil
         reloadSoon?.cancel(); reloadSoon = nil
@@ -717,6 +704,7 @@ public actor Conversation {
                     case .failed(let id, let reason):
                         failed(id, reason)
                         Happenings.errorShown(.messageSend, nil)
+                    case .allowed: deliverWaiting()
                     }
                 }
             }
@@ -727,7 +715,6 @@ public actor Conversation {
                 outgoingModes[queued.id] = queued.mode
                 outgoingFiles[queued.id] = queued.files
                 outgoingTools[queued.id] = queued.toolRequest
-                outgoingReplies[queued.id] = queued.quickReply
                 if outgoingTimes[queued.id] == nil { outgoingTimes[queued.id] = Date().timeIntervalSince1970 * 1000 }
             }
         }
@@ -756,18 +743,32 @@ public actor Conversation {
                 await questionEvent(envelope)
             }
         }
-        heldEvents = []
         followed = true
         reload()
-        for send in outgoing where !send.accepted && send.failure == nil { deliver(send.id) }
+        deliverWaiting()
         for await event in events {
             if Task.isCancelled { return }
             switch event {
-            case .resync:
-                // Some were lost: not current again until the read below is in.
-                snapshot.synced = false
-                reload()
-                for send in outgoing where !send.accepted && send.failure == nil { deliver(send.id) }
+            case .resync(let from, let stale, let replays):
+                anchoring = replays
+                // The stream opening: read now, a read on its way asked
+                // again only if a pause came since it began (perhaps on a
+                // tunnel the suspension left dead); one on a live tunnel,
+                // as on a launch straight into a chat, is let land. Open: a
+                // read on its way is read again as it lands if it began
+                // before the stream (`adopt`).
+                if let from, heldEvents != nil {
+                    streamFrom = from
+                } else if from == nil, !stale, heldEvents != nil {
+                    // The stream's `.resync(from:)` says whether it covers.
+                } else if replays, !visible, heldEvents == nil {
+                    // Off screen, the replay brings what it missed.
+                } else if from.map(covered) != true {
+                    // Some may be lost: not current again until the read below is in.
+                    snapshot.synced = false
+                    reload()
+                }
+                deliverWaiting()
             case .event(let envelope):
                 if heldEvents != nil { heldEvents?.append(envelope) } else { receive(envelope) }
             }
@@ -776,40 +777,78 @@ public actor Conversation {
 
     // MARK: Reads
 
-    /// The newest runs and what is pending, read whole; events that arrive
-    /// meanwhile are applied after.
-    func reload(attempt: Int = 0) {
+    func deliverWaiting() {
+        for send in outgoing where !send.accepted && send.failure == nil { deliver(send.id) }
+    }
+
+    /// What is pending, and the runs after the newest finished one held
+    /// here, whole, while the stream replays what it missed (`anchoring`);
+    /// the newest runs otherwise, when none is held, or too many came
+    /// since. Events that arrive meanwhile are applied after. Asked again
+    /// with backoff until a read lands, saying meanwhile why it didn't.
+    func reload() {
         reading?.cancel()
         if heldEvents == nil { heldEvents = [] }
         let client = client
         let agentId = agentId
+        let anchors = anchoring
+        anchoring = false
         let id = UUID()
         readingId = id
         reading = Task {
             defer { if readingId == id { reading = nil } }
-            do {
-                async let bootstrap = client.bootstrap(agentId)
-                async let page = client.messages(agentId)
-                let (start, history) = try await (bootstrap, page)
-                if Task.isCancelled { return }
-                adopt(start, history)
-            } catch {
-                if Task.isCancelled { return }
-                if await readAgainIfCancelledUnderneath(error, agentId: agentId, attempt: attempt) { return }
-                reads += 1
-                snapshot.synced = false
-                snapshot.error = Store.describe(error)
-                Happenings.errorShown(.conversationLoad, error)
-                snapshot.loaded = true
-                let held = heldEvents ?? []
-                heldEvents = nil
-                for event in held { receive(event, publishes: false) }
-                publish()
+            var failures = 0
+            var anchored = anchors
+            while true {
+                if heldEvents == nil { heldEvents = [] }
+                let after = anchored ? anchor() : nil
+                let resets = await store.carrierResets
+                do {
+                    async let bootstrap = client.bootstrap(agentId)
+                    async let page = client.messages(agentId, after: after?.message)
+                    var (start, history) = try await (bootstrap, page)
+                    var since = after?.run
+                    if since != nil, history.hasMore { history = try await client.messages(agentId); since = nil }
+                    if Task.isCancelled { return }
+                    adopt(start, history, since: since)
+                    return
+                } catch {
+                    if Task.isCancelled { return }
+                    // A message the computer no longer holds: the newest runs instead, at once.
+                    if after != nil, case AgentClientError.status = error { anchored = false; continue }
+                    // Let go with its client (a network change), or cancelled
+                    // underneath it (a connect another caller gave up on):
+                    // asked again, unsaid.
+                    if await store.carrierResets == resets, !Self.cancelledUnderneath(error) {
+                        reads += 1
+                        snapshot.synced = false
+                        snapshot.error = Store.describe(error)
+                        Happenings.errorShown(.conversationLoad, error)
+                        snapshot.loaded = true
+                        let held = heldEvents ?? []
+                        heldEvents = nil
+                        for event in held { receive(event, publishes: false) }
+                        publish()
+                    }
+                }
+                do { try await Task.sleep(for: .seconds(min(30, 1 << min(failures, 5)))) } catch { return }
+                failures += 1
             }
         }
     }
 
-    private func adopt(_ start: AgentWire.Bootstrap, _ history: AgentWire.MessagesResponse) {
+    /// The newest run held here that has finished, and its last message,
+    /// which a read after brings every run since.
+    private func anchor() -> (run: String, message: String)? {
+        for run in transcript.runs.reversed() where transcript.times[run.id]?.endedAt != nil {
+            if let last = run.messageIds.last { return (run.id, last) }
+        }
+        return nil
+    }
+
+    /// `since`: `history` holds the runs after that one, which is kept
+    /// with every run before it.
+    private func adopt(_ start: AgentWire.Bootstrap, _ history: AgentWire.MessagesResponse, since: String? = nil) {
         reads += 1
         // The agent's own mode stands over the draft's: a draft carries
         // whatever mode its device had, picked or not, and would otherwise
@@ -825,10 +864,12 @@ public actor Conversation {
         var runs: [Transcript.Run] = []
         var messages: [String: AgentWire.Message] = [:]
         var times = transcript.times
-        if persistence != nil && history.hasMore {
+        if let since, let index = transcript.runs.firstIndex(where: { $0.id == since }) {
+            runs = transcript.runs[...index].filter { !refreshed.contains($0.id) }
+        } else if persistence != nil && history.hasMore {
             runs = transcript.runs.filter { !refreshed.contains($0.id) }
-            for id in runs.lazy.flatMap(\.messageIds) { messages[id] = transcript[message: id] }
         }
+        for id in runs.lazy.flatMap(\.messageIds) { messages[id] = transcript[message: id] }
         for run in history.runs {
             runs.append(.init(id: run.id, messageIds: (run.messages ?? []).map(\.id)))
             times[run.id] = RunTime(run)
@@ -852,7 +893,7 @@ public actor Conversation {
         } else if !awaiting {
             activeRun = nil
         }
-        snapshot.hasMore = history.hasMore
+        if since == nil { snapshot.hasMore = history.hasMore }
         if let subagents = start.subagents {
             // desktop's `projectSubagents`: an untitled child is "Subagent".
             snapshot.subagentTitles = Dictionary(subagents.map { ($0.id, $0.title ?? "") }, uniquingKeysWith: { first, _ in first })
@@ -869,7 +910,15 @@ public actor Conversation {
         for event in early { child(event, publishes: false) }
         publish()
         if visible { markRead() }
+        readCursor = start.cursor.flatMap { first in history.cursor.map { min(first, $0) } }
+        if let from = streamFrom {
+            streamFrom = nil
+            if !covered(from) { reload() }
+        }
     }
+
+    /// The newest read taken began after the stream that began at `from`.
+    private func covered(_ from: String) -> Bool { readCursor.map { from <= $0 } == true }
 
     /// Runs older than the first one shown.
     /// A tool call's raw `arguments` and `result` as the computer holds
@@ -1110,7 +1159,7 @@ public actor Conversation {
     /// goes until `prepared` hands over the pictures themselves.
     @discardableResult
     public func send(id: String = ClientID.make(), text: String, pictures: [(mimeType: String, data: Data)] = [], attachments: [OutgoingAttachment] = [],
-                     previews: [PreviewAttachment] = [], toolRequest: AgentWire.ToolCallRequest? = nil, quickReply: QuickReply? = nil) async -> Bool {
+                     previews: [PreviewAttachment] = [], toolRequest: AgentWire.ToolCallRequest? = nil) async -> Bool {
         guard !outgoing.contains(where: { $0.id == id }), transcript[message: id] == nil else { return false }
         admitting.insert(id)
         defer { admitting.remove(id) }
@@ -1126,7 +1175,6 @@ public actor Conversation {
         }
         outgoingFiles[id] = files
         outgoingTools[id] = toolRequest
-        outgoingReplies[id] = quickReply
         if !previews.isEmpty { held[id] = previews }
         outgoing.append((id, text, inline, false, nil))
         outgoingModes[id] = mode
@@ -1183,7 +1231,6 @@ public actor Conversation {
             outgoingModes.removeValue(forKey: id)
             outgoingTimes.removeValue(forKey: id)
             outgoingTools.removeValue(forKey: id)
-            outgoingReplies.removeValue(forKey: id)
             outgoingFiles.removeValue(forKey: id)
             attachmentCleanup.insert(id)
             publish()
@@ -1276,7 +1323,6 @@ public actor Conversation {
             outgoingModes.removeValue(forKey: id)
             outgoingTimes.removeValue(forKey: id)
             outgoingTools.removeValue(forKey: id)
-            outgoingReplies.removeValue(forKey: id)
             attachmentCleanup.insert(id)
             publish()
             return
@@ -1364,7 +1410,7 @@ public actor Conversation {
 
     private func queuedMessage(id: String, text: String, pictures: [(mimeType: String, data: Data)]) -> QueuedMessage {
         QueuedMessage(id: id, agentID: agentId, text: text, pictures: pictures.map { .init(mimeType: $0.mimeType, data: $0.data) }, mode: outgoingModes[id], files: outgoingFiles[id],
-                      toolRequest: outgoingTools[id], quickReply: outgoingReplies[id])
+                      toolRequest: outgoingTools[id])
     }
 
     private func restoreConversation() async {
@@ -1378,7 +1424,6 @@ public actor Conversation {
         outgoingFiles = Dictionary(kept.outgoing.compactMap { send in send.files.map { (send.id, $0) } }, uniquingKeysWith: { first, _ in first })
         outgoingTimes = Dictionary(kept.outgoing.compactMap { send in send.at.map { (send.id, $0) } }, uniquingKeysWith: { first, _ in first })
         outgoingTools = Dictionary(kept.outgoing.compactMap { send in send.toolRequest.map { (send.id, $0) } }, uniquingKeysWith: { first, _ in first })
-        outgoingReplies = Dictionary(kept.outgoing.compactMap { send in send.quickReply.map { (send.id, $0) } }, uniquingKeysWith: { first, _ in first })
         if let commands = kept.slashCommands { snapshot.slashCommands = commands }
         if followsDefault {
             // An unsent bot or task keeps the person's own pick; the default
@@ -1458,7 +1503,7 @@ public actor Conversation {
         let window = Self.kept(runs: transcript.runs.map { ($0.id, $0.messageIds) }, messages: transcript.messages, pending: transcript.pending)
         var kept = KeptConversation(runs: window.runs.map { .init(id: $0.id, messageIds: $0.messageIds, time: transcript.times[$0.id]) }, messages: window.messages, pending: transcript.pending,
             outgoing: outgoing.filter({ held[$0.id] == nil }).map { .init(id: $0.id, text: $0.text, pictures: $0.pictures.map { .init(mimeType: $0.mimeType, data: $0.data) }, accepted: $0.accepted, failure: $0.failure, mode: outgoingModes[$0.id], files: outgoingFiles[$0.id], at: outgoingTimes[$0.id],
-                toolRequest: outgoingTools[$0.id], quickReply: outgoingReplies[$0.id]) }, mode: mode, hasMore: snapshot.hasMore || window.trimmed, slashCommands: snapshot.slashCommands, syncedAt: snapshot.syncedAt)
+                toolRequest: outgoingTools[$0.id]) }, mode: mode, hasMore: snapshot.hasMore || window.trimmed, slashCommands: snapshot.slashCommands, syncedAt: snapshot.syncedAt)
         // When it was last read rides along with what changed, never a write of its own.
         kept.modePicked = picked != nil ? true : nil // fork
         var compared = kept
@@ -1823,185 +1868,6 @@ public actor Conversation {
         if let mode { setMode(mode) } else { publish() }
     }
 
-    // MARK: Chat UI
-
-    /// One press on a chat UI component, through `/actions`. It draws no
-    /// bubble: its component shows it pending, then refused or as the
-    /// server's state moves. Nothing is sent while another press on the
-    /// component is on its way. A press is a new attempt, with a new ID,
-    /// unless the last press of that same action and payload on the
-    /// component ended without the computer's answer (the request failed
-    /// or timed out): then it is that attempt again, under its ID, so one
-    /// the computer did take is answered from its record, not done twice.
-    @discardableResult
-    public func act(_ shown: UiShown, action: UiAction) async -> Bool {
-        guard UiCatalog.actions[action.type] != nil, action.componentType == shown.type, creation == nil else { return false }
-        guard !acting.contains(where: { $0.offer == shown.offer && $0.failure == nil }) else { return false }
-        // Held without its secrets, so two presses are known to be the
-        // same only when the action has none.
-        let held = UiCatalog.redacted(action)
-        let again = acting.last { $0.offer == shown.offer }.flatMap { held == action && $0.action == action ? $0.id : nil }
-        let id = again ?? ClientID.make()
-        acting.removeAll { $0.offer == shown.offer }
-        acting.append((id, shown.offer, held, nil, Date().timeIntervalSince1970 * 1000))
-        publish()
-        var accepted = false
-        do {
-            let record = try await client.act(agentId, id: id, offer: shown.offer, action: action)
-            // Held for its component's state; a record is never drawn.
-            transcript.set(record)
-            acting.removeAll { $0.id == id }
-            accepted = record.content.contains { if case .action(let block) = $0 { block.outcome.status == "accepted" } else { false } }
-        } catch {
-            if let index = acting.firstIndex(where: { $0.id == id }) {
-                acting[index].failure = Store.describe(error)
-                acting[index].at = Date().timeIntervalSince1970 * 1000
-            }
-        }
-        publish()
-        return accepted
-    }
-
-    /// Each component's latest action, with when this phone learned how it
-    /// stands: the newest attempt record held, or a press from this phone
-    /// made since.
-    private func uiAttempts() -> [UiOffer: (attempt: UiAttempt, at: Double)] {
-        let now = Date().timeIntervalSince1970 * 1000
-        var newest: [UiOffer: (createdAt: Double, attempt: UiAttempt, at: Double)] = [:]
-        var learned: [String: (status: String, at: Double)] = [:]
-        for (id, blocks) in transcript.actions {
-            guard let record = transcript[message: id], record.role == "service", let block = blocks.first else { continue }
-            let known = recordsLearned[id]
-            let at = known?.status == block.outcome.status ? known?.at ?? now : now
-            learned[id] = (block.outcome.status, at)
-            if let other = newest[block.offer], other.createdAt > record.createdAt { continue }
-            newest[block.offer] = (record.createdAt, UiAttempt(type: block.action.type, outcome: block.outcome), at)
-        }
-        recordsLearned = learned
-        var attempts = newest.mapValues { (attempt: $0.attempt, at: $0.at) }
-        for press in acting {
-            if let record = attempts[press.offer], record.at > press.at { continue }
-            let outcome = press.failure.map { UiOutcome(status: "failed", reason: $0) } ?? UiOutcome(status: "pending")
-            attempts[press.offer] = (UiAttempt(type: press.action.type, outcome: outcome), press.at)
-        }
-        return attempts
-    }
-
-    /// Each component drawn as it stands: its latest action, and the
-    /// server's state for a live one, which a refusal older than its
-    /// reading says nothing against.
-    private func applyUiStates(_ items: inout [ChatItem]) {
-        guard items.contains(where: { $0.pieces.contains { if case .ui = $0 { true } else { false } } }) else { return }
-        let attempts = uiAttempts()
-        var live = false
-        for index in items.indices {
-            guard items[index].pieces.contains(where: { if case .ui = $0 { true } else { false } }) else { continue }
-            let pieces = items[index].pieces.map { piece -> ChatItem.Piece in
-                guard case .ui(var shown) = piece else { return piece }
-                let latest = attempts[shown.offer]
-                if shown.kind == .defaultModel {
-                    live = true
-                    shown.defaults = defaults?.defaults
-                    shown.attempt = latest.flatMap { $0.attempt.stands(learnedAt: $0.at, readAt: defaults?.at) ? $0.attempt : nil }
-                } else {
-                    shown.attempt = latest?.attempt
-                }
-                return .ui(shown)
-            }
-            if pieces != items[index].pieces { items[index].pieces = pieces }
-        }
-        if live, defaultsFollowed == nil {
-            let source = liveDefaults
-            defaultsFollowed = Task { [weak self] in
-                for await reading in source.readings() { await self?.read(reading) }
-            }
-        }
-    }
-
-    private func read(_ reading: UiLiveDefaults.Reading) {
-        guard defaultsFollowed != nil else { return }
-        defaults = reading
-        publish()
-    }
-
-    // MARK: Quick replies
-
-    /// Each suggestion's row, under the agent's words that offered it (and
-    /// any it went on with) and above how the turn ended, for good: a
-    /// person's message later in the turn (a steer) and the answer to it
-    /// go under it, so from then on nothing moves it. The option a
-    /// person's message sent is marked from its `quickReply` (a send on its
-    /// way from here too), and only the newest takes a tap, while nobody
-    /// has written since.
-    private func placeQuickReplies(_ items: inout [ChatItem]) {
-        // Each with the last row of its turn made up to it, if any.
-        var found: [(run: String, replies: QuickReplies, after: String?)] = []
-        var chosen: [QuickReply] = []
-        var spokeAfter = false
-        for run in transcript.runs {
-            var after: String?
-            // This turn's suggestions nobody has written under yet.
-            var open: [Int] = []
-            for id in run.messageIds {
-                guard let message = transcript[message: id] else { continue }
-                let made = madeMessages[id]
-                if message.role == "user" {
-                    spokeAfter = true
-                    open = []
-                    if let reply = message.quickReply { chosen.append(reply) }
-                }
-                if let last = made?.items.last {
-                    after = last.id
-                    for index in open { found[index].after = after }
-                }
-                if message.role != "user", let suggestion = made?.suggestion {
-                    open.append(found.count)
-                    found.append((run.id, suggestion, after))
-                    spokeAfter = false
-                }
-            }
-        }
-        guard !found.isEmpty else { return }
-        // Sent and taken, and not yet in a run; or still on its way.
-        chosen += transcript.pending.compactMap { transcript[message: $0]?.quickReply }
-        chosen += outgoing.compactMap { outgoingReplies[$0.id] }
-        let quiet = !spokeAfter && outgoing.isEmpty && transcript.pending.isEmpty
-        // From the end, so each insertion leaves the places still to find.
-        for (offset, entry) in found.enumerated().reversed() {
-            var replies = entry.replies
-            replies.chosen = chosen.last(where: replies.names)?.index
-            replies.live = quiet && offset == found.count - 1
-            let item = ChatItem(id: "replies:\(replies.messageId):\(replies.toolCallId ?? "")", role: .agent, pieces: [.quickReplies(replies)], delivery: .sent, turn: entry.run)
-            let place = if let after = entry.after, let index = items.firstIndex(where: { $0.id == after }) { index + 1 }
-                else { items.firstIndex { $0.turn == entry.run } ?? items.endIndex }
-            items.insert(item, at: place)
-        }
-    }
-
-    /// What an agent's message offers to reply with: the daemon's block, or
-    /// a `suggest_replies` call's presentation.
-    private static func suggestion(in message: AgentWire.Message) -> QuickReplies? {
-        for block in message.content {
-            switch block {
-            case .quickReplies(let options) where !options.isEmpty:
-                return QuickReplies(messageId: message.id, options: options)
-            case .toolCall(let callId, _, _, let presentation?, _, _, _, _) where presentation.type == "quick_replies" && !(presentation.options ?? []).isEmpty:
-                return QuickReplies(messageId: message.id, toolCallId: callId, options: presentation.options ?? [])
-            default:
-                continue
-            }
-        }
-        return nil
-    }
-
-    /// A tap on a quick reply: an ordinary send of the option, naming
-    /// where it came from, which the computer checks.
-    @discardableResult
-    public func sendQuickReply(_ replies: QuickReplies, index: Int, id: String = ClientID.make()) async -> Bool {
-        guard replies.options.indices.contains(index) else { return false }
-        return await send(id: id, text: replies.options[index], quickReply: replies.reply(index))
-    }
-
     // MARK: Questions
 
     /// The agent waits on question `id`, or on none: one it isn't showing
@@ -2227,8 +2093,6 @@ public actor Conversation {
         var readsShown = false
         var produces = false
         var tools = 0
-        /// The quick replies it offers, read once per revision.
-        var suggestion: QuickReplies?
         /// Each text block's pieces and each call's row, by block index.
         var blocks: [Int: MadeBlock] = [:]
         /// Each run of words' row, by its ID, with what it was made from.
@@ -2266,7 +2130,6 @@ public actor Conversation {
         var streaming: Bool
         var role: ChatItem.Role
         var delivery: ChatItem.Delivery
-        var suggested: Bool
         var time: Double?
         var author: String?
         var turn: String?
@@ -2328,7 +2191,6 @@ public actor Conversation {
         made.produces = message.role != "user" && !message.content.isEmpty && (message.metadata?.senderAgentId ?? agentId) == agentId
         if message.role == "agent" {
             made.tools = message.content.reduce(0) { if case .toolCall = $1 { $0 + 1 } else { $0 } }
-            made.suggestion = Self.suggestion(in: message)
         }
         items(message, old: old, made: &made, shown: &shown)
         madeMessages[message.id] = made
@@ -2397,14 +2259,11 @@ public actor Conversation {
                     mimeType: "image/jpeg", file: preview.thumbnail, width: preview.width, height: preview.height)))
             }
             var item = ChatItem(id: send.id, role: .user, pieces: pieces, delivery: delivery, time: outgoingTimes[send.id])
-            item.suggested = outgoingReplies[send.id] != nil
             item = item.stamped()
             sends[send.id] = (key, item)
             items.append(item)
         }
         madeSends = sends
-        applyUiStates(&items)
-        placeQuickReplies(&items)
         snapshot.items = items
         // Only steering for a run already going: a send that starts one is
         // its first message, not next in line.
@@ -2483,8 +2342,6 @@ public actor Conversation {
     private func items(_ message: AgentWire.Message, old: MadeMessage?, made: inout MadeMessage, shown: inout [String: Media]) {
         let turn = made.turn
         if message.role == "service" {
-            // A chat UI attempt record: its component reads it.
-            if message.content.contains(where: { if case .action = $0 { true } else { false } }) { return }
             // A compaction is a step of its run, as desktop's projection
             // makes it a `compact` call.
             let compactions = message.content.compactMap { block -> AgentWire.Compaction? in
@@ -2522,7 +2379,6 @@ public actor Conversation {
         let delivery: ChatItem.Delivery = role == .user && message.status == "pending" ? .pending : .sent
         let time = role == .user ? message.createdAt : nil
         let author = message.role == "user" ? message.metadata?.userId : nil
-        let suggested = message.role == "user" && message.quickReply != nil
         let streaming = made.streaming || message.status == "streaming"
         var pieces: [ChatItem.Piece] = []
         // The words before the first call keep the message's ID; each run
@@ -2534,13 +2390,12 @@ public actor Conversation {
         var proposedBefore: Set<String> = []
         func flush(next: String) {
             if !pieces.isEmpty {
-                let key = SegmentKey(blocks: segmentBlocks, proposed: proposedBefore, manager: manager, streaming: streaming, role: role, delivery: delivery, suggested: suggested, time: time, author: author, turn: turn)
+                let key = SegmentKey(blocks: segmentBlocks, proposed: proposedBefore, manager: manager, streaming: streaming, role: role, delivery: delivery, time: time, author: author, turn: turn)
                 let item: ChatItem
                 if !segmentLayout, let kept = old?.segments[segment], kept.key == key {
                     item = kept.item
                 } else {
-                    var made = ChatItem(id: segment, role: role, pieces: pieces, delivery: delivery, turn: turn, time: time, author: author)
-                    made.suggested = suggested
+                    let made = ChatItem(id: segment, role: role, pieces: pieces, delivery: delivery, turn: turn, time: time, author: author)
                     item = made.stamped()
                 }
                 // Made from shown media, which may move: made again each time.
@@ -2601,20 +2456,6 @@ public actor Conversation {
                 let key = "\(message.id):\(index)"
                 if pictures[key] == nil { pictures[key] = Data(base64Encoded: data) }
                 if let bytes = pictures[key] { pieces.append(.picture(id: key, mimeType: mimeType, data: bytes)) }
-            case .toolCall(let id, _, _, let presentation?, _, _, _, _) where agentRole && presentation.type == "ui" && presentation.ui != nil:
-                // What `show_ui` showed is the agent's own: a row of its own,
-                // with no call line, which stays when the turn folds.
-                guard let document = presentation.ui else { continue }
-                flush(next: id)
-                segmentBlocks.append(revision)
-                let media = (presentation.items ?? []).enumerated().map { Media(toolCallId: id, index: $0.offset, item: $0.element) }
-                for component in document.components {
-                    pieces += UiShown.pieces(component, document: document.id, message: message.id, media: media)
-                }
-                flush(next: "\(message.id)/\(index + 1)")
-            case .toolCall(_, let name, _, let presentation, _, _, _, _) where agentRole && (name == "suggest_replies" || presentation?.type == "quick_replies"):
-                // Suggested replies are drawn as pills at the end, no call line.
-                segmentBlocks.append(revision)
             case .toolCall(let id, let name, let status, let presentation, let arguments, let output, let result, let review):
                 var call = kept ?? MadeBlock(revision: revision, streaming: false, context: itemContext, agentRole: agentRole, callId: id, pieces: [])
                 if kept == nil {
@@ -2663,13 +2504,7 @@ public actor Conversation {
                 guard let item else { continue }
                 flush(next: "\(message.id)/\(index + 1)")
                 made.items.append(item)
-            case .ui(let document):
-                segmentBlocks.append(revision)
-                guard agentRole else { continue }
-                for component in document.components {
-                    pieces += UiShown.pieces(component, document: document.id, message: message.id, media: [])
-                }
-            case .reasoning, .compaction, .action, .quickReplies, .unknown:
+            case .reasoning, .compaction, .unknown:
                 continue
             }
         }

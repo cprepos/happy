@@ -5,6 +5,7 @@ import com.slopus.happy.chat.arr
 import com.slopus.happy.chat.num
 import com.slopus.happy.chat.obj
 import com.slopus.happy.chat.str
+import com.slopus.happy.genui.GEN_UI_RENDER_PATH
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -148,8 +149,18 @@ data class ArtifactVersion(
     val createdAt: Long = 0,
     /** Made by an agent rather than a person. */
     val byAgent: Boolean = false,
+    /** The agent that made it (`createdBy` `{ kind: "agent" }`): a Gen UI version's origin. */
+    val origin: String? = null,
 ) {
     fun file(path: String): ArtifactFile? = files.firstOrNull { it.path == path } ?: entry?.takeIf { it.path == path }
+
+    /**
+     * A `gen_ui` version's render document, read by its path whether or not
+     * the manifest lists it: a Happy Agent lists `.genui/render.json`, a
+     * Happy Cloud server leaves it out of `files` and serves it all the same.
+     * A version without one fails when the read does, not before.
+     */
+    val genUiRender: ArtifactFile get() = file(GEN_UI_RENDER_PATH) ?: ArtifactFile(GEN_UI_RENDER_PATH, "application/json", 0)
 
     companion object {
         private fun label(version: JsonObject): String {
@@ -176,6 +187,7 @@ data class ArtifactVersion(
                 label = label(version),
                 createdAt = version["createdAt"].num?.toLong() ?: 0,
                 byAgent = version["createdBy"].obj?.get("kind").str == "agent",
+                origin = version["createdBy"].obj?.takeIf { it["kind"].str == "agent" }?.get("agentId").str,
             )
         }
     }
@@ -194,12 +206,15 @@ sealed interface ArtifactShow {
     data class Gallery(val files: List<ArtifactFile>) : ArtifactShow
     data class Page(val file: ArtifactFile) : ArtifactShow
     data class Openable(val file: ArtifactFile) : ArtifactShow
+    /** A `gen_ui` version, drawn natively from the render document the computer compiled, never from its entry. */
+    data class GenUi(val render: ArtifactFile) : ArtifactShow
     data object Unavailable : ArtifactShow
 
     companion object {
-        /** [path] is the file a link opened; null for the entry. */
-        fun of(version: ArtifactVersion, path: String? = null): ArtifactShow {
+        /** [path] is the file a link opened; null for the entry. [type] is the artifact's. */
+        fun of(version: ArtifactVersion, path: String? = null, type: String = ""): ArtifactShow {
             if (path == null) version.liveUrl?.let { return Live(it) }
+            if (path == null && type == "gen_ui") return GenUi(version.genUiRender)
             val entry = version.entry ?: return Unavailable
             val wanted = path ?: entry.path
             val file = version.files.firstOrNull { it.path == wanted } ?: entry.takeIf { wanted == it.path } ?: return Unavailable

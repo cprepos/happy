@@ -112,6 +112,7 @@ import com.slopus.happy.ui.components.HomeCardPlace
 import com.slopus.happy.ui.components.Icon
 import com.slopus.happy.ui.components.Ionicon
 import com.slopus.happy.ui.components.Octicon
+import com.slopus.happy.ui.components.segmentThumb
 import com.slopus.happy.ui.connection.AgentTopBar
 import com.slopus.happy.ui.connection.BarIconButton
 import com.slopus.happy.ui.connection.ConversationMark
@@ -604,7 +605,7 @@ private fun <T> FeedSegments(options: List<Pair<T, String>>, current: T, modifie
                     .weight(1f)
                     .heightIn(min = FeedSpec.tabsHeight - FeedSpec.tabsPadding * 2)
                     .clip(RoundedCornerShape(FeedSpec.tabRadius))
-                    .background(if (picked) colors.surfaceHighest else Color.Transparent)
+                    .background(if (picked) colors.segmentThumb() else Color.Transparent)
                     .clickable(role = Role.Tab) { onChange(tab) }
                     .semantics { selected = picked },
                 contentAlignment = Alignment.Center,
@@ -946,6 +947,7 @@ internal fun feedTile(kind: FeedSubjectKind, artifactType: String?): Pair<Ionico
         "image" -> Ionicon.ImageOutline to RowTile.Orange
         "image_series" -> Ionicon.AlbumsOutline to RowTile.Orange
         "video" -> Ionicon.FilmOutline to RowTile.Red
+        "gen_ui" -> Ionicon.CodeWorkingOutline to RowTile.Teal
         else -> Ionicon.DocumentOutline to RowTile.Indigo
     }
 }

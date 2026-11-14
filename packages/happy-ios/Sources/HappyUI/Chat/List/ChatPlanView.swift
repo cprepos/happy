@@ -46,9 +46,9 @@ final class ChatPlanView: UIView {
     var onChunksPlaced: (() -> Void)?
     /// A chunk of a tall plan: touches go through it to the row's other chunks.
     private var passesTouches = false
-    /// The pictures, recordings, pages and live browsers the plan shows now.
+    /// The pictures, recordings, pages, Gen UI and live browsers the plan shows now.
     var mediaViews: [UIView] {
-        (media as [UIView] + pages as [UIView] + liveBrowsers as [UIView]).filter { !$0.isHidden }
+        (media as [UIView] + pages as [UIView] + genUIs as [UIView] + liveBrowsers as [UIView]).filter { !$0.isHidden }
             + chunkViews.keys.sorted().flatMap { chunkViews[$0]?.mediaViews ?? [] }
     }
     private var boxes: [UIView] = []
@@ -70,6 +70,7 @@ final class ChatPlanView: UIView {
     private var fileStatuses: [ChatFileStatusView] = []
     private var pages: [InlinePageView] = []
     private var liveBrowsers: [LiveBrowserChipView] = []
+    private var genUIs: [GenUIBlockView] = []
     private var deliveries: [ChatDeliveryView] = []
     private var questionFields: [ChatQuestionFieldView] = []
 
@@ -174,6 +175,7 @@ final class ChatPlanView: UIView {
         var fileStatusIndex = 0
         var pageIndex = 0
         var liveBrowserIndex = 0
+        var genUIIndex = 0
         var deliveryIndex = 0
         var questionFieldIndex = 0
         var order: [UIView] = []
@@ -308,6 +310,11 @@ final class ChatPlanView: UIView {
                 view.setLayoutFrame(frame)
                 view.apply(link)
                 order.append(view)
+            case .embed(.genUI(let embed), let frame):
+                let view = take(&genUIs, &genUIIndex) { GenUIBlockView() }
+                view.setLayoutFrame(frame)
+                view.apply(embed)
+                order.append(view)
             case .delivery(let mark, let frame):
                 let view = take(&deliveries, &deliveryIndex) { ChatDeliveryView() }
                 view.setLayoutFrame(frame)
@@ -383,6 +390,7 @@ final class ChatPlanView: UIView {
             view.apply(nil)
             view.isHidden = true
         }
+        for view in genUIs[genUIIndex...] { view.isHidden = true }
         for view in deliveries[deliveryIndex...] {
             view.apply(nil)
             view.isHidden = true

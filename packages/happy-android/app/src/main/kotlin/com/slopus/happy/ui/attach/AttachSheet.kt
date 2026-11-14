@@ -96,6 +96,7 @@ import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onPlaced
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionOnScreen
 import androidx.compose.ui.util.lerp
 import androidx.compose.ui.unit.round
@@ -110,6 +111,14 @@ object AttachTags {
     const val GALLERY = "attach.gallery"
     const val CELL = "attach.gallery.cell"
     const val CHECK = "attach.gallery.check"
+    /** The check on the full-screen preview, for the picture in view. */
+    const val PREVIEW_CHECK = "attach.preview.check"
+    const val PREVIEW_FOOT = "attach.preview.foot"
+    const val PREVIEW_CAPTION_BAR = "attach.preview.captionBar"
+    const val PREVIEW_CAPTION = "attach.preview.caption"
+    const val PREVIEW_SEND = "attach.preview.send"
+    const val PREVIEW_CROP = "attach.preview.crop"
+    const val PREVIEW_DRAW = "attach.preview.draw"
     const val VIDEO_BADGE = "attach.gallery.video"
     const val ASK = "attach.gallery.ask"
     const val ALLOW = "attach.gallery.allow"
@@ -127,6 +136,7 @@ object AttachTags {
     const val CAPTION_BAR = "attach.captionBar"
     const val CAPTION = "attach.caption"
     const val SEND = "attach.send"
+    const val CONFIRM = "attach.confirm"
     const val COUNTER = "attach.counter"
 
     fun tab(kind: AttachTabKind) = "attach.tab." + kind.name.lowercase()
@@ -275,7 +285,9 @@ class AttachSheetMotion(settled: Boolean = false) {
  * raises the sheet's top until it meets the top bar, where the corners go
  * square. A pull down at the list's top moves the sheet, and it goes once
  * pulled 0.8 cm. The tab bar floats at its foot on glass, and gives way to
- * the caption bar once something is picked.
+ * the caption bar once something is picked, whose Send sends the picks
+ * with the caption. The header's far end then holds the confirm pill (a
+ * check and the count), which puts them in the composer instead.
  */
 @Composable
 internal fun AttachSheetLayout(
@@ -291,6 +303,7 @@ internal fun AttachSheetLayout(
     motion: AttachSheetMotion,
     onClose: () -> Unit,
     onSend: () -> Unit,
+    onConfirm: () -> Unit,
     onToggleGallery: (GalleryItem) -> Unit,
     onOpenGallery: (GalleryItem) -> Unit,
     onToggleFile: (RecentFile) -> Unit,
@@ -302,6 +315,7 @@ internal fun AttachSheetLayout(
     modifier: Modifier = Modifier,
     onWorkspace: () -> Unit = {},
     sending: Boolean = false,
+    busy: Boolean = false,
     galleryState: LazyGridState = rememberLazyGridState(),
     filesState: LazyListState = rememberLazyListState(),
     camera: AttachCameraState? = null,
@@ -585,6 +599,30 @@ internal fun AttachSheetLayout(
                 }
             }
 
+            // The header's far end, over the top bar once it is in: the picks into the composer, unsent.
+            if (selection.count > 0 || headerProgress > 0f) {
+                ConfirmPill(
+                    selection.count.coerceAtLeast(1),
+                    busy = busy,
+                    enabled = !sending,
+                    colors = colors,
+                    onConfirm = onConfirm,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .offset {
+                            val resting = sheetTop() + AttachSpec.confirmTop.toPx()
+                            val barred = statusBar + (AttachSpec.topBar - AttachSpec.confirmHeight).toPx() / 2
+                            IntOffset(-AttachSpec.confirmEnd.roundToPx(), (resting + (barred - resting) * topBar).roundToInt())
+                        }
+                        .graphicsLayer {
+                            val scale = AttachSpec.CONFIRM_FROM + (1 - AttachSpec.CONFIRM_FROM) * headerProgress
+                            scaleX = scale
+                            scaleY = scale
+                            alpha = headerProgress
+                        },
+                )
+            }
+
             // The foot: the list fades under the bars.
             Box(
                 Modifier
@@ -593,7 +631,14 @@ internal fun AttachSheetLayout(
                     .height(AttachSpec.bottomFade + bottom)
                     .background(Brush.verticalGradient(0f to sheetColor.copy(alpha = 0f), 0.6f to sheetColor.copy(alpha = 0.85f), 1f to sheetColor)),
             )
-            Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(bottom = bottom)) {
+            Box(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .padding(bottom = bottom)
+                    // The live camera tile stops at the bar's top, never over the caption.
+                    .onGloballyPositioned { bar -> camera?.footTop = root?.takeIf { it.isAttached }?.localPositionOf(bar, Offset.Zero)?.y },
+            ) {
                 if (captionProgress.value < 1f) {
                     AttachTabBar(
                         tabs,
@@ -618,7 +663,6 @@ internal fun AttachSheetLayout(
                         sending = sending,
                         shown = { captionProgress.value },
                         backdrop = source,
-                        sheet = sheetColor,
                         colors = colors,
                         modifier = Modifier.align(Alignment.BottomCenter),
                     )

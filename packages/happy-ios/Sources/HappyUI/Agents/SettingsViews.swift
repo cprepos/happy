@@ -267,6 +267,9 @@ struct SettingsRow {
     /// An account's or connection's row: `image` round in the icon's
     /// place, an empty circle until it comes, never a glyph.
     var avatar = false
+    /// `image` drawn in a rounded square, a tile's shape, not round: a
+    /// plugin's mark.
+    var squareImage = false
     /// Its picture, drawn round in the icon's place; the icon is the
     /// fallback for one that hasn't come yet.
     var image: UIImage?
@@ -277,6 +280,9 @@ struct SettingsRow {
     var accessory: SettingsLayout.Accessory = .chevron
     /// A quieter line under the title (a path, an ID): the row is taller.
     var subtitle: String?
+    /// How many lines it wraps to, 0 for as many as it needs; one line is
+    /// cut in the middle, more at the end.
+    var subtitleLines = 1
     /// Drawn where the value goes, instead of it, at its own size: line
     /// counts, a copy glyph, a spinner.
     var valueView: UIView?
@@ -290,6 +296,8 @@ struct SettingsRow {
     var toggled: ((Bool) -> Void)?
     /// The line under this row's card, said by the card's last row.
     var footer: String?
+    /// On a card's first row: the group's name over the card.
+    var header: String?
     /// A block of text the card's width (a secret key), in monospace.
     var isCode = false
     /// Quieter, for a row that can't be used here.
@@ -364,6 +372,13 @@ final class SettingsCardView: UIView {
                     let line = row.subtitle.map { height($0, font: fonts.subtitle, width: words) } ?? 0
                     return SettingsLayout.RowSpec(hasIcon: false, accessory: .chevron, art: SettingsLayout.ArtText(title: height(row.title, font: fonts.title, width: words), subtitle: line))
                 }
+                if row.subtitleLines != 1, let line = row.subtitle {
+                    var spec = spec(row)
+                    let font = RowView.subtitleFont
+                    let measured = height(line, font: font, width: SettingsLayout.titleWidth(spec, width: width))
+                    spec.subtitleHeight = row.subtitleLines == 0 ? measured : min(measured, ceil(CGFloat(row.subtitleLines) * font.lineHeight))
+                    return spec
+                }
                 guard row.isCode else { return spec(row) }
                 let text = height(row.title, font: RowView.codeFont, width: SettingsLayout.textWidth(width))
                 return SettingsLayout.RowSpec(hasIcon: false, accessory: .none, textHeight: text)
@@ -381,6 +396,11 @@ final class SettingsCardView: UIView {
     /// Each card's footer, its last row's, measured at the page's `width`.
     static func footers(_ cards: [[SettingsRow]], width: CGFloat) -> [CGFloat?] {
         cards.map { card in card.last?.footer.map { height($0, font: SettingsFooters.font, width: SettingsLayout.footerWidth(width)) } }
+    }
+
+    /// Each card's header, its first row's, as it is drawn: one line.
+    static func headers(_ cards: [[SettingsRow]]) -> [CGFloat?] {
+        cards.map { card in card.first?.header.map { _ in ceil(SettingsFooters.font.lineHeight) } }
     }
 
     private static func height(_ text: String, font: UIFont, width: CGFloat) -> CGFloat {
@@ -466,7 +486,7 @@ final class SettingsCardView: UIView {
                     // Its own picture, round, filling the square an icon
                     // would have had: the rows read as the accounts they are.
                     tile.backgroundColor = row.image == nil ? UIColor(Palette.settingsAddFill) : .clear
-                    tile.layer.cornerRadius = frame.height / 2
+                    tile.layer.cornerRadius = row.squareImage ? SettingsLayout.Metrics.tileRadius : frame.height / 2
                     // The picture over the thumbhash it had: dissolved in.
                     ImageFade.show(row.image, in: glyph, fade: previous?.id == row.id && previous?.image != nil)
                     glyph.contentMode = .scaleAspectFill
@@ -499,10 +519,12 @@ final class SettingsCardView: UIView {
                 let label = subtitle ?? makeSubtitle()
                 label.isHidden = false
                 label.text = row.subtitle
+                // A destructive row's line is a refusal: said in red too.
+                label.textColor = UIColor(row.destructive ? Palette.settingsDestructive : Palette.settingsSecondary)
                 // An art row's line wraps, at the person's text size.
                 label.font = fonts?.subtitle ?? Self.subtitleFont
-                label.numberOfLines = fonts == nil ? 1 : 0
-                label.lineBreakMode = fonts == nil ? .byTruncatingMiddle : .byWordWrapping
+                label.numberOfLines = fonts == nil ? row.subtitleLines : 0
+                label.lineBreakMode = fonts != nil ? .byWordWrapping : row.subtitleLines == 1 ? .byTruncatingMiddle : .byTruncatingTail
                 label.frame = local(frame)
             } else {
                 subtitle?.isHidden = true
@@ -628,17 +650,24 @@ final class SettingsCardView: UIView {
     }
 }
 
-/// The lines under settings' cards, each where the layout put it.
+/// The lines under settings' cards, each where the layout put it; or, as
+/// `headers`, the group names over them, in capitals as iOS writes them.
 final class SettingsFooters {
     static let font = Fonts.ui(.regular, size: 13)
     private weak var container: UIView?
     private var labels: [UILabel] = []
+    private let headers: Bool
 
-    init(in container: UIView) { self.container = container }
+    init(in container: UIView, headers: Bool = false) {
+        self.container = container
+        self.headers = headers
+    }
 
-    /// `texts` by card, at `layout`'s footer frames.
+    /// `texts` by card, at `layout`'s footer (or header) frames.
     func show(_ texts: [String?], layout: [SettingsLayout.Card]) {
-        let shown = zip(texts, layout).compactMap { text, card in text.flatMap { text in card.footer.map { (text, $0) } } }
+        let shown = zip(texts, layout).compactMap { text, card in
+            text.flatMap { text in (headers ? card.header : card.footer).map { (headers ? text.uppercased() : text, $0) } }
+        }
         while labels.count < shown.count {
             let label = UILabel()
             label.font = Self.font

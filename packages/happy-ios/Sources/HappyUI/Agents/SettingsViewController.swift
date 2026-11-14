@@ -72,10 +72,13 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
     private let subtitle = UILabel()
     private var cards: [SettingsCardView] = []
     private lazy var footers = SettingsFooters(in: scroll)
+    private lazy var headers = SettingsFooters(in: scroll, headers: true)
     private var rows: [[SettingsRow]] = []
     /// What the page shows now, card by card, and where the profiles'
     /// strip is: for the tests, which read the page rather than the screen.
     var shownRowIDs: [[String]] { rows.map { $0.map(\.id) } }
+    /// The group names over the cards, top to bottom: for the tests.
+    var shownHeaders: [String] { headers.texts }
     var shownRowTitles: [[String]] { rows.map { $0.map(\.title) } }
     var stripFrame: CGRect { settingsLayout.strip }
     /// The ids of the rows drawn with a tick.
@@ -497,7 +500,7 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
             let removal: [[SettingsRow]] = [[
                 Row(id: "disconnect", title: server == nil ? Strings.disconnect : Strings.ServerSignIn.signOut, accessory: .none, destructive: true, action: { [weak self] in self?.remove(id, direct: true) }),
             ]]
-            // Compute closes Data and Storage's card.
+            // Compute follows Inference, as desktop's Agents group has it.
             let computeRows: [SettingsRow]
             if let session = Session.session(for: id, context: context), ComputeViewController.offered(session) {
                 computeRows = [Row(Index.computes, action: { [weak self] in
@@ -505,21 +508,35 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
                     navigationController?.pushViewController(ComputeViewController(session: session), animated: true)
                 })]
             } else { computeRows = [] }
-            return [
-                accountRows(),
-            ] + serverRows + [
-                [Row(Index.profile, image: profilePhoto, value: profileName.isEmpty ? nil : profileName, action: { [weak self] in self?.openProfile() })],
-                [supportRow()],
+            // Usage closes the group, as desktop's Agents group has it; every
+            // agent connection has one.
+            let usageRows: [SettingsRow] = Session.session(for: id, context: context).map { session in
+                [Row(Index.usage, action: { [weak self] in
+                    self?.navigationController?.pushViewController(UsageViewController(session: session), animated: true)
+                })]
+            } ?? []
+            // Desktop's sidebar, group for group: its unheaded first group
+            // (General, here Appearance; Account, here Profile; Voice; and
+            // the phone's Data and Storage), then Agents (what new sessions
+            // start on, Inference, Compute). The phone's own cards keep their
+            // places: the accounts and the server at the top, Support
+            // Happy under the first group, Privacy and About at the end.
+            let groups: [[SettingsRow]] = [
                 [
                     Row(Index.appearance, action: { [weak self] in self?.open(.appearance) }),
+                    Row(Index.profile, image: profilePhoto, value: profileName.isEmpty ? nil : profileName, action: { [weak self] in self?.openProfile() }),
                     Row(Index.agentVoice, value: voiceValue(), action: { [weak self] in self?.open(.agentVoice) }),
-                    Row(Index.agents, action: { [weak self] in self?.open(.agents) }),
-                ] + providersRows(id) + [
                     Row(Index.dataStorage, action: { [weak self] in self?.open(.dataStorage) }),
-                ] + computeRows,
+                ],
+                [supportRow()],
+                ([Row(Index.agents, action: { [weak self] in self?.open(.agents) })] + providersRows(id) + computeRows + usageRows).withHeader(Strings.SettingsGroups.agents),
+            ]
+            return ([
+                accountRows(),
+            ] + serverRows + groups + [
                 [Row(Index.privacySettings, action: { [weak self] in self?.open(.privacy) })],
                 aboutRows(),
-            ] + removal
+            ] + removal).filter { !$0.isEmpty }
         }
         return [
             accountRows(),
@@ -762,7 +779,7 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
     private func aboutRows() -> [SettingsRow] {
         typealias Row = SettingsRow
         typealias Index = SettingsIndex
-        return [
+        return ([
             Row(Index.whatsNew, action: { [weak self] in self?.show(ChangelogViewController()) }),
             Row(Index.githubRepo, value: Strings.Links.githubDetail, action: { [weak self] in self?.openBrowser(Strings.Links.github) }),
             Row(Index.reportIssue, action: { [weak self] in self?.openBrowser(Strings.Links.issues) }),
@@ -770,16 +787,31 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
             Row(Index.terms, action: { [weak self] in self?.openBrowser(Strings.Links.terms) }),
             Row(Index.eula, action: { [weak self] in self?.openBrowser(Strings.Links.eula) }),
             Row(Index.version, value: SettingsIndexModel.versionDetail(version: context.version, variant: context.variant), accessory: .none, action: { [weak self] in self?.versionTapped() }),
-        ].withFooter(aboutFooter)
+        ] + developerRows()).withFooter(aboutFooter)
+    }
+
+    /// Developer mode's own rows, after Version, in English only.
+    private func developerRows() -> [SettingsRow] {
+        guard context.account.localSettings.devModeEnabled else { return [] }
+        return [SettingsRow(id: "genui-fixtures", title: "Gen UI fixtures", action: { [weak self] in self?.show(GenUIFixturesViewController()) })]
     }
 
     /// A Happy Cloud server's AI providers: the connections its chats run on.
+    /// Then its instructions and security policy, where its settings serve
+    /// them (`Session.policyDocuments`).
     private func providersRows(_ id: String) -> [SettingsRow] {
         guard let session = Session.session(for: id, context: context), session.isCloud else { return [] }
-        return [SettingsRow(SettingsIndex.providers, action: { [weak self] in
+        let providers = SettingsRow(SettingsIndex.providers, action: { [weak self] in
             guard let self else { return }
             ProvidersViewController.open(.providers, session: session, from: self)
-        })]
+        })
+        guard session.policyDocuments == true else { return [providers] }
+        let documents = [(SettingsIndex.instructions, PolicyDocument.instructions), (SettingsIndex.securityPolicy, PolicyDocument.security)].map { entry, document in
+            SettingsRow(entry, action: { [weak self] in
+                self?.navigationController?.pushViewController(PolicyDocumentViewController(document: document, session: session), animated: true)
+            })
+        }
+        return [providers] + documents
     }
 
     /// The relay app's words, about keys kept on this phone, aren't true
@@ -832,7 +864,8 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
     private func rebuild() {
         guard isViewLoaded, let profile = shown else { return }
         if let query, !query.isEmpty {
-            let found = searchRows(query)
+            // One card of what was found, under no group's name.
+            let found = searchRows(query).map { row in var row = row; row.header = nil; return row }
             rows = found.isEmpty ? [] : [found]
         } else if query != nil {
             rows = []
@@ -870,7 +903,7 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
         let width = scroll.readableColumn(width: view.bounds.width)
         let specs = SettingsCardView.specs(rows, width: width, traits: traitCollection)
         let picture = shown == nil ? nil : agentButton.intrinsicContentSize.width
-        let layout = SettingsLayout(width: width, nameHeight: ceil(name.font.lineHeight), subtitleHeight: ceil(subtitle.font.lineHeight), cards: specs, footers: SettingsCardView.footers(rows, width: width), searching: searching, showsStrip: false, picture: picture)
+        let layout = SettingsLayout(width: width, nameHeight: ceil(name.font.lineHeight), subtitleHeight: ceil(subtitle.font.lineHeight), cards: specs, footers: SettingsCardView.footers(rows, width: width), headers: SettingsCardView.headers(rows), searching: searching, showsStrip: false, picture: picture)
         settingsLayout = layout
         agentButton.frame = layout.picture
         name.frame = layout.name
@@ -882,6 +915,7 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
             card.show(rows[index], layout: frame)
         }
         footers.show(rows.map { $0.last?.footer }, layout: layout.cards)
+        headers.show(rows.map { $0.first?.header }, layout: layout.cards)
         scroll.contentSize = CGSize(width: width, height: layout.contentHeight)
     }
 
@@ -975,6 +1009,7 @@ final class SettingsViewController: UIViewController, UIScrollViewDelegate, UISe
         let enabled = !context.account.localSettings.devModeEnabled
         context.account.localSettings.devModeEnabled = enabled
         Alerts.show(Strings.Modals.developerMode, enabled ? Strings.Modals.developerModeEnabled : Strings.Modals.developerModeDisabled, on: self)
+        rebuild()
     }
 
     /// A Happy account's page, once that account is the active one.

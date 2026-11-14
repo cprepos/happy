@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The builds that offer Happy Cloud (connection/HappyCloud.kt: debug and
+  preview): its invite links open the app. https://INVITE/#<token>, and the
+  older https://WEB/join#<token>; each host's /.well-known/assetlinks.json
+  must list this build's package and signing certificate to verify.
+  The same in src/debug and src/preview; keep them alike.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- Exported in the main manifest already; repeated so this overlay stands alone for lint. -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="https" android:host="${happyCloudInviteHost}" android:path="/" />
+            </intent-filter>
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="https" android:host="${happyCloudWebHost}" android:path="/join" />
+            </intent-filter>
+        </activity>
+        <!-- The bundled Gen UI render documents, listed and drawn (ui/genui/GenUiFixturesActivity); its own launcher icon. -->
+        <activity
+            android:name=".ui.genui.GenUiFixturesActivity"
+            android:exported="true"
+            android:label="Gen UI fixtures"
+            android:taskAffinity="com.slopus.happy.genui.fixtures">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <!-- The plugin pages over an in-memory Happy Cloud server (ui/plugins/PluginsFixturesActivity). -->
+        <activity
+            android:name=".ui.plugins.PluginsFixturesActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize" />
+        <!-- The AI providers list, add chooser, API key and own-endpoint pages over an in-memory server (ui/connection/CloudProvidersFixturesActivity). -->
+        <activity
+            android:name=".ui.connection.CloudProvidersFixturesActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize" />
+        <!-- A policy document's page over an in-memory server (ui/connection/PolicyDocumentFixturesActivity). -->
+        <activity
+            android:name=".ui.connection.PolicyDocumentFixturesActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize" />
+        <!-- A Happy Cloud server's onboarding flow over an in-memory server (ui/gates/CloudOnboardingFixturesActivity). -->
+        <activity
+            android:name=".ui.gates.CloudOnboardingFixturesActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize" />
+        <!-- One Gen UI render document alone on the chat's ground, for screenshots (ui/genui/GenUiGymActivity). -->
+        <activity
+            android:name=".ui.genui.GenUiGymActivity"
+            android:exported="true" />
+        <!-- A render fixture opened as a gen_ui artifact on the real artifact screen (ui/genui/GenUiArtifactGymActivity). -->
+        <activity
+            android:name=".ui.genui.GenUiArtifactGymActivity"
+            android:exported="true" />
+        <!-- 100 Gen UI artifacts under their cards in the chat's own rows, for scrolling and frame timing (ui/genui/GenUiChatGymActivity). -->
+        <activity
+            android:name=".ui.genui.GenUiChatGymActivity"
+            android:exported="true" />
+    </application>
+</manifest>

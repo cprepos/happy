@@ -170,7 +170,8 @@ private object Slot {
  * works and nothing is typed. [+] opens the attachment sheet ([AttachSheet]):
  * the gallery's recent photos and videos and the File tab; its Send sends the
  * picks with the draft as their caption, pictures inline and the rest through
- * the agent's workspace ([com.slopus.happy.conversation.WorkspaceUploads]).
+ * the agent's workspace ([com.slopus.happy.conversation.WorkspaceUploads]), and
+ * its confirm pill puts them here instead, to go on send.
  * The model menu floats above the composer and keyboard, keeping the draft
  * and caret in place. The pill is glass over [backdrop] (the transcript under
  * it), its tint alone where nothing blurs. With Reduce Motion it changes shape
@@ -306,6 +307,9 @@ internal fun ConversationComposer(
             pictures?.state?.images?.addAll(extra)
         }
     }
+
+    // The sheet's confirmed picks wait here with the words, the keyboard up once it has gone.
+    var attachedFocus by remember { mutableStateOf(false) }
 
     val open = focused || text.isNotEmpty() || attached.isNotEmpty()
     val corner by animateDpAsState(
@@ -469,11 +473,15 @@ internal fun ConversationComposer(
             onCaptionChange = onTextChange,
             onSend = { staged -> submit(staged) },
             onSendPending = onSendPending?.let { { staged, pending -> submit(staged, pending) } },
+            onAttach = { staged ->
+                pictures?.state?.let { waiting -> waiting.images.addAll(staged.take(waiting.remaining.coerceAtLeast(0))) }
+                attachedFocus = true
+            },
             onClosed = { attaching = false },
             room = AttachAccepts.Agent.maxItems - attached.size,
             button = plus,
             workspace = workspace,
-            onPhoto = pictures?.let { picker -> { photo -> if (picker.state.checkRoom()) picker.state.images.add(photo) } },
+            takesPhotos = pictures != null,
         )
         ModelPicker(
             open = picker,
@@ -495,6 +503,13 @@ internal fun ConversationComposer(
         }
         LaunchedEffect(focusAsks) {
             if (focusAsks == 0) return@LaunchedEffect
+            focus.requestFocus()
+            keyboard?.show()
+        }
+        // Once the sheet's window has gone, so the field can take focus back.
+        LaunchedEffect(attachedFocus, attaching) {
+            if (!attachedFocus || attaching) return@LaunchedEffect
+            attachedFocus = false
             focus.requestFocus()
             keyboard?.show()
         }

@@ -111,8 +111,8 @@ extension Strings {
     public static let newWorkTask = "Task"
     public static let newWorkBot = "Bot"
     public static let newWorkName = "Name (optional)"
-    public static let newWorkTaskNote = "A task names itself from its first message unless you name it."
-    public static let newWorkBotNote = "A bot is one lasting conversation with a folder of its own."
+    public static let newWorkTaskNote = "A task is one piece of work, big or small. It can reach across several projects and hand parts off to subtasks."
+    public static let newWorkBotNote = "A bot is like a colleague: one lasting conversation with a folder of its own. Tell it what to do in your first message."
 
     // The working line (AgentWorkingStatus.tsx, happyAgentConnection's `activityOf`).
     public static let phaseWaitingForModel = "Waiting for model"
@@ -138,11 +138,6 @@ extension Strings {
     }
     public static let sending = "Sending…"
     public static let sendFailed = "Not sent. Tap to retry."
-    /// Under a person's message that is a quick reply.
-    public static let uiSuggested = "↩ Suggested reply"
-    /// The `default_model` component's pickers.
-    public static let uiDefaultModel = "Default model"
-    public static let uiEffort = "Effort"
     /// A failed turn's card (happyAgentConversationProject.ts, conversationFailureText.ts).
     public static let failure = "Failure"
     public static let retry = "Retry"
@@ -213,6 +208,7 @@ extension Strings {
         case "image_series": "Image series"
         case "video": "Video"
         case "document": "Document"
+        case "gen_ui": "Gen UI"
         default: "Artifact"
         }
     }

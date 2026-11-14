@@ -9,6 +9,7 @@
     "ChatQuestions.swift": {"strings":8,"functions":2},
     "Composer.swift": {"strings":25,"functions":11},
     "DesktopMigration.swift": {"strings":13,"functions":0},
+    "GenUI.swift": {"strings":100,"functions":5},
     "Home.swift": {"strings":36,"functions":1},
     "LowPowerShimmer.swift": {"strings":2,"functions":0},
     "SecondaryStrings.swift": {"strings":116,"functions":8},

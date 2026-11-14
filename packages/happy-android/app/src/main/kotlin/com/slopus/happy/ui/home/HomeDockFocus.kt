@@ -75,6 +75,8 @@ import com.slopus.happy.model.resolveStartButton
 import com.slopus.happy.model.resolveStartProgress
 import com.slopus.happy.ui.components.Icon
 import com.slopus.happy.ui.components.Ionicon
+import com.slopus.happy.ui.components.StateArt
+import com.slopus.happy.ui.chat.NewWorkArtAbove
 import com.slopus.happy.ui.components.PickerSheetOption
 import com.slopus.happy.ui.components.PopupMotion
 import com.slopus.happy.ui.components.PickerSheetPanel
@@ -219,6 +221,8 @@ fun HomeDockFocus(state: HomeDockState, actions: HomeDockActions, modifier: Modi
                 .windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars)),
         ) {
             if (state.bot != null && standalone) {
+                // A bot stands under the robot, in the room over the header, always 128.
+                if (state.creatingBot) NewWorkArtAbove(StateArt.Ready, Modifier.weight(1f))
                 BotKindHeader(
                     state.creatingBot,
                     onChange = { bot -> if (starting) refuse() else actions.onBotKindChange(bot) },
@@ -260,28 +264,16 @@ fun HomeDockFocus(state: HomeDockState, actions: HomeDockActions, modifier: Modi
                     // The sheet is one surface, so its refusal is the whole sheet.
                     if (starting) Box(Modifier.matchParentSize().clickable(interactionSource = null, indication = null, onClick = refuse))
                 } else if (options != null) {
-                    Column {
-                        EnvironmentRows(
-                            options,
-                            progress.value,
-                            botOnly = state.creatingBot,
-                            // Only the standalone screen says so; the dock refuses at Send, as HomeDock.tsx does.
-                            offline = standalone && options.agentMachineOffline,
-                            onOpen = open,
-                            onHelp = { if (starting) refuse() else actions.onHarnessHelp() },
-                        )
-                        // A bot lives on a computer and nowhere else: the faces take the place of the other rows.
-                        val bot = state.bot
-                        if (bot != null && bot.creating) {
-                            BotFacePicker(
-                                bot,
-                                onPick = { if (starting) refuse() else actions.onBotFacePick(it) },
-                                onRoll = { if (starting) refuse() else actions.onBotFacesRoll() },
-                                onOpenUrl = actions.onOpenUrl,
-                                modifier = Modifier.graphicsLayer { alpha = reveal(progress.value, 0.18f + 0.09f, 0.18f + 0.09f + 0.28f) },
-                            )
-                        }
-                    }
+                    // A bot lives on a computer and nowhere else: it keeps only the machine row.
+                    EnvironmentRows(
+                        options,
+                        progress.value,
+                        botOnly = state.creatingBot,
+                        // Only the standalone screen says so; the dock refuses at Send, as HomeDock.tsx does.
+                        offline = standalone && options.agentMachineOffline,
+                        onOpen = open,
+                        onHelp = { if (starting) refuse() else actions.onHarnessHelp() },
+                    )
                 }
                 }
                 }

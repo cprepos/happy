@@ -75,11 +75,15 @@ public enum CloudAccountError: Error, Equatable, Sendable {
     /// A test account's password tried too often; it opens again after
     /// `retryAfter` seconds.
     case locked(retryAfter: TimeInterval?)
+    /// Email codes asked for or tried too often (`429 rate_limited`); ask
+    /// again after `retryAfter` seconds.
+    case rateLimited(retryAfter: TimeInterval?, message: String?)
     case invalidResponse
 }
 
 /// The Happy Cloud account: a one-hour pass from the accounts service
-/// (Sign in with Apple, or the authorization code flow in the browser),
+/// (Sign in with Apple, a code sent by email, or the authorization code
+/// flow in the browser),
 /// good for the picker's calls and for minting a token per server. It has
 /// no refresh token and is never stored: held in memory with its expiry,
 /// and once it ends, or any accounts call answers 401, the person signs in
@@ -161,15 +165,51 @@ public actor CloudAccount {
         let response = try await http.send(HTTPRequest(method: "POST", url: URL(string: HappyCloud.accounts + "/v1/auth/password")!,
                                                        headers: ["Accept": "application/json", "Content-Type": "application/json"],
                                                        body: try JSONEncoder().encode(["login": login, "password": password])))
-        if response.status == 429 {
-            struct Locked: Decodable { let retryAfter: TimeInterval? }
-            let retryAfter = (try? JSONDecoder().decode(Locked.self, from: response.body))?.retryAfter
-                ?? response.headers.first { $0.key.lowercased() == "retry-after" }.flatMap { TimeInterval($0.value) }
-            throw CloudAccountError.locked(retryAfter: retryAfter)
-        }
+        if response.status == 429 { throw CloudAccountError.locked(retryAfter: retryAfter(response)) }
         guard (200..<300).contains(response.status) else { throw refusal(response, endsPass: false) }
         let (access, _) = try OAuthTokenClient(http: http, now: now).accept(response.body, previous: grant, typed: false)
         return CloudAccount(access: access, http: http, now: now)
+    }
+
+    /// Sends a one-time sign-in code to `email` (`POST /v1/auth/email/start`,
+    /// answered `202`). The first half of signing in by email; no browser.
+    public static func startEmailSignIn(email: String, http: any HTTPTransport = NoRedirectURLSessionTransport()) async throws {
+        let response = try await http.send(HTTPRequest(method: "POST", url: URL(string: HappyCloud.accounts + "/v1/auth/email/start")!,
+                                                       headers: ["Accept": "application/json", "Content-Type": "application/json"],
+                                                       body: try JSONEncoder().encode(["email": email])))
+        try checkEmailAnswer(response)
+    }
+
+    /// Signs in with the code `startEmailSignIn` sent to `email`
+    /// (`POST /v1/auth/email/verify`): the same pass as Apple's.
+    public static func signIn(email: String, code: String,
+                              http: any HTTPTransport = NoRedirectURLSessionTransport(), now: @escaping @Sendable () -> Date = Date.init) async throws -> CloudAccount {
+        let response = try await http.send(HTTPRequest(method: "POST", url: URL(string: HappyCloud.accounts + "/v1/auth/email/verify")!,
+                                                       headers: ["Accept": "application/json", "Content-Type": "application/json"],
+                                                       body: try JSONEncoder().encode(["email": email, "code": code])))
+        try checkEmailAnswer(response)
+        let (access, _) = try OAuthTokenClient(http: http, now: now).accept(response.body, previous: grant, typed: false)
+        return CloudAccount(access: access, http: http, now: now)
+    }
+
+    /// A refused email step: `429 rate_limited` with when to ask again,
+    /// else `{ code, error }` (`invalid_email`, `invalid_code`,
+    /// `unsupported_provider`, `unavailable`).
+    private static func checkEmailAnswer(_ response: HTTPResponse) throws {
+        if response.status == 429 {
+            struct Failure: Decodable { let error: String? }
+            let message = (try? JSONDecoder().decode(Failure.self, from: response.body))?.error
+            throw CloudAccountError.rateLimited(retryAfter: retryAfter(response), message: message)
+        }
+        guard (200..<300).contains(response.status) else { throw refusal(response, endsPass: false) }
+    }
+
+    /// A 429's wait in seconds: the body's `retryAfter`, else the
+    /// `Retry-After` header's.
+    private static func retryAfter(_ response: HTTPResponse) -> TimeInterval? {
+        struct Wait: Decodable { let retryAfter: TimeInterval? }
+        return (try? JSONDecoder().decode(Wait.self, from: response.body))?.retryAfter
+            ?? response.headers.first { $0.key.lowercased() == "retry-after" }.flatMap { TimeInterval($0.value.trimmingCharacters(in: .whitespaces)) }
     }
 
     #if DEBUG
@@ -206,9 +246,37 @@ public actor CloudAccount {
         return try await call("POST", "/v1/servers", body: ["name": name], as: Response.self).server
     }
 
-    public func join(_ name: String, code: String) async throws -> CloudServer {
+    /// What `invite` offers, before it is taken.
+    public func preview(_ invite: CloudInvite) async throws -> CloudInvitePreview {
+        try await inviteCall("/v1/invites/preview", invite, as: CloudInvitePreview.self)
+    }
+
+    /// Takes `invite`: the account joins its server, which it returns.
+    public func accept(_ invite: CloudInvite) async throws -> CloudServer {
         struct Response: Decodable { let server: CloudServer }
-        return try await call("POST", "/v1/servers/join", body: ["name": name, "code": code], as: Response.self).server
+        return try await inviteCall("/v1/invites/accept", invite, as: Response.self).server
+    }
+
+    private func inviteCall<T: Decodable>(_ path: String, _ invite: CloudInvite, as: T.Type) async throws -> T {
+        let body = try JSONEncoder().encode(["token": invite.token])
+        let response = try await send("POST", url: URL(string: HappyCloud.accounts + path)!, body: body, refuse: Self.inviteRefusal)
+        guard let value = try? JSONDecoder().decode(T.self, from: response.body) else { throw CloudAccountError.invalidResponse }
+        return value
+    }
+
+    /// An invite refused, as a `CloudInviteError` when its `code` is one.
+    private static func inviteRefusal(_ response: HTTPResponse) -> any Error {
+        struct Failure: Decodable { let code: String?; let emailHint: String? }
+        let failure = try? JSONDecoder().decode(Failure.self, from: response.body)
+        switch response.status == 401 ? nil : failure?.code {
+        case "invalid": return CloudInviteError.invalid
+        case "expired": return CloudInviteError.expired
+        case "revoked": return CloudInviteError.revoked
+        case "exhausted": return CloudInviteError.exhausted
+        case "accepted": return CloudInviteError.accepted
+        case "email_mismatch": return CloudInviteError.emailMismatch(hint: failure?.emailHint)
+        default: return refusal(response)
+        }
     }
 
     /// A server image's bytes. Only from the accounts origin: the account
@@ -250,12 +318,13 @@ public actor CloudAccount {
 
     /// One request under the account's pass. An expired pass or a 401
     /// ends the account: there is nothing to refresh it with.
-    private func send(_ method: String, url: URL, body: Data? = nil, accept: String = "application/json") async throws -> HTTPResponse {
+    private func send(_ method: String, url: URL, body: Data? = nil, accept: String = "application/json",
+                      refuse: (HTTPResponse) -> any Error = { refusal($0) }) async throws -> HTTPResponse {
         guard isLive(at: now()) else { throw CloudAccountError.signInRequired }
         var headers = ["Accept": accept, "Authorization": "Bearer \(token)"]
         if body != nil { headers["Content-Type"] = "application/json" }
         let response = try await http.send(HTTPRequest(method: method, url: url, headers: headers, body: body))
-        guard (200..<300).contains(response.status) else { throw Self.refusal(response) }
+        guard (200..<300).contains(response.status) else { throw refuse(response) }
         return response
     }
 

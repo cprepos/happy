@@ -2,6 +2,12 @@ import Foundation
 import HappyWire
 import Tailcat
 
+/// A candidate in a foreground race owns only its TCP flow. A failure
+/// there must not replace the tunnel under a different, winning flow.
+enum EventStreamPolicy {
+    @TaskLocal static var resetsTunnel: Bool = true
+}
+
 extension TailcatHTTPTransport {
     static func safe(path: String, credential: String, headers: [String: String]) -> Bool {
         path.hasPrefix("/") && !path.contains("\r") && !path.contains("\n") && !path.contains(" ")
@@ -38,55 +44,76 @@ extension TailcatHTTPTransport {
         case .left(let error):
             opening.cancel()
             // One that opens anyway has nobody to read it.
-            Task { if let late = try? await opening.value { await late.stream.close() } }
-            if !(error is CancellationError) { await reset(.realtime) }
+            Task { if let late = try? await opening.value { await late.stream.abort() } }
+            if EventStreamPolicy.resetsTunnel, !(error is CancellationError) { await reset(.realtime) }
             throw error
         }
-        let stream = opened.stream, rest = opened.rest
+        let stream = opened.stream, rest = opened.rest, lease = opened.lease
         let chunked = opened.head.headers["transfer-encoding"]?.lowercased() == "chunked"
+        let coding: String?
+        do { coding = try ContentCoding.coding(opened.head.headers) } catch {
+            await stream.abort()
+            throw error
+        }
         let body = AsyncThrowingStream<Data, Error> { continuation in
+            // Silent past its heartbeat: its client is checked.
+            let silence = lease?.watch(quiet: carrierHeardWithin, repeating: true)
             let reader = Task {
+                defer { silence?.cancel() }
                 var decoder = HTTP1BodyDecoder(chunked: chunked)
+                var ended = false
                 do {
+                    let content = try coding.map(ContentDecoder.init)
                     var bytes = rest
                     while true {
-                        let decoded = try decoder.append(bytes)
+                        var decoded = try decoder.append(bytes)
+                        if let content { decoded = try content.append(decoded, limit: ContentCoding.limit) }
                         if !decoded.isEmpty { continuation.yield(decoded) }
                         if decoder.finished { break }
                         try Task.checkCancellation()
                         bytes = try await stream.read(maximumBytes: 65536)
                         if bytes.isEmpty { break }
                     }
+                    ended = true
                     continuation.finish()
                 } catch { continuation.finish(throwing: error) }
-                await stream.close()
+                // Let go of before its end: the computer stops sending.
+                if ended { await stream.close() } else { await stream.abort() }
             }
-            continuation.onTermination = { _ in reader.cancel(); Task { await stream.close() } }
+            continuation.onTermination = { termination in
+                reader.cancel()
+                if case .cancelled = termination { Task { await stream.abort() } }
+            }
         }
         return HTTP1Stream(status: opened.head.status, headers: opened.head.headers, body: body)
     }
 
     /// A stream past its response head: the head, the body bytes that came
-    /// with it, and the flow the rest of the body comes on.
+    /// with it, the flow the rest of the body comes on, and its lease.
     struct OpenedStream: Sendable {
         let head: HTTP1Head
         let rest: Data
         let stream: any BrowserStream
+        let lease: TailcatClients<Tunnel>.Lease?
     }
 
     /// Leases, opens the flow, writes the request and reads the head.
-    /// Cancelling it closes the flow, so a read waiting on it ends.
+    /// Cancelling it aborts the flow, so a read waiting on it ends.
     private func openStream(path: String, credential: String, headers: [String: String], until deadline: ContinuousClock.Instant) async throws -> OpenedStream {
         let lease = try await lease(.realtime, until: deadline)
+        let watch = lease?.watch()
+        defer { watch?.cancel() }
         let stream: any BrowserStream
         do { stream = try await flow(lease, .realtime) } catch {
             lease?.release()
-            if Self.lostTunnel(error) { await reset(lease) }
+            if EventStreamPolicy.resetsTunnel, !Task.isCancelled, Self.lostTunnel(error) { await reset(lease) }
             throw error
         }
         do {
             return try await withTaskCancellationHandler {
                 var head = "GET \(path) HTTP/1.1\r\nHost: \(authority)\r\nAuthorization: Bearer \(credential)\r\nConnection: close\r\nAccept: text/event-stream\r\n"
+                // A daemon that compresses the stream flushes it after every event.
+                if !headers.keys.contains(where: { $0.lowercased() == "accept-encoding" }) { head += "Accept-Encoding: \(ContentCoding.accepted)\r\n" }
                 for (name, value) in headers { head += "\(name): \(value)\r\n" }
                 try await stream.write(Data((head + "\r\n").utf8))
                 var buffer = Data()
@@ -95,16 +122,16 @@ extension TailcatHTTPTransport {
                     let bytes = try await stream.read(maximumBytes: 65536)
                     buffer.append(bytes)
                     if let parsed = try HTTP1Head.parse(buffer) {
-                        return OpenedStream(head: parsed.0, rest: parsed.1, stream: stream)
+                        return OpenedStream(head: parsed.0, rest: parsed.1, stream: stream, lease: lease)
                     }
                     if bytes.isEmpty { throw PairingError.unavailable }
                 }
-            } onCancel: { Task { await stream.close() } }
+            } onCancel: { Task { await stream.abort() } }
         } catch {
-            await stream.close()
+            await stream.abort()
             // No answer on a stream the tunnel opened: the far side may
             // have restarted and forgotten it.
-            if Self.lostTunnel(error) { await reset(lease) }
+            if EventStreamPolicy.resetsTunnel, !Task.isCancelled, Self.lostTunnel(error) { await reset(lease) }
             throw error
         }
     }

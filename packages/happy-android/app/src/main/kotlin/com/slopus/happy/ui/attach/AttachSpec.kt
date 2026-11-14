@@ -9,9 +9,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.slopus.happy.ui.theme.DarkColors
+import com.slopus.happy.ui.theme.LightColors
 import kotlin.math.PI
 import kotlin.math.cos
-import kotlin.math.max
 import kotlin.math.min
 
 /**
@@ -68,11 +69,14 @@ object AttachSpec {
     val badgePadding = 5.dp
     val badgeText = 12.sp
 
-    /** `CheckBox2` of 24 in a 26 box, 5 from the cell's top and end; its touch is the 42 corner. */
+    /**
+     * `CheckBox2` of 24 in a 26 box, 5 from the cell's top and end. Telegram's touch is the
+     * 42 corner (`checkFrame`); ours is the 48 corner, Android's least target, Telegram's within it.
+     */
     val check = 24.dp
     val checkBox = 26.dp
     val checkInset = 5.dp
-    val checkTouch = 42.dp
+    val checkTouch = 48.dp
     val checkFill = 11.5.dp
     val checkRing = 10.5.dp
     val checkRingShade = 11.dp
@@ -110,26 +114,27 @@ object AttachSpec {
     /** With a few tabs Telegram narrows the bar to 80 a tab and 36 more, centred (its poll rule). */
     fun tabBarWidth(tabs: Int, available: Dp): Dp = min(available.value, (tabs * 80 + 36).toFloat()).dp
 
-    // The caption bar
+    // The caption bar: drawn as the chat's composer (ConversationComposerSpec)
     val captionShift = 36.dp
-    val captionField = 44.dp
-    val captionCorner = 22.dp
-    val captionInset = 7.dp
-    val captionPadding = 5.dp
-    val captionBar = captionField + captionPadding * 2
-    val sendWidth = 52.dp
-    val sendHeight = 38.dp
-    val sendEnd = 11.dp
+    /** The caption grows to this many lines, then scrolls inside the field. */
+    const val CAPTION_LINES = 5
     const val SEND_FROM = 0.2f
 
-    /** The counter on the send pill: at least 18, 9 more than its text; a 2 ring of the sheet round it. */
-    val counterMin = 18.dp
-    val counterRing = 2.dp
-    val counterText = 12.sp
-    /** The counter's centre, this far left of the pill's right edge. */
-    val counterCentre = 50.dp
-
-    fun counterWidth(text: Dp): Dp = max(counterMin.value, 9 + text.value).dp
+    /**
+     * The confirm pill at the header's far end (iOS `SelectedButtonNode`'s shape): 38 tall,
+     * [confirmEnd] from the sheet's edge, its middle on the "N selected" line; a 22 check 8 in,
+     * the count 4 after it and 12 from the end, never narrower than 52.
+     */
+    val confirmHeight = 38.dp
+    val confirmMinWidth = 52.dp
+    val confirmEnd = 12.dp
+    val confirmTop = 6.dp
+    val confirmIcon = 22.dp
+    val confirmStart = 8.dp
+    val confirmSpacing = 4.dp
+    val confirmTrailing = 12.dp
+    val confirmText = 16.sp
+    const val CONFIRM_FROM = 0.2f
 
     // The File tab
     val fileRow = 64.dp
@@ -144,11 +149,16 @@ object AttachSpec {
     val switchShift = 78.dp
 }
 
-/** Telegram's attachment colours: its brand blue where it uses it, our theme elsewhere. */
+/**
+ * The sheet's colours from our theme. Where Telegram puts its blue (the
+ * checks, the confirm pill, the selected tab) we use the chat composer's
+ * send button: the text colour filled, the surface's glyph on it.
+ */
 @Immutable
 data class AttachColors(
-    /** `chat_attachCheckBoxBackground`, the send pill and the counter. */
+    /** `chat_attachCheckBoxBackground` and the confirm pill: the composer's send fill. */
     val accent: Color,
+    /** The check's number and the pill's glyph: the composer's send glyph. */
     val onAccent: Color,
     /** `glass_tabUnselected`. */
     val tab: Color,
@@ -164,28 +174,16 @@ data class AttachColors(
     val badge: Color,
 ) {
     companion object {
-        private val blue = Color(0xFF229AF0)
-
-        fun of(dark: Boolean) = if (dark) {
-            AttachColors(
-                accent = blue,
-                onAccent = Color.White,
-                tab = Color.White,
-                tabSelected = Color(0xFF1A91E6),
-                tabSelectedText = Color(0xFF3FA6F2),
-                grabber = Color(0x25FFFFFF),
-                cell = Color(0x0CFFFFFF),
-                badge = Color(0x66000000),
-            )
-        } else {
-            AttachColors(
-                accent = blue,
-                onAccent = Color.White,
-                tab = Color(0xFF1A1D21),
-                tabSelected = Color(0xFF1A91E6),
-                tabSelectedText = Color(0xFF0D7FCF),
-                grabber = Color(0xFFE1E4E8),
-                cell = Color(0x0C000000),
+        fun of(dark: Boolean): AttachColors {
+            val theme = if (dark) DarkColors else LightColors
+            return AttachColors(
+                accent = theme.text,
+                onAccent = theme.surface,
+                tab = theme.textSecondary,
+                tabSelected = theme.text,
+                tabSelectedText = theme.text,
+                grabber = if (dark) Color(0x25FFFFFF) else Color(0xFFE1E4E8),
+                cell = if (dark) Color(0x0CFFFFFF) else Color(0x0C000000),
                 badge = Color(0x66000000),
             )
         }

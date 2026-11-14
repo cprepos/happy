@@ -16,6 +16,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         LegacyFonts.registerBundledFonts()
+        HappyCloud.keepStandIns()
         PushNotifications.shared.install()
         Analytics.shared.reportCrashes()
         // The store's transactions are listened for from the first moment: renewals, approvals, refunds.
@@ -64,7 +65,14 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         let coordinator = AppCoordinator(window: window, context: CompositionRoot.makeContext())
         self.window = window
         self.coordinator = coordinator
+        // Each computer that takes it is told this phone's time zone and language.
+        let installation = PushNotifications.installationID
+        let kind: UserEnvironment.DeviceKind = UIDevice.current.userInterfaceIdiom == .pad ? .tablet : .phone
+        coordinator.context.account.agentConnections.environment = UserEnvironmentSource(
+            deviceId: { (try? installation.read())?.lowercased() }, current: { .current(kind: kind) })
         coordinator.start()
+        // New work's pictures, read now off the main thread, are on screen in its first frame.
+        StateSceneView.preload([.magicWand, .robot])
         #if DEBUG || HAPPY_FIXTURES
         GymFrameMeter.installIfAsked(in: window)
         ScreenFilm.startIfAsked()
@@ -92,7 +100,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     private func open(_ activity: NSUserActivity) {
         guard activity.activityType == NSUserActivityTypeBrowsingWeb, let url = activity.webpageURL,
-              GuestInvitation(url: url) != nil else { return }
+              GuestInvitation(url: url) != nil || CloudInvite(url: url) != nil else { return }
         open(url)
     }
 

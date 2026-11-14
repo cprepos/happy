@@ -10,7 +10,9 @@ import UIKit
 /// and down to go. Its Gallery tab is the library newest first under a
 /// glass header, the camera live and two cells tall at the top left,
 /// picked in order with numbered circles; the glass tab bar at its foot
-/// turns into the caption with send while anything is picked. Its File
+/// turns into the caption with send while anything is picked, and the
+/// picked count at the top right takes them to the composer instead, to
+/// send from there. Its File
 /// tab offers Files and the system's photo picker.
 ///
 /// The gestures are Telegram's, number for number (`AttachSheetPan`,
@@ -38,6 +40,9 @@ final class AttachSheetViewController: UIViewController, UICollectionViewDelegat
         /// Picked in the grid, by the library's ids, in order, sent now
         /// with the caption.
         case send([String], caption: String)
+        /// The same, to wait in the composer with the caption as its text,
+        /// nothing sent.
+        case stage([String], caption: String)
     }
 
     enum Tab: Int {
@@ -56,7 +61,9 @@ final class AttachSheetViewController: UIViewController, UICollectionViewDelegat
     /// (Telegram's glass style); without it the sheet slides.
     var button: (() -> UIView?)?
 
+    /// The library as the menu shows it: edited pictures, its camera's shots.
     let library: AttachLibrary
+    let edits: AttachEditingLibrary
     private let limit: Int
     private let hasCamera: Bool
     private(set) var page: Tab = .gallery
@@ -105,15 +112,13 @@ final class AttachSheetViewController: UIViewController, UICollectionViewDelegat
         effect.isInteractive = true
         return effect
     }
-    private static func countEffect() -> UIGlassEffect {
-        let effect = UIGlassEffect(style: .regular)
-        effect.tintColor = UIColor(Palette.attachMenuAccent)
-        return effect
-    }
     private let closeGlass = UIVisualEffectView(effect: AttachSheetViewController.closeEffect())
     private let closeButton = UIButton(type: .custom)
-    private let countGlass = UIVisualEffectView(effect: AttachSheetViewController.countEffect())
-    private let countIcon = UIImageView(image: UIImage(systemName: "checkmark", withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .bold)))
+    /// Close's twin at the other side: its glass, its ink, its weight.
+    private let countGlass = UIVisualEffectView(effect: AttachSheetViewController.closeEffect())
+    /// The count's touch: the picks go to the composer.
+    private let countButton = UIButton(type: .custom)
+    private let countIcon = UIImageView(image: UIImage(systemName: "checkmark", withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold)))
     private let countLabel = UILabel()
     private let titleLabel = UILabel()
     private var titleDark = false
@@ -131,10 +136,13 @@ final class AttachSheetViewController: UIViewController, UICollectionViewDelegat
     private let pan = UIPanGestureRecognizer()
     let picking = AttachSelectionRecognizer()
     private weak var preview: AttachPreviewViewController?
+    private weak var camera: CameraViewController?
 
     init(limit: Int, caption: String = "", library: AttachLibrary = AttachMenuEnvironment.library(), camera: Bool = AttachMenuEnvironment.camera()) {
         self.limit = limit
-        self.library = library
+        let editing = AttachEditingLibrary(library)
+        self.edits = editing
+        self.library = editing
         hasCamera = camera
         access = library.access
         super.init(nibName: nil, bundle: nil)
@@ -231,8 +239,8 @@ final class AttachSheetViewController: UIViewController, UICollectionViewDelegat
         files.onPhotos = { [weak self] in self?.finish(.photos) }
 
         // Telegram's glass header: close at the top left, the picked count
-        // beside it, the title in the middle; the fade under them once
-        // the grid scrolls.
+        // at the top right, the title in the middle; the fade under them
+        // once the grid scrolls.
         edge.alpha = 0
         closeButton.setImage(UIImage(systemName: "xmark", withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold)), for: .normal)
         closeButton.tintColor = UIColor(Palette.attachMenuControl)
@@ -242,14 +250,17 @@ final class AttachSheetViewController: UIViewController, UICollectionViewDelegat
         closeGlass.cornerConfiguration = .capsule()
         closeGlass.contentView.addSubview(closeButton)
         countGlass.cornerConfiguration = .capsule()
-        countIcon.tintColor = UIColor(Palette.attachMenuOnAccent)
+        countIcon.tintColor = UIColor(Palette.attachMenuControl)
         countIcon.contentMode = .center
-        countLabel.font = .monospacedDigitSystemFont(ofSize: 17, weight: .medium)
-        countLabel.textColor = UIColor(Palette.attachMenuOnAccent)
+        countLabel.font = .monospacedDigitSystemFont(ofSize: 17, weight: .semibold)
+        countLabel.textColor = UIColor(Palette.attachMenuControl)
         countGlass.contentView.addSubview(countIcon)
         countGlass.contentView.addSubview(countLabel)
-        countGlass.isAccessibilityElement = true
-        countGlass.accessibilityIdentifier = "attach-count"
+        countButton.isAccessibilityElement = true
+        countButton.accessibilityIdentifier = "attach-count"
+        countButton.accessibilityHint = Strings.AttachMenu.confirmHint
+        countButton.addAction(UIAction { [weak self] _ in self?.stagePicked() }, for: .touchUpInside)
+        countGlass.contentView.addSubview(countButton)
         countGlass.alpha = 0
         countGlass.transform = CGAffineTransform(scaleX: 0.01, y: 0.01)
         titleLabel.font = .monospacedDigitSystemFont(ofSize: 17, weight: .semibold)
@@ -271,6 +282,7 @@ final class AttachSheetViewController: UIViewController, UICollectionViewDelegat
         panel.onCaption = { [weak self] text in self?.onCaption?(text) }
         panel.onFocus = { [weak self] focused in self?.captionFocused(focused) }
         panel.onResize = { [weak self] in self?.view.setNeedsLayout() }
+        edits.onEdited = { [weak self] id in self?.edited(id) }
         host.addSubview(panel)
 
         pan.addTarget(self, action: #selector(panned(_:)))
@@ -480,7 +492,7 @@ final class AttachSheetViewController: UIViewController, UICollectionViewDelegat
             noteText.setLayoutFrame(layout.noteText ?? .zero)
             noteButton.setLayoutFrame(layout.noteButton ?? .zero)
         }
-        let inset = UIEdgeInsets(top: layout.topInset, left: 0, bottom: layout.bottomInset, right: 0)
+        let inset = UIEdgeInsets(top: layout.topInset, left: 0, bottom: gridBottomInset(layout), right: 0)
         if grid.contentInset != inset {
             let atTop = grid.contentOffset.y <= -grid.adjustedContentInset.top + AttachSheetPan.topSlop
             grid.contentInset = inset
@@ -494,6 +506,15 @@ final class AttachSheetViewController: UIViewController, UICollectionViewDelegat
         feed.scrolled()
     }
 
+    /// Room under the grid's last row: the bar's, or what the caption and
+    /// the keyboard cover once they stand higher, so every picture can be
+    /// scrolled clear of them.
+    private func gridBottomInset(_ layout: AttachMenuContentLayout) -> CGFloat {
+        guard panel.picking, gallery.bounds.height > 0 else { return layout.bottomInset }
+        let caption = gallery.convert(panel.frame, from: host)
+        return max(layout.bottomInset, gallery.bounds.height - caption.minY + AttachMenuMetrics.captionFocusedBottom)
+    }
+
     private func layoutHeader() {
         guard let sheet else { return }
         let unbounded = CGSize(width: CGFloat.greatestFiniteMagnitude, height: 44)
@@ -504,6 +525,7 @@ final class AttachSheetViewController: UIViewController, UICollectionViewDelegat
         countGlass.center = CGPoint(x: header.count.midX, y: header.count.midY)
         countIcon.frame = header.countIcon
         countLabel.frame = header.countLabel
+        countButton.frame = countGlass.bounds
         titleLabel.setLayoutFrame(header.title)
         edge.frame = header.edge
     }
@@ -524,18 +546,20 @@ final class AttachSheetViewController: UIViewController, UICollectionViewDelegat
         }
     }
 
-    /// The picked count beside close (`SelectedButtonNode`): it grows from
+    /// The picked count at the top right (`SelectedButtonNode`): it grows from
     /// nothing with the first pick and shrinks away with the last; the
     /// panel turns into the caption with it.
     private func updateCount(animated: Bool) {
         let count = picked.count
         if count > 0 {
             countLabel.text = "\(count)"
-            countGlass.accessibilityLabel = Strings.AttachMenu.picked(count)
+            countButton.accessibilityLabel = Strings.AttachMenu.picked(count)
         }
         layoutHeader()
         panel.setPicking(count > 0, animated: animated && shown)
         let visible = count > 0
+        // Gone at once with the last pick, while the glass shrinks away.
+        countButton.isHidden = !visible
         let apply = {
             self.countGlass.alpha = visible ? 1 : 0
             self.countGlass.transform = visible ? .identity : CGAffineTransform(scaleX: 0.01, y: 0.01)
@@ -674,8 +698,9 @@ final class AttachSheetViewController: UIViewController, UICollectionViewDelegat
     }
 
     /// The full camera over the menu, grown out of the tile and taking its
-    /// running camera; closed, it goes back into the tile. A photo leaves
-    /// with the menu, as Telegram's camera sends from itself.
+    /// running camera; closed, it goes back into the tile. Each shot lands
+    /// at the grid's start, picked; the first opens in the preview with
+    /// the caption and send, and back from there the camera shoots on.
     private func openCamera() {
         guard limit > 0 else { return finish(.camera) }
         guard presentedViewController == nil, !closing else { return }
@@ -685,20 +710,96 @@ final class AttachSheetViewController: UIViewController, UICollectionViewDelegat
             guard let self, fromTile, cameraTile.window != nil else { return nil }
             return cameraTile.convert(cameraTile.bounds, to: nil)
         }
-        camera.onWillUse = { [weak self] in self?.view.alpha = 0 }
-        camera.onFinish = { [weak self, weak camera] photo in
-            guard let self else { return }
-            guard let photo else {
-                cameraTile.takeBack()
-                camera?.dismiss(animated: false)
-                return
-            }
-            closing = true
-            hiddenButton?.alpha = 1
-            let onAction = onAction
-            (presentingViewController ?? self).dismiss(animated: false) { onAction?(.photo(photo)) }
+        camera.onShot = { [weak self, weak camera] photo in
+            guard let camera else { return }
+            self?.shot(photo, from: camera)
         }
+        camera.onOpenShot = { [weak self] index in self?.openShots(at: index) }
+        camera.onFinish = { [weak self, weak camera] _ in
+            guard let self, let camera else { return }
+            // Dismiss from below the camera, taking its result gallery and
+            // any editor with it. Dismissing on the camera targets its child.
+            camera.presentingViewController?.dismiss(animated: false) { [weak self] in
+                self?.cameraTile.takeBack()
+                if self?.camera === camera { self?.camera = nil }
+            }
+        }
+        self.camera = camera
         present(camera, animated: false)
+    }
+
+    /// A shot in: picked, and the first one opened.
+    private func shot(_ photo: CameraPhoto, from source: CameraViewController) {
+        edits.add(shot: photo) { [weak self, weak source] id in
+            guard let self, let id else { return }
+            setPicked(id, true)
+            showShots()
+            if let source, camera === source, source.canOpenShotPreview, edits.shotsTaken.count == 1 {
+                openShots(at: 0)
+            }
+        }
+    }
+
+    private func showShots() {
+        camera?.showShots(edits.shotsTaken.compactMap { edits.shotPicture($0) })
+    }
+
+    /// The camera's shots in the preview, over the camera (Telegram's
+    /// result gallery): back goes back to shooting.
+    private func openShots(at start: Int) {
+        guard let camera, camera.canOpenShotPreview, camera.presentedViewController == nil, !closing else { return }
+        let ids = edits.shotsTaken
+        guard ids.indices.contains(start) else { return }
+        let preview = AttachPreviewViewController(
+            count: ids.count, start: start,
+            item: { ids.indices.contains($0) ? AttachLibraryItem(id: ids[$0], duration: nil) : nil },
+            image: { [weak self] index, _, deliver in
+                if ids.indices.contains(index), let picture = self?.edits.shotPicture(ids[index]) { deliver(picture) }
+                return nil
+            },
+            cancel: { _ in },
+            selectionNumber: { [weak self] id in self?.number(id) },
+            toggle: { [weak self] id in self?.toggle(id) ?? false },
+            sourceView: { [weak camera] index in camera?.shotView(index) },
+            composer: previewComposer()
+        )
+        self.preview = preview
+        camera.present(preview, animated: true)
+    }
+
+    /// The preview's foot speaking for the menu: its caption, its send,
+    /// its picks.
+    private func previewComposer() -> AttachPreviewComposer {
+        AttachPreviewComposer(
+            library: edits,
+            caption: { [weak self] in self?.panel.caption ?? "" },
+            setCaption: { [weak self] text in
+                self?.panel.caption = text
+                self?.onCaption?(text)
+            },
+            send: { [weak self] id in self?.sendFromPreview(id) },
+            edited: { [weak self] id in self?.setPicked(id, true) }
+        )
+    }
+
+    /// Send in the preview: the picks, or the picture in view with none;
+    /// what is over the menu goes at once, then the menu as it does.
+    private func sendFromPreview(_ id: String) {
+        guard !closing else { return }
+        if picked.isEmpty, !setPicked(id, true) { return }
+        let fromCamera = camera != nil
+        dismiss(animated: false) { [weak self] in
+            guard let self else { return }
+            if fromCamera { cameraTile.takeBack() }
+            sendPicked()
+        }
+    }
+
+    /// An edit came or went: the picture shows anew wherever it is.
+    private func edited(_ id: String) {
+        feed.redraw(id)
+        preview?.reload(id)
+        if id.hasPrefix("shot:") { showShots() }
     }
 
     /// Telegram's out: back into the "+" on glass, else down past the
@@ -715,8 +816,8 @@ final class AttachSheetViewController: UIViewController, UICollectionViewDelegat
         view.isUserInteractionEnabled = false
         let gone = { [weak self] in
             self?.hiddenButton?.alpha = 1
-            guard let self, presentingViewController != nil else { return completion() }
-            dismiss(animated: false, completion: completion)
+            guard let presenter = self?.presentingViewController else { return completion() }
+            presenter.dismiss(animated: false, completion: completion)
         }
         guard shown, let sheet else { return gone() }
         if sheet.style == .card {
@@ -836,7 +937,7 @@ final class AttachSheetViewController: UIViewController, UICollectionViewDelegat
     private func setContent(shown: Bool) {
         pageFade.alpha = shown ? 1 : 0
         titleLabel.alpha = shown ? 1 : 0
-        for (glass, effect) in [(closeGlass, Self.closeEffect()), (countGlass, Self.countEffect())] {
+        for (glass, effect) in [(closeGlass, Self.closeEffect()), (countGlass, Self.closeEffect())] {
             glass.effect = shown ? effect : nil
             glass.contentView.alpha = shown ? 1 : 0
         }
@@ -1013,7 +1114,10 @@ final class AttachSheetViewController: UIViewController, UICollectionViewDelegat
         keyboard = overlap
         let duration = (info[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double) ?? 0.25
         let curve = (info[UIResponder.keyboardAnimationCurveUserInfoKey] as? Int).flatMap(UIView.AnimationCurve.init(rawValue:)) ?? .easeInOut
-        let animator = UIViewPropertyAnimator(duration: duration, curve: curve) { self.placePanel() }
+        let animator = UIViewPropertyAnimator(duration: duration, curve: curve) {
+            self.placePanel()
+            self.layoutBody()
+        }
         animator.isUserInteractionEnabled = true
         animator.startAnimation()
     }
@@ -1118,13 +1222,14 @@ final class AttachSheetViewController: UIViewController, UICollectionViewDelegat
 
     /// Telegram's preview over the grid, from the tapped picture.
     private func open(_ index: Int) {
-        guard preview == nil, !closing, presentedViewController == nil else { return }
+        guard preview?.presentingViewController == nil, !closing, presentedViewController == nil else { return }
         view.endEditing(true)
         let preview = AttachPreviewViewController(
             library: library, start: index,
             selectionNumber: { [weak self] id in self?.number(id) },
             toggle: { [weak self] id in self?.toggle(id) ?? false },
-            sourceView: { [weak self] index in self?.cell(index) }
+            sourceView: { [weak self] index in self?.cell(index) },
+            composer: previewComposer()
         )
         preview.onHide = { [weak self] id in self?.feed.hidden = id }
         preview.onFocus = { [weak self] index in self?.reveal(index) }
@@ -1150,6 +1255,13 @@ final class AttachSheetViewController: UIViewController, UICollectionViewDelegat
     private func sendPicked() {
         guard !picked.isEmpty else { return }
         finish(.send(picked, caption: panel.caption))
+    }
+
+    /// The count at the top right: the menu goes and the picks wait in
+    /// the composer, nothing sent yet.
+    private func stagePicked() {
+        guard !picked.isEmpty, !closing else { return }
+        finish(.stage(picked, caption: panel.caption))
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
@@ -1332,9 +1444,9 @@ final class AttachMenuPlaceholderView: UIScrollView {
         text.numberOfLines = 0
 
         primary.configuration?.cornerStyle = .capsule
-        primary.tintColor = UIColor(Palette.libraryCheckFill)
+        primary.tintColor = UIColor(Palette.attachMenuAccent)
         primary.configuration?.title = Strings.AttachMenu.choosePhotos
-        primary.configuration?.baseForegroundColor = UIColor(Palette.libraryCheckText)
+        primary.configuration?.baseForegroundColor = UIColor(Palette.attachMenuOnAccent)
         primary.configuration?.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
             var attributes = attributes
             attributes.font = Self.buttonFont
@@ -1350,7 +1462,7 @@ final class AttachMenuPlaceholderView: UIScrollView {
             button.titleLabel?.adjustsFontForContentSizeCategory = true
             button.titleLabel?.numberOfLines = 0
             button.titleLabel?.textAlignment = .center
-            button.tintColor = UIColor(Palette.libraryCheckFill)
+            button.tintColor = UIColor(Palette.attachMenuControl)
             button.accessibilityIdentifier = id
         }
         settings.addAction(UIAction { [weak self] _ in self?.onSettings?() }, for: .touchUpInside)
@@ -1441,13 +1553,13 @@ final class AttachMenuRow: UIControl {
     private let separator = UIView()
 
     init(icon: Icon, title text: String, id: String) {
-        self.icon = IconView(icon, size: AttachMenuFilesLayout.Metrics.icon, tint: Palette.libraryCheckFill)
+        self.icon = IconView(icon, size: AttachMenuFilesLayout.Metrics.icon, tint: Palette.attachMenuControl)
         super.init(frame: .zero)
         self.icon.isUserInteractionEnabled = false
         title.text = text
         title.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: .systemFont(ofSize: 17))
         title.adjustsFontForContentSizeCategory = true
-        title.textColor = UIColor(Palette.libraryCheckFill)
+        title.textColor = UIColor(Palette.attachMenuControl)
         title.numberOfLines = 0
         separator.backgroundColor = UIColor(Palette.divider)
         for view in [self.icon, title, separator] as [UIView] { addSubview(view) }

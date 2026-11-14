@@ -14,8 +14,9 @@ public enum SidebarRows {
     }
 
     /// `users`: the team members the tasks belong to, as last read, by ID.
-    /// `feed`: the Feed's row, nil for none.
-    public static func make(_ desktop: DesktopSnapshot, settings: [String: JSONValue], users: [String: TeamUser] = [:], feed: FeedRow? = nil) -> [Row] {
+    /// `feed`: the Feed's row, nil for none. `plugins`: a Happy Cloud
+    /// server's Plugins row under Artifacts.
+    public static func make(_ desktop: DesktopSnapshot, settings: [String: JSONValue], users: [String: TeamUser] = [:], feed: FeedRow? = nil, plugins: Bool = false) -> [Row] {
         var rows: [Row] = []
         var descendants = Set<String>()
         let tasksByID = Dictionary((desktop.tasks ?? []).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -47,7 +48,6 @@ public enum SidebarRows {
                 status: muted ? .none : status(agent), unread: !muted && agent.unread != nil,
                 isHappy: owner?.systemKey == "chief_of_staff", agentId: agent.id, workspaceId: agent.workspaceId, targetKind: kind)
             row.targetId = owner?.id
-            if kind == "task", let owner { row.detail = ownerName(owner, profile: desktop.profile, users: users) }
             // The Chief of Staff never, whatever an older server says.
             row.canArchive = owner?.systemKey != "chief_of_staff" && owner?.canArchive == true
             row.activityTime = agent.activityAt.map(Rows.minute)
@@ -56,6 +56,9 @@ public enum SidebarRows {
             for child in children { agentRow(child, depth: depth + 1, muted: muted) }
         }
         rows.append(Row(id: "direct:artifacts", nodeId: "direct:artifacts", kind: .space, label: "Artifacts", mark: .glyph("doc"), targetKind: "artifacts"))
+        if plugins {
+            rows.append(Row(id: "direct:plugins", nodeId: "direct:plugins", kind: .space, label: "Plugins", mark: .glyph("plugin"), targetKind: "plugins"))
+        }
         if let feed {
             // Bold while something is unread, with how many beside it.
             var row = Row(id: "direct:feed", nodeId: "direct:feed", kind: .space, label: "Activity", mark: .glyph("feed"), unread: feed.unread > 0, targetKind: "feed")
@@ -195,14 +198,6 @@ public enum SidebarRows {
         let photo = author == me ? profile?.photo : users[author]?.photo
         guard let photo else { return .placeholder(seed: author) }
         return .image(path: TeamUser.photoPath(author), thumbhash: photo.thumbhash)
-    }
-
-    /// A team task's line under its title: the teammate it belongs to, once
-    /// read. Nil for the person's own, outside a team, or before the name comes.
-    static func ownerName(_ task: DesktopSnapshot.Owner, profile: DesktopSnapshot.Profile?, users: [String: TeamUser]) -> String? {
-        guard let me = profile?.userId, let author = task.ownerUserId, author != me,
-              let name = users[author]?.name.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else { return nil }
-        return name
     }
 
     /// The active tasks the person isn't in, as rows that open their

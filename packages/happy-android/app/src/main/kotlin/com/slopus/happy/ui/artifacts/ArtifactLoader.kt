@@ -14,6 +14,8 @@ import com.slopus.happy.artifacts.ArtifactRef
 import com.slopus.happy.artifacts.ArtifactReference
 import com.slopus.happy.artifacts.ArtifactShow
 import com.slopus.happy.artifacts.ArtifactVersion
+import com.slopus.happy.genui.RenderDocument
+import com.slopus.happy.ui.genui.readGenUi
 import com.slopus.happy.browser.BrowserException
 import com.slopus.happy.browser.BrowserFetcher
 import com.slopus.happy.browser.BrowserPolicy
@@ -73,6 +75,18 @@ sealed interface ArtifactUi {
 
     /** A file Android's WebView doesn't draw (a PDF, an office file), opened in an app that reads it. */
     data class Openable(val file: ArtifactFile) : ArtifactUi
+
+    /**
+     * A `gen_ui` version's render document, the version's pictures it names
+     * by path, and its origin agent (the agent that made the version), to
+     * whom its `message` and `secret` actions go; null for a person's version.
+     */
+    data class GenUi(
+        val version: Int,
+        val document: RenderDocument,
+        val pictures: Map<String, ArtifactMediaItem>,
+        val origin: String? = null,
+    ) : ArtifactUi
 }
 
 /** Where a tapped link in a document leads (iOS's `ArtifactViewController.open(link:)`). */
@@ -153,7 +167,7 @@ class ArtifactLoader(
                 }
             }
         }
-        show(version, ArtifactShow.of(version, opened?.second))
+        show(version, ArtifactShow.of(version, opened?.second, ref.type))
     } catch (e: CancellationException) {
         throw e
     } catch (_: ArtifactGoneException) {
@@ -178,8 +192,12 @@ class ArtifactLoader(
                 )
             }
             is ArtifactShow.Openable -> ArtifactUi.Openable(show.file)
+            is ArtifactShow.GenUi -> genUi(version, show.render)
         }
     }
+
+    private suspend fun genUi(version: ArtifactVersion, render: ArtifactFile): ArtifactUi =
+        readGenUi(files, version, render, media(version)) { path -> labels(false, path.substringAfterLast('/')) }
 
     /**
      * A live artifact at the URL of the version shown, http or https,
@@ -294,5 +312,6 @@ class ArtifactLoader(
 
         /** The most of the version before that is read to diff against. */
         const val MAX_DIFF_BYTES = 2L * 1024 * 1024
+
     }
 }

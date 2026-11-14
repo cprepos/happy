@@ -48,12 +48,15 @@ let package = Package(
         // Native Home and chat's optional renderer. Pin the pre-1.0 API used by
         // NodeRow and the custom keyframe scroller.
         .package(url: "https://github.com/slopus/ultraview.git", revision: "f8ddf59370296aa764100049073eecdd67909ab5"),
-        .package(url: "https://github.com/slopus/tailcat-swift.git", revision: "62ffc1d7355d7b5d7adb93ceeff73498a1f287c4"),
+        .package(url: "https://github.com/slopus/tailcat-swift.git", revision: "7cad7755fe73dfb1dddf8cc82768617353fb9ec8"),
         // The state pictures (`StateSceneView`), desktop's Lottie scenes.
         // lottie-spm is Lottie's prebuilt xcframework, so it adds no source
         // build; scenes play on its Core Animation engine, off the main
         // thread's render loop.
         .package(url: "https://github.com/airbnb/lottie-spm.git", exact: "4.5.2"),
+        // Happy Cloud's Continue with Google: Google's own sign-in, whose ID
+        // token, bound to a nonce, the accounts service takes natively.
+        .package(url: "https://github.com/google/GoogleSignIn-iOS.git", exact: "10.1.0"),
     ],
     targets: [
         .target(name: "HappyGuest", dependencies: [cryptoBackend]),
@@ -73,6 +76,8 @@ let package = Package(
                 .product(name: "GRDB", package: "GRDB.swift"),
             ]
         ),
+        // zlib and Brotli for Linux; Apple's SDK has zlib and Compression.
+        .systemLibrary(name: "CDecoders", providers: [.apt(["zlib1g-dev", "libbrotli-dev"])]),
         .target(
             // The system zlib, for the live browser's VNC viewer (ZRLE):
             // a header that makes zlib's init macros callable from Swift.
@@ -85,6 +90,7 @@ let package = Package(
                 "HappyCrypto", "HappyWire", "HappyStore", "CZlib",
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "Tailcat", package: "tailcat-swift"),
+                .target(name: "CDecoders", condition: .when(platforms: [.linux])),
             ]
         ),
         .target(
@@ -112,6 +118,7 @@ let package = Package(
                 .product(name: "ElevenLabs", package: "elevenlabs-swift-sdk", condition: .when(platforms: [.iOS])),
                 .product(name: "UltraView", package: "ultraview", condition: .when(platforms: [.iOS])),
                 .product(name: "Lottie", package: "lottie-spm", condition: .when(platforms: [.iOS])),
+                .product(name: "GoogleSignIn", package: "GoogleSignIn-iOS", condition: .when(platforms: [.iOS])),
             ],
             // Fonts and images live with the code that draws them, so
             // `Bundle.module` resolves the same way under xtool and Xcode.

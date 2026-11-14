@@ -8,6 +8,12 @@ public final class AgentConnections {
     public internal(set) var accounts: [AgentConnection] = []
     public private(set) var activeID: String?
     public var onChange: (() -> Void)?
+    /// Said to a Happy Cloud server as the phone signs out of it, while
+    /// its session still works: the app takes this phone's push
+    /// registration off (`CloudPush.unregister`). The session's revocation
+    /// and the connection's teardown wait for it, `farewellLimit` at most.
+    public var cloudFarewell: (@Sendable (_ id: String, _ client: AgentClient) async -> Void)?
+    static let farewellLimit: Duration = .seconds(5)
     let storage: AgentConnectionStorage
     private var credentials: [String: AgentConnectionCredentials] = [:]
     private var endpoints: [String: AgentEndpoint] = [:]
@@ -33,9 +39,16 @@ public final class AgentConnections {
     /// in the foreground. Coming back to the foreground reads them at once,
     /// and an open account's own stream says whether its computer is there.
     var refreshInterval: Duration = .seconds(600)
-    /// How long coming back waits for an engine's tunnels to wake before
-    /// it starts the engine and the pairings' checks anyway (`resume`).
-    var wakeLimit: Duration = .seconds(5)
+    /// The platform's background execution lease. Without one an event
+    /// stream is closed immediately, never left retransmitting to a frozen app.
+    public var streamHold: SyncEngine.StreamHold = { _ in nil }
+    /// This device's environment, told to each computer that takes it when
+    /// its engine starts, back in the foreground, and when the time zone or
+    /// locale changes (`AgentClient.reportEnvironment`). Nil tells none.
+    public var environment: UserEnvironmentSource? {
+        didSet { if environment != nil { observeEnvironment() } }
+    }
+    private var environmentObservers: [NSObjectProtocol] = []
 
     public init(credentials: any AgentConnectionCredentialStore, directory: URL?, makeTransport: @escaping @Sendable (AgentConnectionCredentials) -> any AgentTransport = { AgentHTTPTransport(address: $0.address, port: $0.port, publicUrl: $0.publicUrl, tailcatAvailable: $0.tailcatAvailable != false) }) {
         storage = AgentConnectionStorage(credentials: credentials, directory: directory)
@@ -138,6 +151,9 @@ public final class AgentConnections {
     /// Whether `id` is a team server signed in to, rather than a pairing.
     public func isServer(_ id: String) -> Bool { credentials[id]?.signIn != nil }
 
+    /// The team user the server `id` was signed in as; nil for a pairing.
+    public func userId(for id: String) -> String? { credentials[id]?.signIn?.userId }
+
     /// The origin of the signed-in server `id`.
     public func server(for id: String) -> String? { credentials[id]?.signIn != nil ? credentials[id]?.publicUrl : nil }
 
@@ -165,9 +181,12 @@ public final class AgentConnections {
         if signedOut(id) { return nil }
         if let engine = engines[id] { return engine }
         guard let client = agentClient(for: id) else { return nil }
-        let engine = SyncEngine(client: client, directory: OfflineFile.directory(for: id))
+        let engine = SyncEngine(client: client, directory: OfflineFile.directory(for: id), cloud: HappyCloud.isCloud(server(for: id)), streamHold: streamHold)
         engines[id] = engine
-        if foreground && activeID == id { Task { await engine.start() } }
+        if foreground && activeID == id {
+            Task { await engine.start() }
+            reportEnvironment(to: engine.client)
+        }
         return engine
     }
     func credential(for id: String) -> AgentConnectionCredentials? { credentials[id] }
@@ -270,8 +289,9 @@ public final class AgentConnections {
     public func rename(_ id: String, to name: String) async throws {
         guard let credential = credentials[id] else { throw AccountSwitchError.unknownAccount }
         let body = try JSONSerialization.data(withJSONObject: ["node": ["name": name]])
-        let transport = transport(credential, for: id)
-        defer { Task { await transport.close() } }
+        let shared = await runningTransport(id)
+        let transport = shared ?? transport(credential, for: id)
+        defer { if shared == nil { Task { await transport.close() } } }
         // The transport names the body's type itself.
         let response = try await transport.request(method: "PATCH", path: "/v0/config", credential: credential.deviceToken, body: body, headers: [:])
         if response.status == 401 { throw PairingError.revoked }
@@ -291,6 +311,7 @@ public final class AgentConnections {
     }
 
     public func remove(_ id: String) async throws {
+        await farewell(id)?.value
         // Await teardown before deleting credentials. The loop can no longer
         // publish or save an old identity after removal completes.
         await stop(id)
@@ -310,10 +331,20 @@ public final class AgentConnections {
     }
 
     /// A removed cloud server's session is revoked at the accounts service,
-    /// not just forgotten here.
-    private func revokeIfCloud(_ removed: AgentConnectionCredentials?) {
+    /// not just forgotten here, once its farewell is said.
+    private func revokeIfCloud(_ removed: AgentConnectionCredentials?, after farewell: Task<Void, Never>? = nil) {
         guard let removed, HappyCloud.isCloud(removed.publicUrl), let grant = removed.signIn?.grant else { return }
-        Task.detached { await CloudAccount.revoke(grant) }
+        Task.detached {
+            await farewell?.value
+            await CloudAccount.revoke(grant)
+        }
+    }
+
+    /// `cloudFarewell` to a cloud server about to be removed, on a client
+    /// of its own while everything it needs is still in place.
+    private func farewell(_ id: String) -> Task<Void, Never>? {
+        guard let say = cloudFarewell, HappyCloud.isCloud(server(for: id)), !signedOut(id), let client = agentClient(for: id) else { return nil }
+        return Task { await waitAtMost(Self.farewellLimit) { await say(id, client) } }
     }
 
     /// What `forget` took away, for its owner to stop off screen.
@@ -328,12 +359,13 @@ public final class AgentConnections {
     /// awaited; `finishRemoval` stops what it ran and forgets what it kept.
     public func forget(_ id: String) -> Teardown? {
         guard accounts.contains(where: { $0.id == id }) else { return nil }
+        let farewell = farewell(id)
         let job = jobs.removeValue(forKey: id)
         job?.cancel()
         let engine = engines.removeValue(forKey: id)
-        revokeIfCloud(credentials.removeValue(forKey: id))
-        if let endpoint = endpoints.removeValue(forKey: id) { Task { await endpoint.retire() } }
-        if let authorization = authorizations.removeValue(forKey: id) { Task { await authorization.signInRequired() } }
+        revokeIfCloud(credentials.removeValue(forKey: id), after: farewell)
+        if let endpoint = endpoints.removeValue(forKey: id) { Task { await farewell?.value; await endpoint.retire() } }
+        if let authorization = authorizations.removeValue(forKey: id) { Task { await farewell?.value; await authorization.signInRequired() } }
         meters.removeValue(forKey: id)
         accounts.removeAll { $0.id == id }
         if activeID == id { activeID = nil }
@@ -382,6 +414,9 @@ public final class AgentConnections {
         if active { networkForegrounded() }
         if !active { suspended = Set(engines.keys) }
         let pending = jobs; jobs.removeAll()
+        // Acquire execution time before waiting for the identity checks to
+        // wind down: iOS may otherwise suspend us before the hold is armed.
+        if !active, let id = activeID, let engine = engines[id] { await engine.background() }
         pending.values.forEach { $0.cancel() }
         for job in pending.values { await job.value }
         guard foreground == active else { return }
@@ -393,7 +428,8 @@ public final class AgentConnections {
         if case let (id, engine)? = open { await resume(id, engine) }
         for (id, engine) in engines where id != open?.0 {
             guard foreground == active else { return }
-            await engine.pause()
+            if !active && id == activeID { await engine.background() }
+            else { await engine.pause() }
         }
         guard foreground == active else { return }
         if !active {
@@ -403,18 +439,51 @@ public final class AgentConnections {
     }
 
     /// Starts `id`'s engine. One kept through a suspension holds tunnels
-    /// that may have gone stale with nothing to say so; first they look for
-    /// every way to the computer again, as after a network change on
-    /// screen, before the stream asks them for anything. Waited for only
-    /// `wakeLimit`: a tunnel whose relay iOS reclaimed wakes only once a
-    /// new one is up, over a network that may still be coming back, and
-    /// until then neither the stream nor the pairings' checks started, so
-    /// home said "connecting…" for as long as the slowest wake took. The
-    /// wake goes on; what the stream sends meanwhile waits in Tailcat for
-    /// the rekey. The pairings' checks don't wait for it (`setForeground`).
+    /// that may have gone stale with nothing to say so: they look for every
+    /// way to the computer again, as after a network change on screen,
+    /// beside the engine's first reads rather than before them. Waiting for
+    /// the wake held the stream and the open chat's read back a round trip
+    /// or more, and for as long as the slowest relay took to come back
+    /// over a network still coming back; what is asked meanwhile waits in
+    /// Tailcat for the rekey, or fails and is asked again.
     private func resume(_ id: String, _ engine: SyncEngine) async {
-        if suspended.remove(id) != nil { await waitAtMost(wakeLimit) { await engine.client.resumed() } }
-        await engine.start()
+        if suspended.remove(id) != nil { let client = engine.client; Task { await client.resumed() } }
+        await engine.foreground()
+        reportEnvironment(to: engine.client)
+    }
+
+    /// Tells `client`'s computer this device's environment, if it changed
+    /// since it was last told. A failed report goes again at the next start.
+    private func reportEnvironment(to client: AgentClient) {
+        guard let source = environment else { return }
+        Task.detached(priority: .utility) {
+            guard let deviceId = source.deviceId() else { return }
+            try? await client.reportEnvironment(source.current(), deviceId: deviceId)
+        }
+    }
+
+    private func observeEnvironment() {
+        guard environmentObservers.isEmpty else { return }
+        environmentObservers = [Notification.Name.NSSystemTimeZoneDidChange, NSLocale.currentLocaleDidChangeNotification].map { name in
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.environmentChanged() }
+            }
+        }
+    }
+
+    /// The time zone or locale changed: each running computer is told now;
+    /// in the background, at the next start.
+    func environmentChanged() {
+        guard foreground else { return }
+        for engine in engines.values { reportEnvironment(to: engine.client) }
+    }
+
+    /// The transport of `id`'s engine while it runs: a request over it
+    /// opens no tunnel of its own. Nil for one paused or not there, whose
+    /// tunnels a request would open and leave idling on the radio.
+    private func runningTransport(_ id: String) async -> (any AgentTransport)? {
+        guard let engine = engines[id], await engine.running, engines[id] === engine else { return nil }
+        return engine.client.transport
     }
 
     func stop(_ id: String) async {
@@ -441,12 +510,14 @@ public final class AgentConnections {
                         current.status = attempt == 0 ? .connecting : .retrying
                         await self?.apply(current, generation: generation)
                         while !Task.isCancelled {
-                            // A transport per check, closed after it: its tunnels
-                            // don't idle on the radio until the next one.
-                            let transport = AgentEndpointTransport(endpoint: endpoint, metrics: meter, make: make)
+                            // Over the running engine's tunnels when there are
+                            // some; else a transport per check, closed after it:
+                            // its tunnels don't idle on the radio until the next one.
+                            let shared = await self?.runningTransport(account.id)
+                            let transport = shared ?? AgentEndpointTransport(endpoint: endpoint, metrics: meter, make: make)
                             do { current = try await AgentIdentity.refresh(current, transport: transport, token: credential.deviceToken, within: AgentIdentity.deadline) }
-                            catch { await transport.close(); throw error }
-                            await transport.close()
+                            catch { if shared == nil { await transport.close() }; throw error }
+                            if shared == nil { await transport.close() }
                             try Task.checkCancellation()
                             await self?.apply(current, generation: generation)
                             attempt = 0

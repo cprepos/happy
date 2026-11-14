@@ -21,7 +21,10 @@ extension Strings {
         /// has ended.
         static let expired = "Your Happy Cloud sign-in has ended. Sign in again."
 
-        /// The welcome's second way in, under Apple's own button.
+        /// The welcome's second way in, under Apple's own button, in the
+        /// words Google's branding guidelines give it.
+        static let google = "Continue with Google"
+        /// The third, under Google's.
         static let github = "Sign in with GitHub"
         /// A test account's sign-in.
         static let signInTitle = "Sign in"
@@ -32,13 +35,11 @@ extension Strings {
         static let joined = "Joined"
         static func joinServer(_ name: String) -> String { "Join \(name)" }
         static let bootstrapNew = "Bootstrap a new one"
-        static let joinWithInvite = "Join with an invite"
 
         static let createTitle = "Bootstrap a server"
         static let createMessage = "Name your team’s new server. You can change it later."
         static let createFirstMessage = "Your account has no servers yet. Name your team’s first one."
         static let createAction = "Bootstrap"
-        static let haveInvite = "Have an invite? Join a server"
         static let namePlaceholder = "acme"
         static let checking = "Checking…"
         static let invalidName = "3–32 lowercase letters, digits or dashes, not starting or ending with a dash."
@@ -53,11 +54,52 @@ extension Strings {
             }
         }
 
-        static let joinTitle = "Join with an invite"
-        static let joinMessage = "Enter the server’s name and the invite code you were sent."
-        static let joinAction = "Join server"
-        static let codePlaceholder = "Invite code"
-
         static let failedTitle = "Couldn’t connect"
+
+        /// An invite link opened in the app.
+        static let inviteTitle = "Join a server"
+        static let inviteBody = "You’ve been invited to a server on Happy Cloud."
+        /// An invite that can't be taken, and one for another email.
+        static let inviteUnavailable = "Invite unavailable"
+        static let inviteOtherEmail = "Use your invited email"
+        static func inviteRole(_ role: String) -> String { "You’ll join as \(role)." }
+        static func invitedBy(_ name: String) -> String { "\(name) invited you" }
+        static let inviteJoin = "Join"
+        static let inviteShowServers = "Show My Servers"
+        static let inviteOtherAccount = "Use Another Account"
+        static let inviteInvalid = "This invite link doesn’t work. Ask for a new one."
+        static let inviteExpired = "This invite has expired. Ask for a new link."
+        static let inviteRevoked = "This invite was withdrawn. Ask for a new link."
+        static let inviteExhausted = "This invite has been used up. Ask for a new link."
+        static let inviteAccepted = "This invite has already been accepted. If it was you, the server is in your list."
+        static func inviteEmailMismatch(_ hint: String?) -> String {
+            "This invite was sent to \(hint ?? "another email address.") Sign in with that email to join."
+        }
+        /// Every refusal, for the room its line keeps whatever it says.
+        static var inviteRefusals: [String] {
+            [inviteInvalid, inviteExpired, inviteRevoked, inviteExhausted, inviteAccepted, inviteEmailMismatch("m…@…")]
+        }
+        static func invite(_ error: CloudInviteError) -> String {
+            switch error {
+            case .invalid: inviteInvalid
+            case .expired: inviteExpired
+            case .revoked: inviteRevoked
+            case .exhausted: inviteExhausted
+            case .accepted: inviteAccepted
+            case .emailMismatch(let hint): inviteEmailMismatch(hint)
+            }
+        }
+
+        /// Create your profile, as agreed with desktop: a member's name and
+        /// picture before their first server opens.
+        static let profileTitle = "Create your profile"
+        static func profileMessage(_ handle: String) -> String { "This is how your team and agents see you on \(handle)." }
+        static let addPhoto = "Add photo"
+        static let changePhoto = "Change photo"
+        static let profileNamePlaceholder = "Your name"
+        /// Every way saving the name can fail; never the server's words.
+        static let nameFailed = "Couldn’t save your name. Check your connection and try again."
+        /// Said once the person has landed: the picture never holds them up.
+        static let photoFailed = "Your photo didn’t upload. You can add it later in Settings › Profile."
     }
 }

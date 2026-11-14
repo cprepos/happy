@@ -1,0 +1,119 @@
+import Foundation
+import HappyCore
+
+// A Happy Cloud server's onboarding: the screens its gates ask for.
+extension Strings {
+    enum CloudOnboarding {
+        static let notNow = "Not Now"
+        static let skip = "Skip for Now"
+        static let checkAgain = "Check Again"
+        static let couldntSkip = "Couldn’t skip this step. Try again."
+        static let couldntCheck = "Couldn’t reach the server. Try again."
+
+        static let photoTitle = "Add a photo"
+        static let photoBody = "Your team and agents see it next to your name."
+        static let choosePhoto = "Choose Photo"
+        static let photoFailed = "Your photo didn’t upload. Try again."
+
+        static let botTitle = "Name your admin bot"
+        static let botBody = "This is your server’s admin bot. It can change the server’s settings, connect tools and create other bots, so it can adapt Happy and build a system around how your team works."
+        static let botNamePlaceholder = "Its name"
+        static let botNameFailed = "Couldn’t save the name. Try again."
+
+        static let inferenceTitle = "Connect a model"
+        static let inferenceBody = "Your agents think with a model you connect: ChatGPT, Claude, Grok, or your own endpoint."
+        static let inferenceFree = "Until then, they use Happy’s free model."
+        static let connectProvider = "Connect a Provider"
+        static let inferenceNotAllowed = "Your role can’t connect providers. Ask your admin."
+
+        static let pluginsTitle = "Connect your tools"
+        static func pluginsBody(needed: [String]) -> String {
+            let lead = "Plugins let your agents work in the services your team uses."
+            return needed.isEmpty
+                ? "\(lead) Set one up now, or later from Plugins."
+                : "\(lead) \(ListFormatter.localizedString(byJoining: needed)) \(needed.count == 1 ? "has" : "have") to be connected first."
+        }
+        static let setUp = "Set Up"
+        static let connected = "Connected"
+        static let neededPlugin = "Required"
+        static let pluginsFailed = "Couldn’t read the plugins."
+        static let tryAgain = "Try Again"
+
+        static let teammatesTitle = "Invite your team"
+        static func teammatesBody(_ handle: String) -> String {
+            "Happy works best together. Invite people by email, and they’ll get a link to join \(handle)."
+        }
+        static let emailPlaceholder = "name@company.com"
+        static let emailLabel = "Email address"
+        static let sendInvite = "Send Invite"
+        static let inviteSent = "Invite sent"
+        static let sent = "Sent"
+        static let emailFailed = "Email not sent"
+        static let shareLink = "Share"
+        static let inviteLink = "Invite link"
+        static let inviteLinkNote = "Anyone with it can join"
+        static let shareInviteLink = "Share Invite Link"
+        static let noEmail = "This server can’t send email yet. Share an invite link instead."
+        static let invitesOnWeb = "This server takes invites in Happy on your computer or on the web."
+        static let inviteFailed = "Couldn’t send the invite. Try again."
+
+        static let notificationsTitle = "Turn on notifications"
+        static let notificationsBody = "Know when an agent finishes, needs an answer, or a teammate mentions you, wherever you are."
+        static let turnOnNotifications = "Turn On Notifications"
+        static let notificationsOff = "Notifications are off for Happy. Turn them on in Settings, then come back."
+        static let openSettings = "Open Settings"
+        static let notificationsUnsupported = "This build of Happy can’t get this server’s notifications. Get Happy from the App Store."
+        static let notificationsFailed = "Couldn’t turn on notifications. Try again."
+
+        static let updateTitle = "Update Happy to continue"
+        static let updateBody = "This server asks for a step this version of Happy doesn’t know yet."
+        static let updateAction = "Open the App Store"
+
+        static let waitingTitle = "Waiting for your admin"
+        /// `owners`' names where the server sends them: one or two by name,
+        /// more as the owners.
+        static func waitingBody(_ steps: [String], owners: [String] = []) -> String {
+            let who = switch owners.count {
+            case 1: owners[0]
+            case 2: "\(owners[0]) or \(owners[1])"
+            case 0: "Someone who manages this server"
+            default: "One of this server’s owners"
+            }
+            return "\(who) has to finish setting it up first: \(ListFormatter.localizedString(byJoining: steps.map(\.lowercasedFirst)))."
+        }
+        static let notReadyTitle = "Almost ready"
+        static let notReadyBody = "This server isn’t ready for you yet. Check again in a little while."
+
+        static let elsewhereTitle = "Finish on your computer"
+        static func elsewhereBody(_ step: String) -> String {
+            "\(step) is done in Happy on your computer. Come back here when it’s done."
+        }
+        static let openWeb = "Open on the Web"
+
+        static let doneTitle = "You’re all set"
+        static func doneBody(_ handle: String) -> String { "\(handle) is ready for you." }
+        static func meet(_ name: String) -> String { "Meet \(name)" }
+        static let getStarted = "Get Started"
+        static let couldntFinish = "Couldn’t finish setting up. Try again."
+
+        /// A gate, as a step in a sentence.
+        static func step(_ gate: OnboardingGate) -> String {
+            switch gate.kind {
+            case .profile: "Your name"
+            case .avatar: "Your photo"
+            case .adminBot: "Naming the admin bot"
+            case .inference: "Connecting a model provider"
+            case .plugins: "Connecting plugins"
+            case .teammates: "Inviting teammates"
+            case .mobileApp: "Installing the mobile app"
+            case .paymentMethod: "Adding a payment method"
+            case .payment: "Paying for this server"
+            case .unknown: "A new step"
+            }
+        }
+    }
+}
+
+private extension String {
+    var lowercasedFirst: String { prefix(1).lowercased() + dropFirst() }
+}

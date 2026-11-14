@@ -21,6 +21,7 @@ import com.slopus.happy.ui.PHONE
 import com.slopus.happy.ui.assertDp
 import com.slopus.happy.ui.bounds
 import com.slopus.happy.ui.components.Ionicon
+import com.slopus.happy.ui.components.StateArt
 import com.slopus.happy.ui.node
 import com.slopus.happy.ui.setHappyContent
 import org.junit.Assert.assertEquals
@@ -46,7 +47,7 @@ class ComposeTargetLayoutTest {
     @get:Rule
     val rule = createComposeRule()
 
-    private fun show(room: Dp, status: NewWorkStatus? = NewWorkStatus("● Online", Color.Green), note: Boolean = true) = rule.setHappyContent {
+    private fun show(room: Dp, status: NewWorkStatus? = NewWorkStatus("● Online", Color.Green), note: Boolean = true, art: StateArt? = null) = rule.setHappyContent {
         Box(Modifier.fillMaxWidth().height(room).testTag(ROOM)) {
             NewWorkGivingWay(
                 shown = true,
@@ -65,6 +66,7 @@ class ComposeTargetLayoutTest {
                     { NewWorkMenuRow(Ionicon.FolderOutline, "~/repo", true, {}, Modifier.testTag(NewWorkTags.FOLDER)) },
                 ),
                 note = if (note) { { Text("What a bot is, on one line.", Modifier.testTag(NewWorkTags.NOTE)) } } else null,
+                art = art,
             )
         }
     }
@@ -112,6 +114,38 @@ class ComposeTargetLayoutTest {
         show(600.dp)
         rule.node("kind.1").assertIsEnabled()
         rule.node("kind.2").assertIsNotEnabled()
+    }
+
+    @Test fun `a bot stands under the robot, 16 over the kind, centred with the block`() {
+        show(600.dp, art = StateArt.Ready)
+        val room = rule.node(ROOM).bounds
+        val art = rule.node(NewWorkTags.art(StateArt.Ready)).bounds
+        val kind = rule.node(NewWorkTags.KIND).bounds
+        val note = rule.node(NewWorkTags.NOTE).bounds
+        assertDp("an empty state's 128", 128, art.width)
+        assertDp("square", art.width, art.height)
+        assertDp("centred across", ((411 - 128) / 2f).dp, art.left)
+        assertDp("16 over the kind", art.bottom + 16.dp, kind.top)
+        assertEquals("centred in its room", ((room.top + room.bottom) / 2).value, ((art.top + note.bottom) / 2).value, 1f)
+    }
+
+    @Test fun `short of room the picture keeps its size, and the note goes first`() {
+        // The picture and its gap, 144, over kind 32 + 16 + 44 + 8 + 44 = 144; margins 12 each; the note's line won't fit.
+        show(144.dp + 144.dp + 24.dp + 10.dp, art = StateArt.Action)
+        assertDp("never smaller", 128, rule.node(NewWorkTags.art(StateArt.Action)).bounds.width)
+        assertDp("the gaps kept", rule.node(NewWorkTags.KIND).bounds.bottom + 16.dp, rule.node(NewWorkTags.MACHINE).bounds.top)
+        val note = rule.onAllNodes(hasTestTag(NewWorkTags.NOTE), useUnmergedTree = true).fetchSemanticsNodes().single()
+        assertTrue("the note is there, unseen", note.layoutInfo.isPlaced)
+    }
+
+    @Test fun `with no room the block stands on the composer and runs up, picture and all`() {
+        show(200.dp, art = StateArt.Action)
+        val room = rule.node(ROOM).bounds
+        val art = rule.node(NewWorkTags.art(StateArt.Action)).bounds
+        assertDp("never smaller", 128, art.width)
+        assertDp("12 over the composer", room.bottom - 12.dp, rule.node(NewWorkTags.FOLDER).bounds.bottom)
+        assertDp("16 over the kind", art.bottom + 16.dp, rule.node(NewWorkTags.KIND).bounds.top)
+        assertTrue("above the room: $art, $room", art.top < room.top)
     }
 
     @Test fun `short of room the note goes first`() {

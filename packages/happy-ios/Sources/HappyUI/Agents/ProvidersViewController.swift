@@ -11,9 +11,10 @@ final class ProvidersViewController: SettingsPageViewController {
     private let session: Session
     private var providers: [CloudProvider]?
     private var failed = false
-    /// The sign-ins the server runs (`codex`, `claude`); empty until read,
-    /// and when it has none yet.
-    private var offer = CloudAddOffer()
+    /// The ways to add one, offering what the server runs.
+    private(set) lazy var adding = ProviderChooser(session: session, host: self, added: { [weak self] in self?.load() },
+                                              changed: { [weak self] in self?.reload() })
+    private var offer: CloudAddOffer { adding.offer }
     private var watch: Task<Void, Never>?
     /// The role decides what can be added: shown again when it is read.
     private var accessWatch: Watch?
@@ -48,7 +49,7 @@ final class ProvidersViewController: SettingsPageViewController {
                 let listing = try await client.cloudProviderListing()
                 self?.providers = CloudProvider.sorted(listing.providers)
                 self?.failed = false
-                self?.offer = await Self.offer(listing.offer, client)
+                self?.adding.offer = await Self.offer(listing.offer, client)
             } catch {
                 self?.failed = self?.providers == nil
             }
@@ -73,7 +74,7 @@ final class ProvidersViewController: SettingsPageViewController {
     override func makeRows() -> [[SettingsRow]] {
         typealias Text = Strings.Providers
         var cards: [[SettingsRow]] = []
-        if !CloudProvider.destinations(session.gate).isEmpty, Self.offers(offer) {
+        if !CloudProvider.destinations(session.gate).isEmpty, Self.offers(offer) || CloudProvider.destinations(session.gate).contains(.team) {
             cards.append([SettingsRow(id: "providers-add", title: Text.add, icon: ("add", .action), action: { [weak self] in self?.choose() }, footer: Text.footer)])
         }
         guard let providers else {
@@ -116,92 +117,19 @@ final class ProvidersViewController: SettingsPageViewController {
         case "claude-code": "Claude"
         case "grok": "Grok"
         case "bedrock": "Bedrock"
+        case "openai_compatible": "Custom"
         default: vendor
         }
     }
 
     /// The chooser: the sign-ins the server offers, then an API key.
-    func choose(destination: CloudProvider.Destination? = nil) {
-        present(chooser(destination: destination), animated: true)
-    }
+    func choose(destination: CloudProvider.Destination? = nil) { adding.choose(destination: destination) }
 
-    func chooser(destination: CloudProvider.Destination? = nil) -> UIAlertController {
-        typealias Text = Strings.Providers
-        let sheet = UIAlertController(title: Text.add, message: nil, preferredStyle: .actionSheet)
-        if offer.signIns.contains(.codex) {
-            sheet.addAction(UIAlertAction(title: Text.signInChatGPT, style: .default) { [weak self] _ in self?.open(.providersAddOpenAI, destination: destination) })
-        }
-        if offer.setupToken {
-            sheet.addAction(UIAlertAction(title: Text.claudeSetupToken, style: .default) { [weak self] _ in self?.open(.providersAddAnthropic, destination: destination) })
-        }
-        if offer.apiKeys {
-            sheet.addAction(UIAlertAction(title: "\(Text.addAPIKey) · \(Text.openAI)", style: .default) { [weak self] _ in
-                self?.open(.providersAddAPIKey, vendor: "openai", destination: destination)
-            })
-            sheet.addAction(UIAlertAction(title: "\(Text.addAPIKey) · \(Text.anthropic)", style: .default) { [weak self] _ in
-                self?.open(.providersAddAPIKey, vendor: "anthropic", destination: destination)
-            })
-            sheet.addAction(UIAlertAction(title: "\(Text.addAPIKey) · \(Text.grok)", style: .default) { [weak self] _ in
-                self?.open(.providersAddAPIKey, vendor: "grok", destination: destination)
-            })
-        }
-        sheet.addAction(UIAlertAction(title: Strings.Common.cancel, style: .cancel))
-        if let popover = sheet.popoverPresentationController {
-            popover.sourceView = view
-            popover.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 1, height: 1)
-        }
-        return sheet
-    }
+    /// The team's own provider: owners with `providers.manage` only.
+    func addCustom() { adding.addCustom() }
 
-    /// One way of adding, after asking where it goes when the role leaves
-    /// a choice and the link didn't make it.
     func open(_ page: HappyLink.SettingsPage, vendor: String? = nil, destination: CloudProvider.Destination? = nil) {
-        let allowed = CloudProvider.destinations(session.gate)
-        if let destination, !allowed.contains(destination) {
-            Alerts.show(Strings.Providers.destinationRefused, Strings.Providers.destinationRefusedHint, on: self)
-            return
-        }
-        guard !allowed.isEmpty else { return }
-        if page == .providersAdd || page == .providers { return page == .providers ? () : choose(destination: destination) }
-        // A way this server doesn't offer (a link from elsewhere): the chooser.
-        let offered = switch page {
-        case .providersAddOpenAI: offer.signIns.contains(.codex)
-        case .providersAddAnthropic: offer.setupToken
-        case .providersAddAPIKey: offer.apiKeys
-        default: false
-        }
-        guard offered else { return choose(destination: destination) }
-        let picked = destination ?? (allowed.count == 1 ? allowed[0] : nil)
-        guard let picked else { return chooseDestination(page, vendor: vendor) }
-        let flows = ProviderFlows(client: session.client, destination: picked, host: self, unavailable: { [weak self] cli in
-            self?.offer.signIns.remove(cli)
-            self?.reload()
-        }) { [weak self] in self?.load() }
-        switch page {
-        case .providersAddOpenAI:
-            navigationController?.pushViewController(DeviceSignInViewController(flows: flows), animated: true)
-        case .providersAddAnthropic:
-            navigationController?.pushViewController(ClaudeSignInViewController(flows: flows), animated: true)
-        case .providersAddAPIKey:
-            flows.addKey(vendor: vendor ?? "openai")
-        default:
-            break
-        }
-    }
-
-    private func chooseDestination(_ page: HappyLink.SettingsPage, vendor: String?) {
-        let sheet = UIAlertController(title: Strings.Providers.saveTo, message: nil, preferredStyle: .actionSheet)
-        for option in CloudProvider.destinations(session.gate) {
-            sheet.addAction(UIAlertAction(title: option == .mine ? Strings.Providers.mine : Strings.Providers.team, style: .default) { [weak self] _ in
-                self?.open(page, vendor: vendor, destination: option)
-            })
-        }
-        sheet.addAction(UIAlertAction(title: Strings.Common.cancel, style: .cancel))
-        if let popover = sheet.popoverPresentationController {
-            popover.sourceView = view
-            popover.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 1, height: 1)
-        }
-        present(sheet, animated: true)
+        adding.open(page, vendor: vendor, destination: destination)
     }
 
     /// Opens a providers link (`happy://settings/providers…`) on `session`.
@@ -214,11 +142,11 @@ final class ProvidersViewController: SettingsPageViewController {
         let destination = options.destination.flatMap(CloudProvider.Destination.init(rawValue:)) ?? .mine
         Task { @MainActor in
             // The chooser offers only what the server runs: read that first.
-            list.offer = await offer((try? await session.client.cloudProviderListing())?.offer, session.client)
+            list.adding.offer = await offer((try? await session.client.cloudProviderListing())?.offer, session.client)
             let allowed = CloudProvider.destinations(session.gate)
             if options.destination == nil, !allowed.contains(.mine), !allowed.isEmpty {
                 // A private default never silently becomes a shared credential.
-                return list.chooseDestination(page, vendor: options.vendor)
+                return list.adding.chooseDestination(page, vendor: options.vendor)
             }
             list.open(page, vendor: options.vendor, destination: destination)
         }

@@ -11,14 +11,43 @@ import HappyWire
 /// Cloud").
 public enum HappyCloud {
     /// The domain every cloud server is under. Change it here only.
-    public static let base = "happy-clusters.com"
+    public static var base: String { stand(in: "HappyCloudBase") ?? "happy-clusters.com" }
     public static let name = "Happy Cloud"
     /// The accounts service, on its own domain: account sign-in, the
     /// servers API, and every token. Change it here only.
-    public static let accounts = "https://auth.happy.engineering"
+    public static var accounts: String { stand(in: "HappyCloudAccounts") ?? "https://auth.happy.engineering" }
     /// The web app, where a server's settings the phone has no page for
     /// are: `acme`'s under `https://acme.<web>/#/settings/`. Change it here only.
-    public static let web = "happybases.com"
+    public static var web: String { stand(in: "HappyCloudWeb") ?? "happybases.com" }
+    /// Where invite links point, `https://<invite>/#<token>`; the app's
+    /// associated domain. Change it here and in the entitlements only.
+    public static var invite: String { stand(in: "HappyCloudInvite") ?? "join.happy.engineering" }
+
+    private static let standInKeys = ["HappyCloudAccounts", "HappyCloudBase", "HappyCloudWeb", "HappyCloudInvite"]
+
+    /// A debug build's stand-ins for the above, for a scratch deployment:
+    /// launched once with `-HappyCloudAccounts <origin>` (and
+    /// `-HappyCloudBase`, `-HappyCloudWeb`, `-HappyCloudInvite`), kept here
+    /// at launch for later launches, such as one from an invite link; an
+    /// empty value forgets one. Other builds have none.
+    public static func keepStandIns() {
+        #if DEBUG
+        let defaults = UserDefaults.standard
+        let given = defaults.volatileDomain(forName: UserDefaults.argumentDomain)
+        for key in standInKeys {
+            guard let value = given[key] as? String else { continue }
+            defaults.set(value.isEmpty ? nil : value, forKey: key)
+        }
+        #endif
+    }
+
+    private static func stand(in key: String) -> String? {
+        #if DEBUG
+        UserDefaults.standard.string(forKey: key).flatMap { $0.isEmpty ? nil : $0 }
+        #else
+        nil
+        #endif
+    }
 
     /// How a cloud server's own sign-in is described: on the accounts
     /// service, for the server (what `/v0/authentication` advertises). The

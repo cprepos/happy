@@ -8,21 +8,30 @@ import Foundation
 public struct Permissions: Decodable, Equatable, Sendable {
     public var role: String?
     public var granted: Set<String>
+    /// Every permission the server has (`permissions`, its catalog),
+    /// granted or not: what it serves. Empty where it doesn't say.
+    public var known: Set<String>
 
-    public init(role: String? = nil, granted: Set<String>) {
+    public init(role: String? = nil, granted: Set<String>, known: Set<String> = []) {
         self.role = role
         self.granted = granted
+        self.known = known
     }
 
-    enum CodingKeys: String, CodingKey { case role, granted }
+    enum CodingKeys: String, CodingKey { case role, granted, permissions }
+    private struct Known: Decodable { var id: String }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         role = try? container.decodeIfPresent(String.self, forKey: .role)
         granted = Set(try container.decode([String].self, forKey: .granted))
+        known = Set(((try? container.decodeIfPresent([Lossy<Known>].self, forKey: .permissions)) ?? []).compactMap(\.value?.id))
     }
 
     public func allows(_ permission: Permission) -> Bool { granted.contains(permission.rawValue) }
+
+    /// Whether the server has `permission` at all, for anyone.
+    public func knows(_ permission: Permission) -> Bool { known.contains(permission.rawValue) }
 
     /// The ones the phone has a control for.
     public enum Permission: String, Sendable {
@@ -36,8 +45,12 @@ public struct Permissions: Decodable, Equatable, Sendable {
         /// The team's inference providers; the person's own take `providers.own`.
         case providersManage = "providers.manage"
         case providersOwn = "providers.own"
-        /// Read-only Compute pools and node monitoring on this phone.
+        /// Reading and joining machines, and adding a private one of one's own.
+        case computeUse = "compute.use"
+        /// Adding a machine in any mode, freeing a held one, and its host facts.
         case poolsManage = "pools.manage"
+        /// The server's instructions and security policy (`PolicyDocument`).
+        case policyEdit = "policy.edit"
     }
 
     public static let refreshEvents = ["role.", "member.updated", "member.removed"]

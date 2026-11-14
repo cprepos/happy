@@ -131,9 +131,11 @@ The same numbers, in Compose:
   sheet goes at 0.8 cm (computed from the display's xdpi as Telegram does) or comes back in
   `250 × pulled / 0.8 cm` ms. Predictive back pulls the sheet down by the gesture's
   progress and closes it on commit.
-- **Theme.** Telegram's blue is our accent only where Telegram uses its brand colour (the
-  check, the send pill, the counter, the selected tab), as `AttachColors` in light and dark
-  (Telegram's night values: the same blue, white unselected glyphs). The sheet is
+- **Theme.** Where Telegram uses its brand blue (the check, the confirm pill, the counter,
+  the selected tab, the preview's check) we use the chat composer's send button instead:
+  `colors.text` filled with `colors.surface` on it, so black and white in light, white and
+  black in dark (`AttachColors`). The preview is black in both, so its check is the dark
+  one. iOS follows its own composer's send (grey with ink). The sheet is
   `colors.surface`; the glass is our `Glass` (`GlassSpec`) over the grid.
 - **Foldables.** The sheet takes `ContentTokens.sheetMaxWidth` and centres, so on the 750 dp
   inner screen it is a 640 column, 55 in, the scrim either side. From 600 dp of sheet it
@@ -147,7 +149,43 @@ The same numbers, in Compose:
 - **The tab bar** narrows to `80 × tabs + 36` and centres, Telegram's rule for a bar of
   few tabs (its poll attach), since we have two.
 - **Preview.** A tap on a cell's picture opens it in the app's own viewer
-  (`PictureViewer`: zoom for photos, playback for videos); the check picks.
-- **Not ported:** the camera cell and in-sheet camera, albums drop-down, the in-sheet photo
-  editor, spoilers, captions above media, scheduled and silent sends, the Lottie tab icons
+  (`PictureViewer`: zoom for photos, playback for videos, open and close in
+  220 ms ease-out, the grid's thumbnail drawn until the photo is read); the
+  check picks, through a 48 corner (Telegram's 42).
+- **Preview's foot and the editor.** Under the picture, as Telegram's `PhotoViewer` has it
+  while picking: the sheet's caption bar (the same words; Send sends the picks, or the
+  photo in view when nothing is picked), then a capsule of two edits, Crop and Draw, each
+  #FFD300 once applied. Each opens `ui/photoedit/PhotoEditor` over the viewer, black in
+  either theme, fading in over 200 ms. Crop is `PhotoCropView`: corners and sides resize the
+  frame (64 dp at least, the photo fixed under it), one finger moves the photo, two pinch it
+  to 10×; dim `0x7f000000`, line `0xb2ffffff`, 16 × 3 handles, thirds while touched; a
+  resized frame grows back to fill the area after 0.8 s. `CropRotationWheel` straightens
+  ±45° (1 / 1.65π ° a dp, ticks a degree apart, 0 within 0.05) between mirror and aspect on
+  the left and a quarter turn anticlockwise on the right, 70 × 64 each; the aspect list is
+  Telegram's (Original, Square, 3:2 … 16:9, turned to the frame), and tapping aspect while
+  locked unlocks. Draw is `LPhotoPaintView` without shapes, stickers or text: Undo, Clear
+  All (asked), the size wedge on the left, the nine `PersistColorPalette` colours, the
+  colour button (`ColorPickerBottomSheet` on #252525: the 12 × 10 grid or the spectrum, the
+  opacity slider, the eyedropper's loupe; its Sliders tab is not ported), and the six
+  brushes of `Brush.java` with their colours, sizes and alphas, Arrow first; the weight is
+  `RenderView.brushWeightForSize` (8/2048 of the photo's width, 90/2048 more at full
+  size) and the eraser clears pixels, as Telegram-Android's do. ✕ or Back leaves the photo
+  as it was; ✓ (white, a black check: the composer's send colours) keeps the edit and,
+  if it changed, picks the photo. Edits are kept per photo for the sheet's life
+  (`AttachEdits`, in the photo's upright pixels, so either edit can be redone): the grid,
+  the viewer and what is staged or sent are the edited JPEG. Handles and sliders by the
+  screen's edges are excluded from the system's back swipe.
+- **Camera.** Telegram-Android's in-sheet camera keeps going after a shot
+  (`ChatAttachAlertPhotoLayout.openPhotoViewer`): each photo lands at the grid's head
+  picked; the first opens the preview over the camera's shots with the caption and Send,
+  and Back there returns to the camera. From then on the camera shows its shots in an 80
+  strip over the photo's foot (the zoom bar lifted over it) and the pick count beside the
+  shutter in a 38 pill, "2 PHOTOS ▲" (`counterTextView`), which opens them again. Closing
+  the camera leaves the grid with the shots picked. No Retake / Use Photo.
+- **Confirm as well as send.** Telegram's send pill stays in the caption bar
+  and sends at once. The header's far end adds a check and the count (iOS's
+  `SelectedButtonNode` shape): the picks go into the composer with the
+  caption as its draft, and are sent from there.
+- **Not ported:** albums drop-down, the editor's Adjust, stickers, text and shapes, SD/HD
+  quality, the self-destruct timer, spoilers, captions above media, scheduled and silent sends, the Lottie tab icons
   (outlined → filled vector swap on the same 320 ms).

@@ -8,6 +8,7 @@ import android.os.Build
 import android.provider.MediaStore
 import android.util.Size
 import coil3.ImageLoader
+import coil3.BitmapImage
 import coil3.asImage
 import coil3.decode.DataSource
 import coil3.fetch.FetchResult
@@ -85,4 +86,11 @@ fun galleryThumbnail(resolver: ContentResolver, uri: String): ByteArray? {
     } finally {
         bitmap.recycle()
     }
+}
+
+/** The grid's thumbnail of [uri] if the loader still holds it, at whatever size it was drawn. */
+fun galleryThumbBitmap(loader: ImageLoader, uri: String): Bitmap? {
+    val cache = loader.memoryCache ?: return null
+    val key = cache.keys.firstOrNull { it.key == "thumb:$uri" } ?: return null
+    return (cache[key]?.image as? BitmapImage)?.bitmap
 }

@@ -14,6 +14,7 @@ import com.slopus.happy.connection.networkPath
 import com.slopus.happy.ui.files.workspaceSource
 import com.slopus.happy.ui.chat.rememberShownLinkState
 import com.slopus.happy.ui.page
+import com.slopus.happy.ui.plugins.openPlugin
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -73,6 +74,7 @@ import androidx.compose.ui.platform.LocalContext
 import com.slopus.happy.browser.BrowserPolicy
 import com.slopus.happy.ui.artifacts.BrowserRoute
 import com.slopus.happy.ui.artifacts.InlinePages
+import com.slopus.happy.ui.genui.GenUiInline
 import com.slopus.happy.ui.artifacts.computerName
 import com.slopus.happy.ui.browser.LinkOpener
 import com.slopus.happy.ui.browser.ProvideLinks
@@ -252,7 +254,10 @@ internal fun AgentSession.makeConversation(
     initialChoice: WorkChoice = WorkChoice(),
     created: () -> Unit = {},
 ): Conversation = Conversation(
-    api = ConversationApi(bytesRequest = conversationBytesRequest(), request = conversationRequest(), cloud = client.cloud, fileRequest = conversationFileRequest()),
+    api = ConversationApi(
+        bytesRequest = conversationBytesRequest(), request = conversationRequest(), cloud = client.cloud, fileRequest = conversationFileRequest(),
+        sendingDevice = { client.environment.sendingDeviceId },
+    ),
     signals = events.signalsFor(agentId),
     // No screen's or call's: a send or draft save in flight finishes after they go.
     scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
@@ -481,7 +486,6 @@ private fun ConversationEntry(graph: AppGraph, nav: NavHostController, route: Co
             opensAttach = route.attach,
             roleCanSend = roleCanSend,
             roleCanCompose = permissions.canWrite,
-            roleAllows = permissions::allows,
             link = link,
             usage = usage,
             onRefreshUsage = session.usage::refresh,
@@ -511,6 +515,13 @@ private fun ConversationEntry(graph: AppGraph, nav: NavHostController, route: Co
                             nav.navigate(BrowserRoute(route.connectionId, url, conversation.agentId))
                         }
                     },
+                    genUi = GenUiInline(
+                        session.client, session.media, conversation.agentId,
+                        onMessage = { words -> conversation.send(words) },
+                        onOpenWeb = { url -> nav.navigate(BrowserRoute(route.connectionId, url, conversation.agentId)) },
+                        plugins = session.pluginsAvailable,
+                        onOpenPlugin = { id -> nav.openPlugin(route.connectionId, id) },
+                    ),
                     onRetryLoad = conversation::retryLoad,
                     loadMedia = conversation::media,
                     // A recording streams a range at a time, as iOS's MediaStream asks.
@@ -526,8 +537,6 @@ private fun ConversationEntry(graph: AppGraph, nav: NavHostController, route: Co
                     onVisible = holder.hold::show,
                     onChoiceChange = holder::setChoice,
                     onCommand = conversation::runCommand,
-                    onQuickReply = conversation::sendReply,
-                    onUiAction = conversation::press,
                     onToggleTurn = conversation::toggleTurn,
                     onToggleMessage = conversation::toggleMessage,
                     onOpenTool = { callId -> nav.navigate(ToolCallRoute(route.connectionId, conversation.agentId, callId)) },

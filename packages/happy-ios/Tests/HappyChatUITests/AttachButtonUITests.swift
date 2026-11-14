@@ -118,6 +118,36 @@ final class AttachButtonUITests: XCTestCase {
     func testThePlusOpensTheMenuInTheAgentChat() { plusOpensTheMenu(["-agent", "-open", "ipad-agent"]) }
     func testThePlusOpensTheMenuInTheCLIChat() { plusOpensTheMenu(["-open", "seeded-tab-1"]) }
 
+    /// The count at the sheet's top right, tapped as a finger does: the
+    /// menu goes and the picture waits in the composer, unsent, until its
+    /// Send.
+    func testTheCountAtTheTopRightPutsAPhotoInTheComposer() {
+        for layout in layouts {
+            launch(["-agent", "-open", "ipad-agent"] + layout)
+            add.tap()
+            XCTAssertTrue(sheet.waitForExistence(timeout: 5), "\(layout): the + opened nothing")
+            let cell = app.descendants(matching: .any)["attach-photo:0"]
+            XCTAssertTrue(cell.waitForExistence(timeout: 10), "\(layout): the grid never showed it")
+            sleep(1)
+            cell.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0)).withOffset(CGVector(dx: -17.5, dy: 17.5)).tap()
+            let count = app.descendants(matching: .any)["attach-count"]
+            XCTAssertTrue(count.waitForExistence(timeout: 3), "\(layout): picking showed no count")
+            XCTAssertTrue(app.descendants(matching: .any)["attach-send"].exists, "\(layout): the caption lost its send")
+            XCTAssertGreaterThan(count.frame.midX, sheet.frame.midX, "\(layout): the count isn't at the right")
+            sleep(1)
+            count.tap()
+            XCTAssertTrue(waitGone(sheet), "\(layout): the count didn't close the menu")
+            let staged = app.descendants(matching: .any)["composer-attachment"]
+            XCTAssertTrue(staged.waitForExistence(timeout: 10), "\(layout): it didn't wait in the composer")
+            sleep(2)
+            XCTAssertEqual(agentMedia.count, 0, "\(layout): the count sent it")
+            app.buttons["Send"].tap()
+            let deadline = Date().addingTimeInterval(15)
+            while agentMedia.count == 0, Date() < deadline { usleep(250_000) }
+            XCTAssertGreaterThan(agentMedia.count, 0, "\(layout): the composer's Send didn't send it")
+        }
+    }
+
     func testTheAgentChatSendsAPhoto() {
         sendsPicture(0, ["-agent", "-open", "ipad-agent"]) { agentMedia.count > 0 }
     }

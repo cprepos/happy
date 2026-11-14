@@ -117,6 +117,7 @@ public actor Store {
     private var artifactTitles: [String: References.Artifact] = [:]
     private var artifactPages: [String: References.Page] = [:]
     private var artifactApps: [String: Int] = [:]
+    private var artifactGenUI: [String: References.GenUI] = [:]
     private var artifactReads: Set<String> = []
     /// People messages mention, as named, and those being read; the person reading.
     private var userNames: [String: String] = [:]
@@ -125,7 +126,24 @@ public actor Store {
     private var me: String?
     private var places = Places()
     private var placesReload: Task<Void, Never>?
+    /// Paused since the stream last opened (`externalOpening`).
+    private var pausedSinceOpening = false
+    /// How many times the client the stream and queries share was let go
+    /// (`SyncEngine.resetCarrier`): a read on its way dies with it, and is
+    /// asked again without saying it failed.
+    public private(set) var carrierResets = 0
     private var placesDirty = false
+    /// When the bots and tasks were last read (~0.8 MB on a busy
+    /// computer), and what came meanwhile that their read could not follow.
+    private var placesRead: ContinuousClock.Instant?
+    private var placesHeld: [JSONValue]?
+    /// Tasks `task.created` told of that aren't the person's yet: one
+    /// takes its place in their list when they join it (`task.joined`).
+    private var announcedTasks: [String: JSONValue] = [:]
+    /// Whether the bots and tasks were read yet: before then they aren't held.
+    private var placesLoaded = false
+    /// How soon after a read news may read the bots and tasks again.
+    private let placesRereadInterval: Duration
     /// An `agent.updated` the sidebar follows, drawn with the others that
     /// come within 250 ms (`followAgentsSoon`).
     private var followingAgents: Task<Void, Never>?
@@ -137,8 +155,9 @@ public actor Store {
     private var attentionIdle: Task<Void, Never>?
     private var attentionVisible = true
 
-    public init(client: AgentClient, offline: OfflineFile? = nil, intents: IntentOutbox? = nil, labels: Rows.Labels = Rows.Labels()) {
+    public init(client: AgentClient, offline: OfflineFile? = nil, intents: IntentOutbox? = nil, labels: Rows.Labels = Rows.Labels(), placesRereadInterval: Duration = .seconds(10)) {
         self.client = client
+        self.placesRereadInterval = placesRereadInterval
         self.offline = offline
         self.intents = intents
         self.labels = labels
@@ -152,13 +171,8 @@ public actor Store {
     public func startExternal() async { await restoreOffline() }
 
     @discardableResult
-    public func externalResync(loadSidebar: Bool, resync: Bool = true) async -> Bool {
-        // A stream that picked up where it left off replays what they
-        // missed: nothing is read again.
-        if resync {
-            for listener in listeners.values { listener.continuation.yield(.resync) }
-            for listener in typeListeners.values { listener.continuation.yield(.resync) }
-        }
+    public func externalResync(loadSidebar: Bool) async -> Bool {
+        resync(from: nil)
         snapshot.live = true
         if loadSidebar {
             await load()
@@ -166,6 +180,40 @@ public actor Store {
         }
         publish()
         return true
+    }
+
+    /// The account's stream opens (`SyncEngine`): the conversations
+    /// followed are read at once, beside it. `replays`: it picks up where
+    /// it left off, and only those on screen are read.
+    public func externalOpening(replays: Bool = false) {
+        let stale = pausedSinceOpening
+        pausedSinceOpening = false
+        for listener in listeners.values { listener.continuation.yield(.resync(from: nil, stale: stale, replays: replays)) }
+    }
+
+    public func carrierReset() { carrierResets += 1 }
+
+    /// The account's stream is open. It carries everything after
+    /// `missedBefore`; what came before it, those following read again.
+    /// Nil: it picked up where it left off and replays what they missed.
+    public func externalOpened(missedBefore cursor: String?) {
+        if let cursor { resync(from: cursor) }
+        snapshot.live = true
+        publish()
+    }
+
+    private func resync(from cursor: String?) {
+        for listener in listeners.values { listener.continuation.yield(.resync(from: cursor)) }
+        for listener in typeListeners.values { listener.continuation.yield(.resync(from: cursor)) }
+    }
+
+    /// What the server's health says it serves, read with the account's
+    /// bootstrap: what Gen UI's actions may run (`References.genUIServed`).
+    public func externalCapabilities(_ capabilities: AgentWire.Health.Capabilities?) {
+        let capabilities = capabilities ?? AgentWire.Health.Capabilities()
+        guard capabilities != self.capabilities else { return }
+        self.capabilities = capabilities
+        publish()
     }
 
     /// The bots, tasks and Surfaces from the account's bootstrap, kept
@@ -223,6 +271,7 @@ public actor Store {
     /// Closes the events stream while the app is in the background; what
     /// shows stays, and `start` resumes from the last cursor.
     public func pause() {
+        pausedSinceOpening = true
         following?.cancel(); following = nil
         // Kept now rather than after the app may have been closed.
         if let keeping { keeping.cancel(); self.keeping = nil; saveOffline() }
@@ -241,7 +290,7 @@ public actor Store {
         await flush()
         following?.cancel(); following = nil
         loading?.cancel(); loading = nil
-        placesReload?.cancel(); placesReload = nil
+        placesReload?.cancel(); placesReload = nil; placesHeld = nil
         followingAgents?.cancel(); followingAgents = nil
         attentionIdle?.cancel(); attentionIdle = nil
         keeping?.cancel(); keeping = nil
@@ -261,10 +310,7 @@ public actor Store {
                         let resumed = hello?["resumed"]?.boolValue == true && hello?["gap"]?.boolValue != true
                         if let next = hello?["cursor"]?.stringValue, !resumed || cursor == nil { cursor = next }
                         snapshot.live = true
-                        if !resumed {
-                            for listener in listeners.values { listener.continuation.yield(.resync) }
-                            for listener in typeListeners.values { listener.continuation.yield(.resync) }
-                        }
+                        if !resumed { resync(from: hello?["cursor"]?.stringValue ?? "") }
                         if !resumed || held == nil { await load() } else { publish() }
                         continue
                     }
@@ -288,10 +334,16 @@ public actor Store {
     // MARK: Conversations
 
     /// One conversation's events off this store's stream, so an open chat
-    /// needs no stream of its own. `resync` means some were lost: read again.
+    /// needs no stream of its own. `resync` means some may have been lost:
+    /// read again. `from` is where the stream began, which a read that
+    /// began after it covers; nil while it is still opening. `stale`: the
+    /// engine was paused since the stream last opened, so a read on its way
+    /// may be on a tunnel the suspension left dead. `replays`: the stream
+    /// picks up where it left off and brings what was missed; only what is
+    /// on screen is read beside it, to show before the replay is through.
     public enum ConversationEvent: Sendable {
         case event(JSONValue)
-        case resync
+        case resync(from: String?, stale: Bool = false, replays: Bool = false)
     }
 
     private var listeners: [UUID: (key: String, continuation: AsyncStream<ConversationEvent>.Continuation)] = [:]
@@ -407,6 +459,7 @@ public actor Store {
             artifactTitles = [:]
             artifactPages = [:]
             artifactApps = [:]
+            artifactGenUI = [:]
             for event in pending { receive(event) }
             publish()
             keeping?.cancel()
@@ -441,18 +494,28 @@ public actor Store {
     /// The bots and tasks are stale: read once things settle, and once
     /// more for news that came during the read, as home's own loop does
     /// (Proofs/: `Refresh`). Starting the wait again with each piece of
-    /// news, as this did, never read while news kept coming.
+    /// news, as this did, never read while news kept coming. A read is
+    /// `placesRereadInterval` after the last at the soonest, and what came
+    /// during it is taken in after it, in order: a working agent's updates
+    /// follow the copy just read rather than asking for the lists again
+    /// with every word.
     private func schedulePlacesReload() {
         placesDirty = true
         guard placesReload == nil else { return }
         placesReload = Task {
             while placesDirty {
-                try? await Task.sleep(for: .milliseconds(300))
+                let due = max(.now + .milliseconds(300), placesRead.map { $0 + placesRereadInterval } ?? .now)
+                try? await Task.sleep(until: due, clock: .continuous)
                 guard !Task.isCancelled else { return }
                 placesDirty = false
-                guard let (bots, tasks) = try? await (client.bots(), client.tasks()) else { placesDirty = true; break }
-                guard !Task.isCancelled else { return }
+                placesRead = .now
+                placesHeld = []
+                guard let (bots, tasks) = try? await (client.bots(), client.tasks()) else { placesHeld = nil; placesDirty = true; break }
+                guard !Task.isCancelled else { placesHeld = nil; return }
                 adoptPlaces(bots: bots, tasks: tasks)
+                let held = placesHeld ?? []
+                placesHeld = nil
+                for event in held { receive(event) }
             }
             placesReload = nil
         }
@@ -460,9 +523,34 @@ public actor Store {
 
     private func adoptPlaces(bots: [JSONValue], tasks: [JSONValue]) {
         self.bots = bots; self.tasks = tasks
+        placesLoaded = true
         for owner in bots + tasks { if let agent = owner["agent"] { agents.absorb(agent) } }
         rebuildPlaces()
         publish()
+    }
+
+    /// A new task from its own events, as home takes it (`HomeEvent`):
+    /// `task.created` carries the whole task, kept until `task.joined`
+    /// puts it at its order key in the person's list. False for what needs
+    /// the lists read: a join of a task no event told of, or one already
+    /// held, which moves it.
+    private func joinWithoutRead(_ type: String, _ payload: JSONValue) -> Bool {
+        if type == "task.created" {
+            guard let task = payload["task"], let id = task["id"]?.stringValue,
+                  !tasks.contains(where: { $0["id"]?.stringValue == id }) else { return false }
+            announcedTasks[id] = task
+            return true
+        }
+        guard let membership = payload["membership"], let id = membership["taskId"]?.stringValue, let key = membership["orderKey"]?.stringValue,
+              !tasks.contains(where: { $0["id"]?.stringValue == id }),
+              var task = announcedTasks.removeValue(forKey: id)?.objectValue else { return false }
+        task["membership"] = membership
+        let index = tasks.firstIndex { ($0["membership"]?["orderKey"]?.stringValue ?? "") > key } ?? tasks.endIndex
+        tasks.insert(.object(task), at: index)
+        if let agent = task["agent"] { agents.absorb(agent) }
+        rebuildPlaces()
+        publish()
+        return true
     }
 
     /// The bots and tasks, each with its conversation composed from the newest copies.
@@ -491,6 +579,7 @@ public actor Store {
                 let read: References.Artifact?
                 var page: References.Page?
                 var app: Int?
+                var genUI: References.GenUI?
                 do {
                     let object = try await client.artifact(id)
                     read = References.artifact(object)
@@ -501,22 +590,37 @@ public actor Store {
                        (try? await client.artifactPage(id, version: entry.version, path: entry.path))?.mode == .app {
                         app = entry.version
                     }
+                    if let version = References.genUIVersion(object) {
+                        genUI = await Self.genUI(client, artifactId: id, version: version)
+                    }
                 } catch AgentClientError.status(404, _, _) {
                     read = .missing
                 } catch {
                     read = nil
                 }
-                await artifactRead(id, read, page: page, app: app)
+                await artifactRead(id, read, page: page, app: app, genUI: genUI)
             }
         }
     }
 
-    private func artifactRead(_ id: String, _ read: References.Artifact?, page: References.Page?, app: Int?) {
+    /// A `gen_ui` version's render document (`GenUIRenderDocument.path`),
+    /// read and parsed here, off the main thread, with the agent that made
+    /// the version; nil when the document can't be had. A version that
+    /// can't be read names no agent, and its actions that need one are
+    /// drawn disabled.
+    private static func genUI(_ client: AgentClient, artifactId: String, version: Int) async -> References.GenUI? {
+        async let read = try? client.artifactVersion(artifactId, version: version)
+        guard let data = try? await client.genUIRender(artifactId, version: version), let document = GenUIRenderDocument.parse(data) else { return nil }
+        return References.GenUI(version: version, document: document, origin: await read?.origin)
+    }
+
+    private func artifactRead(_ id: String, _ read: References.Artifact?, page: References.Page?, app: Int?, genUI: References.GenUI?) {
         artifactReads.remove(id)
         guard let read else { return }
         artifactTitles[id] = read
         artifactPages[id] = page
         artifactApps[id] = app
+        artifactGenUI[id] = genUI
         publish()
     }
 
@@ -632,15 +736,27 @@ public actor Store {
                 if agents.drawn(id) != drawn { followAgentsSoon() }
                 return
             }
+            if placesHeld != nil { placesHeld?.append(event); return }
             schedulePlacesReload()
         case "agent.created":
             if let agent = payload["agent"] { agents.created(agent); rebuildPlaces() }
         case "bot.created", "bot.updated", "task.created", "task.updated", "task.joined", "task.left":
+            if type == "task.created" || type == "task.joined", placesLoaded, placesHeld == nil, joinWithoutRead(type, payload) { return }
             if let membership = payload["membership"] { adoptMembership(membership) }
+            if placesHeld != nil { placesHeld?.append(event); return }
             schedulePlacesReload()
         case "task.membership.updated":
             guard let membership = payload["membership"] else { return }
             adoptMembership(membership)
+        case "task.removed":
+            // Deleted for good, its memberships with it, as home takes it
+            // (`HomeEvent`); a read on its way may still hold it.
+            guard let id = payload["taskId"]?.stringValue else { return }
+            if placesHeld != nil { placesHeld?.append(event) }
+            announcedTasks[id] = nil
+            tasks.removeAll { $0["id"]?.stringValue == id }
+            rebuildPlaces()
+            publish()
         case "profile.updated":
             // Names changed somewhere: the ones held are read again.
             let held = Array(userNames.keys)
@@ -674,8 +790,9 @@ public actor Store {
             if type == "artifact.deleted" || changes["status"]?.stringValue == "deleted" {
                 artifactPages[id] = nil
                 artifactApps[id] = nil
-            } else if case .active(_, "html", _) = held {
-                // A page shown inline follows its latest version, entry and display.
+                artifactGenUI[id] = nil
+            } else if case .active(_, let kind, _) = held, kind == "html" || kind == "gen_ui" {
+                // A page or Gen UI shown inline follows its latest version and display.
                 read(artifacts: [id])
             }
 
@@ -775,6 +892,8 @@ public actor Store {
         references.artifacts = artifactTitles
         references.pages = artifactPages
         references.apps = artifactApps
+        references.genUI = artifactGenUI
+        references.genUIServed = GenUIServed(capabilities)
         references.users = userNames
         references.me = me
         references.missingUsers = usersMissing

@@ -13,7 +13,8 @@ import UniformTypeIdentifiers
 /// gives it back once the menu, and whatever it opened, is done. The draft,
 /// its selection and what already waits in the composer stay as they were;
 /// only a send from the menu changes them, taking its picks and its caption
-/// into the composer and sending as the composer's own button does.
+/// into the composer and sending as the composer's own button does, or the
+/// menu's count, which takes them into the composer without sending.
 @MainActor
 final class AttachMenuPresenter: NSObject {
     /// What the presenter reads from and hands back to the composer it serves.
@@ -64,6 +65,7 @@ final class AttachMenuPresenter: NSObject {
             case .photo(let photo): take(photo)
             case .files: presentFiles()
             case let .send(ids, caption): send(ids, caption: caption, from: library)
+            case let .stage(ids, caption): stage(ids, caption: caption, from: library)
             }
         }
         sheet.onCaption = { [weak self] text in self?.composer.setText(text) }
@@ -126,6 +128,16 @@ final class AttachMenuPresenter: NSObject {
             composer.send()
             settle(added: false)
         }
+    }
+
+    /// Confirmed with the menu's count: its picks show in the composer as a
+    /// send's do, the caption is the composer's text, and the composer has
+    /// the keyboard, to send them with its own button.
+    func stage(_ ids: [String], caption: String, from library: AttachLibrary) {
+        composer.setText(caption)
+        keyboardOwed = true
+        settle(added: true)
+        Task { await pictures.add(library: ids, from: library) }
     }
 
     /// The full camera on its own, where the menu couldn't open it.

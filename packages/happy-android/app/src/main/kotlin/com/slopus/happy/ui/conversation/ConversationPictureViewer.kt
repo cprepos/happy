@@ -6,8 +6,8 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.media.MediaDataSource
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.LinearOutSlowInEasing
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.Easing
 import androidx.compose.animation.core.VectorConverter
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.spring
@@ -21,7 +21,9 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.WindowInsets
+import android.view.WindowManager
 import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.only
@@ -73,6 +75,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
@@ -83,6 +86,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.semantics
@@ -110,7 +115,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import java.io.File
-import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
@@ -126,18 +130,22 @@ object PictureViewerTags {
     const val PLAY = "conversation.picture.viewer.play"
 }
 
-/** The viewer's motion, iOS's PictureViewController. */
+/** The viewer's motion, iOS's PictureViewController at Telegram's PhotoViewer pace. */
 object PictureViewerSpec {
-    /** The cross-dissolve it comes and goes with. */
-    const val FADE_MS = 250
+    /**
+     * Out of its thumbnail and back, faded or flung away alike: Telegram's
+     * PhotoViewer opens and closes in about 200 ms on a decelerating curve.
+     */
+    const val MOTION_MS = 220
+    /** UIKit's `.curveEaseOut`, both ways. */
+    val easing: Easing = CubicBezierEasing(0f, 0f, 0.58f, 1f)
+    /** A double tap's zoom in or out. */
+    const val ZOOM_MS = 250
     /** The longest it waits for its window to show before it begins anyway. */
     const val SHOW_WAIT_MS = 1_500L
     /** Let go short of closing, it springs back (UIKit's 0.35 s, damping 0.85). */
     const val SPRING_DAMPING = 0.85f
     const val SPRING_STIFFNESS = 322f
-    /** Flung away, it carries on off the screen in 0.15 to 0.3 s. */
-    const val LEAVE_MIN_MS = 150
-    const val LEAVE_MAX_MS = 300
     const val MAX_ZOOM = 5f
     /** A double tap zooms a whole picture to this. */
     const val DOUBLE_TAP_ZOOM = 2.5f
@@ -151,6 +159,12 @@ object PictureViewerSpec {
 interface ViewerSource {
     /** The bytes already at hand, shown from the first frame. */
     fun cached(key: String): ByteArray? = null
+
+    /** A small picture already decoded (a gallery's thumbnail), drawn while the bytes are read. */
+    fun thumbnail(key: String): ImageBitmap? = null
+
+    /** Which making of the picture this is: read as state, a new one (an edit) is read and drawn again. */
+    fun revision(key: String): Int = 0
 
     /** A picture's bytes; null when they can't be had. */
     suspend fun bytes(key: String): ByteArray?
@@ -177,18 +191,35 @@ interface ViewerSource {
  * ([PictureDismissal]); let go past 100 dp or flung, it carries on off the
  * screen and the viewer goes, otherwise it springs back. A recording plays
  * in its page while it is the one in view ([VideoPage]). It comes and goes
- * with a 250 ms fade; Back, a tap on a picture or the close button (44, 8
+ * in 220 ms on one ease-out curve, flung away too; Back, a tap on a picture or the close button (44, 8
  * in from the safe area's top right) leaves. A source that shares adds a
- * Share button at the top left. The position ("2 of 5") is the page's
- * state for TalkBack, as iOS gives it to VoiceOver.
+ * Share button at the top left. A [corner] (the attach sheet's check, as
+ * iOS's `AttachPreviewViewController` has it) takes the top right for the
+ * picture in view, and the close button moves to the top left. A
+ * [bottom] (the attach sheet's caption and edits, Telegram's
+ * `PhotoViewer` picking) reserves its measured height below the picture,
+ * including the caption keyboard, and supplies the viewer's Back. [onImageTap]
+ * lets the picker toggle selection instead of closing the viewer. The
+ * position ("2 of 5") is the page's state for TalkBack, as iOS gives it to
+ * VoiceOver.
  */
 @Composable
-fun PictureViewer(items: List<ViewerItem>, index: Int, source: ViewerSource, onClose: () -> Unit) {
+fun PictureViewer(
+    items: List<ViewerItem>,
+    index: Int,
+    source: ViewerSource,
+    corner: (@Composable (item: ViewerItem, modifier: Modifier) -> Unit)? = null,
+    bottom: (@Composable (item: ViewerItem, modifier: Modifier, onBack: () -> Unit) -> Unit)? = null,
+    onImageTap: ((ViewerItem) -> Unit)? = null,
+    onClose: () -> Unit,
+) {
     if (items.isEmpty()) return
     val scope = rememberCoroutineScope()
     val shown = remember { Animatable(0f) }
     val leave by rememberUpdatedState(onClose)
     val showing by rememberUpdatedState(items)
+    val tapImage by rememberUpdatedState(onImageTap)
+    var footHeight by remember { mutableIntStateOf(0) }
     val origins = ViewerOrigins.Shared
     val pager = rememberPagerState(initialPage = index.coerceIn(0, items.lastIndex)) { items.size }
     val zooms = remember(items) { List(items.size) { PageZoom() } }
@@ -220,9 +251,9 @@ fun PictureViewer(items: List<ViewerItem>, index: Int, source: ViewerSource, onC
                 scope.launch {
                     coroutineScope {
                         if (target != null && motion.drag != Offset.Zero) launch {
-                            animate(Offset.VectorConverter, motion.drag, Offset.Zero, animationSpec = tween(PictureViewerSpec.FADE_MS, easing = FastOutSlowInEasing)) { value, _ -> motion.drag = value }
+                            animate(Offset.VectorConverter, motion.drag, Offset.Zero, animationSpec = tween(PictureViewerSpec.MOTION_MS, easing = PictureViewerSpec.easing)) { value, _ -> motion.drag = value }
                         }
-                        shown.animateTo(0f, tween(PictureViewerSpec.FADE_MS, easing = FastOutSlowInEasing))
+                        shown.animateTo(0f, tween(PictureViewerSpec.MOTION_MS, easing = PictureViewerSpec.easing))
                     }
                     // Under the picture where it landed, the thumbnail is back, and drawn, before the viewer goes.
                     origins.hidden?.let { key ->
@@ -250,7 +281,7 @@ fun PictureViewer(items: List<ViewerItem>, index: Int, source: ViewerSource, onC
         // Its window takes a few frames to come: the thumbnail stays until the picture is there over it, then goes.
         snapshotFlow { flight.screen != null && flight.visible }.first { it }
         if (flight.origin != null && !motion.leaving) origins.hidden = items[pager.currentPage].key
-        shown.animateTo(1f, tween(PictureViewerSpec.FADE_MS, easing = LinearOutSlowInEasing))
+        shown.animateTo(1f, tween(PictureViewerSpec.MOTION_MS, easing = PictureViewerSpec.easing))
     }
     // Paged to another, its thumbnail is the one hidden.
     LaunchedEffect(pager.currentPage) {
@@ -270,6 +301,9 @@ fun PictureViewer(items: List<ViewerItem>, index: Int, source: ViewerSource, onC
             // It comes and goes by its own motion, not the system's dialog fade over it.
             window?.setWindowAnimations(0)
             window?.let { WindowCompat.getInsetsController(it, it.decorView).isAppearanceLightStatusBars = false }
+            window?.let { WindowCompat.getInsetsController(it, it.decorView).isAppearanceLightNavigationBars = false }
+            @Suppress("DEPRECATION")
+            if (bottom != null) window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         }
         // Its window has focus once the system shows it, a while after it is laid out on a slow phone; not before is the flight begun.
         val view = LocalView.current
@@ -286,6 +320,15 @@ fun PictureViewer(items: List<ViewerItem>, index: Int, source: ViewerSource, onC
             flight.visible = true
         }
         val density = LocalDensity.current
+        val focus = LocalFocusManager.current
+        val keyboard = LocalSoftwareKeyboardController.current
+        val typing = bottom != null && WindowInsets.ime.getBottom(density) > 0
+        LaunchedEffect(motion.leaving) {
+            if (motion.leaving && bottom != null) {
+                focus.clearFocus(force = true)
+                keyboard?.hide()
+            }
+        }
         motion.density = density.density
         val pages by remember(items) {
             derivedStateOf { PictureViewing.pages(zooms.getOrNull(pager.currentPage)?.zoomed == true, motion.drag != Offset.Zero || motion.leaving) }
@@ -304,7 +347,7 @@ fun PictureViewer(items: List<ViewerItem>, index: Int, source: ViewerSource, onC
         ) {
             HorizontalPager(
                 state = pager,
-                modifier = Modifier.fillMaxSize().testTag(PictureViewerTags.PAGER),
+                modifier = Modifier.fillMaxSize().padding(bottom = with(density) { footHeight.toDp() }).testTag(PictureViewerTags.PAGER),
                 pageSpacing = PictureViewing.PAGE_GAP.dp,
                 beyondViewportPageCount = 1,
                 userScrollEnabled = pages,
@@ -339,24 +382,35 @@ fun PictureViewer(items: List<ViewerItem>, index: Int, source: ViewerSource, onC
                         val zoom = zooms[page]
                         // Turned away from, a page is whole again when it comes back.
                         LaunchedEffect(pager.settledPage == page) { if (pager.settledPage != page) zoom.reset() }
-                        PicturePage(item, source, zoom, current, motion, scope, flight.takeIf { flying }, { shown.value }, onTap = close)
+                        PicturePage(item, source, zoom, current, motion, scope, flight.takeIf { flying }, { shown.value }, reservedFoot = bottom != null, onTap = {
+                            val select = tapImage
+                            if (select != null) select(item)
+                            else if (typing) {
+                                focus.clearFocus(force = true)
+                                keyboard?.hide()
+                            } else close()
+                        })
                     }
                 }
             }
             val controls = Modifier.graphicsLayer { alpha = min(shown.value, motion.dismissal().groundAlpha) }
+            val safe = WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal)
+            fun Modifier.corner(alignment: Alignment) = align(alignment)
+                .windowInsetsPadding(safe)
+                .padding(PictureViewing.CLOSE_INSET.dp)
+                .size(PictureViewing.CLOSE_SIZE.dp)
             if (source.shares) ShareButton(source, items[pager.currentPage], controls.align(Alignment.TopStart))
-            IconButton(
+            if (bottom == null) IconButton(
                 onClick = close,
                 colors = IconButtonDefaults.iconButtonColors(contentColor = Color.White),
                 modifier = controls
-                    .align(Alignment.TopEnd)
-                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))
-                    .padding(PictureViewing.CLOSE_INSET.dp)
-                    .size(PictureViewing.CLOSE_SIZE.dp)
+                    .corner(if (corner != null) Alignment.TopStart else Alignment.TopEnd)
                     .testTag(PictureViewerTags.CLOSE),
             ) {
                 Icon(MaterialSymbols.Close, stringResource(R.string.conversation_picture_close))
             }
+            corner?.invoke(items[pager.currentPage], controls.corner(Alignment.TopEnd))
+            bottom?.invoke(items[pager.currentPage], controls.align(Alignment.BottomCenter).onSizeChanged { footHeight = it.height }, close)
         }
     }
 }
@@ -376,7 +430,7 @@ fun PictureViewer(bytes: ByteArray, cacheKey: String, name: String?, onClose: ()
             override suspend fun bytes(key: String) = bytes
         }
     }
-    PictureViewer(listOf(ViewerItem(cacheKey, name)), 0, source, onClose)
+    PictureViewer(listOf(ViewerItem(cacheKey, name)), 0, source, onClose = onClose)
 }
 
 /**
@@ -415,10 +469,7 @@ internal class ViewerMotion(private val scope: CoroutineScope, private val onClo
                 leaving = true
                 val down = if (velocityY == 0f) drag.y >= 0 else velocityY > 0
                 val distance = height.toFloat()
-                val remaining = max(1f, distance - abs(drag.y))
-                val ms = (remaining / max(abs(velocityY), 1f) * 1000).toInt()
-                    .coerceIn(PictureViewerSpec.LEAVE_MIN_MS, PictureViewerSpec.LEAVE_MAX_MS)
-                animate(Offset.VectorConverter, drag, Offset(drag.x, if (down) distance else -distance), animationSpec = tween(ms, easing = LinearOutSlowInEasing)) { value, _ ->
+                animate(Offset.VectorConverter, drag, Offset(drag.x, if (down) distance else -distance), animationSpec = tween(PictureViewerSpec.MOTION_MS, easing = PictureViewerSpec.easing)) { value, _ ->
                     drag = value
                 }
                 onClose()
@@ -492,7 +543,7 @@ internal class PageZoom {
         val to = if (from > 1f) 1f else PictureViewerSpec.DOUBLE_TAP_ZOOM
         val start = offset
         val end = if (to == 1f) Offset.Zero else clamp((middle - point) * (to - 1), to)
-        animate(0f, 1f, animationSpec = tween(PictureViewerSpec.FADE_MS)) { t, _ ->
+        animate(0f, 1f, animationSpec = tween(PictureViewerSpec.ZOOM_MS)) { t, _ ->
             scale = from + (to - from) * t
             offset = start + (end - start) * t
         }
@@ -568,13 +619,16 @@ private fun PicturePage(
     scope: CoroutineScope,
     flight: ViewerFlight?,
     progress: () -> Float,
+    reservedFoot: Boolean = false,
     onTap: () -> Unit,
 ) {
-    // Decoded once per page, not on every recomposition.
-    val initial = remember(item.key) { source.cached(item.key) }
-    val bytes by produceState(initial, item.key) {
-        if (value == null) {
-            value = try {
+    // Decoded once per page and making of it, not on every recomposition.
+    val revision = source.revision(item.key)
+    val initial = remember(item.key, revision) { source.cached(item.key) }
+    // The bytes with the making they are of, so a new one is never cached under the old one's key.
+    val loaded by produceState<Pair<Int, ByteArray?>?>(initial?.let { revision to it }, item.key, revision) {
+        if (value?.first != revision || value?.second == null) {
+            value = revision to try {
                 source.bytes(item.key)
             } catch (e: CancellationException) {
                 throw e
@@ -583,12 +637,14 @@ private fun PicturePage(
             }
         }
     }
+    val bytes = loaded?.second
+    val made = loaded?.first ?: 0
     // The thumbnail it flies out of, as the chat drew it, until its own bytes are read; else its thumbhash.
-    val placeholder = rememberMemoryImage(item.key) ?: rememberThumbHash(item.thumbhash)
+    val placeholder = (if (revision == 0) rememberMemoryImage(item.key) else null) ?: remember(item.key, revision) { source.thumbnail(item.key) } ?: rememberThumbHash(item.thumbhash)
     val read = remember(bytes) { bytes?.let(::pictureSize)?.let { image -> image.width?.let { w -> image.height?.let { h -> w to h } } } }
     val density = LocalDensity.current
     val direction = LocalLayoutDirection.current
-    val insets = WindowInsets.safeDrawing
+    val insets = if (reservedFoot) WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal) else WindowInsets.safeDrawing
     BoxWithConstraints(
         Modifier
             .fillMaxSize()
@@ -597,10 +653,10 @@ private fun PicturePage(
     ) {
         val safe = with(density) {
             PictureViewing.Insets(
-                left = insets.getLeft(this, direction).toDp().value,
-                top = insets.getTop(this).toDp().value,
-                right = insets.getRight(this, direction).toDp().value,
-                bottom = insets.getBottom(this).toDp().value,
+                left = max(insets.getLeft(this, direction).toDp().value, if (reservedFoot) 12f else 0f),
+                top = insets.getTop(this).toDp().value + if (reservedFoot) 56f else 0f,
+                right = max(insets.getRight(this, direction).toDp().value, if (reservedFoot) 12f else 0f),
+                bottom = if (reservedFoot) 12f else insets.getBottom(this).toDp().value,
             )
         }
         val natural = read ?: PictureViewing.restingSize(item, hashedRatio(item.thumbhash), max(maxWidth.value, maxHeight.value))
@@ -634,7 +690,7 @@ private fun PicturePage(
             when {
                 shown != null -> RemoteImage(
                     model = shown,
-                    cacheKey = item.key,
+                    cacheKey = if (made == 0) item.key else "${item.key}#$made",
                     contentDescription = item.label,
                     contentScale = ContentScale.Fit,
                     placeholder = placeholder,
@@ -708,5 +764,5 @@ class PictureViewerState {
 internal fun PictureViewerHost(state: PictureViewerState, store: ConversationMediaStore) {
     val showing = state.showing ?: return
     val source = remember(showing, store) { ConversationViewerSource(showing.entries, store) }
-    PictureViewer(remember(showing) { showing.entries.map { it.item } }, showing.index, source, state::close)
+    PictureViewer(remember(showing) { showing.entries.map { it.item } }, showing.index, source, onClose = state::close)
 }

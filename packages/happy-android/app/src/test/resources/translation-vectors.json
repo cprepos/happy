@@ -1,4 +1,4 @@
-{"sources":{"en.json":"b2f46315bd3ab620f43d388c0697158f3db501f3e25a8b368a65cdd8bab5c98f","ru.json":"ffb360a57e59c7c11923d00cd9b458e541cc3cab2c3f086f844ea63d29e89f2b","pl.json":"6c7a2f9843c11a714d888f1b7e80c048e2808f3bcfdd689d4afffd986bfc1018","es.json":"e2ca2191b8ed1d289760c1ec91babaee5fcc81c38e9ca49277e4c8a34d76c0ba","it.json":"c3a66349ce35ac841489d40da96106875bfa79c4af2ad7c575dcc7e43766479b","pt.json":"a117ad1b23ed0139e5b5648507d2f38cd3eeab795cc8f3fc80ec998cdb5b08d9","ca.json":"57c2ba51c8dd8aeb41171d0eaec48a16a41dfd269c4dc7f23136ce1a9c33c5ef","zh-Hans.json":"0c0a046c1facf0d4c16ad935faa54f211d051cee631a4de8ced635c2e358a6c6","zh-Hant.json":"a56bc3cbf58a79027735414fc62721ff6a0af82b3cb1c58a96715e71252b27e0","ja.json":"834a6d8e5b2edd21dd02eeb27c9702f98dabf2458303cd832f7044d65e830c35","parameters.json":"366630ad54f3b289b95b918bb4953cb75200a7b38368699198e0049cdbcdfbc4"},
+{"sources":{"en.json":"86ef6e9a99586076756c58288b1116f40eabe751acf72d0e4798454252af75d1","ru.json":"92b8a7c937fca03dff4d43ed6f6e425cda1b4e6a60033eb9a07025f6e8c84871","pl.json":"8c59dd95f90da5b0bb8820aea15add51d84bfab56ca0a2dc04e3af0cb359954e","es.json":"e0c1bc8672f2210465c68182085a34e940e1b679a25b28b64d2e34b8cd507f65","it.json":"e30bc7bb3de318c51034c8e22975b11c7fb8e8ade36fbc804bcda4c2440cd1ab","pt.json":"0c49a5e42ae00fba236f66c1e56804d5320bef9802437ae5fe728aa3de689690","ca.json":"a989cafa1010dbe44f2766121a050fc23d09517ad4fdc5205152e3c23c2bf771","zh-Hans.json":"3213eb3cda31c4c33555473394c14d13c7b2ec9ffb7ac4f2d79c6fb616abc887","zh-Hant.json":"1bb073c2686b6e134286cb8f2b34b92ba8aeafb78bf57de0311052a20fcfefd4","ja.json":"00b0187829c3289551f46d7acfd58d61087938930a646037cee8bc7af71e90c6","parameters.json":"366630ad54f3b289b95b918bb4953cb75200a7b38368699198e0049cdbcdfbc4"},
 "keys":{
 "voiceStatusBar.tapToEnd":{"name":"voice_status_bar_tap_to_end","kind":"string","value":"tap to end"},
 "voiceStatusBar.connecting":{"name":"voice_status_bar_connecting","kind":"string","value":"Connecting…"},
@@ -905,8 +905,8 @@
 "newWork.task":{"name":"new_work_task","kind":"string","value":"Task"},
 "newWork.bot":{"name":"new_work_bot","kind":"string","value":"Bot"},
 "newWork.name":{"name":"new_work_name","kind":"string","value":"Name (optional)"},
-"newWork.taskNote":{"name":"new_work_task_note","kind":"string","value":"A task names itself from its first message unless you name it."},
-"newWork.botNote":{"name":"new_work_bot_note","kind":"string","value":"A bot is one lasting conversation with a folder of its own."},
+"newWork.taskNote":{"name":"new_work_task_note","kind":"string","value":"A task is one piece of work, big or small. It can reach across several projects and hand parts off to subtasks."},
+"newWork.botNote":{"name":"new_work_bot_note","kind":"string","value":"A bot is like a colleague: one lasting conversation with a folder of its own. Tell it what to do in your first message."},
 "newWork.taskFailed":{"name":"new_work_task_failed","kind":"format","params":["reason"]},
 "newWork.botFailed":{"name":"new_work_bot_failed","kind":"format","params":["reason"]},
 "agentInput.permissionMode.opencodeAsk":{"name":"agent_input_permission_mode_opencode_ask","kind":"string","value":"asks before tools that need permission"},

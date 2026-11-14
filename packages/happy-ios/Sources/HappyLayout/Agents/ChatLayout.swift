@@ -278,8 +278,6 @@ public struct MessageLayout: Equatable, Sendable {
         case markdown([MarkdownLayout.Block])
         /// A tool call's pictures and recordings; `columns` 0 is justified rows.
         case media([MediaLayout.Item], columns: Int)
-        /// A `media` component's items.
-        case mediaRows([MediaRows.Item])
         /// A layout the agent wrote for media it showed.
         case tree([MediaTreeLayout.Box])
         /// A document, file or artifact: one card across the column.
@@ -290,23 +288,17 @@ public struct MessageLayout: Equatable, Sendable {
         case page(height: CGFloat)
         /// A sidebar Prioritizing proposed, at the column's left.
         case proposal(SidebarProposalLayout.Input)
-        /// A chat UI component, at the column's left.
-        case ui(ChatUiLayout.Input)
     }
 
     public enum Placed: Equatable, Sendable {
         case markdown(MarkdownLayout, origin: CGPoint)
         /// One frame per item, in the items' order.
         case media([CGRect])
-        /// Its tiles are `layout`'s, from `origin`.
-        case mediaRows(MediaRows, origin: CGPoint)
         case tree(MediaTreeLayout, origin: CGPoint)
         case card(CGRect)
         case page(CGRect)
         /// The card's frame; its insides are `layout`'s, from the frame's origin.
         case proposal(SidebarProposalLayout, frame: CGRect)
-        /// Its insides are `layout`'s, from `origin`.
-        case ui(ChatUiLayout, origin: CGPoint)
     }
 
     public var size: CGSize
@@ -341,12 +333,17 @@ public struct MessageLayout: Equatable, Sendable {
         agent(width: width, maxContentWidth: maxContentWidth, parts: [.markdown(blocks)])
     }
 
+    /// How wide an agent message's runs are in a row `width` wide.
+    public static func agentInner(width: CGFloat, maxContentWidth: CGFloat = .greatestFiniteMagnitude) -> CGFloat {
+        max(0, ChatColumn(rowWidth: width, maxContentWidth: maxContentWidth).width - 2 * Metrics.marginH)
+    }
+
     /// The runs one under another, 8 apart, in the reading column, from
     /// `top` down, `bottom` left under the last.
     public static func agent(width: CGFloat, maxContentWidth: CGFloat = .greatestFiniteMagnitude, parts: [Part], top: CGFloat = Metrics.marginV, bottom: CGFloat = Metrics.marginV) -> MessageLayout {
         typealias M = Metrics
         let column = ChatColumn(rowWidth: width, maxContentWidth: maxContentWidth)
-        let inner = max(0, column.width - 2 * M.marginH)
+        let inner = agentInner(width: width, maxContentWidth: maxContentWidth)
         let left = column.x + M.marginH
         var y = top
         var placed: [Placed] = []
@@ -361,10 +358,6 @@ public struct MessageLayout: Equatable, Sendable {
                 let media = MediaLayout(width: inner, items: items, columns: columns)
                 placed.append(.media(media.frames.map { $0.offsetBy(dx: left, dy: y) }))
                 y += media.size.height
-            case .mediaRows(let items):
-                let rows = MediaRows(width: inner, items: items)
-                placed.append(.mediaRows(rows, origin: CGPoint(x: left, y: y)))
-                y += rows.size.height
             case .tree(let boxes):
                 let tree = MediaTreeLayout(width: inner, root: boxes)
                 placed.append(.tree(tree, origin: CGPoint(x: left, y: y)))
@@ -380,10 +373,6 @@ public struct MessageLayout: Equatable, Sendable {
                 let proposal = SidebarProposalLayout(width: inner, input: input)
                 placed.append(.proposal(proposal, frame: CGRect(origin: CGPoint(x: left, y: y), size: proposal.size)))
                 y += proposal.size.height
-            case .ui(let input):
-                let ui = ChatUiLayout(width: inner, input: input)
-                placed.append(.ui(ui, origin: CGPoint(x: left, y: y)))
-                y += ui.size.height
             }
         }
         return MessageLayout(size: CGSize(width: max(0, width), height: y + bottom), parts: placed, bubble: nil, text: nil, pictures: [], status: nil)

@@ -29,6 +29,7 @@ import com.slopus.happy.ui.setHappyContent
 import com.slopus.happy.ui.start.StartGalleryTags
 import com.slopus.happy.ui.start.StartSlide
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.height
 import androidx.compose.ui.unit.width
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -63,12 +64,13 @@ class CloudWelcomeTest {
             joins = joins,
             image = { null },
             onOpenBrowser = { taps += "browser ${it.id}" },
+            onSignInWithGoogle = { taps += "google" },
+            onEmail = { taps += "email" },
             signInWithPassword = { login, password -> tries += login to password; answers.removeFirst() },
             onReload = {},
             onJoinServer = { taps += "join ${it.name}" },
             onContinue = { taps += "continue" },
             onCreate = { taps += "create" },
-            onInvite = { taps += "invite" },
             onSignOut = { taps += "signOut" },
             onBack = { taps += "back" },
         )
@@ -86,9 +88,13 @@ class CloudWelcomeTest {
         rule.mainClock.autoAdvance = true
     }
 
-    /** Desktop's five slides in its order, with its words (the first in Liquid Metal), then Sign in with Apple and with GitHub in the first screen's two places. */
+    /**
+     * Desktop's five slides in its order, with its words (the first in Liquid
+     * Metal), then Sign in with Apple and with GitHub in the first screen's
+     * two places, and the quiet Continue with email right under them.
+     */
     @Test
-    fun theWelcomeIsDesktopsSlidesThenAppleAndGitHub() {
+    fun theWelcomeIsDesktopsSlidesThenAppleGitHubAndEmail() {
         assertEquals(StartSlide.Art.Cloud, CloudSlides[0].art)
         assertEquals(
             listOf(R.raw.state_robot, R.raw.state_closed_lock, R.raw.state_sparkles, R.raw.state_open_hands),
@@ -106,23 +112,51 @@ class CloudWelcomeTest {
         rule.node(CloudTags.PRIMARY).assert(hasAnyDescendant(hasText("Sign in with Apple")))
         rule.node(CloudTags.SECONDARY).assert(hasAnyDescendant(hasText("Sign in with GitHub")))
         assertDp("github 12 under apple", apple.bottom + 12.dp, github.top)
-        assertDp("github 24 above the bottom", (891 - 24).dp, github.bottom)
+        val email = rule.node(CloudTags.EMAIL_SIGN_IN).bounds
+        rule.node(CloudTags.EMAIL_SIGN_IN).assert(hasAnyDescendant(hasText("Continue with email")))
+        assertDp("email right under github", github.bottom, email.top)
+        assertDp("email 24 above the bottom", (891 - 24).dp, email.bottom)
         assertDp("as wide as each other", apple.width, github.width)
+        assertDp("email as wide too", apple.width, email.width)
         assertDp("centred", (PHONE_WIDTH / 2f).dp, (apple.left + apple.right) / 2)
         rule.onNodeWithText("Continue").assertDoesNotExist()
         rule.onNodeWithText("Other ways", substring = true).assertDoesNotExist()
         rule.onNodeWithText("Sign in with Apple").performClick()
         rule.onNodeWithText("Sign in with GitHub").performClick()
+        rule.onNodeWithText("Continue with email").performClick()
         rule.node(HeaderTags.LEFT).performClick()
-        assertEquals(listOf("browser apple", "browser github", "back"), taps)
+        assertEquals(listOf("browser apple", "browser github", "email", "back"), taps)
     }
 
-    /** While the code is exchanged neither can be pressed again. */
+    /**
+     * Continue with Google, Google's button (its G, 20, 10 before the words),
+     * 12 over Apple and as wide, a pill as tall as the others; Apple and
+     * GitHub stay where they were.
+     */
     @Test
-    fun whileFinishingBothWait() {
+    fun continueWithGoogleStandsOverApple() {
+        screen()
+        val google = rule.node(CloudTags.GOOGLE).bounds
+        val apple = rule.node(CloudTags.PRIMARY).bounds
+        val github = rule.node(CloudTags.SECONDARY).bounds
+        rule.node(CloudTags.GOOGLE).assert(hasAnyDescendant(hasText("Continue with Google")))
+        assertDp("apple 12 under google", google.bottom + 12.dp, apple.top)
+        assertDp("as tall as apple", apple.height, google.height)
+        assertDp("50 tall", 50.dp, google.height)
+        assertDp("as wide as apple", apple.width, google.width)
+        assertDp("github still right over email", rule.node(CloudTags.EMAIL_SIGN_IN).bounds.top, github.bottom)
+        rule.onNodeWithText("Continue with Google").performClick()
+        assertEquals(listOf("google"), taps)
+    }
+
+    /** While Google's sheet is up or the code is exchanged none can be pressed again. */
+    @Test
+    fun whileFinishingAllWait() {
         screen(CloudAccountState.Finishing)
+        rule.node(CloudTags.GOOGLE).assertIsNotEnabled()
         rule.node(CloudTags.PRIMARY).assertIsNotEnabled()
         rule.node(CloudTags.SECONDARY).assertIsNotEnabled()
+        rule.node(CloudTags.EMAIL_SIGN_IN).assertIsNotEnabled()
     }
 
     /** A failed sign-in stays on the welcome: why, in red over the button, which tries again. */
@@ -199,7 +233,7 @@ class CloudWelcomeTest {
     private val acme = CloudServer(id = "s1", name = "acme", url = "https://acme.happy-clusters.com", displayName = "Acme")
     private val beta = CloudServer(id = "s2", name = "beta", url = "https://beta.happy-clusters.com")
 
-    /** Join a server: each server with Join; Continue only once one is on the phone; the two ways to add one under them. */
+    /** Join a server: each server with Join; Continue only once one is on the phone; Bootstrap a new one under them, and no invite code. */
     @Test
     fun joinAServer() {
         screen(CloudAccountState.SignedIn, servers = listOf(acme, beta))
@@ -209,10 +243,11 @@ class CloudWelcomeTest {
         rule.node(CloudTags.PRIMARY).assertDoesNotExist()
         rule.onNodeWithContentDescription("Join Acme").performClick()
         rule.onNodeWithText("Bootstrap a new one").performClick()
-        rule.onNodeWithText("Join with an invite").performClick()
+        // Invites are links, accepted on the web.
+        rule.onNodeWithText("Join with an invite").assertDoesNotExist()
         // Back leaves the account, so the welcome's Continue can use another.
         rule.node(HeaderTags.LEFT).performClick()
-        assertEquals(listOf("join acme", "create", "invite", "signOut"), taps)
+        assertEquals(listOf("join acme", "create", "signOut"), taps)
     }
 
     @Test
@@ -232,5 +267,16 @@ class CloudWelcomeTest {
         rule.node(CloudTags.CREATE).assertIsNotEnabled()
         rule.node(HeaderTags.LEFT).performClick()
         assertEquals(emptyList<String>(), taps)
+    }
+
+    /** The account's first server: Bootstrap a server says it has none, with no invite to type in. */
+    @Test
+    fun theFirstBootstrapHasNoInvite() {
+        rule.setHappyContent {
+            CloudCreateScreen(name = "", availability = null, busy = false, failure = null, onName = {}, onCreate = {}, onBack = {}, first = true)
+        }
+        rule.onNodeWithText("Bootstrap a server").assertExists()
+        rule.onNodeWithText("Your account has no servers yet. Name your team’s first one.").assertExists()
+        rule.onNodeWithText("Have an invite? Join a server").assertDoesNotExist()
     }
 }

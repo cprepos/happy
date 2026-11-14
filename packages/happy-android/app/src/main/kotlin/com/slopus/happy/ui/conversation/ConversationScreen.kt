@@ -82,6 +82,7 @@ import com.slopus.happy.conversation.NewWork
 import com.slopus.happy.conversation.WorkChoice
 import com.slopus.happy.ui.chat.NewWorkChoicePanel
 import com.slopus.happy.ui.chat.NewWorkRoom
+import com.slopus.happy.ui.chat.art
 import com.slopus.happy.ui.chat.MessageCallbacks
 import com.slopus.happy.ui.chat.SessionStatusColors
 import com.slopus.happy.ui.chat.PrimaryAction
@@ -195,6 +196,8 @@ class ConversationScreenActions(
     val onOpenArtifact: ((com.slopus.happy.conversation.ConversationRow.Artifact) -> Unit)? = null,
     /** HTML artifacts shown inline under their cards; null where none are. */
     val pages: com.slopus.happy.ui.artifacts.InlinePages? = null,
+    /** Gen UI artifacts drawn under their cards; null where none are. */
+    val genUi: com.slopus.happy.ui.genui.GenUiInline? = null,
     /** The newest message is on screen while the app is up: unread clears. */
     val onVisible: (Boolean) -> Unit = {},
     /** How a secret request is made and answered; null where this build cannot. */
@@ -211,10 +214,6 @@ class ConversationScreenActions(
     val onOpenTool: ((String) -> Unit)? = null,
     /** How a workspace's folders read, for naming one of its files from the attach sheet; null where they can't. */
     val workspace: ((workspaceId: String) -> com.slopus.happy.ui.files.WorkspaceSource)? = null,
-    /** Sends a suggested reply ([com.slopus.happy.conversation.Conversation.sendReply]). */
-    val onQuickReply: (ConversationRow.Replies, Int) -> Unit = { _, _ -> },
-    /** Sends a chat UI component's action ([com.slopus.happy.conversation.Conversation.press]). */
-    val onUiAction: (com.slopus.happy.conversation.ui.UiOffer, com.slopus.happy.conversation.ui.UiAction) -> Unit = { _, _ -> },
 )
 
 /**
@@ -254,8 +253,6 @@ fun ConversationScreen(
     roleCanSend: Boolean = true,
     /** The person's role starts new work: the header's compose shows. */
     roleCanCompose: Boolean = true,
-    /** The person's role holds a permission: chat UI's controls they may not use show disabled. */
-    roleAllows: (permission: String) -> Boolean = { true },
 ) {
     RecomposeProbe.mark(ConversationScreenTags.PROBE_SCREEN)
     val colors = HappyTheme.colors
@@ -302,12 +299,6 @@ fun ConversationScreen(
     val videoLabel = stringResource(R.string.artifact_video)
     val folds = remember(listState) { FoldHold(listState) }
     val videos = rememberVideoOpening(store::video)
-    // An archived chat, or one not made yet, takes no presses.
-    val presses by rememberUpdatedState(state.created && state.agent?.archivedAt == null)
-    // A suggested reply is a send: it goes where the composer would, from whoever may write here.
-    val sends by rememberUpdatedState(presses && roleCanSend)
-    val allows by rememberUpdatedState(roleAllows)
-    val catalog by rememberUpdatedState(state.catalog)
     val rowActions = remember(actions, legacy, pictures, media, store, pictureLabel, videoLabel, asks, folds, videos) {
         ConversationRowActions(
             legacy = legacy,
@@ -334,14 +325,7 @@ fun ConversationScreen(
             kept = store.kept,
             videos = videos,
             pages = actions.pages,
-            ui = UiRowActions(
-                reply = { replies, index -> if (sends) actions.onQuickReply(replies, index) },
-                replies = { sends },
-                press = { offer, action -> if (presses) actions.onUiAction(offer, action) },
-                presses = { presses },
-                allowed = { permission -> allows(permission) },
-                catalog = { catalog },
-            ),
+            genUi = actions.genUi,
         )
     }
     val atNewest by remember { derivedStateOf { listState.firstVisibleItemIndex == 0 } }
@@ -543,12 +527,12 @@ fun ConversationScreen(
                             TranscriptPhase.Rows -> Transcript(state, listState, bubble, rowActions, actions.onLoadOlder, top, dockHeight, glass, keyboard, flight, folds)
                         }
                     }
-                    // New work: Task or Bot and a name, centred between the bar and the composer, riding the
-                    // keyboard with it; it fades once the work is made.
+                    // New work: Task or Bot and a name under the kind's picture, centred between the bar and the
+                    // composer, riding the keyboard with it; it fades once the work is made.
                     // As last chosen, for the fade after it is made.
                     val last = remember { arrayOfNulls<NewWork>(1) }
                     (state.newWork?.also { last[0] = it } ?: last[0])?.let { shown ->
-                        NewWorkRoom(state.newWork != null, Modifier.riding(keyboard, 0.5f).padding(top = barFoot).keyboardPadding(keyboard, dockHeight)) {
+                        NewWorkRoom(state.newWork != null, Modifier.riding(keyboard, 0.5f).padding(top = barFoot).keyboardPadding(keyboard, dockHeight), art = shown.choice.kind.art) {
                             NewWorkChoicePanel(shown, onChange = actions.onChoiceChange, onReturn = { nameReturns++ })
                         }
                     }

@@ -1,0 +1,269 @@
+# Quirks of the TS server, reproduced on purpose
+
+Every item here is odd behavior of `packages/happy-server` that the Rust server
+reproduces. Do not fix them without changing both servers.
+
+## HTTP layer
+
+1. **Validation runs before authentication.** Fastify validates params → body →
+   querystring before the `authenticate` preHandler, so an unauthenticated request
+   with a bad body gets 400, not 401. Only the first failing part is reported.
+2. **Validation error body** is `{"error":"Error","message":"body/publicKey Invalid input:
+   expected string, received undefined, body/challenge ...","statusCode":400}`; the
+   path for the root is `body/` (trailing slash, then a space).
+3. **Global JSON parser override.** `connectRoutes` registers its own
+   `application/json` parser for the whole app: an empty body becomes `{}` for
+   POST/PUT/PATCH and `undefined` for DELETE/GET. Invalid JSON returns
+   `{"error":"SyntaxError","message":<V8 JSON.parse message>,"statusCode":400}`.
+4. `text/plain` bodies are accepted (string body → schema error); unknown content
+   types are 415 `{"error":"FastifyError","message":"Unsupported Media Type: <type>"}`.
+5. **No 405.** An unknown method on a known path is the generic 404
+   `{"error":"Not found","path":"<url with query>","method":"<METHOD>"}`.
+6. Uncaught handler errors (bad base64 in `/v1/auth`, unknown feed cursor,
+   `DELETE /v1/connect/:vendor` with nothing to delete) are 500
+   `{"error":"Internal Server Error","message":"An unexpected error occurred","statusCode":500}`.
+7. Routes with a zod response schema strip unknown keys and emit keys in schema
+   order (`/v1/feed` hides `userId`, `counter`, `updatedAt`).
+8. `/v1/updates` without a trailing slash is not Engine.IO; it falls through to the
+   Fastify 404 handler.
+9. **Bad URLs bypass every hook.** A path that `decodeURI` rejects (`%zz`, a
+    truncated escape, overlong UTF-8 such as `%C0%80`, anywhere before `?`) is answered
+    by find-my-way's `onBadUrl`: 400
+    `{"error":"Bad Request","code":"FST_ERR_BAD_URL","message":"'<url incl. query>' is not a valid url component","statusCode":400}`
+    with `content-type: application/json` (no charset) and **no CORS header**.
+10. **Route params follow find-my-way.** A param longer than 100 UTF-16 units makes
+    the whole lookup miss (generic 404 even though the route exists); an empty
+    param matches (`GET /v1/sessions//messages` → "Session not found",
+    `DELETE /v1/sessions/` reaches the handler with `sessionId = ""`). Escapes are
+    decoded with `decodeURI` and then only the reserved characters (`%2F` → `/`,
+    `%25` → `%`, …) inside params.
+11. An `OPTIONS` request without `Origin` + `Access-Control-Request-Method` is 400
+    `Invalid Preflight Request` with `content-type: text/plain` (no charset).
+12. **Response schema failures cascade.** A handler payload that fails its status
+    schema becomes a 500 through the custom error handler; if that 500 payload fails
+    the route's 500 schema too, Fastify's fallback answers
+    `{"statusCode":500,"code":"FST_ERR_FAILED_ERROR_SERIALIZATION","message":"Failed to serialize an error. Error: Response doesn't match the schema. Original error: Response doesn't match the schema"}`.
+    Error-handler payloads (validation 400s, 401s from `authenticate`) also pass
+    through the route's schema for their status code.
+13. Request JSON objects get JS property order: integer-like keys
+    (`"0"`, `"17"`, not `"01"`) move to the front in ascending order, everywhere a
+    body or a jsonb value passes through a JS object.
+
+## Data and timestamps
+
+14. Every Prisma `update`/`updateMany`/`upsert` sets `updatedAt` to the JS clock
+   (millisecond precision). Allocating a user seq therefore bumps
+   `Account.updatedAt`, and allocating a session seq bumps `Session.updatedAt`,
+   which reorders `GET /v1/sessions` (ordered by `updatedAt desc`).
+15. `createdAt`/`updatedAt` on insert are client-side JS timestamps, one `Date` per
+    statement: all rows of one `createManyAndReturn` share a timestamp.
+16. Message `content` read back from Postgres has jsonb key order (`{"c":…,"t":"encrypted"}`),
+    while the realtime `new-message` update carries the in-memory order
+    (`{"t":"encrypted","c":…}`).
+17. Public keys are stored as **uppercase** hex (`@stablelib/hex`).
+18. `POST /v1/sessions` accepts `agentState` in its schema but never stores it.
+19. `GET /v2/sessions`: `cursor=cursor_v1_` (empty id) is ignored rather than
+    rejected; `limit`/`changedSince` use `||` defaults, so `changedSince=0` means "no
+    filter"; a `changedSince` beyond the JS date range (±8.64e15 ms) is a 500.
+20. Prisma validates `Int` filters as INT4: `GET /v3/.../messages?after_seq=3000000000`
+    passes zod (safe integer) and then fails in Prisma → 500.
+21. `POST /v1/usage/query` buckets by the **server's local time zone** (`new Date(y, m, d, h)`),
+    sums with `(acc || 0) + v` (floating point, `0.30000000000000004`), and fails the
+    whole query with 500 `{"error":"Failed to query usage reports"}` as soon as one
+    report's `data.tokens` or `data.cost` is missing or null. `startTime=0` or a
+    missing `groupBy` falls back through `||`.
+22. `POST /v1/auth/request`: a pending request is never updated; the
+    `supportsV2` of the first request wins.
+23. Base64 decoding uses two different decoders: `privacy-kit` (`@stablelib/base64`,
+    throws on bad characters or on inputs shorter than 4 chars) and Node's
+    `Buffer.from(x, 'base64')` (lenient, also accepts base64url) for session/machine
+    data keys and KV creates.
+
+## Sockets
+
+24. The socket `message` handler allocates a user seq **and** a session seq before
+    checking `localId` dedup, so duplicates burn both sequence numbers (session
+    `seq` gaps).
+25. RPC forwarding returns the daemon's first ack argument (`RemoteSocket` uses
+    `expectSingleResponse`), not an array.
+26. An `rpc-call` for a method nobody registered waits the full 15 s reconnect grace
+    window before answering `RPC method not available`.
+27. The Engine.IO path is a prefix: anything under `/v1/updates/` (`/v1/updates/x/y`)
+    is the engine, `/v1/updates` without the slash is a Fastify 404. Upgrade requests
+    outside the engine path are held for 1 s (`destroyUpgradeTimeout`) and then dropped
+    without a response.
+28. A websocket handshake with `EIO≠4` completes the `101` first, then writes the raw
+    `400` HTTP text into the socket and closes it.
+29. A polling POST answers `ok` even when its payload fails to parse (the session is
+    closed anyway); a POST with `Content-Type: application/octet-stream` closes the
+    session and the request never gets an answer. An overlapping GET answers both
+    polls (the pending one with a noop) and kills the session. Methods other than
+    GET/POST get a chunked 500.
+30. JSONP polling (`?j=`) is still on: the head keeps only the digits of `j`
+    (`j=x` → `___eio[](`), the payload is a JS string literal with U+2028/U+2029
+    escaped, POST bodies are form-encoded `d=` (absent or repeated `d` is ignored but
+    still answered `ok`). `X-XSS-Protection: 0` is sent only when the user agent
+    contains `;MSIE` or `Trident/`.
+31. Socket.IO parser: whitespace counts as a type digit and as an ack-id digit
+    (`Number(" ")` is 0); a binary packet announcing zero attachments is emitted at
+    once but leaves the reconstructor armed: the next text packet is a protocol
+    error that closes the connection, and binary frames are swallowed for good.
+32. A CONNECT is answered after the rest of its inbound batch is processed; an EVENT
+    before CONNECT (or a CONNECT after it) closes the whole connection. An unknown
+    namespace gets `44/x,{"message":"Invalid namespace"}` and the connection stays.
+33. Handlers read `data` from `args[0]` and the ack from `args[1]`, so `ping` only acks
+    when the client sent no data; destructuring a nullish argument or calling a
+    non-function ack throws and the event gets no answer.
+34. The RPC target is the socket that joined `rpc:U:<method>` first, not the latest.
+    If no socket matches when the request goes out (the target just closed), the
+    call answers `{ok:true}` with no `result`.
+35. `usage-report` without `sessionId` always answers `Failed to save usage report`:
+    the Prisma compound-unique `where` rejects a null component.
+
+
+## Phase 3 routes
+
+36. **Prisma `startsWith` does not escape wildcards.** `GET /v1/kv?prefix=` is
+    `LIKE prefix || '%'` and `GET /v1/user/search?query=` is `ILIKE query || '%'`:
+    `%` and `_` in the input match anything (`query=%` lists every user with a
+    username). An empty KV prefix is no filter.
+37. **KV base64 depends on the path.** A new key (`version: -1`) is decoded with
+    Node's lenient `Buffer.from(…, 'base64')`; an update uses privacy-kit's decoder,
+    which throws on short or malformed input (→ 500 `Failed to mutate values`). An
+    empty-string value is stored as `null` (deleted) in both paths. `version` is any
+    JS number, so `0.5` or `1e300` simply mismatches (409). Two creates of the same
+    key in one batch pass the pre-check and fail on the unique index (500).
+38. **Feed cursors use `parseInt`.** `0-%203x` reads as 3, `0--5` as -5; `0-`,
+    `0-abc` and values outside the int64 range make Prisma throw (500); anything
+    not starting with `0-` is `Invalid cursor format` (500). `before` wins over
+    `after`. A stored feed body that fails the response schema is a 500.
+39. The `new-feed-post` update carries the body Prisma read back from jsonb
+    (`{"uid":…,"kind":…}`), while `GET /v1/feed` re-serializes it through the zod
+    schema (`{"kind":…,"uid":…}`).
+40. Friend requests notify the receiver at most once per 24 h per direction
+    (`lastNotifiedAt`), never for a `rejected` relationship; adding yourself or an
+    unknown user answers 200 `{"user":null}`, not 404. `GET /v1/friends` has no
+    `ORDER BY` (table order).
+41. `POST /v1/machines` answers without `seq` (both "found" and "created"), the GET
+    routes include it; it emits `new-machine` to user-scoped clients and
+    `update-machine` to the machine and user-scoped clients, each with its own seq.
+    `DELETE /v1/machines/:id` emits `delete-machine` after commit, not awaited.
+42. **Push tokens are never pruned.** A `DeviceNotRegistered` ticket "deletes" its
+    token with `void db.accountPushToken.deleteMany(...)`; Prisma queries are lazy
+    and run only when awaited, so the token stays. A ticket list longer than the
+    token list throws on `tokens[i].id` for such a ticket (`result: "failed"`,
+    reason `Cannot read properties of undefined (reading 'id')`); a `null` ticket
+    throws on `.status` the same way. A non-iterable `data` in Expo's answer, a
+    non-2xx status and bad JSON all become per-message error tickets; a string
+    `data` is spread into one ticket per character.
+43. **`push-event` data order.** The pushed `data` is `{ sessionId, ...data, kind }`:
+    a `sessionId` inside `data` keeps the first position but its value wins, and
+    integer-like keys sort first. Presence suppression needs a user-scoped socket
+    whose last `app-state` was `{ state: "active" }`; any other payload means
+    background.
+44. **GitHub OAuth callback.** Every outcome is a 302 to `https://app.happy.engineering`:
+    `?error=invalid_state`, `?error=server_config`, `?error=<encodeURIComponent(String(error))>`
+    from the token exchange, `?error=github_user_fetch_failed` (only once the user
+    body has parsed as JSON), `?error=server_error` for anything thrown, else
+    `?github=connected&user=<login>` (`user=undefined` without a login). A missing
+    `login` leaves `username` untouched. The avatar is uploaded before the
+    transaction, so a failed connect (say, the username is taken) still leaves the
+    file and its `UploadedFile` row. Uploads are reused by source URL across
+    accounts. Connecting a GitHub id another account holds disconnects that account
+    first. The authorize URL always points at github.com.
+45. **GitHub webhooks.** `500 "Server configuration error"` unless the body went
+    through the JSON parser and is non-empty (no body, `text/plain`, empty JSON);
+    `500 "Webhooks not configured"` unless all six `GITHUB_*` variables are set.
+    A bad signature, a whitespace-only body, a falsy or primitive payload, an empty
+    event name, or a hook that throws (`push` without `repository`/`pusher`,
+    `star.created` without `sender`, a logged field that is an object with a
+    `toString` key, …) is `500 "Internal server error"`. Hooks only log.
+46. **Vendor tokens.** Deleting a token that does not exist is a Prisma P2025, so a
+    generic 500. `GET /v1/connect/tokens` has no `ORDER BY`.
+47. **Voice.** `agentId` goes into the token URL unencoded (`#` cuts it, `&` adds
+    parameters). `conversationLimit` is always 100. Any usage problem (non-2xx, bad
+    JSON, non-array `conversations`, non-boolean `has_more`, a `null` conversation,
+    a duration that is not a finite non-negative number, a missing or repeated
+    cursor, the 15 s deadline) is `500 "Failed to get voice usage"`. Token problems
+    are `"Failed to get voice credentials"`, except a `video.room` without a `conv_…`
+    id: `"Failed to get conversation ID"`.
+
+(Continued as more are found.)
+
+## Known deviations
+
+Differences accepted on purpose. Everything else is a bug.
+
+1. **V8 `JSON.parse` error wording.** The Rust parser reproduces V8's messages and
+   positions for every case in `testdata/json_errors.json` (and the harness); rarer
+   inputs may word an error differently.
+2. **Thumbhash of resized avatars.** The TS server resizes with sharp (libvips)
+   before computing the thumbhash; the Rust server uses the `image` crate. Hashes of
+   the same picture can differ slightly.
+3. **`/metrics` has no Prisma metrics.** The `prisma_*` series do not exist; the
+   application metrics keep their names, labels and buckets.
+4. **Ed25519 non-canonical signatures.** tweetnacl and ed25519-dalek disagree on
+   signatures with a non-reduced `S` scalar; such signatures are rejected by Rust.
+   Real clients never produce them.
+5. **JS infinities in JSON.** `serde_json` cannot hold ±Infinity, so a request
+   number that overflows (`1e400`) is carried as ±1.7976931348623157e308 and treated
+   as infinite. The one literal `1.7976931348623157e308` is therefore also read as
+   Infinity.
+6. **Lone UTF-16 surrogates** in request JSON strings (`"\ud83d"`) become U+FFFD,
+   since Rust strings are UTF-8.
+7. **`GET /files/*` framing.** The TS server streams the file (chunked); the Rust
+   server sends it with `content-length`. Same status, headers otherwise and bytes.
+8. **Failures after commit.** `sessionDelete` runs its after-commit work without
+   awaiting it; if allocating the `delete-session` seq fails, the TS process dies on
+   an unhandled rejection. The Rust server logs the error and keeps running.
+9. **User seqs for `POST /v3/.../messages`.** The TS server allocates one user seq
+   per created message (one `UPDATE` each); the Rust server takes the same
+   consecutive range in one `UPDATE`. The values match (single writer); `Account.updatedAt`
+   is bumped once instead of once per message. This assumes the TS server is never
+   live on the same database at the same time: switching servers is stop one, then
+   start the other. The advisory lock only keeps a second *Rust* instance out.
+   The same holds for **group commit** (`writer.rs`): socket `message` events and v3
+   sends for one session queue behind the write in flight and are written together,
+   in one statement that takes the session seqs, the user seqs and inserts every
+   row, in arrival order. Seqs, burned seqs (duplicate localIds), duplicates inside a
+   batch, v3 responses and updates are those of the TS handlers run one after
+   another (`compat/phase4-batch`); a batch that fails is replayed one message at a
+   time through the TS-shaped code paths. What differs: `Session.updatedAt` and
+   `Account.updatedAt` are bumped once per batch rather than once per message, and
+   messages of one batch become visible together, at its commit.
+10. **Inputs that crash the TS process.** A throw inside a handler's `catch` block,
+    a client-sent `error` event (unhandled EventEmitter `error`), and an `rpc-call`
+    whose `method` is not a string all end the TS process. The Rust server logs the
+    error and drops the event; the connection stays up.
+11. **Two CONNECTs in one batch.** The TS server runs the middleware for both and
+    connects twice; the Rust server connects once and ignores the second.
+12. **Compressed poll bodies.** gzip/deflate is negotiated identically (≥1024 bytes),
+    but miniz and zlib produce different compressed bytes. The decompressed body is
+    the same.
+13. **Raw upgrade aborts.** The hand-written `400` responses of `abortUpgrade` gain a
+    `date` header and lowercase header names.
+14. **Ack order across events.** Handlers that the TS server runs concurrently (not
+    behind a per-socket lock) are spawned as tasks, so acks of *different* events sent
+    together may come back in another order. Events behind the per-socket FIFO
+    (`message`, `usage-report`, `session-subscribe`/`-unsubscribe`) keep their order.
+15. **Avatar thumbhash after a resize.** The thumbhash encoder is the TS one (in
+    doubles) and matches exactly when no resize is needed (≤100 px square). Other
+    sizes are resized with the `image` crate's Lanczos3 rather than libvips (which
+    shrinks, then reduces, in premultiplied alpha), so the low bits of the hash can
+    differ. The placeholder looks the same.
+16. **`avatar_url` schemes.** Only `http:` and `https:` are fetched; Node's `fetch`
+    also reads `data:` URLs.
+17. **Remote debug log file.** With `DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING`
+    the route's answers match, and posted lines go to `.logs/MM-DD-HH-MM-SS.log` in
+    pino's JSON layout. The TS server also copies its own log output into that file
+    at debug level; the Rust server's own logs stay on stdout under `HAPPY_LOG`.
+18. **Console log format.** The levels follow `NODE_ENV` like the TS server (production:
+    errors plus the 30 s `http:summary` line; otherwise debug), but lines are
+    `tracing` output, not pino-pretty, and `HAPPY_LOG` overrides the filter. Stdout is
+    written by a background thread: when it falls 64k lines behind, info/debug lines
+    are dropped (warn and error keep a 1k-line reserve), a
+    `log-writer: dropped N log lines` line follows once the queue drains, and the
+    count is exported as `log_lines_dropped_total` on `/metrics`.
+19. **`/metrics` extras.** `redis_stream_lag_ms` is exported as a constant `0` (there is
+    no Redis stream). `log_lines_dropped_total` and `message_write_batch_size` (items per
+    group-commit batch) exist only in the Rust server.

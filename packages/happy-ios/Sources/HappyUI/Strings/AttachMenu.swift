@@ -23,9 +23,10 @@ extension Strings {
         public static func picked(_ count: Int) -> String { count == 1 ? "1 selected" : "\(count) selected" }
         /// A picture's other action: Telegram opens it, the circle picks it.
         public static let preview = "Preview"
-        /// The caption field while photos are picked (`MediaPicker.AddCaption`).
-        public static let addCaption = "Add a caption..."
         public static let send = "Send"
+        /// The picked count at the top right, which puts them in the
+        /// message rather than sending them.
+        public static let confirmHint = "Adds them to the message"
         /// Telegram's question before a pull or a tap outside drops the picks
         /// (`Attachment.CancelSelectionAlert*`).
         public static let cancelSelection = "Cancel selection?"

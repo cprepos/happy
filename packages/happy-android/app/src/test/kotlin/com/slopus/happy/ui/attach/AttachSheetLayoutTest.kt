@@ -14,7 +14,10 @@ import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.click
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.swipeDown
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.height
@@ -69,6 +72,7 @@ internal fun SheetUnderTest(
     onClose: () -> Unit = {},
     motion: AttachSheetMotion = remember { AttachSheetMotion(settled = true) },
     camera: AttachCameraState? = null,
+    onOpen: (GalleryItem) -> Unit = {},
 ) {
     var tab by remember { mutableStateOf(startTab) }
     var caption by remember { mutableStateOf("") }
@@ -85,8 +89,9 @@ internal fun SheetUnderTest(
         motion = motion,
         onClose = onClose,
         onSend = {},
+        onConfirm = {},
         onToggleGallery = { selection.toggle(it.picked()) },
-        onOpenGallery = {},
+        onOpenGallery = onOpen,
         onToggleFile = { selection.toggle(it.picked()) },
         onAllow = {},
         onManage = {},
@@ -171,9 +176,9 @@ class AttachSheetLayoutTest {
         assertDp("square", side.dp, first.height)
         assertDp("gap", 2, second.left - first.right)
         assertDp("row gap", 2, fourth.top - first.bottom)
-        // The check's 42 corner, top right of its cell.
+        // The check's 48 corner (Telegram's 42, grown to Android's target), top right of its cell.
         val check = checks()[0].bounds
-        assertDp("check touch", 42, check.width)
+        assertDp("check touch", 48, check.width)
         assertDp("check right", first.right, check.right)
         assertDp("check top", first.top, check.top)
         // The grabber 10 under the sheet's top, 24 over the first row.
@@ -212,16 +217,71 @@ class AttachSheetLayoutTest {
         rule.onNodeWithText("2 selected").assertIsDisplayed()
         // The sheet grew 26 at its top for the header; the grabber went with it.
         assertDp("header", restingGrabber - 26.dp, rule.node(AttachTags.GRABBER).bounds.top)
-        // The send pill, its count on its top left corner.
+        // The caption bar is the chat composer's pill: 12 in, 48 tall on one line, send's 36 circle 6 from its end.
+        val bar = rule.node(AttachTags.CAPTION_BAR).bounds
         val send = rule.node(AttachTags.SEND).bounds
-        assertDp("send", 52, send.width)
-        assertDp("send", 38, send.height)
+        assertDp("bar in", 12, bar.left)
+        assertDp("bar end", 411 - 12, bar.right)
+        assertDp("one line", 48, bar.height)
+        assertDp("send", 36, send.width)
+        assertDp("send end", bar.right - 6.dp, send.right)
+        assertDp("send foot", bar.bottom - 6.dp, send.bottom)
         val counter = rule.node(AttachTags.COUNTER).bounds
-        assertDp("counter centre 50 left of the pill's right", send.right - 50.dp, (counter.left + counter.right) / 2)
+        // The confirm pill at the header's far end, its middle on the "N selected" line.
+        val confirm = rule.node(AttachTags.CONFIRM).bounds
+        val header = rule.node(AttachTags.HEADER).bounds
+        assertTrue("at least 52 wide", confirm.width >= 52.dp - 0.5.dp)
+        assertDp("confirm", 38, confirm.height)
+        assertDp("12 from the sheet's end", 411 - 12, confirm.right)
+        assertTrue("on the header's line: $confirm / $header", confirm.top < header.bottom && confirm.bottom > header.top)
+        assertTrue("above the first row", confirm.bottom <= cells()[0].bounds.top)
+        assertTrue("its count inside it", counter.left >= confirm.left && counter.right <= confirm.right)
         // Unpicking the first renumbers the second.
         checks()[2].performClick()
         rule.waitForIdle()
         assertEquals(1, selection.number(fakeGallery()[0].uri))
+    }
+
+    @Test fun `send keeps the caption's bottom right corner as the words grow, five lines at most`() {
+        lateinit var selection: AttachSelection
+        rule.setHappyContent {
+            selection = remember { AttachSelection(20) }
+            SheetUnderTest(selection = selection)
+        }
+        rule.waitForIdle()
+        checks()[0].performClick()
+        rule.mainClock.advanceTimeBy(1_000)
+        val heights = listOf(1, 3, 5, 12).map { lines ->
+            rule.node(AttachTags.CAPTION).performTextReplacement((1..lines).joinToString("\n") { "Line $it" })
+            rule.mainClock.advanceTimeBy(1_000)
+            val bar = rule.node(AttachTags.CAPTION_BAR).bounds
+            val send = rule.node(AttachTags.SEND).bounds
+            assertDp("send end at $lines lines", bar.right - 6.dp, send.right)
+            assertDp("send foot at $lines lines", bar.bottom - 6.dp, send.bottom)
+            bar.height
+        }
+        assertTrue("it grows to three lines: $heights", heights[1] > heights[0])
+        assertTrue("and five: $heights", heights[2] > heights[1])
+        assertDp("then scrolls", heights[2], heights[3])
+    }
+
+    @Test fun `the check's corner picks, the rest of the picture opens it`() {
+        lateinit var selection: AttachSelection
+        val opened = ArrayList<String>()
+        rule.setHappyContent {
+            selection = remember { AttachSelection(20) }
+            SheetUnderTest(selection = selection, onOpen = { opened += it.uri })
+        }
+        rule.waitForIdle()
+        // 46 in from the corner: past Telegram's 42, inside the 48.
+        cells()[1].performTouchInput { click(Offset(width - 46.dp.toPx(), 46.dp.toPx())) }
+        rule.waitForIdle()
+        assertEquals(1, selection.number(fakeGallery()[1].uri))
+        assertTrue(opened.isEmpty())
+        cells()[1].performTouchInput { click(Offset(width - 52.dp.toPx(), 52.dp.toPx())) }
+        rule.waitForIdle()
+        assertEquals(listOf(fakeGallery()[1].uri), opened)
+        assertEquals(1, selection.count)
     }
 
     @Test fun `a pull of eight millimetres at the top closes it, a short one springs back`() {

@@ -5,15 +5,18 @@ import UIKit
 /// Telegram's glass panel at the foot of the "+" menu (`AttachmentPanel`,
 /// glass): a capsule of tabs with a lens behind the chosen one that a
 /// finger can drag along the bar (`TabSelectionRecognizer`), which turns,
-/// while photos are picked, into the caption field with send; the same
-/// glass stretches from one to the other.
+/// while photos are picked, into the caption: the chat's own composer card
+/// (`AgentInputCardView`) with only its text and send, so the two look
+/// the same. One shape morphs from the bar's capsule to the card's frame
+/// and back; inside it the tabs' glass dematerializes as the card comes in,
+/// the tabs rising out and the text and send coming in where they rest.
 ///
 /// The lens is Telegram's own for systems without the private liquid lens
 /// (`LiquidLensView`'s legacy selection): a tinted capsule 3 in, the chosen
-/// tab's glyph and name in the accent inside it, 2 bigger while a finger
+/// tab's glyph and name in full ink inside it, 2 bigger while a finger
 /// holds it.
 @MainActor
-final class AttachMenuPanel: UIView, UITextViewDelegate, UIGestureRecognizerDelegate {
+final class AttachMenuPanel: UIView, UIGestureRecognizerDelegate {
     var onTab: ((Int) -> Void)?
     var onSend: (() -> Void)?
     /// The caption took or gave up the keyboard.
@@ -24,6 +27,9 @@ final class AttachMenuPanel: UIView, UITextViewDelegate, UIGestureRecognizerDele
     private(set) var selected = 0
     private(set) var picking = false
 
+    /// What morphs: it clips the glass and the card to one rounded shape,
+    /// the bar's or the card's, while it moves between them.
+    private let shape = UIView()
     private let glass = UIVisualEffectView(effect: AttachMenuPanel.glassEffect())
     private static func glassEffect() -> UIGlassEffect {
         let effect = UIGlassEffect(style: .regular)
@@ -42,19 +48,26 @@ final class AttachMenuPanel: UIView, UITextViewDelegate, UIGestureRecognizerDele
     private let recognizer = AttachTabRecognizer()
     private var lensDrag: AttachTabLens?
 
-    let field = UITextView()
-    private let placeholder = UILabel()
-    private let send = UIControl()
-    private let fieldTap = UITapGestureRecognizer()
-    private let sendBackground = UIView()
-    private let sendGlyph = UIImageView(image: UIImage(systemName: "arrow.up", withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold)))
+    /// The caption: the chat composer's card without "+" or the chips, in
+    /// one row (send beside the text, at its last line) that grows to the
+    /// full card's five lines and then scrolls.
+    let card = AgentInputCardView(configuration: AgentInputCardConfiguration(
+        placeholder: Strings.Composer.inputPlaceholder,
+        primaryAction: .send,
+        primaryAccessibilityLabel: Strings.AttachMenu.send,
+        compact: true,
+        compactLines: 5
+    ))
+    var field: UITextView { card.textView }
 
     private var placed: (minX: CGFloat, width: CGFloat, bottom: CGFloat, sides: LayoutInsets, pixel: CGFloat, maxHeight: CGFloat)?
     private(set) var layout: AttachMenuPanelLayout?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        addSubview(glass)
+        shape.layer.cornerCurve = .continuous
+        addSubview(shape)
+        shape.addSubview(glass)
         tabsHost.clipsToBounds = true
         tabsHost.layer.cornerRadius = 28
         tabsHost.layer.cornerCurve = .continuous
@@ -72,46 +85,12 @@ final class AttachMenuPanel: UIView, UITextViewDelegate, UIGestureRecognizerDele
         recognizer.delegate = self
         tabsHost.addGestureRecognizer(recognizer)
 
-        field.font = .systemFont(ofSize: 17)
-        field.textColor = UIColor(Palette.attachMenuCaption)
-        field.backgroundColor = .clear
-        field.textContainerInset = .zero
-        field.textContainer.lineFragmentPadding = 0
-        field.isScrollEnabled = false
-        field.delegate = self
-        field.accessibilityIdentifier = "attach-caption"
-        field.accessibilityLabel = Strings.AttachMenu.addCaption
-        placeholder.text = Strings.AttachMenu.addCaption
-        placeholder.font = .systemFont(ofSize: 17)
-        placeholder.textColor = UIColor(Palette.attachMenuCaptionPlaceholder)
-        placeholder.isUserInteractionEnabled = false
-        placeholder.isAccessibilityElement = false
-        sendBackground.backgroundColor = UIColor(Palette.attachMenuAccent)
-        sendBackground.isUserInteractionEnabled = false
-        sendGlyph.tintColor = UIColor(Palette.attachMenuOnAccent)
-        sendGlyph.contentMode = .center
-        sendGlyph.isUserInteractionEnabled = false
-        send.addSubview(sendBackground)
-        send.addSubview(sendGlyph)
-        send.accessibilityIdentifier = "attach-send"
-        send.accessibilityLabel = Strings.AttachMenu.send
-        send.accessibilityTraits = .button
-        send.isAccessibilityElement = true
-        send.addAction(UIAction { [weak self] _ in self?.onSend?() }, for: .touchUpInside)
-        send.addAction(UIAction { [weak self] _ in self?.sendBackground.alpha = 0.6 }, for: [.touchDown, .touchDragEnter])
-        send.addAction(UIAction { [weak self] _ in
-            UIView.animate(withDuration: 0.2) { self?.sendBackground.alpha = 1 }
-        }, for: [.touchUpInside, .touchUpOutside, .touchCancel, .touchDragExit])
-        for view in [field, placeholder, send] as [UIView] {
-            view.alpha = 0
-            view.isHidden = true
-            glass.contentView.addSubview(view)
-        }
-        // Tapping the field anywhere gives it the keyboard; never on send,
-        // a plain control whose touch this tap would otherwise cancel.
-        fieldTap.addTarget(self, action: #selector(fieldTapped(_:)))
-        fieldTap.delegate = self
-        glass.contentView.addGestureRecognizer(fieldTap)
+        card.delegate = self
+        card.textView.accessibilityIdentifier = "attach-caption"
+        card.primaryControl.accessibilityIdentifier = "attach-send"
+        card.alpha = 0
+        card.isHidden = true
+        shape.addSubview(card)
     }
 
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
@@ -120,8 +99,9 @@ final class AttachMenuPanel: UIView, UITextViewDelegate, UIGestureRecognizerDele
     /// what is on it fades (a glass view under a fading alpha draws wrong
     /// and pops at 1). Inside an animation, animates.
     func setShown(_ shown: Bool) {
-        glass.effect = shown ? Self.glassEffect() : nil
-        glass.contentView.alpha = shown ? 1 : 0
+        glass.effect = shown && !picking ? Self.glassEffect() : nil
+        glass.contentView.alpha = shown && !picking ? 1 : 0
+        card.alpha = shown && picking ? 1 : 0
     }
 
     /// The tabs: names, glyphs and accessibility ids.
@@ -147,11 +127,8 @@ final class AttachMenuPanel: UIView, UITextViewDelegate, UIGestureRecognizerDele
     }
 
     var caption: String {
-        get { field.text }
-        set {
-            field.text = newValue
-            placeholder.isHidden = !picking || !newValue.isEmpty
-        }
+        get { card.text }
+        set { card.setText(newValue, selection: NSRange(location: (newValue as NSString).length, length: 0), animatesHeight: false) }
     }
 
     // MARK: Tabs
@@ -202,88 +179,37 @@ final class AttachMenuPanel: UIView, UITextViewDelegate, UIGestureRecognizerDele
         gestureRecognizer !== recognizer || !picking
     }
 
-    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-        gestureRecognizer !== fieldTap || touch.view?.isDescendant(of: send) != true
-    }
-
-    // MARK: Caption
-
-    @objc private func fieldTapped(_ tap: UITapGestureRecognizer) {
-        guard picking, !field.isFirstResponder else { return }
-        field.becomeFirstResponder()
-    }
-
-    func textViewDidBeginEditing(_ textView: UITextView) {
-        onFocus?(true)
-        relayout(animated: true)
-    }
-
-    func textViewDidEndEditing(_ textView: UITextView) {
-        onFocus?(false)
-        relayout(animated: true)
-    }
-
-    func textViewDidChange(_ textView: UITextView) {
-        placeholder.isHidden = !textView.text.isEmpty
-        onCaption?(textView.text)
-        let before = layout?.glass.height
-        relayout(animated: false)
-        if layout?.glass.height != before { onResize?() }
-    }
-
-    /// A hardware keyboard's Return in the caption sends the picked
-    /// pictures, as send does, and its newlines make lines (`SendShortcut`).
-    override var keyCommands: [UIKeyCommand]? {
-        guard field.isFirstResponder else { return super.keyCommands }
-        return SendShortcut.commands(send: #selector(sendShortcut(_:)), newline: #selector(newlineShortcut(_:))) + (super.keyCommands ?? [])
-    }
-
-    /// Neither while an input method is composing: Return is its.
-    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
-        if action == #selector(sendShortcut(_:)) || action == #selector(newlineShortcut(_:)) {
-            return SendShortcut.takes(in: field)
-        }
-        return super.canPerformAction(action, withSender: sender)
-    }
-
-    @objc func newlineShortcut(_ sender: Any?) {
-        SendShortcut.insertNewline(in: field)
-    }
-
-    @objc func sendShortcut(_ sender: Any?) {
-        SendShortcut.fire(allowed: picking && !send.isHidden && send.isEnabled) {
-            send.sendActions(for: .touchUpInside)
-        }
-    }
-
-    /// Picked or not: the bar becomes the caption, or back.
+    /// Picked or not: the shape morphs between the bar and the card, its
+    /// glass going as the card comes, or back; the same way both ways.
     func setPicking(_ value: Bool, animated: Bool) {
         guard value != picking else { return }
         picking = value
         if !value { field.resignFirstResponder() }
-        for view in [field, placeholder, send] as [UIView] { view.isHidden = false }
-        tabsHost.isHidden = false
+        card.isHidden = false
+        glass.isHidden = false
+        // The card's shadow falls outside the shape: clipped while it moves.
+        shape.clipsToBounds = true
         tabsHost.isUserInteractionEnabled = !value
-        let fade = value ? 0.1 : 0.25
-        let alpha = {
+        let swap = {
             self.tabsHost.alpha = value ? 0 : 1
-            self.field.alpha = value ? 1 : 0
-            self.placeholder.alpha = value ? 1 : 0
-            self.send.alpha = value ? 1 : 0
+            self.glass.effect = value ? nil : Self.glassEffect()
+            self.card.alpha = value ? 1 : 0
         }
-        let done = { (_: Bool) in
+        let done = {
             guard self.picking == value else { return }
-            for view in [self.field, self.placeholder, self.send] as [UIView] { view.isHidden = !value }
-            self.tabsHost.isHidden = value
-            self.placeholder.isHidden = !value || !self.field.text.isEmpty
+            self.card.isHidden = !value
+            self.glass.isHidden = value
+            self.shape.clipsToBounds = !value
         }
-        if animated {
-            UIView.animate(withDuration: fade, delay: 0, options: [.curveEaseInOut, .beginFromCurrentState], animations: alpha, completion: done)
-        } else {
-            alpha()
-            done(true)
+        guard animated, window != nil else {
+            swap()
+            relayout(animated: false)
+            return done()
         }
-        relayout(animated: animated)
+        let fade = UIViewPropertyAnimator(duration: AttachMenuMotion.captionSwap, curve: .easeInOut, animations: swap)
+        fade.isUserInteractionEnabled = true
+        fade.startAnimation()
+        relayout(animated: true) { done() }
     }
 
     // MARK: Layout
@@ -294,32 +220,46 @@ final class AttachMenuPanel: UIView, UITextViewDelegate, UIGestureRecognizerDele
         relayout(animated: false)
     }
 
-    var glassFrame: CGRect { layout?.glass ?? .zero }
+    /// The tab bar, or the caption's card while picking.
+    var glassFrame: CGRect { frame }
 
-    private func relayout(animated: Bool) {
+    /// The card where the chat's composer would stand: the composer's
+    /// inset from the sheet's sides, on the bar's foot or 8 over the
+    /// keyboard, as tall as its text asks (it caps and scrolls itself).
+    private func cardFrame(_ placed: (minX: CGFloat, width: CGFloat, bottom: CGFloat, sides: LayoutInsets, pixel: CGFloat, maxHeight: CGFloat)) -> CGRect {
+        let inset = MobileComposerMetrics.mobile.shellInset
+        let width = max(0, placed.width - placed.sides.left - placed.sides.right - 2 * inset)
+        let height = card.height(fitting: width)
+        let spacing = field.isFirstResponder ? AttachMenuMetrics.captionFocusedBottom : AttachMenuMetrics.barBottom
+        return CGRect(x: placed.minX + placed.sides.left + inset, y: placed.bottom - spacing - height, width: width, height: height)
+    }
+
+    private func relayout(animated: Bool, completion: (() -> Void)? = nil) {
         guard let placed else { return }
-        let focused = field.isFirstResponder
-        let textWidth = AttachMenuPanelLayout.textWidth(width: placed.width, sides: placed.sides, focused: focused)
-        let textHeight = field.sizeThatFits(CGSize(width: textWidth, height: .greatestFiniteMagnitude)).height
         let layout = AttachMenuPanelLayout(.init(
             minX: placed.minX, width: placed.width, bottom: placed.bottom, sides: placed.sides,
-            titles: plainTabs.map(\.titleSize), selected: selected, picking: picking, focused: focused,
-            textHeight: textHeight, placeholder: placeholder.sizeThatFits(CGSize(width: CGFloat.greatestFiniteMagnitude, height: 30)),
-            empty: field.text.isEmpty, maxHeight: placed.maxHeight, pixel: placed.pixel
+            titles: plainTabs.map(\.titleSize), selected: selected, picking: false, pixel: placed.pixel
         ))
         self.layout = layout
-        field.isScrollEnabled = ceil(textHeight) + 19 > placed.maxHeight
+        let caption = cardFrame(placed)
+        let own = picking ? caption : layout.tabBar
         let inset = AttachMenuMetrics.barInset
         let lensRest = layout.lens.offsetBy(dx: -inset, dy: -inset)
         let lifted = lensDrag != nil
         let lensFrame = lensDrag.map { $0.lens(selection: layout.lens, width: layout.tabBar.width).offsetBy(dx: -inset, dy: -inset) }
             ?? (lifted ? lensRest.insetBy(dx: -AttachTabLens.lift, dy: -AttachTabLens.lift) : lensRest)
+        let radius = picking ? MobileComposerMetrics.mobile.shellRadius : layout.glassRadius
+        // The tabs keep the bar's place, and the card its own, in the shape.
+        let bar = layout.tabBar.offsetBy(dx: -own.minX, dy: -own.minY)
         let apply = {
-            // The panel spans whatever the glass does; the tabs keep the bar's place.
-            self.frame = layout.glass
+            self.frame = own
+            self.shape.frame = self.bounds
+            self.shape.layer.cornerRadius = min(radius, own.height / 2)
             self.glass.frame = self.bounds
-            self.glass.cornerConfiguration = .capsule(maximumRadius: layout.glassRadius)
-            let tabsOrigin = CGPoint(x: layout.tabBar.minX - layout.glass.minX + inset, y: layout.tabBar.minY - layout.glass.minY + inset + layout.tabsOffset)
+            self.glass.cornerConfiguration = .capsule(maximumRadius: radius)
+            self.card.frame = caption.offsetBy(dx: -own.minX, dy: -own.minY)
+            self.card.layoutIfNeeded()
+            let tabsOrigin = CGPoint(x: bar.minX + inset, y: bar.minY + inset + (self.picking ? -AttachMenuMetrics.tabsRise : 0))
             self.tabsHost.frame = CGRect(origin: tabsOrigin, size: CGSize(width: layout.tabBar.width - 2 * inset, height: layout.tabBar.height - 2 * inset))
             self.tabsPlain.frame = self.tabsHost.bounds
             self.tabsChosen.frame = self.tabsHost.bounds
@@ -337,17 +277,16 @@ final class AttachMenuPanel: UIView, UITextViewDelegate, UIGestureRecognizerDele
                     self.accessTabs[index].accessibilityTraits = index == self.selected ? [.button, .selected] : .button
                 }
             }
-            self.field.frame = layout.text
-            self.placeholder.frame = layout.placeholder
-            self.send.frame = layout.send
-            self.sendBackground.frame = layout.sendBackground.offsetBy(dx: -layout.send.minX, dy: -layout.send.minY)
-            self.sendBackground.layer.cornerRadius = layout.sendBackground.height / 2
-            self.sendGlyph.frame = self.sendBackground.frame
         }
-        guard animated, window != nil else { return apply() }
+        guard animated, window != nil else {
+            apply()
+            completion?()
+            return
+        }
         let curve = AttachMenuMotion.openCurve
         let animator = UIViewPropertyAnimator(duration: AttachMenuMotion.barDuration, controlPoint1: CGPoint(x: CGFloat(curve.x1), y: CGFloat(curve.y1)), controlPoint2: CGPoint(x: CGFloat(curve.x2), y: CGFloat(curve.y2)), animations: apply)
         animator.isUserInteractionEnabled = true
+        if let completion { animator.addCompletion { _ in completion() } }
         animator.startAnimation()
     }
 
@@ -476,6 +415,27 @@ extension AttachMenuPanel {
         return UIGraphicsImageRenderer(size: box, format: format).image { _ in
             image.draw(in: CGRect(x: (box.width - size.width) / 2, y: (box.height - size.height) / 2, width: size.width, height: size.height))
         }.withRenderingMode(.alwaysTemplate)
+    }
+}
+extension AttachMenuPanel: AgentInputCardDelegate {
+    func agentInputCardDidChangeText(_ card: AgentInputCardView) {
+        onCaption?(card.text)
+    }
+
+    func agentInputCardDidChangeFocus(_ card: AgentInputCardView) {
+        onFocus?(card.textView.isFirstResponder)
+        relayout(animated: true)
+        onResize?()
+    }
+
+    func agentInputCardDidInvalidateHeight(_ card: AgentInputCardView) {
+        let before = frame.height
+        relayout(animated: false)
+        if frame.height != before { onResize?() }
+    }
+
+    func agentInputCardDidPressPrimary(_ card: AgentInputCardView) {
+        onSend?()
     }
 }
 #endif

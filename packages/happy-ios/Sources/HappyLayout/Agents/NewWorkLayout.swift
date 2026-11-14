@@ -5,15 +5,20 @@ import CoreGraphics
 
 /// New work's empty conversation, on both homes: what it will be, as one
 /// block centred between the bar and the composer. The composer moves with
-/// the keyboard, and the block, laid out against it, moves with it.
+/// the keyboard, and the block, laid out against it, moves with it. With
+/// less room than it takes (the keyboard up, the composer grown) it stands
+/// on the composer and runs up under the bar, picture and all: it never
+/// shrinks or drops the picture.
 ///
 /// Happy Agent's asks Task or Bot over an optional name; a legacy account's
 /// asks the computer (when it has more than one), folder, harness and mode.
-/// Either is an optional control over field-high rows and a line saying what it
-/// is. A legacy account's can ask for all of it on a small phone with the
-/// keyboard up, so it may tighten before it gives up (`compactsWhenShort`).
+/// Either is an optional control over field-high rows and a line saying what it is,
+/// under the kind's picture when it is a bot or a task. A legacy account's can
+/// ask for all of it on a small phone with the keyboard up, so it may tighten
+/// before it gives up (`compactsWhenShort`).
 ///
 ///     bar ─────────────────────────
+///                  (robot)              art, optional: always 128
 ///               [ Task | Bot ]          kind, optional
 ///          |24| [ Name (optional) ] |24|   rows, at most 320 wide
 ///               what a task is          note, optional
@@ -36,37 +41,52 @@ public struct NewWorkLayout: Equatable, Sendable {
         /// 375x667 phone has 214 for 201.
         public static let compactMargin: CGFloat = 4
         /// The least room kept over and under the block; with less it
-        /// doesn't show.
+        /// doesn't fit, and stands this far over the composer.
         public static let margin: CGFloat = 12
+        /// The kind's picture, an empty state's (`CardListMetrics.noteScene`),
+        /// and its gap, as a note's scene stands over its words. Its size
+        /// never changes with the room.
+        public static let art: CGFloat = 128
+        public static let artToKind: CGFloat = 16
     }
 
     /// The block, in the screen.
     public var block: CGRect
-    /// In the block.
+    /// In the block. `art` is nil when it was not asked for.
+    public var art: CGRect?
     public var kind: CGRect?
     public var rows: [CGRect]
     public var note: CGRect?
-    /// There is room for the block between the bar and the composer.
+    /// There is room for the block between the bar and the composer. When
+    /// there isn't, it stands `margin` over the composer, its top under the
+    /// bar.
     public var fits: Bool
 
     /// `top` is the bar's foot and `bottom` the composer's top, in the
     /// screen; `kindHeight` is the control's, nil for none; `note` wraps,
     /// centred, at the block's width. The block stands centred in what the
-    /// safe area's `sides` leave of the screen's `width`. `compactsWhenShort`
-    /// tightens the rows and their gaps when the regular ones would not fit.
-    public init(width: CGFloat, sides: LayoutInsets = .zero, top: CGFloat, bottom: CGFloat, kindHeight: CGFloat?, rows count: Int, note: Measurable?, compactsWhenShort: Bool = false) {
+    /// safe area's `sides` leave of the screen's `width`. With `art`, the
+    /// kind's picture stands over it. `compactsWhenShort` tightens the rows
+    /// and their gaps when the regular ones would not fit.
+    public init(width: CGFloat, sides: LayoutInsets = .zero, top: CGFloat, bottom: CGFloat, kindHeight: CGFloat?, rows count: Int, note: Measurable?, art: Bool = false, compactsWhenShort: Bool = false) {
         typealias M = Metrics
         let band = sides.sides(of: CGSize(width: width, height: 0))
         let blockWidth = max(0, min(M.maxWidth, band.width - 2 * M.side))
         let noteHeight = note?.size(fitting: blockWidth).height
         let room = bottom - top
-        func stack(rowHeight: CGFloat, rowGap: CGFloat, kindToRows: CGFloat) -> (kind: CGRect?, rows: [CGRect], note: CGRect?, height: CGFloat) {
+        func stack(rowHeight: CGFloat, rowGap: CGFloat, kindToRows: CGFloat) -> (art: CGRect?, kind: CGRect?, rows: [CGRect], note: CGRect?, height: CGFloat) {
             var y: CGFloat = 0
+            var picture: CGRect?
+            if art {
+                picture = CGRect(x: (blockWidth - M.art) / 2, y: 0, width: M.art, height: M.art)
+                y = M.art + M.artToKind
+            }
             var kind: CGRect?
             if let kindHeight {
                 let kindWidth = min(M.kindWidth, blockWidth)
-                kind = CGRect(x: (blockWidth - kindWidth) / 2, y: 0, width: kindWidth, height: kindHeight)
-                y = kindHeight + kindToRows
+                kind = CGRect(x: (blockWidth - kindWidth) / 2, y: y, width: kindWidth, height: kindHeight)
+                // With no rows the block ends at the kind.
+                y += kindHeight + (count > 0 ? kindToRows : 0)
             }
             var rows: [CGRect] = []
             for index in 0..<max(0, count) {
@@ -80,7 +100,7 @@ public struct NewWorkLayout: Equatable, Sendable {
                 note = CGRect(x: 0, y: y, width: blockWidth, height: noteHeight)
                 y += noteHeight
             }
-            return (kind, rows, note, y)
+            return (picture, kind, rows, note, y)
         }
         var stacked = stack(rowHeight: M.rowHeight, rowGap: M.rowGap, kindToRows: M.kindToRows)
         var margin = M.margin
@@ -88,11 +108,12 @@ public struct NewWorkLayout: Equatable, Sendable {
             stacked = stack(rowHeight: M.compactRowHeight, rowGap: M.compactRowGap, kindToRows: M.compactKindToRows)
             margin = M.compactMargin
         }
+        self.art = stacked.art
         kind = stacked.kind
         rows = stacked.rows
         self.note = stacked.note
         fits = room >= stacked.height + 2 * margin
-        let origin = fits ? top + (room - stacked.height) / 2 : top + margin
+        let origin = fits ? top + (room - stacked.height) / 2 : bottom - margin - stacked.height
         showsNote = stacked.note != nil
         block = CGRect(x: band.minX + (band.width - blockWidth) / 2, y: origin, width: blockWidth, height: stacked.height)
     }
@@ -104,31 +125,36 @@ public struct NewWorkLayout: Equatable, Sendable {
     /// asks (the kind, the computer, a bot's name) is what the first send
     /// makes, so with the keyboard up on a small phone the note goes, then
     /// the gaps close, and only when even that has no room (a phone held
-    /// sideways) does it not fit. Nothing a row says (a computer offline, a
-    /// name refused) adds to it: that is said inside the row. With four rows
-    /// (computer, folder, harness, mode) and the kind on a 375x667 phone, the
-    /// rows themselves then shorten when `compactsWhenShort` (`compactRowHeight`),
-    /// first keeping the gap the status chip clears, then closing it too.
+    /// sideways) does it not fit: then it stands on the composer and runs up
+    /// under the bar. The picture stays, at its size, throughout. Nothing a row
+    /// says (a computer offline, a name refused) adds to it: that is said
+    /// inside the row. With four rows (computer, folder, harness, mode) and
+    /// the kind on a 375x667 phone, the rows themselves then shorten when
+    /// `compactsWhenShort` (`compactRowHeight`), first keeping the gap the
+    /// status chip clears, then closing it too.
     ///
     ///     bar ─────────────────────────
+    ///                  (robot)                 art, always 128
     ///               [ Session | Bot | Task ]
     ///               [ computer          ]
     ///               [ Name your bot     ]
     ///               what a bot is              note, dropped first
     ///     composer ────────────────────
-    public init(width: CGFloat, sides: LayoutInsets = .zero, top: CGFloat, bottom: CGFloat, kindHeight: CGFloat?, givingWay count: Int, note: Measurable?, compactsWhenShort: Bool = false) {
+    public init(width: CGFloat, sides: LayoutInsets = .zero, top: CGFloat, bottom: CGFloat, kindHeight: CGFloat?, givingWay count: Int, note: Measurable?, art: Bool = false, compactsWhenShort: Bool = false) {
         typealias M = Metrics
         let band = sides.sides(of: CGSize(width: width, height: 0))
         let blockWidth = max(0, min(M.maxWidth, band.width - 2 * M.side))
         let room = bottom - top
         let noteHeight = note.map { ceil($0.size(fitting: blockWidth).height) }
-        func stack(kindGap: CGFloat, rowGap: CGFloat, withNote: Bool, rowHeight: CGFloat = M.rowHeight, margin: CGFloat = M.margin) -> (kind: CGRect?, rows: [CGRect], note: CGRect?, height: CGFloat, margin: CGFloat) {
+        func stack(art side: CGFloat? = nil, kindGap: CGFloat, rowGap: CGFloat, withNote: Bool, rowHeight: CGFloat = M.rowHeight, margin: CGFloat = M.margin) -> (art: CGRect?, kind: CGRect?, rows: [CGRect], note: CGRect?, height: CGFloat, margin: CGFloat) {
             var y: CGFloat = 0
+            let art = side.map { CGRect(x: (blockWidth - $0) / 2, y: 0, width: $0, height: $0) }
+            if let side { y = side + M.artToKind }
             var kind: CGRect?
             if let kindHeight {
                 let kindWidth = min(M.kindWidth, blockWidth)
-                kind = CGRect(x: (blockWidth - kindWidth) / 2, y: 0, width: kindWidth, height: kindHeight)
-                y = kindHeight + kindGap
+                kind = CGRect(x: (blockWidth - kindWidth) / 2, y: y, width: kindWidth, height: kindHeight)
+                y += kindHeight + kindGap
             }
             var frames: [CGRect] = []
             for index in 0..<max(0, count) {
@@ -142,26 +168,28 @@ public struct NewWorkLayout: Equatable, Sendable {
                 noteFrame = CGRect(x: 0, y: y, width: blockWidth, height: noteHeight)
                 y += noteHeight
             }
-            return (kind, frames, noteFrame, y, margin)
+            return (art, kind, frames, noteFrame, y, margin)
         }
+        let side = art ? M.art : nil
         var attempts = [
-            stack(kindGap: M.kindToRows, rowGap: M.rowGap, withNote: true),
-            stack(kindGap: M.kindToRows, rowGap: M.rowGap, withNote: false),
-            stack(kindGap: M.tightKindToRows, rowGap: M.tightRowGap, withNote: false),
+            stack(art: side, kindGap: M.kindToRows, rowGap: M.rowGap, withNote: true),
+            stack(art: side, kindGap: M.kindToRows, rowGap: M.rowGap, withNote: false),
+            stack(art: side, kindGap: M.tightKindToRows, rowGap: M.tightRowGap, withNote: false),
         ]
         if compactsWhenShort {
             attempts += [
-                stack(kindGap: M.tightKindToRows, rowGap: M.compactRowGap, withNote: false, rowHeight: M.compactRowHeight, margin: M.compactMargin),
-                stack(kindGap: M.compactKindToRows, rowGap: M.compactRowGap, withNote: false, rowHeight: M.compactRowHeight, margin: M.compactMargin),
+                stack(art: side, kindGap: M.tightKindToRows, rowGap: M.compactRowGap, withNote: false, rowHeight: M.compactRowHeight, margin: M.compactMargin),
+                stack(art: side, kindGap: M.compactKindToRows, rowGap: M.compactRowGap, withNote: false, rowHeight: M.compactRowHeight, margin: M.compactMargin),
             ]
         }
         let chosen = attempts.first { room >= $0.height + 2 * $0.margin } ?? attempts[attempts.count - 1]
+        self.art = chosen.art
         kind = chosen.kind
         self.rows = chosen.rows
         self.note = chosen.note
         showsNote = chosen.note != nil
         fits = room >= chosen.height + 2 * chosen.margin
-        let origin = fits ? top + (room - chosen.height) / 2 : top + chosen.margin
+        let origin = fits ? top + (room - chosen.height) / 2 : bottom - chosen.margin - chosen.height
         block = CGRect(x: band.minX + (band.width - blockWidth) / 2, y: origin, width: blockWidth, height: chosen.height)
     }
 }

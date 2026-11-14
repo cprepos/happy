@@ -49,10 +49,13 @@ data class CloudServerImage(val thumbhash: String? = null, val width: Int? = nul
 
 /**
  * A way to sign in to the account, by the accounts service's `provider`
- * hint. Both are web sign-ins on Android: Apple has no native sign-in here,
- * and the service refuses Google (`unsupported_provider`).
+ * hint. Apple and GitHub are web sign-ins on Android (Apple has no native
+ * one here). Google signs in on the phone through Credential Manager
+ * ([CloudAccount.signInWithGoogle]), and on the web where it has no account
+ * to offer. Email is no provider: its code is asked for and typed in the
+ * app ([CloudAccount.startEmail], [CloudAccount.verifyEmail]).
  */
-enum class CloudProvider(val id: String) { Apple("apple"), GitHub("github") }
+enum class CloudProvider(val id: String) { Apple("apple"), GitHub("github"), Google("google") }
 
 /** What `GET /v1/servers/availability` says of a name. */
 enum class CloudName { Available, Taken, Reserved, Invalid }
@@ -73,6 +76,31 @@ sealed interface PasswordSignIn {
     data class Locked(val minutes: Long) : PasswordSignIn
 
     data class Failed(val reason: CloudException.Reason) : PasswordSignIn
+}
+
+/** How asking for an email code ([CloudAccount.startEmail]) or typing it ([CloudAccount.verifyEmail]) went. */
+sealed interface EmailSignIn {
+    /** The code is on its way to the address. */
+    data object Sent : EmailSignIn
+
+    data object SignedIn : EmailSignIn
+
+    /** `invalid_email`: not an address the service takes. */
+    data object InvalidEmail : EmailSignIn
+
+    /** `invalid_code`: wrong, or expired; the service doesn't say which. */
+    data object InvalidCode : EmailSignIn
+
+    /** `unavailable`: the service couldn't reach its email sign-in just now. */
+    data object Unavailable : EmailSignIn
+
+    /** `unsupported_provider`: this service has no email sign-in; [message] is its own words, shown as they came. */
+    data class Unsupported(val message: String?) : EmailSignIn
+
+    /** `429 rate_limited`: nothing more for [seconds]; [message] is the service's own words. */
+    data class RateLimited(val seconds: Long, val message: String?) : EmailSignIn
+
+    data class Failed(val reason: CloudException.Reason) : EmailSignIn
 }
 
 /** Where the Happy Cloud account stands. */
@@ -107,7 +135,7 @@ class CloudAccount(
     private val auth: ServerAuthClient,
     http: OkHttpClient,
     private val now: () -> Long = System::currentTimeMillis,
-) {
+) : CloudInviteService {
     private val http = http.newBuilder()
         .followRedirects(false)
         .followSslRedirects(false)
@@ -116,7 +144,7 @@ class CloudAccount(
         .build()
 
     private val mutableState = MutableStateFlow<CloudAccountState>(CloudAccountState.SignedOut())
-    val state: StateFlow<CloudAccountState> = mutableState.asStateFlow()
+    override val state: StateFlow<CloudAccountState> = mutableState.asStateFlow()
 
     private var pending: PendingOAuth? = null
     @Volatile private var access: AccessToken? = null
@@ -133,9 +161,9 @@ class CloudAccount(
 
     /**
      * [provider]'s sign-in, starting a fresh one each time: the PKCE request
-     * with `provider=apple` or `github`, which makes the accounts service skip
-     * its chooser and redirect straight to Apple or GitHub (an unknown
-     * provider shows the chooser; Google is refused, 400).
+     * with `provider=apple`, `github` or `google`, which makes the accounts
+     * service skip its chooser and redirect straight to that provider (an
+     * unknown provider shows the chooser).
      */
     fun browserUrl(provider: CloudProvider): String {
         val next = auth.begin(origin, method, ServerSignInFlow.REDIRECT_URI)
@@ -178,21 +206,120 @@ class CloudAccount(
         } catch (e: CloudException) {
             return PasswordSignIn.Failed(e.reason)
         }
-        fun field(key: String) = (body?.get(key) as? JsonPrimitive)?.contentOrNull
         return when {
-            status == 200 -> {
-                val token = field("access_token")?.takeIf { it.isNotEmpty() } ?: return PasswordSignIn.Failed(CloudException.Reason.Failed)
-                val life = field("expires_in")?.toLongOrNull()?.takeIf { it > 0 }?.let { it * 1000 } ?: PASS_MILLIS
-                access = AccessToken(token, now() + life)
-                pending = null
-                mutableState.value = CloudAccountState.SignedIn
-                PasswordSignIn.SignedIn
-            }
-            status == 429 -> PasswordSignIn.Locked(((field("retryAfter")?.toLongOrNull() ?: LOCKOUT_SECONDS) + 59) / 60)
+            status == 200 -> if (signedInWith(body)) PasswordSignIn.SignedIn else PasswordSignIn.Failed(CloudException.Reason.Failed)
+            status == 429 -> PasswordSignIn.Locked((((body?.get("retryAfter") as? JsonPrimitive)?.contentOrNull?.toLongOrNull() ?: LOCKOUT_SECONDS) + 59) / 60)
             status == 401 || status == 400 -> PasswordSignIn.Wrong
             status >= 500 -> PasswordSignIn.Failed(CloudException.Reason.Unreachable)
             else -> PasswordSignIn.Failed(CloudException.Reason.Failed)
         }
+    }
+
+    /**
+     * Signs in with Google on the phone: [credential] asks Credential Manager
+     * for an ID token bound to a fresh random nonce, and `POST
+     * /v1/auth/native` trades it, with the same raw nonce, for the same hour's
+     * pass as the browser's. A pass for anything but [origin] is refused. The
+     * welcome waits ([CloudAccountState.Finishing]) from the sheet's opening
+     * to the answer; a cancel goes back to signed out, saying nothing. Returns
+     * false when the phone had no Google sign-in to offer (no account, no
+     * Google Play services), for the browser's instead.
+     */
+    suspend fun signInWithGoogle(credential: suspend (nonce: String) -> GoogleCredential): Boolean {
+        // A second press before the first one's sheet: that one goes on.
+        if (mutableState.value == CloudAccountState.Finishing) return true
+        pending = null
+        mutableState.value = CloudAccountState.Finishing
+        try {
+            val nonce = nonce()
+            val got = credential(nonce)
+            mutableState.value = when (got) {
+                is GoogleCredential.Token -> signInNatively(CloudProvider.Google, got.idToken, nonce)
+                GoogleCredential.Cancelled, GoogleCredential.Unavailable -> CloudAccountState.SignedOut()
+                GoogleCredential.Failed -> CloudAccountState.Failed(ServerAuthException.Reason.Denied)
+            }
+            return got != GoogleCredential.Unavailable
+        } finally {
+            // Left before an answer (the screen went): not waiting any more.
+            if (mutableState.value == CloudAccountState.Finishing) mutableState.value = CloudAccountState.SignedOut()
+        }
+    }
+
+    /** `POST /v1/auth/native`: a 401 is the ID token refused, never a pass ending; nothing was signed in yet. */
+    private suspend fun signInNatively(provider: CloudProvider, idToken: String, nonce: String): CloudAccountState {
+        val body = JsonObject(mapOf("provider" to JsonPrimitive(provider.id), "idToken" to JsonPrimitive(idToken), "nonce" to JsonPrimitive(nonce)))
+        val (status, root) = try {
+            send("POST", "/v1/auth/native", body, token = null)
+        } catch (_: CloudException) {
+            return CloudAccountState.Failed(ServerAuthException.Reason.Unreachable)
+        }
+        fun field(key: String) = (root?.get(key) as? JsonPrimitive)?.contentOrNull
+        return when {
+            status == 200 -> {
+                val token = field("access_token")?.takeIf { it.isNotEmpty() } ?: return CloudAccountState.Failed(ServerAuthException.Reason.InvalidToken)
+                if (!ServerAuthClient.audienceIs(token, origin)) return CloudAccountState.Failed(ServerAuthException.Reason.WrongAudience)
+                val life = field("expires_in")?.toLongOrNull()?.takeIf { it > 0 }?.let { it * 1000 } ?: PASS_MILLIS
+                access = AccessToken(token, now() + life)
+                CloudAccountState.SignedIn
+            }
+            status == 401 -> CloudAccountState.Failed(ServerAuthException.Reason.Rejected)
+            status >= 500 -> CloudAccountState.Failed(ServerAuthException.Reason.Unreachable)
+            else -> CloudAccountState.Failed(ServerAuthException.Reason.Denied)
+        }
+    }
+
+    /**
+     * Emails a one-time code to [email] (`POST /v1/auth/email/start`, no
+     * browser), for [verifyEmail]. Asking again sends a new one.
+     */
+    suspend fun startEmail(email: String): EmailSignIn {
+        val answer = try {
+            send("POST", "/v1/auth/email/start", JsonObject(mapOf("email" to JsonPrimitive(email))), token = null)
+        } catch (e: CloudException) {
+            return EmailSignIn.Failed(e.reason)
+        }
+        return if (answer.status in 200..299) EmailSignIn.Sent else emailRefusal(answer)
+    }
+
+    /**
+     * Signs in with the [code] emailed to [email] (`POST
+     * /v1/auth/email/verify`), for the same hour's pass as the browser's
+     * sign-in and kept as the password's is.
+     */
+    suspend fun verifyEmail(email: String, code: String): EmailSignIn {
+        val answer = try {
+            send("POST", "/v1/auth/email/verify", JsonObject(mapOf("email" to JsonPrimitive(email), "code" to JsonPrimitive(code))), token = null)
+        } catch (e: CloudException) {
+            return EmailSignIn.Failed(e.reason)
+        }
+        if (answer.status == 200) return if (signedInWith(answer.body)) EmailSignIn.SignedIn else EmailSignIn.Failed(CloudException.Reason.Failed)
+        return emailRefusal(answer)
+    }
+
+    /** Why the email sign-in said no, by its `code`; a 429 waits for `Retry-After`, or its `retryAfter`. */
+    private fun emailRefusal(answer: Answer): EmailSignIn {
+        fun field(key: String) = (answer.body?.get(key) as? JsonPrimitive)?.contentOrNull
+        val message = field("error")?.takeIf { it.isNotBlank() }
+        return when {
+            answer.status == 429 -> EmailSignIn.RateLimited(answer.retryAfter ?: field("retryAfter")?.toLongOrNull()?.takeIf { it > 0 } ?: EMAIL_WAIT_SECONDS, message)
+            field("code") == "invalid_email" -> EmailSignIn.InvalidEmail
+            field("code") == "invalid_code" -> EmailSignIn.InvalidCode
+            field("code") == "unsupported_provider" -> EmailSignIn.Unsupported(message)
+            field("code") == "unavailable" -> EmailSignIn.Unavailable
+            answer.status >= 500 -> EmailSignIn.Failed(CloudException.Reason.Unreachable)
+            else -> EmailSignIn.Failed(CloudException.Reason.Failed)
+        }
+    }
+
+    /** A password's or email code's token answer: the hour's pass, kept in memory as the browser's is. False when it holds no token. */
+    private fun signedInWith(body: JsonObject?): Boolean {
+        fun field(key: String) = (body?.get(key) as? JsonPrimitive)?.contentOrNull
+        val token = field("access_token")?.takeIf { it.isNotEmpty() } ?: return false
+        val life = field("expires_in")?.toLongOrNull()?.takeIf { it > 0 }?.let { it * 1000 } ?: PASS_MILLIS
+        access = AccessToken(token, now() + life)
+        pending = null
+        mutableState.value = CloudAccountState.SignedIn
+        return true
     }
 
     /** After a failure, or the page closed: back to signed out, to sign in again. */
@@ -241,9 +368,49 @@ class CloudAccount(
     /** A new server named [name], the person its owner. */
     suspend fun create(name: String): CloudServer = server(call("POST", "/v1/servers", JsonObject(mapOf("name" to JsonPrimitive(name)))).second)
 
-    /** Joins [name] with an owner's invite [code]. A wrong name or code is NotFound, the same for both. */
-    suspend fun join(name: String, code: String): CloudServer =
-        server(call("POST", "/v1/servers/join", JsonObject(mapOf("name" to JsonPrimitive(name), "code" to JsonPrimitive(code)))).second)
+    /**
+     * What [invite] opens (`POST /v1/invites/preview`, no account token, so
+     * it reads before the sign-in): the server and the role it gives.
+     * Throws [CloudInviteException] for an invite that can't be used.
+     */
+    override suspend fun previewInvite(invite: CloudInvite): CloudInvitePreview {
+        val answer = send("POST", "/v1/invites/preview", JsonObject(mapOf("token" to JsonPrimitive(invite.token))), token = null)
+        val body = inviteAnswer(answer)
+        fun text(obj: JsonObject?, key: String) = (obj?.get(key) as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() }
+        val server = body["server"] as? JsonObject
+        val name = text(server, "name") ?: throw CloudException(CloudException.Reason.Failed)
+        // Its picture comes inline, as a data: URL; the server has no id or address until the accept.
+        val image = text(server, "image")?.let { CloudServerImage(url = it) }
+        val inviter = (body["inviter"] as? JsonObject)?.let { who -> text(who, "name")?.let { CloudInviter(it, text(who, "image")) } }
+        return CloudInvitePreview(CloudServer(id = "", name = name, url = "", displayName = text(server, "displayName"), image = image), text(body, "roleName"), inviter)
+    }
+
+    /** Accepts [invite] for the signed-in account (`POST /v1/invites/accept`): the server it is on now. */
+    override suspend fun acceptInvite(invite: CloudInvite): CloudServer {
+        val answer = send("POST", "/v1/invites/accept", JsonObject(mapOf("token" to JsonPrimitive(invite.token))), bearer())
+        if (answer.status == 401) {
+            expire()
+            throw CloudException(CloudException.Reason.SignInRequired)
+        }
+        return server(inviteAnswer(answer))
+    }
+
+    /** An invite call's body, or why it was refused: the invite's own reasons as [CloudInviteException], the rest as [CloudException]. */
+    private fun inviteAnswer(answer: Answer): JsonObject {
+        val body = answer.body
+        if (answer.status in 200..299) return body ?: throw CloudException(CloudException.Reason.Failed)
+        fun field(key: String) = (body?.get(key) as? JsonPrimitive)?.contentOrNull
+        val refusal = when (field("code")) {
+            "expired" -> CloudInviteRefusal.Expired
+            "revoked" -> CloudInviteRefusal.Revoked
+            "exhausted", "accepted" -> CloudInviteRefusal.UsedUp
+            "invalid" -> CloudInviteRefusal.Unknown
+            "email_mismatch" -> CloudInviteRefusal.EmailMismatch(field("emailHint")?.takeIf { it.isNotBlank() })
+            else -> null
+        }
+        if (refusal != null) throw CloudInviteException(refusal)
+        throw CloudException(if (answer.status >= 500) CloudException.Reason.Unreachable else CloudException.Reason.Failed)
+    }
 
     /**
      * A token for the Happy Cloud server at [origin] (`POST
@@ -335,12 +502,11 @@ class CloudAccount(
 
     /** One accounts API request. A 401 is the pass over: signed out, never retried. */
     private suspend fun call(verb: String, path: String, body: JsonObject? = null): Pair<Int, JsonObject> {
-        val answer = send(verb, path, body, bearer())
-        if (answer.first == 401) {
+        val (status, root) = send(verb, path, body, bearer())
+        if (status == 401) {
             expire()
             throw CloudException(CloudException.Reason.SignInRequired)
         }
-        val (status, root) = answer
         if (status in 200..299) return status to (root ?: throw CloudException(CloudException.Reason.Failed))
         throw CloudException(
             when ((root?.get("code") as? JsonPrimitive)?.contentOrNull) {
@@ -352,7 +518,10 @@ class CloudAccount(
         )
     }
 
-    private suspend fun send(verb: String, path: String, body: JsonObject?, token: String?): Pair<Int, JsonObject?> = withContext(Dispatchers.IO) {
+    /** An accounts API answer: its status, its JSON object if it was one, and a `Retry-After` in seconds. */
+    private data class Answer(val status: Int, val body: JsonObject?, val retryAfter: Long? = null)
+
+    private suspend fun send(verb: String, path: String, body: JsonObject?, token: String?): Answer = withContext(Dispatchers.IO) {
         val request = Request.Builder().url("${origin.value}$path")
             .header("Accept", "application/json")
             .apply { if (token != null) header("Authorization", "Bearer $token") }
@@ -360,7 +529,11 @@ class CloudAccount(
             .build()
         try {
             http.newCall(request).execute().use { response ->
-                response.code to runCatching { json.parseToJsonElement(response.peekBody(MAX_BODY).string()) as? JsonObject }.getOrNull()
+                Answer(
+                    response.code,
+                    runCatching { json.parseToJsonElement(response.peekBody(MAX_BODY).string()) as? JsonObject }.getOrNull(),
+                    response.header("Retry-After")?.trim()?.toLongOrNull()?.takeIf { it > 0 },
+                )
             }
         } catch (e: IOException) {
             throw CloudException(CloudException.Reason.Unreachable).initCause(e)
@@ -386,6 +559,14 @@ class CloudAccount(
         private const val PASS_MILLIS = 3_600_000L
         /** A lockout's length when a 429 doesn't say (test accounts: 15 minutes). */
         private const val LOCKOUT_SECONDS = 900L
+        /** An email 429's wait when it says none: a resend's own cooldown. */
+        private const val EMAIL_WAIT_SECONDS = 60L
         private val json = Json { ignoreUnknownKeys = true }
+
+        /** A native sign-in's nonce: 32 random bytes, base64url. Google puts it in the ID token as given, and the service checks it is the one sent. */
+        internal fun nonce(): String {
+            val bytes = ByteArray(32).also(java.security.SecureRandom()::nextBytes)
+            return java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
+        }
     }
 }

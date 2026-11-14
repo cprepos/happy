@@ -12,6 +12,20 @@ protocol AttachPreviewSource: UIView {
     var previewImage: UIImage? { get }
 }
 
+/// What the preview's foot does for the menu over it (Telegram's caption
+/// panel and editing toolbar): the caption, shared with the menu's;
+/// send; the editor's edits, kept in the menu's library.
+@MainActor
+struct AttachPreviewComposer {
+    let library: AttachEditingLibrary
+    var caption: () -> String
+    var setCaption: (String) -> Void
+    /// Sends the picks; the picture in view when none is picked.
+    var send: (String) -> Void
+    /// An edit was applied to picture `id`: it is picked, as Telegram's are.
+    var edited: (String) -> Void
+}
+
 /// Telegram's media picker gallery for the "+" menu
 /// (`MediaPickerScreen.openMedia`, `presentLegacyMediaPickerGallery`,
 /// `TGMediaPickerGallery*`): a tapped picture zooms out of its cell to the
@@ -43,11 +57,31 @@ final class AttachPreviewViewController: UIViewController, UIScrollViewDelegate,
     private let pager = UIScrollView()
     private var pages: [Int: AttachPreviewPage] = [:]
     private let chrome = AttachPreviewChrome()
-    private let back = UIButton(type: .custom)
-    private let backIcon = IconView(.ionicons("chevron-back"), size: AttachPreviewLayout.Metrics.backIcon, tint: Palette.viewerControl)
+    private let back = PhotoEditorButton(.symbol("chevron.left"), identifier: "attach-preview-back", label: Strings.Library.back)
     private let checkButton = UIControl()
     private let check = LibraryCheckView()
     private let drag = UIPanGestureRecognizer()
+    private let composer: AttachPreviewComposer?
+    /// The caption: the menu's own card, its send beside the text.
+    private let card = AgentInputCardView(configuration: AgentInputCardConfiguration(
+        placeholder: Strings.Composer.inputPlaceholder,
+        primaryAction: .send,
+        primaryAccessibilityLabel: Strings.AttachMenu.send,
+        compact: true,
+        compactLines: 5
+    ))
+    private let cropButton = PhotoEditorButton.plain("crop.rotate", identifier: "attach-preview-crop", label: Strings.PhotoEditor.crop)
+    private let drawButton = PhotoEditorButton.plain("pencil.tip.crop.circle", identifier: "attach-preview-draw", label: Strings.PhotoEditor.draw)
+    /// Current Telegram's toolbar (`MediaPickerPhotoToolbarView`): dark
+    /// glass, with white artwork at 28 points and 44-point touch targets.
+    private lazy var toolbar = PhotoEditorGroup([cropButton, drawButton])
+    private var tools: [PhotoEditorButton] { [cropButton, drawButton] }
+    private var pictureArea: CGRect?
+    /// Over the pictures while the caption is typed; a tap puts the
+    /// keyboard away (`TGPhotoCaptionInputMixin`'s dismiss view).
+    private let typingDim = UIView()
+    /// The keyboard over the view, while the caption has it.
+    private var keyboard: CGFloat = 0
     /// Set while the pager is placed for a new size, so its offset moving
     /// doesn't turn the page.
     private var placing = false
@@ -57,6 +91,7 @@ final class AttachPreviewViewController: UIViewController, UIScrollViewDelegate,
     /// The speed the last drag let go with, for the way out.
     private var leaving: CGFloat = 0
     private var playing: Task<Void, Never>?
+    private var retiring = false
 
     init(count: Int, start: Int,
          item: @escaping @MainActor (Int) -> AttachLibraryItem?,
@@ -65,7 +100,9 @@ final class AttachPreviewViewController: UIViewController, UIScrollViewDelegate,
          video: (@MainActor (String) async -> URL?)? = nil,
          selectionNumber: @escaping @MainActor (String) -> Int?,
          toggle: @escaping @MainActor (String) -> Bool,
-         sourceView: @escaping @MainActor (Int) -> UIView?) {
+         sourceView: @escaping @MainActor (Int) -> UIView?,
+         composer: AttachPreviewComposer? = nil) {
+        self.composer = composer
         self.count = max(0, count)
         self.item = item
         self.image = image
@@ -79,11 +116,12 @@ final class AttachPreviewViewController: UIViewController, UIScrollViewDelegate,
         modalPresentationStyle = .overFullScreen
         modalPresentationCapturesStatusBarAppearance = true
         transitioningDelegate = self
+        overrideUserInterfaceStyle = .dark
     }
 
     /// Over the library itself: its pictures, and a video read whole to play
     /// (the copy is removed when the preview goes).
-    convenience init(library: AttachLibrary, start: Int, selectionNumber: @escaping @MainActor (String) -> Int?, toggle: @escaping @MainActor (String) -> Bool, sourceView: @escaping @MainActor (Int) -> UIView?) {
+    convenience init(library: AttachLibrary, start: Int, selectionNumber: @escaping @MainActor (String) -> Int?, toggle: @escaping @MainActor (String) -> Bool, sourceView: @escaping @MainActor (Int) -> UIView?, composer: AttachPreviewComposer? = nil) {
         let copies = AttachPreviewCopies()
         self.init(count: library.count, start: start,
             item: { [weak library] in library?.item(at: $0) },
@@ -94,7 +132,7 @@ final class AttachPreviewViewController: UIViewController, UIScrollViewDelegate,
                 copies.urls.append(url)
                 return url
             },
-            selectionNumber: selectionNumber, toggle: toggle, sourceView: sourceView)
+            selectionNumber: selectionNumber, toggle: toggle, sourceView: sourceView, composer: composer)
     }
 
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
@@ -119,15 +157,15 @@ final class AttachPreviewViewController: UIViewController, UIScrollViewDelegate,
         pager.alwaysBounceVertical = false
         pager.scrollsToTop = false
         view.addSubview(pager)
+        if composer != nil {
+            typingDim.backgroundColor = UIColor(Palette.attachPreviewTypingDim)
+            typingDim.alpha = 0
+            typingDim.isHidden = true
+            typingDim.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(typingDimTapped)))
+            view.addSubview(typingDim)
+        }
 
         view.addSubview(chrome)
-        backIcon.layer.shadowColor = UIColor(Palette.attachPreviewShadow).cgColor
-        backIcon.layer.shadowOpacity = 1
-        backIcon.layer.shadowRadius = 2.5
-        backIcon.layer.shadowOffset = .zero
-        back.addSubview(backIcon)
-        back.accessibilityIdentifier = "attach-preview-back"
-        back.accessibilityLabel = Strings.Library.back
         back.addTarget(self, action: #selector(close), for: .touchUpInside)
         chrome.addSubview(back)
         chrome.addSubview(check)
@@ -142,7 +180,50 @@ final class AttachPreviewViewController: UIViewController, UIScrollViewDelegate,
         view.addGestureRecognizer(drag)
         // A swipe to the side turns the page only once it's no drag to close.
         pager.panGestureRecognizer.require(toFail: drag)
+        if let composer {
+            card.overrideUserInterfaceStyle = .dark
+            card.delegate = self
+            card.textView.accessibilityIdentifier = "attach-preview-caption"
+            card.textView.keyboardAppearance = .dark
+            card.primaryControl.accessibilityIdentifier = "attach-preview-send"
+            card.setText(composer.caption(), selection: NSRange(location: (composer.caption() as NSString).length, length: 0), animatesHeight: false)
+            chrome.addSubview(card)
+            cropButton.addTarget(self, action: #selector(cropTapped), for: .touchUpInside)
+            drawButton.addTarget(self, action: #selector(drawTapped), for: .touchUpInside)
+            chrome.insertSubview(toolbar, belowSubview: card)
+            NotificationCenter.default.addObserver(self, selector: #selector(keyboardChanged(_:)), name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
+        }
         showSelection(animated: false)
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        card.textView.resignFirstResponder()
+        var ancestor: UIViewController? = self
+        while let controller = ancestor {
+            if controller.isBeingDismissed { retire() }
+            ancestor = controller.presentingViewController
+        }
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        guard retiring || presentingViewController == nil else { return }
+        retire()
+        // Gone however it went (a dismissal of what's under it, without
+        // its zoom): nothing of it is left on the screen.
+        view.isHidden = true
+        view.removeFromSuperview()
+        onHide?(nil)
+    }
+
+    private func retire() {
+        retiring = true
+        shown = false
+        playing?.cancel()
+        for page in pages.values { page.stop() }
+        card.textView.resignFirstResponder()
+        NotificationCenter.default.removeObserver(self, name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
     }
 
     override func viewDidLayoutSubviews() {
@@ -150,10 +231,11 @@ final class AttachPreviewViewController: UIViewController, UIScrollViewDelegate,
         let layout = AttachPreviewLayout(size: view.bounds.size, safeArea: LayoutInsets(view.safeAreaInsets), count: count)
         ground.frame = view.bounds
         chrome.frame = view.bounds
+        typingDim.frame = view.bounds
         back.setLayoutFrame(layout.back)
-        backIcon.frame = back.bounds
         check.setLayoutFrame(layout.check)
         checkButton.setLayoutFrame(layout.checkButton)
+        defer { placeFoot() }
         guard pager.bounds.size != layout.pager.pager.size || pager.contentSize != layout.pager.contentSize else { return }
         placing = true
         pager.frame = layout.pager.pager
@@ -185,7 +267,8 @@ final class AttachPreviewViewController: UIViewController, UIScrollViewDelegate,
             guard let shown = item(number) else { continue }
             let page = AttachPreviewPage(item: shown, index: number)
             page.frame = layout.page(number)
-            page.onTap = { [weak self] in self?.toggleChrome() }
+            page.onTap = { [weak self] in self?.checkTapped() }
+            page.pictureArea = pictureArea
             page.onPlay = { [weak self, weak page] in
                 guard let self, let page else { return }
                 play(page)
@@ -228,6 +311,46 @@ final class AttachPreviewViewController: UIViewController, UIScrollViewDelegate,
         if !animated { scrollViewDidEndDecelerating(pager) }
     }
 
+    /// Telegram's foot (`AttachPreviewFootLayout`): the caption over the
+    /// tool row, and over the keyboard while typing. The whole photo fits
+    /// above it; typing dims it and hides the tools, Back and check.
+    private func placeFoot() {
+        guard composer != nil else { return }
+        let bounds = view.bounds, safe = LayoutInsets(view.safeAreaInsets)
+        let inset = MobileComposerMetrics.mobile.shellInset
+        let width = AttachPreviewFootLayout.cardWidth(size: bounds.size, safeArea: safe, inset: inset)
+        let foot = AttachPreviewFootLayout(size: bounds.size, safeArea: safe, keyboard: keyboard, inset: inset, cardHeight: card.height(fitting: width), tools: tools.count)
+        back.setLayoutFrame(foot.back)
+        toolbar.frame = foot.group
+        toolbar.place(foot.tools.map { $0.offsetBy(dx: -foot.group.minX, dy: -foot.group.minY) })
+        card.frame = foot.card
+        pictureArea = foot.pictures
+        for page in pages.values { page.pictureArea = foot.pictures }
+        typingDim.alpha = foot.typing ? 1 : 0
+        for control in [back, check, checkButton] as [UIView] { control.alpha = foot.typing ? 0 : 1 }
+        showTools()
+    }
+
+    @objc private func keyboardChanged(_ note: Notification) {
+        guard let frame = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue else { return }
+        let local = view.convert(frame, from: nil)
+        let overlap = card.textView.isFirstResponder ? max(0, view.bounds.maxY - local.minY) : 0
+        guard overlap != keyboard else { return }
+        keyboard = overlap
+        if overlap > 0 { typingDim.isHidden = false; currentPage?.stop() }
+        let duration = note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double ?? 0.25
+        UIView.animate(withDuration: duration, delay: 0, options: [.beginFromCurrentState]) {
+            self.placeFoot()
+            self.card.layoutIfNeeded()
+        } completion: { _ in
+            self.typingDim.isHidden = self.keyboard == 0
+        }
+    }
+
+    @objc private func typingDimTapped() {
+        card.textView.resignFirstResponder()
+    }
+
     var currentPage: AttachPreviewPage? { pages[index] }
     var groundAlpha: CGFloat { ground.alpha }
     var picturesOffset: CGFloat { pager.transform.ty }
@@ -242,6 +365,22 @@ final class AttachPreviewViewController: UIViewController, UIScrollViewDelegate,
         check.set(number, animated: animated)
         checkButton.accessibilityLabel = shown.duration.map { Strings.Library.video(LibraryPickerLayout.duration(seconds: $0), index: number) } ?? Strings.Library.photo(number)
         checkButton.accessibilityTraits = number == nil ? .button : [.button, .selected]
+        showTools()
+    }
+
+    /// Crop and Draw for a photo, yellow where its edit is applied.
+    private func showTools() {
+        guard let composer, let shown = item(index) else { return }
+        let photo = shown.duration == nil
+        for tool in tools {
+            tool.alpha = photo ? 1 : 0.2
+            tool.isUserInteractionEnabled = photo && keyboard == 0
+        }
+        toolbar.alpha = keyboard > 0 ? 0 : 1
+        toolbar.isUserInteractionEnabled = keyboard == 0
+        let edit = composer.library.edit(shown.id)
+        cropButton.applied = edit.map { !$0.crop.isWhole($0.canvas) } ?? false
+        drawButton.applied = !(edit?.strokes.isEmpty ?? true)
     }
 
     var shownNumber: Int? { check.number }
@@ -254,10 +393,6 @@ final class AttachPreviewViewController: UIViewController, UIScrollViewDelegate,
     }
 
     // MARK: Chrome
-
-    private func toggleChrome() {
-        setChrome(hidden: !chromeHidden)
-    }
 
     private func setChrome(hidden: Bool) {
         guard hidden != chromeHidden else { return }
@@ -290,6 +425,12 @@ final class AttachPreviewViewController: UIViewController, UIScrollViewDelegate,
 
     func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
         guard recognizer === drag else { return true }
+        if composer != nil {
+            // Typing, a drag doesn't close it: the dim's tap puts the keyboard away.
+            if keyboard > 0 { return false }
+            let point = recognizer.location(in: view)
+            if !chromeHidden, card.frame.contains(point) || toolbar.frame.contains(point) || back.frame.contains(point) { return false }
+        }
         guard let page = currentPage, !page.isZoomed, !pager.isDragging, !pager.isDecelerating else { return false }
         let velocity = drag.velocity(in: view)
         return abs(velocity.y) > abs(velocity.x)
@@ -321,16 +462,96 @@ final class AttachPreviewViewController: UIViewController, UIScrollViewDelegate,
             close()
             return
         }
-        UIView.animate(withDuration: AttachPreviewDismissal.Metrics.returnDuration, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
+        let back = Self.motion()
+        back.addAnimations {
             self.pager.transform = .identity
             self.ground.alpha = 1
         }
+        back.isUserInteractionEnabled = true
+        back.startAnimation()
         setChrome(hidden: false)
     }
 
     @objc func close() {
         guard presentingViewController != nil, !isBeingDismissed else { return }
         dismiss(animated: true)
+    }
+
+    // MARK: Editing
+
+    private enum Editor { case crop, draw }
+
+    @objc private func cropTapped() { openEditor(.crop) }
+    @objc private func drawTapped() { openEditor(.draw) }
+
+    /// The picture with no edit at the screen's size, then the editor
+    /// over the preview with it.
+    private func openEditor(_ editor: Editor) {
+        guard let composer, let shown = item(index), shown.duration == nil, presentedViewController == nil else { return }
+        card.textView.resignFirstResponder()
+        let id = shown.id
+        let scale = view.window?.screen.scale ?? traitCollection.displayScale
+        let pixels = CGSize(width: view.bounds.width * scale, height: view.bounds.height * scale)
+        var opened = false
+        var token: Int?
+        token = composer.library.original(id, index: index, pixels: pixels) { [weak self] image in
+            guard let self, !opened else { return }
+            // PhotoKit may hand a rough one first; the editor wants the sharp one.
+            let longer = max(image.size.width * image.scale, image.size.height * image.scale)
+            guard longer >= min(max(pixels.width, pixels.height), 1200) * 0.6 else { return }
+            opened = true
+            if let token { composer.library.cancelThumbnail(token) }
+            present(editor, id: id, picture: image)
+        }
+    }
+
+    private func present(_ editor: Editor, id: String, picture: UIImage) {
+        guard let composer, item(index)?.id == id, presentedViewController == nil, shown else { return }
+        let edit = composer.library.edit(id) ?? PhotoEdit(canvas: PhotoEdit.canvas(for: picture))
+        let controller: UIViewController
+        switch editor {
+        case .crop:
+            let crop = PhotoCropViewController(picture: picture, edit: edit)
+            crop.onDone = { [weak self, weak crop] next in
+                var changed = edit
+                changed.crop = next
+                self?.apply(changed, to: id, was: edit)
+                crop?.dismiss(animated: true)
+            }
+            crop.onCancel = { [weak crop] in crop?.dismiss(animated: true) }
+            controller = crop
+        case .draw:
+            let draw = PhotoDrawViewController(picture: picture, edit: edit)
+            draw.onDone = { [weak self, weak draw] strokes in
+                var changed = edit
+                changed.strokes = strokes
+                self?.apply(changed, to: id, was: edit)
+                draw?.dismiss(animated: true)
+            }
+            draw.onCancel = { [weak draw] in draw?.dismiss(animated: true) }
+            controller = draw
+        }
+        present(controller, animated: true)
+    }
+
+    /// Kept for picture `id`; changed, the picture is picked (Telegram's
+    /// gallery selects an item its editor applied adjustments to).
+    private func apply(_ edit: PhotoEdit, to id: String, was before: PhotoEdit) {
+        guard let composer else { return }
+        composer.library.setEdit(id, edit)
+        if edit != before, !edit.isEmpty { composer.edited(id) }
+        showTools()
+    }
+
+    /// Picture `id` was edited: its page shows it anew.
+    func reload(_ id: String) {
+        let scale = view.window?.screen.scale ?? traitCollection.displayScale
+        let pixels = CGSize(width: view.bounds.width * scale, height: view.bounds.height * scale)
+        for (number, page) in pages where page.item.id == id {
+            if let request = page.request { cancel(request) }
+            page.request = image(number, pixels) { [weak page] picture in page?.show(picture) }
+        }
+        showTools()
     }
 
     // MARK: Transitions
@@ -343,15 +564,10 @@ final class AttachPreviewViewController: UIViewController, UIScrollViewDelegate,
         AttachPreviewTransition(opening: false)
     }
 
-    /// Telegram's spring, in UIKit's terms, and how long it takes to settle.
-    private static func spring(damping: CGFloat, stretch: CGFloat) -> UIViewPropertyAnimator {
-        let spring = AttachPreviewMotion.stretched(damping: damping, factor: stretch)
-        let probe = CASpringAnimation()
-        probe.mass = spring.mass
-        probe.stiffness = spring.stiffness
-        probe.damping = spring.damping
-        let timing = UISpringTimingParameters(mass: spring.mass, stiffness: spring.stiffness, damping: spring.damping, initialVelocity: .zero)
-        return UIViewPropertyAnimator(duration: probe.settlingDuration, timingParameters: timing)
+    /// The preview's one motion (`AttachPreviewMotion`), over `duration`.
+    private static func motion(_ duration: TimeInterval = AttachPreviewMotion.duration) -> UIViewPropertyAnimator {
+        let curve = AttachPreviewMotion.curve
+        return UIViewPropertyAnimator(duration: duration, controlPoint1: CGPoint(x: curve.x1, y: curve.y1), controlPoint2: CGPoint(x: curve.x2, y: curve.y2))
     }
 
     /// Where `index`'s cell is in the preview, if it is on the screen.
@@ -394,21 +610,25 @@ final class AttachPreviewViewController: UIViewController, UIScrollViewDelegate,
         view.isUserInteractionEnabled = false
         let finish = { [weak self] in
             guard let self else { return done() }
+            guard !retiring else { return done() }
             shown = true
             view.isUserInteractionEnabled = true
             done()
         }
-        UIView.animate(withDuration: AttachPreviewMotion.groundIn) {
+        let fade = Self.motion()
+        fade.addAnimations {
             self.ground.alpha = 1
             self.chrome.alpha = 1
         }
+        fade.startAnimation()
         guard let page = currentPage, let source = cell(index) else {
-            let leave = AttachPreviewDismissal.leave(velocity: AttachPreviewDismissal.Metrics.leavingSpeed, height: view.bounds.height)
+            let leave = AttachPreviewDismissal.leave(velocity: 0, height: view.bounds.height)
             onHide?(id)
             pager.transform = CGAffineTransform(translationX: 0, y: leave.offset)
-            UIView.animate(withDuration: leave.duration, delay: 0, options: [.curveEaseOut]) {
-                self.pager.transform = .identity
-            } completion: { _ in finish() }
+            let slide = Self.motion(leave.duration)
+            slide.addAnimations { self.pager.transform = .identity }
+            slide.addCompletion { _ in finish() }
+            slide.startAnimation()
             return
         }
         let image = Self.larger((source.view as? AttachPreviewSource)?.previewImage, page.shownImage)
@@ -417,7 +637,7 @@ final class AttachPreviewViewController: UIViewController, UIScrollViewDelegate,
         let (clip, picture) = flier(zoom, image: image, source: source.view)
         onHide?(id)
         page.alpha = 0
-        let animator = Self.spring(damping: AttachPreviewMotion.dampingIn, stretch: AttachPreviewMotion.stretchIn)
+        let animator = Self.motion()
         animator.addAnimations {
             clip.frame = zoom.page
             picture.frame = image == nil ? CGRect(origin: .zero, size: zoom.page.size) : zoom.pagePicture
@@ -434,9 +654,7 @@ final class AttachPreviewViewController: UIViewController, UIScrollViewDelegate,
     /// or off the screen the way it was going with that cell not showing
     /// (`simpleTransitionOutWithVelocity`).
     fileprivate func animateOut(_ done: @escaping () -> Void) {
-        shown = false
-        playing?.cancel()
-        for page in pages.values { page.stop() }
+        retire()
         view.isUserInteractionEnabled = false
         let velocity = leaving
         let finish = { [weak self] in
@@ -449,10 +667,13 @@ final class AttachPreviewViewController: UIViewController, UIScrollViewDelegate,
         }
         guard let page = currentPage, let source = cell(index) else {
             let leave = AttachPreviewDismissal.leave(velocity: velocity, height: view.bounds.height)
-            UIView.animate(withDuration: AttachPreviewMotion.groundOut) { self.ground.alpha = 0 }
-            UIView.animate(withDuration: leave.duration, delay: 0, options: [.curveEaseIn]) {
+            let slide = Self.motion(leave.duration)
+            slide.addAnimations {
+                self.ground.alpha = 0
                 self.pager.transform = CGAffineTransform(translationX: 0, y: leave.offset)
-            } completion: { _ in finish() }
+            }
+            slide.addCompletion { _ in finish() }
+            slide.startAnimation()
             return
         }
         UIView.animate(withDuration: AttachPreviewMotion.fadeOut) { self.ground.alpha = 0 }
@@ -462,7 +683,7 @@ final class AttachPreviewViewController: UIViewController, UIScrollViewDelegate,
         clip.frame = zoom.page
         picture.frame = image == nil ? clip.bounds : zoom.pagePicture
         page.alpha = 0
-        let animator = Self.spring(damping: AttachPreviewMotion.dampingOut, stretch: AttachPreviewMotion.stretchOut)
+        let animator = Self.motion()
         animator.addAnimations {
             clip.frame = zoom.cell
             picture.frame = image == nil ? CGRect(origin: .zero, size: zoom.cell.size) : zoom.cellPicture
@@ -478,6 +699,29 @@ final class AttachPreviewViewController: UIViewController, UIScrollViewDelegate,
     }
 }
 
+extension AttachPreviewViewController: AgentInputCardDelegate {
+    func agentInputCardDidChangeText(_ card: AgentInputCardView) {
+        composer?.setCaption(card.text)
+    }
+
+    func agentInputCardDidChangeFocus(_ card: AgentInputCardView) {
+        view.setNeedsLayout()
+    }
+
+    func agentInputCardDidInvalidateHeight(_ card: AgentInputCardView) {
+        UIView.animate(withDuration: 0.2) {
+            self.placeFoot()
+            self.card.layoutIfNeeded()
+        }
+    }
+
+    func agentInputCardDidPressPrimary(_ card: AgentInputCardView) {
+        guard let composer, let shown = item(index) else { return }
+        card.textView.resignFirstResponder()
+        composer.send(shown.id)
+    }
+}
+
 /// Presents and dismisses the preview with its own zoom.
 private final class AttachPreviewTransition: NSObject, UIViewControllerAnimatedTransitioning {
     let opening: Bool
@@ -486,7 +730,7 @@ private final class AttachPreviewTransition: NSObject, UIViewControllerAnimatedT
         self.opening = opening
     }
 
-    func transitionDuration(using context: UIViewControllerContextTransitioning?) -> TimeInterval { 0.4 }
+    func transitionDuration(using context: UIViewControllerContextTransitioning?) -> TimeInterval { AttachPreviewMotion.duration }
 
     func animateTransition(using context: UIViewControllerContextTransitioning) {
         if opening {
@@ -537,6 +781,11 @@ final class AttachPreviewPage: UIScrollView, UIScrollViewDelegate {
     var onTap: (() -> Void)?
     var onPlay: (() -> Void)?
     var onRelease: ((Int) -> Void)?
+    /// Nil for a plain gallery; the attach viewer reserves its caption
+    /// and toolbar before fitting the picture.
+    var pictureArea: CGRect? {
+        didSet { if pictureArea != oldValue { reset() } }
+    }
     /// The library's request for its picture.
     var request: Int?
     /// The video, once read.
@@ -613,11 +862,11 @@ final class AttachPreviewPage: UIScrollView, UIScrollViewDelegate {
     func reset() {
         if zoomScale != 1 { setZoomScale(1, animated: false) }
         let natural = imageView.image?.size ?? .zero
-        let fitted = AttachPreviewLayout.fit(natural, in: bounds.size)
+        let fitted = fitted(natural)
         imageView.frame = fitted
         contentSize = fitted.size
         // Videos play where they are; only photos zoom.
-        maximumZoomScale = item.duration == nil ? AttachPreviewLayout.maximumZoom(natural, in: bounds.size) : 1
+        maximumZoomScale = item.duration == nil ? AttachPreviewLayout.maximumZoom(natural, in: pictureArea?.size ?? bounds.size) : 1
         setNeedsLayout()
     }
 
@@ -625,7 +874,7 @@ final class AttachPreviewPage: UIScrollView, UIScrollViewDelegate {
     /// known, where one of `natural` would.
     func pictureFrame(in view: UIView, natural: CGSize?) -> CGRect {
         if imageView.image == nil, let natural {
-            return convert(AttachPreviewLayout.fit(natural, in: bounds.size), to: view)
+            return convert(fitted(natural), to: view)
         }
         return imageView.convert(imageView.bounds, to: view)
     }
@@ -636,7 +885,8 @@ final class AttachPreviewPage: UIScrollView, UIScrollViewDelegate {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        imageView.frame = AttachPreviewLayout.zoomed(imageView.frame.size, in: bounds.size)
+        let area = pictureArea ?? bounds
+        imageView.frame = AttachPreviewLayout.zoomed(imageView.frame.size, in: area.size).offsetBy(dx: area.minX, dy: area.minY)
         playerView?.frame = imageView.frame
         guard item.duration != nil else { return }
         playButton.frame = AttachPreviewLayout.play(in: imageView.frame)
@@ -646,6 +896,11 @@ final class AttachPreviewPage: UIScrollView, UIScrollViewDelegate {
     }
 
     func viewForZooming(in scrollView: UIScrollView) -> UIView? { item.duration == nil ? imageView : nil }
+
+    private func fitted(_ natural: CGSize) -> CGRect {
+        let area = pictureArea ?? bounds
+        return AttachPreviewLayout.fit(natural, in: area.size).offsetBy(dx: area.minX, dy: area.minY)
+    }
 
     func scrollViewDidZoom(_ scrollView: UIScrollView) {
         setNeedsLayout()

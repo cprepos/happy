@@ -162,6 +162,13 @@ final class AttachMenuLayoutTests: XCTestCase {
         XCTAssertEqual(tall.sendBackground, rect(327, 44, 40, 34))
         XCTAssertEqual(tall.glassRadius, 20)
         XCTAssertEqual(AttachMenuPanelLayout.textWidth(width: 402, sides: .zero, focused: true), 303)
+        // A long caption stops at its tallest and scrolls inside, the text
+        // kept in the glass and the glass never past the room it was given.
+        let long = AttachMenuPanelLayout(.init(minX: 0, width: 402, bottom: 538, titles: titles, selected: 0, picking: true, focused: true, textHeight: 900, placeholder: CGSize(width: 110, height: 21), empty: false, maxHeight: 140, pixel: 1.0 / 3))
+        XCTAssertEqual(long.glass, rect(16, 390, 370, 140))
+        XCTAssertEqual(long.text.height, 121)
+        XCTAssertEqual(long.text.minY, 9, accuracy: 0.5, "the text left the glass")
+        XCTAssertEqual(long.sendBackground, rect(327, 103, 40, 34), "send left the foot")
     }
 
     func testTheIPadCardsBarSitsInTheCard() {
@@ -174,8 +181,8 @@ final class AttachMenuLayoutTests: XCTestCase {
     func testTheHeaderIsTelegramsGlassControls() {
         let header = AttachMenuHeaderLayout(width: 402, title: CGSize(width: 64.5, height: 20.3), arrow: true, countText: CGSize(width: 10, height: 20.3), pixel: 1.0 / 3)
         XCTAssertEqual(header.close, rect(16, 16, 44, 44))
-        // The count 12 right of close: 38 wider than its number.
-        XCTAssertEqual(header.count, rect(72, 16, 48, 44))
+        // The count at the top right, as far in as close: 38 wider than its number.
+        XCTAssertEqual(header.count, rect(338, 16, 48, 44))
         XCTAssertEqual(header.countLabel.minX, 27 - 1.0 / 3, accuracy: 0.0001)
         // Title and arrow centred together on the buttons' middle, 1 up.
         XCTAssertEqual(header.title.minX + (header.arrow!.maxX - header.title.minX) / 2, 201, accuracy: 0.5)

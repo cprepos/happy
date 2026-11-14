@@ -109,22 +109,63 @@ final class AttachPreviewLayoutTests: XCTestCase {
         XCTAssertEqual(AttachPreviewDismissal(distance: 200, velocity: 1500).velocity, 1500)
     }
 
-    func testWithNoCellItLeavesTheScreenAtLeast2000ASecond() {
+    func testWithNoCellItLeavesTheScreenWithinTheZoomsTime() {
         let slow = AttachPreviewDismissal.leave(velocity: 600, height: 874)
         XCTAssertEqual(slow.offset, 874)
-        XCTAssertEqual(slow.duration, 0.437, accuracy: 0.0001)
-        let up = AttachPreviewDismissal.leave(velocity: -4000, height: 874)
+        XCTAssertEqual(slow.duration, 0.22, accuracy: 0.0001)
+        let up = AttachPreviewDismissal.leave(velocity: -8000, height: 874)
         XCTAssertEqual(up.offset, -874)
-        XCTAssertEqual(up.duration, 0.2185, accuracy: 0.0001)
+        XCTAssertEqual(up.duration, 874.0 / 8000, accuracy: 0.0001, "a finger faster than the zoom keeps its speed")
+        let opening = AttachPreviewDismissal.leave(velocity: 0, height: 874)
+        XCTAssertEqual(opening.offset, 874, "with no velocity it comes from below")
+        XCTAssertEqual(opening.duration, 0.22, accuracy: 0.0001)
     }
 
-    func testTelegramsSpringsStretchedInTime() {
-        let opening = AttachPreviewMotion.stretched(damping: AttachPreviewMotion.dampingIn, factor: AttachPreviewMotion.stretchIn)
-        XCTAssertEqual(opening.mass, 0.8)
-        XCTAssertEqual(opening.stiffness, 300 / 3.24, accuracy: 0.0001)
-        XCTAssertEqual(opening.damping, 25 / 1.8, accuracy: 0.0001)
-        let closing = AttachPreviewMotion.stretched(damping: AttachPreviewMotion.dampingOut, factor: AttachPreviewMotion.stretchOut)
-        XCTAssertEqual(closing.stiffness, 75)
-        XCTAssertEqual(closing.damping, 15)
+    func testThePreviewMovesIn220MillisecondsBothWays() {
+        XCTAssertEqual(AttachPreviewMotion.duration, 0.22)
+        XCTAssertLessThan(AttachPreviewMotion.fadeOut, AttachPreviewMotion.duration)
+        // An ease out that never overshoots.
+        let curve = AttachPreviewMotion.curve
+        XCTAssertGreaterThan(curve.y1, curve.x1)
+        XCTAssertLessThanOrEqual(max(curve.y1, curve.y2), 1)
+    }
+}
+
+/// The preview's foot: Telegram's toolbar and caption panel, and what the
+/// keyboard does to them.
+final class AttachPreviewFootLayoutTests: XCTestCase {
+    private let phone = CGSize(width: 402, height: 874)
+    private let safe = LayoutInsets(top: 62, bottom: 34)
+
+    func testBackAndToolsShareTheBottomRowAndThePictureClearsTheCaption() {
+        let foot = AttachPreviewFootLayout(size: phone, safeArea: safe, keyboard: 0, inset: 8, cardHeight: 50, tools: 2)
+        XCTAssertEqual(foot.bar, CGRect(x: 0, y: 791, width: 402, height: 83))
+        XCTAssertEqual(foot.tools, [CGRect(x: 152, y: 793.5, width: 44, height: 44), CGRect(x: 206, y: 793.5, width: 44, height: 44)])
+        XCTAssertEqual(foot.card, CGRect(x: 8, y: 731, width: 386, height: 50))
+        XCTAssertEqual(foot.back, CGRect(x: 26, y: 793.5, width: 44, height: 44))
+        XCTAssertEqual(foot.group, CGRect(x: 152, y: 793.5, width: 98, height: 44))
+        XCTAssertEqual(foot.pictures, CGRect(x: 12, y: 118, width: 378, height: 601))
+        XCTAssertFalse(foot.typing)
+    }
+
+    func testTypingTheCaptionAndWholePictureStayAboveTheKeyboard() {
+        let foot = AttachPreviewFootLayout(size: phone, safeArea: safe, keyboard: 336, inset: 8, cardHeight: 50, tools: 2)
+        XCTAssertTrue(foot.typing)
+        XCTAssertEqual(foot.card, CGRect(x: 8, y: 480, width: 386, height: 50))
+        XCTAssertEqual(foot.pictures, CGRect(x: 12, y: 118, width: 378, height: 350))
+        // The bar stays where it was, under the keyboard.
+        XCTAssertEqual(foot.bar.minY, 791)
+    }
+
+    func testALongCaptionStopsAtAThirdOfWhatTheKeyboardLeaves() {
+        let foot = AttachPreviewFootLayout(size: phone, safeArea: safe, keyboard: 336, inset: 8, cardHeight: 400, tools: 2)
+        XCTAssertEqual(foot.card.height, (874 - 336) / 3)
+        XCTAssertEqual(foot.card.maxY, 874 - 336 - 8)
+    }
+
+    func testTurnedTheCaptionKeepsInsideTheSideInsets() {
+        let foot = AttachPreviewFootLayout(size: CGSize(width: 874, height: 402), safeArea: LayoutInsets(left: 62, bottom: 21, right: 62), keyboard: 0, inset: 8, cardHeight: 50, tools: 2)
+        XCTAssertEqual(foot.card, CGRect(x: 70, y: 272, width: 734, height: 50))
+        XCTAssertEqual(foot.bar, CGRect(x: 0, y: 332, width: 874, height: 70))
     }
 }

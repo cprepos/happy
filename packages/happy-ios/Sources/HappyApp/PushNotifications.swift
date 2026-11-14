@@ -29,6 +29,11 @@ final class PushNotifications: NSObject {
     /// A tap delivered before the scene's coordinator exists.
     private var pendingSessionID: String?
 
+    /// This installation's id: the push exchange's `deviceId`, and the
+    /// device this phone's environment reports name (`AgentConnections.environment`).
+    nonisolated static let installationID = ExpoInstallationID(backend: SecurityKeychainBackend(), legacyDefaults: StandardDefaults(),
+                                                               bundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+
     private lazy var source: ExpoDevicePushTokenSource = {
         let bundle = Bundle.main
         let bundleID = bundle.bundleIdentifier ?? ""
@@ -36,7 +41,7 @@ final class PushNotifications: NSObject {
         let apns = self.apns
         return ExpoDevicePushTokenSource(
             transport: URLSessionTransport(),
-            installationID: ExpoInstallationID(backend: SecurityKeychainBackend(), legacyDefaults: StandardDefaults(), bundleIdentifier: bundleID),
+            installationID: Self.installationID,
             development: ProvisioningProfile.usesDevelopmentAPNs(profile),
             appId: bundleID,
             deviceToken: { try await apns.token() }
@@ -52,12 +57,32 @@ final class PushNotifications: NSObject {
     /// the launching tap only to a delegate set before launch finishes.
     func install() {
         UNUserNotificationCenter.current().delegate = self
+        SettingsHooks.cloudPush = cloudPush
     }
+
+    /// Happy Cloud servers' push (`CloudPush`): the relay's token for this
+    /// install's APNs token, registered on each server.
+    private lazy var cloudPush: CloudPush = {
+        let profile = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision").flatMap { try? Data(contentsOf: $0) }
+        let apns = self.apns
+        return CloudPush(source: .init(
+            device: CloudPushDevice(appId: Bundle.main.bundleIdentifier ?? "", development: ProvisioningProfile.usesDevelopmentAPNs(profile),
+                                    locale: Locale.preferredLanguages.first),
+            ids: CloudPushIDs(store: UserDefaultsStore(suiteName: "happy-ios.cloud-push")),
+            transport: URLSessionTransport(),
+            permission: { await Self.permission() },
+            requestPermission: { await Self.requestPermission() },
+            apnsToken: { try await apns.token() }
+        ))
+    }()
 
     /// From the scene, once its coordinator has started.
     func attach(context: AppContext, coordinator: AppCoordinator) {
         self.context = context
         self.coordinator = coordinator
+        // Signed out of a cloud server: its notifications stop now.
+        let cloudPush = self.cloudPush
+        context.account.agentConnections.cloudFarewell = { id, client in try? await cloudPush.unregister(connection: id, client: client) }
         accountsObservation = context.account.observeAccounts { [weak self] _ in
             self?.accountsChanged()
         }

@@ -3,6 +3,8 @@ package com.slopus.happy.ui.attach
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.slopus.happy.ui.assertDp
+import com.slopus.happy.ui.theme.DarkColors
+import com.slopus.happy.ui.theme.LightColors
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -40,7 +42,8 @@ class AttachSpecTest {
         assertDp("check", 24, AttachSpec.check)
         assertDp("box", 26, AttachSpec.checkBox)
         assertDp("inset", 5, AttachSpec.checkInset)
-        assertDp("touch", 42, AttachSpec.checkTouch)
+        // Telegram's 42 corner, grown to Android's 48 target.
+        assertDp("touch", 48, AttachSpec.checkTouch)
         assertEquals(14.sp, AttachSpec.checkText(9))
         assertEquals(14.sp, AttachSpec.checkText(20))
         assertEquals(10.sp, AttachSpec.checkText(100))
@@ -58,10 +61,9 @@ class AttachSpecTest {
         assertDp("narrow window", 150, AttachSpec.tabBarWidth(2, 150.dp))
         assertEquals(0.09f, AttachSpec.TAB_SELECTED_ALPHA, delta)
         assertEquals(0.6f, AttachSpec.TAB_SELECTED_FROM, delta)
-        assertDp("send", 52, AttachSpec.sendWidth)
-        assertDp("send", 38, AttachSpec.sendHeight)
-        assertDp("counter at least", 18, AttachSpec.counterWidth(4.dp))
-        assertDp("counter grows", 9 + 14, AttachSpec.counterWidth(14.dp))
+        assertEquals(5, AttachSpec.CAPTION_LINES)
+        assertDp("confirm", 52, AttachSpec.confirmMinWidth)
+        assertDp("confirm", 38, AttachSpec.confirmHeight)
         assertDp("caption shift", 36, AttachSpec.captionShift)
         assertDp("file row", 64, AttachSpec.fileRow)
         assertDp("file icon", 42, AttachSpec.fileIcon)
@@ -128,5 +130,15 @@ class AttachSpecTest {
         assertEquals(FileTint.entries['k'.code % 4], fileTint("app.kt"))
         assertEquals("pdf", fileExtension("a.b.PDF"))
         assertEquals("", fileExtension("README"))
+    }
+
+    @Test fun `the accent is the composer's send button, not Telegram's blue`() {
+        for (theme in listOf(LightColors, DarkColors)) {
+            val colors = AttachColors.of(theme.dark)
+            assertEquals(theme.text, colors.accent)
+            assertEquals(theme.surface, colors.onAccent)
+            assertEquals(theme.text, colors.tabSelected)
+            assertEquals(theme.text, colors.tabSelectedText)
+        }
     }
 }

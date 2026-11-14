@@ -196,6 +196,15 @@ final class AttachGridFeed: NSObject, UICollectionViewDataSource, UICollectionVi
 
     /// The numbers on the cells showing, after a pick: the one picked or
     /// unpicked animates, the rest close up.
+    /// Picture `id` shows anew where its cell is: its edit came or went.
+    func redraw(_ id: String) {
+        guard let grid else { return }
+        for case let cell as AttachGridCell in grid.visibleCells where cell.itemID == id {
+            guard let path = grid.indexPath(for: cell), let item = library.item(at: path.item) else { continue }
+            cell.show(item, index: path.item, library: library, pixels: pixels, again: true)
+        }
+    }
+
     func refreshNumbers(animating id: String?) {
         guard let grid else { return }
         for case let cell as AttachGridCell in grid.visibleCells {
@@ -288,7 +297,8 @@ final class AttachGridCollectionLayout: UICollectionViewLayout {
 /// thumbnail filling the square on the placeholder colour; for a video a
 /// camera glyph at the top left and its length 6 in from the bottom right,
 /// each on a soft corner shadow; the number circle 3 in from the top right.
-/// The circle picks; the rest of the picture opens the preview.
+/// The circle picks, and so does the 44 point corner around it; the rest
+/// of the picture opens the preview.
 final class AttachGridCell: UICollectionViewCell, UIGestureRecognizerDelegate, AttachPreviewSource {
     static let id = "attach-cell"
     private let picture = UIImageView()
@@ -356,10 +366,12 @@ final class AttachGridCell: UICollectionViewCell, UIGestureRecognizerDelegate, A
         return true
     }
 
-    func show(_ item: AttachLibraryItem, index: Int, library: AttachLibrary, pixels: CGSize) {
+    /// `again`: the same picture changed (edited), drawn anew in place.
+    func show(_ item: AttachLibraryItem, index: Int, library: AttachLibrary, pixels: CGSize, again: Bool = false) {
         self.index = index
         accessibilityIdentifier = "attach-photo:\(index)"
-        guard item.id != itemID || picture.image == nil else { return }
+        guard item.id != itemID || picture.image == nil || again else { return }
+        let keep = again && item.id == itemID
         if let request { self.library?.cancelThumbnail(request) }
         request = nil
         self.library = library
@@ -373,7 +385,7 @@ final class AttachGridCell: UICollectionViewCell, UIGestureRecognizerDelegate, A
         typeIcon.isHidden = !video
         leftShadow.isHidden = !video
         rightShadow.isHidden = !video
-        picture.image = nil
+        if !keep { picture.image = nil }
         let id = item.id
         request = library.thumbnail(at: index, pixels: pixels) { [weak self] image in
             guard let self, itemID == id else { return }
@@ -408,7 +420,7 @@ final class AttachGridCell: UICollectionViewCell, UIGestureRecognizerDelegate, A
         typeIcon.frame = CGRect(x: 0, y: 1, width: 19, height: 19)
         let size = duration.intrinsicContentSize
         duration.frame = CGRect(x: bounds.width - ceil(size.width) - 6, y: bounds.height - ceil(size.height) - 6, width: ceil(size.width), height: ceil(size.height))
-        check.frame = CGRect(x: bounds.width - AttachCheckView.side - 3, y: 3, width: AttachCheckView.side, height: AttachCheckView.side)
+        check.frame = CGRect(x: bounds.width - AttachCheckView.side - AttachCheckView.inset, y: AttachCheckView.inset, width: AttachCheckView.side, height: AttachCheckView.side)
     }
 
     /// Semibold 11, white, on a 4 point black shadow at 40%.
@@ -458,6 +470,12 @@ final class AttachGridCell: UICollectionViewCell, UIGestureRecognizerDelegate, A
 /// in) under the ring as it dips and settles. A press shrinks it to 0.85.
 final class AttachCheckView: UIControl {
     static let side: CGFloat = 29
+    /// From the cell's top and right edges.
+    static let inset: CGFloat = 3
+    /// The corner of the cell it takes touches in. Telegram's circle takes
+    /// only its own 29 (`MediaPickerGridItemNode`, Telegram-Android's 42
+    /// `checkFrame`); 44, the system's smallest target, is kinder to a thumb.
+    static let reach: CGFloat = 44
     private(set) var number: Int?
     /// 0 empty, 1 picked.
     private var progress: CGFloat = 0
@@ -559,6 +577,11 @@ final class AttachCheckView: UIControl {
             scale.isRemovedOnCompletion = false
             layer.add(scale, forKey: "press")
         }
+    }
+
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        let outset = Self.reach - Self.side - Self.inset
+        return bounds.inset(by: UIEdgeInsets(top: -Self.inset, left: -outset, bottom: -outset, right: -Self.inset)).contains(point)
     }
 
     /// Whether a press counts: not within half a second of the last.

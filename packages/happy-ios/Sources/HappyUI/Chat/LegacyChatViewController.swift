@@ -982,7 +982,8 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
             composeRoom = area
             let layout = composeTarget.layout(width: size.width, sides: safeArea, top: area.minY, bottom: area.maxY)
             composeTarget.place(layout)
-            composeTarget.isHidden = !layout.fits
+            // A bot's or a task's picture never goes: short of room it runs up under the bar.
+            composeTarget.isHidden = !layout.fits && layout.art == nil
         }
         header.maxWidth = ChatTitleLayout.maxWidth(barWidth: band.width)
         dock.setLayoutFrame(screen.dock)
@@ -2146,8 +2147,8 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         case .copyMenu, .selectable, .markdownSelectable:
             // Long presses; see `chatList(_:hold:frame:at:)`.
             break
-        case .openMedia, .openArtifact, .toggleTurn, .openURL, .linkButton, .ui:
-            // Only V2 conversations show media, artifacts, turns, tool screens and chat UI.
+        case .openMedia, .openArtifact, .toggleTurn, .openURL, .linkButton:
+            // Only V2 conversations show media, artifacts, turns and tool screens.
             break
         case .toggleDownload(let ref):
             chatAttachments?.toggle(ref)

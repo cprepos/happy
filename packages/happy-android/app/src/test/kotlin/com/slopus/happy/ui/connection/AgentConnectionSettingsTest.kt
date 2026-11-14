@@ -18,6 +18,8 @@ import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTextClearance
+import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.height
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -135,8 +137,8 @@ class AgentConnectionSettingsTest {
     @Test
     fun cardsAndRows() {
         show()
-        // Support Happy is a card of its own, right under Profile, and the page's only Support us.
-        rule.onAllNodesWithTag(ItemGroupTags.CARD, useUnmergedTree = true).assertCountEquals(7)
+        // Desktop's first group (Appearance, Profile, Voice), then Support Happy, a card of its own and the page's only Support us; Agents is under AGENTS.
+        rule.onAllNodesWithTag(ItemGroupTags.CARD, useUnmergedTree = true).assertCountEquals(6)
         rule.onNode(hasText("Steve") and hasAnyAncestor(hasTestTag(SettingsPageTags.account("account-1"))), useUnmergedTree = true).assertExists()
         rule.node(SettingsPageTags.account("agent-connection-2")).performClick()
         rule.node(SettingsPageTags.ADD_AGENT).performScrollTo().performClick()
@@ -146,8 +148,10 @@ class AgentConnectionSettingsTest {
         rule.node(SettingsTags.SUPPORT).assertDoesNotExist()
         rule.node(SettingsTags.MANAGE_SUBSCRIPTIONS).assertDoesNotExist()
         rule.node(SettingsTags.VERSION).performScrollTo().assertIsDisplayed()
-        assertTrue(rule.node(AgentVoiceTags.SUPPORT).bounds.top > rule.node(AgentSettingsTags.PROFILE).bounds.bottom)
-        assertTrue(rule.node(AgentVoiceTags.SUPPORT).bounds.bottom < rule.node(AgentSettingsTags.APPEARANCE).bounds.top)
+        val first = hasTestTag(ItemGroupTags.CARD) and hasAnyDescendant(hasTestTag(AgentSettingsTags.APPEARANCE)) and
+            hasAnyDescendant(hasTestTag(AgentSettingsTags.PROFILE)) and hasAnyDescendant(hasTestTag(AgentVoiceTags.ROW))
+        rule.onNode(first, useUnmergedTree = true).assertExists()
+        rule.onNode(first and hasAnyDescendant(hasTestTag(AgentVoiceTags.SUPPORT)), useUnmergedTree = true).assertDoesNotExist()
         rule.node(AgentVoiceTags.ROW).performScrollTo().assertIsDisplayed()
     }
 
@@ -176,24 +180,88 @@ class AgentConnectionSettingsTest {
         assertEquals(listOf(false), set)
     }
 
-    /** On Happy Cloud, Compute is the last row of Data and Storage's card, under that name. */
+    /** A local agent: Notifications (it was Sharing) after Data and Storage, a bell on red, and no Team at all. */
     @Test
-    fun computePoolsCloseDataAndStoragesCard() {
+    fun aLocalAgentsNotificationsCloseTheFirstGroupAndThereIsNoTeam() {
+        var opened = 0
         rule.setHappyContent {
             AgentConnectionSettingsScreen(
                 profile = SettingsProfile("agent-connection-1", "Studio", "Connected"),
                 accounts = accounts,
-                actions = AgentSettingsActions(onDataStorage = {}, onSharing = {}, onAgents = {}, onMembers = {}, onProviders = {}, onComputePools = {}, onNotifications = {}),
+                actions = AgentSettingsActions(onDataStorage = {}, onSharing = { opened++ }, onAgents = {}),
                 about = AboutInfo("1.8.0 (412)"),
             )
         }
-        val card = hasTestTag(ItemGroupTags.CARD) and hasAnyDescendant(hasTestTag(DataStorageTags.ROW))
-        rule.onNode(card and hasAnyDescendant(hasTestTag(ComputePoolsTags.ROW)), useUnmergedTree = true).assertExists()
-        val rows = listOf(DataStorageTags.ROW, AgentSharingTags.ROW, CloudProvidersTags.ROW, CloudTags.MEMBERS, CloudPushTags.ROW, ComputePoolsTags.ROW)
-            .map { rule.node(it).bounds }
-        assertEquals(rows.sortedBy { it.top }, rows)
-        rule.onNode(hasTestTag(ComputePoolsTags.ROW) and hasAnyDescendant(hasText("Compute")), useUnmergedTree = true).assertExists()
-        assertDp("Compute ends the card", rule.onNode(card, useUnmergedTree = true).bounds.bottom, rows.last().bottom)
+        rule.onNode(
+            hasTestTag(ItemGroupTags.CARD) and hasAnyDescendant(hasTestTag(DataStorageTags.ROW)) and hasAnyDescendant(hasTestTag(AgentSharingTags.ROW)),
+            useUnmergedTree = true,
+        ).assertExists()
+        rule.onNode(hasTestTag(AgentSharingTags.ROW) and hasAnyDescendant(hasText("Notifications")), useUnmergedTree = true).assertExists()
+        rule.onNodeWithText("TEAM").assertDoesNotExist()
+        rule.onNodeWithText("Sharing").assertDoesNotExist()
+        rule.node(AgentSharingTags.ROW).performScrollTo().performClick()
+        assertEquals(1, opened)
+    }
+
+    /** Search finds Notifications once, and its switches by their own titles, which open the page on them. */
+    @Test
+    fun searchFindsNotificationsOnceAndItsSwitches() {
+        val revealed = mutableListOf<String>()
+        rule.setHappyContent {
+            AgentConnectionSettingsScreen(
+                profile = SettingsProfile("agent-connection-1", "Studio", "Connected"),
+                accounts = accounts,
+                actions = AgentSettingsActions(onSharing = {}, onNotifications = {}, onNotificationsRow = { revealed += it }),
+                about = AboutInfo("1.8.0 (412)"),
+            )
+        }
+        rule.node(com.slopus.happy.ui.settings.SettingsSearchTags.OPEN).performClick()
+        rule.node(AgentSearchTags.FIELD).performTextInput("Notif")
+        rule.waitForIdle()
+        rule.onAllNodes(hasText("Notifications"), useUnmergedTree = true).assertCountEquals(1)
+        rule.onNodeWithText("Notifications from this server").assertExists()
+        rule.node(AgentSearchTags.FIELD).performTextClearance()
+        rule.node(AgentSearchTags.FIELD).performTextInput("Join other")
+        rule.waitForIdle()
+        rule.onNodeWithText("Join other people’s tasks").performClick()
+        assertEquals(listOf(AgentSharingTags.row(com.slopus.happy.agent.AutoJoinKind.Tasks)), revealed)
+    }
+
+    /**
+     * On Happy Cloud, desktop's groups: Data and Storage and Notifications
+     * close the first, Agents is Agents, Inference, Compute then Usage, Team is
+     * Members alone; each headed by its name, and no Advanced. Sharing is
+     * notifications: one Notifications row, and no Sharing.
+     */
+    @Test
+    fun cloudRowsAreInDesktopsGroups() {
+        rule.setHappyContent {
+            AgentConnectionSettingsScreen(
+                profile = SettingsProfile("agent-connection-1", "Studio", "Connected"),
+                accounts = accounts,
+                actions = AgentSettingsActions(onDataStorage = {}, onSharing = {}, onAgents = {}, onMembers = {}, onProviders = {}, onCompute = {}, onNotifications = {}, onUsage = {}),
+                about = AboutInfo("1.8.0 (412)"),
+            )
+        }
+        fun card(vararg tags: String) = rule.onNode(tags.fold(hasTestTag(ItemGroupTags.CARD)) { m, t -> m and hasAnyDescendant(hasTestTag(t)) }, useUnmergedTree = true)
+        card(AgentSettingsTags.APPEARANCE, AgentVoiceTags.ROW, DataStorageTags.ROW, CloudPushTags.ROW).assertExists()
+        card(AgentAgentsTags.ROW, CloudProvidersTags.ROW, ComputeTags.ROW, AgentUsageTags.ROW).assertExists()
+        card(CloudTags.MEMBERS).assertExists()
+        card(AgentSharingTags.ROW, CloudTags.MEMBERS).assertDoesNotExist()
+        rule.onAllNodesWithTag(AgentSharingTags.ROW, useUnmergedTree = true).assertCountEquals(1)
+        rule.onNode(hasTestTag(AgentSharingTags.ROW) and hasAnyDescendant(hasText("Notifications")), useUnmergedTree = true).assertExists()
+        rule.onNodeWithText("Sharing").assertDoesNotExist()
+        // Right after Data and Storage.
+        assertTrue(rule.onNode(hasTestTag(AgentSharingTags.ROW), useUnmergedTree = true).fetchSemanticsNode().positionInRoot.y > rule.onNode(hasTestTag(DataStorageTags.ROW), useUnmergedTree = true).fetchSemanticsNode().positionInRoot.y)
+        rule.onNode(hasTestTag(ItemGroupTags.CARD) and hasAnyDescendant(hasTestTag(DataStorageTags.ROW)) and hasAnyDescendant(hasTestTag(ComputeTags.ROW)), useUnmergedTree = true).assertDoesNotExist()
+        rule.onNodeWithText("AGENTS").assertExists()
+        rule.onNodeWithText("TEAM").assertExists()
+        rule.onNodeWithText("ADVANCED").assertDoesNotExist()
+        rule.onNode(hasTestTag(ComputeTags.ROW) and hasAnyDescendant(hasText("Compute")), useUnmergedTree = true).assertExists()
+        rule.onNode(hasTestTag(CloudProvidersTags.ROW) and hasAnyDescendant(hasText("Inference")), useUnmergedTree = true).assertExists()
+        rule.onNode(hasTestTag(AgentUsageTags.ROW) and hasAnyDescendant(hasText("Usage")), useUnmergedTree = true).assertExists()
+        // Usage closes the group, under Compute.
+        assertTrue(rule.onNode(hasTestTag(AgentUsageTags.ROW), useUnmergedTree = true).fetchSemanticsNode().positionInRoot.y > rule.onNode(hasTestTag(ComputeTags.ROW), useUnmergedTree = true).fetchSemanticsNode().positionInRoot.y)
     }
 
     /**
@@ -352,5 +420,58 @@ class AgentConnectionSettingsTest {
             AgentProfileScreen("seed", AgentProfileState(WireProfile(name = "Steve", version = "v1")), null, {}, {}, {}, {})
         }
         rule.onAllNodesWithTag(AgentPagesTags.REMOVE_PHOTO, useUnmergedTree = true).assertCountEquals(0)
+    }
+
+    @Test
+    fun instructionsAndSecurityPolicyFollowInferenceWhereTheServerServesThem() {
+        var opened: com.slopus.happy.agent.PolicyDocument? = null
+        rule.setHappyContent {
+            AgentConnectionSettingsScreen(
+                profile = SettingsProfile("agent-connection-1", "Studio", "Connected"),
+                accounts = accounts,
+                actions = AgentSettingsActions(onAgents = {}, onProviders = {}, onPolicy = { opened = it }, onCompute = {}, onUsage = {}),
+                about = AboutInfo("1.8.0 (412)"),
+            )
+        }
+        rule.onNode(hasTestTag(PolicyDocumentTags.row(com.slopus.happy.agent.PolicyDocument.Instructions)), useUnmergedTree = true).assertExists()
+        val security = rule.onNode(hasTestTag(PolicyDocumentTags.row(com.slopus.happy.agent.PolicyDocument.Security)) and hasAnyDescendant(hasText("Security policy")), useUnmergedTree = true)
+        security.assertExists()
+        fun y(tag: String) = rule.onNode(hasTestTag(tag), useUnmergedTree = true).fetchSemanticsNode().positionInRoot.y
+        assertTrue(y(PolicyDocumentTags.row(com.slopus.happy.agent.PolicyDocument.Instructions)) > y(CloudProvidersTags.ROW))
+        assertTrue(y(ComputeTags.ROW) > y(PolicyDocumentTags.row(com.slopus.happy.agent.PolicyDocument.Security)))
+        rule.onNodeWithText("Instructions").performScrollTo().performClick()
+        assertEquals(com.slopus.happy.agent.PolicyDocument.Instructions, opened)
+    }
+
+    @Test
+    fun noPolicyRowsWhereTheServerDoesntServeThem() {
+        rule.setHappyContent {
+            AgentConnectionSettingsScreen(
+                profile = SettingsProfile("agent-connection-1", "Studio", "Connected"),
+                accounts = accounts,
+                actions = AgentSettingsActions(onAgents = {}, onProviders = {}),
+                about = AboutInfo("1.8.0 (412)"),
+            )
+        }
+        rule.onNode(hasTestTag(PolicyDocumentTags.row(com.slopus.happy.agent.PolicyDocument.Instructions)), useUnmergedTree = true).assertDoesNotExist()
+    }
+
+    /** The settings' own search finds the policy rows by their titles, and a found one opens its document. */
+    @Test
+    fun searchFindsTheSecurityPolicy() {
+        var opened: com.slopus.happy.agent.PolicyDocument? = null
+        rule.setHappyContent {
+            AgentConnectionSettingsScreen(
+                profile = SettingsProfile("agent-connection-1", "Studio", "Connected"),
+                accounts = accounts,
+                actions = AgentSettingsActions(onAgents = {}, onProviders = {}, onPolicy = { opened = it }),
+                about = AboutInfo("1.8.0 (412)"),
+            )
+        }
+        rule.node(com.slopus.happy.ui.settings.SettingsSearchTags.OPEN).performClick()
+        rule.node(AgentSearchTags.FIELD).performTextInput("Security")
+        rule.waitForIdle()
+        rule.onNodeWithText("Security policy").performClick()
+        assertEquals(com.slopus.happy.agent.PolicyDocument.Security, opened)
     }
 }

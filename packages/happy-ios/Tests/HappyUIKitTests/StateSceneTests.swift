@@ -27,6 +27,8 @@ final class StateSceneTests: XCTestCase {
         .podcastMic: "f90db7a207596916bc5c0b22db6e3ca40f2e24008b015bc654ee1aa5ff724284",
         // The 🎟️ sticker supplied for the empty Artifacts list (PROVENANCE.md).
         .tickets: "8715ac66cadbd7cba548b81f7366e190592a7c515811c0df69d65ac8e9db51d4",
+        // The 🪄 sticker Kirill supplied for new work's Task (PROVENANCE.md).
+        .magicWand: "6d23637e2b8e7d8374afdd646633965ae03928b2b113033c2b2dd83da23d32d9",
         // Desktop's, for Happy Cloud's welcome (PROVENANCE.md).
         .closedLock: "f6087f51de1ccc7dea5cfb9853292bc14271e86e9390a8fbc9514b31b32a0ad8",
         .openHands: "7b5b9d98156057d2fb4cb895f0a462e943942be190dd0a302935e2ef306420b4",
@@ -224,6 +226,65 @@ final class StateSceneTests: XCTestCase {
         window.isHidden = true
     }
 
+    /// The magic wand rests on its first frame, whether it appears on its
+    /// own or on demand; a tap plays
+    /// it once through and shows the first frame again.
+    func testTheMagicWandRestsOnItsFirstFrameAndATapComesBackToIt() async throws {
+        try XCTSkipIf(UIAccessibility.isReduceMotionEnabled, "reduce motion is on in this environment")
+        for play in [StateSceneView.Play.onDemand, .onAppear] {
+            let view = StateSceneView(scene: .magicWand, size: 128, play: play, replayLabel: "Play again")
+            let window = shown(view)
+            try await loaded(view)
+            XCTAssertFalse(view.isAnimating, "\(play): it moves only when asked")
+            XCTAssertEqual(view.progress, 0, accuracy: 0.001, "\(play)")
+            view.replay()
+            XCTAssertTrue(view.isAnimating, "\(play): a tap plays it")
+            try await Task.sleep(nanoseconds: 1_200_000_000)
+            XCTAssertTrue(view.isAnimating, "\(play): once through, 180 frames at 60 fps")
+            for _ in 0..<80 where view.isAnimating {
+                try await Task.sleep(nanoseconds: 50_000_000)
+            }
+            XCTAssertFalse(view.isAnimating, "\(play): it stops")
+            XCTAssertEqual(view.progress, 0, accuracy: 0.001, "\(play): back at rest")
+            view.isHidden = true
+            view.isHidden = false
+            XCTAssertFalse(view.isAnimating, "\(play): appearing again holds it")
+            window.isHidden = true
+        }
+    }
+
+    /// Switching to a scene already read shows it at once (new work's
+    /// Task | Bot): no blank frame between the two pictures.
+    func testSwitchingToASceneAlreadyReadShowsItAtOnce() async throws {
+        let view = StateSceneView(scene: .robot, size: 128, play: .onDemand, replayLabel: "Play again")
+        let window = shown(view)
+        try await loaded(view)
+        XCTAssertNotNil(StateSceneView.read(.magicWand))
+        view.scene = .magicWand
+        XCTAssertTrue(view.isLoaded, "drawn in the same pass")
+        XCTAssertFalse(view.isAnimating)
+        XCTAssertEqual(view.progress, 0, accuracy: 0.001, "at rest")
+        window.isHidden = true
+    }
+
+    /// New work's pictures are there in the first frame, even cold, before
+    /// anything has read them: an `immediate` view has its scene from init,
+    /// held at rest, and so has one switched to a scene not yet read.
+    func testAnImmediateSceneIsDrawnFromItsFirstFrameEvenCold() throws {
+        StateSceneView.forgetRead()
+        let view = StateSceneView(scene: .magicWand, size: 128, play: .onDemand, replayLabel: "Play again", immediate: true)
+        XCTAssertTrue(view.isLoaded, "read at once, not after a turn of the run loop")
+        let window = shown(view)
+        XCTAssertTrue(view.isLoaded)
+        XCTAssertFalse(view.isAnimating)
+        XCTAssertEqual(view.progress, 0, accuracy: 0.001, "the magic wand at rest")
+        StateSceneView.forgetRead()
+        view.scene = .robot
+        XCTAssertTrue(view.isLoaded, "a kind switched to, unread, is drawn in the same pass")
+        XCTAssertEqual(view.progress, 1, accuracy: 0.001, "the robot at rest")
+        window.isHidden = true
+    }
+
     /// Setting the scene again and again must leave one animation, one box
     /// and no stale play.
     func testRepeatedConfigurationSettles() async throws {
@@ -250,7 +311,7 @@ final class StateSceneTests: XCTestCase {
             let window = shown(view)
             try await loaded(view)
             XCTAssertFalse(view.isAnimating, "\(scene.rawValue) moved with motion reduced")
-            XCTAssertEqual(view.progress, 1, accuracy: 0.001, "\(scene.rawValue) did not hold its last frame")
+            XCTAssertEqual(view.progress, scene.restsOnFirstFrame ? 0 : 1, accuracy: 0.001, "\(scene.rawValue) did not hold its rest frame")
             XCTAssertFalse(view.isAccessibilityElement, "\(scene.rawValue) offered a replay control")
             view.replay()
             XCTAssertFalse(view.isAnimating, "\(scene.rawValue) replayed with motion reduced")

@@ -246,6 +246,118 @@ final class HostedAttachMenuTests: XCTestCase {
         try await wait(15) { self.chat.presentedViewController == nil && self.card.text.isEmpty && self.card.configuration.attachments.isEmpty }
     }
 
+    /// The count at the top right takes the picks to the composer instead:
+    /// the menu goes, both wait there with the caption as the text and the
+    /// keyboard up, nothing sent until the composer's own send.
+    func testTheCountAtTheTopRightStagesThePicksWithoutSending() async throws {
+        try await open(FixtureAttachLibrary(access: .authorized, count: 30))
+        card.setText("Draft", selection: NSRange(location: 5, length: 0))
+        let sheet = try await menu()
+        let grid = try XCTUnwrap(view("attach-grid", in: sheet.view) as? UICollectionView)
+        try await wait { grid.visibleCells.count >= 6 }
+        try pick(0, in: grid)
+        try pick(1, in: grid)
+        try await Task.sleep(for: .milliseconds(500))
+        let count = try XCTUnwrap(view("attach-count", in: sheet.view) as? UIControl)
+        XCTAssertEqual(count.accessibilityLabel, "2 selected")
+        // At the header's far right, clear of close and the title.
+        let frame = count.convert(count.bounds, to: sheet.view)
+        let close = try XCTUnwrap(view("attach-close", in: sheet.view)).convert(CGRect(x: 0, y: 0, width: 44, height: 44), to: sheet.view)
+        let title = try XCTUnwrap(view("attach-title", in: sheet.view))
+        XCTAssertEqual(frame.midY, close.midY, accuracy: 0.5, "the count isn't in the header")
+        XCTAssertEqual(sheet.view.bounds.width - frame.maxX, close.minX, accuracy: 6, "the count isn't at the far right")
+        XCTAssertGreaterThan(frame.minX, title.convert(title.bounds, to: sheet.view).maxX, "the count is over the title")
+        XCTAssertNotNil(view("attach-send", in: sheet.view), "the caption lost its send")
+        let caption = try XCTUnwrap(view("attach-caption", in: sheet.view) as? UITextView)
+        caption.text = "Draft and two"
+        caption.delegate?.textViewDidChange?(caption)
+        try await keep("attach-count-top-right")
+
+        count.sendActions(for: .touchUpInside)
+        try await wait(15) { self.chat.presentedViewController == nil && self.card.configuration.attachments.count == 2 }
+        XCTAssertEqual(card.text, "Draft and two", "the caption isn't the composer's text")
+        try await wait { self.card.textView.isFirstResponder }
+        try await Task.sleep(for: .milliseconds(500))
+        let sent = await computer.sends.count
+        XCTAssertEqual(sent, 0, "the count sent")
+        try await keep("attach-count-staged")
+        chat.agentInputCardDidPressSend(card)
+        try await wait(15) { self.card.text.isEmpty && self.card.configuration.attachments.isEmpty }
+    }
+
+    /// The circle takes touches in the tile's top right 44, past its own
+    /// 29 (Telegram's takes only its own); the rest of the tile opens the
+    /// preview.
+    func testTheCirclePicksFromTheTilesCorner() async throws {
+        try await open(FixtureAttachLibrary(access: .authorized, count: 30))
+        let sheet = try await menu()
+        let grid = try XCTUnwrap(view("attach-grid", in: sheet.view) as? UICollectionView)
+        try await wait { grid.visibleCells.count >= 6 }
+        let cell = try XCTUnwrap(grid.cellForItem(at: IndexPath(item: 0, section: 0)) as? AttachGridCell)
+        let width = cell.bounds.width
+        for point in [CGPoint(x: width - 2, y: 2), CGPoint(x: width - 43, y: 43), CGPoint(x: width - 17, y: 17)] {
+            XCTAssertTrue(cell.hitTest(point, with: nil)?.isDescendant(of: cell.check) == true, "\(point) missed the circle")
+        }
+        for point in [CGPoint(x: width - 46, y: 20), CGPoint(x: width - 20, y: 46), CGPoint(x: width / 2, y: cell.bounds.midY)] {
+            XCTAssertFalse(cell.hitTest(point, with: nil)?.isDescendant(of: cell.check) == true, "\(point) took the circle")
+        }
+    }
+
+    /// A long caption grows to its tallest, the chat composer's five lines,
+    /// and then scrolls inside its one row, send at its foot; the text never leaves
+    /// the glass, and the grid keeps room to scroll every picture clear of it.
+    func testALongCaptionStopsGrowingAndScrollsInside() async throws {
+        try await open(FixtureAttachLibrary(access: .authorized, count: 30))
+        let sheet = try await menu()
+        let grid = try XCTUnwrap(view("attach-grid", in: sheet.view) as? UICollectionView)
+        try await wait { grid.visibleCells.count >= 6 }
+        try pick(0, in: grid)
+        try await Task.sleep(for: .milliseconds(500))
+        let caption = try XCTUnwrap(view("attach-caption", in: sheet.view) as? UITextView)
+        caption.becomeFirstResponder()
+        try await Task.sleep(for: .milliseconds(800))
+        caption.text = Array(repeating: "A caption that goes on and on.", count: 40).joined(separator: " ")
+        caption.delegate?.textViewDidChange?(caption)
+        try await Task.sleep(for: .milliseconds(400))
+        sheet.view.layoutIfNeeded()
+        let sheetLayout = try XCTUnwrap(sheet.sheet)
+        let glass = sheet.panel.glassFrame
+        let room = sheet.view.bounds.height - sheet.keyboard - sheetLayout.expandedTop
+        // The chat composer's card caps its own text (120) and scrolls it.
+        XCTAssertLessThanOrEqual(glass.height, sheet.panel.card.height(fitting: glass.width) + 0.5)
+        XCTAssertLessThan(glass.height, room / 2, "the caption grew past its tallest")
+        XCTAssertGreaterThanOrEqual(glass.minY, sheetLayout.expandedTop, "the caption rose over the header")
+        XCTAssertLessThanOrEqual(glass.maxY, sheet.view.bounds.height - sheet.keyboard + 0.5, "the caption went under the keyboard")
+        let text = caption.convert(caption.bounds, to: sheet.panel)
+        XCTAssertGreaterThanOrEqual(text.minY, 0, "the text left the glass's top")
+        XCTAssertLessThanOrEqual(text.maxY, sheet.panel.bounds.height + 0.5, "the text left the glass's foot")
+        XCTAssertTrue(caption.isScrollEnabled, "a caption past its tallest doesn't scroll")
+        // Scrolled to its end, the top line shows whole and nothing of the
+        // line above it peeks in over it.
+        caption.setContentOffset(CGPoint(x: 0, y: caption.contentSize.height - caption.bounds.height), animated: false)
+        let top = caption.contentOffset.y
+        let layoutManager = try XCTUnwrap(caption.textLayoutManager)
+        var lines: [CGRect] = []
+        layoutManager.enumerateTextLayoutFragments(from: layoutManager.documentRange.location, options: [.ensuresLayout]) { fragment in
+            for line in fragment.textLineFragments {
+                lines.append(line.typographicBounds.offsetBy(dx: fragment.layoutFragmentFrame.minX, dy: fragment.layoutFragmentFrame.minY))
+            }
+            return true
+        }
+        let cut = try XCTUnwrap(lines.first { $0.minY <= top && top < $0.maxY })
+        XCTAssertLessThan(top - cut.minY, 1, "part of the line above the top one shows")
+        // One row: send beside the text at its foot, no row of controls under it.
+        let send = sheet.panel.card.primaryControl.convert(sheet.panel.card.primaryControl.bounds, to: sheet.panel)
+        XCTAssertGreaterThanOrEqual(send.minX, text.maxX, "send isn't beside the text")
+        XCTAssertEqual(send.maxY, text.maxY, accuracy: 12, "send isn't at the text's last line")
+        XCTAssertLessThan(sheet.panel.bounds.height - send.maxY, 12, "a row under send")
+        let under = sheet.panel.convert(sheet.panel.bounds, to: grid)
+        let visibleFoot = grid.bounds.maxY - grid.contentInset.bottom
+        XCTAssertLessThanOrEqual(visibleFoot, under.minY + 0.5, "the grid's last row can't scroll clear of the caption")
+        try await keep("attach-long-caption")
+        caption.resignFirstResponder()
+    }
+
     /// Limited access: only what was allowed, under Telegram's note with
     /// its way to change that.
     func testLimitedShowsTheAllowedItemsAndAManageControl() async throws {

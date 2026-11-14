@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -146,6 +147,7 @@ private fun ChatComposerFor(
     var aborting by remember { mutableStateOf(false) }
     // A local acknowledgement: the status update can trail the abort RPC.
     var stopRequested by remember { mutableStateOf(false) }
+    var focusAsks by remember { mutableIntStateOf(0) }
     LaunchedEffect(showAbort) { if (!showAbort) stopRequested = false }
     val canAbort = sessionState != SessionState.Disconnected && metadata.rigCanAbort() && !stopRequested
     val blocked = session.isRig && state.thinking && metadata?.capabilities?.steering != true
@@ -195,6 +197,7 @@ private fun ChatComposerFor(
         status = if (state.session != null) rememberComposerStatus(sessionState, state.activeAt, now) else null,
         autoFocus = autoFocus,
         placeholder = placeholder,
+        focusAsks = focusAsks,
         primary = primary,
         aborting = aborting,
         onPrimary = {
@@ -224,6 +227,7 @@ private fun ChatComposerFor(
                     caption = draft,
                     onCaptionChange = actions.onDraftChange,
                     onSend = { latestSend(latestDraft) },
+                    onAttached = { focusAsks++ },
                 )
                 ComposerModeChips(modes, metadata, actions.onModeChange, Modifier.weight(1f))
             }

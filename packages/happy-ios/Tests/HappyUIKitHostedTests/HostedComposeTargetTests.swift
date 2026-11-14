@@ -216,7 +216,6 @@ final class HostedComposeTargetTests: XCTestCase {
                 metadataTransport: account.realtime,
                 saveInitialModes: { [sender = account.sender] in try await sender.saveInitialModes(sessionId: $0, patch: $1) },
                 refreshSessions: {},
-                paintBotFace: { Data("png:\($0)".utf8) },
                 attachmentPlan: { [sender = account.sender] message, sessionId in try await sender.attachmentPlan(for: message, sessionId: sessionId) },
                 spawnRequests: account.spawnRequests
             ))
@@ -742,10 +741,10 @@ final class HostedComposeTargetTests: XCTestCase {
         panel.showsMachine = true
         panel.machine.title = "MacBook-Pro-7.local"
         panel.setSessionKinds([.session, .bot, .task], current: .bot, botName: "")
-        // With room, and with the least room the panel still shows in,
-        // where the gap under the kind is tightest.
+        // With room, and with the least room the panel still fits in,
+        // where the gap under the kind is tightest; the robot stays.
         typealias M = NewWorkLayout.Metrics
-        let tightest = 160 + panel.kind.intrinsicContentSize.height + M.tightKindToRows + 2 * M.rowHeight + M.tightRowGap + 2 * M.margin
+        let tightest = 160 + M.art + M.artToKind + panel.kind.intrinsicContentSize.height + M.tightKindToRows + 2 * M.rowHeight + M.tightRowGap + 2 * M.margin
         for bottom in [600, tightest] {
             let layout = panel.layout(width: 393, top: 160, bottom: bottom)
             XCTAssertTrue(layout.fits, "\(bottom)")

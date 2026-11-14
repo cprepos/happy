@@ -32,6 +32,8 @@ public final class AppCoordinator {
     private var pendingLink: String?
     /// An entity or file link from outside, waiting for the stored accounts.
     private var pendingInstanceLink: String?
+    /// A Happy Cloud invite link, waiting for the stored accounts.
+    private var pendingInvite: CloudInvite?
     /// What an instance link opens once its connection is home.
     private var instanceTarget: (connection: String, link: HappyLink)?
     /// The session a tapped notification named, until a signed-in home can
@@ -84,6 +86,7 @@ public final class AppCoordinator {
             self?.accountRestored = true
             self?.openPendingLink()
             self?.openPendingInstanceLink()
+            self?.openPendingInvite()
             self?.openNotificationSession()
         }
     }
@@ -191,6 +194,15 @@ public final class AppCoordinator {
         // A sign-in's redirect belongs to its browser session, which takes
         // it before iOS opens the app; a stray one opens nothing.
         if OAuthRedirect.isCallback(url) { return true }
+        // Google's redirect (its reversed client ID's scheme) goes to its
+        // sign-in, which usually takes it in its own session first.
+        if CloudGoogle.handle(url) { return true }
+        if let invite = CloudInvite(url: url) {
+            guard HappyCloud.isOffered(in: context.variant) else { return false }
+            pendingInvite = invite
+            openPendingInvite()
+            return true
+        }
         let text = url.absoluteString
         guard HappyCode(text) != .notHappy else {
             // An entity or file link: opened only on the installation it names.
@@ -202,6 +214,16 @@ public final class AppCoordinator {
         pendingLink = text
         openPendingLink()
         return true
+    }
+
+    /// A Happy Cloud invite: the Cloud flow over whatever is shown, on the
+    /// invite once the account is signed in.
+    private func openPendingInvite() {
+        guard accountRestored, pendingInvite != nil, shell.topViewController != nil else { return }
+        guard clearedForLink(then: { [weak self] in self?.openPendingInvite() }),
+              let invite = pendingInvite, let top = linkHost else { return }
+        pendingInvite = nil
+        AccountAdding.connectToCloud(context: context, from: top, invite: invite)
     }
 
     /// An entity or file link from outside: on the connection whose
@@ -438,6 +460,7 @@ public final class AppCoordinator {
         NotificationCenter.default.post(name: Self.rootDidChange, object: window)
         openPendingLink()
         openPendingInstanceLink()
+        openPendingInvite()
         openNotificationSession()
         openInstanceTarget()
     }

@@ -1,6 +1,7 @@
 #if canImport(UIKit)
 import AuthenticationServices
 import CryptoKit
+import GoogleSignIn
 import HappyCore
 import HappyLayout
 import UIKit
@@ -13,17 +14,32 @@ final class CloudNavigationController: UINavigationController, AccountAddingFlow
 /// first of them.
 protocol CloudFlowScreen: AccountAddingFlow {}
 
+/// A sign-in step after the welcome, replaced by the servers once signed
+/// in.
+protocol CloudSignInStep: CloudFlowScreen {}
+
+/// A step that opens typing in a field: pushed with its keyboard
+/// (`CloudScreens.pushTyping`), and coming back to it, the field takes the
+/// keyboard as the step comes in, rather than after.
+@MainActor
+protocol CloudTyping: UIViewController {
+    var typingField: UITextField? { get }
+}
+
 /// Happy Cloud's screens, full screen on the first screen's Grain Gradient,
 /// in desktop's order (CloudConnectScreen.tsx):
 ///
 /// 1. Welcome: desktop's Cloud slides in the first screen's gallery, and
-///    under them the sign-in: Sign in with Apple (native) and Sign in
-///    with GitHub (GitHub's page in the app, straight from the accounts
-///    service). Skipped while the account's hour-long pass lasts.
+///    under them the sign-in: Sign in with Apple and Continue with Google
+///    (both native), Sign in with GitHub (GitHub's page in the app,
+///    straight from the accounts service) and Continue with email (a code
+///    sent by email, typed in the app). Skipped while the account's
+///    hour-long pass lasts.
 /// 2. Join a server: each of the account's servers with Join; several can
-///    be joined, then Continue opens the last. Bootstrap a new one and Join
-///    with an invite under them. An account with none starts at Bootstrap.
-/// 3. Bootstrap a server, or Join with an invite: then straight into it
+///    be joined, then Continue opens the last. Bootstrap a new one under
+///    them. An account with none starts at Bootstrap. An invite is a link,
+///    accepted on the web; the list loads again when the app comes back.
+/// 3. Bootstrap a server: then straight into it
 ///    (Connecting: a token for the server from the accounts API, no
 ///    browser).
 ///
@@ -37,39 +53,90 @@ enum CloudScreens {
     /// The name Apple gave this sign-in, which it gives only the first
     /// time: what "What's your name?" offers. In memory only.
     static var appleName: String?
+    /// An invite link opened while signed out, taken up once the account
+    /// signs in. In memory only.
+    static var pendingInvite: CloudInvite?
 
-    /// The first screen of the flow: the servers while the account's pass
-    /// lasts, the welcome otherwise.
-    static func first(context: AppContext) -> UIViewController {
+    /// The first screen of the flow: an invite's, or the servers, while the
+    /// account's pass lasts; the welcome otherwise, `invite` kept for after.
+    static func first(context: AppContext, invite: CloudInvite? = nil) -> UIViewController {
         CloudAccount.forgetKeptGrant(backend: SecurityKeychainBackend())
-        if let account, account.isLive() { return CloudServersViewController(context: context, account: account) }
+        pendingInvite = invite
+        if let account, account.isLive() { return next(account, context: context) }
         account = nil
         return CloudWelcomeViewController(context: context)
     }
 
-    /// Signed in: the servers, in the test sign-in's place, so Back goes
-    /// to the welcome.
+    /// Signed in, however: the invite waiting, else the servers, in the
+    /// place of the welcome and every sign-in step, so Back leaves Happy
+    /// Cloud (and signs the account out) rather than going back to a
+    /// sign-in that is over.
     static func signedIn(_ account: CloudAccount, context: AppContext, from controller: UIViewController) {
         self.account = account
-        guard let navigation = controller.navigationController else { return }
-        var stack = navigation.viewControllers
-        if stack.last is CloudTestSignInViewController { stack.removeLast() }
-        stack.append(CloudServersViewController(context: context, account: account))
-        navigation.setViewControllers(stack, animated: true)
+        replace(from: controller, with: next(account, context: context))
+    }
+
+    /// What a signed-in account sees first: the invite waiting, taken up
+    /// once, else its servers.
+    private static func next(_ account: CloudAccount, context: AppContext) -> UIViewController {
+        guard let invite = pendingInvite else { return CloudServersViewController(context: context, account: account) }
+        pendingInvite = nil
+        return CloudInviteViewController(context: context, account: account, invite: invite)
     }
 
     /// Back to the welcome when the account's pass has ended, which says
     /// so over Continue: no retry.
     static func signedOut(context: AppContext, from controller: UIViewController) {
         account = nil
+        replace(from: controller, with: CloudWelcomeViewController(context: context, expired: true))
+    }
+
+    /// A step done for good (signed in, a server made or joined): `screen`
+    /// takes the place of every Happy Cloud screen above `kept` (the
+    /// servers' list, say), or of all of them, coming in as a push. Back
+    /// never returns to a step that is over. Where it is the flow's first
+    /// screen, the flow's Close goes with it. A field's keyboard goes down
+    /// with the push, and a sign-in sheet (Apple's, Google's, GitHub's)
+    /// still on its way out is let go first, so the two never move at once.
+    static func replace(from controller: UIViewController, with screen: UIViewController, keeping kept: UIViewController? = nil) {
         guard let navigation = controller.navigationController else { return }
-        var stack = Array(navigation.viewControllers.prefix { !($0 is CloudFlowScreen) })
-        let welcome = CloudWelcomeViewController(context: context, expired: true)
-        if stack.isEmpty, let close = navigation.viewControllers.first?.navigationItem.leftBarButtonItem {
-            welcome.navigationItem.leftBarButtonItem = close
+        let go = {
+            // Built first, so the keyboard and the push start together.
+            screen.loadViewIfNeeded()
+            navigation.view.window?.endEditing(true)
+            let old = navigation.viewControllers
+            var stack: [UIViewController]
+            if let kept, let index = old.firstIndex(where: { $0 === kept }) { stack = Array(old[...index]) }
+            else { stack = Array(old.prefix { !($0 is CloudFlowScreen) }) }
+            if stack.isEmpty, let close = old.first?.navigationItem.leftBarButtonItem { screen.navigationItem.leftBarButtonItem = close }
+            stack.append(screen)
+            navigation.setViewControllers(stack, animated: true)
         }
-        stack.append(welcome)
-        navigation.setViewControllers(stack, animated: true)
+        guard navigation.presentedViewController != nil || navigation.transitionCoordinator != nil else { return go() }
+        Task { @MainActor in
+            var waited = 0
+            while navigation.presentedViewController != nil || navigation.transitionCoordinator != nil, waited < 40 {
+                try? await Task.sleep(for: .milliseconds(50))
+                waited += 1
+            }
+            go()
+        }
+    }
+
+    /// Pushes a step that opens typing with its keyboard: the push and the
+    /// keyboard start together, as new work's does (`KeyboardPush`). With
+    /// the keyboard already up the push goes at once and the keyboard
+    /// stays, taking the new field's kind. `show` brings it in another way
+    /// (in the place of the screen on top, say).
+    static func pushTyping(_ screen: UIViewController & CloudTyping, on navigation: UINavigationController?,
+                           show: ((UINavigationController) -> Void)? = nil) {
+        guard let navigation else { return }
+        // Its field dressed (the address's keyboard, the code's digits) for
+        // the stand-in to copy. Its observer, heard first, finds it out of
+        // its window and leaves the keyboard to `keyboardPushStarted`.
+        screen.loadViewIfNeeded()
+        let keyboardUp = (navigation.topViewController as? CloudStageViewController)?.keyboardTop != nil
+        KeyboardPush.push(screen, on: navigation, traits: screen.typingField, keyboardUp: keyboardUp, show: show)
     }
 
     /// Done. When the account open changed, the coordinator ends the flow
@@ -82,28 +149,87 @@ enum CloudScreens {
         if let start = navigation.viewControllers.last(where: { !($0 is CloudFlowScreen) }) { navigation.popToViewController(start, animated: true) }
     }
 
+    /// Opens a server already on this phone, as Continue does, and ends
+    /// the flow over it.
+    static func open(_ id: String, context: AppContext, from controller: UIViewController) async throws {
+        let accounts = context.account
+        if !accounts.showsAgentConnections { await accounts.setShowsAgentConnections(true) }
+        accounts.cancelAddingAccount()
+        let opened = accounts.agentConnections.activeID != id
+        try await accounts.switchAccount(to: id)
+        finish(from: controller, opened: opened)
+    }
+
+    /// The connection already on this phone (and not signed out there) to
+    /// `server`.
+    static func connection(to server: CloudServer, context: AppContext) -> String? {
+        guard let origin = server.origin, let existing = HappyCloud.connection(to: origin, in: context.account.agentConnections.accounts),
+              !existing.revoked else { return nil }
+        return existing.id
+    }
+
     /// The server isn't kept without the member's name.
     struct NameNeeded: Error {}
 
+    /// A picture picked on Create your profile that didn't upload, said
+    /// once the person has landed (`takePhotoNote`).
+    static var photoNotePending = false
+
+    /// The photo note, once: what shows it says it.
+    static func takePhotoNote() -> String? {
+        guard photoNotePending else { return nil }
+        photoNotePending = false
+        return Strings.CloudConnect.photoFailed
+    }
+
     /// Signs this phone in to `server` with a token from the accounts API
     /// (no browser) and keeps it; `open` opens it too. A server that wants
-    /// the member's profile first asks their name on `controller`. Returns
-    /// the connection's id.
+    /// the member's profile first pushes Create your profile over
+    /// `controller`, which saves their name and any picture; then the
+    /// server is kept and opened whatever `open` said, the flow ending over
+    /// it from the profile (`opened`): nothing pops back to a step that is
+    /// over. A failure after the name was saved goes back to `controller`
+    /// to say so. Returns the connection's id.
     static func join(_ server: CloudServer, account: CloudAccount, context: AppContext, on controller: UIViewController, open: Bool,
-                     makeFlow: (String) throws -> ServerSignInFlow = { try ServerSignInFlow.cloud($0) }) async throws -> String {
+                     makeFlow: (String) throws -> ServerSignInFlow = { try ServerSignInFlow.cloud($0) }) async throws -> (id: String, opened: Bool) {
         guard let origin = server.origin else { throw ServerSignInError.invalidURL }
         let (access, grant) = try await account.serverToken(for: server)
         let flow = try makeFlow(origin)
-        var signedIn = try await flow.signedIn(access: access, grant: grant, installation: .recorded)
-        if signedIn.needsProfile {
-            let suggested = await flow.suggestedName(for: signedIn)
-            guard let name = await NamePrompt.ask(on: controller, message: Strings.ServerSignIn.nameCloudMessage, prefill: appleName ?? suggested) else {
-                throw NameNeeded()
-            }
-            signedIn = try await flow.saveProfile(name, for: signedIn)
-            appleName = nil
+        let signedIn = try await flow.signedIn(access: access, grant: grant, installation: .recorded)
+        guard signedIn.needsProfile else { return (try await context.account.addServer(signedIn, open: open), open) }
+        guard let navigation = controller.navigationController else { throw NameNeeded() }
+        let suggested = await flow.suggestedName(for: signedIn)
+        let saved = Saved()
+        let screen = CloudProfileViewController(
+            context: context, handle: HappyCloud.handle(server.name), prefill: appleName ?? suggested, seed: server.name
+        ) { name, photo in
+            let named = try await flow.saveProfile(name, for: signedIn)
+            saved.signedIn = named
+            guard let photo else { return true }
+            return (try? await flow.saveProfilePhoto(photo, for: named)) != nil
         }
-        return try await context.account.addServer(signedIn, open: open)
+        return try await withCheckedThrowingContinuation { continuation in
+            // Continue spins on until the server is open, or this failed.
+            screen.finished = { photoSaved in
+                guard let photoSaved, let named = saved.signedIn else { return continuation.resume(throwing: NameNeeded()) }
+                appleName = nil
+                if !photoSaved { photoNotePending = true }
+                do {
+                    let id = try await context.account.addServer(named, open: open)
+                    if !open { try await Self.open(id, context: context, from: screen) }
+                    continuation.resume(returning: (id, true))
+                } catch {
+                    if navigation.viewControllers.contains(controller) { navigation.popToViewController(controller, animated: true) }
+                    continuation.resume(throwing: error)
+                }
+            }
+            pushTyping(screen, on: navigation)
+        }
+    }
+
+    /// What Create your profile saved, read once it is done.
+    private final class Saved: @unchecked Sendable {
+        var signedIn: ServerSignInFlow.SignedIn?
     }
 
     /// Why a join failed, in words.
@@ -132,15 +258,19 @@ private func dressCloudScreen(_ controller: UIViewController, gradient: GrainGra
 
 /// Happy Cloud's welcome, desktop's (`CLOUD_SLIDES` in a `WelcomeScreen`),
 /// with the sign-in in its action's place: its slides in the first screen's
-/// gallery, at the first screen's place, Sign in with Apple where Start is
-/// and Sign in with GitHub under it where Use Happy Cloud is
-/// (`CloudWelcomeLayout`).
+/// gallery, at the first screen's place, Sign in with Apple where Start is,
+/// Continue with Google under it, and Sign in with GitHub under them where
+/// Use Happy Cloud is (`CloudWelcomeLayout`).
 ///
 /// - Sign in with Apple: Apple's own button, Sign in with Apple, then
 ///   `POST /v1/auth/native`.
+/// - Continue with Google: Google's button (`CloudGoogleButton`), Google's
+///   own sign-in, then `POST /v1/auth/native` the same way.
 /// - Sign in with GitHub: the accounts service's authorization request
 ///   with `provider=github`, which goes straight to GitHub, in the app's
 ///   own browser sheet.
+/// - Continue with email: the address, then the code sent to it
+///   (`CloudEmailViewController`), all in the app.
 ///
 /// A note over the buttons says when the account's sign-in has ended, or
 /// why one failed. Ten taps on the cloud mark within four seconds open a
@@ -163,12 +293,16 @@ final class CloudWelcomeViewController: UIViewController, CloudFlowScreen, ASWeb
     let drift = SetupDriftView(scenes: CloudWelcomeViewController.drift)
     let gallery = StartGalleryView(slides: CloudWelcomeViewController.slides, interval: CloudWelcomeViewController.advanceInterval)
     private(set) var appleButton: ASAuthorizationAppleIDButton?
+    let google = CloudGoogleButton()
     let github = RoundButton(title: Strings.CloudConnect.github)
+    let email = RoundButton(title: Strings.CloudEmail.action)
     let note = StartGalleryView.bodyLabel("")
     private var taps = CloudLogoTaps()
     private var browser: ASWebAuthenticationSession?
     private var apple: CloudApple?
-    /// Where the test account's sign-in goes; the tests' fake accounts.
+    private var signingInWithGoogle = false
+    /// Where the test account's and email's sign-ins go; the tests' fake
+    /// accounts.
     var http: any HTTPTransport = NoRedirectURLSessionTransport()
 
     init(context: AppContext, expired: Bool = false) {
@@ -177,6 +311,10 @@ final class CloudWelcomeViewController: UIViewController, CloudFlowScreen, ASWeb
         note.string = expired ? Strings.CloudConnect.expired : ""
         note.accessibilityIdentifier = "cloud-welcome-note"
         followsTextSize()
+        // Apple's button draws its words at one size whatever the person's
+        // text size, and Google's matches it: GitHub's and email's stay at
+        // theirs too, so the four read as one set and none is cut short.
+        for button in [github, email] { button.traitOverrides.followsTextSize = false }
     }
 
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
@@ -192,14 +330,28 @@ final class CloudWelcomeViewController: UIViewController, CloudFlowScreen, ASWeb
         scroll.showsVerticalScrollIndicator = false
         scroll.alwaysBounceVertical = false
         view.addSubview(scroll)
+        google.addAction(UIAction { [weak self] _ in Task { await self?.signInWithGoogle() } }, for: .touchUpInside)
         github.accessibilityIdentifier = "cloud-github"
         github.action = { [weak self] in await self?.signInWithGitHub() }
+        email.accessibilityIdentifier = "cloud-email"
+        email.onTap = { [weak self] in
+            guard let self else { return }
+            say(nil)
+            CloudScreens.pushTyping(CloudEmailViewController(context: context, http: http), on: navigationController)
+        }
         if HappyCloud.isOffered(in: context.variant) {
             gallery.onArtTap = { [weak self] in self?.logoTapped(at: Date()) }
         }
-        for subview in [gallery, note, github] as [UIView] { scroll.addSubview(subview) }
+        for subview in [gallery, note, google, github, email] as [UIView] { scroll.addSubview(subview) }
         updateAppleButton()
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: Self, _) in self.updateAppleButton() }
+    }
+
+    /// Back from a step that was typing, the keyboard goes down with the
+    /// pop rather than after it.
+    override func viewIsAppearing(_ animated: Bool) {
+        super.viewIsAppearing(animated)
+        if !isMovingToParent { view.window?.endEditing(true) }
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -234,16 +386,22 @@ final class CloudWelcomeViewController: UIViewController, CloudFlowScreen, ASWeb
         if let bar = navigationController?.navigationBar, !bar.isHidden {
             insets.top = max(0, insets.top - bar.frame.height)
         }
-        // GitHub's as wide as its label; Apple's as tall, as wide as the wider.
+        // GitHub's and email's as wide as their labels, Google's as its "G"
+        // and words; Apple's as tall, all as wide as the widest.
         let metrics = RoundButtonMetrics.of(github.size)
-        let label = github.label.measurable.size(fitting: .greatestFiniteMagnitude)
-        let githubSize = CGSize(width: ceil(label.width) + metrics.paddingHorizontal * 2, height: github.layout(width: StartLayout.Metrics.buttonMinWidth).size.height)
+        func measured(_ button: RoundButton) -> CGSize {
+            let label = button.label.measurable.size(fitting: .greatestFiniteMagnitude)
+            return CGSize(width: ceil(label.width) + metrics.paddingHorizontal * 2, height: button.layout(width: StartLayout.Metrics.buttonMinWidth).size.height)
+        }
         let layout = CloudWelcomeLayout(
             size: view.bounds.size,
             safeArea: LayoutInsets(insets),
             button: CGSize(width: 0, height: metrics.height),
-            secondary: githubSize,
+            google: CGSize(width: google.sizeThatFits(.zero).width, height: metrics.height),
+            secondary: measured(github),
+            tertiary: measured(email),
             note: note.string.isEmpty ? nil : note.measurable,
+            noteRoom: CloudStageViewController.statusRoom,
             slides: gallery.slides,
             dots: gallery.dotsSize
         )
@@ -254,7 +412,9 @@ final class CloudWelcomeViewController: UIViewController, CloudFlowScreen, ASWeb
         note.setLayoutFrame(layout.note)
         appleButton?.setLayoutFrame(layout.button)
         appleButton?.cornerRadius = layout.button.height / 2
+        google.setLayoutFrame(layout.google)
         github.setLayoutFrame(layout.secondary)
+        email.setLayoutFrame(layout.tertiary)
         // The drift keeps clear of the art, every slide's words, the dots,
         // the note and the buttons.
         let start = layout.start, gallery = start.gallery
@@ -263,7 +423,7 @@ final class CloudWelcomeViewController: UIViewController, CloudFlowScreen, ASWeb
                    height: (start.bodies.map(\.maxY).max() ?? title.maxY) - title.minY)
         }
         let avoid = [start.art.offsetBy(dx: gallery.minX, dy: gallery.minY), words ?? .zero, start.dots.offsetBy(dx: gallery.minX, dy: gallery.minY),
-                     layout.note, layout.button, layout.secondary]
+                     layout.note, layout.button, layout.google, layout.secondary, layout.tertiary]
         drift.avoid = avoid.filter { !$0.isEmpty }.map { scroll.convert($0, to: view) }
     }
 
@@ -273,7 +433,7 @@ final class CloudWelcomeViewController: UIViewController, CloudFlowScreen, ASWeb
         taps = CloudLogoTaps()
         let signIn = CloudTestSignInViewController(context: context)
         signIn.http = http
-        navigationController?.pushViewController(signIn, animated: true)
+        CloudScreens.pushTyping(signIn, on: navigationController)
     }
 
     private func signInWithApple() async {
@@ -287,6 +447,24 @@ final class CloudWelcomeViewController: UIViewController, CloudFlowScreen, ASWeb
             CloudScreens.appleName = identity.name ?? CloudScreens.appleName
             let account = try await CloudAccount.signIn(provider: "apple", idToken: identity.idToken, nonce: identity.nonce,
                                                         authorizationCode: identity.authorizationCode, name: identity.name)
+            CloudScreens.signedIn(account, context: context, from: self)
+        } catch OAuthError.cancelled {
+        } catch {
+            say(Strings.HappyCloud.failure(error))
+        }
+    }
+
+    /// Google's own sign-in, then the accounts service with the nonce its ID
+    /// token was bound to, as Apple's; cancelling it says nothing.
+    private func signInWithGoogle() async {
+        guard !signingInWithGoogle else { return }
+        signingInWithGoogle = true
+        defer { signingInWithGoogle = false }
+        say(nil)
+        do {
+            let identity = try await CloudGoogle.signIn(presenting: self)
+            let account = try await CloudAccount.signIn(provider: "google", idToken: identity.idToken, nonce: identity.nonce,
+                                                        authorizationCode: nil, name: nil)
             CloudScreens.signedIn(account, context: context, from: self)
         } catch OAuthError.cancelled {
         } catch {
@@ -323,12 +501,27 @@ final class CloudWelcomeViewController: UIViewController, CloudFlowScreen, ASWeb
 
 /// One Happy Cloud step after the welcome: the gradient, optional art, a
 /// title, a line under it, what the step holds, and its actions at the
-/// bottom, riding the keyboard (`CloudStageLayout`). Steps that sign the
-/// account out on Back set `signsOutOnBack`.
-class CloudStageViewController: UIViewController, CloudFlowScreen {
+/// bottom (`CloudStageLayout`). Steps that sign the account out on Back set
+/// `signsOutOnBack`.
+///
+/// Nothing on a step moves but for the keyboard:
+/// - the block is centred by its steady measure (`steadyContentHeight`,
+///   `steadyBody`), so a status line, a hint or a list arriving grows down
+///   from where it is; a status line keeps two lines' room
+///   (`statusRoom`). The actions keep their places, the primary's even
+///   while it is hidden (`keepsActionRoom`). A list (`pinsActions`)
+///   instead starts at the top and scrolls with the title while the
+///   actions stay put, so a long one never pushes them out of sight;
+/// - the keyboard is followed as the chat's composer follows it: from its
+///   will-change notification, on its own duration and curve, in one
+///   animation (`keyboardWillChange`); while a finger drags it down
+///   (interactive dismissal) from the layout guide, frame by frame. A step
+///   coming in reads where the keyboard already is (`viewIsAppearing`), so
+///   a push with the keyboard up moves nothing.
+class CloudStageViewController: UIViewController, CloudFlowScreen, CloudTyping, KeyboardPushed, UIScrollViewDelegate {
     let context: AppContext
     private let gradient = GrainGradientView(palette: StartViewController.Colors.grain)
-    let scroll = UIScrollView()
+    let scroll: UIScrollView = CloudStageScroll()
     let art: StateSceneView?
     let titleLabel: StyledLabel
     let bodyLabel: StyledLabel
@@ -340,34 +533,92 @@ class CloudStageViewController: UIViewController, CloudFlowScreen {
         didSet {
             oldValue?.removeFromSuperview()
             primary.isHidden = primaryReplacement != nil
-            if let primaryReplacement { scroll.addSubview(primaryReplacement) }
+            if let primaryReplacement { (pinsActions ? view : scroll).addSubview(primaryReplacement) }
             relayout()
         }
     }
     let secondary: RoundButton?
+    /// Pinned to the keyboard layout guide: where a finger has the keyboard
+    /// while it drags it.
     private let keyboardProbe = UIView()
+    /// The keyboard's top in the view as its last notification said; nil
+    /// while it is down.
+    private(set) var keyboardTop: CGFloat?
+    /// A finger is dragging the keyboard down: the layout follows the guide.
+    private var followsGuide = false
+    /// The keyboard's top the screen last scrolled for.
+    private var scrolledForKeyboard: CGFloat??
+    /// Pushed while the keyboard comes (`KeyboardPush`): laid out with it
+    /// down, whatever the guide already says, so its notification carries
+    /// the step up with it.
+    private var startsDown = false
+    /// Between coming in and starting to go: a step on its way out stays as
+    /// it is while the keyboard leaves with it (a pop takes the keyboard
+    /// sideways with the step, not down).
+    private var showing = false
     /// Back (or the edge swipe) to the step before signs the account out:
-    /// Join a server, and Bootstrap when the account has no server.
+    /// Join a server, and Bootstrap when the account has no server. Only
+    /// Back: giving way to the next step, or the flow ending over the
+    /// server, keeps it.
     var signsOutOnBack = false
+    /// The screen under this one when it last came in, which Back returns to.
+    private weak var under: UIViewController?
+    /// The actions' places are kept while they are hidden (Continue until a
+    /// server is joined, Try Again until a connection fails), so showing one
+    /// moves nothing. Off for a step whose only action is in its content.
+    var keepsActionRoom = true
+    /// The step starts at the top and scrolls while its actions stay in
+    /// place over it (`CloudStageLayout`): a list that can be long. Set
+    /// before the view loads.
+    var pinsActions = false
+    /// The body the block is centred by when the body changes (Connecting's
+    /// failure); nil: the body as it is.
+    var steadyBody: String? {
+        didSet { steadyBodyLabel = steadyBody.map { CloudStageViewController.bodyLabel($0) } }
+    }
+    /// `steadyBody`, measured as the body is.
+    private var steadyBodyLabel: StyledLabel?
+    /// With `pinsActions`, what scrolls fades out over the actions, so a
+    /// row never runs into them.
+    private let fade = CAGradientLayer()
+    /// Where the pinned actions start in the view; nil without any shown.
+    private var actionsTop: CGFloat?
 
     init(context: AppContext, scene: StateScene?, title: String, body: String, primary: String, secondary: String? = nil, secondaryDisplay: RoundButtonDisplay = .inverted) {
         self.context = context
         art = scene.map { StateSceneView(scene: $0, size: StartLayout.Metrics.art, replayLabel: title) }
         titleLabel = StartGalleryView.titleLabel(title)
-        bodyLabel = StartGalleryView.bodyLabel(body)
+        bodyLabel = CloudStageViewController.bodyLabel(body)
         self.primary = RoundButton(title: primary)
         self.secondary = secondary.map { RoundButton(title: $0, size: secondaryDisplay == .filled ? .large : .normal, display: secondaryDisplay) }
         super.init(nibName: nil, bundle: nil)
+        for button in [self.primary, self.secondary].compactMap({ $0 }) where button.display == .filled {
+            button.label.style.maxScale = CloudStageLayout.Metrics.pillTextMaxScale
+        }
         if let secondary = self.secondary, secondaryDisplay == .inverted { Self.quiet(secondary) }
         followsTextSize()
     }
 
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
 
+    /// A step's line: a slide's, grown no further than its title.
+    static func bodyLabel(_ string: String) -> StyledLabel {
+        StartGalleryView.bodyLabel(string, style: TextStyles.cloudStageBody)
+    }
+
     /// A text action in the gradient's secondary colour.
     static func quiet(_ button: RoundButton) {
         button.label.color = Palette.startTextSecondary
         button.spinner.color = UIColor(Palette.startTextSecondary)
+    }
+
+    /// The room a status line keeps whether or not it says anything: two
+    /// lines, the longest the steps say.
+    static var statusRoom: CGFloat { 2 * (TextStyles.startSlideBody.lineHeight ?? 24) }
+
+    /// A status line's height in the column: its room, or more for a longer one.
+    static func statusHeight(_ status: StyledLabel, width: CGFloat) -> CGFloat {
+        max(statusRoom, status.string.isEmpty ? 0 : status.measurable.height(fitting: width))
     }
 
     override func viewDidLoad() {
@@ -376,10 +627,17 @@ class CloudStageViewController: UIViewController, CloudFlowScreen {
         scroll.contentInsetAdjustmentBehavior = .never
         scroll.alwaysBounceVertical = true
         scroll.keyboardDismissMode = .interactive
+        scroll.delegate = self
         view.addSubview(scroll)
-        for subview in [art, titleLabel, bodyLabel, content, primary, secondary].compactMap({ $0 }) { scroll.addSubview(subview) }
-        // A layout pass whenever the keyboard moves.
+        for subview in [art, titleLabel, bodyLabel, content].compactMap({ $0 }) { scroll.addSubview(subview) }
+        for subview in [primary, secondary].compactMap({ $0 }) { (pinsActions ? view : scroll).addSubview(subview) }
+        // A drag begun on a row's button scrolls the list, as a table's does.
+        (scroll as? CloudStageScroll)?.scrollsFromControls = pinsActions
+        // The guide, read only while a finger drags the keyboard; a
+        // floating or split iPad keyboard covers nothing.
+        view.keyboardLayoutGuide.followsUndockedKeyboard = false
         keyboardProbe.isHidden = true
+        keyboardProbe.isUserInteractionEnabled = false
         view.addSubview(keyboardProbe)
         keyboardProbe.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
@@ -388,11 +646,58 @@ class CloudStageViewController: UIViewController, CloudFlowScreen {
             keyboardProbe.widthAnchor.constraint(equalToConstant: 1),
             keyboardProbe.heightAnchor.constraint(equalToConstant: 1),
         ])
+        NotificationCenter.default.addObserver(self, selector: #selector(keyboardWillChange(_:)), name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
     }
+
+    /// The field the step types in, which has the keyboard while it shows;
+    /// nil for a step without one.
+    var typingField: UITextField? { nil }
+
+    /// Coming in, or back: the keyboard is where the guide says, whatever
+    /// it did while this step was away. Back on a step, its field takes
+    /// the keyboard as it comes in (the keyboard stays up, taking its
+    /// kind), or a step without one puts it away, so the keyboard moves
+    /// with the pop rather than after it.
+    override func viewIsAppearing(_ animated: Bool) {
+        super.viewIsAppearing(animated)
+        followsGuide = false
+        view.layoutIfNeeded()
+        keyboardTop = startsDown ? nil : guideTop
+        startsDown = false
+        showing = true
+        view.setNeedsLayout()
+        guard !isMovingToParent else { return }
+        if let field = typingField {
+            if !field.isFirstResponder { field.becomeFirstResponder() }
+        } else {
+            view.window?.endEditing(true)
+        }
+    }
+
+    /// Pushed in (with its keyboard, `CloudScreens.pushTyping`), the field
+    /// takes the keyboard the push brought.
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        // Back after an edge swipe let go of halfway, too.
+        showing = true
+        if let stack = navigationController?.viewControllers, let index = stack.firstIndex(of: self) { under = index > 0 ? stack[index - 1] : nil }
+        if let field = typingField, !field.isFirstResponder { field.becomeFirstResponder() }
+    }
+
+    func keyboardPushWillStart(keyboardUp: Bool) { startsDown = !keyboardUp }
+
+    /// The step is in its window now: it rides the keyboard up from here.
+    /// Its own observer heard the same notification out of its window, or
+    /// hears it after this, and either way moves nothing more
+    /// (`keyboardWillChange`).
+    func keyboardPushStarted(_ keyboard: Notification) { keyboardWillChange(keyboard) }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
-        guard signsOutOnBack, isMovingFromParent else { return }
+        showing = false
+        // Back leaves the screen under this one on top; a step replacing
+        // this one, or the coordinator's new home, doesn't.
+        guard signsOutOnBack, isMovingFromParent, let under, navigationController?.topViewController === under else { return }
         // Only once Back has really gone back: an edge swipe let go of halfway stays.
         if let coordinator = transitionCoordinator {
             coordinator.animate(alongsideTransition: nil) { context in
@@ -403,8 +708,67 @@ class CloudStageViewController: UIViewController, CloudFlowScreen {
         }
     }
 
+    // MARK: The keyboard
+
+    /// The guide's top, nil where it rests on the safe area (no keyboard),
+    /// or isn't placed yet: out of a window, or before its first layout,
+    /// the probe sits at the view's top.
+    private var guideTop: CGFloat? {
+        let top = keyboardProbe.frame.maxY
+        guard view.window != nil, top > view.safeAreaInsets.top else { return nil }
+        return top < view.bounds.maxY - view.safeAreaInsets.bottom - 0.5 ? top : nil
+    }
+
+    /// The step goes with the keyboard: to where it ends, in its time, on
+    /// its curve, in one animation.
+    @objc private func keyboardWillChange(_ note: Notification) {
+        guard isViewLoaded, showing, let window = view.window,
+              let end = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue else { return }
+        let local = view.convert(end, from: window.screen.coordinateSpace)
+        // Undocked (an iPad's floating or split keyboard) it covers nothing.
+        let docked = local.maxY >= view.bounds.maxY - 1
+        let top: CGFloat? = !docked || local.isEmpty || local.minY >= view.bounds.maxY - view.safeAreaInsets.bottom - 0.5 ? nil : local.minY
+        // Let go of mid-drag, the keyboard goes back up or down from where
+        // the finger left it, and the step with it.
+        let followed = followsGuide
+        followsGuide = false
+        let duration = (note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? NSNumber)?.doubleValue ?? 0
+        let curve = (note.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? NSNumber)?.uintValue ?? 7
+        guard top != keyboardTop || followed else { return }
+        keyboardTop = top
+        guard duration > 0 else { return view.setNeedsLayout() }
+        UIView.animate(withDuration: duration, delay: 0, options: [UIView.AnimationOptions(rawValue: curve << 16), .beginFromCurrentState, .allowUserInteraction]) {
+            self.view.setNeedsLayout()
+            self.view.layoutIfNeeded()
+        }
+    }
+
+    /// A finger on the step while the keyboard is up may drag it down: the
+    /// step follows the guide until the keyboard says where it went.
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        if keyboardTop != nil { followsGuide = true }
+    }
+
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        // A drag that never moved the keyboard hears no notification.
+        guard followsGuide, let top = guideTop, let keyboardTop, abs(top - keyboardTop) < 1 else { return }
+        followsGuide = false
+    }
+
+    // MARK: Layout
+
+    /// The art's side: the scene's, or a step's own art's.
+    var artSide: CGFloat { art == nil ? 0 : StartLayout.Metrics.art }
+    /// A line under the art, as measured; zero without one.
+    var captionSize: CGSize { .zero }
+    /// Places a step's own art and the line under it.
+    func layoutArt(_ art: CGRect, caption: CGRect) {}
     /// How tall the step's own part is at `width`.
     func contentHeight(width: CGFloat) -> CGFloat { 0 }
+    /// How tall the step's own part is with nothing come or gone: status
+    /// lines at their room, a list at its loading size. The block is
+    /// centred by it.
+    func steadyContentHeight(width: CGFloat) -> CGFloat { contentHeight(width: width) }
     /// Places the step's own part in `content`'s bounds.
     func layoutContent() {}
 
@@ -416,36 +780,79 @@ class CloudStageViewController: UIViewController, CloudFlowScreen {
         let safeArea = LayoutInsets(view.safeAreaInsets)
         let column = CloudStageLayout.column(size: size, safeArea: safeArea)
         let primaryShown = !primary.isHidden || primaryReplacement != nil
+        let primaryPlaced = primaryShown || keepsActionRoom
         var actions: [CloudStageLayout.Action] = []
-        if primaryShown { actions.append(.init(height: primary.layout(width: column).size.height)) }
-        if let secondary, !secondary.isHidden {
+        if primaryPlaced { actions.append(.init(height: primary.layout(width: column).size.height)) }
+        if let secondary, !secondary.isHidden || keepsActionRoom {
             let gap = secondary.display == .filled ? CloudStageLayout.Metrics.actionGap : CloudStageLayout.Metrics.textActionGap
             actions.append(.init(height: secondary.layout(width: column).size.height, gap: gap))
         }
+        let keyboard = followsGuide ? guideTop : keyboardTop
         let layout = CloudStageLayout(
-            size: size, safeArea: safeArea, keyboardTop: keyboardProbe.frame.maxY,
-            art: art == nil ? 0 : StartLayout.Metrics.art,
+            size: size, safeArea: safeArea, keyboardTop: keyboard,
+            art: artSide, caption: captionSize,
             title: titleLabel.measurable,
             body: bodyLabel.string.isEmpty ? .fixed(.zero) : bodyLabel.measurable,
             content: Measurable { [unowned self] width in CGSize(width: width, height: contentHeight(width: width)) },
+            steadyBody: steadyBodyLabel?.measurable,
+            steadyContent: Measurable { [unowned self] width in CGSize(width: width, height: steadyContentHeight(width: width)) },
+            pinsActions: pinsActions,
             actions: actions
         )
         scroll.frame = view.bounds
         scroll.contentSize = CGSize(width: size.width, height: layout.contentHeight)
         scroll.contentInset.bottom = layout.keyboardInset
-        scroll.verticalScrollIndicatorInsets.bottom = layout.keyboardInset
+        scroll.verticalScrollIndicatorInsets.bottom = layout.keyboardInset + layout.pinnedInset
+        // Once each time the keyboard settles somewhere new: the action
+        // stays in sight, and a finger's scroll after that is left alone.
+        if !followsGuide, scrolledForKeyboard != .some(keyboard) {
+            scrolledForKeyboard = .some(keyboard)
+            if !scroll.isDragging { scroll.contentOffset.y = layout.keyboardOffset }
+        }
         art?.setLayoutFrame(layout.art)
+        layoutArt(layout.art, caption: layout.caption)
         titleLabel.setLayoutFrame(layout.title)
         bodyLabel.setLayoutFrame(layout.body)
         content.setLayoutFrame(layout.content)
         layoutContent()
         var frames = layout.actions[...]
-        if primaryShown, let frame = frames.popFirst() {
+        if primaryPlaced, let frame = frames.popFirst() {
             primary.setLayoutFrame(frame)
             primaryReplacement?.setLayoutFrame(frame)
         }
         if let secondary, let frame = frames.popFirst() { secondary.setLayoutFrame(frame) }
+        actionsTop = pinsActions ? [primaryShown ? primary.frame : nil, secondary.flatMap { $0.isHidden ? nil : $0.frame }].compactMap { $0?.minY }.min() : nil
+        placeFade()
     }
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) { placeFade() }
+
+    /// Opaque down to 44 over the actions, clear from 12 over them; the
+    /// mask rides the scroll's bounds, so it stays put on screen.
+    private func placeFade() {
+        guard let actionsTop, scroll.bounds.height > 0 else {
+            if scroll.layer.mask != nil { scroll.layer.mask = nil }
+            return
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        if scroll.layer.mask == nil {
+            fade.colors = [UIColor.black.cgColor, UIColor.black.cgColor, UIColor.clear.cgColor, UIColor.clear.cgColor]
+            scroll.layer.mask = fade
+        }
+        let height = scroll.bounds.height
+        fade.frame = CGRect(origin: CGPoint(x: 0, y: scroll.contentOffset.y), size: scroll.bounds.size)
+        fade.locations = [0, max(0, actionsTop - 44) / height, max(0, actionsTop - 12) / height, 1].map { NSNumber(value: Double(min(1, $0))) }
+        CATransaction.commit()
+    }
+}
+
+/// A step's scroll; `scrollsFromControls`: a drag begun on a button
+/// scrolls rather than taps it.
+private final class CloudStageScroll: UIScrollView {
+    var scrollsFromControls = false
+
+    override func touchesShouldCancel(in view: UIView) -> Bool { scrollsFromControls || super.touchesShouldCancel(in: view) }
 }
 
 /// Taps on the welcome's logo: ten within four seconds open the test
@@ -502,14 +909,16 @@ final class CloudTestSignIn: UIView {
 /// A test account's sign-in, for testing every surface without Apple or
 /// GitHub: its login and password, opened by ten taps on the welcome's
 /// Happy mark in development and preview builds.
-final class CloudTestSignInViewController: CloudStageViewController, UITextFieldDelegate {
-    let problem = StartGalleryView.bodyLabel("")
+final class CloudTestSignInViewController: CloudStageViewController, CloudSignInStep, UITextFieldDelegate {
+    let problem = CloudStageViewController.bodyLabel("")
     private(set) var testSignIn: CloudTestSignIn?
     /// Where the test account's sign-in goes; the tests' fake accounts.
     var http: any HTTPTransport = NoRedirectURLSessionTransport()
 
     init(context: AppContext) {
         super.init(context: context, scene: .closedLock, title: Strings.CloudConnect.signInTitle, body: "", primary: Strings.CloudConnect.signInTitle)
+        // Its button is in the form.
+        keepsActionRoom = false
     }
 
     override func viewDidLoad() {
@@ -528,9 +937,10 @@ final class CloudTestSignInViewController: CloudStageViewController, UITextField
         testSignIn = form
     }
 
-    override func viewDidAppear(_ animated: Bool) {
-        super.viewDidAppear(animated)
-        if let testSignIn, testSignIn.login.text.text?.isEmpty ?? true { testSignIn.login.text.becomeFirstResponder() }
+    /// The password while it has the keyboard, else the login.
+    override var typingField: UITextField? {
+        guard let form = testSignIn else { return nil }
+        return form.password.text.isFirstResponder ? form.password.text : form.login.text
     }
 
     func textFieldShouldReturn(_ textField: UITextField) -> Bool {
@@ -556,14 +966,15 @@ final class CloudTestSignInViewController: CloudStageViewController, UITextField
         }
     }
 
-    private func items(width: CGFloat) -> [CloudColumnLayout.Item] {
+    private func items(width: CGFloat, steady: Bool = false) -> [CloudColumnLayout.Item] {
         [
             .init(height: testSignIn?.height(width: width) ?? 0),
-            .init(height: problem.string.isEmpty ? 0 : problem.measurable.height(fitting: width), gap: 16),
+            .init(height: steady ? Self.statusRoom : Self.statusHeight(problem, width: width), gap: 16),
         ]
     }
 
     override func contentHeight(width: CGFloat) -> CGFloat { CloudColumnLayout.stack(items(width: width), width: width).height }
+    override func steadyContentHeight(width: CGFloat) -> CGFloat { CloudColumnLayout.stack(items(width: width, steady: true), width: width).height }
 
     override func layoutContent() {
         let frames = CloudColumnLayout.stack(items(width: content.bounds.width), width: content.bounds.width).frames
@@ -603,7 +1014,7 @@ final class CloudApple: NSObject, ASAuthorizationControllerDelegate, ASAuthoriza
         }
     }
 
-    private static func nonce() -> String {
+    static func nonce() -> String {
         var bytes = [UInt8](repeating: 0, count: 32)
         _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
         return bytes.map { String(format: "%02x", $0) }.joined()
@@ -636,13 +1047,114 @@ final class CloudApple: NSObject, ASAuthorizationControllerDelegate, ASAuthoriza
     }
 }
 
+/// One Continue with Google: Google's own sign-in (GoogleSignIn, with the
+/// variant's `GIDClientID` from its Info.plist), its ID token bound to a
+/// fresh nonce, which goes back raw with it. Google's session isn't kept:
+/// the account is the accounts service's, and the next sign-in asks again.
+@MainActor
+enum CloudGoogle {
+    struct Identity { let idToken: String; let nonce: String }
+
+    static func signIn(presenting controller: UIViewController) async throws -> Identity {
+        let nonce = CloudApple.nonce()
+        let idToken: String = try await withCheckedThrowingContinuation { continuation in
+            GIDSignIn.sharedInstance.signIn(withPresenting: controller, hint: nil, additionalScopes: nil, nonce: nonce) { result, error in
+                if let idToken = result?.user.idToken?.tokenString { return continuation.resume(returning: idToken) }
+                let cancelled = (error as? GIDSignInError)?.code == .canceled
+                continuation.resume(throwing: cancelled ? OAuthError.cancelled : error ?? OAuthError.invalidResponse)
+            }
+        }
+        GIDSignIn.sharedInstance.signOut()
+        return Identity(idToken: idToken, nonce: nonce)
+    }
+
+    /// Google's redirect, if `url` is one; the app opens nothing for it.
+    static func handle(_ url: URL) -> Bool { GIDSignIn.sharedInstance.handle(url) }
+}
+
+/// Continue with Google, by Google's branding guidelines: its standard "G"
+/// and its words on Google's light button where Apple's is black, and on
+/// its dark one where Apple's is white (`Palette.google*`), the pill and
+/// the words' size and weight Apple's (`GoogleButtonLayout`).
+final class CloudGoogleButton: UIControl {
+    private let mark = GoogleMarkView()
+    private let label = UILabel()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        accessibilityIdentifier = "cloud-google"
+        isAccessibilityElement = true
+        accessibilityLabel = Strings.CloudConnect.google
+        accessibilityTraits = .button
+        layer.borderWidth = 1
+        layer.cornerCurve = .continuous
+        label.text = Strings.CloudConnect.google
+        label.font = .systemFont(ofSize: 19, weight: .medium)
+        label.lineBreakMode = .byTruncatingTail
+        for view in [mark, label] as [UIView] {
+            view.isUserInteractionEnabled = false
+            addSubview(view)
+        }
+        applyColors()
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: Self, _) in self.applyColors() }
+    }
+
+    @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
+
+    override var isHighlighted: Bool {
+        didSet { alpha = isHighlighted ? 0.7 : 1 }
+    }
+
+    private func applyColors() {
+        backgroundColor = UIColor(Palette.googleButtonFill).resolvedColor(with: traitCollection)
+        layer.borderColor = UIColor(Palette.googleButtonStroke).resolvedColor(with: traitCollection).cgColor
+        label.textColor = UIColor(Palette.googleButtonText)
+    }
+
+    private var labelSize: CGSize { label.sizeThatFits(CGSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude)) }
+
+    override func sizeThatFits(_ size: CGSize) -> CGSize {
+        CGSize(width: GoogleButtonLayout.width(label: labelSize), height: size.height)
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        layer.cornerRadius = bounds.height / 2
+        let layout = GoogleButtonLayout(size: bounds.size, label: labelSize)
+        mark.setLayoutFrame(layout.mark)
+        label.setLayoutFrame(layout.label)
+    }
+}
+
+/// Google's "G" (`GoogleMark`), aspect-fit.
+final class GoogleMarkView: UIView {
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isOpaque = false
+        contentMode = .redraw
+    }
+
+    @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
+
+    override func draw(_ rect: CGRect) {
+        guard let context = UIGraphicsGetCurrentContext() else { return }
+        for layer in GoogleMark.graphic.fitted(into: bounds) {
+            context.addPath(layer.path.cgPath)
+            context.setFillColor(UIColor(layer.color).cgColor)
+            context.fillPath()
+        }
+    }
+}
+
 /// Join a server, desktop's: each of the account's servers with its
 /// picture, its name and `@name`, and Join, or Joined once it is on this
 /// phone. Joining keeps the list, so several can be joined (one after
 /// another, each asking a name if its server wants one); Continue, once
 /// one is in, opens the last joined. Back is held while a join runs.
-/// Bootstrap a new one and Join with an invite sit under the list. An
-/// account with no server goes straight to Bootstrap a server.
+/// Bootstrap a new one sits under the list. An account with no server
+/// goes straight to Bootstrap a server. The list loads again whenever the
+/// app comes back, so a server joined from an invite link in the browser
+/// shows up.
 final class CloudServersViewController: CloudStageViewController {
     private let account: CloudAccount
     /// Where the list comes from: the account's; a preview's own.
@@ -651,18 +1163,20 @@ final class CloudServersViewController: CloudStageViewController {
     private var rows: [String: CloudServerRow] = [:]
     private var order: [String] = []
     private let spinner = UIActivityIndicatorView(style: .medium)
-    let status = StartGalleryView.bodyLabel("")
-    let bootstrap = RoundButton(title: Strings.CloudConnect.bootstrapNew, size: .normal, display: .inverted)
-    let invite = RoundButton(title: Strings.CloudConnect.joinWithInvite, size: .normal, display: .inverted)
+    let status = CloudStageViewController.bodyLabel("")
+    let bootstrap = RoundButton(title: Strings.CloudConnect.bootstrapNew, size: .normal)
     private var pictures: [String: UIImage] = [:]
     private var loadingPictures: Set<String> = []
     /// Servers being joined, and those joined from here (server id to
     /// connection id), the last one last.
     private var joining: Set<String> = []
-    private(set) var joined: [(server: String, connection: String)] = []
+    fileprivate(set) var joined: [(server: String, connection: String)] = []
     /// Joins run one after another.
     private var queue: Task<Void, Never>?
     private var failedToLoad = false
+    /// A join opened its server (after Create your profile): the flow is
+    /// ending over it, and joins still queued are dropped.
+    private var left = false
 
     init(context: AppContext, account: CloudAccount, load: (() async throws -> [CloudServer])? = nil) {
         self.account = account
@@ -670,6 +1184,7 @@ final class CloudServersViewController: CloudStageViewController {
         super.init(context: context, scene: nil, title: Strings.CloudConnect.serversTitle, body: Strings.CloudConnect.serversMessage,
                    primary: Strings.CloudConnect.continueAction)
         signsOutOnBack = true
+        pinsActions = true
     }
 
     override func viewDidLoad() {
@@ -679,23 +1194,26 @@ final class CloudServersViewController: CloudStageViewController {
         primary.isHidden = true
         primary.action = { [weak self] in await self?.primaryTapped() }
         bootstrap.accessibilityIdentifier = "cloud-create"
-        invite.accessibilityIdentifier = "cloud-join"
-        for link in [bootstrap, invite] { Self.quiet(link) }
+        // A button of its own, not a line of text, under the list.
+        bootstrap.glass = .regular
         bootstrap.onTap = { [weak self] in
             guard let self, joining.isEmpty else { return }
-            navigationController?.pushViewController(CloudCreateViewController(context: context, account: account, first: false), animated: true)
-        }
-        invite.onTap = { [weak self] in
-            guard let self, joining.isEmpty else { return }
-            navigationController?.pushViewController(CloudJoinViewController(context: context, account: account), animated: true)
+            CloudScreens.pushTyping(CloudCreateViewController(context: context, account: account, first: false), on: navigationController)
         }
         spinner.color = StartViewController.Colors.text
         status.accessibilityIdentifier = "cloud-servers-status"
-        for subview in [spinner, status, bootstrap, invite] as [UIView] { content.addSubview(subview) }
+        for subview in [spinner, status, bootstrap] as [UIView] { content.addSubview(subview) }
+        NotificationCenter.default.addObserver(self, selector: #selector(foregrounded), name: UIApplication.willEnterForegroundNotification, object: nil)
     }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        Task { await reload() }
+    }
+
+    /// Back from the browser, where an invite link may have added a server.
+    @objc func foregrounded() {
+        guard viewIfLoaded?.window != nil else { return }
         Task { await reload() }
     }
 
@@ -714,10 +1232,13 @@ final class CloudServersViewController: CloudStageViewController {
             failedToLoad = false
             // None yet: Bootstrap leads, and its Back signs out as this one's does.
             if list.isEmpty, joined.isEmpty, let navigation = navigationController, navigation.topViewController === self {
-                var stack = navigation.viewControllers
-                stack.removeLast()
-                stack.append(CloudCreateViewController(context: context, account: account, first: true))
-                navigation.setViewControllers(stack, animated: true)
+                let create = CloudCreateViewController(context: context, account: account, first: true)
+                CloudScreens.pushTyping(create, on: navigation) { [weak self] navigation in
+                    var stack = navigation.viewControllers
+                    if let self, stack.last === self { stack.removeLast() }
+                    if stack.isEmpty { create.navigationItem.leftBarButtonItem = self?.navigationItem.leftBarButtonItem }
+                    navigation.setViewControllers(stack + [create], animated: true)
+                }
                 return
             }
             servers = list
@@ -736,8 +1257,7 @@ final class CloudServersViewController: CloudStageViewController {
     /// Already on this phone (and not signed out there), or joined here.
     private func connection(for server: CloudServer) -> String? {
         if let here = joined.last(where: { $0.server == server.id }) { return here.connection }
-        guard let origin = server.origin, let existing = HappyCloud.connection(to: origin, in: context.account.agentConnections.accounts), !existing.revoked else { return nil }
-        return existing.id
+        return CloudScreens.connection(to: server, context: context)
     }
 
     private func rebuild() {
@@ -771,7 +1291,6 @@ final class CloudServersViewController: CloudStageViewController {
         navigationItem.leftBarButtonItem?.isEnabled = !busy
         navigationController?.interactivePopGestureRecognizer?.isEnabled = !busy
         bootstrap.isEnabled = !busy
-        invite.isEnabled = !busy
         let anyJoined = (servers ?? []).contains { connection(for: $0) != nil }
         primary.title = failedToLoad ? Strings.HappyCloud.tryAgain : Strings.CloudConnect.continueAction
         primary.isHidden = !(failedToLoad || anyJoined)
@@ -787,10 +1306,12 @@ final class CloudServersViewController: CloudStageViewController {
         let previous = queue
         queue = Task { [weak self] in
             await previous?.value
-            guard let self else { return }
+            guard let self, !left else { return }
             do {
-                let id = try await CloudScreens.join(server, account: account, context: context, on: self, open: false)
+                let (id, opened) = try await CloudScreens.join(server, account: account, context: context, on: self, open: false)
                 joined.append((server.id, id))
+                if opened { left = true; return }
+                if let note = CloudScreens.takePhotoNote() { say(note, problem: false) }
             } catch CloudAccountError.signInRequired {
                 joining.remove(server.id)
                 return CloudScreens.signedOut(context: context, from: self)
@@ -811,45 +1332,48 @@ final class CloudServersViewController: CloudStageViewController {
         }
         let id = joined.last?.connection ?? (servers ?? []).lazy.compactMap { self.connection(for: $0) }.first
         guard let id else { return }
-        let accounts = context.account
-        if !accounts.showsAgentConnections { await accounts.setShowsAgentConnections(true) }
-        accounts.cancelAddingAccount()
-        let opened = accounts.agentConnections.activeID != id
         do {
-            try await accounts.switchAccount(to: id)
-            CloudScreens.finish(from: self, opened: opened)
+            try await CloudScreens.open(id, context: context, from: self)
         } catch {
             say(CloudScreens.problem(error))
         }
     }
 
-    private func say(_ text: String?) {
+    private func say(_ text: String?, problem: Bool = true) {
         status.string = text ?? ""
-        status.textColor = UIColor(Palette.textDestructive)
+        status.textColor = UIColor(problem ? Palette.textDestructive : Palette.startTextSecondary)
         relayout()
+        // Under a long list, scrolled to where it can be read over Continue.
+        guard text != nil, isViewLoaded else { return }
+        view.layoutIfNeeded()
+        var shown = status.convert(status.bounds, to: scroll)
+        shown.size.height += scroll.verticalScrollIndicatorInsets.bottom
+        scroll.scrollRectToVisible(shown, animated: true)
     }
 
-    private func items(width: CGFloat) -> [CloudColumnLayout.Item] {
-        let rowItems = order.map { _ in CloudColumnLayout.Item(height: CloudServerRowLayout.Metrics.height, gap: 12) }
-        let link = { (button: RoundButton) in button.layout(width: width).size }
+    /// The rows, or the spinner while they load; Bootstrap a new one; and
+    /// the status line last, in room kept for it, so a join's failure
+    /// moves nothing. They start under the title and scroll with it while
+    /// Continue stays put (`pinsActions`).
+    private func items(width: CGFloat, steady: Bool = false) -> [CloudColumnLayout.Item] {
+        let rowItems = steady ? [] : order.map { CloudColumnLayout.Item(height: rows[$0]?.height ?? CloudServerRowLayout.Metrics.height, gap: 12) }
         return rowItems + [
-            .init(size: CGSize(width: 44, height: spinner.isAnimating ? 44 : 0), gap: 12, centred: true),
-            .init(height: status.string.isEmpty ? 0 : status.measurable.height(fitting: width), gap: 16),
-            .init(size: link(bootstrap), gap: 16, centred: true),
-            .init(size: link(invite), gap: 0, centred: true),
+            .init(size: CGSize(width: 44, height: steady || spinner.isAnimating ? 44 : 0), gap: 12, centred: true),
+            .init(height: bootstrap.layout(width: width).size.height, gap: 16),
+            .init(height: steady ? Self.statusRoom : Self.statusHeight(status, width: width), gap: 16),
         ]
     }
 
     override func contentHeight(width: CGFloat) -> CGFloat { CloudColumnLayout.stack(items(width: width), width: width).height }
+    override func steadyContentHeight(width: CGFloat) -> CGFloat { CloudColumnLayout.stack(items(width: width, steady: true), width: width).height }
 
     override func layoutContent() {
         let frames = CloudColumnLayout.stack(items(width: content.bounds.width), width: content.bounds.width).frames
         for (index, id) in order.enumerated() { rows[id]?.setLayoutFrame(frames[index]) }
-        let rest = frames.suffix(4).map { $0 }
+        let rest = frames.suffix(3).map { $0 }
         spinner.setLayoutFrame(rest[0])
-        status.setLayoutFrame(rest[1])
-        bootstrap.setLayoutFrame(rest[2])
-        invite.setLayoutFrame(rest[3])
+        bootstrap.setLayoutFrame(rest[1])
+        status.setLayoutFrame(rest[2])
     }
 
     /// Its picture, else its ThumbHash, else the placeholder its name picks
@@ -879,12 +1403,12 @@ final class CloudServersViewController: CloudStageViewController {
 /// Bootstrap a server: its name, as `@name`, checked as it is typed;
 /// Bootstrap once it is free, which makes it with the person as its owner
 /// and goes straight into it. When the account has none yet (`first`) it
-/// says so, offers an invite instead, and Back signs the account out.
+/// says so, Back signs the account out, and coming back to the app with a
+/// server joined from an invite link in the browser opens Join a server.
 final class CloudCreateViewController: CloudStageViewController, UITextFieldDelegate {
     private let account: CloudAccount
     let field = CloudField(prefix: "@", placeholder: Strings.CloudConnect.namePlaceholder)
-    let status = StartGalleryView.bodyLabel("")
-    let invite = RoundButton(title: Strings.CloudConnect.haveInvite, size: .normal, display: .inverted)
+    let status = CloudStageViewController.bodyLabel("")
     private let first: Bool
     private var checking: Task<Void, Never>?
 
@@ -908,20 +1432,27 @@ final class CloudCreateViewController: CloudStageViewController, UITextFieldDele
         field.text.addTarget(self, action: #selector(edited), for: .editingChanged)
         primary.action = { [weak self] in await self?.create() }
         status.accessibilityIdentifier = "cloud-create-status"
-        invite.accessibilityIdentifier = "cloud-create-invite"
-        Self.quiet(invite)
-        invite.isHidden = !first
-        invite.onTap = { [weak self] in
-            guard let self else { return }
-            navigationController?.pushViewController(CloudJoinViewController(context: context, account: account), animated: true)
-        }
-        for subview in [field, status, invite] as [UIView] { content.addSubview(subview) }
+        for subview in [field, status] as [UIView] { content.addSubview(subview) }
+        if first { NotificationCenter.default.addObserver(self, selector: #selector(foregrounded), name: UIApplication.willEnterForegroundNotification, object: nil) }
     }
 
-    override func viewDidAppear(_ animated: Bool) {
-        super.viewDidAppear(animated)
-        field.text.becomeFirstResponder()
+    /// The account's first server, joined from an invite link in the
+    /// browser: Join a server takes this one's place.
+    @objc func foregrounded() {
+        guard viewIfLoaded?.window != nil else { return }
+        Task { [weak self, account] in
+            guard let servers = try? await account.servers(), !servers.isEmpty,
+                  let self, let navigation = navigationController, navigation.topViewController === self else { return }
+            // Giving way isn't Back: the account stays signed in.
+            signsOutOnBack = false
+            var stack = navigation.viewControllers
+            stack.removeLast()
+            stack.append(CloudServersViewController(context: context, account: account))
+            navigation.setViewControllers(stack, animated: true)
+        }
     }
+
+    override var typingField: UITextField? { field.text }
 
     private var name: String { Strings.HappyCloud.bareName(field.text.text ?? "") }
 
@@ -962,24 +1493,23 @@ final class CloudCreateViewController: CloudStageViewController, UITextFieldDele
         return false
     }
 
-    /// The hint's line is kept whether or not it says anything, so typing
+    /// The hint's two lines are kept whether or not it says anything
+    /// (Checking…, available, taken, or the rule a name breaks), so typing
     /// never moves the page.
-    private func items(width: CGFloat) -> [CloudColumnLayout.Item] {
-        let hint = max((TextStyles.startSlideBody.lineHeight ?? 24), status.string.isEmpty ? 0 : status.measurable.height(fitting: width))
-        return [
+    private func items(width: CGFloat, steady: Bool = false) -> [CloudColumnLayout.Item] {
+        [
             .init(height: CloudField.height),
-            .init(height: hint, gap: 12),
-            .init(size: invite.isHidden ? .zero : invite.layout(width: width).size, gap: 12, centred: true),
+            .init(height: steady ? Self.statusRoom : Self.statusHeight(status, width: width), gap: 12),
         ]
     }
 
     override func contentHeight(width: CGFloat) -> CGFloat { CloudColumnLayout.stack(items(width: width), width: width).height }
+    override func steadyContentHeight(width: CGFloat) -> CGFloat { CloudColumnLayout.stack(items(width: width, steady: true), width: width).height }
 
     override func layoutContent() {
         let frames = CloudColumnLayout.stack(items(width: content.bounds.width), width: content.bounds.width).frames
         field.setLayoutFrame(frames[0])
         status.setLayoutFrame(frames[1])
-        invite.setLayoutFrame(frames[2])
     }
 
     /// The primary button's action: `RoundButton` marks itself loading
@@ -990,7 +1520,7 @@ final class CloudCreateViewController: CloudStageViewController, UITextFieldDele
         guard HappyCloud.isValidName(name) else { return say(Strings.CloudConnect.invalidName, problem: true) }
         do {
             let server = try await account.create(name)
-            navigationController?.pushViewController(CloudConnectingViewController(context: context, account: account, server: server), animated: true)
+            CloudConnectingViewController.replace(self, context: context, account: account, server: server)
         } catch CloudAccountError.signInRequired {
             CloudScreens.signedOut(context: context, from: self)
         } catch {
@@ -999,95 +1529,7 @@ final class CloudCreateViewController: CloudStageViewController, UITextFieldDele
     }
 }
 
-/// Join with an invite: a server's `@name` and the invite code its owner
-/// gave; Join server once both are there, then straight into it.
-final class CloudJoinViewController: CloudStageViewController, UITextFieldDelegate {
-    private let account: CloudAccount
-    let nameField = CloudField(prefix: "@", placeholder: Strings.CloudConnect.namePlaceholder)
-    let codeField = CloudField(prefix: nil, placeholder: Strings.CloudConnect.codePlaceholder)
-    let status = StartGalleryView.bodyLabel("")
-
-    init(context: AppContext, account: CloudAccount) {
-        self.account = account
-        super.init(context: context, scene: nil, title: Strings.CloudConnect.joinTitle, body: Strings.CloudConnect.joinMessage, primary: Strings.CloudConnect.joinAction)
-    }
-
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        view.accessibilityIdentifier = "cloud-join-server"
-        primary.accessibilityIdentifier = "cloud-join-save"
-        primary.isEnabled = false
-        nameField.text.accessibilityIdentifier = "cloud-join-name"
-        nameField.text.accessibilityLabel = "Server name"
-        codeField.text.accessibilityIdentifier = "cloud-join-code"
-        codeField.text.accessibilityLabel = Strings.CloudConnect.codePlaceholder
-        nameField.text.returnKeyType = .next
-        codeField.text.returnKeyType = .join
-        for field in [nameField, codeField] {
-            field.text.delegate = self
-            field.text.addTarget(self, action: #selector(edited), for: .editingChanged)
-        }
-        status.textColor = UIColor(Palette.textDestructive)
-        primary.action = { [weak self] in await self?.join() }
-        for subview in [nameField, codeField, status] { content.addSubview(subview) }
-    }
-
-    override func viewDidAppear(_ animated: Bool) {
-        super.viewDidAppear(animated)
-        nameField.text.becomeFirstResponder()
-    }
-
-    private var filled: Bool {
-        !Strings.HappyCloud.bareName(nameField.text.text ?? "").isEmpty && !(codeField.text.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    @objc func edited() { primary.isEnabled = filled }
-
-    func textFieldShouldReturn(_ textField: UITextField) -> Bool {
-        if textField === nameField.text { codeField.text.becomeFirstResponder() } else if filled { primary.tapped() }
-        return false
-    }
-
-    private func items(width: CGFloat) -> [CloudColumnLayout.Item] {
-        [
-            .init(height: CloudField.height),
-            .init(height: CloudField.height, gap: 12),
-            .init(height: max((TextStyles.startSlideBody.lineHeight ?? 24), status.string.isEmpty ? 0 : status.measurable.height(fitting: width)), gap: 12),
-        ]
-    }
-
-    override func contentHeight(width: CGFloat) -> CGFloat { CloudColumnLayout.stack(items(width: width), width: width).height }
-
-    override func layoutContent() {
-        let frames = CloudColumnLayout.stack(items(width: content.bounds.width), width: content.bounds.width).frames
-        nameField.setLayoutFrame(frames[0])
-        codeField.setLayoutFrame(frames[1])
-        status.setLayoutFrame(frames[2])
-    }
-
-    /// The primary button's action; like `create`, it leaves `isLoading`
-    /// to the button.
-    func join() async {
-        let name = Strings.HappyCloud.bareName(nameField.text.text ?? "")
-        let code = (codeField.text.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty, !code.isEmpty else {
-            status.string = Strings.HappyCloud.joinMissing
-            return relayout()
-        }
-        status.string = ""
-        do {
-            let server = try await account.join(name, code: code)
-            navigationController?.pushViewController(CloudConnectingViewController(context: context, account: account, server: server), animated: true)
-        } catch CloudAccountError.signInRequired {
-            CloudScreens.signedOut(context: context, from: self)
-        } catch {
-            status.string = Strings.HappyCloud.failure(error)
-        }
-        relayout()
-    }
-}
-
-/// Signing in to a server just made or joined by invite: a token for it
+/// Signing in to a server just made: a token for it
 /// from the accounts API, no browser, then its home. A failure says why,
 /// with Try Again.
 final class CloudConnectingViewController: CloudStageViewController {
@@ -1104,6 +1546,19 @@ final class CloudConnectingViewController: CloudStageViewController {
         self.server = server
         self.startsAtOnce = startsAtOnce
         super.init(context: context, scene: .robot, title: Strings.HappyCloud.connecting(HappyCloud.handle(server.name)), body: Strings.HappyCloud.connectingBody, primary: Strings.HappyCloud.tryAgain)
+        // A failure in the body's place moves nothing above it.
+        steadyBody = Strings.HappyCloud.connectingBody
+    }
+
+    /// The server made or joined: Connecting in the place of Bootstrap or
+    /// an invite, over the servers' list where there is one, so
+    /// Back never returns to a step that is done. With no list under it,
+    /// its Back signs the account out, as the first Bootstrap's did.
+    static func replace(_ step: UIViewController, context: AppContext, account: CloudAccount, server: CloudServer) {
+        let connecting = CloudConnectingViewController(context: context, account: account, server: server)
+        let list = step.navigationController?.viewControllers.last { $0 is CloudServersViewController }
+        connecting.signsOutOnBack = list == nil
+        CloudScreens.replace(from: step, with: connecting, keeping: list)
     }
 
     override func viewDidLoad() {
@@ -1125,6 +1580,7 @@ final class CloudConnectingViewController: CloudStageViewController {
     }
 
     override func contentHeight(width: CGFloat) -> CGFloat { spinner.isAnimating ? 44 : 0 }
+    override func steadyContentHeight(width: CGFloat) -> CGFloat { 44 }
     override func layoutContent() {
         spinner.setLayoutFrame(CloudColumnLayout.stack([.init(size: CGSize(width: 44, height: content.bounds.height), centred: true)], width: content.bounds.width).frames[0])
     }
@@ -1177,15 +1633,17 @@ enum CloudBrowser {
 
 /// A server in Join a server's list, on glass over the gradient: its
 /// picture, its name over `@name`, and Join, Joining, or Joined with a
-/// check (`CloudServerRowLayout`).
+/// check (`CloudServerRowLayout`). Onboarding's plugins step words its
+/// own (Set Up, Connected).
 final class CloudServerRow: UIView {
     enum State { case join, joining, joined }
 
     private let glass = UIVisualEffectView(effect: UIBlurEffect(style: .systemThinMaterial))
     let picture = UIImageView()
-    let title = StyledLabel(style: TextStyle(.semiBold, size: 17, lineHeight: 22), color: Palette.startText, lines: 1)
-    let subtitle = StyledLabel(style: TextStyle(.regular, size: 15, lineHeight: 20), color: Palette.startTextSecondary, lines: 1)
-    let join = RoundButton(title: Strings.CloudConnect.join, size: .small)
+    // Grown no further than the pill beside them, so a row keeps room for its words.
+    let title = StyledLabel(style: TextStyle(.semiBold, size: 17, lineHeight: 22, maxScale: CloudStageLayout.Metrics.pillTextMaxScale), color: Palette.startText, lines: 1)
+    let subtitle = StyledLabel(style: TextStyle(.regular, size: 15, lineHeight: 20, maxScale: CloudStageLayout.Metrics.pillTextMaxScale), color: Palette.startTextSecondary, lines: 1)
+    let join: RoundButton
     private let joined = UIButton(type: .system)
 
     var state: State = .join {
@@ -1196,9 +1654,19 @@ final class CloudServerRow: UIView {
     var joinLabel: String? {
         didSet { apply() }
     }
+    /// Room for this many subtitle lines (`CloudServerRowLayout.height`).
+    var subtitleLines = 1 {
+        didSet { subtitle.numberOfLines = subtitleLines; setNeedsLayout() }
+    }
+    /// The button at its own width rather than Join's 104.
+    var compactButton = false {
+        didSet { setNeedsLayout() }
+    }
 
-    override init(frame: CGRect) {
-        super.init(frame: frame)
+    init(action: String = Strings.CloudConnect.join, done: String = Strings.CloudConnect.joined) {
+        join = RoundButton(title: action, size: .small)
+        join.label.style.maxScale = CloudStageLayout.Metrics.pillTextMaxScale
+        super.init(frame: .zero)
         glass.clipsToBounds = true
         glass.layer.cornerRadius = 22
         glass.layer.cornerCurve = .continuous
@@ -1210,18 +1678,23 @@ final class CloudServerRow: UIView {
         look.image = UIImage(systemName: "checkmark", withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .semibold))
         look.imagePadding = 4
         look.contentInsets = .zero
-        look.attributedTitle = AttributedString(Strings.CloudConnect.joined, attributes: AttributeContainer([
+        look.attributedTitle = AttributedString(done, attributes: AttributeContainer([
             .font: UIFont(name: FontFace.regular.rawValue, size: 15) ?? .systemFont(ofSize: 15),
         ]))
         joined.configuration = look
         joined.tintColor = UIColor(Palette.startTextSecondary)
         joined.isUserInteractionEnabled = false
-        joined.accessibilityLabel = Strings.CloudConnect.joined
+        joined.accessibilityLabel = done
         for view in [glass, picture, title, subtitle, join, joined] as [UIView] { addSubview(view) }
         apply()
     }
 
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
+
+    /// Its height at the person's text size, for the list it is in.
+    var height: CGFloat {
+        CloudServerRowLayout.height(subtitleLines: subtitleLines, titleHeight: title.lineHeight, subtitleHeight: subtitle.lineHeight)
+    }
 
     private func apply() {
         join.isHidden = state == .joined
@@ -1233,8 +1706,20 @@ final class CloudServerRow: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        let buttonSize = state == .joined ? joined.sizeThatFits(CGSize(width: CGFloat.greatestFiniteMagnitude, height: 32)) : join.layout(width: 0).size
-        let layout = CloudServerRowLayout(width: bounds.width, button: CGSize(width: buttonSize.width, height: max(32, buttonSize.height)))
+        // Compact, the pill as wide as its words.
+        let natural = ceil(join.label.sizeThatFits(CGSize(width: CGFloat.greatestFiniteMagnitude, height: 40)).width) + 2 * RoundButtonMetrics.of(.small).paddingHorizontal
+        let buttonSize = state == .joined ? joined.sizeThatFits(CGSize(width: CGFloat.greatestFiniteMagnitude, height: 32)) : join.layout(width: compactButton ? natural : 0).size
+        let button = CGSize(width: buttonSize.width, height: max(32, buttonSize.height))
+        let minButton = compactButton ? 0 : CloudServerRowLayout.Metrics.buttonWidth
+        let lines = (title: title.lineHeight, subtitle: subtitle.lineHeight)
+        var layout = CloudServerRowLayout(width: bounds.width, button: button, minButton: minButton, subtitleLines: subtitleLines,
+                                          titleHeight: lines.title, subtitleHeight: lines.subtitle)
+        // A shorter subtitle than its room: the name and it stay together, centred.
+        if subtitleLines > 1 {
+            let used = Int(ceil(subtitle.sizeThatFits(CGSize(width: layout.subtitle.width, height: .greatestFiniteMagnitude)).height / lines.subtitle - 0.25))
+            layout = CloudServerRowLayout(width: bounds.width, button: button, minButton: minButton, subtitleLines: subtitleLines, usedLines: max(1, used),
+                                          titleHeight: lines.title, subtitleHeight: lines.subtitle)
+        }
         glass.setLayoutFrame(bounds)
         picture.setLayoutFrame(layout.picture)
         title.setLayoutFrame(layout.title)
@@ -1287,31 +1772,72 @@ final class CloudField: UIView {
 #if DEBUG
 /// Each Happy Cloud screen under an account token, for the harness's
 /// device screenshots (`-screen cloud -cloudScreen …`): `welcome`,
-/// `expired`, `test`, `servers` (two of the preview's own),
+/// `expired`, `test`, `servers` (two of the preview's own), `serversMany`
+/// (five, two of them joined: taller than a phone's room),
 /// `empty` (none: Bootstrap), `live` (the account's, under the token),
-/// `create`, `join`, `connecting`.
+/// `create`, `connecting`, `email` and `code` (email's two steps,
+/// the address in `name`). `http` is where the welcome's sign-ins go. On
+/// `email`, `send` taps Send code once the address is in, and `code` is
+/// then typed into the code step, as a person would: the phone's run
+/// against scripts/cloud-email-mock, where UI tests can't drive it.
 public enum CloudScreensPreview {
     @MainActor
-    public static func make(context: AppContext, token: String, screen: String, name: String?) -> UINavigationController {
+    public static func make(context: AppContext, token: String, screen: String, name: String?,
+                            http: any HTTPTransport = NoRedirectURLSessionTransport(), send: Bool = false, code: String? = nil) -> UINavigationController {
         let account = CloudAccount.preview(token: token, expiresAt: nil)
         CloudScreens.account = screen == "expired" ? nil : account
-        let navigation = UINavigationController(rootViewController: CloudWelcomeViewController(context: context, expired: screen == "expired"))
+        let welcome = CloudWelcomeViewController(context: context, expired: screen == "expired")
+        welcome.http = http
+        let navigation = UINavigationController(rootViewController: welcome)
         let server = CloudServer(id: "preview", name: name ?? "acme", url: "", role: .owner, displayName: "Acme")
         let list = [server, CloudServer(id: "preview-2", name: "globex-labs", url: "", role: .member, displayName: "Globex Labs")]
         switch screen {
         case "test": navigation.pushViewController(CloudTestSignInViewController(context: context), animated: false)
         case "servers": navigation.pushViewController(CloudServersViewController(context: context, account: account, load: { list }), animated: false)
+        case "serversMany":
+            let many = ["core", "test", "hello", "hello2", "globex-labs"].map { CloudServer(id: "preview-\($0)", name: $0, url: "", role: .member) }
+            let servers = CloudServersViewController(context: context, account: account, load: { many })
+            servers.joined = [("preview-core", "preview-core"), ("preview-test", "preview-test")]
+            navigation.pushViewController(servers, animated: false)
         case "empty": navigation.pushViewController(CloudServersViewController(context: context, account: account, load: { [] }), animated: false)
         case "live": navigation.pushViewController(CloudServersViewController(context: context, account: account), animated: false)
         case "create":
             let create = CloudCreateViewController(context: context, account: account)
             navigation.pushViewController(create, animated: false)
             if let name { DispatchQueue.main.asyncAfter(deadline: .now() + 1) { create.field.text.text = name; create.edited() } }
-        case "join":
-            let join = CloudJoinViewController(context: context, account: account)
-            navigation.pushViewController(join, animated: false)
-            if let name { DispatchQueue.main.asyncAfter(deadline: .now() + 1) { join.nameField.text.text = name; join.codeField.text.text = "pcmurcvd"; join.edited() } }
         case "connecting": navigation.pushViewController(CloudConnectingViewController(context: context, account: account, server: server, startsAtOnce: false), animated: false)
+        case "profile", "profileFilled", "profilePhoto":
+            let profile = CloudProfileViewController(context: context, handle: HappyCloud.handle(server.name), prefill: screen == "profile" ? nil : name ?? "Alex Rivera", seed: server.name) { _, _ in
+                try await Task.sleep(for: .seconds(2))
+                return true
+            }
+            navigation.pushViewController(profile, animated: false)
+            if screen == "profilePhoto" { profile.choose(CloudProfileViewController.previewPhoto()) }
+        case "email", "code":
+            let email = CloudEmailViewController(context: context, http: http)
+            navigation.pushViewController(email, animated: false)
+            if let name {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    email.field.text.text = name
+                    email.edited()
+                    guard send else { return }
+                    email.primary.tapped()
+                    Task {
+                        var waited = 0
+                        while !(navigation.topViewController is CloudEmailCodeViewController), waited < 100 {
+                            try? await Task.sleep(for: .milliseconds(100))
+                            waited += 1
+                        }
+                        guard let step = navigation.topViewController as? CloudEmailCodeViewController, let code else { return }
+                        try? await Task.sleep(for: .seconds(1))
+                        step.field.text.text = code
+                        step.edited()
+                    }
+                }
+            }
+            if screen == "code" {
+                navigation.pushViewController(CloudEmailCodeViewController(context: context, email: name ?? "you@example.com", http: http, sentAt: Date()), animated: false)
+            }
         default: break
         }
         AppCoordinator.applyAppearance(to: navigation.navigationBar)

@@ -3,6 +3,10 @@ package com.slopus.happy.ui.attach
 import androidx.compose.runtime.DisposableEffect
 import com.slopus.happy.ui.components.WindowDialog
 import android.content.res.Configuration
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Box
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalConfiguration
 import android.app.Activity
 import android.content.ClipboardManager
@@ -37,6 +41,13 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.LocalView
 import com.slopus.happy.ui.components.PageDialog as Dialog
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindowProvider
 import com.slopus.happy.R
@@ -60,12 +71,17 @@ import com.slopus.happy.ui.components.Alert
 import com.slopus.happy.ui.components.AlertButton
 import com.slopus.happy.ui.components.HappyAlert
 import com.slopus.happy.ui.components.rememberReduceMotion
+import com.slopus.happy.ui.components.rememberImageLoader
+import coil3.ImageLoader
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import com.slopus.happy.ui.components.TrackOverlay
 import com.slopus.happy.ui.conversation.PictureViewer
 import com.slopus.happy.ui.conversation.ViewerSource
 import com.slopus.happy.ui.files.WorkspaceFilePicker
 import com.slopus.happy.ui.files.WorkspaceSource
 import com.slopus.happy.ui.files.withWorkspacePath
+import com.slopus.happy.ui.theme.DarkColors
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -73,7 +89,17 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.io.FileInputStream
+import java.io.InputStream
+import java.util.UUID
+import android.graphics.Bitmap
+import androidx.compose.runtime.produceState
+import com.slopus.happy.ui.camera.CameraShot
+import com.slopus.happy.ui.photoedit.PhotoCrop
+import com.slopus.happy.ui.photoedit.PhotoEdit
+import com.slopus.happy.ui.photoedit.PhotoEditMode
+import com.slopus.happy.ui.photoedit.PhotoEditor
 import java.io.IOException
 import java.nio.ByteBuffer
 
@@ -83,13 +109,22 @@ import java.nio.ByteBuffer
  * and its File tab, as [accepts] allows. What is picked goes with the
  * [caption] (the composer's words, edited here too) once Send is pressed:
  * each pick is copied into the app's cache first ([AttachmentStaging]),
- * then [onSend] has them. Room is [room] picks. [onClosed] runs once the
- * sheet has gone, after its own close. On a phone held upright it grows
- * out of [button] and goes back into it ([AttachMorph]). With a [workspace]
- * the File tab can name one of its files instead: the picked path goes
- * into the caption as `./path` and nothing is uploaded. With
- * [onSendPending], gallery photos don't wait to be read: the sheet goes at
- * once and each goes as its thumbnail, read after ([PendingPicture]).
+ * then [onSend] has them. The header's confirm pill (a check and the
+ * count) sends nothing: the picks are copied the same way, [onAttach] puts
+ * them in the composer, and the sheet goes. Room is [room] picks.
+ * [onClosed] runs once the sheet has gone, after its own close. On a phone
+ * held upright it grows out of [button] and goes back into it
+ * ([AttachMorph]). With a [workspace] the File tab can name one of its
+ * files instead: the picked path goes into the caption as `./path` and
+ * nothing is uploaded. With [onSendPending], gallery photos don't wait to
+ * be read on Send: the sheet goes at once and each goes as its thumbnail,
+ * read after ([PendingPicture]). The preview pages the photos with the
+ * caption and Send at its foot, and Telegram's crop and drawing
+ * ([PhotoEditor]): an edited photo is what the grid shows and what goes
+ * ([AttachEdits]). With [takesPhotos], the grid's first tile is the camera:
+ * each photo it takes lands at the grid's head picked, the first opens in
+ * the preview, and Back there returns to the camera, which keeps them in a
+ * strip (Telegram-Android's `ChatAttachAlertPhotoLayout`).
  */
 @Composable
 fun AttachSheet(
@@ -98,12 +133,13 @@ fun AttachSheet(
     caption: String,
     onCaptionChange: (String) -> Unit,
     onSend: (List<AttachmentPreview>) -> Unit,
+    onAttach: (List<AttachmentPreview>) -> Unit,
     onClosed: () -> Unit,
     room: Int = accepts.maxItems,
     button: AttachButton? = null,
     workspace: WorkspaceSource? = null,
     onSendPending: ((List<AttachmentPreview>, List<PendingPicture>) -> Unit)? = null,
-    onPhoto: ((AttachmentPreview) -> Unit)? = null,
+    takesPhotos: Boolean = false,
 ) {
     if (!open) return
     val tabs = accepts.tabs
@@ -117,15 +153,23 @@ fun AttachSheet(
     val reduceMotion = rememberReduceMotion()
     val haptics = LocalHapticFeedback.current
     val motion = remember { AttachSheetMotion() }
-    val camera = remember { AttachCameraState() }.takeIf { accepts.photos && onPhoto != null }
+    val camera = remember { AttachCameraState() }.takeIf { accepts.photos && takesPhotos }
     val selection = remember { AttachSelection(room.coerceAtLeast(0)) }
     val closed by rememberUpdatedState(onClosed)
     val send by rememberUpdatedState(onSend)
     val sendPending by rememberUpdatedState(onSendPending)
+    val attach by rememberUpdatedState(onAttach)
     var tab by remember { mutableStateOf(tabs.first()) }
     var alert by remember { mutableStateOf<Alert?>(null) }
     var sending by remember { mutableStateOf(false) }
-    var viewing by remember { mutableStateOf<Int?>(null) }
+    var staging by remember { mutableStateOf(false) }
+    var viewing by remember { mutableStateOf<Viewing?>(null) }
+    var editing by remember { mutableStateOf<Editing?>(null) }
+    var savingEdit by remember { mutableStateOf(false) }
+    val edits = remember { AttachEdits(File(context.cacheDir, "attachments/edits/${UUID.randomUUID()}")) }
+    DisposableEffect(edits) { onDispose { edits.clear() } }
+    // The camera's photos, newest first, at the grid's head.
+    val shots = remember { mutableStateListOf<GalleryItem>() }
     var naming by remember { mutableStateOf(false) }
     val closeExtra = with(LocalDensity.current) { AttachSpec.closeExtra.toPx() }
     val configuration = LocalConfiguration.current
@@ -160,6 +204,7 @@ fun AttachSheet(
     var access by remember { mutableStateOf(GalleryAccess.of(context)) }
     var blocked by remember { mutableStateOf(false) }
     var items by remember { mutableStateOf<List<GalleryItem>>(emptyList()) }
+    val all = shots.toList() + items
     var loaded by remember { mutableStateOf(false) }
     val wantsGallery = AttachTabKind.Gallery in tabs
     LaunchedEffect(access, wantsGallery) {
@@ -239,18 +284,16 @@ fun AttachSheet(
     }
 
     fun sendPicks() {
-        if (sending || selection.count == 0) return
+        if (sending || staging || selection.count == 0) return
         sending = true
         val picks = selection.items.toList()
         val later = sendPending
         val app = context.applicationContext
-        val staging = AttachmentStaging(attachmentCacheDir(app)) { pick ->
-            app.contentResolver.openInputStream(Uri.parse(pick.uri)) ?: throw IOException("Cannot open ${pick.name}")
-        }
+        val staging = AttachmentStaging(attachmentCacheDir(app)) { pick -> openPick(app, edits, pick) }
         scope.launch {
             try {
-                // A gallery photo goes as its thumbnail, read once the sheet has gone (iOS b03dd48cc).
-                val photos = if (later == null) emptyList() else picks.filter { it.kind == PickedKind.Photo }
+                // A gallery photo goes as its thumbnail, read once the sheet has gone (iOS b03dd48cc); an edited one is read now.
+                val photos = if (later == null) emptyList() else picks.filter { it.kind == PickedKind.Photo && edits[it.uri] == null }
                 val thumbnails = withContext(Dispatchers.IO) { photos.map { async { galleryThumbnail(app.contentResolver, it.uri) } }.awaitAll() }
                 val pending = photos.zip(thumbnails).mapNotNull { (pick, thumbnail) ->
                     thumbnail?.let {
@@ -275,6 +318,36 @@ fun AttachSheet(
                 else selection.clear()
             } finally {
                 sending = false
+            }
+        }
+    }
+
+    fun confirm() {
+        if (staging || sending || selection.count == 0) return
+        staging = true
+        val picks = selection.items.toList()
+        val app = context.applicationContext
+        val stager = AttachmentStaging(attachmentCacheDir(app)) { pick -> openPick(app, edits, pick) }
+        scope.launch {
+            try {
+                // Each pick read on its own, a few at a time, and put back in the order picked.
+                val staged = withContext(Dispatchers.IO) {
+                    picks.map { pick -> async(StagingDispatcher) { stager.stage(listOf(pick), accepts) } }.awaitAll()
+                }.let { parts -> Staged(parts.flatMap { it.attachments }, parts.flatMap { it.problems }) }
+                staged.problems.firstOrNull()?.let { problem ->
+                    when (problem) {
+                        is StagingProblem.TooLarge -> say(R.string.image_upload_file_too_large_title, resources.getString(R.string.image_upload_file_too_large_message, problem.name, problem.maxMb))
+                        is StagingProblem.Unreadable -> say(R.string.image_upload_upload_failed_title, resources.getString(R.string.attach_unreadable_message, problem.name))
+                    }
+                }
+                if (staged.attachments.isEmpty()) return@launch
+                val files = picks.filter { it.kind == PickedKind.File && it.uri.startsWith("content:") }
+                if (files.isNotEmpty() && accepts.files) withContext(Dispatchers.IO) { RecentFiles(context).remember(files) }
+                attach(staged.attachments)
+                if (staged.problems.isEmpty()) close()
+                else selection.clear()
+            } finally {
+                staging = false
             }
         }
     }
@@ -306,7 +379,7 @@ fun AttachSheet(
             tabs = tabs,
             tab = tab,
             onTab = { tab = it },
-            gallery = GalleryContent(access, items, loaded, blocked),
+            gallery = GalleryContent(access, all, loaded, blocked, edits),
             sources = FileSources(browse = accepts.files, gallery = accepts.files || accepts.photos, paste = accepts.photos || accepts.files, workspace = workspace != null),
             recent = (picked + sent.filter { old -> picked.none { it.uri == old.uri } }),
             selection = selection,
@@ -315,8 +388,9 @@ fun AttachSheet(
             motion = motion,
             onClose = ::close,
             onSend = ::sendPicks,
+            onConfirm = ::confirm,
             onToggleGallery = { toggle(it.picked()) },
-            onOpenGallery = { item -> viewing = items.indexOf(item).takeIf { it >= 0 } },
+            onOpenGallery = { item -> viewing = all.indexOf(item).takeIf { it >= 0 }?.let { Viewing(camera = false, index = it) } },
             onToggleFile = { toggle(it.picked()) },
             onAllow = ::allow,
             onManage = { permissions.launch(GalleryAccess.permissions()) },
@@ -328,23 +402,123 @@ fun AttachSheet(
             onPaste = ::paste,
             onWorkspace = { naming = true },
             sending = sending,
+            busy = staging,
             camera = camera,
         )
-        if (camera != null && onPhoto != null) AttachCamera(
+        if (camera != null) AttachCamera(
             state = camera, visible = tab == AttachTabKind.Gallery && viewing == null && !naming && !motion.closing,
             maxBytes = accepts.maxFileBytes,
             hasRoom = {
-                if (room > 0) true else {
+                if (selection.count < selection.maxItems) true else {
                     say(R.string.image_upload_limit_title, resources.getString(R.string.attach_limit_message, accepts.maxItems))
                     false
                 }
             },
-            onPhoto = onPhoto,
-            onFinished = { motion.giveBack(); closed() },
+            onShot = { photo ->
+                val item = GalleryItem(-(shots.size + 1L), photo.uri, false, photo.mimeType, photo.name, photo.size, photo.width, photo.height, 0)
+                shots.add(0, item)
+                selection.pick(item.picked())
+                // Telegram opens the first in the preview, with the caption; the rest wait in the strip.
+                if (shots.size == 1) viewing = Viewing(camera = true, index = 0)
+            },
+            shots = shots.map { CameraShot(CAMERA_KEY + it.uri, edits[it.uri]?.file ?: it.uri, selection.number(it.uri)) },
+            picked = selection.count,
+            onShots = { index -> viewing = Viewing(camera = true, index = index) },
+            paused = viewing != null || editing != null,
         )
-        viewing?.let { index ->
-            val shown = remember(items) { items.map { ViewerItem(it.uri, it.name, it.isVideo, it.width.toFloat().takeIf { w -> w > 0 }, it.height.toFloat().takeIf { h -> h > 0 }) } }
-            PictureViewer(shown, index, remember(context) { GallerySource(context) }, onClose = { viewing = null })
+        viewing?.let { open ->
+            // From the camera the preview pages its photos alone, keyed apart so they fly from its strip.
+            val list = if (open.camera) shots.toList() else all
+            fun keyOf(item: GalleryItem) = if (open.camera) CAMERA_KEY + item.uri else item.uri
+            fun itemOf(key: String) = list.firstOrNull { keyOf(it) == key }
+            val shown = remember(list, open.camera) { list.map { ViewerItem(keyOf(it), it.name, it.isVideo, it.width.toFloat().takeIf { w -> w > 0 }, it.height.toFloat().takeIf { h -> h > 0 }) } }
+            val loader = rememberImageLoader()
+            // The viewer is black in either theme, so its check takes the dark theme's colours.
+            val colors = remember { AttachColors.of(dark = true) }
+            PictureViewer(
+                shown, open.index.coerceIn(0, (shown.size - 1).coerceAtLeast(0)), remember(context, loader, edits) { GallerySource(context, loader, edits) },
+                // The picture in view picks and unpicks as its cell's check does.
+                corner = { shownItem, modifier ->
+                    val item = itemOf(shownItem.key) ?: return@PictureViewer
+                    val number = selection.number(item.uri)
+                    val label = stringResource(if (number > 0) R.string.attach_unpick else R.string.attach_pick)
+                    Box(
+                        modifier
+                            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { toggle(item.picked()) }
+                            .semantics {
+                                contentDescription = label
+                                role = Role.Checkbox
+                                selected = number > 0
+                            }
+                            .testTag(AttachTags.PREVIEW_CHECK),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        AttachCheck(number, DarkColors.surface, colors)
+                    }
+                },
+                // The caption and Send, and the photo's edits, under it (Telegram's `PhotoViewer` picking).
+                onImageTap = { shownItem -> itemOf(shownItem.key)?.let { toggle(it.picked()) } },
+                bottom = { shownItem, modifier, onBack ->
+                    val item = itemOf(shownItem.key) ?: return@PictureViewer
+                    AttachViewerFoot(
+                        caption = caption,
+                        onCaptionChange = onCaptionChange,
+                        count = maxOf(1, selection.count),
+                        sending = sending,
+                        // Nothing picked, Send sends the photo in view.
+                        onSend = {
+                            if (selection.count > 0 || selection.pick(item.picked())) {
+                                viewing = null
+                                sendPicks()
+                            }
+                        },
+                        edited = edits[item.uri],
+                        editable = !item.isVideo,
+                        onEdit = { mode -> editing = Editing(item, mode) },
+                        onBack = onBack,
+                        modifier = modifier,
+                    )
+                },
+                onClose = { viewing = null },
+            )
+        }
+        editing?.let { open ->
+            val app = context.applicationContext
+            val photo by produceState<Bitmap?>(null, open.item.uri) {
+                value = edits.working(open.item.uri) { app.contentResolver.openInputStream(Uri.parse(open.item.uri)) ?: throw IOException("Cannot open ${open.item.name}") }
+                if (value == null) {
+                    editing = null
+                    say(R.string.image_upload_upload_failed_title, resources.getString(R.string.attach_unreadable_message, open.item.name))
+                }
+            }
+            PhotoEditor(
+                photo = photo,
+                edit = edits[open.item.uri]?.edit,
+                mode = open.mode,
+                saving = savingEdit,
+                onCancel = { if (!savingEdit) editing = null },
+                onDone = { edit ->
+                    val working = photo
+                    if (working != null && !savingEdit) {
+                        savingEdit = true
+                        scope.launch {
+                            try {
+                                val before = edits[open.item.uri]?.edit ?: PhotoEdit(PhotoCrop.whole(working.width, working.height))
+                                if (edit != before) {
+                                    edits.save(open.item.uri, working, edit)
+                                    // Done with a change picks the photo, as Telegram does.
+                                    selection.pick(open.item.picked())
+                                }
+                                editing = null
+                            } catch (_: IOException) {
+                                say(R.string.image_upload_upload_failed_title, resources.getString(R.string.attach_unreadable_message, open.item.name))
+                            } finally {
+                                savingEdit = false
+                            }
+                        }
+                    }
+                },
+            )
         }
         if (naming && workspace != null) {
             WorkspaceFilePicker(
@@ -362,14 +536,43 @@ fun AttachSheet(
     }
 }
 
-/** The preview's pictures and recordings: read straight from the gallery. */
-private class GallerySource(private val context: Context) : ViewerSource {
+/** Picks read into the cache at once: a photo's decode is big, so a few at a time. */
+private val StagingDispatcher = Dispatchers.IO.limitedParallelism(3)
+
+/** The viewer's key for a photo the camera took, opened from its strip. */
+private const val CAMERA_KEY = "camera:"
+
+/** The preview opened over the grid's photos, or the camera's ([camera]), at [index]. */
+private data class Viewing(val camera: Boolean, val index: Int)
+
+/** A photo being cropped or drawn on. */
+private data class Editing(val item: GalleryItem, val mode: PhotoEditMode)
+
+/** A pick's bytes: as edited, if it was; else as the gallery or the camera has them. */
+private fun openPick(context: Context, edits: AttachEdits, pick: PickedMedia): InputStream =
+    edits[pick.uri]?.file?.inputStream()
+        ?: context.contentResolver.openInputStream(Uri.parse(pick.uri))
+        ?: throw IOException("Cannot open ${pick.name}")
+
+/**
+ * The preview's pictures and recordings: read straight from the gallery, the
+ * grid's thumbnail first; an edited photo as edited, read again each time it is.
+ */
+private class GallerySource(private val context: Context, private val loader: ImageLoader, private val edits: AttachEdits) : ViewerSource {
+    private fun uri(key: String) = key.removePrefix(CAMERA_KEY)
+
+    override fun thumbnail(key: String): ImageBitmap? =
+        if (edits[uri(key)] != null) null else galleryThumbBitmap(loader, uri(key))?.asImageBitmap()
+
+    override fun revision(key: String): Int = edits.revision(uri(key))
+
     override suspend fun bytes(key: String): ByteArray? = withContext(Dispatchers.IO) {
-        context.contentResolver.openInputStream(Uri.parse(key))?.use { it.readBytes() }
+        edits[uri(key)]?.file?.takeIf { it.exists() }?.readBytes()
+            ?: context.contentResolver.openInputStream(Uri.parse(uri(key)))?.use { it.readBytes() }
     }
 
     override fun video(key: String): MediaDataSource? = try {
-        context.contentResolver.openFileDescriptor(Uri.parse(key), "r")?.let(::FileSource)
+        context.contentResolver.openFileDescriptor(Uri.parse(uri(key)), "r")?.let(::FileSource)
     } catch (_: Exception) {
         null
     }

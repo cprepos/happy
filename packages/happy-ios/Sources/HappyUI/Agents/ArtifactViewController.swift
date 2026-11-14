@@ -9,7 +9,9 @@ import UIKit
 /// conversation renderer, its pictures and recordings resolved against the
 /// version's files (`ArtifactMarkdown`) and read through the file route,
 /// linked ones through the computer's network. Images, image series and
-/// videos show natively (`ArtifactGalleryView`), opening in the viewer.
+/// videos show natively (`ArtifactGalleryView`), opening in the viewer. A
+/// `gen_ui` version draws the document its daemon compiled
+/// (`GenUIRenderDocument.path`) natively, against its own pictures.
 /// Other entries use the shared browser with an artifact-scoped file/API
 /// origin over the agent connection, but for an app (`ArtifactPageMode`),
 /// which is presented full screen (`AppPageViewController`) in its place.
@@ -48,6 +50,13 @@ final class ArtifactViewController: UIViewController, ChatMediaProviding {
     private var plannedWidth: CGFloat?
     private var plannedSizes = 0
     private var gallery: ArtifactGalleryView?
+    /// A `gen_ui` version's document, and the width and text it was last
+    /// planned at.
+    private var genUI: (block: GenUIBlockView, document: GenUIRenderDocument, files: GenUIArtifactFiles, runs: GenUIRuns)?
+    private var genUIPlanned: (width: CGFloat, text: TextEnvironment?)?
+    private var servedRead: Task<Void, Never>?
+    private var isFirstAppearance = true
+    private var documentTap: UITapGestureRecognizer?
     private var browser: BrowserViewController?
     /// An app's version and file, and the button that opens it again.
     private var app: (version: Int, entry: String, close: ArtifactAppClose)?
@@ -114,7 +123,9 @@ final class ArtifactViewController: UIViewController, ChatMediaProviding {
         spinner.hidesWhenStopped = true
         view.addSubview(spinner)
         spinner.startAnimating()
-        scrollView.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tapped(_:))))
+        let documentTap = UITapGestureRecognizer(target: self, action: #selector(tapped(_:)))
+        scrollView.addGestureRecognizer(documentTap)
+        self.documentTap = documentTap
         // The artifact, at the version it was pinned to; a file a link
         // opened inside it has no link of its own.
         if opened == nil, vault == nil {
@@ -127,11 +138,17 @@ final class ArtifactViewController: UIViewController, ChatMediaProviding {
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         if app != nil, openButton == nil { presentApp() }
+        // Back from another screen: what the server runs may have changed.
+        if genUI != nil, !isFirstAppearance { readServed() }
+        isFirstAppearance = false
     }
 
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
-        if isMovingFromParent || isBeingDismissed || navigationController?.isBeingDismissed == true { loading?.cancel() }
+        if isMovingFromParent || isBeingDismissed || navigationController?.isBeingDismissed == true {
+            loading?.cancel()
+            servedRead?.cancel()
+        }
     }
 
     private func load() async {
@@ -158,7 +175,14 @@ final class ArtifactViewController: UIViewController, ChatMediaProviding {
             let media = vault.map { ArtifactMedia(client: client, files: $0.files, library: session.media, workspace: { throw BrowserError.unavailable }) }
                 ?? ArtifactMedia(client: client, artifactId: artifact.id, version: version.number, library: session.media)
             self.media = media
-            if Self.isMarkdown(file) {
+            // A `gen_ui` version draws its render document, listed in its
+            // files or not; never its entry as a page.
+            let listed = version.files.first { $0.path == GenUIRenderDocument.path }
+            var isGenUI = file == entry && listed != nil
+            if file == entry, listed == nil, vault == nil { isGenUI = await type() == "gen_ui" }
+            if isGenUI {
+                try await showGenUI(listed, version: version, media: media)
+            } else if Self.isMarkdown(file) {
                 try await showDocument(file, version: version, media: media)
             } else if ArtifactMedia.isVisual(file) {
                 // An image series is all of its pictures, in path order.
@@ -177,6 +201,13 @@ final class ArtifactViewController: UIViewController, ChatMediaProviding {
             Analytics.shared.artifactLoadFailed(error, isFile: vault != nil)
             show(message: Strings.artifactUnavailable)
         }
+    }
+
+    /// The artifact's type, read from its object when what opened it didn't
+    /// know (a link); empty when that can't be read.
+    private func type() async -> String {
+        if !artifact.type.isEmpty { return artifact.type }
+        return (try? await session.client.artifact(artifact.id))?["type"]?.stringValue ?? ""
     }
 
     static func isMarkdown(_ file: AgentWire.ArtifactVersion.File) -> Bool {
@@ -369,6 +400,97 @@ final class ArtifactViewController: UIViewController, ChatMediaProviding {
         present(PictureViewController(source: media, pictures: pictures, index: index), animated: true)
     }
 
+    // MARK: Gen UI
+
+    /// The version's render document, planned at the column's width once
+    /// layout knows it; never per frame, again only when the width or the
+    /// text size changes. One the version's files list reads as they do; one
+    /// they don't (Happy Cloud's) by its path, unavailable only when that
+    /// read fails.
+    private func showGenUI(_ listed: AgentWire.ArtifactVersion.File?, version: AgentWire.ArtifactVersion, media: ArtifactMedia) async throws {
+        let body: Data
+        if let listed {
+            _ = media.media(listed)
+            guard let read = await media.data(ArtifactMedia.key(listed.path)) else { throw AgentClientError.invalidResponse }
+            body = read
+        } else {
+            do {
+                body = try await session.client.genUIRender(artifact.id, version: version.number)
+            } catch AgentClientError.status(404, _, _) {
+                // The version is there; its document isn't.
+                throw AgentClientError.invalidResponse
+            }
+        }
+        try Task.checkCancellation()
+        let document = await Task.detached(priority: .userInitiated) { GenUIRenderDocument.parse(body) }.value
+        guard let document else { return show(message: Strings.artifactUnavailable) }
+        spinner.stopAnimating()
+        // Its own presses take its taps.
+        documentTap?.isEnabled = false
+        let block = GenUIBlockView()
+        block.accessibilityIdentifier = "artifact-gen-ui"
+        // The chat's card of this version shares its answers: a secret saved there is marked here.
+        if vault == nil { block.interaction.use(.of(session.client, artifactId: artifact.id, version: version.number)) }
+        block.onHeight = { [weak self] _ in self?.view.setNeedsLayout() }
+        block.interaction.onViewer = { [weak self] _, group, index in self?.openGenUIViewer(group, index: index) }
+        let artifactId = artifact.id
+        let fromVault = vault != nil
+        block.interaction.onAction = { [weak self, weak block] key, action in
+            guard let self, let block else { return }
+            if GenUIActionRunner.run(action, session: self.session, from: self) { return }
+            guard !fromVault else { return }
+            GenUIActionRunner.openForm(action, key: key, artifactId: artifactId, version: version.number, in: block, client: self.session.client, from: self)
+        }
+        scrollView.addSubview(block)
+        // No conversation to send a `message` into here; a vault's version
+        // names no agent.
+        let host = GenUIHost(server: session.isCloud ? .cluster : .happyAgent, origin: version.origin != nil, served: session.snapshot.references.genUIServed)
+        genUI = (block, document, GenUIArtifactFiles(media: media, files: version.files), GenUIRuns(host: host, sends: false, forms: vault == nil))
+        view.setNeedsLayout()
+        readServed()
+    }
+
+    /// What the server runs, read again each time the Gen UI shows: an
+    /// update may have started or stopped serving its secret actions or
+    /// plugins since the store last heard. Its buttons follow the answer,
+    /// and so does every other screen of this server.
+    private func readServed() {
+        servedRead?.cancel()
+        servedRead = Task { [weak self, session] in
+            guard let health = try? await session.client.health(), !Task.isCancelled else { return }
+            await session.store.externalCapabilities(health.capabilities)
+            guard let self, var genUI = self.genUI else { return }
+            let host = GenUIHost(server: genUI.runs.host.server, origin: genUI.runs.host.origin, served: GenUIServed(health.capabilities))
+            guard host != genUI.runs.host else { return }
+            genUI.runs.host = host
+            self.genUI = genUI
+            self.genUIPlanned = nil
+            self.view.setNeedsLayout()
+        }
+    }
+
+    /// A document's viewer group, the pictures the version holds, at `index`.
+    private func openGenUIViewer(_ group: String, index: Int) {
+        guard let genUI else { return }
+        let (pictures, start) = genUI.files.viewer(genUI.document.viewers[group] ?? [], at: index)
+        openViewer(pictures, index: start)
+    }
+
+    private func layoutGenUI(width: CGFloat) {
+        guard let genUI else { return }
+        let margin = MessageLayout.Metrics.marginH
+        let column = GenUIPageLayout.column(width: width, maxWidth: ContentWidth.maxWidth, margin: margin)
+        let text = traitCollection.textEnvironment
+        if column > 0, genUIPlanned?.width != column || genUIPlanned?.text != text {
+            genUIPlanned = (column, text)
+            genUI.block.load(genUI.document, width: column, traits: GenUITraits(text: text, displayScale: traitCollection.displayScale), files: genUI.files, runs: genUI.runs)
+        }
+        let height = genUI.block.sizeThatFits(CGSize(width: column, height: .greatestFiniteMagnitude)).height
+        let layout = GenUIPageLayout(width: width, maxWidth: ContentWidth.maxWidth, margin: margin, height: height)
+        genUI.block.frame = layout.block
+        scrollView.contentSize = CGSize(width: width, height: layout.contentHeight)
+    }
+
     // MARK: Pictures and recordings
 
     /// The files in a grid, or one large; drawn once their sizes are in
@@ -508,6 +630,7 @@ final class ArtifactViewController: UIViewController, ChatMediaProviding {
         message.isHidden = !showsMessage
         message.frame = showsMessage ? layout.body : .zero
         scrollView.contentSize = CGSize(width: width, height: layout.contentHeight)
+        if !showsMessage { layoutGenUI(width: width) }
     }
 }
 #endif
