@@ -3,7 +3,7 @@ import Foundation
 import OSLog
 #endif
 
-// Our plugins' retry, refresh and cancelled-read handling for `Conversation`, kept
+// Our plugins' retry and refresh handling for `Conversation`, kept
 // out of Conversation.swift so upstream merges do not conflict there.
 extension Conversation {
     // Stored in Conversation.swift, beside `reading` (an extension cannot
@@ -37,8 +37,7 @@ extension Conversation {
     /// Pull to refresh: the conversation read whole again now, whether or
     /// not the last read failed, and unsent messages offered again, as
     /// after the stream's resync. One whose start failed is started again.
-    /// Returns once that read has ended (a read retried after a cancel
-    /// underneath it included). Nothing for new work, or after `stop`.
+    /// Returns once that read has ended. Nothing for new work, or after `stop`.
     public func refresh() async {
         guard !stopped, !starting, creation == nil else { return }
         guard following != nil else {
@@ -81,14 +80,6 @@ extension Conversation {
         guard !starting, !stopped else { return false }
         starting = true
         return true
-    }
-
-    /// A read cancelled underneath it, not by it (a connect another caller
-    /// gave up on): `reload` asks again without saying it failed, as for a
-    /// network change (its one call, beside upstream's `carrierResets`
-    /// check). The caller checks that the cancellation is not the read's own.
-    static func cancelledUnderneath(_ error: Error) -> Bool {
-        error is CancellationError || (error as? URLError)?.code == .cancelled
     }
 
     #if canImport(OSLog)

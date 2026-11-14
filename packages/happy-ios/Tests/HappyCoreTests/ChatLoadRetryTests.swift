@@ -4,8 +4,7 @@ import HappyWire
 @testable import HappyCore
 
 /// A conversation whose first read or start failed is read again when asked
-/// (`retryLoad`), once however often it is asked; a cancellation from under
-/// a read is never kept as a failure.
+/// (`retryLoad`), once however often it is asked.
 final class ChatLoadRetryTests: XCTestCase {
     /// Every snapshot a conversation published, newest last.
     private actor Seen {
@@ -87,21 +86,6 @@ final class ChatLoadRetryTests: XCTestCase {
         XCTAssertEqual(claims.count, 2)
         let reads = await server.bootstraps
         XCTAssertEqual(reads, 1)
-        await conversation.stop()
-    }
-
-    func testACancellationFromUnderAReadIsNeverKeptAsAFailure() async throws {
-        let server = FlakyServer(failures: [CancellationError()])
-        let conversation = conversation(server)
-        let (seen, following) = follow(conversation)
-        defer { following.cancel() }
-        await conversation.start()
-        let read = try await eventually(seen, "read") { $0.loaded && !$0.items.isEmpty }
-        XCTAssertNil(read.error)
-        let shown = await seen.all
-        XCTAssertFalse(shown.contains { $0.error != nil }, "no failure was shown on the way")
-        let reads = await server.bootstraps
-        XCTAssertEqual(reads, 2)
         await conversation.stop()
     }
 

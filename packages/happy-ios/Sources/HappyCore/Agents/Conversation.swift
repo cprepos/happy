@@ -783,7 +783,7 @@ public actor Conversation {
                     // A message the computer no longer holds: the newest runs instead, at once.
                     if after != nil, case AgentClientError.status = error { anchored = false; continue }
                     // Let go with its client (a network change): asked again, unsaid.
-                    if await store.carrierResets == resets, !Self.cancelledUnderneath(error) {
+                    if await store.carrierResets == resets {
                         reads += 1
                         snapshot.synced = false
                         snapshot.error = Store.describe(error)
