@@ -20,7 +20,7 @@ services:
   happy-server:
     build:
       context: ..
-      dockerfile: Dockerfile.server
+      dockerfile: selfhost/Dockerfile.server
     image: happy-selfhost/happy-server:latest
     restart: unless-stopped
     depends_on:
