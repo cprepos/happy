@@ -326,6 +326,7 @@ async fn session_alive(app: Arc<App>, s: Arc<SocketHandle>, args: Args) {
         app.metrics.session_cache.with_label_values(&["session_validation", "miss"]).inc();
         return;
     };
+    if !crate::plugins::heartbeat::alive(&app, &s, sid, t as i64).await { return; }
     if !app.activity.is_session_valid(sid, &s.user_id).await {
         return;
     }

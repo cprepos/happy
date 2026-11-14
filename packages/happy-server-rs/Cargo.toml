@@ -52,3 +52,20 @@ debug = 1
 # Dependencies (pbkdf2, sha2, image) are painfully slow unoptimized.
 [profile.dev.package."*"]
 opt-level = 2
+
+# plugins dependencies (src/plugins), kept apart from the tables above.
+# livekit 0.8.0 with webrtc-sys 0.3.42 is the newest pair whose prebuilt libwebrtc
+# links against libstdc++ and builds with gcc. webrtc-sys 0.3.43 and later need
+# clang >= 21, which neither rust:*-bookworm nor most hosts ship. The livekit-*
+# pins keep the 0.8.0 sources compiling (later patch releases broke them).
+[target.'cfg(all())'.dependencies]
+livekit = { version = "=0.8.0", default-features = false, features = ["tokio", "rustls-tls-webpki-roots"] }
+webrtc-sys = { version = "=0.3.42", default-features = false }
+livekit-api = { version = "=0.6.0", default-features = false }
+livekit-protocol = "=0.7.11"
+livekit-datatrack = "=0.1.12"
+livekit-data-stream = "=0.1.0"
+livekit-common = "=0.1.0"
+
+[target.'cfg(all())'.build-dependencies]
+webrtc-sys-build = "=0.3.18"
