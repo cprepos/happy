@@ -1,5 +1,5 @@
 # The TypeScript server (packages/happy-server) for selfhost/docker-compose.yml:
-# it carries the plugin voice routes the Rust server in Dockerfile.server lacks.
+# it carries the addon voice routes the Rust server in Dockerfile.server lacks.
 # Stage 1: install dependencies with workspace context
 FROM node:24 AS deps
 

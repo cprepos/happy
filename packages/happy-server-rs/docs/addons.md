@@ -5,6 +5,9 @@ self-hosted voice, the bundled web app, and a heartbeat fix for resumed
 sessions. The TypeScript server (`packages/happy-server`) is the reference for
 each of them; the compat scenarios below compare the two.
 
+Upstream's Plugins (HappyCore/Plugins, /v0/plugins) is a different feature;
+never put add-on code there.
+
 The addons are written to merge with upstream with as few conflicts as
 possible:
 
