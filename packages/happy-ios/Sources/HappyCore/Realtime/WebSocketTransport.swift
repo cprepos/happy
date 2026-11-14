@@ -3,26 +3,7 @@ import Foundation
 import FoundationNetworking
 #endif
 
-/// One frame off a WebSocket.
-public enum WebSocketFrame: Equatable, Sendable {
-    case text(String)
-    case binary(Data)
-}
-
-/// The close the peer sent, as the socket reports it.
-public struct WebSocketClosure: Equatable, Sendable {
-    public let code: Int
-    public let reason: String
-
-    public init(code: Int, reason: String) {
-        self.code = code
-        self.reason = reason
-    }
-}
-
-/// One open WebSocket. Text frames are what every socket carries; binary
-/// frames and close codes are for the sockets that use them, and the defaults
-/// below keep a text-only socket a complete one.
+/// One open WebSocket carrying text frames.
 public protocol WebSocketConnection: Sendable {
     func send(_ text: String) async throws
     /// The next text frame. Throws when the socket closes.
@@ -35,22 +16,6 @@ public protocol WebSocketConnection: Sendable {
     func close(code: Int, reason: String) async
     /// How the peer closed the socket; nil while open or when it is unknown.
     var closure: WebSocketClosure? { get }
-}
-
-extension WebSocketConnection {
-    public func send(binary: Data) async throws {
-        throw WebSocketError.binaryFrameUnsupported
-    }
-
-    public func receiveFrame() async throws -> WebSocketFrame {
-        .text(try await receive())
-    }
-
-    public func close(code: Int, reason: String) async {
-        await close()
-    }
-
-    public var closure: WebSocketClosure? { nil }
 }
 
 public protocol WebSocketConnector: Sendable {
