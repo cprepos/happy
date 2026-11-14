@@ -166,7 +166,7 @@ public actor SyncEngine {
     private var holding: Set<String> = []
     private var generation = 0
     var stopped = false
-    var held = true // SyncEngine+Plugins.swift
+    var held = true, setupFailed = false // SyncEngine+Plugins.swift
     private var cursor: String?
     private var dirty = false
     /// The team members the listed tasks belong to, as last read, kept
@@ -438,7 +438,7 @@ public actor SyncEngine {
         // the pause before it was overtaken and left the outbox as it was.
         await intents.setOnline(false)
         do {
-            try await Self.wait(for: Task { () async throws -> Void in
+            try await setUp(Task { () async throws -> Void in
             let database = try database()
             if desktop == nil, let cached = try await database.checkpoint("desktop") {
                 desktop = try JSONDecoder().decode(DesktopSnapshot.self, from: JSONEncoder().encode(cached.value))
@@ -463,7 +463,7 @@ public actor SyncEngine {
             guard current(generation) else { return }
             await spaces.startExternal()
             await artifacts.start()
-            }, upTo: Self.setupDeadline)
+            })
         } catch {
             guard current(generation) else { return }
             // What this phone keeps could not be read: nothing to do with the link.

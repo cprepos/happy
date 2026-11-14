@@ -7,9 +7,10 @@ extension SyncEngine {
     /// the try counts as failed: a step stuck on a dead connection or a
     /// slow disk shows as an error instead of "connecting…" for good.
     ///
-    /// In `run`, upstream's setup body and its hello body each sit inside
-    /// `try await Self.wait(for: Task { … }, upTo: …)`; the bodies keep
-    /// upstream's indentation so the wrap is two lines at each site. Past
+    /// In `run`, upstream's setup body sits inside `try await setUp(Task
+    /// { … })` and its hello body inside `try await Self.wait(for: Task
+    /// { … }, upTo: …)`; the bodies keep upstream's indentation so the
+    /// wrap is two lines at each site. Past
     /// `setupDeadline` the run ends with "Could not open this connection";
     /// past `helloDeadline` the try counts as a dropped stream and comes
     /// back round. The hello's `attempt = 0` moved out of the body, which
@@ -22,14 +23,29 @@ extension SyncEngine {
     // it, each as its first line; while running it is always false, since
     // `pause()` lets go of `runner` before its first await.
 
-    /// `reconnect`'s first line: a run that ended on its own (its setup
-    /// failed or timed out) starts again, when nothing paused or stopped
-    /// the engine. True when it did, and `reconnect` has nothing more to do.
+    /// `reconnect`'s first line: a run whose setup failed or timed out
+    /// starts again, when nothing paused or stopped the engine. A run that
+    /// ended because home revoked this device stays ended: its error asks
+    /// the person to sign in or pair again. True when it restarted, and
+    /// `reconnect` has nothing more to do.
     func restartEndedRun() -> Bool {
-        guard !stopped, !held, !running else { return false }
+        guard !stopped, !held, !running, setupFailed else { return false }
         snapshot.error = nil
         start()
         return true
+    }
+
+    /// The run's setup, waited for up to `setupDeadline`. `setupFailed`
+    /// (stored in SyncEngine.swift, beside `held`) says whether the last
+    /// setup threw, other than by its run being cancelled.
+    func setUp(_ work: Task<Void, Error>) async throws {
+        setupFailed = false
+        do {
+            try await Self.wait(for: work, upTo: Self.setupDeadline)
+        } catch {
+            setupFailed = !Task.isCancelled
+            throw error
+        }
     }
 
     /// Waits for `work` up to `limit`, throwing what it throws. Past the

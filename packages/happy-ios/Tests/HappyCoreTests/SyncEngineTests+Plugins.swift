@@ -11,6 +11,21 @@ extension SyncFixture {
     func resetCount(_ category: RequestCategory) -> Int { resets.filter { $0 == category }.count }
 }
 
+/// Home that has revoked this device: every request answers 401.
+private actor RevokedTransport: AgentTransport {
+    var requests = 0
+    func request(method: String, path: String, credential: String, body: Data?, headers: [String: String]) async throws -> HTTP1Response {
+        requests += 1
+        return HTTP1Response(status: 401)
+    }
+    func stream(path: String, credential: String, headers: [String: String]) -> HTTP1Stream {
+        requests += 1
+        return .init(status: 401, body: AsyncThrowingStream { $0.finish() })
+    }
+    func count() -> Int { requests }
+    func close() {}
+}
+
 final class SyncEnginePluginsTests: XCTestCase {
     private struct Timeout: Error {}
     private func wait(_ engine: SyncEngine, _ predicate: @escaping @Sendable (HomeSnapshot) -> Bool) async throws -> HomeSnapshot {
@@ -31,6 +46,28 @@ final class SyncEnginePluginsTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(50))
         }
         XCTFail("not in time")
+    }
+
+    /// A run that home ended by revoking this device stays ended when the
+    /// network comes back: its "pair again" stays up and nothing is asked
+    /// of home again. Only a run whose setup failed starts over.
+    func testAReconnectLeavesARevokedRunEnded() async throws {
+        let transport = RevokedTransport()
+        let engine = SyncEngine(client: AgentClient(transport: transport, token: "test"), directory: nil)
+        await engine.start()
+        let ended = try await wait(engine) { $0.error != nil && !$0.reconnecting }
+        let message = try XCTUnwrap(ended.error)
+        try await eventually { await !engine.running }
+        let asked = await transport.count()
+        await engine.reconnect()
+        try await Task.sleep(for: .milliseconds(300))
+        let after = await transport.count()
+        XCTAssertEqual(after, asked)
+        let error = await engine.snapshot.error
+        XCTAssertEqual(error, message)
+        let running = await engine.running
+        XCTAssertFalse(running)
+        await engine.stop()
     }
 
     /// A start that comes while a pause is still waiting on its tasks
