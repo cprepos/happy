@@ -1,7 +1,7 @@
-import Foundation
 #if canImport(CoreGraphics)
 import CoreGraphics
 #endif
+import Foundation
 
 /// An image, image series or video artifact on its own screen. One item
 /// shows large, fitted inside the safe area less the padding, never past
