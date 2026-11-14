@@ -4,6 +4,7 @@
 //! docs/plugins.md. Settings come from the environment on first use and shared
 //! state lives in statics, so `Config` and `App` stay as upstream has them.
 
+pub mod heartbeat;
 pub mod voice;
 pub mod webapp;
 
