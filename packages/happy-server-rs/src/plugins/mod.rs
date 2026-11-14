@@ -5,6 +5,7 @@
 //! state lives in statics, so `Config` and `App` stay as upstream has them.
 
 pub mod voice;
+pub mod webapp;
 
 use crate::app::App;
 use crate::config::Config;
@@ -13,8 +14,9 @@ use std::sync::Arc;
 
 /// Called last from `routes::register`. Replaces the upstream routes the plugins
 /// answer differently and adds the rest.
-pub fn register(r: &mut Router, _c: &Config) {
+pub fn register(r: &mut Router, c: &Config) {
     voice::register(r);
+    webapp::register(r, c);
 }
 
 /// Whether a plugin answers upgrades on this path.
