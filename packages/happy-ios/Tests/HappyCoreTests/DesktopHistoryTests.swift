@@ -87,7 +87,7 @@ final class DesktopHistoryTests: XCTestCase {
 
     func testEveryLanguageSaysTheLabelItsOwnWay() async {
         let key = "native.chat.loadPreviousHistory"
-        let english = TranslationCatalog.nativeSources["en"]?[key]
+        let english = TranslationCatalog.nativeSourcesWithPlugins["en"]?[key]
         XCTAssertEqual(english, "Load previous history")
         for language in AppLanguage.supported.map(\.code) {
             _ = await TranslationCatalog.load(language)

@@ -16,11 +16,11 @@ final class VoiceNativeStringsTests: XCTestCase {
     }
 
     func testEveryLanguageSaysTheWordsItsOwnWay() {
-        let english = TranslationCatalog.nativeSources["en"] ?? [:]
+        let english = TranslationCatalog.nativeSourcesWithPlugins["en"] ?? [:]
         XCTAssertEqual(Set(english.keys.filter { $0.hasPrefix("native.voice.") }), Set(Self.keys))
         for language in AppLanguage.supported.map(\.code) {
             let catalog = TranslationCatalog.catalog(for: language)
-            let words = TranslationCatalog.nativeSources[language] ?? [:]
+            let words = TranslationCatalog.nativeSourcesWithPlugins[language] ?? [:]
             for key in Self.keys {
                 XCTAssertNotEqual(catalog(key), key, "\(language) lacks \(key)")
                 XCTAssertFalse((words[key] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, "\(language) \(key)")

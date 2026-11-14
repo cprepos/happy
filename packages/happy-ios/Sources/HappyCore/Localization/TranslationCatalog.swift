@@ -200,7 +200,7 @@ public final class TranslationCatalog: Sendable {
             #endif
             let json = TranslationCatalog.sources.first { $0.code == code }?.json ?? "{}"
             // Decoded outside the lock; a race decodes twice and keeps one.
-            let made = TranslationCatalog(language: code, json: json, native: TranslationCatalog.nativeSources[code] ?? [:])
+            let made = TranslationCatalog(language: code, json: json, native: TranslationCatalog.nativeSourcesWithPlugins[code] ?? [:])
             return lock.withLock {
                 if let cached = catalogs[code] { return cached }
                 catalogs[code] = made

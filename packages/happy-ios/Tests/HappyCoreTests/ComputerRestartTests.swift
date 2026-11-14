@@ -339,7 +339,7 @@ final class SessionResumeStringsTests: XCTestCase {
     }
 
     func testEveryLanguageSaysItItsOwnWayAndKeepsTheProductsName() {
-        let english = TranslationCatalog.nativeSources["en"]?[key]
+        let english = TranslationCatalog.nativeSourcesWithPlugins["en"]?[key]
         for language in AppLanguage.supported.map(\.code) {
             let text = TranslationCatalog.catalog(for: language)(key)
             XCTAssertNotEqual(text, key, language)

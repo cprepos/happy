@@ -1,9 +1,17 @@
 extension TranslationCatalog {
-    /// Words this fork adds to `nativeSources`, kept out of
+    /// Upstream's `nativeSources` with our plugins' words added; upstream's
+    /// words win where a key is in both. The catalog cache in
+    /// TranslationCatalog.swift reads this in place of `nativeSources`, so
+    /// upstream's list in NativeTranslations.swift carries no entry of ours.
+    static let nativeSourcesWithPlugins: [String: [String: String]] = nativeSources.merging(pluginSources) { kept, added in
+        kept.merging(added) { first, _ in first }
+    }
+
+    /// Words our plugins add to the app's own words, kept out of
     /// NativeTranslations.swift so upstream merges don't conflict there:
     /// the browser's (`browserSources`), the hardware keyboard's
-    /// (`hardwareKeyboardSources`) and the rest below. Joined into
-    /// `nativeSources` by the one `pluginSources` entry in its list.
+    /// (`hardwareKeyboardSources`) and the rest below. Joined to
+    /// `nativeSources` in `nativeSourcesWithPlugins`.
     static let pluginSources: [String: [String: String]] = [browserSources, hardwareKeyboardSources].reduce(pluginOwnSources) { all, area in
         all.merging(area) { kept, added in kept.merging(added) { first, _ in first } }
     }
