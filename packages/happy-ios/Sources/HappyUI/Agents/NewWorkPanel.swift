@@ -38,7 +38,7 @@ final class NewWorkPanel: UIView, UITextFieldDelegate {
     let machine = NewWorkMenuRow(icon: .ionicons("desktop-outline"), showsStatus: true)
     let folder = NewWorkMenuRow(icon: .ionicons("folder-outline"))
     let harness = NewWorkMenuRow(icon: .ionicons("hardware-chip-outline"))
-    let modeRow = NewWorkMenuRow(icon: .ionicons("shield-outline"))
+    let modeRow = NewWorkPanel.makeModeRow()
     let note = UILabel()
     let art = StateSceneView(scene: .magicWand, size: NewWorkLayout.Metrics.art, play: .onDemand, replayLabel: Strings.Tablet.replayIllustration, immediate: true)
     /// The kind's picture; nil for a session.
@@ -100,21 +100,7 @@ final class NewWorkPanel: UIView, UITextFieldDelegate {
         }
     }
 
-    /// `.session`: the harness's current mode; nil when it has none, which
-    /// hides the row.
-    var modeTitle: String? {
-        didSet {
-            modeRow.title = modeTitle ?? ""
-            showMode()
-        }
-    }
-
-    private func showMode() {
-        let hidden = modeTitle == nil || sessionKind != .session
-        guard modeRow.isHidden != hidden else { return }
-        modeRow.isHidden = hidden
-        superview?.setNeedsLayout()
-    }
+    var modeTitle: String? { didSet { modeTitleChanged() } } // NewWorkPanel+Plugins.swift
 
     /// `.session`: the kinds this computer makes; one alone hides the
     /// control.
@@ -205,9 +191,7 @@ final class NewWorkPanel: UIView, UITextFieldDelegate {
             machine.accessibilityIdentifier = "new-work-machine"
             folder.accessibilityIdentifier = "new-work-folder"
             harness.accessibilityIdentifier = "new-work-harness"
-            modeRow.accessibilityIdentifier = "new-work-mode"
             machine.isHidden = true
-            modeRow.isHidden = true
             field.layer.borderColor = UIColor(Palette.textDestructive).cgColor
             for view in [kind, machine, folder, harness, modeRow, field, note] { addSubview(view) }
         }
@@ -266,8 +250,7 @@ final class NewWorkPanel: UIView, UITextFieldDelegate {
                 width: width, sides: sides, top: top, bottom: bottom,
                 kindHeight: kind.isHidden ? nil : kind.intrinsicContentSize.height,
                 givingWay: sessionRows.count,
-                note: sessionKind == .session ? nil : measuredNote, art: artScene != nil,
-                compactsWhenShort: true
+                note: sessionKind == .session ? nil : measuredNote, art: artScene != nil, compactsWhenShort: true
             )
         }
     }
