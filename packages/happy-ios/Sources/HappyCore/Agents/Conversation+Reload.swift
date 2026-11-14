@@ -66,6 +66,14 @@ extension Conversation {
     /// Makes the checkpoint claim `claim`, for a test.
     func overrideClaim(_ claim: @escaping @Sendable (String) async throws -> Void) { claimOverride = claim }
 
+    /// The checkpoint claim for `key` a test made (`overrideClaim`), or nil
+    /// for the real one: `checkpointClaim`'s one call, before it makes its
+    /// own.
+    func overriddenClaim(_ key: String) -> Task<Void, Error>? {
+        guard let claimOverride else { return nil }
+        return Task { try await claimOverride(key) }
+    }
+
     /// `start`'s first line: past it, `start` is underway (`starting`,
     /// which `start` lets go of as it returns), so a second call or a retry
     /// waits for it rather than starting again. False, with nothing

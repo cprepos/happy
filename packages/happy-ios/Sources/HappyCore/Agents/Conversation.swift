@@ -1507,9 +1507,8 @@ public actor Conversation {
         if let claim = checkpointClaims[key] { return claim }
         let persistence = persistence
         let owner = checkpointOwner
-        let claimOverride = claimOverride
+        if let claim = overriddenClaim(key) { checkpointClaims[key] = claim; return claim }
         let claim = Task<Void, Error> {
-            if let claimOverride { return try await claimOverride(key) }
             if let persistence { try await persistence.claimConversation(key, owner: owner) }
         }
         checkpointClaims[key] = claim
