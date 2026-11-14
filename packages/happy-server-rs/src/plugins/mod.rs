@@ -28,9 +28,9 @@ pub fn register(r: &mut Router, c: &Config) {
     webapp::register(r, c);
 }
 
-/// Whether a plugin answers upgrades on this path.
-pub fn owns_upgrade(path: &str) -> bool {
-    path == voice::stream::PATH
+/// Whether a plugin answers this request: an upgrade on a plugin's path.
+pub fn owns_upgrade(path: &str, headers: &hyper::HeaderMap) -> bool {
+    path == voice::stream::PATH && crate::engine::is_upgrade(headers)
 }
 
 /// Answers an upgrade request on a path `owns_upgrade` claimed.
@@ -50,9 +50,13 @@ mod tests {
 
     #[test]
     fn owns_only_the_voice_stream_path() {
-        assert!(owns_upgrade("/v1/voice/stream"));
-        assert!(!owns_upgrade("/v1/voice/stream/"));
-        assert!(!owns_upgrade("/v1/updates"));
-        assert!(!owns_upgrade("/"));
+        let mut up = hyper::HeaderMap::new();
+        up.insert("connection", "Upgrade".parse().unwrap());
+        up.insert("upgrade", "websocket".parse().unwrap());
+        assert!(owns_upgrade("/v1/voice/stream", &up));
+        assert!(!owns_upgrade("/v1/voice/stream", &hyper::HeaderMap::new()));
+        assert!(!owns_upgrade("/v1/voice/stream/", &up));
+        assert!(!owns_upgrade("/v1/updates", &up));
+        assert!(!owns_upgrade("/", &up));
     }
 }
