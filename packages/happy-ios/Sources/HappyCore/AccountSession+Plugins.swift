@@ -1,4 +1,6 @@
 import Foundation
+import HappyStore
+import HappyWire
 
 /// Our plugins' additions to `AccountSession`, kept out of
 /// AccountSession.swift so merges from upstream do not conflict there.
