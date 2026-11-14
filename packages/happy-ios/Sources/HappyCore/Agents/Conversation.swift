@@ -376,11 +376,7 @@ public actor Conversation {
     private var checkpointClaims: [String: Task<Void, Error>] = [:]
     private var attachmentCleanup: Set<String> = []
     private struct KeptConversation: Codable, Equatable, Sendable {
-        // plugins: ours, first and defaulted, so upstream's initializer call
-        // stays as upstream writes it (set after it, in `persistConversation`).
-        /// `mode` was the person's pick, not the computer's default it
-        /// started on; absent in what was kept before it was told apart.
-        var modePicked: Bool? = nil
+        var modePicked: Bool? = nil // plugins: Conversation+StartingMode.swift
         struct Run: Codable, Equatable, Sendable { var id: String; var messageIds: [String]; var time: RunTime? }
         struct Picture: Codable, Equatable, Sendable { var mimeType: String; var data: Data }
         struct Send: Codable, Equatable, Sendable {
@@ -410,7 +406,7 @@ public actor Conversation {
     private var children: Task<Void, Never>?
     var reading: Task<Void, Never>?
     // plugins: stored for Conversation+Reload.swift, which says what each is.
-    var readingId = UUID(), starting = false, followed = false, stopped = false
+    var readingId = UUID(), starting = false, followed = false, stopped = false, followsDefault = false
     var claimOverride: (@Sendable (String) async throws -> Void)?
     private var reloadSoon: Task<Void, Never>?
     /// History reads finished, read or failed.
@@ -484,21 +480,17 @@ public actor Conversation {
     private let temporaryAttachments = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     /// Pictures already decoded, by message and block.
     private var pictures: [String: Data] = [:]
-    private var mode: AgentWire.Mode?
+    var mode: AgentWire.Mode?
     /// A mode the person chose here; what the daemon last ran with never
     /// replaces it.
     private var picked: AgentWire.Mode?
-    /// New work's mode is the computer's default it started on, not a pick:
-    /// the computer's own default, once read, replaces it (one kept offline
-    /// may be out of date), until the person picks one.
-    private var followsDefault = false
     /// The agent's own mode, as the computer says it last ran: what the
     /// composer shows unless the person picked one here. A draft always
     /// carries a mode (the daemon requires one), picked or not, so a
     /// draft's never stands over this.
     private var agentMode: AgentWire.Mode?
     private var modeRefresh: Task<Void, Never>?
-    private var defaultMode: Task<AgentWire.Mode, Error>?
+    var defaultMode: Task<AgentWire.Mode, Error>?
     /// The agent's own state, for the working line.
     private var status = "idle"
     private var wait: AgentWire.AgentWait?
@@ -550,11 +542,8 @@ public actor Conversation {
     static let draftDebounce: Duration = .milliseconds(300)
 
     /// `newTask` opens the conversation of a task its first message makes,
-    /// under the ID named for it here. `mode` is a pick the next message
-    /// goes with; `startingMode` is the default new work starts on, shown
-    /// and sent until the computer's own default is read or a pick is made.
-    public init(client: AgentClient, store: Store, agentId: String, newTask: NewTask? = nil, mode: AgentWire.Mode? = nil, startingMode: AgentWire.Mode? = nil,
-                persistence: SyncEngine? = nil) {
+    /// under the ID named for it here.
+    public init(client: AgentClient, store: Store, agentId: String, newTask: NewTask? = nil, mode: AgentWire.Mode? = nil, startingMode: AgentWire.Mode? = nil, persistence: SyncEngine? = nil) {
         self.client = client
         self.store = store
         self.persistence = persistence
@@ -562,9 +551,9 @@ public actor Conversation {
         self.creation = newTask
         (updates, continuation) = AsyncStream.makeStream(of: ChatSnapshot.self, bufferingPolicy: .bufferingNewest(1))
         picked = mode
-        followsDefault = mode == nil && newTask != nil
-        self.mode = mode ?? startingMode
-        snapshot.mode = self.mode
+        self.mode = mode
+        snapshot.mode = mode
+        followsDefault = mode == nil && newTask != nil; if mode == nil { self.mode = startingMode; snapshot.mode = startingMode } // plugins
     }
 
     // MARK: Life
@@ -1404,17 +1393,7 @@ public actor Conversation {
         outgoingTimes = Dictionary(kept.outgoing.compactMap { send in send.at.map { (send.id, $0) } }, uniquingKeysWith: { first, _ in first })
         outgoingTools = Dictionary(kept.outgoing.compactMap { send in send.toolRequest.map { (send.id, $0) } }, uniquingKeysWith: { first, _ in first })
         if let commands = kept.slashCommands { snapshot.slashCommands = commands }
-        if followsDefault {
-            // An unsent bot or task keeps the person's own pick; the default
-            // it started on is the computer's, read again.
-            if kept.modePicked == true, let pick = kept.mode {
-                picked = pick
-                mode = pick
-                followsDefault = false
-            }
-        } else {
-            mode = picked ?? kept.mode
-        }
+        (mode, picked) = restoredMode(kept.mode, pickedThen: kept.modePicked, mode: mode, picked: picked)
         snapshot.mode = mode
         snapshot.hasMore = kept.hasMore
         snapshot.syncedAt = kept.syncedAt
@@ -1484,7 +1463,7 @@ public actor Conversation {
             outgoing: outgoing.filter({ held[$0.id] == nil }).map { .init(id: $0.id, text: $0.text, pictures: $0.pictures.map { .init(mimeType: $0.mimeType, data: $0.data) }, accepted: $0.accepted, failure: $0.failure, mode: outgoingModes[$0.id], files: outgoingFiles[$0.id], at: outgoingTimes[$0.id],
                 toolRequest: outgoingTools[$0.id]) }, mode: mode, hasMore: snapshot.hasMore || window.trimmed, slashCommands: snapshot.slashCommands, syncedAt: snapshot.syncedAt)
         // When it was last read rides along with what changed, never a write of its own.
-        kept.modePicked = picked != nil ? true : nil // plugins
+        kept.modePicked = picked != nil ? true : nil
         var compared = kept
         compared.syncedAt = lastKept?.syncedAt
         guard compared != lastKept || conversationWrite != nil else { return true }
@@ -1648,7 +1627,7 @@ public actor Conversation {
     /// What a message goes with when nothing was picked: what the person's
     /// next session starts on (`ModelPreferences`), read from this
     /// computer's settings as this phone last has them.
-    private func readDefaultMode() -> Task<AgentWire.Mode, Error> {
+    func readDefaultMode() -> Task<AgentWire.Mode, Error> {
         Task { [client, persistence] in
             try await client.defaultMode(ModelPreferences(await persistence?.userSettings() ?? [:]))
         }
@@ -1671,29 +1650,6 @@ public actor Conversation {
             return mode
         } catch {
             defaultMode = nil
-            throw error
-        }
-    }
-
-    /// New work's default, read from the computer: it replaces the one it
-    /// started on, and a pick made meanwhile wins. Unread (the computer out
-    /// of reach), the one it started on goes.
-    private func liveDefault() async throws -> AgentWire.Mode {
-        let task = defaultMode ?? readDefaultMode()
-        defaultMode = task
-        do {
-            let live = try await task.value
-            guard followsDefault else { return mode ?? live }
-            followsDefault = false
-            if mode != live {
-                mode = live
-                snapshot.mode = live
-                publish()
-            }
-            return live
-        } catch {
-            if defaultMode == task { defaultMode = nil }
-            if let mode { return mode }
             throw error
         }
     }
