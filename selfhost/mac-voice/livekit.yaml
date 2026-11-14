@@ -1,0 +1,22 @@
+# Shared LiveKit for Happy voice and OpenClaw on prep-air (LAN only).
+# Keys live outside git in ~/.config/livekit/keys.yaml (chmod 600).
+# launchd label: com.openclaw.livekit (kept for continuity).
+port: 7880
+bind_addresses:
+  - ""
+rtc:
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 50100
+  use_external_ip: false
+  node_ip: 192.168.2.56
+  ips:
+    includes:
+      - 192.168.2.56/32
+key_file: /Users/cprepos/.config/livekit/keys.yaml
+logging:
+  level: info
+  pion_level: error
+room:
+  empty_timeout: 300
+  departure_timeout: 20

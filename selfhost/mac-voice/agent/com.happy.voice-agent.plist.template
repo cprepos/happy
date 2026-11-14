@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.happy.voice-agent</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>__HOME__</string>
+		<key>PATH</key>
+		<string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<key>HAPPY_REPO</key>
+		<string>__REPO__</string>
+	</dict>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/sh</string>
+		<string>__VOICE_DIR__/agent/run-agent.sh</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>__REPO__/packages/happy-voice-agent</string>
+	<key>KeepAlive</key>
+	<true/>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>ProcessType</key>
+	<string>Interactive</string>
+	<key>StandardOutPath</key>
+	<string>__VOICE_DIR__/logs/agent.log</string>
+	<key>StandardErrorPath</key>
+	<string>__VOICE_DIR__/logs/agent.log</string>
+</dict>
+</plist>
