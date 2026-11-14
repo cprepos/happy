@@ -483,7 +483,7 @@ public actor Conversation {
     /// Sends the daemon has not echoed yet, oldest first. One it accepted
     /// stays here until history or an event carries it, so no read that
     /// began before the send can take it off the screen.
-    var outgoing: [(id: String, text: String, pictures: [(mimeType: String, data: Data)], accepted: Bool, failure: String?)] = []
+    private var outgoing: [(id: String, text: String, pictures: [(mimeType: String, data: Data)], accepted: Bool, failure: String?)] = []
     private var outgoingFiles: [String: [QueuedFile]] = [:]
     private var outgoingTools: [String: AgentWire.ToolCallRequest] = [:]
     /// When each send was made, in ms, for its bubble's time.
@@ -1320,7 +1320,7 @@ public actor Conversation {
         if persistence == nil, send.failure == nil { deliver(id) }
     }
 
-    func deliver(_ id: String) {
+    private func deliver(_ id: String) {
         guard delivering[id] == nil, !admitting.contains(id), held[id] == nil else { return }
         let client = client
         delivering[id] = Task {
