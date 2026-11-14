@@ -104,7 +104,7 @@ async fn root(_app: Arc<App>, req: Req) -> HResult {
 
 async fn get_any(_app: Arc<App>, req: Req) -> HResult {
     let Some(w) = webapp() else { return not_found_reply() };
-    if let Some(file) = static_file(&w.dir, &req.param("*")).await {
+    if let Some(file) = static_file(&w.dir, &req.param("*"), &req.url).await {
         return serve_file(w, &file, &req).await;
     }
     // SPA fallback.
@@ -128,10 +128,18 @@ fn not_found_reply() -> HResult {
     Reply::error(404, "Not found")
 }
 
-/// The file a request path names inside `dir`: no `..`, no dot files, and a
-/// directory means its `index.html`.
-async fn static_file(dir: &Path, rel: &str) -> Option<PathBuf> {
+/// The file a request path names inside `dir`, as `@fastify/static` with
+/// `wildcard: false` routes them: one route per file found, so no `..`, no dot
+/// files, a directory only with a trailing slash (meaning its `index.html`),
+/// and nothing when the URL escapes a reserved character (`%2f`), which the
+/// router keeps encoded and no file route matches.
+async fn static_file(dir: &Path, rel: &str, url: &str) -> Option<PathBuf> {
     if rel.contains('\0') {
+        return None;
+    }
+    let raw = url.split(['?', '#']).next().unwrap_or("");
+    let decoded = crate::http::decode_uri(raw)?;
+    if decoded.trim_start_matches('/') != rel {
         return None;
     }
     let mut path = dir.to_path_buf();
@@ -144,12 +152,116 @@ async fn static_file(dir: &Path, rel: &str) -> Option<PathBuf> {
     }
     let meta = tokio::fs::metadata(&path).await.ok()?;
     if meta.is_dir() {
+        if !(rel.is_empty() || rel.ends_with('/')) {
+            return None;
+        }
         path.push("index.html");
         tokio::fs::metadata(&path).await.ok().filter(|m| m.is_file())?;
-    } else if !meta.is_file() {
+    } else if !meta.is_file() || rel.ends_with('/') {
         return None;
     }
     Some(path)
+}
+
+/// `Date.parse` of an HTTP date, in milliseconds; `None` where it gives NaN.
+fn parse_date(s: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc2822(s.trim()).ok().map(|d| d.timestamp_millis())
+}
+
+/// `parseTokenList`: the comma separated tokens of a header, spaces trimmed.
+fn tokens(s: &str) -> impl Iterator<Item = &str> {
+    s.split(',').map(|t| t.trim_matches(' ')).filter(|t| !t.is_empty())
+}
+
+/// `send`'s `isPreconditionFailure`: If-Match or If-Unmodified-Since fail.
+fn precondition_failed(req: &Req, etag: &str, modified_ms: i64) -> bool {
+    if let Some(m) = req.header("if-match").filter(|m| !m.is_empty()) {
+        if m != "*" && !tokens(m).any(|t| t == etag || format!("W/{t}") == etag) {
+            return true;
+        }
+    }
+    if let Some(since) = req.header("if-unmodified-since").and_then(parse_date) {
+        return modified_ms > since;
+    }
+    false
+}
+
+/// `send`'s `isNotModifiedFailure`: answer 304. `Cache-Control: no-cache`
+/// always gets the file; If-None-Match, when present, decides alone.
+fn not_modified(req: &Req, etag: &str, modified_ms: i64) -> bool {
+    if req.header("cache-control").is_some_and(|c| c.contains("no-cache")) {
+        return false;
+    }
+    if let Some(m) = req.header("if-none-match") {
+        return m == "*" || tokens(m).any(|t| t == etag || (etag.len() > t.len() && format!("W/{t}") == etag));
+    }
+    match req.header("if-modified-since") {
+        Some(since) => parse_date(since).is_some_and(|since| modified_ms <= since),
+        None => false,
+    }
+}
+
+/// `send`'s `isRangeFresh`: If-Range names this etag or a date not before the file's.
+fn range_fresh(req: &Req, etag: &str, modified_ms: i64) -> bool {
+    let Some(r) = req.header("if-range") else { return true };
+    if r.contains('"') {
+        return r.contains(etag);
+    }
+    parse_date(r).is_some_and(|t| modified_ms <= t)
+}
+
+/// `parseInt(s, 10)`: leading spaces, a sign, then digits; `None` for NaN.
+fn parse_int(s: &str) -> Option<i64> {
+    let s = s.trim_start();
+    let (neg, rest) = match s.as_bytes().first() {
+        Some(b'-') => (true, &s[1..]),
+        Some(b'+') => (false, &s[1..]),
+        _ => (false, s),
+    };
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let n: i64 = digits.parse().ok()?;
+    Some(if neg { -n } else { n })
+}
+
+/// `send`'s `parseBytesRange`: the satisfiable ranges, overlapping or
+/// adjacent ones combined, in request order.
+fn parse_ranges(size: i64, header: &str) -> Vec<(i64, i64)> {
+    let values = &header[header.find('=').map_or(0, |i| i + 1)..];
+    let mut ranges: Vec<(i64, i64, usize)> = vec![];
+    for part in values.split(',') {
+        let (a, b) = match part.find('-') {
+            Some(i) => (&part[..i], &part[i + 1..]),
+            None => (part, ""),
+        };
+        let (start, end) = match (parse_int(a), parse_int(b)) {
+            (None, Some(e)) => (Some(size - e), Some(size - 1)),
+            (None, None) => (None, None),
+            (Some(s), None) => (Some(s), Some(size - 1)),
+            (Some(s), Some(e)) => (Some(s), Some(e.min(size - 1))),
+        };
+        if let (Some(s), Some(e)) = (start, end) {
+            if s > -1 && s <= e {
+                let n = ranges.len();
+                ranges.push((s, e, n));
+            }
+        }
+    }
+    if ranges.len() >= 2 {
+        ranges.sort_by_key(|r| r.0);
+        let mut merged: Vec<(i64, i64, usize)> = vec![ranges[0]];
+        for r in &ranges[1..] {
+            let cur = merged.last_mut().unwrap();
+            if r.0 > cur.1 + 1 {
+                merged.push(*r);
+            } else if r.1 > cur.1 {
+                cur.1 = r.1;
+                cur.2 = cur.2.min(r.2);
+            }
+        }
+        merged.sort_by_key(|r| r.2);
+        ranges = merged;
+    }
+    ranges.into_iter().map(|(s, e, _)| (s, e)).collect()
 }
 
 /// `@fastify/send`'s answer for a file, with the config injected into the index.
@@ -157,19 +269,45 @@ async fn serve_file(w: &Webapp, path: &Path, req: &Req) -> HResult {
     let meta = tokio::fs::metadata(path).await?;
     let mtime_ms = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis() as i64).unwrap_or(0);
     let etag = format!("W/\"{:x}-{:x}\"", meta.len(), mtime_ms);
+    // Last-Modified has whole seconds; send compares against what it sent.
+    let modified_ms = mtime_ms - mtime_ms.rem_euclid(1000);
     let last_modified = crate::util::ms_to_naive(mtime_ms).format("%a, %d %b %Y %H:%M:%S GMT").to_string();
     let ct = content_type(path);
-    let headers = vec![
+    let mut headers = vec![
         ("accept-ranges".to_string(), "bytes".to_string()),
         ("cache-control".to_string(), "public, max-age=0".to_string()),
         ("last-modified".to_string(), last_modified),
         ("etag".to_string(), etag.clone()),
-        ("content-type".to_string(), ct.to_string()),
     ];
-    if req.header("if-none-match").is_some_and(|v| v.split(',').any(|t| t.trim() == etag)) {
-        return Ok(Reply { status: 304, headers, body: Body::Empty });
+    let conditional = ["if-match", "if-unmodified-since", "if-none-match", "if-modified-since"].iter().any(|h| req.header(h).is_some_and(|v| !v.is_empty()));
+    if conditional {
+        if precondition_failed(req, &etag, modified_ms) {
+            return Ok(crate::http::error_reply(412, "PreconditionFailedError", "Precondition Failed"));
+        }
+        if not_modified(req, &etag, modified_ms) {
+            return Ok(Reply { status: 304, headers, body: Body::Empty });
+        }
+    }
+    if !ct.is_empty() {
+        headers.push(("content-type".to_string(), ct.to_string()));
     }
     let bytes = tokio::fs::read(path).await?;
+    if let Some(range) = req.header("range").filter(|r| r.trim_start_matches(' ').starts_with("bytes=")) {
+        if range_fresh(req, &etag, modified_ms) {
+            let len = bytes.len() as i64;
+            match parse_ranges(len, range).as_slice() {
+                [] => {
+                    return Ok(crate::http::error_reply(416, "RangeNotSatisfiableError", "Range Not Satisfiable"));
+                }
+                [(s, e)] => {
+                    headers.push(("content-range".to_string(), format!("bytes {s}-{e}/{len}")));
+                    let part = bytes[*s as usize..=*e as usize].to_vec();
+                    return Ok(Reply { status: 206, headers, body: Body::Bytes(part, "") });
+                }
+                _ => {}
+            }
+        }
+    }
     let body = match &w.inject_script {
         Some(s) if is_index_url(&req.url) && ct.contains("text/html") => Body::Text(inject(&String::from_utf8_lossy(&bytes), s)),
         _ => Body::Bytes(bytes, ""),
@@ -182,7 +320,8 @@ pub fn content_type(path: &Path) -> &'static str {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     match ext.as_str() {
         "html" | "htm" => "text/html; charset=utf-8",
-        "js" | "mjs" | "cjs" => "text/javascript; charset=utf-8",
+        "js" | "mjs" => "application/javascript; charset=utf-8",
+        "cjs" => "application/node",
         "css" => "text/css; charset=utf-8",
         "json" | "map" => "application/json; charset=utf-8",
         "webmanifest" => "application/manifest+json; charset=utf-8",
@@ -202,7 +341,14 @@ pub fn content_type(path: &Path) -> &'static str {
         "mp3" => "audio/mpeg",
         "mp4" => "video/mp4",
         "wav" => "audio/wav",
-        _ => "application/octet-stream",
+        "md" => "text/markdown; charset=utf-8",
+        "csv" => "text/csv; charset=utf-8",
+        "pdf" => "application/pdf",
+        "avif" => "image/avif",
+        "eot" => "application/vnd.ms-fontobject",
+        "webm" => "video/webm",
+        // `mime` knows no type: send sets none.
+        _ => "",
     }
 }
 
@@ -247,13 +393,19 @@ mod tests {
         std::fs::write(dir.join("a.js"), "1").unwrap();
         std::fs::write(dir.join(".env"), "x").unwrap();
         std::fs::write(dir.join("sub/index.html"), "s").unwrap();
-        assert_eq!(static_file(&dir, "a.js").await, Some(dir.join("a.js")));
-        assert_eq!(static_file(&dir, "sub").await, Some(dir.join("sub/index.html")));
-        assert_eq!(static_file(&dir, "").await, Some(dir.join("index.html")));
-        assert_eq!(static_file(&dir, "../etc/passwd").await, None);
-        assert_eq!(static_file(&dir, ".env").await, None);
-        assert_eq!(static_file(&dir, "/etc/passwd").await, None);
-        assert_eq!(static_file(&dir, "missing.js").await, None);
+        std::fs::create_dir_all(dir.join("bare")).unwrap();
+        let f = |rel: &'static str, url: &'static str| static_file(&dir, rel, url);
+        assert_eq!(f("a.js", "/a.js").await, Some(dir.join("a.js")));
+        assert_eq!(f("sub/", "/sub/").await, Some(dir.join("sub/index.html")));
+        assert_eq!(f("sub", "/sub").await, None);
+        assert_eq!(f("a.js/", "/a.js/").await, None);
+        assert_eq!(f("bare/", "/bare/").await, None);
+        assert_eq!(f("", "/").await, Some(dir.join("index.html")));
+        assert_eq!(f("sub/index.html", "/sub%2findex.html").await, None);
+        assert_eq!(f("../etc/passwd", "/../etc/passwd").await, None);
+        assert_eq!(f(".env", "/.env").await, None);
+        assert_eq!(f("/etc/passwd", "//etc/passwd").await, None);
+        assert_eq!(f("missing.js", "/missing.js").await, None);
         let w = from_env(|k| match k {
             "HAPPY_STATIC_DIR" => Some(dir.to_string_lossy().into_owned()),
             "HAPPY_INJECT_HTML_CONFIG" => Some(r#"{"b":1,"a":"x"}"#.into()),
@@ -269,5 +421,25 @@ mod tests {
         })
         .unwrap();
         assert!(bad.inject_script.is_none());
+    }
+
+    #[test]
+    fn byte_ranges_like_send() {
+        assert_eq!(parse_ranges(10, "bytes=0-6"), vec![(0, 6)]);
+        assert_eq!(parse_ranges(10, "bytes=-3"), vec![(7, 9)]);
+        assert_eq!(parse_ranges(10, "bytes=4-"), vec![(4, 9)]);
+        assert_eq!(parse_ranges(10, "bytes=4-100"), vec![(4, 9)]);
+        assert_eq!(parse_ranges(10, "bytes=20-30"), vec![]);
+        assert_eq!(parse_ranges(10, "bytes=x"), vec![]);
+        assert_eq!(parse_ranges(10, "bytes=0-1,5-6"), vec![(0, 1), (5, 6)]);
+        assert_eq!(parse_ranges(10, "bytes=5-6,0-1,2-3"), vec![(5, 6), (0, 3)]);
+        assert_eq!(parse_ranges(10, "bytes=0-4,3-8"), vec![(0, 8)]);
+    }
+
+    #[test]
+    fn mime_types_like_send() {
+        assert_eq!(content_type(Path::new("a/app.js")), "application/javascript; charset=utf-8");
+        assert_eq!(content_type(Path::new("x.WOFF2")), "font/woff2");
+        assert_eq!(content_type(Path::new("LICENSE")), "");
     }
 }
