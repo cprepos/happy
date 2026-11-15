@@ -1988,9 +1988,18 @@ final class LiveBrowserFullScreenItems: UIViewController {
         if isPhone, viewer == nil { view.setNeedsLayout() }
         viewer?.pageFocusChanged(held ? state?.editableFocused : nil)
         if isNoVNC, viewer == nil, !address.isEditing, navigating == 0, let url = state?.url, !url.isEmpty { address.text = url }
-        navigationItem.subtitle = state.flatMap { $0.asleep ? Strings.LiveBrowser.asleep : $0.starting ? Strings.LiveBrowser.startingBrowser : nil }
-            ?? state?.lastAction.map(Strings.LiveBrowser.lastAction)
-            ?? state.map { Strings.LiveBrowser.status($0.status) }
+        navigationItem.subtitle = Self.subtitle(state)
+    }
+
+    /// Under the title: asleep (why, when the bridge said), starting, the
+    /// agent asking for the person (and why), what it did last, else the
+    /// status. Needs you is never covered by a last action.
+    static func subtitle(_ state: LiveBrowserState?) -> String? {
+        guard let state else { return nil }
+        if state.asleep { return Strings.LiveBrowser.notLive(state.liveReason) ?? Strings.LiveBrowser.asleep }
+        if state.starting { return Strings.LiveBrowser.startingBrowser }
+        if state.status == .takeover { return Strings.LiveBrowser.needsYou(state.reason) }
+        return state.lastAction.map(Strings.LiveBrowser.lastAction) ?? Strings.LiveBrowser.status(state.status)
     }
 }
 

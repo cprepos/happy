@@ -241,5 +241,62 @@ extension Strings {
             case .done: endedStatus
             }
         }
+
+        /// The full screen's subtitle while the agent asked for the
+        /// person: why, when the bridge said.
+        static func needsYou(_ reason: String?) -> String {
+            guard let reason = Wait.line(reason) else { return needsYou }
+            return "\(needsYou): \(reason)"
+        }
+
+        /// Why the bridge says no browser runs for the link
+        /// (`live_reason`), in plain words; nil for one it doesn't know.
+        static func notLive(_ reason: String?) -> String? {
+            switch reason {
+            case "asleep": asleep
+            case "crashed": "The browser crashed — the agent’s next use starts a fresh one"
+            case "pod_gone": "The browser went away — the agent’s next use starts it again"
+            case "session_not_answering": "The browser isn’t answering"
+            case "start_stuck": "The browser didn’t finish starting"
+            case "no_browser": "No browser is running"
+            case "user_ended": "You ended this browser"
+            default: nil
+            }
+        }
+
+        /// The full screen's wait bar: what the agent waits on the person
+        /// for, besides a browser approval (`LiveBrowserWaitBar`).
+        enum Wait {
+            /// The agent asked for the person in the browser
+            /// (`browser_wait_for_human`).
+            static func takeover(_ reason: String?) -> String {
+                guard let reason = line(reason) else { return "The agent needs you" }
+                return "The agent needs you: \(reason)"
+            }
+            /// A question in the chat waits on an answer.
+            static func question(_ text: String?) -> String {
+                guard let text = line(text) else { return "The agent asked you a question" }
+                return "The agent asked you a question: \(text)"
+            }
+            /// A harness permission prompt in the chat: separate from
+            /// browser yolo, which never answers these.
+            static func permission(_ tool: String) -> String { "The agent is waiting for permission to run \(tool)" }
+            /// The harness's plan approval (ExitPlanMode), a permission prompt too.
+            static let plan = "The agent is waiting for permission to carry out its plan"
+            /// A timed wait the agent set itself.
+            static func timed(until due: Date) -> String {
+                "The agent is waiting until \(due.formatted(date: .omitted, time: .shortened))"
+            }
+            /// The bar's button that goes to the chat, where it is answered.
+            static let show = "Show"
+            static let showHint = "Closes the full screen and shows it in the chat."
+
+            /// The first non-empty line of `text`, trimmed; nil if none.
+            static func line(_ text: String?) -> String? {
+                text?.split(whereSeparator: \.isNewline)
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .first { !$0.isEmpty }
+            }
+        }
     }
 }
