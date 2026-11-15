@@ -290,6 +290,14 @@ extension Strings {
             /// The bar's button that goes to the chat, where it is answered.
             static let show = "Show"
             static let showHint = "Closes the full screen and shows it in the chat."
+            /// Under browser yolo's button, and on the minimized line.
+            static let dismiss = "Dismiss"
+            /// The agent asked for the person in the browser: Dismiss
+            /// hands it back, and the agent carries on without them.
+            static let dismissTakeoverHint = "Hands the browser back: the agent carries on without you."
+            /// A question or a harness permission prompt: Dismiss only
+            /// hides it here; it still waits in the chat.
+            static let dismissChatHint = "Hides this here. It still waits for you in the chat."
 
             /// The first non-empty line of `text`, trimmed; nil if none.
             static func line(_ text: String?) -> String? {

@@ -18,6 +18,9 @@ final class LiveBrowserApprovalBar: UIView {
     private(set) var approval: LiveBrowserState.Approval?
     /// A yolo approval's words, while they show.
     private(set) var notice: String?
+    /// The bar came or went (an approval, a notice): the full screen's
+    /// wait bar takes or gives up its place.
+    var onShownChange: (() -> Void)?
     /// Details shown under the summary (not compact).
     var showsDetails = true { didSet { if showsDetails != oldValue { render() } } }
     /// Deny and Approve on the summary's row.
@@ -146,6 +149,7 @@ final class LiveBrowserApprovalBar: UIView {
     /// In as content comes, out as it goes; never a jump in place.
     private func fade(from had: Bool) {
         let has = hasContent
+        if has != had { onShownChange?() }
         guard has != had || (has && isHidden) else { return }
         if has {
             isHidden = false

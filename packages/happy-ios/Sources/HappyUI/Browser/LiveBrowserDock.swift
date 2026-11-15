@@ -101,6 +101,27 @@ final class LiveBrowserDock: NSObject {
     private var approvalBarTop: CGFloat?
     /// The approval a decision is on its way for: the bars hide it.
     private var deciding: String?
+    /// What the chat's agent waits on the person for outside the browser
+    /// (a question, a harness permission prompt, a timed wait), set by the
+    /// chat as it changes: the full screen's wait bar says it.
+    var chatWait: ChatWait? {
+        didSet { if chatWait != oldValue { refresh() } }
+    }
+    /// The chat wait Dismiss hid: that one only, so the next shows.
+    /// Nothing is answered by it.
+    private var dismissedWait: String?
+    /// The chat's wait unless Dismiss hid it.
+    var shownChatWait: ChatWait? { chatWait.flatMap { $0.id == dismissedWait ? nil : $0 } }
+    /// What Dismiss acts on now: the takeover, else the chat's wait; none
+    /// while an approval waits (its own Deny answers it).
+    var dismissable: LiveBrowserWaitBar.Content? {
+        LiveBrowserWaitBar.content(state: feed?.phase.state, held: holdsControl, chatWait: shownChatWait, approvalBar: barApproval != nil)
+    }
+    /// The line's Dismiss as it last showed.
+    private var shownDismiss = false
+    /// The wait bar's Show: the chat shows what waits (its question, its
+    /// permission prompt), once the full screen has gone.
+    var onShowWait: (() -> Void)?
     /// What yolo mode approved by itself that this dock has seen; nil
     /// before the first state, whose list is history and never shown.
     private var seenAutoApproved: Set<String>?
@@ -142,6 +163,7 @@ final class LiveBrowserDock: NSObject {
         super.init()
         indicator.isHidden = true
         indicator.addAction(UIAction { [weak self] _ in self?.openPlayer() }, for: .touchUpInside)
+        indicator.onDismiss = { [weak self] in self?.dismissWait() }
         approvalBar.onDecide = { [weak self] approval, approve in self?.decide(approval, approve: approve) }
         NotificationCenter.default.addObserver(self, selector: #selector(voiceSheetChanged), name: .voiceSheetChanged, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(appBackgrounded), name: UIApplication.didEnterBackgroundNotification, object: nil)
@@ -488,9 +510,12 @@ final class LiveBrowserDock: NSObject {
     private func refresh() {
         let status = lineShows ? feed.flatMap { lineStatus($0.phase) } : nil
         let yolo = status != nil && yoloOn
-        let changed = status != shownStatus || yolo != shownYolo
+        let dismiss = status != nil && dismissable != nil
+        let changed = status != shownStatus || yolo != shownYolo || dismiss != shownDismiss
         shownStatus = status
         shownYolo = yolo
+        shownDismiss = dismiss
+        indicator.showsDismiss = dismiss
         indicator.text = indicatorText
         indicator.isHidden = status == nil
         if let feed { player?.show(feed) }
@@ -498,9 +523,14 @@ final class LiveBrowserDock: NSObject {
         let barShowed = approvalBar.hasContent
         approvalBar.show(barApproval)
         if approvalBar.hasContent != barShowed { changedBar() }
-        for controller in fullScreen?.viewControllers ?? [] { (controller as? LiveBrowserFullScreenItems)?.update(feed?.phase.state, held: holdsControl) }
+        updateFullScreen()
         NotificationCenter.default.post(name: Self.didChange, object: self)
         if changed { onLayoutChange?() }
+    }
+
+    /// Each full-screen page shows the state, and what waits, again.
+    private func updateFullScreen() {
+        for controller in fullScreen?.viewControllers ?? [] { (controller as? LiveBrowserFullScreenItems)?.update(feed?.phase.state, held: holdsControl) }
     }
 
     @objc private func voiceSheetChanged() {
@@ -1135,6 +1165,35 @@ final class LiveBrowserDock: NSObject {
         dismissFullScreen(animated: true)
     }
 
+    /// The wait bar's button: Take or Release control for the browser's
+    /// own wait; for the chat's, the full screen goes and the chat shows
+    /// where it is answered.
+    func waitAction(_ content: LiveBrowserWaitBar.Content) {
+        switch content {
+        case .takeover(_, let held): if held { release() } else { take() }
+        case .chat(let wait):
+            guard wait.answeredInChat else { return }
+            if player == nil { openPlayer() }
+            dismissFullScreen(animated: true)
+            DispatchQueue.main.async { [weak self] in self?.onShowWait?() }
+        }
+    }
+
+    /// Dismiss, under browser yolo's button and on the line. A takeover
+    /// is handed back (`POST /release`, as Release control): the agent's
+    /// wait for the person ends and it carries on. A chat wait (a
+    /// question, a harness permission prompt) is only hidden here, that
+    /// one; it still waits in the chat, and nothing is answered.
+    func dismissWait() {
+        switch dismissable {
+        case .takeover?: release()
+        case .chat(let wait)?:
+            dismissedWait = wait.id
+            refresh()
+        case nil: break
+        }
+    }
+
     // MARK: Approvals
 
     /// Approve, Deny, or Not now for the action the agent waits on. The
@@ -1308,6 +1367,12 @@ final class LiveBrowserFullScreenItems: UIViewController {
     /// else over the bottom, compact. Never over the header, never moves
     /// the picture.
     let approvalBar = LiveBrowserApprovalBar()
+    /// What else the agent waits on the person for, in the approval bar's
+    /// place while no approval holds it (`LiveBrowserWaitBar`).
+    let waitBar = LiveBrowserWaitBar()
+    /// Dismiss, right under browser yolo's button while the wait bar has
+    /// something (`LiveBrowserDock.dismissWait`).
+    let dismissButton = LiveBrowserFullScreenItems.makeDismissButton()
     private var state: LiveBrowserState?
     private var held = false
 
@@ -1436,6 +1501,12 @@ final class LiveBrowserFullScreenItems: UIViewController {
         if isPhone { buildStrip() }
         approvalBar.onDecide = { [weak self] approval, approve in self?.dock?.decide(approval, approve: approve) }
         view.addSubview(approvalBar)
+        approvalBar.onShownChange = { [weak self] in self?.showWait() }
+        waitBar.onAction = { [weak self] content in self?.dock?.waitAction(content) }
+        view.addSubview(waitBar)
+        dismissButton.addAction(UIAction { [weak self] _ in self?.dock?.dismissWait() }, for: .touchUpInside)
+        dismissButton.isHidden = true
+        view.addSubview(dismissButton)
         yoloLine.isHidden = true
         view.addSubview(yoloLine)
         update(state, held: held)
@@ -1564,6 +1635,9 @@ final class LiveBrowserFullScreenItems: UIViewController {
     private let stripEnd = LiveBrowserFullScreenItems.stripButton("xmark.octagon", Strings.LiveBrowser.endBrowser, "live-browser-end")
     private let stripSleep = LiveBrowserFullScreenItems.stripButton("moon.zzz", Strings.LiveBrowser.sleepBrowser, "live-browser-sleep")
     private let stripYolo = LiveBrowserFullScreenItems.stripButton("bolt.shield", Strings.LiveBrowser.yoloMenu, "live-browser-strip-yolo")
+    /// Dismiss in the column, under browser yolo's: hidden while nothing
+    /// waits, so the column has room for it then.
+    let stripDismiss = LiveBrowserFullScreenItems.stripButton("xmark.circle", Strings.LiveBrowser.Wait.dismiss, "live-browser-dismiss-wait")
 
     /// The web pages (the frame view, and noVNC's on a phone) are placed
     /// by `LiveBrowserFullScreenLayout` always; the native viewer, which
@@ -1635,15 +1709,18 @@ final class LiveBrowserFullScreenItems: UIViewController {
                 reload,
                 more,
                 stripYolo,
+                stripDismiss,
             ]
         } else if viewer == nil, let browser {
             let reload = Self.stripButton("arrow.clockwise", Strings.Browser.reload, "browser-reload")
             reload.addAction(UIAction { [weak browser] _ in browser?.reloadOrStop() }, for: .touchUpInside)
             HoldTip.attach(to: reload, title: Strings.LiveBrowser.reload, detail: Strings.LiveBrowser.Tip.reload, placement: .leading)
-            page = [reload, stripYolo]
+            page = [reload, stripYolo, stripDismiss]
         } else {
-            page = [stripYolo]
+            page = [stripYolo, stripDismiss]
         }
+        stripDismiss.isHidden = true
+        stripDismiss.addAction(UIAction { [weak self] _ in self?.dock?.dismissWait() }, for: .touchUpInside)
         stripYolo.addAction(UIAction { [weak self] _ in
             guard let dock = self?.dock else { return }
             dock.setYolo(!dock.yoloOn)
@@ -1709,7 +1786,44 @@ final class LiveBrowserFullScreenItems: UIViewController {
         if let frame = layout.strip { strip.frame = frame }
         if stripShown || placesByLayout { content.view.frame = layout.content }
         layoutApprovalBar(layout)
+        layoutWaitBar(layout)
         layoutYoloLine(layout)
+        layoutDismiss()
+    }
+
+    /// Dismiss centred under browser yolo's button, under the header (and
+    /// noVNC's address row, and the browser yolo line while it shows).
+    private func layoutDismiss() {
+        guard !dismissButton.isHidden else { return }
+        let size = dismissButton.sizeThatFits(CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude))
+        var top = isNoVNC && viewer == nil && !navBar.isHidden ? navBar.frame.maxY : view.safeAreaInsets.top
+        if !yoloLine.isHidden { top = max(top, yoloLine.frame.maxY) }
+        let yolo = yoloButton.window != nil ? yoloButton.convert(yoloButton.bounds, to: view) : CGRect(x: view.safeAreaInsets.left + 16, y: 0, width: 44, height: 0)
+        let x = min(max(yolo.midX - size.width / 2, view.safeAreaInsets.left + 8), view.bounds.width - view.safeAreaInsets.right - 8 - size.width)
+        dismissButton.frame = CGRect(x: x, y: top + 6, width: size.width, height: size.height)
+        view.bringSubviewToFront(dismissButton)
+    }
+
+    /// A small capsule saying Dismiss, its shadow clear of the picture.
+    private static func makeDismissButton() -> UIButton {
+        var configuration = UIButton.Configuration.filled()
+        configuration.title = Strings.LiveBrowser.Wait.dismiss
+        configuration.cornerStyle = .capsule
+        configuration.baseBackgroundColor = UIColor(Palette.cardFill)
+        configuration.baseForegroundColor = UIColor(Palette.cardTitle)
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 10, bottom: 4, trailing: 10)
+        configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
+            var attributes = attributes
+            attributes.font = Fonts.ui(.semiBold, size: 13)
+            return attributes
+        }
+        let button = UIButton(configuration: configuration)
+        button.accessibilityIdentifier = "live-browser-dismiss-wait"
+        button.layer.shadowColor = UIColor.black.cgColor
+        button.layer.shadowOpacity = 0.2
+        button.layer.shadowRadius = 6
+        button.layer.shadowOffset = CGSize(width: 0, height: 2)
+        return button
     }
 
     /// Yolo's line under the header (and noVNC's address row), over the
@@ -1728,11 +1842,20 @@ final class LiveBrowserFullScreenItems: UIViewController {
     /// picture's frame as placed, never changed for it.
     private func layoutApprovalBar(_ layout: LiveBrowserFullScreenLayout) {
         guard approvalBar.hasContent else { return }
+        approvalBar.place(barLayout(layout))
+    }
+
+    /// The wait bar where the approval bar goes.
+    private func layoutWaitBar(_ layout: LiveBrowserFullScreenLayout) {
+        guard waitBar.hasContent else { return }
+        waitBar.place(barLayout(layout))
+    }
+
+    private func barLayout(_ layout: LiveBrowserFullScreenLayout) -> LiveBrowserApprovalBarLayout {
         let picture = stripShown || placesByLayout ? layout.content : content.view.frame
-        let bar = LiveBrowserApprovalBarLayout(size: view.bounds.size, safeArea: LayoutInsets(view.safeAreaInsets),
-                                               place: .fullScreen(picture: picture, phone: isPhone, held: isNoVNC,
-                                                                  strip: stripShown ? layout.strip : nil))
-        approvalBar.place(bar)
+        return LiveBrowserApprovalBarLayout(size: view.bounds.size, safeArea: LayoutInsets(view.safeAreaInsets),
+                                            place: .fullScreen(picture: picture, phone: isPhone, held: isNoVNC,
+                                                               strip: stripShown ? layout.strip : nil))
     }
 
     /// Sideways on a phone, the strip; upright, the header. Follows the
@@ -1751,6 +1874,7 @@ final class LiveBrowserFullScreenItems: UIViewController {
             }
             showNavRow()
             view.bringSubviewToFront(strip)
+            showDismiss()
         }
         if let navigation = navigationController, navigation.topViewController === self, navigation.isNavigationBarHidden != wants {
             navigation.setNavigationBarHidden(wants, animated: false)
@@ -1983,12 +2107,37 @@ final class LiveBrowserFullScreenItems: UIViewController {
         showYolo(stripYolo, on: yolo, enabled: live, word: false)
         yoloLine.isHidden = !(yolo && live)
         approvalBar.show(dock?.barApproval)
+        showWait()
         view.setNeedsLayout()
         // The picture's height follows the frame's aspect once one came.
         if isPhone, viewer == nil { view.setNeedsLayout() }
         viewer?.pageFocusChanged(held ? state?.editableFocused : nil)
         if isNoVNC, viewer == nil, !address.isEditing, navigating == 0, let url = state?.url, !url.isEmpty { address.text = url }
         navigationItem.subtitle = Self.subtitle(state)
+    }
+
+    /// The wait bar, unless the approval bar shows (an approval, or what
+    /// browser yolo approved): the two never stack.
+    func showWait() {
+        waitBar.show(LiveBrowserWaitBar.content(state: state, held: held, chatWait: dock?.shownChatWait, approvalBar: approvalBar.hasContent))
+        showDismiss()
+    }
+
+    /// Dismiss while the wait bar has something: in the header's place
+    /// under browser yolo's button, or the strip's while it shows.
+    private func showDismiss() {
+        let hint: String? = switch waitBar.content {
+        case .takeover?: Strings.LiveBrowser.Wait.dismissTakeoverHint
+        case .chat?: Strings.LiveBrowser.Wait.dismissChatHint
+        case nil: nil
+        }
+        for button in [dismissButton, stripDismiss] { button.accessibilityHint = hint }
+        let headerHidden = hint == nil || stripShown
+        if dismissButton.isHidden != headerHidden {
+            dismissButton.isHidden = headerHidden
+            view.setNeedsLayout()
+        }
+        if stripDismiss.isHidden != (hint == nil) { stripDismiss.isHidden = hint == nil }
     }
 
     /// Under the title: asleep (why, when the bridge said), starting, the
@@ -2176,10 +2325,27 @@ final class LiveBrowserYoloLine: UIView {
 // MARK: The red line
 
 /// "Live browser · Watching ●": the composer status row's right, its dot at
-/// the card's edge, in the row's font. A tap opens the player.
+/// the card's edge, in the row's font. A tap opens the player. A small
+/// Dismiss before the words while the agent waits on the person
+/// (`LiveBrowserDock.dismissWait`).
 final class LiveBrowserIndicatorView: UIControl {
     private let dot = StatusDotView()
     private let label = UILabel()
+    let dismissButton = LiveBrowserIndicatorView.makeDismissButton()
+    var showsDismiss = false {
+        didSet {
+            guard showsDismiss != oldValue else { return }
+            dismissButton.isHidden = !showsDismiss
+            accessibilityCustomActions = showsDismiss ? [UIAccessibilityCustomAction(name: Strings.LiveBrowser.Wait.dismiss) { [weak self] _ in
+                self?.onDismiss?()
+                return true
+            }] : nil
+            setNeedsLayout()
+        }
+    }
+    var onDismiss: (() -> Void)?
+    /// Dismiss's room before the words.
+    private static let dismissGap: CGFloat = 8
     /// The status row's style, as the host scales it.
     var style: TextStyle = TextStyles.composerStatus { didSet { render() } }
     var text: String? { didSet { if text != oldValue { render() } } }
@@ -2192,9 +2358,36 @@ final class LiveBrowserIndicatorView: UIControl {
         label.isUserInteractionEnabled = false
         addSubview(label)
         addSubview(dot)
+        dismissButton.isHidden = true
+        dismissButton.addAction(UIAction { [weak self] _ in self?.onDismiss?() }, for: .touchUpInside)
+        addSubview(dismissButton)
         isAccessibilityElement = true
         accessibilityTraits = .button
         accessibilityIdentifier = "live-browser-indicator"
+    }
+
+    /// A small capsule saying Dismiss, in the line's red.
+    private static func makeDismissButton() -> UIButton {
+        var configuration = UIButton.Configuration.tinted()
+        configuration.title = Strings.LiveBrowser.Wait.dismiss
+        configuration.cornerStyle = .capsule
+        configuration.baseBackgroundColor = UIColor(Palette.statusError)
+        configuration.baseForegroundColor = UIColor(Palette.statusError)
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 1, leading: 8, bottom: 1, trailing: 8)
+        configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
+            var attributes = attributes
+            attributes.font = Fonts.ui(.semiBold, size: 12)
+            return attributes
+        }
+        let button = UIButton(configuration: configuration)
+        button.accessibilityIdentifier = "live-browser-dismiss-wait"
+        return button
+    }
+
+    /// Dismiss's size while it shows; zero while not.
+    private var dismissSize: CGSize {
+        guard showsDismiss else { return .zero }
+        return dismissButton.sizeThatFits(CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude))
     }
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
 
@@ -2215,7 +2408,10 @@ final class LiveBrowserIndicatorView: UIControl {
     /// The text's size, measured; nil while hidden.
     var textSize: CGSize? {
         guard !isHidden, text != nil else { return nil }
-        return label.sizeThatFits(CGSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude))
+        let size = label.sizeThatFits(CGSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude))
+        guard showsDismiss else { return size }
+        let dismiss = dismissSize
+        return CGSize(width: size.width + dismiss.width + Self.dismissGap, height: max(size.height, dismiss.height))
     }
 
     /// At `row` (in the superview's coordinates); nil hides it.
@@ -2223,7 +2419,15 @@ final class LiveBrowserIndicatorView: UIControl {
         self.row = row
         guard let row else { return }
         setLayoutFrame(row.frame)
-        label.frame = row.text.offsetBy(dx: -row.frame.minX, dy: -row.frame.minY)
+        var text = row.text.offsetBy(dx: -row.frame.minX, dy: -row.frame.minY)
+        if showsDismiss {
+            // Dismiss first, the words after it, cut short before it is.
+            let dismiss = dismissSize
+            dismissButton.frame = CGRect(x: text.minX, y: text.midY - dismiss.height / 2, width: dismiss.width, height: dismiss.height)
+            let taken = dismiss.width + Self.dismissGap
+            text = CGRect(x: text.minX + taken, y: text.minY, width: max(0, text.width - taken), height: text.height)
+        }
+        label.frame = text
         dot.frame = row.dot.offsetBy(dx: -row.frame.minX, dy: -row.frame.minY)
     }
 
