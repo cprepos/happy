@@ -199,6 +199,9 @@ A create body must match the launcher's templates: host network, read-only root,
 `CapDrop: ALL` and no `CapAdd`, `no-new-privileges`, the role's uid, a tmpfs only at `/tmp`,
 and binds only under that slot's `data/pods/slot-N/` or read-only under the browser
 directory, never the docker socket. Anything else gets a 403 and never reaches the engine.
+The one exception is a GPU (below): a node may name the `nvidia` runtime and the single GPU
+`BROWSER_GPU` names, and nothing else. `DeviceRequests`, `Devices` and `Privileged` stay
+refused, and so is any other `NVIDIA_*` variable on any container.
 `browser.mk` sets `DOCKER_SOCKET_GID` to the group of `HAPPY_DOCKER_SOCKET` (the
 `docker` group); a socket elsewhere is named with `HAPPY_DOCKER_SOCKET`.
 
@@ -296,6 +299,22 @@ Tunables, such as screen size, ports and `MAX_SESSIONS`, go in
   socket is visible on the host. The takeover URL is
   `http://localhost:6080/vnc.html?autoconnect=true&resize=scale`: noVNC scales the whole
   desktop down to fit the phone (pinch-zoom for detail), so there is nothing to pan.
+- **GPU (`BROWSER_GPU`):** pages get WebGL either way. Without a GPU it is software
+  (`--ignore-gpu-blocklist` puts ANGLE on Mesa llvmpipe, which passes sites' (Figma's)
+  `failIfMajorPerformanceCaveat` check; SwiftShader does not). Set `BROWSER_GPU` in
+  `.env.browser` to a GPU index from `nvidia-smi -L` (`0`, the first card) or one GPU's UUID,
+  and run `make browser-up`. New pods
+  then get the `nvidia` runtime with `NVIDIA_VISIBLE_DEVICES=nvidia.com/gpu=<gpu>`, and the
+  runtime (mode `auto`) injects that one GPU's device nodes and the driver's graphics libraries
+  and Vulkan ICD from its CDI spec (`/var/run/cdi/nvidia.yaml`; Docker's own `--device`
+  CDI support is not needed). `happy-kiosk.mjs` then starts Chrome with `--use-angle=vulkan`
+  (`GPU_ARGS`), and `chrome://gpu` shows `ANGLE (NVIDIA, Vulkan ...)`. An index follows the
+  slot: `0` is whichever card the driver lists first, so swapping cards needs no change here; a
+  UUID stays with one card wherever it moves. The toolkit's `nvidia-cdi-refresh` units (enabled)
+  regenerate the spec at boot and after a driver change; by hand it is
+  `sudo nvidia-ctk cdi generate --output=/var/run/cdi/nvidia.yaml`. A card of another driver
+  branch needs its own driver on the host. Unset (the default), nothing changes. The shared `browser-node`
+  stays on software.
 - **Host networking:** all three services run with `network_mode: host`, so `localhost` in
   Chromium is this machine and agents can open loopback-only services here (for example
   `http://localhost:8903/v1/models`). There are no port publishes; each listener binds

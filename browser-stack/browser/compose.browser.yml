@@ -294,6 +294,8 @@ services:
       PROXY_NODE_GID: ${BROWSER_NODE_UID:-1994}
       PROXY_CONTROLLER_UID: ${CONTROLLER_UID:-1993}
       PROXY_CONTROLLER_GID: ${CONTROLLER_UID:-1993}
+      # The one GPU pod nodes may render on (BROWSER_GPU in .env.browser); unset, none.
+      PROXY_NODE_GPU: ${BROWSER_GPU:-}
     healthcheck:
       test: ["CMD", "test", "-S", "/proxy/docker.sock"]
       interval: 10s
@@ -347,6 +349,7 @@ services:
       BROWSER_WIDTH: ${BROWSER_WIDTH:-1920}
       BROWSER_HEIGHT: ${BROWSER_HEIGHT:-1200}
       BROWSER_KIOSK: ${BROWSER_KIOSK:-0}
+      BROWSER_GPU: ${BROWSER_GPU:-}
       BROWSER_VIEWPORT_HEIGHT: ${BROWSER_VIEWPORT_HEIGHT:?run through browser-stack/browser.mk}
       BROWSER_PANEL_HEIGHT: ${BROWSER_PANEL_HEIGHT:-0}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}

@@ -135,15 +135,36 @@ test('launchOptions: the window flags, and BROWSER_EXECUTABLE_PATH as the binary
     const base = { headless: false, args: ['--no-first-run'], downloadsPath: '/data/downloads' };
     const upstream = K.launchOptions(base, { kiosk: false, env: {} });
     assert.equal('executablePath' in upstream, false);
-    assert.deepEqual(upstream.args, ['--no-first-run', ...K.WINDOW_ARGS]);
+    assert.deepEqual(upstream.args, ['--no-first-run', ...K.WEBGL_ARGS, ...K.WINDOW_ARGS]);
     assert.equal(upstream.downloadsPath, '/data/downloads');
     assert.deepEqual(base.args, ['--no-first-run'], 'the caller\'s options are not changed');
     const chrome = K.launchOptions(base, { kiosk: true, env: { BROWSER_EXECUTABLE_PATH: '/opt/google/chrome/chrome' } });
     assert.equal(chrome.executablePath, '/opt/google/chrome/chrome');
-    assert.deepEqual(chrome.args, ['--no-first-run', ...K.KIOSK_ARGS]);
+    assert.deepEqual(chrome.args, ['--no-first-run', ...K.WEBGL_ARGS, ...K.KIOSK_ARGS]);
     // Nothing that loads an extension: branded Chrome ignores --load-extension, and nothing here needs one.
     for (const a of chrome.args) assert.ok(!/load-extension|disable-extensions-except/.test(a), a);
     for (const bad of ['chrome', 'opt/google/chrome/chrome', '/opt/x chrome']) {
         assert.throws(() => K.launchOptions(base, { kiosk: false, env: { BROWSER_EXECUTABLE_PATH: bad } }), /absolute path/);
+    }
+});
+
+test('launchOptions drops the flags that turn WebGL off, and only those, and adds the one that lets sites get it', () => {
+    const base = { args: ['--disable-dev-shm-usage', '--disable-gpu', '--disable-software-rasterizer', '--no-first-run'] };
+    const out = K.launchOptions(base, { kiosk: false, env: {} });
+    assert.deepEqual(K.WEBGL_ARGS, ['--ignore-gpu-blocklist']);
+    assert.deepEqual(out.args, ['--disable-dev-shm-usage', '--no-first-run', ...K.WEBGL_ARGS, ...K.WINDOW_ARGS]);
+    assert.equal(base.args.length, 4, 'the caller\'s options are not changed');
+});
+
+test('launchOptions: BROWSER_GPU=1 renders through ANGLE on Vulkan, and only then', () => {
+    const base = { args: ['--no-first-run', '--disable-features=A,B'] };
+    const gpu = K.launchOptions(base, { kiosk: false, env: { BROWSER_GPU: '1' } });
+    assert.deepEqual(gpu.args, ['--no-first-run', '--disable-features=A,B', ...K.WEBGL_ARGS, ...K.GPU_ARGS, ...K.WINDOW_ARGS]);
+    assert.ok(K.GPU_ARGS.includes('--use-angle=vulkan'));
+    // server.mjs's --disable-features list is the only one: Chromium keeps the last.
+    assert.equal(gpu.args.filter((a) => a.startsWith('--disable-features=')).length, 1);
+    for (const v of [undefined, '', '0', 'true', ' 1']) {
+        assert.deepEqual(K.launchOptions(base, { kiosk: false, env: { BROWSER_GPU: v } }).args,
+            ['--no-first-run', '--disable-features=A,B', ...K.WEBGL_ARGS, ...K.WINDOW_ARGS], String(v));
     }
 });

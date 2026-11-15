@@ -10,7 +10,8 @@
 //                                  from the launcher's templates: a pinned image, host network, a
 //                                  non-root user per role, every capability dropped and none added,
 //                                  no-new-privileges, a read-only root, binds only of that slot's
-//                                  directory and of the repo (read-only), and the pod labels
+//                                  directory and of the repo (read-only), and the pod labels; a
+//                                  node may also get the one GPU PROXY_NODE_GPU names (below)
 //   POST   /containers/{id}/start  only a pod container of this project
 //   DELETE /containers/{id}        the same
 //   POST   /containers/{id}/exec   only python3, as the browser node's user, in a pod's node
@@ -22,6 +23,12 @@
 // or option outside the above) is refused with 403 before the daemon sees it. Bodies are never
 // logged. A container named by id or name is resolved to its id through the daemon first, and
 // the call is forwarded with that id, so a name cannot change between the check and the call.
+//
+// GPU: with PROXY_NODE_GPU set (a GPU's UUID, GPU-<uuid>, or its index), a node may be created
+// with HostConfig.Runtime "nvidia" and NVIDIA_VISIBLE_DEVICES=nvidia.com/gpu=<that GPU>, which the
+// NVIDIA runtime (mode auto) injects through its CDI spec: that GPU's device nodes and the driver's
+// graphics libraries and Vulkan ICD, nothing else. Unset, no Runtime is allowed. Any other NVIDIA_*
+// variable is refused in every case, since those choose what the runtime injects.
 import { createServer, request as httpRequest } from 'node:http';
 import { chmodSync, existsSync, statSync, unlinkSync } from 'node:fs';
 import { normalize } from 'node:path';
@@ -49,6 +56,7 @@ export function proxyConfig(env = process.env) {
         nodeUser: `${uid('PROXY_NODE_UID', 1994)}:${uid('PROXY_NODE_GID', 1994)}`,
         controllerUser: `${uid('PROXY_CONTROLLER_UID', 1993)}:${uid('PROXY_CONTROLLER_GID', 1993)}`,
         execUser: String(uid('PROXY_NODE_UID', 1994)),
+        nodeGpu: gpuDevice(env.PROXY_NODE_GPU, 'PROXY_NODE_GPU'),
     };
     if (!/^[a-z0-9][a-z0-9_-]*$/.test(cfg.project)) throw new Error('PROXY_PROJECT must be a compose project name');
     // Pinned: a registry digest, or a local image id (sha256:<64 hex>; BROWSER_NODE_CHROME=1's build).
@@ -58,6 +66,14 @@ export function proxyConfig(env = process.env) {
     }
     cfg.nameRe = new RegExp(`^${cfg.project}-pod-(\\d{1,2})-(node|controller)$`);
     return cfg;
+}
+
+// A GPU setting (a UUID or an index; never "all") as its CDI device name, or '' when unset.
+export function gpuDevice(v, what) {
+    const g = String(v ?? '').trim();
+    if (!g) return '';
+    if (!/^(GPU-[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}|\d{1,2})$/.test(g)) throw new Error(`${what} must be one GPU's UUID (GPU-...) or index`);
+    return `nvidia.com/gpu=${g}`;
 }
 
 class Denied extends Error {}
@@ -76,7 +92,7 @@ export function checkCreate(cfg, name, body) {
     if (!cfg.images.includes(body.Image)) deny('image is not one of the pinned images');
     if (body.Entrypoint !== undefined) strList(body.Entrypoint, 'Entrypoint');
     if (body.Cmd !== undefined) strList(body.Cmd, 'Cmd');
-    if (body.Env !== undefined) strList(body.Env, 'Env');
+    const nvidiaEnv = strList(body.Env ?? [], 'Env').filter((e) => e.startsWith('NVIDIA_'));
     const want = role === 'node' ? cfg.nodeUser : cfg.controllerUser;
     if (body.User !== want) deny(`User must be ${want} for a ${role}`);
     const L = body.Labels;
@@ -85,7 +101,11 @@ export function checkCreate(cfg, name, body) {
     const h = body.HostConfig;
     if (!isObj(h)) deny('HostConfig');
     onlyKeys(h, ['NetworkMode', 'ShmSize', 'CapDrop', 'CapAdd', 'SecurityOpt', 'PidsLimit', 'Memory', 'MemorySwap', 'NanoCpus',
-        'Init', 'RestartPolicy', 'Binds', 'ReadonlyRootfs', 'Tmpfs'], 'HostConfig');
+        'Init', 'RestartPolicy', 'Binds', 'ReadonlyRootfs', 'Tmpfs', 'Runtime'], 'HostConfig');
+    if (h.Runtime !== undefined) {
+        if (h.Runtime !== 'nvidia' || role !== 'node' || !cfg.nodeGpu) deny('Runtime');
+        if (nvidiaEnv.length !== 1 || nvidiaEnv[0] !== `NVIDIA_VISIBLE_DEVICES=${cfg.nodeGpu}`) deny('the GPU must be PROXY_NODE_GPU');
+    } else if (nvidiaEnv.length) deny('NVIDIA_* Env');
     if (h.NetworkMode !== 'host') deny('NetworkMode');
     if (!strList(h.CapDrop ?? [], 'CapDrop').includes('ALL')) deny('CapDrop must include ALL');
     if (h.CapAdd !== undefined && strList(h.CapAdd, 'CapAdd').length) deny('CapAdd');
