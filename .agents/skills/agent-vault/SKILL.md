@@ -4,7 +4,7 @@ description: >
   The agents' password manager: the self-hosted Vaultwarden (Bitwarden-compatible) at
   vault.girthbass.duckdns.org, its "agent" account, and the secret filler that types those logins
   into the agent browser without the model ever seeing a value, plus the vault_* tools (vault-mcp)
-  that create, rotate, trash, restore, compare and pipe logins. Use when an agent needs to sign
+  that create, rotate, trash, restore, compare and pipe logins, and save browser downloads into it. Use when an agent needs to sign
   in to a site, create or rotate a login, log a CLI in with a stored token, when the user asks
   which logins the agents have, why a login didn't fill, to add or fix a login, or about the
   vault, the filler, Bitwarden or passwords for the agents. Works the same on prep-ml, prep-air
@@ -96,11 +96,37 @@ the filler's files, `docker exec`, or the token file directly, on any machine.
 - `vault_pipe {id, field, target, args?}` feeds the value to the stdin of a command from the
   filler policy's `pipe_targets` (for example docker-login or gh-token), **on prep-ml**, and
   returns its exit code and scrubbed output.
+- `vault_save_download {download_id, item? | new_item?: {name, uris?}, file_name?}` moves a file
+  this chat's browser downloaded into the vault as an encrypted attachment. Give exactly one of
+  `item` (an existing item's name or id) and `new_item` (a new Secure Note). See "Saving a
+  download" below.
+- `vault_list` and `vault_search` also show Secure Notes (`kind: note`) and each item's
+  attachments (id, file name, size). Never the contents.
 - Permissions come from the policy, `clients.<c>.manage`. A refusal names the missing
   `manage.*` key; the user changes it with `make filler-policy-edit` (on prep-ml).
 - The vault tools' client token lives in prep's secrets folder on prep-ml and is read by the
   server itself. Never read or print it. The servers are registered with every harness on all
   three machines by `make mcp-register` (run on prep-ml).
+
+## Saving a download (statements, tax forms, keys, recovery codes)
+
+1. Download the file in the browser as usual, then `browser_list_downloads` for its `id`.
+2. `vault_save_download {download_id: "<id>", new_item: {name: "<what it is>"}}`, or
+   `item: "<existing item>"` to attach it to a login or note that already exists.
+3. The filler fetches the file from this chat's own browser, encrypts it into the vault, reads
+   it back and checks its sha256, and only then deletes the download. The result is metadata
+   only: `{item_id, item_name, attachment_id, file_name, size, sha256, download_deleted}`. Tell
+   the user the item name, file name and size.
+- **Never call `browser_read_download` on a sensitive file** (anything personal, financial,
+  medical, a key or a credential), before or after saving it: that puts its contents into the
+  model. Saving does not need you to read it.
+- Only this chat's own browser downloads can be saved; another chat's id is refused. The cap is
+  100 MiB, and saves are rate limited.
+- If the check fails (`verify_failed`), the download is kept and the attachment stays in the
+  vault: tell the user, don't retry in a loop. If `download_deleted` is false, the file is safe
+  in the vault but the download was not removed; say so.
+- Needs `manage.save_download` in the policy (off by default) and a Vaultwarden backend;
+  1Password refuses attachments.
 
 ## Which chats can use which logins
 
