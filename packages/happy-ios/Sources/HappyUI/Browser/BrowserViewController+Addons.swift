@@ -7,6 +7,11 @@ import WebKit
 /// header buttons, a remote screen, failure reports), kept out of its file
 /// so upstream merges don't conflict there. Each is reached from one line.
 extension BrowserViewController {
+    /// The finder `openBrowser(_:session:agentID:workspace:)` hands the
+    /// browser upstream's `openBrowser` makes, read by `init` when it is
+    /// given none. Set only for the length of that call.
+    static var openingWorkspace: (@Sendable () async throws -> String)?
+
     /// The workspace the page opens in: the opener's finder's, when it
     /// gave one, else `agentID`'s or the computer's first host workspace.
     func findWorkspace(_ client: AgentClient, agentID: String?) async throws -> String {
@@ -86,6 +91,17 @@ extension BrowserViewController {
 }
 
 extension UIViewController {
+    /// Upstream's `openBrowser`, the page opening in the workspace
+    /// `workspace` finds. Kept out of BrowserViewController.swift so its
+    /// `openBrowser` stays upstream's (a merge conflicted there): the
+    /// finder reaches the browser it makes through `openingWorkspace`.
+    func openBrowser(_ url: URL, session: Session?, agentID: String?, workspace: (@Sendable () async throws -> String)?) {
+        // A workspace finder belongs to the session it was made for.
+        BrowserViewController.openingWorkspace = session == nil ? nil : workspace
+        defer { BrowserViewController.openingWorkspace = nil }
+        openBrowser(url, session: session, agentID: agentID)
+    }
+
     /// Pushes `browser` on this screen's stack, or presents it in a stack
     /// of its own with a close button (as `openBrowser` does).
     func presentBrowser(_ browser: BrowserViewController) {

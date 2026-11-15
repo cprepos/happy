@@ -83,7 +83,7 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
     lazy var shareItem = UIBarButtonItem(image: .icon(.ionicons("share-outline"), size: 22), menu: UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] done in done(self?.shareActions() ?? []) }]))
 
     init(url: URL, session: Session? = nil, agentID: String? = nil, artifactID: String? = nil, workspace: (@Sendable () async throws -> String)? = nil, page: BrowserPage? = nil, extraItems: [UIBarButtonItem] = [], app: Bool = false) {
-        originalURL = url; self.session = session; self.agentID = agentID; self.artifactID = artifactID; self.workspace = workspace; self.page = page; self.extraItems = extraItems
+        originalURL = url; self.session = session; self.agentID = agentID; self.artifactID = artifactID; self.workspace = workspace ?? Self.openingWorkspace; self.page = page; self.extraItems = extraItems
         isApp = app
         super.init(nibName: nil, bundle: nil)
         title = Self.isSynthetic(url) ? nil : BrowserPolicy.Loopback.shown(url).host
@@ -557,12 +557,11 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
 }
 
 extension UIViewController {
-    func openBrowser(_ url: URL, session: Session? = nil, agentID: String? = nil, workspace: (@Sendable () async throws -> String)? = nil) {
+    func openBrowser(_ url: URL, session: Session? = nil, agentID: String? = nil) {
         // A share link is a Happy link, opened in the app and never in a browser.
         if HappyShareLink.parse(url.absoluteString) != nil { return openHappyLink(url.absoluteString) }
         guard BrowserPolicy.route(url) != .system else { UIApplication.shared.open(url); return }
-        // A workspace finder belongs to the session it was made for.
-        let browser = BrowserViewController(url: url, session: session ?? browserConnection(), agentID: agentID, workspace: session == nil ? nil : workspace)
+        let browser = BrowserViewController(url: url, session: session ?? browserConnection(), agentID: agentID)
         if let navigationController { navigationController.pushViewController(browser, animated: true) }
         else {
             let navigation = UINavigationController(rootViewController: browser)
