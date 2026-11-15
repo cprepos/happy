@@ -171,3 +171,9 @@ an upstream line rather than rewriting it, and each naming the addons file.
   `BrowserViewController+Addons.swift` (`openingWorkspace`).
 - Tests: our tests in an upstream test file go in an `extension` at the
   file's end (`HostedComposeTests`), not in the class body.
+- Two upstream tests carry our fixes, which upstream's own runs still fail:
+  `StateSceneShots` expects a `restsOnFirstFrame` scene at progress 0
+  (after 2e49c9b77), and `AgentInputCompactCardTests`'
+  `testAScrolledTextShowsWholeLines` checks the trimmed height and the top
+  line fragment (after ad5ff29e8). If a merge conflicts there, take
+  upstream's lines once they pass.
