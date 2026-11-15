@@ -913,6 +913,17 @@ export function createPodManager({
         return { slot: pod.slot, client: pod.client, novncPort: pod.ports.novnc, vncPassword: pod.vncPassword, sessionId: chat.sessionId };
     }
     /**
+     * The chat's running pod and session (describe's shape), or null: never starts or wakes a
+     * pod and is not agent activity. For a caller that must act on this chat's own browser only
+     * (vault-mcp's vault_save_download).
+     */
+    function peek(chatKey) {
+        if (!CHAT_KEY.test(chatKey || '')) return null;
+        const chat = chats.get(chatKey);
+        if (!podOf(chatKey) || !chat.sessionId) return null;
+        return describe(chat);
+    }
+    /**
      * The chat's pod's whole screen as a PNG ({mime, width, height, data: base64}), captured by the
      * launcher inside that pod (op screen, which also checks the pod id). Never starts a pod.
      */
@@ -1072,7 +1083,7 @@ export function createPodManager({
 
     return {
         ensure, stopChat, checkpointAuth, idleSweep, healthCheck, reconcile, refill, start, close,
-        chatForLink, chatForSession, podOf, podState, touchViewer, wake, status, hold, screen, screenShot, pageShot,
+        chatForLink, chatForSession, podOf, peek, podState, touchViewer, wake, status, hold, screen, screenShot, pageShot,
         liveness, sessionSeen, phantomSweep,
         get timings() { return timings.slice(); },
         _pods: pods, _chats: chats,

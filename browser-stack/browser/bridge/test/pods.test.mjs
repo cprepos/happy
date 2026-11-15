@@ -450,9 +450,16 @@ test('lookups by link and session, and stopChat for an ended browser', async () 
     const p = h.mgr.podOf(A);
     assert.equal(p.novncPort, 6100);
     assert.match(p.vncPassword, /^[A-Za-z0-9]{8}$/);
+    // peek: the running chat's describe, never another chat's, never a start.
+    const pk = h.mgr.peek(A);
+    assert.equal(pk.session_id, d.session_id);
+    assert.equal(pk.api_url, d.api_url);
+    assert.equal(h.mgr.peek('b'.repeat(32)), null);
+    assert.equal(h.mgr.peek('nothex'), null);
     assert.equal(await h.mgr.stopChat(A, 'user_ended'), true);
     assert.equal(h.mgr.podState(A), 'asleep');
     assert.equal(await h.mgr.stopChat(A, 'user_ended'), false, 'nothing left to stop');
+    assert.equal(h.mgr.peek(A), null, 'an asleep chat has no browser to peek at');
 });
 
 test('screen asks the launcher for the chat\'s own slot and pod id, and never wakes a sleeping chat', async () => {

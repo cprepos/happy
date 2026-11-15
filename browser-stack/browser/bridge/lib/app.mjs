@@ -65,6 +65,8 @@
 // With per-chat pods (config.pods, lib/pods.mjs), also:
 //   POST /api/pod       {chat_key, source?, verify?} or {session_id}
 //                       -> {mcp_url, session_id, link_id, url, slot}: the chat's pod, started or woken
+//   POST /api/pod       {chat_key, peek: true} -> {session_id, api_url, ...} of the chat's running
+//                       pod, or 404 no_browser; never starts or wakes one (vault-mcp's save_download)
 //   POST /api/pod/close {chat_key}                  -> saves the login, closes the session, stops the pod
 //   POST /api/screen    {chat_key, activate?, label?, redact?, view?} -> {mime, width, height, data
 //                       (base64 PNG), session_id, url, title, captured_at, tz, view, screenshot_path,
@@ -788,6 +790,13 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
                     const chat = pods.chatForSession(sessionIdOf(body));
                     if (!chat) return send(res, 404, { error: 'unknown session' });
                     key = chat.chatKey;
+                }
+                // peek: the chat's running pod and session, or 404 no_browser; never starts one.
+                if (body.peek === true) {
+                    if (body.chat_key === undefined) return send(res, 400, { error: 'peek needs chat_key' });
+                    const d = pods.peek(key);
+                    if (!d) return send(res, 404, { error: 'no_browser' });
+                    return send(res, 200, d);
                 }
                 const source = typeof body.source === 'string' ? body.source.slice(0, 32) : null;
                 // forked_from: the parent chat's key, sent by the MCP server of a forked or side

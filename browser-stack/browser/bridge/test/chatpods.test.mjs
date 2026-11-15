@@ -56,6 +56,11 @@ function fakePods(store) {
             if (!c || c.state !== 'running') return null;
             return { slot: c.slot, client: podClient(c.sessionId, calls), novncPort: pods.novncPortOf(c.slot), vncPassword: `pw${c.slot}`, sessionId: c.sessionId };
         },
+        peek(key) {
+            const c = chats.get(key);
+            if (!c || c.state !== 'running') return null;
+            return { chat_key: key, state: 'running', session_id: c.sessionId, link_id: c.linkId, slot: c.slot, api_url: `http://127.0.0.1:${8100 + c.slot}`, mcp_url: `http://127.0.0.1:${8100 + c.slot}/mcp`, novnc_port: 6100 + c.slot };
+        },
         podState: (key) => chats.get(key)?.state ?? 'none',
         screenFail: null,
         async screen(key) {
@@ -158,6 +163,23 @@ test('/api/pod starts the chat\'s pod; the chat link is found by chat key, each 
     const st = await (await api('/api/state', { chat_key: KEY_A })).json();
     assert.equal(st.id, a.link_id);
     assert.equal(st.pod, 'running');
+});
+
+test('/api/pod peek: the chat\'s running pod and session only, never starting one', async () => {
+    await start();
+    const none = await api('/api/pod', { chat_key: KEY_A, peek: true });
+    assert.equal(none.status, 404);
+    assert.equal((await none.json()).error, 'no_browser');
+    assert.equal(pods.podState(KEY_A), 'none', 'peek started nothing');
+    const a = await (await api('/api/pod', { chat_key: KEY_A, source: 'happy' })).json();
+    const p = await (await api('/api/pod', { chat_key: KEY_A, peek: true })).json();
+    assert.equal(p.session_id, a.session_id);
+    assert.equal(p.api_url, a.api_url);
+    assert.equal(p.chat_key, KEY_A);
+    // Another chat's peek never sees chat A's browser.
+    assert.equal((await api('/api/pod', { chat_key: KEY_B, peek: true })).status, 404);
+    assert.equal((await api('/api/pod', { session_id: a.session_id, peek: true })).status, 400);
+    assert.equal((await api('/api/pod', { chat_key: 'nothex', peek: true })).status, 400);
 });
 
 test('the live page and frames use the chat\'s own pod and noVNC port and password', async () => {
