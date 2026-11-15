@@ -39,6 +39,12 @@ with the desktop panel's clock (the node's own, in its TZ) across the top; in vi
 browser window's rectangle. Nothing is drawn on it or cropped from it here; the only change to the
 captured pixels is the OCR PII redaction, and the result and the audit log say whether it ran.
 
+And one route for vault_save_download (see "a download saved to the vault" below):
+DELETE /happy/sessions/{session_id}/downloads/{download_id}?sha256=<hex> removes one completed download
+of a live session from disk, from session.downloads and from downloads.jsonl, only when the file still
+hashes to the sha256 the caller verified in the vault. It always needs the bearer token, even where
+tokenless loopback is allowed.
+
 The share route and its token check (app/routes/share.py) are untouched; the patch refuses to load if
 that file, or any file whose behaviour it relies on, is not the 1.14.0 file it was written against.
 
@@ -84,6 +90,11 @@ EXPECTED_SHA256 = {
     "browser/services/diagnostics.py": "513ba73b6ae613e2d428a09417f5d52e328803e4ca87411f777c9912ae116adc",
     "browser/page_provenance.py": "e7f89cc529daee1cb489995388d562052400ae764d5f406d7b91c1213b2f5544",
     "browser/services/tabs.py": "04c52a6b8428c144df4b75af0618fb117e2b1c4671d057cad57b3d408d1d9daf",
+    # The download delete route (see "a download saved to the vault"): the record and downloads.jsonl
+    # capture writes, the persist that stores session.downloads, and the bearer credential check.
+    "downloads.py": "fa807e5e65061f9e36f408c7f57119d4cd53cfeb51aa91fd8ce2d169630d2ff2",
+    "browser/services/sessions.py": "ce85ac6d854c75abbbf3233bbceacfecfc98d1a2c9f2b88f89f474c8a610fa9c",
+    "auth_policy.py": "42070495ddaabc914441e84d38553351a5e550cdd5452166ac527df8db5deef5",
 }
 
 # A lockless capture: how long a poll waits on it before serving the previous frame, and the
@@ -1199,6 +1210,136 @@ def install_screen_routes(application: Any, manager: Any) -> None:
     application.add_api_route("/happy/sessions/{session_id}/page-shot", page, methods=["POST"], include_in_schema=False)
 
 
+# ── a download saved to the vault ───────────────────────────────────────────
+#
+# The secret filler's vault_save_download fetches a download's bytes from /artifacts, stores them as
+# an encrypted attachment in the vault, reads the attachment back and checks its sha256. Only then does
+# it call DELETE /happy/sessions/{session_id}/downloads/{download_id}?sha256=<hex>, which:
+#
+# - needs a bearer credential the controller knows, checked here as well as by the middleware, so a
+#   controller with API_ALLOW_TOKENLESS_LOOPBACK still refuses a tokenless delete (401);
+# - acts only on a live session (manager.sessions; get_session's owner check applies) and on one
+#   completed record in its session.downloads (404 otherwise);
+# - removes only a regular file (not a symlink) directly inside artifact_root/<session>/downloads
+#   (403 otherwise), and only when the file's sha256 is the one given (409 otherwise: kept);
+# - then drops the record from session.downloads and from downloads.jsonl (rewritten through a
+#   temporary file and a rename), persists the session, and records a download_deleted audit event
+#   with the download id, sha256 and size. It never returns or logs the file's name, bytes or source.
+#
+# Pinned with the rest (EXPECTED_SHA256): downloads.py, browser/services/sessions.py, auth_policy.py.
+
+_DOWNLOAD_ID = re.compile(r"^[0-9a-f]{12}$")
+_SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
+
+
+class DownloadRefused(Exception):
+    def __init__(self, status: int, code: str, detail: str) -> None:
+        super().__init__(detail)
+        self.status, self.code, self.detail = status, code, detail
+
+
+def _hash_file(path: Path) -> tuple[str, int]:
+    h = hashlib.sha256()
+    size = 0
+    with open(path, "rb") as fh:
+        while chunk := fh.read(1 << 20):
+            h.update(chunk)
+            size += len(chunk)
+    return h.hexdigest(), size
+
+
+def _rewrite_jsonl_without(path: Path, download_id: str) -> None:
+    """downloads.jsonl without the lines whose record has this id; the rest kept byte for byte."""
+    import json
+
+    if not path.exists():
+        return
+    kept: list[str] = []
+    for line in path.read_text(encoding="utf-8").splitlines(keepends=True):
+        try:
+            if json.loads(line).get("id") == download_id:
+                continue
+        except (ValueError, AttributeError):
+            pass
+        kept.append(line)
+    tmp = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
+    tmp.write_text("".join(kept), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+async def delete_download(manager: Any, session_id: str, download_id: str, sha256: str) -> dict[str, Any]:
+    if not _DOWNLOAD_ID.match(download_id or ""):
+        raise DownloadRefused(400, "bad_request", "download_id must be 12 hex characters")
+    if not _SHA256_HEX.match(sha256 or ""):
+        raise DownloadRefused(400, "bad_request", "sha256 must be 64 lower-case hex characters")
+    try:
+        session = await manager.get_session(session_id)
+    except KeyError:
+        raise DownloadRefused(404, "not_found", "no such live session") from None
+    if manager.sessions.get(session_id) is not session:
+        raise DownloadRefused(404, "not_found", "no such live session")
+    record = next((d for d in session.downloads if isinstance(d, dict) and d.get("id") == download_id), None)
+    if record is None or record.get("status") != "completed" or not record.get("path"):
+        raise DownloadRefused(404, "not_found", "no completed download with that id in this session")
+    downloads_dir = (Path(manager.settings.artifact_root) / session_id / "downloads").resolve()
+    raw = Path(str(record["path"]))
+    try:
+        st = os.lstat(raw)
+    except OSError:
+        raise DownloadRefused(404, "gone", "the download is no longer on disk") from None
+    import stat as stat_module
+
+    resolved = raw.resolve()
+    if not stat_module.S_ISREG(st.st_mode) or resolved.parent != downloads_dir:
+        logger.warning("refusing to delete download %s: not a file in the session's downloads directory", download_id)
+        raise DownloadRefused(403, "outside", "the download is not a file in this session's downloads directory")
+    actual, size = await asyncio.to_thread(_hash_file, resolved)
+    if not secrets.compare_digest(actual, sha256):
+        raise DownloadRefused(409, "hash_mismatch", "the file on disk does not match that sha256; it was kept")
+    await asyncio.to_thread(resolved.unlink)
+    session.downloads[:] = [d for d in session.downloads if not (isinstance(d, dict) and d.get("id") == download_id)]
+    try:
+        await asyncio.to_thread(_rewrite_jsonl_without, Path(session.artifact_dir) / "downloads.jsonl", download_id)
+    except OSError as exc:
+        logger.warning("download %s: downloads.jsonl rewrite failed: %s", download_id, type(exc).__name__)
+    try:
+        await manager._persist_session(session, status="active")
+    except Exception as exc:
+        logger.warning("download %s: persist failed: %s", download_id, type(exc).__name__)
+    try:
+        await manager.audit.append(
+            event_type="download_deleted",
+            status="ok",
+            action="delete_download",
+            session_id=session_id,
+            details={"download_id": download_id, "sha256": sha256, "size": size, "reason": "saved_to_vault"},
+        )
+    except Exception as exc:
+        logger.warning("download %s: audit failed: %s", download_id, type(exc).__name__)
+    return {"deleted": True, "download_id": download_id, "sha256": sha256, "size": size}
+
+
+def install_download_routes(application: Any, manager: Any) -> None:
+    """DELETE /happy/sessions/{session_id}/downloads/{download_id}?sha256= (see above)."""
+    from fastapi import Request
+    from fastapi.responses import JSONResponse
+
+    from app.auth_policy import credentials_for, match_credential
+
+    async def delete(session_id: str, download_id: str, request: Request) -> Any:
+        if match_credential(credentials_for(manager.settings), request.headers.get("authorization", "")) is None:
+            return JSONResponse(status_code=401, content={"detail": "a bearer token is required", "code": "unauthorized"})
+        try:
+            return await delete_download(manager, session_id, download_id, request.query_params.get("sha256", ""))
+        except DownloadRefused as exc:
+            return JSONResponse(status_code=exc.status, content={"detail": exc.detail, "code": exc.code})
+
+    delete.__annotations__["request"] = Request
+    application.add_api_route(
+        "/happy/sessions/{session_id}/downloads/{download_id}", delete, methods=["DELETE"], include_in_schema=False
+    )
+
+
 def install_routes(application: Any, manager: Any) -> None:
     """GET /happy/sessions/{session_id}/focus and the screen routes, behind the controller's own auth middleware."""
     if getattr(application.state, "happy_focus_route", False):
@@ -1221,6 +1362,7 @@ def install_routes(application: Any, manager: Any) -> None:
 
     application.add_api_route("/happy/sessions/{session_id}/focus", focus, methods=["GET"], include_in_schema=False)
     install_screen_routes(application, manager)
+    install_download_routes(application, manager)
     application.state.happy_focus_route = True
 
 

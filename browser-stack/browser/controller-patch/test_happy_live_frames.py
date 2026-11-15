@@ -1461,3 +1461,113 @@ class FollowTabTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DownloadDeleteTests(unittest.TestCase):
+    """DELETE /happy/sessions/{id}/downloads/{download_id}?sha256= (a download saved to the vault)."""
+
+    TOKEN = "download-delete-test-token-0123456789"
+
+    def setUp(self) -> None:
+        import hashlib
+        import json
+
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root)
+        self.art = self.root / "s1"
+        (self.art / "downloads").mkdir(parents=True)
+        self.data = b"%PDF-1.7 statement bytes\n"
+        self.sha = hashlib.sha256(self.data).hexdigest()
+        self.file = self.art / "downloads" / "statement.pdf"
+        self.file.write_bytes(self.data)
+        self.record = {"id": "a1b2c3d4e5f6", "status": "completed", "filename": "statement.pdf",
+                       "path": str(self.file), "url": "/artifacts/s1/downloads/statement.pdf", "source_url": "https://bank.test/x?t=1"}
+        other = {"id": "0f0f0f0f0f0f", "status": "completed", "filename": "keep.txt", "path": str(self.art / "downloads" / "keep.txt")}
+        (self.art / "downloads" / "keep.txt").write_text("keep")
+        (self.art / "downloads.jsonl").write_text(json.dumps(other) + "\n" + json.dumps(self.record) + "\n")
+        self.session = SimpleNamespace(id="s1", artifact_dir=self.art, downloads=[other, dict(self.record)])
+        sessions = {"s1": self.session}
+
+        async def get_session(sid: str) -> object:
+            if sid not in sessions:
+                raise KeyError(sid)
+            return sessions[sid]
+
+        self.manager = SimpleNamespace(
+            settings=SimpleNamespace(artifact_root=str(self.root), api_bearer_token=self.TOKEN, api_bearer_tokens=""),
+            sessions=sessions,
+            get_session=get_session,
+            _persist_session=AsyncMock(),
+            audit=SimpleNamespace(append=AsyncMock()),
+        )
+        application = FastAPI()
+        hlf.install_download_routes(application, self.manager)
+        self.client = TestClient(application)
+
+    def delete(self, download_id: str = "a1b2c3d4e5f6", sha: str | None = None, token: str | None = TOKEN, sid: str = "s1"):
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        return self.client.delete(f"/happy/sessions/{sid}/downloads/{download_id}", params={"sha256": sha or self.sha}, headers=headers)
+
+    def test_deletes_the_file_the_record_and_its_jsonl_line(self) -> None:
+        r = self.delete()
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json(), {"deleted": True, "download_id": "a1b2c3d4e5f6", "sha256": self.sha, "size": len(self.data)})
+        self.assertFalse(self.file.exists())
+        self.assertTrue((self.art / "downloads" / "keep.txt").exists())
+        self.assertEqual([d["id"] for d in self.session.downloads], ["0f0f0f0f0f0f"])
+        jsonl = (self.art / "downloads.jsonl").read_text()
+        self.assertNotIn("a1b2c3d4e5f6", jsonl)
+        self.assertIn("0f0f0f0f0f0f", jsonl)
+        self.manager._persist_session.assert_awaited_once()
+        ev = self.manager.audit.append.await_args.kwargs
+        self.assertEqual(ev["event_type"], "download_deleted")
+        self.assertEqual(ev["details"]["download_id"], "a1b2c3d4e5f6")
+        # Neither the file's name nor its source reaches the answer or the audit.
+        for text in (r.text, repr(ev)):
+            self.assertNotIn("statement", text)
+            self.assertNotIn("bank.test", text)
+        self.assertEqual(self.delete().status_code, 404)
+
+    def test_a_token_is_required(self) -> None:
+        self.assertEqual(self.delete(token=None).status_code, 401)
+        self.assertEqual(self.delete(token="wrong-token-wrong-token-wrong").status_code, 401)
+        self.assertTrue(self.file.exists())
+
+    def test_a_hash_mismatch_keeps_everything(self) -> None:
+        r = self.delete(sha="0" * 64)
+        self.assertEqual((r.status_code, r.json()["code"]), (409, "hash_mismatch"))
+        self.assertTrue(self.file.exists())
+        self.assertEqual(len(self.session.downloads), 2)
+        self.assertIn("a1b2c3d4e5f6", (self.art / "downloads.jsonl").read_text())
+        self.manager.audit.append.assert_not_awaited()
+
+    def test_a_path_outside_the_downloads_directory_is_refused(self) -> None:
+        outside = self.root / "secret.txt"
+        outside.write_bytes(self.data)
+        self.session.downloads[1]["path"] = str(self.art / "downloads" / ".." / ".." / "secret.txt")
+        r = self.delete()
+        self.assertEqual((r.status_code, r.json()["code"]), (403, "outside"))
+        self.assertTrue(outside.exists())
+        link = self.art / "downloads" / "link.pdf"
+        link.symlink_to(outside)
+        self.session.downloads[1]["path"] = str(link)
+        r = self.delete()
+        self.assertEqual((r.status_code, r.json()["code"]), (403, "outside"))
+        self.assertTrue(outside.exists() and link.is_symlink())
+
+    def test_unknown_session_id_or_bad_input(self) -> None:
+        self.assertEqual(self.delete(sid="s2").status_code, 404)
+        self.assertEqual(self.delete(download_id="ffffffffffff").status_code, 404)
+        self.assertEqual(self.delete(download_id="nothex!").status_code, 400)
+        self.assertEqual(self.delete(sha="xyz").status_code, 400)
+        self.session.downloads[1]["status"] = "failed"
+        self.assertEqual(self.delete().status_code, 404)
+        self.assertTrue(self.file.exists())
+
+    def test_a_session_that_is_not_live_is_refused(self) -> None:
+        del self.manager.sessions["s1"]
+        self.assertEqual(self.delete().status_code, 404)
+        self.assertTrue(self.file.exists())
