@@ -35,6 +35,8 @@ data class References(
     /** People the computer doesn't know; any other unnamed one is still being read. */
     val missingUsers: Set<String> = emptySet(),
     val words: ReferenceWords = ReferenceWords.English,
+    /** The Surfaces the person is in, by ID, as named ("" unnamed): a Surface link opens one. */
+    val surfaces: Map<String, String> = emptyMap(),
 ) {
     /** Something a reference can open: a conversation. */
     data class Entity(val label: String, val agentId: String)
@@ -97,9 +99,30 @@ data class References(
                     else -> View.Mention("@…", me = reference.id == me)
                 }
             }
+            "surface" -> surfaces[reference.id]?.let { name -> View.Link(name.trim().ifEmpty { words.untitledSurface }) } ?: inert
             // Projects aren't on this phone; services open nowhere yet.
             else -> inert
         }
+    }
+
+    /**
+     * The reference a link to [url] names when this connection holds it, read
+     * from the address (a Happy URL or a share link; [here] says which
+     * installation is this connection's): an in-app link, desktop's `link`
+     * view. Null for another server's, for what isn't held (archived, a
+     * project, a person) and for any other address.
+     */
+    fun resolve(url: String, here: (String) -> Boolean): HappyReferences.Reference? {
+        val (reference, instanceId) = HappyReferences.reference(url) ?: return null
+        if (instanceId != null && !here(instanceId)) return null
+        return reference.takeIf { view(it) is View.Link }
+    }
+
+    /** Whether a link to [url] names a conversation [resolve] finds whose work runs now, one of [busy]'s agent IDs: its label shimmers. */
+    fun busy(url: String, here: (String) -> Boolean, busy: Set<String>): Boolean {
+        if (busy.isEmpty()) return false
+        val reference = resolve(url, here) ?: return false
+        return entity(reference)?.agentId in busy
     }
 
     /** The conversation a reference opens, for an agent or a workspace. */
@@ -126,13 +149,25 @@ data class References(
     }
 
     companion object {
-        /** Whether [text] may hold a reference at all: most messages don't, and are never parsed for one. */
-        fun mayHold(text: String): Boolean = text.contains("<happy-")
+        /** Whether [text] may hold a reference at all, a tag, a Happy link or a share link: most messages don't, and are never parsed for one. */
+        fun mayHold(text: String): Boolean =
+            text.contains("<happy-") || text.contains("happy:", ignoreCase = true) || text.contains("happy-file:", ignoreCase = true) ||
+                text.contains(com.slopus.happy.agent.HappyShareLinks.PREFIX)
 
         /**
          * `messageReferenceEntities`, from the bots and tasks [catalog] holds,
          * each owner's agent as the catalog has it newest, with its active subtasks.
          */
+        /**
+         * The Surfaces a reference can name, by ID, as named: the ones the
+         * person is in and hasn't archived (desktop's catalog names, home's list).
+         */
+        fun surfaces(catalog: AgentCatalog): Map<String, String> = catalog.surfaces.values
+            .filter { it["status"].str != "archived" && (it["archivedAt"] ?: JsonNull) == JsonNull }
+            .filter { surface -> (surface["members"] as? JsonArray).orEmpty().any { (it as? JsonObject)?.get("userId").str == catalog.userId } }
+            .mapNotNull { surface -> surface["id"].str?.let { it to surface["name"].str.orEmpty() } }
+            .toMap()
+
         fun entities(catalog: AgentCatalog): Pair<Map<String, Entity>, Map<String, Entity>> {
             val agents = HashMap<String, Entity>()
             val workspaces = HashMap<String, Entity>()
@@ -215,6 +250,8 @@ data class ReferenceWords(
     /** By kind; [unavailableReference] for any other. */
     val unavailableKinds: Map<String, String>,
     val unavailableReference: String,
+    /** A Surface with no name (desktop's). */
+    val untitledSurface: String = "Untitled",
 ) {
     fun unavailable(kind: String): String = unavailableKinds[kind] ?: unavailableReference
 

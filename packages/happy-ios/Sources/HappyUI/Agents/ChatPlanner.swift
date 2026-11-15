@@ -223,22 +223,33 @@ actor ChatPlanner {
             // the accent bubble at the right, its photos under it, whole.
             // Only a ludicrous one, past `foldLines`, is cut there until
             // tapped open.
-            // A file that is no picture or video is named under the words.
+            // A file on its way that is no picture or video is named under
+            // the words; once the computer holds it, it is a card that opens it.
             let named = item.pieces.compactMap { piece -> String? in
                 guard case .sentFile(let file) = piece, !file.isVisual else { return nil }
                 return "📎 \(file.name)"
             }
+            let files = item.pieces.compactMap { piece -> Media? in
+                guard case .file(let media) = piece, media.attachment != nil else { return nil }
+                return media
+            }
             let written = ([text] + named).filter { !$0.isEmpty }.joined(separator: "\n\n")
-            let string = ChatTextStyles.text.string(written, color: Palette.userMessageText, in: environment)
+            // Its links read as desktop's: under what they name now.
+            var segments = text.isEmpty ? [] : HappyReferences.segments(item.text, instanceId: key.references.instanceId, view: key.references.view)
+            if !named.isEmpty { segments.append(.text((text.isEmpty ? "" : "\n\n") + named.joined(separator: "\n\n"))) }
+            let string = ChatSpans.plain(segments, style: ChatTextStyles.text, color: Palette.userMessageText, in: environment, links: key.references)
             let body = written.isEmpty ? nil : MeasuredText(string)
             let preview = MeasuredText(string, maxLines: M.foldLines)
             let toggles = opened ? Strings.showLess : Strings.showFull
             let control = MeasuredText(ChatTextStyles.fold.string(toggles, color: Palette.textSecondary, in: environment))
-            let pictures: [(id: String, image: MediaFlow.Image, isVideo: Bool)] = item.pieces.compactMap {
-                switch $0 {
-                case .picture(let id, _, let data): return (id, Self.pictureSize(data), false)
-                case .sentFile(let file) where file.isVisual: return (file.id, Self.fileSize(file), file.isVideo)
-                default: return nil
+            // An attachment the computer holds is read as a tool's media is,
+            // its thumbhash first; the sender's own is already here.
+            let pictures: [(id: String, image: MediaFlow.Image, isVideo: Bool, attached: Media?)] = item.pieces.flatMap { piece -> [(id: String, image: MediaFlow.Image, isVideo: Bool, attached: Media?)] in
+                switch piece {
+                case .picture(let id, _, let data): return [(id, Self.pictureSize(data), false, nil)]
+                case .sentFile(let file) where file.isVisual: return [(file.id, Self.fileSize(file), file.isVideo, nil)]
+                case .gallery(let media, _): return media.filter { $0.attachment != nil }.map { ($0.key, Self.layoutItem($0).image, $0.isVideo, $0) }
+                default: return []
                 }
             }
             var failure = false
@@ -263,7 +274,7 @@ actor ChatPlanner {
                 fold: body.map { _ in .init(preview: preview.measurable, control: control.measurable, opened: opened, lineHeight: ChatTextStyles.text.lineHeight ?? 24) },
                 // A refusal is the red mark in the slot, as Telegram's: no
                 // line under the bubble, so the row never grows when a send fails.
-                pictures: pictures.map(\.image), showsStatus: false,
+                pictures: pictures.map(\.image), cards: files.count, showsStatus: false,
                 delivery: status, trailing: body?.trailing
             )
             var items: [ChatDrawItem] = []
@@ -272,16 +283,25 @@ actor ChatPlanner {
                 items.append(.box(ChatBox(frame: bubble, fill: Palette.userBubble, radius: M.bubbleRadius)))
                 if layout.foldControl != nil { hits.append(ChatHit(frame: bubble, action: .toggleTool(item.id))) }
                 else if failure { hits.append(ChatHit(frame: bubble, action: .retry(localId: item.id))) }
-                hits.append(ChatHit(frame: bubble, action: .copyMenu(text), hold: true))
+                // Copied exactly as written.
+                hits.append(ChatHit(frame: bubble, action: .copyMenu(item.text), hold: true))
             }
             var selectable: [ChatSelectable.Text] = []
             if let body, let frame = layout.text {
                 let drawn = (layout.cut ? preview : body).layout(for: frame)
                 items.append(.text(drawn, frame))
+                items += ChatSheen.items(drawn, frame: frame, ground: Palette.userBubble)
                 selectable.append(.init(layout: drawn, frame: frame))
             }
             if let frame = layout.foldControl { items.append(.text(control.layout(for: frame), frame)) }
             for (picture, frame) in zip(pictures, layout.pictures) {
+                if let media = picture.attached {
+                    items.append(.media(ChatMedia(key: media.key, isVideo: media.isVideo, thumbhash: media.item.thumbhash, label: Strings.media(isVideo: media.isVideo, name: media.item.name)), frame: frame))
+                    hits.insert(ChatHit(frame: frame, action: .openMedia(media.key)), at: 0)
+                    let ring = media.isVideo ? MediaStatusLayout.badgeHit(in: frame) : ChatUpload.ring(in: frame).insetBy(dx: -8, dy: -8)
+                    hits.insert(ChatHit(frame: ring, action: .toggleDownload(media.key)), at: 0)
+                    continue
+                }
                 let key = MediaLoader.sentKey(picture.id)
                 let upload = uploading ? ChatUpload(key: picture.id, failed: failure) : nil
                 items.append(.media(ChatMedia(key: key, isVideo: picture.isVideo, thumbhash: nil, label: picture.isVideo ? Strings.video : Strings.picture, upload: upload), frame: frame))
@@ -295,6 +315,15 @@ actor ChatPlanner {
                     hits.append(ChatHit(frame: frame, action: .openMedia(key)))
                 }
             }
+            // A file's card, as an agent's: its ring reads or pauses it, the
+            // rest opens it once here.
+            for (file, frame) in zip(files, layout.cards) {
+                let drawn = ChatMediaPlan.draw(ChatMediaPlan.card(file: file), in: frame, environment: environment)
+                items += drawn.items
+                hits.insert(drawn.hit, at: 0)
+                let chip = ResultCardLayout(frame: frame, opens: true).chip
+                hits.insert(ChatHit(frame: chip.insetBy(dx: -8, dy: -8), action: .toggleDownload(file.key)), at: 0)
+            }
             // The mark says where it is, so the bubble is never dimmed.
             if let box = layout.delivery {
                 if let pill = layout.deliveryPill {
@@ -304,12 +333,12 @@ actor ChatPlanner {
                 items += placed.items
                 if failure { hits.insert(ChatHit(frame: placed.mark.insetBy(dx: -8, dy: -8), action: .retry(localId: item.id)), at: 0) }
             }
-            let label = [text, failure ? Strings.sendFailed : ""].filter { !$0.isEmpty }.joined(separator: ", ")
+            let label = ([text] + files.map(\.item.name) + [failure ? Strings.sendFailed : ""]).filter { !$0.isEmpty }.joined(separator: ", ")
             let shape = layout.bubble.map { ChatBox(frame: $0, fill: Palette.userBubble, radius: M.bubbleRadius) }
-                ?? ChatBox(frame: layout.pictures.reduce(CGRect.null) { $0.union($1) })
+                ?? ChatBox(frame: (layout.pictures + layout.cards).reduce(CGRect.null) { $0.union($1) })
             let flight = ChatRowFlight(bubble: shape, text: layout.text, status: layout.delivery, media: !pictures.isEmpty)
             let selection = layout.bubble.flatMap { bubble in
-                selectable.isEmpty ? nil : ChatSelectable(texts: selectable, whole: text, frame: bubble, card: false)
+                selectable.isEmpty ? nil : ChatSelectable(texts: selectable, whole: item.text, frame: bubble, card: false)
             }
             return ChatRowPlan(id: item.id, size: layout.size, items: items, hits: hits, accessibilityLabel: label, toggles: layout.foldControl == nil ? nil : toggles, flight: flight, mine: true, selection: selection)
         case .collaborator, .failure, .tool, .turnEnd, .trace, .question:
@@ -349,12 +378,10 @@ actor ChatPlanner {
                 drafts.append(.liveBrowser(link))
                 parts.append(.page(height: Self.liveBrowserHeight))
             case .text(let text):
-                let resolved = HappyReferences.markdown(text, instanceId: key.references.instanceId, files: key.references.opens, view: key.references.view)
-                let server = key.server
-                let references = key.references
+                let resolved = HappyReferences.markdown(text, instanceId: key.references.instanceId, view: key.references.view)
                 let markdown = MarkdownPiece(
                     Markdown.joiningSoftBreaks(resolved), color: Palette.text, diagrams: ChatMermaidHeights(row: item.id), syntax: syntax, in: environment,
-                    body: ChatTextStyles.text, header: ChatTextStyles.header, opens: { ChatLinks.opens($0, server: server) && (ChatLinks.file($0).map(references.opens) ?? true) }
+                    body: ChatTextStyles.text, header: ChatTextStyles.header, links: key.references, server: key.server, copied: text
                 )
                 drafts.append(.markdown(markdown))
                 parts.append(.markdown(markdown.blocks))
@@ -461,7 +488,7 @@ actor ChatPlanner {
         // Each picture and recording reads as itself (`ChatMediaView`).
         return ChatRowPlan(
             id: item.id, size: layout.size, items: items, hits: hits, accessibilityLabel: spoken.joined(separator: "\n\n"), proposals: proposals,
-            revealable: revealable, selection: .covering(items, texts: selectable, whole: text)
+            revealable: revealable, selection: .covering(items, texts: selectable, whole: item.text)
         )
     }
 
@@ -554,9 +581,9 @@ actor ChatPlanner {
         let verbText = verb.map { ChatTextStyles.activityVerb.string($0, color: Palette.textSecondary, lineBreakMode: .byTruncatingTail, in: environment) }
         let lineText = ChatTextStyles.activityText.string(line, color: Palette.text, lineBreakMode: .byTruncatingTail, in: environment)
         let markdown = opened && opens ? MarkdownPiece(
-            Markdown.joiningSoftBreaks(HappyReferences.markdown(body, instanceId: key.references.instanceId, files: key.references.opens, view: key.references.view)), color: Palette.textSecondary,
+            Markdown.joiningSoftBreaks(HappyReferences.markdown(body, instanceId: key.references.instanceId, view: key.references.view)), color: Palette.textSecondary,
             diagrams: ChatMermaidHeights(row: item.id), syntax: syntax, in: environment,
-            body: ChatTextStyles.activityBody, header: ChatTextStyles.activityHeader
+            body: ChatTextStyles.activityBody, header: ChatTextStyles.activityHeader, links: key.references, server: key.server, copied: body
         ) : nil
         let layout = AgentMessageLayout(
             width: key.width, maxContentWidth: key.maxContentWidth,

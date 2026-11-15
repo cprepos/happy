@@ -73,143 +73,149 @@ public enum HappyReferences {
     /// Streaming text without a trailing tag still arriving, held back
     /// rather than flashed as raw text.
     public static func droppingPartialTag(_ text: String) -> String {
+        let text = droppingPartialShareLink(text)
         guard text.contains("<") else { return text }
         let units = Array(text.utf16)
         let end = scan(units, streaming: true).end
         return end == units.count ? text : String(decoding: units[..<end], as: UTF16.self)
     }
 
+    /// A link's words and the start of its destination, `[](https://link.happy.p`.
+    private static let partialLink = try! NSRegularExpression(pattern: #"\[(?:[^\]\\\n]|\\.)*\]\(([^\s()]*)$"#)
+
+    /// Streaming text without a trailing share link still arriving: its
+    /// words read as a name only once its address is whole (desktop's
+    /// `shareLinkPartialHold`).
+    static func droppingPartialShareLink(_ text: String) -> String {
+        guard text.contains("](") else { return text }
+        let ns = text as NSString
+        guard let match = partialLink.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)) else { return text }
+        let destination = ns.substring(with: match.range(at: 1))
+        let origin = HappyShareLink.origin + "/#"
+        return origin.hasPrefix(destination) || destination.hasPrefix(origin) ? ns.substring(to: match.range.location) : text
+    }
+
     // MARK: Reading
 
-    /// The scheme of the links written for references. Minted once per
-    /// launch, as desktop's is, so a link an agent wrote by hand never
-    /// passes for one: only a tag the grammar accepted becomes one.
-    public static let linkPrefix = "happy-reference-\(UUID().uuidString.prefix(8).lowercased()):"
-
-    /// `kind/id`, and `/version` when the reference pins one.
-    public static func link(_ reference: Reference) -> String {
-        "\(linkPrefix)\(reference.kind)/\(reference.id)" + (reference.version.map { "/\($0)" } ?? "")
-    }
-
-    /// A mention's link: `user/id`, and `/me` when it names the reader.
-    public static func mentionLink(_ reference: Reference, me: Bool) -> String {
-        "\(linkPrefix)user/\(reference.id)" + (me ? "/me" : "")
-    }
-
-    /// The person a mention's link names, and whether it is the reader.
-    public static func mention(link: String) -> (id: String, me: Bool)? {
-        guard link.hasPrefix(linkPrefix) else { return nil }
-        let parts = link.dropFirst(linkPrefix.count).split(separator: "/", omittingEmptySubsequences: false).map(String.init)
-        guard parts.count == 2 || (parts.count == 3 && parts[2] == "me"), parts[0] == "user", isID(parts[1]) else { return nil }
-        return (parts[1], parts.count == 3)
-    }
-
-    /// The reference a link written by `markdown` points at.
-    public static func reference(link: String) -> Reference? {
-        guard link.hasPrefix(linkPrefix) else { return nil }
-        let parts = link.dropFirst(linkPrefix.count).split(separator: "/", omittingEmptySubsequences: false).map(String.init)
-        guard parts.count == 2 || parts.count == 3, isID(parts[1]) else { return nil }
-        var reference = Reference(kind: parts[0], id: parts[1])
-        if parts.count == 3 {
-            guard isVersion(parts[2]) else { return nil }
-            reference.version = Int(parts[2])
-        }
-        return reference
+    /// The Happy link a tag stands for once it is read, `happy://agents/a1`;
+    /// nil for a kind or shape no link expresses.
+    public static func url(_ reference: Reference) -> String? {
+        guard let kind = HappyLink.Kind(rawValue: reference.kind) else { return nil }
+        return HappyLink(.reference(.init(kind: kind, id: reference.id, version: reference.version, workspaceId: reference.workspaceId))).url
     }
 
     /// The Markdown a message is drawn from (desktop's
-    /// `messageReferencesResolve`): a reference that opens is a link with
-    /// its name, any other its words; a kind this build doesn't know is
-    /// never asked about.
-    /// Happy links written as Markdown (`[label](happy://agents/…)`) read
-    /// the same way, the live name winning over the written label, which
-    /// stands in while the name is read and for what can't be looked up.
-    /// `instanceId` is the installation the conversation is on: a link to
-    /// another one is its label as words, as is a file link `files` says
-    /// can't be opened here.
-    public static func markdown(
-        _ text: String, instanceId: String? = nil, files: (HappyLink.File) -> Bool = { _ in true }, view: (Reference) -> References.View
-    ) -> String {
+    /// `messageReferencesResolve`): a Happy link, `happy://` or a share
+    /// link, reads as the live name of what it names, whatever words it was
+    /// written with (they go stale on a rename), or as the placeholder
+    /// where nothing here names it (gone, archived, another server's); a
+    /// person as "@" and their name. Its address stays exactly as written,
+    /// so where it goes is read from it as it is drawn (`ChatLinks.kind`).
+    /// A file or settings link keeps its words, its path or "Settings"
+    /// where it has none. A tag becomes a link the same way, or its words
+    /// where it opens nothing; a kind this build doesn't know is never
+    /// asked about. A bare address stays as written. `instanceId` is the
+    /// conversation's installation. An artifact's document keeps the words
+    /// a link was written with (`keepingLabels`): only an empty `[]` reads
+    /// as the name or the placeholder.
+    public static func markdown(_ text: String, instanceId: String? = nil, keepingLabels: Bool = false, view: (Reference) -> References.View) -> String {
         let linked = HappyMarkdownLinks.replace(text) { match in
-            guard let link = match.link else { return nil }
-            // A button stays one, which the screen draws as its words where
-            // it opens nothing, in its place among the others.
-            func words(_ name: String) -> String {
-                guard match.button, let url = link.url else { return name }
-                return "[\(name)](\(url) \"button\")"
-            }
-            if let named = link.instanceId, named != instanceId { return words(Self.words(match, link)) }
-            if case .file(let file) = link.target, !files(file) { return words(Self.words(match, link)) }
-            let reference: Reference
-            switch link.target {
-            case .settings, .file:
-                // Opened by the screen as written; one naming this installation reads as the plain form.
-                guard link.instanceId != nil, let url = HappyLink(link.target).url else { return nil }
-                return "[\(match.label)](\(url)\(match.button ? " \"button\"" : ""))"
-            case .reference(let named):
-                reference = Reference(kind: named.kind.rawValue, id: named.id, version: named.version, workspaceId: named.workspaceId)
-            }
-            let shown = view(reference)
-            let written = label(match.label)
-            let name: String
-            switch shown {
-            case .link(_, true) where !written.isEmpty: name = written
-            case .text(let words) where words == placeholder(reference) && !written.isEmpty: name = written
-            default: name = label(shown.label).isEmpty ? label(placeholder(reference)) : label(shown.label)
-            }
+            guard !match.source.hasPrefix("!") else { return nil }
             let title = match.button ? " \"button\"" : ""
-            switch shown {
-            case .link: return "[\(name)](\(self.link(reference))\(title))"
-            case .mention(_, let me): return "[\(name)](\(mentionLink(reference, me: me)))"
-            case .text: return words(name)
-            }
+            return "[\(label(words(match, instanceId: instanceId, keepingLabels: keepingLabels, view: view)))](\(match.url)\(title))"
         }
         return replace(linked) { reference in
             let shown = knownKinds.contains(reference.kind) ? view(reference) : .text(placeholder(reference))
             let name = label(shown.label).isEmpty ? label(placeholder(reference)) : label(shown.label)
             switch shown {
-            case .link: return "[\(name)](\(link(reference)))"
-            case .mention(_, let me): return "[\(name)](\(mentionLink(reference, me: me)))"
+            case .link, .mention: return url(reference).map { "[\(name)](\($0))" } ?? name
             case .text: return name
             }
         }
     }
 
-    /// The same words as plain text, for what is read aloud or copied
+    /// The same words as plain text, for what is read aloud
     /// (`messageReferencesPlainText`).
     public static func plain(_ text: String, instanceId: String? = nil, view: (Reference) -> References.View) -> String {
-        let linked = HappyMarkdownLinks.replace(text) { match in
-            guard let link = match.link else { return label(match.label) }
-            if let named = link.instanceId, named != instanceId { return words(match, link) }
-            guard case .reference(let named) = link.target else {
-                let written = label(match.label)
-                if !written.isEmpty { return written }
-                if case .file(let file) = link.target { return file.path }
-                return "Settings"
-            }
-            let reference = Reference(kind: named.kind.rawValue, id: named.id, version: named.version, workspaceId: named.workspaceId)
-            let shown = view(reference)
-            let written = label(match.label)
-            switch shown {
-            case .link(_, true) where !written.isEmpty: return written
-            case .text(let words) where words == placeholder(reference) && !written.isEmpty: return written
-            default: return shown.label
-            }
-        }
+        let linked = HappyMarkdownLinks.replace(text) { words($0, instanceId: instanceId, view: view) }
         return replace(linked) { reference in
             knownKinds.contains(reference.kind) ? view(reference).label : placeholder(reference)
         }
     }
 
-    /// A link to what this conversation's installation doesn't hold: its
-    /// label, or words for what it names.
-    static func words(_ match: HappyMarkdownLinks.Match, _ link: HappyLink) -> String {
+    /// One run of a person's message as typed: its own words, or words
+    /// that link, `link` being the address as written or a tag's Happy link.
+    public enum PlainSegment: Equatable, Sendable {
+        case text(String)
+        case link(String, link: String)
+    }
+
+    /// A person's message split around the links it holds (desktop's
+    /// `messagePlainTextSegments`): a Happy link under what it names now
+    /// (`markdown`), a share link written out bare as its address, and a
+    /// tag that opens, or names a person, under its live name; any other
+    /// tag its words. Joined, the runs read exactly as `plain` does.
+    public static func segments(_ text: String, instanceId: String? = nil, view: (Reference) -> References.View) -> [PlainSegment] {
+        var out: [PlainSegment] = []
+        func add(_ words: String) {
+            guard !words.isEmpty else { return }
+            if case .text(let last)? = out.last { out[out.count - 1] = .text(last + words) } else { out.append(.text(words)) }
+        }
+        func shared(_ words: String) {
+            let units = Array(words.utf16)
+            var position = 0
+            for found in HappyShareLink.bare(in: words) {
+                add(String(decoding: units[position..<found.range.location], as: UTF16.self))
+                out.append(.link(found.url, link: found.url))
+                position = found.range.location + found.range.length
+            }
+            add(String(decoding: units[position...], as: UTF16.self))
+        }
+        func tags(_ chunk: String) {
+            guard chunk.contains("<") else { return shared(chunk) }
+            for segment in parse(chunk) {
+                switch segment {
+                case .text(let words): shared(words)
+                case .reference(let reference, _):
+                    let shown = knownKinds.contains(reference.kind) ? view(reference) : .text(placeholder(reference))
+                    switch shown {
+                    case .link, .mention:
+                        if let url = url(reference) { out.append(.link(shown.label, link: url)) } else { add(shown.label) }
+                    case .text: add(shown.label)
+                    }
+                }
+            }
+        }
+        let units = Array(text.utf16)
+        var position = 0
+        for match in HappyMarkdownLinks.matches(text) {
+            tags(String(decoding: units[position..<match.start], as: UTF16.self))
+            position = match.end
+            let words = words(match, instanceId: instanceId, view: view)
+            if match.link != nil { out.append(.link(words, link: match.url)) } else { add(words) }
+        }
+        tags(String(decoding: units[position...], as: UTF16.self))
+        return out
+    }
+
+    /// The words a Happy link reads as (desktop's `linkPlainWords`): what
+    /// it names now, or the placeholder; a file or settings link its own
+    /// words, else its path or "Settings"; a malformed one the
+    /// placeholder. With `keepingLabels`, any words it was written with.
+    static func words(_ match: HappyMarkdownLinks.Match, instanceId: String?, keepingLabels: Bool = false, view: (Reference) -> References.View) -> String {
         let written = label(match.label)
-        if !written.isEmpty { return written }
+        if keepingLabels, !written.trimmingCharacters(in: .whitespaces).isEmpty { return written }
+        // A malformed one names nothing, whatever its words (desktop's rule).
+        guard let link = match.link else { return "an unavailable reference" }
         switch link.target {
-        case .file(let file): return label(file.path)
-        case .settings: return "Settings"
-        case .reference(let named): return placeholder(Reference(kind: named.kind.rawValue, id: named.id))
+        case .file(let file): return written.isEmpty ? file.path : written
+        case .settings: return written.isEmpty ? "Settings" : written
+        case .reference(let named):
+            let reference = Reference(kind: named.kind.rawValue, id: named.id, version: named.version, workspaceId: named.workspaceId)
+            // Another installation's isn't looked up here.
+            if let other = link.instanceId, other != instanceId { return placeholder(reference) }
+            let name = view(reference).label.trimmingCharacters(in: .whitespacesAndNewlines)
+            return name.isEmpty ? placeholder(reference) : name
         }
     }
 

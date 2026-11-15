@@ -511,7 +511,8 @@ private fun titleStart(row: AgentFeedRow): Dp {
 
 /**
  * One conversation, on one line: a bot's or task's 30 mark, the title 17/22
- * (desktop's sheen while it runs, [AgentFeedRow.Conversation.running]),
+ * (desktop's sheen while it runs, [AgentFeedRow.Conversation.running];
+ * cut with its last 12 fading where it runs out of room, [com.slopus.happy.ui.components.TitleFade]),
  * and a 10 dot 12 after it while it waits or is unread. No time. The whole
  * row opens it.
  */
@@ -564,6 +565,7 @@ private fun ConversationRow(row: AgentFeedRow.Conversation, onOpen: (String) -> 
                     baseColor = colors.text,
                     highlightColor = ShimmerSpec.sheen(colors.text, colors.surfaceHigh),
                     shimmering = row.running,
+                    fade = true,
                     modifier = if (row.owner == null) Modifier.wrapContentHeight(unbounded = true).agentTitleBaseline() else Modifier,
                 )
                 // A teammate's task: whose it is, as search's detail line.
@@ -613,7 +615,7 @@ private fun FeedPlaceRow(unread: Int, onClick: () -> Unit) {
     PlaceRow(stringResource(R.string.feed_title), { TileMark(Octicon.Pulse, RowTile.Red) }, onClick, count = count, countLabel = label)
 }
 
-/** Artifacts, the Feed, or a Surface: its [mark] (a glyph on its tile), and its name; bold with a [count] after it while something in it is unread. */
+/** Artifacts, the Feed, or a Surface: its [mark] (a glyph on its tile), and its name, its end fading where it runs out of room ([com.slopus.happy.ui.components.TitleFade]); bold with a [count] after it while something in it is unread. */
 @Composable
 private fun PlaceRow(name: String, mark: @Composable () -> Unit, onClick: () -> Unit, onLongClick: (() -> Unit)? = null, count: Int? = null, countLabel: String? = null) {
     Row(
@@ -624,12 +626,13 @@ private fun PlaceRow(name: String, mark: @Composable () -> Unit, onClick: () -> 
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(modifier = Modifier.size(AgentHomeSpec.mark).testTag(AgentHomeTags.ROW_MARK)) { mark() }
-        Text(
+        ShimmerText(
             name,
             style = if (count != null) AgentHomeSpec.title.copy(fontWeight = FontWeight.SemiBold) else AgentHomeSpec.title,
-            color = HappyTheme.colors.text,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
+            baseColor = HappyTheme.colors.text,
+            highlightColor = HappyTheme.colors.text,
+            shimmering = false,
+            fade = true,
             modifier = Modifier
                 .padding(start = AgentHomeSpec.markGap)
                 .weight(1f)
@@ -653,8 +656,9 @@ private fun PlaceRow(name: String, mark: @Composable () -> Unit, onClick: () -> 
 }
 
 /**
- * A project or a worktree: its name, shimmering while work runs inside it,
- * and a project's mark before it ([FolderMarkView]). It opens nothing.
+ * A project or a worktree: its name, shimmering while work runs inside it
+ * and fading at its end where it runs out of room ([com.slopus.happy.ui.components.TitleFade]), and a
+ * project's mark before it ([FolderMarkView]). It opens nothing.
  */
 @Composable
 private fun FolderRow(row: AgentFeedRow.Folder) {
@@ -682,6 +686,7 @@ private fun FolderRow(row: AgentFeedRow.Folder) {
                 baseColor = colors.text,
                 highlightColor = ShimmerSpec.sheen(colors.text, colors.surfaceHigh),
                 shimmering = row.running,
+                fade = true,
                 modifier = Modifier.wrapContentHeight(unbounded = true).agentTitleBaseline(),
             )
         }

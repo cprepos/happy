@@ -35,11 +35,12 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
     private let context: AppContext
     private let account: AccountSession
     /// Read by `AppCoordinator` to skip reopening the chat a tapped
-    /// notification names when it is already on top.
-    let sessionId: String
+    /// notification names when it is already on top. The tab on screen: a
+    /// tab switch shows another in place (`switchChat`).
+    private(set) var sessionId: String
     /// The session the screen shows: `sessionId`, or for a `pending-chat:`
     /// screen the session it became once the machine answered. The route
-    /// keeps the stand-in's id for the screen's whole life.
+    /// keeps the stand-in's id for as long as its tab is shown.
     private(set) var chatId: String
     private lazy var services = Self.services(account: account, context: context, sessionId: sessionId)
 
@@ -86,6 +87,9 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
     /// The composer stays hidden until its draft is restored, its taps
     /// caught meanwhile (`ChatComposerReveal`).
     private lazy var composerReveal = ChatComposerReveal(composer: composer)
+    /// The composer of the tab just left, shown in the new one's place
+    /// until that one has its draft (`replaceComposer`).
+    private var retiringComposer: (any ChatComposerView)?
     /// The bars above the composer, top to bottom: how to bring back a
     /// session that has stopped, the goal, a request the chat can't show
     /// inline, what a Happy Agent session has running.
@@ -181,7 +185,9 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
     /// Derived from the account's newest home snapshot during the
     /// transition (`seed`), for the first observations to start from.
     private var seededSession: ChatSessionState?
-    private var seededCheckout: WorktreeCheckout??
+    /// The checkout the first observation of the chat the header speaks
+    /// for (`id`) starts from.
+    private var seededCheckout: (id: String, checkout: WorktreeCheckout??)?
     /// How often the store's record changed what the screen drew: none
     /// while it agrees with the seed.
     private(set) var sessionUpdates = 0
@@ -253,7 +259,10 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         // projection, checkout grouping, SQL, or composer is made on a tap.
         let home = account.homeFeed.latest
         let cached = home?.sessions.first { $0.id == sessionId }
-        navigationItem.title = cached?.title ?? Strings.Session.newChat
+        // Grouped by project the header names the chat's checkout from its
+        // first frame, never the chat, which its tab names.
+        let named = home.flatMap { AccountSettings($0.settings).sessionListGrouping == .project ? cached.flatMap(WorktreeCheckout.named) : nil }
+        navigationItem.title = named?.headerTitle(metadata: cached?.metadata, gitStatus: nil) ?? cached?.title ?? Strings.Session.newChat
         // The capsule is in the bar as the push starts, the name and status
         // on it, as the agent chat's is; nothing is measured to show it.
         sessionStatus = cached.map { SessionComposerView.headerStatus(record: $0, now: home?.presenceNow) }
@@ -608,6 +617,8 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
             }
             ultraKeyboard = nil
             construction?.cancel()
+            listCoverLink?.invalidate()
+            listCoverLink = nil
             opening?.cancel()
             if contentInstalled { endChat() }
             pendingTask.task?.cancel()
@@ -661,7 +672,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
 
     /// Whether a change may animate: not before the screen's first frame.
     private var isShown: Bool {
-        contentInstalled && openingReport != nil && isViewLoaded && view.window != nil && transitionCoordinator == nil
+        contentInstalled && openingReport != nil && !switchHeld && isViewLoaded && view.window != nil && transitionCoordinator == nil
     }
 
     private static func services(account: AccountSession, context: AppContext, sessionId: String) -> ChatServices {
@@ -681,7 +692,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
     /// start from it and change nothing while the store agrees.
     private func seed(_ seed: ChatServices.Seed) {
         seededSession = seed.session
-        seededCheckout = .some(seed.checkout)
+        seededCheckout = (id: sessionId, checkout: .some(seed.checkout))
         // The header was set up before, unseeded: its checkout is observed
         // again, from the seed.
         checkoutObservation?.cancel()
@@ -938,9 +949,13 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         let band = safeArea.sides(of: size)
         measureLiveBrowserLine()
         let composerHeight = composer.composerHeight(fitting: band.width)
-        // Restored while answering: it shows in this frame.
+        // Restored while answering: it shows in this frame, in the place
+        // of the tab left's.
+        retireComposer()
         composerReveal.heightRead()
-        let session = composer as? SessionComposerView
+        // Until then the tab left's keeps the dock as it was.
+        let shownComposer = retiringComposer ?? composer
+        let session = shownComposer as? SessionComposerView
         let screen = LegacyChatScreenLayout(.init(
             size: size,
             safeArea: safeArea,
@@ -948,8 +963,8 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
             // is down, and the layout never goes below that.
             keyboardTop: ultraKeyboard?.keyboardTop(guideTop: keyboardTracker.frame.minY) ?? keyboardTracker.frame.minY,
             accessories: dockBars.map { $0.inset ? .inset($0.measurable) : .fullWidth($0.measurable) },
-            composerHeight: composerHeight,
-            composerCardOffset: composer.cardOffset,
+            composerHeight: retiringComposer?.composerHeight(fitting: band.width) ?? composerHeight,
+            composerCardOffset: shownComposer.cardOffset,
             composerCard: session?.cardFrame(fitting: band.width),
             browser: session == nil ? nil : liveDock.indicator.textSize,
             maxContentWidth: maxContentWidth,
@@ -976,19 +991,26 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         // an empty chat sits between the bar and the dock.
         placeholder.setLayoutFrame(dock.isHidden ? view.bounds : screen.placeholder)
         if composing != nil {
-            // Centred between the bar and the dock, which rides the
-            // keyboard: the panel moves with it, in the same pass.
+            // Centred between the bar and the dock where the tallest keyboard
+            // seen leaves it, so the keyboard coming or going moves nothing
+            // (Kirill).
             let area = screen.placeholder
             composeRoom = area
-            let layout = composeTarget.layout(width: size.width, sides: safeArea, top: area.minY, bottom: area.maxY)
-            composeTarget.place(layout)
-            // A bot's or a task's picture never goes: short of room it runs up under the bar.
-            composeTarget.isHidden = !layout.fits && layout.art == nil
+            let keyboardTop = ultraKeyboard?.keyboardTop(guideTop: keyboardTracker.frame.minY) ?? keyboardTracker.frame.minY
+            let reserve = KeyboardReserve.shared.hold(size.height - keyboardTop, height: size.height)
+            // The dock rests on the safe area's bottom with the keyboard down.
+            let dockFoot = min(keyboardTop, size.height - safeArea.bottom)
+            let bottom = NewWorkLayout.heldBottom(bottom: area.maxY, keyboardTop: dockFoot, height: size.height, reserve: reserve)
+            composeTarget.place(composeTarget.layout(width: size.width, sides: safeArea, top: area.minY, bottom: bottom))
         }
         header.maxWidth = ChatTitleLayout.maxWidth(barWidth: band.width)
         dock.setLayoutFrame(screen.dock)
         for (bar, frame) in zip(dockBars, screen.accessories) { bar.view.setLayoutFrame(frame) }
-        composer.setLayoutFrame(screen.composer)
+        shownComposer.setLayoutFrame(screen.composer)
+        if shownComposer !== composer {
+            // Measured where it will be, out of sight.
+            composer.setLayoutFrame(CGRect(origin: screen.composer.origin, size: CGSize(width: screen.composer.width, height: composerHeight)))
+        }
         composerReveal.layout(composerFrame: screen.composer)
         liveDock.indicator.place(screen.browser)
         if let session {
@@ -1250,7 +1272,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         // under it holds its tabs. Under the name is the status, as in the
         // agent chat: the branch and line counts are on session info.
         if let checkout {
-            title = checkout.workspaceName ?? model.subtitle ?? checkout.projectName
+            title = checkout.headerTitle(metadata: headerRecord?.metadata, gitStatus: gitStatus)
         }
         if isComposing || (awaitingRecord && session.record == nil) { title = Strings.Session.newChat }
         navigationItem.title = title
@@ -1298,7 +1320,9 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         let id = headerSessionId
         guard id != gitSessionId else { return }
         gitSessionId = id
-        gitStatus = nil
+        // Another tab of the checkout on screen shares its status: the
+        // header keeps it until the new observation answers.
+        if checkout == nil { gitStatus = nil }
         gitTask.task = Task { [weak self] in
             for await status in await git.observe(sessionId: id) {
                 guard let self, !Task.isCancelled else { return }
@@ -1313,8 +1337,9 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         let id = headerSessionId
         guard id != checkoutSessionId else { return }
         checkoutSessionId = id
-        // The seed is this chat's own checkout.
-        let seeded = id == sessionId ? seededCheckout : nil
+        // The seed is this chat's own checkout, or on a switch the one on
+        // screen.
+        let seeded = seededCheckout?.id == id ? seededCheckout?.checkout : nil
         seededCheckout = nil
         if let seeded {
             checkout = seeded
@@ -1364,25 +1389,214 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         if isShown { UIView.performWithoutAnimation { view.layoutIfNeeded() } }
     }
 
-    /// Switching swaps the chat in place rather than pushing a screen, so
+    /// Switching shows the tab in this screen rather than pushing one, so
     /// back still returns to the list.
-    private func selectTab(_ id: String) {
+    private func selectTab(_ id: String, pending: PendingChat? = nil) {
         guard id != sessionId, id != selectedTabId else { return }
-        switchChat(to: id)
+        switchChat(to: id, pending: pending)
     }
 
-    /// Replace the tab immediately, then prepare its content with the
-    /// same cancellable construction used by a push.
-    private func switchChat(to id: String) {
-        guard let navigation = navigationController, navigation.viewControllers.contains(self) else { return }
+    /// The screen shows another tab of its checkout in place. The header,
+    /// the strip and the dock stay; only what belongs to a chat moves to
+    /// the new one, and nothing of the tab left shows in it:
+    /// - the old tab's rows stay until the new tab's first rows replace
+    ///   them in one apply (`holdSwitch`), never a spinner between;
+    /// - the new tab gets a composer of its own, reading its own draft,
+    ///   attachments and picks; the old one stays in the dock until that
+    ///   draft is in, then goes, writing its draft to its own chat
+    ///   (`retireComposer`);
+    /// - the header keeps naming the checkout, from the first frame.
+    /// `pending` is a chat the strip's `+` is opening, known before the
+    /// account's pending chats say so.
+    private func switchChat(to id: String, pending: PendingChat? = nil) {
+        guard contentInstalled, id != sessionId else { return }
+        // A stand-in left once it has settled or failed is done with, as
+        // when its screen goes (`didMove(toParent:)`).
+        if let left = pendingChat, left.sessionId != nil || left.status == .failed {
+            let chats = services.pendingChats
+            Task { await chats.dismiss(id: left.id) }
+        }
+        MessageLiftOverlay.putBack(from: self)
         keepStripOffset()
-        let next = LegacyChatViewController(context: context, session: account, sessionId: id)
-        next.inheritedStripOffset = tabStrip.isHidden ? nil : tabStrip.offset
-        TabletRoutes.record(.session(id: id), for: next)
-        guard let index = navigation.viewControllers.firstIndex(of: self) else { return }
-        var stack = navigation.viewControllers
-        stack[index] = next
-        navigation.setViewControllers(stack, animated: false)
+        let leftRecord = session.record
+        let leftId = chatId
+        endChat()
+        connectionTask?.cancel()
+        awaitingRecord = false
+        awaitingRecordTask.task?.cancel()
+        resuming = false
+        goalInFlight = nil
+        questionSheet?.dismiss(animated: false)
+        sessionId = id
+        chatId = id
+        services = Self.services(account: account, context: context, sessionId: id)
+        chatAttachments = makeChatAttachments()
+        TabletRoutes.record(.session(id: id), for: self)
+        // Until the new tab's own projection is in (`seed`), the record
+        // home holds, and its status, which its composer takes over; what
+        // that projection decides (the dock's bars, the rows) stays the
+        // tab left's until then. The checkout's name stays as it is.
+        let home = account.homeFeed.latest
+        let cached = home?.sessions.first { $0.id == id }
+        session = ChatSessionState(record: cached, settings: session.settings, dataReady: session.dataReady)
+        sessionStatus = cached.map { SessionComposerView.headerStatus(record: $0, now: home?.presenceNow) }
+        if let pending { pendingChats[pending.id] = pending }
+        let pendingChat = PendingChats.isPendingChatId(id) ? pendingChats[id] : nil
+        // The checkout is the one on screen: observed again from it, so the
+        // same answer changes nothing.
+        seededCheckout = checkout.map { (id: pendingChat?.anchorSessionId ?? id, checkout: .some($0)) }
+        holdSwitch()
+        replaceComposer()
+        UIView.performWithoutAnimation {
+            // What it shows for the session from its first frame.
+            updateComposer()
+            pendingChatChanged(pendingChat)
+            // Opened beside the tab left: its header reads that tab's
+            // record from the start.
+            if let chat = pendingChat, chat.anchorSessionId == leftId, anchorRecord == nil {
+                anchorRecord = leftRecord
+                anchorMetadata = leftRecord?.metadata
+            }
+            updateHeader()
+            updateTabStrip()
+            view.layoutIfNeeded()
+        }
+        // A store write: never on the main thread.
+        let actions = account.actions
+        Task.detached(priority: .userInitiated) { actions.markRead(sessionId: id) }
+        account.spawnRequests.release(sessionId: id)
+        VoiceCoordinator.shared.focus(account: account, sessionId: id)
+        // The shell keeps the sidebar's row on the tab shown.
+        if let navigation = navigationController {
+            navigation.delegate?.navigationController?(navigation, didShow: self, animated: false)
+        }
+        let generation = chatGeneration
+        let seed = services.seed
+        connectionTask = Task { [weak self] in
+            let seed = await Task.detached(priority: .userInitiated) { seed() }.value
+            guard let self, !Task.isCancelled, self.chatGeneration == generation,
+                  self.context.account.session === self.account else { return }
+            UIView.performWithoutAnimation {
+                if let seed { self.seed(seed) }
+                self.observeChat()
+            }
+        }
+    }
+
+    /// From a tab switch to the new tab's first rows: the old rows and the
+    /// placeholder stay as they are, and nothing animates. At most
+    /// `ChatOpening.limit`, after which the new tab shows what it has.
+    private var switchHeld = false
+    private let switchHoldTask = TaskHolder()
+    /// The tab left's rows and placeholder as drawn, over them until the
+    /// new tab's are drawn: both are drawn off the main thread, a frame or
+    /// two after they are applied.
+    private var listCover: UIView?
+    private var listCoverLink: CADisplayLink?
+    private var listCoverStarted: CFTimeInterval = 0
+
+    /// Whether a tab switch still shows the tab left's rows, for tests.
+    var isHoldingSwitch: Bool { switchHeld || listCover != nil || retiringComposer != nil }
+
+    private func holdSwitch() {
+        switchHeld = true
+        rowsApplied = false
+        // The rows on screen are the tab left's until then.
+        list.isUserInteractionEnabled = false
+        if listCover == nil {
+            let cover = UIView(frame: view.bounds)
+            cover.isUserInteractionEnabled = false
+            // Opaque, so the new rows drawing under it don't show through.
+            cover.backgroundColor = view.backgroundColor
+            for shown in [list, placeholder] where !shown.isHidden {
+                guard let drawn = shown.snapshotView(afterScreenUpdates: false) else { continue }
+                drawn.frame = shown.frame
+                cover.addSubview(drawn)
+            }
+            view.insertSubview(cover, aboveSubview: placeholder)
+            listCover = cover
+        }
+        listCoverStarted = CACurrentMediaTime()
+        listCoverLink?.invalidate()
+        let link = CADisplayLink(target: self, selector: #selector(checkListCover))
+        link.add(to: .main, forMode: .common)
+        listCoverLink = link
+        let generation = chatGeneration
+        switchHoldTask.task = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(Int(ChatOpening.limit * 1000)))
+            guard !Task.isCancelled, let self, self.chatGeneration == generation else { return }
+            self.releaseSwitch()
+        }
+    }
+
+    private func releaseSwitch() {
+        guard switchHeld else { return }
+        switchHeld = false
+        switchHoldTask.task?.cancel()
+        list.isUserInteractionEnabled = true
+        // The new tab's placeholder first, so the cover waits for it too.
+        UIView.performWithoutAnimation {
+            updatePlaceholder()
+            view.layoutIfNeeded()
+        }
+        checkListCover()
+    }
+
+    /// The cover goes once the new tab's rows are drawn, or the tab left's
+    /// are gone from the list if it has none, in the frame they show; never
+    /// after `ChatOpening.limit`.
+    @objc private func checkListCover() {
+        guard !switchHeld || CACurrentMediaTime() - listCoverStarted > ChatOpening.limit else { return }
+        // An empty apply reaches UltraList's rows a pass later.
+        let rowsDrawn = list.plans.isEmpty ? list.ultra.list.items.isEmpty : list.isDisplayReady
+        let drawn = rowsDrawn && (placeholder.isHidden || placeholder.measure.isSettled)
+        guard drawn || CACurrentMediaTime() - listCoverStarted > ChatOpening.limit else { return }
+        listCoverLink?.invalidate()
+        listCoverLink = nil
+        listCover?.removeFromSuperview()
+        listCover = nil
+        updateHeaderBackdrop(distanceFromOldest: list.maximumVisibleMinY - list.visibleMinY)
+        // The new tab's composer, if it is in, shows with them.
+        if retiringComposer != nil {
+            view.setNeedsLayout()
+            UIView.performWithoutAnimation { view.layoutIfNeeded() }
+        }
+    }
+
+    /// The new tab's composer, made for its chat as a fresh screen's is,
+    /// so its draft, attachments and picks are its own. The old one keeps
+    /// its place, and the dock its height, until the new one has its draft
+    /// measured; both are swapped in one layout (`retireComposer`).
+    private func replaceComposer() {
+        let old = composer
+        if retiringComposer == nil {
+            retiringComposer = old
+        } else {
+            // Switched again before the last one was in: it never shows.
+            composerReveal.catcher.removeFromSuperview()
+            old.removeFromSuperview()
+        }
+        let next = makeComposer()
+        next.composerDelegate = self
+        composer = next
+        composerReveal = ChatComposerReveal(composer: next)
+        dock.insertSubview(next, belowSubview: retiringComposer ?? old)
+        dock.addSubview(composerReveal.catcher)
+        view.setNeedsLayout()
+    }
+
+    /// The new tab's composer is restored and its rows are drawn: it takes
+    /// the old one's place in this layout pass, in the frame the rows show.
+    /// A keyboard up stays up, on the new composer.
+    private func retireComposer() {
+        // A tap on it while it waited (`ChatComposerReveal`) shows it now.
+        guard let old = retiringComposer, composer.isRestored, listCover == nil || composer.isTextFocused else { return }
+        retiringComposer = nil
+        let focused = old.isTextFocused
+        if focused { composer.focus() }
+        // Its pending edit is written to its own chat as it leaves.
+        old.removeFromSuperview()
+        old.composerDelegate = nil
     }
 
     /// Archiving the open tab moves the screen to its neighbour first, the
@@ -1532,11 +1746,13 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         // Made: the panel stays as it was while it goes, though the draft
         // already offers a session again.
         guard compose.sessionId == nil else { return }
+        // Nothing of it until this account's computers are known, so it
+        // comes in its final shape, the kinds or a session alone.
+        composeTarget.isHidden = !compose.knowsComputers
         composeTarget.isLocked = compose.isStarting
-        // Every kind and the computer show from the first frame, whatever
-        // has arrived: a big account's computers can take a while, and the
-        // panel fills in where it stands rather than grow under the keyboard.
-        composeTarget.setSessionKinds(LegacyComposeStart.shownKinds, enabled: compose.enabledKinds, current: compose.kind, botName: compose.drafts.botName)
+        // The kinds show where a computer's Happy Agent makes more than a
+        // session (`shownKinds`).
+        composeTarget.setSessionKinds(compose.shownKinds, enabled: compose.enabledKinds, current: compose.kind, botName: compose.drafts.botName)
         composeTarget.showsMachine = true
         composeTarget.machine.title = compose.machineName
         composeTarget.machine.status = compose.machineStatus
@@ -1664,6 +1880,9 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         pendingChat = chat
         if let real = chat?.sessionId, real != chatId {
             becomeChat(real)
+            // The stand-in's placeholder stays until the session's rows
+            // replace it, never a spinner between.
+            if contentInstalled { holdSwitch() }
         }
         updateHeader()
         updatePlaceholder()
@@ -1707,7 +1926,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         let known = checkout.tabs.map(\.id)
         Task { [weak self] in
             let chat = await launcher.open(anchorSessionId: openId, knownSessionIds: known)
-            self?.selectTab(chat.id)
+            self?.selectTab(chat.id, pending: chat)
         }
     }
 
@@ -1724,6 +1943,8 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
     /// this one is gone; in a session, a spinner until its messages are in
     /// and EmptyMessages if there are none.
     private func updatePlaceholder() {
+        // The tab left's stays until the new tab's rows replace it.
+        guard !switchHeld else { return }
         let content: ChatPlaceholderView.Content?
         var fullScreen = false
         if let record = session.record {
@@ -1968,11 +2189,16 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
             // applies, and may ask for the next page.
             appliedGrows = update.grows
             reachesOldest = update.reachesOldest
+            var switched = false
             if let rows = update.list {
                 oldestBoundary = update.oldestBoundary
                 touched += list.apply(rows, animated: rowsApplied)
+                // A switched tab opens at its newest message, as a fresh one.
+                if switchHeld { list.scrollToNewest(animated: false) }
+                switched = switchHeld
                 rowsApplied = true
             }
+            if switched { releaseSwitch() }
             if windowReset {
                 // History W3: the window dropped rows it showed; it is back
                 // at the newest, and so is the reader.
@@ -2037,14 +2263,21 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         scheduleMeasure()
     }
 
-    // MARK: ChatListViewDelegate
-
-    func chatList(_ list: ChatListView, didScroll distanceFromNewest: CGFloat, distanceFromOldest: CGFloat) {
+    /// The fade behind the bar while rows are under it. A tab switch's
+    /// cover keeps the tab left's until it goes.
+    private func updateHeaderBackdrop(distanceFromOldest: CGFloat) {
+        guard listCover == nil else { return }
         let backdrop = LegacyChatScreenLayout.headerBackdropVisible(distanceFromOldest: distanceFromOldest)
         if backdrop != headerBackdropVisible {
             headerBackdropVisible = backdrop
             headerScrim.presence = backdrop ? 1 : 0
         }
+    }
+
+    // MARK: ChatListViewDelegate
+
+    func chatList(_ list: ChatListView, didScroll distanceFromNewest: CGFloat, distanceFromOldest: CGFloat) {
+        updateHeaderBackdrop(distanceFromOldest: distanceFromOldest)
         let showButton = LegacyChatScreenLayout.showsScrollButton(distanceFromNewest: distanceFromNewest)
         if (scrollButton.alpha > 0) != showButton {
             UIView.animate(withDuration: 0.2, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
@@ -2363,6 +2596,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
     /// animated before the screen's first frame.
     func composerDidInvalidateHeight(_ composer: any ChatComposerView) {
         view.setNeedsLayout()
+        guard composer === self.composer || composer === retiringComposer else { return }
         if isShown {
             // UltraList never moves inside a UIView animation: its newest
             // inset goes on the composer's own (its default curve), so the
@@ -2382,6 +2616,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
 
     /// The session's status is the header's, under its name.
     func composerDidChangeHeaderStatus(_ composer: any ChatComposerView) {
+        guard composer === self.composer else { return }
         sessionStatus = composer.headerStatus
         applyTitleAndStatus()
     }
@@ -2390,7 +2625,11 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
     /// for it, now. A report for the chat before a retarget isn't this
     /// one's.
     func composerDidRestore(_ composer: any ChatComposerView, generation: Int) {
-        guard generation == composer.restoreGeneration else { return }
+        guard composer === self.composer, generation == composer.restoreGeneration else { return }
+        if retiringComposer != nil {
+            view.setNeedsLayout()
+            UIView.performWithoutAnimation { view.layoutIfNeeded() }
+        }
         view.layoutIfNeeded()
         composerReveal.restored(generation: generation)
         opening?.check()
@@ -2401,11 +2640,13 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
     /// Telegram's send: at the newest message it flies in from the
     /// composer; further up, `didSend` scrolls down to it instead.
     func composerWillSend(_ composer: any ChatComposerView, from card: AgentInputCardView) {
-        guard !isComposing, ChatSendFlight.flies(distance: list.distanceFromNewest) else { return }
+        guard composer === self.composer, !isComposing, ChatSendFlight.flies(distance: list.distanceFromNewest) else { return }
         list.ultra.flight = ChatSendFlight(source: ChatSendFlight.source(from: card, in: view), host: view, message: nil)
     }
 
     func composer(_ composer: any ChatComposerView, didSend localId: String) {
+        // A send from the tab left is its own chat's.
+        guard composer === self.composer else { return }
         // The first send made the session: this screen is its chat now.
         if let compose = composing, isComposing, let real = compose.sessionId {
             composeStarted(real)

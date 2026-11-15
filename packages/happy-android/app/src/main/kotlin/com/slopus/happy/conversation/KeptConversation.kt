@@ -53,7 +53,8 @@ data class KeptConversation(
     companion object {
         /** desktop's window on a conversation nobody reads (connectHappyAgent's `trimHistory`), as iOS keeps. */
         const val KEPT_RUNS = 100
-        private const val VERSION = 1
+        /** 2: file blocks keep their kind, size on screen and thumbhash; a phone that kept them without reads them again. */
+        private const val VERSION = 2
 
         fun parse(value: JsonObject?): KeptConversation? {
             val o = value ?: return null
@@ -104,6 +105,11 @@ data class KeptConversation(
                 put("name", block.name)
                 block.mimeType?.let { put("mimeType", it) }
                 block.size?.let { put("size", it) }
+                block.kind?.let { put("kind", it) }
+                block.width?.let { put("width", it) }
+                block.height?.let { put("height", it) }
+                block.thumbhash?.let { put("thumbhash", it) }
+                block.scale?.let { put("scale", it) }
             }
             is Block.ToolCall -> buildJsonObject {
                 put("type", "tool_call")

@@ -152,6 +152,8 @@ class TailcatTransport internal constructor(
             owners.remove(client)?.close()
             client.close()
         },
+        // The relay pinged and replaced only if silent; direct paths probed.
+        check = { it.wake() },
     )
 
     private class OpenFlow(private val stream: TailcatConnection, private val ownership: OpenFlows.Owner.Flow) {
@@ -160,6 +162,16 @@ class TailcatTransport internal constructor(
         fun write(bytes: ByteArray) = stream.write(bytes)
         fun write(bytes: ByteArray, timeoutMillis: Long) = stream.write(bytes, timeoutMillis = timeoutMillis)
         fun close() = ownership.close()
+
+        /** Lets go of an answer no longer wanted: the flow is reset, so the computer stops sending. [close] would take the rest in and discard it. */
+        fun abort() {
+            try {
+                stream.abort()
+            } catch (_: Exception) {
+                // Already gone.
+            }
+            ownership.close()
+        }
     }
 
     private fun open(client: TailcatClient): OpenFlow {
@@ -196,10 +208,13 @@ class TailcatTransport internal constructor(
         val progress = kotlinx.coroutines.currentCoroutineContext()[BodyProgress]
         val lease = clients.lease(category)
         val deadline = if (category == RequestCategory.File) fileTimeoutMillis else requestTimeoutMillis
+        // In a dead relay even the flow's opening and the head's write hang.
+        val watch = lease.watch()
         return try {
             withTimeout(deadline) {
                 runInterruptible(Dispatchers.IO) {
                     val stream = open(lease.client)
+                    var answered = false
                     try {
                         stream.write(head, timeoutMillis = requestTimeoutMillis)
                         if (body != null) {
@@ -209,11 +224,13 @@ class TailcatTransport internal constructor(
                         val parser = HttpResponseParser()
                         while (true) {
                             val bytes = stream.read(65536, timeoutMillis = requestTimeoutMillis)
-                            parser.append(bytes, eof = bytes.isEmpty())?.let { return@runInterruptible it }
+                            if (bytes.isNotEmpty()) lease.heard()
+                            parser.append(bytes, eof = bytes.isEmpty())?.let { answered = true; return@runInterruptible it }
                         }
                         @Suppress("UNREACHABLE_CODE") error("unreachable")
                     } finally {
-                        stream.close()
+                        // Cut off or given up on: the computer stops sending the rest.
+                        if (answered) stream.close() else stream.abort()
                     }
                 }
             }
@@ -229,6 +246,7 @@ class TailcatTransport internal constructor(
             failed(lease, e)
             throw AgentConnectionException(AgentConnectionException.Reason.Unavailable).initCause(e)
         } finally {
+            watch.cancel()
             lease.release()
         }
     }
@@ -237,6 +255,9 @@ class TailcatTransport internal constructor(
         val head = TailcatHttp.requestHead("GET", path, port, credential, null, headers + ("Accept" to "text/event-stream"))
         val lease = clients.lease(RequestCategory.Realtime)
         val opening = java.util.concurrent.atomic.AtomicReference<OpenFlow?>()
+        // Until the head is in; then silent past its heartbeat, its client is checked.
+        val watch = lease.watch()
+        val silence = lease.watch(TailcatClients.STREAM_QUIET_MILLIS, repeating = true)
         val socket: OpenFlow = try {
             withTimeout(requestTimeoutMillis) {
                 runInterruptible(Dispatchers.IO) {
@@ -246,26 +267,31 @@ class TailcatTransport internal constructor(
                         opened.write(head, timeoutMillis = requestTimeoutMillis)
                         opened
                     } catch (error: Throwable) {
-                        opened.close()
+                        opened.abort()
                         throw error
                     }
                 }
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
-            opening.getAndSet(null)?.close()
+            opening.getAndSet(null)?.abort()
+            watch.cancel(); silence.cancel()
             lease.release()
             if (e !is kotlinx.coroutines.TimeoutCancellationException) throw e
             failed(lease, e)
             throw AgentConnectionException(AgentConnectionException.Reason.Unavailable).initCause(e)
         } catch (e: Exception) {
-            opening.getAndSet(null)?.close()
+            opening.getAndSet(null)?.abort()
+            watch.cancel(); silence.cancel()
             lease.release()
             failed(lease, e)
             throw AgentConnectionException(AgentConnectionException.Reason.Unavailable).initCause(e)
         }
         val reader = object : ByteSource {
+            @Volatile private var ended = false
+
             override suspend fun read(): ByteArray = try {
-                runInterruptible(Dispatchers.IO) { socket.read(65536, timeoutMillis = silenceMillis) }.also { if (it.isEmpty()) close() }
+                runInterruptible(Dispatchers.IO) { socket.read(65536, timeoutMillis = silenceMillis) }
+                    .also { if (it.isEmpty()) { ended = true; close() } else lease.heard() }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 close()
                 throw e
@@ -276,15 +302,13 @@ class TailcatTransport internal constructor(
             }
 
             override fun close() {
+                watch.cancel(); silence.cancel()
                 lease.release()
-                try {
-                    socket.close()
-                } catch (_: Exception) {
-                    // Already gone.
-                }
+                // Let go of before its end: the computer stops sending.
+                if (ended) socket.close() else socket.abort()
             }
         }
-        return TransportStream.open(reader)
+        return TransportStream.open(reader).also { watch.cancel() }
     }
 
     override suspend fun socket(): TransportSocket {
@@ -306,7 +330,7 @@ class TailcatTransport internal constructor(
         }
         return object : TransportSocket {
             // A cancelled read or write closes the stream, which wakes the blocked call.
-            override suspend fun read(maximumBytes: Int): ByteArray = io { stream.read(maximumBytes) }.also { if (it.isEmpty()) close() }
+            override suspend fun read(maximumBytes: Int): ByteArray = io { stream.read(maximumBytes) }.also { if (it.isEmpty()) close() else lease.heard() }
 
             override suspend fun write(bytes: ByteArray) {
                 io { stream.write(bytes) }

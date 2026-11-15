@@ -124,7 +124,7 @@ class LinkOpener internal constructor(
             computer: String,
             app: (String) -> Boolean = { false },
             /** Whether one of the app's own links opens anything ([com.slopus.happy.ui.connection.HappyLinks.opens]); a screen that opens none, none. */
-            opens: (String) -> Boolean = { url -> !com.slopus.happy.agent.HappyUrls.owns(url) && !HappyReferences.owns(url) },
+            opens: (String) -> Boolean = { url -> !com.slopus.happy.agent.HappyUrls.owns(url) },
             navigateBrowser: (String) -> Unit,
         ): LinkOpener {
             val browse = { url: String ->
@@ -137,15 +137,18 @@ class LinkOpener internal constructor(
             return LinkOpener(proxied = true, computer = computer, tap = browse, inApp = browse, external = { openOutside(context, it) }, opensUrl = opens)
         }
 
-        /** Legacy mode: a tap does what [system] always did; "in the app" is a Custom Tab, [dark] or light as the app is. */
-        fun legacy(context: Context, system: UriHandler, dark: Boolean = false): LinkOpener = LinkOpener(
+        /**
+         * Legacy mode: a tap does what [system] always did; "in the app" is a Custom Tab, [dark] or light as the app is.
+         * [app] takes what the app opens itself first: a share link, on its agent connection.
+         */
+        fun legacy(context: Context, system: UriHandler, dark: Boolean = false, app: (String) -> Boolean = { false }): LinkOpener = LinkOpener(
             proxied = false,
             computer = null,
             // The app's own links are an agent connection's; the system has nothing to open them with.
-            tap = { url -> if (!com.slopus.happy.agent.HappyUrls.owns(url) && !HappyReferences.owns(url)) system.openUri(url) },
+            tap = { url -> if (!app(url) && !com.slopus.happy.agent.HappyUrls.owns(url)) system.openUri(url) },
             inApp = { url -> if (BrowserPolicy.route(url) == BrowserPolicy.Route.Web) openCustomTab(context, url, dark) else openOutside(context, url) },
             external = { openOutside(context, it) },
-            opensUrl = { url -> !com.slopus.happy.agent.HappyUrls.owns(url) && !HappyReferences.owns(url) },
+            opensUrl = { url -> !com.slopus.happy.agent.HappyUrls.owns(url) },
         )
     }
 }
@@ -209,7 +212,7 @@ internal fun Modifier.webLinkGestures(key: Any, find: (Offset) -> Link?): Modifi
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
             val link = linkAt(down.position) ?: return@awaitEachGesture
-            // The app's own links (a reference, a Happy URL) open on a tap and have no menu.
+            // The app's own links (a Happy URL, a share link) open on a tap and have no menu.
             val url = link.url
             if (url == null && link.target?.let(HappyReferences::opensInApp) != true) return@awaitEachGesture
             down.consume()
@@ -280,7 +283,8 @@ internal class Link(private val annotation: LinkAnnotation) {
         is LinkAnnotation.Clickable -> annotation.tag
         else -> null
     }
-    val url: String? = target?.takeIf { BrowserPolicy.route(it) == BrowserPolicy.Route.Web }
+    // A share link is the app's own to open, not a page: it has no browser menu (desktop 5a4c075c).
+    val url: String? = target?.takeIf { BrowserPolicy.route(it) == BrowserPolicy.Route.Web && com.slopus.happy.agent.HappyShareLinks.parse(it) == null }
 
     fun activate(handler: UriHandler) {
         val listener = annotation.linkInteractionListener

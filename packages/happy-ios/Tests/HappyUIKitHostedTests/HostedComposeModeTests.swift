@@ -438,7 +438,10 @@ final class HostedComposeModeTests: XCTestCase {
         XCTContext.runActivity(named: report) { _ in }
 
         XCTAssertFalse(panel.isHidden, "the panel gave up: \(report)", file: file, line: line)
-        XCTAssertGreaterThanOrEqual(panel.frame.minY, barFoot, report, file: file, line: line)
+        // The kind's picture room may run under the bar (upstream's
+        // `givingWay`); the first control never does.
+        let first = panel.kind.isHidden ? frames[0] : panel.kind.convert(panel.kind.bounds, to: view)
+        XCTAssertGreaterThanOrEqual(first.minY, barFoot - 0.5, report, file: file, line: line)
         XCTAssertLessThanOrEqual(panel.frame.maxY, card.minY, report, file: file, line: line)
         XCTAssertLessThanOrEqual(card.maxY, view.keyboardLayoutGuide.layoutFrame.minY + 0.5, report, file: file, line: line)
         for (index, frame) in frames.enumerated() {

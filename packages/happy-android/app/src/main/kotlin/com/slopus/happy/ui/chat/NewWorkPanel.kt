@@ -98,9 +98,6 @@ object NewWorkSpec {
     val rowHeight = 44.dp
     val rowGap = 8.dp
     val rowsToNote = 10.dp
-    /** The gaps once the room is short; under the kind the computer's chip still clears it. */
-    val tightKindToRows = NewWorkStatusSpec.overhang + 5.dp
-    val tightRowGap = 6.dp
     /** A kind no computer makes yet. */
     const val DISABLED_ALPHA = 0.4f
     /** The least room kept over and under the block; with less it doesn't show. */
@@ -109,6 +106,8 @@ object NewWorkSpec {
     val rowInset = 16.dp
     val rowIcon = 16.dp
     val rowIconGap = 8.dp
+    /** Between a row's label column and its pick. */
+    val columnGap = 16.dp
     const val FADE_MILLIS = 200
     val field = happyTextStyle(fontSize = 16)
     val note = happyTextStyle(fontSize = 13, lineHeight = 18)
@@ -123,6 +122,12 @@ object NewWorkSpec {
 
     /** The block's width in a room [width] wide: 24 in from either side, at most 320. */
     fun blockWidth(width: Dp): Dp = minOf(maxWidth, width - side * 2).coerceAtLeast(0.dp)
+
+    /** A Happy account's block ([NewWorkGivingWay]), snugger (Kirill): at most 256. */
+    val givingWayMaxWidth = 256.dp
+    fun givingWayWidth(width: Dp): Dp = minOf(givingWayMaxWidth, width - side * 2).coerceAtLeast(0.dp)
+    /** Its picture, 0.6 of [art] (Kirill). */
+    val givingWayArt = 77.dp
 }
 
 /** Room kept for what another kind shows: laid out, but neither drawn nor read out. */
@@ -142,14 +147,14 @@ val WorkKind.art: StateArt
  * than a blank frame while it is read.
  */
 @Composable
-fun NewWorkArt(art: StateArt, modifier: Modifier = Modifier) {
+fun NewWorkArt(art: StateArt, modifier: Modifier = Modifier, size: Dp = NewWorkSpec.art) {
     Box(modifier) {
         for (each in listOf(StateArt.Action, StateArt.Ready).sortedBy { it == art }) {
             // The one shown is drawn last, over the other, and takes the taps.
             val shown = each == art
             key(each) {
                 Box(if (shown) Modifier.testTag(NewWorkTags.art(each)) else Modifier.reserved()) {
-                    StateAnimation(each, size = NewWorkSpec.art, autoplay = false, immediate = true)
+                    StateAnimation(each, size = size, autoplay = false, immediate = true)
                 }
             }
         }
@@ -283,8 +288,11 @@ fun NewWorkChoicePanel(work: NewWork, onChange: (WorkChoice) -> Unit, onReturn: 
 
 /**
  * One of a Happy account's rows (happy-ios NewWorkMenuRow): a 44 capsule on
- * the input ground, 16 in, a 16 glyph 8 before what is chosen (16, the
- * middle truncated), opening [menu] under it. Dimmed while fixed. The
+ * the input ground, 16 in, opening [menu] under it, in two columns from its
+ * start lined up across the rows: a 16 glyph 8 before what it picks
+ * ([label], 16 secondary), in a column [labelWidth] wide (the glyph and the
+ * widest label), then 16 on what is chosen (16, cut as [overflow] says: a
+ * path from its start, so its folder shows). Dimmed while fixed. The
  * computer's row wears its [status] as a chip on its top-right corner.
  */
 @Composable
@@ -293,8 +301,11 @@ fun NewWorkMenuRow(
     title: String,
     enabled: Boolean,
     onClick: () -> Unit,
+    labelWidth: Dp,
     modifier: Modifier = Modifier,
+    label: String? = null,
     status: NewWorkStatus? = null,
+    overflow: TextOverflow = TextOverflow.Ellipsis,
     menu: @Composable () -> Unit = {},
 ) {
     val colors = HappyTheme.colors
@@ -309,10 +320,17 @@ fun NewWorkMenuRow(
                 .alpha(if (enabled) 1f else 0.5f)
                 .padding(horizontal = NewWorkSpec.rowInset),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(NewWorkSpec.rowIconGap, Alignment.CenterHorizontally),
         ) {
-            Icon(icon, NewWorkSpec.rowIcon, colors.input.text)
-            Text(title, style = NewWorkSpec.field, color = colors.input.text, maxLines = 1, overflow = TextOverflow.MiddleEllipsis)
+            Row(
+                modifier = Modifier.width(labelWidth),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(NewWorkSpec.rowIconGap),
+            ) {
+                Icon(icon, NewWorkSpec.rowIcon, colors.input.text)
+                label?.let { Text(it, style = NewWorkSpec.field, color = colors.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+            }
+            Spacer(Modifier.width(NewWorkSpec.columnGap))
+            Text(title, style = NewWorkSpec.field, color = colors.input.text, maxLines = 1, overflow = overflow, modifier = Modifier.weight(1f))
         }
         status?.let {
             NewWorkStatusChip(
@@ -498,13 +516,17 @@ fun NewWorkNameField(
 
 /**
  * A Happy account's new work, centred between the bar and the composer
- * (happy-ios NewWorkLayout(givingWay:)): the kind's optional [art] over the
- * optional [kind] control, field-high [rows] and an optional [note]. What it
- * asks is what the first send makes, so short of room it gives way instead
- * of going: the note goes, then the gaps close (16 → 14 under the kind, which the computer's
- * chip still clears; 8 → 6 between rows); the picture keeps its size. With
- * no room even then it stands 12 over the composer and runs up under the
- * bar. Going ([shown] false) it fades out over 0.2 s, ease-out, as [NewWorkRoom].
+ * (happy-ios NewWorkLayout(givingWay:)), at most 256 wide
+ * ([NewWorkSpec.givingWayWidth]), top to bottom: the kind's optional
+ * [art] (at [NewWorkSpec.givingWayArt]), the optional [kind] control, an optional [note] saying what the
+ * kind is, then field-high [rows]. The kind control holds still as the kind
+ * changes (Kirill): the block is laid out at its tallest, the picture's
+ * room kept with [reserveArt] and [reserveRows] rows' room, so a kind with
+ * no picture or fewer rows leaves that room empty rather than moving what
+ * stands above it. As Happy Agent's new work ([NewWorkRoom]) it never
+ * shrinks or drops anything: short of room (the keyboard up, the composer
+ * grown) it stands 12 over the composer and runs up under the bar, picture
+ * first. Going ([shown] false) it fades out over 0.2 s, ease-out.
  */
 @Composable
 fun NewWorkGivingWay(
@@ -514,6 +536,8 @@ fun NewWorkGivingWay(
     note: (@Composable () -> Unit)?,
     modifier: Modifier = Modifier,
     art: StateArt? = null,
+    reserveArt: Boolean = false,
+    reserveRows: Int = 0,
 ) {
     val reduceMotion = rememberReduceMotion()
     val alpha by animateFloatAsState(
@@ -525,62 +549,49 @@ fun NewWorkGivingWay(
     val slots = listOfNotNull(kind) + rows + listOfNotNull(note)
     Layout({
         slots.forEach { slot -> Box { slot() } }
-        if (art != null) NewWorkArt(art)
+        if (art != null) NewWorkArt(art, size = NewWorkSpec.givingWayArt)
     }, modifier.fillMaxSize().testTag(NewWorkTags.PANEL)) { measurables, constraints ->
         val width = constraints.maxWidth
         val height = constraints.maxHeight
-        val blockWidth = NewWorkSpec.blockWidth(width.toDp()).roundToPx()
+        val blockWidth = NewWorkSpec.givingWayWidth(width.toDp()).roundToPx()
         val kindWidth = minOf(NewWorkSpec.kindWidth.roundToPx(), blockWidth)
         var index = 0
         val kindPlaceable = kind?.let { measurables[index++].measure(Constraints(maxWidth = kindWidth)) }
         val rowPlaceables = rows.map { measurables[index++].measure(Constraints(minWidth = blockWidth, maxWidth = blockWidth)) }
         val notePlaceable = note?.let { measurables[index].measure(Constraints(minWidth = blockWidth, maxWidth = blockWidth)) }
-        fun stackHeight(kindGap: Int, rowGap: Int, withNote: Boolean): Int {
-            var y = kindPlaceable?.let { it.height + kindGap } ?: 0
-            rowPlaceables.forEachIndexed { i, row -> y += row.height + if (i > 0) rowGap else 0 }
-            if (withNote && notePlaceable != null) y += NewWorkSpec.rowsToNote.roundToPx() + notePlaceable.height
-            return y
-        }
+        val gap = NewWorkSpec.kindToRows.roundToPx()
+        val rowGap = NewWorkSpec.rowGap.roundToPx()
         val margin = NewWorkSpec.margin.roundToPx()
         val artGap = NewWorkSpec.artToKind.roundToPx()
-        val kindToRows = NewWorkSpec.kindToRows.roundToPx()
-        val rowGapPx = NewWorkSpec.rowGap.roundToPx()
-        // (picture, kind gap, row gap, note): the note goes, then the gaps close; the picture stays at its size.
-        val side = if (art != null) NewWorkSpec.art.roundToPx() else null
-        val attempts = listOf(
-            GivingWay(side, kindToRows, rowGapPx, true),
-            GivingWay(side, kindToRows, rowGapPx, false),
-            GivingWay(side, NewWorkSpec.tightKindToRows.roundToPx(), NewWorkSpec.tightRowGap.roundToPx(), false),
-        )
-        fun total(attempt: GivingWay) = (attempt.art?.let { it + artGap } ?: 0) + stackHeight(attempt.kindGap, attempt.rowGap, attempt.withNote)
-        val chosen = attempts.firstOrNull { height >= total(it) + 2 * margin } ?: attempts.last()
-        val (_, kindGap, rowGap, withNote) = chosen
-        val picture = side?.let { measurables.last().measure(Constraints.fixed(it, it)) }
-        val total = total(chosen)
+        val side = if (art != null || reserveArt) NewWorkSpec.givingWayArt.roundToPx() else null
+        // Rows not asked keep a field's room.
+        val rowCount = maxOf(rows.size, reserveRows)
+        val rowsHeight = rowPlaceables.sumOf { it.height } + (reserveRows - rows.size).coerceAtLeast(0) * NewWorkSpec.rowHeight.roundToPx()
+        var total = side?.let { it + artGap } ?: 0
+        kindPlaceable?.let { total += it.height + gap }
+        notePlaceable?.let { total += it.height + gap }
+        total += rowsHeight + (rowCount - 1).coerceAtLeast(0) * rowGap
+        val picture = art?.let { measurables.last().measure(Constraints.fixed(side!!, side)) }
         val fits = height >= total + 2 * margin
         val left = (width - blockWidth) / 2
         layout(width, height) {
             // Short of room it stands on the composer and runs up under the bar.
             var y = if (fits) (height - total) / 2 else height - margin - total
-            picture?.let {
-                it.placeWithLayer(left + (blockWidth - it.width) / 2, y) { this.alpha = alpha }
-                y += it.height + artGap
-            }
+            picture?.placeWithLayer(left + (blockWidth - picture.width) / 2, y) { this.alpha = alpha }
+            if (side != null) y += side + artGap
             kindPlaceable?.let {
                 it.placeWithLayer(left + (blockWidth - it.width) / 2, y) { this.alpha = alpha }
-                y += it.height + kindGap
+                y += it.height + gap
+            }
+            notePlaceable?.let {
+                it.placeWithLayer(left, y) { this.alpha = alpha }
+                y += it.height + gap
             }
             rowPlaceables.forEachIndexed { i, row ->
                 if (i > 0) y += rowGap
                 row.placeWithLayer(left, y) { this.alpha = alpha }
                 y += row.height
             }
-            notePlaceable?.let {
-                it.placeWithLayer(left, y + NewWorkSpec.rowsToNote.roundToPx()) { this.alpha = if (withNote) alpha else 0f }
-            }
         }
     }
 }
-
-/** One way [NewWorkGivingWay] may stand: the picture's side (null, none), the gaps, and whether the note shows. */
-private data class GivingWay(val art: Int?, val kindGap: Int, val rowGap: Int, val withNote: Boolean)

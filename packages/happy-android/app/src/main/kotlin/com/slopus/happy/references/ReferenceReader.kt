@@ -4,6 +4,7 @@ import com.slopus.happy.agent.AgentApiException
 import com.slopus.happy.agent.AgentCatalog
 import com.slopus.happy.agent.AgentClient
 import com.slopus.happy.agent.AgentEvent
+import com.slopus.happy.agent.AgentFeed
 import com.slopus.happy.agent.decode
 import com.slopus.happy.chat.num
 import com.slopus.happy.chat.obj
@@ -55,23 +56,42 @@ class ReferenceReader(
     private val artifactReads = HashSet<String>()
     private val userReads = HashSet<String>()
 
-    private class Entities(val agents: Map<String, References.Entity>, val workspaces: Map<String, References.Entity>, val me: String?) {
-        override fun equals(other: Any?) = other is Entities && other.agents == agents && other.workspaces == workspaces && other.me == me
+    private class Entities(
+        val agents: Map<String, References.Entity>,
+        val workspaces: Map<String, References.Entity>,
+        val me: String?,
+        val surfaces: Map<String, String>,
+    ) {
+        override fun equals(other: Any?) =
+            other is Entities && other.agents == agents && other.workspaces == workspaces && other.me == me && other.surfaces == surfaces
         override fun hashCode() = agents.hashCode() * 31 + workspaces.hashCode()
     }
 
-    private fun entities(catalog: AgentCatalog) = References.entities(catalog).let { (agents, workspaces) -> Entities(agents, workspaces, catalog.userId) }
+    private fun entities(catalog: AgentCatalog) =
+        References.entities(catalog).let { (agents, workspaces) -> Entities(agents, workspaces, catalog.userId, References.surfaces(catalog)) }
 
     /** What references read as now; equal readings are the same instance, so a row built with one is built again only when it changes. */
     val references: StateFlow<References> = combine(
         catalog.map(::entities).distinctUntilChanged(),
         combine(artifacts, pages, ::Pair), users, missingUsers, wordState,
     ) { entities, (artifacts, pages), users, missing, words ->
-        References(entities.agents, entities.workspaces, artifacts, pages, users = users, me = entities.me, missingUsers = missing, words = words)
+        References(entities.agents, entities.workspaces, artifacts, pages, users = users, me = entities.me, missingUsers = missing, words = words, surfaces = entities.surfaces)
     }
         .distinctUntilChanged()
         .flowOn(compute)
-        .stateIn(scope, SharingStarted.Eagerly, entities(catalog.value).let { References(it.agents, it.workspaces, me = it.me) })
+        .stateIn(scope, SharingStarted.Eagerly, entities(catalog.value).let { References(it.agents, it.workspaces, me = it.me, surfaces = it.surfaces) })
+
+    /**
+     * The conversations whose work runs now, by agent ID, as home's rows
+     * shimmer ([com.slopus.happy.agent.AgentFeedRow.Conversation.running]):
+     * a link to one shimmers while it works. Apart from [references], so a
+     * turn starting or ending builds no row again.
+     */
+    val busy: StateFlow<Set<String>> = catalog
+        .map { now -> AgentFeed.derive(now).conversations.filter { it.running }.mapTo(HashSet()) { it.agentId } as Set<String> }
+        .distinctUntilChanged()
+        .flowOn(compute)
+        .stateIn(scope, SharingStarted.Eagerly, emptySet())
 
     init {
         scope.launch { events.collect(::take) }

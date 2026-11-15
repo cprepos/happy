@@ -231,10 +231,10 @@ internal fun AgentSession.conversationBytesRequest(): com.slopus.happy.conversat
     }
 }
 
-/** [conversationRequest] for a file's own bytes, as their type: a Happy Cloud attachment's upload. */
-internal fun AgentSession.conversationFileRequest(): com.slopus.happy.conversation.AgentFileRequest = { method, path, body, contentType ->
+/** [conversationRequest] for a file's own bytes, with their type and range: an attachment's upload. */
+internal fun AgentSession.conversationFileRequest(): com.slopus.happy.conversation.AgentFileRequest = { method, path, body, headers ->
     try {
-        client.sendBytes(method, path, body, mapOf("Content-Type" to contentType))
+        client.sendBytes(method, path, body, headers)
     } catch (e: AgentApiException) {
         throw ConversationApiException(e.status, e.code, e.message, e.body as? kotlinx.serialization.json.JsonObject)
     }
@@ -278,6 +278,9 @@ internal fun AgentSession.makeConversation(
     references = references,
     hasSettingsPage = settingsPages(),
     cloudFiles = client.cloud,
+    attachmentRoute = attachmentRoute,
+    keepAttachment = { id, file -> media?.store?.keep(com.slopus.happy.conversation.KeptMedia.attachmentId(agentId, id), file) },
+    here = ::isHere,
     preferences = modelPreferences,
     onStarted = ::recordStart,
     address = { ChatAddress.of(catalog.value, agentId) },
@@ -468,7 +471,7 @@ private fun ConversationEntry(graph: AppGraph, nav: NavHostController, route: Co
     val computer = computerName(graph, route.connectionId)
     // A name a message wrote, or a Happy URL, opens what it names here.
     val happyLinks = com.slopus.happy.ui.connection.LocalHappyLinks.current
-    val references = remember(nav, session, happyLinks) { com.slopus.happy.ui.references.ReferenceOpener(nav, route.connectionId, session.references, happyLinks) }
+    val references = remember(nav, session, happyLinks) { com.slopus.happy.ui.references.ReferenceOpener(nav, route.connectionId, session.references, happyLinks, session::isHere) }
     val links = remember(nav, computer, conversation.agentId, references) {
         LinkOpener.agent(context, computer, app = references::open, opens = references::opens) { url -> nav.navigate(BrowserRoute(route.connectionId, url, conversation.agentId)) }
     }
@@ -480,7 +483,7 @@ private fun ConversationEntry(graph: AppGraph, nav: NavHostController, route: Co
     }.collectAsStateWithLifecycle(false)
     val roleCanSend = permissions.allows(if (chief) Permission.BOTS_MANAGE else Permission.CONTENT_WRITE)
     // A command's artwork is read and kept as the agent's other pictures are.
-    ProvideLinks(links) { androidx.compose.runtime.CompositionLocalProvider(com.slopus.happy.ui.connection.LocalAgentPictures provides session.pictures) {
+    ProvideLinks(links) { androidx.compose.runtime.CompositionLocalProvider(com.slopus.happy.ui.connection.LocalAgentPictures provides session.pictures) { com.slopus.happy.ui.references.ProvideBusyLinks(references, session.references) {
         ConversationScreen(
             state = state,
             opensAttach = route.attach,
@@ -528,7 +531,7 @@ private fun ConversationEntry(graph: AppGraph, nav: NavHostController, route: Co
                     loadMediaRange = { ref, range ->
                         session.client.send(
                             "GET",
-                            ConversationApi.mediaPath(conversation.agentId, ref.toolCallId, ref.index),
+                            ConversationApi.mediaPath(conversation.agentId, ref),
                             headers = mapOf("Range" to "bytes=${range.first}-${range.last}"),
                             category = RequestCategory.File,
                         )
@@ -549,7 +552,7 @@ private fun ConversationEntry(graph: AppGraph, nav: NavHostController, route: Co
                 )
             },
         )
-    } }
+    } } }
     state.alert?.let { problemText(it) }?.let {
         val title = stringResource(R.string.common_error)
         val ok = stringResource(R.string.common_ok)
@@ -611,7 +614,7 @@ internal fun rememberKeptMedia(graph: AppGraph, session: AgentSession, agentId: 
                 range = { ref, span ->
                     session.client.send(
                         "GET",
-                        ConversationApi.mediaPath(agentId, ref.toolCallId, ref.index),
+                        ConversationApi.mediaPath(agentId, ref),
                         headers = mapOf("Range" to MediaPiece.header(span)),
                         category = RequestCategory.File,
                     )

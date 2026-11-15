@@ -62,6 +62,16 @@ final class ArtifactViewController: UIViewController, ChatMediaProviding {
     private var app: (version: Int, entry: String, close: ArtifactAppClose)?
     private var openButton: UIButton?
     private var loading: Task<Void, Never>?
+    /// What the Happy links in the document read as now, and the rows a
+    /// conversation one opens is found in (`openReference`).
+    private var references = References()
+    private var rows: [Row] = []
+    /// The references as the store has them, and the agents home's rows
+    /// show at work: a link to one the document names shimmers.
+    private var known = References()
+    private var homeBusy: Set<String> = []
+    private var watch: Watch?
+    private var homeWatch: Watch?
     /// How long the first drawing waits for the pictures' sizes, so it
     /// doesn't jump as they arrive.
     static let sizeWait: Duration = .seconds(1)
@@ -126,6 +136,8 @@ final class ArtifactViewController: UIViewController, ChatMediaProviding {
         let documentTap = UITapGestureRecognizer(target: self, action: #selector(tapped(_:)))
         scrollView.addGestureRecognizer(documentTap)
         self.documentTap = documentTap
+        watch = session.watch { [weak self] snapshot in self?.follow(snapshot) }
+        homeWatch = session.watchHome { [weak self] home in self?.follow(home) }
         // The artifact, at the version it was pinned to; a file a link
         // opened inside it has no link of its own.
         if opened == nil, vault == nil {
@@ -223,6 +235,45 @@ final class ArtifactViewController: UIViewController, ChatMediaProviding {
 
     // MARK: Markdown
 
+    /// The Happy links in the document read as the names they have now,
+    /// as a conversation's do.
+    private func follow(_ snapshot: Snapshot) {
+        rows = snapshot.allRows
+        known = snapshot.references
+        known.instanceId = session.instanceId
+        referencesChanged()
+    }
+
+    private func follow(_ home: HomeSnapshot) {
+        let busy = References.busy(in: home.allRows)
+        guard busy != homeBusy else { return }
+        homeBusy = busy
+        referencesChanged()
+    }
+
+    /// Only the work of what the document links shows: another agent
+    /// starting or stopping plans nothing again.
+    private func referencesChanged(reading: Bool = true) {
+        var next = known
+        next.busy = documentText.map { known.busy.union(homeBusy).intersection(known.agents(in: $0)) } ?? []
+        guard next != references else { return }
+        references = next
+        if reading { readNamed() }
+        guard documentPlan != nil else { return }
+        plannedWidth = nil
+        Task { [weak self] in await self?.plan() }
+    }
+
+    /// The titles and names the document's links need, read once each.
+    private func readNamed() {
+        guard let text = documentText else { return }
+        let store = session.store
+        let artifacts = references.unread(in: text)
+        let users = references.unknownUsers(in: text)
+        if !artifacts.isEmpty { Task { await store.readArtifacts(artifacts) } }
+        if !users.isEmpty { Task { await store.readUsers(users) } }
+    }
+
     /// The Markdown with each picture it shows registered with the media
     /// source, drawn once their sizes are in (or a second has gone by), and
     /// drawn again as the rest arrive.
@@ -250,6 +301,9 @@ final class ArtifactViewController: UIViewController, ChatMediaProviding {
             if let shown { pictures[raw] = MarkdownDocument.Picture(media: shown, size: nil) }
         }
         documentText = prepared.0
+        // Its links' work, before its first plan.
+        referencesChanged(reading: false)
+        readNamed()
         let keys = Array(Set(pictures.values.map(\.media.key)))
         let sizes = Task { [weak self] in
             await withTaskGroup(of: Void.self) { group in
@@ -306,8 +360,12 @@ final class ArtifactViewController: UIViewController, ChatMediaProviding {
         let key = ChatPlanner.Key(width: width, maxContentWidth: ContentWidth.maxWidth, environment: traitCollection.textEnvironment)
         let syntax = session.syntax
         let id = "artifact:\(artifact.id):\(documentPath)"
+        let references = references
         let plan = await Task.detached(priority: .userInitiated) {
-            Self.plan(text, id: id, key: key, syntax: syntax, document: MarkdownDocument(pictures: shown))
+            // Its Happy links read as a message's, but keep the words they
+            // were written with: only an empty `[]` reads as the live name.
+            let resolved = HappyReferences.markdown(text, instanceId: references.instanceId, keepingLabels: true, view: references.view)
+            return Self.plan(resolved, id: id, key: key, syntax: syntax, document: MarkdownDocument(pictures: shown), references: references)
         }.value
         // Only the newest plan is drawn.
         guard generation == planning else { return }
@@ -329,10 +387,10 @@ final class ArtifactViewController: UIViewController, ChatMediaProviding {
 
     /// The agent text's look (desktop's Figtree 16/24 markdown) in the
     /// reading column, its pictures in their own shapes.
-    nonisolated static func plan(_ text: String, id: String, key: ChatPlanner.Key, syntax: CodeSyntaxService, document: MarkdownDocument) -> ChatRowPlan {
+    nonisolated static func plan(_ text: String, id: String, key: ChatPlanner.Key, syntax: CodeSyntaxService, document: MarkdownDocument, references: References? = nil) -> ChatRowPlan {
         let markdown = MarkdownPiece(
             text, color: Palette.text, diagrams: ChatMermaidHeights(row: id), syntax: syntax, in: key.environment,
-            body: ChatTextStyles.text, header: ChatTextStyles.header, document: document
+            body: ChatTextStyles.text, header: ChatTextStyles.header, document: document, links: references
         )
         let layout = MessageLayout.agent(width: key.width, maxContentWidth: key.maxContentWidth, parts: [.markdown(markdown.blocks)])
         guard case .markdown(let placed, let origin)? = layout.parts.first else { return ChatRowPlan(id: id, size: layout.size, items: []) }
@@ -366,9 +424,12 @@ final class ArtifactViewController: UIViewController, ChatMediaProviding {
         openViewer(all, index: all.firstIndex { $0.key == key } ?? 0)
     }
 
-    /// A link in the document: another of the artifact's files opens here,
+    /// A link in the document: what a Happy link names opens in the app, as
+    /// one in a message does; another of the artifact's files opens here,
     /// pushed; an address on the web in the browser, through the computer.
     func open(link: String) {
+        // A file it links as the instance link it means here.
+        if openHappyLink(link, references: references, rows: rows, session: session) { return }
         switch ArtifactMarkdown.resolve(link, from: documentPath) {
         case .file(let path, _):
             guard let version, let media, let file = version.files.first(where: { $0.path == path }) else { return show(alert: Strings.ArtifactMedia.fileUnavailable) }

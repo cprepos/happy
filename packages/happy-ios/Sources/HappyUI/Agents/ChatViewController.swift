@@ -177,8 +177,15 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         known.subagents = chat.subagentTitles
         known.instanceId = session.instanceId
         known.closedFiles = closedFiles
+        // Only the work of what the messages link shows: another agent
+        // starting or stopping plans nothing again.
+        known.busy = references.busy.union(homeBusy).intersection(linkedAgents)
         return known
     }
+    /// The agents home's rows show at work.
+    private var homeBusy: Set<String> = []
+    /// The agents the messages name, by tag or link.
+    private var linkedAgents: Set<String> = []
     /// File links found not to open here, read as their words.
     private var closedFiles: Set<String> = []
     /// File links being read, so a second tap waits for the first.
@@ -899,8 +906,9 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         // ones too.
         // References in messages read as the names they have now.
         if snapshot.references != references {
+            let shown = subagentReferences
             references = snapshot.references
-            replan()
+            if subagentReferences != shown { replan() }
         }
         if snapshot.allRows != sidebarRows {
             sidebarRows = snapshot.allRows
@@ -927,6 +935,12 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
     /// or task the agent renames is renamed here too, on a computer whose
     /// sidebar is the account's bootstrap rather than the spaces document.
     private func follow(_ home: HomeSnapshot) {
+        let busy = References.busy(in: home.allRows)
+        if busy != homeBusy {
+            let shown = subagentReferences
+            homeBusy = busy
+            if subagentReferences != shown { replan() }
+        }
         let agentId = media.agentId
         let spaceId = spaceId
         guard let row = home.allRows.first(where: { row in spaceId.map { row.spaceId == $0 } ?? (row.agentId == agentId && row.depth == 0) }),
@@ -1260,7 +1274,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
 
     /// Plans the rows off the main thread, then shows them in one frame.
     private func replan() {
-        let key = planKey
+        var key = planKey
         // Nothing is planned from history not yet read.
         guard key.width > 0, !reading(chat) else { return }
         // Ticks outlive only the question they were for.
@@ -1277,7 +1291,9 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         }
         // Only words not looked through yet, as of what references read as
         // now: a long conversation isn't read again on every layout pass.
-        if scanned.references != references { scanned = Scanned(references: references) }
+        var settled = references
+        settled.busy = []
+        if scanned.references != settled { scanned = Scanned(references: settled) }
         // A row is looked into once per making of it (`ChatItem.revision`):
         // its words aren't joined and compared again on every word that
         // lands in another row.
@@ -1292,6 +1308,14 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
             guard scanned.texts[item.id] != text else { continue }
             scanned.texts[item.id] = text
             fresh.append(item)
+        }
+        // The agents they link, whose work their links show.
+        // Share links count only as addressed to this computer, as `subagentReferences` knows it.
+        let known = subagentReferences
+        let linked = linkedAgents.union(fresh.flatMap { known.agents(in: $0.text) })
+        if linked != linkedAgents {
+            linkedAgents = linked
+            key = planKey
         }
         // Artifacts the messages name are read for their titles, once each.
         let unread = fresh.flatMap { references.unread(in: $0.text) }
@@ -2019,37 +2043,9 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         replan()
     }
 
-    /// What a message names, opened over this one: a conversation, or an
-    /// artifact at the version the reference pinned.
+    /// What a message names, opened over this one.
     private func open(_ reference: HappyReferences.Reference) {
-        if reference.kind == "artifact" {
-            // Still being read, the viewer reads it itself.
-            var known: (title: String, type: String, latest: Int) = ("", "", 1)
-            switch references.artifacts[reference.id] {
-            case .active(let title, let type, let latest)?: known = (title, type, latest)
-            case nil: let store = session.store; Task { await store.readArtifacts([reference.id]) }
-            default: return
-            }
-            var artifact = Artifact(id: reference.id, version: reference.version ?? known.latest, type: known.type, title: known.title, followsLatest: reference.version == nil)
-            artifact.pinned = reference.version != nil
-            openArtifact(artifact, session: session)
-            return
-        }
-        if reference.kind == "surface" {
-            guard let surface = references.surfaces[reference.id] else { return }
-            navigationController?.pushViewController(SurfaceScreens.make(session: session, surface: surface), animated: true)
-            return
-        }
-        guard let entity = references.entity(reference) else { return }
-        // A bot's or task's own conversation opens as its row opens it: renamed in its bar, its mark in the intro.
-        let row = sidebarRows.first { $0.kind == .space && $0.agentId == entity.agentId }
-        let intro: Intro? = switch row?.mark {
-        case .clay(let slug)?: .clay(slug)
-        default: nil
-        }
-        let title = references.view(reference).label
-        let chat = ChatViewController(session: session, agentId: entity.agentId, title: title, spaceId: row?.spaceId, intro: intro)
-        navigationController?.pushViewController(chat, animated: true)
+        openReference(reference, references: references, rows: sidebarRows, session: session)
     }
 
     func loadOlder() {
@@ -2062,13 +2058,10 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         }
     }
 
-    /// A link in a row: the reference it names, else the web.
+    /// A link in a row: a Happy link in the app, else the web.
     private func open(link: String) {
-        if let reference = HappyReferences.reference(link: link) { open(reference) }
-        else if let page = SettingsLinkPlace.page(link) { SettingsLinks.open(page, options: HappyLink(link)?.providerOptions ?? .init(), session: session, from: self) }
-        else if let file = ChatLinks.file(link) { open(file) }
-        else if HappyLink.isHappyURL(link) { return }
-        else if let url = URL(string: link) { openBrowser(url, session: session, agentID: media.agentId) }
+        if openHappyLink(link, references: subagentReferences, rows: sidebarRows, session: session, file: { [weak self] in self?.open($0) }) { return }
+        if let url = URL(string: link) { openBrowser(url, session: session, agentID: media.agentId) }
     }
 
     /// A file link, read before anything shows: the file read-only over

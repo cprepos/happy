@@ -22,6 +22,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberUpdatedState
@@ -58,6 +59,7 @@ import com.slopus.happy.ui.conversation.SendFlight
 import com.slopus.happy.ui.conversation.SendFlightOverlay
 import com.slopus.happy.ui.conversation.keyboardPadding
 import com.slopus.happy.ui.conversation.rememberKeyboardLift
+import com.slopus.happy.ui.conversation.reservingKeyboard
 import com.slopus.happy.ui.conversation.riding
 import com.slopus.happy.ui.components.Header
 import com.slopus.happy.ui.components.HeaderBackButton
@@ -255,7 +257,8 @@ fun ChatScreen(
     val toolEnvironment = remember(compactToolCalls, showLineNumbersInToolViews, flavor, path) {
         ToolEnvironment(compactToolCalls = compactToolCalls, showLineNumbers = showLineNumbersInToolViews, flavor = flavor, path = path)
     }
-    val listState = rememberLazyListState()
+    // Each chat's own scroll: one switched to in place (another tab) opens at its newest row.
+    val listState = key(session?.id) { rememberLazyListState() }
     val loadOlder by rememberUpdatedState(actions.loadOlder)
     val pager = remember(session?.id) { OlderPager { loadOlder() } }
     val callbacks = remember(actions) {
@@ -305,6 +308,8 @@ fun ChatScreen(
                 source = glass,
                 // Only the transcript runs under the bar; what stands in for it is held below the bar's foot.
                 feathered = showsList,
+                // A chat being started has no glass: its new work's picture slides up under Back still seen (Kirill).
+                clear = session == null && pending != null,
                 bar = {
                     Column(Modifier.liftBackdrop(lift, blur)) {
                         // An empty chat's header is Back alone; its name and actions fade in with the first send (iOS 323fb2e9f).
@@ -360,32 +365,38 @@ fun ChatScreen(
                     ) {
                         // The list runs under the bar and the floating dock; anything else keeps to the room between them.
                         // The chat blurs behind a held message; the composer stays sharp ([liftClear]).
-                        Box(Modifier.fillMaxSize().liftBackdrop(lift, blur).padding(top = if (showsList) 0.dp else top - GlassSpec.feather, bottom = if (showsList) 0.dp else dockInset)) {
+                        // A chat being started holds still where the keyboard would leave it, up or not, so the
+                        // keyboard coming or going never moves what it asks.
+                        val holdsStill = session == null && pending != null
+                        Box(Modifier.fillMaxSize().then(if (holdsStill) Modifier.reservingKeyboard(keyboard) else Modifier).liftBackdrop(lift, blur).padding(top = if (showsList) 0.dp else top - GlassSpec.feather, bottom = if (showsList) 0.dp else dockInset)) {
                             when {
                                 session == null && pending != null -> pending.placeholder()
                                 !state.sessionLoaded -> Spinner(Modifier.align(Alignment.Center).testTag(ChatScreenTags.LOADING))
                                 session == null -> DeletedSession()
-                                state.snapshot.rows.isNotEmpty() -> CompositionLocalProvider(LocalToolEnvironment provides toolEnvironment, LocalToolAgentState provides session.agentState) {
-                                    ChatList(
-                                        rows = state.snapshot.rows,
-                                        hasMoreOlder = state.snapshot.hasMoreOlder,
-                                        isLoadingOlder = state.snapshot.isLoadingOlder,
-                                        controlledByUser = session.usesControlledSessionUi && session.agentState?.controlledByUser == true,
-                                        bubble = bubble,
-                                        callbacks = callbacks,
-                                        pager = pager,
-                                        state = listState,
-                                        bottomInset = dockInset,
-                                        topInset = top,
-                                        scrollButtonInset = cardInset?.takeIf { docked }?.let { with(density) { it.coerceAtLeast(0f).toDp() } },
-                                        onNewestVisibleChange = if (floating) { visible -> atNewest = visible } else null,
-                                        sessionId = session.id,
-                                        groupToolCalls = groupToolCalls,
-                                        currentTurnComplete = isCurrentTurnComplete(state.thinking, session.agentState),
-                                        foreground = foreground,
-                                        working = state.sessionState == SessionState.Thinking,
-                                        flight = flight,
-                                    )
+                                // A chat switched to in place is a list of its own, none of the last one's rows or groups kept.
+                                state.snapshot.rows.isNotEmpty() -> key(session.id) {
+                                    CompositionLocalProvider(LocalToolEnvironment provides toolEnvironment, LocalToolAgentState provides session.agentState) {
+                                        ChatList(
+                                            rows = state.snapshot.rows,
+                                            hasMoreOlder = state.snapshot.hasMoreOlder,
+                                            isLoadingOlder = state.snapshot.isLoadingOlder,
+                                            controlledByUser = session.usesControlledSessionUi && session.agentState?.controlledByUser == true,
+                                            bubble = bubble,
+                                            callbacks = callbacks,
+                                            pager = pager,
+                                            state = listState,
+                                            bottomInset = dockInset,
+                                            topInset = top,
+                                            scrollButtonInset = cardInset?.takeIf { docked }?.let { with(density) { it.coerceAtLeast(0f).toDp() } },
+                                            onNewestVisibleChange = if (floating) { visible -> atNewest = visible } else null,
+                                            sessionId = session.id,
+                                            groupToolCalls = groupToolCalls,
+                                            currentTurnComplete = isCurrentTurnComplete(state.thinking, session.agentState),
+                                            foreground = foreground,
+                                            working = state.sessionState == SessionState.Thinking,
+                                            flight = flight,
+                                        )
+                                    }
                                 }
                                 state.snapshot.loaded -> EmptyMessages(
                                     session = session,

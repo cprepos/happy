@@ -340,6 +340,9 @@ class AgentSession internal constructor(
         }
     }
 
+    /** Whether [instanceId] is this connection's installation, as its health last said: its share links read as its own. */
+    fun isHere(instanceId: String): Boolean = connections.accounts.value.firstOrNull { it.id == connectionId }?.instanceId == instanceId
+
     /** What the Happy references in this connection's messages read as, and the titles and names they need read. */
     val references: com.slopus.happy.references.ReferenceReader by lazy {
         com.slopus.happy.references.ReferenceReader(
@@ -363,6 +366,9 @@ class AgentSession internal constructor(
             keep = { key, value -> kotlinx.coroutines.withContext(Dispatchers.IO) { keepResource(key, value) } },
         )
     }
+
+    /** Whether the computer takes message attachments, as this connection's first upload found. */
+    val attachmentRoute = com.slopus.happy.conversation.AttachmentRoute()
 
     /** Bots' pictures, as home's rows draw them. */
     /** Chat media kept on this phone for good, beside the catalog (iOS `MediaLibrary.agent`); null where nothing is kept. */
@@ -654,12 +660,16 @@ class AgentSession internal constructor(
                 linking = on && signedIn
                 when {
                     !signedIn -> statusState.value = AgentLinkStatus.SignInRequired
+                    // Off the collector: Tailcat's reads block their thread, and on the collector's
+                    // they would hold up the next value, so a background could not stop the link.
                     on -> coroutineScope {
-                        // Kept through a background: its tunnels check every way to the
-                        // agent before the stream asks them for anything.
-                        if (suspended.getAndSet(false)) linkLock.withLock { route?.second }?.resumed()
-                        launch { watchGit() }
-                        live()
+                        launch {
+                            // Kept through a background: its tunnels check every way to the
+                            // agent before the stream asks them for anything.
+                            if (suspended.getAndSet(false)) linkLock.withLock { route?.second }?.resumed()
+                            launch { watchGit() }
+                            live()
+                        }
                     }
                     statusState.value == AgentLinkStatus.SignInRequired -> statusState.value = AgentLinkStatus.Connecting
                 }
