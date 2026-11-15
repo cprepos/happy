@@ -81,12 +81,23 @@ export const NO_WEBGL_ARGS = ["--disable-gpu", "--disable-software-rasterizer"];
 export const WEBGL_ARGS = ["--ignore-gpu-blocklist"];
 
 /**
- * The launch options server.mjs asked for, less NO_WEBGL_ARGS, with WEBGL_ARGS and this file's window flags added
+ * BROWSER_GPU=1 (the launcher sets it when the pod has a GPU, BROWSER_GPU in its config): the
+ * NVIDIA runtime has put that GPU and the driver's Vulkan ICD in the container, and ANGLE renders
+ * WebGL and compositing on it through Vulkan (X11 has no GLX/EGL on the GPU here: Xvfb is
+ * software). --enable-features, not --disable-features: server.mjs passes its own
+ * --disable-features list, and Chromium keeps only the last of each.
+ */
+export const GPU_ARGS = ["--use-angle=vulkan", "--enable-features=Vulkan,VulkanFromANGLE,DefaultANGLEVulkan"];
+export const gpuMode = (env = process.env) => String(env.BROWSER_GPU ?? "") === "1";
+
+/**
+ * The launch options server.mjs asked for, less NO_WEBGL_ARGS, with WEBGL_ARGS (and GPU_ARGS with
+ * BROWSER_GPU=1) and this file's window flags added
  * and, when BROWSER_EXECUTABLE_PATH is set, the browser binary it names (an absolute path, or refused).
  */
 export function launchOptions(options = {}, { kiosk = kioskMode(), env = process.env } = {}) {
   const asked = (options.args || []).filter((a) => !NO_WEBGL_ARGS.includes(a));
-  const out = { ...options, args: [...asked, ...WEBGL_ARGS, ...argsFor(kiosk)] };
+  const out = { ...options, args: [...asked, ...WEBGL_ARGS, ...(gpuMode(env) ? GPU_ARGS : []), ...argsFor(kiosk)] };
   const exe = String(env.BROWSER_EXECUTABLE_PATH ?? "");
   if (exe) {
     if (!exe.startsWith("/") || /\s/.test(exe)) throw new Error("BROWSER_EXECUTABLE_PATH must be an absolute path");

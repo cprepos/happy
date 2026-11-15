@@ -99,7 +99,12 @@ export function launcherConfig(env = process.env) {
         // browser_screenshot's default view: desktop (the whole screen, panel and clock) or tab.
         screenshotTimeMode: env.SCREENSHOT_TIME_MODE || 'desktop',
         mcpProfile: env.MCP_TOOL_PROFILE || 'curated',
+        // BROWSER_GPU: one GPU (its UUID, GPU-<uuid>, which survives the cards being moved, or its
+        // index) every node renders on, through the NVIDIA runtime; unset, the browser renders in
+        // software (llvmpipe). The docker proxy allows only the GPU its PROXY_NODE_GPU names.
+        gpu: String(env.BROWSER_GPU ?? '').trim(),
     };
+    if (cfg.gpu && !/^(GPU-[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}|\d{1,2})$/.test(cfg.gpu)) throw new Error("BROWSER_GPU must be one GPU's UUID (GPU-...) or index");
     if (!/^[A-Za-z0-9_+-]+(\/[A-Za-z0-9_+-]+)*$/.test(cfg.evidenceTz)) throw new Error('EVIDENCE_TZ must be an IANA zone name');
     if (!SCREENSHOT_VIEWS.has(cfg.screenshotTimeMode)) throw new Error('SCREENSHOT_TIME_MODE must be desktop or tab');
     // The desktop panel above the window; the kiosk has none.
@@ -236,6 +241,9 @@ export function nodeSpec(cfg, { slot, podId, vncPassword, image, seccomp }) {
             'NOVNC_ALLOWED_HOSTS=',
             'NOVNC_ALLOWED_ORIGINS=',
             'HOME=/tmp',
+            // happy-kiosk.mjs renders through ANGLE's Vulkan backend on it.
+            `BROWSER_GPU=${cfg.gpu ? 1 : 0}`,
+            ...(cfg.gpu ? [`NVIDIA_VISIBLE_DEVICES=nvidia.com/gpu=${cfg.gpu}`] : []),
         ],
         User: `${cfg.nodeUid}:${cfg.nodeGid}`,
         Labels: labels(cfg, slot, podId, 'node'),
@@ -252,6 +260,7 @@ export function nodeSpec(cfg, { slot, podId, vncPassword, image, seccomp }) {
             NanoCpus: 2e9,
             Init: true,
             RestartPolicy: { Name: 'no' },
+            ...(cfg.gpu ? { Runtime: 'nvidia' } : {}),
             Binds: [
                 `${dir}/browser-profile:/data/profile`,
                 `${dir}/downloads:/data/downloads`,

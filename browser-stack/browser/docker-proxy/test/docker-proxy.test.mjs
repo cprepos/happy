@@ -18,18 +18,20 @@ const SECRETS = { apiToken: 't', authStateKey: 'k', shareTokenSecret: 's' };
 const POD = 'a'.repeat(32);
 const quiet = { log() {}, warn() {} };
 
-function setup() {
+function setup({ launcher = {}, proxy = {} } = {}) {
     const home = mkdtempSync(join(tmpdir(), 'docker-proxy-test-'));
     const me = { uid: process.getuid(), gid: process.getgid() };
     const lcfg = launcherConfig({
         LAUNCHER_BROWSER_DIR: BROWSER_DIR, LAUNCHER_HOME: home, LAUNCHER_PROJECT: 'hbtest',
         POD_DATA_UID: String(me.uid), POD_DATA_GID: String(me.gid), POD_NODE_UID: String(me.uid + 1), POD_NODE_GID: String(me.gid),
+        ...launcher,
     });
     const pcfg = proxyConfig({
         PROXY_PROJECT: 'hbtest', PROXY_IMAGES: `${IMAGES.node},${IMAGES.controller}`,
         PROXY_PODS_DIR: lcfg.podsDir, PROXY_RO_DIR: BROWSER_DIR,
         PROXY_NODE_UID: String(lcfg.nodeUid), PROXY_NODE_GID: String(lcfg.nodeGid),
         PROXY_CONTROLLER_UID: String(lcfg.dataUid), PROXY_CONTROLLER_GID: String(lcfg.dataGid),
+        ...proxy,
     });
     return { home, lcfg, pcfg };
 }
@@ -111,6 +113,64 @@ test('create: anything outside the templates is refused', () => {
     bad(c, (b) => { b.Labels['happy-browser.project'] = 'happy-browser'; }, /labels/);
     bad(c, (b) => { b.Volumes = { '/x': {} }; }, /Volumes/);
     bad(c, (b) => { b.Privileged = true; }, /Privileged/);
+});
+
+test('GPU: only the node, only the nvidia runtime, only the one GPU PROXY_NODE_GPU names', () => {
+    const uuid = 'GPU-ec736653-87c9-a837-d134-886e38ccc778';
+    const other = 'GPU-6745b153-e0f6-c968-9d13-bd1024729c40';
+    const { lcfg, pcfg } = setup({ launcher: { BROWSER_GPU: uuid }, proxy: { PROXY_NODE_GPU: uuid } });
+    const s = specs(lcfg);
+    assert.equal(s.node.HostConfig.Runtime, 'nvidia');
+    assert.ok(s.node.Env.includes(`NVIDIA_VISIBLE_DEVICES=nvidia.com/gpu=${uuid}`));
+    assert.ok(s.node.Env.includes('BROWSER_GPU=1'));
+    assert.equal(s.controller.HostConfig.Runtime, undefined);
+    checkCreate(pcfg, 'hbtest-pod-2-node', s.node);
+    checkCreate(pcfg, 'hbtest-pod-2-controller', s.controller);
+
+    const refused = (name, body, re) => assert.throws(() => checkCreate(pcfg, name, body), re);
+    const withEnv = (f) => { const b = clone(s.node); b.Env = f(b.Env); return b; };
+    const swap = (v) => withEnv((e) => e.map((x) => (x.startsWith('NVIDIA_VISIBLE_DEVICES=') ? `NVIDIA_VISIBLE_DEVICES=${v}` : x)));
+    for (const v of [`nvidia.com/gpu=${other}`, 'all', 'nvidia.com/gpu=all', '0', uuid, `nvidia.com/gpu=${uuid},nvidia.com/gpu=${other}`]) {
+        refused('hbtest-pod-2-node', swap(v), /PROXY_NODE_GPU/);
+    }
+    refused('hbtest-pod-2-node', withEnv((e) => e.filter((x) => !x.startsWith('NVIDIA_'))), /PROXY_NODE_GPU/);
+    // Every other NVIDIA_* variable picks what the runtime injects: refused, with or without it.
+    for (const extra of ['NVIDIA_DRIVER_CAPABILITIES=all', 'NVIDIA_VISIBLE_DEVICES=all', 'NVIDIA_REQUIRE_CUDA=cuda>=12', 'NVIDIA_MIG_CONFIG_DEVICES=all']) {
+        refused('hbtest-pod-2-node', withEnv((e) => [...e, extra]), /PROXY_NODE_GPU/);
+        const ctl = clone(s.controller); ctl.Env = [...ctl.Env, extra];
+        refused('hbtest-pod-2-controller', ctl, /NVIDIA_\* Env/);
+    }
+    for (const rt of ['runc', 'nvidia-legacy', 'io.containerd.runc.v2', '']) {
+        const b = clone(s.node); b.HostConfig.Runtime = rt;
+        refused('hbtest-pod-2-node', b, /Runtime/);
+    }
+    const ctl = clone(s.controller); ctl.HostConfig.Runtime = 'nvidia';
+    ctl.Env = [...ctl.Env, `NVIDIA_VISIBLE_DEVICES=nvidia.com/gpu=${uuid}`];
+    refused('hbtest-pod-2-controller', ctl, /Runtime/);
+    // The legacy and CDI device fields stay closed.
+    for (const k of ['DeviceRequests', 'Devices', 'DeviceCgroupRules', 'Privileged']) {
+        const b = clone(s.node); b.HostConfig[k] = k === 'Privileged' ? true : [];
+        refused('hbtest-pod-2-node', b, /not allowed/);
+    }
+    // The GPU must be the one the proxy names; with none named, no node gets one.
+    const elsewhere = setup({ launcher: { BROWSER_GPU: other }, proxy: { PROXY_NODE_GPU: uuid } });
+    assert.throws(() => checkCreate(elsewhere.pcfg, 'hbtest-pod-2-node', specs(elsewhere.lcfg).node), /PROXY_NODE_GPU/);
+    const off = setup({ launcher: { BROWSER_GPU: uuid } });
+    assert.equal(off.pcfg.nodeGpu, '');
+    assert.throws(() => checkCreate(off.pcfg, 'hbtest-pod-2-node', specs(off.lcfg).node), /Runtime/);
+    // Without a GPU, the node is as before: no runtime, no NVIDIA_* variable.
+    const plain = setup();
+    const n = specs(plain.lcfg).node;
+    assert.equal(n.HostConfig.Runtime, undefined);
+    assert.ok(n.Env.includes('BROWSER_GPU=0'));
+    assert.ok(!n.Env.some((e) => e.startsWith('NVIDIA_')));
+    assert.throws(() => checkCreate(plain.pcfg, 'hbtest-pod-2-node', { ...clone(n), Env: [...n.Env, `NVIDIA_VISIBLE_DEVICES=nvidia.com/gpu=${uuid}`] }), /NVIDIA_\* Env/);
+
+    assert.equal(setup({ proxy: { PROXY_NODE_GPU: '1' } }).pcfg.nodeGpu, 'nvidia.com/gpu=1');
+    for (const v of ['all', 'nvidia.com/gpu=0', 'GPU-XYZ', '0,1', '123', 'GPU-EC736653-87C9-A837-D134-886E38CCC778']) {
+        assert.throws(() => setup({ proxy: { PROXY_NODE_GPU: v } }), /PROXY_NODE_GPU/);
+        assert.throws(() => setup({ launcher: { BROWSER_GPU: v } }), /BROWSER_GPU/);
+    }
 });
 
 test('exec: python3 as the node uid only', () => {

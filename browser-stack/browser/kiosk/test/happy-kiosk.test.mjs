@@ -155,3 +155,16 @@ test('launchOptions drops the flags that turn WebGL off, and only those, and add
     assert.deepEqual(out.args, ['--disable-dev-shm-usage', '--no-first-run', ...K.WEBGL_ARGS, ...K.WINDOW_ARGS]);
     assert.equal(base.args.length, 4, 'the caller\'s options are not changed');
 });
+
+test('launchOptions: BROWSER_GPU=1 renders through ANGLE on Vulkan, and only then', () => {
+    const base = { args: ['--no-first-run', '--disable-features=A,B'] };
+    const gpu = K.launchOptions(base, { kiosk: false, env: { BROWSER_GPU: '1' } });
+    assert.deepEqual(gpu.args, ['--no-first-run', '--disable-features=A,B', ...K.WEBGL_ARGS, ...K.GPU_ARGS, ...K.WINDOW_ARGS]);
+    assert.ok(K.GPU_ARGS.includes('--use-angle=vulkan'));
+    // server.mjs's --disable-features list is the only one: Chromium keeps the last.
+    assert.equal(gpu.args.filter((a) => a.startsWith('--disable-features=')).length, 1);
+    for (const v of [undefined, '', '0', 'true', ' 1']) {
+        assert.deepEqual(K.launchOptions(base, { kiosk: false, env: { BROWSER_GPU: v } }).args,
+            ['--no-first-run', '--disable-features=A,B', ...K.WEBGL_ARGS, ...K.WINDOW_ARGS], String(v));
+    }
+});
