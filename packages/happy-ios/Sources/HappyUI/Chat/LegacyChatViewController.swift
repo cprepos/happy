@@ -80,6 +80,8 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
             guard let self else { return picked(nil) }
             self.askLegacyComputer(choices, session: record, machine: nil, settings: self.account.localSettings, picked: picked)
         }
+        // The full screen's wait bar shows the chat where it is answered.
+        dock.onShowWait = { [weak self] in self?.scrollToNewest() }
         return dock
     }()
     /// The transcript's newest live link.
@@ -1425,6 +1427,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         awaitingRecord = false
         awaitingRecordTask.task?.cancel()
         resumeWait?.cancel(); resumeProgress = ResumeProgress()
+        liveDock.chatWait = nil
         goalInFlight = nil
         questionSheet?.dismiss(animated: false)
         sessionId = id
@@ -2013,6 +2016,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         }
         goalBar.isHidden = goal == nil
         updateQuestionBanner()
+        liveDock.chatWait = ChatWait.legacy(session.agentState)
         rigActivity.show(RigActivityIndicator.indicators(session.metadata), running: facts?.runningSubagents ?? [])
         rigActivity.isHidden = rigActivity.content.isEmpty
 

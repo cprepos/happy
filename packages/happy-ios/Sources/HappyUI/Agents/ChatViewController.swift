@@ -60,6 +60,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
     lazy var liveDock: LiveBrowserDock = {
         let dock = LiveBrowserDock(host: self, chatKey: "agent.\(media.agentId)")
         dock.onLayoutChange = { [weak self] in self?.view.setNeedsLayout() }
+        dock.onShowWait = { [weak self] in self?.jumpToLatest() }
         return dock
     }()
     private let previewPill = GlassCapsuleView()
@@ -1049,6 +1050,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         updateLoadFailure()
         if !snapshot.items.isEmpty { dismissNewWorkPanel() }
         if !previewing { liveDock.update(link: snapshot.latestLiveBrowser) }
+        updateLiveBrowserWait()
         updatePrimary()
         updateChips()
         updateSlash()

@@ -38,6 +38,13 @@ extension ChatViewController {
     /// The key the bridge is asked by first for this chat's browser.
     var liveBrowserKey: String { liveBrowserIdentity.keys()[0] }
 
+    /// What the agent waits on the person for (its question, its timed
+    /// wait): the live browser's full screen says it.
+    func updateLiveBrowserWait() {
+        guard !previewing else { return }
+        liveDock.chatWait = ChatWait.agent(chat)
+    }
+
     /// What of the live browser rides the keyboard with the card.
     var liveDockRiders: [UIView] { previewing ? [] : [liveDock.indicator] + liveDock.riders }
 
