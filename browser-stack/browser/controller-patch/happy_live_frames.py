@@ -25,6 +25,8 @@ element; not disabled or read-only), followed into shadow roots and frames. The 
 while the person holds the browser, so the app's native viewer brings up the keyboard by itself. It
 answers only that one boolean, never the field or its value; it takes no lock and changes nothing in
 the page. The controller's bearer-token middleware and session ownership apply to it as to any route.
+Before it reads, it makes the tab the person has in front the session's page (see "a new tab the
+person opens" below, which also lets a tab the person opens with Ctrl+T or the tab strip's "+" work).
 
 And two routes for browser_screenshot's whole-screen capture (see "the whole-screen screenshot" below):
 POST /happy/sessions/{session_id}/screen/front brings the session's tab to the front and hands out a
@@ -77,10 +79,11 @@ EXPECTED_SHA256 = {
     "browser/services/actions.py": "861f865cf05a2c64102000decfac41f16701fde642ff898f3cb43cfe94c3a29a",
     "actions/pipeline.py": "0eed86efa2cfe54a1ea827d6a03bbceeba3914695625fd521681d9d4b1d4d31a",
     "browser_manager.py": "c5410eb4c2731102e75d575e46df6a44cbba5d39c660998936418ee1124364a3",
-    # New tabs (see "a new tab the person opens"): the page guard and attach_popup's hold, and the provenance
-    # it records.
+    # New tabs (see "a new tab the person opens"): the page guard and attach_popup's hold, the provenance
+    # it records, and the tab activate adopt_tab mirrors to follow the person's tab.
     "browser/services/diagnostics.py": "513ba73b6ae613e2d428a09417f5d52e328803e4ca87411f777c9912ae116adc",
     "browser/page_provenance.py": "e7f89cc529daee1cb489995388d562052400ae764d5f406d7b91c1213b2f5544",
+    "browser/services/tabs.py": "04c52a6b8428c144df4b75af0618fb117e2b1c4671d057cad57b3d408d1d9daf",
 }
 
 # A lockless capture: how long a poll waits on it before serving the previous frame, and the
@@ -1205,6 +1208,11 @@ def install_routes(application: Any, manager: Any) -> None:
         # An unknown session, or another operator's, is a KeyError: the app's 404.
         session = await manager.get_session(session_id)
         try:
+            # Asked while the person holds the browser: the session follows the tab they have in front.
+            await follow_active_tab(manager, session_id)
+        except Exception as exc:
+            logger.debug("tab follow failed: %s", type(exc).__name__)
+        try:
             manager._assert_page_allowed(session)
             return {"editable_focused": await editable_focused(session.page)}
         except Exception as exc:
@@ -1513,6 +1521,7 @@ def build_scroll(actions_module: Any) -> dict[str, Any]:
 #   refuses every scheme but http(s), about:, data:, blob: and chrome-error:. The page guard sent it to
 #   about:blank, and while it was open on a non-http page, held for a verdict, it counted as refused for
 #   the session (counts_for_its_session), so the session's own tab's commits were refused too.
+# - The frame view, /nav and the agent follow session.page only, so the new tab was never seen.
 #
 # What this changes:
 #
@@ -1531,8 +1540,40 @@ def build_scroll(actions_module: Any) -> dict[str, Any]:
 #   and the new-tab page's document has a chrome:// origin no web page shares, so nothing the session's
 #   pages ran can be in it. What the person types next is judged as any navigation is (the URL list,
 #   the gate, the session's taint).
+# - follow_active_tab, called by GET /happy/sessions/{id}/focus (which the bridge asks only while the
+#   person holds the browser, as often as the app polls /state): when the person has another of the
+#   session's tabs in front, that tab becomes session.page through adopt_tab: the controller's own tab
+#   activate (BrowserTabService.activate) without its bring_to_front, which would take the keyboard
+#   focus from the address bar. It refuses a refused tab as activate does for the agent. The tab in front
+#   is the one the person last used: the latest of the moment the person opened it (the new-tab commit
+#   above) and the last trusted click, key, wheel or touch in it. document.visibilityState and
+#   document.hasFocus() cannot tell: Playwright's focus emulation keeps every page of the browser
+#   visible and focused. Input is recorded in an isolated world (Page.createIsolatedWorld), whose
+#   listener and record a page's script can neither read nor write, and only for trusted events
+#   (event.isTrusted), which a script cannot make. A refused tab is not read at all. A tab switched to
+#   with the keyboard or the tab strip is followed once the person clicks or types in it. No polling of
+#   its own: it runs only when the focus route is asked.
 
 NEW_TAB_URLS = frozenset({"chrome://newtab/", "chrome://new-tab-page/"})
+# The world the active-tab read runs in, and its bounds.
+TAB_FOCUS_WORLD = "happy_tab_focus"
+# Installs the listener once per world (one per document), and answers the last trusted input's time (ms).
+TAB_FOCUS_SCRIPT = """(() => {
+  if (!window.__happyTabInput) {
+    const seen = (window.__happyTabInput = { at: 0 });
+    const mark = (event) => { if (event.isTrusted) seen.at = Date.now(); };
+    for (const type of ['pointerdown', 'keydown', 'wheel', 'touchstart']) {
+      window.addEventListener(type, mark, { capture: true, passive: true });
+    }
+  }
+  return window.__happyTabInput.at;
+})()"""
+TAB_FOCUS_TIMEOUT_SECONDS = 1.0
+# /focus waits this long for an activation it started; one that takes longer finishes in the background.
+TAB_FOLLOW_WAIT_SECONDS = 1.0
+_CDP_ATTR = "_happy_tab_focus_cdp"
+_FOLLOW_ATTR = "_happy_tab_follow"
+_OPENED_ATTR = "_happy_person_opened_at"
 
 
 def is_new_tab_url(url: Any) -> bool:
@@ -1567,12 +1608,128 @@ def build_new_tab(manager_module: Any, diagnostics_module: Any) -> tuple[dict[st
             provenance = self.manager.page_provenance
             if provenance.held_for_verdict(page) and not self.birth_pending(page) and not has_opener(page):
                 provenance.opened_by_controller(page)
+                # Ctrl+T and the tab strip's "+" bring the tab to the front: the person is on it now.
+                try:
+                    setattr(page, _OPENED_ATTR, time.time() * 1000)
+                except AttributeError:
+                    pass
         upstream_frame_navigated(self, session, page, frame, reported=reported)
 
     return (
         {"_assert_runtime_url_allowed": _assert_runtime_url_allowed},
         {"_on_frame_navigated": _on_frame_navigated},
     )
+
+
+async def _tab_input_at(page: Any) -> float | None:
+    """When the person last clicked, typed, scrolled or touched in the page's top document (ms since the
+    epoch, 0 for never), read in an isolated world; None when it can't be told."""
+    state = getattr(page, _CDP_ATTR, None)
+    if state is None:
+        state = {"cdp": await page.context.new_cdp_session(page), "doc": None, "ctx": None}
+        setattr(page, _CDP_ATTR, state)
+    cdp = state["cdp"]
+    tree = await cdp.send("Page.getFrameTree")
+    top = tree["frameTree"]["frame"]
+    doc = (top["id"], top.get("loaderId"))
+    if state["doc"] != doc:
+        # One world per document: a new document drops the old one's.
+        world = await cdp.send("Page.createIsolatedWorld", {"frameId": top["id"], "worldName": TAB_FOCUS_WORLD})
+        state["doc"], state["ctx"] = doc, world["executionContextId"]
+    try:
+        result = await cdp.send(
+            "Runtime.evaluate", {"expression": TAB_FOCUS_SCRIPT, "contextId": state["ctx"], "returnByValue": True}
+        )
+    except Exception:
+        state["doc"] = None  # the world went with its document: made again on the next read
+        raise
+    value = result.get("result", {}).get("value")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+async def _last_used(page: Any) -> float | None:
+    """The later of the person opening the tab and their last input in it; None when neither can be told."""
+    try:
+        at = await asyncio.wait_for(_tab_input_at(page), timeout=TAB_FOCUS_TIMEOUT_SECONDS)
+    except Exception as exc:
+        logger.debug("tab input read failed: %s", type(exc).__name__)
+        at = None
+    opened = getattr(page, _OPENED_ATTR, None)
+    known = [v for v in (at, opened) if isinstance(v, (int, float))]
+    return max(known) if known else None
+
+
+def front_tab(current: Any, states: list[tuple[Any, float | None]]) -> Any:
+    """The tab the person last used, when it is not the current one and was used after it; else None."""
+    used = [(at, page) for page, at in states if at]
+    if not used:
+        return None
+    at, target = max(used, key=lambda item: item[0])
+    if target is current:
+        return None
+    current_at = next((a for page, a in states if page is current), None) or 0
+    return target if at > current_at else None
+
+
+async def adopt_tab(manager: Any, session_id: str, target: Any) -> int | None:
+    """BrowserTabService.activate for a tab the person already has in front, minus its bring_to_front.
+
+    bring_to_front moves the keyboard focus into the page: the person typing a URL into a new tab's
+    address bar would type into the page instead. Everything else is activate's: the birth verdict
+    waited for, the session lock, the page's URL and provenance checked (a refused tab raises
+    PermissionError and the session stays where it was), its listeners, session.page, the session
+    persisted. None when the tab closed meanwhile.
+    """
+    session = await manager.get_session(session_id)
+    await manager.diagnostics.birth_judged(target)
+    async with session.lock:
+        if await manager.get_session(session_id) is not session:
+            return None
+        pages = manager.tabs.pages(session)
+        index = next((i for i, page in enumerate(pages) if page is target), None)
+        if index is None or target.is_closed():
+            return None
+        manager._assert_page_object_allowed(target)
+        manager._attach_page_listeners(target, session)
+        session.page = target
+        await manager._persist_session(session, status="active")
+        return index
+
+
+async def follow_active_tab(manager: Any, session_id: str) -> None:
+    """Make the tab the person has in front the session's page (see "a new tab the person opens")."""
+    session = await manager.get_session(session_id)
+    running = getattr(session, _FOLLOW_ATTR, None)
+    if running is not None and not running.done():
+        await asyncio.wait({running}, timeout=TAB_FOLLOW_WAIT_SECONDS)
+        return
+    pages = [page for page in manager.tabs.pages(session) if not page.is_closed()]
+    if len(pages) < 2:
+        return
+    # A refused tab is not read (nor activated: activate refuses it).
+    readable = [page for page in pages if not manager._page_refused(page)]
+    states = list(zip(readable, await asyncio.gather(*(_last_used(page) for page in readable))))
+    if not any(page is session.page for page in readable):
+        states.append((session.page, None))
+    target = front_tab(session.page, states)
+    if target is None:
+        return
+
+    async def activate() -> None:
+        try:
+            index = await adopt_tab(manager, session_id, target)
+        except PermissionError as exc:
+            logger.debug("tab in front not followed: %s", type(exc).__name__)
+            return
+        if index is not None:
+            logger.info("happy_live_frames: session %s follows the tab in front (index %d)", session_id, index)
+
+    task = asyncio.ensure_future(activate())
+    task.add_done_callback(_retrieve)
+    setattr(session, _FOLLOW_ATTR, task)
+    await asyncio.wait({task}, timeout=TAB_FOLLOW_WAIT_SECONDS)
 
 
 def apply() -> None:

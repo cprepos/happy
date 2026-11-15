@@ -1315,5 +1315,149 @@ class NewTabTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(hlf.has_opener(NtpPage(opener=object())))
 
 
+class FakeCdp:
+    def __init__(self, page: "TabPage") -> None:
+        self.page = page
+        self.worlds = 0
+
+    async def send(self, method: str, params: dict | None = None) -> dict:
+        if method == "Page.getFrameTree":
+            return {"frameTree": {"frame": {"id": "F", "loaderId": self.page.loader}}}
+        if method == "Page.createIsolatedWorld":
+            assert params["worldName"] == hlf.TAB_FOCUS_WORLD
+            self.worlds += 1
+            return {"executionContextId": self.worlds}
+        assert method == "Runtime.evaluate" and params["contextId"] == self.worlds
+        assert "isTrusted" in params["expression"]
+        return {"result": {"value": self.page.input_at}}
+
+
+class TabPage:
+    def __init__(self, input_at: float = 0) -> None:
+        self.input_at, self.loader = input_at, "L1"
+        self.cdp = FakeCdp(self)
+        self.context = SimpleNamespace(new_cdp_session=AsyncMock(return_value=self.cdp))
+
+    def is_closed(self) -> bool:
+        return False
+
+
+class FollowTabTests(unittest.IsolatedAsyncioTestCase):
+    def manager(self, pages: list, current: object, refused: tuple = ()) -> SimpleNamespace:
+        session = SimpleNamespace(page=current)
+
+        session.lock = asyncio.Lock()
+
+        def allowed(page: object) -> None:
+            if page in refused:
+                raise PermissionError("refused")
+
+        m = SimpleNamespace(
+            get_session=AsyncMock(return_value=session),
+            tabs=SimpleNamespace(pages=lambda s: list(pages)),
+            diagnostics=SimpleNamespace(birth_judged=AsyncMock()),
+            _page_refused=lambda page: page in refused,
+            _assert_page_object_allowed=MagicMock(side_effect=allowed),
+            _attach_page_listeners=MagicMock(),
+            _persist_session=AsyncMock(),
+            session=session,
+        )
+        m.adopted = []
+        real = hlf.adopt_tab
+
+        async def adopt(manager: object, sid: str, target: object) -> int | None:
+            index = await real(manager, sid, target)
+            m.adopted.append((sid, index))
+            return index
+
+        self._real_adopt = real
+        hlf.adopt_tab = adopt
+        self.addCleanup(setattr, hlf, "adopt_tab", real)
+        return m
+
+    async def test_the_tab_last_used_becomes_the_session_page(self) -> None:
+        old, new = TabPage(1000), TabPage(2000)
+        m = self.manager([old, new], old)
+        await hlf.follow_active_tab(m, "s1")
+        self.assertEqual(m.adopted, [("s1", 1)])
+        self.assertIs(m.session.page, new)
+        # Once it is the session's page, nothing more happens.
+        await hlf.follow_active_tab(m, "s1")
+        self.assertEqual(len(m.adopted), 1)
+        # Input back in the old tab follows it again.
+        old.input_at = 3000
+        await hlf.follow_active_tab(m, "s1")
+        self.assertIs(m.session.page, old)
+
+    async def test_a_tab_the_person_just_opened_is_followed_before_any_input(self) -> None:
+        old, new = TabPage(1000), TabPage(0)
+        m = self.manager([old, new], old)
+        diag = guard(fake_manager(old, new))
+        diag.manager.page_provenance.opener_lookup_started(new)
+        new.url, new._impl_obj = "chrome://newtab/", SimpleNamespace(_opener=None)
+        diag._on_frame_navigated(SimpleNamespace(id="s1"), new, NtpFrame("chrome://newtab/"), reported=True)
+        self.assertGreater(getattr(new, hlf._OPENED_ATTR), 1000)
+        await hlf.follow_active_tab(m, "s1")
+        self.assertEqual(m.adopted, [("s1", 1)])
+
+    async def test_the_current_tab_used_last_stays(self) -> None:
+        cur, other = TabPage(2000), TabPage(1000)
+        m = self.manager([cur, other], cur)
+        await hlf.follow_active_tab(m, "s1")
+        self.assertEqual(m.adopted, [])
+
+    async def test_nothing_used_nothing_followed(self) -> None:
+        cur, other = TabPage(0), TabPage(0)
+        m = self.manager([cur, other], cur)
+        await hlf.follow_active_tab(m, "s1")
+        self.assertEqual(m.adopted, [])
+
+    async def test_a_refused_tab_is_never_read_nor_followed(self) -> None:
+        cur, bad = TabPage(1000), TabPage(5000)
+        m = self.manager([cur, bad], cur, refused=(bad,))
+        await hlf.follow_active_tab(m, "s1")
+        self.assertEqual(m.adopted, [])
+        bad.context.new_cdp_session.assert_not_awaited()
+
+    async def test_one_world_per_document(self) -> None:
+        page = TabPage(7)
+        await hlf._tab_input_at(page)
+        await hlf._tab_input_at(page)
+        self.assertEqual(page.cdp.worlds, 1)
+        page.loader = "L2"
+        self.assertEqual(await hlf._tab_input_at(page), 7.0)
+        self.assertEqual(page.cdp.worlds, 2)
+
+    async def test_a_single_tab_reads_nothing(self) -> None:
+        only = TabPage(1)
+        m = self.manager([only], only)
+        await hlf.follow_active_tab(m, "s1")
+        only.context.new_cdp_session.assert_not_awaited()
+
+    async def test_adopting_checks_like_activate_and_never_brings_to_front(self) -> None:
+        cur, other = TabPage(0), TabPage(0)
+        other.bring_to_front = AsyncMock()
+        m = self.manager([cur, other], cur)
+        self.assertEqual(await self._real_adopt(m, "s1", other), 1)
+        self.assertIs(m.session.page, other)
+        m.diagnostics.birth_judged.assert_awaited_once_with(other)
+        m._assert_page_object_allowed.assert_called_once_with(other)
+        m._persist_session.assert_awaited_once()
+        other.bring_to_front.assert_not_awaited()
+        m2 = self.manager([cur, other], cur, refused=(other,))
+        with self.assertRaises(PermissionError):
+            await self._real_adopt(m2, "s1", other)
+        self.assertIs(m2.session.page, cur)
+        m3 = self.manager([cur], cur)
+        self.assertIsNone(await self._real_adopt(m3, "s1", other))
+
+    def test_front_tab(self) -> None:
+        a, b, c = object(), object(), object()
+        self.assertIs(hlf.front_tab(a, [(a, 1.0), (b, 3.0), (c, 2.0)]), b)
+        self.assertIsNone(hlf.front_tab(a, [(a, 3.0), (b, 2.0)]))
+        self.assertIsNone(hlf.front_tab(a, [(a, None), (b, None)]))
+        self.assertIs(hlf.front_tab(a, [(a, None), (b, 2.0)]), b)
+
+
 if __name__ == "__main__":
     unittest.main()
