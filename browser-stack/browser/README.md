@@ -302,16 +302,18 @@ Tunables, such as screen size, ports and `MAX_SESSIONS`, go in
 - **GPU (`BROWSER_GPU`):** pages get WebGL either way. Without a GPU it is software
   (`--ignore-gpu-blocklist` puts ANGLE on Mesa llvmpipe, which passes sites' (Figma's)
   `failIfMajorPerformanceCaveat` check; SwiftShader does not). Set `BROWSER_GPU` in
-  `.env.browser` to one GPU's UUID from `nvidia-smi -L` and run `make browser-up`. New pods
-  then get the `nvidia` runtime with `NVIDIA_VISIBLE_DEVICES=nvidia.com/gpu=<uuid>`, and the
+  `.env.browser` to a GPU index from `nvidia-smi -L` (`0`, the first card) or one GPU's UUID,
+  and run `make browser-up`. New pods
+  then get the `nvidia` runtime with `NVIDIA_VISIBLE_DEVICES=nvidia.com/gpu=<gpu>`, and the
   runtime (mode `auto`) injects that one GPU's device nodes and the driver's graphics libraries
   and Vulkan ICD from its CDI spec (`/var/run/cdi/nvidia.yaml`; Docker's own `--device`
   CDI support is not needed). `happy-kiosk.mjs` then starts Chrome with `--use-angle=vulkan`
-  (`GPU_ARGS`), and `chrome://gpu` shows `ANGLE (NVIDIA, Vulkan ...)`. Prefer the UUID to an
-  index: the UUID stays with the card when cards are moved or added. After a driver upgrade, or
-  when the cards change, regenerate the spec with `sudo nvidia-ctk cdi generate --output=/var/run/cdi/nvidia.yaml`.
-  A card of another driver branch needs its own driver on the host, and the same
-  setting then points at it. Unset (the default), nothing changes. The shared `browser-node`
+  (`GPU_ARGS`), and `chrome://gpu` shows `ANGLE (NVIDIA, Vulkan ...)`. An index follows the
+  slot: `0` is whichever card the driver lists first, so swapping cards needs no change here; a
+  UUID stays with one card wherever it moves. The toolkit's `nvidia-cdi-refresh` units (enabled)
+  regenerate the spec at boot and after a driver change; by hand it is
+  `sudo nvidia-ctk cdi generate --output=/var/run/cdi/nvidia.yaml`. A card of another driver
+  branch needs its own driver on the host. Unset (the default), nothing changes. The shared `browser-node`
   stays on software.
 - **Host networking:** all three services run with `network_mode: host`, so `localhost` in
   Chromium is this machine and agents can open loopback-only services here (for example
