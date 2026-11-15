@@ -62,6 +62,9 @@ jobs:
             -derivedDataPath build/ci/DerivedData \
             -resultBundlePath build/ci/HappyUIKitTests.xcresult \
             -parallel-testing-enabled NO \
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 120 \
+            -maximum-test-execution-time-allowance 300 \
             -jobs 4 \
             CODE_SIGNING_ALLOWED=NO \
             | tee build/ci/xcodebuild.log
@@ -201,6 +204,9 @@ jobs:
             -derivedDataPath build/ci/DerivedData \
             -resultBundlePath build/ci/HappyUIKitHostedTests.xcresult \
             -parallel-testing-enabled NO \
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 120 \
+            -maximum-test-execution-time-allowance 300 \
             CODE_SIGNING_ALLOWED=NO \
             < build/ci/hosted-shard.txt \
             | tee build/ci/hosted-xcodebuild.log
