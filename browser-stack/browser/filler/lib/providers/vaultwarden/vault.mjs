@@ -18,8 +18,17 @@
 // refused). trashLogin is Bitwarden's soft delete: the item goes to the vault's
 // trash, from which restoreLogin brings it back. There is no purge or hard
 // delete here, by design. Every write drops the cached sync.
+//
+// Secure notes (type 2) and attachments, for the vault tools' save_download:
+// createNote makes a note; listCipherMeta({notes: true}) lists notes beside
+// the logins; trashLogin and restoreLogin take a note too. addAttachment
+// stores a file on a personal login or note with Bitwarden's attachment v2
+// protocol (a fresh attachment key under the item key, the name as an
+// EncString, the bytes as an EncArrayBuffer), and readAttachment downloads
+// and decrypts one back, so the caller can check it byte for byte. No
+// attachment is ever deleted here.
 import { createHash, randomBytes } from 'node:crypto';
-import { decryptKey, decryptSym, decryptSymText, encryptSym, VaultCryptoError } from './vaultcrypto.mjs';
+import { decryptBuffer, decryptKey, decryptSym, decryptSymText, encryptBuffer, encryptSym, VaultCryptoError } from './vaultcrypto.mjs';
 import { httpsHost } from '../../hosts.mjs';
 import { buildEquivalence, equivalentsFor } from './domains.mjs';
 import { CUSTOM_FIELD_NAME } from '../../policy.mjs';
@@ -27,6 +36,8 @@ import { CUSTOM_FIELD_NAME } from '../../policy.mjs';
 // Bitwarden custom field types: 0 text, 1 hidden, 2 boolean, 3 linked (a
 // pointer to the login's own username or password, with no value of its own).
 const LINKED_FIELD = 3;
+const LOGIN = 1;
+const NOTE = 2;
 
 export class VaultError extends Error {
     constructor(message, status = 502) { super(message); this.status = status; }
@@ -93,6 +104,26 @@ export function createVault({ url, clientId, clientSecret, userKey, deviceId, fe
         } finally {
             synced = null; // a write (or a failed one) makes the cached sync stale
         }
+    }
+
+    // An authenticated request whose body is not JSON (a multipart upload) or whose answer
+    // is bytes: returns the Response (ok only). Never echoes a body, a token or a query.
+    async function authedRaw(path, init, { sync: dropSync = true } = {}) {
+        const t = await login();
+        let res;
+        try {
+            res = await fetchImpl(base + path, { ...init, headers: { ...CLIENT_HEADERS, Authorization: `Bearer ${t}`, ...(init?.headers || {}) }, signal: AbortSignal.timeout(Math.max(timeoutMs, 120_000)) });
+        } catch (err) {
+            throw new VaultError(`vault unreachable: ${err.name}`);
+        } finally {
+            if (dropSync) synced = null;
+        }
+        if (!res.ok) {
+            try { await res.body?.cancel(); } catch {}
+            if (res.status === 401) token = null;
+            throw new VaultError(`vault ${path.split('?')[0]} -> HTTP ${res.status}`, 502);
+        }
+        return res;
     }
 
     async function login() {
@@ -369,11 +400,12 @@ export function createVault({ url, clientId, clientSecret, userKey, deviceId, fe
      * decrypted URIs (the adapter derives hosts and the shown form).
      * equivalence is the sync's equivalent-domains index (domains.mjs).
      */
-    async function listCipherMeta({ force = false, trash = false } = {}) {
+    async function listCipherMeta({ force = false, trash = false, notes = false } = {}) {
         const s = await sync({ force });
         const items = [];
         for (const c of s.ciphers) {
-            if (!c || c.type !== 1 || !c.login) continue;
+            const isNote = notes && c?.type === NOTE;
+            if (!c || (!isNote && (c.type !== LOGIN || !c.login))) continue;
             if (c.deletedDate && !trash) continue;
             let k;
             try { k = keysOf(s, c); } catch { k = null; }
@@ -382,10 +414,13 @@ export function createVault({ url, clientId, clientSecret, userKey, deviceId, fe
             items.push({
                 id: String(c.id || c.Id).toLowerCase(),
                 name: dec(c.name),
-                username: dec(c.login.username),
-                uris: (c.login.uris || []).map((u) => ({ uri: dec(u?.uri), match: u?.match ?? null })).filter((u) => u.uri),
-                present: ['username', 'password', 'totp'].filter((f) => !!c.login[f]),
+                ...(isNote ? { kind: 'note', username: null, uris: [], present: [] } : {
+                    username: dec(c.login.username),
+                    uris: (c.login.uris || []).map((u) => ({ uri: dec(u?.uri), match: u?.match ?? null })).filter((u) => u.uri),
+                    present: ['username', 'password', 'totp'].filter((f) => !!c.login[f]),
+                }),
                 fields: rawFields(c, k.key, false),
+                ...(Array.isArray(c.attachments) && c.attachments.length ? { attachments: attachmentsOf(c, k.key) } : {}),
                 revisionDate: c.revisionDate || null,
                 trashed: !!c.deletedDate,
                 organization: !!k.orgId,
@@ -395,15 +430,24 @@ export function createVault({ url, clientId, clientSecret, userKey, deviceId, fe
         return { items, equivalence: s.equivalence };
     }
 
+    /** A cipher's attachments as [{id, fileName, size}]; a name that does not decrypt is null. */
+    function attachmentsOf(c, key) {
+        return (c.attachments || []).filter((a) => a && a.id).map((a) => {
+            let fileName = null;
+            try { fileName = a.fileName ? decryptSymText(a.fileName, key) : null; } catch {}
+            return { id: String(a.id), fileName, size: Number(a.size) || 0 };
+        });
+    }
+
     /** Whether id is a Vaultwarden item id (a uuid, any case). */
     const isId = (id) => typeof id === 'string' && ID.test(id.toLowerCase());
 
-    /** The cipher for a write, from a fresh sync: a personal login, or throws. */
-    async function personal(itemId, { trashed = false } = {}) {
+    /** The cipher for a write, from a fresh sync: a personal login (or, with notes, a secure note), or throws. */
+    async function personal(itemId, { trashed = false, notes = false } = {}) {
         const s = await sync({ force: true });
         const c = findCipher(s, checkId(itemId));
         if (!c) throw new VaultError('item not found in the agent account\'s vault', 404);
-        if (c.type !== 1 || !c.login) throw new VaultError('item is not a login', 422);
+        if (!(notes && c.type === NOTE) && (c.type !== LOGIN || !c.login)) throw new VaultError(notes ? 'item is not a login or a secure note' : 'item is not a login', 422);
         if (c.organizationId) throw new VaultError('item belongs to an organization; the vault tools only change the agent account\'s own logins', 403);
         if (trashed && !c.deletedDate) throw new VaultError('item is not in the trash', 409);
         if (!trashed && c.deletedDate) throw new VaultError('item is in the trash', 409);
@@ -474,16 +518,105 @@ export function createVault({ url, clientId, clientSecret, userKey, deviceId, fe
         return changed;
     }
 
-    /** Soft delete: the login goes to the vault's trash (restorable). */
+    /** Soft delete: the login (or note) goes to the vault's trash (restorable). */
     async function trashLogin(itemId) {
-        await personal(itemId);
+        await personal(itemId, { notes: true });
         await authed(`/api/ciphers/${checkId(itemId)}/delete`, 'PUT');
     }
 
-    /** Bring a trashed login back. */
+    /** Bring a trashed login (or note) back. */
     async function restoreLogin(itemId) {
-        await personal(itemId, { trashed: true });
+        await personal(itemId, { trashed: true, notes: true });
         await authed(`/api/ciphers/${checkId(itemId)}/restore`, 'PUT');
+    }
+
+    /**
+     * A new secure note in the personal vault, under its own fresh item key.
+     * text (optional) is the note's body. Returns the new item id.
+     */
+    async function createNote({ name, text = null }) {
+        const s = synced || await sync();
+        const itemKey = randomBytes(64);
+        try {
+            const body = {
+                type: NOTE, organizationId: null, folderId: null, favorite: false, reprompt: 0,
+                encryptedFor: s.userId,
+                key: encryptSym(itemKey, userKey),
+                name: encryptSym(name, itemKey), notes: text ? encryptSym(text, itemKey) : null, fields: [], passwordHistory: [],
+                login: null, secureNote: { type: 0 },
+            };
+            const r = await authed('/api/ciphers', 'POST', body);
+            const id = r && (r.id || r.Id);
+            if (!id) throw new VaultError('vault create returned no item id');
+            return String(id).toLowerCase();
+        } finally { itemKey.fill(0); }
+    }
+
+    /**
+     * Store bytes (a Buffer) as an attachment named fileName on a personal,
+     * live login or note (attachment v2: register, then upload the encrypted
+     * file to the server directly). Returns the attachment id.
+     */
+    async function addAttachment(itemId, fileName, bytes) {
+        if (!Buffer.isBuffer(bytes)) throw new VaultError('attachment bytes must be a Buffer', 500);
+        const id = checkId(itemId);
+        const c = await personal(id, { notes: true });
+        const s = synced || await sync();
+        const { key } = keysOf(s, c);
+        const attKey = randomBytes(64);
+        let enc = null;
+        try {
+            enc = encryptBuffer(bytes, attKey);
+            const encName = encryptSym(fileName, key);
+            const r = await authed(`/api/ciphers/${id}/attachment/v2`, 'POST', { key: encryptSym(attKey, key), fileName: encName, fileSize: enc.length, adminRequest: false });
+            const attId = r && (r.attachmentId || r.AttachmentId);
+            if (typeof attId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(attId)) throw new VaultError('vault attachment registration returned no attachment id');
+            const upload = r.fileUploadType ?? r.FileUploadType ?? 0;
+            if (upload !== 0) throw new VaultError('the vault asked for an upload to external storage, which the filler does not do', 422);
+            const form = new FormData();
+            form.append('data', new Blob([enc]), encName);
+            await authedRaw(`/api/ciphers/${id}/attachment/${attId}`, { method: 'POST', body: form });
+            return attId;
+        } finally {
+            attKey.fill(0);
+            if (enc) enc.fill(0);
+        }
+    }
+
+    /**
+     * One attachment of a personal login or note, downloaded and decrypted:
+     * a Buffer (the caller wipes it). maxBytes bounds the encrypted download.
+     */
+    async function readAttachment(itemId, attachmentId, { maxBytes = 128 * 1024 * 1024 } = {}) {
+        const id = checkId(itemId);
+        const c = await personal(id, { notes: true });
+        const s = synced || await sync();
+        const { key } = keysOf(s, c);
+        const att = (c.attachments || []).find((a) => a && String(a.id) === String(attachmentId));
+        if (!att || !att.key) throw new VaultError('attachment not found on the item', 404);
+        let attKey = null;
+        try {
+            attKey = decryptKey(att.key, { symKey: key });
+            const meta = await authed(`/api/ciphers/${id}/attachment/${encodeURIComponent(String(attachmentId))}`, 'GET');
+            let where;
+            try { const u = new URL(String(meta?.url || ''), base); where = u.pathname + u.search; } catch { where = null; }
+            if (!where || !where.startsWith('/')) throw new VaultError('vault gave no attachment download URL');
+            const res = await authedRaw(where, { method: 'GET' }, { sync: false });
+            const chunks = []; let n = 0;
+            for await (const chunk of res.body) {
+                n += chunk.length;
+                if (n > maxBytes) { try { await res.body.cancel(); } catch {} throw new VaultError('the attachment is larger than allowed', 413); }
+                chunks.push(Buffer.from(chunk));
+            }
+            const encBuf = Buffer.concat(chunks);
+            for (const ch of chunks) ch.fill(0);
+            try { return decryptBuffer(encBuf, attKey); } finally { encBuf.fill(0); }
+        } catch (err) {
+            if (err instanceof VaultCryptoError) throw new VaultError(`cannot decrypt the attachment: ${err.message}`, 422);
+            throw err;
+        } finally {
+            if (attKey) attKey.fill(0);
+        }
     }
 
     return {
@@ -498,6 +631,9 @@ export function createVault({ url, clientId, clientSecret, userKey, deviceId, fe
         updateLogin,
         trashLogin,
         restoreLogin,
+        createNote,
+        addAttachment,
+        readAttachment,
         status: () => ({ unlocked: true, sync_age_s: synced ? Math.round((now() - synced.at) / 1000) : null }),
         lock() { token = null; synced = null; },
     };

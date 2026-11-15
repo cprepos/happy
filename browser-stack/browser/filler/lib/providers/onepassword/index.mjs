@@ -201,7 +201,7 @@ export function createOnePasswordProvider(config = {}, deps = {}) {
     return {
         id,
         type: 'onepassword',
-        capabilities: Object.freeze({ restore: archive ? 'manual' : 'tag', equivalentDomains: false, totp: true }),
+        capabilities: Object.freeze({ restore: archive ? 'manual' : 'tag', equivalentDomains: false, totp: true, attach: false }),
         checkId: (x) => (isId(x) ? x.toLowerCase() : null),
         status: () => {
             const out = { unlocked: !!(client && vaultId), sync_age_s: cache ? Math.round((now() - cache.at) / 1000) : null };

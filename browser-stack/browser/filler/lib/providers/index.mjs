@@ -10,7 +10,7 @@
 //
 //   p.id            string: the backend's name (for example "shared")
 //   p.type          string: the type it was registered under ("vaultwarden")
-//   p.capabilities  {restore, equivalentDomains, totp}:
+//   p.capabilities  {restore, equivalentDomains, totp, attach}:
 //                     restore: 'native'  trashLogin/restoreLogin use the vault's own trash
 //                              'tag'     they tag the item and hide it (a vault with no trash API)
 //                              'manual'  trashLogin hides the item where the API cannot bring
@@ -18,6 +18,8 @@
 //                                        (409) until a person has undone that in the vault app
 //                     equivalentDomains: true when listItems can attach `equivalents`
 //                     totp: true when readItem can return a TOTP seed
+//                     attach: true when the provider has createNote, addAttachment
+//                             and readAttachment (below); false refuses save_download
 //   p.checkId(id)   the canonical form of an item id, or null when id is not
 //                   one of this vault's ids. Ids are opaque to the filler: it
 //                   only bounds them (ITEM_ID in policy.mjs: 8..128 of
@@ -34,6 +36,15 @@
 //                   fields changed. Fields not named are kept as they are.
 //   p.trashLogin(id), p.restoreLogin(id): reversible removal; there is no purge
 //   p.lock()        forget tokens and cached data
+//
+// Only with capabilities.attach:
+//   p.listItems({notes: true}) also lists secure notes, each LoginMeta with
+//                   kind: 'note' (no uris, hosts or has); never filled
+//   p.createNote({name, text?}) -> the new secure note's id
+//   p.addAttachment(id, fileName, bytes) -> attachment id; bytes is a Buffer,
+//                   stored encrypted on a personal login or note
+//   p.readAttachment(id, attachmentId, {maxBytes}) -> the decrypted Buffer
+//                   (the caller wipes it). Attachments are never deleted.
 //
 // Errors carry a numeric `status` (HTTP-like); callers map it to their own.
 // Writes (create, update, trash, restore) refuse a `shared` item.

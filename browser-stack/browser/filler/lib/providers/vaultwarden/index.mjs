@@ -54,6 +54,8 @@ export function toMeta(raw, equivalence) {
         revisionDate: raw.revisionDate,
         trashed: raw.trashed,
         shared: raw.organization,
+        ...(raw.kind === 'note' ? { kind: 'note' } : {}),
+        ...(raw.attachments?.length ? { attachments: raw.attachments.map((a) => ({ id: a.id, file_name: a.fileName, size: a.size })) } : {}),
         ...(equivalents.size ? { equivalents } : {}),
     };
 }
@@ -67,12 +69,12 @@ export function createVaultwardenProvider({ id = 'vaultwarden', ...config } = {}
     return {
         id,
         type: 'vaultwarden',
-        capabilities: Object.freeze({ restore: 'native', equivalentDomains: true, totp: true }),
+        capabilities: Object.freeze({ restore: 'native', equivalentDomains: true, totp: true, attach: true }),
         checkId: (x) => (v.isId(x) ? x.toLowerCase() : null),
         status: () => v.status(),
         async sync({ force = false } = {}) { await v.sync({ force }); },
-        async listItems({ trash = false, force = false } = {}) {
-            const { items, equivalence } = await v.listCipherMeta({ force, trash });
+        async listItems({ trash = false, force = false, notes = false } = {}) {
+            const { items, equivalence } = await v.listCipherMeta({ force, trash, notes });
             return items.map((r) => toMeta(r, equivalence));
         },
         async readItem(itemId) { return toLogin(await v.readCipher(itemId)); },
@@ -80,6 +82,9 @@ export function createVaultwardenProvider({ id = 'vaultwarden', ...config } = {}
         updateLogin: (itemId, patch) => v.updateLogin(itemId, patch),
         trashLogin: (itemId) => v.trashLogin(itemId),
         restoreLogin: (itemId) => v.restoreLogin(itemId),
+        createNote: (spec) => v.createNote(spec),
+        addAttachment: (itemId, fileName, bytes) => v.addAttachment(itemId, fileName, bytes),
+        readAttachment: (itemId, attachmentId, opts) => v.readAttachment(itemId, attachmentId, opts),
         lock: () => v.lock(),
     };
 }

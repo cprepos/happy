@@ -10,10 +10,27 @@
 //   restore {id}                                  -> meta
 //   compare {id, field | custom_field, algo, digest, salt?} -> {match}
 //   pipe    {id, field | custom_field, target, args?}      -> {target, argv, value}
+//   save_download {download_id, item | new_item:{name, uris?}, file_name?,
+//           session_id, controller_port?} -> {item_id, item_name, attachment_id,
+//           file_name, size, sha256, download_deleted}
 //
-// meta is {id, name, secret?, username, uris, hosts, fields, custom_fields,
-// revision_date, trashed}: never a password or TOTP value, only whether one is
-// set, and only the names of custom fields.
+// meta is {id, name, secret?, kind?, username, uris, hosts, fields, custom_fields,
+// attachments?, revision_date, trashed}: never a password or TOTP value, only
+// whether one is set, and only the names of custom fields. kind is 'note' for a
+// secure note (on a provider with capabilities.attach); attachments lists
+// {id, file_name, size} when an item has any.
+//
+// save_download moves one file the chat's browser downloaded into the vault,
+// as an encrypted attachment, without its bytes ever leaving the filler: they
+// are read from the controller (GET /artifacts/<session>/downloads/<name>,
+// in memory, at most MAX_DOWNLOAD), stored on an existing personal item or on
+// a new secure note, downloaded back and compared (sha256, constant time), and
+// only then is the browser's copy deleted (the controller patch re-hashes it
+// first). On a mismatch nothing is deleted: the download and the attachment
+// both stay, and the call fails. vault-mcp names the chat's own browser
+// session and controller port (from the bridge); a download id that is not in
+// that session's list is refused. The result and the audit carry the name,
+// size and sha256 only, never a byte or a source URL.
 
 // compare and pipe take exactly one of field (username, password, totp) and
 // custom_field (the exact, case-sensitive name of one of the login's custom
@@ -39,6 +56,7 @@
 // found. Writes go to the
 // agent account's personal vault only. Every call is audited: action, item id,
 // the names of the fields changed, outcome; never a value.
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { FillError, backendVaults } from './fill.mjs';
 import { itemSlug, FIELDS, NO_CHAT, CUSTOM_FIELD_NAME, ITEM_ID } from './policy.mjs';
 import { compareValue, ALGOS, HashError } from './hashes.mjs';
@@ -46,7 +64,10 @@ import { generatePassword, checkSpec, GenerateError } from './generate.mjs';
 
 // eslint-disable-next-line no-control-regex
 const CONTROL = /[\u0000-\u001f\u007f]/;
-export const ACTIONS = ['list', 'search', 'create', 'update', 'remove', 'restore', 'compare', 'pipe'];
+export const ACTIONS = ['list', 'search', 'create', 'update', 'remove', 'restore', 'compare', 'pipe', 'save_download'];
+/** The largest download save_download moves into the vault (bytes). */
+export const MAX_DOWNLOAD = 100 * 1024 * 1024;
+const DOWNLOAD_ID = /^[0-9a-f]{12}$/;
 const KEYS = {
     list: ['include_trash'],
     search: ['query', 'include_trash'],
@@ -56,6 +77,7 @@ const KEYS = {
     restore: ['id'],
     compare: ['id', 'field', 'custom_field', 'algo', 'digest', 'salt'],
     pipe: ['id', 'field', 'custom_field', 'target', 'args'],
+    save_download: ['download_id', 'item', 'new_item', 'file_name', 'session_id', 'controller_port'],
 };
 const bad = (msg) => new FillError(msg, 400, 'bad_request');
 
@@ -91,9 +113,29 @@ function checkWhich(body) {
     return { custom: body.custom_field };
 }
 const kindOf = (w) => (w.custom !== undefined ? `custom:${w.custom}` : w.field);
+/** An attachment's file name: one path segment, printable, 1..200 characters. */
+function checkFileName(v, what) {
+    const t = text(v, what, { max: 200 });
+    if (/[/\\]/.test(t) || t === '.' || t === '..') throw bad(`${what} must be a file name without slashes`);
+    return t;
+}
+/** The stored name of a download record (the last segment of its /artifacts url), or null. */
+function storedName(rec, sessionId) {
+    const m = /^\/artifacts\/([^/?#]+)\/downloads\/([^/?#]+)$/.exec(String(rec?.url || ''));
+    if (!m) return null;
+    let sid, name;
+    try { sid = decodeURIComponent(m[1]); name = decodeURIComponent(m[2]); } catch { return null; }
+    if (sid !== sessionId || !name || name === '.' || name === '..' || /[/\\]/.test(name) || CONTROL.test(name)) return null;
+    return name;
+}
 
-export function createManager({ getPolicy, vault = null, vaults = null, audit, now = () => Date.now(), compareLimit = { max: 20, windowMs: 10 * 60_000 } }) {
+export function createManager({
+    getPolicy, vault = null, vaults = null, audit, now = () => Date.now(),
+    compareLimit = { max: 20, windowMs: 10 * 60_000 },
+    controllers = () => null, saveLimit = { max: 20, windowMs: 10 * 60_000 }, maxDownload = MAX_DOWNLOAD,
+}) {
     const compares = new Map(); // `${client}/${id}` -> [timestamps]
+    const saves = new Map(); // client -> [timestamps]
     const vaultOf = backendVaults({ vault, vaults });
     // An item id from a request: bounded here (ITEM_ID), then the client's provider's own check.
     const checkId = (ctx, v) => {
@@ -114,7 +156,10 @@ export function createManager({ getPolicy, vault = null, vaults = null, audit, n
     }
     function need(ctx, perm) {
         const ok = perm === 'pipe' ? !!ctx.manage?.pipe.length : !!ctx.manage?.[perm];
-        if (!ok) throw new FillError(`the filler policy does not let this chat's client ${perm === 'remove' ? 'remove' : perm} vault logins (manage.${perm}); ask the user`, 403, 'refused_manage');
+        if (!ok) {
+            if (perm === 'save_download') throw new FillError('the filler policy does not let this chat\'s client save browser downloads to the vault (manage.save_download); ask the user', 403, 'refused_manage');
+            throw new FillError(`the filler policy does not let this chat's client ${perm === 'remove' ? 'remove' : perm} vault logins (manage.${perm}); ask the user`, 403, 'refused_manage');
+        }
     }
     const vaultErr = (err) => {
         if (err instanceof FillError) return err;
@@ -131,11 +176,14 @@ export function createManager({ getPolicy, vault = null, vaults = null, audit, n
         fields: FIELDS.filter((f) => m.has[f]),
         custom_fields: m.fields.map((f) => f.name).filter((n) => typeof n === 'string' && CUSTOM_FIELD_NAME.test(n)),
         revision_date: m.revisionDate ?? null, trashed: !!m.trashed, shared: !!m.shared,
+        ...(m.kind === 'note' ? { kind: 'note' } : {}),
+        ...(Array.isArray(m.attachments) && m.attachments.length ? { attachments: m.attachments.map((a) => ({ id: a.id, file_name: a.file_name ?? null, size: a.size ?? null })) } : {}),
     });
 
     // The client's view of the vault: [{...meta, secret?, listed?}] for every login it reaches.
     async function view(ctx, { trash = false } = {}) {
-        const items = (await ctx.vault.listItems({ force: false, trash }).catch((e) => { throw vaultErr(e); })).map(fromMeta);
+        const notes = ctx.vault.capabilities?.attach === true;
+        const items = (await ctx.vault.listItems({ force: false, trash, ...(notes ? { notes } : {}) }).catch((e) => { throw vaultErr(e); })).map(fromMeta);
         const all = ctx.policy.allItems(ctx.client);
         const bySecretId = new Map();
         for (const [name, s] of ctx.cfg.secrets) bySecretId.set(s.item_id, [...(bySecretId.get(s.item_id) || []), name]);
@@ -147,15 +195,16 @@ export function createManager({ getPolicy, vault = null, vaults = null, audit, n
                 const allow = (key, list) => list.filter((f) => names.some((n) => ctx.cfg.secrets.get(n)[key].includes(f)));
                 out.push({ ...it, secret: names[0], listed: true, fields: allow('fields', it.fields), custom_fields: allow('custom_fields', it.custom_fields || []) });
             } else if (!listedBy && all && !it.shared) {
-                const slug = itemSlug(it.name);
+                const slug = it.kind === 'note' ? null : itemSlug(it.name);
                 out.push({ ...it, ...(slug && !ctx.cfg.secrets.has(slug) && !it.trashed ? { secret: slug } : {}) });
             }
         }
         return out;
     }
     const meta = (it) => ({
-        id: it.id, name: it.name, ...(it.secret ? { secret: it.secret } : {}), username: it.username,
-        uris: it.uris, hosts: it.hosts, fields: it.fields, custom_fields: [...new Set(it.custom_fields || [])], revision_date: it.revision_date, trashed: it.trashed,
+        id: it.id, name: it.name, ...(it.secret ? { secret: it.secret } : {}), ...(it.kind ? { kind: it.kind } : {}), username: it.username,
+        uris: it.uris, hosts: it.hosts, fields: it.fields, custom_fields: [...new Set(it.custom_fields || [])],
+        ...(it.attachments ? { attachments: it.attachments } : {}), revision_date: it.revision_date, trashed: it.trashed,
     });
     // Whether this chat may use the field or custom field w of a login it reaches (it, from
     // view): throws 404 (naming the custom fields it may use) or 409 (a duplicate name).
@@ -331,6 +380,115 @@ export function createManager({ getPolicy, vault = null, vaults = null, audit, n
                 });
                 return { target: name, argv, value };
             } finally { wipe(rec, { keepUsername: true }); }
+        }),
+
+        save_download: (body) => run('save_download', body, async (ctx, ev) => {
+            need(ctx, 'save_download');
+            if (ctx.vault.capabilities?.attach !== true || typeof ctx.vault.addAttachment !== 'function') {
+                throw new FillError(`this chat's vault (${ctx.vault.type || 'its provider'}) cannot store files; save_download needs a Vaultwarden vault`, 422, 'refused_unsupported');
+            }
+            if (typeof body.download_id !== 'string' || !DOWNLOAD_ID.test(body.download_id)) throw bad('download_id must be a download id from browser_list_downloads (12 hex characters)');
+            const downloadId = body.download_id;
+            ev.download_id = downloadId;
+            const hasItem = body.item !== undefined; const hasNew = body.new_item !== undefined;
+            if (hasItem === hasNew) throw bad('give exactly one of item (an existing item\'s name or id) and new_item ({name, uris?})');
+            let newItem = null;
+            if (hasNew) {
+                const n = body.new_item;
+                if (!n || typeof n !== 'object' || Array.isArray(n)) throw bad('new_item must be an object {name, uris?}');
+                const extra = Object.keys(n).filter((k) => !['name', 'uris'].includes(k));
+                if (extra.length) throw bad(`new_item: unknown key ${JSON.stringify(extra[0]).slice(0, 40)} (allowed: name, uris)`);
+                newItem = { name: text(n.name, 'new_item.name', { max: 100 }), uris: n.uris === undefined ? [] : checkUris(n.uris) };
+            }
+            const wanted = body.file_name === undefined ? null : checkFileName(body.file_name, 'file_name');
+            const port = body.controller_port ?? null;
+            if (port !== null && !Number.isInteger(port)) throw bad('controller_port must be a port number');
+            const r = controllers(port);
+            if (!r) throw new FillError('that browser controller is not one the filler may use', 403, 'refused_controller');
+            if (typeof body.session_id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(body.session_id)) throw new FillError('this chat has no live browser session to take a download from', 400, 'bad_request');
+            const session = body.session_id;
+            ev.session = `${r.port}/${session}`;
+
+            const ctlErr = (e) => (e instanceof FillError ? e : new FillError(`browser: ${e.message}`, [404, 413].includes(e?.status) ? e.status : 502, 'controller'));
+            const list = await r.controller.listDownloads(session).catch((e) => { throw ctlErr(e); });
+            const rec = list.find((d) => d && d.id === downloadId);
+            if (!rec) throw new FillError('no download with that id in this chat\'s browser session (see browser_list_downloads)', 404, 'not_found');
+            if (String(rec.status || '') !== 'completed') throw new FillError('that download has not completed', 409, 'refused');
+            const stored = storedName(rec, session);
+            if (!stored) throw new FillError('that download has no file the filler can read', 409, 'refused');
+            let fileName = wanted;
+            if (!fileName) {
+                for (const c of [rec.suggested_filename, rec.filename, stored]) {
+                    try { fileName = checkFileName(c, 'file name'); break; } catch {}
+                }
+                fileName = fileName || `download-${downloadId}`;
+            }
+
+            // The target item, before any byte is read.
+            const all = await view(ctx);
+            let target;
+            if (hasItem) {
+                if (typeof body.item !== 'string' || !body.item.trim() || body.item.length > 200 || CONTROL.test(body.item)) throw bad('item must be an item name or id from vault_list');
+                const raw = body.item.trim();
+                const byId = ITEM_ID.test(raw) ? ctx.vault.checkId(raw.toLowerCase()) : null;
+                let hits = byId ? all.filter((x) => x.id === byId) : [];
+                if (!hits.length) hits = all.filter((x) => x.name === raw);
+                if (!hits.length) hits = all.filter((x) => typeof x.name === 'string' && x.name.toLowerCase() === raw.toLowerCase());
+                if (!hits.length) throw new FillError('no item with that name or id is reachable from this chat (see vault_list)', 404, 'not_found');
+                if (hits.length > 1) throw new FillError(`more than one item is named "${raw.slice(0, 100)}"; give its id from vault_list`, 409, 'refused_ambiguous');
+                target = hits[0];
+                if (target.shared) throw new FillError('that item is shared; files go to personal items only', 403, 'refused');
+            } else {
+                if (!ctx.policy.allItems(ctx.client)) throw new FillError('a new item needs a client with all_items in the filler policy; save into an existing item instead', 403, 'refused');
+                const clash = all.find((x) => typeof x.name === 'string' && x.name.toLowerCase() === newItem.name.toLowerCase());
+                if (clash) throw new FillError(`an item named "${clash.name}" already exists; give item instead, or another name`, 409, 'refused_name');
+            }
+
+            // The limit counts transfers: calls that got this far, per client.
+            const t = now();
+            const recent = (saves.get(ctx.client) || []).filter((x) => t - x < saveLimit.windowMs);
+            if (recent.length >= saveLimit.max) throw new FillError(`too many downloads saved to the vault; wait ${Math.ceil(saveLimit.windowMs / 60_000)} minutes`, 429, 'rate_limited');
+            recent.push(t); saves.set(ctx.client, recent);
+
+            let bytes = null; let back = null;
+            try {
+                bytes = await r.controller.fetchDownload(session, stored, { maxBytes: maxDownload }).catch((e) => {
+                    if (e?.status === 413) throw new FillError(`that download is larger than ${Math.round(maxDownload / 1024 / 1024)} MiB, the most the vault takes from the browser`, 413, 'refused_size');
+                    throw ctlErr(e);
+                });
+                const sha256 = createHash('sha256').update(bytes).digest('hex');
+                const size = bytes.length;
+                Object.assign(ev, { sha256, size });
+
+                let itemId; let itemName;
+                if (hasItem) { itemId = target.id; itemName = target.name; } else {
+                    const textBody = newItem.uris.length ? newItem.uris.join('\n') : null;
+                    itemId = await ctx.vault.createNote({ name: newItem.name, text: textBody }).catch((e) => { throw vaultErr(e); });
+                    itemName = newItem.name;
+                }
+                ev.item_id = itemId;
+                ev.changed = 'attachment';
+                const attachmentId = await ctx.vault.addAttachment(itemId, fileName, bytes).catch((e) => { throw vaultErr(e); });
+                back = await ctx.vault.readAttachment(itemId, attachmentId, { maxBytes: maxDownload + 4096 }).catch((e) => {
+                    throw new FillError(`the file was stored, but reading it back failed (${vaultErr(e).message}); the download was kept`, 502, 'verify_failed');
+                });
+                const backSha = createHash('sha256').update(back).digest();
+                const same = back.length === size && timingSafeEqual(backSha, Buffer.from(sha256, 'hex'));
+                if (!same) throw new FillError('the vault copy does not match the download; the download and the vault copy were both kept', 502, 'verify_failed');
+
+                let deleted = false; let note;
+                try {
+                    const d = await r.controller.deleteDownload(session, downloadId, sha256);
+                    deleted = !!d?.deleted;
+                } catch (e) {
+                    note = `saved and verified, but the browser's copy was not deleted (${String(e?.message || 'error').slice(0, 120)})`;
+                }
+                if (!deleted && !note) note = 'saved and verified, but the browser did not confirm deleting its copy';
+                return { item_id: itemId, item_name: itemName, attachment_id: attachmentId, file_name: fileName, size, sha256, download_deleted: deleted, ...(note ? { note } : {}) };
+            } finally {
+                if (bytes) bytes.fill(0);
+                if (back) back.fill(0);
+            }
         }),
     };
 }

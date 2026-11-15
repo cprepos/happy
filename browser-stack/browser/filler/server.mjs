@@ -26,7 +26,7 @@
 // reaches only these routes, and the bridge's token never does
 // (lib/manage.mjs has the bodies):
 //
-//   POST /v1/vault/{list,search,create,update,remove,restore,compare,pipe}
+//   POST /v1/vault/{list,search,create,update,remove,restore,compare,pipe,save_download}
 //
 // Every route answers metadata only, except /v1/vault/pipe, which hands one
 // value to vault-mcp's pipe runner for an allowlisted command's stdin.
@@ -125,11 +125,11 @@ export function createVaults({ getPolicy, build, logFn = log }) {
  * it serves the shared backend only. A chat whose backend has no provider (not
  * enrolled) gets 503 from list/fill/login and the vault routes.
  */
-export function createApp({ checkToken, checkVaultToken = () => false, getPolicy, vault = null, vaults = null, controllers, scrubber, taint, audit, allowLoopbackHttp = false, sleep, totpOpts, now }) {
+export function createApp({ checkToken, checkVaultToken = () => false, getPolicy, vault = null, vaults = null, controllers, scrubber, taint, audit, allowLoopbackHttp = false, sleep, totpOpts, now, manageOpts = {} }) {
     const getVault = vaults ? vaults.get : (name) => (name === DEFAULT_BACKEND ? vault : null);
     const vaultOf = backendVaults({ vaults: getVault });
     const filler = createFiller({ getPolicy, vaults: getVault, controllers, taint, audit, allowLoopbackHttp, sleep, totpOpts });
-    const manager = createManager({ getPolicy, vaults: getVault, audit, ...(now ? { now } : {}) });
+    const manager = createManager({ getPolicy, vaults: getVault, audit, controllers, ...manageOpts, ...(now ? { now } : {}) });
     // Before a vault or fill route reads its body: 503 when the chat's backend has no provider.
     const needVault = (chat) => {
         const policy = getPolicy();
@@ -260,7 +260,7 @@ async function main(argv) {
             for (const c of p.clients()) {
                 const m = p.manage(c);
                 if (!m) continue;
-                const on = ['create', 'update', 'remove', 'compare'].filter((f) => m[f]);
+                const on = ['create', 'update', 'remove', 'compare', 'save_download'].filter((f) => m[f]);
                 process.stdout.write(`  ${c} may ${on.length ? on.join(', ') : 'not change'} vault logins${m.pipe.length ? `, and pipe into ${m.pipe.join(', ')}` : ''}\n`);
             }
             if (p.pipeTargets().length) process.stdout.write(`  pipe targets: ${p.pipeTargets().map((t) => `${t} (${p.pipeTarget(t).argv[0]})`).join(', ')}\n`);

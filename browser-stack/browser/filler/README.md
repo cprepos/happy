@@ -323,6 +323,19 @@ filler's files or docker. Each tool is a thin client of the filler's
 | `vault_restore` | back from the trash | `remove` |
 | `vault_compare` | `{match: true\|false}` against a sha256/sha512 (hex, optional salt prefix), bcrypt or argon2 (PHC) digest; 20 per client and login per 10 minutes | `compare` |
 | `vault_pipe` | the value on the stdin of an allowlisted command; returns its exit code and scrubbed output | `pipe: [target names]` |
+| `vault_save_download` | moves a file the chat's browser downloaded into the vault as an encrypted attachment (on an existing item, or on a new secure note), reads it back and compares sha256, then deletes the download; returns `{item_id, item_name, attachment_id, file_name, size, sha256, download_deleted}`, never the bytes. 100 MiB cap; 20 per client per 10 minutes; Vaultwarden only | `save_download` (a new note also needs `all_items`) |
+
+`vault_save_download` works on the calling chat's own browser only: vault-mcp
+asks the bridge (`/api/pod` with `peek`, which never starts a pod) for the
+chat's session and controller port, and the filler refuses a download id that
+is not in that session's list. The filler reads the file from the controller
+over loopback into memory, uploads it with Bitwarden's attachment v2 protocol,
+downloads and decrypts it again, and compares in constant time. Only on a
+match does it call the controller patch's `DELETE
+/happy/sessions/{sid}/downloads/{id}?sha256=`, which re-hashes the file and
+refuses if it changed. On a mismatch the download and the attachment are both
+kept. Nothing in the vault is ever deleted. `vault_list` shows secure notes
+with `kind: "note"` and any item's `attachments` (`id`, `file_name`, `size`).
 
 `vault_compare` and `vault_pipe` take exactly one of `field` (`username`,
 `password`, `totp`; totp is the stored seed, not a current code) and
@@ -380,8 +393,8 @@ the chat id (a process without one sends `none`, served by `default_client`).
 }
 ```
 
-- `manage` keys are `create`, `update`, `remove`, `compare` (true or false)
-  and `pipe` (names from `pipe_targets`). A missing `manage` means list and
+- `manage` keys are `create`, `update`, `remove`, `compare`, `save_download`
+  (true or false) and `pipe` (names from `pipe_targets`). A missing `manage` means list and
   search only.
 - A `pipe_targets` entry is a command run without a shell. Each argv element
   is a literal, or exactly `{username}` (the login's username) or

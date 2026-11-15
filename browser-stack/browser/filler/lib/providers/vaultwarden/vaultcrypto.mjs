@@ -63,6 +63,32 @@ export function encryptSym(plain, key, iv = randomBytes(16)) {
     return `2.${iv.toString('base64')}|${data.toString('base64')}|${m.toString('base64')}`;
 }
 
+/**
+ * Encrypt bytes to Bitwarden's EncArrayBuffer (an attachment's file): one
+ * byte of type 2, the 16-byte IV, the 32-byte HMAC-SHA256 of IV and
+ * ciphertext, then the AES-256-CBC ciphertext.
+ */
+export function encryptBuffer(plain, key, iv = randomBytes(16)) {
+    const { enc, mac } = splitKey(key);
+    const c = createCipheriv('aes-256-cbc', enc, iv);
+    const data = Buffer.concat([c.update(plain), c.final()]);
+    const m = createHmac('sha256', mac).update(iv).update(data).digest();
+    return Buffer.concat([Buffer.from([2]), iv, m, data]);
+}
+
+/** Decrypt an EncArrayBuffer (type 2 only), checking its MAC first. */
+export function decryptBuffer(buf, key) {
+    if (!Buffer.isBuffer(buf) || buf.length < 1 + 16 + 32 + 16) throw new VaultCryptoError('encrypted file too short');
+    if (buf[0] !== 2) throw new VaultCryptoError(`unsupported encrypted file type ${buf[0]}`);
+    const iv = buf.subarray(1, 17); const m = buf.subarray(17, 49); const data = buf.subarray(49);
+    if (data.length % 16) throw new VaultCryptoError('malformed encrypted file');
+    const { enc, mac } = splitKey(key);
+    const want = createHmac('sha256', mac).update(iv).update(data).digest();
+    if (!timingSafeEqual(want, m)) throw new VaultCryptoError('encrypted file MAC mismatch');
+    const d = createDecipheriv('aes-256-cbc', enc, iv);
+    return Buffer.concat([d.update(data), d.final()]);
+}
+
 /** Decrypt a type 4 EncString (RSA-OAEP, SHA-1) with a PKCS8 DER private key. */
 export function decryptRsa(encString, pkcs8Der) {
     const e = typeof encString === 'string' ? parseEncString(encString) : encString;

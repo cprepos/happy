@@ -6,11 +6,13 @@
 // equivalent_of, the saved host whose group granted the page's host. The
 // vault tools (manage.mjs) add action (list, create, update, remove, …),
 // item_id, changed (the names of the fields a write changed), target (a pipe
-// target) and algo (a compare's hash); never a value.
+// target) and algo (a compare's hash); never a value. save_download adds
+// download_id, sha256 and size (of the file moved into the vault), never its
+// bytes, name or source URL.
 import { appendFileSync, chmodSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-const KEYS = ['ts', 'chat', 'client', 'backend', 'path', 'session', 'name', 'host', 'field_kind', 'via', 'equivalent_of', 'action', 'item_id', 'changed', 'target', 'algo', 'outcome', 'step'];
+const KEYS = ['ts', 'chat', 'client', 'backend', 'path', 'session', 'name', 'host', 'field_kind', 'via', 'equivalent_of', 'action', 'item_id', 'changed', 'target', 'algo', 'outcome', 'step', 'download_id', 'sha256', 'size'];
 
 export function createAudit(dir, { now = () => new Date() } = {}) {
     return {

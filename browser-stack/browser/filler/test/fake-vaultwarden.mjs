@@ -20,7 +20,16 @@
 // lastKnownRevisionDate), PUT /api/ciphers/<id>/delete (soft delete: sets
 // deletedDate, answers an empty 200) and PUT /api/ciphers/<id>/restore. Each is
 // recorded in calls.writes; any other cipher write (DELETE, a purge) answers
-// 404 and is recorded in calls.refusedWrites.
+// 404 and is recorded in calls.refusedWrites. POST /api/ciphers also takes a
+// secure note (type 2, secureNote, no login).
+//
+// Attachments (v2, as Vaultwarden 1.37 answers them): POST
+// /api/ciphers/<id>/attachment/v2 registers one ({key, fileName, fileSize}),
+// POST /api/ciphers/<id>/attachment/<attId> uploads it (multipart, field
+// "data", whose size must equal fileSize), GET /api/ciphers/<id>/attachment/<attId>
+// gives its download URL (on the server's DOMAIN, with a ?token=), and GET
+// /attachments/<id>/<attId> serves the stored bytes. Uploads are in
+// calls.attachments; hooks.tamper(buf) may change what is served back.
 import { createServer } from 'node:http';
 import { generateKeyPairSync, randomBytes, randomUUID } from 'node:crypto';
 import { encryptRsa, encryptSym, masterKey, masterPasswordHash, stretchMasterKey } from '../lib/providers/vaultwarden/vaultcrypto.mjs';
@@ -130,7 +139,10 @@ export function buildVault({ email = 'agent@vault.test', password = 'correct hor
 }
 
 export async function startFakeVaultwarden(vault = buildVault(), { twoFactor = false, apiKeyStatus = 200 } = {}) {
-    const calls = { token: 0, sync: 0, prelogin: 0, passwordGrant: 0, apiKey: 0, bodies: [], writes: [], refusedWrites: [], noClientVersion: [] };
+    const calls = { token: 0, sync: 0, prelogin: 0, passwordGrant: 0, apiKey: 0, bodies: [], writes: [], refusedWrites: [], noClientVersion: [], attachments: [], downloadUrls: [] };
+    const hooks = { tamper: null };
+    const files = new Map(); // `${cipherId}/${attId}` -> Buffer
+    const pending = new Map(); // attId -> {cipherId, key, fileName, fileSize}
     let rev = 0;
     const stamp = () => new Date(Date.UTC(2026, 1, 1) + (++rev) * 1000).toISOString();
     const tokens = new Set();
@@ -138,7 +150,8 @@ export async function startFakeVaultwarden(vault = buildVault(), { twoFactor = f
     const server = createServer(async (req, res) => {
         const chunks = [];
         for await (const c of req) chunks.push(c);
-        const body = Buffer.concat(chunks).toString('utf8');
+        const raw = Buffer.concat(chunks);
+        const body = raw.toString('utf8');
         const send = (status, obj) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
         const url = new URL(req.url, 'http://x');
         if (req.method === 'POST' && (url.pathname === '/identity/accounts/prelogin' || url.pathname === '/api/accounts/prelogin')) {
@@ -189,6 +202,53 @@ export async function startFakeVaultwarden(vault = buildVault(), { twoFactor = f
             calls.syncUrls = [...(calls.syncUrls || []), req.url];
             return send(200, url.searchParams.get('excludeDomains') === 'true' ? { ...vault.sync, domains: null } : vault.sync);
         }
+        const authOk = () => tokens.has((req.headers.authorization || '').replace(/^Bearer /, ''));
+        const am = /^\/api\/ciphers\/([0-9a-f-]{36})\/attachment\/([A-Za-z0-9]+)$/.exec(url.pathname);
+        if (am) {
+            if (!authOk()) return send(401, { error: 'unauthorized' });
+            const [, cid, attId] = am;
+            const c = vault.sync.ciphers.find((x) => x.id === cid);
+            if (!c) return send(404, { message: 'not found' });
+            if (req.method === 'POST' && attId === 'v2') {
+                let b; try { b = JSON.parse(body); } catch { return send(400, { message: 'bad json' }); }
+                if (typeof b.key !== 'string' || typeof b.fileName !== 'string' || !Number.isInteger(b.fileSize)) return send(400, { message: 'bad attachment' });
+                const id = randomBytes(10).toString('hex');
+                pending.set(id, { cipherId: cid, key: b.key, fileName: b.fileName, fileSize: b.fileSize });
+                return send(200, { object: 'attachment-fileUpload', attachmentId: id, url: `/ciphers/${cid}/attachment/${id}`, fileUploadType: 0, cipherResponse: { ...c, object: 'cipherDetails' } });
+            }
+            if (req.method === 'POST') {
+                const p = pending.get(attId);
+                if (!p || p.cipherId !== cid) return send(404, { message: 'no such pending attachment' });
+                const bm = /boundary=(?:"([^"]+)"|([^;]+))/.exec(req.headers['content-type'] || '');
+                if (!bm) return send(400, { message: 'not multipart' });
+                const data = multipartField(raw, bm[1] || bm[2], 'data');
+                if (!data) return send(400, { message: 'no data field' });
+                if (data.length !== p.fileSize) return send(400, { message: 'Attachment size mismatch' });
+                pending.delete(attId);
+                files.set(`${cid}/${attId}`, Buffer.from(data));
+                c.attachments = [...(c.attachments || []), { id: attId, url: `https://vault.example.test/attachments/${cid}/${attId}`, fileName: p.fileName, key: p.key, size: String(data.length), sizeName: `${data.length} Bytes`, object: 'attachment' }];
+                c.revisionDate = stamp();
+                calls.attachments.push({ cipherId: cid, attachmentId: attId, size: data.length });
+                calls.writes.push({ op: 'attach', id: cid });
+                res.writeHead(200); return res.end();
+            }
+            if (req.method === 'GET') {
+                const a = (c.attachments || []).find((x) => x.id === attId);
+                if (!a) return send(404, { message: 'Attachment doesn\'t exist' });
+                return send(200, { ...a, url: `https://vault.example.test/attachments/${cid}/${attId}?token=dl-${randomBytes(6).toString('hex')}` });
+            }
+            calls.refusedWrites.push({ method: req.method, path: url.pathname });
+            return send(404, { error: 'not found' });
+        }
+        const fm = /^\/attachments\/([0-9a-f-]{36})\/([A-Za-z0-9]+)$/.exec(url.pathname);
+        if (fm && req.method === 'GET') {
+            calls.downloadUrls.push(req.url);
+            if (!url.searchParams.get('token')) return send(401, { error: 'no token' });
+            const f = files.get(`${fm[1]}/${fm[2]}`);
+            if (!f) return send(404, { error: 'not found' });
+            res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+            return res.end(hooks.tamper ? hooks.tamper(Buffer.from(f)) : f);
+        }
         const cm = /^\/api\/ciphers(?:\/([0-9a-f-]{36}))?(?:\/(delete|restore))?$/.exec(url.pathname);
         if (cm && req.method !== 'GET') {
             const t = (req.headers.authorization || '').replace(/^Bearer /, '');
@@ -200,7 +260,9 @@ export async function startFakeVaultwarden(vault = buildVault(), { twoFactor = f
                 // CipherData.encryptedFor is required (a missing field is a 422 data guard error) and must be the user.
                 if (typeof b.encryptedFor !== 'string') return send(422, { message: 'missing field encryptedFor' });
                 if (b.encryptedFor !== vault.userId) return send(400, { message: 'This cipher is not encrypted for the current user' });
-                if (b.type !== 1 || !b.name || !b.login) return send(400, { message: 'bad cipher' });
+                const okLogin = b.type === 1 && b.login;
+                const okNote = b.type === 2 && b.secureNote && b.secureNote.type === 0 && !b.login;
+                if (!b.name || !(okLogin || okNote)) return send(400, { message: 'bad cipher' });
                 const c = { ...b, id: randomUUID(), collectionIds: [], deletedDate: null, revisionDate: stamp(), creationDate: stamp() };
                 delete c.lastKnownRevisionDate; delete c.encryptedFor;
                 vault.sync.ciphers.push(c);
@@ -232,5 +294,24 @@ export async function startFakeVaultwarden(vault = buildVault(), { twoFactor = f
     });
     await new Promise((r) => server.listen(0, '127.0.0.1', r));
     const url = `http://127.0.0.1:${server.address().port}`;
-    return { url, vault, calls, close: () => new Promise((r) => { server.closeAllConnections?.(); server.close(r); }) };
+    return { url, vault, calls, hooks, files, close: () => new Promise((r) => { server.closeAllConnections?.(); server.close(r); }) };
+}
+
+/** The bytes of one multipart/form-data field, or null. */
+function multipartField(raw, boundary, name) {
+    const delim = Buffer.from(`--${boundary}`);
+    let at = raw.indexOf(delim);
+    while (at !== -1) {
+        const start = at + delim.length;
+        const next = raw.indexOf(delim, start);
+        if (next === -1) break;
+        const part = raw.subarray(start, next);
+        const headEnd = part.indexOf('\r\n\r\n');
+        if (headEnd !== -1) {
+            const head = part.subarray(0, headEnd).toString('utf8');
+            if (new RegExp(`name="${name}"`).test(head)) return part.subarray(headEnd + 4, part.length - 2);
+        }
+        at = next;
+    }
+    return null;
 }

@@ -177,8 +177,10 @@ test('equivalent_domains: a boolean on a client, true unless set to false', () =
 test('manage and pipe_targets: strict keys, create needs all_items, pipe names must exist', () => {
     const T = { 'docker-login': { argv: ['docker', 'login', '--username', '{username}', '--password-stdin', '{arg:registry}'], args: { registry: '^[a-z0-9.-]+(:[0-9]+)?$' } }, 'gh-token': { argv: ['gh', 'auth', 'login', '--with-token'] } };
     const p = parsePolicy({ version: 1, default_client: 'agent', clients: { agent: { all_items: true, manage: { create: true, update: true, remove: true, compare: true, pipe: ['docker-login'] } }, acme: { manage: { update: true } } }, chats: {}, pipe_targets: T });
-    assert.deepEqual({ ...p.manage('agent') }, { create: true, update: true, remove: true, compare: true, pipe: ['docker-login'] });
-    assert.deepEqual({ ...p.manage('acme') }, { create: false, update: true, remove: false, compare: false, pipe: [] });
+    assert.deepEqual({ ...p.manage('agent') }, { create: true, update: true, remove: true, compare: true, save_download: false, pipe: ['docker-login'] });
+    assert.deepEqual({ ...p.manage('acme') }, { create: false, update: true, remove: false, compare: false, save_download: false, pipe: [] });
+    assert.equal(parsePolicy({ version: 1, clients: { a: { manage: { save_download: true } } } }).manage('a').save_download, true);
+    assert.throws(() => parsePolicy({ version: 1, clients: { a: { manage: { save_download: 1 } } } }), /manage.save_download must be true or false/);
     assert.equal(p.manage('nobody'), null);
     assert.equal(parsePolicy({ version: 1, clients: { a: {} } }).manage('a'), null);
     const t = p.pipeTarget('docker-login');

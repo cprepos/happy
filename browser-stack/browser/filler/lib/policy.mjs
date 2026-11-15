@@ -45,7 +45,9 @@
 // logins to the all_items client). update, remove (soft delete to the vault's
 // trash; there is no purge), compare and pipe act only on logins the client
 // already reaches: its secrets' item ids, and for all_items every personal
-// login no client lists.
+// login no client lists. save_download moves a file the chat's browser
+// downloaded into the vault as an attachment (on an item the client reaches,
+// or, for all_items only, on a new secure note), then deletes the download.
 //
 // "pipe_targets" (top level) is the only list of commands a password may be
 // piped into, chosen here and never by the agent: {"docker-login": {"argv":
@@ -114,7 +116,7 @@ export const DEFAULT_BACKEND = 'shared';
 const BACKEND_TYPE = /^[a-z][a-z0-9-]{0,31}$/;
 const BACKEND_KEY = /^[A-Za-z][A-Za-z0-9_]{0,31}$/;
 const MAX_BACKENDS = 16;
-const MANAGE_FLAGS = ['create', 'update', 'remove', 'compare'];
+const MANAGE_FLAGS = ['create', 'update', 'remove', 'compare', 'save_download'];
 const SLOT = /^[a-z][a-z0-9_]{0,31}$/;
 // eslint-disable-next-line no-control-regex
 const CONTROL = /[\u0000-\u001f\u007f]/;
@@ -319,7 +321,7 @@ function createPolicy(clients, chats, defaultClient, listedItems, targets, backe
         allItems: (slug) => !!clients.get(slug)?.allItems,
         /** Whether a client's all_items logins also fill on equivalent domains (default true; never for explicit secrets). */
         equivalentDomains: (slug) => clients.get(slug)?.equivalentDomains !== false && clients.has(slug),
-        /** A client's manage permissions {create, update, remove, compare, pipe:[names]}, or null (list and fill only). */
+        /** A client's manage permissions {create, update, remove, compare, save_download, pipe:[names]}, or null (list and fill only). */
         manage: (slug) => clients.get(slug)?.manage ?? null,
         /** A pipe target {name, argv, args: Map slot -> RegExp}, or null. */
         pipeTarget: (name) => targets.get(String(name ?? '')) ?? null,
