@@ -27,7 +27,7 @@ final class StateSceneShots: XCTestCase {
         }
         for (scene, view) in zip(StateScene.allCases, held) {
             XCTAssertTrue(view.isLoaded, "\(scene.rawValue) never arrived")
-            XCTAssertEqual(view.progress, 1, accuracy: 0.001, "\(scene.rawValue) is not on its last frame")
+            XCTAssertEqual(view.progress, scene.restsOnFirstFrame ? 0 : 1, accuracy: 0.001, "\(scene.rawValue) is not on its resting frame")
         }
         window.isHidden = true
 
