@@ -1424,7 +1424,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         connectionTask?.cancel()
         awaitingRecord = false
         awaitingRecordTask.task?.cancel()
-        resuming = false
+        resumeWait?.cancel(); resumeProgress = ResumeProgress()
         goalInFlight = nil
         questionSheet?.dismiss(animated: false)
         sessionId = id
