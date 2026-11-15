@@ -7,7 +7,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
-import { createVaultMcp, TOOLS, checkArgs, NO_CHAT } from '../mcp.mjs';
+import { createVaultMcp, TOOLS, checkArgs, NO_CHAT, chatKeyOf, envChat } from '../mcp.mjs';
+import { chatKeyOf as bridgeChatKeyOf } from '../../browser/bridge/mcp.mjs';
 import { runPipe } from '../lib/pipe.mjs';
 
 const ID = '0b8e6f3a-8c1d-4c1e-9d1e-2f3a4b5c6d7e';
@@ -47,12 +48,12 @@ function client(opts) {
 }
 const textOf = (r) => r.result.content[0].text;
 
-test('eight strict tools, no client or email parameter anywhere', () => {
-    assert.deepEqual(TOOLS.map((t) => t.name), ['vault_list', 'vault_search', 'vault_create', 'vault_update', 'vault_remove', 'vault_restore', 'vault_compare', 'vault_pipe']);
+test('nine strict tools, no client or email parameter anywhere', () => {
+    assert.deepEqual(TOOLS.map((t) => t.name), ['vault_list', 'vault_search', 'vault_create', 'vault_update', 'vault_remove', 'vault_restore', 'vault_compare', 'vault_pipe', 'vault_save_download']);
     const walk = (s) => {
         if (s.type === 'object' && s.properties) {
             assert.equal(s.additionalProperties === false || typeof s.additionalProperties === 'object', true);
-            for (const k of Object.keys(s.properties)) assert.doesNotMatch(k, /client|email|password_value|value/);
+            for (const k of Object.keys(s.properties)) assert.doesNotMatch(k, /client|email|password_value|value|session|port/);
             Object.values(s.properties).forEach(walk);
         }
         if (s.items) walk(s.items);
@@ -153,7 +154,7 @@ test('stdio: initialize, tools/list and a call through the real process', async 
         const init = await ask(1, 'initialize', { protocolVersion: '2025-03-26' });
         assert.equal(init.result.protocolVersion, '2025-03-26');
         assert.match(init.result.instructions, /only way to use the vault/);
-        assert.equal((await ask(2, 'tools/list', {})).result.tools.length, 8);
+        assert.equal((await ask(2, 'tools/list', {})).result.tools.length, 9);
         const r = await ask(3, 'tools/call', { name: 'vault_list', arguments: {} });
         assert.match(r.result.content[0].text, /Docker Hub/);
         assert.equal(f.calls[0].auth, `Bearer ${TOKEN}`);
@@ -264,4 +265,86 @@ test('vault_pipe with custom_field: the value is scrubbed as [secret:<name>]', a
         assert.ok(!text.includes(VALUE) && !text.includes(Buffer.from(VALUE).toString('base64')) && !text.includes(encodeURIComponent(VALUE)));
         assert.deepEqual(f.calls[0].body, { id: ID, custom_field: 'token', target: 'jira-login', args: { site: 'team.atlassian.net' } });
     } finally { await f.close(); }
+});
+
+// A fake bridge /api/pod: chats (chat key -> {session_id, port}) have a running browser.
+async function fakeBridge(chats, { status = null } = {}) {
+    const calls = [];
+    const srv = createServer((req, res) => {
+        let b = '';
+        req.on('data', (d) => (b += d)).on('end', () => {
+            const body = b ? JSON.parse(b) : null;
+            calls.push({ path: req.url, auth: req.headers.authorization, body });
+            const send = (st, o) => res.writeHead(st, { 'Content-Type': 'application/json' }).end(JSON.stringify(o));
+            if (req.headers.authorization !== 'Bearer bridge-token-for-tests') return send(401, { error: 'unauthorized' });
+            if (status) return send(status, { error: 'pods_disabled' });
+            const c = chats[body?.chat_key];
+            if (!body?.peek) return send(500, { error: 'a start was asked for' });
+            if (!c) return send(404, { error: 'no_browser' });
+            send(200, { chat_key: body.chat_key, state: 'running', session_id: c.session_id, api_url: `http://127.0.0.1:${c.port}`, slot: 0 });
+        });
+    });
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    return { url: `http://127.0.0.1:${srv.address().port}`, calls, close: () => new Promise((r) => srv.close(r)) };
+}
+
+test('vault_save_download: the chat\'s own browser, found by its chat key, never from the arguments', async () => {
+    assert.equal(chatKeyOf({ source: 'happy', id: 'h-1' }), bridgeChatKeyOf({ source: 'happy', id: 'h-1' }), 'the same key the bridge uses');
+    assert.deepEqual(envChat({ HAPPY_SESSION_ID: 'h1', CLAUDE_CODE_SESSION_ID: 'c1' }), { source: 'happy', id: 'h1' });
+    assert.deepEqual(envChat({ CLAUDE_CODE_SESSION_ID: 'c1' }), { source: 'claude', id: 'c1' });
+    assert.equal(envChat({}), null);
+    const out = { item_id: ID, item_name: 'n', attachment_id: 'a1', file_name: 'f.pdf', size: 3, sha256: 'a'.repeat(64), download_deleted: true };
+    const f = await fakeFiller(() => [200, out]);
+    const mine = { source: 'happy', id: 'sess-mine' };
+    const b = await fakeBridge({ [chatKeyOf(mine)]: { session_id: 'browser-mine', port: 8103 } });
+    try {
+        const opts = { fillerUrl: f.url, bridgeUrl: b.url, readBridgeToken: () => 'bridge-token-for-tests' };
+        const c = client({ ...opts, chat: 'sess-mine', ident: mine });
+        const r = await c.call('vault_save_download', { download_id: 'a1b2c3d4e5f6', new_item: { name: 'test-download' } });
+        assert.equal(r.result.isError, undefined, textOf(r));
+        assert.deepEqual(JSON.parse(textOf(r)), out);
+        assert.deepEqual(b.calls[0].body, { chat_key: chatKeyOf(mine), source: 'happy', peek: true });
+        assert.deepEqual(f.calls[0], { path: '/v1/vault/save_download', auth: `Bearer ${TOKEN}`, chat: 'sess-mine', body: { download_id: 'a1b2c3d4e5f6', new_item: { name: 'test-download' }, session_id: 'browser-mine', controller_port: 8103 } });
+        // The agent may not name a session or port, nor both or neither of item and new_item.
+        for (const [args, msg] of [
+            [{ download_id: 'a1b2c3d4e5f6', item: 'x', session_id: 'browser-theirs' }, /unknown key "session_id"/],
+            [{ download_id: 'a1b2c3d4e5f6', item: 'x', controller_port: 8104 }, /unknown key "controller_port"/],
+            [{ download_id: 'a1b2c3d4e5f6' }, /exactly one of item, new_item/],
+            [{ download_id: 'a1b2c3d4e5f6', item: 'x', new_item: { name: 'y' } }, /exactly one of item, new_item/],
+            [{ download_id: '../etc', item: 'x' }, /download_id is not in the expected form/],
+            [{ download_id: 'a1b2c3d4e5f6', item: 'x', file_name: 'a/b' }, /file_name is not in the expected form/],
+        ]) {
+            const x = await c.call('vault_save_download', args);
+            assert.equal(x.result.isError, true);
+            assert.match(textOf(x), msg);
+        }
+        assert.equal(f.calls.length, 1);
+        // Another chat (no running browser), no chat id at all, a bridge with shared browsers only.
+        const other = client({ ...opts, chat: 'sess-other', ident: { source: 'happy', id: 'sess-other' } });
+        assert.match(textOf(await other.call('vault_save_download', { download_id: 'a1b2c3d4e5f6', item: 'x' })), /no running browser/);
+        assert.match(textOf(await client({ ...opts }).call('vault_save_download', { download_id: 'a1b2c3d4e5f6', item: 'x' })), /no chat id/);
+        const shared = await fakeBridge({}, { status: 409 });
+        try {
+            assert.match(textOf(await client({ ...opts, bridgeUrl: shared.url, ident: mine }).call('vault_save_download', { download_id: 'a1b2c3d4e5f6', item: 'x' })), /per-chat browser/);
+        } finally { await shared.close(); }
+        assert.match(textOf(await client({ fillerUrl: f.url, bridgeUrl: b.url, bridgeTokenPath: '/nonexistent/bridge-token', ident: mine }).call('vault_save_download', { download_id: 'a1b2c3d4e5f6', item: 'x' })), /no browser bridge token/);
+        assert.equal(f.calls.length, 1, 'nothing more reached the filler');
+    } finally { await f.close(); await b.close(); }
+});
+
+test('vault_save_download behind the gateway: each call\'s _meta chat picks the browser', async () => {
+    const f = await fakeFiller(() => [200, { download_deleted: true }]);
+    const a = { source: 'happy', id: 'sess-a' };
+    const cc = { source: 'claude', id: 'cc-b' };
+    const b = await fakeBridge({ [chatKeyOf(a)]: { session_id: 'browser-a', port: 8101 }, [chatKeyOf(cc)]: { session_id: 'browser-b', port: 8102 } });
+    try {
+        const out = [];
+        const s = createVaultMcp({ readToken: () => TOKEN, write: (m) => out.push(m), fillerUrl: f.url, bridgeUrl: b.url, readBridgeToken: () => 'bridge-token-for-tests', fromMeta: true, ident: { source: 'happy', id: 'ignored' } });
+        const call = async (id, meta) => { await s.handle({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'vault_save_download', arguments: { download_id: 'a1b2c3d4e5f6', item: 'x' }, _meta: meta } }); return out.find((m) => m.id === id); };
+        await call(1, { 'browserstack/chat': a });
+        await call(2, { 'browserstack/chat': cc });
+        assert.deepEqual(f.calls.map((c) => [c.chat, c.body.session_id, c.body.controller_port]), [['sess-a', 'browser-a', 8101], [NO_CHAT, 'browser-b', 8102]]);
+        assert.equal((await call(3, {})).result.isError, true);
+        assert.equal(f.calls.length, 2);
+    } finally { await f.close(); await b.close(); }
 });

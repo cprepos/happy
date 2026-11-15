@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // happy-vault-mcp: the agents' vault tools (stdio, newline-delimited JSON-RPC
-// 2.0). Every agent vault interaction goes through these eight tools, one
+// 2.0). Every agent vault interaction goes through these nine tools, one
 // strict function per action, each a thin client of the secret filler's
 // POST /v1/vault/<action> on 127.0.0.1:6091 with the vault-client token
 // (~/.local/share/happy-vault-mcp/secrets/vault-client-token, written by
@@ -11,6 +11,15 @@
 // call where a value reaches this process: lib/pipe.mjs writes it to an
 // allowlisted command's stdin and returns only the scrubbed output.
 // vault_remove is a soft delete to the vault trash; there is no purge.
+//
+// vault_save_download moves a file this chat's browser downloaded into the
+// vault (an encrypted attachment), and the filler deletes the download once
+// the vault copy is verified. The bytes never pass through here: this process
+// only finds the chat's own browser (the bridge's POST /api/pod with peek, by
+// the chat key of HAPPY_SESSION_ID or CLAUDE_CODE_SESSION_ID, or of the call's
+// _meta chat behind the gateway) and hands the filler that session and
+// controller port. The tool's arguments never name a session or a port.
+import { createHash } from 'node:crypto';
 import { readFileSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { homedir } from 'node:os';
@@ -18,6 +27,7 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { runPipe, scrubValue } from './lib/pipe.mjs';
 import { chatFromMeta, chatOfMeta, fillerChatOf } from '../identity/chatmeta.mjs';
+import { loadConfig as bridgeConfig } from '../browser/bridge/lib/config.mjs';
 
 const PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const SERVER_INFO = { name: 'happy-vault', version: '1.0.0' };
@@ -45,6 +55,20 @@ const CUSTOM_FIELD = { type: 'string', minLength: 1, maxLength: 64, pattern: '^[
 // tool schemas may not use a top-level oneOf).
 const ONE_OF = ['field', 'custom_field'];
 const TRASH = { type: 'boolean', description: 'Also list logins in the vault trash (default false).' };
+const DOWNLOAD_ID = { type: 'string', pattern: '^[0-9a-f]{12}$', description: 'The download\'s id, exactly as browser_list_downloads shows it (12 hex characters).' };
+const ITEM = { type: 'string', minLength: 1, maxLength: 200, description: 'An existing vault item to attach the file to: its id or its exact name from vault_list (a login or a secure note). Give this or new_item, not both.' };
+const NEW_ITEM = {
+    type: 'object',
+    description: 'A new secure note to hold the file. Give this or item, not both.',
+    properties: {
+        name: { type: 'string', minLength: 1, maxLength: 100, description: 'The new note\'s name; no other item may have it.' },
+        uris: { type: 'array', minItems: 1, maxItems: 10, items: { type: 'string', minLength: 9, maxLength: 2048, pattern: '^https://' }, description: 'Optional https URLs the file relates to, kept in the note\'s text.' },
+    },
+    required: ['name'],
+    additionalProperties: false,
+};
+const FILE_NAME = { type: 'string', minLength: 1, maxLength: 200, pattern: '^[^/\\\\]+$', description: 'The attachment\'s name in the vault (default: the downloaded file\'s name).' };
+const ITEM_OR_NEW = ['item', 'new_item'];
 const obj = (properties, required = [], exactlyOne = null) => {
     const s = { type: 'object', properties, required, additionalProperties: false };
     if (exactlyOne) Object.defineProperty(s, 'exactlyOne', { value: exactlyOne, enumerable: false }); // not sent in tools/list
@@ -101,6 +125,11 @@ export const TOOLS = [
             args: { type: 'object', additionalProperties: { type: 'string', maxLength: 256 }, description: 'Values for the target\'s {arg:slot} placeholders, each checked against the target\'s pattern.' },
         }, ['id', 'target'], ONE_OF),
     },
+    {
+        name: 'vault_save_download',
+        description: 'Move a file this chat\'s browser downloaded into the vault as an encrypted attachment, on an existing item (item: its id or exact name) or on a new secure note (new_item), then delete the download from the browser once the vault copy is read back and matches. The file\'s contents never come back to you; the answer is {item_id, item_name, attachment_id, file_name, size, sha256, download_deleted}. Use this, never browser_read_download, for any sensitive file (statements, contracts, IDs, keys, exports). Only this chat\'s own downloads (browser_list_downloads) can be saved. If the vault copy does not match, nothing is deleted and the call fails.',
+        inputSchema: obj({ download_id: DOWNLOAD_ID, item: ITEM, new_item: NEW_ITEM, file_name: FILE_NAME }, ['download_id'], ITEM_OR_NEW),
+    },
 ];
 const TOOL_BY_NAME = new Map(TOOLS.map((t) => [t.name, t]));
 
@@ -111,7 +140,9 @@ export const INSTRUCTIONS =
     'passwords are always generated inside the filler; you never see one. To sign in on a web page use the browser ' +
     'tools (browser_login, browser_fill_secret), which fill vault logins by name. vault_remove only moves a login to the ' +
     'trash (on an archive-only vault, it archives it), and vault_restore brings it back (after a person unarchives it, ' +
-    'on an archive-only vault).';
+    'on an archive-only vault). To keep a file the browser downloaded, call vault_save_download: it moves the file into ' +
+    'the vault without its contents reaching you and deletes the download once the vault copy is verified. Never use ' +
+    'browser_read_download on a sensitive file.';
 
 /** A small JSON-schema check of exactly what TOOLS uses. Returns an error message or null. */
 export function checkArgs(schema, v, at = 'arguments') {
@@ -152,6 +183,16 @@ export function checkArgs(schema, v, at = 'arguments') {
     return `${at}: unsupported schema`;
 }
 
+/** The bridge's chat key for {source, id}: sha256("<source>:<id>"), first 32 hex (as browser/bridge/mcp.mjs). */
+export const chatKeyOf = (c) => createHash('sha256').update(`${c.source}:${c.id}`).digest('hex').slice(0, 32);
+
+/** This process's chat from its environment (as the bridge MCP server finds it), or null. */
+export function envChat(env = process.env) {
+    if (env.HAPPY_SESSION_ID) return { source: 'happy', id: String(env.HAPPY_SESSION_ID) };
+    if (env.CLAUDE_CODE_SESSION_ID) return { source: 'claude', id: String(env.CLAUDE_CODE_SESSION_ID) };
+    return null;
+}
+
 export function defaultHome(env = process.env) {
     return env.BROWSER_VAULT_MCP_HOME || env.HAPPY_VAULT_MCP_HOME || join(homedir(), '.local', 'share', 'happy-vault-mcp');
 }
@@ -160,7 +201,13 @@ export function defaultHome(env = process.env) {
 // many chats, and each call's chat is the one the Mac's gateway client put in
 // _meta["browserstack/chat"] (browser-stack/identity/chatmeta.mjs), never the tool arguments. The
 // filler hears its Happy session id, else "none", as it would from HAPPY_SESSION_ID.
-export function createVaultMcp({ fillerUrl = 'http://127.0.0.1:6091', tokenPath, readToken, chat = null, fromMeta = false, write, fetchImpl = fetch, pipe = runPipe, timeoutMs = 120_000 }) {
+// ident ({source, id}, from envChat) is the chat whose browser vault_save_download may use;
+// behind the gateway it is each call's _meta chat instead. bridgeUrl and the bridge token
+// (readBridgeToken or bridgeTokenPath) reach the bridge's /api/pod for that chat's session.
+export function createVaultMcp({
+    fillerUrl = 'http://127.0.0.1:6091', tokenPath, readToken, chat = null, fromMeta = false, write, fetchImpl = fetch, pipe = runPipe, timeoutMs = 120_000,
+    ident = null, bridgeUrl = 'http://127.0.0.1:6090', bridgeTokenPath = null, readBridgeToken = null,
+}) {
     const base = fillerUrl.replace(/\/+$/, '');
     const token = readToken || (() => {
         let t;
@@ -192,11 +239,53 @@ export function createVaultMcp({ fillerUrl = 'http://127.0.0.1:6091', tokenPath,
         return data;
     }
 
-    async function call(name, args, signal, who = chat) {
+    const bridgeToken = readBridgeToken || (() => {
+        let t = '';
+        try { t = bridgeTokenPath ? readFileSync(bridgeTokenPath, 'utf8').trim() : ''; } catch {}
+        if (!t) throw new Error('vault_save_download cannot find this chat\'s browser on this machine (no browser bridge token)');
+        return t;
+    });
+    const bridgeBase = String(bridgeUrl).replace(/\/+$/, '');
+
+    // The chat's own browser: {session_id, controller_port}, never started here. Refuses when in doubt.
+    async function chatBrowser(c, signal) {
+        if (!c || typeof c.source !== 'string' || typeof c.id !== 'string' || !c.id) throw new Error('this chat has no chat id, so its browser cannot be found; vault_save_download works only in a chat with its own browser');
+        const sig = signal ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000);
+        const bt = bridgeToken();
+        let res;
+        try {
+            res = await fetchImpl(`${bridgeBase}/api/pod`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${bt}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ chat_key: chatKeyOf(c), source: c.source, peek: true }),
+                signal: sig,
+            });
+        } catch (err) {
+            if (signal?.aborted) throw err;
+            throw new Error(`the browser bridge is not reachable (${err.cause?.code || err.name})`);
+        }
+        let d = null;
+        try { d = await res.json(); } catch {}
+        if (res.status === 404) throw new Error('this chat has no running browser: download the file in this chat\'s browser first (browser_list_downloads lists what it has)');
+        if (res.status === 409) throw new Error('vault_save_download needs a per-chat browser, and this machine runs a shared one');
+        if (!res.ok) throw new Error(`the browser bridge refused (HTTP ${res.status})`);
+        let port = null;
+        try { const u = new URL(String(d?.api_url || '')); if (['127.0.0.1', 'localhost'].includes(u.hostname)) port = Number(u.port); } catch {}
+        if (d?.chat_key !== chatKeyOf(c) || typeof d?.session_id !== 'string' || !d.session_id || !Number.isInteger(port) || port < 1) {
+            throw new Error('the browser bridge gave no usable browser for this chat');
+        }
+        return { session_id: d.session_id, controller_port: port };
+    }
+
+    async function call(name, args, signal, who = chat, c = ident) {
         const tool = TOOL_BY_NAME.get(name);
         const bad = checkArgs(tool.inputSchema, args);
         if (bad) throw new Error(bad);
         const action = name.slice('vault_'.length);
+        if (action === 'save_download') {
+            const b = await chatBrowser(c, signal);
+            return filler('save_download', { ...args, ...b }, signal, who);
+        }
         if (action !== 'pipe') return filler(action, args, signal, who);
         const got = await filler('pipe', args, signal, who);
         // The scrub label: the field, or the custom field's name ("[secret:token]").
@@ -233,16 +322,16 @@ export function createVaultMcp({ fillerUrl = 'http://127.0.0.1:6091', tokenPath,
             case 'tools/call': {
                 const name = params?.name;
                 if (!TOOL_BY_NAME.has(name)) return error(id, -32602, `unknown tool ${String(name).slice(0, 64)}`);
-                let who = chat;
+                let who = chat; let c = ident;
                 if (fromMeta) {
-                    const c = chatOfMeta(params?._meta);
+                    c = chatOfMeta(params?._meta);
                     if (!c) return result(id, toolResult(`Error: ${NO_META_CHAT}`, true));
                     who = fillerChatOf(c);
                 }
                 const ac = new AbortController();
                 inflight.set(id, ac);
                 try {
-                    const out = await call(name, params?.arguments ?? {}, ac.signal, who);
+                    const out = await call(name, params?.arguments ?? {}, ac.signal, who, c);
                     if (!ac.signal.aborted) result(id, toolResult(out));
                 } catch (err) {
                     if (!ac.signal.aborted) result(id, toolResult(`Error: ${err.message}`, true));
@@ -274,12 +363,16 @@ export function createVaultMcp({ fillerUrl = 'http://127.0.0.1:6091', tokenPath,
 // Run as a program, also through a symlink (selfhost/browser and selfhost/vault-mcp point here).
 const isMain = (() => { try { return import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href; } catch { return false; } })();
 if (isMain) {
+    const bridge = bridgeConfig();
     const server = createVaultMcp({
         fillerUrl: process.env.BROWSER_VAULT_FILLER_URL || process.env.HAPPY_VAULT_FILLER_URL || 'http://127.0.0.1:6091',
         tokenPath: join(defaultHome(), 'secrets', 'vault-client-token'),
         // Behind the LAN gateway each call names its chat in _meta; the environment names none.
         chat: chatFromMeta() ? null : process.env.HAPPY_SESSION_ID || null,
         fromMeta: chatFromMeta(),
+        ident: chatFromMeta() ? null : envChat(),
+        bridgeUrl: bridge.bridgeUrl,
+        bridgeTokenPath: bridge.files.bridgeToken,
         write: (obj) => process.stdout.write(JSON.stringify(obj) + '\n'),
     });
     const rl = createInterface({ input: process.stdin });
