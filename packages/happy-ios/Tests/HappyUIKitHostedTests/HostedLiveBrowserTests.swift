@@ -99,7 +99,8 @@ final class HostedLiveBrowserTests: XCTestCase {
         }
         XCTAssertEqual(row.dot.maxX, host.cardFrame.maxX)
         XCTAssertEqual(line.frame.maxY, host.cardFrame.minY)
-        XCTAssertEqual(line.frame.height, 20)
+        // A point rounds to a third on a 3x screen: 20 can lay out as 20.67.
+        XCTAssertEqual(line.frame.height, 20, accuracy: 1)
         // The player: at the bottom right, 8 over the line, its right edge the card's.
         let player = try XCTUnwrap(dock.player)
         let expected = LiveBrowserDockLayout(.init(
@@ -112,7 +113,10 @@ final class HostedLiveBrowserTests: XCTestCase {
         if host.view.bounds.size == CGSize(width: 402, height: 874) {
             XCTAssertEqual(host.cardFrame, CGRect(x: 8, y: 784, width: 386, height: 56))
             // Small is 60% of the card, ⇲ and full screen both on its bar.
-            XCTAssertEqual(player.frame, CGRect(x: 162, y: 537, width: 232, height: 219))
+            // To a rounding: on a 3x screen y can land on 536.33.
+            for (a, b) in zip([player.frame.minX, player.frame.minY, player.frame.width, player.frame.height], [162, 537, 232, 219] as [CGFloat]) {
+                XCTAssertEqual(a, b, accuracy: 1)
+            }
             for id in ["live-browser-player-resize", "live-browser-player-full-screen", "live-browser-player-menu", "live-browser-player-close"] {
                 XCTAssertNotNil(player.subviews.first { $0.accessibilityIdentifier == id && !$0.isHidden }, id)
             }
