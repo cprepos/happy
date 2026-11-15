@@ -150,3 +150,24 @@ row ("Home embeds it in the dock").
 | Icons | `Sources/HappyIcons`, `scripts/generate-icons.*`, `Sources/HappyUI/Theme/IconImages.swift`, `ItemIcon`'s icon source, swapping SF Symbols for happy-app's icons in onboarding and troubleshoot, light/dark theme application |
 | Home | `Screens/HomeScreens.swift`, `Screens/SessionListScreens.swift`, `Screens/HomeUltraListView.swift`, `Screens/HomeRowDrawing.swift`, `Components/NoSessionsViews.swift`, home header, the empty chat's `NewWorkPanel` and `Chat/LegacyComposeStart.swift`, new session screen, `Core/Home/` (including the new-session draft store and `SessionStarter`) |
 | Composer | `Sources/HappyUI/Composer/`, `Sources/HappyLayout/Composer/`, `Sources/HappyCore/Composer/` (model, permission and effort options; `useComposerModes`). The AgentInput card is shared: the empty chat compose opens uses it, as every chat does. The phone's new session screen draws its own glass composer (`new/index.tsx` `mobileInputBox`), not the card |
+## Upstream merges: addon hooks (added at the end)
+
+Our code in an upstream file conflicts whenever upstream edits next to it.
+Keep it in the file's `+Addons.swift` and leave one-line hooks, each beside
+an upstream line rather than rewriting it, and each naming the addons file.
+
+- `NewWorkPanel.swift`: the Mode row (`modeRow`, `modeTitle`, `showMode`,
+  `reservedSessionRows`) lives in `NewWorkPanel+Addons.swift`; the panel's
+  doc comment stays upstream's. Compact rows on a short phone are
+  `NewWorkLayout+Addons.swift`'s `compactsWhenShort` init, which copies
+  upstream's `givingWay` body with its metrics as parameters;
+  `testTheCopyMatchesUpstreamAtUpstreamsMetrics` fails when upstream's
+  drifts, and the copy is refreshed from it.
+- `LegacyChatViewController.swift`: the live browser dock adds lines after
+  upstream's in `layout` (`let session = shownComposer as? …`), never in
+  place of them, so upstream's composer changes there merge.
+- `BrowserViewController.swift`: `openBrowser` stays upstream's; the
+  workspace finder goes through the overload in
+  `BrowserViewController+Addons.swift` (`openingWorkspace`).
+- Tests: our tests in an upstream test file go in an `extension` at the
+  file's end (`HostedComposeTests`), not in the class body.
