@@ -145,7 +145,24 @@ final class AgentInputCompactCardTests: XCTestCase {
         // height isn't judged; the UI test's still is what shows it.
         let line = layout.text.height / 2
         XCTAssertEqual(line, 22)
-        XCTAssertEqual(card.textView.bounds.height, 2 * line, accuracy: 0.01, "the view is two lines")
+        // The view is trimmed to two lines as drawn, a little under 2 x 22.
+        XCTAssertLessThan(card.textView.bounds.height, 2 * line, "the view is over two lines")
+        XCTAssertGreaterThan(card.textView.bounds.height, 2 * line - 2, "the view is under two lines")
+        // Scrolled to its end, the top line shows whole and nothing of the
+        // line above it peeks in over it.
+        let text = card.textView
+        text.setContentOffset(CGPoint(x: 0, y: text.contentSize.height - text.bounds.height), animated: false)
+        let top = text.contentOffset.y
+        let layoutManager = try XCTUnwrap(text.textLayoutManager)
+        var lines: [CGRect] = []
+        layoutManager.enumerateTextLayoutFragments(from: layoutManager.documentRange.location, options: [.ensuresLayout]) { fragment in
+            for line in fragment.textLineFragments {
+                lines.append(line.typographicBounds.offsetBy(dx: fragment.layoutFragmentFrame.minX, dy: fragment.layoutFragmentFrame.minY))
+            }
+            return true
+        }
+        let cut = try XCTUnwrap(lines.first { $0.minY <= top && top < $0.maxY })
+        XCTAssertLessThan(top - cut.minY, 1, "part of the line above the top one shows")
 
         setCompact(card, false)
         XCTAssertEqual(card.textView.textContainerInset.top, MobileComposerMetrics.mobile.inputPaddingTop)
