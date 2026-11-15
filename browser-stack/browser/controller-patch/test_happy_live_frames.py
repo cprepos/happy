@@ -1163,5 +1163,157 @@ class ScrollPatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((click["verified"], click["signals"]), (False, []))
 
 
+# ── a new tab the person opens ──────────────────────────────────────────────
+
+
+class NtpFrame:
+    def __init__(self, url: str, parent: object = None) -> None:
+        self.url = url
+        self.parent_frame = parent
+
+
+class NtpPage:
+    """A page as diagnostics sees it: its URL follows its top frame's commits."""
+
+    def __init__(self, url: str = "about:blank", opener: object = None) -> None:
+        self.url = url
+        self._impl_obj = SimpleNamespace(_opener=opener)
+        self.main_frame = NtpFrame(url)
+
+    def is_closed(self) -> bool:
+        return False
+
+
+def fake_manager(*pages: object) -> SimpleNamespace:
+    """The BrowserManager methods the page guard calls, upstream's own, over a manager of fakes."""
+    import types
+
+    from app.browser_manager import BrowserManager
+
+    m = SimpleNamespace(settings=SimpleNamespace(allowed_host_patterns=["*"]))
+    for name in ("_assert_url_allowed", "_assert_runtime_url_allowed", "_url_off_list",
+                 "_session_has_refused_page", "_open_page_counts"):
+        setattr(m, name, types.MethodType(getattr(BrowserManager, name), m))
+    m.page_provenance = PageProvenance(url_refused=m._url_off_list)
+    m.tabs = SimpleNamespace(pages=lambda session: list(pages))
+    return m
+
+
+def guard(manager: SimpleNamespace) -> object:
+    from app.browser.services.diagnostics import BrowserDiagnosticsService
+
+    diag = object.__new__(BrowserDiagnosticsService)
+    diag.manager = manager
+    diag._birth_judgements = {}
+    diag._return_to_blank = AsyncMock()
+    return diag
+
+
+class NewTabTests(unittest.IsolatedAsyncioTestCase):
+    def test_the_patch_is_applied(self) -> None:
+        from app.browser.services.diagnostics import BrowserDiagnosticsService
+        from app.browser_manager import BrowserManager
+
+        self.assertEqual(BrowserManager._assert_runtime_url_allowed.__module__, "happy_live_frames")
+        self.assertEqual(BrowserDiagnosticsService._on_frame_navigated.__module__, "happy_live_frames")
+
+    def test_only_the_new_tab_page_of_chrome_is_allowed(self) -> None:
+        m = fake_manager()
+        for url in ("chrome://newtab/", "chrome://new-tab-page/", "https://example.com/", "about:blank"):
+            m._assert_runtime_url_allowed(url)
+            self.assertFalse(m._url_off_list(url), url)
+        for url in ("chrome://settings/", "chrome://newtab/x", "chrome://newtab/?q=1", "chrome://newtab/#a",
+                    "chrome://new-tab-page/foo", "chrome-untrusted://new-tab-page/", "CHROME://NEWTAB/",
+                    "chrome://version/", "devtools://devtools/", "file:///etc/passwd", "chrome://newtab.evil/"):
+            with self.assertRaises(PermissionError, msg=url):
+                m._assert_runtime_url_allowed(url)
+            self.assertTrue(m._url_off_list(url), url)
+        # The agent's own target URLs are upstream's: http(s) only, the new-tab page included.
+        with self.assertRaises(PermissionError):
+            m._assert_url_allowed("chrome://newtab/")
+
+    async def commit(self, diag: object, page: NtpPage, url: str, **kw: object) -> None:
+        page.url = url
+        page.main_frame = NtpFrame(url)
+        diag._on_frame_navigated(SimpleNamespace(id="s1"), page, page.main_frame, **kw)
+        await asyncio.sleep(0)
+
+    async def test_a_tab_the_person_opens_is_clean(self) -> None:
+        own, tab = NtpPage("https://example.com/"), NtpPage()
+        m = fake_manager(own, tab)
+        diag = guard(m)
+        m.page_provenance.opener_lookup_started(tab)  # attach_popup, as the context reported it
+        self.assertTrue(m.page_provenance.refused(tab))
+        await self.commit(diag, tab, "chrome://newtab/", reported=True)
+        self.assertFalse(m.page_provenance.refused(tab))
+        self.assertTrue(m.page_provenance.controller_opened(tab))
+        diag._return_to_blank.assert_not_called()
+        # It does not taint the session's own tab, and what the person types next is judged as usual.
+        self.assertFalse(m._session_has_refused_page(SimpleNamespace(id="s1")))
+        await self.commit(diag, own, "https://example.com/two")
+        await self.commit(diag, tab, "https://example.org/")
+        self.assertFalse(m.page_provenance.refused(tab) or m.page_provenance.refused(own))
+        diag._return_to_blank.assert_not_called()
+        await self.commit(diag, tab, "chrome://settings/")
+        self.assertTrue(m.page_provenance.refused(tab))
+        diag._return_to_blank.assert_called_once()
+
+    async def test_a_popup_is_still_judged_by_its_opener(self) -> None:
+        opener = NtpPage("https://example.com/")
+        popup = NtpPage(opener=opener)
+        m = fake_manager(opener, popup)
+        diag = guard(m)
+        m.page_provenance.opener_lookup_started(popup)
+        await self.commit(diag, popup, "chrome://newtab/", reported=True)
+        self.assertTrue(m.page_provenance.held_for_verdict(popup))
+        self.assertFalse(m.page_provenance.controller_opened(popup))
+
+    async def test_no_opener_alone_does_not_clear_the_hold(self) -> None:
+        # A window a refused page opened and then closed reaches the controller with no opener.
+        window = NtpPage()
+        m = fake_manager(window)
+        diag = guard(m)
+        m.page_provenance.opener_lookup_started(window)
+        await self.commit(diag, window, "about:blank", reported=True)
+        self.assertTrue(m.page_provenance.held_for_verdict(window))
+        await self.commit(diag, window, "https://example.com/")
+        self.assertTrue(m.page_provenance.refused(window))
+        self.assertFalse(m.page_provenance.controller_opened(window))
+
+    async def test_a_tainted_page_stays_tainted_on_the_new_tab_page(self) -> None:
+        page = NtpPage()
+        m = fake_manager(page)
+        diag = guard(m)
+        m.page_provenance.opener_lookup_started(page)
+        m.page_provenance.opener_judged(page, opener_refused=True)
+        await self.commit(diag, page, "chrome://newtab/")
+        self.assertTrue(m.page_provenance.refused(page))
+        self.assertFalse(m.page_provenance.controller_opened(page))
+
+    async def test_a_birth_being_judged_is_left_to_its_verdict(self) -> None:
+        page = NtpPage()
+        m = fake_manager(page)
+        diag = guard(m)
+        m.page_provenance.opener_lookup_started(page)
+        diag._birth_judgements[page] = asyncio.get_running_loop().create_future()
+        await self.commit(diag, page, "chrome://newtab/", reported=True)
+        self.assertTrue(m.page_provenance.held_for_verdict(page))
+        self.assertFalse(m.page_provenance.controller_opened(page))
+        diag._birth_judgements[page].cancel()
+
+    async def test_an_iframe_commit_is_not_the_page(self) -> None:
+        page = NtpPage()
+        m = fake_manager(page)
+        diag = guard(m)
+        m.page_provenance.opener_lookup_started(page)
+        diag._on_frame_navigated(SimpleNamespace(id="s1"), page, NtpFrame("chrome://newtab/", parent=object()))
+        self.assertTrue(m.page_provenance.held_for_verdict(page))
+
+    def test_unknown_opener_counts_as_one(self) -> None:
+        self.assertTrue(hlf.has_opener(SimpleNamespace()))
+        self.assertFalse(hlf.has_opener(NtpPage()))
+        self.assertTrue(hlf.has_opener(NtpPage(opener=object())))
+
+
 if __name__ == "__main__":
     unittest.main()

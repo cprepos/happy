@@ -5,7 +5,8 @@ BrowserObservationService.share_snapshot. Upstream, that waits for the session l
 holds the lock from its before-snapshot to its after-snapshot, so the viewer saw nothing between an
 action's start and its end: a navigation that took ten seconds was ten seconds of a frozen frame.
 
-What this changes (share_snapshot and light_snapshot; and the scroll action, see "scroll" below):
+What this changes (share_snapshot and light_snapshot; the scroll action, see "scroll" below; and a new tab
+the person opens, see "a new tab the person opens" below):
 
 - Each session keeps its most recent PII-scrubbed frame (a PNG in its artifact directory, with the
   URL and title it was taken with). It is filled by the share poll itself, by every action's
@@ -76,6 +77,10 @@ EXPECTED_SHA256 = {
     "browser/services/actions.py": "861f865cf05a2c64102000decfac41f16701fde642ff898f3cb43cfe94c3a29a",
     "actions/pipeline.py": "0eed86efa2cfe54a1ea827d6a03bbceeba3914695625fd521681d9d4b1d4d31a",
     "browser_manager.py": "c5410eb4c2731102e75d575e46df6a44cbba5d39c660998936418ee1124364a3",
+    # New tabs (see "a new tab the person opens"): the page guard and attach_popup's hold, and the provenance
+    # it records.
+    "browser/services/diagnostics.py": "513ba73b6ae613e2d428a09417f5d52e328803e4ca87411f777c9912ae116adc",
+    "browser/page_provenance.py": "e7f89cc529daee1cb489995388d562052400ae764d5f406d7b91c1213b2f5544",
 }
 
 # A lockless capture: how long a poll waits on it before serving the previous frame, and the
@@ -1496,6 +1501,80 @@ def build_scroll(actions_module: Any) -> dict[str, Any]:
     }
 
 
+# ── a new tab the person opens ──────────────────────────────────────────────
+#
+# While the person holds the browser, Ctrl+T (or the "+" in the tab strip) opened a tab that upstream
+# refused for good, and sent back to about:blank on every navigation:
+#
+# - The context reports it like a popup (diagnostics.attach_popup), which holds it as opener_pending
+#   until its opener's "popup" event judges it. A tab the browser opened itself has no opener and gets
+#   no such event, so it was never judged, and stayed refused (PageProvenance.refused).
+# - Its first commit is Chromium's new-tab page, chrome://newtab/, and _assert_runtime_url_allowed
+#   refuses every scheme but http(s), about:, data:, blob: and chrome-error:. The page guard sent it to
+#   about:blank, and while it was open on a non-http page, held for a verdict, it counted as refused for
+#   the session (counts_for_its_session), so the session's own tab's commits were refused too.
+#
+# What this changes:
+#
+# - _assert_runtime_url_allowed (BrowserManager) accepts exactly the new-tab page's URLs, NEW_TAB_URLS,
+#   the ones the kiosk policy's URLAllowlist lets past its chrome://* block. Every other chrome:// URL
+#   stays refused. The agent's own target URLs go through _assert_url_allowed, which is unchanged and
+#   accepts http(s) only, so the agent cannot navigate to the new-tab page.
+# - _on_frame_navigated (the diagnostics service) first: a page whose top frame commits a new-tab URL,
+#   with no opener, held only for its opener's verdict (nothing tainted it, no refused hop, no birth
+#   verdict being judged), is recorded as one the controller opened (opened_by_controller, as tabs.open
+#   does). Then upstream judges the commit as before. That runs for the replay attach_popup makes of a
+#   reported page's first commit too, so the provenance is set before that first commit is judged.
+#   Only a commit of the new-tab page clears the hold, never the lack of an opener alone: a window a
+#   refused page opens and then closes itself also reaches the controller with no opener, and it is on
+#   about:blank (scriptable by that page), which stays refused. Web content cannot open chrome:// URLs,
+#   and the new-tab page's document has a chrome:// origin no web page shares, so nothing the session's
+#   pages ran can be in it. What the person types next is judged as any navigation is (the URL list,
+#   the gate, the session's taint).
+
+NEW_TAB_URLS = frozenset({"chrome://newtab/", "chrome://new-tab-page/"})
+
+
+def is_new_tab_url(url: Any) -> bool:
+    return isinstance(url, str) and url in NEW_TAB_URLS
+
+
+def has_opener(page: Any) -> bool:
+    """Whether Playwright knows an opener for the page (closed or not). Unknown counts as having one.
+
+    Page.opener() is a coroutine that only reads this attribute (and answers None for a closed opener,
+    which is not what is asked here), set when Playwright first reported the page.
+    """
+    impl = getattr(page, "_impl_obj", page)
+    if not hasattr(impl, "_opener"):
+        return True
+    return impl._opener is not None
+
+
+def build_new_tab(manager_module: Any, diagnostics_module: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    Manager = manager_module.BrowserManager
+    Diagnostics = diagnostics_module.BrowserDiagnosticsService
+    upstream_runtime_check = Manager._assert_runtime_url_allowed
+    upstream_frame_navigated = Diagnostics._on_frame_navigated
+
+    def _assert_runtime_url_allowed(self: Any, url: str) -> None:
+        if is_new_tab_url(url):
+            return
+        upstream_runtime_check(self, url)
+
+    def _on_frame_navigated(self: Any, session: Any, page: Any, frame: Any, *, reported: bool = False) -> None:
+        if frame.parent_frame is None and is_new_tab_url(frame.url):
+            provenance = self.manager.page_provenance
+            if provenance.held_for_verdict(page) and not self.birth_pending(page) and not has_opener(page):
+                provenance.opened_by_controller(page)
+        upstream_frame_navigated(self, session, page, frame, reported=reported)
+
+    return (
+        {"_assert_runtime_url_allowed": _assert_runtime_url_allowed},
+        {"_on_frame_navigated": _on_frame_navigated},
+    )
+
+
 def apply() -> None:
     from app.browser import page_read
     from app.browser.services import observation
@@ -1510,8 +1589,16 @@ def apply() -> None:
 
     for name, fn in build_scroll(actions).items():
         setattr(actions.BrowserActionService, name, fn)
+    from app import browser_manager
+    from app.browser.services import diagnostics
+
+    manager_patches, diagnostics_patches = build_new_tab(browser_manager, diagnostics)
+    for name, fn in manager_patches.items():
+        setattr(browser_manager.BrowserManager, name, fn)
+    for name, fn in diagnostics_patches.items():
+        setattr(diagnostics.BrowserDiagnosticsService, name, fn)
     logger.warning(
-        "happy_live_frames: patched auto-browser %s share_snapshot/light_snapshot and scroll; screenshot audit in %s, default view %s",
+        "happy_live_frames: patched auto-browser %s share_snapshot/light_snapshot, scroll and new tabs; screenshot audit in %s, default view %s",
         EXPECTED_VERSION,
         tz_name(),
         default_view(),
