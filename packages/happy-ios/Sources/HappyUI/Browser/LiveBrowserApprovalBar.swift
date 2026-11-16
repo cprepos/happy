@@ -3,14 +3,17 @@ import HappyCore
 import HappyLayout
 import UIKit
 
-/// The action the agent waits on, asked without a modal: its summary (and
-/// its details where the bar has room and they are short), Deny and
-/// Approve. Placed by `LiveBrowserApprovalBarLayout`; shown from the
-/// feed's pending approval, gone once it resolves. Between approvals it
-/// can say for a moment what yolo mode approved by itself (`flash`).
+/// The action the agent waits on, asked without a modal: its summary, the
+/// agent's reason (three lines at most) and the page, Deny and Approve.
+/// Details shows every line and the script it would run, in a block that
+/// scrolls; Hide folds them away. Placed by `LiveBrowserApprovalBarLayout`
+/// and laid out inside by its `Content`; shown from the feed's pending
+/// approval, gone once it resolves. Between approvals it can say for a
+/// moment what yolo mode approved by itself (`flash`).
 @MainActor
 final class LiveBrowserApprovalBar: UIView {
     typealias M = LiveBrowserApprovalBarLayout.Metrics
+    typealias Content = LiveBrowserApprovalBarLayout.Content
 
     /// Deny (false) or Approve (true), for the approval shown.
     var onDecide: ((LiveBrowserState.Approval, Bool) -> Void)?
@@ -21,21 +24,29 @@ final class LiveBrowserApprovalBar: UIView {
     /// The bar came or went (an approval, a notice): the full screen's
     /// wait bar takes or gives up its place.
     var onShownChange: (() -> Void)?
-    /// Details shown under the summary (not compact).
-    var showsDetails = true { didSet { if showsDetails != oldValue { render() } } }
     /// Deny and Approve on the summary's row.
     var inline = false { didSet { if inline != oldValue { setNeedsLayout() } } }
+    /// Details open: every line and the script. Closed again for each
+    /// new approval.
+    private(set) var expanded = false
 
     private let icon = UIImageView()
     private let summary = UILabel()
-    private let details = UILabel()
+    /// The lines under the summary, scrolled where they don't fit.
+    let body = UIScrollView()
+    /// The reason (or what it would do), the other lines, the page.
+    private let lead = UILabel()
+    private let others = UILabel()
+    private let page = UILabel()
+    /// The script, monospaced in its block.
+    private let codeBlock = UIView()
+    private let code = UILabel()
+    let toggle = UIButton(configuration: .plain())
     let deny = UIButton(configuration: .gray())
     let approve = UIButton(configuration: .filled())
     private var noticeClear: Task<Void, Never>?
     /// How long a yolo approval's words stay.
     static let noticeTime: Duration = .seconds(3)
-    /// Details longer than this are left to the summary.
-    static let shortDetails = 160
 
     /// Something to show: an approval, or a notice.
     var hasContent: Bool { approval != nil || notice != nil }
@@ -58,10 +69,40 @@ final class LiveBrowserApprovalBar: UIView {
         summary.textColor = UIColor(Palette.cardTitle)
         summary.numberOfLines = 3
         summary.accessibilityIdentifier = "live-browser-approval-summary"
-        details.font = Fonts.ui(.regular, size: 12)
-        details.textColor = UIColor(Palette.cardDetail)
-        details.numberOfLines = 4
-        details.accessibilityIdentifier = "live-browser-approval-details"
+        for (label, id) in [(lead, "live-browser-approval-reason"), (others, "live-browser-approval-details"), (page, "live-browser-approval-page")] {
+            label.font = Fonts.ui(.regular, size: 12)
+            label.textColor = UIColor(Palette.cardDetail)
+            label.accessibilityIdentifier = id
+            body.addSubview(label)
+        }
+        lead.textColor = UIColor(Palette.cardTitle)
+        others.numberOfLines = 0
+        codeBlock.backgroundColor = UIColor(Palette.surfaceHighest)
+        codeBlock.layer.cornerRadius = 8
+        codeBlock.layer.cornerCurve = .continuous
+        code.font = Fonts.mono(bold: false, size: 11)
+        code.textColor = UIColor(Palette.cardTitle)
+        code.numberOfLines = 0
+        code.lineBreakMode = .byCharWrapping
+        code.accessibilityIdentifier = "live-browser-approval-code"
+        codeBlock.addSubview(code)
+        body.addSubview(codeBlock)
+        body.accessibilityIdentifier = "live-browser-approval-body"
+        body.alwaysBounceVertical = false
+        body.showsHorizontalScrollIndicator = false
+        toggle.configuration?.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 8)
+        toggle.configuration?.baseForegroundColor = UIColor(Palette.cardTitle)
+        toggle.configuration?.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
+            var attributes = attributes
+            attributes.font = Fonts.ui(.semiBold, size: 13)
+            return attributes
+        }
+        toggle.contentHorizontalAlignment = .leading
+        toggle.accessibilityIdentifier = "live-browser-approval-toggle"
+        toggle.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.setExpanded(!self.expanded)
+        }, for: .touchUpInside)
         deny.configuration?.title = Strings.LiveBrowser.deny
         deny.configuration?.baseForegroundColor = .systemRed
         deny.configuration?.cornerStyle = .capsule
@@ -75,7 +116,7 @@ final class LiveBrowserApprovalBar: UIView {
         approve.configuration?.baseForegroundColor = .liveBrowserOnFill
         approve.accessibilityIdentifier = "live-browser-approval-approve"
         approve.addAction(UIAction { [weak self] _ in self?.decide(true) }, for: .touchUpInside)
-        for view in [icon, summary, details, deny, approve] as [UIView] { addSubview(view) }
+        for view in [icon, summary, body, toggle, deny, approve] as [UIView] { addSubview(view) }
         isHidden = true
         alpha = 0
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: Self, _) in
@@ -89,10 +130,22 @@ final class LiveBrowserApprovalBar: UIView {
     func show(_ approval: LiveBrowserState.Approval?) {
         guard approval != self.approval else { return }
         let had = hasContent
+        if approval?.id != self.approval?.id { expanded = false }
         self.approval = approval
         if approval != nil { clearNotice() }
         render()
         fade(from: had)
+    }
+
+    /// Details or Hide: the bar grows to every line and the script, or
+    /// folds back to the reason and the page.
+    func setExpanded(_ open: Bool) {
+        guard open != expanded, approval != nil else { return }
+        expanded = open
+        render()
+        body.contentOffset = .zero
+        guard window != nil, let superview else { return }
+        UIView.animate(withDuration: 0.2) { superview.layoutIfNeeded() }
     }
 
     /// Yolo approved something: its words for a moment, then they fade.
@@ -125,23 +178,26 @@ final class LiveBrowserApprovalBar: UIView {
         onDecide?(approval, approve)
     }
 
-    /// The details, when there is room for them and they are short.
-    private var detailText: String? {
-        guard showsDetails, let approval, !approval.details.isEmpty else { return nil }
-        let text = approval.details.joined(separator: "\n")
-        return text.count <= Self.shortDetails ? text : nil
-    }
-
     private func render() {
         let asking = approval != nil
         icon.image = UIImage(systemName: asking ? "checkmark.shield" : "bolt.shield.fill")
         icon.tintColor = .liveBrowserYolo
         summary.text = approval?.summary ?? notice
-        details.text = detailText
-        details.isHidden = detailText == nil
+        lead.text = approval?.lead
+        lead.numberOfLines = expanded ? 0 : M.leadLines
+        page.text = approval?.page
+        page.numberOfLines = expanded ? 0 : 1
+        page.lineBreakMode = expanded ? .byCharWrapping : .byTruncatingMiddle
+        let more = approval?.otherDetails ?? []
+        others.text = more.isEmpty ? nil : more.joined(separator: "\n")
+        code.text = approval?.code
+        code.accessibilityLabel = approval?.code.map(Strings.LiveBrowser.approvalScript)
+        others.isHidden = !expanded || more.isEmpty
+        codeBlock.isHidden = !expanded || approval?.code == nil
+        toggle.configuration?.title = expanded ? Strings.LiveBrowser.approvalHide : Strings.LiveBrowser.approvalDetails
         deny.isHidden = !asking
         approve.isHidden = !asking
-        accessibilityLabel = approval.map { Strings.LiveBrowser.approvalBar($0.summary) } ?? notice
+        accessibilityLabel = approval.map { Strings.LiveBrowser.approvalBar($0.summary, reason: $0.reason) } ?? notice
         setNeedsLayout()
         superview?.setNeedsLayout()
     }
@@ -161,60 +217,81 @@ final class LiveBrowserApprovalBar: UIView {
         }
     }
 
-    /// The text's width beside the icon, and the buttons' on an inline row.
-    private func textWidth(_ width: CGFloat) -> CGFloat {
-        let buttons = inline && approval != nil ? buttonsWidth + M.padding : 0
-        return max(0, width - 2 * M.padding - 24 - buttons)
-    }
-
-    private var buttonsWidth: CGFloat { buttonWidth(deny) + 8 + buttonWidth(approve) }
-
-    private func buttonWidth(_ button: UIButton) -> CGFloat {
-        max(76, ceil(button.sizeThatFits(CGSize(width: CGFloat.greatestFiniteMagnitude, height: M.button)).width))
-    }
-
-    private static func height(_ label: UILabel, _ width: CGFloat) -> CGFloat {
+    private static func measure(_ label: UILabel, _ width: CGFloat, lines: Int? = nil) -> CGFloat {
         guard !label.isHidden, !(label.text ?? "").isEmpty else { return 0 }
+        let kept = label.numberOfLines
+        if let lines { label.numberOfLines = lines }
+        defer { label.numberOfLines = kept }
         return ceil(label.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height)
     }
 
-    /// The bar's height at `width`.
-    func height(fitting width: CGFloat) -> CGFloat {
-        let text = textWidth(width)
-        let summaryHeight = max(20, Self.height(summary, text))
-        let detailsHeight = Self.height(details, text)
-        var block = summaryHeight + (detailsHeight > 0 ? 4 + detailsHeight : 0)
-        if approval != nil {
-            block = inline ? max(block, M.button) : block + 10 + M.button
-        }
-        return ceil(block + 2 * M.padding)
+    private static func measure(_ button: UIButton) -> CGFloat {
+        button.sizeThatFits(CGSize(width: CGFloat.greatestFiniteMagnitude, height: M.button)).width
+    }
+
+    /// The body's pieces in order, with their heights at `width`.
+    private func pieces(_ width: CGFloat) -> [(UIView, CGFloat)] {
+        let codeWidth = max(0, width - 2 * M.codeInset)
+        return [
+            (lead, Self.measure(lead, width)),
+            (others, Self.measure(others, width)),
+            (page, Self.measure(page, width)),
+            (codeBlock, codeBlock.isHidden ? 0 : Content.codeBlock(text: Self.measure(code, codeWidth))),
+        ]
+    }
+
+    /// Details shows something more: a line or the script closed away,
+    /// or a reason or page cut short. Open, Hide always shows.
+    private func hasMore(_ width: CGFloat) -> Bool {
+        guard let approval else { return false }
+        if expanded { return true }
+        if !approval.otherDetails.isEmpty || approval.code != nil { return true }
+        return Self.measure(lead, width, lines: 0) > Self.measure(lead, width)
+            || Self.measure(page, width, lines: 0) > Self.measure(page, width)
+    }
+
+    /// The inside at `width`, no taller than `maxHeight`.
+    private func content(width: CGFloat, maxHeight: CGFloat) -> (Content, [(UIView, CGFloat)], Bool) {
+        let asking = approval != nil
+        let denyWidth = Self.measure(deny), approveWidth = Self.measure(approve)
+        let text = Content.textWidth(width: width, inline: inline, asking: asking, deny: denyWidth, approve: approveWidth)
+        let pieces = asking ? pieces(text) : []
+        let more = hasMore(text)
+        let content = Content(width: width, maxHeight: maxHeight, inline: inline, asking: asking,
+                              summary: Self.measure(summary, text), pieces: pieces.map(\.1),
+                              deny: denyWidth, approve: approveWidth, toggle: more ? Self.measure(toggle) : nil)
+        return (content, pieces, more)
+    }
+
+    /// The bar's height at `width`, held to `maxHeight`.
+    func height(fitting width: CGFloat, maxHeight: CGFloat = .greatestFiniteMagnitude) -> CGFloat {
+        content(width: width, maxHeight: maxHeight).0.height
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        let width = bounds.width
-        let text = textWidth(width)
-        let summaryHeight = max(20, Self.height(summary, text))
-        let detailsHeight = Self.height(details, text)
-        let block = summaryHeight + (detailsHeight > 0 ? 4 + detailsHeight : 0)
-        let inlineRow = inline && approval != nil
-        let top = inlineRow ? max(M.padding, (bounds.height - block) / 2) : M.padding
-        icon.frame = CGRect(x: M.padding, y: top, width: 18, height: 20)
-        let textX = M.padding + 24
-        summary.frame = CGRect(x: textX, y: top, width: text, height: summaryHeight)
-        details.frame = CGRect(x: textX, y: summary.frame.maxY + 4, width: text, height: detailsHeight)
-        let approveWidth = buttonWidth(approve), denyWidth = buttonWidth(deny)
-        let buttonY = inlineRow ? (bounds.height - M.button) / 2 : bounds.height - M.padding - M.button
-        approve.frame = CGRect(x: width - M.padding - approveWidth, y: buttonY, width: approveWidth, height: M.button)
-        deny.frame = CGRect(x: approve.frame.minX - 8 - denyWidth, y: buttonY, width: denyWidth, height: M.button)
+        let (content, pieces, more) = self.content(width: bounds.width, maxHeight: bounds.height)
+        icon.frame = content.icon
+        summary.frame = content.summary
+        body.frame = content.body
+        var frames = content.pieces.makeIterator()
+        for (view, height) in pieces { view.frame = height > 0 ? frames.next() ?? .zero : .zero }
+        code.frame = Content.code(in: codeBlock.bounds)
+        body.contentSize = CGSize(width: content.body.width, height: content.bodyHeight)
+        body.isScrollEnabled = content.bodyHeight > content.body.height
+        toggle.isHidden = !more
+        if let frame = content.toggle { toggle.frame = frame }
+        approve.frame = content.approve
+        deny.frame = content.deny
         layer.shadowPath = UIBezierPath(roundedRect: bounds, cornerRadius: M.radius).cgPath
     }
 
-    /// Placed by `layout`, as tall as its content there, on top.
+    /// Placed by `layout`, as tall as its content there, on top; taller
+    /// with Details open.
     func place(_ layout: LiveBrowserApprovalBarLayout) {
-        showsDetails = layout.showsDetails
         inline = layout.inline
-        let frame = layout.frame(height: height(fitting: layout.width))
+        let maxHeight = layout.maxHeight(expanded: expanded)
+        let frame = layout.frame(height: height(fitting: layout.width, maxHeight: maxHeight), expanded: expanded)
         // By its bounds and centre: a pulse's scale may be under way.
         bounds = CGRect(origin: .zero, size: frame.size)
         center = CGPoint(x: frame.midX, y: frame.midY)

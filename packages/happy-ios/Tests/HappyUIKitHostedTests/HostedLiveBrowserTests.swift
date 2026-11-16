@@ -1352,4 +1352,90 @@ final class HostedLiveBrowserTests: XCTestCase {
         }
     }
 }
+
+extension HostedLiveBrowserTests {
+    /// A script's approval: the bar says why and where, closed; Details
+    /// shows every line and the script, monospaced, and Hide folds them
+    /// away. In the chat and floating over the full screen alike.
+    func testTheBarSaysWhyAndDetailsShowsTheScript() async throws {
+        let root = UIViewController()
+        let window = hostedKeyWindow(in: try await hostedActiveScene(), root: root)
+        defer { window.isHidden = true }
+        let bar = LiveBrowserApprovalBar()
+        root.view.addSubview(bar)
+        let reason = "Agent says: Read the monthly cost table from the Billing page, every row of it, so the totals can be compared with last month's"
+        let script = (0..<40).map { "const row\($0) = document.querySelector('#cost-\($0)').textContent;" }.joined(separator: "\n")
+        let approval = LiveBrowserState.Approval(id: "e1", summary: "The agent wants to change the page.",
+                                                 details: ["Run JavaScript in the page", reason, "Page: console.example.com/billing/home"],
+                                                 code: script)
+        bar.show(approval)
+        func find(_ id: String) throws -> UIView { try XCTUnwrap(Self.view(bar, id), id) }
+        let size = root.view.bounds.size, safe = LayoutInsets(root.view.safeAreaInsets)
+        let card = CGRect(x: 8, y: size.height - safe.bottom - 64, width: size.width - 16, height: 56)
+        let places: [LiveBrowserApprovalBarLayout] = [
+            LiveBrowserApprovalBarLayout(size: size, safeArea: safe, place: .chat(card: card, anchor: card.minY - 20)),
+            LiveBrowserApprovalBarLayout(size: size, safeArea: safe, place: .fullScreen(picture: CGRect(origin: .zero, size: size), phone: true,
+                                                                                        held: true, strip: nil, floor: size.height - safe.bottom - 49)),
+        ]
+        for layout in places {
+            bar.setExpanded(false)
+            bar.place(layout)
+            bar.layoutIfNeeded()
+            let what = "\(layout.mode)"
+            XCTAssertEqual(bar.accessibilityLabel, Strings.LiveBrowser.approvalBar(approval.summary, reason: reason), what)
+            let lead = try XCTUnwrap(try find("live-browser-approval-reason") as? UILabel)
+            let page = try XCTUnwrap(try find("live-browser-approval-page") as? UILabel)
+            XCTAssertEqual(lead.text, reason, what)
+            XCTAssertGreaterThan(lead.frame.height, 0, what)
+            XCTAssertLessThanOrEqual(lead.numberOfLines, 3, what)
+            XCTAssertEqual(page.text, "Page: console.example.com/billing/home", what)
+            XCTAssertGreaterThan(page.frame.height, 0, what)
+            XCTAssertTrue(try find("live-browser-approval-code").superview!.isHidden, "closed: no script, \(what)")
+            XCTAssertTrue(try find("live-browser-approval-details").isHidden, what)
+            XCTAssertFalse(bar.toggle.isHidden, what)
+            XCTAssertEqual(bar.toggle.configuration?.title, Strings.LiveBrowser.approvalDetails, what)
+            XCTAssertFalse(bar.toggle.frame.intersects(bar.deny.frame), what)
+            XCTAssertLessThanOrEqual(bar.frame.height, layout.maxHeight, what)
+            let closed = bar.frame
+            try screenshot(window, name: "live-browser-approval-closed-\(layout.mode)")
+
+            bar.toggle.sendActions(for: .touchUpInside)
+            XCTAssertTrue(bar.expanded, what)
+            bar.place(layout)
+            bar.layoutIfNeeded()
+            let code = try XCTUnwrap(try find("live-browser-approval-code") as? UILabel)
+            XCTAssertFalse(code.superview!.isHidden, what)
+            XCTAssertEqual(code.text, script, what)
+            XCTAssertTrue(code.font.fontDescriptor.symbolicTraits.contains(.traitMonoSpace), what)
+            XCTAssertFalse(try find("live-browser-approval-details").isHidden, what)
+            XCTAssertEqual(bar.toggle.configuration?.title, Strings.LiveBrowser.approvalHide, what)
+            XCTAssertGreaterThan(bar.frame.height, closed.height, what)
+            XCTAssertLessThanOrEqual(bar.frame.height, layout.maxHeight(expanded: true), what)
+            XCTAssertEqual(bar.frame.maxY, closed.maxY, accuracy: 0.5, "it grows up from where it stands, \(what)")
+            XCTAssertTrue(bar.body.isScrollEnabled, "a long script scrolls, \(what)")
+            XCTAssertGreaterThan(bar.body.contentSize.height, bar.body.bounds.height, what)
+            XCTAssertLessThanOrEqual(bar.body.frame.maxY, bar.deny.frame.minY, what)
+            try screenshot(window, name: "live-browser-approval-open-\(layout.mode)")
+
+            bar.toggle.sendActions(for: .touchUpInside)
+            XCTAssertFalse(bar.expanded, what)
+            bar.place(layout)
+            bar.layoutIfNeeded()
+            XCTAssertEqual(bar.frame, closed, what)
+        }
+
+        // A new approval starts closed; one with nothing more has no Details.
+        bar.setExpanded(true)
+        bar.show(LiveBrowserState.Approval(id: "e2", summary: "The agent wants to click.", details: ["Page: a.example"]))
+        XCTAssertFalse(bar.expanded)
+        bar.place(places[0])
+        bar.layoutIfNeeded()
+        XCTAssertTrue(bar.toggle.isHidden)
+    }
+
+    private static func view(_ root: UIView, _ id: String) -> UIView? {
+        if root.accessibilityIdentifier == id { return root }
+        return root.subviews.lazy.compactMap { view($0, id) }.first
+    }
+}
 #endif

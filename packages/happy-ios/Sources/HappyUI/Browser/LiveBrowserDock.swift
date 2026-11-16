@@ -375,7 +375,7 @@ final class LiveBrowserDock: NSObject {
         let layout = LiveBrowserApprovalBarLayout(size: view.bounds.size, safeArea: LayoutInsets(view.safeAreaInsets),
                                                   place: .chat(card: card, anchor: LiveBrowserDockLayout.anchor(anchor, strip)))
         approvalBar.place(layout)
-        approvalBarTop = layout.anchor(height: approvalBar.bounds.height)
+        approvalBarTop = layout.anchor(height: approvalBar.bounds.height, expanded: approvalBar.expanded)
     }
 
     private func playerLayout(in view: UIView, card: CGRect, anchor: CGFloat) -> LiveBrowserDockLayout {
@@ -1197,7 +1197,9 @@ final class LiveBrowserDock: NSObject {
     // MARK: Approvals
 
     /// Approve, Deny, or Not now for the action the agent waits on. The
-    /// words are the bridge's scrubbed summary: never what was typed.
+    /// words are the bridge's scrubbed summary and its lines, the agent's
+    /// reason ("Agent says: …") and the page among them: never what was
+    /// typed. The script stays the bar's, under Details.
     private func askApproval(_ approval: LiveBrowserState.Approval) {
         guard let host, approvalAlert == nil else { return }
         var presenter: UIViewController = host

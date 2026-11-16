@@ -209,6 +209,17 @@ final class HostedLiveBrowserWaitTests: XCTestCase {
         // Moved by the viewer's own layout (`onControlsMoved`), not by a pass of the test's.
         XCTAssertLessThan(items.approvalBar.frame.maxY, down - 12 - 1)
         clear(items.approvalBar, "approval, keyboard up")
+        // Details open: taller, and still over the key row and the bar.
+        let closed = items.approvalBar.frame.height
+        items.approvalBar.show(LiveBrowserState.Approval(id: "a2", summary: "The agent wants to change the page.",
+                                                         details: ["Run JavaScript in the page", "Agent says: Read the order total", "Page: shop.example.com/cart"],
+                                                         code: (0..<30).map { "const line\($0) = \($0);" }.joined(separator: "\n")))
+        items.approvalBar.setExpanded(true)
+        clear(items.approvalBar, "details open, keyboard up")
+        XCTAssertGreaterThan(items.approvalBar.frame.height, closed)
+        XCTAssertGreaterThanOrEqual(items.approvalBar.frame.minY, items.view.safeAreaInsets.top)
+        items.approvalBar.setExpanded(false)
+        clear(items.approvalBar, "details closed, keyboard up")
 
         // The wait bar in its place: the same.
         items.approvalBar.show(nil)

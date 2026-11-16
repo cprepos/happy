@@ -147,8 +147,17 @@ extension Strings {
         static let approvalFailed = "Couldn’t Send Your Answer"
         /// `/approve` or `/deny` answered 409: decided elsewhere, or the browser closed.
         static let approvalGone = "This request is no longer waiting."
-        /// The bar that asks, under the picture or over the composer.
-        static func approvalBar(_ summary: String) -> String { "\(approvalTitle) \(summary)" }
+        /// The bar that asks, under the picture or over the composer: the
+        /// summary, then the agent's reason where it gave one.
+        static func approvalBar(_ summary: String, reason: String? = nil) -> String {
+            ([approvalTitle, summary] + (reason.map { [$0] } ?? [])).joined(separator: " ")
+        }
+        /// The bar's button that shows every line and the script, and the
+        /// one that folds them away again.
+        static let approvalDetails = "Details"
+        static let approvalHide = "Hide"
+        /// The script's block under Details, as VoiceOver reads it.
+        static func approvalScript(_ code: String) -> String { "Script: \(code)" }
         /// The browser's own yolo mode (`POST /auto`): while on, the bridge
         /// approves what the agent asks for by itself.
         static let yoloMenu = "Yolo mode"
