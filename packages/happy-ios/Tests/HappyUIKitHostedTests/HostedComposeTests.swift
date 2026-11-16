@@ -893,24 +893,8 @@ extension HostedComposeTests {
         XCTAssertEqual(log.spawned.map(\.providerId), ["claude"])
         XCTAssertEqual(log.spawned.map(\.modelId), ["opus"])
         XCTAssertEqual(log.spawned.map(\.happyAgentTarget), [.object(["kind": .string("bot"), "name": .string("Release Captain")])])
-        // The face that couldn't be painted is offered again; not now.
-        try await until { chat.presentedViewController is UIAlertController }
-        let offer = try XCTUnwrap(chat.presentedViewController as? UIAlertController)
-        typealias Handler = @convention(block) (UIAlertAction) -> Void
-        let notNow = try XCTUnwrap(offer.actions.first { $0.style == .cancel })
-        let handler = unsafeBitCast(try XCTUnwrap(notNow.value(forKey: "handler") as AnyObject?), to: Handler.self)
-        try await dismissAlert(on: chat)
-        handler(notNow)
         try await until { !chat.isComposing }
-    }
-
-    /// Takes an alert down once it has finished coming up: one dismissed
-    /// mid-presentation stays.
-    private func dismissAlert(on chat: UIViewController) async throws {
-        try await until {
-            if let alert = chat.presentedViewController, !alert.isBeingPresented { alert.dismiss(animated: false) }
-            return chat.presentedViewController == nil
-        }
+        XCTAssertNil(chat.presentedViewController, "no face to offer again")
     }
 
     private static func subviews<T: UIView>(_ type: T.Type, in view: UIView) -> [T] {
