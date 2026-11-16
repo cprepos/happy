@@ -177,10 +177,12 @@ an upstream line rather than rewriting it, and each naming the addons file.
   `testAScrolledTextShowsWholeLines` checks the trimmed height and the top
   line fragment (after ad5ff29e8). If a merge conflicts there, take
   upstream's lines once they pass.
-- `.github/workflows/happy-ios.yml` (upstream's, which upstream has since
-  deleted): the `uikit` and `hosted` test steps pass
-  `-test-timeouts-enabled YES -default-test-execution-time-allowance 120
-  -maximum-test-execution-time-allowance 300`, so a test that hangs fails
-  on its own and its shard finishes, instead of holding the job until the
-  60-minute timeout cancels the whole run. Keep the flags if a merge
-  brings the workflow back.
+- `.github/workflows/happy-ios.yml` is gone: upstream deleted every
+  automatic workflow, and the 2026-11-15 merge took that deletion here too
+  (only the manual `release-happy-cli.yml` is left). `AGENTS.md`'s "GitHub
+  Actions" rule now applies to this tree: don't add a workflow or an
+  automatic trigger back without the user asking. Hosted and UIKit tests run
+  by hand on the Mac instead; pass `-test-timeouts-enabled YES
+  -default-test-execution-time-allowance 120
+  -maximum-test-execution-time-allowance 300` to `xcodebuild test` there, so
+  a test that hangs fails on its own and the rest of the run finishes.

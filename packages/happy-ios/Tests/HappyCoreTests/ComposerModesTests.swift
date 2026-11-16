@@ -164,7 +164,7 @@ final class ModelModeOptionsTests: XCTestCase {
         let models = Options.hardcodedModelModes(flavor: "codex")
         XCTAssertEqual(keys(models), [
             "default",
-            "gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
+            "gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
         ])
         XCTAssertEqual(models[0], ModeOption(key: "default", name: "Default model"), "names no model and no provider")
         XCTAssertEqual(models[1].name, "GPT-6 Astra")
@@ -177,11 +177,11 @@ final class ModelModeOptionsTests: XCTestCase {
         let withCustom = Options.includeConfiguredModel(flavor: "codex", models: models, configured: "my-workspace-model")
         XCTAssertEqual(keys(withCustom), [
             "default",
-            "gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
+            "gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
             "my-workspace-model",
         ])
         XCTAssertEqual(withCustom.last, ModeOption(key: "my-workspace-model", name: "my-workspace-model", description: "custom model"))
-        XCTAssertEqual(models.count, 8)
+        XCTAssertEqual(models.count, 9)
         XCTAssertEqual(Options.includeConfiguredModel(flavor: "codex", models: models, configured: "default"), models)
         XCTAssertEqual(Options.includeConfiguredModel(flavor: "codex", models: models, configured: "gpt-6.1-sol"), models)
         XCTAssertEqual(Options.includeConfiguredModel(flavor: "gemini", models: models, configured: "my-workspace-model"), models)
@@ -191,13 +191,13 @@ final class ModelModeOptionsTests: XCTestCase {
     func testOnlyCurrentGenerationClaudeModels() {
         let models = Options.hardcodedModelModes(flavor: "claude")
         XCTAssertEqual(keys(models), [
-            "claude-fable-5-1", "claude-fable-5", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5", "claude-haiku-5-5",
+            "claude-fable-5-2", "claude-fable-5-1", "claude-fable-5", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5", "claude-haiku-5-5",
         ])
-        XCTAssertEqual(models.map(\.name), ["Fable 5.1", "Fable 5", "Opus 5.5", "Opus 5", "Sonnet 5.5", "Haiku 5.5"])
+        XCTAssertEqual(models.map(\.name), ["Fable 5.2", "Fable 5.1", "Fable 5", "Opus 5.5", "Opus 5", "Sonnet 5.5", "Haiku 5.5"])
         XCTAssertFalse(models.contains { $0.key == "default" })
         XCTAssertFalse(models.contains { ["opus", "sonnet", "fable", "haiku"].contains($0.key) })
         XCTAssertFalse(models.contains { $0.key.hasSuffix("[1m]") })
-        XCTAssertEqual(models[0].description, "1M context")
+        XCTAssertEqual(models[1].description, "1M context")
         XCTAssertEqual(models[0].providerId, "anthropic")
     }
 
@@ -234,7 +234,7 @@ final class ModelModeOptionsTests: XCTestCase {
     func testEveryCodexModelGetsTheLevelsItsRegistryPublishes() {
         let full = ["low", "medium", "high", "xhigh", "max", "ultra"]
         let luna = ["low", "medium", "high", "xhigh", "max"]
-        for model in ["gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-5.6-sol", "gpt-5.6-terra"] {
+        for model in ["gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-sol", "gpt-5.6-sol", "gpt-5.6-terra"] {
             XCTAssertEqual(keys(Options.effortLevelsForModel(flavor: "codex", modelKey: model)), full, model)
         }
         for model in ["gpt-6-luna", "gpt-5.6-luna"] {
@@ -247,7 +247,7 @@ final class ModelModeOptionsTests: XCTestCase {
     }
 
     func testClaudeGetsTheSDKScaleForEveryModel() {
-        for model in ["claude-fable-5-1", "claude-fable-5", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5", "claude-haiku-5-5"] {
+        for model in ["claude-fable-5-2", "claude-fable-5-1", "claude-fable-5", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5", "claude-haiku-5-5"] {
             let levels = Options.effortLevelsForModel(flavor: "claude", modelKey: model)
             XCTAssertEqual(keys(levels), ["low", "medium", "high", "xhigh", "max"])
             XCTAssertEqual(levels.map(\.name), ["Low", "Medium", "High", "xHigh", "Max"])
@@ -682,7 +682,7 @@ final class ComposerModesTests: XCTestCase {
         XCTAssertEqual(modes.modelMode?.key, "claude-opus-5-5")
         XCTAssertEqual(modes.effortLevel?.key, "medium")
         XCTAssertEqual(modes.availableModes.count, 5)
-        XCTAssertEqual(modes.availableModels.count, 6)
+        XCTAssertEqual(modes.availableModels.count, 7)
         XCTAssertEqual(modes.availableEffortLevels.map(\.key), ["low", "medium", "high", "xhigh", "max"])
     }
 

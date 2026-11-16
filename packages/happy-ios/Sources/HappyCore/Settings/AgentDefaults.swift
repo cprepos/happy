@@ -227,6 +227,7 @@ public enum AgentDefaults {
         switch agent {
         case .claude:
             [
+                Option("claude-fable-5-2", "Fable 5.2"),
                 Option("claude-fable-5-1", "Fable 5.1", "1M context"),
                 Option("claude-fable-5", "Fable 5"),
                 Option("claude-opus-5-5", "Opus 5.5"),
@@ -241,6 +242,7 @@ public enum AgentDefaults {
                 Option("default", "Default model"),
                 Option("gpt-6-astra", "GPT-6 Astra", "most capable"),
                 Option("gpt-6.1-sol", "GPT-6.1 Sol"),
+                Option("gpt-6.1-terra", "GPT-6.1 Terra"),
                 Option("gpt-6-sol", "GPT-6 Sol"),
                 Option("gpt-6-luna", "GPT-6 Luna"),
                 Option("gpt-5.6-sol", "GPT-5.6 Sol"),
@@ -294,6 +296,7 @@ public enum AgentDefaults {
             let byModel: [String: [String]] = [
                 "gpt-6-astra": ["low", "medium", "high", "xhigh", "max", "ultra"],
                 "gpt-6.1-sol": ["low", "medium", "high", "xhigh", "max", "ultra"],
+                "gpt-6.1-terra": ["low", "medium", "high", "xhigh", "max", "ultra"],
                 "gpt-6-sol": ["low", "medium", "high", "xhigh", "max", "ultra"],
                 "gpt-6-luna": ["low", "medium", "high", "xhigh", "max"],
                 "gpt-5.6-sol": ["low", "medium", "high", "xhigh", "max", "ultra"],

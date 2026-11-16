@@ -49,6 +49,10 @@ final class SettingsIndexModelTests: XCTestCase {
     func testVersionDetail() {
         XCTAssertEqual(SettingsIndexModel.versionDetail(version: "2026.10.1", variant: .production), "2026.10.1")
         XCTAssertEqual(SettingsIndexModel.versionDetail(version: "2026.10.1", variant: .preview), "2026.10.1 / preview")
+        // Builds of one CalVer version differ only by their build number.
+        XCTAssertEqual(SettingsIndexModel.versionDetail(version: "2026.11.1", build: "160", variant: .production), "2026.11.1 (160)")
+        XCTAssertEqual(SettingsIndexModel.versionDetail(version: "2026.11.1", build: "171", variant: .preview), "2026.11.1 (171) / preview")
+        XCTAssertEqual(SettingsIndexModel.versionDetail(version: "2026.11.1", build: "", variant: .production), "2026.11.1")
     }
 }
 
@@ -219,7 +223,7 @@ final class AgentsPageTests: XCTestCase {
         XCTAssertEqual(fields.map(\.detail), ["Default (Auto)", "Default (Opus 5.5)", "Default (Medium)"])
         XCTAssertEqual(fields.map(\.codeDefaultName), ["Auto", "Opus 5.5", "Medium"])
         XCTAssertEqual(fields.map(\.hasOverride), [false, false, false])
-        XCTAssertEqual(fields[1].options.count, 6)
+        XCTAssertEqual(fields[1].options.count, 7)
         XCTAssertFalse(fields[1].offersCustomModel)
     }
 

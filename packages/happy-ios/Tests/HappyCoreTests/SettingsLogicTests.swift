@@ -44,7 +44,7 @@ final class AgentDefaultsTests: XCTestCase {
         XCTAssertEqual(AgentDefaults.modelModes(.openclaw, configured: nil), [], "a lone Default row is no choice")
         let claude = AgentDefaults.modelModes(.claude, configured: "claude-sonnet-5")
         XCTAssertEqual(claude.last?.name, "Sonnet 5")
-        XCTAssertEqual(AgentDefaults.modelModes(.claude, configured: "claude-opus-5-5[1m]").count, 6, "maps onto an existing row")
+        XCTAssertEqual(AgentDefaults.modelModes(.claude, configured: "claude-opus-5-5[1m]").count, 7, "maps onto an existing row")
     }
 
     func testEffortLevelsPerModel() {
