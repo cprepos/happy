@@ -1,7 +1,8 @@
 // What the user sees of an auto-browser approval: a short, scrubbed summary built from the
 // controller's approval record. Never the typed text, a field's value, a tool's arguments, a
-// file path or a query string; the agent's own reason is shown with anything that looks like a
-// secret masked. For a tool call (eval_js and the like) the controller's record carries only a raw
+// file path or a query string. The agent's own reason, with anything that looks like a secret
+// masked, is the approval's headline (its summary): what the user is agreeing to, in the agent's
+// words. For a tool call (eval_js and the like) the controller's record carries only a raw
 // argument preview, never shown; the reason and the script preview come from the bridge's MCP
 // server instead (`extras`), which holds the call's own arguments.
 
@@ -22,7 +23,7 @@ const TOOL_LABEL = {
     'browser.set_cookies': 'Set cookies in the browser',
     'browser.set_local_storage': 'Change the page\'s stored data',
     'browser.cdp_attach': 'Attach a debugger to the browser',
-    'browser.eval_js': 'Run JavaScript in the page',
+    'browser.eval_js': 'Runs a script on this page',
 };
 
 // Tool-call tools (by their local, API-safe names) that take the bridge's own `reason` argument.
@@ -31,8 +32,8 @@ export const REASON_TOOLS = new Set(Object.keys(TOOL_LABEL).map((t) => t.replace
 export const CODE_TOOL = 'browser.eval_js';
 export const REASON_MAX_INPUT = 300;
 export const CODE_MAX = 1500;
-export const AGENT_SAYS = 'Agent says: ';
-export const NO_REASON = 'The agent didn\'t say why';
+// What the bridge answers, instead of asking the user, for an eval_js approval with no reason.
+export const REASON_REFUSED = 'Nothing was run: say in plain words what this script will do (the reason argument: what it clicks, changes or reads, on which page), then call again.';
 
 const MAX_REASON = 240;
 const MASK = '•••';
@@ -129,35 +130,41 @@ function toolNameOf(record) {
 }
 
 /**
- * {kind, summary, details[], code} for an approval record. `pageUrl` is the link's last known page,
- * used when the record has no observation. `extras` is what the bridge's MCP server sent with the
- * approval: the agent's `reason` for a tool call and, for eval_js only, the script as `code`.
- * `code` is null for every other approval.
+ * {kind, summary, details[], code, reason} for an approval record. `pageUrl` is the link's last
+ * known page, used when the record has no observation. `extras` is what the bridge's MCP server
+ * sent with the approval: the agent's `reason` for a tool call and, for eval_js only, the script
+ * as `code`. `code` is null for every other approval.
+ *
+ * `reason` is the agent's own words, scrubbed, or null; when there is one it is also the summary.
+ * Without one the summary stays a generic "The agent wants to ...". `details` are, in order: what
+ * kind of thing it is (for eval_js "Runs a script on this page", for a click its target), then the
+ * page. The controller's own argument preview (record.reason on a tool call) is never shown.
  */
 export function approvalSummary(record, pageUrl = null, extras = {}) {
     const kind = KIND_LABEL[record?.kind] ? record.kind : 'write';
-    const summary = `The agent wants to ${KIND_LABEL[kind]}.`;
     const details = [];
     let code = null;
+    let reason = null;
     const where = placeOf(record?.observation?.url) || placeOf(pageUrl);
     if (record?.origin === 'tool_call') {
         const tool = toolNameOf(record);
         details.push(TOOL_LABEL[tool] || (tool ? `Use the tool ${tool}` : 'Use a browser tool'));
-        const reason = scrubReason(extras?.reason);
-        details.push(reason ? `${AGENT_SAYS}${reason}` : NO_REASON);
+        reason = scrubReason(extras?.reason);
         if (tool === CODE_TOOL) code = scrubCode(extras?.code);
     } else {
         const a = record?.action || {};
         details.push(actionLine(a));
-        const reason = scrubReason(a.reason || record?.reason, [a.text, a.value, a.username, a.file_path]);
-        if (reason) details.push(`${AGENT_SAYS}${reason}`);
+        reason = scrubReason(a.reason || record?.reason, [a.text, a.value, a.username, a.file_path]);
     }
     if (where) details.push(`Page: ${where}`);
-    return { kind, summary, details, code };
+    const summary = reason || `The agent wants to ${KIND_LABEL[kind]}.`;
+    return { kind, summary, details, code, reason };
 }
 
-/** A one-line summary for browser yolo's record: the summary plus the agent's reason, if any. */
-export function summaryWithReason(summary, details) {
-    const said = Array.isArray(details) ? details.find((d) => typeof d === 'string' && d.startsWith(AGENT_SAYS)) : null;
-    return said ? `${summary} ${said}` : summary;
+/**
+ * True for a tool-call approval of eval_js whose reason is missing or blank: the bridge refuses it
+ * (denies it on the controller) and never shows it, with or without browser yolo.
+ */
+export function refusesForNoReason(record, extras = {}) {
+    return record?.origin === 'tool_call' && toolNameOf(record) === CODE_TOOL && !scrubReason(extras?.reason);
 }

@@ -56,8 +56,11 @@
 //   POST /api/approval  {session_id|chat_key, approval_id, reason?, code?}
 //                       -> {id, url, approval}: an auto-browser approval of this link's own session,
 //                       still pending, is shown to the user (state.approval, scrubbed) until decided.
-//                       reason (the agent's, for a tool call) becomes an "Agent says: " line, and code
-//                       (eval_js's script) approval.code, scrubbed; both only on first registration.
+//                       reason (the agent's, for a tool call) becomes approval.reason and its summary,
+//                       and code (eval_js's script) approval.code, scrubbed; both only on first
+//                       registration. An eval_js approval with no reason (or a blank one) is never
+//                       shown: it is denied on the controller at once, browser yolo or not:
+//                       -> {id, url, approval: null, refused: true, approval_status: denied, error: reason_required, message}
 //                       With browser yolo on for the link, approved at once instead:
 //                       -> {id, url, approval: null, auto_approved: true, approval_status: approved}
 //   POST /api/approval/wait {id, approval_id, wait_s}
@@ -98,7 +101,7 @@ import { timingSafeEqual, randomBytes, createHash } from 'node:crypto';
 import { request as httpRequest } from 'node:http';
 import { connect as netConnect } from 'node:net';
 import { renderPage, renderGone } from './page.mjs';
-import { APPROVAL_ID, approvalSummary, summaryWithReason, REASON_MAX_INPUT, CODE_MAX } from './approval.mjs';
+import { APPROVAL_ID, approvalSummary, refusesForNoReason, REASON_REFUSED, REASON_MAX_INPUT, CODE_MAX } from './approval.mjs';
 
 const LIVE_ROUTE = /^\/live\/([^/]+)(\/frame\.jpg|\/screen\.png|\/state|\/done|\/take|\/release|\/end|\/sleep|\/nav|\/approve|\/deny|\/auto)?\/?$/;
 const CHAT_ROUTE = /^\/live\/chat\/([0-9a-f]{32})\/?$/;
@@ -173,7 +176,7 @@ export function navUrl(input) {
 export function pendingApproval(rec) {
     const a = rec.approval;
     if (!a || a.status !== 'pending' || a.sessionId !== rec.sessionId || rec.status === 'done') return null;
-    return { id: a.id, kind: a.kind, summary: a.summary, details: a.details ?? [], asked_at: a.askedAt ?? null, code: a.code ?? null };
+    return { id: a.id, kind: a.kind, summary: a.summary, details: a.details ?? [], asked_at: a.askedAt ?? null, code: a.code ?? null, reason: a.reason ?? null };
 }
 
 export function stateOf(rec) {
@@ -372,6 +375,7 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
     const approvalStatusOf = (rec, aid) => {
         if (rec.approval?.id === aid && rec.approval.sessionId === rec.sessionId) return rec.approval.status;
         if (Array.isArray(rec.autoApproved) && rec.autoApproved.some((e) => e?.id === aid)) return 'approved';
+        if (rt(rec.id).refused?.includes(aid)) return 'denied';
         return 'gone';
     };
 
@@ -430,7 +434,7 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         const a = body.on ? pendingApproval(rec) : null;
         const c = a ? clientOf(rec) : null;
         if (a && c) {
-            const err = await yoloApprove(rec, c, a.id, summaryWithReason(a.summary, a.details));
+            const err = await yoloApprove(rec, c, a.id, a.summary);
             if (!err) settleApproval(rec, 'approved');
             else if (err.status === 409 || err.status === 404) await syncApproval(rec);
         }
@@ -723,11 +727,24 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
             if (record.status !== 'pending') {
                 return send(res, 409, { error: 'not_pending', approval_status: APPROVAL_STATUS[record.status] ?? 'gone' });
             }
+            // A script with no reason is never put to the user (or browser yolo): nothing would say
+            // what they are agreeing to. Denied on the controller now; the agent is told to say
+            // what the script will do and call again. Old MCP servers, which never send a reason,
+            // read it back from /api/approval/wait as denied.
+            if (refusesForNoReason(record, extras)) {
+                try { await c.reject(aid, 'Refused by the bridge: the agent gave no reason for this script'); } catch (err) {
+                    if (err.status !== 409 && err.status !== 404) return send(res, 502, { error: 'approval_failed' });
+                }
+                if (rec.approval?.id === aid && rec.approval.status === 'pending') settleApproval(rec, 'denied');
+                const r = rt(rec.id);
+                r.refused = [aid, ...(r.refused || []).filter((x) => x !== aid)].slice(0, 20);
+                log(`approval /live/${rec.id.slice(0, 6)}… refused ${aid}: eval_js with no reason`);
+                return send(res, 200, { id: rec.id, url: linkUrl(rec), approval: null, refused: true, approval_status: 'denied', error: 'reason_required', message: REASON_REFUSED });
+            }
             // Browser yolo: approved at once, never shown or waited on. Should that fail for any
             // reason but a decision made meanwhile, the user is asked as usual.
             if (rec.autoApprove === true) {
-                const shown = approvalSummary(record, rec.url, extras);
-                const err = await yoloApprove(rec, c, aid, summaryWithReason(shown.summary, shown.details));
+                const err = await yoloApprove(rec, c, aid, approvalSummary(record, rec.url, extras).summary);
                 if (!err) return send(res, 200, { id: rec.id, url: linkUrl(rec), approval: null, auto_approved: true, approval_status: 'approved' });
                 if (err.status === 409 || err.status === 404) {
                     let current = null;
